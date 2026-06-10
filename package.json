@@ -1,0 +1,40 @@
+{
+  "name": "@kynesyslabs/dacs",
+  "version": "0.1.0-alpha.0",
+  "description": "TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents — the reusable runtime for the Identify → Vet → Negotiate → Settle → Verify lifecycle.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "conformance:sync": "node scripts/sync-vectors.mjs",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@kynesyslabs/demosdk": "^4.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^4.0.18"
+  }
+}
