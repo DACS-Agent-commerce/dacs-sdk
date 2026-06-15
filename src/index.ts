@@ -47,3 +47,27 @@ export {
   type ProxyFetchResult,
   type ResolvedIdentity,
 } from "./substrate/index.js";
+
+// Artifact model (T3): spine artifact types, kind→separator registry, validators.
+export {
+  type ArtifactKind,
+  type ClaimRef,
+  type ClaimRequirement,
+  type Price,
+  type Delivery,
+  type Listing,
+  type VerifyResultEntry,
+  type CompositeVerificationRecord,
+  type AgreementDocument,
+  type SettlementEvidence,
+  type Rating,
+  type AttestationBundle,
+  ARTIFACT_SEPARATORS,
+  RATING_SEPARATOR,
+  separatorFor,
+  isListing,
+  isCompositeVerificationRecord,
+  isAgreementDocument,
+  isSettlementEvidence,
+  isAttestationBundle,
+} from "./artifacts/index.js";
