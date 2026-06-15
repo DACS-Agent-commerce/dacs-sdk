@@ -60,10 +60,14 @@ export interface SubstrateAdapter {
   /** Sign raw bytes. Domain-separated signing is composed above this (T2). */
   sign(bytes: Uint8Array): Promise<string>;
 
-  /** SR-2 — write a value to anchored storage; returns its address + tx ref. */
-  anchor(address: string, value: string): Promise<AnchorRef>;
-  /** SR-2 — read a previously anchored value, or null if absent. */
-  readAnchor(address: string): Promise<string | null>;
+  /**
+   * SR-2 — anchor a JSON value under a logical name. Returns the content
+   * address it was written to (deterministic from the writer + name) and the
+   * tx ref. Consumers re-canonicalise the value to verify its content hash.
+   */
+  anchor(name: string, value: Record<string, unknown>): Promise<AnchorRef>;
+  /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
+  readAnchor(address: string): Promise<Record<string, unknown> | null>;
 
   /** SR-3 — consensus-backed proxy fetch of a public HTTPS endpoint (DAHR). */
   proxyFetch(req: ProxyFetchRequest): Promise<ProxyFetchResult>;

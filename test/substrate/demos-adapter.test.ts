@@ -20,15 +20,16 @@ describe("DemosAdapter", () => {
     expect(() => adapter.getAddress()).toThrow(/not connected/);
   });
 
-  it("seam methods outside the MVP scaffold throw NotImplementedError", async () => {
+  it("anchor (SR-2) requires a connection", async () => {
+    const adapter = new DemosAdapter({ rpc: RPC });
+    await expect(adapter.anchor("dacs:test", { a: 1 })).rejects.toThrow(
+      /not connected/,
+    );
+  });
+
+  it("seam methods not yet implemented throw NotImplementedError", async () => {
     const adapter = new DemosAdapter({ rpc: RPC });
     await expect(adapter.sign(new Uint8Array())).rejects.toBeInstanceOf(
-      NotImplementedError,
-    );
-    await expect(adapter.anchor("addr", "val")).rejects.toBeInstanceOf(
-      NotImplementedError,
-    );
-    await expect(adapter.readAnchor("addr")).rejects.toBeInstanceOf(
       NotImplementedError,
     );
     await expect(

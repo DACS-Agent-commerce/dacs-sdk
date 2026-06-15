@@ -1,6 +1,7 @@
 import { Demos } from "@kynesyslabs/demosdk/websdk";
+import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 
-import { NotImplementedError } from "../errors.js";
+import { DacsError, NotImplementedError } from "../errors.js";
 import type {
   AnchorRef,
   ProxyFetchRequest,
@@ -8,6 +9,11 @@ import type {
   ResolvedIdentity,
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
+
+// Fixed address-derivation inputs so a logical name always resolves to the same
+// storage address (any reader can re-derive it from the writer address + name).
+const ANCHOR_NONCE = 0;
+const ANCHOR_SALT = "dacs:v1";
 
 export interface DemosAdapterConfig {
   /** Demos node RPC URL (e.g. https://node2.demos.sh). */
@@ -61,12 +67,83 @@ export class DemosAdapter implements SubstrateAdapter {
     throw new NotImplementedError("DemosAdapter.sign", "T2 — signing foundation");
   }
 
-  async anchor(_address: string, _value: string): Promise<AnchorRef> {
-    throw new NotImplementedError("DemosAdapter.anchor (SR-2)", "T2 — anchoring");
+  /**
+   * SR-2 anchoring via Demos Storage Programs. A logical name maps to one
+   * storage program at a deterministic address (`deriveStorageAddress` of the
+   * writer + name + fixed nonce/salt), so the same name re-resolves to the same
+   * address and re-anchoring updates it in place. First write creates the
+   * program (public-read ACL); later writes update it. (Mirrors the
+   * agent-commerce-demo's proven create-or-write + sign→confirm→broadcast flow.)
+   */
+  async anchor(name: string, value: Record<string, unknown>): Promise<AnchorRef> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const deployer = this.demos.getAddress();
+    const address = StorageProgram.deriveStorageAddress(
+      deployer,
+      name,
+      ANCHOR_NONCE,
+      ANCHOR_SALT,
+    );
+
+    // Create on first write, update thereafter (idempotent).
+    let exists = false;
+    try {
+      const probe = (await this.demos.storagePrograms.read(address)) as {
+        success?: boolean;
+        data?: unknown;
+      };
+      exists = probe?.success === true && probe.data != null;
+    } catch {
+      exists = false;
+    }
+
+    const payload = exists
+      ? StorageProgram.writeStorage(address, value, "json")
+      : StorageProgram.createStorageProgram(
+          deployer,
+          name,
+          value,
+          "json",
+          StorageProgram.publicACL(),
+          { nonce: ANCHOR_NONCE, salt: ANCHOR_SALT },
+        );
+
+    const signed = await this.demos.storagePrograms.sign(payload);
+    const validity = await this.demos.tx.confirm(signed, this.demos);
+    const broadcast = (await this.demos.tx.broadcast(validity, this.demos)) as {
+      result?: number;
+      response?: { hash?: string; message?: string };
+      extra?: unknown;
+    };
+    if (broadcast?.result !== 200) {
+      throw new DacsError(
+        `anchor failed for ${address}: ${
+          typeof broadcast?.extra === "string"
+            ? broadcast.extra
+            : JSON.stringify(broadcast?.extra ?? broadcast?.response)
+        }`,
+      );
+    }
+
+    return {
+      address,
+      txRef: broadcast.response?.hash ?? (signed as { hash?: string }).hash,
+    };
   }
 
-  async readAnchor(_address: string): Promise<string | null> {
-    throw new NotImplementedError("DemosAdapter.readAnchor (SR-2)", "T2 — anchoring");
+  async readAnchor(address: string): Promise<Record<string, unknown> | null> {
+    try {
+      const res = (await this.demos.storagePrograms.read(address)) as {
+        success?: boolean;
+        data?: Record<string, unknown> | null;
+      };
+      return res?.success && res.data != null ? res.data : null;
+    } catch {
+      // Storage Programs read throws on 404 (not yet anchored).
+      return null;
+    }
   }
 
   async proxyFetch(_req: ProxyFetchRequest): Promise<ProxyFetchResult> {
