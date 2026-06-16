@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DemosAdapter, NotImplementedError } from "../../src/index.js";
+import { DemosAdapter } from "../../src/index.js";
 
 const RPC = "https://node2.demos.sh";
 
@@ -20,7 +20,7 @@ describe("DemosAdapter", () => {
     expect(() => adapter.getAddress()).toThrow(/not connected/);
   });
 
-  it("anchor (SR-2) + sign require a connection", async () => {
+  it("substrate ops require a connection", async () => {
     const adapter = new DemosAdapter({ rpc: RPC });
     await expect(adapter.anchor("dacs:test", { a: 1 })).rejects.toThrow(
       /not connected/,
@@ -28,15 +28,11 @@ describe("DemosAdapter", () => {
     await expect(adapter.sign(new Uint8Array())).rejects.toThrow(
       /not connected/,
     );
-  });
-
-  it("seam methods not yet implemented throw NotImplementedError", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
     await expect(
       adapter.proxyFetch({ url: "https://example.com" }),
-    ).rejects.toBeInstanceOf(NotImplementedError);
-    await expect(adapter.resolveIdentity("ref")).rejects.toBeInstanceOf(
-      NotImplementedError,
+    ).rejects.toThrow(/not connected/);
+    await expect(adapter.resolveIdentity("ref")).rejects.toThrow(
+      /not connected/,
     );
   });
 });

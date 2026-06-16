@@ -1,7 +1,8 @@
 import { Demos } from "@kynesyslabs/demosdk/websdk";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
+import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
-import { DacsError, NotImplementedError } from "../errors.js";
+import { DacsError } from "../errors.js";
 import type {
   AnchorRef,
   ProxyFetchRequest,
@@ -159,14 +160,51 @@ export class DemosAdapter implements SubstrateAdapter {
     }
   }
 
-  async proxyFetch(_req: ProxyFetchRequest): Promise<ProxyFetchResult> {
-    throw new NotImplementedError("DemosAdapter.proxyFetch (SR-3 / DAHR)", "T6 — vet");
+  /**
+   * SR-3 — consensus-backed proxy fetch via DAHR. Validators perform the HTTPS
+   * fetch and co-sign an anchoring tx over (url, time, body hash); the body is
+   * returned inline and `anchorTxRef` is the on-chain commitment.
+   */
+  async proxyFetch(req: ProxyFetchRequest): Promise<ProxyFetchResult> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const dahr = await (this.demos as any).web2.createDahr();
+    try {
+      const result = await dahr.startProxy({
+        url: req.url,
+        method: req.method ?? "GET",
+        options: { headers: req.headers ?? {} },
+      });
+      return {
+        body: String(result?.body ?? result?.data ?? ""),
+        status: Number(result?.status ?? 0),
+        responseHash: String(result?.responseHash ?? ""),
+        anchorTxRef: result?.txHash,
+        fetchedAt: Number(result?.timestamp ?? Date.now()),
+      };
+    } finally {
+      if (typeof dahr?.stopProxy === "function") {
+        await dahr.stopProxy().catch(() => {});
+      }
+    }
   }
 
-  async resolveIdentity(_ref: string): Promise<ResolvedIdentity> {
-    throw new NotImplementedError(
-      "DemosAdapter.resolveIdentity (SR-1 / CCI)",
-      "T3 — identity",
+  /**
+   * SR-1 — resolve a claim reference through CCI (the GCR identity routine).
+   * The 4.0.5 surface resolves identities by address, so a ref that is (or
+   * contains) an address returns its identity graph. Full claim-ref reverse
+   * resolution (e.g. "web2:domain:*") is a substrate gap tracked upstream.
+   */
+  async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const raw = await new Identities().getIdentities(
+      this.demos,
+      "getIdentities",
+      ref,
     );
+    return { ref, boundTo: ref, raw };
   }
 }
