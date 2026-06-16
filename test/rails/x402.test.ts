@@ -25,27 +25,28 @@ describe("baseUnits (exact decimal → integer base units)", () => {
   });
 });
 
-describe("termsMatch (§4.1 abort guard)", () => {
-  const expected = { network: NETWORK, recipientEvm: RECIPIENT, amount: "1.5", decimals: 6 };
+describe("termsMatch (§4.1 abort guard, base-unit amounts)", () => {
+  // DACS Price.amount is already base units (e.g. "1000000" = 1.0 USDC).
+  const expected = { network: NETWORK, recipientEvm: RECIPIENT, amount: "1000000" };
 
-  test("matches on equal terms (recipient case-insensitive)", () => {
+  test("matches on equal terms (recipient case-insensitive, leading zeros ok)", () => {
     expect(
       termsMatch(expected, {
         network: NETWORK,
         payTo: RECIPIENT.toUpperCase(),
-        amount: "1500000",
+        amount: "01000000",
       }).ok,
     ).toBe(true);
   });
 
   test("rejects network mismatch", () => {
-    const m = termsMatch(expected, { network: "eip155:8453", payTo: RECIPIENT, amount: "1500000" });
+    const m = termsMatch(expected, { network: "eip155:8453", payTo: RECIPIENT, amount: "1000000" });
     expect(m.ok).toBe(false);
     expect(m.reason).toMatch(/network/);
   });
 
   test("rejects recipient mismatch", () => {
-    const m = termsMatch(expected, { network: NETWORK, payTo: "0xdead", amount: "1500000" });
+    const m = termsMatch(expected, { network: NETWORK, payTo: "0xdead", amount: "1000000" });
     expect(m.ok).toBe(false);
     expect(m.reason).toMatch(/recipient/);
   });
@@ -86,9 +87,8 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     paywallUrl: "https://seller.example/deliver",
     network: NETWORK,
     recipientEvm: RECIPIENT,
-    amount: "1.5",
+    amount: "1000000",
     asset: "USDC",
-    decimals: 6,
   };
 
   test("happy path: pays the matching requirement and returns settlement", async () => {
@@ -98,7 +98,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         paidHeader = new Headers(init?.headers).get("X-PAYMENT") ?? "";
       },
     });
-    const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "1500000" }]);
+    const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "1000000" }]);
 
     const res = await x402SettleCore(params, { client, fetchImpl, payerAddress: PAYER });
 
@@ -114,8 +114,8 @@ describe("x402SettleCore (buyer 402-dance)", () => {
 
   test("picks the matching requirement among several advertised", async () => {
     const client = fakeClient([
-      { network: "eip155:8453", payTo: RECIPIENT, amount: "1500000" }, // wrong network
-      { network: NETWORK, payTo: RECIPIENT, amount: "1500000" }, // the match
+      { network: "eip155:8453", payTo: RECIPIENT, amount: "1000000" }, // wrong network
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000" }, // the match
     ]);
     const res = await x402SettleCore(params, {
       client,

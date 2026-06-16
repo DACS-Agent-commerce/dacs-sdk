@@ -1,4 +1,3 @@
-import { baseUnits } from "../canonical/decimal.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 
 /**
@@ -47,27 +46,30 @@ export interface X402SettleParams {
   network: string;
   /** Negotiated recipient EVM address (the expected payTo). */
   recipientEvm: string;
-  /** Negotiated price as a CD-1 decimal string. */
+  /** Negotiated price in integer base units (matching DACS Price.amount). */
   amount: string;
   /** Asset id/symbol (informational; the on-chain asset is the token contract). */
   asset: string;
-  /** Token decimals for base-unit conversion (USDC = 6, the default). */
-  decimals?: number;
   requestInit?: RequestInit;
+}
+
+/** Numeric equality over integer base-unit strings (tolerant of leading zeros). */
+function sameAmount(a: string, b: string): boolean {
+  try {
+    return BigInt(a) === BigInt(b);
+  } catch {
+    return a === b;
+  }
 }
 
 /**
  * DACS §4.1 abort guard: the 402's offered terms MUST match the negotiated
- * agreement. Network exact, recipient case-insensitive, amount compared in
- * exact integer base units.
+ * agreement. Network exact, recipient case-insensitive, amount compared as
+ * integer base units (DACS Price.amount is already base units — no decimal
+ * conversion, so the on-chain and agreed amounts can never silently diverge).
  */
 export function termsMatch(
-  expected: {
-    network: string;
-    recipientEvm: string;
-    amount: string;
-    decimals: number;
-  },
+  expected: { network: string; recipientEvm: string; amount: string },
   offered: { network: string; payTo: string; amount: string },
 ): { ok: boolean; reason?: string } {
   if (offered.network !== expected.network) {
@@ -82,11 +84,10 @@ export function termsMatch(
       reason: `recipient mismatch: 402 says ${offered.payTo}, agreement says ${expected.recipientEvm}`,
     };
   }
-  const expectedUnits = baseUnits(expected.amount, expected.decimals);
-  if (offered.amount !== expectedUnits) {
+  if (!sameAmount(offered.amount, expected.amount)) {
     return {
       ok: false,
-      reason: `amount mismatch: 402 says ${offered.amount}, agreement says ${expectedUnits}`,
+      reason: `amount mismatch: 402 says ${offered.amount}, agreement says ${expected.amount}`,
     };
   }
   return { ok: true };
@@ -107,7 +108,6 @@ export async function x402SettleCore(
   params: X402SettleParams,
   deps: X402SettleCoreDeps,
 ): Promise<SettleResult> {
-  const decimals = params.decimals ?? 6;
   const { client, fetchImpl, payerAddress } = deps;
 
   // 1. Initial request — expect a 402 with payment requirements.
@@ -137,7 +137,6 @@ export async function x402SettleCore(
         network: params.network,
         recipientEvm: params.recipientEvm,
         amount: params.amount,
-        decimals,
       },
       {
         network: String(req.network),
@@ -240,12 +239,7 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
  */
 export function x402Settle(
   rail: X402Rail,
-  paywall: {
-    url: string;
-    network: string;
-    recipientEvm: string;
-    decimals?: number;
-  },
+  paywall: { url: string; network: string; recipientEvm: string },
 ): (req: SettleRequest) => Promise<SettleResult> {
   return (req) =>
     rail.settle({
@@ -254,6 +248,5 @@ export function x402Settle(
       recipientEvm: paywall.recipientEvm,
       amount: req.amount,
       asset: req.asset,
-      decimals: paywall.decimals,
     });
 }
