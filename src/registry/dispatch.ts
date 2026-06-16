@@ -1,6 +1,7 @@
-import { DacsError, NotImplementedError } from "../errors.js";
+import { DacsError } from "../errors.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
+import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
 import type { RailDescriptor } from "./types.js";
 
 /**
@@ -16,6 +17,8 @@ export interface RailDispatchOptions {
   evmPrivateKey: string;
   /** Per-deal paywall coordinates (from the listing/agreement, not the registry). */
   paywall: { url: string; network: string; recipientEvm: string };
+  /** JSON-RPC URL — required by the direct-transfer (evm-erc20) rail. */
+  rpcUrl?: string;
   /** Override fetch (tests / custom transport). */
   fetchImpl?: typeof fetch;
 }
@@ -32,13 +35,29 @@ export async function settleFromRail(
       });
       return x402Settle(rail, opts.paywall);
     }
-    case "evm-erc20":
-      // Second reference rail (direct USDC transfer) — slot reserved; the
-      // registry/dispatch model already supports it, the executor lands next.
-      throw new NotImplementedError(
-        "evm-erc20 rail",
-        "T6 — direct ERC-20 transfer rail",
-      );
+    case "evm-erc20": {
+      // The token contract is rail config (registry params); the recipient +
+      // network are per-deal (paywall); the RPC is a caller secret.
+      const tokenAddress = descriptor.params["tokenAddress"];
+      if (typeof tokenAddress !== "string") {
+        throw new DacsError(
+          `evm-erc20 rail "${descriptor.id}" descriptor missing params.tokenAddress`,
+        );
+      }
+      if (!opts.rpcUrl) {
+        throw new DacsError("evm-erc20 rail requires opts.rpcUrl");
+      }
+      const rail = await createEvmErc20Rail({
+        evmPrivateKey: opts.evmPrivateKey,
+        rpcUrl: opts.rpcUrl,
+        network: opts.paywall.network,
+      });
+      return evmErc20Settle(rail, {
+        tokenAddress,
+        network: opts.paywall.network,
+        recipientEvm: opts.paywall.recipientEvm,
+      });
+    }
     default:
       throw new DacsError(`unknown rail kind: ${descriptor.kind}`);
   }

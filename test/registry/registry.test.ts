@@ -134,13 +134,40 @@ describe("rail dispatch by kind (T6)", () => {
     expect(typeof settle).toBe("function");
   });
 
-  test("evm-erc20 is a reserved slot (not yet implemented)", async () => {
+  test("evm-erc20 dispatches when token + rpc are supplied", async () => {
+    const settle = await settleFromRail(
+      {
+        id: "evm-erc20:usdc",
+        kind: "evm-erc20",
+        availability: "live",
+        params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+      },
+      { evmPrivateKey: HARDHAT_KEY, paywall, rpcUrl: "https://sepolia.base.org" },
+    );
+    expect(typeof settle).toBe("function");
+  });
+
+  test("evm-erc20 without a token address in the descriptor is rejected", async () => {
     await expect(
       settleFromRail(
         { id: "evm-erc20:usdc", kind: "evm-erc20", availability: "live", params: {} },
+        { evmPrivateKey: HARDHAT_KEY, paywall, rpcUrl: "https://sepolia.base.org" },
+      ),
+    ).rejects.toThrow(/tokenAddress/);
+  });
+
+  test("evm-erc20 without an rpc url is rejected", async () => {
+    await expect(
+      settleFromRail(
+        {
+          id: "evm-erc20:usdc",
+          kind: "evm-erc20",
+          availability: "live",
+          params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+        },
         { evmPrivateKey: HARDHAT_KEY, paywall },
       ),
-    ).rejects.toThrow(/evm-erc20/);
+    ).rejects.toThrow(/rpcUrl/);
   });
 
   test("unknown kind is rejected", async () => {

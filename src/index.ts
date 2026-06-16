@@ -86,6 +86,13 @@ export {
   type X402ClientLike,
   type X402PaymentRequired,
   type X402PaymentRequirement,
+  createEvmErc20Rail,
+  evmErc20Settle,
+  evmErc20SettleCore,
+  type EvmErc20Rail,
+  type EvmErc20RailConfig,
+  type EvmErc20SettleParams,
+  type EvmTransferClient,
 } from "./rails/index.js";
 
 // Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
