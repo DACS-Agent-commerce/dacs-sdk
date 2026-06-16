@@ -25,22 +25,48 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, sealed-bid auctions, RFQ, private channels, AP2, and dispute (DACS-X) are deferred — most become config once the registries carry them.
 
-## Planned public API (target)
+## Public API
 
 ```ts
-const agent = createAgent({ identity, demosRpc, wallet });
+import { createAgent, createX402Rail, x402Settle } from "@kynesyslabs/dacs";
 
-// seller
-await agent.publishListing(spec);
+const agent = createAgent({ demosRpc, wallet, identity: { agentId } });
 
-// buyer
-const listing = await agent.discover();
-const { result, bundleRef } = await agent.runSession(listing);
+// seller — sign + anchor a fixed-price listing
+const { ref } = await agent.publishListing(spec);
 
-// anyone
-await agent.verifyBundle(bundleRef);
-await agent.getReputation(primaryClaim);
+// buyer — negotiate → settle on x402 → verify, anchoring the bundle
+const rail = await createX402Rail({ evmPrivateKey });
+const session = await agent.runSession(ref, {
+  terms,
+  settle: x402Settle(rail, { url, network, recipientEvm }),
+});
+
+// anyone — verify the bundle's structure + every artifact signature
+const verdict = await agent.verifyBundle(session.bundleRef);
+const rep = await agent.getReputation(primaryClaim, bundleRefs);
 ```
+
+See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
+
+## Imports
+
+The package ships ESM with subpath exports so the substrate-free surface can be
+used without pulling in `demosdk`:
+
+| Import | Needs `demosdk` | Use for |
+| --- | --- | --- |
+| `@kynesyslabs/dacs` | yes (`createAgent` / `DemosAdapter`) | building live agents |
+| `@kynesyslabs/dacs/rails` | no | x402 settlement (`x402SettleCore`, `termsMatch`) |
+| `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing |
+| `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
+| `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
+
+> **Note:** the root export transitively imports `demosdk`, whose build uses
+> directory imports that Node's strict ESM resolver rejects at runtime. Use a
+> bundler (Vite/webpack/tsx) for the root API, or import the substrate-free
+> subpaths above (verifier / rail consumers) to load under raw Node ESM. The
+> fix belongs upstream in `demosdk`.
 
 ## License
 

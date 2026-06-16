@@ -11,6 +11,22 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./canonical": {
+      "types": "./dist/canonical/index.d.ts",
+      "import": "./dist/canonical/index.js"
+    },
+    "./crypto": {
+      "types": "./dist/crypto/index.d.ts",
+      "import": "./dist/crypto/index.js"
+    },
+    "./artifacts": {
+      "types": "./dist/artifacts/index.d.ts",
+      "import": "./dist/artifacts/index.js"
+    },
+    "./rails": {
+      "types": "./dist/rails/index.d.ts",
+      "import": "./dist/rails/index.js"
     }
   },
   "main": "./dist/index.js",
