@@ -1,4 +1,5 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import { CounterpartyError } from "../errors.js";
 
 /**
  * x402 settlement rail (DACS SR-4 / the reference-backed payment rail).
@@ -113,7 +114,7 @@ export async function x402SettleCore(
   // 1. Initial request — expect a 402 with payment requirements.
   const initial = await fetchImpl(params.paywallUrl, params.requestInit);
   if (initial.status !== 402) {
-    throw new Error(
+    throw new CounterpartyError(
       `x402: expected HTTP 402 from ${params.paywallUrl}, got ${initial.status}`,
     );
   }
@@ -127,7 +128,9 @@ export async function x402SettleCore(
   //    negotiated agreement; reject if none do.
   const candidates = paymentRequired.accepts ?? [];
   if (candidates.length === 0) {
-    throw new Error("x402: 402 response has no `accepts` payment requirements");
+    throw new CounterpartyError(
+      "x402: 402 response has no `accepts` payment requirements",
+    );
   }
   let chosen: X402PaymentRequirement | null = null;
   let lastReason = "no acceptable payment requirement";
@@ -151,7 +154,7 @@ export async function x402SettleCore(
     lastReason = m.reason ?? lastReason;
   }
   if (!chosen) {
-    throw new Error(
+    throw new CounterpartyError(
       `x402: 402 payment requirement does not match negotiated agreement: ${lastReason}`,
     );
   }

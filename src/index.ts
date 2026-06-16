@@ -10,7 +10,15 @@
  */
 
 export { VERSION, DACS_SPEC_VERSION } from "./version.js";
-export { DacsError, NotImplementedError } from "./errors.js";
+export {
+  DacsError,
+  NotImplementedError,
+  TransientError,
+  CounterpartyError,
+  SubstrateError,
+  faultCategory,
+  type FaultCategory,
+} from "./errors.js";
 
 // Foundation (T2): canonical form, decimals, content hashing, domain-separated signing.
 export {

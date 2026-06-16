@@ -1,4 +1,5 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import { DacsError } from "../errors.js";
 
 /**
  * Direct ERC-20 transfer rail (the second reference rail). Where x402 couples
@@ -39,10 +40,10 @@ export async function evmErc20SettleCore(
   try {
     amount = BigInt(params.amount);
   } catch {
-    throw new Error(`evm-erc20: invalid base-unit amount ${params.amount}`);
+    throw new DacsError(`evm-erc20: invalid base-unit amount ${params.amount}`);
   }
   if (amount <= 0n) {
-    throw new Error(`evm-erc20: amount must be > 0 (got ${params.amount})`);
+    throw new DacsError(`evm-erc20: amount must be > 0 (got ${params.amount})`);
   }
 
   const txHash = await client.transfer({
@@ -77,7 +78,11 @@ const ERC20_TRANSFER_ABI = [
 /** Parse the numeric chain id out of a CAIP-2 `eip155:<id>` string. */
 function chainIdFromCaip2(network: string): number {
   const m = network.match(/^eip155:(\d+)$/);
-  if (!m) throw new Error(`evm-erc20: unsupported network ${network} (expected eip155:<id>)`);
+  if (!m) {
+    throw new DacsError(
+      `evm-erc20: unsupported network ${network} (expected eip155:<id>)`,
+    );
+  }
   return Number(m[1]);
 }
 

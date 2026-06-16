@@ -2,7 +2,7 @@ import { Demos } from "@kynesyslabs/demosdk/websdk";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
-import { DacsError } from "../errors.js";
+import { SubstrateError } from "../errors.js";
 import type {
   AnchorRef,
   ProxyFetchRequest,
@@ -132,7 +132,9 @@ export class DemosAdapter implements SubstrateAdapter {
       extra?: unknown;
     };
     if (broadcast?.result !== 200) {
-      throw new DacsError(
+      // The node rejected the anchor tx — a substrate-side fault, blameless to
+      // the counterparty (T9: substrate fault ≠ party fault).
+      throw new SubstrateError(
         `anchor failed for ${address}: ${
           typeof broadcast?.extra === "string"
             ? broadcast.extra
