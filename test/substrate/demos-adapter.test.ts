@@ -20,18 +20,18 @@ describe("DemosAdapter", () => {
     expect(() => adapter.getAddress()).toThrow(/not connected/);
   });
 
-  it("anchor (SR-2) requires a connection", async () => {
+  it("anchor (SR-2) + sign require a connection", async () => {
     const adapter = new DemosAdapter({ rpc: RPC });
     await expect(adapter.anchor("dacs:test", { a: 1 })).rejects.toThrow(
+      /not connected/,
+    );
+    await expect(adapter.sign(new Uint8Array())).rejects.toThrow(
       /not connected/,
     );
   });
 
   it("seam methods not yet implemented throw NotImplementedError", async () => {
     const adapter = new DemosAdapter({ rpc: RPC });
-    await expect(adapter.sign(new Uint8Array())).rejects.toBeInstanceOf(
-      NotImplementedError,
-    );
     await expect(
       adapter.proxyFetch({ url: "https://example.com" }),
     ).rejects.toBeInstanceOf(NotImplementedError);

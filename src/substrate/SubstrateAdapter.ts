@@ -57,15 +57,17 @@ export interface SubstrateAdapter {
   connect(): Promise<void>;
   /** Address of the connected wallet. Throws if not connected. */
   getAddress(): string;
-  /** Sign raw bytes. Domain-separated signing is composed above this (T2). */
-  sign(bytes: Uint8Array): Promise<string>;
+  /** Sign raw bytes with the connected wallet key; returns the raw signature. */
+  sign(bytes: Uint8Array): Promise<Uint8Array>;
+  /** The connected wallet's ed25519 public key (the agent's signing identity). */
+  getPublicKey(): Promise<Uint8Array>;
 
   /**
    * SR-2 — anchor a JSON value under a logical name. Returns the content
    * address it was written to (deterministic from the writer + name) and the
    * tx ref. Consumers re-canonicalise the value to verify its content hash.
    */
-  anchor(name: string, value: Record<string, unknown>): Promise<AnchorRef>;
+  anchor(name: string, value: object): Promise<AnchorRef>;
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 

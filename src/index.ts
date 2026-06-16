@@ -48,6 +48,21 @@ export {
   type ResolvedIdentity,
 } from "./substrate/index.js";
 
+// Public agent API (T4) — the headline surface a dApp dev uses.
+export {
+  createAgent,
+  type Agent,
+  type AgentConfig,
+  type PublishResult,
+  type BundleVerification,
+  type Reputation,
+  buildSignedArtifact,
+  verifySignedArtifact,
+  type SignedArtifact,
+  type Signer,
+  type Verifier,
+} from "./agent/index.js";
+
 // Artifact model (T3): spine artifact types, kind→separator registry, validators.
 export {
   type ArtifactKind,

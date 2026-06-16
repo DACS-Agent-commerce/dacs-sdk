@@ -63,8 +63,20 @@ export class DemosAdapter implements SubstrateAdapter {
     return this.demos.getAddress();
   }
 
-  async sign(_bytes: Uint8Array): Promise<string> {
-    throw new NotImplementedError("DemosAdapter.sign", "T2 — signing foundation");
+  async sign(bytes: Uint8Array): Promise<Uint8Array> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const result = await (this.demos as any).crypto.sign(
+      (this.demos as any).algorithm,
+      bytes,
+    );
+    return result.signature as Uint8Array;
+  }
+
+  async getPublicKey(): Promise<Uint8Array> {
+    const { publicKey } = await (this.demos as any).crypto.getIdentity("ed25519");
+    return publicKey as Uint8Array;
   }
 
   /**
@@ -75,7 +87,8 @@ export class DemosAdapter implements SubstrateAdapter {
    * program (public-read ACL); later writes update it. (Mirrors the
    * agent-commerce-demo's proven create-or-write + sign→confirm→broadcast flow.)
    */
-  async anchor(name: string, value: Record<string, unknown>): Promise<AnchorRef> {
+  async anchor(name: string, value: object): Promise<AnchorRef> {
+    const data = value as Record<string, unknown>;
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
@@ -100,11 +113,11 @@ export class DemosAdapter implements SubstrateAdapter {
     }
 
     const payload = exists
-      ? StorageProgram.writeStorage(address, value, "json")
+      ? StorageProgram.writeStorage(address, data, "json")
       : StorageProgram.createStorageProgram(
           deployer,
           name,
-          value,
+          data,
           "json",
           StorageProgram.publicACL(),
           { nonce: ANCHOR_NONCE, salt: ANCHOR_SALT },
