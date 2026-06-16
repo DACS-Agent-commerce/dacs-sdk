@@ -27,6 +27,10 @@
     "./rails": {
       "types": "./dist/rails/index.d.ts",
       "import": "./dist/rails/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry/index.d.ts",
+      "import": "./dist/registry/index.js"
     }
   },
   "main": "./dist/index.js",

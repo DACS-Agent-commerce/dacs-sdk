@@ -88,6 +88,20 @@ export {
   type X402PaymentRequirement,
 } from "./rails/index.js";
 
+// Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
+// dispatch the money path by rail kind.
+export {
+  resolveRail,
+  resolveRecipe,
+  type RegistryResolveDeps,
+  settleFromRail,
+  type RailDispatchOptions,
+  type Availability,
+  type RailDescriptor,
+  type RecipeDescriptor,
+  type Registry,
+} from "./registry/index.js";
+
 // Artifact model (T3): spine artifact types, kind→separator registry, validators.
 export {
   type ArtifactKind,
