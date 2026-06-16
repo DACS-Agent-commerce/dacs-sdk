@@ -1,9 +1,26 @@
+import { randomUUID } from "node:crypto";
+
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { AttestationBundle, Listing } from "../artifacts/types.js";
 import { isAttestationBundle } from "../artifacts/validators.js";
+import type { DomainSeparator } from "../crypto/index.js";
 import { NotImplementedError } from "../errors.js";
 import { DemosAdapter } from "../substrate/index.js";
+import {
+  runSessionCore,
+  type SessionResult,
+  type SessionTerms,
+  type SettleRequest,
+  type SettleResult,
+} from "./runSessionCore.js";
 import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
+
+export interface RunSessionOptions {
+  /** The agreed fixed-price terms (rail must be offered by the listing). */
+  terms: SessionTerms;
+  /** Executes payment on the chosen rail (e.g. an x402 rail). */
+  settle: (req: SettleRequest) => Promise<SettleResult>;
+}
 
 export interface AgentConfig {
   /** Demos node RPC URL. */
@@ -47,8 +64,8 @@ export interface Agent {
   verifyBundle(ref: string): Promise<BundleVerification>;
   /** Buyer: find anchored listings. */
   discover(): Promise<Array<{ ref: string; listing: Listing }>>;
-  /** Buyer: run a full identify→vet→negotiate→settle→verify session. */
-  runSession(listingRef: string): Promise<{ outcome: string; bundleRef: string }>;
+  /** Buyer: run a fixed-price session (negotiate → settle → verify). */
+  runSession(listingRef: string, opts: RunSessionOptions): Promise<SessionResult>;
   /** Anyone: derive reputation for a primary claim from its bundles. */
   getReputation(primaryClaim: string): Promise<Reputation>;
 }
@@ -102,11 +119,26 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       );
     },
 
-    async runSession(_listingRef: string) {
-      throw new NotImplementedError(
-        "Agent.runSession",
-        "T5/T6 — vet + settle orchestration",
-      );
+    async runSession(
+      listingRef: string,
+      opts: RunSessionOptions,
+    ): Promise<SessionResult> {
+      const buyerId = config.identity?.agentId;
+      if (!buyerId) {
+        throw new Error(
+          "runSession requires createAgent({ identity: { agentId } })",
+        );
+      }
+      return runSessionCore(listingRef, opts.terms, {
+        buyerId,
+        readListing: (ref) => adapter.readAnchor(ref),
+        sign: (artifact, separator) =>
+          buildSignedArtifact(artifact, separator as DomainSeparator, sign),
+        anchor: async (name, value) => (await adapter.anchor(name, value)).address,
+        settle: opts.settle,
+        newJobId: () => randomUUID(),
+        now: () => new Date().toISOString(),
+      });
     },
 
     async getReputation(_primaryClaim: string) {
