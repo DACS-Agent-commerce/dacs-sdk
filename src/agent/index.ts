@@ -4,9 +4,11 @@ export {
   type AgentConfig,
   type PublishResult,
   type BundleVerification,
+  type ArtifactVerification,
   type Reputation,
   type RunSessionOptions,
 } from "./Agent.js";
+export { verifyBundleCore, type VerifyBundleDeps } from "./verifyBundleCore.js";
 export {
   runSessionCore,
   type SessionResult,

@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { AttestationBundle, Listing } from "../artifacts/types.js";
-import { isAttestationBundle } from "../artifacts/validators.js";
-import type { DomainSeparator } from "../crypto/index.js";
+import type { Listing } from "../artifacts/types.js";
+import {
+  ed25519Verify,
+  publicKeyFromRaw,
+  type DomainSeparator,
+} from "../crypto/index.js";
 import { NotImplementedError } from "../errors.js";
 import { DemosAdapter } from "../substrate/index.js";
 import {
@@ -13,7 +16,30 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
-import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
+import { buildSignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
+import {
+  verifyBundleCore,
+  type ArtifactVerification,
+  type BundleVerification,
+} from "./verifyBundleCore.js";
+
+export type { ArtifactVerification, BundleVerification };
+
+/**
+ * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
+ * model a CCI *is* the ed25519 public-key hex, so a DID embedding that hex
+ * (`did:…:<64-hex>`, `0x<64-hex>`, or a bare `<64-hex>`) resolves directly.
+ * Aliases that don't embed the key return null (the artifact stays
+ * `unverified` rather than falsely `valid`); alias→CCI lookup is a follow-up.
+ */
+function publicKeyFromDid(did: string): Uint8Array | null {
+  const hex = did.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
+  return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
+}
+
+/** Verifier that lifts a raw 32-byte key into a KeyObject for ed25519Verify. */
+const ed25519RawVerify: Verifier = (bytes, signature, publicKey) =>
+  ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey));
 
 export interface RunSessionOptions {
   /** The agreed fixed-price terms (rail must be offered by the listing). */
@@ -35,13 +61,6 @@ export interface PublishResult {
   /** Storage address the listing was anchored at. */
   ref: string;
   txRef?: string;
-}
-
-export interface BundleVerification {
-  ok: boolean;
-  reason?: string;
-  bundle?: AttestationBundle;
-  artifacts?: Array<{ ref: string; resolved: boolean }>;
 }
 
 export interface Reputation {
@@ -98,18 +117,13 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     },
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
-      const bundle = await adapter.readAnchor(ref);
-      if (!bundle || !isAttestationBundle(bundle)) {
-        return { ok: false, reason: "not an attestation bundle" };
-      }
-      // Structural check: every referenced artifact resolves on-chain.
-      // Per-artifact signature verification is gated on CCI public-key
-      // resolution (resolveIdentity, a later task).
-      const artifacts: Array<{ ref: string; resolved: boolean }> = [];
-      for (const r of bundle.artifactRefs) {
-        artifacts.push({ ref: r, resolved: (await adapter.readAnchor(r)) != null });
-      }
-      return { ok: artifacts.every((a) => a.resolved), bundle, artifacts };
+      // Structural check (every referenced artifact resolves) plus per-artifact
+      // §7.7 signature verification against each signer's resolved public key.
+      return verifyBundleCore(ref, {
+        readArtifact: (r) => adapter.readAnchor(r),
+        resolvePublicKey: async (did) => publicKeyFromDid(did),
+        verify: ed25519RawVerify,
+      });
     },
 
     async discover() {
