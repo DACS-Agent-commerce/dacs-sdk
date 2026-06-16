@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { Listing } from "../artifacts/types.js";
+import type { AttestationBundle, Listing } from "../artifacts/types.js";
+import { isAttestationBundle } from "../artifacts/validators.js";
+import { stripSignature } from "../canonical/index.js";
 import {
   ed25519Verify,
   publicKeyFromRaw,
@@ -16,6 +18,7 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
+import { computeReputation, type Reputation } from "./reputation.js";
 import { buildSignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
 import {
   verifyBundleCore,
@@ -23,7 +26,7 @@ import {
   type BundleVerification,
 } from "./verifyBundleCore.js";
 
-export type { ArtifactVerification, BundleVerification };
+export type { ArtifactVerification, BundleVerification, Reputation };
 
 /**
  * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
@@ -63,13 +66,6 @@ export interface PublishResult {
   txRef?: string;
 }
 
-export interface Reputation {
-  primaryClaim: string;
-  totalAgreements: number;
-  completed: number;
-  avgRating: number | null;
-}
-
 /**
  * The DACS agent surface (T4). The small set of calls a dApp dev uses; the
  * adapter, artifact model, and signing are wired underneath.
@@ -85,8 +81,12 @@ export interface Agent {
   discover(): Promise<Array<{ ref: string; listing: Listing }>>;
   /** Buyer: run a fixed-price session (negotiate → settle → verify). */
   runSession(listingRef: string, opts: RunSessionOptions): Promise<SessionResult>;
-  /** Anyone: derive reputation for a primary claim from its bundles. */
-  getReputation(primaryClaim: string): Promise<Reputation>;
+  /**
+   * Anyone: derive reputation for a primary claim from its bundles. The bundle
+   * refs are caller-supplied (enumerating a claim's bundles is an indexer
+   * concern, not the substrate's); non-bundle refs are skipped.
+   */
+  getReputation(primaryClaim: string, bundleRefs: string[]): Promise<Reputation>;
 }
 
 /**
@@ -155,11 +155,18 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       });
     },
 
-    async getReputation(_primaryClaim: string) {
-      throw new NotImplementedError(
-        "Agent.getReputation",
-        "T6 — reputation derived from bundles",
-      );
+    async getReputation(
+      primaryClaim: string,
+      bundleRefs: string[],
+    ): Promise<Reputation> {
+      const bundles: AttestationBundle[] = [];
+      for (const ref of bundleRefs) {
+        const raw = await adapter.readAnchor(ref);
+        if (raw && isAttestationBundle(stripSignature(raw))) {
+          bundles.push(stripSignature(raw) as unknown as AttestationBundle);
+        }
+      }
+      return computeReputation(primaryClaim, bundles);
     },
   };
 }
