@@ -39,3 +39,24 @@ export function assertPositiveAmount(input: string): string {
   }
   return canon;
 }
+
+/**
+ * Convert a CD-1 decimal amount into integer base units for an on-chain token
+ * (e.g. `"1.5"` USDC @ 6 decimals → `"1500000"`). String-based and exact — no
+ * float rounding — so settlement amounts never drift. Throws if the amount
+ * carries more fractional precision than the token supports.
+ */
+export function baseUnits(amount: string, decimals: number): string {
+  if (!Number.isInteger(decimals) || decimals < 0) {
+    throw new DacsError(`invalid token decimals: ${decimals}`);
+  }
+  const canon = canonicalizeDecimal(amount);
+  const [intPart, fracPart = ""] = canon.split(".");
+  if (fracPart.length > decimals) {
+    throw new DacsError(
+      `amount ${amount} has more precision than ${decimals} decimals`,
+    );
+  }
+  const units = (intPart + fracPart.padEnd(decimals, "0")).replace(/^0+/, "");
+  return units === "" ? "0" : units;
+}

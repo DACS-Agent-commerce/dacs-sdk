@@ -17,6 +17,7 @@ export {
   canonicalize,
   canonicalizeDecimal,
   assertPositiveAmount,
+  baseUnits,
   sha256Hex,
   stripSignature,
   canonicalSignedScope,
@@ -67,6 +68,21 @@ export {
   type Signer,
   type Verifier,
 } from "./agent/index.js";
+
+// Settlement rails (SR-4): x402 reference rail + the runSession `settle` bridge.
+export {
+  createX402Rail,
+  x402Settle,
+  x402SettleCore,
+  termsMatch,
+  type X402Rail,
+  type X402RailConfig,
+  type X402SettleParams,
+  type X402SettleCoreDeps,
+  type X402ClientLike,
+  type X402PaymentRequired,
+  type X402PaymentRequirement,
+} from "./rails/index.js";
 
 // Artifact model (T3): spine artifact types, kind→separator registry, validators.
 export {

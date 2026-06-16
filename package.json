@@ -30,7 +30,11 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@kynesyslabs/demosdk": "^4.0.5"
+    "@kynesyslabs/demosdk": "^4.0.5",
+    "@x402/core": "^2.15.0",
+    "@x402/evm": "^2.15.0",
+    "@x402/fetch": "^2.15.0",
+    "viem": "^2.52.2"
   },
   "devDependencies": {
     "@types/node": "^20",
