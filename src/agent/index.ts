@@ -16,6 +16,12 @@ export {
 export { computeReputation } from "./reputation.js";
 export { discoverListings } from "./discover.js";
 export {
+  vetCore,
+  type VetDeps,
+  type VetRequest,
+  type VetProxyResult,
+} from "./vetCore.js";
+export {
   runSessionCore,
   type SessionResult,
   type SessionTerms,
