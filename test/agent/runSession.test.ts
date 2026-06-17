@@ -30,6 +30,8 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     readListing: async () => LISTING,
     sign: async (a, sep) => ({ ...a, signature: "sig", _sep: sep }),
     anchor: async (name) => `stor-${name}`,
+    anchorAddress: async (name) => `stor-${name}`,
+    readAnchor: async () => null,
     settle: async () => ({
       ok: true,
       txHash: "0xabc",
@@ -84,5 +86,32 @@ describe("runSession orchestration (T4)", () => {
     await expect(
       runSessionCore("stor-x", TERMS, makeDeps({ readListing: async () => ({ not: "a listing" }) })),
     ).rejects.toThrow(/listing/);
+  });
+
+  test("resume with the same jobId reuses artifacts and never re-pays", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    const deps = makeDeps({
+      anchor: async (name, value) => {
+        const addr = `stor-${name}`;
+        store.set(addr, value as Record<string, unknown>);
+        return addr;
+      },
+      anchorAddress: async (name) => `stor-${name}`,
+      readAnchor: async (addr) => store.get(addr) ?? null,
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0xabc", chainId: "c", payer: "p", payee: "q" };
+      },
+    });
+
+    const first = await runSessionCore("stor-listing", TERMS, deps, "job-RESUME");
+    expect(first.outcome).toBe("completed");
+    expect(settleCalls).toBe(1);
+
+    // Re-drive the same jobId (as after a crash) — everything is already anchored.
+    const second = await runSessionCore("stor-listing", TERMS, deps, "job-RESUME");
+    expect(second).toEqual(first); // identical refs
+    expect(settleCalls).toBe(1); // settlement NOT executed again
   });
 });

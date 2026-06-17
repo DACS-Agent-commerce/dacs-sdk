@@ -68,6 +68,8 @@ export interface SubstrateAdapter {
    * tx ref. Consumers re-canonicalise the value to verify its content hash.
    */
   anchor(name: string, value: object): Promise<AnchorRef>;
+  /** SR-2 — the deterministic storage address a name anchors to, without writing. */
+  anchorAddress(name: string): string;
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 

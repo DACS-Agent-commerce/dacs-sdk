@@ -49,6 +49,11 @@ export interface RunSessionOptions {
   terms: SessionTerms;
   /** Executes payment on the chosen rail (e.g. an x402 rail). */
   settle: (req: SettleRequest) => Promise<SettleResult>;
+  /**
+   * Resume an interrupted session: pass the prior run's jobId to re-drive it
+   * idempotently (reuse anchored artifacts, never re-pay). Omit for a new session.
+   */
+  jobId?: string;
 }
 
 export interface AgentConfig {
@@ -143,16 +148,23 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
           "runSession requires createAgent({ identity: { agentId } })",
         );
       }
-      return runSessionCore(listingRef, opts.terms, {
-        buyerId,
-        readListing: (ref) => adapter.readAnchor(ref),
-        sign: (artifact, separator) =>
-          buildSignedArtifact(artifact, separator as DomainSeparator, sign),
-        anchor: async (name, value) => (await adapter.anchor(name, value)).address,
-        settle: opts.settle,
-        newJobId: () => randomUUID(),
-        now: () => new Date().toISOString(),
-      });
+      return runSessionCore(
+        listingRef,
+        opts.terms,
+        {
+          buyerId,
+          readListing: (ref) => adapter.readAnchor(ref),
+          sign: (artifact, separator) =>
+            buildSignedArtifact(artifact, separator as DomainSeparator, sign),
+          anchor: async (name, value) => (await adapter.anchor(name, value)).address,
+          anchorAddress: async (name) => adapter.anchorAddress(name),
+          readAnchor: (address) => adapter.readAnchor(address),
+          settle: opts.settle,
+          newJobId: () => randomUUID(),
+          now: () => new Date().toISOString(),
+        },
+        opts.jobId,
+      );
     },
 
     async getReputation(

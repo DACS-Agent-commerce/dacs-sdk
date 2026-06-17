@@ -54,6 +54,7 @@ function memSubstrate() {
       store.set(address, value as Record<string, unknown>);
       return address;
     },
+    anchorAddress: async (name: string) => `stor:${name}`,
     read: async (ref: string) => store.get(ref) ?? null,
   };
 }
@@ -106,6 +107,8 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       sign: (artifact, sep) =>
         buildSignedArtifact(artifact, sep as never, signBuyer),
       anchor: sub.anchor,
+      anchorAddress: sub.anchorAddress,
+      readAnchor: sub.read,
       settle: (req) =>
         x402SettleCore(
           {

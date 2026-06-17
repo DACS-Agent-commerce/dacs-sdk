@@ -88,18 +88,25 @@ export class DemosAdapter implements SubstrateAdapter {
    * program (public-read ACL); later writes update it. (Mirrors the
    * agent-commerce-demo's proven create-or-write + sign→confirm→broadcast flow.)
    */
+  /** The deterministic storage address a name anchors to (no write) — for resume. */
+  anchorAddress(name: string): string {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    return StorageProgram.deriveStorageAddress(
+      this.demos.getAddress(),
+      name,
+      ANCHOR_NONCE,
+      ANCHOR_SALT,
+    );
+  }
+
   async anchor(name: string, value: object): Promise<AnchorRef> {
     const data = value as Record<string, unknown>;
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    const deployer = this.demos.getAddress();
-    const address = StorageProgram.deriveStorageAddress(
-      deployer,
-      name,
-      ANCHOR_NONCE,
-      ANCHOR_SALT,
-    );
+    const address = this.anchorAddress(name);
 
     // Create on first write, update thereafter (idempotent).
     let exists = false;
@@ -116,7 +123,7 @@ export class DemosAdapter implements SubstrateAdapter {
     const payload = exists
       ? StorageProgram.writeStorage(address, data, "json")
       : StorageProgram.createStorageProgram(
-          deployer,
+          this.demos.getAddress(),
           name,
           data,
           "json",
