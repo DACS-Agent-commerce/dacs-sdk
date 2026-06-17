@@ -166,6 +166,16 @@ describe("verifyBundleCore (full per-artifact signature verification)", () => {
     expect(res.artifacts.every((a) => a.signature === "unverified")).toBe(true);
   });
 
+  test("malformed signer key => error, not a false-negative invalid (§10.4.1)", async () => {
+    // Resolver returns a wrong-length (16-byte) key for every signer.
+    const badKey = () => new Uint8Array(16);
+    const res = await verifyBundleCore("ref:bundle", depsFor(await buildStore(), badKey));
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/malformed/);
+    expect(res.bundleSignature).toBe("error");
+    expect(res.artifacts.every((a) => a.signature === "error")).toBe(true);
+  });
+
   test("ref that isn't a bundle => rejected", async () => {
     const res = await verifyBundleCore("ref:listing", depsFor(await buildStore()));
     expect(res.ok).toBe(false);

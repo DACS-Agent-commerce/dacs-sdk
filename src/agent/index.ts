@@ -8,7 +8,11 @@ export {
   type Reputation,
   type RunSessionOptions,
 } from "./Agent.js";
-export { verifyBundleCore, type VerifyBundleDeps } from "./verifyBundleCore.js";
+export {
+  verifyBundleCore,
+  type VerifyBundleDeps,
+  type SignatureVerdict,
+} from "./verifyBundleCore.js";
 export { computeReputation } from "./reputation.js";
 export { discoverListings } from "./discover.js";
 export {

@@ -14,29 +14,33 @@ import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
  * Full attestation-bundle verification (T4 follow-up). Beyond the structural
  * check (every referenced artifact resolves), this recomputes and checks each
  * artifact's §7.7 signature against the public key its claimed signer resolves
- * to via CCI. Signatures are honestly tri-stated: `valid` (a resolved key
- * verified it), `invalid` (a key resolved but no signature matched — tampering
- * or wrong key), `unverified` (no key could be resolved, so we make no claim).
+ * to via CCI. Signatures are honestly four-stated: `valid` (a resolved key
+ * verified it), `invalid` (a usable key resolved but no signature matched —
+ * tampering or wrong key), `error` (a key resolved but is malformed, e.g.
+ * wrong length, so it can't be evaluated — §10.4.1: an ERROR, never a
+ * false-negative FAIL), `unverified` (no key could be resolved at all).
  */
+
+export type SignatureVerdict = "valid" | "invalid" | "error" | "unverified";
 
 export interface ArtifactVerification {
   ref: string;
   resolved: boolean;
   kind: ArtifactKind | "unknown";
-  signature: "valid" | "invalid" | "unverified";
+  signature: SignatureVerdict;
   /** The signer DID whose resolved key validated the signature, if any. */
   signer?: string;
 }
 
 export interface BundleVerification {
-  /** Structurally complete (all artifacts resolve) AND no invalid signatures. */
+  /** Structurally complete (all artifacts resolve) AND no invalid/error signatures. */
   ok: boolean;
   reason?: string;
   /** True only if every signature (bundle + artifacts) verified against a key. */
   fullyVerified: boolean;
   bundle?: AttestationBundle;
   /** The bundle's own signature verdict. */
-  bundleSignature: "valid" | "invalid" | "unverified";
+  bundleSignature: SignatureVerdict;
   artifacts: ArtifactVerification[];
 }
 
@@ -102,21 +106,28 @@ async function verifyOne(
     return { ref, resolved: true, kind, signature: "unverified" };
   }
   const separator = ARTIFACT_SEPARATORS[kind];
-  let anyKeyResolved = false;
+  let anyUsableKey = false;
+  let anyMalformedKey = false;
   for (const did of candidateSigners(kind, artifact, bundle)) {
     const key = await deps.resolvePublicKey(did);
     if (!key) continue;
-    anyKeyResolved = true;
+    // A resolved-but-malformed key can't be evaluated — that's an ERROR, not a
+    // FAIL (§10.4.1). Skip it; another candidate may still verify cleanly.
+    if (key.length !== 32) {
+      anyMalformedKey = true;
+      continue;
+    }
+    anyUsableKey = true;
     if (await verifySignedArtifact(artifact, separator, key, deps.verify)) {
       return { ref, resolved: true, kind, signature: "valid", signer: did };
     }
   }
-  return {
-    ref,
-    resolved: true,
-    kind,
-    signature: anyKeyResolved ? "invalid" : "unverified",
-  };
+  const signature: SignatureVerdict = anyUsableKey
+    ? "invalid" // a usable key existed but none matched → genuine mismatch
+    : anyMalformedKey
+      ? "error" // only malformed keys resolved → cannot decide
+      : "unverified"; // no key resolved at all
+  return { ref, resolved: true, kind, signature };
 }
 
 export async function verifyBundleCore(
@@ -160,21 +171,22 @@ export async function verifyBundleCore(
     artifacts.push(await verifyOne(ref, detectKind(obj), obj, bundle, deps));
   }
 
+  const all = [bundleResult, ...artifacts];
   const allResolved = artifacts.every((a) => a.resolved);
-  const anyInvalid =
-    bundleResult.signature === "invalid" ||
-    artifacts.some((a) => a.signature === "invalid");
-  const fullyVerified =
-    bundleResult.signature === "valid" &&
-    artifacts.every((a) => a.signature === "valid");
+  const anyInvalid = all.some((a) => a.signature === "invalid");
+  const anyError = all.some((a) => a.signature === "error");
+  const fullyVerified = all.every((a) => a.signature === "valid");
 
   return {
-    ok: allResolved && !anyInvalid,
+    // A malformed key (error) is not a pass: we couldn't decide, so don't ok it.
+    ok: allResolved && !anyInvalid && !anyError,
     reason: !allResolved
       ? "one or more referenced artifacts did not resolve"
       : anyInvalid
         ? "one or more signatures failed verification"
-        : undefined,
+        : anyError
+          ? "one or more signer keys were malformed (could not verify)"
+          : undefined,
     fullyVerified,
     bundle,
     bundleSignature: bundleResult.signature,

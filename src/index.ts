@@ -70,6 +70,7 @@ export {
   type ArtifactVerification,
   verifyBundleCore,
   type VerifyBundleDeps,
+  type SignatureVerdict,
   computeReputation,
   discoverListings,
   type Reputation,
