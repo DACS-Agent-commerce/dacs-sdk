@@ -9,7 +9,6 @@ import {
   publicKeyFromRaw,
   type DomainSeparator,
 } from "../crypto/index.js";
-import { NotImplementedError } from "../errors.js";
 import { DemosAdapter } from "../substrate/index.js";
 import {
   runSessionCore,
@@ -18,6 +17,7 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
+import { discoverListings } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
 import { buildSignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
 import {
@@ -82,8 +82,14 @@ export interface Agent {
   publishListing(listing: Listing): Promise<PublishResult>;
   /** Anyone: dereference + structurally verify an anchored attestation bundle. */
   verifyBundle(ref: string): Promise<BundleVerification>;
-  /** Buyer: find anchored listings. */
-  discover(): Promise<Array<{ ref: string; listing: Listing }>>;
+  /**
+   * Buyer: resolve + structurally validate anchored listings at the given refs.
+   * Refs are caller-supplied (shared out-of-band / via a directory) — a
+   * marketplace crawl needs an indexer the deterministic substrate doesn't
+   * provide. Non-listing / missing refs are skipped. (Seller-identity vetting
+   * is the separate Vet stage.)
+   */
+  discover(listingRefs: string[]): Promise<Array<{ ref: string; listing: Listing }>>;
   /** Buyer: run a fixed-price session (negotiate → settle → verify). */
   runSession(listingRef: string, opts: RunSessionOptions): Promise<SessionResult>;
   /**
@@ -131,11 +137,10 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       });
     },
 
-    async discover() {
-      throw new NotImplementedError(
-        "Agent.discover",
-        "T6 — marketplace discovery",
-      );
+    async discover(
+      listingRefs: string[],
+    ): Promise<Array<{ ref: string; listing: Listing }>> {
+      return discoverListings(listingRefs, (r) => adapter.readAnchor(r));
     },
 
     async runSession(

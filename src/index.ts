@@ -68,6 +68,7 @@ export {
   verifyBundleCore,
   type VerifyBundleDeps,
   computeReputation,
+  discoverListings,
   type Reputation,
   type RunSessionOptions,
   type SessionResult,
