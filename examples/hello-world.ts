@@ -19,7 +19,7 @@
  *   npx tsx examples/hello-world.ts
  */
 
-import { createAgent, createX402Rail, x402Settle } from "../src/index.js";
+import { createAgent, createX402Rail, vetCore, x402Settle } from "../src/index.js";
 
 const env = (k: string): string => {
   const v = process.env[k];
@@ -63,6 +63,14 @@ async function main(): Promise<void> {
       deliveryPhase: "deliver-attested-payload",
       deliveryFormat: "application/json",
     },
+    // Optional Vet step: verify the seller before paying. The session aborts
+    // before settlement if it fails. In production resolve the recipe from the
+    // steward registry (resolveRecipe) instead of inlining it.
+    vet: (subject) =>
+      vetCore(
+        { subject, recipe: { id: "self-signed", method: "self-signed", availability: "live", params: {} } },
+        { proxyFetch: (r) => buyer.adapter.proxyFetch({ url: r.url }), now: () => new Date().toISOString() },
+      ),
     settle: x402Settle(rail, {
       url: env("PAYWALL_URL"),
       network: env("PAY_NETWORK"),
