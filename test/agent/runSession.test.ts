@@ -88,6 +88,71 @@ describe("runSession orchestration (T4)", () => {
     ).rejects.toThrow(/listing/);
   });
 
+  test("vet pass: anchors the CVR, includes it in the bundle, then settles", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    const deps = makeDeps({
+      anchor: async (name, value) => {
+        const addr = `stor-${name}`;
+        store.set(addr, value as Record<string, unknown>);
+        return addr;
+      },
+      anchorAddress: async (name) => `stor-${name}`,
+      readAnchor: async (addr) => store.get(addr) ?? null,
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+      },
+      vet: async (subject) => ({
+        subject,
+        recipeId: "self-signed",
+        recipeVersion: "0.1",
+        results: [{ claimRef: subject, method: "self-signed", status: "pass" }],
+        requiredPassed: true,
+        verifiedAt: "2026-01-01T00:00:00Z",
+      }),
+    });
+
+    const res = await runSessionCore("stor-listing", TERMS, deps, "job-VET");
+    expect(res.outcome).toBe("completed");
+    expect(res.vetRef).toBe("stor-dacs2:verifyrecord:job-VET");
+    expect(settleCalls).toBe(1);
+    // The CVR ref sits between the listing and the agreement in the bundle.
+    const bundle = store.get(res.bundleRef)!;
+    expect(bundle.artifactRefs).toEqual([
+      "stor-listing",
+      res.vetRef,
+      res.agreementRef,
+      res.settlementRef,
+    ]);
+  });
+
+  test("vet fail: aborts before settlement (never pays a failed seller)", async () => {
+    let settleCalls = 0;
+    const deps = makeDeps({
+      anchor: async (name) => `stor-${name}`,
+      anchorAddress: async (name) => `stor-${name}`,
+      readAnchor: async () => null,
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+      },
+      vet: async (subject) => ({
+        subject,
+        recipeId: "domain-acme",
+        recipeVersion: "0.1",
+        results: [{ claimRef: subject, method: "consensus-backed-proxy", status: "fail" }],
+        requiredPassed: false,
+        verifiedAt: "2026-01-01T00:00:00Z",
+      }),
+    });
+
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-VETFAIL")).rejects.toThrow(
+      /failed verification/,
+    );
+    expect(settleCalls).toBe(0);
+  });
+
   test("resume with the same jobId reuses artifacts and never re-pays", async () => {
     const store = new Map<string, Record<string, unknown>>();
     let settleCalls = 0;

@@ -1,13 +1,16 @@
 import { stripSignature } from "../canonical/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import { CounterpartyError } from "../errors.js";
 import type {
   AgreementDocument,
   AttestationBundle,
+  CompositeVerificationRecord,
   Price,
   SettlementEvidence,
 } from "../artifacts/types.js";
 import {
   isAgreementDocument,
+  isCompositeVerificationRecord,
   isListing,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
@@ -65,6 +68,12 @@ export interface SessionDeps {
   readAnchor: (address: string) => Promise<Record<string, unknown> | null>;
   /** Execute payment on the chosen rail. */
   settle: (req: SettleRequest) => Promise<SettleResult>;
+  /**
+   * Optional Vet step: verify the seller before paying. Returns a
+   * CompositeVerificationRecord; if requiredPassed is false the session aborts
+   * before settlement. Omit to skip vetting.
+   */
+  vet?: (subject: string) => Promise<CompositeVerificationRecord>;
   /** Fresh job id (e.g. crypto.randomUUID). */
   newJobId: () => string;
   /** Current ISO-8601 timestamp. */
@@ -74,6 +83,8 @@ export interface SessionDeps {
 export interface SessionResult {
   outcome: "completed" | "failed";
   jobId: string;
+  /** Set when a Vet step ran — the anchored CompositeVerificationRecord. */
+  vetRef?: string;
   agreementRef: string;
   settlementRef: string;
   bundleRef: string;
@@ -119,6 +130,31 @@ export async function runSessionCore(
     const ref = await deps.anchor(name, await build());
     return { ref, existing: null };
   };
+
+  // Vet (DACS-2): verify the seller before paying. Abort before settlement if
+  // verification fails — never pay a seller that didn't clear the recipe.
+  let vetRef: string | undefined;
+  if (deps.vet) {
+    let record: CompositeVerificationRecord | undefined;
+    const { ref, existing } = await anchorOnce(
+      `dacs2:verifyrecord:${jobId}`,
+      isCompositeVerificationRecord,
+      async () => {
+        record = await deps.vet!(listing.agentId);
+        return deps.sign(record, ARTIFACT_SEPARATORS.CompositeVerificationRecord);
+      },
+    );
+    vetRef = ref;
+    if (existing) {
+      record = stripSignature(existing) as unknown as CompositeVerificationRecord;
+    }
+    if (record?.requiredPassed !== true) {
+      throw new CounterpartyError(
+        `seller ${listing.agentId} failed verification` +
+          (record ? ` (recipe ${record.recipeId})` : ""),
+      );
+    }
+  }
 
   // Negotiate (fixed-price): accept the listed terms.
   const { ref: agreementRef } = await anchorOnce(
@@ -184,7 +220,12 @@ export async function runSessionCore(
         jobId,
         state: outcome,
         primaryClaim: listing.agentId,
-        artifactRefs: [listingRef, agreementRef, settlementRef],
+        artifactRefs: [
+          listingRef,
+          ...(vetRef ? [vetRef] : []),
+          agreementRef,
+          settlementRef,
+        ],
         ratings: [],
         signedBy: [deps.buyerId],
         completedAt: deps.now(),
@@ -193,5 +234,5 @@ export async function runSessionCore(
     },
   );
 
-  return { outcome, jobId, agreementRef, settlementRef, bundleRef };
+  return { outcome, jobId, vetRef, agreementRef, settlementRef, bundleRef };
 }

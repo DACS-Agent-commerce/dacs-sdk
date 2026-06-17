@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { AttestationBundle, Listing } from "../artifacts/types.js";
+import type {
+  AttestationBundle,
+  CompositeVerificationRecord,
+  Listing,
+} from "../artifacts/types.js";
 import { isAttestationBundle } from "../artifacts/validators.js";
 import { stripSignature } from "../canonical/index.js";
 import {
@@ -49,6 +53,12 @@ export interface RunSessionOptions {
   terms: SessionTerms;
   /** Executes payment on the chosen rail (e.g. an x402 rail). */
   settle: (req: SettleRequest) => Promise<SettleResult>;
+  /**
+   * Optional Vet step: verify the seller before paying (e.g. resolveRecipe +
+   * vetCore). Returns a CompositeVerificationRecord; the session aborts before
+   * settlement if requiredPassed is false. Omit to skip vetting.
+   */
+  vet?: (subject: string) => Promise<CompositeVerificationRecord>;
   /**
    * Resume an interrupted session: pass the prior run's jobId to re-drive it
    * idempotently (reuse anchored artifacts, never re-pay). Omit for a new session.
@@ -165,6 +175,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
           anchorAddress: async (name) => adapter.anchorAddress(name),
           readAnchor: (address) => adapter.readAnchor(address),
           settle: opts.settle,
+          vet: opts.vet,
           newJobId: () => randomUUID(),
           now: () => new Date().toISOString(),
         },

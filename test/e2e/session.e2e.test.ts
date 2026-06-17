@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import { runSessionCore, type SessionDeps } from "../../src/agent/runSessionCore.js";
+import { vetCore } from "../../src/agent/vetCore.js";
 import { verifyBundleCore } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
@@ -126,6 +127,12 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
             payerAddress: BUYER_EVM,
           },
         ),
+      // Vet the seller (self-signed recipe) before paying — full 5-stage flow.
+      vet: (subject) =>
+        vetCore(
+          { subject, recipe: { id: "self-signed", method: "self-signed", availability: "live", params: {} } },
+          { proxyFetch: async () => ({ status: 200, responseHash: "0x" }), now: () => "2026-01-01T00:00:00Z" },
+        ),
       newJobId: () => "job-e2e",
       now: () => "2026-01-01T00:00:00Z",
     };
@@ -158,12 +165,26 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(v.ok).toBe(true);
     expect(v.fullyVerified).toBe(true);
     expect(v.bundleSignature).toBe("valid");
+    // Full 5-stage bundle: listing, vet record, agreement, settlement.
+    expect(result.vetRef).toBeDefined();
     expect(v.bundle?.artifactRefs).toEqual([
       listingRef,
+      result.vetRef,
       result.agreementRef,
       result.settlementRef,
     ]);
-    expect(v.artifacts.map((a) => a.signature)).toEqual(["valid", "valid", "valid"]);
+    expect(v.artifacts.map((a) => a.signature)).toEqual([
+      "valid",
+      "valid",
+      "valid",
+      "valid",
+    ]);
+    expect(v.artifacts.map((a) => a.kind)).toEqual([
+      "Listing",
+      "CompositeVerificationRecord",
+      "AgreementDocument",
+      "SettlementEvidence",
+    ]);
 
     // Settlement evidence carries the rail's reported tx hash.
     const evidence = sub.store.get(result.settlementRef);

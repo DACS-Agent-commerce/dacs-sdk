@@ -79,7 +79,9 @@ function candidateSigners(
     case "AgreementDocument":
       return [...str(artifact["buyer"]), ...str(artifact["seller"])];
     case "CompositeVerificationRecord":
-      return str(artifact["subject"]);
+      // The vetter signs the record (the subject is who was vetted, not the
+      // signer), so the session's signatories are the candidates too.
+      return [...str(artifact["subject"]), ...bundle.signedBy];
     case "SettlementEvidence":
       // Evidence carries no signer DID — the session's signatories did.
       return bundle.signedBy;
