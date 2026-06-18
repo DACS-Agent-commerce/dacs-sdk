@@ -1,11 +1,12 @@
 import { describe, expect, test } from "vitest";
 
-import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
+import type { Signer } from "../../src/agent/signedArtifact.js";
 import {
   verifyBundleCore,
   type VerifyBundleDeps,
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -13,9 +14,9 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 
-const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 7));
 const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 9));
 
 function signerFor(seed: Uint8Array): Signer {
@@ -23,13 +24,10 @@ function signerFor(seed: Uint8Array): Signer {
   return (bytes) => ed25519Sign(bytes, priv);
 }
 function didFor(seed: Uint8Array): string {
-  const hex = Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex");
-  return `did:demos:agent:${hex}`;
+  return `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
 }
 
-const sellerDid = didFor(SELLER_SEED);
 const buyerDid = didFor(BUYER_SEED);
-const signSeller = signerFor(SELLER_SEED);
 const signBuyer = signerFor(BUYER_SEED);
 
 // Mirrors Agent's production wiring: CCI == ed25519 pubkey hex embedded in DID.
@@ -40,149 +38,91 @@ function resolveFromDid(did: string): Uint8Array | null {
   return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
 }
 
-async function buildStore(): Promise<Map<string, Record<string, unknown>>> {
-  const listing = await buildSignedArtifact(
-    {
-      agentId: sellerDid,
-      serviceId: "svc",
-      name: "n",
-      description: "d",
-      claimRequirements: [],
-      supportedNegotiation: ["negotiate-fixed-price"],
-      supportedPaymentRails: ["pay-x402"],
-      supportedDelivery: ["deliver-attested-payload"],
-    },
-    ARTIFACT_SEPARATORS.Listing,
-    signSeller,
+const h = (c: string) => c.repeat(64);
+
+/** Build a spec bundle signed by `party` (mirrors runSession's bundle signing). */
+async function signedBundle(party: string, sign: Signer): Promise<Record<string, unknown>> {
+  const body: Record<string, unknown> = {
+    bundleVersion: "1",
+    jobId: "j1",
+    outcome: "completed",
+    anchoredByRole: "buyer",
+    listingRef: { listingId: "svc", version: 1, contentHash: h("a") },
+    agreementRef: { kind: "dacs-3-agreement", id: "agreement-j1", contentHash: h("b") },
+    parties: [{ role: "buyer", bundleHash: h("c"), primaryClaim: party }],
+    phaseSummary: [],
+    vetRecords: [],
+    settlementEvidence: [
+      { kind: "dacs-4-evidence", id: "settlement-j1", contentHash: h("d") },
+    ],
+    recipeRegistryVersion: 1,
+    railRegistryVersion: 1,
+    finalisedAt: 1780000000000,
+  };
+  const scope = { ...body };
+  delete scope["anchoredByRole"];
+  const sig = await sign(
+    signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope)),
   );
-  const agreement = await buildSignedArtifact(
-    {
-      jobId: "j1",
-      pattern: "negotiate-fixed-price",
-      buyer: buyerDid,
-      seller: sellerDid,
-      listingRef: "ref:listing",
-      price: { amount: "1000000", asset: "USDC", decimals: 6, rail: "pay-x402" },
-      delivery: { phase: "deliver-attested-payload", format: "application/json" },
-      expiresAt: "2026-01-01T00:00:00Z",
-    },
-    ARTIFACT_SEPARATORS.AgreementDocument,
-    signBuyer,
-  );
-  const evidence = await buildSignedArtifact(
-    {
-      evidenceVersion: "1",
-      jobId: "j1",
-      phase: "pay-x402",
-      phaseIndex: 0,
-      outcome: "success",
-      paymentTxRefs: [
-        { rail: "eip155:84532", txHash: "0xabc", kind: "payment" },
-      ],
-      paymentAmount: { amount: "1000000", currency: "USDC" },
-      settlementFinality: {
-        model: "observed",
-        finalityBlocks: 0,
-        finalityObservedAt: 1780000000000,
-      },
-      observedAt: 1780000000000,
-    },
-    ARTIFACT_SEPARATORS.SettlementEvidence,
-    signBuyer,
-  );
-  const bundle = await buildSignedArtifact(
-    {
-      jobId: "j1",
-      state: "completed",
-      primaryClaim: sellerDid,
-      artifactRefs: ["ref:listing", "ref:agreement", "ref:evidence"],
-      ratings: [],
-      signedBy: [buyerDid],
-      completedAt: "2026-01-01T00:00:00Z",
-    },
-    ARTIFACT_SEPARATORS.AttestationBundle,
-    signBuyer,
-  );
-  return new Map<string, Record<string, unknown>>([
-    ["ref:listing", listing],
-    ["ref:agreement", agreement],
-    ["ref:evidence", evidence],
-    ["ref:bundle", bundle],
-  ]);
+  return {
+    ...body,
+    signatures: [
+      { party, algorithm: "ed25519", value: Buffer.from(sig).toString("base64url") },
+    ],
+  };
 }
 
 function depsFor(
-  store: Map<string, Record<string, unknown>>,
+  bundle: Record<string, unknown> | null,
   resolve = resolveFromDid,
 ): VerifyBundleDeps {
   return {
-    readArtifact: async (ref) => store.get(ref) ?? null,
+    readArtifact: async () => bundle,
     resolvePublicKey: async (did) => resolve(did),
     verify,
   };
 }
 
-describe("verifyBundleCore (full per-artifact signature verification)", () => {
-  test("happy path: every signature valid, bundle fully verified", async () => {
-    const res = await verifyBundleCore("ref:bundle", depsFor(await buildStore()));
+describe("verifyBundleCore (DACS-5 bundle signature verification)", () => {
+  test("happy path: the bundle signature verifies", async () => {
+    const res = await verifyBundleCore("ref", depsFor(await signedBundle(buyerDid, signBuyer)));
     expect(res.ok).toBe(true);
     expect(res.fullyVerified).toBe(true);
-    expect(res.bundleSignature).toBe("valid");
-    expect(res.artifacts.map((a) => a.signature)).toEqual(["valid", "valid", "valid"]);
-    expect(res.artifacts.map((a) => a.kind)).toEqual([
-      "Listing",
-      "AgreementDocument",
-      "SettlementEvidence",
-    ]);
-    // Listing verifies against the seller; agreement/evidence against the buyer.
-    expect(res.artifacts[0]?.signer).toBe(sellerDid);
-    expect(res.artifacts[1]?.signer).toBe(buyerDid);
+    expect(res.signatures).toEqual([{ party: buyerDid, verdict: "valid" }]);
+    expect(res.bundle?.outcome).toBe("completed");
   });
 
-  test("tampered artifact => signature invalid, bundle not ok", async () => {
-    const store = await buildStore();
-    const agreement = { ...store.get("ref:agreement")! };
-    agreement.price = { amount: "9999999", asset: "USDC", decimals: 6, rail: "pay-x402" };
-    store.set("ref:agreement", agreement);
-
-    const res = await verifyBundleCore("ref:bundle", depsFor(store));
+  test("tampered bundle body => signature invalid, not ok", async () => {
+    const bundle = await signedBundle(buyerDid, signBuyer);
+    bundle.outcome = "failed"; // mutate a signed-scope field after signing
+    const res = await verifyBundleCore("ref", depsFor(bundle));
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/signature/);
-    expect(res.artifacts[1]?.signature).toBe("invalid");
+    expect(res.signatures[0]?.verdict).toBe("invalid");
   });
 
-  test("missing referenced artifact => not ok", async () => {
-    const store = await buildStore();
-    store.delete("ref:evidence");
-    const res = await verifyBundleCore("ref:bundle", depsFor(store));
-    expect(res.ok).toBe(false);
-    expect(res.artifacts[2]?.resolved).toBe(false);
-    expect(res.reason).toMatch(/resolve/);
-  });
-
-  test("unresolvable signer => unverified (not falsely valid), still ok structurally", async () => {
+  test("unresolvable signer => unverified, not ok (never falsely valid)", async () => {
     const res = await verifyBundleCore(
-      "ref:bundle",
-      depsFor(await buildStore(), () => null),
+      "ref",
+      depsFor(await signedBundle(buyerDid, signBuyer), () => null),
     );
-    expect(res.ok).toBe(true); // no invalid signatures
+    expect(res.ok).toBe(false);
     expect(res.fullyVerified).toBe(false);
-    expect(res.bundleSignature).toBe("unverified");
-    expect(res.artifacts.every((a) => a.signature === "unverified")).toBe(true);
+    expect(res.signatures[0]?.verdict).toBe("unverified");
   });
 
   test("malformed signer key => error, not a false-negative invalid (§10.4.1)", async () => {
-    // Resolver returns a wrong-length (16-byte) key for every signer.
-    const badKey = () => new Uint8Array(16);
-    const res = await verifyBundleCore("ref:bundle", depsFor(await buildStore(), badKey));
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(await signedBundle(buyerDid, signBuyer), () => new Uint8Array(16)),
+    );
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/malformed/);
-    expect(res.bundleSignature).toBe("error");
-    expect(res.artifacts.every((a) => a.signature === "error")).toBe(true);
+    expect(res.signatures[0]?.verdict).toBe("error");
   });
 
   test("ref that isn't a bundle => rejected", async () => {
-    const res = await verifyBundleCore("ref:listing", depsFor(await buildStore()));
+    const res = await verifyBundleCore("ref", depsFor({ not: "a bundle" }));
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/not an attestation bundle/);
   });

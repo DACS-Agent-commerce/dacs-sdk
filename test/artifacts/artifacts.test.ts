@@ -23,6 +23,7 @@ const VECTOR = join(CONF, "vectors/dacs-v0.1-happy-path.json");
 // SettlementEvidence migrated to the rich/normative §14 shape; the happy-path
 // vector still carries the stale simple shape, so validate the rich fixture.
 const EV_FIXTURE = join(CONF, "fixtures/settlement-evidence-payment-success.json");
+const BUNDLE_FIXTURE = join(CONF, "fixtures/attestation-bundle-0004.json");
 const have = existsSync(VECTOR);
 
 const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
@@ -53,10 +54,15 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     if (!validator) continue;
 
     it(`${kind}: validator accepts the fixture`, () => {
-      const fixture =
-        kind === "SettlementEvidence"
-          ? JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence
-          : a.artifact;
+      // SettlementEvidence + AttestationBundle migrated to the rich/normative
+      // §14 shapes; the happy-path vector still carries the stale simple shape,
+      // so validate the rich fixtures for those.
+      let fixture = a.artifact;
+      if (kind === "SettlementEvidence") {
+        fixture = JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence;
+      } else if (kind === "AttestationBundle") {
+        fixture = JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+      }
       expect(validator(fixture)).toBe(true);
     });
 

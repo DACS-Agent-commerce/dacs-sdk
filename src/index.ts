@@ -69,7 +69,7 @@ export {
   type AgentConfig,
   type PublishResult,
   type BundleVerification,
-  type ArtifactVerification,
+  type SignatureCheck,
   verifyBundleCore,
   type VerifyBundleDeps,
   type SignatureVerdict,

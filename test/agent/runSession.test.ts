@@ -29,6 +29,7 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     buyerId: "did:demos:agent:bob",
     readListing: async () => LISTING,
     sign: async (a, sep) => ({ ...a, signature: "sig", _sep: sep }),
+    signBytes: async () => new Uint8Array(64),
     anchor: async (name) => `stor-${name}`,
     anchorAddress: async (name) => `stor-${name}`,
     readAnchor: async () => null,
@@ -118,14 +119,15 @@ describe("runSession orchestration (T4)", () => {
     expect(res.outcome).toBe("completed");
     expect(res.vetRef).toBe("stor-dacs2:verifyrecord:job-VET");
     expect(settleCalls).toBe(1);
-    // The CVR ref sits between the listing and the agreement in the bundle.
-    const bundle = store.get(res.bundleRef)!;
-    expect(bundle.artifactRefs).toEqual([
-      "stor-listing",
-      res.vetRef,
-      res.agreementRef,
-      res.settlementRef,
-    ]);
+    // Spec bundle: vet record + settlement evidence are content-addressed refs,
+    // a buyer party, and a signature.
+    const bundle = store.get(res.bundleRef)! as Record<string, any>;
+    expect(bundle.bundleVersion).toBe("1");
+    expect(bundle.outcome).toBe("completed");
+    expect(bundle.vetRecords).toHaveLength(1);
+    expect(bundle.settlementEvidence).toHaveLength(1);
+    expect(bundle.parties[0].primaryClaim).toBe("did:demos:agent:bob");
+    expect(bundle.signatures[0].party).toBe("did:demos:agent:bob");
   });
 
   test("vet fail: aborts before settlement (never pays a failed seller)", async () => {

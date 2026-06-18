@@ -26,11 +26,11 @@ import { computeReputation, type Reputation } from "./reputation.js";
 import { buildSignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
 import {
   verifyBundleCore,
-  type ArtifactVerification,
+  type SignatureCheck,
   type BundleVerification,
 } from "./verifyBundleCore.js";
 
-export type { ArtifactVerification, BundleVerification, Reputation };
+export type { SignatureCheck, BundleVerification, Reputation };
 
 /**
  * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
@@ -171,6 +171,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
           readListing: (ref) => adapter.readAnchor(ref),
           sign: (artifact, separator) =>
             buildSignedArtifact(artifact, separator as DomainSeparator, sign),
+          signBytes: async (bytes) => sign(bytes),
           anchor: async (name, value) => (await adapter.anchor(name, value)).address,
           anchorAddress: async (name) => adapter.anchorAddress(name),
           readAnchor: (address) => adapter.readAnchor(address),

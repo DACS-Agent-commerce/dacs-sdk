@@ -1,47 +1,41 @@
-import { stripSignature } from "../canonical/index.js";
+import { contentHash, stripSignature } from "../canonical/index.js";
+import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { ArtifactKind, AttestationBundle } from "../artifacts/types.js";
-import {
-  isAgreementDocument,
-  isAttestationBundle,
-  isCompositeVerificationRecord,
-  isListing,
-  isSettlementEvidence,
-} from "../artifacts/validators.js";
-import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
+import type { AttestationBundle } from "../artifacts/types.js";
+import { isAttestationBundle } from "../artifacts/validators.js";
+import { type Verifier } from "./signedArtifact.js";
 
 /**
- * Full attestation-bundle verification (T4 follow-up). Beyond the structural
- * check (every referenced artifact resolves), this recomputes and checks each
- * artifact's §7.7 signature against the public key its claimed signer resolves
- * to via CCI. Signatures are honestly four-stated: `valid` (a resolved key
- * verified it), `invalid` (a usable key resolved but no signature matched —
- * tampering or wrong key), `error` (a key resolved but is malformed, e.g.
- * wrong length, so it can't be evaluated — §10.4.1: an ERROR, never a
- * false-negative FAIL), `unverified` (no key could be resolved at all).
+ * Attestation-bundle verification (DACS-5). The bundle's signed scope is its
+ * canonical form omitting `signatures` + `anchoredByRole` (§10.4.1); each entry
+ * in `signatures[]` is an Ed25519 signature over
+ * `signedBytes("dacs-bundle:v1:", contentHash(scope))` by a party. We resolve
+ * each party's key and check its signature. Verdicts are honestly four-stated:
+ * `valid` (a resolved key verified it), `invalid` (a usable key resolved but
+ * didn't match — tampering/wrong key), `error` (a key resolved but is malformed
+ * — §10.4.1 ERROR, not a false-negative FAIL), `unverified` (no key resolvable).
+ *
+ * The bundle's artifact refs (listingRef / agreementRef / vetRecords /
+ * settlementEvidence) are content-addressed (`{kind,id,contentHash}`), so
+ * integrity is bound by the bundle's own signed hash rather than by resolving
+ * each ref on the substrate.
  */
 
 export type SignatureVerdict = "valid" | "invalid" | "error" | "unverified";
 
-export interface ArtifactVerification {
-  ref: string;
-  resolved: boolean;
-  kind: ArtifactKind | "unknown";
-  signature: SignatureVerdict;
-  /** The signer DID whose resolved key validated the signature, if any. */
-  signer?: string;
+export interface SignatureCheck {
+  party: string;
+  verdict: SignatureVerdict;
 }
 
 export interface BundleVerification {
-  /** Structurally complete (all artifacts resolve) AND no invalid/error signatures. */
+  /** At least one signature verified and none are invalid/error. */
   ok: boolean;
   reason?: string;
-  /** True only if every signature (bundle + artifacts) verified against a key. */
+  /** Every signature verified against a resolved key. */
   fullyVerified: boolean;
   bundle?: AttestationBundle;
-  /** The bundle's own signature verdict. */
-  bundleSignature: SignatureVerdict;
-  artifacts: ArtifactVerification[];
+  signatures: SignatureCheck[];
 }
 
 export interface VerifyBundleDeps {
@@ -51,85 +45,6 @@ export interface VerifyBundleDeps {
   resolvePublicKey: (did: string) => Promise<Uint8Array | null>;
   /** Verify a signature over raw bytes for a public key. */
   verify: Verifier;
-}
-
-/** Best-effort kind detection from a signed artifact's shape (signature stripped). */
-function detectKind(obj: Record<string, unknown>): ArtifactKind | "unknown" {
-  const scope = stripSignature(obj);
-  if (isListing(scope)) return "Listing";
-  if (isAgreementDocument(scope)) return "AgreementDocument";
-  if (isSettlementEvidence(scope)) return "SettlementEvidence";
-  if (isCompositeVerificationRecord(scope)) return "CompositeVerificationRecord";
-  if (isAttestationBundle(scope)) return "AttestationBundle";
-  return "unknown";
-}
-
-/** The DIDs that could legitimately have signed an artifact of this kind. */
-function candidateSigners(
-  kind: ArtifactKind | "unknown",
-  artifact: Record<string, unknown>,
-  bundle: AttestationBundle,
-): string[] {
-  const str = (v: unknown): string[] => (typeof v === "string" ? [v] : []);
-  const arr = (v: unknown): string[] =>
-    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  switch (kind) {
-    case "Listing":
-      return str(artifact["agentId"]);
-    case "AgreementDocument":
-      return [...str(artifact["buyer"]), ...str(artifact["seller"])];
-    case "CompositeVerificationRecord":
-      // The vetter signs the record (the subject is who was vetted, not the
-      // signer), so the session's signatories are the candidates too.
-      return [...str(artifact["subject"]), ...bundle.signedBy];
-    case "SettlementEvidence":
-      // Evidence carries no signer DID — the session's signatories did.
-      return bundle.signedBy;
-    case "AttestationBundle":
-      return arr(artifact["signedBy"]);
-    default:
-      return bundle.signedBy;
-  }
-}
-
-/**
- * Verify one signed artifact against its candidate signers' resolved keys.
- * Returns `valid` on the first key that verifies, `invalid` if at least one key
- * resolved but none matched, `unverified` if no key could be resolved.
- */
-async function verifyOne(
-  ref: string,
-  kind: ArtifactKind | "unknown",
-  artifact: Record<string, unknown>,
-  bundle: AttestationBundle,
-  deps: VerifyBundleDeps,
-): Promise<ArtifactVerification> {
-  if (kind === "unknown") {
-    return { ref, resolved: true, kind, signature: "unverified" };
-  }
-  const separator = ARTIFACT_SEPARATORS[kind];
-  let anyUsableKey = false;
-  let anyMalformedKey = false;
-  for (const did of candidateSigners(kind, artifact, bundle)) {
-    const key = await deps.resolvePublicKey(did);
-    if (!key) continue;
-    // A resolved-but-malformed key can't be evaluated — that's an ERROR, not a
-    // FAIL (§10.4.1). Skip it; another candidate may still verify cleanly.
-    if (key.length !== 32) {
-      anyMalformedKey = true;
-      continue;
-    }
-    anyUsableKey = true;
-    if (await verifySignedArtifact(artifact, separator, key, deps.verify)) {
-      return { ref, resolved: true, kind, signature: "valid", signer: did };
-    }
-  }
-  const signature: SignatureVerdict = anyUsableKey
-    ? "invalid" // a usable key existed but none matched → genuine mismatch
-    : anyMalformedKey
-      ? "error" // only malformed keys resolved → cannot decide
-      : "unverified"; // no key resolved at all
-  return { ref, resolved: true, kind, signature };
 }
 
 export async function verifyBundleCore(
@@ -142,56 +57,63 @@ export async function verifyBundleCore(
       ok: false,
       reason: "not an attestation bundle",
       fullyVerified: false,
-      bundleSignature: "unverified",
-      artifacts: [],
+      signatures: [],
     };
   }
   const bundle = stripSignature(raw) as unknown as AttestationBundle;
 
-  // Verify the bundle's own signature.
-  const bundleResult = await verifyOne(
-    bundleRef,
-    "AttestationBundle",
-    raw,
-    bundle,
-    deps,
+  // Signed scope = canonical form omitting signatures + anchoredByRole (§10.4.1).
+  const scope = { ...raw };
+  delete scope["signatures"];
+  delete scope["anchoredByRole"];
+  const message = signedBytes(
+    ARTIFACT_SEPARATORS.AttestationBundle,
+    contentHash(scope),
   );
 
-  // Verify each referenced artifact.
-  const artifacts: ArtifactVerification[] = [];
-  for (const ref of bundle.artifactRefs) {
-    const obj = await deps.readArtifact(ref);
-    if (!obj) {
-      artifacts.push({
-        ref,
-        resolved: false,
-        kind: "unknown",
-        signature: "unverified",
-      });
-      continue;
+  const sigs = Array.isArray(raw["signatures"])
+    ? (raw["signatures"] as Array<{ party?: unknown; value?: unknown }>)
+    : [];
+
+  const signatures: SignatureCheck[] = [];
+  for (const s of sigs) {
+    const party = typeof s.party === "string" ? s.party : "";
+    const key = await deps.resolvePublicKey(party);
+    let verdict: SignatureVerdict;
+    if (!key) {
+      verdict = "unverified";
+    } else if (key.length !== 32) {
+      // Malformed resolved key — can't evaluate; ERROR, not a false FAIL.
+      verdict = "error";
+    } else {
+      const sigBytes = Uint8Array.from(
+        Buffer.from(typeof s.value === "string" ? s.value : "", "base64url"),
+      );
+      verdict = (await deps.verify(message, sigBytes, key)) ? "valid" : "invalid";
     }
-    artifacts.push(await verifyOne(ref, detectKind(obj), obj, bundle, deps));
+    signatures.push({ party, verdict });
   }
 
-  const all = [bundleResult, ...artifacts];
-  const allResolved = artifacts.every((a) => a.resolved);
-  const anyInvalid = all.some((a) => a.signature === "invalid");
-  const anyError = all.some((a) => a.signature === "error");
-  const fullyVerified = all.every((a) => a.signature === "valid");
+  const anyInvalid = signatures.some((c) => c.verdict === "invalid");
+  const anyError = signatures.some((c) => c.verdict === "error");
+  const anyValid = signatures.some((c) => c.verdict === "valid");
+  const fullyVerified =
+    signatures.length > 0 && signatures.every((c) => c.verdict === "valid");
 
   return {
-    // A malformed key (error) is not a pass: we couldn't decide, so don't ok it.
-    ok: allResolved && !anyInvalid && !anyError,
-    reason: !allResolved
-      ? "one or more referenced artifacts did not resolve"
-      : anyInvalid
-        ? "one or more signatures failed verification"
-        : anyError
-          ? "one or more signer keys were malformed (could not verify)"
-          : undefined,
+    ok: anyValid && !anyInvalid && !anyError,
+    reason:
+      signatures.length === 0
+        ? "bundle has no signatures"
+        : anyInvalid
+          ? "one or more signatures failed verification"
+          : anyError
+            ? "one or more signer keys were malformed (could not verify)"
+            : anyValid
+              ? undefined
+              : "no signer key could be resolved",
     fullyVerified,
     bundle,
-    bundleSignature: bundleResult.signature,
-    artifacts,
+    signatures,
   };
 }

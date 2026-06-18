@@ -4,7 +4,7 @@ export {
   type AgentConfig,
   type PublishResult,
   type BundleVerification,
-  type ArtifactVerification,
+  type SignatureCheck,
   type Reputation,
   type RunSessionOptions,
 } from "./Agent.js";

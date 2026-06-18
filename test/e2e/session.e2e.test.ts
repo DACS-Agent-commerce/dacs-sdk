@@ -107,6 +107,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       readListing: sub.read,
       sign: (artifact, sep) =>
         buildSignedArtifact(artifact, sep as never, signBuyer),
+      signBytes: async (bytes) => signBuyer(bytes),
       anchor: sub.anchor,
       anchorAddress: sub.anchorAddress,
       readAnchor: sub.read,
@@ -165,27 +166,16 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
 
     expect(v.ok).toBe(true);
     expect(v.fullyVerified).toBe(true);
-    expect(v.bundleSignature).toBe("valid");
-    // Full 5-stage bundle: listing, vet record, agreement, settlement.
+    // The bundle's buyer signature verifies over the §10.4.1 signed scope.
+    expect(v.signatures).toEqual([{ party: buyerDid, verdict: "valid" }]);
+    // Full 5-stage spec bundle: content-addressed listing/agreement refs +
+    // vet record + settlement evidence.
     expect(result.vetRef).toBeDefined();
-    expect(v.bundle?.artifactRefs).toEqual([
-      listingRef,
-      result.vetRef,
-      result.agreementRef,
-      result.settlementRef,
-    ]);
-    expect(v.artifacts.map((a) => a.signature)).toEqual([
-      "valid",
-      "valid",
-      "valid",
-      "valid",
-    ]);
-    expect(v.artifacts.map((a) => a.kind)).toEqual([
-      "Listing",
-      "CompositeVerificationRecord",
-      "AgreementDocument",
-      "SettlementEvidence",
-    ]);
+    expect(v.bundle?.outcome).toBe("completed");
+    expect(v.bundle?.vetRecords).toHaveLength(1);
+    expect(v.bundle?.settlementEvidence).toHaveLength(1);
+    expect(v.bundle?.listingRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(v.bundle?.agreementRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
 
     // Settlement evidence carries the rail's reported tx hash.
     const evidence = sub.store.get(result.settlementRef);
@@ -197,11 +187,12 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     });
   });
 
-  test("tampering an anchored artifact breaks verification", async () => {
+  test("tampering the anchored bundle breaks signature verification", async () => {
     const { sub, result } = await runFlow();
-    const agreement = { ...sub.store.get(result.agreementRef)! };
-    agreement.price = { amount: "1", asset: "USDC", decimals: 6, rail: "pay-x402" };
-    sub.store.set(result.agreementRef, agreement);
+    // Mutate a signed-scope field of the bundle after it was signed.
+    const bundle = { ...sub.store.get(result.bundleRef)! };
+    bundle.outcome = "failed";
+    sub.store.set(result.bundleRef, bundle);
 
     const v = await verifyBundleCore(result.bundleRef, {
       readArtifact: sub.read,

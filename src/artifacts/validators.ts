@@ -96,17 +96,37 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
   );
 }
 
-// NOTE: still the simplified MVP bundle shape; rich-bundle validation lands
-// with the bundle conformance increment (isAttestationRef above is staged for it).
 export function isAttestationBundle(v: unknown): v is AttestationBundle {
   if (!isObj(v)) return false;
+  const lr = v.listingRef;
   return (
+    isStr(v.bundleVersion) &&
     isStr(v.jobId) &&
-    isStr(v.state) &&
-    isStr(v.primaryClaim) &&
-    isStrArray(v.artifactRefs) &&
-    Array.isArray(v.ratings) &&
-    isStrArray(v.signedBy) &&
-    isStr(v.completedAt)
+    isStr(v.outcome) &&
+    isObj(lr) &&
+    isStr(lr.listingId) &&
+    isNum(lr.version) &&
+    isStr(lr.contentHash) &&
+    isAttestationRef(v.agreementRef) &&
+    Array.isArray(v.parties) &&
+    v.parties.every(
+      (p) => isObj(p) && isStr(p.role) && isStr(p.bundleHash) && isStr(p.primaryClaim),
+    ) &&
+    Array.isArray(v.phaseSummary) &&
+    v.phaseSummary.every(
+      (ph) =>
+        isObj(ph) &&
+        isNum(ph.index) &&
+        isStr(ph.kind) &&
+        isStr(ph.outcome) &&
+        isAttestationRef(ph.attestationRef),
+    ) &&
+    Array.isArray(v.vetRecords) &&
+    v.vetRecords.every(isAttestationRef) &&
+    Array.isArray(v.settlementEvidence) &&
+    v.settlementEvidence.every(isAttestationRef) &&
+    isNum(v.recipeRegistryVersion) &&
+    isNum(v.railRegistryVersion) &&
+    isNum(v.finalisedAt)
   );
 }

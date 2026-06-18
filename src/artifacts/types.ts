@@ -158,22 +158,24 @@ export interface BundleSignature {
   value: string;
 }
 
-/**
- * DACS-5 — the session audit unit. NOTE: still the simplified MVP shape; the
- * spec-conformant rich form (bundleVersion / outcome / parties[] / phaseSummary
- * / content-hash refs / registryVersions, signed scope omitting signatures +
- * anchoredByRole) is the next conformance increment — the rich helper types
- * above (AttestationRef, ListingRef, BundleParty, PhaseSummaryEntry,
- * BundleSignature) are already in place for it.
- */
+/** DACS-5 — the session audit unit referencing every artifact (spec shape). */
 export interface AttestationBundle {
+  bundleVersion: string;
   jobId: string;
-  state: string;
-  primaryClaim: ClaimRef;
-  artifactRefs: string[];
-  ratings: Rating[];
-  signedBy: string[];
-  completedAt: string;
+  outcome: string;
+  /** Per-copy field; omitted from the signed scope (§10.4.1). */
+  anchoredByRole?: string;
+  listingRef: ListingRef;
+  agreementRef: AttestationRef;
+  parties: BundleParty[];
+  phaseSummary: PhaseSummaryEntry[];
+  vetRecords: AttestationRef[];
+  settlementEvidence: AttestationRef[];
+  recipeRegistryVersion: number;
+  railRegistryVersion: number;
+  finalisedAt: number;
+  /** Omitted from the signed scope (§10.4.1). */
+  signatures?: BundleSignature[];
 }
 
 /** Discriminator for the spine artifact kinds (matches the vector `kind`). */
