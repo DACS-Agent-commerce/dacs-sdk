@@ -15,7 +15,7 @@ const REPO =
   "https://github.com/DACS-Agent-commerce/DACS-Standard.git";
 // Pinned for reproducible conformance runs. Bump deliberately.
 const REF =
-  process.env.DACS_STANDARD_REF || "5ff59bcd26acbff259a2f829f06cd682eefdfc6b";
+  process.env.DACS_STANDARD_REF || "239d646ca0ef97e5e4ce79fd6b7ab30ff3ddebba";
 
 function git(args, cwd) {
   execFileSync("git", args, { cwd, stdio: "inherit" });
