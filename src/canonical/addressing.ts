@@ -1,4 +1,22 @@
 import { DacsError } from "../errors.js";
+import { sha256Hex } from "./hash.js";
+
+/**
+ * Hash-based storage address (§10.4.3 / CORE.md): `stor-` followed by the
+ * sha256 hex of the seed. The substrate-agnostic address form for content that
+ * has no colon-bearing logical name — notably the role-specific bundle copies.
+ */
+export function storAddress(seed: string): string {
+  return `stor-${sha256Hex(seed)}`;
+}
+
+/** DACS-5 §10.4.3 role-specific bundle address: `stor-{sha256(jobId + "-bundle-" + role)}`. */
+export function bundleAddress(
+  jobId: string,
+  role: "buyer" | "seller" | "orchestrator",
+): string {
+  return storAddress(`${jobId}-bundle-${role}`);
+}
 
 /**
  * CF-4 logical addressing (§6.3.4). A logical address is assembled from fixed

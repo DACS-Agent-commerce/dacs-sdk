@@ -4,6 +4,8 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  storAddress,
+  bundleAddress,
 } from "./addressing.js";
 export {
   sha256Hex,

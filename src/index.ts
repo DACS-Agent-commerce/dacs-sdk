@@ -29,6 +29,8 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  storAddress,
+  bundleAddress,
   sha256Hex,
   stripSignature,
   canonicalSignedScope,
