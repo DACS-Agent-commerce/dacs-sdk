@@ -76,8 +76,10 @@ export interface SessionDeps {
   vet?: (subject: string) => Promise<CompositeVerificationRecord>;
   /** Fresh job id (e.g. crypto.randomUUID). */
   newJobId: () => string;
-  /** Current ISO-8601 timestamp. */
+  /** Current ISO-8601 timestamp (used where the spec field is a string). */
   now: () => string;
+  /** Current unix-ms timestamp (used where the spec field is a number). */
+  nowMs: () => number;
 }
 
 export interface SessionResult {
@@ -190,24 +192,35 @@ export async function runSessionCore(
         jobId,
       });
       settledOk = pay.ok;
+      const observedAt = deps.nowMs();
+      // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
+      // tx hash become a payment txRef; finality is recorded as observed (the
+      // rail seam doesn't surface depth yet — finalityBlocks 0).
       const evidence: SettlementEvidence = {
+        evidenceVersion: "1",
         jobId,
-        rail: terms.price.rail,
-        chainId: pay.chainId,
-        txHash: pay.txHash,
-        payer: pay.payer,
-        payee: pay.payee,
-        amount: terms.price.amount,
-        asset: terms.price.asset,
-        ok: pay.ok,
-        observedAt: deps.now(),
+        phase: terms.price.rail,
+        phaseIndex: 0,
+        outcome: pay.ok ? "success" : "failed",
+        paymentTxRefs: [
+          { rail: pay.chainId, txHash: pay.txHash, kind: "payment" },
+        ],
+        paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
+        settlementFinality: {
+          model: "observed",
+          finalityBlocks: 0,
+          finalityObservedAt: observedAt,
+        },
+        observedAt,
       };
       return deps.sign(evidence, ARTIFACT_SEPARATORS.SettlementEvidence);
     },
   );
   if (existingEvidence) {
     // Reused a prior settlement — take the outcome from the anchored evidence.
-    settledOk = (stripSignature(existingEvidence) as { ok?: unknown }).ok === true;
+    settledOk =
+      (stripSignature(existingEvidence) as { outcome?: unknown }).outcome ===
+      "success";
   }
 
   // Verify: assemble + anchor the bundle.

@@ -71,21 +71,63 @@ export interface AgreementDocument {
   expiresAt: string;
 }
 
-/** DACS-4 — evidence of a settlement (payment / delivery) phase. */
-export interface SettlementEvidence {
-  jobId: string;
-  rail: string;
-  chainId: string;
-  txHash: string;
-  payer: string;
-  payee: string;
-  amount: string;
-  asset: string;
-  ok: boolean;
-  observedAt: string;
+/** A content-addressed reference to another artifact (kind + id + content hash). */
+export interface AttestationRef {
+  kind: string;
+  id: string;
+  contentHash: string;
 }
 
-/** DACS-5 — a rating recorded in the bundle. */
+/** DACS-1 listing reference — carries the listing id, version, and content hash. */
+export interface ListingRef {
+  listingId: string;
+  version: number;
+  contentHash: string;
+}
+
+/** An on-chain transaction reference. */
+export interface TxRef {
+  rail: string;
+  txHash: string;
+  kind: string;
+}
+
+/** A settled payment amount. */
+export interface PaymentAmount {
+  amount: string;
+  currency: string;
+}
+
+/** Settlement finality model for a payment. */
+export interface SettlementFinality {
+  model: string;
+  finalityBlocks: number;
+  finalityObservedAt: number;
+}
+
+/** Detached signature on a standalone artifact: `{ algorithm, signer, value }`. */
+export interface ArtifactSignature {
+  algorithm: string;
+  signer: string;
+  value: string;
+}
+
+/** DACS-4 — evidence of a settlement (payment / delivery) phase. */
+export interface SettlementEvidence {
+  evidenceVersion: string;
+  jobId: string;
+  phase: string;
+  phaseIndex: number;
+  outcome: string;
+  paymentTxRefs: TxRef[];
+  paymentAmount: PaymentAmount;
+  settlementFinality: SettlementFinality;
+  observedAt: number;
+  /** Omitted from the signed scope when hashing. */
+  signature?: ArtifactSignature;
+}
+
+/** DACS-5 — a rating recorded as a standalone RatingRecord (§10.6). */
 export interface Rating {
   from: string;
   to: string;
@@ -93,7 +135,37 @@ export interface Rating {
   dimensions?: Record<string, number>;
 }
 
-/** DACS-5 — the session audit unit referencing every artifact. */
+/** A party to an attestation bundle, with the content hash of its IdentityBundle. */
+export interface BundleParty {
+  role: string;
+  bundleHash: string;
+  primaryClaim: ClaimRef;
+}
+
+/** A phase entry in the bundle's phaseSummary. */
+export interface PhaseSummaryEntry {
+  index: number;
+  kind: string;
+  outcome: string;
+  txRefs?: TxRef[];
+  attestationRef: AttestationRef;
+}
+
+/** A per-party bundle signature: `{ party, algorithm, value }`. */
+export interface BundleSignature {
+  party: string;
+  algorithm: string;
+  value: string;
+}
+
+/**
+ * DACS-5 — the session audit unit. NOTE: still the simplified MVP shape; the
+ * spec-conformant rich form (bundleVersion / outcome / parties[] / phaseSummary
+ * / content-hash refs / registryVersions, signed scope omitting signatures +
+ * anchoredByRole) is the next conformance increment — the rich helper types
+ * above (AttestationRef, ListingRef, BundleParty, PhaseSummaryEntry,
+ * BundleSignature) are already in place for it.
+ */
 export interface AttestationBundle {
   jobId: string;
   state: string;

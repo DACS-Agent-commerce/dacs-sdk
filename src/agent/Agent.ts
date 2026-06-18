@@ -178,6 +178,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
           vet: opts.vet,
           newJobId: () => randomUUID(),
           now: () => new Date().toISOString(),
+          nowMs: () => Date.now(),
         },
         opts.jobId,
       );

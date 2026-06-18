@@ -15,10 +15,14 @@ import {
   isSettlementEvidence,
 } from "../../src/index.js";
 
-const VECTOR = join(
+const CONF = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../vendor/DACS-Standard/conformance/vectors/dacs-v0.1-happy-path.json",
+  "../../vendor/DACS-Standard/conformance",
 );
+const VECTOR = join(CONF, "vectors/dacs-v0.1-happy-path.json");
+// SettlementEvidence migrated to the rich/normative §14 shape; the happy-path
+// vector still carries the stale simple shape, so validate the rich fixture.
+const EV_FIXTURE = join(CONF, "fixtures/settlement-evidence-payment-success.json");
 const have = existsSync(VECTOR);
 
 const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
@@ -49,7 +53,11 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     if (!validator) continue;
 
     it(`${kind}: validator accepts the fixture`, () => {
-      expect(validator(a.artifact)).toBe(true);
+      const fixture =
+        kind === "SettlementEvidence"
+          ? JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence
+          : a.artifact;
+      expect(validator(fixture)).toBe(true);
     });
 
     it(`${kind}: registry separator matches the spec`, () => {

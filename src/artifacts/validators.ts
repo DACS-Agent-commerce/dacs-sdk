@@ -3,7 +3,6 @@ import type {
   AttestationBundle,
   CompositeVerificationRecord,
   Listing,
-  Rating,
   SettlementEvidence,
 } from "./types.js";
 
@@ -69,33 +68,36 @@ export function isAgreementDocument(v: unknown): v is AgreementDocument {
   );
 }
 
+const isTxRef = (v: unknown): boolean =>
+  isObj(v) && isStr(v.rail) && isStr(v.txHash) && isStr(v.kind);
+const isAttestationRef = (v: unknown): boolean =>
+  isObj(v) && isStr(v.kind) && isStr(v.id) && isStr(v.contentHash);
+
 export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
   if (!isObj(v)) return false;
+  const amt = v.paymentAmount;
+  const fin = v.settlementFinality;
   return (
+    isStr(v.evidenceVersion) &&
     isStr(v.jobId) &&
-    isStr(v.rail) &&
-    isStr(v.chainId) &&
-    isStr(v.txHash) &&
-    isStr(v.payer) &&
-    isStr(v.payee) &&
-    isStr(v.amount) &&
-    isStr(v.asset) &&
-    isBool(v.ok) &&
-    isStr(v.observedAt)
+    isStr(v.phase) &&
+    isNum(v.phaseIndex) &&
+    isStr(v.outcome) &&
+    Array.isArray(v.paymentTxRefs) &&
+    v.paymentTxRefs.every(isTxRef) &&
+    isObj(amt) &&
+    isStr(amt.amount) &&
+    isStr(amt.currency) &&
+    isObj(fin) &&
+    isStr(fin.model) &&
+    isNum(fin.finalityBlocks) &&
+    isNum(fin.finalityObservedAt) &&
+    isNum(v.observedAt)
   );
 }
 
-function isRating(v: unknown): v is Rating {
-  return (
-    isObj(v) &&
-    isStr(v.from) &&
-    isStr(v.to) &&
-    isNum(v.score) &&
-    (v.dimensions === undefined ||
-      (isObj(v.dimensions) && Object.values(v.dimensions).every(isNum)))
-  );
-}
-
+// NOTE: still the simplified MVP bundle shape; rich-bundle validation lands
+// with the bundle conformance increment (isAttestationRef above is staged for it).
 export function isAttestationBundle(v: unknown): v is AttestationBundle {
   if (!isObj(v)) return false;
   return (
@@ -104,7 +106,6 @@ export function isAttestationBundle(v: unknown): v is AttestationBundle {
     isStr(v.primaryClaim) &&
     isStrArray(v.artifactRefs) &&
     Array.isArray(v.ratings) &&
-    v.ratings.every(isRating) &&
     isStrArray(v.signedBy) &&
     isStr(v.completedAt)
   );

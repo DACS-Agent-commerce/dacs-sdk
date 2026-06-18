@@ -8,8 +8,17 @@ export type {
   VerifyResultEntry,
   CompositeVerificationRecord,
   AgreementDocument,
+  AttestationRef,
+  ListingRef,
+  TxRef,
+  PaymentAmount,
+  SettlementFinality,
+  ArtifactSignature,
   SettlementEvidence,
   Rating,
+  BundleParty,
+  PhaseSummaryEntry,
+  BundleSignature,
   AttestationBundle,
 } from "./types.js";
 export {

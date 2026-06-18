@@ -71,16 +71,21 @@ async function buildStore(): Promise<Map<string, Record<string, unknown>>> {
   );
   const evidence = await buildSignedArtifact(
     {
+      evidenceVersion: "1",
       jobId: "j1",
-      rail: "pay-x402",
-      chainId: "eip155:84532",
-      txHash: "0xabc",
-      payer: "0xbob",
-      payee: "0xalice",
-      amount: "1000000",
-      asset: "USDC",
-      ok: true,
-      observedAt: "2026-01-01T00:00:00Z",
+      phase: "pay-x402",
+      phaseIndex: 0,
+      outcome: "success",
+      paymentTxRefs: [
+        { rail: "eip155:84532", txHash: "0xabc", kind: "payment" },
+      ],
+      paymentAmount: { amount: "1000000", currency: "USDC" },
+      settlementFinality: {
+        model: "observed",
+        finalityBlocks: 0,
+        finalityObservedAt: 1780000000000,
+      },
+      observedAt: 1780000000000,
     },
     ARTIFACT_SEPARATORS.SettlementEvidence,
     signBuyer,

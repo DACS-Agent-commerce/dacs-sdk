@@ -41,6 +41,7 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     }),
     newJobId: () => "job-1",
     now: () => "2026-01-01T00:00:00Z",
+    nowMs: () => 1780000000000,
     ...overrides,
   };
 }

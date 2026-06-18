@@ -135,6 +135,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
         ),
       newJobId: () => "job-e2e",
       now: () => "2026-01-01T00:00:00Z",
+      nowMs: () => 1780000000000,
     };
     const result = await runSessionCore(
       listingRef,
@@ -188,7 +189,12 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
 
     // Settlement evidence carries the rail's reported tx hash.
     const evidence = sub.store.get(result.settlementRef);
-    expect(evidence).toMatchObject({ txHash: "0xsettlement", ok: true });
+    // DACS-4 spec shape: outcome + payment txRefs (was the flat txHash/ok).
+    expect(evidence).toMatchObject({
+      evidenceVersion: "1",
+      outcome: "success",
+      paymentTxRefs: [{ txHash: "0xsettlement", kind: "payment" }],
+    });
   });
 
   test("tampering an anchored artifact breaks verification", async () => {
