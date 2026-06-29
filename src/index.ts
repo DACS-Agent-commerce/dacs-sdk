@@ -52,14 +52,17 @@ export {
   verifyArtifact,
 } from "./crypto/index.js";
 
-export {
-  DemosAdapter,
-  type DemosAdapterConfig,
-  type SubstrateAdapter,
-  type AnchorRef,
-  type ProxyFetchRequest,
-  type ProxyFetchResult,
-  type ResolvedIdentity,
+// Types only — the `DemosAdapter` *value* lives on the
+// "@kynesyslabs/dacs/substrate" subpath so this top-level barrel stays free of
+// an eager @kynesyslabs/demosdk load (its ESM packaging breaks plain-Node-ESM
+// consumers of the pure/verify surface). createAgent lazy-loads it when needed.
+export type {
+  DemosAdapterConfig,
+  SubstrateAdapter,
+  AnchorRef,
+  ProxyFetchRequest,
+  ProxyFetchResult,
+  ResolvedIdentity,
 } from "./substrate/index.js";
 
 // Public agent API (T4) — the headline surface a dApp dev uses.

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { DemosAdapter } from "../../src/index.js";
+// DemosAdapter lives on the substrate subpath, not the top-level barrel (the
+// barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
+import { DemosAdapter } from "../../src/substrate/index.js";
 
 const RPC = "https://node2.demos.sh";
 

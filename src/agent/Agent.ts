@@ -13,7 +13,7 @@ import {
   publicKeyFromRaw,
   type DomainSeparator,
 } from "../crypto/index.js";
-import { DemosAdapter } from "../substrate/index.js";
+import type { DemosAdapter } from "../substrate/index.js";
 import {
   runSessionCore,
   type SessionResult,
@@ -115,6 +115,10 @@ export interface Agent {
  * wires artifact signing to it.
  */
 export async function createAgent(config: AgentConfig): Promise<Agent> {
+  // Lazy-load the adapter so importing the package barrel doesn't eagerly pull
+  // @kynesyslabs/demosdk, whose ESM packaging breaks plain-Node-ESM imports of
+  // the pure/verify surface. demosdk loads only when an agent is actually built.
+  const { DemosAdapter } = await import("../substrate/index.js");
   const adapter = new DemosAdapter({
     rpc: config.demosRpc,
     secret: config.wallet,

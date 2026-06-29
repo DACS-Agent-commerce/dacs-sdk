@@ -31,6 +31,10 @@
     "./registry": {
       "types": "./dist/registry/index.d.ts",
       "import": "./dist/registry/index.js"
+    },
+    "./substrate": {
+      "types": "./dist/substrate/index.d.ts",
+      "import": "./dist/substrate/index.js"
     }
   },
   "main": "./dist/index.js",
