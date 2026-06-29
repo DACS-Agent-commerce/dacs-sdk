@@ -1,8 +1,9 @@
 # Development
 
-`dacs-sdk` is being built per [`IMPLEMENTATION.md`](./IMPLEMENTATION.md). This is
-the T1 scaffold: package skeleton, the substrate-adapter seam, and the
-conformance harness wired to the spec's §14 vectors.
+`dacs-sdk` implements the full five-stage DACS lifecycle (Identify → Vet →
+Negotiate → Settle → Verify). For *what's implemented*, see the
+**"What's implemented"** table in [`README.md`](./README.md) — that's the source
+of truth for scope. This file covers how to build, test, and lay out the code.
 
 ## Setup
 
@@ -18,35 +19,35 @@ npm run conformance:sync   # pull DACS-Standard §14 vectors into vendor/ (pinne
 | `npm run typecheck` | `tsc --noEmit` over `src` + `test` |
 | `npm run build` | emit ESM + types to `dist/` (`tsconfig.build.json`) |
 | `npm test` | vitest — unit tests + the conformance harness |
+| `npm run test:live` | live on-chain e2e (gated on a funded node + creds; skipped otherwise) |
 | `npm run conformance:sync` | sync the §14 vectors from `DACS-Standard` at the pinned ref |
 
 ## Layout
 
 ```
 src/
+  agent/             createAgent + the 5-stage runSession / verifyBundle / reputation
+  artifacts/         spine artifact types, validators, separator registry
+  canonical/         JCS + sha256 content hashing, stor- addressing
+  crypto/            signing seam + domain separators
+  rails/             settlement rails (x402, evm-erc20)
+  registry/          recipe / rail steward registries
   substrate/         the SubstrateAdapter seam + the single DemosAdapter
-  errors.ts          DacsError / NotImplementedError
-  version.ts         package + spec version
-  index.ts           public entry (seam only for now; agent API lands in T4)
+  errors.ts          DacsError
+  index.ts           public entry — the agent API + rails/registry subpaths
 test/
-  substrate/         adapter unit tests
-  conformance/       §14 vector harness (areas are `it.todo` until implemented)
+  agent/ artifacts/ rails/ registry/ canonical/ crypto/ substrate/   unit tests
+  conformance/       §14 golden-vector harness (some areas still it.todo)
+  integration/       live node smoke + on-chain e2e (gated on creds)
 scripts/
   sync-vectors.mjs   clone/checkout DACS-Standard at the pinned ref into vendor/
 ```
 
 ## Conformance vectors
 
-The §14 vectors are the **test oracle** and the source of truth lives in
+The §14 vectors are the **test oracle**; the source of truth lives in
 [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard).
 They are synced (not vendored into git) at a pinned commit by
 `scripts/sync-vectors.mjs`. Override the ref with `DACS_STANDARD_REF=<sha>` to
-test against a newer spec build. As each builder/validator lands (T2 onward),
-its area flips from `it.todo` to a real conformance assertion.
-
-## Status (T1)
-
-`connect` / `getAddress` are wired to the real Demos SDK. Every other seam
-method throws `NotImplementedError` with the task ref that lands it. The agent
-public API (`createAgent`, `publishListing`, `discover`, `runSession`,
-`verifyBundle`, `getReputation`) is designed in T4.
+test against a newer spec build. A few §14 areas remain `it.todo` and are
+tracked in the open conformance issues.
