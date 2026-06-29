@@ -215,20 +215,21 @@ export async function runSessionCore(
       settledOk = pay.ok;
       const observedAt = deps.nowMs();
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
-      // tx hash become a payment txRef; finality is recorded as observed (the
-      // rail seam doesn't surface depth yet — finalityBlocks 0).
+      // tx hash become a payment txRef. Finality is the rail's receipt
+      // (§9.7 `provider-receipt`) — the rail seam confirms via receipt, not
+      // block depth, so finalityBlocks is 0.
       const evidence: SettlementEvidence = {
         evidenceVersion: "1",
         jobId,
         phase: terms.price.rail,
         phaseIndex: 0,
-        outcome: pay.ok ? "success" : "failed",
+        outcome: pay.ok ? "success" : "failure",
         paymentTxRefs: [
           { rail: pay.chainId, txHash: pay.txHash, kind: "payment" },
         ],
         paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
         settlementFinality: {
-          model: "observed",
+          model: "provider-receipt",
           finalityBlocks: 0,
           finalityObservedAt: observedAt,
         },

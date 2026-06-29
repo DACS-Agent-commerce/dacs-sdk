@@ -98,9 +98,21 @@ export interface PaymentAmount {
   currency: string;
 }
 
+/** §9.7 settlement outcome. */
+export type SettlementOutcome = "success" | "failure";
+
+/** §9.7 settlement finality models (PC-6 — the actual model applied). */
+export type SettlementFinalityModel =
+  | "block-depth"
+  | "commitment-level"
+  | "provider-receipt"
+  | "htlc-reveal"
+  | "liquidity-tank"
+  | "bft-final";
+
 /** Settlement finality model for a payment. */
 export interface SettlementFinality {
-  model: string;
+  model: SettlementFinalityModel;
   finalityBlocks: number;
   finalityObservedAt: number;
 }
@@ -118,7 +130,7 @@ export interface SettlementEvidence {
   jobId: string;
   phase: string;
   phaseIndex: number;
-  outcome: string;
+  outcome: SettlementOutcome;
   paymentTxRefs: TxRef[];
   paymentAmount: PaymentAmount;
   settlementFinality: SettlementFinality;
