@@ -67,7 +67,15 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     });
 
     it(`${kind}: registry separator matches the spec`, () => {
-      expect(ARTIFACT_SEPARATORS[kind]).toBe(a.domainSeparator);
+      // The pinned v0.1 happy-path vector still carries the stale
+      // `dacs-verifyresult:v1:` for the composite record; CORE §B.7 / DACS-2
+      // §7.7 assign `dacs-composite:v1:` (fixed in #3). Drops away once the
+      // vectors are re-pointed to DACS v0.2 (#7).
+      const expectedSeparator =
+        kind === "CompositeVerificationRecord"
+          ? "dacs-composite:v1:"
+          : a.domainSeparator;
+      expect(ARTIFACT_SEPARATORS[kind]).toBe(expectedSeparator);
     });
 
     it(`${kind}: content hash is a stable sha256 hex`, () => {
