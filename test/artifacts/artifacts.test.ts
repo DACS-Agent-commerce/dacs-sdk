@@ -92,4 +92,18 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
       false,
     );
   });
+
+  it("SettlementEvidence validator enforces the §9.7 enums", () => {
+    const valid = JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence;
+    expect(isSettlementEvidence(valid)).toBe(true);
+    // outcome must be success|failure — not any string.
+    expect(isSettlementEvidence({ ...valid, outcome: "banana" })).toBe(false);
+    // finality model must be a §9.7 member — not the old "observed".
+    expect(
+      isSettlementEvidence({
+        ...valid,
+        settlementFinality: { ...valid.settlementFinality, model: "observed" },
+      }),
+    ).toBe(false);
+  });
 });

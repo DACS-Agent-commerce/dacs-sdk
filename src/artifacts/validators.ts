@@ -13,6 +13,20 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 const isStrArray = (v: unknown): v is string[] =>
   Array.isArray(v) && v.every(isStr);
+const isOneOf = (set: readonly string[], v: unknown): boolean =>
+  typeof v === "string" && set.includes(v);
+
+// §9.7 enums — enforced so an out-of-spec value (e.g. outcome:"banana") is
+// rejected, not just any string.
+const SETTLEMENT_OUTCOMES = ["success", "failure"] as const;
+const FINALITY_MODELS = [
+  "block-depth",
+  "commitment-level",
+  "provider-receipt",
+  "htlc-reveal",
+  "liquidity-tank",
+  "bft-final",
+] as const;
 
 export function isListing(v: unknown): v is Listing {
   if (!isObj(v)) return false;
@@ -82,14 +96,14 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
     isStr(v.jobId) &&
     isStr(v.phase) &&
     isNum(v.phaseIndex) &&
-    isStr(v.outcome) &&
+    isOneOf(SETTLEMENT_OUTCOMES, v.outcome) &&
     Array.isArray(v.paymentTxRefs) &&
     v.paymentTxRefs.every(isTxRef) &&
     isObj(amt) &&
     isStr(amt.amount) &&
     isStr(amt.currency) &&
     isObj(fin) &&
-    isStr(fin.model) &&
+    isOneOf(FINALITY_MODELS, fin.model) &&
     isNum(fin.finalityBlocks) &&
     isNum(fin.finalityObservedAt) &&
     isNum(v.observedAt)
