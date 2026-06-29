@@ -27,6 +27,13 @@ const FINALITY_MODELS = [
   "liquidity-tank",
   "bft-final",
 ] as const;
+// DACS-2 §7.7 verification verdicts.
+const VERIFICATION_DECISIONS = [
+  "pass",
+  "fail",
+  "indeterminate",
+  "error",
+] as const;
 
 export function isListing(v: unknown): v is Listing {
   if (!isObj(v)) return false;
@@ -54,8 +61,14 @@ export function isCompositeVerificationRecord(
     isStr(v.recipeId) &&
     isStr(v.recipeVersion) &&
     Array.isArray(v.results) &&
-    v.results.every((r) => isObj(r) && isStr(r.claimRef) && isStr(r.method) && isStr(r.status)) &&
-    isBool(v.requiredPassed) &&
+    v.results.every(
+      (r) =>
+        isObj(r) &&
+        isStr(r.claimRef) &&
+        isStr(r.method) &&
+        isOneOf(VERIFICATION_DECISIONS, r.status),
+    ) &&
+    isOneOf(VERIFICATION_DECISIONS, v.decision) &&
     isStr(v.verifiedAt)
   );
 }

@@ -56,7 +56,7 @@ export interface RunSessionOptions {
   /**
    * Optional Vet step: verify the seller before paying (e.g. resolveRecipe +
    * vetCore). Returns a CompositeVerificationRecord; the session aborts before
-   * settlement if requiredPassed is false. Omit to skip vetting.
+   * settlement unless the decision is `pass`. Omit to skip vetting.
    */
   vet?: (subject: string) => Promise<CompositeVerificationRecord>;
   /**

@@ -62,6 +62,14 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         fixture = JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence;
       } else if (kind === "AttestationBundle") {
         fixture = JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+      } else if (kind === "CompositeVerificationRecord") {
+        // The v0.1 vector predates the 4-value decision (#5) — map its legacy
+        // `requiredPassed` boolean to the normative `decision`. Drops away when
+        // the vectors re-point to DACS v0.2 (#7).
+        const { requiredPassed, ...rest } = fixture as {
+          requiredPassed?: boolean;
+        } & Record<string, unknown>;
+        fixture = { ...rest, decision: requiredPassed ? "pass" : "fail" };
       }
       expect(validator(fixture)).toBe(true);
     });

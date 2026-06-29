@@ -1,9 +1,25 @@
 import { DacsError } from "../errors.js";
 import type {
   CompositeVerificationRecord,
+  VerificationDecision,
   VerifyResultEntry,
 } from "../artifacts/types.js";
 import type { RecipeDescriptor } from "../registry/types.js";
+
+/**
+ * Composite decision over per-method results (DACS-2 §7.7) — worst result
+ * wins: error > indeterminate > fail > pass. Empty/inconclusive is
+ * `indeterminate`, never `pass` (indeterminate is not pass).
+ */
+function compositeDecision(
+  statuses: VerificationDecision[],
+): VerificationDecision {
+  if (statuses.length === 0) return "indeterminate";
+  if (statuses.includes("error")) return "error";
+  if (statuses.includes("indeterminate")) return "indeterminate";
+  if (statuses.includes("fail")) return "fail";
+  return "pass";
+}
 
 /**
  * The Vet stage (DACS-2). Runs a resolved, steward-signed verification recipe
@@ -85,8 +101,8 @@ export async function vetCore(
     recipeId: recipe.id,
     recipeVersion: req.recipeVersion ?? "0.1",
     results,
-    // Single-result recipes for the MVP; requiredPassed is the conjunction.
-    requiredPassed: results.every((r) => r.status === "pass"),
+    // Composite decision — worst result wins; the session proceeds only on pass.
+    decision: compositeDecision(results.map((r) => r.status)),
     verifiedAt: deps.now(),
   };
 }

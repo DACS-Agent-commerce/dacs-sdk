@@ -41,11 +41,18 @@ export interface Listing {
   supportedDelivery: string[];
 }
 
+/**
+ * DACS-2 §7.7/§7.5.1 verification verdict. `indeterminate` (couldn't conclude)
+ * and `error` (the check itself failed) are distinct from `fail` and are
+ * security-load-bearing: indeterminate is NOT pass.
+ */
+export type VerificationDecision = "pass" | "fail" | "indeterminate" | "error";
+
 /** DACS-2 — one method result inside a composite verification record. */
 export interface VerifyResultEntry {
   claimRef: ClaimRef;
   method: string;
-  status: "pass" | "fail" | string;
+  status: VerificationDecision;
   authority?: string;
 }
 
@@ -55,7 +62,8 @@ export interface CompositeVerificationRecord {
   recipeId: string;
   recipeVersion: string;
   results: VerifyResultEntry[];
-  requiredPassed: boolean;
+  /** Composite decision (DACS-2 §7.7); the session proceeds only on `pass`. */
+  decision: VerificationDecision;
   verifiedAt: string;
 }
 

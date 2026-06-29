@@ -110,7 +110,7 @@ describe("runSession orchestration (T4)", () => {
         recipeId: "self-signed",
         recipeVersion: "0.1",
         results: [{ claimRef: subject, method: "self-signed", status: "pass" }],
-        requiredPassed: true,
+        decision: "pass",
         verifiedAt: "2026-01-01T00:00:00Z",
       }),
     });
@@ -145,13 +145,13 @@ describe("runSession orchestration (T4)", () => {
         recipeId: "domain-acme",
         recipeVersion: "0.1",
         results: [{ claimRef: subject, method: "consensus-backed-proxy", status: "fail" }],
-        requiredPassed: false,
+        decision: "fail",
         verifiedAt: "2026-01-01T00:00:00Z",
       }),
     });
 
     await expect(runSessionCore("stor-listing", TERMS, deps, "job-VETFAIL")).rejects.toThrow(
-      /failed verification/,
+      /did not pass verification/,
     );
     expect(settleCalls).toBe(0);
   });

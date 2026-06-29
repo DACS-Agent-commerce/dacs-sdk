@@ -76,8 +76,8 @@ export interface SessionDeps {
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
    * Optional Vet step: verify the seller before paying. Returns a
-   * CompositeVerificationRecord; if requiredPassed is false the session aborts
-   * before settlement. Omit to skip vetting.
+   * CompositeVerificationRecord; unless the decision is `pass` the session
+   * aborts before settlement. Omit to skip vetting.
    */
   vet?: (subject: string) => Promise<CompositeVerificationRecord>;
   /** Fresh job id (e.g. crypto.randomUUID). */
@@ -168,9 +168,11 @@ export async function runSessionCore(
     vetRef = ref;
     vetValue = value;
     const record = stripSignature(value) as unknown as CompositeVerificationRecord;
-    if (record.requiredPassed !== true) {
+    // Proceed only on an explicit pass — fail, indeterminate and error all abort
+    // (indeterminate/error are NOT pass; DACS-2 §7.7).
+    if (record.decision !== "pass") {
       throw new CounterpartyError(
-        `seller ${listing.agentId} failed verification (recipe ${record.recipeId})`,
+        `seller ${listing.agentId} did not pass verification (recipe ${record.recipeId}, decision=${record.decision})`,
       );
     }
   }

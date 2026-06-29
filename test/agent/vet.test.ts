@@ -21,7 +21,7 @@ describe("vetCore (DACS-2 Vet stage)", () => {
     expect(cvr).toMatchObject({
       subject: "did:demos:agent:alice",
       recipeId: "self-signed",
-      requiredPassed: true,
+      decision: "pass",
     });
     expect(cvr.results).toEqual([
       { claimRef: "did:demos:agent:alice", method: "self-signed", status: "pass", authority: "did:demos:agent:alice" },
@@ -40,7 +40,7 @@ describe("vetCore (DACS-2 Vet stage)", () => {
       },
       deps(200),
     );
-    expect(cvr.requiredPassed).toBe(true);
+    expect(cvr.decision).toBe("pass");
     expect(cvr.results[0]).toMatchObject({
       method: "consensus-backed-proxy",
       status: "pass",
@@ -56,7 +56,7 @@ describe("vetCore (DACS-2 Vet stage)", () => {
       },
       deps(404),
     );
-    expect(cvr.requiredPassed).toBe(false);
+    expect(cvr.decision).toBe("fail");
     expect(cvr.results[0]!.status).toBe("fail");
   });
 
