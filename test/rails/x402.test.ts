@@ -56,6 +56,32 @@ describe("termsMatch (§4.1 abort guard, base-unit amounts)", () => {
     expect(m.ok).toBe(false);
     expect(m.reason).toMatch(/amount/);
   });
+
+  test("matches when the asset matches (case-insensitive)", () => {
+    const m = termsMatch(
+      { ...expected, asset: "USDC" },
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "usdc" },
+    );
+    expect(m.ok).toBe(true);
+  });
+
+  test("rejects a different asset for the same amount/recipient/chain", () => {
+    const m = termsMatch(
+      { ...expected, asset: "USDC" },
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "DAI" },
+    );
+    expect(m.ok).toBe(false);
+    expect(m.reason).toMatch(/asset/);
+  });
+
+  test("rejects when the expected asset is set but the 402 omits it", () => {
+    const m = termsMatch(
+      { ...expected, asset: "USDC" },
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000" },
+    );
+    expect(m.ok).toBe(false);
+    expect(m.reason).toMatch(/asset/);
+  });
 });
 
 // ── A fake x402 client + fetch so the 402-dance is exercised without a chain ──
@@ -98,7 +124,9 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         paidHeader = new Headers(init?.headers).get("X-PAYMENT") ?? "";
       },
     });
-    const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "1000000" }]);
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" },
+    ]);
 
     const res = await x402SettleCore(params, { client, fetchImpl, payerAddress: PAYER });
 
@@ -114,8 +142,8 @@ describe("x402SettleCore (buyer 402-dance)", () => {
 
   test("picks the matching requirement among several advertised", async () => {
     const client = fakeClient([
-      { network: "eip155:8453", payTo: RECIPIENT, amount: "1000000" }, // wrong network
-      { network: NETWORK, payTo: RECIPIENT, amount: "1000000" }, // the match
+      { network: "eip155:8453", payTo: RECIPIENT, amount: "1000000", asset: "USDC" }, // wrong network
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }, // the match
     ]);
     const res = await x402SettleCore(params, {
       client,
@@ -126,10 +154,45 @@ describe("x402SettleCore (buyer 402-dance)", () => {
   });
 
   test("aborts (§4.1) when no advertised requirement matches the agreement", async () => {
-    const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "9999999" }]);
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "9999999", asset: "USDC" },
+    ]);
     await expect(
       x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
     ).rejects.toThrow(/does not match negotiated agreement/);
+  });
+
+  test("aborts when the 402 advertises a different asset (no wrong-token pay)", async () => {
+    // Same chain, recipient, and base-unit amount — but a different token.
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "DAI" },
+    ]);
+    await expect(
+      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
+    ).rejects.toThrow(/asset mismatch/);
+  });
+
+  test("aborts when the 402 omits the asset (can't confirm the token)", async () => {
+    const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "1000000" }]);
+    await expect(
+      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
+    ).rejects.toThrow(/asset mismatch/);
+  });
+
+  test("reports non-success when settlement returns no transaction id", async () => {
+    // Gate passes (HTTP 200) but X-PAYMENT-RESPONSE carries no tx hash — an
+    // unverifiable receipt. Must NOT be reported as a success.
+    const client = fakeClient(
+      [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
+      "", // empty transaction id
+    );
+    const res = await x402SettleCore(params, {
+      client,
+      fetchImpl: fakeFetch(),
+      payerAddress: PAYER,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.txHash).toBe("");
   });
 
   test("throws if the paywall doesn't return a 402", async () => {

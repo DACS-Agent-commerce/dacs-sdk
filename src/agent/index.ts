@@ -12,6 +12,8 @@ export {
   verifyBundleCore,
   type VerifyBundleDeps,
   type SignatureVerdict,
+  type RefCheck,
+  type RefVerdict,
 } from "./verifyBundleCore.js";
 export { computeReputation } from "./reputation.js";
 export { discoverListings } from "./discover.js";

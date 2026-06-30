@@ -16,6 +16,7 @@ import {
 import type { DemosAdapter } from "../substrate/index.js";
 import {
   runSessionCore,
+  sessionAnchorName,
   type SessionResult,
   type SessionTerms,
   type SettleRequest,
@@ -142,10 +143,23 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     },
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
-      // Structural check (every referenced artifact resolves) plus per-artifact
-      // §7.7 signature verification against each signer's resolved public key.
+      // Bundle signature verification (§7.7) PLUS dereferencing each referenced
+      // artifact and hash-checking it. Session artifacts live at deterministic,
+      // jobId-keyed addresses, so resolveRef maps (kind, jobId) → address → read.
       return verifyBundleCore(ref, {
         readArtifact: (r) => adapter.readAnchor(r),
+        resolveRef: async (kind, jobId) => {
+          const name =
+            kind === "dacs-3-agreement"
+              ? sessionAnchorName.agreement(jobId)
+              : kind === "dacs-4-evidence"
+                ? sessionAnchorName.evidence(jobId)
+                : kind === "dacs-2-verifyresult"
+                  ? sessionAnchorName.vet(jobId)
+                  : null;
+          if (!name) return null;
+          return adapter.readAnchor(await adapter.anchorAddress(name));
+        },
         resolvePublicKey: async (did) => publicKeyFromDid(did),
         verify: ed25519RawVerify,
       });

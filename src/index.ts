@@ -76,6 +76,8 @@ export {
   verifyBundleCore,
   type VerifyBundleDeps,
   type SignatureVerdict,
+  type RefCheck,
+  type RefVerdict,
   computeReputation,
   discoverListings,
   vetCore,

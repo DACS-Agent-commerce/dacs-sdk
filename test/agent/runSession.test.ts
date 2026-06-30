@@ -182,4 +182,39 @@ describe("runSession orchestration (T4)", () => {
     expect(second).toEqual(first); // identical refs
     expect(settleCalls).toBe(1); // settlement NOT executed again
   });
+
+  test("resume aborts when the anchored artifact is for a different deal", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    // A prior session at this jobId's address negotiated a DIFFERENT price.
+    store.set("stor-dacs3:agreement:job-WRONG", {
+      jobId: "job-WRONG",
+      pattern: "negotiate-fixed-price",
+      buyer: "did:demos:agent:bob",
+      seller: "did:demos:agent:alice",
+      listingRef: "stor-listing",
+      price: { amount: "999", asset: "USDC", decimals: 6, rail: "pay-x402" },
+      delivery: { phase: "deliver-attested-payload", format: "application/json" },
+      expiresAt: "2026-01-01T00:00:00Z",
+      signature: "sig",
+    });
+    const deps = makeDeps({
+      anchor: async (name, value) => {
+        const addr = `stor-${name}`;
+        store.set(addr, value as Record<string, unknown>);
+        return addr;
+      },
+      anchorAddress: async (name) => `stor-${name}`,
+      readAnchor: async (addr) => store.get(addr) ?? null,
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0xabc", chainId: "c", payer: "p", payee: "q" };
+      },
+    });
+
+    await expect(
+      runSessionCore("stor-listing", TERMS, deps, "job-WRONG"),
+    ).rejects.toThrow(/does not match the requested deal/);
+    expect(settleCalls).toBe(0); // never paid against a mismatched session
+  });
 });

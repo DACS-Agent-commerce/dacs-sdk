@@ -68,10 +68,28 @@ function sameAmount(a: string, b: string): boolean {
  * agreement. Network exact, recipient case-insensitive, amount compared as
  * integer base units (DACS Price.amount is already base units — no decimal
  * conversion, so the on-chain and agreed amounts can never silently diverge).
+ *
+ * Asset is part of the guard: a 402 advertising the same base-unit amount to the
+ * same recipient on the same chain but for a *different token* must NOT pass —
+ * otherwise auto-pay would sign for the wrong asset. `expected.asset` is the
+ * canonical on-chain asset identifier the rail expects (e.g. the token contract
+ * / CAIP-19 id resolved for the negotiated Price.asset). When it is set, the 402
+ * MUST carry a matching asset; a 402 that omits the asset is rejected because we
+ * can't confirm the token.
  */
 export function termsMatch(
-  expected: { network: string; recipientEvm: string; amount: string },
-  offered: { network: string; payTo: string; amount: string },
+  expected: {
+    network: string;
+    recipientEvm: string;
+    amount: string;
+    asset?: string;
+  },
+  offered: {
+    network: string;
+    payTo: string;
+    amount: string;
+    asset?: string;
+  },
 ): { ok: boolean; reason?: string } {
   if (offered.network !== expected.network) {
     return {
@@ -90,6 +108,22 @@ export function termsMatch(
       ok: false,
       reason: `amount mismatch: 402 says ${offered.amount}, agreement says ${expected.amount}`,
     };
+  }
+  const expectedAsset = expected.asset?.trim();
+  if (expectedAsset) {
+    const offeredAsset = offered.asset?.trim();
+    if (!offeredAsset) {
+      return {
+        ok: false,
+        reason: `asset mismatch: 402 omits asset, agreement says ${expectedAsset}`,
+      };
+    }
+    if (offeredAsset.toLowerCase() !== expectedAsset.toLowerCase()) {
+      return {
+        ok: false,
+        reason: `asset mismatch: 402 says ${offeredAsset}, agreement says ${expectedAsset}`,
+      };
+    }
   }
   return { ok: true };
 }
@@ -140,11 +174,13 @@ export async function x402SettleCore(
         network: params.network,
         recipientEvm: params.recipientEvm,
         amount: params.amount,
+        asset: params.asset,
       },
       {
         network: String(req.network),
         payTo: String(req.payTo),
         amount: String(req.amount),
+        asset: req.asset != null ? String(req.asset) : undefined,
       },
     );
     if (m.ok) {
@@ -177,20 +213,23 @@ export async function x402SettleCore(
     headers,
   });
 
-  // 5. Read the settlement tx hash from X-PAYMENT-RESPONSE. Some middleware
-  //    versions omit it on a 200 — payment clearly succeeded to pass the gate,
-  //    so accept with an empty hash rather than failing the settled session.
+  // 5. Read the settlement tx hash from X-PAYMENT-RESPONSE. A money-safe receipt
+  //    needs a verifiable on-chain transaction id — without it the SettlementEvidence
+  //    would assert a provider-receipt finality that nobody can independently
+  //    check. So success REQUIRES both a passing gate (final.ok) and a non-empty
+  //    transaction id; a 200 with no parseable tx is reported as a non-success
+  //    settlement (ok:false) rather than an unverifiable "success".
   let txHash = "";
   try {
     txHash =
       client.getPaymentSettleResponse((name) => final.headers.get(name))
         ?.transaction ?? "";
-  } catch (err) {
-    if (!final.ok) throw err;
+  } catch {
+    txHash = "";
   }
 
   return {
-    ok: final.ok,
+    ok: final.ok && txHash.trim().length > 0,
     txHash,
     chainId: params.network,
     payer: payerAddress,

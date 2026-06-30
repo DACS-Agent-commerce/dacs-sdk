@@ -1,9 +1,16 @@
 import { describe, expect, test } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
-import { runSessionCore, type SessionDeps } from "../../src/agent/runSessionCore.js";
+import {
+  runSessionCore,
+  sessionAnchorName,
+  type SessionDeps,
+} from "../../src/agent/runSessionCore.js";
 import { vetCore } from "../../src/agent/vetCore.js";
-import { verifyBundleCore } from "../../src/agent/verifyBundleCore.js";
+import {
+  verifyBundleCore,
+  type VerifyBundleDeps,
+} from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
   ed25519Sign,
@@ -57,6 +64,27 @@ function memSubstrate() {
     },
     anchorAddress: async (name: string) => `stor:${name}`,
     read: async (ref: string) => store.get(ref) ?? null,
+  };
+}
+
+// ── Bundle-verification deps: resolve referenced artifacts via the substrate ──
+function verifyDeps(sub: ReturnType<typeof memSubstrate>): VerifyBundleDeps {
+  return {
+    readArtifact: sub.read,
+    resolveRef: async (kind, jobId) => {
+      const name =
+        kind === "dacs-3-agreement"
+          ? sessionAnchorName.agreement(jobId)
+          : kind === "dacs-4-evidence"
+            ? sessionAnchorName.evidence(jobId)
+            : kind === "dacs-2-verifyresult"
+              ? sessionAnchorName.vet(jobId)
+              : null;
+      if (!name) return null;
+      return sub.read(await sub.anchorAddress(name));
+    },
+    resolvePublicKey: async (did) => resolveFromDid(did),
+    verify,
   };
 }
 
@@ -122,7 +150,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
           },
           {
             client: fakeClient([
-              { network: NETWORK, payTo: RECIPIENT_EVM, amount: req.amount },
+              { network: NETWORK, payTo: RECIPIENT_EVM, amount: req.amount, asset: req.asset },
             ]),
             fetchImpl: fakeFetch(),
             payerAddress: BUYER_EVM,
@@ -158,11 +186,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(result.settlementRef).toBe("stor:dacs4:evidence:job-e2e");
 
     // A third party verifies the anchored bundle from scratch.
-    const v = await verifyBundleCore(result.bundleRef, {
-      readArtifact: sub.read,
-      resolvePublicKey: async (did) => resolveFromDid(did),
-      verify,
-    });
+    const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
 
     expect(v.ok).toBe(true);
     expect(v.fullyVerified).toBe(true);
@@ -194,11 +218,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     bundle.outcome = "failed";
     sub.store.set(result.bundleRef, bundle);
 
-    const v = await verifyBundleCore(result.bundleRef, {
-      readArtifact: sub.read,
-      resolvePublicKey: async (did) => resolveFromDid(did),
-      verify,
-    });
+    const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
     expect(v.ok).toBe(false);
     expect(v.reason).toMatch(/signature/);
   });

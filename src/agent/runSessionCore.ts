@@ -98,6 +98,21 @@ export interface SessionResult {
   bundleRef: string;
 }
 
+/**
+ * Deterministic anchor names for a session's artifacts, keyed by jobId. The
+ * address derived from each name IS the session's storage slot for that phase —
+ * shared between runSessionCore (write/resume) and verifyBundle (dereference).
+ */
+export const sessionAnchorName = {
+  vet: (jobId: string) => `dacs2:verifyrecord:${jobId}`,
+  agreement: (jobId: string) => `dacs3:agreement:${jobId}`,
+  evidence: (jobId: string) => `dacs4:evidence:${jobId}`,
+  bundle: (jobId: string) => `dacs5:bundle:${jobId}`,
+};
+
+/** Result of a resume-time semantic check on an already-anchored artifact. */
+type Match = { ok: boolean; reason?: string };
+
 export async function runSessionCore(
   listingRef: string,
   terms: SessionTerms,
@@ -125,24 +140,41 @@ export async function runSessionCore(
   const jobId = resumeJobId ?? deps.newJobId();
 
   /**
-   * Anchor `build()` under `name` only if a valid artifact isn't already there.
-   * Returns the ref + the artifact now at that ref (reused or freshly built) so
-   * callers can content-hash it for the bundle's refs.
+   * Anchor `build()` under `name` only if a matching artifact isn't already there.
+   * `match` is a resume-safety predicate: it must confirm an already-anchored
+   * artifact is not just structurally valid but semantically the SAME deal as the
+   * current request (jobId, parties, price, delivery, …). If an artifact is
+   * present but does NOT match, this ABORTS rather than reusing or overwriting it
+   * — a stale/wrong resumeJobId must never silently complete with another deal's
+   * agreement/evidence (and overwriting evidence could double-pay). Returns the
+   * ref + the artifact now at that ref so callers can content-hash it.
    */
   const anchorOnce = async (
     name: string,
-    isValid: (v: Record<string, unknown>) => boolean,
+    match: (v: Record<string, unknown>) => Match,
     build: () => Promise<object>,
   ): Promise<{ ref: string; value: Record<string, unknown>; existing: boolean }> => {
     const address = await deps.anchorAddress(name);
     const existing = await deps.readAnchor(address);
-    if (existing && isValid(stripSignature(existing))) {
+    if (existing) {
+      const m = match(stripSignature(existing));
+      if (!m.ok) {
+        throw new CounterpartyError(
+          `resume: artifact anchored at ${address} does not match the requested deal: ${m.reason}`,
+        );
+      }
       return { ref: address, value: existing, existing: true };
     }
     const built = (await build()) as Record<string, unknown>;
     const ref = await deps.anchor(name, built);
     return { ref, value: built, existing: false };
   };
+
+  const pricesEqual = (a: Price, b: Price): boolean =>
+    a.amount === b.amount &&
+    a.asset === b.asset &&
+    a.decimals === b.decimals &&
+    a.rail === b.rail;
 
   /** Content-addressed ref to a signed artifact's signed scope. */
   const refTo = (kind: string, id: string, value: Record<string, unknown>): AttestationRef => ({
@@ -157,8 +189,20 @@ export async function runSessionCore(
   let vetValue: Record<string, unknown> | undefined;
   if (deps.vet) {
     const { ref, value } = await anchorOnce(
-      `dacs2:verifyrecord:${jobId}`,
-      isCompositeVerificationRecord,
+      sessionAnchorName.vet(jobId),
+      (v) => {
+        if (!isCompositeVerificationRecord(v))
+          return { ok: false, reason: "not a verification record" };
+        const r = v as unknown as CompositeVerificationRecord;
+        // The CVR has no jobId; its load-bearing invariant is the subject — a
+        // reused record MUST vet THIS seller, not whoever a stale job vetted.
+        if (r.subject !== listing.agentId)
+          return {
+            ok: false,
+            reason: `vet subject ${r.subject} ≠ seller ${listing.agentId}`,
+          };
+        return { ok: true };
+      },
       async () =>
         deps.sign(
           await deps.vet!(listing.agentId),
@@ -179,8 +223,28 @@ export async function runSessionCore(
 
   // Negotiate (fixed-price): accept the listed terms.
   const { ref: agreementRef, value: agreementValue } = await anchorOnce(
-    `dacs3:agreement:${jobId}`,
-    isAgreementDocument,
+    sessionAnchorName.agreement(jobId),
+    (v) => {
+      if (!isAgreementDocument(v))
+        return { ok: false, reason: "not an agreement" };
+      const a = v as unknown as AgreementDocument;
+      if (a.jobId !== jobId)
+        return { ok: false, reason: `jobId ${a.jobId} ≠ ${jobId}` };
+      if (a.buyer !== deps.buyerId)
+        return { ok: false, reason: `buyer ${a.buyer} ≠ ${deps.buyerId}` };
+      if (a.seller !== listing.agentId)
+        return { ok: false, reason: `seller ${a.seller} ≠ ${listing.agentId}` };
+      if (a.listingRef !== listingRef)
+        return { ok: false, reason: `listingRef ${a.listingRef} ≠ ${listingRef}` };
+      if (!pricesEqual(a.price, terms.price))
+        return { ok: false, reason: "price mismatch" };
+      if (
+        a.delivery.phase !== terms.deliveryPhase ||
+        a.delivery.format !== terms.deliveryFormat
+      )
+        return { ok: false, reason: "delivery mismatch" };
+      return { ok: true };
+    },
     () => {
       const agreement: AgreementDocument = {
         jobId,
@@ -204,8 +268,21 @@ export async function runSessionCore(
     value: evidenceValue,
     existing: evidenceExisting,
   } = await anchorOnce(
-    `dacs4:evidence:${jobId}`,
-    isSettlementEvidence,
+    sessionAnchorName.evidence(jobId),
+    (v) => {
+      if (!isSettlementEvidence(v))
+        return { ok: false, reason: "not settlement evidence" };
+      const e = v as unknown as SettlementEvidence;
+      if (e.jobId !== jobId)
+        return { ok: false, reason: `jobId ${e.jobId} ≠ ${jobId}` };
+      if (e.phase !== terms.price.rail)
+        return { ok: false, reason: `rail ${e.phase} ≠ ${terms.price.rail}` };
+      if (e.paymentAmount.amount !== terms.price.amount)
+        return { ok: false, reason: "settled amount mismatch" };
+      if (e.paymentAmount.currency !== terms.price.asset)
+        return { ok: false, reason: "settled currency mismatch" };
+      return { ok: true };
+    },
     async () => {
       const pay = await deps.settle({
         rail: terms.price.rail,
@@ -214,7 +291,10 @@ export async function runSessionCore(
         payee: listing.agentId,
         jobId,
       });
-      settledOk = pay.ok;
+      // Defense in depth (independent of the rail): a settlement is only a
+      // success if it produced a verifiable on-chain tx id. A rail reporting
+      // ok:true with no txHash cannot back a provider-receipt claim.
+      settledOk = pay.ok && pay.txHash.trim().length > 0;
       const observedAt = deps.nowMs();
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
       // tx hash become a payment txRef. Finality is the rail's receipt
@@ -225,7 +305,7 @@ export async function runSessionCore(
         jobId,
         phase: terms.price.rail,
         phaseIndex: 0,
-        outcome: pay.ok ? "success" : "failure",
+        outcome: settledOk ? "success" : "failure",
         paymentTxRefs: [
           { rail: pay.chainId, txHash: pay.txHash, kind: "payment" },
         ],
@@ -280,8 +360,15 @@ export async function runSessionCore(
   });
 
   const { ref: bundleRef } = await anchorOnce(
-    `dacs5:bundle:${jobId}`,
-    isAttestationBundle,
+    sessionAnchorName.bundle(jobId),
+    (v) => {
+      if (!isAttestationBundle(v))
+        return { ok: false, reason: "not an attestation bundle" };
+      const b = v as unknown as AttestationBundle;
+      if (b.jobId !== jobId)
+        return { ok: false, reason: `jobId ${b.jobId} ≠ ${jobId}` };
+      return { ok: true };
+    },
     async () => {
       const body: AttestationBundle = {
         bundleVersion: "1",
