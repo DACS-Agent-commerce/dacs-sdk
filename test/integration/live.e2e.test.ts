@@ -12,7 +12,7 @@ import { createAgent, createX402Rail, x402Settle } from "../../src/index.js";
  *
  *   DEMOS_RPC=… SELLER_WALLET=… SELLER_DID=… BUYER_WALLET=… BUYER_DID=… \
  *   BUYER_EVM_KEY=0x… PAYWALL_URL=… PAY_NETWORK=eip155:84532 SELLER_EVM=0x… \
- *   npx vitest run test/integration/live.e2e.test.ts
+ *   PAY_TOKEN=0x…(ERC-20 contract) npx vitest run test/integration/live.e2e.test.ts
  */
 
 const ENV = [
@@ -25,6 +25,7 @@ const ENV = [
   "PAYWALL_URL",
   "PAY_NETWORK",
   "SELLER_EVM",
+  "PAY_TOKEN",
 ] as const;
 
 const env = Object.fromEntries(ENV.map((k) => [k, process.env[k]])) as Record<
@@ -77,6 +78,7 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           url: env.PAYWALL_URL!,
           network: env.PAY_NETWORK!,
           recipientEvm: env.SELLER_EVM!,
+          asset: env.PAY_TOKEN!,
         }),
       });
       expect(session.outcome).toBe("completed");

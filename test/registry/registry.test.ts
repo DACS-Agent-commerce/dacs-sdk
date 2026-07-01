@@ -128,10 +128,24 @@ describe("rail dispatch by kind (T6)", () => {
 
   test("x402 descriptor dispatches to a settle executor", async () => {
     const settle = await settleFromRail(
-      { id: "x402:default", kind: "x402", availability: "live", params: {} },
+      {
+        id: "x402:default",
+        kind: "x402",
+        availability: "live",
+        params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+      },
       { evmPrivateKey: HARDHAT_KEY, paywall },
     );
     expect(typeof settle).toBe("function");
+  });
+
+  test("x402 without a token address in the descriptor is rejected", async () => {
+    await expect(
+      settleFromRail(
+        { id: "x402:default", kind: "x402", availability: "live", params: {} },
+        { evmPrivateKey: HARDHAT_KEY, paywall },
+      ),
+    ).rejects.toThrow(/tokenAddress/);
   });
 
   test("evm-erc20 dispatches when token + rpc are supplied", async () => {

@@ -64,7 +64,9 @@ const session = await agent.runSession(listingRef, {
   vet: (subject) =>
     resolveRecipe(recipeRegistryRef, "self-signed", { readRegistry, stewardPublicKey, verify })
       .then((recipe) => vetCore({ subject, recipe }, { proxyFetch, now })),
-  settle: x402Settle(rail, { url, network, recipientEvm }),
+  // `asset` is the on-chain token id (ERC-20 contract) the 402 must advertise —
+  // the §4.1 guard compares against it, not the Price.asset symbol.
+  settle: x402Settle(rail, { url, network, recipientEvm, asset }),
 });
 
 // anyone — verify the bundle's structure + every artifact signature

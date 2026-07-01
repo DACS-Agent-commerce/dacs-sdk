@@ -29,11 +29,20 @@ export async function settleFromRail(
 ): Promise<(req: SettleRequest) => Promise<SettleResult>> {
   switch (descriptor.kind) {
     case "x402": {
+      // The expected token is rail config (steward-signed descriptor params) —
+      // exactly like evm-erc20 — so the §4.1 asset guard compares the 402's
+      // token against a canonical on-chain id, not the Price.asset symbol.
+      const tokenAddress = descriptor.params["tokenAddress"];
+      if (typeof tokenAddress !== "string") {
+        throw new DacsError(
+          `x402 rail "${descriptor.id}" descriptor missing params.tokenAddress`,
+        );
+      }
       const rail = await createX402Rail({
         evmPrivateKey: opts.evmPrivateKey,
         fetchImpl: opts.fetchImpl,
       });
-      return x402Settle(rail, opts.paywall);
+      return x402Settle(rail, { ...opts.paywall, asset: tokenAddress });
     }
     case "evm-erc20": {
       // The token contract is rail config (registry params); the recipient +
