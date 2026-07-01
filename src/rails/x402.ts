@@ -49,7 +49,11 @@ export interface X402SettleParams {
   recipientEvm: string;
   /** Negotiated price in integer base units (matching DACS Price.amount). */
   amount: string;
-  /** Asset id/symbol (informational; the on-chain asset is the token contract). */
+  /**
+   * Expected on-chain token id (the ERC-20 contract) the 402 must advertise —
+   * the §4.1 asset guard compares this against the 402's `asset`. This is the
+   * resolved token, not the Price.asset symbol.
+   */
   asset: string;
   requestInit?: RequestInit;
 }
@@ -275,13 +279,20 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
 }
 
 /**
- * Bridge an X402Rail to the runSession `settle` seam: the rail carries the
- * static x402 paywall coordinates (resolved from the listing) while runSession
- * supplies the per-session amount/asset.
+ * Bridge an X402Rail to the runSession `settle` seam. The paywall coordinates
+ * (url / network / recipientEvm / token) are static for the rail — resolved
+ * from the listing + the steward rail descriptor — while runSession supplies the
+ * per-session amount.
+ *
+ * `paywall.asset` is the canonical ON-CHAIN token id (the ERC-20 contract, same
+ * kind of value the 402 advertises), NOT the human Price.asset symbol. It's what
+ * the §4.1 guard compares against — mixing a symbol in here would abort every
+ * real payment. Like the evm-erc20 rail, the token address is rail config, so
+ * the symbol→token resolution is the steward's registry entry, not runtime code.
  */
 export function x402Settle(
   rail: X402Rail,
-  paywall: { url: string; network: string; recipientEvm: string },
+  paywall: { url: string; network: string; recipientEvm: string; asset: string },
 ): (req: SettleRequest) => Promise<SettleResult> {
   return (req) =>
     rail.settle({
@@ -289,6 +300,6 @@ export function x402Settle(
       network: paywall.network,
       recipientEvm: paywall.recipientEvm,
       amount: req.amount,
-      asset: req.asset,
+      asset: paywall.asset,
     });
 }

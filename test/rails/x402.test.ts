@@ -3,9 +3,12 @@ import { describe, expect, test } from "vitest";
 import { baseUnits } from "../../src/canonical/decimal.js";
 import {
   termsMatch,
+  x402Settle,
   x402SettleCore,
   type X402ClientLike,
   type X402PaymentRequired,
+  type X402Rail,
+  type X402SettleParams,
 } from "../../src/rails/x402.js";
 
 const NETWORK = "eip155:84532";
@@ -215,5 +218,37 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         payerAddress: PAYER,
       }),
     ).rejects.toThrow(/no .accepts. payment requirements/);
+  });
+});
+
+describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () => {
+  test("hands the rail the configured token id as the guard's asset", async () => {
+    let captured: X402SettleParams | undefined;
+    const rail: X402Rail = {
+      address: PAYER,
+      settle: async (p) => {
+        captured = p;
+        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+      },
+    };
+    const settle = x402Settle(rail, {
+      url: "https://seller.example/deliver",
+      network: NETWORK,
+      recipientEvm: RECIPIENT,
+      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // resolved token id
+    });
+
+    // runSession passes the human Price.asset symbol; the bridge must NOT use it
+    // for the guard — it uses the rail-configured on-chain token id.
+    await settle({
+      rail: "pay-x402",
+      amount: "1000000",
+      asset: "USDC",
+      payee: RECIPIENT,
+      jobId: "j1",
+    });
+
+    expect(captured?.asset).toBe("0x036CbD53842c5426634e7929541eC2318f3dCF7e");
+    expect(captured?.amount).toBe("1000000");
   });
 });
