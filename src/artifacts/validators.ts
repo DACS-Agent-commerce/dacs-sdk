@@ -1,0 +1,159 @@
+import type {
+  AgreementDocument,
+  AttestationBundle,
+  CompositeVerificationRecord,
+  Listing,
+  SettlementEvidence,
+} from "./types.js";
+
+const isStr = (v: unknown): v is string => typeof v === "string";
+const isBool = (v: unknown): v is boolean => typeof v === "boolean";
+const isNum = (v: unknown): v is number => typeof v === "number";
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+const isStrArray = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.every(isStr);
+const isOneOf = (set: readonly string[], v: unknown): boolean =>
+  typeof v === "string" && set.includes(v);
+
+// §9.7 enums — enforced so an out-of-spec value (e.g. outcome:"banana") is
+// rejected, not just any string.
+const SETTLEMENT_OUTCOMES = ["success", "failure"] as const;
+const FINALITY_MODELS = [
+  "block-depth",
+  "commitment-level",
+  "provider-receipt",
+  "htlc-reveal",
+  "liquidity-tank",
+  "bft-final",
+] as const;
+// DACS-2 §7.7 verification verdicts.
+const VERIFICATION_DECISIONS = [
+  "pass",
+  "fail",
+  "indeterminate",
+  "error",
+] as const;
+
+export function isListing(v: unknown): v is Listing {
+  if (!isObj(v)) return false;
+  return (
+    isStr(v.agentId) &&
+    isStr(v.serviceId) &&
+    isStr(v.name) &&
+    isStr(v.description) &&
+    Array.isArray(v.claimRequirements) &&
+    v.claimRequirements.every(
+      (c) => isObj(c) && isStr(c.claimRef) && isBool(c.required),
+    ) &&
+    isStrArray(v.supportedNegotiation) &&
+    isStrArray(v.supportedPaymentRails) &&
+    isStrArray(v.supportedDelivery)
+  );
+}
+
+export function isCompositeVerificationRecord(
+  v: unknown,
+): v is CompositeVerificationRecord {
+  if (!isObj(v)) return false;
+  return (
+    isStr(v.subject) &&
+    isStr(v.recipeId) &&
+    isStr(v.recipeVersion) &&
+    Array.isArray(v.results) &&
+    v.results.every(
+      (r) =>
+        isObj(r) &&
+        isStr(r.claimRef) &&
+        isStr(r.method) &&
+        isOneOf(VERIFICATION_DECISIONS, r.status),
+    ) &&
+    isOneOf(VERIFICATION_DECISIONS, v.decision) &&
+    isStr(v.verifiedAt)
+  );
+}
+
+export function isAgreementDocument(v: unknown): v is AgreementDocument {
+  if (!isObj(v)) return false;
+  const price = v.price;
+  const delivery = v.delivery;
+  return (
+    isStr(v.jobId) &&
+    isStr(v.pattern) &&
+    isStr(v.buyer) &&
+    isStr(v.seller) &&
+    isStr(v.listingRef) &&
+    isObj(price) &&
+    isStr(price.amount) &&
+    isStr(price.asset) &&
+    isNum(price.decimals) &&
+    isStr(price.rail) &&
+    isObj(delivery) &&
+    isStr(delivery.phase) &&
+    isStr(delivery.format) &&
+    isStr(v.expiresAt)
+  );
+}
+
+const isTxRef = (v: unknown): boolean =>
+  isObj(v) && isStr(v.rail) && isStr(v.txHash) && isStr(v.kind);
+const isAttestationRef = (v: unknown): boolean =>
+  isObj(v) && isStr(v.kind) && isStr(v.id) && isStr(v.contentHash);
+
+export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
+  if (!isObj(v)) return false;
+  const amt = v.paymentAmount;
+  const fin = v.settlementFinality;
+  return (
+    isStr(v.evidenceVersion) &&
+    isStr(v.jobId) &&
+    isStr(v.phase) &&
+    isNum(v.phaseIndex) &&
+    isOneOf(SETTLEMENT_OUTCOMES, v.outcome) &&
+    Array.isArray(v.paymentTxRefs) &&
+    v.paymentTxRefs.every(isTxRef) &&
+    isObj(amt) &&
+    isStr(amt.amount) &&
+    isStr(amt.currency) &&
+    isObj(fin) &&
+    isOneOf(FINALITY_MODELS, fin.model) &&
+    isNum(fin.finalityBlocks) &&
+    isNum(fin.finalityObservedAt) &&
+    isNum(v.observedAt)
+  );
+}
+
+export function isAttestationBundle(v: unknown): v is AttestationBundle {
+  if (!isObj(v)) return false;
+  const lr = v.listingRef;
+  return (
+    isStr(v.bundleVersion) &&
+    isStr(v.jobId) &&
+    isStr(v.outcome) &&
+    isObj(lr) &&
+    isStr(lr.listingId) &&
+    isNum(lr.version) &&
+    isStr(lr.contentHash) &&
+    isAttestationRef(v.agreementRef) &&
+    Array.isArray(v.parties) &&
+    v.parties.every(
+      (p) => isObj(p) && isStr(p.role) && isStr(p.bundleHash) && isStr(p.primaryClaim),
+    ) &&
+    Array.isArray(v.phaseSummary) &&
+    v.phaseSummary.every(
+      (ph) =>
+        isObj(ph) &&
+        isNum(ph.index) &&
+        isStr(ph.kind) &&
+        isStr(ph.outcome) &&
+        isAttestationRef(ph.attestationRef),
+    ) &&
+    Array.isArray(v.vetRecords) &&
+    v.vetRecords.every(isAttestationRef) &&
+    Array.isArray(v.settlementEvidence) &&
+    v.settlementEvidence.every(isAttestationRef) &&
+    isNum(v.recipeRegistryVersion) &&
+    isNum(v.railRegistryVersion) &&
+    isNum(v.finalisedAt)
+  );
+}

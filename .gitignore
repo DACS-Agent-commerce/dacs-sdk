@@ -9,3 +9,7 @@ build/
 coverage/
 .turbo/
 *.tsbuildinfo
+
+# Conformance vectors are synced from DACS-Standard at a pinned ref
+# (npm run conformance:sync); not vendored into git.
+vendor/
