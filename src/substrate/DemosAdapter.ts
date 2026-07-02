@@ -3,6 +3,7 @@ import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
 import { SubstrateError } from "../errors.js";
+import { parseClaimRef } from "../identity/index.js";
 import type {
   AnchorRef,
   ProxyFetchRequest,
@@ -215,5 +216,37 @@ export class DemosAdapter implements SubstrateAdapter {
       ref,
     );
     return { ref, boundTo: ref, raw };
+  }
+
+  /**
+   * SR-1 (reverse) — resolve a linked claim ref back to the subject pubkeys that
+   * hold it, via demosdk's GCR reverse lookups (`getDemosIdsBy{Web2,Web3}Identity`).
+   */
+  async findSubjectsByClaim(claimRef: string): Promise<string[]> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const parsed = parseClaimRef(claimRef);
+    if (!parsed) {
+      throw new Error(
+        `findSubjectsByClaim: "${claimRef}" is not a reverse-resolvable linked-claim ref`,
+      );
+    }
+    const identities = new Identities();
+    const accounts =
+      parsed.kind === "web2"
+        ? await identities.getDemosIdsByWeb2Identity(
+            this.demos,
+            parsed.platform as "twitter" | "github" | "discord" | "telegram",
+            parsed.handle,
+          )
+        : await identities.getDemosIdsByWeb3Identity(
+            this.demos,
+            parsed.chainType as `${string}.${string}`,
+            parsed.address,
+          );
+    return (accounts ?? [])
+      .map((a: { pubkey?: unknown }) => a.pubkey)
+      .filter((p: unknown): p is string => typeof p === "string");
   }
 }

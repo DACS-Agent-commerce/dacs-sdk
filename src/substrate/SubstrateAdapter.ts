@@ -78,4 +78,11 @@ export interface SubstrateAdapter {
 
   /** SR-1 — resolve a claim reference through cross-substrate identity (CCI). */
   resolveIdentity(ref: string): Promise<ResolvedIdentity>;
+  /**
+   * SR-1 (reverse) — find the subject primary claims (Demos pubkeys) that have a
+   * given linked claim bound to them. `claimRef` is a canonical linked-claim ref
+   * (`web2:<platform>:<handle>` or `xm:<chainType>:<address>`); returns the
+   * matching subjects (usually one), or [] if none.
+   */
+  findSubjectsByClaim(claimRef: string): Promise<string[]>;
 }

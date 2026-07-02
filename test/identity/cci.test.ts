@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   parseCciRecord,
+  parseClaimRef,
   cciClaimRefs,
   cciHasClaim,
 } from "../../src/identity/cci.js";
@@ -111,5 +112,37 @@ describe("cciClaimRefs / cciHasClaim", () => {
 
   test("rejects an unknown claim", () => {
     expect(cciHasClaim(rec, "web2:github:someone-else")).toBe(false);
+  });
+});
+
+describe("parseClaimRef (reverse-lookup decomposition)", () => {
+  test("parses a web2 ref", () => {
+    expect(parseClaimRef("web2:twitter:alice")).toEqual({
+      kind: "web2",
+      platform: "twitter",
+      handle: "alice",
+    });
+  });
+
+  test("parses a wallet ref (address may contain no extra colons)", () => {
+    expect(parseClaimRef("xm:evm:0xAbC0000000000000000000000000000000000001")).toEqual({
+      kind: "wallet",
+      chainType: "evm",
+      address: "0xAbC0000000000000000000000000000000000001",
+    });
+  });
+
+  test("round-trips the refs parseCciRecord produced", () => {
+    const rec = parseCciRecord(PRIMARY, GRAPH);
+    for (const c of rec.claims) {
+      const parsed = parseClaimRef(c.ref);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.kind).toBe(c.kind);
+    }
+  });
+
+  test("returns null for the primary claim / non-linked refs", () => {
+    expect(parseClaimRef(PRIMARY)).toBeNull();
+    expect(parseClaimRef("not-a-ref")).toBeNull();
   });
 });

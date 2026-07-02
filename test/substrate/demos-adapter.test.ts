@@ -36,5 +36,8 @@ describe("DemosAdapter", () => {
     await expect(adapter.resolveIdentity("ref")).rejects.toThrow(
       /not connected/,
     );
+    await expect(
+      adapter.findSubjectsByClaim("web2:twitter:alice"),
+    ).rejects.toThrow(/not connected/);
   });
 });

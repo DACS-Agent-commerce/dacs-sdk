@@ -98,6 +98,12 @@ export interface Agent {
    * substrate follow-up).
    */
   resolveIdentity(subject: string): Promise<CciRecord>;
+  /**
+   * Anyone: reverse-resolve a linked claim to the subject(s) that hold it —
+   * `findByClaim("web2:twitter:alice")` or `findByClaim("xm:evm:0x…")` returns
+   * the matching primary claims (Demos pubkeys), usually one, or [] if none.
+   */
+  findByClaim(claimRef: string): Promise<string[]>;
   /** Seller: sign + anchor a fixed-price listing. */
   publishListing(listing: Listing): Promise<PublishResult>;
   /** Anyone: dereference + structurally verify an anchored attestation bundle. */
@@ -149,6 +155,10 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       const address = key ? Buffer.from(key).toString("hex") : subject;
       const resolved = await adapter.resolveIdentity(address);
       return parseCciRecord(subject, resolved.raw);
+    },
+
+    async findByClaim(claimRef: string): Promise<string[]> {
+      return adapter.findSubjectsByClaim(claimRef);
     },
 
     async publishListing(listing: Listing): Promise<PublishResult> {

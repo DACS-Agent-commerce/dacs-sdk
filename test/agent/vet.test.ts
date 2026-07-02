@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { vetCore, type VetDeps } from "../../src/agent/vetCore.js";
+import { parseCciRecord } from "../../src/identity/cci.js";
 import type { RecipeDescriptor } from "../../src/registry/types.js";
 
 function recipe(over: Partial<RecipeDescriptor>): RecipeDescriptor {
@@ -73,5 +74,150 @@ describe("vetCore (DACS-2 Vet stage)", () => {
     await expect(
       vetCore({ subject: "s", recipe: recipe({ method: "telepathy" }) }, deps()),
     ).rejects.toThrow(/unsupported verification method/);
+  });
+
+  describe("cci-claim method (DACS-1 linked-claim vetting)", () => {
+    const SUBJECT = "did:demos:agent:alice";
+    const record = parseCciRecord(SUBJECT, {
+      linkedSocials: { twitter: "alice" },
+      linkedWallets: ["evm:0xAbC0000000000000000000000000000000000001"],
+    });
+    const cciDeps = (): VetDeps => ({ ...deps(), resolveCci: async () => record });
+
+    test("passes when the subject holds the required linked claim", async () => {
+      const cvr = await vetCore(
+        {
+          subject: SUBJECT,
+          recipe: recipe({
+            id: "has-x",
+            method: "cci-claim",
+            params: { requiredClaim: "web2:twitter:alice" },
+          }),
+        },
+        cciDeps(),
+      );
+      expect(cvr.decision).toBe("pass");
+      expect(cvr.results[0]).toMatchObject({
+        claimRef: "web2:twitter:alice",
+        method: "cci-claim",
+        status: "pass",
+        authority: SUBJECT,
+      });
+    });
+
+    test("fails when the required claim is not in the record", async () => {
+      const cvr = await vetCore(
+        {
+          subject: SUBJECT,
+          recipe: recipe({
+            method: "cci-claim",
+            params: { requiredClaim: "web2:github:someone-else" },
+          }),
+        },
+        cciDeps(),
+      );
+      expect(cvr.decision).toBe("fail");
+      expect(cvr.results[0]!.status).toBe("fail");
+    });
+
+    test("rejects a cci-claim recipe with no requiredClaim", async () => {
+      await expect(
+        vetCore(
+          { subject: SUBJECT, recipe: recipe({ method: "cci-claim", params: {} }) },
+          cciDeps(),
+        ),
+      ).rejects.toThrow(/requiredClaim/);
+    });
+
+    test("rejects when resolveCci isn't wired", async () => {
+      await expect(
+        vetCore(
+          {
+            subject: SUBJECT,
+            recipe: recipe({
+              method: "cci-claim",
+              params: { requiredClaim: "web2:twitter:alice" },
+            }),
+          },
+          deps(), // no resolveCci
+        ),
+      ).rejects.toThrow(/resolveCci/);
+    });
+  });
+
+  describe("ofac-screen method (DAHR sanctions screening of linked wallets)", () => {
+    const SUBJECT = "did:demos:agent:alice";
+    const EVM = "0xAbC0000000000000000000000000000000000001";
+    const SOL = "So1anaAddr11111111111111111111111111111";
+    const record = parseCciRecord(SUBJECT, {
+      linkedWallets: [`evm:${EVM}`, `solana:${SOL}`],
+    });
+    const ofacRecipe = recipe({
+      id: "ofac",
+      method: "ofac-screen",
+      params: { screeningUrlTemplate: "https://screen.example/ofac?a={address}" },
+    });
+    // proxyFetch that returns { listed } per address; `listedAddrs` are sanctioned.
+    const ofacDeps = (opts: { listedAddrs?: string[]; status?: number } = {}): VetDeps => ({
+      now: () => "2026-01-01T00:00:00Z",
+      resolveCci: async () => record,
+      proxyFetch: async ({ url }) => {
+        const listed = (opts.listedAddrs ?? []).some((a) => url.includes(encodeURIComponent(a)));
+        return {
+          status: opts.status ?? 200,
+          responseHash: "0xhash",
+          body: JSON.stringify({ listed }),
+        };
+      },
+    });
+
+    test("passes when every linked wallet screens clean", async () => {
+      const cvr = await vetCore({ subject: SUBJECT, recipe: ofacRecipe }, ofacDeps());
+      expect(cvr.decision).toBe("pass");
+      expect(cvr.results).toHaveLength(2);
+      expect(cvr.results.every((r) => r.status === "pass")).toBe(true);
+    });
+
+    test("fails when any linked wallet is sanctioned", async () => {
+      const cvr = await vetCore(
+        { subject: SUBJECT, recipe: ofacRecipe },
+        ofacDeps({ listedAddrs: [EVM] }),
+      );
+      expect(cvr.decision).toBe("fail");
+      const evmResult = cvr.results.find((r) => r.claimRef === `xm:evm:${EVM}`);
+      expect(evmResult!.status).toBe("fail");
+    });
+
+    test("indeterminate (never a silent pass) when a wallet can't be screened", async () => {
+      const cvr = await vetCore(
+        { subject: SUBJECT, recipe: ofacRecipe },
+        ofacDeps({ status: 503 }),
+      );
+      expect(cvr.decision).toBe("indeterminate");
+    });
+
+    test("indeterminate when the subject has no linked wallets", async () => {
+      const cvr = await vetCore(
+        { subject: SUBJECT, recipe: ofacRecipe },
+        { ...ofacDeps(), resolveCci: async () => parseCciRecord(SUBJECT, {}) },
+      );
+      expect(cvr.decision).toBe("indeterminate");
+      expect(cvr.results[0]!.method).toBe("ofac-screen");
+    });
+
+    test("rejects a recipe without a valid screeningUrlTemplate", async () => {
+      await expect(
+        vetCore(
+          { subject: SUBJECT, recipe: recipe({ method: "ofac-screen", params: {} }) },
+          ofacDeps(),
+        ),
+      ).rejects.toThrow(/screeningUrlTemplate/);
+    });
+
+    test("rejects when resolveCci isn't wired", async () => {
+      await expect(
+        vetCore({ subject: SUBJECT, recipe: ofacRecipe }, deps()),
+      ).rejects.toThrow(/resolveCci/);
+    });
   });
 });

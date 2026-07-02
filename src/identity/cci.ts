@@ -130,6 +130,27 @@ export function parseCciRecord(primaryClaim: string, raw: unknown): CciRecord {
   };
 }
 
+/** A claim ref decomposed into its addressable parts (for reverse lookup). */
+export type ParsedClaimRef =
+  | { kind: "web2"; platform: string; handle: string }
+  | { kind: "wallet"; chainType: string; address: string };
+
+/**
+ * Parse a canonical claim ref back into its parts, or null if it isn't a
+ * reverse-resolvable linked-claim ref. Inverse of the `ref` fields produced by
+ * {@link parseCciRecord}:
+ *   `web2:<platform>:<handle>` → web2 claim
+ *   `xm:<chainType>:<address>` → wallet claim
+ * (The primary claim / DID isn't a linked-claim ref and returns null.)
+ */
+export function parseClaimRef(ref: string): ParsedClaimRef | null {
+  const web2 = /^web2:([^:]+):(.+)$/.exec(ref);
+  if (web2) return { kind: "web2", platform: web2[1]!, handle: web2[2]! };
+  const xm = /^xm:([^:]+):(.+)$/.exec(ref);
+  if (xm) return { kind: "wallet", chainType: xm[1]!, address: xm[2]! };
+  return null;
+}
+
 /** Every claim ref for a record, primary first. */
 export function cciClaimRefs(record: CciRecord): string[] {
   return [record.primaryClaim, ...record.claims.map((c) => c.ref)];

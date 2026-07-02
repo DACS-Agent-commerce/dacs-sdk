@@ -1,5 +1,6 @@
 export {
   parseCciRecord,
+  parseClaimRef,
   cciClaimRefs,
   cciHasClaim,
   type CciRecord,
@@ -7,4 +8,5 @@ export {
   type CciClaimKind,
   type CciWeb2Claim,
   type CciWalletClaim,
+  type ParsedClaimRef,
 } from "./cci.js";
