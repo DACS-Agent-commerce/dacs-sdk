@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 
+import { canonicalize } from "../../src/canonical/jcs.js";
+import { sha256Hex } from "../../src/canonical/hash.js";
 import {
   computeBidHash,
   generateSalt,
@@ -10,6 +12,8 @@ import {
   commitsInWindow,
   revealsInWindow,
   matchRevealsToCommits,
+  parseRuleRef,
+  verifyRuleRefContent,
   compareDecimal,
   selectSealedWinner,
   type AnchoredCommit,
@@ -128,6 +132,30 @@ describe("compareDecimal", () => {
     expect(compareDecimal("2", "10")).toBe(-1);
     expect(compareDecimal("0.1", "0.09")).toBe(1);
     expect(compareDecimal("100", "99.999")).toBe(1);
+  });
+});
+
+describe("rule-ref binding (SE-6)", () => {
+  const rule = { kind: "acceptance", maxPrice: "100" };
+  // The authoritative contentHash is sha256 of the rule's canonical (JCS) form.
+  const hashOf = (obj: unknown) => sha256Hex(canonicalize(obj));
+
+  test("parseRuleRef splits hash + uri (uri may contain colons)", () => {
+    const h = "a".repeat(64);
+    const parsed = parseRuleRef(`rule-ref:${h}:https://rules.example/r/1`);
+    expect(parsed).toEqual({ contentHash: h, uri: "https://rules.example/r/1" });
+  });
+
+  test("parseRuleRef returns null for non-rule-ref or malformed rules", () => {
+    expect(parseRuleRef("lowest-price")).toBeNull();
+    expect(parseRuleRef("rule-ref:short:https://x")).toBeNull();
+  });
+
+  test("verifyRuleRefContent passes for matching content, fails on tamper", () => {
+    const h = hashOf(rule);
+    const ref = `rule-ref:${h}:https://rules.example/r/1`;
+    expect(verifyRuleRefContent(ref, rule)).toBe(true);
+    expect(verifyRuleRefContent(ref, { ...rule, maxPrice: "999" })).toBe(false);
   });
 });
 

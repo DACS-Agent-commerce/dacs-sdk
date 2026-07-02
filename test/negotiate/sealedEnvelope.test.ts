@@ -3,10 +3,12 @@ import { describe, expect, test } from "vitest";
 import {
   buildCommitMessage,
   buildRevealMessage,
+  buildSealedAgreement,
   runSealedEnvelopeCore,
   type SealedEnvelopeDeps,
   type SealedEnvelopeInput,
 } from "../../src/negotiate/sealedEnvelope.js";
+import { isAgreementDocument } from "../../src/artifacts/validators.js";
 import {
   makeCommitment,
   type AnchoredCommit,
@@ -145,6 +147,60 @@ describe("runSealedEnvelopeCore", () => {
     );
     expect(res.ok).toBe(false);
     expect(called).toBe(0);
+  });
+
+  test("buildSealedAgreement turns the winning bid into a valid AgreementDocument", () => {
+    const agreement = buildSealedAgreement(
+      {
+        jobId: "job-1",
+        seller: "did:demos:agent:seller",
+        winningBidderClaim: "did:demos:agent:bob",
+        winningBid: { price: { amount: "1.5", currency: "USDC" } },
+        losingBidderClaims: ["did:demos:agent:carol"],
+      },
+      {
+        seller: "did:demos:agent:seller",
+        listingRef: "stor-listing",
+        decimals: 6,
+        rail: "pay-x402",
+        deliveryPhase: "deliver-attested-payload",
+        deliveryFormat: "application/json",
+        expiresAt: "2026-01-01T00:00:00Z",
+      },
+    );
+    expect(isAgreementDocument(agreement)).toBe(true);
+    expect(agreement.pattern).toBe("negotiate-sealed-envelope");
+    expect(agreement.buyer).toBe("did:demos:agent:bob");
+    // 1.5 USDC @ 6 decimals → 1500000 base units.
+    expect(agreement.price).toEqual({
+      amount: "1500000",
+      asset: "USDC",
+      decimals: 6,
+      rail: "pay-x402",
+    });
+  });
+
+  test("buildSealedAgreement rejects a bid that resolves to zero base units", () => {
+    expect(() =>
+      buildSealedAgreement(
+        {
+          jobId: "j",
+          seller: "s",
+          winningBidderClaim: "b",
+          winningBid: { price: { amount: "0.000000", currency: "USDC" } },
+          losingBidderClaims: [],
+        },
+        {
+          seller: "s",
+          listingRef: "r",
+          decimals: 6,
+          rail: "pay-x402",
+          deliveryPhase: "p",
+          deliveryFormat: "f",
+          expiresAt: "t",
+        },
+      ),
+    ).toThrow();
   });
 
   test("SE-1 is validated at session start", async () => {

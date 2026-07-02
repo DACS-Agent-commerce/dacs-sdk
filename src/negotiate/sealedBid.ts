@@ -197,6 +197,46 @@ export function matchRevealsToCommits(
   return out;
 }
 
+// ── rule-ref binding (SE-6) ─────────────────────────────────────────────────
+
+export interface RuleRef {
+  /** The authoritative sha256 (lowercase hex) the fetched rule MUST hash to. */
+  contentHash: string;
+  /** Where to fetch the rule — informational only; the contentHash is the binding. */
+  uri: string;
+}
+
+/**
+ * Parse a `rule-ref:<contentHash>:<uri>` selection rule. The URI may itself
+ * contain colons (e.g. `https://…`), so only the first `:` after the hash is a
+ * delimiter. Returns null for the non-rule-ref rules.
+ */
+export function parseRuleRef(rule: SelectionRule | string): RuleRef | null {
+  if (!rule.startsWith("rule-ref:")) return null;
+  const rest = rule.slice("rule-ref:".length);
+  const sep = rest.indexOf(":");
+  if (sep <= 0) return null;
+  const contentHash = rest.slice(0, sep);
+  const uri = rest.slice(sep + 1);
+  if (!/^[0-9a-f]{64}$/.test(contentHash) || !uri) return null;
+  return { contentHash, uri };
+}
+
+/**
+ * SE-6: verify fetched rule content is the one the selection rule commits to —
+ * sha256 of its canonical form MUST equal the ref's contentHash. A mismatch
+ * MUST exclude the rule and fail selection (`errorClass: permanent`), so a
+ * seller can't swap the algorithm after bids are in.
+ */
+export function verifyRuleRefContent(
+  rule: SelectionRule | string,
+  ruleContent: unknown,
+): boolean {
+  const parsed = parseRuleRef(rule);
+  if (!parsed) return false;
+  return sha256Hex(canonicalize(ruleContent)) === parsed.contentHash;
+}
+
 // ── Decimal comparison + selection ──────────────────────────────────────────
 
 /** Compare two non-negative CD-1 decimals full-precision: -1 / 0 / 1. */

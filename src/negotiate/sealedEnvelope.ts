@@ -1,3 +1,6 @@
+import { baseUnits } from "../canonical/decimal.js";
+import { DacsError } from "../errors.js";
+import type { AgreementDocument } from "../artifacts/types.js";
 import {
   commitsInWindow,
   matchRevealsToCommits,
@@ -79,6 +82,54 @@ export interface SealedWinnerContext {
   winningBidderClaim: string;
   winningBid: SealedBid;
   losingBidderClaims: string[];
+}
+
+/** Listing-side context needed to turn a winning bid into an AgreementDocument. */
+export interface SealedAgreementContext {
+  seller: string;
+  listingRef: string;
+  /** Token decimals for the listing's rail (bid amount is a decimal → base units). */
+  decimals: number;
+  /** Payment rail id the agreement settles on. */
+  rail: string;
+  deliveryPhase: string;
+  deliveryFormat: string;
+  /** Agreement expiry / settle-by (ISO-8601). */
+  expiresAt: string;
+}
+
+/**
+ * Construct the AgreementDocument from the winning sealed bid (§8.4.3 step 6,
+ * `derivedFromPattern: sealed-envelope`): the buyer is the winning bidder, the
+ * price is the bid's amount converted to integer base units (matching the SDK's
+ * base-unit Price.amount), the currency is the bid's currency, and the rail /
+ * decimals / delivery come from the listing context. Pure — the caller signs +
+ * anchors it. Throws if the bid amount carries more precision than the rail's
+ * token supports.
+ */
+export function buildSealedAgreement(
+  win: SealedWinnerContext,
+  ctx: SealedAgreementContext,
+): AgreementDocument {
+  const amount = baseUnits(win.winningBid.price.amount, ctx.decimals);
+  if (amount === "0") {
+    throw new DacsError("winning sealed bid resolves to a zero base-unit amount");
+  }
+  return {
+    jobId: win.jobId,
+    pattern: "negotiate-sealed-envelope",
+    buyer: win.winningBidderClaim,
+    seller: ctx.seller,
+    listingRef: ctx.listingRef,
+    price: {
+      amount,
+      asset: win.winningBid.price.currency,
+      decimals: ctx.decimals,
+      rail: ctx.rail,
+    },
+    delivery: { phase: ctx.deliveryPhase, format: ctx.deliveryFormat },
+    expiresAt: ctx.expiresAt,
+  };
 }
 
 export interface SealedEnvelopeDeps {
