@@ -1,0 +1,157 @@
+import { describe, expect, test } from "vitest";
+
+import {
+  deriveReputation,
+  type ReputationWindow,
+} from "../../src/agent/reputationDerivation.js";
+import type { AttestationBundle } from "../../src/artifacts/types.js";
+
+const PARTY = "did:demos:buyer";
+const CP = "did:demos:seller";
+const WINDOW: ReputationWindow = {
+  windowStart: 1000,
+  windowEnd: 2000,
+  computedAt: 3000,
+  windowingBasis: "finalisedAt",
+};
+
+/** Minimal valid-enough AttestationBundle for the deriver (it reads a few fields). */
+function bundle(
+  jobId: string,
+  outcome: string,
+  finalisedAt: number,
+  anchoredByRole: "buyer" | "seller" = "buyer",
+  parties = [
+    { role: "buyer", bundleHash: "h", primaryClaim: PARTY },
+    { role: "seller", bundleHash: "h", primaryClaim: CP },
+  ],
+): AttestationBundle {
+  return {
+    bundleVersion: "1",
+    jobId,
+    outcome,
+    anchoredByRole,
+    listingRef: { listingId: "svc", version: 1, contentHash: "c" },
+    agreementRef: { kind: "dacs-3-agreement", id: `a-${jobId}`, contentHash: "c" },
+    parties,
+    phaseSummary: [],
+    vetRecords: [],
+    settlementEvidence: [],
+    recipeRegistryVersion: 1,
+    railRegistryVersion: 1,
+    finalisedAt,
+  } as unknown as AttestationBundle;
+}
+
+describe("deriveReputation (DACS-5 §10.5)", () => {
+  test("windowing: bundles outside [start,end] on finalisedAt are excluded", () => {
+    const r = deriveReputation(
+      PARTY,
+      [
+        bundle("in", "completed", 1500),
+        bundle("early", "completed", 500),
+        bundle("late", "completed", 2500),
+      ],
+      WINDOW,
+    );
+    expect(r.bundleCount).toBe(1);
+    expect(r.metrics.completionRate).toBe(1);
+  });
+
+  test("failed-substrate is blameless — excluded from the denominator", () => {
+    // completed + failed-substrate → denom 1 (substrate excluded) → completionRate 1.
+    const r = deriveReputation(
+      PARTY,
+      [
+        bundle("a", "completed", 1100),
+        bundle("b", "failed-substrate", 1200),
+      ],
+      WINDOW,
+    );
+    expect(r.bundleCount).toBe(2); // both counted in bundleCount
+    expect(r.metrics.completionRate).toBe(1); // but denom excludes substrate
+    expect(r.metrics.counterpartyFaultRate).toBe(0);
+  });
+
+  test("counterparty fault = aborted-by-other + failed-counterparty", () => {
+    const r = deriveReputation(
+      PARTY,
+      [
+        bundle("a", "completed", 1100),
+        bundle("b", "failed-counterparty", 1200),
+        bundle("c", "aborted-by-other", 1300),
+        bundle("d", "aborted-by-self", 1400), // party's own fault, not counterparty
+      ],
+      WINDOW,
+    );
+    expect(r.metrics.counterpartyFaultRate).toBe(0.5); // 2 / 4
+    expect(r.metrics.completionRate).toBe(0.25); // 1 / 4
+  });
+
+  test("all-failed-substrate → denominator 0 → rates are null, not zero", () => {
+    const r = deriveReputation(
+      PARTY,
+      [bundle("a", "failed-substrate", 1100), bundle("b", "failed-substrate", 1200)],
+      WINDOW,
+    );
+    expect(r.metrics.completionRate).toBeNull();
+    expect(r.metrics.counterpartyFaultRate).toBeNull();
+  });
+
+  test("empty scoped set → zeroed derivation with null scalar metrics", () => {
+    const r = deriveReputation(PARTY, [], WINDOW);
+    expect(r.bundleCount).toBe(0);
+    expect(r.bundleRefs).toEqual([]);
+    expect(r.metrics.completionRate).toBeNull();
+    expect(r.metrics.observedTransactionalVolume).toEqual([]);
+  });
+
+  test("per-jobId reconciliation: two copies of one job count once (self perspective)", () => {
+    const r = deriveReputation(
+      PARTY,
+      [
+        bundle("j1", "completed", 1100, "buyer"),
+        bundle("j1", "completed", 1100, "seller"), // counterparty copy, same job
+      ],
+      WINDOW,
+    );
+    expect(r.bundleCount).toBe(1); // deduped by jobId
+  });
+
+  test("divergent copies of one job are excluded from all metrics (§10.4.3d)", () => {
+    const r = deriveReputation(
+      PARTY,
+      [
+        bundle("j1", "completed", 1100, "buyer"),
+        bundle("j1", "failed-counterparty", 1100, "seller"), // contradicts the buyer copy
+        bundle("j2", "completed", 1200, "buyer"),
+      ],
+      WINDOW,
+    );
+    // j1 dropped (dispute); only j2 remains.
+    expect(r.bundleCount).toBe(1);
+    expect(r.metrics.completionRate).toBe(1);
+  });
+
+  test("counterparty-only copy is perspective-flipped (aborted-by-self → other)", () => {
+    // Only the seller's copy exists; from the buyer's view its 'aborted-by-self'
+    // becomes 'aborted-by-other' (counterparty fault).
+    const r = deriveReputation(
+      PARTY,
+      [bundle("j1", "aborted-by-self", 1100, "seller")],
+      WINDOW,
+    );
+    expect(r.metrics.counterpartyFaultRate).toBe(1);
+    expect(r.metrics.completionRate).toBe(0);
+  });
+
+  test("signature validation hook drops invalid copies", () => {
+    const r = deriveReputation(
+      PARTY,
+      [bundle("a", "completed", 1100), bundle("b", "completed", 1200)],
+      WINDOW,
+      { isValid: (b) => b.jobId === "a" },
+    );
+    expect(r.bundleCount).toBe(1);
+  });
+});

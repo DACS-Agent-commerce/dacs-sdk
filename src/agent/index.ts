@@ -16,6 +16,14 @@ export {
   type RefVerdict,
 } from "./verifyBundleCore.js";
 export { computeReputation } from "./reputation.js";
+export {
+  deriveReputation,
+  type ReputationDerivation,
+  type ReputationMetrics,
+  type ReputationWindow,
+  type SessionOutcome,
+  type DeriveReputationDeps,
+} from "./reputationDerivation.js";
 export { discoverListings } from "./discover.js";
 export {
   vetCore,
