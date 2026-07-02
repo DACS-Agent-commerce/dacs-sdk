@@ -69,6 +69,7 @@ export type {
 // no substrate import — so verifiers can parse/inspect CCI records too.
 export {
   parseCciRecord,
+  parseClaimRef,
   cciClaimRefs,
   cciHasClaim,
   type CciRecord,
@@ -76,7 +77,45 @@ export {
   type CciClaimKind,
   type CciWeb2Claim,
   type CciWalletClaim,
+  type ParsedClaimRef,
 } from "./identity/index.js";
+
+// Negotiate (DACS-3): the sealed-envelope (sealed-bid) core — commitment/reveal
+// crypto, deadline gating, and winner selection. Pure — no substrate import.
+export {
+  computeBidHash,
+  generateSalt,
+  saltHasEnoughEntropy,
+  makeCommitment,
+  verifyReveal,
+  validateSealedParams,
+  commitsInWindow,
+  revealsInWindow,
+  matchRevealsToCommits,
+  compareDecimal,
+  selectSealedWinner,
+  SEALED_BID_HASH_TAG,
+  MIN_SALT_BYTES,
+  MIN_COMMIT_LEAD_MS,
+  MIN_REVEAL_WINDOW_SECONDS,
+  type PriceTerm,
+  type SealedBid,
+  type AnchoredCommit,
+  type AnchoredReveal,
+  type SelectionRule,
+  type SealedCommitment,
+  type SealedEnvelopeParams,
+  type SelectionOptions,
+  type SelectionResult,
+  buildCommitMessage,
+  buildRevealMessage,
+  runSealedEnvelopeCore,
+  type SealedChannelMessage,
+  type SealedWinnerContext,
+  type SealedEnvelopeDeps,
+  type SealedEnvelopeInput,
+  type SealedEnvelopeResult,
+} from "./negotiate/index.js";
 
 // Public agent API (T4) — the headline surface a dApp dev uses.
 export {
