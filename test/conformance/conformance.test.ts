@@ -33,7 +33,13 @@ describe("DACS-Standard §14 conformance vectors", () => {
   // Areas with a real implementation are exercised by dedicated vector suites
   // (test/canonical/*, test/crypto/*). The rest remain visible todos so the
   // harness shows exactly what's left to implement (T3 artifacts onward).
-  const IMPLEMENTED = new Set(["canonicalize", "decimal", "signing", "addressing"]);
+  const IMPLEMENTED = new Set([
+    "canonicalize",
+    "decimal",
+    "signing",
+    "addressing",
+    "bundle",
+  ]);
 
   for (const area of [...byArea.keys()].sort()) {
     const n = byArea.get(area)!;
