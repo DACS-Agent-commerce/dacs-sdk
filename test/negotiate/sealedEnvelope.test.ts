@@ -48,7 +48,6 @@ function deps(
       agreementRef: `stor-agreement-${ctx.jobId}`,
       agreementHash: `hash-${ctx.winningBidderClaim}`,
     }),
-    now: () => NOW,
     ...over,
   };
 }
@@ -203,13 +202,22 @@ describe("runSealedEnvelopeCore", () => {
     ).toThrow();
   });
 
-  test("SE-1 is validated at session start", async () => {
+  test("SE-1 is re-validated only against an explicit sessionStartMs, never now()", async () => {
     const a = bidder("a", "100", DEADLINE - 100, DEADLINE + 1000);
+    // With a session-start clock supplied, a too-soon commitDeadline throws SE-1.
     await expect(
       runSealedEnvelopeCore(
-        input({ params: { commitDeadline: NOW + 1000, revealWindow: 120, selectionRule: "lowest-price" } }),
+        input({
+          sessionStartMs: NOW,
+          params: { commitDeadline: NOW + 1000, revealWindow: 120, selectionRule: "lowest-price" },
+        }),
         deps([a.commit], [a.reveal]),
       ),
     ).rejects.toThrow(/SE-1/);
+
+    // Post-close default (no sessionStartMs): the core does NOT re-check SE-1
+    // against a live clock, so a normal invocation never spuriously throws.
+    const res = await runSealedEnvelopeCore(input(), deps([a.commit], [a.reveal]));
+    expect(res.ok).toBe(true);
   });
 });

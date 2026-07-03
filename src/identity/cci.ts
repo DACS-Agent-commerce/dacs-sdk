@@ -60,15 +60,23 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 
 /**
- * The GCR identity graph can arrive wrapped in RPC envelopes (`{ response: {
- * response: {...} } }`, `{ data: {...} }`, …). Walk a few known wrappers to find
- * the object that actually carries the identity fields.
+ * The GCR identity graph can arrive wrapped in RPC envelopes (`{ result, response:
+ * {...} }`, `{ response: { response: {...} } }`, `{ data: {...} }`, …). Walk a few
+ * known wrappers to find the object that actually carries the identity fields.
+ * The deployed testnet graph is keyed `xm` / `web2` / `ud` / `pqc`; the older
+ * `linkedSocials` / `linkedWallets` shape is also recognised.
  */
 function unwrapIdentityPayload(raw: unknown): Record<string, unknown> {
   let cur: unknown = raw;
-  for (let i = 0; i < 5 && isObj(cur); i++) {
+  for (let i = 0; i < 6 && isObj(cur); i++) {
     const o = cur as Record<string, unknown>;
-    if ("linkedWallets" in o || "linkedSocials" in o) return o;
+    if (
+      "xm" in o ||
+      "web2" in o ||
+      "linkedWallets" in o ||
+      "linkedSocials" in o
+    )
+      return o;
     if (isObj(o.response)) cur = o.response;
     else if (isObj(o.data)) cur = o.data;
     else break;
@@ -76,40 +84,95 @@ function unwrapIdentityPayload(raw: unknown): Record<string, unknown> {
   return isObj(cur) ? cur : {};
 }
 
-function parseWeb2(payload: Record<string, unknown>): CciWeb2Claim[] {
-  const socials = payload["linkedSocials"];
-  if (!isObj(socials)) return [];
-  const out: CciWeb2Claim[] = [];
-  for (const [platform, value] of Object.entries(socials)) {
-    if (typeof value !== "string") continue;
-    const handle = value.trim();
-    if (!handle) continue;
-    out.push({ kind: "web2", platform, handle, ref: `web2:${platform}:${handle}` });
+function dedupeByRef<T extends { ref: string }>(claims: T[]): T[] {
+  const seen = new Set<string>();
+  return claims.filter((c) => (seen.has(c.ref) ? false : (seen.add(c.ref), true)));
+}
+
+/** Pull a web2 handle out of an entry, which may be a bare string or an object. */
+function web2Handle(entry: unknown): string {
+  if (typeof entry === "string") return entry.trim();
+  if (isObj(entry)) {
+    const v = entry["username"] ?? entry["handle"] ?? entry["userId"];
+    if (typeof v === "string") return v.trim();
   }
-  return out;
+  return "";
+}
+
+function parseWeb2(payload: Record<string, unknown>): CciWeb2Claim[] {
+  const out: CciWeb2Claim[] = [];
+  // Primary: the live GCR shape — `web2.<platform>[]` of proof objects.
+  const web2 = payload["web2"];
+  if (isObj(web2)) {
+    for (const [platform, entries] of Object.entries(web2)) {
+      const list = Array.isArray(entries) ? entries : [entries];
+      for (const entry of list) {
+        const handle = web2Handle(entry);
+        if (!handle) continue;
+        out.push({ kind: "web2", platform, handle, ref: `web2:${platform}:${handle}` });
+      }
+    }
+  }
+  // Fallback: the older flat `linkedSocials: { platform: "handle" }` shape.
+  const socials = payload["linkedSocials"];
+  if (isObj(socials)) {
+    for (const [platform, value] of Object.entries(socials)) {
+      const handle = typeof value === "string" ? value.trim() : "";
+      if (!handle) continue;
+      out.push({ kind: "web2", platform, handle, ref: `web2:${platform}:${handle}` });
+    }
+  }
+  return dedupeByRef(out);
+}
+
+/** Extract an address from an xm identity link (object with `.address`, or a bare string). */
+function xmAddress(link: unknown): string {
+  if (typeof link === "string") return link;
+  if (isObj(link) && typeof link["address"] === "string") return link["address"];
+  return "";
 }
 
 function parseWallets(payload: Record<string, unknown>): CciWalletClaim[] {
-  const linked = payload["linkedWallets"];
-  if (!Array.isArray(linked)) return [];
   const out: CciWalletClaim[] = [];
-  for (const entry of linked) {
-    if (typeof entry !== "string") continue;
-    // Entries are "<chainType>:<address>" — the address itself may contain ":"
-    // (unlikely for the supported chains, but split once to be safe).
-    const idx = entry.indexOf(":");
-    if (idx <= 0) continue;
-    const chainType = entry.slice(0, idx);
-    const address = entry.slice(idx + 1);
-    if (!address) continue;
-    out.push({
-      kind: "wallet",
-      chainType,
-      address,
-      ref: `xm:${chainType}:${address}`,
-    });
+  // Primary: the live GCR shape — `xm.<chainType>.<network>[].address`.
+  const xm = payload["xm"];
+  if (isObj(xm)) {
+    for (const [chainType, networks] of Object.entries(xm)) {
+      if (!isObj(networks)) continue;
+      for (const links of Object.values(networks)) {
+        const list = Array.isArray(links) ? links : [links];
+        for (const link of list) {
+          const address = xmAddress(link);
+          if (!address) continue;
+          out.push({
+            kind: "wallet",
+            chainType,
+            address,
+            ref: `xm:${chainType}:${address}`,
+          });
+        }
+      }
+    }
   }
-  return out;
+  // Fallback: the older `linkedWallets: "<chainType>:<address>"[]` shape.
+  const linked = payload["linkedWallets"];
+  if (Array.isArray(linked)) {
+    for (const entry of linked) {
+      if (typeof entry !== "string") continue;
+      const idx = entry.indexOf(":");
+      if (idx <= 0) continue;
+      const chainType = entry.slice(0, idx);
+      const address = entry.slice(idx + 1);
+      if (!address) continue;
+      out.push({
+        kind: "wallet",
+        chainType,
+        address,
+        ref: `xm:${chainType}:${address}`,
+      });
+    }
+  }
+  return dedupeByRef(out);
 }
 
 /**

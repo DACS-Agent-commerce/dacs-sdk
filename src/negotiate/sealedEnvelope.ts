@@ -145,8 +145,6 @@ export interface SealedEnvelopeDeps {
   commitAgreement: (
     ctx: SealedWinnerContext,
   ) => Promise<{ agreementRef: string; agreementHash: string }>;
-  /** Current unix-ms clock (for SE-1 validation at session start). */
-  now: () => number;
 }
 
 export interface SealedEnvelopeInput {
@@ -163,8 +161,15 @@ export interface SealedEnvelopeInput {
    * (SE-6) before wrapping it here.
    */
   acceptancePredicate?: (bid: SealedBid) => boolean;
-  /** Validate SE-1 against the session-start clock (default true). */
-  validateAtStart?: boolean;
+  /**
+   * SE-1 (commitDeadline ≥ start + 60s) is a session-OPEN check, but this core
+   * runs AFTER the reveal window closes (it reads the final anchored sets), when
+   * `commitDeadline < now` always. So SE-1 is NOT re-checked here against a live
+   * clock — callers MUST run `validateSealedParams(params, sessionStartMs)` when
+   * they OPEN the session. Optionally pass the recorded `sessionStartMs` and this
+   * core re-validates SE-1 against that (the correct clock), not against now().
+   */
+  sessionStartMs?: number;
 }
 
 export interface SealedEnvelopeResult {
@@ -193,8 +198,12 @@ export async function runSealedEnvelopeCore(
   input: SealedEnvelopeInput,
   deps: SealedEnvelopeDeps,
 ): Promise<SealedEnvelopeResult> {
-  if (input.validateAtStart !== false) {
-    validateSealedParams(input.params, deps.now());
+  // SE-1 is a session-open check (see SealedEnvelopeInput.sessionStartMs) — only
+  // re-validated here if the caller supplied the recorded session-start clock.
+  // It is NEVER checked against now(): this core runs post-close, so a live-clock
+  // check would always (and wrongly) throw.
+  if (input.sessionStartMs !== undefined) {
+    validateSealedParams(input.params, input.sessionStartMs);
   }
 
   // SE-2 / SE-3 gating, then the authoritative matched candidate set (step 4).

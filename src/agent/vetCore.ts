@@ -69,6 +69,10 @@ function readSanctioned(
  *    screening endpoint (`params.screeningUrlTemplate`, `{address}` substituted).
  *    A listed wallet is a `fail`; an unscreenable one is `indeterminate` (never a
  *    silent pass) — so the composite is `pass` only when every wallet is clean.
+ *    NOTE: this screens the linked cross-chain WALLETS only, not the subject's
+ *    primary Demos address — sanctions endpoints are chain-specific and screen
+ *    on-chain (EVM/etc.) addresses. A subject with no linked wallets is
+ *    `indeterminate` (nothing to clear), never `pass`.
  */
 
 export interface VetProxyResult {
@@ -131,6 +135,8 @@ export async function vetCore(
         method: "consensus-backed-proxy",
         status: ok ? "pass" : "fail",
         authority: url,
+        // Record the DAHR attestation so the vet record carries the evidence.
+        ...(res.responseHash ? { responseHash: res.responseHash } : {}),
       });
       break;
     }
@@ -201,6 +207,7 @@ export async function vetCore(
           method: "ofac-screen",
           status,
           authority: url,
+          ...(res.responseHash ? { responseHash: res.responseHash } : {}),
         });
       }
       break;

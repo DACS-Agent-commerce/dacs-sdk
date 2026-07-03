@@ -202,9 +202,11 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * SR-1 — resolve a claim reference through CCI (the GCR identity routine).
-   * The 4.0.5 surface resolves identities by address, so a ref that is (or
-   * contains) an address returns its identity graph. Full claim-ref reverse
-   * resolution (e.g. "web2:domain:*") is a substrate gap tracked upstream.
+   * Resolves by address: a ref that is (or contains) an address returns its
+   * identity graph (keyed `xm` / `web2` / `ud` / `pqc`; parseCciRecord reads it).
+   * Requires demosdk ≥ 4.0.12 — 4.0.6's auth-header path 401s against the public
+   * nodes on gcr_routine (issue #20). Reverse claim-ref resolution is
+   * findSubjectsByClaim below.
    */
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
     if (!this.connected) {

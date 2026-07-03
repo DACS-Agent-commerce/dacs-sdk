@@ -115,6 +115,62 @@ describe("cciClaimRefs / cciHasClaim", () => {
   });
 });
 
+describe("parseCciRecord — live GCR shape (R1: xm/web2 nested)", () => {
+  // The deployed testnet shape: gcr_routine getIdentities → { result, response:
+  // { xm: {<chain>:{<network>:[{address}]}}, web2: {<platform>:[{username}]}, ud, pqc } }.
+  const LIVE = {
+    result: 200,
+    response: {
+      ud: [],
+      pqc: {},
+      xm: {
+        evm: {
+          mainnet: [
+            { address: "0xAbC0000000000000000000000000000000000001", publicKey: "pk1" },
+          ],
+        },
+        solana: {
+          mainnet: [{ address: "So1anaAddr11111111111111111111111111111" }],
+        },
+      },
+      web2: {
+        twitter: [{ username: "alice", userId: "1", proofHash: "h" }],
+        github: [{ username: "alice-dev" }],
+      },
+    },
+  };
+
+  test("reads cross-chain wallets from xm.<chain>.<network>[].address", () => {
+    const rec = parseCciRecord(PRIMARY, LIVE);
+    expect(rec.wallets.map((w) => w.ref)).toEqual([
+      "xm:evm:0xAbC0000000000000000000000000000000000001",
+      "xm:solana:So1anaAddr11111111111111111111111111111",
+    ]);
+  });
+
+  test("reads web2 handles from web2.<platform>[].username", () => {
+    const rec = parseCciRecord(PRIMARY, LIVE);
+    expect(rec.web2.map((c) => c.ref)).toEqual([
+      "web2:twitter:alice",
+      "web2:github:alice-dev",
+    ]);
+  });
+
+  test("an empty live graph yields a valid empty record (fail-closed, not a throw)", () => {
+    const rec = parseCciRecord(PRIMARY, {
+      result: 200,
+      response: { ud: [], xm: {}, pqc: {}, web2: {} },
+    });
+    expect(rec.claims).toEqual([]);
+    expect(rec.primaryClaim).toBe(PRIMARY);
+  });
+
+  test("still handles the legacy linkedSocials/linkedWallets shape (fallback)", () => {
+    const rec = parseCciRecord(PRIMARY, GRAPH);
+    expect(rec.claims).toHaveLength(5);
+  });
+});
+
 describe("parseClaimRef (reverse-lookup decomposition)", () => {
   test("parses a web2 ref", () => {
     expect(parseClaimRef("web2:twitter:alice")).toEqual({

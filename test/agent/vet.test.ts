@@ -46,6 +46,8 @@ describe("vetCore (DACS-2 Vet stage)", () => {
       method: "consensus-backed-proxy",
       status: "pass",
       authority: "https://alice.example/.well-known/dacs",
+      // R5: the DAHR attestation is recorded on the entry as evidence.
+      responseHash: "0xhash",
     });
   });
 
@@ -176,6 +178,8 @@ describe("vetCore (DACS-2 Vet stage)", () => {
       expect(cvr.decision).toBe("pass");
       expect(cvr.results).toHaveLength(2);
       expect(cvr.results.every((r) => r.status === "pass")).toBe(true);
+      // R5: each screened result records the DAHR attestation.
+      expect(cvr.results.every((r) => r.responseHash === "0xhash")).toBe(true);
     });
 
     test("fails when any linked wallet is sanctioned", async () => {
