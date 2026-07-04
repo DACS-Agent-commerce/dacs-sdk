@@ -54,6 +54,12 @@ export interface VerifyResultEntry {
   method: string;
   status: VerificationDecision;
   authority?: string;
+  /**
+   * DAHR attestation of the proxied response body (the consensus-backed evidence
+   * this result rests on), when the method fetched one. Recorded so the vet
+   * record carries verifiable evidence, not just a status.
+   */
+  responseHash?: string;
 }
 
 /** DACS-2 — aggregated verification outcome for a subject. */

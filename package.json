@@ -24,6 +24,14 @@
       "types": "./dist/artifacts/index.d.ts",
       "import": "./dist/artifacts/index.js"
     },
+    "./identity": {
+      "types": "./dist/identity/index.d.ts",
+      "import": "./dist/identity/index.js"
+    },
+    "./negotiate": {
+      "types": "./dist/negotiate/index.d.ts",
+      "import": "./dist/negotiate/index.js"
+    },
     "./rails": {
       "types": "./dist/rails/index.d.ts",
       "import": "./dist/rails/index.js"
@@ -55,7 +63,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@kynesyslabs/demosdk": "^4.0.5",
+    "@kynesyslabs/demosdk": "^4.0.12",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",

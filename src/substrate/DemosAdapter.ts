@@ -3,6 +3,7 @@ import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
 import { SubstrateError } from "../errors.js";
+import { parseClaimRef } from "../identity/index.js";
 import type {
   AnchorRef,
   ProxyFetchRequest,
@@ -201,9 +202,11 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * SR-1 — resolve a claim reference through CCI (the GCR identity routine).
-   * The 4.0.5 surface resolves identities by address, so a ref that is (or
-   * contains) an address returns its identity graph. Full claim-ref reverse
-   * resolution (e.g. "web2:domain:*") is a substrate gap tracked upstream.
+   * Resolves by address: a ref that is (or contains) an address returns its
+   * identity graph (keyed `xm` / `web2` / `ud` / `pqc`; parseCciRecord reads it).
+   * Requires demosdk ≥ 4.0.12 — 4.0.6's auth-header path 401s against the public
+   * nodes on gcr_routine (issue #20). Reverse claim-ref resolution is
+   * findSubjectsByClaim below.
    */
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
     if (!this.connected) {
@@ -215,5 +218,37 @@ export class DemosAdapter implements SubstrateAdapter {
       ref,
     );
     return { ref, boundTo: ref, raw };
+  }
+
+  /**
+   * SR-1 (reverse) — resolve a linked claim ref back to the subject pubkeys that
+   * hold it, via demosdk's GCR reverse lookups (`getDemosIdsBy{Web2,Web3}Identity`).
+   */
+  async findSubjectsByClaim(claimRef: string): Promise<string[]> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const parsed = parseClaimRef(claimRef);
+    if (!parsed) {
+      throw new Error(
+        `findSubjectsByClaim: "${claimRef}" is not a reverse-resolvable linked-claim ref`,
+      );
+    }
+    const identities = new Identities();
+    const accounts =
+      parsed.kind === "web2"
+        ? await identities.getDemosIdsByWeb2Identity(
+            this.demos,
+            parsed.platform as "twitter" | "github" | "discord" | "telegram",
+            parsed.handle,
+          )
+        : await identities.getDemosIdsByWeb3Identity(
+            this.demos,
+            parsed.chainType as `${string}.${string}`,
+            parsed.address,
+          );
+    return (accounts ?? [])
+      .map((a: { pubkey?: unknown }) => a.pubkey)
+      .filter((p: unknown): p is string => typeof p === "string");
   }
 }

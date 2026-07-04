@@ -13,6 +13,7 @@ import {
   publicKeyFromRaw,
   type DomainSeparator,
 } from "../crypto/index.js";
+import { parseCciRecord, type CciRecord } from "../identity/index.js";
 import type { DemosAdapter } from "../substrate/index.js";
 import {
   runSessionCore,
@@ -31,7 +32,7 @@ import {
   type BundleVerification,
 } from "./verifyBundleCore.js";
 
-export type { SignatureCheck, BundleVerification, Reputation };
+export type { SignatureCheck, BundleVerification, Reputation, CciRecord };
 
 /**
  * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
@@ -89,6 +90,20 @@ export interface PublishResult {
 export interface Agent {
   /** Escape hatch to the underlying substrate adapter. */
   readonly adapter: DemosAdapter;
+  /**
+   * Anyone: resolve a subject's full cross-context identity (DACS-1) — its
+   * primary claim plus the linked Web2 handles and cross-chain wallets bound to
+   * it in the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
+   * primary key; other claim refs are passed through (reverse resolution is a
+   * substrate follow-up).
+   */
+  resolveIdentity(subject: string): Promise<CciRecord>;
+  /**
+   * Anyone: reverse-resolve a linked claim to the subject(s) that hold it —
+   * `findByClaim("web2:twitter:alice")` or `findByClaim("xm:evm:0x…")` returns
+   * the matching primary claims (Demos pubkeys), usually one, or [] if none.
+   */
+  findByClaim(claimRef: string): Promise<string[]>;
   /** Seller: sign + anchor a fixed-price listing. */
   publishListing(listing: Listing): Promise<PublishResult>;
   /** Anyone: dereference + structurally verify an anchored attestation bundle. */
@@ -130,6 +145,21 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
 
   return {
     adapter,
+
+    async resolveIdentity(subject: string): Promise<CciRecord> {
+      // The GCR routine resolves by Demos address (the ed25519 pubkey hex).
+      // Accept a DID / 0x-prefixed / bare-hex primary key; anything else is
+      // handed through as-is. The parsed record keeps `subject` as its primary
+      // claim (the canonical form the caller passed).
+      const key = publicKeyFromDid(subject);
+      const address = key ? Buffer.from(key).toString("hex") : subject;
+      const resolved = await adapter.resolveIdentity(address);
+      return parseCciRecord(subject, resolved.raw);
+    },
+
+    async findByClaim(claimRef: string): Promise<string[]> {
+      return adapter.findSubjectsByClaim(claimRef);
+    },
 
     async publishListing(listing: Listing): Promise<PublishResult> {
       const signed = await buildSignedArtifact(
