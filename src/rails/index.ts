@@ -20,3 +20,16 @@ export {
   type EvmErc20SettleParams,
   type EvmTransferClient,
 } from "./evmErc20.js";
+export {
+  createPayDemRail,
+  payDemSettle,
+  payDemSettleCore,
+  termsMatchDem,
+  type PayDemRail,
+  type PayDemRailConfig,
+  type PayDemSettleParams,
+  type PayDemSettleCoreDeps,
+  type D402ClientLike,
+  type D402PaymentRequirement,
+  type D402SettlementResult,
+} from "./payDem.js";
