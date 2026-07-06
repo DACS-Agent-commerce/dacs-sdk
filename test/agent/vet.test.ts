@@ -122,6 +122,39 @@ describe("vetCore (DACS-2 Vet stage)", () => {
       expect(cvr.results[0]!.status).toBe("fail");
     });
 
+    test("requireProof passes when the linked claim carries an attested proof", async () => {
+      const proven = parseCciRecord(SUBJECT, {
+        web2: { twitter: [{ username: "alice", proof: "https://x.com/alice/status/1" }] },
+      });
+      const cvr = await vetCore(
+        {
+          subject: SUBJECT,
+          recipe: recipe({
+            method: "cci-claim",
+            params: { requiredClaim: "web2:twitter:alice", requireProof: true },
+          }),
+        },
+        { ...deps(), resolveCci: async () => proven },
+      );
+      expect(cvr.decision).toBe("pass");
+      expect(cvr.results[0]!.responseHash).toBe("https://x.com/alice/status/1");
+    });
+
+    test("requireProof fails a claim that is asserted but carries no proof", async () => {
+      // `record` (flat linkedSocials) has the claim but no attached proof.
+      const cvr = await vetCore(
+        {
+          subject: SUBJECT,
+          recipe: recipe({
+            method: "cci-claim",
+            params: { requiredClaim: "web2:twitter:alice", requireProof: true },
+          }),
+        },
+        cciDeps(),
+      );
+      expect(cvr.decision).toBe("fail");
+    });
+
     test("rejects a cci-claim recipe with no requiredClaim", async () => {
       await expect(
         vetCore(
