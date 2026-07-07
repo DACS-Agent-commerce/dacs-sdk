@@ -15,6 +15,13 @@ export {
   type RefCheck,
   type RefVerdict,
 } from "./verifyBundleCore.js";
+export {
+  bundleConsistency,
+  bundlesDiverge,
+  type ConsistencyVerdict,
+  type BundleCopies,
+  type BundleRole,
+} from "./bundleConsistency.js";
 export { computeReputation } from "./reputation.js";
 export {
   deriveReputation,
