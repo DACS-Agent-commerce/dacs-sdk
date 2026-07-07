@@ -15,6 +15,15 @@ export {
   type RefCheck,
   type RefVerdict,
 } from "./verifyBundleCore.js";
+export {
+  verifySettlementEvidence,
+  type EvidenceDecision,
+  type EvidenceVerification,
+  type EvidenceContext,
+  type EvidenceAgreementContext,
+  type EvidenceRailContext,
+  type EvidenceDeps,
+} from "./verifySettlementEvidence.js";
 export { computeReputation } from "./reputation.js";
 export { discoverListings } from "./discover.js";
 export {
