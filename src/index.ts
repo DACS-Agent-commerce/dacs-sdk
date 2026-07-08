@@ -80,6 +80,18 @@ export {
   type ParsedClaimRef,
 } from "./identity/index.js";
 
+// Deterministic identityTier derivation (DACS-1 §6.3.2.1, IT-1..IT-3).
+export {
+  deriveIdentityTier,
+  claimScheme,
+  claimHasStructuralProof,
+  TIER1_SCHEMES,
+  type IdentityTier,
+  type IdentityBundleLike,
+  type BundleClaimLike,
+  type BundleClaimVerifiedBy,
+} from "./identity/tier.js";
+
 // Negotiate (DACS-3): the sealed-envelope (sealed-bid) core — commitment/reveal
 // crypto, deadline gating, and winner selection. Pure — no substrate import.
 export {
