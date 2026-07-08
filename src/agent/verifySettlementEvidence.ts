@@ -165,7 +165,10 @@ export async function verifySettlementEvidence(
     reasons.push(r);
   };
 
-  if (!isObj(record)) return { decision: "fail", reasons: ["evidence is not an object"] };
+  // A non-object root isn't a record at all — it can't be evaluated as evidence,
+  // so it's `error` (input isn't parseable), not a definite `fail` (§7.5.1) —
+  // consistent with the malformed-key line below.
+  if (!isObj(record)) return { decision: "error", reasons: ["evidence is not an object"] };
 
   const ev = stripSignature(record);
   const phase = ev["phase"];

@@ -85,6 +85,11 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     expect((await verify(delivery())).decision).toBe("pass");
   });
 
+  test("a non-object root is `error`, not fail (input isn't a record, §7.5.1)", async () => {
+    expect((await verify(null)).decision).toBe("error");
+    expect((await verify("nope" as unknown)).decision).toBe("error");
+  });
+
   test("successPaymentMissingFinality → fail", async () => {
     const ev = payment();
     delete ev.settlementFinality;
