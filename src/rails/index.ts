@@ -34,3 +34,13 @@ export {
   type D402PaymentRequirement,
   type D402SettlementResult,
 } from "./payD402.js";
+export {
+  createPayDemRail,
+  payDemSettle,
+  payDemSettleCore,
+  type PayDemRail,
+  type PayDemRailConfig,
+  type PayDemSettleParams,
+  type DemosNativeClient,
+  type DemosTransferResult,
+} from "./payDem.js";

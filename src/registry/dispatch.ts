@@ -3,6 +3,7 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
 import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
 import { createPayD402Rail, payD402Settle } from "../rails/payD402.js";
+import { createPayDemRail, payDemSettle } from "../rails/payDem.js";
 import type { RailDescriptor } from "./types.js";
 
 /**
@@ -105,6 +106,26 @@ export async function settleFromRail(
       });
       return payD402Settle(rail, {
         url: opts.paywall.url,
+        recipient: opts.paywall.recipientEvm,
+        network: opts.paywall.network,
+      });
+    }
+    case "dem": {
+      // Native DEM transfer rail (§9.5.9, live). The recipient + network are
+      // per-deal (paywall); the Demos RPC + wallet secret are caller secrets.
+      // `payTo` (paywall.recipientEvm) carries the Demos recipient address.
+      if (!opts.demosRpc) {
+        throw new DacsError("pay-dem rail requires opts.demosRpc");
+      }
+      if (!opts.demosSecret) {
+        throw new DacsError("pay-dem rail requires opts.demosSecret");
+      }
+      const rail = await createPayDemRail({
+        rpc: opts.demosRpc,
+        secret: opts.demosSecret,
+        network: opts.paywall.network,
+      });
+      return payDemSettle(rail, {
         recipient: opts.paywall.recipientEvm,
         network: opts.paywall.network,
       });

@@ -10,6 +10,7 @@ import type {
   PhaseSummaryEntry,
   Price,
   SettlementEvidence,
+  SettlementFinalityModel,
 } from "../artifacts/types.js";
 import {
   isAgreementDocument,
@@ -55,6 +56,17 @@ export interface SettleResult {
   chainId: string;
   payer: string;
   payee: string;
+  /**
+   * Rail-specific finality (§9.5.x / PC-6). When a rail knows the finality model
+   * it settled under, it reports it here and runSessionCore records it on the
+   * evidence instead of the default provider-receipt. E.g. §9.5.9 pay-dem →
+   * `{ model: "bft-final" }`. Omit for a receipt-confirmed rail.
+   */
+  finality?: { model: string; finalityBlocks?: number };
+  /** Block/ledger height the settlement landed at, when the rail reports it (§9.5.9 `demos`). */
+  blockNumber?: number;
+  /** The txRef kind the rail's tx is (e.g. §9.5.9 `demos`); defaults to `payment`. */
+  txRefKind?: string;
 }
 
 export interface SessionDeps {
@@ -297,9 +309,11 @@ export async function runSessionCore(
       settledOk = pay.ok && pay.txHash.trim().length > 0;
       const observedAt = deps.nowMs();
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
-      // tx hash become a payment txRef. Finality is the rail's receipt
-      // (§9.7 `provider-receipt`) — the rail seam confirms via receipt, not
-      // block depth, so finalityBlocks is 0.
+      // tx hash become a payment txRef. Finality defaults to the rail's receipt
+      // (§9.7 `provider-receipt`, finalityBlocks 0) but a rail that knows its own
+      // model — e.g. §9.5.9 pay-dem's `bft-final` + block height — reports it via
+      // `pay.finality` / `pay.blockNumber` / `pay.txRefKind`, so the evidence
+      // asserts the finality model that actually settled, not a hardcoded one (F7/#22).
       const evidence: SettlementEvidence = {
         evidenceVersion: "1",
         jobId,
@@ -307,12 +321,17 @@ export async function runSessionCore(
         phaseIndex: 0,
         outcome: settledOk ? "success" : "failure",
         paymentTxRefs: [
-          { rail: pay.chainId, txHash: pay.txHash, kind: "payment" },
+          {
+            rail: pay.chainId,
+            txHash: pay.txHash,
+            kind: pay.txRefKind ?? "payment",
+            ...(pay.blockNumber !== undefined ? { blockNumber: pay.blockNumber } : {}),
+          },
         ],
         paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
         settlementFinality: {
-          model: "provider-receipt",
-          finalityBlocks: 0,
+          model: (pay.finality?.model ?? "provider-receipt") as SettlementFinalityModel,
+          finalityBlocks: pay.finality?.finalityBlocks ?? 0,
           finalityObservedAt: observedAt,
         },
         observedAt,

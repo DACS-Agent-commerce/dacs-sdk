@@ -104,6 +104,8 @@ export interface TxRef {
   rail: string;
   txHash: string;
   kind: string;
+  /** Block/ledger height the tx landed at — carried by rails that report it (e.g. §9.5.9 `demos`). */
+  blockNumber?: number;
 }
 
 /** A settled payment amount. */

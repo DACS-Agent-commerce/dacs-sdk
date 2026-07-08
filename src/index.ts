@@ -204,6 +204,14 @@ export {
   type D402ClientLike,
   type D402PaymentRequirement,
   type D402SettlementResult,
+  createPayDemRail,
+  payDemSettle,
+  payDemSettleCore,
+  type PayDemRail,
+  type PayDemRailConfig,
+  type PayDemSettleParams,
+  type DemosNativeClient,
+  type DemosTransferResult,
 } from "./rails/index.js";
 
 // Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
