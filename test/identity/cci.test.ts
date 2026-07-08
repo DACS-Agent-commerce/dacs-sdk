@@ -200,35 +200,36 @@ describe("parseCciRecord — ud + pqc claim families", () => {
     expect(cciClaimHasProof(rec, "web2:domain:alice.example")).toBe(true);
   });
 
-  test("unstoppable domains parse into ud claims (network + proof surfaced)", () => {
+  test("unstoppable domains parse into registered cci-ud claims (network + proof surfaced)", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
-    expect(rec.ud.map((c) => c.ref)).toEqual(["ud:alice.crypto", "ud:alice.nft"]);
+    expect(rec.ud.map((c) => c.ref)).toEqual(["cci-ud:alice.crypto", "cci-ud:alice.nft"]);
     expect(rec.ud[0]).toMatchObject({ domain: "alice.crypto", network: "polygon", proof: "0xsig" });
     expect(rec.ud[1]!.network).toBeUndefined();
     expect(rec.ud[1]!.proof).toBeUndefined();
   });
 
-  test("pqc keys parse into pqc claims keyed by algorithm+address", () => {
+  test("pqc keys parse into registered cci-pqc claims keyed by algorithm+address", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
     expect(rec.pqc.map((c) => c.ref)).toEqual([
-      "pqc:falcon:falconpk1",
-      "pqc:ml-dsa:mldsapk1",
+      "cci-pqc:falcon:falconpk1",
+      "cci-pqc:ml-dsa:mldsapk1",
     ]);
   });
 
-  test("cciHasClaim matches ud case-insensitively, pqc exactly", () => {
+  test("cciHasClaim matches cci-ud case-insensitively, cci-pqc exactly", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
-    expect(cciHasClaim(rec, "ud:ALICE.CRYPTO")).toBe(true);
-    expect(cciHasClaim(rec, "pqc:falcon:falconpk1")).toBe(true);
-    expect(cciHasClaim(rec, "pqc:falcon:FALCONPK1")).toBe(false); // key casing is significant
+    expect(cciHasClaim(rec, "cci-ud:ALICE.CRYPTO")).toBe(true);
+    expect(cciHasClaim(rec, "cci-pqc:falcon:falconpk1")).toBe(true);
+    // CF-2: the public key is case-significant — only the exact form matches.
+    expect(cciHasClaim(rec, "cci-pqc:falcon:FALCONPK1")).toBe(false);
   });
 
   test("cciClaimProof returns the proof only for proof-bearing claims", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
-    expect(cciClaimProof(rec, "ud:alice.crypto")).toBe("0xsig");
-    expect(cciClaimProof(rec, "ud:alice.nft")).toBeUndefined();
+    expect(cciClaimProof(rec, "cci-ud:alice.crypto")).toBe("0xsig");
+    expect(cciClaimProof(rec, "cci-ud:alice.nft")).toBeUndefined();
     // pqc / wallet families never carry a web-style proof.
-    expect(cciClaimHasProof(rec, "pqc:falcon:falconpk1")).toBe(false);
+    expect(cciClaimHasProof(rec, "cci-pqc:falcon:falconpk1")).toBe(false);
   });
 
   test("all four families flow into claims and claim refs", () => {
@@ -236,8 +237,8 @@ describe("parseCciRecord — ud + pqc claim families", () => {
     expect(rec.claims).toHaveLength(1 + 2 + 2); // 1 web2 + 2 ud + 2 pqc (no xm)
     const refs = cciClaimRefs(rec);
     expect(refs[0]).toBe(PRIMARY);
-    expect(refs).toContain("ud:alice.crypto");
-    expect(refs).toContain("pqc:ml-dsa:mldsapk1");
+    expect(refs).toContain("cci-ud:alice.crypto");
+    expect(refs).toContain("cci-pqc:ml-dsa:mldsapk1");
   });
 });
 

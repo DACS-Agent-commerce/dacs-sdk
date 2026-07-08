@@ -53,7 +53,7 @@ export interface CciUdClaim {
   domain: string;
   /** The registry network the domain lives on, when known (e.g. "polygon"). */
   network?: string;
-  /** Canonical claim ref: `ud:<domain>`. */
+  /** Canonical claim ref: `cci-ud:<domain>` (DACS-1 §6.3 scheme registry). */
   ref: string;
   /** Ownership proof/signature evidence, when the GCR carries one. */
   proof?: string;
@@ -66,7 +66,7 @@ export interface CciPqcClaim {
   algorithm: string;
   /** The PQC public key / address. */
   address: string;
-  /** Canonical claim ref: `pqc:<algorithm>:<address>`. */
+  /** Canonical claim ref: `cci-pqc:<algorithm>:<address>` (DACS-1 §6.3 scheme registry). */
   ref: string;
 }
 
@@ -252,7 +252,9 @@ function parseUd(payload: Record<string, unknown>): CciUdClaim[] {
       kind: "ud",
       domain,
       ...(network ? { network } : {}),
-      ref: `ud:${domain}`,
+      // CF-2: UD domains are case-insensitive, so the canonical ref lower-cases
+      // the domain (the display `domain` field keeps the original casing).
+      ref: `cci-ud:${domain.toLowerCase()}`,
       ...(proof ? { proof } : {}),
     });
   }
@@ -270,7 +272,9 @@ function parsePqc(payload: Record<string, unknown>): CciPqcClaim[] {
       kind: "pqc",
       algorithm,
       address,
-      ref: `pqc:${algorithm}:${address}`,
+      // CF-2: the algorithm is a lower-case enum; the public key is
+      // case-significant, so it is NOT normalised (an exact-match identifier).
+      ref: `cci-pqc:${algorithm.toLowerCase()}:${address}`,
     });
   }
   return dedupeByRef(out);
