@@ -53,6 +53,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("late", "completed", 2500),
       ],
       WINDOW,
+      { trustBundles: true },
     );
     expect(r.bundleCount).toBe(1);
     expect(r.metrics.completionRate).toBe(1);
@@ -67,6 +68,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("b", "failed-substrate", 1200),
       ],
       WINDOW,
+      { trustBundles: true },
     );
     expect(r.bundleCount).toBe(2); // both counted in bundleCount
     expect(r.metrics.completionRate).toBe(1); // but denom excludes substrate
@@ -83,6 +85,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("d", "aborted-by-self", 1400), // party's own fault, not counterparty
       ],
       WINDOW,
+      { trustBundles: true },
     );
     expect(r.metrics.counterpartyFaultRate).toBe(0.5); // 2 / 4
     expect(r.metrics.completionRate).toBe(0.25); // 1 / 4
@@ -93,13 +96,14 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       PARTY,
       [bundle("a", "failed-substrate", 1100), bundle("b", "failed-substrate", 1200)],
       WINDOW,
+      { trustBundles: true },
     );
     expect(r.metrics.completionRate).toBeNull();
     expect(r.metrics.counterpartyFaultRate).toBeNull();
   });
 
   test("empty scoped set → zeroed derivation with null scalar metrics", () => {
-    const r = deriveReputation(PARTY, [], WINDOW);
+    const r = deriveReputation(PARTY, [], WINDOW, { trustBundles: true });
     expect(r.bundleCount).toBe(0);
     expect(r.bundleRefs).toEqual([]);
     expect(r.metrics.completionRate).toBeNull();
@@ -114,6 +118,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("j1", "completed", 1100, "seller"), // counterparty copy, same job
       ],
       WINDOW,
+      { trustBundles: true },
     );
     expect(r.bundleCount).toBe(1); // deduped by jobId
   });
@@ -127,6 +132,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("j2", "completed", 1200, "buyer"),
       ],
       WINDOW,
+      { trustBundles: true },
     );
     // j1 dropped (dispute); only j2 remains.
     expect(r.bundleCount).toBe(1);
@@ -140,6 +146,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       PARTY,
       [bundle("j1", "aborted-by-self", 1100, "seller")],
       WINDOW,
+      { trustBundles: true },
     );
     expect(r.metrics.counterpartyFaultRate).toBe(1);
     expect(r.metrics.completionRate).toBe(0);
@@ -153,5 +160,45 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       { isValid: (b) => b.jobId === "a" },
     );
     expect(r.bundleCount).toBe(1);
+  });
+
+  test("requires an explicit isValid or trustBundles — no fail-open default", () => {
+    expect(() =>
+      deriveReputation(PARTY, [bundle("a", "completed", 1100)], WINDOW),
+    ).toThrow(/isValid|trustBundles/);
+  });
+
+  test("counterpartyAdjustedCompletionRate strips counterparty-caused failures from the denom", () => {
+    // completed 1, failed-counterparty 1, aborted-by-other 1, aborted-by-self 1.
+    // party_fault_denom 4; counterparty-caused 2; blame denom 4-2=2 → 1/2.
+    const r = deriveReputation(
+      PARTY,
+      [
+        bundle("a", "completed", 1100),
+        bundle("b", "failed-counterparty", 1200),
+        bundle("c", "aborted-by-other", 1300),
+        bundle("d", "aborted-by-self", 1400),
+      ],
+      WINDOW,
+      { trustBundles: true },
+    );
+    expect(r.metrics.counterpartyAdjustedCompletionRate).toBe(0.5);
+  });
+
+  test("counterpartyAdjustedCompletionRate is null when every outcome is counterparty-caused", () => {
+    const r = deriveReputation(
+      PARTY,
+      [bundle("a", "failed-counterparty", 1100), bundle("b", "aborted-by-other", 1200)],
+      WINDOW,
+      { trustBundles: true },
+    );
+    expect(r.metrics.counterpartyAdjustedCompletionRate).toBeNull(); // blame denom 0
+  });
+
+  test("transactionCountByCurrency is schema-present ([]) until volume wiring", () => {
+    const r = deriveReputation(PARTY, [bundle("a", "completed", 1100)], WINDOW, {
+      trustBundles: true,
+    });
+    expect(r.metrics.transactionCountByCurrency).toEqual([]);
   });
 });

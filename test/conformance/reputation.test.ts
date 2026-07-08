@@ -32,12 +32,17 @@ describe.skipIf(!haveVectors)("§14 conformance — reputation (§10.5)", () => 
   };
   const golden = load("conformance/vectors/golden.json").verify.reputation;
 
-  const derived = deriveReputation(fixture.partyPrimaryClaim, fixture.bundles, {
-    windowStart: fixture.windowStart,
-    windowEnd: fixture.windowEnd,
-    computedAt: fixture.computedAt,
-    windowingBasis: fixture.windowingBasis,
-  });
+  const derived = deriveReputation(
+    fixture.partyPrimaryClaim,
+    fixture.bundles,
+    {
+      windowStart: fixture.windowStart,
+      windowEnd: fixture.windowEnd,
+      computedAt: fixture.computedAt,
+      windowingBasis: fixture.windowingBasis,
+    },
+    { trustBundles: true },
+  );
 
   it("excludes the out-of-window bundle (bundleCount matches golden)", () => {
     // 6 bundles in, one finalised past windowEnd → 5 counted.
@@ -64,14 +69,27 @@ describe.skipIf(!haveVectors)("§14 conformance — reputation (§10.5)", () => 
     expect(derived.bundleRefs).toEqual(golden.bundleRefs);
   });
 
-  it("reproduces the full golden ReputationDerivation", () => {
+  it("derives the v0.2 metrics: counterpartyAdjustedCompletionRate + transactionCountByCurrency", () => {
+    // The vendored golden predates the v0.2 fields (DACS-Standard#215 refreshes
+    // them on `next`); assert the derived values directly until it's vendored.
+    // party_fault_denom 4, counterparty-caused 2 → blame denom 2 → 1/2.
+    expect(derived.metrics.counterpartyAdjustedCompletionRate).toBe(0.5);
+    expect(derived.metrics.transactionCountByCurrency).toEqual([]);
+  });
+
+  it("reproduces the full golden ReputationDerivation (+ the v0.2 metric fields)", () => {
     expect(derived).toEqual({
       derivationVersion: "1",
       partyPrimaryClaim: fixture.partyPrimaryClaim,
       windowStart: golden.windowStart,
       windowEnd: golden.windowEnd,
       bundleCount: golden.bundleCount,
-      metrics: golden.metrics,
+      metrics: {
+        ...golden.metrics,
+        // v0.2 fields not yet in the vendored golden (see #215).
+        counterpartyAdjustedCompletionRate: 0.5,
+        transactionCountByCurrency: [],
+      },
       computedAt: golden.computedAt,
       windowingBasis: golden.windowingBasis,
       bundleRefs: golden.bundleRefs,

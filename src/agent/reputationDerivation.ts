@@ -1,4 +1,5 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
+import { DacsError } from "../errors.js";
 import type { AttestationBundle, AttestationRef } from "../artifacts/types.js";
 
 /**
@@ -18,9 +19,19 @@ import type { AttestationBundle, AttestationRef } from "../artifacts/types.js";
  *  - Null vs empty: the scalar rates are `null` when the denominator is 0 ("no
  *    signal"), while the array metrics/refs are `[]`.
  *
- * Ratings (averageBuyer/SellerRating) and observedTransactionalVolume are `null`
- * / `[]` until standalone RatingRecords (§10.6) and agreement-price aggregation
- * are wired — the MVP surfaces the completion / counterparty-fault rates.
+ * Ratings (averageBuyer/SellerRating), observedTransactionalVolume, and
+ * transactionCountByCurrency are `null` / `[]` until standalone RatingRecords
+ * (§10.6) and agreement-price aggregation are wired — the MVP surfaces the
+ * completion / counterparty-fault / counterparty-adjusted rates.
+ *
+ * NOT YET HANDLED (tracked): the §10.5.1 ST-10 `cancellation` marker. A v0.2
+ * deriver should resolve a cancellation marker across both non-divergent copies
+ * with the ST-10 trichotomy (established → reputation-neutral like
+ * failed-substrate; refuted → the fault stands; unresolvable → excluded from all
+ * denominators). This deriver currently books the ordinary fault (the spec's
+ * safe direction for old readers) and does NOT inspect the marker — it needs a
+ * `resolveListing`-style dep for the signed-listing teeth check (§10.3.1 ST-10).
+ * Gap called out here rather than silently skipped.
  */
 
 export type SessionOutcome =
@@ -34,9 +45,23 @@ export type SessionOutcome =
 export interface ReputationMetrics {
   completionRate: number | null;
   counterpartyFaultRate: number | null;
+  /**
+   * §10.5.1 (v0.2): completions over the party-blameable denominator —
+   * `|completed| / (party_fault_denom − (|failed-counterparty| + |aborted-by-other|))`.
+   * `null` when that denominator is 0 (no signal OR all outcomes were
+   * counterparty-caused). Isolates the party's own performance from
+   * counterparty-caused failures.
+   */
+  counterpartyAdjustedCompletionRate: number | null;
   averageBuyerRating: number | null;
   averageSellerRating: number | null;
   observedTransactionalVolume: Array<{ amount: string; currency: string }>;
+  /**
+   * §10.5.1 (v0.2): count of completed transactions grouped by currency. `[]`
+   * until agreement-price aggregation is wired (same deferral as
+   * observedTransactionalVolume — schema-present, not yet populated).
+   */
+  transactionCountByCurrency: Array<{ currency: string; count: number }>;
 }
 
 export interface ReputationDerivation {
@@ -102,11 +127,18 @@ function bundleContentHash(bundle: AttestationBundle): string {
 
 export interface DeriveReputationDeps {
   /**
-   * §10.4.1 signature validation — drop copies that fail. Defaults to accepting
-   * all (the caller pre-validates / trusts the read bundles); wire verifyBundle
-   * here for full conformance.
+   * §10.4.1 signature validation — drop copies that fail. Wire verifyBundle here
+   * for full conformance. REQUIRED unless `trustBundles` is set: deriving
+   * reputation from unvalidated bundles is a fail-open trap, so the caller must
+   * make the choice explicit.
    */
   isValid?: (bundle: AttestationBundle) => boolean;
+  /**
+   * Explicit, grep-able opt-out of signature validation (accept every copy).
+   * Only for callers that have already validated the bundles upstream. Ignored
+   * when `isValid` is supplied.
+   */
+  trustBundles?: boolean;
 }
 
 /**
@@ -120,6 +152,12 @@ export function deriveReputation(
   deps: DeriveReputationDeps = {},
 ): ReputationDerivation {
   const basis = window.windowingBasis ?? "finalisedAt";
+  if (!deps.isValid && !deps.trustBundles) {
+    throw new DacsError(
+      "deriveReputation requires deps.isValid (wire verifyBundle) or an explicit deps.trustBundles: true opt-out — " +
+        "deriving from unvalidated bundles is not a safe default",
+    );
+  }
   const isValid = deps.isValid ?? (() => true);
 
   const scoped = bundles.filter(
@@ -138,9 +176,11 @@ export function deriveReputation(
     metrics: {
       completionRate: null,
       counterpartyFaultRate: null,
+      counterpartyAdjustedCompletionRate: null,
       averageBuyerRating: null,
       averageSellerRating: null,
       observedTransactionalVolume: [],
+      transactionCountByCurrency: [],
     },
     computedAt: window.computedAt,
     windowingBasis: basis,
@@ -186,6 +226,11 @@ export function deriveReputation(
   const counterpartyFault = count("aborted-by-other") + count("failed-counterparty");
   const partyFaultDenom = outcomes.length - failedSubstrate;
   const rate = (n: number) => (partyFaultDenom > 0 ? n / partyFaultDenom : null);
+  // §10.5.1 (v0.2): strip counterparty-caused failures from the denominator so
+  // the rate reflects only the party's own blameable performance.
+  const partyBlameDenom = partyFaultDenom - counterpartyFault;
+  const counterpartyAdjustedCompletionRate =
+    partyBlameDenom > 0 ? completed / partyBlameDenom : null;
 
   const bundleRefs: AttestationRef[] = reconciled
     .map((b) => ({
@@ -204,9 +249,11 @@ export function deriveReputation(
     metrics: {
       completionRate: rate(completed),
       counterpartyFaultRate: rate(counterpartyFault),
+      counterpartyAdjustedCompletionRate,
       averageBuyerRating: null,
       averageSellerRating: null,
       observedTransactionalVolume: [],
+      transactionCountByCurrency: [],
     },
     computedAt: window.computedAt,
     windowingBasis: basis,
