@@ -1,23 +1,25 @@
 import { describe, expect, test } from "vitest";
 
 import {
-  termsMatchDem,
-  payDemSettleCore,
+  termsMatchD402,
+  payD402SettleCore,
+  createPayD402Rail,
+  PAY_D402_AVAILABILITY,
   type D402ClientLike,
   type D402PaymentRequirement,
   type D402SettlementResult,
-} from "../../src/rails/payDem.js";
+} from "../../src/rails/payD402.js";
 
 const RECIPIENT = "demos1recipientaddress0000000000000000000000";
 const PAYER = "demos1payeraddress00000000000000000000000000";
 const URL = "https://seller.example/premium";
 
-describe("termsMatchDem (§4.1 abort guard, native DEM)", () => {
+describe("termsMatchD402 (§4.1 abort guard, native DEM)", () => {
   const expected = { recipient: RECIPIENT, amount: "1500000000" };
 
   test("matches on equal terms (recipient case-insensitive, leading zeros ok)", () => {
     expect(
-      termsMatchDem(expected, {
+      termsMatchD402(expected, {
         recipient: RECIPIENT.toUpperCase(),
         amount: "01500000000",
       }).ok,
@@ -25,13 +27,13 @@ describe("termsMatchDem (§4.1 abort guard, native DEM)", () => {
   });
 
   test("rejects a recipient mismatch", () => {
-    const r = termsMatchDem(expected, { recipient: "demos1someoneelse", amount: "1500000000" });
+    const r = termsMatchD402(expected, { recipient: "demos1someoneelse", amount: "1500000000" });
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/recipient mismatch/);
   });
 
   test("rejects an amount mismatch", () => {
-    const r = termsMatchDem(expected, { recipient: RECIPIENT, amount: "999" });
+    const r = termsMatchD402(expected, { recipient: RECIPIENT, amount: "999" });
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/amount mismatch/);
   });
@@ -71,10 +73,10 @@ const params = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-describe("payDemSettleCore", () => {
+describe("payD402SettleCore", () => {
   test("happy path: pays the advertised requirement and returns the settlement hash", async () => {
     const client = fakeClient();
-    const res = await payDemSettleCore(params(), {
+    const res = await payD402SettleCore(params(), {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
@@ -91,7 +93,7 @@ describe("payDemSettleCore", () => {
     let created = 0;
     const client = fakeClient({ onCreate: () => (created += 1) });
     await expect(
-      payDemSettleCore(params(), {
+      payD402SettleCore(params(), {
         client,
         fetchImpl: fetch402({ recipient: "demos1attacker", amount: "1500000000", resourceId: "res-1" }),
         payerAddress: PAYER,
@@ -103,7 +105,7 @@ describe("payDemSettleCore", () => {
   test("§4.1 abort: a 402 advertising a different amount is rejected before paying", async () => {
     const client = fakeClient();
     await expect(
-      payDemSettleCore(params(), {
+      payD402SettleCore(params(), {
         client,
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: "999", resourceId: "res-1" }),
         payerAddress: PAYER,
@@ -114,7 +116,7 @@ describe("payDemSettleCore", () => {
   test("a non-402 response is a counterparty fault", async () => {
     const client = fakeClient();
     await expect(
-      payDemSettleCore(params(), {
+      payD402SettleCore(params(), {
         client,
         fetchImpl: fetch402({}, 200),
         payerAddress: PAYER,
@@ -125,7 +127,7 @@ describe("payDemSettleCore", () => {
   test("a malformed 402 body (no resourceId) is rejected", async () => {
     const client = fakeClient();
     await expect(
-      payDemSettleCore(params(), {
+      payD402SettleCore(params(), {
         client,
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000" }),
         payerAddress: PAYER,
@@ -135,7 +137,7 @@ describe("payDemSettleCore", () => {
 
   test("settlement success with no hash is reported ok:false (not an unverifiable success)", async () => {
     const client = fakeClient({ result: { success: true, hash: "" } });
-    const res = await payDemSettleCore(params(), {
+    const res = await payD402SettleCore(params(), {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
@@ -146,12 +148,36 @@ describe("payDemSettleCore", () => {
 
   test("a failed settlement is reported ok:false with its hash preserved", async () => {
     const client = fakeClient({ result: { success: false, hash: "0xtried", message: "insufficient balance" } });
-    const res = await payDemSettleCore(params(), {
+    const res = await payD402SettleCore(params(), {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
     });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("0xtried");
+  });
+
+  test("a bare-DEM number amount (pre-fork) is rejected — OS base-unit string required", async () => {
+    const client = fakeClient();
+    await expect(
+      payD402SettleCore(params(), {
+        client,
+        // 402 advertises `amount: 2` (pre-fork DEM) instead of OS base units.
+        fetchImpl: fetch402({ recipient: RECIPIENT, amount: 2, resourceId: "res-1" }),
+        payerAddress: PAYER,
+      }),
+    ).rejects.toThrow(/bare number|OS base units/);
+  });
+});
+
+describe("createPayD402Rail — experimental quarantine (RAV-R1)", () => {
+  test("is marked non-live", () => {
+    expect(PAY_D402_AVAILABILITY).toBe("experimental");
+  });
+
+  test("refuses to build without acknowledgeExperimental (never wired as live by accident)", async () => {
+    await expect(
+      createPayD402Rail({ rpc: "https://node.demos.sh", secret: "x" } as never),
+    ).rejects.toThrow(/EXPERIMENTAL|acknowledgeExperimental/);
   });
 });

@@ -2,7 +2,7 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { CounterpartyError, DacsError } from "../errors.js";
 
 /**
- * pay-dem settlement rail — native DEM via Demos's D402 protocol (SR-4).
+ * pay-d402 settlement rail — the D402 HTTP-402 protocol on Demos (SR-4).
  *
  * D402 is Demos's native analogue of x402: the seller's deliverable is
  * paywalled and returns an HTTP 402 advertising a payment requirement
@@ -13,11 +13,23 @@ import { CounterpartyError, DacsError } from "../errors.js";
  * payment proof).
  *
  * Per DACS §4.1 the buyer MUST abort before paying if the 402's advertised
- * terms don't match the negotiated agreement (termsMatchDem) — otherwise
+ * terms don't match the negotiated agreement (termsMatchD402) — otherwise
  * auto-pay could settle the wrong recipient or amount.
  *
- * payDemSettleCore is pure over a minimal client interface + an injected fetch,
- * so it's unit-tested without a Demos node; createPayDemRail() is the thin
+ * ⚠️ EXPERIMENTAL — NOT node-enabled. D402 processing (`d402_payment`) is not
+ * live on production Demos nodes yet: the client half exists, the node side does
+ * not process the tx. This rail therefore CANNOT settle live today, and per the
+ * RAV-R1 discipline ("MUST NOT treat a non-`live` rail as live") it must not be
+ * selected as a production settlement path. `createPayD402Rail` refuses to build
+ * unless the caller passes `acknowledgeExperimental: true`, so it can't be wired
+ * as `live` by accident. It graduates when the node ships d402 processing.
+ *
+ * NOTE ON NAMING: this is `pay-d402` (the HTTP-402 protocol rail), distinct from
+ * the spec's `pay-dem` (§9.5.9) — the plain `demos.transfer` native rail, which
+ * is a separate, live-proven path (evidence `txRef` kind `demos`, `bft-final`).
+ *
+ * payD402SettleCore is pure over a minimal client interface + an injected fetch,
+ * so it's unit-tested without a Demos node; createPayD402Rail() is the thin
  * wiring that constructs the real demosdk D402Client from a connected wallet.
  */
 
@@ -48,7 +60,7 @@ export interface D402ClientLike {
 }
 
 /** Per-session settlement inputs, derived from the negotiated agreement. */
-export interface PayDemSettleParams {
+export interface PayD402SettleParams {
   /** Seller's paywalled delivery URL (returns HTTP 402). */
   paywallUrl: string;
   /** Negotiated recipient Demos address (the expected payTo). */
@@ -76,7 +88,7 @@ function sameAmount(a: string, b: string): boolean {
  * conversion, so the on-chain and agreed amounts can never silently diverge).
  * D402 is native-DEM only, so there is no network/asset to reconcile.
  */
-export function termsMatchDem(
+export function termsMatchD402(
   expected: { recipient: string; amount: string },
   offered: { recipient: string; amount: string },
 ): { ok: boolean; reason?: string } {
@@ -104,8 +116,20 @@ function parseRequirement(body: unknown): D402PaymentRequirement {
   if (typeof recipient !== "string" || recipient.trim() === "") {
     throw new CounterpartyError("d402: 402 body missing a string `recipient`");
   }
-  if (typeof amount !== "string" && typeof amount !== "number") {
-    throw new CounterpartyError("d402: 402 body missing a numeric/string `amount`");
+  // Unit safety (fork boundary): the §4.1 guard compares the 402 amount against
+  // the agreement's OS base-unit amount as BigInt. A pre-fork node advertising a
+  // bare-DEM `number` (e.g. 1 = 1 DEM) would then mismatch a base-unit agreement
+  // (1e9 OS) and abort a legitimate payment — a silent interop gap. So require
+  // the 402 to advertise OS base units as a string and reject a bare-DEM number
+  // explicitly, rather than guess the unit. (Post-fork public nodes send string
+  // OS; this only rejects the ambiguous pre-fork number path.)
+  if (typeof amount === "number") {
+    throw new CounterpartyError(
+      "d402: 402 `amount` is a bare number (pre-fork DEM); D402 settlement requires OS base units as a string",
+    );
+  }
+  if (typeof amount !== "string" || amount.trim() === "") {
+    throw new CounterpartyError("d402: 402 body missing a string `amount` (OS base units)");
   }
   if (typeof resourceId !== "string" || resourceId.trim() === "") {
     throw new CounterpartyError("d402: 402 body missing a string `resourceId`");
@@ -114,7 +138,7 @@ function parseRequirement(body: unknown): D402PaymentRequirement {
   return { recipient, amount, resourceId, ...(description ? { description } : {}) };
 }
 
-export interface PayDemSettleCoreDeps {
+export interface PayD402SettleCoreDeps {
   client: D402ClientLike;
   fetchImpl: typeof fetch;
   /** The buyer's Demos address (recorded as `payer` on the result). */
@@ -126,9 +150,9 @@ export interface PayDemSettleCoreDeps {
  * Aborts before signing if the advertised requirement doesn't match the
  * agreement.
  */
-export async function payDemSettleCore(
-  params: PayDemSettleParams,
-  deps: PayDemSettleCoreDeps,
+export async function payD402SettleCore(
+  params: PayD402SettleParams,
+  deps: PayD402SettleCoreDeps,
 ): Promise<SettleResult> {
   const { client, fetchImpl, payerAddress } = deps;
 
@@ -142,7 +166,7 @@ export async function payDemSettleCore(
   const requirement = parseRequirement(await initial.json());
 
   // 2. Abort guard (§4.1): the advertised terms MUST match the agreement.
-  const m = termsMatchDem(
+  const m = termsMatchD402(
     { recipient: params.recipient, amount: params.amount },
     { recipient: requirement.recipient, amount: String(requirement.amount) },
   );
@@ -172,7 +196,10 @@ export async function payDemSettleCore(
   };
 }
 
-export interface PayDemRailConfig {
+/** This rail's availability (§9.4.4). NOT `live` — D402 isn't node-enabled. */
+export const PAY_D402_AVAILABILITY = "experimental" as const;
+
+export interface PayD402RailConfig {
   /** Demos node RPC URL. */
   rpc: string;
   /** Buyer wallet secret — mnemonic or private key — used to sign the payment. */
@@ -181,22 +208,35 @@ export interface PayDemRailConfig {
   network?: string;
   /** Override fetch (tests / custom transport). Defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /**
+   * REQUIRED to build the rail: D402 is not node-enabled (§9.4.4 non-`live`), so
+   * this rail cannot settle live. Constructing it without this explicit
+   * acknowledgement throws, so it can never be wired as a `live` path by
+   * accident (RAV-R1). Set `true` only for experimental / preview use.
+   */
+  acknowledgeExperimental: boolean;
 }
 
-export interface PayDemRail {
+export interface PayD402Rail {
   /** The buyer's Demos address. */
   readonly address: string;
   /** Settle one session's payment via the D402 402-flow. */
-  settle(params: PayDemSettleParams): Promise<SettleResult>;
+  settle(params: PayD402SettleParams): Promise<SettleResult>;
 }
 
 /**
- * Construct a pay-dem rail from a Demos RPC + wallet secret. Lazily imports
+ * Construct a pay-d402 rail from a Demos RPC + wallet secret. Lazily imports
  * demosdk so the SDK core stays importable without the chain deps installed.
  */
-export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
-  if (!config?.rpc) throw new DacsError("pay-dem rail requires an rpc URL");
-  if (!config?.secret) throw new DacsError("pay-dem rail requires a wallet secret to sign payments");
+export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD402Rail> {
+  if (!config?.acknowledgeExperimental) {
+    throw new DacsError(
+      "pay-d402 is EXPERIMENTAL and not node-enabled (§9.4.4 non-`live`): it cannot settle live. " +
+        "Pass acknowledgeExperimental: true to construct it for preview use — never select it as a live rail (RAV-R1).",
+    );
+  }
+  if (!config?.rpc) throw new DacsError("pay-d402 rail requires an rpc URL");
+  if (!config?.secret) throw new DacsError("pay-d402 rail requires a wallet secret to sign payments");
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
   const { D402Client } = await import("@kynesyslabs/demosdk/d402/client");
@@ -211,7 +251,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   return {
     address: demos.getAddress(),
     settle: (params) =>
-      payDemSettleCore(
+      payD402SettleCore(
         { ...params, network: params.network ?? network },
         { client, fetchImpl, payerAddress: demos.getAddress() },
       ),
@@ -219,12 +259,12 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 }
 
 /**
- * Bridge a PayDemRail to the runSession `settle` seam: the rail carries the
+ * Bridge a PayD402Rail to the runSession `settle` seam: the rail carries the
  * static D402 paywall coordinates (resolved from the listing) while runSession
  * supplies the per-session amount.
  */
-export function payDemSettle(
-  rail: PayDemRail,
+export function payD402Settle(
+  rail: PayD402Rail,
   paywall: { url: string; recipient: string; network?: string },
 ): (req: SettleRequest) => Promise<SettleResult> {
   return (req) =>

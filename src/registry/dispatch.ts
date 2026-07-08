@@ -2,7 +2,7 @@ import { DacsError } from "../errors.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
 import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
-import { createPayDemRail, payDemSettle } from "../rails/payDem.js";
+import { createPayD402Rail, payD402Settle } from "../rails/payD402.js";
 import type { RailDescriptor } from "./types.js";
 
 /**
@@ -20,10 +20,16 @@ export interface RailDispatchOptions {
   paywall: { url: string; network: string; recipientEvm: string };
   /** JSON-RPC URL — required by the direct-transfer (evm-erc20) rail. */
   rpcUrl?: string;
-  /** Demos node RPC URL — required by the native-DEM (pay-dem / D402) rail. */
+  /** Demos node RPC URL — required by the D402 (pay-d402) rail. */
   demosRpc?: string;
-  /** Demos wallet secret (mnemonic/private key) — required by the pay-dem rail to sign payments. */
+  /** Demos wallet secret (mnemonic/private key) — required by the pay-d402 rail to sign payments. */
   demosSecret?: string;
+  /**
+   * Explicit opt-in to dispatch EXPERIMENTAL / non-`live` rails (currently
+   * pay-d402, which isn't node-enabled). Off by default so a registry can't wire
+   * a non-live rail as a production settlement path (RAV-R1).
+   */
+  allowExperimentalRails?: boolean;
   /** Override fetch (tests / custom transport). */
   fetchImpl?: typeof fetch;
 }
@@ -73,22 +79,31 @@ export async function settleFromRail(
       });
     }
     case "d402": {
-      // Native-DEM rail. The recipient + network are per-deal (paywall); the
-      // Demos RPC + wallet secret are caller secrets. `payTo` carries the Demos
-      // recipient address (reusing the paywall's recipient field).
+      // EXPERIMENTAL D402 rail (§9.4.4 non-`live`, not node-enabled). The
+      // recipient + network are per-deal (paywall); the Demos RPC + wallet secret
+      // are caller secrets. `payTo` carries the Demos recipient address (reusing
+      // the paywall's recipient field). RAV-R1: refuse to dispatch it unless the
+      // caller explicitly opts into experimental rails.
+      if (!opts.allowExperimentalRails) {
+        throw new DacsError(
+          "pay-d402 is EXPERIMENTAL and not node-enabled (RAV-R1: MUST NOT be selected as a live rail); " +
+            "set opts.allowExperimentalRails: true to dispatch it for preview use",
+        );
+      }
       if (!opts.demosRpc) {
-        throw new DacsError("pay-dem (d402) rail requires opts.demosRpc");
+        throw new DacsError("pay-d402 rail requires opts.demosRpc");
       }
       if (!opts.demosSecret) {
-        throw new DacsError("pay-dem (d402) rail requires opts.demosSecret");
+        throw new DacsError("pay-d402 rail requires opts.demosSecret");
       }
-      const rail = await createPayDemRail({
+      const rail = await createPayD402Rail({
         rpc: opts.demosRpc,
         secret: opts.demosSecret,
         network: opts.paywall.network,
         fetchImpl: opts.fetchImpl,
+        acknowledgeExperimental: true,
       });
-      return payDemSettle(rail, {
+      return payD402Settle(rail, {
         url: opts.paywall.url,
         recipient: opts.paywall.recipientEvm,
         network: opts.paywall.network,

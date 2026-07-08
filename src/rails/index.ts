@@ -21,15 +21,16 @@ export {
   type EvmTransferClient,
 } from "./evmErc20.js";
 export {
-  createPayDemRail,
-  payDemSettle,
-  payDemSettleCore,
-  termsMatchDem,
-  type PayDemRail,
-  type PayDemRailConfig,
-  type PayDemSettleParams,
-  type PayDemSettleCoreDeps,
+  createPayD402Rail,
+  payD402Settle,
+  payD402SettleCore,
+  termsMatchD402,
+  PAY_D402_AVAILABILITY,
+  type PayD402Rail,
+  type PayD402RailConfig,
+  type PayD402SettleParams,
+  type PayD402SettleCoreDeps,
   type D402ClientLike,
   type D402PaymentRequirement,
   type D402SettlementResult,
-} from "./payDem.js";
+} from "./payD402.js";
