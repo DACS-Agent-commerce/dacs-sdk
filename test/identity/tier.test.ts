@@ -7,8 +7,15 @@ import { describe, expect, it, test } from "vitest";
 import {
   deriveIdentityTier,
   claimScheme,
+  claimHasStructuralProof,
   type BundleClaimLike,
+  type IdentityBundleLike,
 } from "../../src/identity/tier.js";
+
+// The predicate is REQUIRED — tests exercise the structural-only opt-in
+// explicitly (the offline read; NOT IT-1-conformant on its own).
+const derive = (b: IdentityBundleLike | null | undefined) =>
+  deriveIdentityTier(b, claimHasStructuralProof);
 
 const verified = (ref: string): BundleClaimLike => ({
   ref,
@@ -29,40 +36,40 @@ describe("deriveIdentityTier (§6.3.2.1, IT-1..IT-3)", () => {
 
   test("IT-1: a verified authority-issued (tier-1) claim → institutional", () => {
     expect(
-      deriveIdentityTier({ claims: [selfAsserted("key:aaaa"), verified("lei:5299")] }),
+      derive({ claims: [selfAsserted("key:aaaa"), verified("lei:5299")] }),
     ).toBe("institutional");
   });
 
   test("IT-2: a verified non-tier-1 claim → verified", () => {
     expect(
-      deriveIdentityTier({ claims: [selfAsserted("key:bbbb"), verified("domain:example.com")] }),
+      derive({ claims: [selfAsserted("key:bbbb"), verified("domain:example.com")] }),
     ).toBe("verified");
   });
 
   test("IT-2: a verified key: is `verified` (verification status, not scheme strength)", () => {
-    expect(deriveIdentityTier({ claims: [verified("key:bbbb")] })).toBe("verified");
+    expect(derive({ claims: [verified("key:bbbb")] })).toBe("verified");
   });
 
   test("IT-3: only a raw key / no verified claim → self-declared", () => {
-    expect(deriveIdentityTier({ claims: [selfAsserted("key:cccc")] })).toBe("self-declared");
-    expect(deriveIdentityTier({ claims: [] })).toBe("self-declared");
-    expect(deriveIdentityTier(null)).toBe("self-declared");
+    expect(derive({ claims: [selfAsserted("key:cccc")] })).toBe("self-declared");
+    expect(derive({ claims: [] })).toBe("self-declared");
+    expect(derive(null)).toBe("self-declared");
   });
 
   test("a self-asserted (unverified) tier-1 claim does NOT elevate → self-declared", () => {
     // An `lei:` the presenter merely asserts, with no verifiedBy, must not launder a tier.
-    expect(deriveIdentityTier({ claims: [selfAsserted("lei:5299")] })).toBe("self-declared");
+    expect(derive({ claims: [selfAsserted("lei:5299")] })).toBe("self-declared");
   });
 
   test("institutional precedence is strict: verified lei + verified did → institutional", () => {
     expect(
-      deriveIdentityTier({ claims: [verified("did:demos:agent:x"), verified("lei:5299")] }),
+      derive({ claims: [verified("did:demos:agent:x"), verified("lei:5299")] }),
     ).toBe("institutional");
   });
 
   test("a declared identityTier on the bundle is ignored — derivation keys only on claims", () => {
     const lying = { identityTier: "institutional", claims: [selfAsserted("key:dddd")] } as never;
-    expect(deriveIdentityTier(lying)).toBe("self-declared");
+    expect(derive(lying)).toBe("self-declared");
   });
 
   test("a custom predicate models staleness: a stale verifiedBy is not-verified", () => {
@@ -93,7 +100,7 @@ describe("§14 identityTier golden vectors", () => {
     if (!c.fixture) continue; // cases without a fixture are described by derivation alone
     it(`${c.id} → ${c.expected}`, () => {
       const fx = read(c.fixture!.replace(/^conformance\//, ""));
-      expect(deriveIdentityTier(fx.identityBundle)).toBe(fx.expectedIdentityTier);
+      expect(derive(fx.identityBundle)).toBe(fx.expectedIdentityTier);
       expect(fx.expectedIdentityTier).toBe(c.expected);
     });
   }

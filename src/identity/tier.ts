@@ -80,13 +80,21 @@ export function claimHasStructuralProof(claim: BundleClaimLike): boolean {
  *   3. else (no verified claim) → `self-declared`
  *
  * Verification status — not scheme strength — decides the tier: a verified
- * `key:` is `verified`, while an unverified `lei:` is `self-declared`. Pass
- * `isClaimVerified` to plug in real anchor resolution; the default treats a
- * structurally-complete `verifiedBy` as verified.
+ * `key:` is `verified`, while an unverified `lei:` is `self-declared`.
+ *
+ * **`isClaimVerified` is REQUIRED — there is no fail-open default.** IT-1 counts
+ * a claim as verified only when its `verifiedBy` resolves to a `pass` VerifyResult
+ * that is *fresh* per the §6.3.2 effective-window gate; a structural-only check
+ * (a well-formed `verifiedBy` pointing at garbage, a `fail`, or a stale result)
+ * would let a bare `lei:` launder an `institutional` tier — the exact
+ * tier-laundering the `dacs1-tier-laundering-guard` golden exists to stop. So the
+ * caller MUST supply the predicate. For a deliberate offline/structural-only read
+ * (NOT IT-1-conformant) pass the exported {@link claimHasStructuralProof} — naming
+ * it is the loud opt-in.
  */
 export function deriveIdentityTier(
   bundle: IdentityBundleLike | null | undefined,
-  isClaimVerified: (claim: BundleClaimLike) => boolean = claimHasStructuralProof,
+  isClaimVerified: (claim: BundleClaimLike) => boolean,
 ): IdentityTier {
   const claims = Array.isArray(bundle?.claims) ? bundle!.claims! : [];
   const verified = claims.filter(
