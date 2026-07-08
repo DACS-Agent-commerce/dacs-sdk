@@ -5,7 +5,7 @@ import type {
   VerifyResultEntry,
 } from "../artifacts/types.js";
 import type { RecipeDescriptor } from "../registry/types.js";
-import { cciHasClaim, type CciRecord } from "../identity/index.js";
+import { cciHasClaim, cciClaimProof, type CciRecord } from "../identity/index.js";
 
 /**
  * Composite decision over per-method results (DACS-2 §7.7) — worst result
@@ -154,12 +154,19 @@ export async function vetCore(
       }
       const record = await deps.resolveCci(subject);
       const held = cciHasClaim(record, requiredClaim);
+      // Optional stricter gate: the claim must not only be asserted but carry
+      // an attested proof (a verified /.well-known URL or signature the node
+      // stored). Only proof-bearing families (web2 / ud) can satisfy it.
+      const requireProof = recipe.params["requireProof"] === true;
+      const proof = held ? cciClaimProof(record, requiredClaim) : undefined;
+      const pass = held && (!requireProof || proof !== undefined);
       results.push({
         claimRef: requiredClaim,
         method: "cci-claim",
-        status: held ? "pass" : "fail",
+        status: pass ? "pass" : "fail",
         // The CCI (the subject's primary key) is the authority that binds the claim.
         authority: record.primaryClaim,
+        ...(proof ? { responseHash: proof } : {}),
       });
       break;
     }
