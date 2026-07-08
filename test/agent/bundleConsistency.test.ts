@@ -84,6 +84,16 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
     // Both invalid → absent.
     expect(bundleConsistency({ buyer, seller }, () => false)).toBe("absent");
   });
+
+  test("§10.4.3(b) third arm: a lone single-signed NON-abort copy the isValid gate rejects → absent", () => {
+    // A single-signed `completed` copy is rejected per §10.4.1 — no valid bundle
+    // for the session. The isValid gate carries that rule; here it drops the copy.
+    const loneNonAbort = { outcome: "completed", phaseSummary: [] };
+    expect(bundleConsistency({ buyer: loneNonAbort }, () => false)).toBe("absent");
+    // …whereas a single-signed abort copy stands (§10.11 suppression): the gate accepts it.
+    const loneAbort = { outcome: "aborted-by-other", phaseSummary: [] };
+    expect(bundleConsistency({ buyer: loneAbort }, () => true)).toBe("oneSided");
+  });
 });
 
 describe.skipIf(!haveVectors)("§14 verify golden — two-sided verdicts over reference bundles", () => {
@@ -94,7 +104,9 @@ describe.skipIf(!haveVectors)("§14 verify golden — two-sided verdicts over re
     expect(bundleConsistency({ buyer, seller })).toBe("divergent");
   });
 
-  it("a lone anchored copy is oneSided (anchoring omission, not an abort)", () => {
+  it("a lone anchored copy is oneSided (here the §10.11 abort-suppression arm)", () => {
+    // This fixture is single-signed with outcome aborted-by-other — the §10.4.3(b)
+    // arm that stands via §10.11 suppression, NOT a mere anchoring omission.
     const buyer = read("fixtures/session-bundle-one-sided.json");
     expect(bundleConsistency({ buyer })).toBe("oneSided");
   });

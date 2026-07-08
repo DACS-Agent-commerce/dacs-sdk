@@ -5,9 +5,17 @@
  * (`…-bundle-buyer`, `…-bundle-seller`). A consumer looking up "the bundle(s)
  * for session X" fetches both and MUST classify what it found:
  *
- *  - `absent`    — no valid copy anchored.
- *  - `oneSided`  — exactly one valid copy (the other is an anchoring omission,
- *                  §10.4.3(b) — the present copy stands as the session bundle).
+ *  - `absent`    — no valid copy anchored (incl. §10.4.3(b) third arm: a lone
+ *                  single-signed copy with a NON-abort outcome is rejected per
+ *                  §10.4.1, leaving no valid bundle — the `isValid` gate MUST
+ *                  drop it, so it never reaches `oneSided`).
+ *  - `oneSided`  — exactly one valid copy (§10.4.3(b)). Two arms both land here:
+ *                  (i) a fully-signed copy whose counterpart is an anchoring
+ *                  omission; (ii) a single-signed copy whose outcome is an abort,
+ *                  standing via §10.11 bundle-suppression. Both are "the present
+ *                  copy is the session bundle"; they are NOT the same as a mere
+ *                  omission, so consumers must not read an abort-suppression copy
+ *                  as one.
  *  - `unified`   — both present and they do NOT canonically diverge (equal, or
  *                  differing only in advisory fields), §10.4.3(c).
  *  - `divergent` — both present and they contradict, §10.4.3(d) — a genuine
@@ -20,9 +28,23 @@
  * `ratingRefs`, `anchoredByRole`, amendment ordering) is NOT a divergence, so a
  * party cannot force a spurious "disputed" classification by perturbing one.
  *
- * Pure: signature/anchor validity is the caller's concern, injected via
- * `isValid` (default: treat a provided copy as valid) so this composes with
- * verifyBundleCore without importing it.
+ * `isValid` CONTRACT (load-bearing — §10.4.3(b) validity split lives here): a
+ * copy passes iff it satisfies §10.4.1 signature validation **with** the §10.11
+ * single-signed-abort exception — i.e. accept a fully-signed copy, OR a
+ * single-signed copy whose outcome is an abort; REJECT a single-signed non-abort
+ * copy. Composing `verifyBundleCore` as `isValid` must honour that exception, or
+ * a suppression-standing abort copy is wrongly dropped to `absent`. When no
+ * `isValid` is supplied a provided copy is treated as valid — convenient for
+ * pre-validated inputs, but a raw consumer MUST inject the gate for §10.4.3(b).
+ *
+ * Transport-trust caveat (non-normative): the `oneSided` verdict trusts the
+ * absence signal. An attacker who can censor the counterparty's anchor at the
+ * fetch layer can present a `divergent` session as a clean `oneSided`. Nothing
+ * here proves the missing copy was honestly absent, so a reputation-bearing
+ * consumer SHOULD read both addresses over a quorum/authenticated substrate.
+ *
+ * Pure: signature/anchor validity is injected via `isValid` so this composes
+ * with verifyBundleCore without importing it.
  */
 
 export type ConsistencyVerdict = "absent" | "oneSided" | "unified" | "divergent";
