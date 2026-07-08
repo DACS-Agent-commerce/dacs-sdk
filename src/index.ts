@@ -192,6 +192,18 @@ export {
   type EvmErc20RailConfig,
   type EvmErc20SettleParams,
   type EvmTransferClient,
+  createPayD402Rail,
+  payD402Settle,
+  payD402SettleCore,
+  termsMatchD402,
+  PAY_D402_AVAILABILITY,
+  type PayD402Rail,
+  type PayD402RailConfig,
+  type PayD402SettleParams,
+  type PayD402SettleCoreDeps,
+  type D402ClientLike,
+  type D402PaymentRequirement,
+  type D402SettlementResult,
 } from "./rails/index.js";
 
 // Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
