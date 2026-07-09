@@ -19,7 +19,9 @@ function fakeClient(
     address: PAYER,
     async transfer(args) {
       self.sent = args;
-      return over.result ?? { ok: true, hash: "demos:0xabc", blockNumber: 4242 };
+      return (
+        over.result ?? { ok: true, state: "included", hash: "demos:0xabc", blockNumber: 4242 }
+      );
     },
   };
   return self;
@@ -67,23 +69,53 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   });
 
   test("a broadcast that fails is reported ok:false (hash preserved)", async () => {
-    const client = fakeClient({ result: { ok: false, hash: "demos:0xtried", message: "rejected" } });
+    const client = fakeClient({
+      result: { ok: false, state: "failed", hash: "demos:0xtried", message: "rejected" },
+    });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("demos:0xtried");
+    expect(res.finality).toBeUndefined();
   });
 
   test("ok:true but no hash → ok:false (no unverifiable receipt)", async () => {
-    const client = fakeClient({ result: { ok: true, hash: "" } });
+    const client = fakeClient({ result: { ok: true, state: "included", hash: "", blockNumber: 1 } });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
   });
 
-  test("omits blockNumber from the result when the rail doesn't report one", async () => {
-    const client = fakeClient({ result: { ok: true, hash: "demos:0xabc" } });
+  test("broadcast ACCEPTANCE without observed inclusion → ok:false, no bft-final (steward finding)", async () => {
+    // ok:true + a hash but NO terminal inclusion state: the node accepted the tx
+    // for submission, it hasn't been observed to land. Must not mint bft-final.
+    const client = fakeClient({ result: { ok: true, hash: "demos:0xaccepted", blockNumber: 9 } });
     const res = await payDemSettleCore(params(), client);
-    expect(res.ok).toBe(true);
+    expect(res.ok).toBe(false);
+    expect(res.finality).toBeUndefined();
     expect(res.blockNumber).toBeUndefined();
+  });
+
+  test("terminal inclusion state but NO block height → ok:false (finality witness missing)", async () => {
+    const client = fakeClient({ result: { ok: true, state: "included", hash: "demos:0xabc" } });
+    const res = await payDemSettleCore(params(), client);
+    expect(res.ok).toBe(false);
+    expect(res.finality).toBeUndefined();
+  });
+
+  test("a poll that timed out (nonterminal) → ok:false, no evidence", async () => {
+    const client = fakeClient({ result: { ok: false, state: "timeout", hash: "demos:0xpending" } });
+    const res = await payDemSettleCore(params(), client);
+    expect(res.ok).toBe(false);
+    expect(res.finality).toBeUndefined();
+  });
+
+  test("confirmed/finalized also count as observed inclusion", async () => {
+    for (const state of ["confirmed", "finalized"]) {
+      const client = fakeClient({ result: { ok: true, state, hash: "demos:0xok", blockNumber: 7 } });
+      const res = await payDemSettleCore(params(), client);
+      expect(res.ok).toBe(true);
+      expect(res.finality).toEqual({ model: "bft-final" });
+      expect(res.blockNumber).toBe(7);
+    }
   });
 });
 

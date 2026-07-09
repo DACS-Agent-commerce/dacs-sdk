@@ -7,14 +7,23 @@ import { DacsError } from "../errors.js";
  * The plain native path: the buyer submits a `demos.transfer` of the agreed DEM
  * amount straight to the seller's address; the cosigned agreement + the on-chain
  * transfer ARE the settlement (no HTTP 402 flow — that's the separate,
- * experimental pay-d402). This is the live-settleable native rail: Demos reaches
- * BFT finality on inclusion, so the evidence carries `settlementFinality.model:
+ * experimental pay-d402). This is the live-settleable native rail: for Demos,
+ * BFT *inclusion IS finality*, so the evidence carries `settlementFinality.model:
  * "bft-final"` and a `demos` txRef (hash + block height).
+ *
+ * INCLUSION-GATED (§9.5.9): `bft-final` is emitted ONLY on observed inclusion —
+ * a terminal `included`/`confirmed`/`finalized` state AND the finality-witness
+ * block height. Broadcast *acceptance* (the node took the tx for submission) is
+ * NOT finality: a merely-accepted tx can still be rejected in consensus, dropped,
+ * or never included, so minting evidence on acceptance would attest an unobserved
+ * payment. A transfer that doesn't reach observed inclusion settles `ok: false`
+ * and no finality is stamped — evidence is never minted for a payment we didn't
+ * see land.
  *
  * Amounts are integer OS base units (matching DACS Price.amount) — never floats.
  * payDemSettleCore is pure over an injected native client, so it's tested
  * without a Demos node; createPayDemRail is the thin demosdk wiring
- * (transfer → confirm → broadcast).
+ * (transfer → confirm → broadcastAndWait, gated on the terminal inclusion state).
  */
 
 export interface PayDemSettleParams {
@@ -26,13 +35,27 @@ export interface PayDemSettleParams {
   network?: string;
 }
 
-/** The result of submitting a native transfer (sign → confirm → broadcast). */
+/** The result of submitting a native transfer (sign → confirm → broadcastAndWait). */
 export interface DemosTransferResult {
   ok: boolean;
   hash: string;
+  /**
+   * The terminal transaction state the client observed. `bft-final` is emitted
+   * only for an inclusion state ({@link TERMINAL_INCLUDED}); any other state
+   * (`failed`, `timeout`, a nonterminal poll, …) is not observed finality.
+   */
+  state?: string;
+  /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
   message?: string;
 }
+
+/**
+ * Terminal states that count as observed inclusion for `bft-final`. The Demos
+ * node reports `included`; `confirmed`/`finalized` are accepted for forward
+ * compatibility with substrates that name the terminal inclusion state differently.
+ */
+export const TERMINAL_INCLUDED = new Set(["included", "confirmed", "finalized"]);
 
 /** Minimal structural view of the native-transfer client this rail depends on. */
 export interface DemosNativeClient {
@@ -58,18 +81,41 @@ export async function payDemSettleCore(
 
   const res = await client.transfer({ to: params.recipient, amountOs });
   const txHash = (res?.hash ?? "").trim();
+  const chainId = params.network ?? "demos";
+
+  // Observed inclusion (§9.5.9): a verifiable tx id AND a terminal inclusion
+  // state AND the finality-witness block height. Broadcast acceptance alone is
+  // NOT finality — without these three, we do not stamp bft-final, because the
+  // tx may never have landed.
+  const observedFinal =
+    res?.ok === true &&
+    txHash.length > 0 &&
+    res?.state !== undefined &&
+    TERMINAL_INCLUDED.has(res.state) &&
+    typeof res?.blockNumber === "number";
+
+  if (!observedFinal) {
+    return {
+      ok: false,
+      txHash,
+      chainId,
+      payer: client.address,
+      payee: params.recipient,
+      // No finality / blockNumber: inclusion was not observed, so no bft-final
+      // evidence is minted for a possibly-unincluded payment.
+    };
+  }
 
   return {
-    // Money-safe: a success needs a verifiable on-chain tx id, not just an ok flag.
-    ok: res?.ok === true && txHash.length > 0,
+    ok: true,
     txHash,
-    chainId: params.network ?? "demos",
+    chainId,
     payer: client.address,
     payee: params.recipient,
-    // §9.5.9: native DEM reaches BFT finality on inclusion; the tx is a `demos`
-    // ref carrying the block height.
+    // §9.5.9: inclusion IS finality on Demos; the tx is a `demos` ref carrying
+    // the block height that witnesses it.
     finality: { model: "bft-final" },
-    ...(res?.blockNumber !== undefined ? { blockNumber: res.blockNumber } : {}),
+    blockNumber: res.blockNumber,
     txRefKind: "demos",
   };
 }
@@ -109,17 +155,33 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     transfer: async ({ to, amountOs }) => {
       const signed = await demos.transfer(to, amountOs);
       const validity = await demos.tx.confirm(signed, demos);
-      const broadcast = (await demos.tx.broadcast(validity, demos)) as {
-        result?: number;
-        response?: { hash?: string; blockNumber?: number; message?: string };
-      };
-      const ok = broadcast?.result === 200;
-      return {
-        ok,
-        hash: broadcast?.response?.hash ?? (signed as { hash?: string }).hash ?? "",
-        blockNumber: broadcast?.response?.blockNumber,
-        message: broadcast?.response?.message,
-      };
+      const fallbackHash = (signed as { hash?: string }).hash ?? "";
+      try {
+        // broadcastAndWait POLLS to a terminal state (included|failed) instead
+        // of returning on broadcast acceptance — so `ok`/`bft-final` reflect
+        // observed inclusion, and `status.blockNumber` gives the finality witness.
+        const { broadcast, status } = (await demos.broadcastAndWait(validity)) as {
+          broadcast: { response?: { hash?: string; message?: string } };
+          status: { state: "included" | "failed"; blockNumber?: number };
+        };
+        return {
+          ok: status.state === "included",
+          state: status.state,
+          hash: broadcast?.response?.hash ?? fallbackHash,
+          blockNumber: status.blockNumber,
+          message: broadcast?.response?.message,
+        };
+      } catch (err) {
+        // Timeout / broadcast failure → no terminal inclusion observed. Report a
+        // non-final result (ok:false) rather than throwing, so the settle seam
+        // records a failed payment and never mints bft-final for an unseen tx.
+        return {
+          ok: false,
+          state: "timeout",
+          hash: fallbackHash,
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
     },
   };
 
