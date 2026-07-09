@@ -12,6 +12,7 @@ import {
   isAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
+  isPricingSpec,
   isSettlementEvidence,
 } from "../../src/index.js";
 
@@ -113,5 +114,54 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         settlementFinality: { ...valid.settlementFinality, model: "observed" },
       }),
     ).toBe(false);
+  });
+});
+
+describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
+  const baseListing = {
+    agentId: "did:demos:seller",
+    serviceId: "svc",
+    name: "n",
+    description: "d",
+    claimRequirements: [],
+    supportedNegotiation: ["negotiate-fixed-price"],
+    supportedPaymentRails: ["pay-x402"],
+    supportedDelivery: ["deliver-attested-payload"],
+  };
+
+  it("a listing with no pricing is still valid (optional; #5 tracks required-fidelity)", () => {
+    expect(isListing(baseListing)).toBe(true);
+  });
+
+  it("accepts each PricingSpec kind", () => {
+    expect(isPricingSpec({ kind: "fixed", price: { amount: "5", currency: "USDC" } })).toBe(true);
+    expect(
+      isPricingSpec({
+        kind: "negotiable",
+        bandCenter: { amount: "5", currency: "USDC" },
+        minPct: 10,
+        maxPct: 20,
+      }),
+    ).toBe(true);
+    expect(isPricingSpec({ kind: "auction", selectionRule: "lowest-price" })).toBe(true);
+    expect(
+      isPricingSpec({ kind: "auction", selectionRule: "rule-ref:abc:https://x" }),
+    ).toBe(true);
+    // …and a valid pricing rides along on the listing.
+    expect(
+      isListing({ ...baseListing, pricing: { kind: "fixed", price: { amount: "5", currency: "USDC" } } }),
+    ).toBe(true);
+  });
+
+  it("rejects a malformed PricingSpec (present but not well-formed)", () => {
+    expect(isPricingSpec({ kind: "banana" })).toBe(false);
+    expect(isPricingSpec({ kind: "fixed" })).toBe(false); // missing price
+    expect(isPricingSpec({ kind: "fixed", price: { amount: "", currency: "USDC" } })).toBe(false);
+    expect(isPricingSpec({ kind: "auction", selectionRule: "coin-flip" })).toBe(false);
+    expect(
+      isPricingSpec({ kind: "negotiable", bandCenter: { amount: "5", currency: "USDC" }, minPct: "x", maxPct: 1 }),
+    ).toBe(false);
+    // a listing carrying a bad pricing is rejected — not silently accepted.
+    expect(isListing({ ...baseListing, pricing: { kind: "banana" } })).toBe(false);
   });
 });
