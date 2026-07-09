@@ -127,6 +127,42 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     expect((await verify(ev)).decision).toBe("fail");
   });
 
+  test("outOfSetFinalityModel → fail (PC-6 closed set; presence alone insufficient)", async () => {
+    const ev = payment();
+    ev.settlementFinality = { model: "trust-me", finalityObservedAt: 1 };
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+  test("bftFinalModel (pay-dem §9.5.9) is accepted", async () => {
+    const ev = payment();
+    ev.settlementFinality = { model: "bft-final", finalityObservedAt: 1 };
+    expect((await verify(ev)).decision).toBe("pass");
+  });
+  test("bftFinal carrying a stray finalityBlocks → fail (inclusion IS finality, §9.5.9)", async () => {
+    const ev = payment();
+    ev.settlementFinality = { model: "bft-final", finalityBlocks: 1, finalityObservedAt: 1 };
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+  test("blockDepth with a negative finalityBlocks → fail", async () => {
+    const ev = payment();
+    ev.settlementFinality = { model: "block-depth", finalityBlocks: -1, finalityObservedAt: 1 };
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+  test("commitmentLevel with an out-of-set commitment → fail", async () => {
+    const ev = payment();
+    ev.settlementFinality = { model: "commitment-level", finalityCommitmentLevel: "kinda", finalityObservedAt: 1 };
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+  test("commitmentLevel with a valid commitment passes", async () => {
+    const ev = payment();
+    ev.settlementFinality = { model: "commitment-level", finalityCommitmentLevel: "confirmed", finalityObservedAt: 1 };
+    expect((await verify(ev)).decision).toBe("pass");
+  });
+  test("finality without finalityObservedAt → fail (§9.7 requires it)", async () => {
+    const ev = payment();
+    ev.settlementFinality = { model: "block-depth", finalityBlocks: 1 };
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+
   test("deliveryWithFinality → fail", async () => {
     const ev = delivery();
     ev.settlementFinality = { model: "block-depth", finalityBlocks: 1, finalityObservedAt: 1 };

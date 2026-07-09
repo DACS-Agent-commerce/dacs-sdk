@@ -118,6 +118,24 @@ const PHASE_RAIL_TYPE: Record<string, string> = {
   "pay-x402": "x402",
 };
 
+/**
+ * The closed set of §9.7 SettlementFinalityRecord.model tokens (PC-6). Presence
+ * of `settlementFinality` is not enough — an out-of-set model (`"trust-me"`)
+ * MUST be rejected, else a record can assert an unverifiable finality basis and
+ * still pass. The v0.1 set is the first five; `bft-final` is the substrate-native
+ * model the pay-dem rail (§9.5.9) reports and is carried in the SDK's
+ * SettlementFinalityModel union, so it's accepted here too.
+ */
+const FINALITY_MODELS = new Set([
+  "block-depth",
+  "commitment-level",
+  "provider-receipt",
+  "htlc-reveal",
+  "liquidity-tank",
+  "bft-final",
+]);
+const SOLANA_COMMITMENTS = new Set(["processed", "confirmed", "finalized"]);
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 const isStr = (v: unknown): v is string => typeof v === "string";
@@ -219,6 +237,45 @@ export async function verifySettlementEvidence(
     if (!isCanonicalDecimal(fee["amount"])) fail("paymentFee.amount MUST be a canonical CD-1 decimal (non-negative)");
   }
 
+  // ── settlementFinality closed-set + per-model params (PC-6, §9.7) ───────
+  // A present finality record must name a model from the closed set and carry
+  // the model's parameter shape; presence alone is insufficient.
+  if (finality) {
+    const model = finality["model"];
+    if (!isStr(model) || !FINALITY_MODELS.has(model)) {
+      fail(`settlementFinality.model "${String(model)}" is not a recognised §9.7 finality model (PC-6)`);
+    } else {
+      // block-depth echoes the blocks waited; commitment-level echoes the Solana
+      // commitment. Both are OPTIONAL in §9.7 (self-describing echoes of
+      // rail.parameters) — validate only when present, never require.
+      if (model === "block-depth" && finality["finalityBlocks"] !== undefined) {
+        const fb = finality["finalityBlocks"];
+        if (!isNum(fb) || fb < 0 || !Number.isInteger(fb)) {
+          fail("settlementFinality.finalityBlocks MUST be a non-negative integer");
+        }
+      }
+      if (model === "commitment-level" && finality["finalityCommitmentLevel"] !== undefined) {
+        if (!isStr(finality["finalityCommitmentLevel"]) || !SOLANA_COMMITMENTS.has(finality["finalityCommitmentLevel"])) {
+          fail(`settlementFinality.finalityCommitmentLevel MUST be one of processed|confirmed|finalized`);
+        }
+      }
+      // The depth/commitment params belong ONLY to their own model. bft-final in
+      // particular is finality-by-inclusion (§9.5.9) — there is no block-depth or
+      // commitment to wait on — and provider-receipt/htlc-reveal/liquidity-tank
+      // likewise carry neither. A stray param signals a mis-modelled record.
+      if (model !== "block-depth" && finality["finalityBlocks"] !== undefined) {
+        fail(`settlementFinality.finalityBlocks is only valid for model "block-depth", not "${model}"`);
+      }
+      if (model !== "commitment-level" && finality["finalityCommitmentLevel"] !== undefined) {
+        fail(`settlementFinality.finalityCommitmentLevel is only valid for model "commitment-level", not "${model}"`);
+      }
+    }
+    // §9.7: finalityObservedAt is REQUIRED on a finality record.
+    if (!isNum(finality["finalityObservedAt"])) {
+      fail("settlementFinality.finalityObservedAt MUST be a unix-ms number");
+    }
+  }
+
   // ── Delivery-evidence rules (§9.7) ──────────────────────────────────────
   if (isDelivery) {
     // Delivery phases MUST omit settlementFinality (finality is payment-only).
@@ -275,6 +332,14 @@ export async function verifySettlementEvidence(
       `rail handler "${ctx.rail.handler}" is incoherent with rail type "${ctx.rail.railType}"`,
     );
   }
+  // NOTE (SB scope): this verifier checks each txRef's structural coherence with
+  // the pinned rail (below). It does NOT implement DACS-4 §9.5.8 session-binding
+  // (SB-1 settlement-tx-id keying, SB-2 cross-session uniqueness, SB-3 handler
+  // binding) — that layer is a consumer/aggregation concern (verifyBundle +
+  // reputation reconciliation), normative only from spec v0.2, and the vendored
+  // spec here is v0.1. Tracked as a distinct workstream in issue #33; a record
+  // that passes here can still be a coincidental-citation or cross-session
+  // double-count until SB lands. Do not read a `pass` as SB-clean.
   if (txRefs && ctx.rail) {
     for (const t of txRefs) {
       if (!isObj(t)) continue;
