@@ -229,6 +229,7 @@ export {
   type Listing,
   type PriceTerm,
   type PricingSpec,
+  type ClaimProofRef,
   type VerifyResultEntry,
   type CompositeVerificationRecord,
   type AgreementDocument,

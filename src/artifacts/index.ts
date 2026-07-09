@@ -7,6 +7,7 @@ export type {
   Listing,
   PriceTerm,
   PricingSpec,
+  ClaimProofRef,
   VerifyResultEntry,
   CompositeVerificationRecord,
   AgreementDocument,

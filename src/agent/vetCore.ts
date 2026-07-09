@@ -1,5 +1,6 @@
 import { DacsError } from "../errors.js";
 import type {
+  ClaimProofRef,
   CompositeVerificationRecord,
   VerificationDecision,
   VerifyResultEntry,
@@ -20,6 +21,15 @@ function compositeDecision(
   if (statuses.includes("indeterminate")) return "indeterminate";
   if (statuses.includes("fail")) return "fail";
   return "pass";
+}
+
+/**
+ * Classify a CCI claim proof honestly (#31): a 64-char sha256 hex is a `hash`;
+ * anything else (a `/.well-known` URL, a signature, …) is a `raw` reference. The
+ * proof is NOT a DAHR attestation, so it never belongs in `responseHash`.
+ */
+function classifyClaimProof(value: string): ClaimProofRef {
+  return { kind: /^[0-9a-f]{64}$/i.test(value) ? "hash" : "raw", value };
 }
 
 /**
@@ -166,7 +176,10 @@ export async function vetCore(
         status: pass ? "pass" : "fail",
         // The CCI (the subject's primary key) is the authority that binds the claim.
         authority: record.primaryClaim,
-        ...(proof ? { responseHash: proof } : {}),
+        // A cci-claim proof is the GCR-stored /.well-known URL / hash / signature,
+        // NOT a DAHR attestation — record it in the honestly-typed `proof` field,
+        // never in `responseHash` (#31).
+        ...(proof ? { proof: classifyClaimProof(proof) } : {}),
       });
       break;
     }
