@@ -1,3 +1,5 @@
+import { DacsError } from "../errors.js";
+
 /**
  * Two-sided bundle consistency verdict — DACS-5 §10.4.3.
  *
@@ -33,9 +35,14 @@
  * single-signed-abort exception — i.e. accept a fully-signed copy, OR a
  * single-signed copy whose outcome is an abort; REJECT a single-signed non-abort
  * copy. Composing `verifyBundleCore` as `isValid` must honour that exception, or
- * a suppression-standing abort copy is wrongly dropped to `absent`. When no
- * `isValid` is supplied a provided copy is treated as valid — convenient for
- * pre-validated inputs, but a raw consumer MUST inject the gate for §10.4.3(b).
+ * a suppression-standing abort copy is wrongly dropped to `absent`.
+ *
+ * The gate is REQUIRED, not defaultable: classifying unvalidated copies is a
+ * fail-open trap (an unsigned forgery would read as a present copy and flip
+ * `absent`→`oneSided` or `oneSided`→`divergent`), so the caller MUST make the
+ * choice explicit — supply `deps.isValid`, or set `deps.trustBundles: true` to
+ * opt out when copies are already validated upstream. Neither → throws. (Same
+ * shape as the #21 reputation deriver / #26 identityTier.)
  *
  * Transport-trust caveat (non-normative): the `oneSided` verdict trusts the
  * absence signal. An attacker who can censor the counterparty's anchor at the
@@ -90,15 +97,39 @@ export function bundlesDiverge(
   return false;
 }
 
+export interface BundleConsistencyDeps {
+  /**
+   * §10.4.1 signature/anchor validation (with the §10.11 single-signed-abort
+   * exception) — an invalid copy is treated as not-present. Wire
+   * `verifyBundleCore` here. REQUIRED unless `trustBundles` is set.
+   */
+  isValid?: (bundle: Record<string, unknown>, role: BundleRole) => boolean;
+  /**
+   * Explicit, grep-able opt-out of validation (classify every present copy as
+   * valid). Only for callers that have already validated the copies upstream.
+   * Ignored when `isValid` is supplied.
+   */
+  trustBundles?: boolean;
+}
+
 /**
- * Classify the two-sided copies for a session (§10.4.3). `isValid`, when given,
- * gates each copy on signature/anchor validity (e.g. wrap verifyBundleCore); an
- * invalid copy is treated as not-present.
+ * Classify the two-sided copies for a session (§10.4.3). `deps.isValid` gates
+ * each copy on signature/anchor validity (e.g. wrap verifyBundleCore); an
+ * invalid copy is treated as not-present. Supply `isValid` or an explicit
+ * `trustBundles: true` — deriving a verdict from unvalidated copies is not a
+ * safe default, so an absent gate throws.
  */
 export function bundleConsistency(
   copies: BundleCopies,
-  isValid?: (bundle: Record<string, unknown>, role: BundleRole) => boolean,
+  deps: BundleConsistencyDeps = {},
 ): ConsistencyVerdict {
+  if (!deps.isValid && !deps.trustBundles) {
+    throw new DacsError(
+      "bundleConsistency requires deps.isValid (wire verifyBundle) or an explicit deps.trustBundles: true opt-out — " +
+        "classifying unvalidated bundle copies is not a safe default",
+    );
+  }
+  const isValid = deps.isValid;
   const keep = (b: Record<string, unknown> | null | undefined, role: BundleRole) =>
     isObj(b) && (!isValid || isValid(b, role)) ? b : null;
   const buyer = keep(copies.buyer, "buyer");
