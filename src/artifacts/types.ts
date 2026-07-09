@@ -48,6 +48,17 @@ export interface Listing {
  */
 export type VerificationDecision = "pass" | "fail" | "indeterminate" | "error";
 
+/**
+ * An honestly-typed claim proof reference. `kind` says whether `value` is a
+ * digest (`hash`) or a raw reference such as a `/.well-known` URL or signature
+ * (`raw`), so a consumer never has to guess whether the field is a hash. Used
+ * for evidence that is NOT a DAHR attestation (see {@link VerifyResultEntry}).
+ */
+export interface ClaimProofRef {
+  kind: "hash" | "raw";
+  value: string;
+}
+
 /** DACS-2 — one method result inside a composite verification record. */
 export interface VerifyResultEntry {
   claimRef: ClaimRef;
@@ -56,10 +67,19 @@ export interface VerifyResultEntry {
   authority?: string;
   /**
    * DAHR attestation of the proxied response body (the consensus-backed evidence
-   * this result rests on), when the method fetched one. Recorded so the vet
-   * record carries verifiable evidence, not just a status.
+   * this result rests on) — STRICTLY a hash. Populated only by methods that run a
+   * DAHR proxy fetch (consensus-backed-proxy, ofac-screen). A method with no proxy
+   * fetch (e.g. cci-claim) MUST NOT populate it — its evidence goes in `proof`.
    */
   responseHash?: string;
+  /**
+   * The claim's attested proof, when the method rests on one that is NOT a DAHR
+   * attestation (e.g. a cci-claim's stored `/.well-known` URL, proof hash, or
+   * signature). Honestly typed as {@link ClaimProofRef} so consumers know whether
+   * the value is a digest or a raw reference — the #31 fix for the raw-proof-in-a-
+   * hash-named-field bug.
+   */
+  proof?: ClaimProofRef;
 }
 
 /** DACS-2 — aggregated verification outcome for a subject. */

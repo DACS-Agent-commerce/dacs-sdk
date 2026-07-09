@@ -122,7 +122,7 @@ describe("vetCore (DACS-2 Vet stage)", () => {
       expect(cvr.results[0]!.status).toBe("fail");
     });
 
-    test("requireProof passes when the linked claim carries an attested proof", async () => {
+    test("requireProof passes when the linked claim carries an attested proof (honest `proof`, not responseHash — #31)", async () => {
       const proven = parseCciRecord(SUBJECT, {
         web2: { twitter: [{ username: "alice", proof: "https://x.com/alice/status/1" }] },
       });
@@ -137,7 +137,28 @@ describe("vetCore (DACS-2 Vet stage)", () => {
         { ...deps(), resolveCci: async () => proven },
       );
       expect(cvr.decision).toBe("pass");
-      expect(cvr.results[0]!.responseHash).toBe("https://x.com/alice/status/1");
+      // A raw /.well-known URL is `raw`, and it does NOT masquerade as a DAHR hash.
+      expect(cvr.results[0]!.proof).toEqual({ kind: "raw", value: "https://x.com/alice/status/1" });
+      expect(cvr.results[0]!.responseHash).toBeUndefined();
+    });
+
+    test("a 64-hex claim proof is classified `hash` (#31)", async () => {
+      const h = "a".repeat(64);
+      const proven = parseCciRecord(SUBJECT, {
+        web2: { twitter: [{ username: "alice", proof: h }] },
+      });
+      const cvr = await vetCore(
+        {
+          subject: SUBJECT,
+          recipe: recipe({
+            method: "cci-claim",
+            params: { requiredClaim: "web2:twitter:alice", requireProof: true },
+          }),
+        },
+        { ...deps(), resolveCci: async () => proven },
+      );
+      expect(cvr.results[0]!.proof).toEqual({ kind: "hash", value: h });
+      expect(cvr.results[0]!.responseHash).toBeUndefined();
     });
 
     test("requireProof fails a claim that is asserted but carries no proof", async () => {

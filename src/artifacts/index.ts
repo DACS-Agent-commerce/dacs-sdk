@@ -5,6 +5,7 @@ export type {
   Price,
   Delivery,
   Listing,
+  ClaimProofRef,
   VerifyResultEntry,
   CompositeVerificationRecord,
   AgreementDocument,

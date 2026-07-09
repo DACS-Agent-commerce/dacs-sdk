@@ -228,6 +228,7 @@ export {
   type Price,
   type Delivery,
   type Listing,
+  type ClaimProofRef,
   type VerifyResultEntry,
   type CompositeVerificationRecord,
   type AgreementDocument,
