@@ -4,6 +4,7 @@ import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { assertPositiveAmount, canonicalizeDecimal } from "../canonical/decimal.js";
 import { DacsError } from "../errors.js";
+import type { PriceTerm } from "../artifacts/types.js";
 
 /**
  * negotiate-sealed-envelope (DACS-3 §8.4.3) — the pure sealed-bid core:
@@ -19,12 +20,11 @@ import { DacsError } from "../errors.js";
  * base64url and the *raw decoded bytes* are what's hashed.
  */
 
-/** The bid amount + currency. */
-export interface PriceTerm {
-  /** CD-1 decimal string. */
-  amount: string;
-  currency: string;
-}
+/**
+ * The bid amount + currency. Canonical home is the DACS-4 primitive
+ * {@link PriceTerm} in artifacts/types; re-exported here for negotiate callers.
+ */
+export type { PriceTerm };
 
 /** The sealed bid body (the object `bidHash` commits to). */
 export interface SealedBid {

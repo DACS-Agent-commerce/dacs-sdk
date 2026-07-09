@@ -35,6 +35,31 @@ const VERIFICATION_DECISIONS = [
   "error",
 ] as const;
 
+/** A DACS-4 PriceTerm: canonical positive decimal + non-empty currency. */
+const isPriceTerm = (v: unknown): boolean =>
+  isObj(v) && isStr(v.amount) && v.amount !== "" && isStr(v.currency) && v.currency !== "";
+
+const AUCTION_SELECTION = ["lowest-price", "highest-price", "first-acceptable"] as const;
+
+/** A DACS-4 PricingSpec (fixed | negotiable | auction). */
+export function isPricingSpec(v: unknown): boolean {
+  if (!isObj(v)) return false;
+  switch (v.kind) {
+    case "fixed":
+      return isPriceTerm(v.price);
+    case "negotiable":
+      return isPriceTerm(v.bandCenter) && isNum(v.minPct) && isNum(v.maxPct);
+    case "auction":
+      return (
+        (v.reservePrice === undefined || isPriceTerm(v.reservePrice)) &&
+        (isOneOf(AUCTION_SELECTION, v.selectionRule) ||
+          (isStr(v.selectionRule) && v.selectionRule.startsWith("rule-ref:")))
+      );
+    default:
+      return false;
+  }
+}
+
 export function isListing(v: unknown): v is Listing {
   if (!isObj(v)) return false;
   return (
@@ -48,7 +73,10 @@ export function isListing(v: unknown): v is Listing {
     ) &&
     isStrArray(v.supportedNegotiation) &&
     isStrArray(v.supportedPaymentRails) &&
-    isStrArray(v.supportedDelivery)
+    isStrArray(v.supportedDelivery) &&
+    // pricing is OPTIONAL (#34; full required-fidelity in #5) — but if present it
+    // MUST be a well-formed PricingSpec, not any object.
+    (v.pricing === undefined || isPricingSpec(v.pricing))
   );
 }
 

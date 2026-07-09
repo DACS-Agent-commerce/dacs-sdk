@@ -29,7 +29,44 @@ export interface Delivery {
   format: string;
 }
 
-/** DACS-1 — a signed, anchored service listing. */
+/**
+ * DACS-4 PriceTerm — a canonical priced amount. `amount` is a CD-1 canonical
+ * decimal string (minimal-digit, no exponent) and MUST be positive; `currency`
+ * is an ISO 4217 code or asset id (e.g. "USDC", "SOL", "usd-stablecoin").
+ */
+export interface PriceTerm {
+  amount: string;
+  currency: string;
+}
+
+/**
+ * DACS-4 PricingSpec — how a listing prices its service (referenced by DACS-1
+ * `Listing.pricing`). One of: a `fixed` price; a `negotiable` band around a
+ * centre (min/maxPct half-up per §8.5.2); or an `auction` with a selection rule.
+ * The `auction.selectionRule` set is the SAME enum as the §8.4.3 phase-step
+ * parameter, incl. the templated `rule-ref:<contentHash>:<uri>` form.
+ */
+export type PricingSpec =
+  | { kind: "fixed"; price: PriceTerm }
+  | { kind: "negotiable"; bandCenter: PriceTerm; minPct: number; maxPct: number }
+  | {
+      kind: "auction";
+      reservePrice?: PriceTerm;
+      selectionRule:
+        | "lowest-price"
+        | "highest-price"
+        | "first-acceptable"
+        | `rule-ref:${string}`;
+    };
+
+/**
+ * DACS-1 — a signed, anchored service listing.
+ *
+ * NOTE: this is the SDK's reduced MVP shape, not the full normative Listing
+ * (which also carries `pipeline`, `terms`, `validity`, `signature`, …). `pricing`
+ * is the DACS-1 `pricing: PricingSpec` field (#34); it is OPTIONAL here because
+ * the full required-field fidelity pass is tracked as one coherent change in #5.
+ */
 export interface Listing {
   agentId: string;
   serviceId: string;
@@ -39,6 +76,8 @@ export interface Listing {
   supportedNegotiation: string[];
   supportedPaymentRails: string[];
   supportedDelivery: string[];
+  /** DACS-1 `pricing: PricingSpec` (§ Listing) — how the service is priced. */
+  pricing?: PricingSpec;
 }
 
 /**
