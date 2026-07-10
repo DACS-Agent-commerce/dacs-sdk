@@ -117,6 +117,23 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
   });
 });
 
+describe.skipIf(!have)("isAttestationBundle: phaseSummary[].attestationRef is OPTIONAL (#12 / §10.4.3)", () => {
+  const bundle = () => JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+
+  it("accepts a bundle whose phaseSummary entry omits attestationRef", () => {
+    const b = bundle();
+    expect(isAttestationBundle(b)).toBe(true); // baseline: fixture has it
+    delete b.phaseSummary[0].attestationRef; // §10.4.3: MAY be omitted
+    expect(isAttestationBundle(b)).toBe(true);
+  });
+
+  it("still rejects a phaseSummary attestationRef that is present but malformed", () => {
+    const b = bundle();
+    b.phaseSummary[0].attestationRef = { kind: "x" }; // missing id/contentHash
+    expect(isAttestationBundle(b)).toBe(false);
+  });
+});
+
 describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
   const baseListing = {
     agentId: "did:demos:seller",
