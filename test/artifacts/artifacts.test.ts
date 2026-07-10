@@ -164,4 +164,21 @@ describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
     // a listing carrying a bad pricing is rejected — not silently accepted.
     expect(isListing({ ...baseListing, pricing: { kind: "banana" } })).toBe(false);
   });
+
+  it("rejects a negotiable band that breaks the §8.5.2 minPct/maxPct bounds (#37)", () => {
+    const band = (minPct: number, maxPct: number) => ({
+      kind: "negotiable",
+      bandCenter: { amount: "5", currency: "USDC" },
+      minPct,
+      maxPct,
+    });
+    // in-bounds band is fine…
+    expect(isPricingSpec(band(10, 20))).toBe(true);
+    expect(isPricingSpec(band(0, 0))).toBe(true);
+    // …but minPct ≥ 100 (floor at/below zero), or a negative pct, is rejected.
+    expect(isPricingSpec(band(100, 10))).toBe(false);
+    expect(isPricingSpec(band(150, 10))).toBe(false);
+    expect(isPricingSpec(band(-1, 10))).toBe(false);
+    expect(isPricingSpec(band(10, -5))).toBe(false);
+  });
 });

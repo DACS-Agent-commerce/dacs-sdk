@@ -48,7 +48,16 @@ export function isPricingSpec(v: unknown): boolean {
     case "fixed":
       return isPriceTerm(v.price);
     case "negotiable":
-      return isPriceTerm(v.bandCenter) && isNum(v.minPct) && isNum(v.maxPct);
+      // §8.5.2: minPct/maxPct are non-negative percentages, and 0 ≤ minPct < 100
+      // (a floor ≥100% below centre would price at or below zero).
+      return (
+        isPriceTerm(v.bandCenter) &&
+        isNum(v.minPct) &&
+        v.minPct >= 0 &&
+        v.minPct < 100 &&
+        isNum(v.maxPct) &&
+        v.maxPct >= 0
+      );
     case "auction":
       return (
         (v.reservePrice === undefined || isPriceTerm(v.reservePrice)) &&
