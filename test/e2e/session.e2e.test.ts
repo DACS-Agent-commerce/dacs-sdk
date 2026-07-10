@@ -12,6 +12,7 @@ import {
   type VerifyBundleDeps,
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { listingAddress } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -108,8 +109,9 @@ function fakeFetch(): typeof fetch {
 }
 
 describe("end-to-end session (publish → negotiate → x402 settle → verify)", () => {
-  async function runFlow(sub = memSubstrate()) {
-    // 1. Seller publishes a signed, anchored fixed-price listing.
+  async function runFlow(sub = memSubstrate(), listingVersion?: number) {
+    // 1. Seller publishes a signed, anchored fixed-price listing. When a
+    // listingVersion is given, anchor at the versioned §6.3.4 address (#29).
     const listingSigned = await buildSignedArtifact(
       {
         agentId: sellerDid,
@@ -120,12 +122,15 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
         supportedNegotiation: ["negotiate-fixed-price"],
         supportedPaymentRails: ["pay-x402"],
         supportedDelivery: ["deliver-attested-payload"],
+        ...(listingVersion !== undefined ? { listingVersion } : {}),
       },
       ARTIFACT_SEPARATORS.Listing,
       signSeller,
     );
     const listingRef = await sub.anchor(
-      `dacs1:listing:${sellerDid}:market-data`,
+      listingVersion !== undefined
+        ? listingAddress(sellerDid, "market-data", listingVersion)
+        : `dacs1:listing:${sellerDid}:market-data`,
       listingSigned,
     );
 
@@ -209,6 +214,40 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       outcome: "success",
       paymentTxRefs: [{ txHash: "0xsettlement", kind: "payment" }],
     });
+  });
+
+  test("versioned listing (#29): the bundle pins the version it was struck against, and a later version doesn't break it", async () => {
+    const sub = memSubstrate();
+    // Deal struck against listing v2, anchored at the versioned §6.3.4 address.
+    const { result } = await runFlow(sub, 2);
+    const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
+    expect(v.ok).toBe(true);
+    // The bundle records the exact version it pinned, not a hardcoded 1.
+    expect(v.bundle?.listingRef.version).toBe(2);
+    const pinnedHash = v.bundle?.listingRef.contentHash;
+
+    // The seller publishes v3 (a new address); v2's anchor is untouched, so the
+    // historical bundle still verifies against the version it pinned.
+    const v3Signed = await buildSignedArtifact(
+      {
+        agentId: sellerDid,
+        serviceId: "market-data",
+        name: "Market Data",
+        description: "EOD prices + intraday", // edited content
+        claimRequirements: [],
+        supportedNegotiation: ["negotiate-fixed-price"],
+        supportedPaymentRails: ["pay-x402"],
+        supportedDelivery: ["deliver-attested-payload"],
+        listingVersion: 3,
+      },
+      ARTIFACT_SEPARATORS.Listing,
+      signSeller,
+    );
+    await sub.anchor(listingAddress(sellerDid, "market-data", 3), v3Signed);
+
+    const after = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
+    expect(after.ok).toBe(true);
+    expect(after.bundle?.listingRef.contentHash).toBe(pinnedHash);
   });
 
   test("tampering the anchored bundle breaks signature verification", async () => {

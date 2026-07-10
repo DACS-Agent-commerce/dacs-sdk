@@ -377,7 +377,9 @@ export async function runSessionCore(
         anchoredByRole: "buyer",
         listingRef: {
           listingId: (listingScope as { serviceId?: string }).serviceId ?? jobId,
-          version: 1,
+          // Pin the version the deal was struck against (§6.3.4) so the bundle
+          // resolves the exact immutable listing version, not "latest" (#29).
+          version: (listingScope as { listingVersion?: number }).listingVersion ?? 1,
           contentHash: contentHash(listingScope),
         },
         agreementRef: refTo("dacs-3-agreement", `agreement-${jobId}`, agreementValue),

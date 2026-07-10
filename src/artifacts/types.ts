@@ -78,6 +78,14 @@ export interface Listing {
   supportedDelivery: string[];
   /** DACS-1 `pricing: PricingSpec` (§ Listing) — how the service is priced. */
   pricing?: PricingSpec;
+  /**
+   * DACS-1 `listingVersion` (§6.3.4) — monotonic per listingId. A listing is
+   * anchored at a VERSIONED address (`dacs1:<claim>:<listingId>:v<N>`), so an
+   * edit is published as a NEW version at a NEW address and prior versions stay
+   * immutable — old bundles keep verifying against the version they pinned (#29).
+   * Optional here for back-compat; treated as 1 when absent.
+   */
+  listingVersion?: number;
 }
 
 /**

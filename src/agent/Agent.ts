@@ -7,7 +7,7 @@ import type {
   Listing,
 } from "../artifacts/types.js";
 import { isAttestationBundle } from "../artifacts/validators.js";
-import { stripSignature } from "../canonical/index.js";
+import { listingAddress, stripSignature } from "../canonical/index.js";
 import {
   ed25519Verify,
   publicKeyFromRaw,
@@ -167,7 +167,12 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
         ARTIFACT_SEPARATORS.Listing,
         sign,
       );
-      const name = `dacs1:listing:${listing.agentId}:${listing.serviceId}`;
+      // Anchor at the VERSIONED §6.3.4 address so an edit publishes a new version
+      // at a new address and prior versions stay immutable — old bundles keep
+      // verifying against the version they pinned (#29). The seller bumps
+      // `listingVersion` on each edit; absent, it's the initial version 1.
+      const version = listing.listingVersion ?? 1;
+      const name = listingAddress(listing.agentId, listing.serviceId, version);
       const { address, txRef } = await adapter.anchor(name, signed);
       return { ref: address, txRef };
     },
