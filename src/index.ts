@@ -159,6 +159,12 @@ export {
   type VetRequest,
   type VetProxyResult,
   type Reputation,
+  // Injectable buyer-session core (F1/F2 #14): run the lifecycle against any
+  // SubstrateAdapter (mock/simulation/non-Demos), and rebuild the session's
+  // anchor-address scheme a verifier must reproduce.
+  runSessionCore,
+  type SessionDeps,
+  sessionAnchorName,
   type RunSessionOptions,
   type SessionResult,
   type SessionTerms,

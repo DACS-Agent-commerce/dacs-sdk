@@ -33,6 +33,8 @@ export {
 } from "./vetCore.js";
 export {
   runSessionCore,
+  sessionAnchorName,
+  type SessionDeps,
   type SessionResult,
   type SessionTerms,
   type SettleRequest,
