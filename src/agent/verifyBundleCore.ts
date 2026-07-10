@@ -46,7 +46,9 @@ export type RefVerdict =
   | "missing"
   | "invalid-shape"
   | "hash-mismatch"
-  | "unresolved";
+  | "unresolved"
+  /** Hash-matched, but the artifact failed its own DACS-4/§9.7 semantic verification. */
+  | "invalid-evidence";
 
 export interface RefCheck {
   kind: string;
@@ -84,6 +86,17 @@ export interface VerifyBundleDeps {
   resolvePublicKey: (did: string) => Promise<Uint8Array | null>;
   /** Verify a signature over raw bytes for a public key. */
   verify: Verifier;
+  /**
+   * OPTIONAL semantic check of a hash-matched SettlementEvidence artifact
+   * (DACS-4 §9.7) — wire `verifySettlementEvidence` (with the caller's
+   * agreement/rail/orchestrator context) here. When supplied, a settlement ref
+   * that hash-matches but whose evidence does NOT verify (`fail`/`error`) is
+   * downgraded to `invalid-evidence` and the bundle is not `ok`. Omitted by
+   * default — hash + shape integrity only, unchanged behaviour.
+   */
+  verifyEvidence?: (
+    evidence: Record<string, unknown>,
+  ) => Promise<{ decision: "pass" | "fail" | "error" | "indeterminate" }>;
 }
 
 /** Hash-check one resolved artifact against the ref that points at it. */
@@ -172,9 +185,24 @@ export async function verifyBundleCore(
     );
     for (const ev of bundle.settlementEvidence) {
       const r = await deps.resolveRef(ev.kind, bundle.jobId);
-      refs.push(
-        checkArtifact(ev.kind, ev.id, ev.contentHash, isSettlementEvidence, r),
+      const check = checkArtifact(
+        ev.kind,
+        ev.id,
+        ev.contentHash,
+        isSettlementEvidence,
+        r,
       );
+      // Optional §9.7 semantics: a hash-matched evidence record can still be
+      // internally invalid (wrong finality model, non-canonical amount, bad
+      // signer, …). If the caller wired a verifier, run it and downgrade a
+      // non-passing record — a signature over the bundle only binds the hash.
+      if (check.verdict === "ok" && deps.verifyEvidence && r) {
+        const verdict = await deps.verifyEvidence(stripSignature(r));
+        if (verdict.decision === "fail" || verdict.decision === "error") {
+          check.verdict = "invalid-evidence";
+        }
+      }
+      refs.push(check);
     }
     for (const vr of bundle.vetRecords) {
       const r = await deps.resolveRef(vr.kind, bundle.jobId);
