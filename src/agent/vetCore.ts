@@ -70,7 +70,10 @@ function readSanctioned(
  *  - self-signed: the subject self-asserts; recorded as a pass with the subject
  *    as its own authority.
  *  - consensus-backed-proxy: a DAHR proxy fetch of the recipe's authority URL;
- *    a 2xx is a pass, attested by the proxy's response hash.
+ *    a 2xx is a pass, attested by the proxy's response hash. An optional injected
+ *    `checkBody` policy (#16a) can refine a 2xx from the attested body, so
+ *    content-based rules ("the binding matches the claimed login") are
+ *    expressible instead of status-code-only.
  *  - cci-claim: the subject must hold a specific linked claim in its CCI record
  *    (DACS-1) — e.g. a verified X handle or a bound wallet. Resolves the record
  *    and passes iff `params.requiredClaim` is present.
@@ -103,6 +106,21 @@ export interface VetDeps {
    * `cci-claim` and `ofac-screen` methods — e.g. wire `(s) => agent.resolveIdentity(s)`.
    */
   resolveCci?: (subject: string) => Promise<CciRecord>;
+  /**
+   * OPTIONAL content policy for `consensus-backed-proxy` (#16a). Status-only
+   * `2xx ⇒ pass` can't express body-dependent policies ("the CCI binding matches
+   * the claimed login", "account older than a year", …). When supplied, it runs
+   * on a 2xx response and its verdict REFINES the result — a definite `fail`/
+   * `indeterminate` overrides the bare pass; `pass` confirms it; `null` defers to
+   * the status-only verdict. The DAHR `responseHash` still records the exact body
+   * the decision rested on. The `recipe.params` carry the policy criteria; this
+   * hook is the executor, mirroring how `proxyFetch`/`resolveCci` are injected.
+   */
+  checkBody?: (
+    body: string | undefined,
+    recipe: RecipeDescriptor,
+    subject: string,
+  ) => VerificationDecision | null;
 }
 
 export interface VetRequest {
@@ -140,10 +158,19 @@ export async function vetCore(
       }
       const res = await deps.proxyFetch({ url });
       const ok = res.status >= 200 && res.status < 300;
+      // Status first: a non-2xx is a definite fail regardless of body. On a 2xx,
+      // an optional content policy (#16a) can refine the verdict from the DAHR-
+      // attested body — e.g. downgrade to `fail`/`indeterminate` when the body
+      // doesn't satisfy the recipe's criteria. Absent the hook, status-only.
+      let status: VerificationDecision = ok ? "pass" : "fail";
+      if (ok && deps.checkBody) {
+        const refined = deps.checkBody(res.body, recipe, subject);
+        if (refined) status = refined;
+      }
       results.push({
         claimRef: subject,
         method: "consensus-backed-proxy",
-        status: ok ? "pass" : "fail",
+        status,
         authority: url,
         // Record the DAHR attestation so the vet record carries the evidence.
         ...(res.responseHash ? { responseHash: res.responseHash } : {}),

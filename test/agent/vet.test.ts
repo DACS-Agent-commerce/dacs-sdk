@@ -63,6 +63,59 @@ describe("vetCore (DACS-2 Vet stage)", () => {
     expect(cvr.results[0]!.status).toBe("fail");
   });
 
+  // #16a — a content policy can refine a 2xx from the DAHR-attested body.
+  const bodyDeps = (body: string, check: VetDeps["checkBody"]): VetDeps => ({
+    proxyFetch: async () => ({ status: 200, responseHash: "0xhash", body }),
+    now: () => "2026-01-01T00:00:00Z",
+    checkBody: check,
+  });
+  const proxyReq = {
+    subject: "did:demos:agent:alice",
+    recipe: recipe({ method: "consensus-backed-proxy", params: { authorityUrl: "https://x/y", expectLogin: "alice" } }),
+  };
+
+  test("checkBody downgrades a 2xx to fail when the body doesn't satisfy the policy (#16a)", async () => {
+    const cvr = await vetCore(
+      proxyReq,
+      bodyDeps(JSON.stringify({ login: "mallory" }), (body, r) => {
+        const login = JSON.parse(body ?? "{}").login;
+        return login === r.params["expectLogin"] ? "pass" : "fail";
+      }),
+    );
+    expect(cvr.decision).toBe("fail");
+    // The evidence the decision rested on is still recorded.
+    expect(cvr.results[0]!.responseHash).toBe("0xhash");
+  });
+
+  test("checkBody confirms a 2xx when the body matches (#16a)", async () => {
+    const cvr = await vetCore(
+      proxyReq,
+      bodyDeps(JSON.stringify({ login: "alice" }), (body, r) =>
+        JSON.parse(body ?? "{}").login === r.params["expectLogin"] ? "pass" : "fail",
+      ),
+    );
+    expect(cvr.decision).toBe("pass");
+  });
+
+  test("checkBody returning null defers to the status-only verdict (#16a)", async () => {
+    const cvr = await vetCore(proxyReq, bodyDeps("anything", () => null));
+    expect(cvr.decision).toBe("pass");
+  });
+
+  test("checkBody is NOT consulted on a non-2xx (status fails first)", async () => {
+    let called = false;
+    const cvr = await vetCore(proxyReq, {
+      proxyFetch: async () => ({ status: 404, responseHash: "0xhash", body: "{}" }),
+      now: () => "2026-01-01T00:00:00Z",
+      checkBody: () => {
+        called = true;
+        return "pass";
+      },
+    });
+    expect(cvr.decision).toBe("fail");
+    expect(called).toBe(false);
+  });
+
   test("consensus-backed-proxy without an authorityUrl is rejected", async () => {
     await expect(
       vetCore(
