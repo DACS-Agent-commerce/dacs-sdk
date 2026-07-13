@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
 
-import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type {
   AttestationBundle,
   CompositeVerificationRecord,
   Listing,
 } from "../artifacts/types.js";
 import { isAttestationBundle } from "../artifacts/validators.js";
-import { listingAddress, stripSignature } from "../canonical/index.js";
+import { stripSignature } from "../canonical/index.js";
 import {
   ed25519Verify,
   publicKeyFromRaw,
@@ -23,6 +22,7 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
+import { publishListingCore } from "./publishListingCore.js";
 import { discoverListings } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
 import { buildSignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
@@ -162,19 +162,14 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     },
 
     async publishListing(listing: Listing): Promise<PublishResult> {
-      const signed = await buildSignedArtifact(
-        listing,
-        ARTIFACT_SEPARATORS.Listing,
+      // Versioned, write-once publish (§6.3.4, #29/#46) — pure core over the
+      // adapter's anchor/read seam.
+      return publishListingCore(listing, {
         sign,
-      );
-      // Anchor at the VERSIONED §6.3.4 address so an edit publishes a new version
-      // at a new address and prior versions stay immutable — old bundles keep
-      // verifying against the version they pinned (#29). The seller bumps
-      // `listingVersion` on each edit; absent, it's the initial version 1.
-      const version = listing.listingVersion ?? 1;
-      const name = listingAddress(listing.agentId, listing.serviceId, version);
-      const { address, txRef } = await adapter.anchor(name, signed);
-      return { ref: address, txRef };
+        anchorAddress: (name) => adapter.anchorAddress(name),
+        readAnchor: (addr) => adapter.readAnchor(addr),
+        anchor: (name, value) => adapter.anchor(name, value),
+      });
     },
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
