@@ -130,7 +130,7 @@ export interface TwoSidedSession {
    * REQUIRED." Omit it for the ordinary two-party session, where no third signature is required.
    */
   orchestrator?: SigningSessionParty;
-  bundleVersion?: string;
+  bundleVersion?: "1";
 }
 
 export interface TwoSidedBundles {
@@ -195,6 +195,13 @@ export async function buildTwoSidedBundle(
     throw new DacsError(
       "agreementRef is required for a DACS-5 AttestationBundle: the builder refuses to sign " +
         "an artifact that is not accepted by the bundle validator.",
+    );
+  }
+
+  if (session.bundleVersion !== undefined && session.bundleVersion !== "1") {
+    throw new DacsError(
+      `bundleVersion "${session.bundleVersion}" is not supported by this v1 bundle signer. ` +
+        "Use bundleVersion \"1\" or omit it.",
     );
   }
 

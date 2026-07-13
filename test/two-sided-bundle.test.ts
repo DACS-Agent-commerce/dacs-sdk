@@ -162,6 +162,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       return { primaryClaim: p.primaryClaim, bundleHash: p.bundleHash, signer: stub };
     };
 
+    expect(g.bundleVersion).toBe("1");
     const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
       jobId: g.jobId,
       outcome: g.outcome as BundleOutcome,
@@ -173,7 +174,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       recipeRegistryVersion: g.recipeRegistryVersion,
       railRegistryVersion: g.railRegistryVersion,
       finalisedAt: g.finalisedAt,
-      bundleVersion: g.bundleVersion,
+      bundleVersion: g.bundleVersion as "1",
       buyer: partyOf("buyer"),
       seller: partyOf("seller"),
     });
@@ -229,6 +230,11 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
   test("ISC-11.1a ANTI: refuses to sign a bundle without the required agreementRef", async () => {
     const { agreementRef: _agreementRef, ...s } = session();
     await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/agreementRef is required/i);
+  });
+
+  test("ISC-11.1b ANTI: refuses a declared bundleVersion outside the v1 signing domain", async () => {
+    const s = { ...session(), bundleVersion: "2" };
+    await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/bundleVersion "2" is not supported/i);
   });
 
   // The gap the missing-seller guard CANNOT close: nothing is missing. Both parties sign, every
