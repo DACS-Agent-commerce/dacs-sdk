@@ -21,7 +21,9 @@ import {
   bundleSignedScope,
   attestationBundleHash,
   BUNDLE_SIGNED_SCOPE_OMIT,
+  BUNDLE_OUTCOMES,
 } from "../src/agent/twoSidedBundle.js";
+import type { BundleOutcome } from "../src/agent/twoSidedBundle.js";
 import type { AttestationBundle } from "../src/artifacts/types.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -51,7 +53,7 @@ const sellerClaim = `demos:0x${Buffer.from(publicKeyRaw(sellerSeed)).toString("h
 
 const session = () => ({
   jobId: "isc-session-1",
-  outcome: "completed",
+  outcome: "completed" as BundleOutcome,
   listingRef: { listingId: "lst-isc-1", version: 1, contentHash: "a".repeat(64) },
   agreementRef: {
     id: "dacs3:commit:isc-session-1",
@@ -162,7 +164,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
 
     const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
       jobId: g.jobId,
-      outcome: g.outcome,
+      outcome: g.outcome as BundleOutcome,
       listingRef: g.listingRef,
       agreementRef: g.agreementRef,
       phaseSummary: g.phaseSummary,
@@ -192,7 +194,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
   // spec/DACS-5-VERIFY.md:266 @origin/next=d289af1 — "Bundles whose outcome is `completed`,
   // `failed-perm`, `failed-counterparty`, or `failed-substrate` and that are missing any required
   // signature MUST be rejected by consumers."
-  const SPEC_CO_SIGNATURE_REQUIRED = [
+  const SPEC_CO_SIGNATURE_REQUIRED: BundleOutcome[] = [
     "completed",
     "failed-perm",
     "failed-counterparty",
@@ -200,7 +202,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
   ];
   // spec:267 — "A bundle whose outcome is `aborted-by-self` or `aborted-by-other` MAY carry a
   // single signature".
-  const SPEC_SINGLE_SIGNATURE_PERMITTED = ["aborted-by-self", "aborted-by-other"];
+  const SPEC_SINGLE_SIGNATURE_PERMITTED: BundleOutcome[] = ["aborted-by-self", "aborted-by-other"];
 
   test.each(SPEC_CO_SIGNATURE_REQUIRED)(
     "ISC-11 ANTI: refuses a single-signed %s (spec:266)",
@@ -215,7 +217,24 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     // A denylist would fail OPEN here — a future minor version's outcome, or a typo, would
     // silently produce the single-signed bundle consumers must drop.
     const s = { ...session(), outcome: "outcome-from-a-future-minor-version", seller: undefined };
-    await expect(buildTwoSidedBundle(s)).rejects.toThrow(/requires the seller's signature/i);
+    await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/not a DACS-5 bundle outcome/i);
+  });
+
+  // The gap the missing-seller guard CANNOT close: nothing is missing. Both parties sign, every
+  // signature verifies, and the artifact still is not a DACS-5 bundle because `outcome` is not in
+  // the spec's closed set (:177). Fixing only the single-signed path left this wide open — the
+  // invented `failed-buyer` still shipped, fully co-signed.
+  test.each(["failed-buyer", "failed-seller", "outcome-from-a-future-minor-version", ""])(
+    "ISC-11.3 ANTI: refuses a FULLY-SIGNED bundle whose outcome is not in the spec's set: %s",
+    async (outcome) => {
+      const s = { ...session(), outcome }; // seller PRESENT — two signatures, still invalid
+      await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/not a DACS-5 bundle outcome/i);
+    },
+  );
+
+  test.each([...BUNDLE_OUTCOMES])("ISC-11.4: accepts every outcome the spec names: %s", async (o) => {
+    const s = { ...session(), outcome: o };
+    await expect(buildTwoSidedBundle(s)).resolves.toBeDefined();
   });
 
   test.each(SPEC_SINGLE_SIGNATURE_PERMITTED)(
@@ -244,6 +263,29 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     // All three copies stay canonically equal — anchoredByRole is outside the hashed scope.
     expect(attestationBundleHash(buyerCopy)).toBe(attestationBundleHash(orchestratorCopy!));
     expect(orchestratorCopy!.anchoredByRole).toBe("orchestrator");
+  });
+
+  // §10.4.1 requires the orchestrator signature only when the orchestrator is a "distinct party
+  // (not buyer or seller)". When it IS one of them it is already a party and already a signer;
+  // adding it again yields a DUPLICATE signature and a phantom third role. "Distinct" is a
+  // condition, and a condition that is documented but not enforced is not a condition.
+  test.each([
+    ["buyer", () => session().buyer],
+    ["seller", () => session().seller],
+  ])("ISC-11.5 ANTI: an orchestrator that IS the %s is not a distinct party (spec:265)", async (
+    _label,
+    partyOf,
+  ) => {
+    const { buyerCopy, orchestratorCopy } = await buildTwoSidedBundle({
+      ...session(),
+      orchestrator: partyOf(),
+    });
+    expect(orchestratorCopy).toBeUndefined();
+    expect(buyerCopy.parties.map((p) => p.role).sort()).toEqual(["buyer", "seller"]);
+    expect(buyerCopy.signatures).toHaveLength(2);
+    // No party signs twice.
+    const signers = buyerCopy.signatures!.map((s) => s.party);
+    expect(new Set(signers).size).toBe(signers.length);
   });
 
   test("BUNDLE_SIGNED_SCOPE_OMIT is the single source for the omission set", () => {

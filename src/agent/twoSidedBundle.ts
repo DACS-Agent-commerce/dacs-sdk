@@ -39,7 +39,23 @@ export const BUNDLE_SIGNED_SCOPE_OMIT: readonly string[] = ["signatures", "ancho
  * minor version) silently yields a single-signed bundle, which is precisely the artifact
  * §10.4.1 orders consumers to drop. The spec's own structure is an allowlist; mirror it.
  */
-const SINGLE_SIGNATURE_PERMITTED = new Set(["aborted-by-self", "aborted-by-other"]);
+const SINGLE_SIGNATURE_PERMITTED = new Set<string>(["aborted-by-self", "aborted-by-other"]);
+
+/**
+ * The CLOSED set of bundle outcomes (§10.4.1, the `outcome` field of the AttestationBundle type).
+ * An outcome outside this set is not a DACS-5 bundle at all, however many signatures it carries —
+ * so it is rejected at construction, not merely when a signature is missing.
+ */
+export const BUNDLE_OUTCOMES = [
+  "completed",
+  "failed-perm",
+  "failed-counterparty",
+  "failed-substrate",
+  "aborted-by-self",
+  "aborted-by-other",
+] as const;
+
+export type BundleOutcome = (typeof BUNDLE_OUTCOMES)[number];
 
 /** The roles that can anchor a copy of a bundle (§10.4.2). */
 export type BundleRole = "buyer" | "seller" | "orchestrator";
@@ -64,7 +80,16 @@ export function attestationBundleHash(bundle: AttestationBundle): string {
 /** A party to the session, with whatever can sign on its behalf. */
 export interface SessionParty {
   primaryClaim: string;
-  /** Stands in for the party's DACS-1 IdentityBundle hash. */
+  /**
+   * §10.4.1 `SessionParty.bundleHash`: "sha256 of the verified IdentityBundle". It is NOT a hash
+   * of the agent id, and NOT the `attestation_bundle_hash`.
+   *
+   * Caller-supplied on purpose — this module cannot verify an IdentityBundle, and inventing a
+   * value here would bake a wrong one into every bundle. NOTE for whoever wires this up:
+   * `runSessionCore.ts:387` currently passes `sha256Hex(deps.buyerId)`, which is a hash of the
+   * agent id, not of an IdentityBundle. That is a conformance gap in the caller, and it survives
+   * this constructor because a 64-hex string is indistinguishable from the right one.
+   */
   bundleHash: string;
   /** A 32-byte Ed25519 seed, a prepared KeyObject, or a remote signing function. */
   signer: Uint8Array | KeyObject | ((bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array);
@@ -73,7 +98,12 @@ export interface SessionParty {
 /** The facts of one completed (or aborted) session, from which both copies are derived. */
 export interface TwoSidedSession {
   jobId: string;
-  outcome: string;
+  /**
+   * The closed set (§10.4.1). Typed for TS callers; the runtime guard in `buildTwoSidedBundle`
+   * still fires, because a JS caller or an `as any` erases the type and the spec's constraint is
+   * on the artifact, not on the type system.
+   */
+  outcome: BundleOutcome;
   listingRef: AttestationBundle["listingRef"];
   agreementRef?: AttestationBundle["agreementRef"];
   phaseSummary: AttestationBundle["phaseSummary"];
@@ -101,6 +131,11 @@ export interface TwoSidedBundles {
   buyerCopy: AttestationBundle;
   sellerCopy?: AttestationBundle;
   orchestratorCopy?: AttestationBundle;
+}
+
+/** Party identity is the primary claim (§10.4.1 `parties[].primaryClaim` = `bundle.presentedBy`). */
+function sameParty(a: SessionParty, b: SessionParty): boolean {
+  return a.primaryClaim.trim().toLowerCase() === b.primaryClaim.trim().toLowerCase();
 }
 
 async function signOver(party: SessionParty, hash: string): Promise<BundleSignature> {
@@ -133,7 +168,29 @@ async function signOver(party: SessionParty, hash: string): Promise<BundleSignat
 export async function buildTwoSidedBundle(
   session: TwoSidedSession,
 ): Promise<TwoSidedBundles> {
-  const { buyer, seller, orchestrator, outcome } = session;
+  const { buyer, seller, outcome } = session;
+
+  // Gate 1 — the outcome is in the spec's CLOSED set. Without this, a plausible-looking but
+  // non-existent outcome (`failed-buyer`, a typo, a future version's) rides through as a fully
+  // co-signed bundle: every signature verifies, and the artifact is still not a DACS-5 bundle.
+  // The missing-seller guard below cannot catch that, because nothing is missing.
+  if (!(BUNDLE_OUTCOMES as readonly string[]).includes(outcome)) {
+    throw new DacsError(
+      `outcome "${outcome}" is not a DACS-5 bundle outcome (§10.4.1). ` +
+        `Expected one of: ${BUNDLE_OUTCOMES.join(", ")}.`,
+    );
+  }
+
+  // Gate 2 — §10.4.1: the orchestrator signature is REQUIRED only when the orchestrator is a
+  // "distinct party (not buyer or seller)". When the orchestrator IS the buyer or the seller, it
+  // is already a party and already a signer; adding it again produces a duplicate signature and a
+  // phantom third role. Not distinct means not a separate party — so drop it.
+  const orchestrator =
+    session.orchestrator &&
+    !sameParty(session.orchestrator, buyer) &&
+    !(seller && sameParty(session.orchestrator, seller))
+      ? session.orchestrator
+      : undefined;
 
   if (seller === undefined && !SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
     throw new DacsError(
