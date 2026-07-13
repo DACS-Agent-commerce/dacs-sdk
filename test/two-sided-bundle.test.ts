@@ -21,7 +21,6 @@ import {
   bundleSignedScope,
   attestationBundleHash,
   BUNDLE_SIGNED_SCOPE_OMIT,
-  BUNDLE_OUTCOMES,
 } from "../src/agent/twoSidedBundle.js";
 import type { BundleOutcome } from "../src/agent/twoSidedBundle.js";
 import type { AttestationBundle } from "../src/artifacts/types.js";
@@ -249,9 +248,43 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     },
   );
 
-  test.each([...BUNDLE_OUTCOMES])("ISC-11.4: accepts every outcome the spec names: %s", async (o) => {
+  test.each([...SPEC_CO_SIGNATURE_REQUIRED, ...SPEC_SINGLE_SIGNATURE_PERMITTED])(
+    "ISC-11.4: accepts every spec outcome when required signers are present: %s",
+    async (o) => {
     const s = { ...session(), outcome: o };
     await expect(buildTwoSidedBundle(s)).resolves.toBeDefined();
+    },
+  );
+
+  test.each([
+    ["failed-counterparty", "failed-perm"],
+    ["failed-perm", "failed-counterparty"],
+    ["aborted-by-other", "aborted-by-self"],
+    ["aborted-by-self", "aborted-by-other"],
+  ] as const)(
+    "ISC-11.4a: seller copy flips buyer-perspective %s to seller-perspective %s",
+    async (buyerOutcome, sellerOutcome) => {
+      const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
+        ...session(),
+        outcome: buyerOutcome,
+      });
+      expect(buyerCopy.outcome).toBe(buyerOutcome);
+      expect(sellerCopy?.outcome).toBe(sellerOutcome);
+      expect(buyerCopy.signatures).toHaveLength(2);
+      expect(sellerCopy?.signatures).toHaveLength(2);
+    },
+  );
+
+  test("ISC-11.4b: seller copy flips perspective-bearing phase attribution", async () => {
+    const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
+      ...session(),
+      outcome: "failed-counterparty",
+      phaseSummary: [
+        { index: 0, kind: "settle", outcome: "fail", errorClass: "counterparty" } as never,
+      ],
+    });
+    expect(buyerCopy.phaseSummary[0]).toMatchObject({ errorClass: "counterparty" });
+    expect(sellerCopy?.phaseSummary[0]).toMatchObject({ errorClass: "permanent" });
   });
 
   test.each(SPEC_SINGLE_SIGNATURE_PERMITTED)(

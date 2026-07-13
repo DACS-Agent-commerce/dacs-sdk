@@ -1,11 +1,11 @@
 /**
  * DACS-5 §10.4.1/§10.4.2 — two-sided co-signed AttestationBundle production.
  *
- * Both parties co-sign ONE canonical content; each anchors its own copy, marked with its
+ * Both parties co-sign the anchored copy content; each anchors its own copy, marked with its
  * own `anchoredByRole`. The copies are canonically EQUAL in the happy path because
- * `anchoredByRole` is excluded from the hashed scope alongside `signatures` (§10.4.1) —
- * a recognised, specified omission, integrity-checked against the anchor address (§10.4.2)
- * rather than by the signature.
+ * `anchoredByRole` is excluded from the hashed scope alongside `signatures` (§10.4.1). Fault
+ * outcomes are anchorer-perspective (§10.4 / §10.5), so the buyer and seller copies may carry
+ * flipped outcomes and therefore distinct hashes while still carrying the required signatures.
  *
  * Why this module owns the omission set: `canonical/hash.ts` strips only
  * `signature`/`signatures`, so `contentHash()` — and therefore `signArtifact()` — computes
@@ -148,6 +148,44 @@ function canSign(party: SessionParty): party is SigningSessionParty {
   return party.signer !== undefined;
 }
 
+function perspectiveFlip(outcome: BundleOutcome): BundleOutcome {
+  switch (outcome) {
+    case "aborted-by-self":
+      return "aborted-by-other";
+    case "aborted-by-other":
+      return "aborted-by-self";
+    case "failed-perm":
+      return "failed-counterparty";
+    case "failed-counterparty":
+      return "failed-perm";
+    default:
+      return outcome;
+  }
+}
+
+function perspectiveFlipString(value: string): string {
+  switch (value) {
+    case "aborted-by-self":
+      return "aborted-by-other";
+    case "aborted-by-other":
+      return "aborted-by-self";
+    case "failed-perm":
+      return "failed-counterparty";
+    case "failed-counterparty":
+      return "failed-perm";
+    case "permanent":
+      return "counterparty";
+    case "counterparty":
+      return "permanent";
+    default:
+      return value;
+  }
+}
+
+function outcomeForRole(outcome: BundleOutcome, role: BundleRole): BundleOutcome {
+  return role === "seller" ? perspectiveFlip(outcome) : outcome;
+}
+
 async function signOver(party: SigningSessionParty, hash: string): Promise<BundleSignature> {
   const payload = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, hash);
   const raw =
@@ -167,10 +205,9 @@ async function signOver(party: SigningSessionParty, hash: string): Promise<Bundl
 /**
  * Build the two anchored copies of a session's AttestationBundle.
  *
- * Both copies carry both parties and both signatures over one identical canonical content; they
- * differ only in the unhashed `anchoredByRole`. Each copy is anchored by its named role
- * (§10.4.2), and a consumer rejects any copy whose `anchoredByRole` disagrees with the address it
- * came from.
+ * Both completed/happy-path copies carry both parties and both signatures over one identical
+ * canonical content and differ only in the unhashed `anchoredByRole`. Perspective-relative fault
+ * outcomes are emitted per anchoring role, and both parties sign each emitted copy.
  *
  * A single-signed bundle is valid ONLY for an abort outcome (§10.4.1): a single-signed
  * `completed`/`failed-*` MUST be dropped by every consumer, so this refuses to produce one.
@@ -232,7 +269,6 @@ export async function buildTwoSidedBundle(
           .join(" or ")} may be single-signed.`,
     );
   }
-
   const parties: BundleParty[] = [
     { role: "buyer", bundleHash: buyer.bundleHash, primaryClaim: buyer.primaryClaim },
     { role: "seller", bundleHash: seller.bundleHash, primaryClaim: seller.primaryClaim },
@@ -247,37 +283,48 @@ export async function buildTwoSidedBundle(
       : []),
   ];
 
-  // The shared body — identical for both copies. `anchoredByRole` is stamped per copy afterwards
-  // and is outside the hashed scope, so it cannot change the hash or invalidate a signature.
-  const body = {
+  const phaseSummaryFor = (role: BundleRole): AttestationBundle["phaseSummary"] => {
+    if (role !== "seller") return session.phaseSummary;
+    return session.phaseSummary.map((phase) => {
+      const next = { ...phase } as typeof phase & { errorClass?: unknown };
+      if (typeof next.outcome === "string") next.outcome = perspectiveFlipString(next.outcome);
+      if (typeof next.errorClass === "string") next.errorClass = perspectiveFlipString(next.errorClass);
+      return next;
+    });
+  };
+
+  const bodyFor = (role: BundleRole) => ({
     bundleVersion: session.bundleVersion ?? "1",
     jobId: session.jobId,
-    outcome,
+    outcome: outcomeForRole(outcome, role),
     listingRef: session.listingRef,
     agreementRef: session.agreementRef,
     parties,
-    phaseSummary: session.phaseSummary,
+    phaseSummary: phaseSummaryFor(role),
     vetRecords: session.vetRecords,
     settlementEvidence: session.settlementEvidence,
     recipeRegistryVersion: session.recipeRegistryVersion,
     railRegistryVersion: session.railRegistryVersion,
     finalisedAt: session.finalisedAt,
-  } as unknown as AttestationBundle;
+  }) as unknown as AttestationBundle;
 
-  const hash = attestationBundleHash(body);
+  const signers: SigningSessionParty[] = [
+    buyer,
+    ...(sellerSigner ? [sellerSigner] : []),
+    ...(orchestrator ? [orchestrator] : []),
+  ];
 
-  // Both parties sign the SAME hash. This is what makes the copies canonically equal, and what
-  // the ten live Directory deals are missing: each side there signed only its own self-portrait.
-  const signatures: BundleSignature[] = [await signOver(buyer, hash)];
-  if (sellerSigner) signatures.push(await signOver(sellerSigner, hash));
-  if (orchestrator) signatures.push(await signOver(orchestrator, hash));
-
-  const copy = (role: BundleRole): AttestationBundle =>
-    ({ ...body, anchoredByRole: role, signatures }) as AttestationBundle;
+  const copy = async (role: BundleRole): Promise<AttestationBundle> => {
+    const body = bodyFor(role);
+    const hash = attestationBundleHash(body);
+    const signatures: BundleSignature[] = [];
+    for (const signer of signers) signatures.push(await signOver(signer, hash));
+    return { ...body, anchoredByRole: role, signatures } as AttestationBundle;
+  };
 
   return {
-    buyerCopy: copy("buyer"),
-    ...(sellerSigner ? { sellerCopy: copy("seller") } : {}),
-    ...(orchestrator ? { orchestratorCopy: copy("orchestrator") } : {}),
+    buyerCopy: await copy("buyer"),
+    ...(sellerSigner ? { sellerCopy: await copy("seller") } : {}),
+    ...(orchestrator ? { orchestratorCopy: await copy("orchestrator") } : {}),
   };
 }

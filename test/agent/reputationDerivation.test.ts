@@ -139,6 +139,35 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.metrics.completionRate).toBe(1);
   });
 
+  test("perspective-flipped buyer/seller fault copies reconcile as one event", () => {
+    const copies = [
+      bundle("j1", "failed-counterparty", 1100, "buyer"),
+      bundle("j1", "failed-perm", 1100, "seller"),
+    ];
+    const buyer = deriveReputation(PARTY, copies, WINDOW, { trustBundles: true });
+    expect(buyer.bundleCount).toBe(1);
+    expect(buyer.metrics.counterpartyFaultRate).toBe(1);
+
+    const seller = deriveReputation(CP, copies, WINDOW, { trustBundles: true });
+    expect(seller.bundleCount).toBe(1);
+    expect(seller.metrics.counterpartyFaultRate).toBe(0);
+    expect(seller.metrics.completionRate).toBe(0);
+  });
+
+  test("perspective-flipped phase attribution does not create a false divergence", () => {
+    const buyerCopy = bundle("j1", "failed-counterparty", 1100, "buyer");
+    buyerCopy.phaseSummary = [
+      { index: 0, kind: "settle", outcome: "fail", errorClass: "counterparty" } as never,
+    ];
+    const sellerCopy = bundle("j1", "failed-perm", 1100, "seller");
+    sellerCopy.phaseSummary = [
+      { index: 0, kind: "settle", outcome: "fail", errorClass: "permanent" } as never,
+    ];
+    const r = deriveReputation(PARTY, [buyerCopy, sellerCopy], WINDOW, { trustBundles: true });
+    expect(r.bundleCount).toBe(1);
+    expect(r.metrics.counterpartyFaultRate).toBe(1);
+  });
+
   test("counterparty-only copy is perspective-flipped (aborted-by-self → other)", () => {
     // Only the seller's copy exists; from the buyer's view its 'aborted-by-self'
     // becomes 'aborted-by-other' (counterparty fault).

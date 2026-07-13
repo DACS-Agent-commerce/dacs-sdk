@@ -101,17 +101,49 @@ function perspectiveFlip(outcome: string): string {
   }
 }
 
+function perspectiveFlipPhaseValue(value: unknown): unknown {
+  switch (value) {
+    case "aborted-by-self":
+      return "aborted-by-other";
+    case "aborted-by-other":
+      return "aborted-by-self";
+    case "failed-perm":
+      return "failed-counterparty";
+    case "failed-counterparty":
+      return "failed-perm";
+    case "permanent":
+      return "counterparty";
+    case "counterparty":
+      return "permanent";
+    default:
+      return value;
+  }
+}
+
 /** §10.4.3(d) "canonically diverge": contradictory outcome or phaseSummary outcome/errorClass. */
 function canonicallyDiverge(a: AttestationBundle, b: AttestationBundle): boolean {
-  if (a.outcome !== b.outcome) return true;
+  const buyerSellerPair =
+    (a.anchoredByRole === "buyer" && b.anchoredByRole === "seller") ||
+    (a.anchoredByRole === "seller" && b.anchoredByRole === "buyer");
+  if (a.outcome !== b.outcome && !(buyerSellerPair && perspectiveFlip(a.outcome) === b.outcome))
+    return true;
   const pa = a.phaseSummary ?? [];
   const pb = b.phaseSummary ?? [];
   if (pa.length !== pb.length) return true;
   for (let i = 0; i < pa.length; i++) {
-    if (pa[i]!.outcome !== pb[i]!.outcome) return true;
+    if (
+      pa[i]!.outcome !== pb[i]!.outcome &&
+      !(buyerSellerPair && perspectiveFlipPhaseValue(pa[i]!.outcome) === pb[i]!.outcome)
+    )
+      return true;
     if (
       (pa[i] as { errorClass?: unknown }).errorClass !==
-      (pb[i] as { errorClass?: unknown }).errorClass
+        (pb[i] as { errorClass?: unknown }).errorClass &&
+      !(
+        buyerSellerPair &&
+        perspectiveFlipPhaseValue((pa[i] as { errorClass?: unknown }).errorClass) ===
+          (pb[i] as { errorClass?: unknown }).errorClass
+      )
     )
       return true;
   }
