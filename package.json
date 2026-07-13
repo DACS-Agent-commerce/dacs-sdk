@@ -71,6 +71,7 @@
   },
   "devDependencies": {
     "@types/node": "^20",
+    "ganache": "7.9.2",
     "typescript": "^5",
     "vitest": "^4.0.18"
   }
