@@ -28,7 +28,7 @@ import type { AttestationBundle, BundleParty, BundleSignature } from "../artifac
  * The bundle's hash-excluded fields (§10.4.1). SINGLE SOURCE — a producer and a verifier that
  * disagree on this set produce signatures that do not verify.
  */
-export const BUNDLE_SIGNED_SCOPE_OMIT: readonly string[] = ["signatures", "anchoredByRole"];
+export const BUNDLE_SIGNED_SCOPE_OMIT = Object.freeze(["signatures", "anchoredByRole"] as const);
 
 /**
  * The ONLY outcomes a single-signed bundle may carry (§10.4.1): "A bundle whose outcome is
@@ -46,14 +46,14 @@ const SINGLE_SIGNATURE_PERMITTED = new Set<string>(["aborted-by-self", "aborted-
  * An outcome outside this set is not a DACS-5 bundle at all, however many signatures it carries —
  * so it is rejected at construction, not merely when a signature is missing.
  */
-export const BUNDLE_OUTCOMES = [
+export const BUNDLE_OUTCOMES = Object.freeze([
   "completed",
   "failed-perm",
   "failed-counterparty",
   "failed-substrate",
   "aborted-by-self",
   "aborted-by-other",
-] as const;
+] as const);
 
 export type BundleOutcome = (typeof BUNDLE_OUTCOMES)[number];
 
@@ -64,7 +64,7 @@ export type BundleRole = "buyer" | "seller" | "orchestrator";
 export function bundleSignedScope(bundle: AttestationBundle): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(bundle)) {
-    if (!BUNDLE_SIGNED_SCOPE_OMIT.includes(k)) out[k] = v;
+    if (!(BUNDLE_SIGNED_SCOPE_OMIT as readonly string[]).includes(k)) out[k] = v;
   }
   return out;
 }
@@ -105,7 +105,7 @@ export interface TwoSidedSession {
    */
   outcome: BundleOutcome;
   listingRef: AttestationBundle["listingRef"];
-  agreementRef?: AttestationBundle["agreementRef"];
+  agreementRef: AttestationBundle["agreementRef"];
   phaseSummary: AttestationBundle["phaseSummary"];
   vetRecords: AttestationBundle["vetRecords"];
   settlementEvidence: AttestationBundle["settlementEvidence"];
@@ -181,6 +181,13 @@ export async function buildTwoSidedBundle(
     );
   }
 
+  if (!session.agreementRef) {
+    throw new DacsError(
+      "agreementRef is required for a DACS-5 AttestationBundle: the builder refuses to sign " +
+        "an artifact that is not accepted by the bundle validator.",
+    );
+  }
+
   // Gate 2 — §10.4.1: the orchestrator signature is REQUIRED only when the orchestrator is a
   // "distinct party (not buyer or seller)". When the orchestrator IS the buyer or the seller, it
   // is already a party and already a signer; adding it again produces a duplicate signature and a
@@ -224,7 +231,7 @@ export async function buildTwoSidedBundle(
     jobId: session.jobId,
     outcome,
     listingRef: session.listingRef,
-    ...(session.agreementRef ? { agreementRef: session.agreementRef } : {}),
+    agreementRef: session.agreementRef,
     parties,
     phaseSummary: session.phaseSummary,
     vetRecords: session.vetRecords,

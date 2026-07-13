@@ -48,6 +48,18 @@ export {
   type SettleResult,
 } from "./runSessionCore.js";
 export {
+  buildTwoSidedBundle,
+  bundleSignedScope,
+  attestationBundleHash,
+  BUNDLE_SIGNED_SCOPE_OMIT,
+  BUNDLE_OUTCOMES,
+  type BundleOutcome,
+  type BundleRole,
+  type SessionParty,
+  type TwoSidedSession,
+  type TwoSidedBundles,
+} from "./twoSidedBundle.js";
+export {
   buildSignedArtifact,
   verifySignedArtifact,
   type SignedArtifact,

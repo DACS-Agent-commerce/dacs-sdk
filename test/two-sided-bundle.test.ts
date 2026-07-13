@@ -220,6 +220,11 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/not a DACS-5 bundle outcome/i);
   });
 
+  test("ISC-11.1a ANTI: refuses to sign a bundle without the required agreementRef", async () => {
+    const { agreementRef: _agreementRef, ...s } = session();
+    await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/agreementRef is required/i);
+  });
+
   // The gap the missing-seller guard CANNOT close: nothing is missing. Both parties sign, every
   // signature verifies, and the artifact still is not a DACS-5 bundle because `outcome` is not in
   // the spec's closed set (:177). Fixing only the single-signed path left this wide open — the
