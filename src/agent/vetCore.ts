@@ -7,6 +7,11 @@ import type {
 } from "../artifacts/types.js";
 import type { RecipeDescriptor } from "../registry/types.js";
 import { cciHasClaim, cciClaimProof, type CciRecord } from "../identity/index.js";
+import {
+  evaluateParserSpec,
+  defaultParserEngine,
+  type ParserEngine,
+} from "./parserSpec.js";
 
 /**
  * Composite decision over per-method results (DACS-2 §7.7) — worst result
@@ -70,10 +75,12 @@ function readSanctioned(
  *  - self-signed: the subject self-asserts; recorded as a pass with the subject
  *    as its own authority.
  *  - consensus-backed-proxy: a DAHR proxy fetch of the recipe's authority URL;
- *    a 2xx is a pass, attested by the proxy's response hash. An optional injected
- *    `checkBody` policy (#16a) can refine a 2xx from the attested body, so
- *    content-based rules ("the binding matches the claimed login") are
- *    expressible instead of status-code-only.
+ *    a 2xx is a pass, attested by the proxy's response hash. When the signed
+ *    recipe carries a §7.4.1 `parserRules` ParserSpec, the attested body is
+ *    evaluated against it (PSP-1..5) for a content-based, DETERMINISTIC verdict —
+ *    polarity (negativeMatch), indeterminateOn precedence, parse-error → error,
+ *    and the PSP-5 completeness floor — via an injected parser engine that only
+ *    reports predicate matches, never the decision.
  *  - cci-claim: the subject must hold a specific linked claim in its CCI record
  *    (DACS-1) — e.g. a verified X handle or a bound wallet. Resolves the record
  *    and passes iff `params.requiredClaim` is present.
@@ -94,6 +101,14 @@ export interface VetProxyResult {
   responseHash: string;
   /** The proxied response body, when the method needs to inspect it (e.g. ofac-screen). */
   body?: string;
+  /**
+   * PSP-5 completeness signal: whether the proxy confirmed the response was
+   * COMPLETE (declared record-count / end-of-list sentinel / Content-Length ==
+   * received bytes). Only consulted for a `requiresListCompleteness` negative-
+   * match recipe — a `pass` on an unconfirmed/partial response is downgraded to
+   * `indeterminate`.
+   */
+  complete?: boolean;
 }
 
 export interface VetDeps {
@@ -107,20 +122,14 @@ export interface VetDeps {
    */
   resolveCci?: (subject: string) => Promise<CciRecord>;
   /**
-   * OPTIONAL content policy for `consensus-backed-proxy` (#16a). Status-only
-   * `2xx ⇒ pass` can't express body-dependent policies ("the CCI binding matches
-   * the claimed login", "account older than a year", …). When supplied, it runs
-   * on a 2xx response and its verdict REFINES the result — a definite `fail`/
-   * `indeterminate` overrides the bare pass; `pass` confirms it; `null` defers to
-   * the status-only verdict. The DAHR `responseHash` still records the exact body
-   * the decision rested on. The `recipe.params` carry the policy criteria; this
-   * hook is the executor, mirroring how `proxyFetch`/`resolveCci` are injected.
+   * Parser-engine seam (DACS-2 §7.4.1 / #16). When a `consensus-backed-proxy`
+   * recipe carries `parserRules`, the signed ParserSpec is evaluated against the
+   * attested body per PSP-1..5 — the engine only reports low-level predicate
+   * matches (JSONPath/selector/XPath/regex), while the deterministic decision
+   * (polarity, indeterminateOn, error/completeness mapping) is fixed by the
+   * recipe, NOT this dep. Defaults to {@link defaultParserEngine} (json + raw).
    */
-  checkBody?: (
-    body: string | undefined,
-    recipe: RecipeDescriptor,
-    subject: string,
-  ) => VerificationDecision | null;
+  parserEngine?: ParserEngine;
 }
 
 export interface VetRequest {
@@ -159,13 +168,22 @@ export async function vetCore(
       const res = await deps.proxyFetch({ url });
       const ok = res.status >= 200 && res.status < 300;
       // Status first: a non-2xx is a definite fail regardless of body. On a 2xx,
-      // an optional content policy (#16a) can refine the verdict from the DAHR-
-      // attested body — e.g. downgrade to `fail`/`indeterminate` when the body
-      // doesn't satisfy the recipe's criteria. Absent the hook, status-only.
-      let status: VerificationDecision = ok ? "pass" : "fail";
-      if (ok && deps.checkBody) {
-        const refined = deps.checkBody(res.body, recipe, subject);
-        if (refined) status = refined;
+      // if the signed recipe carries a ParserSpec (§7.4.1), evaluate it against
+      // the DAHR-attested body — the verdict (polarity, indeterminateOn, error,
+      // PSP-5 completeness) is fixed deterministically by the recipe, not by the
+      // caller. Absent parserRules, status-only `2xx ⇒ pass`.
+      let status: VerificationDecision;
+      if (!ok) {
+        status = "fail";
+      } else if (recipe.parserRules) {
+        const engine: ParserEngine = deps.parserEngine ?? defaultParserEngine;
+        status = evaluateParserSpec(recipe.parserRules, res.body ?? "", engine, {
+          negativeMatch: recipe.negativeMatch === true,
+          requiresCompleteness: recipe.requiresListCompleteness === true,
+          listComplete: res.complete === true,
+        }).decision;
+      } else {
+        status = "pass";
       }
       results.push({
         claimRef: subject,

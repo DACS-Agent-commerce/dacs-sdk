@@ -32,6 +32,20 @@ export {
   type VetProxyResult,
 } from "./vetCore.js";
 export {
+  evaluateParserSpec,
+  defaultParserEngine,
+  successExpr,
+  predicateExpr,
+  type ParserSpec,
+  type ParserFormat,
+  type IndeterminatePredicate,
+  type ParserEngine,
+  type ParserEvalContext,
+  type ParserEvaluation,
+  type ParserDecision,
+  type PredicateResult,
+} from "./parserSpec.js";
+export {
   runSessionCore,
   type SessionResult,
   type SessionTerms,

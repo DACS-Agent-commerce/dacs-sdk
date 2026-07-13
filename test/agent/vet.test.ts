@@ -63,57 +63,87 @@ describe("vetCore (DACS-2 Vet stage)", () => {
     expect(cvr.results[0]!.status).toBe("fail");
   });
 
-  // #16a — a content policy can refine a 2xx from the DAHR-attested body.
-  const bodyDeps = (body: string, check: VetDeps["checkBody"]): VetDeps => ({
-    proxyFetch: async () => ({ status: 200, responseHash: "0xhash", body }),
+  // #16/#49 — a signed ParserSpec drives a DETERMINISTIC content verdict from the
+  // DAHR-attested body (PSP-1..5), evaluated by the default json/raw engine.
+  const bodyDeps = (body: string, complete?: boolean): VetDeps => ({
+    proxyFetch: async () => ({ status: 200, responseHash: "0xhash", body, ...(complete !== undefined ? { complete } : {}) }),
     now: () => "2026-01-01T00:00:00Z",
-    checkBody: check,
   });
-  const proxyReq = {
+  const proxyRecipe = (over: Partial<RecipeDescriptor>) =>
+    recipe({ method: "consensus-backed-proxy", params: { authorityUrl: "https://x/y" }, ...over });
+  const req = (over: Partial<RecipeDescriptor>) => ({
     subject: "did:demos:agent:alice",
-    recipe: recipe({ method: "consensus-backed-proxy", params: { authorityUrl: "https://x/y", expectLogin: "alice" } }),
-  };
+    recipe: proxyRecipe(over),
+  });
 
-  test("checkBody downgrades a 2xx to fail when the body doesn't satisfy the policy (#16a)", async () => {
+  test("ParserSpec positive-match: JSONPath match ⇒ pass, no match ⇒ fail (PSP-1/2)", async () => {
+    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.login" };
+    expect(
+      (await vetCore(req({ parserRules: rules }), bodyDeps(JSON.stringify({ login: "alice" })))).decision,
+    ).toBe("pass");
+    expect(
+      (await vetCore(req({ parserRules: rules }), bodyDeps(JSON.stringify({ other: 1 })))).decision,
+    ).toBe("fail");
+    // Evidence is still recorded.
+    const r = await vetCore(req({ parserRules: rules }), bodyDeps(JSON.stringify({ login: "alice" })));
+    expect(r.results[0]!.responseHash).toBe("0xhash");
+  });
+
+  test("ParserSpec negative-match: a match ⇒ fail (listed), no match ⇒ pass (PSP-2)", async () => {
+    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.listed" };
+    const opts = { parserRules: rules, negativeMatch: true };
+    expect(
+      (await vetCore(req(opts), bodyDeps(JSON.stringify({ listed: true })))).decision,
+    ).toBe("fail");
+    expect(
+      (await vetCore(req(opts), bodyDeps(JSON.stringify({ clean: true })))).decision,
+    ).toBe("pass");
+  });
+
+  test("ParserSpec indeterminateOn is evaluated BEFORE the match ⇒ indeterminate (PSP-2)", async () => {
+    const rules: RecipeDescriptor["parserRules"] = {
+      format: "json",
+      successJsonPath: "$.login",
+      indeterminateOn: [{ jsonPath: "$.pending" }],
+    };
     const cvr = await vetCore(
-      proxyReq,
-      bodyDeps(JSON.stringify({ login: "mallory" }), (body, r) => {
-        const login = JSON.parse(body ?? "{}").login;
-        return login === r.params["expectLogin"] ? "pass" : "fail";
-      }),
+      req({ parserRules: rules }),
+      bodyDeps(JSON.stringify({ login: "alice", pending: true })),
     );
-    expect(cvr.decision).toBe("fail");
-    // The evidence the decision rested on is still recorded.
-    expect(cvr.results[0]!.responseHash).toBe("0xhash");
+    expect(cvr.decision).toBe("indeterminate");
   });
 
-  test("checkBody confirms a 2xx when the body matches (#16a)", async () => {
-    const cvr = await vetCore(
-      proxyReq,
-      bodyDeps(JSON.stringify({ login: "alice" }), (body, r) =>
-        JSON.parse(body ?? "{}").login === r.params["expectLogin"] ? "pass" : "fail",
-      ),
-    );
-    expect(cvr.decision).toBe("pass");
+  test("ParserSpec on a malformed body ⇒ error, never fail (PSP-2)", async () => {
+    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.login" };
+    const cvr = await vetCore(req({ parserRules: rules }), bodyDeps("{not json"));
+    expect(cvr.decision).toBe("error");
   });
 
-  test("checkBody returning null defers to the status-only verdict (#16a)", async () => {
-    const cvr = await vetCore(proxyReq, bodyDeps("anything", () => null));
-    expect(cvr.decision).toBe("pass");
+  test("PSP-5: a negative-match pass on an unconfirmed-complete list ⇒ indeterminate", async () => {
+    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.hit" };
+    const opts = { parserRules: rules, negativeMatch: true, requiresListCompleteness: true };
+    // No hit (would be "not listed" = pass) but completeness unconfirmed → indeterminate.
+    expect(
+      (await vetCore(req(opts), bodyDeps(JSON.stringify({ records: [] }), false))).decision,
+    ).toBe("indeterminate");
+    // …confirmed complete → the pass stands.
+    expect(
+      (await vetCore(req(opts), bodyDeps(JSON.stringify({ records: [] }), true))).decision,
+    ).toBe("pass");
   });
 
-  test("checkBody is NOT consulted on a non-2xx (status fails first)", async () => {
-    let called = false;
-    const cvr = await vetCore(proxyReq, {
-      proxyFetch: async () => ({ status: 404, responseHash: "0xhash", body: "{}" }),
+  test("a non-2xx fails first — parserRules are not consulted", async () => {
+    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.login" };
+    const cvr = await vetCore(req({ parserRules: rules }), {
+      proxyFetch: async () => ({ status: 404, responseHash: "0xhash", body: '{"login":"alice"}' }),
       now: () => "2026-01-01T00:00:00Z",
-      checkBody: () => {
-        called = true;
-        return "pass";
-      },
     });
     expect(cvr.decision).toBe("fail");
-    expect(called).toBe(false);
+  });
+
+  test("no parserRules ⇒ status-only 2xx pass (back-compat)", async () => {
+    const cvr = await vetCore(req({}), bodyDeps("anything"));
+    expect(cvr.decision).toBe("pass");
   });
 
   test("consensus-backed-proxy without an authorityUrl is rejected", async () => {
