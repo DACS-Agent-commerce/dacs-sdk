@@ -50,10 +50,13 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
   };
 
   // The SDK's Listing / CompositeVerificationRecord / AgreementDocument are the
-  // reduced MVP shapes; the v0.2 vectors (#7) carry the full normative shapes
+  // reduced MVP shapes; the v0.3 vectors carry the full normative shapes
   // (seller.identity, evaluatedParty/requirementHash/dealSpecific, parties[]…).
-  // Bringing the SDK validators up to those shapes is the #5 artifact-fidelity
-  // rewrite, not this vector re-point — so skip the shape check for those three.
+  // These are KNOWN, ACTIONABLE conformance gaps — NOT skipped: each runs as an
+  // `it.fails` asserting the reduced validator does NOT yet accept the normative
+  // shape. When the #5 artifact-fidelity rewrite brings the validators up, these
+  // flip RED (a passing body under `it.fails` fails), forcing their removal — so
+  // the gap can't silently rot green. (Vector-replay coverage is tracked in #6.)
   const REDUCED_SHAPE_KINDS = new Set([
     "Listing",
     "CompositeVerificationRecord",
@@ -65,10 +68,12 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     const validator = VALIDATORS[kind];
     if (!validator) continue;
 
-    it.skipIf(REDUCED_SHAPE_KINDS.has(kind))(
-      `${kind}: validator accepts the fixture`,
+    const knownGap = REDUCED_SHAPE_KINDS.has(kind);
+    const runner = knownGap ? it.fails : it;
+    runner(
+      `${kind}: validator accepts the fixture${knownGap ? " — KNOWN GAP: reduced vs normative shape (#5)" : ""}`,
       () => {
-        // The v0.2 vector's in-body SettlementEvidence/AttestationBundle omit
+        // The v0.3 vector's in-body SettlementEvidence/AttestationBundle omit
         // fields the SDK still carries (e.g. SB-1 recovers phaseIndex from the
         // anchor address, not the body), so validate the rich reference fixtures.
         const fixture =

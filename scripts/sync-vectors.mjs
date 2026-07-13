@@ -14,10 +14,10 @@ const REPO =
   process.env.DACS_STANDARD_REPO ||
   "https://github.com/DACS-Agent-commerce/DACS-Standard.git";
 // Pinned for reproducible conformance runs. Bump deliberately.
-// v0.2 tag (7a3117e) — adds SB-1..3 session-bound settlement, pay-dem, ST-9/10,
-// §11.1.2 additivity. Was v0.1 (239d646). See #7.
+// v0.3 tag (cc01cda) — the latest released Standard. Was v0.1 (239d646); v0.2
+// (7a3117e) was obsolete by the time this landed. See #7.
 const REF =
-  process.env.DACS_STANDARD_REF || "7a3117e9e47607c7c3fec39254c7b16939245631";
+  process.env.DACS_STANDARD_REF || "cc01cdaee14e7def1c293e648a0bd30e7111cf8e";
 
 function git(args, cwd) {
   execFileSync("git", args, { cwd, stdio: "inherit" });
