@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 
@@ -8,7 +9,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import { verifyBundleCore, type VerifyBundleDeps } from "../../src/agent/verifyBundleCore.js";
-import { buildTwoSidedBundle } from "../../src/agent/twoSidedBundle.js";
+import { attestationBundleHash, buildTwoSidedBundle } from "../../src/agent/twoSidedBundle.js";
 import type {
   AgreementDocument,
   AttestationRef,
@@ -29,6 +30,7 @@ import {
 import { x402SettleCore, type X402ClientLike } from "../../src/rails/x402.js";
 
 const RUN = process.env.DACS_LOCAL_CHAIN_E2E === "1";
+const PROOF_OUTDIR = process.env.DACS_LOCAL_CHAIN_E2E_OUTDIR?.trim();
 const CHAIN_ID = 31337;
 const NETWORK = `eip155:${CHAIN_ID}`;
 const AMOUNT = "1000000";
@@ -67,9 +69,19 @@ function didFor(seed: Uint8Array): string {
   return `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
 }
 
+function publicKeyHex(seed: Uint8Array): string {
+  return Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex");
+}
+
 function resolveFromDid(did: string): Uint8Array | null {
   const hex = did.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
   return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
+}
+
+async function writeProofArtifact(name: string, value: unknown): Promise<void> {
+  if (!PROOF_OUTDIR) return;
+  await mkdir(PROOF_OUTDIR, { recursive: true });
+  await writeFile(`${PROOF_OUTDIR}/${name}`, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 function memStore() {
@@ -418,6 +430,21 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           },
         });
         expect(sellerCopy).toBeDefined();
+        await writeProofArtifact("buyer.bundle.json", buyerCopy);
+        await writeProofArtifact("seller.bundle.json", sellerCopy);
+        await writeProofArtifact("public-keys.json", {
+          [buyerDid]: publicKeyHex(BUYER_SEED),
+          [sellerDid]: publicKeyHex(SELLER_SEED),
+        });
+        await writeProofArtifact("proof-metadata.json", {
+          jobId: JOB_ID,
+          chainId: CHAIN_ID,
+          network: NETWORK,
+          tokenAddress,
+          txHash: settlement.txHash,
+          buyerBundleHash: attestationBundleHash(buyerCopy),
+          sellerBundleHash: attestationBundleHash(sellerCopy!),
+        });
         const buyerBundleRef = await sub.anchor(`dacs5:bundle:${JOB_ID}:buyer`, buyerCopy);
         const sellerBundleRef = await sub.anchor(`dacs5:bundle:${JOB_ID}:seller`, sellerCopy!);
 
