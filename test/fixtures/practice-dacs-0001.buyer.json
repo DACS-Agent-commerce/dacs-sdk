@@ -1,0 +1,83 @@
+{
+ "jobId": "practice-dacs-0001",
+ "outcome": "completed",
+ "parties": [
+  {
+   "role": "buyer",
+   "bundleHash": "304a7732a29fa360243a27c28410e3807cfdb8f14c28ac865875b2bd9ca6e563",
+   "primaryClaim": "demos:0xd2e69547a397338b39de33966cae93f4601e32cccf07c38e4d4be21146a4504f"
+  },
+  {
+   "role": "seller",
+   "bundleHash": "fdbdf9393789b1964ffcc6d83fcb6240d7296c58cb0e8d085aeceaf5c924ca30",
+   "primaryClaim": "demos:0x686456d0d07abbd07167ab252f0a9efb7acc409f0bd18daf3a8189f6397d6a29"
+  }
+ ],
+ "listingRef": {
+  "version": 1,
+  "listingId": "lst-practice-dacs-0001",
+  "contentHash": "8c972810251f91f6497f9ea27aef8ca4e133e0767f01df0dbbcf9b5f11abd3f7"
+ },
+ "signatures": [
+  {
+   "party": "demos:0xd2e69547a397338b39de33966cae93f4601e32cccf07c38e4d4be21146a4504f",
+   "value": "uApFw6UHxIzjnXCpvtyqCZ1_HbbCpMwQHLp1oKCxvByMMuRcXQk_G_CGoRzvwAZsiwaYdZ6s3iAWmcdvpR8LCg",
+   "algorithm": "ed25519"
+  },
+  {
+   "party": "demos:0x686456d0d07abbd07167ab252f0a9efb7acc409f0bd18daf3a8189f6397d6a29",
+   "value": "lDxF0FbNolycxM-bUeP3ATUilNxUrUSMmAydlvltCNJnMbpNHNGZxowLDuLIFV_VxBBHb72zuTwFP64wLtOJAg",
+   "algorithm": "ed25519"
+  }
+ ],
+ "vetRecords": [],
+ "finalisedAt": 1767225600000,
+ "agreementRef": {
+  "id": "dacs3:commit:practice-dacs-0001",
+  "kind": "dacs-3-agreement",
+  "contentHash": "fbab2a4ba6e6ab40c404d685b75746426692b4b5eddf2ff68b6ba7a3af50896e"
+ },
+ "phaseSummary": [
+  {
+   "kind": "vet-credentials",
+   "index": 0,
+   "outcome": "ok"
+  },
+  {
+   "kind": "negotiate",
+   "index": 1,
+   "outcome": "ok"
+  },
+  {
+   "kind": "commit",
+   "index": 2,
+   "outcome": "ok"
+  },
+  {
+   "kind": "settle",
+   "index": 3,
+   "outcome": "ok"
+  },
+  {
+   "kind": "deliver",
+   "index": 4,
+   "outcome": "ok"
+  }
+ ],
+ "bundleVersion": "1",
+ "anchoredByRole": "buyer",
+ "settlementEvidence": [
+  {
+   "id": "dacs4:payment:practice-dacs-0001:x402:84532:USDC:3",
+   "kind": "dacs-4-evidence",
+   "contentHash": "8e221cab2ba48a51e43409ad159fd3266876f77d9858c88b6fc3cf4ea5f30288"
+  },
+  {
+   "id": "dacs4:deliverable:practice-dacs-0001",
+   "kind": "dacs-4-evidence",
+   "contentHash": "be3356a17adad75926bbc61f4644521c215d7712ddae24abba15e64fef5d3539"
+  }
+ ],
+ "railRegistryVersion": 1,
+ "recipeRegistryVersion": 1
+}
