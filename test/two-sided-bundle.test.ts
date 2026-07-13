@@ -208,10 +208,16 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     "ISC-11 ANTI: refuses a single-signed %s (spec:266)",
     async (outcome) => {
       // The exact defect class found on all 10 live DACS Directory roster deals.
-      const s = { ...session(), outcome, seller: undefined };
+      const { signer: _signer, ...sellerWithoutSigner } = session().seller;
+      const s = { ...session(), outcome, seller: sellerWithoutSigner };
       await expect(buildTwoSidedBundle(s)).rejects.toThrow(/requires the seller's signature/i);
     },
   );
+
+  test("ISC-11.0 ANTI: refuses an abort bundle that omits the seller party identity", async () => {
+    const s = { ...session(), outcome: "aborted-by-other" as BundleOutcome, seller: undefined };
+    await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/requires the seller party/i);
+  });
 
   test("ISC-11.1 ANTI: fails CLOSED on an outcome the spec does not name", async () => {
     // A denylist would fail OPEN here — a future minor version's outcome, or a typo, would
@@ -245,9 +251,11 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
   test.each(SPEC_SINGLE_SIGNATURE_PERMITTED)(
     "ISC-10: %s MAY be single-signed (spec:267, §10.11 suppression)",
     async (outcome) => {
-      const s = { ...session(), outcome, seller: undefined };
+      const { signer: _signer, ...sellerWithoutSigner } = session().seller;
+      const s = { ...session(), outcome, seller: sellerWithoutSigner };
       const { buyerCopy, sellerCopy } = await buildTwoSidedBundle(s);
       expect(buyerCopy.signatures).toHaveLength(1);
+      expect(buyerCopy.parties.map((p) => p.role).sort()).toEqual(["buyer", "seller"]);
       expect(buyerCopy.outcome).toBe(outcome);
       expect(sellerCopy).toBeUndefined();
     },
@@ -291,6 +299,23 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     // No party signs twice.
     const signers = buyerCopy.signatures!.map((s) => s.party);
     expect(new Set(signers).size).toBe(signers.length);
+  });
+
+  test("ISC-11.6: primary claims are opaque; case-different claims remain distinct", async () => {
+    const orchSeed = seed(4);
+    const { buyerCopy, sellerCopy, orchestratorCopy } = await buildTwoSidedBundle({
+      ...session(),
+      orchestrator: {
+        primaryClaim: buyerClaim.toUpperCase(),
+        bundleHash: "f".repeat(64),
+        signer: orchSeed,
+      },
+    });
+    expect(orchestratorCopy).toBeDefined();
+    for (const copy of [buyerCopy, sellerCopy!, orchestratorCopy!]) {
+      expect(copy.parties.map((p) => p.role).sort()).toEqual(["buyer", "orchestrator", "seller"]);
+      expect(copy.signatures).toHaveLength(3);
+    }
   });
 
   test("BUNDLE_SIGNED_SCOPE_OMIT is the single source for the omission set", () => {

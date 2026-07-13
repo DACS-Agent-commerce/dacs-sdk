@@ -60,6 +60,8 @@ export type BundleOutcome = (typeof BUNDLE_OUTCOMES)[number];
 /** The roles that can anchor a copy of a bundle (§10.4.2). */
 export type BundleRole = "buyer" | "seller" | "orchestrator";
 
+type SessionSigner = Uint8Array | KeyObject | ((bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array);
+
 /** The §B.2 canonical form of a bundle: the document minus `signatures` and `anchoredByRole`. */
 export function bundleSignedScope(bundle: AttestationBundle): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -92,7 +94,11 @@ export interface SessionParty {
    */
   bundleHash: string;
   /** A 32-byte Ed25519 seed, a prepared KeyObject, or a remote signing function. */
-  signer: Uint8Array | KeyObject | ((bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array);
+  signer?: SessionSigner;
+}
+
+export interface SigningSessionParty extends SessionParty {
+  signer: SessionSigner;
 }
 
 /** The facts of one completed (or aborted) session, from which both copies are derived. */
@@ -112,18 +118,18 @@ export interface TwoSidedSession {
   recipeRegistryVersion: number;
   railRegistryVersion: number;
   finalisedAt: number;
-  buyer: SessionParty;
+  buyer: SigningSessionParty;
   /**
-   * The seller. MAY be omitted ONLY for an abort outcome, where §10.11 bundle-suppression lets
-   * the non-withdrawing party's single-signed copy stand.
+   * The seller identity is required even for a single-signed abort bundle. §10.4.1 permits an
+   * abort bundle to miss the seller signature, not to erase the seller from `parties[]`.
    */
-  seller?: SessionParty;
+  seller: SessionParty;
   /**
    * The orchestrator, when it is a party DISTINCT from buyer and seller. §10.4.1: "If the
    * orchestrator is a distinct party (not buyer or seller), the orchestrator signature is also
    * REQUIRED." Omit it for the ordinary two-party session, where no third signature is required.
    */
-  orchestrator?: SessionParty;
+  orchestrator?: SigningSessionParty;
   bundleVersion?: string;
 }
 
@@ -135,10 +141,14 @@ export interface TwoSidedBundles {
 
 /** Party identity is the primary claim (§10.4.1 `parties[].primaryClaim` = `bundle.presentedBy`). */
 function sameParty(a: SessionParty, b: SessionParty): boolean {
-  return a.primaryClaim.trim().toLowerCase() === b.primaryClaim.trim().toLowerCase();
+  return a.primaryClaim === b.primaryClaim;
 }
 
-async function signOver(party: SessionParty, hash: string): Promise<BundleSignature> {
+function canSign(party: SessionParty): party is SigningSessionParty {
+  return party.signer !== undefined;
+}
+
+async function signOver(party: SigningSessionParty, hash: string): Promise<BundleSignature> {
   const payload = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, hash);
   const raw =
     typeof party.signer === "function"
@@ -188,6 +198,13 @@ export async function buildTwoSidedBundle(
     );
   }
 
+  if (!seller) {
+    throw new DacsError(
+      `outcome "${outcome}" requires the seller party in parties[] (§10.4.1): a ` +
+        "single-signed abort bundle may omit the seller signature, but not the seller identity.",
+    );
+  }
+
   // Gate 2 — §10.4.1: the orchestrator signature is REQUIRED only when the orchestrator is a
   // "distinct party (not buyer or seller)". When the orchestrator IS the buyer or the seller, it
   // is already a party and already a signer; adding it again produces a duplicate signature and a
@@ -199,7 +216,8 @@ export async function buildTwoSidedBundle(
       ? session.orchestrator
       : undefined;
 
-  if (seller === undefined && !SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
+  const sellerSigner = canSign(seller) ? seller : undefined;
+  if (!sellerSigner && !SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
     throw new DacsError(
       `outcome "${outcome}" requires the seller's signature (§10.4.1): a bundle missing a ` +
         `required signature MUST be rejected by consumers. Only ${[...SINGLE_SIGNATURE_PERMITTED]
@@ -210,9 +228,7 @@ export async function buildTwoSidedBundle(
 
   const parties: BundleParty[] = [
     { role: "buyer", bundleHash: buyer.bundleHash, primaryClaim: buyer.primaryClaim },
-    ...(seller
-      ? [{ role: "seller", bundleHash: seller.bundleHash, primaryClaim: seller.primaryClaim }]
-      : []),
+    { role: "seller", bundleHash: seller.bundleHash, primaryClaim: seller.primaryClaim },
     ...(orchestrator
       ? [
           {
@@ -246,7 +262,7 @@ export async function buildTwoSidedBundle(
   // Both parties sign the SAME hash. This is what makes the copies canonically equal, and what
   // the ten live Directory deals are missing: each side there signed only its own self-portrait.
   const signatures: BundleSignature[] = [await signOver(buyer, hash)];
-  if (seller) signatures.push(await signOver(seller, hash));
+  if (sellerSigner) signatures.push(await signOver(sellerSigner, hash));
   if (orchestrator) signatures.push(await signOver(orchestrator, hash));
 
   const copy = (role: BundleRole): AttestationBundle =>
@@ -254,7 +270,7 @@ export async function buildTwoSidedBundle(
 
   return {
     buyerCopy: copy("buyer"),
-    ...(seller ? { sellerCopy: copy("seller") } : {}),
+    ...(sellerSigner ? { sellerCopy: copy("seller") } : {}),
     ...(orchestrator ? { orchestratorCopy: copy("orchestrator") } : {}),
   };
 }

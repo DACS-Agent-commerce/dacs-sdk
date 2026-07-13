@@ -56,6 +56,7 @@ export {
   type BundleOutcome,
   type BundleRole,
   type SessionParty,
+  type SigningSessionParty,
   type TwoSidedSession,
   type TwoSidedBundles,
 } from "./twoSidedBundle.js";
