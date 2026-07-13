@@ -1,5 +1,11 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import { baseUnits } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+
+/** §9.5.9: the native asset this rail settles. */
+export const DEM_CURRENCY = "DEM";
+/** §9.5.9: 1 DEM = 10^9 OS base units. The chain moves integer OS. */
+export const DEM_DECIMALS = 9;
 
 /**
  * pay-dem settlement rail — native DEM transfer (DACS-4 §9.5.9, SR-4).
@@ -20,8 +26,11 @@ import { DacsError } from "../errors.js";
  * and no finality is stamped — evidence is never minted for a payment we didn't
  * see land.
  *
- * Amounts are integer OS base units (matching DACS Price.amount) — never floats.
- * payDemSettleCore is pure over an injected native client, so it's tested
+ * Amount units (§9.5.9 step 2): the agreement's DACS `Price.amount` is a canonical
+ * DECIMAL DEM string; the chain moves integer OS base units (1 DEM = 10^9 OS). The
+ * `payDemSettle` seam is the converter — it asserts the currency is DEM and turns
+ * decimal DEM → OS. `payDemSettleCore` then works purely in integer OS base units
+ * (never floats). The core is pure over an injected native client, so it's tested
  * without a Demos node; createPayDemRail is the thin demosdk wiring
  * (transfer → confirm → broadcastAndWait, gated on the terminal inclusion state).
  */
@@ -139,7 +148,12 @@ export interface PayDemRail {
 /**
  * Construct a pay-dem rail from a Demos RPC + wallet secret. Lazily imports
  * demosdk so the SDK core stays importable without the chain deps installed.
- * Submits via the proven sign → confirm → broadcast flow.
+ * Submits via the proven sign → confirm → broadcastAndWait flow.
+ *
+ * Replay/nonce (finding 3): the demosdk assigns the payer account's nonce at
+ * sign time, so a re-submitted transfer carries the same nonce and cannot
+ * double-settle; combined with the inclusion-wait (only an observed terminal
+ * state mints evidence) this closes the resubmit window without extra bookkeeping.
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
   if (!config?.rpc) throw new DacsError("pay-dem rail requires an rpc URL");
@@ -192,15 +206,32 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   };
 }
 
-/** Bridge a PayDemRail to the runSession `settle` seam. */
+/**
+ * Bridge a PayDemRail to the runSession `settle` seam.
+ *
+ * The seam is the DEM converter (§9.5.9 step 2): the agreement's `Price.amount`
+ * is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the chain moves
+ * integer OS base units (1 DEM = 10^9 OS). This asserts the currency is DEM and
+ * converts decimal → OS before handing off to the rail — WITHOUT this, "5" DEM
+ * was submitted as 5 OS (a billionth of the agreed amount), settled silently.
+ */
 export function payDemSettle(
   rail: PayDemRail,
   cfg: { recipient: string; network?: string },
 ): (req: SettleRequest) => Promise<SettleResult> {
-  return (req) =>
-    rail.settle({
+  return async (req) => {
+    if (req.asset !== DEM_CURRENCY) {
+      throw new DacsError(
+        `pay-dem settles ${DEM_CURRENCY} only, got asset "${req.asset}" (§9.5.9)`,
+      );
+    }
+    // Decimal DEM → integer OS base units (string/integer math, no float).
+    // baseUnits also rejects sub-OS precision (> 9 fractional digits).
+    const amountOs = baseUnits(req.amount, DEM_DECIMALS);
+    return rail.settle({
       recipient: cfg.recipient,
-      amount: req.amount,
+      amount: amountOs,
       network: cfg.network ?? "demos",
     });
+  };
 }

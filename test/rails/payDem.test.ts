@@ -119,17 +119,44 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   });
 });
 
-describe("payDemSettle (runSession seam bridge)", () => {
-  test("threads the per-session amount through to the rail", async () => {
+describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion)", () => {
+  const settleWith = (client: ReturnType<typeof fakeClient>) => {
+    const rail: PayDemRail = { address: PAYER, settle: (p) => payDemSettleCore(p, client) };
+    return payDemSettle(rail, { recipient: RECIPIENT, network: "demos" });
+  };
+  const req = (over: Record<string, unknown> = {}) => ({
+    rail: "pay-dem",
+    amount: "5",
+    asset: "DEM",
+    payee: RECIPIENT,
+    jobId: "j1",
+    ...over,
+  });
+
+  test("converts the agreement's DECIMAL DEM to integer OS base units (×10^9)", async () => {
     const client = fakeClient();
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: (p) => payDemSettleCore(p, client),
-    };
-    const settle = payDemSettle(rail, { recipient: RECIPIENT, network: "demos" });
-    const res = await settle({ rail: "pay-dem", amount: "2000000000", asset: "DEM", payee: RECIPIENT, jobId: "j1" });
+    const res = await settleWith(client)(req({ amount: "5" }));
     expect(res.ok).toBe(true);
-    expect(client.sent!.amountOs).toBe(2_000_000_000n);
+    // "5" DEM must move 5 × 10^9 OS — NOT 5 OS (the pre-fix silent 10^-9 bug).
+    expect(client.sent!.amountOs).toBe(5_000_000_000n);
     expect(res.finality).toEqual({ model: "bft-final" });
+  });
+
+  test("handles fractional DEM within the 9-decimal precision", async () => {
+    const client = fakeClient();
+    await settleWith(client)(req({ amount: "5.1" }));
+    expect(client.sent!.amountOs).toBe(5_100_000_000n);
+  });
+
+  test("rejects a non-DEM asset (pay-dem settles DEM only)", async () => {
+    await expect(settleWith(fakeClient())(req({ asset: "USDC" }))).rejects.toThrow(
+      /settles DEM only/,
+    );
+  });
+
+  test("rejects sub-OS precision (> 9 fractional digits)", async () => {
+    await expect(
+      settleWith(fakeClient())(req({ amount: "5.0000000001" })),
+    ).rejects.toThrow(/precision/);
   });
 });
