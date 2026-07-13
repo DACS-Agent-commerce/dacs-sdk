@@ -72,14 +72,31 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
     expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
   });
 
-  test("a phase present in only one copy is not itself a contradiction", () => {
+  test("a phase present in only one copy IS a divergence (#224 — presence-mismatch)", () => {
+    // DACS-Standard#224 dropped the presence carve-out: a copy asserting a phase
+    // the other denies is a contradiction about what happened.
     const buyer = { outcome: "completed", phaseSummary: [{ index: 0, outcome: "ok" }] };
     const seller = {
       outcome: "completed",
       phaseSummary: [
         { index: 0, outcome: "ok" },
-        { index: 1, outcome: "ok" }, // extra advisory phase
+        { index: 1, outcome: "ok" }, // phase 1 present only on the seller copy
       ],
+    };
+    expect(bundlesDiverge(buyer, seller)).toBe(true);
+    expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
+    // …and symmetric (the extra phase on the other side is equally a divergence).
+    expect(bundleConsistency({ buyer: seller, seller: buyer }, TRUST)).toBe("divergent");
+  });
+
+  test("identical phase sets (by index) are unified — reordering is not divergence", () => {
+    const buyer = {
+      outcome: "completed",
+      phaseSummary: [{ index: 0, outcome: "ok" }, { index: 1, outcome: "ok" }],
+    };
+    const seller = {
+      outcome: "completed",
+      phaseSummary: [{ index: 1, outcome: "ok" }, { index: 0, outcome: "ok" }],
     };
     expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("unified");
   });

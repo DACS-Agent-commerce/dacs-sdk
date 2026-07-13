@@ -1,4 +1,9 @@
 import { DacsError } from "../errors.js";
+import { bundlesDiverge } from "./bundleDivergence.js";
+
+// Re-exported for API compatibility — the canonical §10.4.3 predicate now lives
+// in bundleDivergence.js and is shared with the §10.5.1 reputation deriver (#224).
+export { bundlesDiverge };
 
 /**
  * Two-sided bundle consistency verdict — DACS-5 §10.4.3.
@@ -23,9 +28,11 @@ import { DacsError } from "../errors.js";
  *  - `divergent` — both present and they contradict, §10.4.3(d) — a genuine
  *                  dispute; a reputation deriver excludes this jobId entirely.
  *
- * "Canonically diverge" is defined once (§10.4.3, the same guard the §10.5.1
- * deriver applies): the copies differ in `outcome`, or in a `phaseSummary`
- * entry's `outcome`/`errorClass` — a contradiction about what happened. A
+ * "Canonically diverge" is defined ONCE in {@link bundleDivergence} and shared
+ * verbatim with the §10.5.1 reputation deriver (#224 raised the drift between the
+ * two): the copies differ in `outcome`, a `phaseSummary` entry (by `index`) is
+ * present in one copy but not the other (presence-mismatch IS divergence per
+ * DACS-Standard#224), or a shared entry's `outcome`/`errorClass` differ. A
  * difference confined to advisory fields (`finalisedAt` skew, one-sided
  * `ratingRefs`, `anchoredByRole`, amendment ordering) is NOT a divergence, so a
  * party cannot force a spurious "disputed" classification by perturbing one.
@@ -65,37 +72,6 @@ export interface BundleCopies {
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
-
-/** phaseSummary entries keyed by their `index` (the stable per-phase identifier). */
-function phasesByIndex(bundle: Record<string, unknown>): Map<number, Record<string, unknown>> {
-  const out = new Map<number, Record<string, unknown>>();
-  const ps = bundle["phaseSummary"];
-  if (Array.isArray(ps)) {
-    for (const p of ps) {
-      if (isObj(p) && typeof p["index"] === "number") out.set(p["index"], p);
-    }
-  }
-  return out;
-}
-
-/**
- * Do two bundle copies canonically diverge (§10.4.3)? True iff they contradict
- * on `outcome` or on any shared `phaseSummary` entry's `outcome`/`errorClass`.
- */
-export function bundlesDiverge(
-  a: Record<string, unknown>,
-  b: Record<string, unknown>,
-): boolean {
-  if (a["outcome"] !== b["outcome"]) return true;
-  const bp = phasesByIndex(b);
-  for (const [idx, pa] of phasesByIndex(a)) {
-    const pb = bp.get(idx);
-    if (!pb) continue; // a phase present in only one copy is not itself a contradiction
-    if (pa["outcome"] !== pb["outcome"]) return true;
-    if ((pa["errorClass"] ?? null) !== (pb["errorClass"] ?? null)) return true;
-  }
-  return false;
-}
 
 export interface BundleConsistencyDeps {
   /**
