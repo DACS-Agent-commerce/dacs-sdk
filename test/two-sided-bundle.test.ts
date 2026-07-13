@@ -186,20 +186,64 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     );
   });
 
-  test("ISC-10: an abort outcome MAY be single-signed (§10.11 suppression)", async () => {
-    const s = { ...session(), outcome: "aborted-by-other", seller: undefined };
-    const { buyerCopy, sellerCopy } = await buildTwoSidedBundle(s);
-    expect(buyerCopy.signatures).toHaveLength(1);
-    expect(buyerCopy.outcome).toBe("aborted-by-other");
-    expect(sellerCopy).toBeUndefined();
+  // Transcribed from the SPEC, not from the implementation's constant. The previous version of
+  // this test iterated the producer's own guard set, so the code and the test shared a blind spot
+  // and the suite was structurally incapable of finding the `failed-perm` hole that was in it.
+  // spec/DACS-5-VERIFY.md:266 @origin/next=d289af1 — "Bundles whose outcome is `completed`,
+  // `failed-perm`, `failed-counterparty`, or `failed-substrate` and that are missing any required
+  // signature MUST be rejected by consumers."
+  const SPEC_CO_SIGNATURE_REQUIRED = [
+    "completed",
+    "failed-perm",
+    "failed-counterparty",
+    "failed-substrate",
+  ];
+  // spec:267 — "A bundle whose outcome is `aborted-by-self` or `aborted-by-other` MAY carry a
+  // single signature".
+  const SPEC_SINGLE_SIGNATURE_PERMITTED = ["aborted-by-self", "aborted-by-other"];
+
+  test.each(SPEC_CO_SIGNATURE_REQUIRED)(
+    "ISC-11 ANTI: refuses a single-signed %s (spec:266)",
+    async (outcome) => {
+      // The exact defect class found on all 10 live DACS Directory roster deals.
+      const s = { ...session(), outcome, seller: undefined };
+      await expect(buildTwoSidedBundle(s)).rejects.toThrow(/requires the seller's signature/i);
+    },
+  );
+
+  test("ISC-11.1 ANTI: fails CLOSED on an outcome the spec does not name", async () => {
+    // A denylist would fail OPEN here — a future minor version's outcome, or a typo, would
+    // silently produce the single-signed bundle consumers must drop.
+    const s = { ...session(), outcome: "outcome-from-a-future-minor-version", seller: undefined };
+    await expect(buildTwoSidedBundle(s)).rejects.toThrow(/requires the seller's signature/i);
   });
 
-  test("ISC-11 ANTI: never emits a single-signed non-abort bundle", async () => {
-    // The exact defect class found on all 10 live DACS Directory roster deals.
-    for (const outcome of ["completed", "failed-counterparty", "failed-substrate"]) {
+  test.each(SPEC_SINGLE_SIGNATURE_PERMITTED)(
+    "ISC-10: %s MAY be single-signed (spec:267, §10.11 suppression)",
+    async (outcome) => {
       const s = { ...session(), outcome, seller: undefined };
-      await expect(buildTwoSidedBundle(s)).rejects.toThrow(/two signatures/i);
+      const { buyerCopy, sellerCopy } = await buildTwoSidedBundle(s);
+      expect(buyerCopy.signatures).toHaveLength(1);
+      expect(buyerCopy.outcome).toBe(outcome);
+      expect(sellerCopy).toBeUndefined();
+    },
+  );
+
+  test("ISC-11.2: a distinct orchestrator is a REQUIRED signer and anchors its own copy (spec:265)", async () => {
+    const orchSeed = seed(3);
+    const orchClaim = `demos:0x${Buffer.from(publicKeyRaw(orchSeed)).toString("hex")}`;
+    const { buyerCopy, sellerCopy, orchestratorCopy } = await buildTwoSidedBundle({
+      ...session(),
+      orchestrator: { primaryClaim: orchClaim, bundleHash: "f".repeat(64), signer: orchSeed },
+    });
+    expect(orchestratorCopy).toBeDefined();
+    for (const copy of [buyerCopy, sellerCopy!, orchestratorCopy!]) {
+      expect(copy.parties.map((p) => p.role).sort()).toEqual(["buyer", "orchestrator", "seller"]);
+      expect(copy.signatures).toHaveLength(3);
     }
+    // All three copies stay canonically equal — anchoredByRole is outside the hashed scope.
+    expect(attestationBundleHash(buyerCopy)).toBe(attestationBundleHash(orchestratorCopy!));
+    expect(orchestratorCopy!.anchoredByRole).toBe("orchestrator");
   });
 
   test("BUNDLE_SIGNED_SCOPE_OMIT is the single source for the omission set", () => {

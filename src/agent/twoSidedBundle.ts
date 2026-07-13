@@ -30,14 +30,19 @@ import type { AttestationBundle, BundleParty, BundleSignature } from "../artifac
  */
 export const BUNDLE_SIGNED_SCOPE_OMIT: readonly string[] = ["signatures", "anchoredByRole"];
 
-/** Outcomes that are terminal performance claims and therefore REQUIRE both parties' signatures. */
-const CO_SIGNATURE_REQUIRED = new Set([
-  "completed",
-  "failed-counterparty",
-  "failed-substrate",
-  "failed-buyer",
-  "failed-seller",
-]);
+/**
+ * The ONLY outcomes a single-signed bundle may carry (§10.4.1): "A bundle whose outcome is
+ * `aborted-by-self` or `aborted-by-other` MAY carry a single signature".
+ *
+ * This is an ALLOWLIST on purpose. The inverse — a denylist of outcomes that require both
+ * signatures — fails OPEN: any outcome not on the list (a typo, an outcome added by a future
+ * minor version) silently yields a single-signed bundle, which is precisely the artifact
+ * §10.4.1 orders consumers to drop. The spec's own structure is an allowlist; mirror it.
+ */
+const SINGLE_SIGNATURE_PERMITTED = new Set(["aborted-by-self", "aborted-by-other"]);
+
+/** The roles that can anchor a copy of a bundle (§10.4.2). */
+export type BundleRole = "buyer" | "seller" | "orchestrator";
 
 /** The §B.2 canonical form of a bundle: the document minus `signatures` and `anchoredByRole`. */
 export function bundleSignedScope(bundle: AttestationBundle): Record<string, unknown> {
@@ -83,12 +88,19 @@ export interface TwoSidedSession {
    * the non-withdrawing party's single-signed copy stand.
    */
   seller?: SessionParty;
+  /**
+   * The orchestrator, when it is a party DISTINCT from buyer and seller. §10.4.1: "If the
+   * orchestrator is a distinct party (not buyer or seller), the orchestrator signature is also
+   * REQUIRED." Omit it for the ordinary two-party session, where no third signature is required.
+   */
+  orchestrator?: SessionParty;
   bundleVersion?: string;
 }
 
 export interface TwoSidedBundles {
   buyerCopy: AttestationBundle;
   sellerCopy?: AttestationBundle;
+  orchestratorCopy?: AttestationBundle;
 }
 
 async function signOver(party: SessionParty, hash: string): Promise<BundleSignature> {
@@ -121,12 +133,14 @@ async function signOver(party: SessionParty, hash: string): Promise<BundleSignat
 export async function buildTwoSidedBundle(
   session: TwoSidedSession,
 ): Promise<TwoSidedBundles> {
-  const { buyer, seller, outcome } = session;
+  const { buyer, seller, orchestrator, outcome } = session;
 
-  if (CO_SIGNATURE_REQUIRED.has(outcome) && seller === undefined) {
+  if (seller === undefined && !SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
     throw new DacsError(
-      `outcome "${outcome}" requires two signatures (§10.4.1): a single-signed non-abort bundle ` +
-        `MUST be dropped by consumers. Only an abort outcome may be single-signed.`,
+      `outcome "${outcome}" requires the seller's signature (§10.4.1): a bundle missing a ` +
+        `required signature MUST be rejected by consumers. Only ${[...SINGLE_SIGNATURE_PERMITTED]
+          .map((o) => `"${o}"`)
+          .join(" or ")} may be single-signed.`,
     );
   }
 
@@ -134,6 +148,15 @@ export async function buildTwoSidedBundle(
     { role: "buyer", bundleHash: buyer.bundleHash, primaryClaim: buyer.primaryClaim },
     ...(seller
       ? [{ role: "seller", bundleHash: seller.bundleHash, primaryClaim: seller.primaryClaim }]
+      : []),
+    ...(orchestrator
+      ? [
+          {
+            role: "orchestrator",
+            bundleHash: orchestrator.bundleHash,
+            primaryClaim: orchestrator.primaryClaim,
+          },
+        ]
       : []),
   ];
 
@@ -160,11 +183,14 @@ export async function buildTwoSidedBundle(
   // the ten live Directory deals are missing: each side there signed only its own self-portrait.
   const signatures: BundleSignature[] = [await signOver(buyer, hash)];
   if (seller) signatures.push(await signOver(seller, hash));
+  if (orchestrator) signatures.push(await signOver(orchestrator, hash));
 
-  const copy = (role: "buyer" | "seller"): AttestationBundle =>
+  const copy = (role: BundleRole): AttestationBundle =>
     ({ ...body, anchoredByRole: role, signatures }) as AttestationBundle;
 
-  return seller
-    ? { buyerCopy: copy("buyer"), sellerCopy: copy("seller") }
-    : { buyerCopy: copy("buyer") };
+  return {
+    buyerCopy: copy("buyer"),
+    ...(seller ? { sellerCopy: copy("seller") } : {}),
+    ...(orchestrator ? { orchestratorCopy: copy("orchestrator") } : {}),
+  };
 }
