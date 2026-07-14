@@ -1,5 +1,6 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
+import { settlementKey, type SettlementIdempotencyStore } from "./idempotency.js";
 
 /**
  * Direct ERC-20 transfer rail (the second reference rail). Where x402 couples
@@ -145,16 +146,27 @@ export async function createEvmErc20Rail(
   };
 }
 
-/** Bridge an EvmErc20Rail to the runSession `settle` seam. */
+/**
+ * Bridge an EvmErc20Rail to the runSession `settle` seam. When an idempotency
+ * `store` is supplied, the transfer is submitted AT MOST ONCE per
+ * `(railId, jobId, phaseIndex)` — a resume after a settle→anchor crash, or a
+ * concurrent retry, reconciles the prior submission instead of sending another
+ * transfer (#43). Without a store, behaviour is unchanged (no dedupe).
+ */
 export function evmErc20Settle(
   rail: EvmErc20Rail,
   cfg: { tokenAddress: string; network: string; recipientEvm: string },
+  opts: { store?: SettlementIdempotencyStore } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
-  return (req) =>
-    rail.settle({
-      network: cfg.network,
-      tokenAddress: cfg.tokenAddress,
-      recipientEvm: cfg.recipientEvm,
-      amount: req.amount,
-    });
+  return (req) => {
+    const submit = () =>
+      rail.settle({
+        network: cfg.network,
+        tokenAddress: cfg.tokenAddress,
+        recipientEvm: cfg.recipientEvm,
+        amount: req.amount,
+      });
+    if (!opts.store) return submit();
+    return opts.store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), submit);
+  };
 }

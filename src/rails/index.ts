@@ -21,6 +21,11 @@ export {
   type EvmTransferClient,
 } from "./evmErc20.js";
 export {
+  createIdempotencyStore,
+  settlementKey,
+  type SettlementIdempotencyStore,
+} from "./idempotency.js";
+export {
   createPayD402Rail,
   payD402Settle,
   payD402SettleCore,

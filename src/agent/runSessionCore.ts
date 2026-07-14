@@ -47,6 +47,12 @@ export interface SettleRequest {
   asset: string;
   payee: string;
   jobId: string;
+  /**
+   * The settlement phase index — part of the `(railId, jobId, phaseIndex)`
+   * idempotency key a rail dedupes on (#43). Defaults to 0 (the single MVP
+   * settle phase) when the caller omits it.
+   */
+  phaseIndex?: number;
 }
 
 export interface SettleResult {
@@ -290,6 +296,7 @@ export async function runSessionCore(
         asset: terms.price.asset,
         payee: listing.agentId,
         jobId,
+        phaseIndex: 0,
       });
       // Defense in depth (independent of the rail): a settlement is only a
       // success if it produced a verifiable on-chain tx id. A rail reporting
