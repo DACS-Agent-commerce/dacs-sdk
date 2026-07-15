@@ -429,8 +429,11 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             signer: SELLER_SEED,
           },
         });
+        expect(buyerCopy).toBeDefined();
         expect(sellerCopy).toBeDefined();
-        await writeProofArtifact("buyer.bundle.json", buyerCopy);
+        const buyerBundle = buyerCopy!;
+        const sellerBundle = sellerCopy!;
+        await writeProofArtifact("buyer.bundle.json", buyerBundle);
         await writeProofArtifact("seller.bundle.json", sellerCopy);
         await writeProofArtifact("public-keys.json", {
           [buyerDid]: publicKeyHex(BUYER_SEED),
@@ -442,11 +445,11 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           network: NETWORK,
           tokenAddress,
           txHash: settlement.txHash,
-          buyerBundleHash: attestationBundleHash(buyerCopy),
-          sellerBundleHash: attestationBundleHash(sellerCopy!),
+          buyerBundleHash: attestationBundleHash(buyerBundle),
+          sellerBundleHash: attestationBundleHash(sellerBundle),
         });
-        const buyerBundleRef = await sub.anchor(`dacs5:bundle:${JOB_ID}:buyer`, buyerCopy);
-        const sellerBundleRef = await sub.anchor(`dacs5:bundle:${JOB_ID}:seller`, sellerCopy!);
+        const buyerBundleRef = await sub.anchor(`dacs5:bundle:${JOB_ID}:buyer`, buyerBundle);
+        const sellerBundleRef = await sub.anchor(`dacs5:bundle:${JOB_ID}:seller`, sellerBundle);
 
         const deps: VerifyBundleDeps = {
           readArtifact: sub.read,

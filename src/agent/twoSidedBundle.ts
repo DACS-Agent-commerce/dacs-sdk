@@ -2,10 +2,10 @@
  * DACS-5 §10.4.1/§10.4.2 — two-sided co-signed AttestationBundle production.
  *
  * Both parties co-sign the anchored copy content; each anchors its own copy, marked with its
- * own `anchoredByRole`. The copies are canonically EQUAL in the happy path because
+ * own `anchoredByRole`. The co-signed copies are canonically EQUAL because
  * `anchoredByRole` is excluded from the hashed scope alongside `signatures` (§10.4.1). Fault
- * outcomes are anchorer-perspective (§10.4 / §10.5), so the buyer and seller copies may carry
- * flipped outcomes and therefore distinct hashes while still carrying the required signatures.
+ * outcomes are not rewritten per copy; a consumer applies perspective only when one side's copy
+ * is absent (§10.5 / §10.11).
  *
  * Why this module owns the omission set: `canonical/hash.ts` strips only
  * `signature`/`signatures`, so `contentHash()` — and therefore `signArtifact()` — computes
@@ -40,6 +40,12 @@ export const BUNDLE_SIGNED_SCOPE_OMIT = Object.freeze(["signatures", "anchoredBy
  * §10.4.1 orders consumers to drop. The spec's own structure is an allowlist; mirror it.
  */
 const SINGLE_SIGNATURE_PERMITTED = new Set<string>(["aborted-by-self", "aborted-by-other"]);
+const PERSPECTIVE_BEARING_OUTCOMES = new Set<string>([
+  "failed-perm",
+  "failed-counterparty",
+  "aborted-by-self",
+  "aborted-by-other",
+]);
 
 /**
  * The CLOSED set of bundle outcomes (§10.4.1, the `outcome` field of the AttestationBundle type).
@@ -111,14 +117,17 @@ export interface TwoSidedSession {
    */
   outcome: BundleOutcome;
   listingRef: AttestationBundle["listingRef"];
-  agreementRef: AttestationBundle["agreementRef"];
+  agreementRef?: AttestationBundle["agreementRef"];
+  cancellation?: AttestationBundle["cancellation"];
   phaseSummary: AttestationBundle["phaseSummary"];
   vetRecords: AttestationBundle["vetRecords"];
   settlementEvidence: AttestationBundle["settlementEvidence"];
+  amendments?: AttestationBundle["amendments"];
+  ratingRefs?: AttestationBundle["ratingRefs"];
   recipeRegistryVersion: number;
   railRegistryVersion: number;
   finalisedAt: number;
-  buyer: SigningSessionParty;
+  buyer: SessionParty;
   /**
    * The seller identity is required even for a single-signed abort bundle. §10.4.1 permits an
    * abort bundle to miss the seller signature, not to erase the seller from `parties[]`.
@@ -134,7 +143,7 @@ export interface TwoSidedSession {
 }
 
 export interface TwoSidedBundles {
-  buyerCopy: AttestationBundle;
+  buyerCopy?: AttestationBundle;
   sellerCopy?: AttestationBundle;
   orchestratorCopy?: AttestationBundle;
 }
@@ -148,42 +157,8 @@ function canSign(party: SessionParty): party is SigningSessionParty {
   return party.signer !== undefined;
 }
 
-function perspectiveFlip(outcome: BundleOutcome): BundleOutcome {
-  switch (outcome) {
-    case "aborted-by-self":
-      return "aborted-by-other";
-    case "aborted-by-other":
-      return "aborted-by-self";
-    case "failed-perm":
-      return "failed-counterparty";
-    case "failed-counterparty":
-      return "failed-perm";
-    default:
-      return outcome;
-  }
-}
-
-function perspectiveFlipString(value: string): string {
-  switch (value) {
-    case "aborted-by-self":
-      return "aborted-by-other";
-    case "aborted-by-other":
-      return "aborted-by-self";
-    case "failed-perm":
-      return "failed-counterparty";
-    case "failed-counterparty":
-      return "failed-perm";
-    case "permanent":
-      return "counterparty";
-    case "counterparty":
-      return "permanent";
-    default:
-      return value;
-  }
-}
-
-function outcomeForRole(outcome: BundleOutcome, role: BundleRole): BundleOutcome {
-  return role === "seller" ? perspectiveFlip(outcome) : outcome;
+function isAgreementCommitPhase(kind: string): boolean {
+  return kind === "commit" || kind.startsWith("commit-");
 }
 
 async function signOver(party: SigningSessionParty, hash: string): Promise<BundleSignature> {
@@ -205,12 +180,15 @@ async function signOver(party: SigningSessionParty, hash: string): Promise<Bundl
 /**
  * Build the two anchored copies of a session's AttestationBundle.
  *
- * Both completed/happy-path copies carry both parties and both signatures over one identical
- * canonical content and differ only in the unhashed `anchoredByRole`. Perspective-relative fault
- * outcomes are emitted per anchoring role, and both parties sign each emitted copy.
+ * Co-signed completed/failed-substrate copies carry both parties and both signatures over one
+ * identical canonical content, differing only in the unhashed `anchoredByRole`. Perspective-bearing
+ * fault outcomes are emitted as one all-signed canonical copy; a second role-local copy with the
+ * same literal outcome would be misread as that role's own perspective by §10.5 consumers.
  *
  * A single-signed bundle is valid ONLY for an abort outcome (§10.4.1): a single-signed
- * `completed`/`failed-*` MUST be dropped by every consumer, so this refuses to produce one.
+ * `completed`/`failed-*` MUST be dropped by every consumer, so this refuses to produce one. In
+ * that suppression path, the emitted copy is anchored by the actual signer and records
+ * `aborted-by-other`; consumers classify the absent non-signer as `aborted-by-self` (§10.11).
  */
 export async function buildTwoSidedBundle(
   session: TwoSidedSession,
@@ -228,13 +206,6 @@ export async function buildTwoSidedBundle(
     );
   }
 
-  if (!session.agreementRef) {
-    throw new DacsError(
-      "agreementRef is required for a DACS-5 AttestationBundle: the builder refuses to sign " +
-        "an artifact that is not accepted by the bundle validator.",
-    );
-  }
-
   if (session.bundleVersion !== undefined && session.bundleVersion !== "1") {
     throw new DacsError(
       `bundleVersion "${session.bundleVersion}" is not supported by this v1 bundle signer. ` +
@@ -249,6 +220,40 @@ export async function buildTwoSidedBundle(
     );
   }
 
+  const hasCommitCompleted = session.phaseSummary.some(
+    (phase) => phase.outcome === "ok" && isAgreementCommitPhase(phase.kind),
+  );
+  const hasPostCommitRefs =
+    session.outcome === "completed" ||
+    hasCommitCompleted ||
+    session.settlementEvidence.length > 0 ||
+    (session.amendments?.length ?? 0) > 0 ||
+    (session.ratingRefs?.length ?? 0) > 0;
+  if (!session.agreementRef && hasPostCommitRefs) {
+    throw new DacsError(
+      "agreementRef is required once the session reaches agreement commitment or later (§10.4.3). " +
+        "Only pre-commit terminal bundles may omit it.",
+    );
+  }
+
+  if (session.cancellation) {
+    if (!SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
+      throw new DacsError(
+        "cancellation is only supported on aborted-by-self/aborted-by-other bundles (§10.3.1 ST-10).",
+      );
+    }
+    if (session.cancellation.claimedPolicy !== "pre-commit") {
+      throw new DacsError(
+        `cancellation claimedPolicy "${session.cancellation.claimedPolicy}" is not supported; only "pre-commit" is defined.`,
+      );
+    }
+    if (session.agreementRef) {
+      throw new DacsError(
+        "pre-commit cancellation cannot carry agreementRef: the session already reached agreement commitment.",
+      );
+    }
+  }
+
   // Gate 2 — §10.4.1: the orchestrator signature is REQUIRED only when the orchestrator is a
   // "distinct party (not buyer or seller)". When the orchestrator IS the buyer or the seller, it
   // is already a party and already a signer; adding it again produces a duplicate signature and a
@@ -260,7 +265,17 @@ export async function buildTwoSidedBundle(
       ? session.orchestrator
       : undefined;
 
+  const buyerSigner = canSign(buyer) ? buyer : undefined;
   const sellerSigner = canSign(seller) ? seller : undefined;
+  if (!buyerSigner && !SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
+    throw new DacsError(
+      `outcome "${outcome}" requires the buyer's signature (§10.4.1): only ${[
+        ...SINGLE_SIGNATURE_PERMITTED,
+      ]
+        .map((o) => `"${o}"`)
+        .join(" or ")} may be single-signed.`,
+    );
+  }
   if (!sellerSigner && !SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
     throw new DacsError(
       `outcome "${outcome}" requires the seller's signature (§10.4.1): a bundle missing a ` +
@@ -268,6 +283,9 @@ export async function buildTwoSidedBundle(
           .map((o) => `"${o}"`)
           .join(" or ")} may be single-signed.`,
     );
+  }
+  if (!buyerSigner && !sellerSigner) {
+    throw new DacsError("a DACS-5 abort bundle requires at least one buyer or seller signature (§10.11).");
   }
   const parties: BundleParty[] = [
     { role: "buyer", bundleHash: buyer.bundleHash, primaryClaim: buyer.primaryClaim },
@@ -283,48 +301,73 @@ export async function buildTwoSidedBundle(
       : []),
   ];
 
-  const phaseSummaryFor = (role: BundleRole): AttestationBundle["phaseSummary"] => {
-    if (role !== "seller") return session.phaseSummary;
-    return session.phaseSummary.map((phase) => {
-      const next = { ...phase } as typeof phase & { errorClass?: unknown };
-      if (typeof next.outcome === "string") next.outcome = perspectiveFlipString(next.outcome);
-      if (typeof next.errorClass === "string") next.errorClass = perspectiveFlipString(next.errorClass);
-      return next;
-    });
-  };
+  const singlePartyAbort =
+    SINGLE_SIGNATURE_PERMITTED.has(outcome) &&
+    Number(Boolean(buyerSigner)) + Number(Boolean(sellerSigner)) === 1;
+  if (singlePartyAbort && outcome !== "aborted-by-other") {
+    throw new DacsError(
+      "single-signed abort bundles must use signer-perspective aborted-by-other (§10.11); " +
+        "aborted-by-self is the absent non-signer's derived outcome.",
+    );
+  }
+  if (singlePartyAbort && orchestrator) {
+    throw new DacsError(
+      "single-signed abort with a distinct orchestrator is not supported by this helper; " +
+        "omit the orchestrator or provide both buyer and seller signatures.",
+    );
+  }
+  const singleCanonicalFaultCopy =
+    !singlePartyAbort && PERSPECTIVE_BEARING_OUTCOMES.has(outcome);
 
-  const bodyFor = (role: BundleRole) => ({
+  const bodyFor = () => ({
     bundleVersion: session.bundleVersion ?? "1",
     jobId: session.jobId,
-    outcome: outcomeForRole(outcome, role),
+    outcome: singlePartyAbort ? "aborted-by-other" : outcome,
     listingRef: session.listingRef,
-    agreementRef: session.agreementRef,
+    ...(session.agreementRef ? { agreementRef: session.agreementRef } : {}),
+    ...(session.cancellation ? { cancellation: session.cancellation } : {}),
     parties,
-    phaseSummary: phaseSummaryFor(role),
+    phaseSummary: session.phaseSummary,
     vetRecords: session.vetRecords,
     settlementEvidence: session.settlementEvidence,
+    ...(session.amendments ? { amendments: session.amendments } : {}),
+    ...(session.ratingRefs ? { ratingRefs: session.ratingRefs } : {}),
     recipeRegistryVersion: session.recipeRegistryVersion,
     railRegistryVersion: session.railRegistryVersion,
     finalisedAt: session.finalisedAt,
   }) as unknown as AttestationBundle;
 
   const signers: SigningSessionParty[] = [
-    buyer,
+    ...(buyerSigner ? [buyerSigner] : []),
     ...(sellerSigner ? [sellerSigner] : []),
     ...(orchestrator ? [orchestrator] : []),
   ];
+  const roles: BundleRole[] = singlePartyAbort
+    ? buyerSigner
+      ? ["buyer"]
+      : ["seller"]
+    : singleCanonicalFaultCopy
+      ? ["buyer"]
+    : [
+        "buyer",
+        ...(sellerSigner ? (["seller"] as const) : []),
+        ...(orchestrator ? (["orchestrator"] as const) : []),
+      ];
 
   const copy = async (role: BundleRole): Promise<AttestationBundle> => {
-    const body = bodyFor(role);
+    const body = bodyFor();
     const hash = attestationBundleHash(body);
     const signatures: BundleSignature[] = [];
     for (const signer of signers) signatures.push(await signOver(signer, hash));
     return { ...body, anchoredByRole: role, signatures } as AttestationBundle;
   };
 
-  return {
-    buyerCopy: await copy("buyer"),
-    ...(sellerSigner ? { sellerCopy: await copy("seller") } : {}),
-    ...(orchestrator ? { orchestratorCopy: await copy("orchestrator") } : {}),
-  };
+  const out: TwoSidedBundles = {};
+  for (const role of roles) {
+    const bundle = await copy(role);
+    if (role === "buyer") out.buyerCopy = bundle;
+    if (role === "seller") out.sellerCopy = bundle;
+    if (role === "orchestrator") out.orchestratorCopy = bundle;
+  }
+  return out;
 }

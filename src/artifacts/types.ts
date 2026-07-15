@@ -232,6 +232,7 @@ export interface PhaseSummaryEntry {
   index: number;
   kind: string;
   outcome: string;
+  errorClass?: string;
   txRefs?: TxRef[];
   /**
    * OPTIONAL per DACS-5 §10.4.3 / DACS-Standard#204: the authoritative
@@ -240,6 +241,10 @@ export interface PhaseSummaryEntry {
    * it for attestation-bearing phases (runSessionCore does).
    */
   attestationRef?: AttestationRef;
+}
+
+export interface CancellationMarker {
+  claimedPolicy: string;
 }
 
 /** A per-party bundle signature: `{ party, algorithm, value }`. */
@@ -257,11 +262,14 @@ export interface AttestationBundle {
   /** Per-copy field; omitted from the signed scope (§10.4.1). */
   anchoredByRole?: string;
   listingRef: ListingRef;
-  agreementRef: AttestationRef;
+  agreementRef?: AttestationRef;
+  cancellation?: CancellationMarker;
   parties: BundleParty[];
   phaseSummary: PhaseSummaryEntry[];
   vetRecords: AttestationRef[];
   settlementEvidence: AttestationRef[];
+  amendments?: AttestationRef[];
+  ratingRefs?: AttestationRef[];
   recipeRegistryVersion: number;
   railRegistryVersion: number;
   finalisedAt: number;

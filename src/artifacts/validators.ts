@@ -171,7 +171,12 @@ export function isAttestationBundle(v: unknown): v is AttestationBundle {
     isStr(lr.listingId) &&
     isNum(lr.version) &&
     isStr(lr.contentHash) &&
-    isAttestationRef(v.agreementRef) &&
+    (v.agreementRef === undefined || isAttestationRef(v.agreementRef)) &&
+    (v.cancellation === undefined ||
+      (isObj(v.cancellation) &&
+        v.cancellation.claimedPolicy === "pre-commit" &&
+        (v.outcome === "aborted-by-self" || v.outcome === "aborted-by-other") &&
+        v.agreementRef === undefined)) &&
     Array.isArray(v.parties) &&
     v.parties.every(
       (p) => isObj(p) && isStr(p.role) && isStr(p.bundleHash) && isStr(p.primaryClaim),
@@ -183,6 +188,7 @@ export function isAttestationBundle(v: unknown): v is AttestationBundle {
         isNum(ph.index) &&
         isStr(ph.kind) &&
         isStr(ph.outcome) &&
+        (ph.errorClass === undefined || isStr(ph.errorClass)) &&
         // §10.4.3 / DACS-Standard#204: attestationRef is OPTIONAL — a bundle MUST
         // NOT be rejected solely because a phaseSummary entry omits it.
         (ph.attestationRef === undefined || isAttestationRef(ph.attestationRef)),
@@ -191,6 +197,10 @@ export function isAttestationBundle(v: unknown): v is AttestationBundle {
     v.vetRecords.every(isAttestationRef) &&
     Array.isArray(v.settlementEvidence) &&
     v.settlementEvidence.every(isAttestationRef) &&
+    (v.amendments === undefined ||
+      (Array.isArray(v.amendments) && v.amendments.every(isAttestationRef))) &&
+    (v.ratingRefs === undefined ||
+      (Array.isArray(v.ratingRefs) && v.ratingRefs.every(isAttestationRef))) &&
     isNum(v.recipeRegistryVersion) &&
     isNum(v.railRegistryVersion) &&
     isNum(v.finalisedAt)

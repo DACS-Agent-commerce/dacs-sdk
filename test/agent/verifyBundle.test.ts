@@ -271,6 +271,140 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.refs.every((r) => r.verdict === "unresolved")).toBe(true);
   });
 
+  test("pre-commit bundle without agreementRef resolves listing directly", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    delete fx.bundle.agreementRef;
+    fx.bundle.outcome = "aborted-by-other";
+    fx.bundle.settlementEvidence = [];
+    const scope = { ...fx.bundle };
+    delete scope["signatures"];
+    delete scope["anchoredByRole"];
+    const sig = await signBuyer(
+      signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope)),
+    );
+    fx.bundle.signatures = [
+      { party: buyerDid, algorithm: "ed25519", value: Buffer.from(sig).toString("base64url") },
+    ];
+
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind) =>
+          kind === "dacs-1-listing" ? fx.listing : null,
+      }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.refs.find((r) => r.kind === "dacs-1-listing")?.verdict).toBe("ok");
+  });
+
+  test("completed or post-commit bundle without agreementRef fails verification", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    delete fx.bundle.agreementRef;
+    const scope = { ...fx.bundle };
+    delete scope["signatures"];
+    delete scope["anchoredByRole"];
+    const sig = await signBuyer(
+      signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope)),
+    );
+    fx.bundle.signatures = [
+      { party: buyerDid, algorithm: "ed25519", value: Buffer.from(sig).toString("base64url") },
+    ];
+
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind) =>
+          kind === "dacs-1-listing" ? fx.listing : null,
+      }),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.refs.find((r) => r.kind === "dacs-3-agreement")?.verdict).toBe("missing");
+  });
+
+  test("pre-commit phase names do not trigger the agreementRef requirement", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    delete fx.bundle.agreementRef;
+    fx.bundle.outcome = "aborted-by-other";
+    fx.bundle.settlementEvidence = [];
+    fx.bundle.phaseSummary = [{ index: 0, kind: "pre-commit-check", outcome: "ok" }];
+    const scope = { ...fx.bundle };
+    delete scope["signatures"];
+    delete scope["anchoredByRole"];
+    const sig = await signBuyer(
+      signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope)),
+    );
+    fx.bundle.signatures = [
+      { party: buyerDid, algorithm: "ed25519", value: Buffer.from(sig).toString("base64url") },
+    ];
+
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind) =>
+          kind === "dacs-1-listing" ? fx.listing : null,
+      }),
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  test("amendment and rating refs must resolve and hash-match", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const amendment = { amendmentVersion: "1", jobId: "j1", reason: "refund" };
+    const rating = { ratingVersion: "1", jobId: "j1", value: 5 };
+    fx.bundle.amendments = [
+      { kind: "dacs-4-amendment", id: "amendment-j1", contentHash: contentHash(amendment) },
+    ];
+    fx.bundle.ratingRefs = [
+      { kind: "dacs-5-rating", id: "rating-j1", contentHash: contentHash(rating) },
+    ];
+    const scope = { ...fx.bundle };
+    delete scope["signatures"];
+    delete scope["anchoredByRole"];
+    const sig = await signBuyer(
+      signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope)),
+    );
+    fx.bundle.signatures = [
+      { party: buyerDid, algorithm: "ed25519", value: Buffer.from(sig).toString("base64url") },
+    ];
+
+    const ok = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind) =>
+          kind === "dacs-3-agreement"
+            ? fx.agreement
+            : kind === "dacs-4-evidence"
+              ? fx.evidence
+              : kind === "dacs-4-amendment"
+                ? amendment
+                : kind === "dacs-5-rating"
+                  ? rating
+                  : null,
+      }),
+    );
+    expect(ok.ok).toBe(true);
+
+    const bad = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind) =>
+          kind === "dacs-3-agreement"
+            ? fx.agreement
+            : kind === "dacs-4-evidence"
+              ? fx.evidence
+              : kind === "dacs-4-amendment"
+                ? { ...amendment, reason: "tampered" }
+                : kind === "dacs-5-rating"
+                  ? rating
+                  : null,
+      }),
+    );
+    expect(bad.ok).toBe(false);
+    expect(bad.refs.find((r) => r.kind === "dacs-4-amendment")?.verdict).toBe(
+      "hash-mismatch",
+    );
+  });
+
   test("ref that isn't a bundle => rejected", async () => {
     const res = await verifyBundleCore("ref", {
       readArtifact: async () => ({ not: "a bundle" }),

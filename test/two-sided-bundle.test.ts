@@ -78,8 +78,12 @@ const session = () => ({
 /** Both copies of a happy-path session; asserts the seller copy exists so tests can narrow. */
 async function bothCopies() {
   const { buyerCopy, sellerCopy } = await buildTwoSidedBundle(session());
+  expect(buyerCopy).toBeDefined();
   expect(sellerCopy).toBeDefined();
-  return { buyerCopy, sellerCopy: sellerCopy as AttestationBundle };
+  return {
+    buyerCopy: buyerCopy as AttestationBundle,
+    sellerCopy: sellerCopy as AttestationBundle,
+  };
 }
 
 const asRecord = (b: AttestationBundle) => b as unknown as Record<string, unknown>;
@@ -179,10 +183,11 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     });
 
     expect(sellerCopy).toBeDefined();
-    expect(attestationBundleHash(buyerCopy)).toBe(GOLDEN_HASH);
+    expect(buyerCopy).toBeDefined();
+    expect(attestationBundleHash(buyerCopy as AttestationBundle)).toBe(GOLDEN_HASH);
     expect(attestationBundleHash(sellerCopy as AttestationBundle)).toBe(GOLDEN_HASH);
     // The canonical bytes themselves, not merely their digest.
-    expect(bundleSignedScope(buyerCopy)).toEqual(bundleSignedScope(golden("buyer")));
+    expect(bundleSignedScope(buyerCopy as AttestationBundle)).toEqual(bundleSignedScope(golden("buyer")));
     expect(bundleSignedScope(sellerCopy as AttestationBundle)).toEqual(
       bundleSignedScope(golden("seller")),
     );
@@ -226,9 +231,38 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/not a DACS-5 bundle outcome/i);
   });
 
-  test("ISC-11.1a ANTI: refuses to sign a bundle without the required agreementRef", async () => {
+  test("ISC-11.1a: permits a pre-commit terminal bundle without agreementRef", async () => {
     const { agreementRef: _agreementRef, ...s } = session();
-    await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/agreementRef is required/i);
+    const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
+      ...s,
+      outcome: "aborted-by-other",
+      phaseSummary: [{ index: 0, kind: "pre-commit-check", outcome: "ok" }],
+      settlementEvidence: [],
+    });
+    expect(buyerCopy).not.toHaveProperty("agreementRef");
+    expect(sellerCopy).toBeUndefined();
+  });
+
+  test("ISC-11.1a ANTI: refuses to omit agreementRef after commitment", async () => {
+    const { agreementRef: _agreementRef, ...s } = session();
+    await expect(buildTwoSidedBundle(s as never)).rejects.toThrow(/agreementRef is required once/i);
+    await expect(
+      buildTwoSidedBundle({
+        ...s,
+        outcome: "failed-perm",
+        settlementEvidence: [],
+        phaseSummary: [{ index: 0, kind: "commit", outcome: "ok" }],
+      }),
+    ).rejects.toThrow(/agreementRef is required once/i);
+    await expect(
+      buildTwoSidedBundle({
+        ...s,
+        outcome: "failed-perm",
+        settlementEvidence: [],
+        phaseSummary: [{ index: 0, kind: "negotiate", outcome: "fail" }],
+        amendments: [{ id: "refund-1", kind: "dacs-4-amendment", contentHash: "f".repeat(64) }],
+      }),
+    ).rejects.toThrow(/agreementRef is required once/i);
   });
 
   test("ISC-11.1b ANTI: refuses a declared bundleVersion outside the v1 signing domain", async () => {
@@ -256,26 +290,32 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     },
   );
 
-  test.each([
-    ["failed-counterparty", "failed-perm"],
-    ["failed-perm", "failed-counterparty"],
-    ["aborted-by-other", "aborted-by-self"],
-    ["aborted-by-self", "aborted-by-other"],
-  ] as const)(
-    "ISC-11.4a: seller copy flips buyer-perspective %s to seller-perspective %s",
-    async (buyerOutcome, sellerOutcome) => {
+  test("ISC-11.4a: co-signed failed-substrate copies remain canonically identical", async () => {
+    const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
+      ...session(),
+      outcome: "failed-substrate",
+    });
+    expect(buyerCopy?.outcome).toBe("failed-substrate");
+    expect(sellerCopy?.outcome).toBe("failed-substrate");
+    expect(attestationBundleHash(buyerCopy as AttestationBundle)).toBe(
+      attestationBundleHash(sellerCopy as AttestationBundle),
+    );
+  });
+
+  test.each(["failed-counterparty", "failed-perm", "aborted-by-other", "aborted-by-self"] as const)(
+    "ISC-11.4b: co-signed perspective-bearing %s emits one all-signed canonical copy",
+    async (outcome) => {
       const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
         ...session(),
-        outcome: buyerOutcome,
+        outcome,
       });
-      expect(buyerCopy.outcome).toBe(buyerOutcome);
-      expect(sellerCopy?.outcome).toBe(sellerOutcome);
-      expect(buyerCopy.signatures).toHaveLength(2);
-      expect(sellerCopy?.signatures).toHaveLength(2);
+      expect(buyerCopy?.outcome).toBe(outcome);
+      expect(sellerCopy).toBeUndefined();
+      expect(buyerCopy?.signatures).toHaveLength(2);
     },
   );
 
-  test("ISC-11.4b: seller copy flips perspective-bearing phase attribution", async () => {
+  test("ISC-11.4c: perspective-bearing phase attribution is not copied into a second self-copy", async () => {
     const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
       ...session(),
       outcome: "failed-counterparty",
@@ -283,22 +323,107 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
         { index: 0, kind: "settle", outcome: "fail", errorClass: "counterparty" } as never,
       ],
     });
-    expect(buyerCopy.phaseSummary[0]).toMatchObject({ errorClass: "counterparty" });
-    expect(sellerCopy?.phaseSummary[0]).toMatchObject({ errorClass: "permanent" });
+    expect(buyerCopy?.phaseSummary[0]).toMatchObject({ errorClass: "counterparty" });
+    expect(sellerCopy).toBeUndefined();
   });
 
-  test.each(SPEC_SINGLE_SIGNATURE_PERMITTED)(
-    "ISC-10: %s MAY be single-signed (spec:267, §10.11 suppression)",
-    async (outcome) => {
-      const { signer: _signer, ...sellerWithoutSigner } = session().seller;
-      const s = { ...session(), outcome, seller: sellerWithoutSigner };
-      const { buyerCopy, sellerCopy } = await buildTwoSidedBundle(s);
-      expect(buyerCopy.signatures).toHaveLength(1);
-      expect(buyerCopy.parties.map((p) => p.role).sort()).toEqual(["buyer", "seller"]);
-      expect(buyerCopy.outcome).toBe(outcome);
-      expect(sellerCopy).toBeUndefined();
-    },
-  );
+  test("ISC-10: buyer-signed aborted-by-other emits signer-perspective copy", async () => {
+    const { signer: _signer, ...sellerWithoutSigner } = session().seller;
+    const s = {
+      ...session(),
+      outcome: "aborted-by-other" as BundleOutcome,
+      seller: sellerWithoutSigner,
+    };
+    const { buyerCopy, sellerCopy } = await buildTwoSidedBundle(s);
+    expect(buyerCopy?.signatures).toHaveLength(1);
+    expect(buyerCopy?.parties.map((p) => p.role).sort()).toEqual(["buyer", "seller"]);
+    expect(buyerCopy?.anchoredByRole).toBe("buyer");
+    expect(buyerCopy?.outcome).toBe("aborted-by-other");
+    expect(sellerCopy).toBeUndefined();
+  });
+
+  test("ISC-10 ANTI: buyer-signed aborted-by-self is rejected, not rewritten", async () => {
+    const { signer: _signer, ...sellerWithoutSigner } = session().seller;
+    await expect(
+      buildTwoSidedBundle({
+        ...session(),
+        outcome: "aborted-by-self",
+        seller: sellerWithoutSigner,
+      }),
+    ).rejects.toThrow(/single-signed abort bundles must use/i);
+  });
+
+  test("ISC-10.1: seller-signed aborted-by-other emits a seller-anchored signer copy", async () => {
+    const { signer: _signer, ...buyerWithoutSigner } = session().buyer;
+    const s = {
+      ...session(),
+      outcome: "aborted-by-other" as BundleOutcome,
+      buyer: buyerWithoutSigner,
+    };
+    const { buyerCopy, sellerCopy } = await buildTwoSidedBundle(s);
+    expect(buyerCopy).toBeUndefined();
+    expect(sellerCopy?.signatures).toHaveLength(1);
+    expect(sellerCopy?.parties.map((p) => p.role).sort()).toEqual(["buyer", "seller"]);
+    expect(sellerCopy?.anchoredByRole).toBe("seller");
+    expect(sellerCopy?.outcome).toBe("aborted-by-other");
+  });
+
+  test("ISC-10.1 ANTI: single-signed abort with a distinct orchestrator fails closed", async () => {
+    const { signer: _signer, ...sellerWithoutSigner } = session().seller;
+    const orchSeed = seed(3);
+    const orchClaim = `demos:0x${Buffer.from(publicKeyRaw(orchSeed)).toString("hex")}`;
+    await expect(
+      buildTwoSidedBundle({
+        ...session(),
+        outcome: "aborted-by-other",
+        seller: sellerWithoutSigner,
+        orchestrator: { primaryClaim: orchClaim, bundleHash: "f".repeat(64), signer: orchSeed },
+      }),
+    ).rejects.toThrow(/single-signed abort with a distinct orchestrator/i);
+  });
+
+  test("ISC-10.2: carries current optional bundle fields in the signed scope", async () => {
+    const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
+      ...session(),
+      amendments: [{ id: "refund-1", kind: "dacs-4-amendment", contentHash: "f".repeat(64) }],
+      ratingRefs: [{ id: "rating-1", kind: "dacs-5-rating", contentHash: "1".repeat(64) }],
+    });
+    expect(buyerCopy?.amendments).toHaveLength(1);
+    expect(buyerCopy?.ratingRefs).toHaveLength(1);
+    expect(attestationBundleHash(buyerCopy as AttestationBundle)).toBe(
+      attestationBundleHash(sellerCopy as AttestationBundle),
+    );
+  });
+
+  test("ISC-10.3: carries pre-commit cancellation markers without agreementRef", async () => {
+    const { agreementRef: _agreementRef, ...s } = session();
+    const { buyerCopy } = await buildTwoSidedBundle({
+      ...s,
+      outcome: "aborted-by-other",
+      cancellation: { claimedPolicy: "pre-commit" },
+      phaseSummary: [{ index: 0, kind: "negotiate", outcome: "fail" }],
+      settlementEvidence: [],
+    });
+    expect(buyerCopy?.cancellation).toEqual({ claimedPolicy: "pre-commit" });
+    expect(buyerCopy).not.toHaveProperty("agreementRef");
+  });
+
+  test("ISC-10.4 ANTI: fails closed on unsupported cancellation shapes", async () => {
+    await expect(
+      buildTwoSidedBundle({
+        ...session(),
+        outcome: "aborted-by-other",
+        cancellation: { claimedPolicy: "with-fee" },
+      }),
+    ).rejects.toThrow(/only "pre-commit" is defined/i);
+    await expect(
+      buildTwoSidedBundle({
+        ...session(),
+        outcome: "completed",
+        cancellation: { claimedPolicy: "pre-commit" },
+      }),
+    ).rejects.toThrow(/cancellation is only supported/i);
+  });
 
   test("ISC-11.2: a distinct orchestrator is a REQUIRED signer and anchors its own copy (spec:265)", async () => {
     const orchSeed = seed(3);
@@ -307,13 +432,21 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       ...session(),
       orchestrator: { primaryClaim: orchClaim, bundleHash: "f".repeat(64), signer: orchSeed },
     });
+    expect(buyerCopy).toBeDefined();
+    expect(sellerCopy).toBeDefined();
     expect(orchestratorCopy).toBeDefined();
-    for (const copy of [buyerCopy, sellerCopy!, orchestratorCopy!]) {
+    for (const copy of [
+      buyerCopy as AttestationBundle,
+      sellerCopy as AttestationBundle,
+      orchestratorCopy as AttestationBundle,
+    ]) {
       expect(copy.parties.map((p) => p.role).sort()).toEqual(["buyer", "orchestrator", "seller"]);
       expect(copy.signatures).toHaveLength(3);
     }
     // All three copies stay canonically equal — anchoredByRole is outside the hashed scope.
-    expect(attestationBundleHash(buyerCopy)).toBe(attestationBundleHash(orchestratorCopy!));
+    expect(attestationBundleHash(buyerCopy as AttestationBundle)).toBe(
+      attestationBundleHash(orchestratorCopy as AttestationBundle),
+    );
     expect(orchestratorCopy!.anchoredByRole).toBe("orchestrator");
   });
 
@@ -333,10 +466,10 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       orchestrator: partyOf(),
     });
     expect(orchestratorCopy).toBeUndefined();
-    expect(buyerCopy.parties.map((p) => p.role).sort()).toEqual(["buyer", "seller"]);
-    expect(buyerCopy.signatures).toHaveLength(2);
+    expect(buyerCopy?.parties.map((p) => p.role).sort()).toEqual(["buyer", "seller"]);
+    expect(buyerCopy?.signatures).toHaveLength(2);
     // No party signs twice.
-    const signers = buyerCopy.signatures!.map((s) => s.party);
+    const signers = buyerCopy!.signatures!.map((s) => s.party);
     expect(new Set(signers).size).toBe(signers.length);
   });
 
@@ -350,8 +483,14 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
         signer: orchSeed,
       },
     });
+    expect(buyerCopy).toBeDefined();
+    expect(sellerCopy).toBeDefined();
     expect(orchestratorCopy).toBeDefined();
-    for (const copy of [buyerCopy, sellerCopy!, orchestratorCopy!]) {
+    for (const copy of [
+      buyerCopy as AttestationBundle,
+      sellerCopy as AttestationBundle,
+      orchestratorCopy as AttestationBundle,
+    ]) {
       expect(copy.parties.map((p) => p.role).sort()).toEqual(["buyer", "orchestrator", "seller"]);
       expect(copy.signatures).toHaveLength(3);
     }

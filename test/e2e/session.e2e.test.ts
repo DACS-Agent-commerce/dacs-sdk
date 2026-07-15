@@ -199,7 +199,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(v.bundle?.vetRecords).toHaveLength(1);
     expect(v.bundle?.settlementEvidence).toHaveLength(1);
     expect(v.bundle?.listingRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(v.bundle?.agreementRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(v.bundle?.agreementRef?.contentHash).toMatch(/^[0-9a-f]{64}$/);
 
     // Settlement evidence carries the rail's reported tx hash.
     const evidence = sub.store.get(result.settlementRef);
