@@ -12,7 +12,8 @@ import type { AttestationBundle, AttestationRef } from "../artifacts/types.js";
  *    (`finalisedAt`) is within [windowStart, windowEnd].
  *  - Per-jobId reconciliation: collapse buyer/seller-anchored copies of one job
  *    to a single perspective-adjusted outcome; a genuine cross-copy divergence
- *    (§10.4.3(d)) excludes the job from ALL metrics.
+ *    (§10.4.3(d)) excludes the job from ALL metrics. A one-copy attribution
+ *    requires authoritative absence of the missing role's copy.
  *  - Blameless substrate (§10.5, "failed-substrate denominator"):
  *    `party_fault_denom = |outcomes| − |failed-substrate|`, so substrate-induced
  *    failures never damage either party's reputation.
@@ -120,29 +121,42 @@ function perspectiveFlipPhaseValue(value: unknown): unknown {
   }
 }
 
-/** §10.4.3(d) "canonically diverge": contradictory outcome or phaseSummary outcome/errorClass. */
+/** §10.4.3(d) "canonically diverge": contradictory outcome or phaseSummary kind/outcome/errorClass. */
 function canonicallyDiverge(a: AttestationBundle, b: AttestationBundle): boolean {
   const buyerSellerPair =
     (a.anchoredByRole === "buyer" && b.anchoredByRole === "seller") ||
     (a.anchoredByRole === "seller" && b.anchoredByRole === "buyer");
   if (a.outcome !== b.outcome && !(buyerSellerPair && perspectiveFlip(a.outcome) === b.outcome))
     return true;
-  const pa = a.phaseSummary ?? [];
-  const pb = b.phaseSummary ?? [];
-  if (pa.length !== pb.length) return true;
-  for (let i = 0; i < pa.length; i++) {
+  const indexed = (bundle: AttestationBundle) => {
+    const map = new Map<number, { kind: unknown; outcome: unknown; errorClass: unknown }>();
+    for (const phase of bundle.phaseSummary ?? []) {
+      const index = phase.index;
+      if (!Number.isSafeInteger(index) || Number(index) < 0 || map.has(Number(index))) return null;
+      map.set(Number(index), {
+        kind: phase.kind,
+        outcome: phase.outcome,
+        errorClass: (phase as { errorClass?: unknown }).errorClass,
+      });
+    }
+    return map;
+  };
+  const pa = indexed(a);
+  const pb = indexed(b);
+  if (!pa || !pb || pa.size !== pb.size) return true;
+  for (const [index, left] of pa) {
+    const right = pb.get(index);
+    if (!right || left.kind !== right.kind) return true;
     if (
-      pa[i]!.outcome !== pb[i]!.outcome &&
-      !(buyerSellerPair && perspectiveFlipPhaseValue(pa[i]!.outcome) === pb[i]!.outcome)
+      left.outcome !== right.outcome &&
+      !(buyerSellerPair && perspectiveFlipPhaseValue(left.outcome) === right.outcome)
     )
       return true;
     if (
-      (pa[i] as { errorClass?: unknown }).errorClass !==
-        (pb[i] as { errorClass?: unknown }).errorClass &&
+      left.errorClass !== right.errorClass &&
       !(
         buyerSellerPair &&
-        perspectiveFlipPhaseValue((pa[i] as { errorClass?: unknown }).errorClass) ===
-          (pb[i] as { errorClass?: unknown }).errorClass
+        perspectiveFlipPhaseValue(left.errorClass) === right.errorClass
       )
     )
       return true;
@@ -171,6 +185,17 @@ export interface DeriveReputationDeps {
    * when `isValid` is supplied.
    */
   trustBundles?: boolean;
+  /**
+   * §10.5.1 SR-2 absence evidence. When only the counterparty's copy is present,
+   * a deriver may attribute that copy only if the missing self-role copy is
+   * authoritatively absent. Ordinary not-found, transport failure, stale reads,
+   * or bindings without an absence policy are indeterminate and must exclude.
+   */
+  copyAbsence?: (context: {
+    jobId: string;
+    missingRole: "buyer" | "seller";
+    presentRole: "buyer" | "seller";
+  }) => "absent" | "indeterminate";
 }
 
 /**
@@ -244,7 +269,15 @@ export function deriveReputation(
       if (cp && canonicallyDiverge(cp, selfCopy)) continue; // genuine dispute → exclude
       reconciled.push(selfCopy);
       outcomes.push(selfCopy.outcome);
-    } else if (cp) {
+    } else if (cp && (roleOfParty === "buyer" || roleOfParty === "seller")) {
+      const presentRole = cp.anchoredByRole;
+      if (presentRole !== "buyer" && presentRole !== "seller") continue;
+      const absence = deps.copyAbsence?.({
+        jobId: cp.jobId,
+        missingRole: roleOfParty,
+        presentRole,
+      }) ?? "indeterminate";
+      if (absence !== "absent") continue;
       reconciled.push(cp);
       outcomes.push(perspectiveFlip(cp.outcome));
     }

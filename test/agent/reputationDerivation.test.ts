@@ -168,14 +168,46 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.metrics.counterpartyFaultRate).toBe(1);
   });
 
-  test("counterparty-only copy is perspective-flipped (aborted-by-self → other)", () => {
-    // Only the seller's copy exists; from the buyer's view its 'aborted-by-self'
-    // becomes 'aborted-by-other' (counterparty fault).
+  test("shared-index phase kind mismatch is divergent and excluded", () => {
+    const buyerCopy = bundle("j1", "completed", 1100, "buyer");
+    buyerCopy.phaseSummary = [
+      { index: 2, kind: "commit-agreement", outcome: "ok" } as never,
+    ];
+    const sellerCopy = bundle("j1", "completed", 1100, "seller");
+    sellerCopy.phaseSummary = [
+      { index: 2, kind: "deliver-storage-program", outcome: "ok" } as never,
+    ];
+    const r = deriveReputation(PARTY, [buyerCopy, sellerCopy], WINDOW, { trustBundles: true });
+    expect(r.bundleCount).toBe(0);
+    expect(r.metrics.completionRate).toBeNull();
+  });
+
+  test("counterparty-only copy without authoritative absence evidence is excluded", () => {
     const r = deriveReputation(
       PARTY,
       [bundle("j1", "aborted-by-self", 1100, "seller")],
       WINDOW,
       { trustBundles: true },
+    );
+    expect(r.bundleCount).toBe(0);
+    expect(r.metrics.counterpartyFaultRate).toBeNull();
+    expect(r.metrics.completionRate).toBeNull();
+  });
+
+  test("counterparty-only copy is attributed with authoritative absence evidence", () => {
+    const r = deriveReputation(
+      PARTY,
+      [bundle("j1", "aborted-by-self", 1100, "seller")],
+      WINDOW,
+      {
+        trustBundles: true,
+        copyAbsence: ({ jobId, missingRole, presentRole }) => {
+          expect(jobId).toBe("j1");
+          expect(missingRole).toBe("buyer");
+          expect(presentRole).toBe("seller");
+          return "absent";
+        },
+      },
     );
     expect(r.metrics.counterpartyFaultRate).toBe(1);
     expect(r.metrics.completionRate).toBe(0);
