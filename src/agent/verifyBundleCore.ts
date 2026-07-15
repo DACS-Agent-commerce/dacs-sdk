@@ -135,6 +135,37 @@ function requiresAgreementRef(bundle: AttestationBundle): boolean {
   );
 }
 
+const CO_SIGNATURE_REQUIRED_OUTCOMES = new Set([
+  "completed",
+  "failed-perm",
+  "failed-counterparty",
+  "failed-substrate",
+]);
+const ABORT_OUTCOMES = new Set(["aborted-by-self", "aborted-by-other"]);
+
+function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer" | "seller"): string | undefined {
+  if (!agreement) return undefined;
+  const scope = stripSignature(agreement);
+  if (!isAgreementDocument(scope)) return undefined;
+  return scope[role];
+}
+
+function requiredSignatureClaims(
+  bundle: AttestationBundle,
+  agreement: Record<string, unknown> | null,
+): string[] {
+  if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome)) return [];
+  const buyer = bundle.parties.find((party) => party.role === "buyer")?.primaryClaim;
+  const seller = bundle.parties.find((party) => party.role === "seller")?.primaryClaim;
+  const claims = [
+    agreementClaim(agreement, "buyer") ?? buyer ?? "role:buyer",
+    agreementClaim(agreement, "seller") ?? seller ?? "role:seller",
+  ];
+  const orchestrator = bundle.parties.find((party) => party.role === "orchestrator")?.primaryClaim;
+  if (orchestrator && orchestrator !== buyer && orchestrator !== seller) claims.push(orchestrator);
+  return [...new Set(claims)];
+}
+
 export async function verifyBundleCore(
   bundleRef: string,
   deps: VerifyBundleDeps,
@@ -150,6 +181,16 @@ export async function verifyBundleCore(
     };
   }
   const bundle = stripSignature(raw) as unknown as AttestationBundle;
+  if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) && !ABORT_OUTCOMES.has(bundle.outcome)) {
+    return {
+      ok: false,
+      reason: `unsupported DACS-5 bundle outcome: ${bundle.outcome}`,
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+      bundle,
+    };
+  }
 
   // Signed scope = canonical form omitting signatures + anchoredByRole (§10.4.1).
   const scope = { ...raw };
@@ -185,6 +226,7 @@ export async function verifyBundleCore(
 
   // ── Referenced-artifact integrity ──────────────────────────────────────────
   const refs: RefCheck[] = [];
+  let agreementArtifact: Record<string, unknown> | null = null;
   if (!bundle.agreementRef && requiresAgreementRef(bundle)) {
     refs.push({ kind: "dacs-3-agreement", id: "agreementRef", verdict: "missing" });
   }
@@ -201,6 +243,7 @@ export async function verifyBundleCore(
     const agr = bundle.agreementRef
       ? await deps.resolveRef(bundle.agreementRef.kind, bundle.jobId)
       : null;
+    agreementArtifact = agr;
     if (bundle.agreementRef) {
       refs.push(
         checkArtifact(
@@ -297,14 +340,22 @@ export async function verifyBundleCore(
   const anyInvalid = signatures.some((c) => c.verdict === "invalid");
   const anyError = signatures.some((c) => c.verdict === "error");
   const anyValid = signatures.some((c) => c.verdict === "valid");
+  const validSignatureClaims = new Set(
+    signatures.filter((c) => c.verdict === "valid").map((c) => c.party),
+  );
+  const missingRequiredSignatures = requiredSignatureClaims(bundle, agreementArtifact).filter(
+    (claim) => !validSignatureClaims.has(claim),
+  );
   const sigOk = anyValid && !anyInvalid && !anyError;
   const fullyVerified =
-    signatures.length > 0 && signatures.every((c) => c.verdict === "valid");
+    signatures.length > 0 &&
+    signatures.every((c) => c.verdict === "valid") &&
+    missingRequiredSignatures.length === 0;
   const badRef = refs.find((r) => r.verdict !== "ok");
   const refsOk = !badRef;
 
   return {
-    ok: sigOk && refsOk,
+    ok: sigOk && missingRequiredSignatures.length === 0 && refsOk,
     reason:
       signatures.length === 0
         ? "bundle has no signatures"
@@ -312,6 +363,8 @@ export async function verifyBundleCore(
           ? "one or more signatures failed verification"
           : anyError
             ? "one or more signer keys were malformed (could not verify)"
+            : missingRequiredSignatures.length > 0
+              ? `missing required signature(s): ${missingRequiredSignatures.join(", ")}`
             : !anyValid
               ? "no signer key could be resolved"
               : badRef
