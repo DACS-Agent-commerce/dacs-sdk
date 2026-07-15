@@ -25,7 +25,12 @@ import {
 } from "./runSessionCore.js";
 import { discoverListings } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
-import { buildSignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
+import {
+  buildSignedArtifact,
+  verifySignedArtifact,
+  type Signer,
+  type Verifier,
+} from "./signedArtifact.js";
 import {
   verifyBundleCore,
   type SignatureCheck,
@@ -143,6 +148,28 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
 
   const sign: Signer = (bytes) => adapter.sign(bytes);
 
+  // Full bundle verification (signature coverage §10.4.1 + referenced-artifact
+  // integrity), shared by verifyBundle() and getReputation() so reputation never
+  // counts an unverified bundle (#42).
+  const verifyBundleAt = (ref: string): Promise<BundleVerification> =>
+    verifyBundleCore(ref, {
+      readArtifact: (r) => adapter.readAnchor(r),
+      resolveRef: async (kind, jobId) => {
+        const name =
+          kind === "dacs-3-agreement"
+            ? sessionAnchorName.agreement(jobId)
+            : kind === "dacs-4-evidence"
+              ? sessionAnchorName.evidence(jobId)
+              : kind === "dacs-2-verifyresult"
+                ? sessionAnchorName.vet(jobId)
+                : null;
+        if (!name) return null;
+        return adapter.readAnchor(await adapter.anchorAddress(name));
+      },
+      resolvePublicKey: async (did) => publicKeyFromDid(did),
+      verify: ed25519RawVerify,
+    });
+
   return {
     adapter,
 
@@ -176,29 +203,24 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       // Bundle signature verification (§7.7) PLUS dereferencing each referenced
       // artifact and hash-checking it. Session artifacts live at deterministic,
       // jobId-keyed addresses, so resolveRef maps (kind, jobId) → address → read.
-      return verifyBundleCore(ref, {
-        readArtifact: (r) => adapter.readAnchor(r),
-        resolveRef: async (kind, jobId) => {
-          const name =
-            kind === "dacs-3-agreement"
-              ? sessionAnchorName.agreement(jobId)
-              : kind === "dacs-4-evidence"
-                ? sessionAnchorName.evidence(jobId)
-                : kind === "dacs-2-verifyresult"
-                  ? sessionAnchorName.vet(jobId)
-                  : null;
-          if (!name) return null;
-          return adapter.readAnchor(await adapter.anchorAddress(name));
-        },
-        resolvePublicKey: async (did) => publicKeyFromDid(did),
-        verify: ed25519RawVerify,
-      });
+      return verifyBundleAt(ref);
     },
 
     async discover(
       listingRefs: string[],
     ): Promise<Array<{ ref: string; listing: Listing }>> {
-      return discoverListings(listingRefs, (r) => adapter.readAnchor(r));
+      // §6.3.4 / #41: require a valid seller signature on each listing before it
+      // enters discovery — a forged/tampered listing is dropped, not returned.
+      return discoverListings(
+        listingRefs,
+        (r) => adapter.readAnchor(r),
+        async (signed, sellerId) => {
+          const key = publicKeyFromDid(sellerId);
+          return key
+            ? verifySignedArtifact(signed, ARTIFACT_SEPARATORS.Listing, key, ed25519RawVerify)
+            : false;
+        },
+      );
     },
 
     async runSession(
@@ -237,12 +259,14 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       primaryClaim: string,
       bundleRefs: string[],
     ): Promise<Reputation> {
+      // #42: only count bundles that FULLY verify — signature coverage (§10.4.1)
+      // + referenced-artifact integrity. A structurally-shaped but unsigned /
+      // single-signed bundle naming the target claim must NOT inflate reputation,
+      // so we verify each ref (not just isAttestationBundle) before counting it.
       const bundles: AttestationBundle[] = [];
       for (const ref of bundleRefs) {
-        const raw = await adapter.readAnchor(ref);
-        if (raw && isAttestationBundle(stripSignature(raw))) {
-          bundles.push(stripSignature(raw) as unknown as AttestationBundle);
-        }
+        const v = await verifyBundleAt(ref);
+        if (v.ok && v.bundle) bundles.push(v.bundle);
       }
       return computeReputation(primaryClaim, bundles);
     },

@@ -9,7 +9,7 @@ import {
   isListing,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
-import { type Verifier } from "./signedArtifact.js";
+import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
 
 /**
  * Attestation-bundle verification (DACS-5). Two independent checks must BOTH
@@ -46,7 +46,10 @@ export type RefVerdict =
   | "missing"
   | "invalid-shape"
   | "hash-mismatch"
-  | "unresolved";
+  | "unresolved"
+  /** Hash-matched + well-shaped, but the artifact's own signature does not verify
+   *  under its authorized signer (#38) — e.g. a fabricated unsigned listing. */
+  | "invalid-signature";
 
 export interface RefCheck {
   kind: string;
@@ -201,25 +204,77 @@ export async function verifyBundleCore(
     const listing = listingAddr
       ? await deps.readArtifact(listingAddr)
       : null;
-    refs.push(
-      checkArtifact(
-        "dacs-1-listing",
-        listingId,
-        bundle.listingRef.contentHash,
-        isListing,
-        listing,
-      ),
+    const listingCheck = checkArtifact(
+      "dacs-1-listing",
+      listingId,
+      bundle.listingRef.contentHash,
+      isListing,
+      listing,
     );
+    // §10.4.1 / #38: a hash-matched listing must ALSO carry a valid signature by
+    // its advertised seller (`agentId`) — otherwise a bundle could reference a
+    // fabricated, unsigned listing and still verify. (Agreement/evidence/vet
+    // referenced-signature verification needs the signer envelope — tracked #41.)
+    if (listingCheck.verdict === "ok" && listing) {
+      const sellerId = (stripSignature(listing) as { agentId?: unknown }).agentId;
+      const key =
+        typeof sellerId === "string" ? await deps.resolvePublicKey(sellerId) : null;
+      const listingSigOk =
+        !!key &&
+        key.length === 32 &&
+        (await verifySignedArtifact(
+          listing,
+          ARTIFACT_SEPARATORS.Listing,
+          key,
+          deps.verify,
+        ));
+      if (!listingSigOk) listingCheck.verdict = "invalid-signature";
+    }
+    refs.push(listingCheck);
   }
 
   const anyInvalid = signatures.some((c) => c.verdict === "invalid");
   const anyError = signatures.some((c) => c.verdict === "error");
   const anyValid = signatures.some((c) => c.verdict === "valid");
-  const sigOk = anyValid && !anyInvalid && !anyError;
+
+  // §10.4.1 signer coverage (#39): a `completed` or any `failed-*` bundle MUST
+  // carry a VALID signature from every named party role — buyer + seller, plus a
+  // distinct orchestrator when the bundle declares one. The single-signature form
+  // is valid ONLY for abort outcomes (§10.11), where one valid signature stands.
+  // Without this a unilateral party could publish a completed / fault-attributing
+  // bundle from just its own signature and have it verify.
+  const isAbort =
+    bundle.outcome === "aborted-by-self" || bundle.outcome === "aborted-by-other";
+  const validSigners = new Set(
+    signatures.filter((c) => c.verdict === "valid").map((c) => c.party),
+  );
+  const requiredRoles = new Set(["buyer", "seller", "orchestrator"]);
+  const requiredSigners = bundle.parties
+    .filter((p) => requiredRoles.has(p.role))
+    .map((p) => p.primaryClaim);
+  const haveBuyer = bundle.parties.some((p) => p.role === "buyer");
+  const haveSeller = bundle.parties.some((p) => p.role === "seller");
+  const missingSigner = requiredSigners.find((s) => !validSigners.has(s));
+  const coverageOk = isAbort
+    ? anyValid // abort: a single valid signature stands (§10.11)
+    : haveBuyer &&
+      haveSeller &&
+      requiredSigners.length > 0 &&
+      missingSigner === undefined;
+
+  const sigOk = coverageOk && !anyInvalid && !anyError;
   const fullyVerified =
-    signatures.length > 0 && signatures.every((c) => c.verdict === "valid");
+    signatures.length > 0 &&
+    signatures.every((c) => c.verdict === "valid") &&
+    coverageOk;
   const badRef = refs.find((r) => r.verdict !== "ok");
   const refsOk = !badRef;
+
+  const coverageReason = isAbort
+    ? "abort bundle has no valid signature"
+    : !haveBuyer || !haveSeller
+      ? "completed/failed bundle must name both buyer and seller parties (§10.4.1)"
+      : `completed/failed bundle is missing a valid signature from a required party (§10.4.1)`;
 
   return {
     ok: sigOk && refsOk,
@@ -232,9 +287,11 @@ export async function verifyBundleCore(
             ? "one or more signer keys were malformed (could not verify)"
             : !anyValid
               ? "no signer key could be resolved"
-              : badRef
-                ? `referenced artifact ${badRef.kind}/${badRef.id} ${badRef.verdict}`
-                : undefined,
+              : !coverageOk
+                ? coverageReason
+                : badRef
+                  ? `referenced artifact ${badRef.kind}/${badRef.id} ${badRef.verdict}`
+                  : undefined,
     fullyVerified,
     bundle,
     signatures,

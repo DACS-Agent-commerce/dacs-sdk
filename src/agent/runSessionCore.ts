@@ -66,6 +66,13 @@ export interface SessionDeps {
   sign: (artifact: object, separator: string) => Promise<object>;
   /** Sign raw bytes (for artifacts whose signature shape the core assembles, e.g. the bundle). */
   signBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
+  /**
+   * OPTIONAL seller countersignature over the bundle's §10.4.1 signed bytes. When
+   * wired, the completed/failed bundle is two-signed (buyer + seller) as §10.4.1
+   * requires; without it the bundle is buyer-only and a verifier reports it as not
+   * fully signed (#39). `sellerId` is the seller's primary claim (listing.agentId).
+   */
+  countersign?: (bytes: Uint8Array, sellerId: string) => Promise<Uint8Array> | Uint8Array;
   /** Anchor a value under a name; returns the storage address. */
   anchor: (name: string, value: object) => Promise<string>;
   /** Deterministic storage address for a name (without writing) — for resume. */
@@ -382,9 +389,16 @@ export async function runSessionCore(
         },
         agreementRef: refTo("dacs-3-agreement", `agreement-${jobId}`, agreementValue),
         parties: [
-          // MVP one-sided: the buyer's party. bundleHash stands in for the
-          // party's DACS-1 IdentityBundle hash (IdentityBundles are a follow-up).
+          // bundleHash stands in for the party's DACS-1 IdentityBundle hash
+          // (IdentityBundles are a follow-up).
           { role: "buyer", bundleHash: sha256Hex(deps.buyerId), primaryClaim: deps.buyerId },
+          // §10.4.1: a completed/failed bundle MUST be two-signed. When the seller
+          // countersign seam is wired, name the seller party so the bundle carries
+          // both signatures; without it the bundle stays buyer-only and a verifier
+          // correctly reports it as not fully signed (#39).
+          ...(deps.countersign
+            ? [{ role: "seller", bundleHash: sha256Hex(listing.agentId), primaryClaim: listing.agentId }]
+            : []),
         ],
         phaseSummary,
         vetRecords,
@@ -397,19 +411,25 @@ export async function runSessionCore(
       const scope = { ...body };
       delete scope.anchoredByRole;
       const hash = contentHash(scope);
-      const sig = await deps.signBytes(
-        signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, hash),
-      );
-      return {
-        ...body,
-        signatures: [
-          {
-            party: deps.buyerId,
-            algorithm: "ed25519",
-            value: Buffer.from(sig).toString("base64url"),
-          },
-        ],
-      };
+      const message = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, hash);
+      const sig = await deps.signBytes(message);
+      const signatures = [
+        {
+          party: deps.buyerId,
+          algorithm: "ed25519",
+          value: Buffer.from(sig).toString("base64url"),
+        },
+      ];
+      // Seller co-signs over the SAME signed scope when the seam is wired (§10.4.1).
+      if (deps.countersign) {
+        const sellerSig = await deps.countersign(message, listing.agentId);
+        signatures.push({
+          party: listing.agentId,
+          algorithm: "ed25519",
+          value: Buffer.from(sellerSig).toString("base64url"),
+        });
+      }
+      return { ...body, signatures };
     },
   );
 

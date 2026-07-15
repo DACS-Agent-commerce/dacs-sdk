@@ -1,12 +1,12 @@
 import { describe, expect, test } from "vitest";
 
-import type { Signer } from "../../src/agent/signedArtifact.js";
+import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
   verifyBundleCore,
   type VerifyBundleDeps,
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
-import { contentHash } from "../../src/canonical/index.js";
+import { contentHash, stripSignature } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -18,6 +18,7 @@ import {
 } from "../../src/crypto/index.js";
 
 const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 9));
+const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 21));
 
 function signerFor(seed: Uint8Array): Signer {
   const priv = privateKeyFromSeed(seed);
@@ -29,7 +30,8 @@ function didFor(seed: Uint8Array): string {
 
 const buyerDid = didFor(BUYER_SEED);
 const signBuyer = signerFor(BUYER_SEED);
-const sellerDid = "did:demos:agent:seller";
+const sellerDid = didFor(SELLER_SEED);
+const signSeller = signerFor(SELLER_SEED);
 
 // Mirrors Agent's production wiring: CCI == ed25519 pubkey hex embedded in DID.
 const verify = (bytes: Uint8Array, sig: Uint8Array, pub: Uint8Array) =>
@@ -43,17 +45,22 @@ const h = (c: string) => c.repeat(64);
 const LISTING_ADDR = "stor-listing";
 
 /** The session artifacts a real bundle references. */
-function buildArtifacts() {
-  const listing = {
-    agentId: sellerDid,
-    serviceId: "svc",
-    name: "n",
-    description: "d",
-    claimRequirements: [],
-    supportedNegotiation: ["negotiate-fixed-price"],
-    supportedPaymentRails: ["pay-x402"],
-    supportedDelivery: ["deliver-attested-payload"],
-  };
+async function buildArtifacts() {
+  // #38: the referenced listing must be signed by its seller, so sign it here.
+  const listing = await buildSignedArtifact(
+    {
+      agentId: sellerDid,
+      serviceId: "svc",
+      name: "n",
+      description: "d",
+      claimRequirements: [],
+      supportedNegotiation: ["negotiate-fixed-price"],
+      supportedPaymentRails: ["pay-x402"],
+      supportedDelivery: ["deliver-attested-payload"],
+    },
+    ARTIFACT_SEPARATORS.Listing,
+    signSeller,
+  );
   const agreement = {
     jobId: "j1",
     pattern: "negotiate-fixed-price",
@@ -91,7 +98,7 @@ interface Fixture {
 
 /** Build a spec bundle whose refs content-address the resolvable artifacts. */
 async function buildFixture(party: string, sign: Signer): Promise<Fixture> {
-  const { listing, agreement, evidence } = buildArtifacts();
+  const { listing, agreement, evidence } = await buildArtifacts();
   const body: Record<string, unknown> = {
     bundleVersion: "1",
     jobId: "j1",
@@ -100,14 +107,17 @@ async function buildFixture(party: string, sign: Signer): Promise<Fixture> {
     listingRef: {
       listingId: listing.serviceId,
       version: 1,
-      contentHash: contentHash(listing),
+      contentHash: contentHash(stripSignature(listing)),
     },
     agreementRef: {
       kind: "dacs-3-agreement",
       id: "agreement-j1",
       contentHash: contentHash(agreement),
     },
-    parties: [{ role: "buyer", bundleHash: h("c"), primaryClaim: party }],
+    parties: [
+      { role: "buyer", bundleHash: h("c"), primaryClaim: party },
+      { role: "seller", bundleHash: h("d"), primaryClaim: sellerDid },
+    ],
     phaseSummary: [],
     vetRecords: [],
     settlementEvidence: [
@@ -123,13 +133,17 @@ async function buildFixture(party: string, sign: Signer): Promise<Fixture> {
   };
   const scope = { ...body };
   delete scope["anchoredByRole"];
-  const sig = await sign(
-    signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope)),
-  );
+  const message = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope));
+  // §10.4.1: a completed bundle is two-signed (buyer + seller). The `party`/`sign`
+  // params drive the BUYER signature (tests vary it); the seller always co-signs
+  // validly, so signer-coverage (#39) is satisfied for the happy path.
+  const sig = await sign(message);
+  const sellerSig = await signSeller(message);
   const bundle = {
     ...body,
     signatures: [
       { party, algorithm: "ed25519", value: Buffer.from(sig).toString("base64url") },
+      { party: sellerDid, algorithm: "ed25519", value: Buffer.from(sellerSig).toString("base64url") },
     ],
   };
   return { bundle, listing, agreement, evidence };
@@ -167,7 +181,11 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     const res = await verifyBundleCore("ref", depsFor(fx));
     expect(res.ok).toBe(true);
     expect(res.fullyVerified).toBe(true);
-    expect(res.signatures).toEqual([{ party: buyerDid, verdict: "valid" }]);
+    // §10.4.1 two-signed completed bundle: buyer + seller both valid (#39).
+    expect(res.signatures).toEqual([
+      { party: buyerDid, verdict: "valid" },
+      { party: sellerDid, verdict: "valid" },
+    ]);
     expect(res.refs.every((r) => r.verdict === "ok")).toBe(true);
     expect(res.bundle?.outcome).toBe("completed");
   });
@@ -179,6 +197,39 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/signature/);
     expect(res.signatures[0]?.verdict).toBe("invalid");
+  });
+
+  test("#39: a completed bundle with ONLY the buyer signature is rejected (missing seller)", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    // Both parties still named (so the buyer sig stays valid over the scope), but
+    // the SELLER signature is missing — a unilateral 'completed' bundle.
+    (fx.bundle.signatures as unknown[]).splice(1, 1);
+    const res = await verifyBundleCore("ref", depsFor(fx));
+    expect(res.signatures[0]?.verdict).toBe("valid"); // the buyer sig itself is fine…
+    expect(res.ok).toBe(false); // …but coverage fails
+    expect(res.fullyVerified).toBe(false);
+    expect(res.reason).toMatch(/buyer and seller|required party/);
+  });
+
+  test("#39: an abort bundle stands on a single valid signature (§10.11 carve-out)", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    // Single-signed abort: drop the seller, set an abort outcome, re-sign the buyer.
+    (fx.bundle.parties as unknown[]).splice(1, 1);
+    const body = { ...(fx.bundle as Record<string, unknown>) };
+    delete body["signatures"];
+    delete body["anchoredByRole"];
+    body["outcome"] = "aborted-by-other";
+    const { contentHash: ch } = await import("../../src/canonical/index.js");
+    const msg = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, ch(body));
+    const sig = await signBuyer(msg);
+    fx.bundle = {
+      ...body,
+      anchoredByRole: "buyer",
+      signatures: [{ party: buyerDid, algorithm: "ed25519", value: Buffer.from(sig).toString("base64url") }],
+    };
+    const res = await verifyBundleCore("ref", depsFor(fx));
+    expect(res.bundle?.outcome).toBe("aborted-by-other");
+    expect(res.ok).toBe(true); // one valid signature suffices for an abort
   });
 
   test("unresolvable signer => unverified, not ok (never falsely valid)", async () => {
@@ -198,6 +249,17 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/malformed/);
     expect(res.signatures[0]?.verdict).toBe("error");
+  });
+
+  test("#38: a referenced listing not validly signed by its seller => invalid-signature, not ok", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    // Same listing content (hash still matches the ref), but with the seller
+    // signature stripped — a fabricated unsigned listing.
+    fx.listing = stripSignature(fx.listing);
+    const res = await verifyBundleCore("ref", depsFor(fx));
+    expect(res.ok).toBe(false);
+    const lst = res.refs.find((r) => r.kind === "dacs-1-listing");
+    expect(lst?.verdict).toBe("invalid-signature");
   });
 
   test("tampered referenced artifact => hash-mismatch, not ok", async () => {

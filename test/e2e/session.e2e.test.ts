@@ -136,6 +136,9 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       sign: (artifact, sep) =>
         buildSignedArtifact(artifact, sep as never, signBuyer),
       signBytes: async (bytes) => signBuyer(bytes),
+      // §10.4.1 (#39): the seller co-signs the bundle so a `completed` outcome is
+      // two-signed and independently verifies with buyer + seller coverage.
+      countersign: async (bytes) => signSeller(bytes),
       anchor: sub.anchor,
       anchorAddress: sub.anchorAddress,
       readAnchor: sub.read,
@@ -190,8 +193,11 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
 
     expect(v.ok).toBe(true);
     expect(v.fullyVerified).toBe(true);
-    // The bundle's buyer signature verifies over the §10.4.1 signed scope.
-    expect(v.signatures).toEqual([{ party: buyerDid, verdict: "valid" }]);
+    // §10.4.1 two-signed completed bundle: buyer + seller both verify (#39).
+    expect(v.signatures).toEqual([
+      { party: buyerDid, verdict: "valid" },
+      { party: sellerDid, verdict: "valid" },
+    ]);
     // Full 5-stage spec bundle: content-addressed listing/agreement refs +
     // vet record + settlement evidence.
     expect(result.vetRef).toBeDefined();
