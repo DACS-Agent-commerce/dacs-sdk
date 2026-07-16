@@ -29,3 +29,10 @@ jobs:
 
       - name: Test (unit + conformance harness)
         run: npm test
+
+      # Informational only (non-blocking): surface production-tree advisories per
+      # the SECURITY.md audit policy (#40) without gating unrelated work — the
+      # findings are transitive through @kynesyslabs/demosdk, assessed by reachability.
+      - name: Dependency audit (production, informational)
+        run: npm audit --omit=dev || true
+        continue-on-error: true
