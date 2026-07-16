@@ -78,6 +78,21 @@ To resume an interrupted session safely, pass the prior `jobId` to `runSession` 
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
+## Doctor
+
+The package ships a read-only preflight command:
+
+```sh
+dacs doctor --offline
+dacs doctor --json --rpc https://node2.demos.sh
+```
+
+The first slice checks runtime/package state, optional RPC reachability, secret
+redaction, and rail availability without funding, transferring, anchoring, or
+broadcasting. StorageProgram binding resolution and read-visible anchor
+completion currently report `blocked` until the resolver/completion work lands
+(tracked by dacs-sdk #58 and #57).
+
 ## Imports
 
 The package ships ESM with subpath exports so the substrate-free surface can be
@@ -86,6 +101,7 @@ used without pulling in `demosdk`:
 | Import | Needs `demosdk` | Use for |
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | yes (`createAgent` / `DemosAdapter`) | building live agents |
+| `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |

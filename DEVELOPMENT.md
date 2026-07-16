@@ -22,6 +22,10 @@ npm run conformance:sync   # pull DACS-Standard §14 vectors into vendor/ (pinne
 | `npm run test:live` | live on-chain e2e (gated on a funded node + creds; skipped otherwise) |
 | `npm run conformance:sync` | sync the §14 vectors from `DACS-Standard` at the pinned ref |
 
+The `dacs doctor` CLI is read-only by default. Its offline and JSON modes are
+unit-tested; live RPC checks are opt-in through CLI flags and must not fund,
+transfer, anchor, or broadcast.
+
 ## Layout
 
 ```
@@ -32,6 +36,8 @@ src/
   crypto/            signing seam + domain separators
   rails/             settlement rails (x402, evm-erc20)
   registry/          recipe / rail steward registries
+  cli/               read-only doctor/preflight helpers
+  bin/               executable entrypoints
   substrate/         the SubstrateAdapter seam + the single DemosAdapter
   errors.ts          DacsError
   index.ts           public entry — the agent API + rails/registry subpaths

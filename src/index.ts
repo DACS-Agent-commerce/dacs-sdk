@@ -65,6 +65,19 @@ export type {
   ResolvedIdentity,
 } from "./substrate/index.js";
 
+// CLI helpers (pure/read-only by default). The executable entry is `dacs`.
+export {
+  formatDoctorText,
+  redactSecret,
+  runDoctor,
+  type DoctorAdapter,
+  type DoctorCheck,
+  type DoctorMode,
+  type DoctorOptions,
+  type DoctorReport,
+  type DoctorStatus,
+} from "./cli/index.js";
+
 // Identity (DACS-1): cross-context identity resolution + claim helpers. Pure —
 // no substrate import — so verifiers can parse/inspect CCI records too.
 export {
