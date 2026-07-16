@@ -42,6 +42,10 @@ export {
 } from "./vetCore.js";
 export {
   runSessionCore,
+  // sessionAnchorName intentionally NOT re-exported — MVP address strings are
+  // non-normative (see the note in the top-level barrel / #48). Kept internal to
+  // runSessionCore until canonical §6.3.x addressing lands.
+  type SessionDeps,
   type SessionResult,
   type SessionTerms,
   type SettleRequest,

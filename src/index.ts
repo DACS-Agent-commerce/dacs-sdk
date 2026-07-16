@@ -166,6 +166,15 @@ export {
   type VetRequest,
   type VetProxyResult,
   type Reputation,
+  // Injectable buyer-session core (F1 #14): run the lifecycle against any
+  // SubstrateAdapter (mock/simulation/non-Demos). NOTE: `sessionAnchorName` is
+  // deliberately NOT exported — its current MVP address strings are not the
+  // normative §6.3.x schemes (dacs2:composite:{jobId}:{evaluatedParty},
+  // dacs4:payment:{jobId}:{railId}:{phaseIndex}, role-specific bundle addr), and
+  // freezing them into the public API would mislead third-party verifiers.
+  // It stays internal until canonical addressing lands (tracked with #5/#48).
+  runSessionCore,
+  type SessionDeps,
   type RunSessionOptions,
   type SessionResult,
   type SessionTerms,
