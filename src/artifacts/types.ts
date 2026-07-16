@@ -202,6 +202,11 @@ export type ComponentSignatureAlgorithm =
  */
 export interface ComponentSignature {
   algorithm: ComponentSignatureAlgorithm;
+  /**
+   * Primary ClaimReference of the artifact-specific signing role. ClaimReference
+   * is currently an SDK-wide string alias; validate its grammar here once the
+   * shared ClaimReference parser lands.
+   */
   signer: string;
   value: string;
 }

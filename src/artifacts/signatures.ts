@@ -1,5 +1,9 @@
-import { contentHash, stripSignature } from "../canonical/index.js";
-import { type DomainSeparator, signedBytes } from "../crypto/index.js";
+import { contentHash } from "../canonical/index.js";
+import {
+  type DomainSeparator,
+  isRegisteredSeparator,
+  signedBytes,
+} from "../crypto/index.js";
 import { DacsError } from "../errors.js";
 
 import type {
@@ -43,7 +47,7 @@ export type ComponentSignedArtifact<T extends object> = Omit<T, "signature"> & {
 
 /**
  * Signs the already-domain-separated bytes. Returning bytes uses the SDK's
- * unpadded standard-base64 encoding; returning a string preserves a wallet's
+ * unpadded base64url encoding; returning a string preserves a wallet's
  * native wire encoding.
  */
 export type ComponentSigner = (
@@ -70,12 +74,14 @@ export type ComponentSignatureMalformedReason =
   | "invalid-signer"
   | "invalid-value"
   | "ambiguous-signature-fields"
+  | "unregistered-domain-separator"
   | "signed-scope-not-canonicalizable";
 
 export type ComponentSignatureUnresolvedReason =
   | "authorization-unresolved"
   | "signer-key-not-found"
-  | "signer-key-resolution-failed";
+  | "signer-key-resolution-failed"
+  | "verification-error";
 
 export type ComponentSignatureInvalidReason =
   | "signer-not-authorized"
@@ -110,6 +116,9 @@ export interface VerifyComponentSignatureDeps<TKey> {
   /**
    * Artifact-specific role policy. This is required so a cryptographically
    * valid outsider signature cannot be mistaken for an authorised signature.
+   * It runs before cryptographic verification and MUST be a pure comparison:
+   * policy code MUST NOT perform side effects based on the as-yet-unverified
+   * artifact fields.
    */
   isSignerAuthorized: (
     artifact: Readonly<Record<string, unknown>>,
@@ -119,7 +128,11 @@ export interface VerifyComponentSignatureDeps<TKey> {
   resolvePublicKey: (
     signature: Readonly<ComponentSignature>,
   ) => Promise<TKey | null> | TKey | null;
-  /** Verify the envelope value using the injected algorithm implementation. */
+  /**
+   * Verify the envelope value using the injected algorithm implementation.
+   * Return false for a cryptographic mismatch; throw only when verification
+   * cannot be evaluated, which is reported as `unresolved` rather than invalid.
+   */
   verify: (
     input: VerifyComponentSignatureInput<TKey>,
   ) => Promise<boolean> | boolean;
@@ -160,7 +173,7 @@ function encodedSignatureValue(value: Uint8Array | string): string {
   const encoded =
     typeof value === "string"
       ? value
-      : Buffer.from(value).toString("base64").replace(/=+$/, "");
+      : Buffer.from(value).toString("base64url");
   if (!isNonEmptyString(encoded)) {
     throw new DacsError("component signer returned an empty signature value");
   }
@@ -170,7 +183,9 @@ function encodedSignatureValue(value: Uint8Array | string): string {
 /**
  * Construct a ComponentSignature over `separator || contentHash(artifact)`.
  * The input must be unsigned; this prevents accidentally replacing or nesting
- * an existing signature while producing a new envelope.
+ * an existing signature while producing a new envelope. This foundation
+ * accepts only the closed v0.x separator registry; SIG-4 `dacs-x-*` extension
+ * signing remains on the lower-level signing surface until it has a typed API.
  */
 export async function buildComponentSignature(
   artifact: object,
@@ -178,6 +193,9 @@ export async function buildComponentSignature(
   options: BuildComponentSignatureOptions,
 ): Promise<ComponentSignature> {
   assertUnsignedComponentArtifact(artifact);
+  if (!isRegisteredSeparator(separator)) {
+    throw new DacsError(`unregistered domain separator: ${separator}`);
+  }
   if (!ALGORITHM_SET.has(options.algorithm)) {
     throw new DacsError(`unsupported signature algorithm: ${options.algorithm}`);
   }
@@ -204,13 +222,19 @@ export async function signComponentArtifact<T extends object>(
 /**
  * Verify one standalone ComponentSignature. The signed scope is reconstructed
  * from the complete artifact as received, omitting only signature field(s), so
- * unknown artifact fields remain hash-bound as required by SIG-5.
+ * unknown artifact fields remain hash-bound as required by SIG-5. As a
+ * deliberate SDK fail-closed rule, an object carrying both singular `signature`
+ * and plural `signatures` fields is rejected as ambiguous and must use its
+ * artifact-specific multi-signature verifier instead.
  */
 export async function verifyComponentSignature<TKey>(
   artifact: Record<string, unknown>,
   separator: DomainSeparator,
   deps: VerifyComponentSignatureDeps<TKey>,
 ): Promise<ComponentSignatureVerification> {
+  if (!isRegisteredSeparator(separator)) {
+    return { status: "malformed", reason: "unregistered-domain-separator" };
+  }
   if (!Object.prototype.hasOwnProperty.call(artifact, "signature")) {
     return { status: "missing" };
   }
@@ -259,7 +283,9 @@ export async function verifyComponentSignature<TKey>(
 
   let payload: Uint8Array;
   try {
-    payload = signedBytes(separator, contentHash(stripSignature(artifact)));
+    // contentHash omits the signature field(s) but preserves every unknown
+    // artifact field, which is the SIG-5 signed scope required here.
+    payload = signedBytes(separator, contentHash(artifact));
   } catch {
     return {
       status: "malformed",
@@ -278,8 +304,8 @@ export async function verifyComponentSignature<TKey>(
         };
   } catch {
     return {
-      status: "invalid",
-      reason: "cryptographic-verification-failed",
+      status: "unresolved",
+      reason: "verification-error",
       signature,
     };
   }
