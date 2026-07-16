@@ -16,6 +16,8 @@ export type {
   TxRef,
   PaymentAmount,
   SettlementFinality,
+  ComponentSignatureAlgorithm,
+  ComponentSignature,
   ArtifactSignature,
   SettlementEvidence,
   Rating,
@@ -24,6 +26,23 @@ export type {
   BundleSignature,
   AttestationBundle,
 } from "./types.js";
+export {
+  COMPONENT_SIGNATURE_ALGORITHMS,
+  isComponentSignature,
+  buildComponentSignature,
+  signComponentArtifact,
+  verifyComponentSignature,
+  type ComponentSignedArtifact,
+  type ComponentSigner,
+  type BuildComponentSignatureOptions,
+  type ComponentSignatureStatus,
+  type ComponentSignatureMalformedReason,
+  type ComponentSignatureUnresolvedReason,
+  type ComponentSignatureInvalidReason,
+  type ComponentSignatureVerification,
+  type VerifyComponentSignatureInput,
+  type VerifyComponentSignatureDeps,
+} from "./signatures.js";
 export {
   ARTIFACT_SEPARATORS,
   RATING_SEPARATOR,
