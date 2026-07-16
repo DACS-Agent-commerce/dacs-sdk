@@ -1,5 +1,6 @@
 import { VERSION } from "../version.js";
 import { PAY_D402_AVAILABILITY } from "../rails/index.js";
+import { readFileSync } from "node:fs";
 
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip" | "blocked";
 export type DoctorMode = "offline" | "read-only";
@@ -40,6 +41,8 @@ export interface DoctorOptions {
 
 const RUNTIME_NODE = "runtime.node";
 const RPC_REACHABLE = "rpc.reachable";
+const SUBSTRATE_ADAPTER_LOAD = "substrate.adapter-load";
+const SUPPORTED_NODE_RANGE_FALLBACK = "^20.19.0 || >=22.12.0";
 
 function check(
   id: string,
@@ -50,26 +53,116 @@ function check(
   return { id, status, summary, ...extra };
 }
 
-function parseNodeMajor(version: string): number | null {
-  const match = version.match(/^v?(\d+)\./);
-  return match ? Number(match[1]) : null;
+function parseNodeVersion(version: string): { major: number; minor: number; patch: number } | null {
+  const match = version.match(/^v?(\d+)\.(\d+)\.(\d+)/);
+  return match
+    ? {
+        major: Number(match[1]),
+        minor: Number(match[2]),
+        patch: Number(match[3]),
+      }
+    : null;
+}
+
+function supportsNode(version: string): boolean {
+  const parsed = parseNodeVersion(version);
+  if (!parsed) return false;
+  if (parsed.major === 20) {
+    return parsed.minor > 19 || (parsed.minor === 19 && parsed.patch >= 0);
+  }
+  if (parsed.major === 22) {
+    return parsed.minor > 12 || (parsed.minor === 12 && parsed.patch >= 0);
+  }
+  return parsed.major > 22;
+}
+
+interface PackageMetadata {
+  engines?: {
+    node?: unknown;
+  };
+  type?: unknown;
+}
+
+function packageMetadata(): PackageMetadata | null {
+  try {
+    const raw = readFileSync(new URL("../../package.json", import.meta.url), "utf8");
+    return JSON.parse(raw) as PackageMetadata;
+  } catch {
+    return null;
+  }
+}
+
+function packageType(pkg: PackageMetadata | null): string | null {
+  return typeof pkg?.type === "string" ? pkg.type : null;
+}
+
+function supportedNodeRange(pkg: PackageMetadata | null): string {
+  return typeof pkg?.engines?.node === "string" ? pkg.engines.node : SUPPORTED_NODE_RANGE_FALLBACK;
 }
 
 export function redactSecret(secret: string): string {
-  if (secret.length <= 8) return "[redacted]";
-  return `${secret.slice(0, 4)}...[redacted]...${secret.slice(-4)}`;
+  return secret ? "[redacted]" : "";
 }
 
-function sanitizeError(err: unknown, secret?: string): string {
+export function redactRpcUrl(rpc: string): string {
+  try {
+    const url = new URL(rpc);
+    const pathname = url.pathname && url.pathname !== "/" ? "/[redacted]" : url.pathname;
+    return `${url.protocol}//${url.host}${pathname}${url.search ? "?[redacted]" : ""}${
+      url.hash ? "#[redacted]" : ""
+    }`;
+  } catch {
+    return "[redacted-invalid-rpc-url]";
+  }
+}
+
+export function sanitizeText(raw: string, secrets: Array<string | undefined> = []): string {
+  let out = raw;
+  for (const secret of secrets) {
+    if (secret) out = out.split(secret).join("[redacted]");
+  }
+  return out;
+}
+
+export function rpcSensitiveNeedles(rpc?: string): string[] {
+  if (!rpc) return [];
+  const decoded = (value: string): string[] => {
+    try {
+      const out = decodeURIComponent(value);
+      return out === value ? [value] : [value, out];
+    } catch {
+      return [value];
+    }
+  };
+  try {
+    const url = new URL(rpc);
+    const searchParts = [...url.searchParams.entries()].flatMap(([key, value]) => [
+      ...decoded(key),
+      ...decoded(value),
+    ]);
+    return [
+      rpc,
+      url.username,
+      url.password,
+      ...url.pathname.split("/").filter((part) => part.length > 0).flatMap(decoded),
+      url.search.startsWith("?") ? url.search.slice(1) : url.search,
+      ...searchParts,
+      url.hash.startsWith("#") ? url.hash.slice(1) : url.hash,
+    ].flatMap(decoded).filter((part) => part.length > 0);
+  } catch {
+    return [rpc];
+  }
+}
+
+function sanitizeError(err: unknown, secrets: Array<string | undefined> = []): string {
   const raw = err instanceof Error ? err.message : String(err);
-  return secret ? raw.split(secret).join("[redacted]") : raw;
+  return sanitizeText(raw, secrets);
 }
 
 function exitCodeFor(checks: DoctorCheck[]): number {
-  if (checks.some((c) => c.id === RPC_REACHABLE && c.status === "fail")) {
-    return 3;
-  }
-  if (checks.some((c) => c.status === "fail")) return 1;
+  if (checks.some((c) => c.status === "fail" && c.id !== RPC_REACHABLE)) return 1;
+  if (checks.some((c) => c.id === RPC_REACHABLE && c.status === "fail")) return 3;
+  if (checks.some((c) => c.status === "blocked")) return 5;
   return 0;
 }
 
@@ -85,29 +178,33 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const checks: DoctorCheck[] = [];
   const generatedAt = (options.now?.() ?? new Date()).toISOString();
   const nodeVersion = options.nodeVersion ?? process.version;
-  const nodeMajor = parseNodeMajor(nodeVersion);
+  const nodeSupported = supportsNode(nodeVersion);
+  const pkg = packageMetadata();
+  const packageModuleType = packageType(pkg);
+  const nodeRange = supportedNodeRange(pkg);
 
   checks.push(
     check(
       RUNTIME_NODE,
-      nodeMajor != null && nodeMajor >= 20 ? "pass" : "fail",
-      nodeMajor != null && nodeMajor >= 20
-        ? "Node runtime is supported"
-        : "Node runtime is unsupported",
+      nodeSupported ? "pass" : "fail",
+      nodeSupported ? "Node runtime is supported" : "Node runtime is unsupported",
       {
-        data: { version: nodeVersion, required: ">=20" },
+        data: { version: nodeVersion, required: nodeRange },
         remediation:
-          nodeMajor != null && nodeMajor >= 20
-            ? undefined
-            : "Use Node 20 or newer.",
+          nodeSupported ? undefined : `Use Node ${nodeRange}.`,
       },
     ),
   );
 
   checks.push(
-    check("runtime.module", "pass", "Package is configured for ESM", {
-      data: { type: "module" },
-    }),
+    packageModuleType === "module"
+      ? check("runtime.module", "pass", "Package is configured for ESM", {
+          data: { type: packageModuleType },
+        })
+      : check("runtime.module", "fail", "Package module configuration could not be verified", {
+          data: { type: packageModuleType },
+          remediation: "Install from a package that preserves package.json with type=module.",
+        }),
   );
 
   checks.push(
@@ -130,8 +227,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   } else if (!options.rpc) {
     checks.push(check(RPC_REACHABLE, "skip", "No RPC URL provided"));
   } else {
+    let made: DoctorAdapter | null = null;
     try {
-      const made = options.adapterFactory
+      made = options.adapterFactory
         ? options.adapterFactory({
             rpc: options.rpc,
             secret: options.walletSecret,
@@ -140,20 +238,33 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
             rpc: options.rpc,
             secret: options.walletSecret,
           });
-      adapter = made;
-      await adapter.connect();
-      checks.push(
-        check(RPC_REACHABLE, "pass", "Demos RPC is reachable", {
-          data: { rpc: options.rpc },
-        }),
-      );
+      checks.push(check(SUBSTRATE_ADAPTER_LOAD, "pass", "Demos adapter loaded"));
     } catch (err) {
       checks.push(
-        check(RPC_REACHABLE, "fail", "Demos RPC check failed", {
-          detail: sanitizeError(err, options.walletSecret),
-          remediation: "Check the RPC URL and network reachability.",
+        check(SUBSTRATE_ADAPTER_LOAD, "fail", "Demos adapter could not be loaded", {
+          detail: sanitizeError(err, [options.walletSecret, ...rpcSensitiveNeedles(options.rpc)]),
+          remediation: "Check the installed demosdk package and ESM compatibility.",
         }),
       );
+    }
+
+    if (made) {
+      try {
+        await made.connect();
+        adapter = made;
+        checks.push(
+          check(RPC_REACHABLE, "pass", "Demos RPC is reachable", {
+            data: { rpc: redactRpcUrl(options.rpc) },
+          }),
+        );
+      } catch (err) {
+        checks.push(
+          check(RPC_REACHABLE, "fail", "Demos RPC check failed", {
+            detail: sanitizeError(err, [options.walletSecret, ...rpcSensitiveNeedles(options.rpc)]),
+            remediation: "Check the RPC URL and network reachability.",
+          }),
+        );
+      }
     }
   }
 
@@ -243,7 +354,11 @@ export function formatDoctorText(report: DoctorReport): string {
     "dacs doctor",
     `mode: ${report.mode}`,
     `sdk: ${report.sdkVersion}`,
-    ...report.checks.map((c) => `${c.id}: ${c.status} - ${c.summary}`),
+    ...report.checks.flatMap((c) => [
+      `${c.id}: ${c.status} - ${c.summary}`,
+      ...(c.detail ? [`  detail: ${c.detail}`] : []),
+      ...(c.remediation ? [`  remediation: ${c.remediation}`] : []),
+    ]),
     `exit: ${report.exitCode}`,
   ];
   return `${lines.join("\n")}\n`;

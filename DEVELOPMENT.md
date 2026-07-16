@@ -26,6 +26,15 @@ The `dacs doctor` CLI is read-only by default. Its offline and JSON modes are
 unit-tested; live RPC checks are opt-in through CLI flags and must not fund,
 transfer, anchor, or broadcast.
 
+Doctor CLI rules:
+
+- never require secret material as a direct flag value; use file/stdin/env
+  indirection for wallet secrets and authenticated RPC URLs
+- test the built executable through a symlinked/package-style path, not only the
+  imported parser
+- `blocked` required checks exit non-zero until the implementation can evaluate
+  them truthfully
+
 ## Layout
 
 ```

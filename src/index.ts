@@ -68,8 +68,10 @@ export type {
 // CLI helpers (pure/read-only by default). The executable entry is `dacs`.
 export {
   formatDoctorText,
+  redactRpcUrl,
   redactSecret,
   runDoctor,
+  sanitizeText,
   type DoctorAdapter,
   type DoctorCheck,
   type DoctorMode,
