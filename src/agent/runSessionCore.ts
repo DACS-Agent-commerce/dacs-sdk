@@ -2,6 +2,7 @@ import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { CounterpartyError } from "../errors.js";
+import type { SessionReceipt, SessionStore } from "./sessionStore.js";
 import type {
   AgreementDocument,
   AttestationBundle,
@@ -86,6 +87,15 @@ export interface SessionDeps {
   now: () => string;
   /** Current unix-ms timestamp (used where the spec field is a number). */
   nowMs: () => number;
+  /**
+   * OPTIONAL durable session store (#55). When wired, the completed/failed
+   * session is recorded to it — the agreement hash is bound for cross-session
+   * anti-replay, and the agreement/settlement/bundle receipts + final status are
+   * checkpointed — giving restart-safe status/receipt queries without an
+   * app-specific job DB. Additive: pre-settle write-ahead enforcement (reject a
+   * replayed agreement BEFORE paying) is the rail-level #43/#52 work.
+   */
+  sessionStore?: SessionStore;
 }
 
 export interface SessionResult {
@@ -112,6 +122,35 @@ export const sessionAnchorName = {
 
 /** Result of a resume-time semantic check on an already-anchored artifact. */
 type Match = { ok: boolean; reason?: string };
+
+/**
+ * Record a completed/failed session to the durable store (#55): create-or-load,
+ * bind the agreement hash for cross-session anti-replay, and checkpoint each
+ * receipt + the final phase via compare-and-set. Best-effort/idempotent — a
+ * single-writer session never contends, and a resumed session reuses its record.
+ */
+async function recordSessionOutcome(
+  store: SessionStore,
+  jobId: string,
+  input: { agreementHash: string; phase: string; now: number; receipts: SessionReceipt[] },
+): Promise<void> {
+  const loaded = await store.load(jobId);
+  if (loaded.status === "missing") {
+    await store.create({ jobId, agreementHash: input.agreementHash, phase: input.phase, now: input.now });
+  }
+  await store.bindHash({ hash: input.agreementHash, jobId, kind: "agreement" });
+  for (const receipt of input.receipts) {
+    const cur = await store.load(jobId);
+    if (cur.status !== "ok") break;
+    await store.transition({
+      jobId,
+      expectedRevision: cur.record.revision,
+      receipt,
+      phase: input.phase,
+      now: input.now,
+    });
+  }
+}
 
 export async function runSessionCore(
   listingRef: string,
@@ -412,6 +451,19 @@ export async function runSessionCore(
       };
     },
   );
+
+  if (deps.sessionStore) {
+    await recordSessionOutcome(deps.sessionStore, jobId, {
+      agreementHash: contentHash(stripSignature(agreementValue as Record<string, unknown>)),
+      phase: outcome,
+      now: deps.nowMs(),
+      receipts: [
+        { kind: "agreement", ref: agreementRef },
+        { kind: "settlement", ref: settlementRef },
+        { kind: "bundle", ref: bundleRef },
+      ],
+    });
+  }
 
   return { outcome, jobId, vetRef, agreementRef, settlementRef, bundleRef };
 }

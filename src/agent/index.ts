@@ -39,6 +39,23 @@ export {
   type SettleResult,
 } from "./runSessionCore.js";
 export {
+  createInMemorySessionStore,
+  SESSION_STORE_VERSION,
+  type SessionStore,
+  type SessionRecord,
+  type SessionReceipt,
+  type SessionCheckpoint,
+  type SessionLease,
+  type SessionPhase,
+  type SessionLoad,
+  type TransitionInput,
+  type TransitionResult,
+} from "./sessionStore.js";
+export {
+  createFsSessionStore,
+  type FsSessionStoreOptions,
+} from "./sessionStoreFs.js";
+export {
   buildSignedArtifact,
   verifySignedArtifact,
   type SignedArtifact,
