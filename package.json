@@ -40,10 +40,17 @@
       "types": "./dist/registry/index.d.ts",
       "import": "./dist/registry/index.js"
     },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
+    },
     "./substrate": {
       "types": "./dist/substrate/index.d.ts",
       "import": "./dist/substrate/index.js"
     }
+  },
+  "bin": {
+    "dacs": "./dist/bin/dacs.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
