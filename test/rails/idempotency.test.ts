@@ -4,6 +4,7 @@ import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
 import {
   createIdempotencyStore,
+  createInMemorySettlementLog,
   settlementKey,
 } from "../../src/rails/idempotency.js";
 
@@ -55,16 +56,79 @@ describe("settlement idempotency store (#43)", () => {
     expect(good.txHash).toBe("0xgood");
   });
 
-  test("a persisted `done` map makes it crash-safe across runs (resume finds the result)", async () => {
-    const done = new Map<string, SettleResult>();
+  test("a durable log makes it crash-safe across runs (resume finds the recorded result)", async () => {
+    const log = createInMemorySettlementLog();
     let calls = 0;
     const submit = async () => ((calls += 1), ok(`0x${calls}`));
-    // Run 1 settles, then "crashes" (store already recorded).
-    await createIdempotencyStore(done).once("k", submit);
-    // Run 2 (fresh store, SAME durable map) resumes — no resubmit.
-    const resumed = await createIdempotencyStore(done).once("k", submit);
+    // Run 1 settles, then "crashes" (log already recorded the outcome).
+    await createIdempotencyStore(log).once("k", submit);
+    // Run 2 (fresh store, SAME durable log) resumes — no resubmit.
+    const resumed = await createIdempotencyStore(log).once("k", submit);
     expect(calls).toBe(1);
     expect(resumed.txHash).toBe("0x1");
+  });
+
+  test("value moved but the response was LOST → a fresh-process retry does NOT resubmit; it fails closed", async () => {
+    // The reviewer's window: submit MOVES value, then throws before the outcome is
+    // recorded (lost response / crash). The write-ahead intent survives in the
+    // durable log, so the next attempt must NOT pay again.
+    const log = createInMemorySettlementLog();
+    let sends = 0;
+    const submitThatMovesValueThenLosesResponse = async (): Promise<SettleResult> => {
+      sends += 1; // value moved on-chain…
+      throw new Error("response lost after broadcast");
+    };
+    // Run 1: value moves, response lost.
+    await expect(
+      createIdempotencyStore(log).once("k", submitThatMovesValueThenLosesResponse),
+    ).rejects.toThrow(/response lost/);
+    expect(sends).toBe(1);
+
+    // Run 2 (fresh process, SAME durable log): the unresolved intent is seen. With
+    // NO reconcile capability the store FAILS CLOSED rather than double-paying.
+    await expect(
+      createIdempotencyStore(log).once("k", async () => ok("0xsecond")),
+    ).rejects.toThrow(/unresolved prior attempt|double-pay/);
+    expect(sends).toBe(1); // never sent a second transfer
+  });
+
+  test("reconcile ADOPTS a prior payment that landed (no resubmit)", async () => {
+    const log = createInMemorySettlementLog();
+    let sends = 0;
+    // Run 1: value moved, response lost → unresolved intent.
+    await expect(
+      createIdempotencyStore(log).once("k", async () => {
+        sends += 1;
+        throw new Error("lost");
+      }),
+    ).rejects.toThrow();
+    // Run 2: reconcile proves the prior transfer landed → adopt it, don't resubmit.
+    const reconcile = async () => ok("0xlanded");
+    const res = await createIdempotencyStore(log).once("k", async () => {
+      sends += 1;
+      return ok("0xwould-be-double");
+    }, reconcile);
+    expect(res.txHash).toBe("0xlanded");
+    expect(sends).toBe(1); // reconciled, not resubmitted
+  });
+
+  test("reconcile that PROVES no payment landed permits a safe resubmit", async () => {
+    const log = createInMemorySettlementLog();
+    let sends = 0;
+    await expect(
+      createIdempotencyStore(log).once("k", async () => {
+        sends += 1;
+        throw new Error("failed before broadcast");
+      }),
+    ).rejects.toThrow();
+    // Run 2: reconcile returns null (provably NOT paid) → resubmit is allowed.
+    const reconcile = async () => null;
+    const res = await createIdempotencyStore(log).once("k", async () => {
+      sends += 1;
+      return ok("0xretry");
+    }, reconcile);
+    expect(res.txHash).toBe("0xretry");
+    expect(sends).toBe(2); // safely resubmitted after reconcile proved no prior payment
   });
 });
 
@@ -92,21 +156,23 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
   };
   const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
 
-  test("without a store: twice → two transfers (the bug)", async () => {
+  test("SAFE BY DEFAULT: twice with the same request → one transfer (no opt-in store needed)", async () => {
     const rail = countingRail();
-    const settle = evmErc20Settle(rail, cfg);
-    await settle(req);
-    await settle(req);
-    expect(rail.transferCalls).toBe(2);
-  });
-
-  test("with a store: twice → one transfer (fixed)", async () => {
-    const rail = countingRail();
-    const settle = evmErc20Settle(rail, cfg, { store: createIdempotencyStore() });
+    const settle = evmErc20Settle(rail, cfg); // no store supplied — default is safe
     const a = await settle(req);
     const b = await settle(req);
-    expect(rail.transferCalls).toBe(1);
+    expect(rail.transferCalls).toBe(1); // the bug (2 transfers) is gone by default
     expect(b).toEqual(a);
+  });
+
+  test("an injected durable store dedupes across bridge instances (cross-resume)", async () => {
+    const rail = countingRail();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
+    // Two SEPARATE bridge instances sharing one durable store (a fresh-process resume).
+    await evmErc20Settle(rail, cfg, { store })(req);
+    const b = await evmErc20Settle(rail, cfg, { store })(req);
+    expect(rail.transferCalls).toBe(1);
+    expect(b.txHash).toBe("0x1");
   });
 
   test("settlementKey is (railId, jobId, phaseIndex)", () => {

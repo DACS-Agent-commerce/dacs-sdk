@@ -9,7 +9,7 @@ import {
 } from "../../src/agent/runSessionCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/index.js";
-import { createIdempotencyStore, settlementKey } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog, settlementKey } from "../../src/rails/idempotency.js";
 
 const seed = Uint8Array.from(Buffer.alloc(32, 5));
 const priv = privateKeyFromSeed(seed);
@@ -74,7 +74,7 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
 
 describe("runSession resume is at-most-once across a settle→anchor crash (#43)", () => {
   test("a crash after payment but before evidence anchoring does NOT re-pay on resume", async () => {
-    const store = createIdempotencyStore(new Map()); // durable: survives the crash
+    const store = createIdempotencyStore(createInMemorySettlementLog()); // durable: survives the crash
     const counter = { n: 0 };
     const crash = { hit: false };
     const { deps, listingRef } = await makeDeps({ store, failEvidenceAnchorOnce: crash, counter });

@@ -22,8 +22,11 @@ export {
 } from "./evmErc20.js";
 export {
   createIdempotencyStore,
+  createInMemorySettlementLog,
   settlementKey,
   type SettlementIdempotencyStore,
+  type SettlementLog,
+  type SettlementReconcile,
 } from "./idempotency.js";
 export {
   createPayD402Rail,

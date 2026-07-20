@@ -1,6 +1,11 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
-import { settlementKey, type SettlementIdempotencyStore } from "./idempotency.js";
+import {
+  createIdempotencyStore,
+  settlementKey,
+  type SettlementIdempotencyStore,
+  type SettlementReconcile,
+} from "./idempotency.js";
 
 /**
  * Direct ERC-20 transfer rail (the second reference rail). Where x402 couples
@@ -147,17 +152,21 @@ export async function createEvmErc20Rail(
 }
 
 /**
- * Bridge an EvmErc20Rail to the runSession `settle` seam. When an idempotency
- * `store` is supplied, the transfer is submitted AT MOST ONCE per
- * `(railId, jobId, phaseIndex)` — a resume after a settle→anchor crash, or a
- * concurrent retry, reconciles the prior submission instead of sending another
- * transfer (#43). Without a store, behaviour is unchanged (no dedupe).
+ * Bridge an EvmErc20Rail to the runSession `settle` seam. SAFE BY DEFAULT (#43):
+ * the transfer is submitted AT MOST ONCE per `(railId, jobId, phaseIndex)` through
+ * an idempotency store — a concurrent retry or a resume after a settle→anchor
+ * crash reconciles the prior submission instead of sending another transfer. The
+ * default store is in-process (closes the concurrency + same-process races); pass
+ * `store` backed by a durable {@link SettlementLog} for cross-process crash-safety,
+ * and `reconcile` to safely resubmit only after a chain query proves no prior
+ * transfer landed (otherwise an unresolved intent fails closed).
  */
 export function evmErc20Settle(
   rail: EvmErc20Rail,
   cfg: { tokenAddress: string; network: string; recipientEvm: string },
-  opts: { store?: SettlementIdempotencyStore } = {},
+  opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
+  const store = opts.store ?? createIdempotencyStore();
   return (req) => {
     const submit = () =>
       rail.settle({
@@ -166,7 +175,6 @@ export function evmErc20Settle(
         recipientEvm: cfg.recipientEvm,
         amount: req.amount,
       });
-    if (!opts.store) return submit();
-    return opts.store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), submit);
+    return store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), submit, opts.reconcile);
   };
 }
