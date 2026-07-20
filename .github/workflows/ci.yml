@@ -30,9 +30,59 @@ jobs:
       - name: Test (unit + conformance harness)
         run: npm test
 
-      # Informational only (non-blocking): surface production-tree advisories per
-      # the SECURITY.md audit policy (#40) without gating unrelated work — the
-      # findings are transitive through @kynesyslabs/demosdk, assessed by reachability.
+      # Informational (non-blocking): surface production-tree advisories per the
+      # SECURITY.md audit policy (#40). continue-on-error keeps the JOB green, but
+      # the step's own status is NOT swallowed with `|| true` — a non-zero audit
+      # shows as a ⚠️ on the step, and a compact summary is published to the run.
       - name: Dependency audit (production, informational)
-        run: npm audit --omit=dev || true
         continue-on-error: true
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node -e '
+            const a = require("./audit.json");
+            const m = (a.metadata && a.metadata.vulnerabilities) || {};
+            const v = a.vulnerabilities || {};
+            // OWN advisory = a `via` object on a direct dep (not a severity inherited
+            // from its subtree). This is what SECURITY.md tracks as fixable-here.
+            const ownDirect = Object.values(v).filter(x =>
+              x.isDirect && (x.via || []).some(e => typeof e === "object"));
+            const rows = ["| severity | count |", "| --- | --- |"]
+              .concat(["critical","high","moderate","low"].map(s => `| ${s} | ${m[s] ?? 0} |`));
+            const out = [
+              "### Production dependency audit (informational)",
+              "",
+              ...rows,
+              "",
+              `Direct dependencies with their OWN advisory: **${ownDirect.length}** ` +
+              `(all reported findings are transitive through @kynesyslabs/demosdk — see SECURITY.md).`,
+            ].join("\n");
+            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY || "/dev/stdout", out + "\n");
+          '
+          # Re-run without masking so the step reflects the real audit status.
+          npm audit --omit=dev
+
+      # Blocking gate: fail ONLY on a high/critical advisory a DIRECT dependency
+      # carries ITSELF. A direct dep's `severity` is inherited from its subtree via
+      # `via` edges, so severity alone flags demosdk/viem for their transitive tree
+      # (covered by SECURITY.md). An OWN advisory is a `via` OBJECT on the node — a
+      # new one here means a direct dependency we must fix directly.
+      - name: Fail on direct-dependency high/critical advisories
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node -e '
+            const v = (require("./audit.json").vulnerabilities) || {};
+            const bad = [];
+            for (const [name, node] of Object.entries(v)) {
+              if (!node.isDirect) continue;
+              for (const via of node.via || []) {
+                if (typeof via === "object" && (via.severity === "high" || via.severity === "critical")) {
+                  bad.push(`${name}: ${via.title || via.url} (${via.severity})`);
+                }
+              }
+            }
+            if (bad.length) {
+              console.error("Direct-dependency high/critical advisories:\n  " + bad.join("\n  "));
+              process.exit(1);
+            }
+            console.log("No high/critical advisory on any direct dependency.");
+          '
