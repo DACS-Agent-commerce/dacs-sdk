@@ -78,4 +78,48 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
     const body = JSON.stringify({ a: 1 });
     expect(evalSpec(spec, body)).toBe(evalSpec(spec, body));
   });
+
+  // ── Review counterexamples (second-round #49) ──
+
+  it("an UNSUPPORTED JSONPath filter is rejected as error, never silently partial-parsed to fail", () => {
+    const spec: ParserSpec = {
+      format: "json",
+      successJsonPath: '$.data[?(@.attributes.registration.status=="ISSUED")]',
+    };
+    // A body that a full JSONPath engine WOULD match must not come back `fail`;
+    // the default engine can't evaluate the filter, so it is `error`.
+    const body = JSON.stringify({ data: [{ attributes: { registration: { status: "ISSUED" } } }] });
+    expect(evalSpec(spec, body)).toBe("error");
+  });
+
+  it("a non-RE2 matcher (backreference) is rejected as error, not run through JS RegExp", () => {
+    // (a+)\1 is a backreference — accepted by JS RegExp, forbidden by RE2.
+    const spec: ParserSpec = { format: "raw", matcher: "(a+)\\1" };
+    expect(evalSpec(spec, "aa")).toBe("error");
+    // Lookahead is likewise non-RE2.
+    expect(evalSpec({ format: "raw", matcher: "foo(?=bar)" }, "foobar")).toBe("error");
+  });
+
+  it("a THROWING parser engine maps to error, it does not escape", () => {
+    const throwingEngine = {
+      evalPredicate() {
+        throw new Error("engine blew up");
+      },
+    };
+    const spec: ParserSpec = { format: "json", successJsonPath: "$.a" };
+    expect(() =>
+      evaluateParserSpec(spec, JSON.stringify({ a: 1 }), throwingEngine),
+    ).not.toThrow();
+    expect(evaluateParserSpec(spec, JSON.stringify({ a: 1 }), throwingEngine).decision).toBe("error");
+  });
+
+  it("an indeterminateOn predicate of the WRONG kind is malformed ⇒ error (never silently skipped/fail-open)", () => {
+    const spec: ParserSpec = {
+      format: "json",
+      successJsonPath: "$.ok",
+      // A selector predicate on a json spec — wrong kind for the format.
+      indeterminateOn: [{ selector: ".pending" }],
+    };
+    expect(evalSpec(spec, JSON.stringify({ ok: true }))).toBe("error");
+  });
 });

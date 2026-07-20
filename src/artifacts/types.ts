@@ -119,6 +119,12 @@ export interface VerifyResultEntry {
    * hash-named-field bug.
    */
   proof?: ClaimProofRef;
+  /**
+   * PSP-3 parsed data map: the fields a §7.4.1 ParserSpec `dataMap` extracted from
+   * the attested body (audit-only — it never changes the decision). Recorded so the
+   * verification is reproducible from the signed recipe + attested body.
+   */
+  data?: Record<string, string | null>;
 }
 
 /** DACS-2 — aggregated verification outcome for a subject. */

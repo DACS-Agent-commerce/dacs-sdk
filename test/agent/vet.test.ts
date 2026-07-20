@@ -141,6 +141,36 @@ describe("vetCore (DACS-2 Vet stage)", () => {
     expect(cvr.decision).toBe("fail");
   });
 
+  test("HTTP status mapping: 404 (no record) differs from 5xx (reachable error)", async () => {
+    const at = (status: number, over: Partial<RecipeDescriptor> = {}) =>
+      vetCore(req(over), {
+        proxyFetch: async () => ({ status, responseHash: "0xhash", body: "{}" }),
+        now: () => "2026-01-01T00:00:00Z",
+      });
+    // 404 = the authority has no record → a positive-match check FAILS…
+    expect((await at(404)).decision).toBe("fail");
+    // …but for a negative-match recipe a bare 404 is not a confirmed-complete
+    // "not listed", so it is indeterminate (fail-closed), never a silent pass.
+    expect((await at(404, { negativeMatch: true })).decision).toBe("indeterminate");
+    // 5xx / other reachable errors are ERROR, not fail — the verifier couldn't
+    // obtain a trustworthy determination.
+    expect((await at(500)).decision).toBe("error");
+    expect((await at(429)).decision).toBe("error");
+  });
+
+  test("PSP-3: the parsed dataMap is persisted on the VerifyResult", async () => {
+    const rules: RecipeDescriptor["parserRules"] = {
+      format: "json",
+      successJsonPath: "$.status",
+      dataMap: { status: "$.status", id: "$.id" },
+    };
+    const cvr = await vetCore(
+      req({ parserRules: rules }),
+      bodyDeps(JSON.stringify({ status: "ISSUED", id: "abc" })),
+    );
+    expect(cvr.results[0]!.data).toEqual({ status: "ISSUED", id: "abc" });
+  });
+
   test("no parserRules ⇒ status-only 2xx pass (back-compat)", async () => {
     const cvr = await vetCore(req({}), bodyDeps("anything"));
     expect(cvr.decision).toBe("pass");

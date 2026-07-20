@@ -38,6 +38,27 @@ function classifyClaimProof(value: string): ClaimProofRef {
 }
 
 /**
+ * Map a proxied HTTP status that is NOT 2xx to a verification decision (DACS-2).
+ * A 2xx returns null → the caller proceeds to the ParserSpec / status-only pass.
+ * The normative behavior distinguishes a definite "no record" (404) from a
+ * reachable error (5xx / other) the verifier can't turn into a clean result:
+ *  - 404 → the authority has no record of the subject. For a positive-match
+ *    recipe that is a `fail` (the asserted credential is absent); for a
+ *    negative-match recipe a bare 404 is NOT a completeness-confirmed "not listed",
+ *    so it is `indeterminate` (fail-closed, PSP-5 spirit) rather than a silent pass.
+ *  - any other non-2xx (3xx / other 4xx / 5xx) → `error`: reachable but with no
+ *    trustworthy determination — never a silent `fail` or `pass`.
+ */
+function mapProxyStatus(
+  httpStatus: number,
+  negativeMatch: boolean,
+): { decision: VerificationDecision } | null {
+  if (httpStatus >= 200 && httpStatus < 300) return null;
+  if (httpStatus === 404) return { decision: negativeMatch ? "indeterminate" : "fail" };
+  return { decision: "error" };
+}
+
+/**
  * Read a boolean "is this address sanctioned" indicator out of a screening
  * response body. Returns null when the body can't be parsed / the field is
  * missing — the caller treats null as `indeterminate` (fail-closed), never pass.
@@ -166,22 +187,28 @@ export async function vetCore(
         );
       }
       const res = await deps.proxyFetch({ url });
-      const ok = res.status >= 200 && res.status < 300;
-      // Status first: a non-2xx is a definite fail regardless of body. On a 2xx,
-      // if the signed recipe carries a ParserSpec (§7.4.1), evaluate it against
-      // the DAHR-attested body — the verdict (polarity, indeterminateOn, error,
-      // PSP-5 completeness) is fixed deterministically by the recipe, not by the
+      const negativeMatch = recipe.negativeMatch === true;
+      // HTTP status first: a 2xx proceeds; a non-2xx is mapped so that a definite
+      // "no record" (404) is distinguished from a reachable error (5xx / other →
+      // `error`) rather than collapsing every non-2xx to `fail`. On a 2xx, if the
+      // signed recipe carries a ParserSpec (§7.4.1), evaluate it against the
+      // DAHR-attested body — the verdict (polarity, indeterminateOn, parse-error,
+      // PSP-5 completeness) is fixed deterministically by the recipe, not the
       // caller. Absent parserRules, status-only `2xx ⇒ pass`.
       let status: VerificationDecision;
-      if (!ok) {
-        status = "fail";
+      let data: Record<string, string | null> | undefined;
+      const httpMap = mapProxyStatus(res.status, negativeMatch);
+      if (httpMap) {
+        status = httpMap.decision;
       } else if (recipe.parserRules) {
         const engine: ParserEngine = deps.parserEngine ?? defaultParserEngine;
-        status = evaluateParserSpec(recipe.parserRules, res.body ?? "", engine, {
-          negativeMatch: recipe.negativeMatch === true,
+        const evaluation = evaluateParserSpec(recipe.parserRules, res.body ?? "", engine, {
+          negativeMatch,
           requiresCompleteness: recipe.requiresListCompleteness === true,
           listComplete: res.complete === true,
-        }).decision;
+        });
+        status = evaluation.decision;
+        data = evaluation.data; // PSP-3: record the parsed data map on the result
       } else {
         status = "pass";
       }
@@ -192,6 +219,7 @@ export async function vetCore(
         authority: url,
         // Record the DAHR attestation so the vet record carries the evidence.
         ...(res.responseHash ? { responseHash: res.responseHash } : {}),
+        ...(data ? { data } : {}),
       });
       break;
     }
