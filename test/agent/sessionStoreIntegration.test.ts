@@ -36,10 +36,20 @@ const terms = {
   deliveryFormat: "application/json",
 };
 
-async function makeDeps(store: SessionDeps["sessionStore"]) {
-  const kv = new Map<string, Record<string, unknown>>();
+interface DepOverrides {
+  kv?: Map<string, Record<string, unknown>>;
+  settle?: SessionDeps["settle"];
+  anchor?: SessionDeps["anchor"];
+  newJobId?: () => string;
+}
+
+async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides = {}) {
+  const kv = over.kv ?? new Map<string, Record<string, unknown>>();
+  const settleCalls = { n: 0 };
   const listingRef = "stor:listing";
-  kv.set(listingRef, (await buildSignedArtifact(listing, ARTIFACT_SEPARATORS.Listing, sign)) as Record<string, unknown>);
+  if (!kv.has(listingRef)) {
+    kv.set(listingRef, (await buildSignedArtifact(listing, ARTIFACT_SEPARATORS.Listing, sign)) as Record<string, unknown>);
+  }
   const deps: SessionDeps = {
     buyerId: "did:demos:agent:buyer",
     readListing: async (ref) => kv.get(ref) ?? null,
@@ -47,24 +57,25 @@ async function makeDeps(store: SessionDeps["sessionStore"]) {
     signBytes: async (b) => sign(b),
     anchorAddress: async (name) => `stor:${name}`,
     readAnchor: async (addr) => kv.get(addr) ?? null,
-    anchor: async (name, value) => {
-      const addr = `stor:${name}`;
-      kv.set(addr, value as Record<string, unknown>);
-      return addr;
-    },
-    settle: async (req): Promise<SettleResult> => ({
-      ok: true,
-      txHash: "0xpaid",
-      chainId: "eip155:84532",
-      payer: "0xbuyer",
-      payee: req.payee,
-    }),
-    newJobId: () => "job-1",
+    anchor:
+      over.anchor ??
+      (async (name, value) => {
+        const addr = `stor:${name}`;
+        kv.set(addr, value as Record<string, unknown>);
+        return addr;
+      }),
+    settle:
+      over.settle ??
+      (async (req): Promise<SettleResult> => {
+        settleCalls.n++;
+        return { ok: true, txHash: "0xpaid", chainId: "eip155:84532", payer: "0xbuyer", payee: req.payee };
+      }),
+    newJobId: over.newJobId ?? (() => "job-1"),
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
     sessionStore: store,
   };
-  return { deps, listingRef };
+  return { deps, listingRef, kv, settleCalls };
 }
 
 describe("runSessionCore records to the durable SessionStore (#55 integration)", () => {
@@ -95,5 +106,44 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const { deps, listingRef } = await makeDeps(undefined);
     const res = await runSessionCore(listingRef, terms, deps);
     expect(res.outcome).toBe("completed");
+  });
+
+  test("write-ahead: a crash AFTER paying but BEFORE anchoring evidence does NOT re-pay on resume (#52)", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    // Run 1: pay succeeds, then the anchor of the evidence "crashes".
+    const boom = await makeDeps(store, {
+      kv,
+      anchor: async (name, value) => {
+        if (name.includes("evidence")) throw new Error("crash: evidence anchor lost");
+        kv.set(`stor:${name}`, value as Record<string, unknown>);
+        return `stor:${name}`;
+      },
+    });
+    await expect(runSessionCore(boom.listingRef, terms, boom.deps)).rejects.toThrow(/crash/);
+    expect(boom.settleCalls.n).toBe(1); // paid exactly once
+    // The write-ahead outcome checkpoint recorded the payment before the crash.
+    const mid = await store.load("job-1");
+    expect(mid.status === "ok" && mid.record.checkpoints.some((c) => c.stage === "outcome")).toBe(true);
+
+    // Run 2: resume the SAME jobId with a healthy anchor. Evidence still isn't
+    // anchored, so the anchoring guard alone would re-pay — the store must reconcile.
+    const resumed = await makeDeps(store, { kv });
+    const res = await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
+    expect(res.outcome).toBe("completed");
+    expect(resumed.settleCalls.n).toBe(0); // did NOT pay again — reconciled from the checkpoint
+  });
+
+  test("fail-closed: untrustworthy (corrupt) durable state refuses to settle (#67)", async () => {
+    // A store whose load reports `corrupt` for this session — payment must be
+    // refused BEFORE the effect, never run against state we can't trust.
+    const base = createInMemorySessionStore();
+    const corruptStore: SessionDeps["sessionStore"] = {
+      ...base,
+      load: async () => ({ status: "corrupt", reason: "planted" }),
+    };
+    const { deps, listingRef, settleCalls } = await makeDeps(corruptStore);
+    await expect(runSessionCore(listingRef, terms, deps)).rejects.toThrow(/fail-closed|corrupt/);
+    expect(settleCalls.n).toBe(0); // never paid
   });
 });

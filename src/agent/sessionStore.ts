@@ -36,6 +36,13 @@ export interface SessionReceipt {
 }
 
 /**
+ * A checkpoint payload value. PRIMITIVES ONLY (string / number / boolean) — a
+ * closed, secret-free shape so a caller can't smuggle credentials / nested
+ * objects into durable state (#67). Enforced at write time by the store.
+ */
+export type CheckpointValue = string | number | boolean;
+
+/**
  * A write-ahead checkpoint around an external side effect: an `intent` is
  * recorded BEFORE the effect, its `outcome` AFTER — so a crash between them is
  * recoverable (the intent is visible on restart; the outcome may be replayed).
@@ -44,8 +51,25 @@ export interface SessionCheckpoint {
   /** The guarded step, e.g. "settle:0" or "deliver:0". */
   key: string;
   stage: "intent" | "outcome";
-  /** Opaque, secret-free payload (rail id, idempotency key, tx ref, …). */
-  data?: Record<string, unknown>;
+  /** Opaque, secret-free payload — PRIMITIVE values only (rail id, idempotency key, tx ref, …). */
+  data?: Record<string, CheckpointValue>;
+}
+
+/**
+ * Enforce the closed, secret-free checkpoint payload shape (#67): every `data`
+ * value MUST be a primitive. Rejects nested objects/arrays/functions so
+ * credentials or large blobs can't be persisted into durable session state.
+ */
+export function assertSecretFreeCheckpoint(cp: SessionCheckpoint): void {
+  if (!cp.data) return;
+  for (const [k, v] of Object.entries(cp.data)) {
+    const t = typeof v;
+    if (t !== "string" && t !== "number" && t !== "boolean") {
+      throw new DacsError(
+        `checkpoint.data.${k} must be a primitive (string/number/boolean); nested/complex values are rejected so secrets can't be persisted`,
+      );
+    }
+  }
 }
 
 /** An exclusive worker lease over a session's active phase. */
@@ -83,12 +107,22 @@ export type SessionLoad =
 /** Result of a compare-and-set mutation. */
 export type TransitionResult =
   | { ok: true; record: SessionRecord }
-  | { ok: false; reason: "not-found" | "revision-mismatch" | "immutable-receipt"; record?: SessionRecord };
+  | {
+      ok: false;
+      reason: "not-found" | "revision-mismatch" | "immutable-receipt" | "lease-held" | "corrupt" | "unsupported";
+      record?: SessionRecord;
+    };
 
 export interface TransitionInput {
   jobId: string;
   /** The `revision` the caller last observed — the transition fails if it moved. */
   expectedRevision: number;
+  /**
+   * The worker asserting this transition. If the session has a LIVE lease held by
+   * a DIFFERENT owner, the transition is rejected (`lease-held`) — a guarded phase
+   * can only be advanced by the lease owner (#67). Omit only for unguarded writes.
+   */
+  owner?: string;
   phase?: SessionPhase;
   checkpoint?: SessionCheckpoint;
   receipt?: SessionReceipt;
@@ -164,6 +198,17 @@ export function createInMemorySessionStore(): SessionStore {
       if (sessions.has(jobId)) {
         throw new DacsError(`session ${jobId} already exists`);
       }
+      // Anti-replay: reserve the agreement hash BEFORE persisting, and REJECT if
+      // it's already owned by a different session — a reused agreement hash across
+      // sessions is a replay and must never silently overwrite ownership (#67).
+      if (agreementHash) {
+        const existing = hashBindings.get(agreementHash);
+        if (existing && existing.jobId !== jobId) {
+          throw new DacsError(
+            `agreement hash is already bound to session ${existing.jobId} (anti-replay); cannot create ${jobId}`,
+          );
+        }
+      }
       const record: SessionRecord = {
         storeVersion: SESSION_STORE_VERSION,
         jobId,
@@ -197,6 +242,13 @@ export function createInMemorySessionStore(): SessionStore {
       if (record.revision !== input.expectedRevision) {
         return { ok: false, reason: "revision-mismatch", record: clone(record) };
       }
+      // A live lease held by a DIFFERENT owner blocks the transition (#67) — a
+      // guarded phase can only be advanced by the worker that holds the lease.
+      const leaseNow = input.now ?? record.updatedAt;
+      if (record.lease && record.lease.expiresAt > leaseNow && input.owner !== record.lease.owner) {
+        return { ok: false, reason: "lease-held", record: clone(record) };
+      }
+      if (input.checkpoint) assertSecretFreeCheckpoint(input.checkpoint);
       // Receipts are immutable: re-recording the same kind+ref is idempotent, but
       // a different ref for a kind already recorded is rejected.
       if (input.receipt) {

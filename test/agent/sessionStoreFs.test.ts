@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, stat, mkdir, readFile } from "node:fs/promises";
+import { mkdtemp, writeFile, stat, mkdir, readFile, open, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,13 +29,13 @@ describe("createFsSessionStore (durable conformance #55)", () => {
     // Anti-replay: create bound 0xagr to j1; j2 can't reuse it.
     await store.create({ jobId: "j2" });
     expect(await store.bindHash({ hash: "0xagr", jobId: "j2", kind: "agreement" })).toEqual({ ok: false, boundTo: "j1" });
-    // Immutable receipt.
+    // Immutable receipt — as the lease owner (A), since the lease is still live.
     const load = await store.load("j1");
     const rev = load.status === "ok" ? load.record.revision : 0;
-    const r = await store.transition({ jobId: "j1", expectedRevision: rev, receipt: { kind: "bundle", ref: "0xb" }, now: 4 });
+    const r = await store.transition({ jobId: "j1", expectedRevision: rev, owner: "A", receipt: { kind: "bundle", ref: "0xb" }, now: 4 });
     expect(r.ok).toBe(true);
     const rev2 = r.ok ? r.record.revision : 0;
-    const bad = await store.transition({ jobId: "j1", expectedRevision: rev2, receipt: { kind: "bundle", ref: "0xEVIL" }, now: 5 });
+    const bad = await store.transition({ jobId: "j1", expectedRevision: rev2, owner: "A", receipt: { kind: "bundle", ref: "0xEVIL" }, now: 5 });
     expect(bad.ok).toBe(false);
   });
 
@@ -78,6 +78,52 @@ describe("createFsSessionStore (durable conformance #55)", () => {
     expect(await store.load("nope")).toEqual({ status: "missing" });
     await store.create({ jobId: "j1" });
     await expect(store.create({ jobId: "j1" })).rejects.toThrow(/already exists/);
+  });
+
+  test("create REJECTS a reused agreement hash and does NOT persist the session (#67)", async () => {
+    await store.create({ jobId: "j1", agreementHash: "0xagr" });
+    await expect(store.create({ jobId: "j2", agreementHash: "0xagr" })).rejects.toThrow(
+      /anti-replay|already bound/,
+    );
+    // The conflicting session must NOT have been persisted, and ownership stays j1.
+    expect(await store.load("j2")).toEqual({ status: "missing" });
+    expect(await store.bindHash({ hash: "0xagr", jobId: "j2", kind: "agreement" })).toEqual({ ok: false, boundTo: "j1" });
+  });
+
+  test("load fails CLOSED: a field of the wrong type is `corrupt`, not `ok` (#67)", async () => {
+    await store.create({ jobId: "j1", now: 0 });
+    // Valid JSON + right storeVersion, but revision is a string → tampered/partial.
+    await writeFile(
+      join(dir, "sessions", `${encodeURIComponent("j1")}.json`),
+      JSON.stringify({ storeVersion: 1, jobId: "j1", phase: "created", revision: "NaN", checkpoints: [], receipts: [], createdAt: 0, updatedAt: 0 }),
+    );
+    expect((await store.load("j1")).status).toBe("corrupt");
+  });
+
+  test("a stale lock left by a crashed holder is reclaimed, not blocked forever (#67)", async () => {
+    const staleStore = await createFsSessionStore({ dir, lockStaleMs: 50 });
+    await staleStore.create({ jobId: "j1", now: 0 });
+    // Simulate a crashed holder: plant a lock file and backdate it past the stale window.
+    const lp = join(dir, "locks", `${encodeURIComponent("j1")}.lock`);
+    await (await open(lp, "wx")).close();
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lp, old, old);
+    // The transition must reclaim the stale lock and succeed rather than time out.
+    const r = await staleStore.transition({ jobId: "j1", expectedRevision: 0, phase: "settling", now: 1 });
+    expect(r.ok).toBe(true);
+  });
+
+  test("checkpoint payload is secret-free: a nested value is rejected (#67)", async () => {
+    await store.create({ jobId: "j1", now: 0 });
+    await expect(
+      store.transition({
+        jobId: "j1",
+        expectedRevision: 0,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        checkpoint: { key: "settle:0", stage: "intent", data: { secret: { apiKey: "sk-live" } } as any },
+        now: 1,
+      }),
+    ).rejects.toThrow(/primitive|secret/);
   });
 
   test("concurrent CAS transitions: only ONE of many racing writers advances", async () => {

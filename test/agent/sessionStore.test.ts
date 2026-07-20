@@ -82,6 +82,21 @@ describe("SessionStore in-memory conformance (#55)", () => {
     expect((await s.acquireLease({ jobId: "j1", owner: "worker-B", ttlMs: 1000, now: 1500 })).ok).toBe(true);
   });
 
+  test("a guarded transition is enforced against the lease owner (#67)", async () => {
+    const s = fresh();
+    await s.create({ jobId: "j1", now: 0 });
+    await s.acquireLease({ jobId: "j1", owner: "A", ttlMs: 1000, now: 0 });
+    const cur = await s.load("j1");
+    const rev = cur.status === "ok" ? cur.record.revision : 0;
+    // A worker WITHOUT the lease cannot advance the guarded phase, even at the right revision.
+    const b = await s.transition({ jobId: "j1", expectedRevision: rev, owner: "B", phase: "settling", now: 100 });
+    expect(b.ok).toBe(false);
+    if (!b.ok) expect(b.reason).toBe("lease-held");
+    // The lease owner can.
+    const a = await s.transition({ jobId: "j1", expectedRevision: rev, owner: "A", phase: "settling", now: 100 });
+    expect(a.ok).toBe(true);
+  });
+
   test("anti-replay: an agreement/tx hash cannot be reused across sessions", async () => {
     const s = fresh();
     await s.create({ jobId: "j1" });
@@ -99,6 +114,36 @@ describe("SessionStore in-memory conformance (#55)", () => {
     await s.create({ jobId: "j2" });
     // j2 can't reuse j1's agreement hash.
     expect(await s.bindHash({ hash: "0xagr", jobId: "j2", kind: "agreement" })).toEqual({ ok: false, boundTo: "j1" });
+  });
+
+  test("create REJECTS a reused agreement hash instead of overwriting ownership (#67)", async () => {
+    const s = fresh();
+    await s.create({ jobId: "j1", agreementHash: "0xagr" });
+    // Creating a second session with j1's agreement hash must be rejected…
+    await expect(s.create({ jobId: "j2", agreementHash: "0xagr" })).rejects.toThrow(
+      /anti-replay|already bound/,
+    );
+    // …and ownership must be unchanged (still j1, not silently flipped to j2).
+    expect(await s.bindHash({ hash: "0xagr", jobId: "j2", kind: "agreement" })).toEqual({ ok: false, boundTo: "j1" });
+    expect(await s.load("j2")).toEqual({ status: "missing" }); // j2 was NOT persisted
+  });
+
+  test("checkpoint payload is secret-free: a nested/complex value is rejected (#67)", async () => {
+    const s = fresh();
+    await s.create({ jobId: "j1", now: 0 });
+    // A nested object could smuggle a credential into durable state → rejected.
+    await expect(
+      s.transition({
+        jobId: "j1",
+        expectedRevision: 0,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        checkpoint: { key: "settle:0", stage: "intent", data: { secret: { apiKey: "sk-live-xyz" } } as any },
+        now: 1,
+      }),
+    ).rejects.toThrow(/primitive|secret/);
+    // The rejected write must not have advanced the session.
+    const loaded = await s.load("j1");
+    expect(loaded.status === "ok" && loaded.record.revision).toBe(0);
   });
 
   test("list enumerates sessions for status APIs (newest first, phase filter, limit)", async () => {

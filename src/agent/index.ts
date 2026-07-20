@@ -39,12 +39,14 @@ export {
   type SettleResult,
 } from "./runSessionCore.js";
 export {
+  assertSecretFreeCheckpoint,
   createInMemorySessionStore,
   SESSION_STORE_VERSION,
   type SessionStore,
   type SessionRecord,
   type SessionReceipt,
   type SessionCheckpoint,
+  type CheckpointValue,
   type SessionLease,
   type SessionPhase,
   type SessionLoad,

@@ -2,7 +2,7 @@ import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { CounterpartyError } from "../errors.js";
-import type { SessionReceipt, SessionStore } from "./sessionStore.js";
+import type { SessionLoad, SessionReceipt, SessionStore } from "./sessionStore.js";
 import type {
   AgreementDocument,
   AttestationBundle,
@@ -88,12 +88,17 @@ export interface SessionDeps {
   /** Current unix-ms timestamp (used where the spec field is a number). */
   nowMs: () => number;
   /**
-   * OPTIONAL durable session store (#55). When wired, the completed/failed
-   * session is recorded to it — the agreement hash is bound for cross-session
-   * anti-replay, and the agreement/settlement/bundle receipts + final status are
-   * checkpointed — giving restart-safe status/receipt queries without an
-   * app-specific job DB. Additive: pre-settle write-ahead enforcement (reject a
-   * replayed agreement BEFORE paying) is the rail-level #43/#52 work.
+   * OPTIONAL durable session store (#55). When wired, the store is the
+   * settlement BOUNDARY PROTOCOL (#52/#67), not just an after-the-fact log:
+   *   1. BEFORE paying, fail CLOSED on corrupt/unsupported durable state and
+   *      REJECT a replayed agreement hash — so a second session over the same
+   *      deal can never reach `settle`.
+   *   2. Write-ahead a `settle:intent` checkpoint BEFORE the payment and a
+   *      `settle:outcome` checkpoint (with the tx ref) AFTER — a crash in the
+   *      gap is visible on restart and reconciled, never re-paid.
+   *   3. The agreement/settlement/bundle receipts + final status are recorded
+   *      for restart-safe status/receipt queries without an app-specific job DB.
+   * Fully additive: with no store wired the session behaves exactly as before.
    */
   sessionStore?: SessionStore;
 }
@@ -122,6 +127,27 @@ export const sessionAnchorName = {
 
 /** Result of a resume-time semantic check on an already-anchored artifact. */
 type Match = { ok: boolean; reason?: string };
+
+/**
+ * Extract the most recent settlement OUTCOME write-ahead checkpoint from a
+ * loaded session — the reconciliation point a resumed run reads to avoid
+ * re-paying after a crash between payment and evidence anchoring (#52).
+ */
+function findSettleOutcome(
+  load: SessionLoad,
+): { txHash: string; chainId: string; ok: boolean } | undefined {
+  if (load.status !== "ok") return undefined;
+  const { checkpoints } = load.record;
+  for (let i = checkpoints.length - 1; i >= 0; i--) {
+    const cp = checkpoints[i];
+    if (!cp || cp.key !== "settle:0" || cp.stage !== "outcome" || !cp.data) continue;
+    const { txHash, chainId, ok } = cp.data;
+    if (typeof txHash === "string" && typeof ok === "boolean") {
+      return { txHash, chainId: typeof chainId === "string" ? chainId : "", ok };
+    }
+  }
+  return undefined;
+}
 
 /**
  * Record a completed/failed session to the durable store (#55): create-or-load,
@@ -299,6 +325,53 @@ export async function runSessionCore(
     },
   );
 
+  // The agreement's content hash is this deal's anti-replay key.
+  const agreementHash = contentHash(stripSignature(agreementValue as Record<string, unknown>));
+
+  // #52/#67 settlement boundary — BEFORE paying, when a durable store is wired:
+  // fail CLOSED on untrustworthy durable state, and reject a replayed agreement
+  // hash. `create` binds the hash atomically and THROWS on a cross-session reuse,
+  // so a replayed deal aborts here — before any call to `settle`.
+  const store = deps.sessionStore;
+  if (store) {
+    const loaded = await store.load(jobId);
+    if (loaded.status === "corrupt" || loaded.status === "unsupported") {
+      throw new CounterpartyError(
+        `session ${jobId} durable state is ${loaded.status}; refusing to settle (fail-closed)`,
+      );
+    }
+    if (loaded.status === "missing") {
+      await store.create({ jobId, agreementHash, phase: "negotiated", now: deps.nowMs() });
+    } else {
+      // Resume: enforce that the live record's bound hash is THIS deal's — a
+      // mismatch is a replayed/altered agreement under a reused jobId.
+      const bound = await store.bindHash({ hash: agreementHash, jobId, kind: "agreement" });
+      if (!bound.ok) {
+        throw new CounterpartyError(
+          `agreement hash for ${jobId} is bound to ${bound.boundTo} (anti-replay); refusing to settle`,
+        );
+      }
+    }
+  }
+
+  /** Write-ahead a settlement checkpoint via compare-and-set (best-effort, primitives only). */
+  const checkpointSettle = async (
+    stage: "intent" | "outcome",
+    data: Record<string, string | number | boolean>,
+    phase: string,
+  ): Promise<void> => {
+    if (!store) return;
+    const cur = await store.load(jobId);
+    if (cur.status !== "ok") return;
+    await store.transition({
+      jobId,
+      expectedRevision: cur.record.revision,
+      phase,
+      checkpoint: { key: "settle:0", stage, data },
+      now: deps.nowMs(),
+    });
+  };
+
   // Settle on the chosen rail — but only if evidence isn't already anchored
   // (the no-double-pay guard: a present evidence record means we already paid).
   let settledOk = false;
@@ -323,17 +396,42 @@ export async function runSessionCore(
       return { ok: true };
     },
     async () => {
-      const pay = await deps.settle({
-        rail: terms.price.rail,
-        amount: terms.price.amount,
-        asset: terms.price.asset,
-        payee: listing.agentId,
-        jobId,
-      });
-      // Defense in depth (independent of the rail): a settlement is only a
-      // success if it produced a verifiable on-chain tx id. A rail reporting
-      // ok:true with no txHash cannot back a provider-receipt claim.
-      settledOk = pay.ok && pay.txHash.trim().length > 0;
+      // Reconcile across a crash (#52): if a prior run already PAID — recorded a
+      // `settle:outcome` write-ahead — but crashed before the evidence was
+      // anchored, rebuild the evidence from the recorded tx ref instead of paying
+      // again. Without this the anchoring guard alone would re-pay in that window.
+      const prior = store ? findSettleOutcome(await store.load(jobId)) : undefined;
+      let txHash: string;
+      let chainId: string;
+      if (prior) {
+        settledOk = prior.ok;
+        txHash = prior.txHash;
+        chainId = prior.chainId;
+      } else {
+        // Write-ahead the intent BEFORE the irreversible payment, so a crash in the
+        // gap before the outcome is recorded is visible on restart (#52).
+        await checkpointSettle("intent", { rail: terms.price.rail, agreementHash }, "settling");
+        const pay = await deps.settle({
+          rail: terms.price.rail,
+          amount: terms.price.amount,
+          asset: terms.price.asset,
+          payee: listing.agentId,
+          jobId,
+        });
+        // Defense in depth (independent of the rail): a settlement is only a
+        // success if it produced a verifiable on-chain tx id. A rail reporting
+        // ok:true with no txHash cannot back a provider-receipt claim.
+        settledOk = pay.ok && pay.txHash.trim().length > 0;
+        txHash = pay.txHash;
+        chainId = pay.chainId;
+        // Reconcile: record the outcome (tx ref) AFTER the effect completes — this
+        // is the checkpoint a resumed run reads to avoid re-paying.
+        await checkpointSettle(
+          "outcome",
+          { txHash, chainId, ok: settledOk },
+          settledOk ? "settled" : "failed",
+        );
+      }
       const observedAt = deps.nowMs();
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
       // tx hash become a payment txRef. Finality is the rail's receipt
@@ -346,7 +444,7 @@ export async function runSessionCore(
         phaseIndex: 0,
         outcome: settledOk ? "success" : "failure",
         paymentTxRefs: [
-          { rail: pay.chainId, txHash: pay.txHash, kind: "payment" },
+          { rail: chainId, txHash, kind: "payment" },
         ],
         paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
         settlementFinality: {
@@ -452,9 +550,9 @@ export async function runSessionCore(
     },
   );
 
-  if (deps.sessionStore) {
-    await recordSessionOutcome(deps.sessionStore, jobId, {
-      agreementHash: contentHash(stripSignature(agreementValue as Record<string, unknown>)),
+  if (store) {
+    await recordSessionOutcome(store, jobId, {
+      agreementHash,
       phase: outcome,
       now: deps.nowMs(),
       receipts: [
