@@ -65,6 +65,21 @@ export type {
   ResolvedIdentity,
 } from "./substrate/index.js";
 
+// CLI helpers (pure/read-only by default). The executable entry is `dacs`.
+export {
+  formatDoctorText,
+  redactRpcUrl,
+  redactSecret,
+  runDoctor,
+  sanitizeText,
+  type DoctorAdapter,
+  type DoctorCheck,
+  type DoctorMode,
+  type DoctorOptions,
+  type DoctorReport,
+  type DoctorStatus,
+} from "./cli/index.js";
+
 // Identity (DACS-1): cross-context identity resolution + claim helpers. Pure —
 // no substrate import — so verifiers can parse/inspect CCI records too.
 export {
@@ -151,6 +166,13 @@ export {
   type ConsistencyVerdict,
   type BundleCopies,
   type BundleRole,
+  verifySettlementEvidence,
+  type EvidenceDecision,
+  type EvidenceVerification,
+  type EvidenceContext,
+  type EvidenceAgreementContext,
+  type EvidenceRailContext,
+  type EvidenceDeps,
   computeReputation,
   deriveReputation,
   type ReputationDerivation,
@@ -164,6 +186,15 @@ export {
   type VetRequest,
   type VetProxyResult,
   type Reputation,
+  // Injectable buyer-session core (F1 #14): run the lifecycle against any
+  // SubstrateAdapter (mock/simulation/non-Demos). NOTE: `sessionAnchorName` is
+  // deliberately NOT exported — its current MVP address strings are not the
+  // normative §6.3.x schemes (dacs2:composite:{jobId}:{evaluatedParty},
+  // dacs4:payment:{jobId}:{railId}:{phaseIndex}, role-specific bundle addr), and
+  // freezing them into the public API would mislead third-party verifiers.
+  // It stays internal until canonical addressing lands (tracked with #5/#48).
+  runSessionCore,
+  type SessionDeps,
   type RunSessionOptions,
   type SessionResult,
   type SessionTerms,
