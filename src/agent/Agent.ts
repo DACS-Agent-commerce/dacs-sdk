@@ -78,12 +78,8 @@ export interface AgentConfig {
 }
 
 export interface PublishResult {
-  /** Native storage address the listing was anchored at. */
+  /** Storage address the listing was anchored at. */
   ref: string;
-  /** §6.3.4 colon-bearing LOGICAL address — the discovery key / metadata (#46). */
-  logicalAddress: string;
-  /** Colon-free NATIVE storage-program name the logical address binds to (#46). */
-  storageName: string;
   txRef?: string;
 }
 

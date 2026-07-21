@@ -29,7 +29,6 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
-  listingStorageName,
   storAddress,
   bundleAddress,
   sha256Hex,
