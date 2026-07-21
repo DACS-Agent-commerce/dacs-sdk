@@ -22,23 +22,23 @@ const read = (p: string) => JSON.parse(readFileSync(join(CONF, p), "utf8"));
 const TRUST = { trustBundles: true } as const;
 
 describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
-  test("requires an explicit validation gate — neither dep throws (no fail-open)", () => {
+  test("requires an explicit validation gate — neither dep rejects (no fail-open)", async () => {
     const b = { outcome: "completed", phaseSummary: [] };
-    expect(() => bundleConsistency({ buyer: b })).toThrow(/isValid|trustBundles/);
+    await expect(bundleConsistency({ buyer: b })).rejects.toThrow(/isValid|trustBundles/);
   });
 
-  test("absent — no copy anchored", () => {
-    expect(bundleConsistency({}, TRUST)).toBe("absent");
-    expect(bundleConsistency({ buyer: null, seller: null }, TRUST)).toBe("absent");
+  test("absent — no copy anchored", async () => {
+    expect(await bundleConsistency({}, TRUST)).toBe("absent");
+    expect(await bundleConsistency({ buyer: null, seller: null }, TRUST)).toBe("absent");
   });
 
-  test("oneSided — exactly one valid copy", () => {
+  test("oneSided — exactly one valid copy", async () => {
     const b = { outcome: "completed", phaseSummary: [] };
-    expect(bundleConsistency({ buyer: b }, TRUST)).toBe("oneSided");
-    expect(bundleConsistency({ seller: b }, TRUST)).toBe("oneSided");
+    expect(await bundleConsistency({ buyer: b }, TRUST)).toBe("oneSided");
+    expect(await bundleConsistency({ seller: b }, TRUST)).toBe("oneSided");
   });
 
-  test("unified — both present, differing only in advisory fields", () => {
+  test("unified — both present, differing only in advisory fields", async () => {
     const buyer = {
       outcome: "completed",
       anchoredByRole: "buyer",
@@ -53,26 +53,26 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
       phaseSummary: [{ index: 0, kind: "settle", outcome: "ok" }],
     };
     expect(bundlesDiverge(buyer, seller)).toBe(false);
-    expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("unified");
+    expect(await bundleConsistency({ buyer, seller }, TRUST)).toBe("unified");
   });
 
-  test("divergent — copies contradict on outcome", () => {
+  test("divergent — copies contradict on outcome", async () => {
     const buyer = { outcome: "completed", phaseSummary: [] };
     const seller = { outcome: "failed-counterparty", phaseSummary: [] };
-    expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
+    expect(await bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
   });
 
-  test("divergent — copies contradict on a phase outcome/errorClass", () => {
+  test("divergent — copies contradict on a phase outcome/errorClass", async () => {
     const buyer = { outcome: "completed", phaseSummary: [{ index: 1, outcome: "ok" }] };
     const seller = {
       outcome: "completed",
       phaseSummary: [{ index: 1, outcome: "fail", errorClass: "counterparty" }],
     };
     expect(bundlesDiverge(buyer, seller)).toBe(true);
-    expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
+    expect(await bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
   });
 
-  test("a phase present in only one copy IS a divergence (#224 — presence-mismatch)", () => {
+  test("a phase present in only one copy IS a divergence (#224 — presence-mismatch)", async () => {
     // DACS-Standard#224 dropped the presence carve-out: a copy asserting a phase
     // the other denies is a contradiction about what happened.
     const buyer = { outcome: "completed", phaseSummary: [{ index: 0, outcome: "ok" }] };
@@ -84,12 +84,12 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
       ],
     };
     expect(bundlesDiverge(buyer, seller)).toBe(true);
-    expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
+    expect(await bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
     // …and symmetric (the extra phase on the other side is equally a divergence).
-    expect(bundleConsistency({ buyer: seller, seller: buyer }, TRUST)).toBe("divergent");
+    expect(await bundleConsistency({ buyer: seller, seller: buyer }, TRUST)).toBe("divergent");
   });
 
-  test("identical phase sets (by index) are unified — reordering is not divergence", () => {
+  test("identical phase sets (by index) are unified — reordering is not divergence", async () => {
     const buyer = {
       outcome: "completed",
       phaseSummary: [{ index: 0, outcome: "ok" }, { index: 1, outcome: "ok" }],
@@ -98,43 +98,43 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
       outcome: "completed",
       phaseSummary: [{ index: 1, outcome: "ok" }, { index: 0, outcome: "ok" }],
     };
-    expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("unified");
+    expect(await bundleConsistency({ buyer, seller }, TRUST)).toBe("unified");
   });
 
-  test("isValid gate drops an invalid copy (treated as not-present)", () => {
+  test("isValid gate drops an invalid copy (treated as not-present)", async () => {
     const buyer = { outcome: "completed", phaseSummary: [] };
     const seller = { outcome: "failed-counterparty", phaseSummary: [] };
     // Seller copy fails validation → only buyer remains → oneSided, not divergent.
     expect(
-      bundleConsistency({ buyer, seller }, { isValid: (_b, role) => role === "buyer" }),
+      await bundleConsistency({ buyer, seller }, { isValid: (_b, role) => role === "buyer" }),
     ).toBe("oneSided");
     // Both invalid → absent.
-    expect(bundleConsistency({ buyer, seller }, { isValid: () => false })).toBe("absent");
+    expect(await bundleConsistency({ buyer, seller }, { isValid: () => false })).toBe("absent");
   });
 
-  test("§10.4.3(b) third arm: a lone single-signed NON-abort copy the isValid gate rejects → absent", () => {
+  test("§10.4.3(b) third arm: a lone single-signed NON-abort copy the isValid gate rejects → absent", async () => {
     // A single-signed `completed` copy is rejected per §10.4.1 — no valid bundle
     // for the session. The isValid gate carries that rule; here it drops the copy.
     const loneNonAbort = { outcome: "completed", phaseSummary: [] };
-    expect(bundleConsistency({ buyer: loneNonAbort }, { isValid: () => false })).toBe("absent");
+    expect(await bundleConsistency({ buyer: loneNonAbort }, { isValid: () => false })).toBe("absent");
     // …whereas a single-signed abort copy stands (§10.11 suppression): the gate accepts it.
     const loneAbort = { outcome: "aborted-by-other", phaseSummary: [] };
-    expect(bundleConsistency({ buyer: loneAbort }, { isValid: () => true })).toBe("oneSided");
+    expect(await bundleConsistency({ buyer: loneAbort }, { isValid: () => true })).toBe("oneSided");
   });
 });
 
 describe.skipIf(!haveVectors)("§14 verify golden — two-sided verdicts over reference bundles", () => {
-  it("the buyer/seller copies of session 0004 canonically diverge", () => {
+  it("the buyer/seller copies of session 0004 canonically diverge", async () => {
     const buyer = read("fixtures/attestation-bundle-0004.json");
     const seller = read("fixtures/attestation-bundle-0004-seller.json");
     // buyer says completed; seller says failed-counterparty (settle phase fail) → dispute.
-    expect(bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
+    expect(await bundleConsistency({ buyer, seller }, TRUST)).toBe("divergent");
   });
 
-  it("a lone anchored copy is oneSided (here the §10.11 abort-suppression arm)", () => {
+  it("a lone anchored copy is oneSided (here the §10.11 abort-suppression arm)", async () => {
     // This fixture is single-signed with outcome aborted-by-other — the §10.4.3(b)
     // arm that stands via §10.11 suppression, NOT a mere anchoring omission.
     const buyer = read("fixtures/session-bundle-one-sided.json");
-    expect(bundleConsistency({ buyer }, TRUST)).toBe("oneSided");
+    expect(await bundleConsistency({ buyer }, TRUST)).toBe("oneSided");
   });
 });

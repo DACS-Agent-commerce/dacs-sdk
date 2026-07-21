@@ -20,6 +20,7 @@ export {
   bundlesDiverge,
   type ConsistencyVerdict,
   type BundleCopies,
+  type BundleConsistencyDeps,
   type BundleRole,
 } from "./bundleConsistency.js";
 export {
@@ -31,6 +32,12 @@ export {
   type EvidenceRailContext,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
+export {
+  verifyBundleCopy,
+  ABORT_OUTCOMES,
+  type BundleCopyDeps,
+  type CopyValidity,
+} from "./bundleCopyValidity.js";
 export { computeReputation } from "./reputation.js";
 export {
   deriveReputation,
