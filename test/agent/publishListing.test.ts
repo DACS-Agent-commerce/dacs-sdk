@@ -4,7 +4,7 @@ import {
   publishListingCore,
   type PublishListingDeps,
 } from "../../src/agent/publishListingCore.js";
-import { listingAddress } from "../../src/canonical/index.js";
+import { listingAddress, listingStorageName } from "../../src/canonical/index.js";
 import { ed25519Sign, privateKeyFromSeed } from "../../src/crypto/index.js";
 
 const SELLER = "did:demos:agent:seller";
@@ -42,11 +42,27 @@ const listing = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () => {
-  test("anchors v1 (default) at the versioned §6.3.4 address", async () => {
+  test("anchors v1 (default) at the versioned §6.3.4 address (via the colon-free native name)", async () => {
     const deps = fakeDeps();
     const res = await publishListingCore(listing(), deps);
-    expect(res.ref).toBe(`stor:${listingAddress(SELLER, "market-data", 1)}`);
+    const logical = listingAddress(SELLER, "market-data", 1);
+    // Anchored under the colon-free NATIVE name, not the colon-bearing logical one.
+    expect(res.ref).toBe(`stor:${listingStorageName(logical)}`);
     expect(res.txRef).toBeDefined();
+  });
+
+  test("§6.3.4: the native storage name is colon-free and the logical address is returned as the binding (#46)", async () => {
+    const deps = fakeDeps();
+    const res = await publishListingCore(listing({ listingVersion: 2 }), deps);
+    const logical = listingAddress(SELLER, "market-data", 2);
+    // The logical address is colon-bearing; the native storage-program name must NOT be.
+    expect(logical).toContain(":");
+    expect(res.storageName).not.toContain(":");
+    // The publish result carries the discovery binding (logical -> native).
+    expect(res.logicalAddress).toBe(logical);
+    expect(res.storageName).toBe(listingStorageName(logical));
+    // Discoverable: re-deriving the native name from the logical address reads the slot.
+    expect(deps.store.has(`stor:${listingStorageName(logical)}`)).toBe(true);
   });
 
   test("a new version anchors at a NEW address; the old slot is untouched", async () => {

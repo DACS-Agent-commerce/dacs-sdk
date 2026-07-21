@@ -79,3 +79,16 @@ export function listingAddress(
   }
   return `dacs1:${encodeAddressSegment(sellerPrimaryClaim)}:${encodeAddressSegment(listingId)}:${v}`;
 }
+
+/**
+ * Map a §6.3.4 logical address (colon-bearing) to the Demos-native storage-program
+ * NAME. Demos rejects `:` in program names, so the native name must be an
+ * implementation-defined, colon-free opaque value — here `dacs1-<sha256(logical)>`.
+ * It is DETERMINISTIC in the logical address, so the logical→native binding needs
+ * no separate catalog to stay discoverable: any party holding the logical address
+ * re-derives the same native name and reads the slot. The logical address itself
+ * is retained as metadata (e.g. on the publish result / discovery binding).
+ */
+export function listingStorageName(logicalAddress: string): string {
+  return `dacs1-${sha256Hex(logicalAddress)}`;
+}

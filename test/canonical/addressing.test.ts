@@ -4,6 +4,7 @@ import {
   decodeAddressSegment,
   encodeAddressSegment,
   listingAddress,
+  listingStorageName,
 } from "../../src/canonical/addressing.js";
 
 describe("CF-4 logical addressing (§6.3.4)", () => {
@@ -33,5 +34,14 @@ describe("CF-4 logical addressing (§6.3.4)", () => {
 
   test("accepts a pre-formatted version segment", () => {
     expect(listingAddress("a", "b", "v3")).toBe("dacs1:a:b:v3");
+  });
+
+  test("listingStorageName maps a colon-bearing logical address to a colon-free native name (#46)", () => {
+    const logical = listingAddress("cci-xm:evm:mainnet:0x1234", "rfq:lot", 3);
+    const name = listingStorageName(logical);
+    expect(logical).toContain(":"); // logical address is colon-bearing…
+    expect(name).not.toContain(":"); // …native storage-program name is not (Demos rejects `:`)
+    expect(name).toMatch(/^dacs1-[0-9a-f]{64}$/); // opaque, deterministic
+    expect(listingStorageName(logical)).toBe(name); // deterministic re-derivation → discoverable
   });
 });
