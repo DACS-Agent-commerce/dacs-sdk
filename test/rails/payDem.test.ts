@@ -119,16 +119,24 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   });
 });
 
-describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion)", () => {
-  const settleWith = (client: ReturnType<typeof fakeClient>) => {
+describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, PB-2 destination)", () => {
+  // A Demos primary claim intrinsically embeds the ed25519 pubkey hex.
+  const SELLER_HEX = "a1".repeat(32);
+  const PAYEE_CLAIM = `did:demos:agent:${SELLER_HEX}`;
+  const OTHER_HEX = "b2".repeat(32);
+
+  const settleWith = (
+    client: ReturnType<typeof fakeClient>,
+    cfg: { recipient?: string; network?: string } = { recipient: PAYEE_CLAIM, network: "demos" },
+  ) => {
     const rail: PayDemRail = { address: PAYER, settle: (p) => payDemSettleCore(p, client) };
-    return payDemSettle(rail, { recipient: RECIPIENT, network: "demos" });
+    return payDemSettle(rail, cfg);
   };
   const req = (over: Record<string, unknown> = {}) => ({
     rail: "pay-dem",
     amount: "5",
     asset: "DEM",
-    payee: RECIPIENT,
+    payee: PAYEE_CLAIM,
     jobId: "j1",
     ...over,
   });
@@ -158,5 +166,42 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion)"
     await expect(
       settleWith(fakeClient())(req({ amount: "5.0000000001" })),
     ).rejects.toThrow(/precision/);
+  });
+
+  // ── PB-2 Tier 1: the destination comes from the AGREEMENT, not from config ──
+
+  test("transfers to the agreement's payee (derived intrinsically from the claim)", async () => {
+    const client = fakeClient();
+    await settleWith(client)(req());
+    expect(client.sent!.to).toBe(SELLER_HEX);
+  });
+
+  test("payee is authoritative even with NO configured recipient", async () => {
+    const client = fakeClient();
+    await settleWith(client, { network: "demos" })(req());
+    expect(client.sent!.to).toBe(SELLER_HEX);
+  });
+
+  test("a configured recipient that is NOT the agreement payee ABORTS — and performs NO transfer", async () => {
+    const client = fakeClient();
+    await expect(
+      settleWith(client, { recipient: OTHER_HEX, network: "demos" })(req()),
+    ).rejects.toThrow(/destination mismatch|PB-2/);
+    // The money-safety assertion: nothing was sent.
+    expect(client.sent).toBeUndefined();
+  });
+
+  test("a payee that does not intrinsically resolve to an address is rejected with NO transfer", async () => {
+    const client = fakeClient();
+    await expect(
+      settleWith(client, { network: "demos" })(req({ payee: "did:example:alias-only" })),
+    ).rejects.toThrow(/does not intrinsically resolve|PB-2/);
+    expect(client.sent).toBeUndefined();
+  });
+
+  test("an equivalent claim form (0x / bare hex) matches the same address", async () => {
+    const client = fakeClient();
+    await settleWith(client, { recipient: `0x${SELLER_HEX}` })(req());
+    expect(client.sent!.to).toBe(SELLER_HEX);
   });
 });

@@ -8,6 +8,19 @@ export const DEM_CURRENCY = "DEM";
 export const DEM_DECIMALS = 9;
 
 /**
+ * The Demos address a DACS primary claim settles to (PB-2 Tier 1). In the Demos
+ * model a CCI *is* the ed25519 public-key hex, so `did:…:<64-hex>`, `0x<64-hex>`
+ * and a bare `<64-hex>` all resolve INTRINSICALLY to the same address — no
+ * external mapping is trusted. A claim that does not embed a key returns null;
+ * pay-dem then refuses to transfer rather than paying an address the agreement
+ * never named.
+ */
+export function demosAddressFromClaim(claim: string): string | null {
+  const hex = claim.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
+  return hex ? hex.toLowerCase() : null;
+}
+
+/**
  * pay-dem settlement rail — native DEM transfer (DACS-4 §9.5.9, SR-4).
  *
  * The plain native path: the buyer submits a `demos.transfer` of the agreed DEM
@@ -150,10 +163,13 @@ export interface PayDemRail {
  * demosdk so the SDK core stays importable without the chain deps installed.
  * Submits via the proven sign → confirm → broadcastAndWait flow.
  *
- * Replay/nonce (finding 3): the demosdk assigns the payer account's nonce at
- * sign time, so a re-submitted transfer carries the same nonce and cannot
- * double-settle; combined with the inclusion-wait (only an observed terminal
- * state mints evidence) this closes the resubmit window without extra bookkeeping.
+ * NOT retry-idempotent on its own: every call signs a FRESH transaction, and the
+ * payer's nonce is assigned per signing — so a second `settle` for the same
+ * session submits a SECOND transfer. (An earlier note here claimed a resubmit
+ * reuses the same nonce; that is not true of this implementation.) A crash after
+ * chain inclusion but before the SR-2 evidence anchor would therefore pay twice,
+ * so the caller MUST run this rail behind the session/phase-keyed settlement
+ * idempotency store (#43/#52) — see `payDemSettle`.
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
   if (!config?.rpc) throw new DacsError("pay-dem rail requires an rpc URL");
@@ -209,15 +225,23 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 /**
  * Bridge a PayDemRail to the runSession `settle` seam.
  *
- * The seam is the DEM converter (§9.5.9 step 2): the agreement's `Price.amount`
- * is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the chain moves
- * integer OS base units (1 DEM = 10^9 OS). This asserts the currency is DEM and
- * converts decimal → OS before handing off to the rail — WITHOUT this, "5" DEM
- * was submitted as 5 OS (a billionth of the agreed amount), settled silently.
+ * DESTINATION (PB-2 Tier 1): the transfer destination is derived from the
+ * AGREEMENT's `req.payee` — the seller's primary claim — never from separate
+ * config. A Demos primary claim intrinsically IS the address, so the money can
+ * only go where the signed agreement says. `cfg.recipient` is therefore an
+ * optional CROSS-CHECK: if it disagrees with the agreement's payee the settle
+ * ABORTS **before** any transfer, rather than paying a third address while
+ * returning evidence for the session price.
+ *
+ * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
+ * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
+ * chain moves integer OS base units (1 DEM = 10^9 OS). This asserts the currency
+ * is DEM and converts decimal → OS before handing off to the rail — WITHOUT this,
+ * "5" DEM was submitted as 5 OS (a billionth of the agreed amount), settled silently.
  */
 export function payDemSettle(
   rail: PayDemRail,
-  cfg: { recipient: string; network?: string },
+  cfg: { recipient?: string; network?: string } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
   return async (req) => {
     if (req.asset !== DEM_CURRENCY) {
@@ -225,11 +249,29 @@ export function payDemSettle(
         `pay-dem settles ${DEM_CURRENCY} only, got asset "${req.asset}" (§9.5.9)`,
       );
     }
+    // PB-2 Tier 1: resolve the destination from the agreement's payee claim.
+    const payeeAddress = demosAddressFromClaim(req.payee);
+    if (!payeeAddress) {
+      throw new DacsError(
+        `pay-dem: payee "${req.payee}" does not intrinsically resolve to a Demos address ` +
+          `(PB-2 Tier 1); refusing to transfer`,
+      );
+    }
+    // A configured recipient may only CONFIRM the agreement's payee, never replace it.
+    if (cfg.recipient) {
+      const configured = demosAddressFromClaim(cfg.recipient) ?? cfg.recipient.trim().toLowerCase();
+      if (configured !== payeeAddress) {
+        throw new DacsError(
+          `pay-dem destination mismatch: configured recipient "${cfg.recipient}" is not the ` +
+            `agreement payee "${req.payee}" (PB-2 Tier 1); refusing to transfer`,
+        );
+      }
+    }
     // Decimal DEM → integer OS base units (string/integer math, no float).
     // baseUnits also rejects sub-OS precision (> 9 fractional digits).
     const amountOs = baseUnits(req.amount, DEM_DECIMALS);
     return rail.settle({
-      recipient: cfg.recipient,
+      recipient: payeeAddress,
       amount: amountOs,
       network: cfg.network ?? "demos",
     });

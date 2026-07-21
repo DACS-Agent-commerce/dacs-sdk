@@ -62,7 +62,7 @@ export interface SettleResult {
    * evidence instead of the default provider-receipt. E.g. §9.5.9 pay-dem →
    * `{ model: "bft-final" }`. Omit for a receipt-confirmed rail.
    */
-  finality?: { model: string; finalityBlocks?: number };
+  finality?: { model: SettlementFinalityModel; finalityBlocks?: number };
   /** Block/ledger height the settlement landed at, when the rail reports it (§9.5.9 `demos`). */
   blockNumber?: number;
   /** The txRef kind the rail's tx is (e.g. §9.5.9 `demos`); defaults to `payment`. */
@@ -330,7 +330,7 @@ export async function runSessionCore(
         ],
         paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
         settlementFinality: {
-          model: (pay.finality?.model ?? "provider-receipt") as SettlementFinalityModel,
+          model: pay.finality?.model ?? "provider-receipt",
           finalityBlocks: pay.finality?.finalityBlocks ?? 0,
           finalityObservedAt: observedAt,
         },
