@@ -12,10 +12,13 @@ import type {
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
 
-// Fixed address-derivation inputs so a logical name always resolves to the same
-// storage address (any reader can re-derive it from the writer address + name).
-const ANCHOR_NONCE = 0;
-const ANCHOR_SALT = "dacs:v1";
+/**
+ * Address-derivation salt. EMPTY per the observed on-chain convention
+ * (DACS-Standard #242) — `deriveStorageAddress` hashes
+ * `{deployer}:{programName}:{nonce}:{salt}`, and live deals derive with an empty
+ * salt. (Was `"dacs:v1"`, which produced addresses no live reader could match.)
+ */
+const ANCHOR_SALT = "";
 
 export interface DemosAdapterConfig {
   /** Demos node RPC URL (e.g. https://node2.demos.sh). */
@@ -83,21 +86,42 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * SR-2 anchoring via Demos Storage Programs. A logical name maps to one
-   * storage program at a deterministic address (`deriveStorageAddress` of the
-   * writer + name + fixed nonce/salt), so the same name re-resolves to the same
-   * address and re-anchoring updates it in place. First write creates the
-   * program (public-read ACL); later writes update it. (Mirrors the
-   * agent-commerce-demo's proven create-or-write + sign→confirm→broadcast flow.)
+   * storage program, created at `deriveStorageAddress(writer, name, nonce, "")`
+   * where `nonce` is the writer's NEXT account nonce (#58 / DACS-Standard #242) —
+   * the node enforces sequential nonces and rejects the skeleton default 0. First
+   * write creates the program (public-read ACL); later writes update it in place
+   * at that address.
+   *
+   * Because the address folds in the create-time nonce, it is NOT re-derivable by
+   * a third party: readers must resolve by program name via the node's name index.
    */
-  /** The deterministic storage address a name anchors to (no write) — for resume. */
-  anchorAddress(name: string): string {
+  /**
+   * The account nonce a NEW storage program will be created under: the writer's
+   * next nonce (`getAddressNonce` + 1) per DACS-Standard #242. The node enforces
+   * sequential nonces and REJECTS the skeleton default of 0, so a fixed nonce
+   * made every live create fail (#58).
+   */
+  private async nextAnchorNonce(): Promise<number> {
+    return (await this.demos.getAddressNonce(this.demos.getAddress())) + 1;
+  }
+
+  /**
+   * The storage address a name would anchor to, for THIS writer, right now.
+   *
+   * IMPORTANT (#58 / DACS-Standard #242): this is NOT third-party derivable. The
+   * physical address folds in the writer's account nonce at create time, so only
+   * the writer can compute it, and only BEFORE the create lands. A reader that
+   * doesn't know the write nonce MUST resolve by program name through the node's
+   * name index — precomputing the address is not a discovery mechanism.
+   */
+  async anchorAddress(name: string): Promise<string> {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
     return StorageProgram.deriveStorageAddress(
       this.demos.getAddress(),
       name,
-      ANCHOR_NONCE,
+      await this.nextAnchorNonce(),
       ANCHOR_SALT,
     );
   }
@@ -107,7 +131,15 @@ export class DemosAdapter implements SubstrateAdapter {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    const address = this.anchorAddress(name);
+    // Derive with the SAME nonce the create will be signed under, so the address
+    // we return is the one the program actually lands at.
+    const nonce = await this.nextAnchorNonce();
+    const address = StorageProgram.deriveStorageAddress(
+      this.demos.getAddress(),
+      name,
+      nonce,
+      ANCHOR_SALT,
+    );
 
     // Create on first write, update thereafter (idempotent).
     let exists = false;
@@ -129,7 +161,7 @@ export class DemosAdapter implements SubstrateAdapter {
           data,
           "json",
           StorageProgram.publicACL(),
-          { nonce: ANCHOR_NONCE, salt: ANCHOR_SALT },
+          { nonce, salt: ANCHOR_SALT },
         );
 
     const signed = await this.demos.storagePrograms.sign(payload);

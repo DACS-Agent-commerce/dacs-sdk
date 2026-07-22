@@ -68,8 +68,14 @@ export interface SubstrateAdapter {
    * tx ref. Consumers re-canonicalise the value to verify its content hash.
    */
   anchor(name: string, value: object): Promise<AnchorRef>;
-  /** SR-2 — the deterministic storage address a name anchors to, without writing. */
-  anchorAddress(name: string): string;
+  /**
+   * SR-2 — the storage address a name would anchor to for THIS writer, without
+   * writing. NOT third-party derivable (#58 / DACS-Standard #242): the physical
+   * address folds in the writer's account nonce at create time, so a reader that
+   * doesn't know that nonce must resolve by program name through the node's name
+   * index instead of precomputing an address.
+   */
+  anchorAddress(name: string): Promise<string>;
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 
