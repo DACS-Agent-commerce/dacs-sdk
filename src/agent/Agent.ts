@@ -198,7 +198,12 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     async discover(
       listingRefs: string[],
     ): Promise<Array<{ ref: string; listing: Listing }>> {
-      return discoverListings(listingRefs, (r) => adapter.readAnchor(r));
+      // Verify every discovered listing against the key in its own agentId (#41)
+      // — an unverified listing must never reach negotiation or settlement.
+      return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
+        verify: ed25519RawVerify,
+        resolvePublicKey: (claim) => publicKeyFromDid(claim),
+      });
     },
 
     async runSession(

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
+import { buildSignedArtifact, verifySignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
   runSessionCore,
   sessionAnchorName,
@@ -165,6 +165,15 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       newJobId: () => "job-e2e",
       now: () => "2026-01-01T00:00:00Z",
       nowMs: () => 1780000000000,
+      // #41 — REAL listing verification end to end: recompute the signature over
+      // the stored artifact and check it against the key in the advertised seller
+      // claim. Proves the happy path runs on a genuinely signed listing.
+      verifyListing: (raw, sellerClaim) => {
+        const key = resolveFromDid(sellerClaim);
+        return key
+          ? verifySignedArtifact(raw, ARTIFACT_SEPARATORS.Listing, key, verify)
+          : false;
+      },
     };
     const result = await runSessionCore(
       listingRef,
