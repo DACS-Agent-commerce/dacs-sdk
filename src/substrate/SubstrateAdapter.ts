@@ -76,6 +76,16 @@ export interface SubstrateAdapter {
    * index instead of precomputing an address.
    */
   anchorAddress(name: string): Promise<string>;
+  /**
+   * SR-2 discovery — resolve a logical program name to its storage address, bound
+   * to the expected writer. The reader-side counterpart to `anchorAddress`: the
+   * physical address folds in the writer's create-time nonce, so a third party
+   * must resolve by name rather than precompute. Owner binding is required — a
+   * program name is not exclusive, so name-only resolution is squattable.
+   * Returns null if no program with that name is owned by `expectedOwner`.
+   */
+  resolveAnchorByName(name: string, expectedOwner: string): Promise<string | null>;
+
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 

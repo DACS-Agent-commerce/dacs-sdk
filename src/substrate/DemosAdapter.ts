@@ -189,6 +189,47 @@ export class DemosAdapter implements SubstrateAdapter {
     };
   }
 
+  /**
+   * SR-2 discovery — resolve a logical program NAME to its storage address,
+   * bound to the expected writer (#58 / DACS-Standard #242).
+   *
+   * This is the reader-side counterpart to {@link anchorAddress}: because the
+   * physical address folds in the writer's create-time nonce, a third party
+   * cannot precompute it and MUST look the name up through the node's name index.
+   *
+   * OWNER BINDING IS LOAD-BEARING: a program name is not exclusive — anyone can
+   * create a program with the same name — so resolving by name ALONE would let an
+   * attacker squat a well-known name (e.g. a listing address) and serve forged
+   * content. We therefore confirm each candidate's `owner` equals `expectedOwner`
+   * before returning it. (The node's name-index rows don't carry the owner, so the
+   * check costs one read per candidate.) Returns null when nothing matches.
+   */
+  async resolveAnchorByName(
+    name: string,
+    expectedOwner: string,
+  ): Promise<string | null> {
+    const candidates = await StorageProgram.searchByName(this.config.rpc, name, {
+      exactMatch: true, // the default is SUBSTRING matching — never rely on it here
+    });
+    const want = expectedOwner.trim().toLowerCase();
+    for (const c of candidates) {
+      // Re-check the name too: exactMatch is the node's contract, not ours to assume.
+      if (c.programName !== name) continue;
+      try {
+        const res = (await this.demos.storagePrograms.read(c.storageAddress)) as {
+          success?: boolean;
+          owner?: string;
+        };
+        if (res?.success && typeof res.owner === "string" && res.owner.trim().toLowerCase() === want) {
+          return c.storageAddress;
+        }
+      } catch {
+        // Unreadable candidate can't be confirmed as the writer's — skip it.
+      }
+    }
+    return null;
+  }
+
   async readAnchor(address: string): Promise<Record<string, unknown> | null> {
     try {
       const res = (await this.demos.storagePrograms.read(address)) as {
