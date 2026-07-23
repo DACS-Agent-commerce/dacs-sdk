@@ -1,14 +1,11 @@
 import { Demos } from "@kynesyslabs/demosdk/websdk";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
-import { createHash } from "node:crypto";
 
 import { SubstrateError } from "../errors.js";
-import { canonicalize } from "../canonical/index.js";
 import { parseClaimRef } from "../identity/index.js";
 import type {
   AnchorRef,
-  AnchorOptions,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
@@ -19,101 +16,6 @@ import type {
 // storage address (any reader can re-derive it from the writer address + name).
 const ANCHOR_NONCE = 0;
 const ANCHOR_SALT = "dacs:v1";
-
-interface SignedDemosTransaction {
-  content: Record<string, unknown>;
-  hash?: string;
-  signature?: { type: string; data: string } | null;
-  ed25519_signature?: string;
-}
-
-interface DemosTransactionSigner {
-  algorithm: string;
-  crypto: {
-    sign(
-      algorithm: string,
-      bytes: Uint8Array,
-    ): Promise<{ signature: Uint8Array }>;
-  };
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export interface ConfirmationRetryOptions {
-  attempts?: number;
-  timeoutMs?: number;
-  retryDelayMs?: number;
-}
-
-/**
- * Bound the node's pre-broadcast confirmTx RPC. A timed-out confirmation has
- * not mutated chain state, so callers can freshly sign the same payload with
- * the same reserved nonce and safely retry another validator response.
- */
-export async function confirmWithRetry<T>(
-  confirm: (attempt: number) => Promise<T>,
-  options: ConfirmationRetryOptions = {},
-): Promise<T> {
-  const attempts = options.attempts ?? 3;
-  const timeoutMs = options.timeoutMs ?? 12_000;
-  const retryDelayMs = options.retryDelayMs ?? 300;
-  if (!Number.isInteger(attempts) || attempts < 1 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error("invalid confirmation retry options");
-  }
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        confirm(attempt),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`confirmTx timed out after ${timeoutMs}ms (attempt ${attempt}/${attempts})`)),
-            timeoutMs,
-          );
-        }),
-      ]);
-    } catch (error) {
-      lastError = error;
-      if (attempt < attempts && retryDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-      }
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("confirmTx failed without an error");
-}
-
-/**
- * Repair demosdk <=4.0.16's single-byte string hash at the final wire boundary.
- * ASCII transactions are unaffected. Non-ASCII transaction content is hashed
- * again as UTF-8 and signed over the exact public wire shape the node validates.
- */
-export async function ensureUtf8TransactionHash<T extends SignedDemosTransaction>(
-  transaction: T,
-  signer: DemosTransactionSigner,
-): Promise<T> {
-  const hash = createHash("sha256")
-    .update(JSON.stringify(transaction.content), "utf8")
-    .digest("hex");
-  if (hash === transaction.hash) return transaction;
-
-  transaction.hash = hash;
-  const bytes = new TextEncoder().encode(hash);
-  const signature = await signer.crypto.sign(signer.algorithm, bytes);
-  transaction.signature = {
-    type: signer.algorithm,
-    data: bytesToHex(signature.signature),
-  };
-  if (transaction.ed25519_signature !== undefined) {
-    const ed25519 = await signer.crypto.sign("ed25519", bytes);
-    transaction.ed25519_signature = bytesToHex(ed25519.signature);
-  }
-  return transaction;
-}
 
 export interface DemosAdapterConfig {
   /** Demos node RPC URL (e.g. https://node2.demos.sh). */
@@ -152,10 +54,6 @@ export class DemosAdapter implements SubstrateAdapter {
     await this.demos.connect(this.config.rpc);
     if (this.config.secret) {
       await this.demos.connectWallet(this.config.secret);
-      // Seed demosdk's wallet-local sequential nonce allocator. Concurrent
-      // same-wallet transactions then reserve N+1, N+2, ... without waiting
-      // for the confirmed nonce projection to catch up.
-      this.demos.enableAutoNonce();
     }
     this.connected = true;
   }
@@ -204,29 +102,26 @@ export class DemosAdapter implements SubstrateAdapter {
     );
   }
 
-  async anchor(name: string, value: object, options: AnchorOptions = {}): Promise<AnchorRef> {
+  async anchor(name: string, value: object): Promise<AnchorRef> {
     const data = value as Record<string, unknown>;
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
     const address = this.anchorAddress(name);
 
-    // Per-job deterministic slots are known-new by construction. Avoid making
-    // their first write wait for the eventually-consistent storage projection.
+    // Create on first write, update thereafter (idempotent).
     let exists = false;
-    if (options.writeMode !== "known-new") {
-      try {
-        const probe = (await this.demos.storagePrograms.read(address)) as {
-          success?: boolean;
-          data?: unknown;
-        };
-        exists = probe?.success === true && probe.data != null;
-      } catch {
-        exists = false;
-      }
+    try {
+      const probe = (await this.demos.storagePrograms.read(address)) as {
+        success?: boolean;
+        data?: unknown;
+      };
+      exists = probe?.success === true && probe.data != null;
+    } catch {
+      exists = false;
     }
 
-    let payload = exists
+    const payload = exists
       ? StorageProgram.writeStorage(address, data, "json")
       : StorageProgram.createStorageProgram(
           this.demos.getAddress(),
@@ -237,51 +132,13 @@ export class DemosAdapter implements SubstrateAdapter {
           { nonce: ANCHOR_NONCE, salt: ANCHOR_SALT },
         );
 
-    let signed: SignedDemosTransaction | undefined;
-    let reservedNonce: number | undefined = options.nonce;
-    type BroadcastResult = {
+    const signed = await this.demos.storagePrograms.sign(payload);
+    const validity = await this.demos.tx.confirm(signed, this.demos);
+    const broadcast = (await this.demos.tx.broadcast(validity, this.demos)) as {
       result?: number;
       response?: { hash?: string; message?: string };
-      extra?: { confirmationBlock?: number } | unknown;
+      extra?: unknown;
     };
-    const signAndBroadcast = async (): Promise<BroadcastResult> => {
-      const validity = await confirmWithRetry(async () => {
-        const candidate = await ensureUtf8TransactionHash(
-          await this.demos.storagePrograms.sign(
-            payload,
-            reservedNonce === undefined ? undefined : { nonce: reservedNonce },
-          ) as SignedDemosTransaction,
-          this.demos as unknown as DemosTransactionSigner,
-        );
-        const candidateNonce = candidate.content.nonce;
-        if (!Number.isSafeInteger(candidateNonce)) {
-          throw new Error("storage transaction omitted its sequential nonce");
-        }
-        if (reservedNonce !== undefined && Number(candidateNonce) !== reservedNonce) {
-          throw new Error("confirmation retry changed the reserved transaction nonce");
-        }
-        reservedNonce = Number(candidateNonce);
-        signed = candidate;
-        return this.demos.tx.confirm(candidate, this.demos);
-      });
-      if (!signed) throw new Error("anchor confirmation returned without a signed transaction");
-      return this.demos.tx.broadcast(validity, this.demos) as Promise<BroadcastResult>;
-    };
-
-    let broadcast = await signAndBroadcast();
-    if (broadcast?.result !== 200 && options.writeMode === "known-new" && !exists) {
-      // On recovery, only turn a rejected create into an idempotent write when
-      // the existing public value is provably the same canonical value.
-      const probe = await this.demos.storagePrograms.read(address).catch(() => null) as {
-        success?: boolean;
-        data?: unknown;
-      } | null;
-      if (probe?.success === true && probe.data != null && canonicalize(probe.data) === canonicalize(data)) {
-        payload = StorageProgram.writeStorage(address, data, "json");
-        signed = undefined;
-        broadcast = await signAndBroadcast();
-      }
-    }
     if (broadcast?.result !== 200) {
       // The node rejected the anchor tx — a substrate-side fault, blameless to
       // the counterparty (T9: substrate fault ≠ party fault).
@@ -293,24 +150,10 @@ export class DemosAdapter implements SubstrateAdapter {
         }`,
       );
     }
-    if (!signed) throw new Error("anchor broadcast returned without a signed transaction");
 
-    const expectedConfirmationBlock = typeof broadcast.extra === "object"
-      && broadcast.extra !== null
-      && Number.isSafeInteger((broadcast.extra as { confirmationBlock?: number }).confirmationBlock)
-      ? Number((broadcast.extra as { confirmationBlock?: number }).confirmationBlock)
-      : undefined;
-    const broadcastAt = Date.now();
-    const nonce = Number.isSafeInteger(signed.content.nonce)
-      ? Number(signed.content.nonce)
-      : undefined;
     return {
       address,
-      txRef: broadcast.response?.hash ?? signed.hash,
-      broadcastAt,
-      transactionContent: JSON.parse(JSON.stringify(signed.content)) as Record<string, unknown>,
-      ...(nonce === undefined ? {} : { nonce }),
-      ...(expectedConfirmationBlock === undefined ? {} : { expectedConfirmationBlock }),
+      txRef: broadcast.response?.hash ?? (signed as { hash?: string }).hash,
     };
   }
 

@@ -1,6 +1,5 @@
 export type {
   AnchorRef,
-  AnchorOptions,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
