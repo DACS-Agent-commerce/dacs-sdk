@@ -4,7 +4,7 @@ import {
   publishListingCore,
   type PublishListingDeps,
 } from "../../src/agent/publishListingCore.js";
-import { listingAddress } from "../../src/canonical/index.js";
+import { listingAddress, logicalToStorageProgramName } from "../../src/canonical/index.js";
 import { ed25519Sign, privateKeyFromSeed } from "../../src/crypto/index.js";
 
 const SELLER = "did:demos:agent:seller";
@@ -42,11 +42,24 @@ const listing = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () => {
-  test("anchors v1 (default) at the versioned §6.3.4 address", async () => {
+  test("anchors v1 (default) under the colon-free §6.3.4 program name", async () => {
     const deps = fakeDeps();
     const res = await publishListingCore(listing(), deps);
-    expect(res.ref).toBe(`stor:${listingAddress(SELLER, "market-data", 1)}`);
+    const logical = listingAddress(SELLER, "market-data", 1);
+    // Anchored under the colon-free NATIVE name, not the colon-bearing logical one.
+    expect(res.ref).toBe(`stor:${logicalToStorageProgramName(logical)}`);
     expect(res.txRef).toBeDefined();
+  });
+
+  test("§6.3.4: the native program name is colon-free and the logical address is the returned binding (#46)", async () => {
+    const deps = fakeDeps();
+    const res = await publishListingCore(listing({ listingVersion: 2 }), deps);
+    const logical = listingAddress(SELLER, "market-data", 2);
+    expect(logical).toContain(":"); // logical is colon-bearing…
+    expect(res.storageName).not.toContain(":"); // …native program name is not (Demos rejects ":")
+    expect(res.storageName).toContain("%3A"); // colons encoded, not dropped
+    expect(res.logicalAddress).toBe(logical);
+    expect(res.storageName).toBe(logicalToStorageProgramName(logical));
   });
 
   test("a new version anchors at a NEW address; the old slot is untouched", async () => {

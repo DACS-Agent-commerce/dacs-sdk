@@ -1,6 +1,11 @@
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { Listing } from "../artifacts/types.js";
-import { contentHash, listingAddress, stripSignature } from "../canonical/index.js";
+import {
+  contentHash,
+  listingAddress,
+  logicalToStorageProgramName,
+  stripSignature,
+} from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
 
@@ -18,14 +23,27 @@ import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
  *    orphan every bundle that pinned that version's content hash. To change a
  *    listing the seller publishes a NEW version at a new address.
  *
+ * Addressing (§6.3.4 Demos binding): the logical listing address is colon-bearing
+ * (`dacs1:<claim>:<listingId>:v<n>`), but Demos requires colon-free program names.
+ * The name anchored under is therefore `logicalToStorageProgramName(logical)` (the
+ * `%3A` colon-free encoding the spec mandates), and the result RETURNS the binding
+ * — `logicalAddress` + the native `ref` — so the logical→native mapping is
+ * discoverable (spec point (c), via return). Carrying the logical address as
+ * on-record metadata + a published index (points (b)/(c)-via-index) is the fuller
+ * discovery surface, tracked with #54.
+ *
  * NOT enforced here (tracked follow-up): monotonicity / no-gaps (versions
  * increase by exactly 1, no skips). That needs a latest-version index the
  * deterministic substrate doesn't expose — so full §6.3.4 closure is NOT claimed.
  */
 
 export interface PublishListingResult {
-  /** Storage address the listing version was anchored at (or already lived at). */
+  /** Native storage address the listing version was anchored at (or already lived at). */
   ref: string;
+  /** §6.3.4 colon-bearing LOGICAL address — the discovery key / metadata. */
+  logicalAddress: string;
+  /** Colon-free NATIVE storage-program name the logical address encodes to. */
+  storageName: string;
   txRef?: string;
 }
 
@@ -52,8 +70,11 @@ export async function publishListingCore(
   }
 
   const signed = await buildSignedArtifact(listing, ARTIFACT_SEPARATORS.Listing, deps.sign);
-  const name = listingAddress(listing.agentId, listing.serviceId, version);
-  const address = deps.anchorAddress(name);
+  // Logical (colon-bearing, discovery key) vs native (colon-free program name the
+  // substrate actually accepts). Anchor under the encoded name; return both.
+  const logicalAddress = listingAddress(listing.agentId, listing.serviceId, version);
+  const storageName = logicalToStorageProgramName(logicalAddress);
+  const address = deps.anchorAddress(storageName);
 
   const existing = await deps.readAnchor(address);
   if (existing) {
@@ -66,9 +87,10 @@ export async function publishListingCore(
           `a version slot is immutable; publish a new listingVersion instead of overwriting it (§6.3.4, #46)`,
       );
     }
-    return { ref: address }; // idempotent re-publish of the byte-identical version
+    // idempotent re-publish of the byte-identical version
+    return { ref: address, logicalAddress, storageName };
   }
 
-  const { address: anchored, txRef } = await deps.anchor(name, signed);
-  return { ref: anchored, txRef };
+  const { address: anchored, txRef } = await deps.anchor(storageName, signed);
+  return { ref: anchored, logicalAddress, storageName, txRef };
 }
