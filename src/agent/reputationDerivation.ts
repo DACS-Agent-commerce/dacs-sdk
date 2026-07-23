@@ -102,32 +102,9 @@ function perspectiveFlip(outcome: string): string {
   }
 }
 
-function perspectiveFlipPhaseValue(value: unknown): unknown {
-  switch (value) {
-    case "aborted-by-self":
-      return "aborted-by-other";
-    case "aborted-by-other":
-      return "aborted-by-self";
-    case "failed-perm":
-      return "failed-counterparty";
-    case "failed-counterparty":
-      return "failed-perm";
-    case "permanent":
-      return "counterparty";
-    case "counterparty":
-      return "permanent";
-    default:
-      return value;
-  }
-}
-
 /** §10.4.3(d) "canonically diverge": contradictory outcome or phaseSummary kind/outcome/errorClass. */
 function canonicallyDiverge(a: AttestationBundle, b: AttestationBundle): boolean {
-  const buyerSellerPair =
-    (a.anchoredByRole === "buyer" && b.anchoredByRole === "seller") ||
-    (a.anchoredByRole === "seller" && b.anchoredByRole === "buyer");
-  if (a.outcome !== b.outcome && !(buyerSellerPair && perspectiveFlip(a.outcome) === b.outcome))
-    return true;
+  if (a.outcome !== b.outcome) return true;
   const indexed = (bundle: AttestationBundle) => {
     const map = new Map<number, { kind: unknown; outcome: unknown; errorClass: unknown }>();
     for (const phase of bundle.phaseSummary ?? []) {
@@ -147,19 +124,8 @@ function canonicallyDiverge(a: AttestationBundle, b: AttestationBundle): boolean
   for (const [index, left] of pa) {
     const right = pb.get(index);
     if (!right || left.kind !== right.kind) return true;
-    if (
-      left.outcome !== right.outcome &&
-      !(buyerSellerPair && perspectiveFlipPhaseValue(left.outcome) === right.outcome)
-    )
-      return true;
-    if (
-      left.errorClass !== right.errorClass &&
-      !(
-        buyerSellerPair &&
-        perspectiveFlipPhaseValue(left.errorClass) === right.errorClass
-      )
-    )
-      return true;
+    if (left.outcome !== right.outcome) return true;
+    if (left.errorClass !== right.errorClass) return true;
   }
   return false;
 }
