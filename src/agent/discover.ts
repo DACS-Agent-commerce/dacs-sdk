@@ -75,13 +75,17 @@ export async function discoverListings(
 
     if (deps.verify) {
       // Bind to the ADVERTISED seller: verify against the key in listing.agentId.
-      const key = await resolveKey(listing.agentId);
-      if (!key || key.length !== 32) continue; // can't establish the signer → drop
+      // Key resolution AND verification are BOTH inside the guard — a throwing or
+      // unresolvable resolver drops just this listing, never the whole batch, so
+      // one malformed entry can't deny discovery of every later valid listing.
       let ok = false;
       try {
-        ok = await verifySignedArtifact(raw, ARTIFACT_SEPARATORS.Listing, key, deps.verify);
+        const key = await resolveKey(listing.agentId);
+        if (key && key.length === 32) {
+          ok = await verifySignedArtifact(raw, ARTIFACT_SEPARATORS.Listing, key, deps.verify);
+        }
       } catch {
-        ok = false; // malformed signature → fail closed, never throw out of discovery
+        ok = false; // unresolvable/malformed → fail closed, never throw out of discovery
       }
       if (!ok) continue;
     }

@@ -25,7 +25,7 @@ import {
 } from "./runSessionCore.js";
 import { discoverListings } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
-import { buildSignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
+import { buildSignedArtifact, verifySignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
 import {
   verifyBundleCore,
   type SignatureCheck,
@@ -140,7 +140,18 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     secret: config.wallet,
   });
   await adapter.connect();
+  return buildAgent(adapter, config);
+}
 
+/**
+ * Build the Agent surface over an ALREADY-CONNECTED adapter. Split out from
+ * {@link createAgent} so the full lifecycle (incl. the `runSession` dep wiring
+ * that #41 verification depends on) is exercisable in a NON-LIVE test against an
+ * in-memory adapter — the public-Agent path was previously only reachable via a
+ * live, environment-skipped test, which let the missing `verifyListing` wiring
+ * ship. Not exported from the package barrel; internal test seam.
+ */
+export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
   const sign: Signer = (bytes) => adapter.sign(bytes);
 
   return {
@@ -228,6 +239,19 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
           anchor: async (name, value) => (await adapter.anchor(name, value)).address,
           anchorAddress: async (name) => adapter.anchorAddress(name),
           readAnchor: (address) => adapter.readAnchor(address),
+          // #41 — verify the listing against the key in its own agentId before
+          // vetting or settlement. Without this the money path would run on an
+          // unverified listing (and the gate below would throw).
+          verifyListing: async (raw, sellerClaim) => {
+            const key = publicKeyFromDid(sellerClaim);
+            if (!key) return false;
+            return verifySignedArtifact(
+              raw,
+              ARTIFACT_SEPARATORS.Listing,
+              key,
+              ed25519RawVerify,
+            );
+          },
           settle: opts.settle,
           vet: opts.vet,
           newJobId: () => randomUUID(),

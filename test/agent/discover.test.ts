@@ -111,4 +111,22 @@ describe("discoverListings signature verification (#41)", () => {
     const aliasOnly = { ...ok, agentId: "did:example:alias-only" };
     expect(await discoverListings(["a"], async () => aliasOnly, deps)).toEqual([]);
   });
+
+  test("a THROWING key resolver drops only that listing, not the whole batch (#71)", async () => {
+    const bad = await signedBy(ALICE.did, ALICE.priv);
+    const good = await signedBy(ALICE.did, ALICE.priv);
+    const store: Record<string, Record<string, unknown>> = { bad, good };
+    // The resolver throws for the FIRST listing but works for the second.
+    let seen = 0;
+    const found = await discoverListings(["bad", "good"], async (r) => store[r] ?? null, {
+      verify,
+      resolvePublicKey: () => {
+        seen += 1;
+        if (seen === 1) throw new Error("resolver blew up");
+        return Uint8Array.from(Buffer.from(ALICE.hex, "hex"));
+      },
+    });
+    // The throw dropped only "bad"; "good" is still discovered.
+    expect(found.map((f) => f.ref)).toEqual(["good"]);
+  });
 });
