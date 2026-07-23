@@ -1,3 +1,5 @@
+import type { AnchorResolution } from "./anchorResolution.js";
+
 /**
  * SubstrateAdapter — the single seam between dacs-sdk and the underlying
  * substrate. DACS is substrate-agnostic by design; the SDK speaks only to this
@@ -82,9 +84,13 @@ export interface SubstrateAdapter {
    * physical address folds in the writer's create-time nonce, so a third party
    * must resolve by name rather than precompute. Owner binding is required — a
    * program name is not exclusive, so name-only resolution is squattable.
-   * Returns null if no program with that name is owned by `expectedOwner`.
+   *
+   * Returns a TYPED {@link AnchorResolution}: `present` (owned by the writer),
+   * `absent` (readable candidates, none the writer's), or `indeterminate` (the
+   * lookup itself failed) — so a transient substrate failure is never mistaken
+   * for "never created" (#70).
    */
-  resolveAnchorByName(name: string, expectedOwner: string): Promise<string | null>;
+  resolveAnchorByName(name: string, expectedOwner: string): Promise<AnchorResolution>;
 
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;

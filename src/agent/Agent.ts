@@ -174,8 +174,9 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
       // Bundle signature verification (§7.7) PLUS dereferencing each referenced
-      // artifact and hash-checking it. Session artifacts live at deterministic,
-      // jobId-keyed addresses, so resolveRef maps (kind, jobId) → address → read.
+      // artifact and hash-checking it. Session artifacts are resolved BY NAME
+      // (kind, jobId → name → address): the physical address folds in the writer's
+      // create-time nonce, so it can't be recomputed (#70).
       return verifyBundleCore(ref, {
         readArtifact: (r) => adapter.readAnchor(r),
         resolveRef: async (kind, jobId) => {
@@ -188,7 +189,8 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
                   ? sessionAnchorName.vet(jobId)
                   : null;
           if (!name) return null;
-          return adapter.readAnchor(await adapter.anchorAddress(name));
+          const r = await adapter.resolveAnchorByName(name, adapter.getAddress());
+          return r.status === "present" ? adapter.readAnchor(r.address) : null;
         },
         resolvePublicKey: async (did) => publicKeyFromDid(did),
         verify: ed25519RawVerify,
@@ -221,8 +223,17 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
             buildSignedArtifact(artifact, separator as DomainSeparator, sign),
           signBytes: async (bytes) => sign(bytes),
           anchor: async (name, value) => (await adapter.anchor(name, value)).address,
-          anchorAddress: async (name) => adapter.anchorAddress(name),
-          readAnchor: (address) => adapter.readAnchor(address),
+          // Resume resolves BY NAME (owner = this agent), failing closed on an
+          // indeterminate lookup rather than re-anchoring/re-settling (#70).
+          resolveAnchor: async (name) => {
+            const r = await adapter.resolveAnchorByName(name, adapter.getAddress());
+            if (r.status === "indeterminate") return { status: "indeterminate", reason: r.reason };
+            if (r.status === "absent") return { status: "absent" };
+            const value = await adapter.readAnchor(r.address);
+            return value
+              ? { status: "present", ref: r.address, value }
+              : { status: "indeterminate", reason: "resolved address was not readable" };
+          },
           settle: opts.settle,
           vet: opts.vet,
           newJobId: () => randomUUID(),

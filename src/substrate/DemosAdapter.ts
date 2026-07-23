@@ -2,8 +2,14 @@ import { Demos } from "@kynesyslabs/demosdk/websdk";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
+import { logicalToStorageProgramName } from "../canonical/index.js";
 import { SubstrateError } from "../errors.js";
 import { parseClaimRef } from "../identity/index.js";
+import {
+  classifyAnchorResolution,
+  type AnchorResolution,
+  type CandidateOutcome,
+} from "./anchorResolution.js";
 import type {
   AnchorRef,
   ProxyFetchRequest,
@@ -120,7 +126,7 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     return StorageProgram.deriveStorageAddress(
       this.demos.getAddress(),
-      name,
+      logicalToStorageProgramName(name), // Demos requires colon-free names (§6.3.4)
       await this.nextAnchorNonce(),
       ANCHOR_SALT,
     );
@@ -131,38 +137,43 @@ export class DemosAdapter implements SubstrateAdapter {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    // Derive with the SAME nonce the create will be signed under, so the address
-    // we return is the one the program actually lands at.
-    const nonce = await this.nextAnchorNonce();
-    const address = StorageProgram.deriveStorageAddress(
-      this.demos.getAddress(),
-      name,
-      nonce,
-      ANCHOR_SALT,
-    );
-
-    // Create on first write, update thereafter (idempotent).
-    let exists = false;
-    try {
-      const probe = (await this.demos.storagePrograms.read(address)) as {
-        success?: boolean;
-        data?: unknown;
-      };
-      exists = probe?.success === true && probe.data != null;
-    } catch {
-      exists = false;
+    // Create-or-update keyed on the NAME, not on a re-derived address (#70). The
+    // physical address folds in the create-time nonce, so a fresh derivation
+    // NEVER matches an existing program — the previous "derive, probe, else
+    // create" flow created a DUPLICATE on every re-anchor. Resolve the writer's
+    // own program by name first; update it in place if present.
+    const self = this.demos.getAddress();
+    const resolution = await this.resolveAnchorByName(name, self);
+    if (resolution.status === "indeterminate") {
+      // Never create on an unresolved lookup — that risks a duplicate program for
+      // a name that may already exist. Surface it as a substrate fault instead.
+      throw new SubstrateError(
+        `anchor ${name}: could not determine whether the program already exists (${resolution.reason})`,
+      );
     }
 
-    const payload = exists
-      ? StorageProgram.writeStorage(address, data, "json")
-      : StorageProgram.createStorageProgram(
-          this.demos.getAddress(),
-          name,
-          data,
-          "json",
-          StorageProgram.publicACL(),
-          { nonce, salt: ANCHOR_SALT },
-        );
+    // Demos requires colon-free program names (§6.3.4); the logical `name` is the
+    // metadata-of-record, this is the string fed into the native derivation.
+    const programName = logicalToStorageProgramName(name);
+    let address: string;
+    let payload: ReturnType<typeof StorageProgram.writeStorage>;
+    if (resolution.status === "present") {
+      address = resolution.address;
+      payload = StorageProgram.writeStorage(address, data, "json");
+    } else {
+      // Absent → create under the writer's NEXT account nonce; the address the
+      // program lands at is derived from that same nonce.
+      const nonce = await this.nextAnchorNonce();
+      address = StorageProgram.deriveStorageAddress(self, programName, nonce, ANCHOR_SALT);
+      payload = StorageProgram.createStorageProgram(
+        self,
+        programName,
+        data,
+        "json",
+        StorageProgram.publicACL(),
+        { nonce, salt: ANCHOR_SALT },
+      );
+    }
 
     const signed = await this.demos.storagePrograms.sign(payload);
     const validity = await this.demos.tx.confirm(signed, this.demos);
@@ -207,27 +218,44 @@ export class DemosAdapter implements SubstrateAdapter {
   async resolveAnchorByName(
     name: string,
     expectedOwner: string,
-  ): Promise<string | null> {
-    const candidates = await StorageProgram.searchByName(this.config.rpc, name, {
-      exactMatch: true, // the default is SUBSTRING matching — never rely on it here
-    });
-    const want = expectedOwner.trim().toLowerCase();
+  ): Promise<AnchorResolution> {
+    // Resolve by the colon-free program name the record was actually stored under
+    // (§6.3.4) — the logical `name` never reaches the node index.
+    const programName = logicalToStorageProgramName(name);
+    let candidates: Awaited<ReturnType<typeof StorageProgram.searchByName>>;
+    try {
+      candidates = await StorageProgram.searchByName(this.config.rpc, programName, {
+        exactMatch: true, // the default is SUBSTRING matching — never rely on it here
+      });
+    } catch (e) {
+      // A failed name lookup is NOT an absence — treat it as indeterminate so a
+      // caller never mistakes a substrate hiccup for "never created" (#70).
+      return {
+        status: "indeterminate",
+        reason: `name lookup failed: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+    // Confirm ownership of each exact-name candidate (the index rows carry no
+    // owner, so this is one read per candidate). Read failures become
+    // `error: true` so classification can fail closed to `indeterminate`.
+    const outcomes: CandidateOutcome[] = [];
     for (const c of candidates) {
-      // Re-check the name too: exactMatch is the node's contract, not ours to assume.
-      if (c.programName !== name) continue;
+      if (c.programName !== programName) continue; // exactMatch is the node's contract, not ours to assume
       try {
         const res = (await this.demos.storagePrograms.read(c.storageAddress)) as {
           success?: boolean;
           owner?: string;
         };
-        if (res?.success && typeof res.owner === "string" && res.owner.trim().toLowerCase() === want) {
-          return c.storageAddress;
-        }
+        outcomes.push({
+          address: c.storageAddress,
+          owner: res?.success && typeof res.owner === "string" ? res.owner : null,
+          error: false,
+        });
       } catch {
-        // Unreadable candidate can't be confirmed as the writer's — skip it.
+        outcomes.push({ address: c.storageAddress, owner: null, error: true });
       }
     }
-    return null;
+    return classifyAnchorResolution(outcomes, expectedOwner);
   }
 
   async readAnchor(address: string): Promise<Record<string, unknown> | null> {
