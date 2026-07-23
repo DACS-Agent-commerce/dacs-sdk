@@ -54,7 +54,7 @@ jobs:
               ...rows,
               "",
               `Direct dependencies with their OWN advisory: **${ownDirect.length}** ` +
-              `(all reported findings are transitive through @kynesyslabs/demosdk — see SECURITY.md).`,
+              `(findings route through @kynesyslabs/demosdk AND viem's subtree — see SECURITY.md for per-advisory reachability).`,
             ].join("\n");
             require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY || "/dev/stdout", out + "\n");
           '
@@ -68,9 +68,21 @@ jobs:
       # new one here means a direct dependency we must fix directly.
       - name: Fail on direct-dependency high/critical advisories
         run: |
+          # `|| true` keeps a non-zero audit exit (findings exist) from aborting the
+          # step before we parse — but a TOTAL audit failure is caught below, not
+          # swallowed, so a registry/network error can't pass the gate silently.
           npm audit --omit=dev --json > audit.json || true
           node -e '
-            const v = (require("./audit.json").vulnerabilities) || {};
+            let a;
+            try { a = require("./audit.json"); } catch { a = null; }
+            // A completed audit always carries a metadata.vulnerabilities block.
+            // Its absence means the audit did not run to completion — FAIL CLOSED
+            // rather than treat a missing/garbage report as "no advisories".
+            if (!a || !a.metadata || !a.metadata.vulnerabilities) {
+              console.error("dependency audit did not produce a valid report; failing closed");
+              process.exit(1);
+            }
+            const v = a.vulnerabilities || {};
             const bad = [];
             for (const [name, node] of Object.entries(v)) {
               if (!node.isDirect) continue;

@@ -30,10 +30,31 @@ schedule in [Audit policy](#audit-policy), not only on dependency updates.
 | low | 28 |
 | **total** | **132** |
 
-All findings are **transitive through `@kynesyslabs/demosdk`**. The SDK's own
-direct dependencies are `@kynesyslabs/demosdk`, `@x402/core`, `@x402/evm`,
-`@x402/fetch`, `viem`; none carry an open advisory, and `npm audit fix` cannot
-rewrite a dependency's own subtree.
+The SDK's own direct dependencies are `@kynesyslabs/demosdk`, `@x402/core`,
+`@x402/evm`, `@x402/fetch`, `viem`. None carry an advisory *in the package
+itself*, and `npm audit fix` cannot rewrite a dependency's own subtree. But the
+findings are **not** all under one root: the **critical** advisories route
+through `@kynesyslabs/demosdk`'s multichain tree, while a set of **high** DoS
+advisories route through **`viem`** (a direct dependency) — see below. An earlier
+version of this file claimed "all findings are transitive through demosdk"; that
+was inaccurate and is corrected here.
+
+#### High-severity `ws` DoS — via `viem` (direct dependency), not demosdk-only
+
+- **Advisories:** GHSA-3h5v-q93c-6h6q and GHSA-96hv-2xvq-fx4p (`ws` DoS — many
+  HTTP headers / memory exhaustion from tiny fragments), both **high**.
+- **Path:** `viem@2.37.13 → ws` (and `ws` is *also* pulled under demosdk; it is
+  deduped). `viem` is used by the **evm-erc20 settlement rail**, so this is a
+  direct-dependency subtree finding, not isolable to the demosdk lazy-load.
+- **Reachable from a DACS SDK path?** **No, on the shipped rail path.** `ws` is
+  viem's **WebSocket** transport; the evm-erc20 rail builds its viem clients with
+  the **HTTP** transport (`http(rpcUrl)`), which never instantiates `ws`. The DoS
+  also targets a `ws` **server** accepting attacker connections — the SDK is a
+  client, so even if the WS transport were selected, the server-side DoS surface
+  isn't the SDK's. It would matter only if a consumer wired a viem WebSocket
+  transport against an untrusted endpoint.
+- **`npm audit fix`:** viem's pinned `ws` range is not user-overridable here; the
+  fix is a viem bump (tracked against the upstream dependency).
 
 ### The "4 critical" are 2 advisories, not 4
 
@@ -87,14 +108,16 @@ reachability:
 ### Why the pure surface is unaffected
 
 `@kynesyslabs/demosdk` is imported by exactly one module — `src/substrate/DemosAdapter.ts`
-(verified: it is the only non-type `@kynesyslabs/demosdk` import in `src/`). The
-top-level barrel and the pure surfaces — `canonical`, `crypto`, `artifacts`,
-`identity`, `negotiate`, and all of **verify** — never load it. A verifier /
+(verified: it is the only non-type `@kynesyslabs/demosdk` import in `src/`), and
+`viem` is loaded only by the settlement rails (`src/rails/evmErc20.ts`, lazily).
+The top-level barrel and the pure surfaces — `canonical`, `crypto`, `artifacts`,
+`identity`, `negotiate`, and all of **verify** — never load either. A verifier /
 marketplace / reputation consumer using the pure surface does not execute any of
 the vulnerable code, even though `npm install` places the packages on disk. The
-vulnerable subtrees run only for an app that builds the Demos on-chain adapter and
-exercises the specific chain feature above — an app already running a full chain
-stack with these same dependencies.
+demosdk subtrees run only for an app that builds the Demos on-chain adapter and
+exercises the specific chain feature above; the `viem`/`ws` subtree runs only for
+an app settling via the evm-erc20 rail, and even then only if it selects viem's
+WebSocket transport — an app already running a full chain stack with these deps.
 
 ## Audit policy
 
