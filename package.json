@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "exports": {
     ".": {
@@ -40,10 +40,17 @@
       "types": "./dist/registry/index.d.ts",
       "import": "./dist/registry/index.js"
     },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
+    },
     "./substrate": {
       "types": "./dist/substrate/index.d.ts",
       "import": "./dist/substrate/index.js"
     }
+  },
+  "bin": {
+    "dacs": "./dist/bin/dacs.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -63,7 +70,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@kynesyslabs/demosdk": "^4.0.12",
+    "@kynesyslabs/demosdk": "^4.0.16",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
