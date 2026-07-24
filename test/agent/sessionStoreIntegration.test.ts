@@ -146,4 +146,40 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     await expect(runSessionCore(listingRef, terms, deps)).rejects.toThrow(/fail-closed|corrupt/);
     expect(settleCalls.n).toBe(0); // never paid
   });
+
+  test("two CONCURRENT resumes settle AT MOST ONCE — the intent CAS is the ownership claim (#67)", async () => {
+    // The reviewer's repro: leave an intent-only session (interrupt the first
+    // settle), then run two concurrent resumes for the same jobId. Without an
+    // ownership boundary both reach deps.settle (count 2); the intent-checkpoint
+    // compare-and-set must let exactly one win.
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+
+    // Run 1: the intent is written, then settle is interrupted → intent-only session.
+    const boom = await makeDeps(store, {
+      kv,
+      settle: async () => {
+        throw new Error("interrupted before completing settle");
+      },
+    });
+    await expect(runSessionCore(boom.listingRef, terms, boom.deps)).rejects.toThrow(/interrupted/);
+
+    // Two concurrent resumes sharing the store + kv, each counting its settle calls.
+    const counter = { n: 0 };
+    const settle = async (req: { payee: string }): Promise<SettleResult> => {
+      counter.n += 1;
+      await Promise.resolve();
+      return { ok: true, txHash: "0xpaid", chainId: "c", payer: "b", payee: req.payee };
+    };
+    const a = await makeDeps(store, { kv, settle });
+    const b = await makeDeps(store, { kv, settle });
+    const results = await Promise.allSettled([
+      runSessionCore(a.listingRef, terms, a.deps, "job-1"),
+      runSessionCore(b.listingRef, terms, b.deps, "job-1"),
+    ]);
+
+    expect(counter.n).toBe(1); // exactly one settled — the CAS claim gated the other
+    expect(results.some((r) => r.status === "fulfilled")).toBe(true);
+    expect(results.some((r) => r.status === "rejected")).toBe(true); // the loser aborted
+  });
 });

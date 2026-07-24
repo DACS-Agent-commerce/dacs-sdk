@@ -73,7 +73,18 @@ export interface SessionDeps {
   anchorAddress: (name: string) => Promise<string>;
   /** Read the artifact anchored at an address (null if absent) — for resume. */
   readAnchor: (address: string) => Promise<Record<string, unknown> | null>;
-  /** Execute payment on the chosen rail. */
+  /**
+   * Execute payment on the chosen rail.
+   *
+   * CRASH-WINDOW NOTE (#67/#52): the session store's intent CAS makes CONCURRENT
+   * resumes settle at most once, but it cannot close the window where the process
+   * dies AFTER `settle` moved value but BEFORE the outcome checkpoint is written —
+   * an intent alone can't prove the external effect occurred. To be safe there,
+   * wire `settle` through the durable rail idempotency store (#43/#52): on resume
+   * it returns the recorded outcome instead of paying again. The SessionStore and
+   * the rail store are complementary — one guards concurrency, the other the
+   * post-payment crash window.
+   */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
    * Optional Vet step: verify the seller before paying. Returns a
@@ -354,22 +365,30 @@ export async function runSessionCore(
     }
   }
 
-  /** Write-ahead a settlement checkpoint via compare-and-set (best-effort, primitives only). */
+  /**
+   * Write-ahead a settlement checkpoint via COMPARE-AND-SET. Returns whether the
+   * CAS was accepted. The `intent` checkpoint is the ownership CLAIM: its
+   * transition is atomic, so of two concurrent resumes exactly one wins — a
+   * rejected transition means another worker already advanced this phase, and the
+   * caller MUST treat that as fatal BEFORE any irreversible effect (#67). Returns
+   * true when no store is wired (nothing to claim).
+   */
   const checkpointSettle = async (
     stage: "intent" | "outcome",
     data: Record<string, string | number | boolean>,
     phase: string,
-  ): Promise<void> => {
-    if (!store) return;
+  ): Promise<boolean> => {
+    if (!store) return true;
     const cur = await store.load(jobId);
-    if (cur.status !== "ok") return;
-    await store.transition({
+    if (cur.status !== "ok") return false;
+    const res = await store.transition({
       jobId,
       expectedRevision: cur.record.revision,
       phase,
       checkpoint: { key: "settle:0", stage, data },
       now: deps.nowMs(),
     });
+    return res.ok;
   };
 
   // Settle on the chosen rail — but only if evidence isn't already anchored
@@ -408,9 +427,20 @@ export async function runSessionCore(
         txHash = prior.txHash;
         chainId = prior.chainId;
       } else {
-        // Write-ahead the intent BEFORE the irreversible payment, so a crash in the
-        // gap before the outcome is recorded is visible on restart (#52).
-        await checkpointSettle("intent", { rail: terms.price.rail, agreementHash }, "settling");
+        // CLAIM the settlement phase via the intent checkpoint's atomic CAS, AND
+        // write-ahead the intent, BEFORE the irreversible payment. A lost claim
+        // means a concurrent worker already advanced this phase — abort rather than
+        // settle twice (#67). (When no store is wired this always claims.)
+        const claimed = await checkpointSettle(
+          "intent",
+          { rail: terms.price.rail, agreementHash },
+          "settling",
+        );
+        if (!claimed) {
+          throw new CounterpartyError(
+            `settlement for ${jobId} is already claimed by a concurrent worker (CAS lost); refusing to settle twice`,
+          );
+        }
         const pay = await deps.settle({
           rail: terms.price.rail,
           amount: terms.price.amount,
@@ -431,6 +461,17 @@ export async function runSessionCore(
           { txHash, chainId, ok: settledOk },
           settledOk ? "settled" : "failed",
         );
+        // Cross-session TRANSACTION-hash anti-replay (#67): reserve the settlement
+        // tx so the same on-chain payment can't back a second session. A conflict
+        // means this tx already settled another job — a replay — so fail closed.
+        if (store && settledOk && txHash) {
+          const bound = await store.bindHash({ hash: txHash, jobId, kind: "transaction" });
+          if (!bound.ok) {
+            throw new CounterpartyError(
+              `settlement tx ${txHash} is already bound to session ${bound.boundTo} (transaction replay)`,
+            );
+          }
+        }
       }
       const observedAt = deps.nowMs();
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
