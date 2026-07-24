@@ -25,8 +25,10 @@ import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
  *
  * Addressing (§6.3.4 Demos binding): the logical listing address is colon-bearing
  * (`dacs1:<claim>:<listingId>:v<n>`), but Demos requires colon-free program names.
- * The name anchored under is therefore `logicalToStorageProgramName(logical)` (the
- * `%3A` colon-free encoding the spec mandates), and the result RETURNS the binding
+ * The name anchored under is therefore `logicalToStorageProgramName(logical)` —
+ * this SDK's implementation-defined colon-free name (the spec mandates only that
+ * the name be colon-free and treated as an opaque write input, NOT a specific
+ * or reversible encoding) — and the result RETURNS the binding
  * — `logicalAddress` + the native `ref` — so the logical→native mapping is
  * discoverable (spec point (c), via return). Carrying the logical address as
  * on-record metadata + a published index (points (b)/(c)-via-index) is the fuller
