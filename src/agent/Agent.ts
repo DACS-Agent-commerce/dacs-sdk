@@ -179,7 +179,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       // create-time nonce, so it can't be recomputed (#70).
       return verifyBundleCore(ref, {
         readArtifact: (r) => adapter.readAnchor(r),
-        resolveRef: async (kind, jobId) => {
+        resolveRef: async (kind, jobId, parties) => {
           const name =
             kind === "dacs-3-agreement"
               ? sessionAnchorName.agreement(jobId)
@@ -189,7 +189,16 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
                   ? sessionAnchorName.vet(jobId)
                   : null;
           if (!name) return null;
-          const r = await adapter.resolveAnchorByName(name, adapter.getAddress());
+          // Session artifacts are anchored by the session's BUYER (the orchestrator
+          // in this SDK), so owner-bind resolution to the buyer party from the
+          // bundle — NOT to this verifier's own address, which only works when the
+          // verifier IS the buyer and breaks independent verification (#70). No
+          // resolvable buyer party → fail closed (ref reports unresolved).
+          const buyer = parties.find((p) => p.role === "buyer");
+          const key = buyer ? publicKeyFromDid(buyer.primaryClaim) : null;
+          if (!key) return null;
+          const owner = Buffer.from(key).toString("hex");
+          const r = await adapter.resolveAnchorByName(name, owner);
           return r.status === "present" ? adapter.readAnchor(r.address) : null;
         },
         resolvePublicKey: async (did) => publicKeyFromDid(did),
