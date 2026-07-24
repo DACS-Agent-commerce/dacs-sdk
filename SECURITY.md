@@ -107,9 +107,13 @@ reachability:
 
 ### Why the pure surface is unaffected
 
-`@kynesyslabs/demosdk` is imported by exactly one module — `src/substrate/DemosAdapter.ts`
-(verified: it is the only non-type `@kynesyslabs/demosdk` import in `src/`), and
-`viem` is loaded only by the settlement rails (`src/rails/evmErc20.ts`, lazily).
+`@kynesyslabs/demosdk` is loaded from two places: `src/substrate/DemosAdapter.ts`
+(the only static, non-type import in `src/`), and `src/rails/payD402.ts`, which
+performs LAZY dynamic imports (`@kynesyslabs/demosdk/websdk`, `…/d402/client`)
+inside `createPayD402Rail` — behind the `acknowledgeExperimental: true` gate, so
+neither executes at module load. `viem` is loaded only by the settlement rails
+(`src/rails/evmErc20.ts` and `src/rails/x402.ts` via `viem/accounts`, both
+lazily; the `x402` use touches no `ws` code path).
 The top-level barrel and the pure surfaces — `canonical`, `crypto`, `artifacts`,
 `identity`, `negotiate`, and all of **verify** — never load either. A verifier /
 marketplace / reputation consumer using the pure surface does not execute any of
