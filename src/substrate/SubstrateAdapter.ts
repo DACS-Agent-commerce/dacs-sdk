@@ -23,29 +23,6 @@ export interface AnchorRef {
   address: string;
   /** Substrate transaction reference for the write, if available. */
   txRef?: string;
-  /** Node-estimated inclusion block returned when the transaction is accepted. */
-  expectedConfirmationBlock?: number;
-  /** Local unix-ms timestamp immediately after the node accepted broadcast. */
-  broadcastAt?: number;
-  /** Sequential sender nonce carried by the signed transaction. */
-  nonce?: number;
-  /**
-   * Exact public transaction content used to derive `txRef`. Consumers may
-   * hash this JSON and combine it with an authoritative `included` status to
-   * verify the write before eventually-consistent transaction indexes hydrate.
-   */
-  transactionContent?: Record<string, unknown>;
-}
-
-export interface AnchorOptions {
-  /** Explicit sender nonce reserved by a wallet-local transaction queue. */
-  nonce?: number;
-  /**
-   * Skip the eventually-consistent storage projection when the caller owns a
-   * deterministic slot guaranteed to be new for this operation. A create
-   * collision must fail closed unless the existing value is canonically equal.
-   */
-  writeMode?: "auto" | "known-new";
 }
 
 export interface ProxyFetchRequest {
@@ -90,7 +67,7 @@ export interface SubstrateAdapter {
    * address it was written to (deterministic from the writer + name) and the
    * tx ref. Consumers re-canonicalise the value to verify its content hash.
    */
-  anchor(name: string, value: object, options?: AnchorOptions): Promise<AnchorRef>;
+  anchor(name: string, value: object): Promise<AnchorRef>;
   /** SR-2 — the deterministic storage address a name anchors to, without writing. */
   anchorAddress(name: string): string;
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
