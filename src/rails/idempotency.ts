@@ -15,19 +15,26 @@ import { DacsError } from "../errors.js";
  * a WRITE-AHEAD protocol:
  *  1. a recorded definitive OUTCOME short-circuits — the payment already landed,
  *     so it is returned and never resubmitted;
- *  2. an INTENT is persisted BEFORE `submit()` moves value — so if the call then
- *     crashes or loses its response after value moved, the next attempt SEES the
- *     unresolved intent instead of blindly paying again;
- *  3. on an attempt that finds an unresolved intent, the store refuses to
- *     resubmit unless a `reconcile` capability can either prove the prior payment
- *     landed (adopt it) or prove it did NOT (safe to resubmit). With no reconcile
- *     it FAILS CLOSED — a stuck settlement never becomes a double-pay;
- *  4. concurrent calls for one key share a single in-flight submission.
+ *  2. an INTENT is ATOMICALLY CLAIMED (put-if-absent) BEFORE `submit()` moves
+ *     value. Only the caller that wins the claim submits; a caller that finds the
+ *     intent already held (a concurrent submit, or a prior attempt that crashed /
+ *     lost its response after moving value) MUST NOT submit;
+ *  3. on a held intent, the store refuses to resubmit unless a `reconcile`
+ *     capability can either prove the prior payment landed (adopt it) or prove it
+ *     did NOT (safe to resubmit). With no reconcile it FAILS CLOSED — a stuck
+ *     settlement never becomes a double-pay;
+ *  4. after submit, a definitive result is recorded; a result with NO tx identity
+ *     releases the claim (clean retry); a TX-BEARING but non-definitive result (or
+ *     a throw) LEAVES the claim, because value may have moved.
  *
- * Durability is the {@link SettlementLog}'s job: the default log is in-process
- * (closes the concurrency + same-process resubmit races). For cross-process
- * crash-safety inject a durable log — e.g. one backed by the #55 SessionStore —
- * so both the intent and the outcome survive a fresh process.
+ * SCOPE OF THE GUARANTEE. The atomic claim makes at-most-once hold across
+ * concurrent callers *of the same log*. The DEFAULT log is in-process, so that is
+ * one process. CROSS-PROCESS at-most-once (a fresh process after a crash, or two
+ * hosts) requires a DURABLE log whose `claimIntent` is an atomic compare-and-set —
+ * e.g. one backed by the #55 SessionStore lease; the in-memory default is NOT
+ * durable and does NOT provide cross-process safety on its own. The
+ * reconcile-then-resubmit path additionally assumes a single writer or a leased
+ * store (it is not atomic across processes without the lease).
  *
  * Deferred (tracked with SB-3 in #33): reproducing x402's EXACT on-chain
  * authorization/session binding on a reconciled resubmit. This store guarantees
@@ -58,12 +65,23 @@ export interface SettlementLog {
   getOutcome(key: string): Promise<SettleResult | undefined>;
   /** Record a definitive outcome — called only after value provably moved. */
   putOutcome(key: string, res: SettleResult): Promise<void>;
-  /** True if an intent was written for `key` but no outcome recorded yet. */
-  hasIntent(key: string): Promise<boolean>;
-  /** Write-ahead an intent BEFORE submitting — value may move after this returns. */
-  putIntent(key: string): Promise<void>;
-  /** Clear an intent when the rail RETURNED (not threw) proof no value moved. */
-  clearIntent(key: string): Promise<void>;
+  /**
+   * ATOMICALLY claim the intent to submit `key` (put-if-absent). Returns
+   * `"claimed"` if this caller set the intent — it MUST proceed to submit — or
+   * `"held"` if an intent already exists (a concurrent submit, or a crashed prior
+   * attempt): the caller MUST NOT submit; it reconciles or fails closed. The
+   * ATOMICITY is what makes at-most-once hold across concurrent callers — exactly
+   * one `"claimed"` per key. A durable backend MUST implement this as an atomic
+   * compare-and-set / insert-if-absent (e.g. the #55 SessionStore lease); the
+   * default in-process log relies on the single-threaded event loop.
+   */
+  claimIntent(key: string): Promise<"claimed" | "held">;
+  /**
+   * Release a claim ONLY when the rail RETURNED proof no value moved (a result
+   * with no tx identity). A tx-bearing or thrown submit leaves the claim in place
+   * so the next attempt fails closed / reconciles instead of resubmitting.
+   */
+  releaseIntent(key: string): Promise<void>;
 }
 
 export interface SettlementIdempotencyStore {
@@ -90,13 +108,15 @@ export function createInMemorySettlementLog(): SettlementLog {
     async putOutcome(key, res) {
       outcomes.set(key, res);
     },
-    async hasIntent(key) {
-      return intents.has(key);
-    },
-    async putIntent(key) {
+    async claimIntent(key) {
+      // Atomic put-if-absent: the check + add run in one synchronous step with no
+      // await between them, so two concurrent callers can't both claim on the
+      // single-threaded event loop — exactly one gets "claimed".
+      if (intents.has(key)) return "held";
       intents.add(key);
+      return "claimed";
     },
-    async clearIntent(key) {
+    async releaseIntent(key) {
       intents.delete(key);
     },
   };
@@ -121,13 +141,16 @@ export function createIdempotencyStore(
       if (flying) return flying; // a concurrent submit is in progress — share it
 
       const p = (async () => {
-        // An intent from a prior attempt with no recorded outcome means value MAY
-        // already have moved (crash / lost response after submit). Do NOT resubmit
-        // blindly — reconcile, or fail closed.
-        if (await log.hasIntent(key)) {
+        // ATOMICALLY claim the intent. "held" means an intent already exists — a
+        // concurrent submit, or a prior attempt that crashed after moving value —
+        // so we MUST NOT submit under it.
+        if ((await log.claimIntent(key)) === "held") {
+          // A concurrent winner may have just recorded the outcome — re-check.
+          const now = await log.getOutcome(key);
+          if (now) return now;
           if (!reconcile) {
             throw new DacsError(
-              `settlement ${key} has an unresolved prior attempt and no reconcile capability; refusing to resubmit (double-pay risk)`,
+              `settlement ${key} has an unresolved or in-flight prior attempt and no reconcile capability; refusing to resubmit (double-pay risk)`,
             );
           }
           const found = await reconcile(key); // throws if indeterminate → fails closed
@@ -135,22 +158,23 @@ export function createIdempotencyStore(
             await log.putOutcome(key, found);
             return found; // the prior payment landed — adopt it, don't resubmit
           }
-          // found === null → reconcile proved NO payment landed → safe to resubmit.
+          // found === null → reconcile proved NO payment landed → submit under the
+          // existing intent below. (Reconcile-then-resubmit assumes a single writer
+          // or a leased store; cross-process safety rides the #55 SessionStore lease.)
         }
-        // Write-ahead the intent BEFORE moving value, so a crash after submit is
-        // detectable as an unresolved intent on the next attempt.
-        await log.putIntent(key);
+        // We hold the intent (freshly claimed, or reconcile proved not-paid). Submit
+        // exactly once.
         const res = await submit();
         if (isDefinitive(res)) {
           await log.putOutcome(key, res); // payment landed — record it definitively
-        } else {
-          // The rail RETURNED a non-definitive result (no tx id) — it is asserting
-          // that no value moved, so this attempt is cleanly retryable: clear the
-          // write-ahead intent. (A THROW leaves the intent in place → fails closed
-          // on the next attempt, since a thrown submit may have moved value before
-          // losing its response.)
-          await log.clearIntent(key);
+        } else if (!res.txHash || res.txHash.trim().length === 0) {
+          // The rail RETURNED a result with NO tx identity — nothing moved — so
+          // this attempt is cleanly retryable: release the claim.
+          await log.releaseIntent(key);
         }
+        // else: a TX-BEARING but non-definitive result (a tx id exists, so value MAY
+        // have moved) — LEAVE the claim so the next attempt reconciles or fails
+        // closed, never resubmits. A THROW likewise leaves the claim.
         return res;
       })();
       inflight.set(key, p);

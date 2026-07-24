@@ -130,6 +130,44 @@ describe("settlement idempotency store (#43)", () => {
     expect(res.txHash).toBe("0xretry");
     expect(sends).toBe(2); // safely resubmitted after reconcile proved no prior payment
   });
+
+  test("atomic claim: two stores over ONE durable log, concurrent → exactly one submits (#52)", async () => {
+    // Cross-process shape: two store instances (separate inflight maps) share one
+    // durable log. Without an ATOMIC claim both would submit; the put-if-absent
+    // claim lets exactly one win — the loser fails closed, never a second send.
+    const log = createInMemorySettlementLog();
+    let sends = 0;
+    const submit = async () => {
+      sends += 1;
+      await Promise.resolve();
+      return ok(`0x${sends}`);
+    };
+    const results = await Promise.allSettled([
+      createIdempotencyStore(log).once("k", submit),
+      createIdempotencyStore(log).once("k", submit),
+    ]);
+    expect(sends).toBe(1); // the atomic claim prevented a second on-chain submission
+    expect(results.filter((r) => r.status === "fulfilled").length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("a TX-BEARING non-definitive result does NOT clear the intent → retry fails closed (#52)", async () => {
+    // ok:false BUT with a txHash — a tx was broadcast, so value MAY have moved.
+    // The intent must survive (unlike a no-tx result), so a retry can't resubmit.
+    const log = createInMemorySettlementLog();
+    let sends = 0;
+    const submit = async (): Promise<SettleResult> => {
+      sends += 1;
+      return { ok: false, txHash: "0xbroadcast", chainId: "c", payer: "p", payee: "q" };
+    };
+    const first = await createIdempotencyStore(log).once("k", submit);
+    expect(first.ok).toBe(false);
+    expect(sends).toBe(1);
+    // A fresh attempt with no reconcile must FAIL CLOSED — never resubmit.
+    await expect(
+      createIdempotencyStore(log).once("k", submit),
+    ).rejects.toThrow(/unresolved|in-flight|double-pay/);
+    expect(sends).toBe(1); // the broadcast tx was never re-sent
+  });
 });
 
 describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => {
