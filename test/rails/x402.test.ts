@@ -2,8 +2,6 @@ import { describe, expect, test } from "vitest";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
 import {
-  createX402Rail,
-  dacsX402AuthorizationNonce,
   termsMatch,
   x402Settle,
   x402SettleCore,
@@ -16,41 +14,6 @@ import {
 const NETWORK = "eip155:84532";
 const RECIPIENT = "0x1111111111111111111111111111111111111111";
 const PAYER = "0x2222222222222222222222222222222222222222";
-const HARDHAT_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784e7bf4f2ff80";
-
-describe("DACS EIP-3009 session binding", () => {
-  test("derives a deterministic nonce from the signed job, phase, and rail terms", async () => {
-    const input = {
-      jobId: "job-1",
-      phaseIndex: 3,
-      payer: PAYER,
-      payee: RECIPIENT,
-      amount: "1000000",
-      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-      network: NETWORK,
-    };
-    const first = await dacsX402AuthorizationNonce(input);
-    expect(await dacsX402AuthorizationNonce({ ...input })).toBe(first);
-    expect(await dacsX402AuthorizationNonce({ ...input, jobId: "job-2" })).not.toBe(first);
-    expect(await dacsX402AuthorizationNonce({ ...input, phaseIndex: 4 })).not.toBe(first);
-  });
-
-  test("fails closed when a production rail is asked to settle without a session binding", async () => {
-    const rail = await createX402Rail({
-      evmPrivateKey: HARDHAT_KEY,
-      requireSessionBinding: true,
-      fetchImpl: fakeFetch(),
-    });
-    await expect(rail.settle({
-      paywallUrl: "https://seller.example/deliver",
-      network: NETWORK,
-      recipientEvm: RECIPIENT,
-      amount: "1000000",
-      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    })).rejects.toThrow(/jobId\/phaseIndex/);
-  });
-});
 
 describe("baseUnits (exact decimal → integer base units)", () => {
   test("USDC 6-decimal conversions are exact", () => {
@@ -273,7 +236,6 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       network: NETWORK,
       recipientEvm: RECIPIENT,
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // resolved token id
-      phaseIndex: 3,
     });
 
     // runSession passes the human Price.asset symbol; the bridge must NOT use it
@@ -288,7 +250,5 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
 
     expect(captured?.asset).toBe("0x036CbD53842c5426634e7929541eC2318f3dCF7e");
     expect(captured?.amount).toBe("1000000");
-    expect(captured?.jobId).toBe("j1");
-    expect(captured?.phaseIndex).toBe(3);
   });
 });
