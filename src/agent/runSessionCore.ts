@@ -1,7 +1,7 @@
 import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { CounterpartyError, SubstrateError } from "../errors.js";
+import { CounterpartyError, DacsError, SubstrateError } from "../errors.js";
 import type {
   AgreementDocument,
   AttestationBundle,
@@ -103,6 +103,26 @@ export interface SessionDeps {
   now: () => string;
   /** Current unix-ms timestamp (used where the spec field is a number). */
   nowMs: () => number;
+  /**
+   * Verify the anchored listing before ANY action is taken on it (#41). Receives
+   * the raw stored artifact (signature intact) and the seller claim it advertises;
+   * must return true only if the signature verifies AND binds to that seller.
+   *
+   * This is enforced INDEPENDENTLY of discovery: a session may be handed a ref
+   * that never passed through `discover`, and the listing drives vetting, rail
+   * and recipient selection, and payment. Verification therefore happens before
+   * the vet step and before settlement — a forged listing must never reach the
+   * money path. REQUIRED unless `trustListing` is set.
+   */
+  verifyListing?: (
+    raw: Record<string, unknown>,
+    sellerClaim: string,
+  ) => Promise<boolean> | boolean;
+  /**
+   * Explicit, grep-able opt-out of listing verification, for callers that
+   * verified upstream. Ignored when `verifyListing` is supplied.
+   */
+  trustListing?: boolean;
 }
 
 export interface SessionResult {
@@ -145,6 +165,32 @@ export async function runSessionCore(
     supportedPaymentRails: string[];
     supportedDelivery: string[];
   };
+
+  // #41 — verify the listing BEFORE vetting, rail selection or settlement. A
+  // forged/tampered listing steers the recipient and rail, so an unverified one
+  // must never reach the money path. Fails closed; the gate is not defaultable.
+  if (!deps.verifyListing && !deps.trustListing) {
+    throw new DacsError(
+      "runSessionCore requires deps.verifyListing or an explicit deps.trustListing: true opt-out — " +
+        "acting on an unverified listing lets a forged listing drive payment (#41)",
+    );
+  }
+  if (deps.verifyListing) {
+    let verified = false;
+    try {
+      verified = await deps.verifyListing(
+        stored as Record<string, unknown>,
+        listing.agentId,
+      );
+    } catch {
+      verified = false; // a throwing verifier is not a pass
+    }
+    if (!verified) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} failed signature verification for seller ${listing.agentId} (#41)`,
+      );
+    }
+  }
 
   if (!listing.supportedPaymentRails.includes(terms.price.rail)) {
     throw new Error(`rail ${terms.price.rail} not offered by the listing`);
