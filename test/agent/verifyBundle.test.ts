@@ -280,4 +280,27 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/not an attestation bundle/);
   });
+
+  test("passes the bundle's parties to resolveRef so resolution can owner-bind to the anchoring party (#70)", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const seen: Array<readonly unknown[]> = [];
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind, jobId, parties) => {
+          seen.push([kind, jobId, parties]);
+          return kind === "dacs-3-agreement"
+            ? fx.agreement
+            : kind === "dacs-4-evidence"
+              ? fx.evidence
+              : null;
+        },
+      }),
+    );
+    expect(res.ok).toBe(true);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const [, , parties] of seen) {
+      expect(parties).toEqual(fx.bundle.parties);
+    }
+  });
 });
