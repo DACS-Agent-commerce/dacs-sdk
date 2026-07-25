@@ -31,8 +31,7 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     sign: async (a, sep) => ({ ...a, signature: "sig", _sep: sep }),
     signBytes: async () => new Uint8Array(64),
     anchor: async (name) => `stor-${name}`,
-    anchorAddress: async (name) => `stor-${name}`,
-    readAnchor: async () => null,
+    resolveAnchor: async () => ({ status: "absent" as const }),
     settle: async () => ({
       ok: true,
       txHash: "0xabc",
@@ -102,8 +101,11 @@ describe("runSession orchestration (T4)", () => {
         store.set(addr, value as Record<string, unknown>);
         return addr;
       },
-      anchorAddress: async (name) => `stor-${name}`,
-      readAnchor: async (addr) => store.get(addr) ?? null,
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value ? { status: "present" as const, ref, value } : { status: "absent" as const };
+      },
       settle: async () => {
         settleCalls += 1;
         return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
@@ -137,8 +139,7 @@ describe("runSession orchestration (T4)", () => {
     let settleCalls = 0;
     const deps = makeDeps({
       anchor: async (name) => `stor-${name}`,
-      anchorAddress: async (name) => `stor-${name}`,
-      readAnchor: async () => null,
+      resolveAnchor: async () => ({ status: "absent" as const }),
       settle: async () => {
         settleCalls += 1;
         return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
@@ -168,8 +169,11 @@ describe("runSession orchestration (T4)", () => {
         store.set(addr, value as Record<string, unknown>);
         return addr;
       },
-      anchorAddress: async (name) => `stor-${name}`,
-      readAnchor: async (addr) => store.get(addr) ?? null,
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value ? { status: "present" as const, ref, value } : { status: "absent" as const };
+      },
       settle: async () => {
         settleCalls += 1;
         return { ok: true, txHash: "0xabc", chainId: "c", payer: "p", payee: "q" };
@@ -207,8 +211,11 @@ describe("runSession orchestration (T4)", () => {
         store.set(addr, value as Record<string, unknown>);
         return addr;
       },
-      anchorAddress: async (name) => `stor-${name}`,
-      readAnchor: async (addr) => store.get(addr) ?? null,
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value ? { status: "present" as const, ref, value } : { status: "absent" as const };
+      },
       settle: async () => {
         settleCalls += 1;
         return { ok: true, txHash: "0xabc", chainId: "c", payer: "p", payee: "q" };
@@ -282,5 +289,41 @@ describe("runSession orchestration (T4)", () => {
     const res = await runSessionCore("stor-listing", TERMS, deps);
     expect(res.outcome).toBe("completed");
     expect(seenSeller).toBe("did:demos:agent:alice");
+  });
+
+  test("resume with an INDETERMINATE evidence lookup aborts — never re-settles (#70 double-pay)", async () => {
+    let settleCalls = 0;
+    // The agreement is already anchored (valid, matching); the evidence lookup
+    // comes back INDETERMINATE (a substrate hiccup). Treating that as "absent"
+    // would re-settle → double-pay. The session must fail closed instead.
+    const agreement = {
+      jobId: "job-DP",
+      pattern: "negotiate-fixed-price",
+      buyer: "did:demos:agent:bob",
+      seller: "did:demos:agent:alice",
+      listingRef: "stor-listing",
+      price: TERMS.price,
+      delivery: { phase: TERMS.deliveryPhase, format: TERMS.deliveryFormat },
+      expiresAt: "2026-01-01T00:00:00Z",
+      signature: "sig",
+    };
+    const deps = makeDeps({
+      resolveAnchor: async (name) => {
+        if (name === "dacs3:agreement:job-DP")
+          return { status: "present" as const, ref: "stor-a", value: agreement };
+        if (name === "dacs4:evidence:job-DP")
+          return { status: "indeterminate" as const, reason: "rpc timeout" };
+        return { status: "absent" as const };
+      },
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+      },
+    });
+
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-DP")).rejects.toThrow(
+      /could not determine/,
+    );
+    expect(settleCalls).toBe(0); // a transient evidence-lookup failure must NOT re-settle
   });
 });

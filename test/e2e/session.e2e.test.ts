@@ -64,6 +64,13 @@ function memSubstrate() {
     },
     anchorAddress: async (name: string) => `stor:${name}`,
     read: async (ref: string) => store.get(ref) ?? null,
+    resolveAnchor: async (name: string) => {
+      const ref = `stor:${name}`;
+      const value = store.get(ref);
+      return value
+        ? { status: "present" as const, ref, value }
+        : { status: "absent" as const };
+    },
   };
 }
 
@@ -137,8 +144,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
         buildSignedArtifact(artifact, sep as never, signBuyer),
       signBytes: async (bytes) => signBuyer(bytes),
       anchor: sub.anchor,
-      anchorAddress: sub.anchorAddress,
-      readAnchor: sub.read,
+      resolveAnchor: sub.resolveAnchor,
       settle: (req) =>
         x402SettleCore(
           {

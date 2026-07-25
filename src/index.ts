@@ -29,6 +29,7 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  logicalToStorageProgramName,
   storAddress,
   bundleAddress,
   sha256Hex,
