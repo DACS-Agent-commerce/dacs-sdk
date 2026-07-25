@@ -35,6 +35,15 @@ function memAdapter() {
     },
     anchorAddress: async (name: string) => `stor:${name}`,
     readAnchor: async (address: string) => store.get(address) ?? null,
+    // #70 surface: resume resolution is BY NAME, owner-bound. The mem adapter's
+    // addresses are deterministic (`stor:<name>`), so resolution is a lookup.
+    getAddress: () => buyerDid,
+    resolveAnchorByName: async (name: string) => {
+      const address = `stor:${name}`;
+      return store.has(address)
+        ? { status: "present" as const, address }
+        : { status: "absent" as const };
+    },
   } as unknown as SubstrateAdapter;
   return { adapter, store };
 }
