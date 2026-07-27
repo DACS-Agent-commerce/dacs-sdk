@@ -71,7 +71,8 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
     newJobId: () => "job-1",
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
-    // Exercises settle→anchor RESUME, not listing verification (#41).
+    // These fixtures exercise settle→anchor RESUME, not listing verification —
+    // opt out of the #41 gate explicitly (same as runSession.test.ts).
     trustListing: true,
     // kv shared across resume via the same closure
   };
