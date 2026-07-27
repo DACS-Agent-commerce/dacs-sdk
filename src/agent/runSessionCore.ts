@@ -1,7 +1,7 @@
 import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { CounterpartyError } from "../errors.js";
+import { CounterpartyError, DacsError, SubstrateError } from "../errors.js";
 import type { SessionLoad, SessionReceipt, SessionStore } from "./sessionStore.js";
 import type {
   AgreementDocument,
@@ -48,6 +48,12 @@ export interface SettleRequest {
   asset: string;
   payee: string;
   jobId: string;
+  /**
+   * The settlement phase index — part of the `(railId, jobId, phaseIndex)`
+   * idempotency key a rail dedupes on (#43). Defaults to 0 (the single MVP
+   * settle phase) when the caller omits it.
+   */
+  phaseIndex?: number;
 }
 
 export interface SettleResult {
@@ -57,6 +63,17 @@ export interface SettleResult {
   payer: string;
   payee: string;
 }
+
+/**
+ * Result of resolving whether a session artifact is already anchored, for resume
+ * (#70). `indeterminate` (the lookup failed) is DISTINCT from `absent` — the
+ * session must never treat a substrate failure as "never anchored", which would
+ * reopen duplicate-settlement risk.
+ */
+export type AnchorLookup =
+  | { status: "present"; ref: string; value: Record<string, unknown> }
+  | { status: "absent" }
+  | { status: "indeterminate"; reason: string };
 
 export interface SessionDeps {
   /** The buyer agent's id / primary claim. */
@@ -69,10 +86,16 @@ export interface SessionDeps {
   signBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
   /** Anchor a value under a name; returns the storage address. */
   anchor: (name: string, value: object) => Promise<string>;
-  /** Deterministic storage address for a name (without writing) — for resume. */
-  anchorAddress: (name: string) => Promise<string>;
-  /** Read the artifact anchored at an address (null if absent) — for resume. */
-  readAnchor: (address: string) => Promise<Record<string, unknown> | null>;
+  /**
+   * Resolve whether the artifact for `name` is already anchored, for RESUME.
+   * Returns the stored value + its ref when present; `absent` when not yet
+   * anchored; `indeterminate` when the lookup itself failed. Resolution MUST be
+   * by NAME, not by a re-derived address: the physical address folds in the
+   * writer's create-time nonce and can't be recomputed (#70). On `indeterminate`
+   * the session refuses to proceed rather than treat a substrate hiccup as
+   * "absent" and risk a duplicate anchor or a double settlement.
+   */
+  resolveAnchor: (name: string) => Promise<AnchorLookup>;
   /**
    * Execute payment on the chosen rail.
    *
@@ -98,6 +121,26 @@ export interface SessionDeps {
   now: () => string;
   /** Current unix-ms timestamp (used where the spec field is a number). */
   nowMs: () => number;
+  /**
+   * Verify the anchored listing before ANY action is taken on it (#41). Receives
+   * the raw stored artifact (signature intact) and the seller claim it advertises;
+   * must return true only if the signature verifies AND binds to that seller.
+   *
+   * This is enforced INDEPENDENTLY of discovery: a session may be handed a ref
+   * that never passed through `discover`, and the listing drives vetting, rail
+   * and recipient selection, and payment. Verification therefore happens before
+   * the vet step and before settlement — a forged listing must never reach the
+   * money path. REQUIRED unless `trustListing` is set.
+   */
+  verifyListing?: (
+    raw: Record<string, unknown>,
+    sellerClaim: string,
+  ) => Promise<boolean> | boolean;
+  /**
+   * Explicit, grep-able opt-out of listing verification, for callers that
+   * verified upstream. Ignored when `verifyListing` is supplied.
+   */
+  trustListing?: boolean;
   /**
    * OPTIONAL durable session store (#55). When wired, the store is the
    * settlement BOUNDARY PROTOCOL (#52/#67), not just an after-the-fact log:
@@ -205,6 +248,32 @@ export async function runSessionCore(
     supportedDelivery: string[];
   };
 
+  // #41 — verify the listing BEFORE vetting, rail selection or settlement. A
+  // forged/tampered listing steers the recipient and rail, so an unverified one
+  // must never reach the money path. Fails closed; the gate is not defaultable.
+  if (!deps.verifyListing && !deps.trustListing) {
+    throw new DacsError(
+      "runSessionCore requires deps.verifyListing or an explicit deps.trustListing: true opt-out — " +
+        "acting on an unverified listing lets a forged listing drive payment (#41)",
+    );
+  }
+  if (deps.verifyListing) {
+    let verified = false;
+    try {
+      verified = await deps.verifyListing(
+        stored as Record<string, unknown>,
+        listing.agentId,
+      );
+    } catch {
+      verified = false; // a throwing verifier is not a pass
+    }
+    if (!verified) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} failed signature verification for seller ${listing.agentId} (#41)`,
+      );
+    }
+  }
+
   if (!listing.supportedPaymentRails.includes(terms.price.rail)) {
     throw new Error(`rail ${terms.price.rail} not offered by the listing`);
   }
@@ -230,16 +299,24 @@ export async function runSessionCore(
     match: (v: Record<string, unknown>) => Match,
     build: () => Promise<object>,
   ): Promise<{ ref: string; value: Record<string, unknown>; existing: boolean }> => {
-    const address = await deps.anchorAddress(name);
-    const existing = await deps.readAnchor(address);
-    if (existing) {
-      const m = match(stripSignature(existing));
+    // Resolve BY NAME (the address can't be recomputed). Fail closed on an
+    // indeterminate lookup: proceeding as if absent could re-anchor a duplicate
+    // or, for evidence, defeat the no-double-pay guard and settle twice (#70).
+    const found = await deps.resolveAnchor(name);
+    if (found.status === "indeterminate") {
+      throw new SubstrateError(
+        `resume: could not determine whether "${name}" is already anchored (${found.reason}); ` +
+          `refusing to proceed rather than risk a duplicate anchor or double settlement`,
+      );
+    }
+    if (found.status === "present") {
+      const m = match(stripSignature(found.value));
       if (!m.ok) {
         throw new CounterpartyError(
-          `resume: artifact anchored at ${address} does not match the requested deal: ${m.reason}`,
+          `resume: artifact anchored at ${found.ref} does not match the requested deal: ${m.reason}`,
         );
       }
-      return { ref: address, value: existing, existing: true };
+      return { ref: found.ref, value: found.value, existing: true };
     }
     const built = (await build()) as Record<string, unknown>;
     const ref = await deps.anchor(name, built);
@@ -447,6 +524,7 @@ export async function runSessionCore(
           asset: terms.price.asset,
           payee: listing.agentId,
           jobId,
+          phaseIndex: 0,
         });
         // Defense in depth (independent of the rail): a settlement is only a
         // success if it produced a verifiable on-chain tx id. A rail reporting

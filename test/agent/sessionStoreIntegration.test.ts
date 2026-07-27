@@ -55,8 +55,12 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
     readListing: async (ref) => kv.get(ref) ?? null,
     sign: (artifact, sep) => buildSignedArtifact(artifact, sep as never, sign),
     signBytes: async (b) => sign(b),
-    anchorAddress: async (name) => `stor:${name}`,
-    readAnchor: async (addr) => kv.get(addr) ?? null,
+    // #70 replaced anchorAddress+readAnchor with a single resolve-by-name seam.
+    resolveAnchor: async (name) => {
+      const ref = `stor:${name}`;
+      const value = kv.get(ref);
+      return value ? { status: "present" as const, ref, value } : { status: "absent" as const };
+    },
     anchor:
       over.anchor ??
       (async (name, value) => {
@@ -73,6 +77,8 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
     newJobId: over.newJobId ?? (() => "job-1"),
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
+    // These fixtures exercise the durable store, not listing verification (#41).
+    trustListing: true,
     sessionStore: store,
   };
   return { deps, listingRef, kv, settleCalls };

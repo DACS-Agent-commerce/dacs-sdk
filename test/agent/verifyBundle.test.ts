@@ -142,6 +142,7 @@ function depsFor(
     resolve?: (did: string) => Uint8Array | null;
     resolveRef?: VerifyBundleDeps["resolveRef"];
     listing?: Record<string, unknown> | null;
+    verifyEvidence?: VerifyBundleDeps["verifyEvidence"];
   } = {},
 ): VerifyBundleDeps {
   const listing = opts.listing === undefined ? fx.listing : opts.listing;
@@ -158,6 +159,7 @@ function depsFor(
             : null),
     resolvePublicKey: async (did) => (opts.resolve ?? resolveFromDid)(did),
     verify,
+    ...(opts.verifyEvidence ? { verifyEvidence: opts.verifyEvidence } : {}),
   };
 }
 
@@ -214,6 +216,31 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(ev?.verdict).toBe("hash-mismatch");
   });
 
+  test("optional verifyEvidence: a hash-matched but semantically-invalid evidence => invalid-evidence, not ok", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    // The evidence hash-matches (bundle signature valid), but the wired §9.7
+    // verifier rejects it — e.g. wrong finality model — so the ref is downgraded.
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, { verifyEvidence: async () => ({ decision: "fail" }) }),
+    );
+    expect(res.signatures[0]?.verdict).toBe("valid");
+    expect(res.ok).toBe(false);
+    const ev = res.refs.find((r) => r.kind === "dacs-4-evidence");
+    expect(ev?.verdict).toBe("invalid-evidence");
+    expect(res.reason).toMatch(/invalid-evidence/);
+  });
+
+  test("optional verifyEvidence: a passing evidence keeps the bundle ok", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, { verifyEvidence: async () => ({ decision: "pass" }) }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.refs.every((r) => r.verdict === "ok")).toBe(true);
+  });
+
   test("missing referenced artifact => not ok", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     const res = await verifyBundleCore(
@@ -252,5 +279,28 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     });
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/not an attestation bundle/);
+  });
+
+  test("passes the bundle's parties to resolveRef so resolution can owner-bind to the anchoring party (#70)", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const seen: Array<readonly unknown[]> = [];
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind, jobId, parties) => {
+          seen.push([kind, jobId, parties]);
+          return kind === "dacs-3-agreement"
+            ? fx.agreement
+            : kind === "dacs-4-evidence"
+              ? fx.evidence
+              : null;
+        },
+      }),
+    );
+    expect(res.ok).toBe(true);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const [, , parties] of seen) {
+      expect(parties).toEqual(fx.bundle.parties);
+    }
   });
 });

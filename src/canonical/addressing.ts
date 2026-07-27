@@ -79,3 +79,20 @@ export function listingAddress(
   }
   return `dacs1:${encodeAddressSegment(sellerPrimaryClaim)}:${encodeAddressSegment(listingId)}:${v}`;
 }
+
+/**
+ * Encode a colon-bearing logical address into the colon-free Demos StorageProgram
+ * NAME (DACS-1 §6.3.4 Demos binding): `storageProgramName := colon-free encoding
+ * of logical_address`. Demos requires colon-free program names, so the remaining
+ * STRUCTURAL `:` separators are percent-encoded to `%3A` — the same `%3A` scheme
+ * CF-4 already uses for the variable segments — making the whole string colon-free
+ * and deterministic. The logical address itself is carried separately as record
+ * metadata + the published logical→native binding (§6.3.5/§6.3.6); this is only
+ * the name fed into `deriveStorageAddress(deployer, programName, nonce, salt)`.
+ *
+ * NOT reversible on its own (the logical address is the metadata of record) — its
+ * one job is to be a colon-free, collision-free function of the logical address.
+ */
+export function logicalToStorageProgramName(logicalAddress: string): string {
+  return logicalAddress.replace(/:/g, "%3A");
+}
