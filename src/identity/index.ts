@@ -14,3 +14,8 @@ export {
   type CciPqcClaim,
   type ParsedClaimRef,
 } from "./cci.js";
+export {
+  demosAgentClaimRef,
+  demosAgentPublicKey,
+  isDemosAgentClaimRef,
+} from "./demos.js";
