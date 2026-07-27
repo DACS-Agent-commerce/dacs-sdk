@@ -48,8 +48,12 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
     readListing: async (ref) => kv.get(ref) ?? null,
     sign: (artifact, sep) => buildSignedArtifact(artifact, sep as never, sign),
     signBytes: async (b) => sign(b),
-    anchorAddress: async (name) => `stor:${name}`,
-    readAnchor: async (addr) => kv.get(addr) ?? null,
+    // #70 replaced anchorAddress+readAnchor with a single resolve-by-name seam.
+    resolveAnchor: async (name) => {
+      const ref = `stor:${name}`;
+      const value = kv.get(ref);
+      return value ? { status: "present" as const, ref, value } : { status: "absent" as const };
+    },
     anchor: async (name, value) => {
       if (name === evidenceName && opts.failEvidenceAnchorOnce && !opts.failEvidenceAnchorOnce.hit) {
         opts.failEvidenceAnchorOnce.hit = true;
@@ -67,6 +71,9 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
     newJobId: () => "job-1",
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
+    // These fixtures exercise settle→anchor RESUME, not listing verification —
+    // opt out of the #41 gate explicitly (same as runSession.test.ts).
+    trustListing: true,
     // kv shared across resume via the same closure
   };
   return { deps, kv, listingRef };
