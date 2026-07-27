@@ -8,16 +8,23 @@ export const DEM_CURRENCY = "DEM";
 export const DEM_DECIMALS = 9;
 
 /**
- * The Demos address a DACS primary claim settles to (PB-2 Tier 1). In the Demos
- * model a CCI *is* the ed25519 public-key hex, so `did:…:<64-hex>`, `0x<64-hex>`
- * and a bare `<64-hex>` all resolve INTRINSICALLY to the same address — no
- * external mapping is trusted. A claim that does not embed a key returns null;
- * pay-dem then refuses to transfer rather than paying an address the agreement
- * never named.
+ * The Demos address a DACS primary claim settles to. In the Demos model a CCI
+ * *is* the ed25519 public-key hex, so a Demos claim resolves INTRINSICALLY to its
+ * address — no external mapping is trusted. Accepts only the DEMOS forms: a bare
+ * `<64-hex>`, `0x<64-hex>`, or a `did:demos:…:<64-hex>` DID.
+ *
+ * STRICT (#32): a non-Demos scheme that merely *ends* in 64 hex — `did:ethr:…`,
+ * `cci-xm:evm:mainnet:0x…`, `web2:…:…` — is NOT Demos-bound and returns null, so
+ * pay-dem refuses to transfer rather than treating a foreign-scheme claim as an
+ * intrinsic Demos destination. A claim that embeds no Demos key returns null too.
  */
 export function demosAddressFromClaim(claim: string): string | null {
-  const hex = claim.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
-  return hex ? hex.toLowerCase() : null;
+  const c = claim.trim();
+  const bare = c.match(/^(?:0x)?([0-9a-fA-F]{64})$/);
+  if (bare) return bare[1]!.toLowerCase();
+  const did = c.match(/^did:demos:(?:[^:]+:)*(?:0x)?([0-9a-fA-F]{64})$/);
+  if (did) return did[1]!.toLowerCase();
+  return null;
 }
 
 /**
@@ -225,13 +232,19 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 /**
  * Bridge a PayDemRail to the runSession `settle` seam.
  *
- * DESTINATION (PB-2 Tier 1): the transfer destination is derived from the
- * AGREEMENT's `req.payee` — the seller's primary claim — never from separate
- * config. A Demos primary claim intrinsically IS the address, so the money can
- * only go where the signed agreement says. `cfg.recipient` is therefore an
- * optional CROSS-CHECK: if it disagrees with the agreement's payee the settle
- * ABORTS **before** any transfer, rather than paying a third address while
- * returning evidence for the session price.
+ * DESTINATION (legacy safety guard, not PB-2 conformance): the transfer
+ * destination is derived from the AGREEMENT's `req.payee` — the seller's primary
+ * claim — never from separate config. A Demos primary claim intrinsically IS the
+ * address, so the money can only go where the fixed-price agreement says.
+ * `cfg.recipient` is therefore an optional CROSS-CHECK: if it disagrees with the
+ * agreement's payee the settle ABORTS **before** any transfer, rather than paying
+ * a third address while returning evidence for the session price.
+ *
+ * This is a guard on the current §9.5.1-legacy `AgreementDocument` path — NOT
+ * PB-1..PB-3 conformance, which apply to a `PayeeBoundAgreementDocument` whose
+ * destination is selected from a signed `terms.payoutBindings`. The
+ * payee-bound-artifact path is separate follow-up work; here `req.payee` is the
+ * listing seller carried through the fixed-price agreement.
  *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
@@ -249,12 +262,12 @@ export function payDemSettle(
         `pay-dem settles ${DEM_CURRENCY} only, got asset "${req.asset}" (§9.5.9)`,
       );
     }
-    // PB-2 Tier 1: resolve the destination from the agreement's payee claim.
+    // Destination guard: resolve the address from the agreement's payee claim.
     const payeeAddress = demosAddressFromClaim(req.payee);
     if (!payeeAddress) {
       throw new DacsError(
-        `pay-dem: payee "${req.payee}" does not intrinsically resolve to a Demos address ` +
-          `(PB-2 Tier 1); refusing to transfer`,
+        `pay-dem: payee "${req.payee}" does not intrinsically resolve to a Demos ` +
+          `address; refusing to transfer`,
       );
     }
     // A configured recipient may only CONFIRM the agreement's payee, never replace it.
@@ -263,7 +276,7 @@ export function payDemSettle(
       if (configured !== payeeAddress) {
         throw new DacsError(
           `pay-dem destination mismatch: configured recipient "${cfg.recipient}" is not the ` +
-            `agreement payee "${req.payee}" (PB-2 Tier 1); refusing to transfer`,
+            `agreement payee "${req.payee}"; refusing to transfer`,
         );
       }
     }

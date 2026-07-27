@@ -195,7 +195,21 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const client = fakeClient();
     await expect(
       settleWith(client, { network: "demos" })(req({ payee: "did:example:alias-only" })),
-    ).rejects.toThrow(/does not intrinsically resolve|PB-2/);
+    ).rejects.toThrow(/does not intrinsically resolve/);
+    expect(client.sent).toBeUndefined();
+  });
+
+  test("STRICT: a non-Demos scheme ending in 64 hex is NOT Demos-bound → no transfer (#32)", async () => {
+    const client = fakeClient();
+    // did:ethr:…<64hex> ends in 64 hex but is a foreign scheme; must be rejected.
+    await expect(
+      settleWith(client, { network: "demos" })(req({ payee: `did:ethr:${SELLER_HEX}` })),
+    ).rejects.toThrow(/does not intrinsically resolve/);
+    expect(client.sent).toBeUndefined();
+    // A CCI cross-chain claim carrying an 0x address is likewise not intrinsically Demos.
+    await expect(
+      settleWith(client, { network: "demos" })(req({ payee: `cci-xm:evm:mainnet:0x${SELLER_HEX}` })),
+    ).rejects.toThrow(/does not intrinsically resolve/);
     expect(client.sent).toBeUndefined();
   });
 
