@@ -194,7 +194,7 @@ export function createInMemorySessionStore(): SessionStore {
     !!rec.lease && rec.lease.expiresAt > now && rec.lease.owner !== owner;
 
   return {
-    async create({ jobId, agreementHash, phase = "created", now = 0 }) {
+    async create({ jobId, agreementHash, phase = "created", now = Date.now() }) {
       if (sessions.has(jobId)) {
         throw new DacsError(`session ${jobId} already exists`);
       }
@@ -275,7 +275,13 @@ export function createInMemorySessionStore(): SessionStore {
       return { ok: true, record: clone(next) };
     },
 
-    async acquireLease({ jobId, owner, ttlMs, now = 0 }) {
+    async acquireLease({ jobId, owner, ttlMs, now = Date.now() }) {
+      // An epoch-zero clock would make every lease instantly expired, silently
+      // voiding the mutual-exclusion guarantee that guards the money path (#67)
+      // — so the default is the REAL clock, and the TTL must be a positive span.
+      if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+        throw new DacsError(`acquireLease ttlMs must be a positive number, got ${ttlMs}`);
+      }
       const record = sessions.get(jobId);
       if (!record) return { ok: false };
       if (leaseHeldByOther(record, owner, now)) return { ok: false, record: clone(record) };

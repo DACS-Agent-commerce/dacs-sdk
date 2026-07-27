@@ -137,3 +137,46 @@ describe("createFsSessionStore (durable conformance #55)", () => {
     expect(results.filter((r) => r.ok)).toHaveLength(1); // exactly one winner
   });
 });
+
+describe("crash-window hardening (#67 round 3)", () => {
+  test("a binding orphaned by a crash mid-create is reclaimed by the next create", async () => {
+    // Simulate the crash: hash reservation exists, session file never landed.
+    await writeFile(
+      join(dir, "hashes", encodeURIComponent("0xorphan") + ".json"),
+      JSON.stringify({ jobId: "j-crashed", kind: "agreement" }),
+    );
+    // The reservation points at a MISSING session → stale → self-healed.
+    await store.create({ jobId: "j-new", agreementHash: "0xorphan" });
+    const bound = await store.bindHash({ hash: "0xorphan", jobId: "j-new", kind: "agreement" });
+    expect(bound).toEqual({ ok: true, boundTo: "j-new" });
+  });
+
+  test("a binding bound to a LIVE session is never reclaimed", async () => {
+    await store.create({ jobId: "j1", agreementHash: "0xheld" });
+    await expect(store.create({ jobId: "j2", agreementHash: "0xheld" })).rejects.toThrow(
+      /already bound to session j1/,
+    );
+  });
+
+  test("a failed duplicate create does not leak its hash reservation", async () => {
+    await store.create({ jobId: "j1" });
+    // Duplicate jobId with a FRESH hash: the create must fail without leaving
+    // 0xfresh permanently bound to the never-created duplicate.
+    await expect(store.create({ jobId: "j1", agreementHash: "0xfresh" })).rejects.toThrow(
+      /already exists/,
+    );
+    await store.create({ jobId: "j2", agreementHash: "0xfresh" }); // reservation was released
+    const bound = await store.bindHash({ hash: "0xfresh", jobId: "j2", kind: "agreement" });
+    expect(bound).toEqual({ ok: true, boundTo: "j2" });
+  });
+
+  test("acquireLease rejects a non-positive ttl instead of minting a dead lease", async () => {
+    await store.create({ jobId: "j1" });
+    await expect(store.acquireLease({ jobId: "j1", owner: "A", ttlMs: 0 })).rejects.toThrow(
+      /positive/,
+    );
+    await expect(store.acquireLease({ jobId: "j1", owner: "A", ttlMs: -5 })).rejects.toThrow(
+      /positive/,
+    );
+  });
+});

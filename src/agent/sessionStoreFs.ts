@@ -171,14 +171,36 @@ export async function createFsSessionStore(
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       const existing = JSON.parse(await readFile(path, "utf8")) as { jobId: string };
-      return existing.jobId === jobId
-        ? { ok: true, boundTo: jobId } // idempotent for the same session
-        : { ok: false, boundTo: existing.jobId }; // replay across sessions
+      if (existing.jobId === jobId) {
+        return { ok: true, boundTo: jobId }; // idempotent for the same session
+      }
+      // Self-heal an ORPHAN reservation: a crash between the hash reserve and the
+      // exclusive session-file create (#67) leaves a binding pointing at a session
+      // that never existed. If the bound session is missing, the reservation is
+      // stale — reclaim it via unlink + one O_EXCL retry (two concurrent healers
+      // race the O_EXCL; exactly one wins, the loser re-reads a live binding).
+      const boundSession = await readSession(existing.jobId);
+      if (boundSession.status === "missing") {
+        await unlink(path).catch(() => {});
+        try {
+          const handle = await open(path, "wx", FILE_MODE);
+          await handle.writeFile(JSON.stringify({ jobId, kind }));
+          await handle.close();
+          return { ok: true, boundTo: jobId };
+        } catch (e2) {
+          if ((e2 as NodeJS.ErrnoException).code !== "EEXIST") throw e2;
+          const winner = JSON.parse(await readFile(path, "utf8")) as { jobId: string };
+          return winner.jobId === jobId
+            ? { ok: true, boundTo: jobId }
+            : { ok: false, boundTo: winner.jobId };
+        }
+      }
+      return { ok: false, boundTo: existing.jobId }; // replay across sessions
     }
   };
 
   return {
-    async create({ jobId, agreementHash, phase = "created", now = 0 }) {
+    async create({ jobId, agreementHash, phase = "created", now = Date.now() }) {
       const record: SessionRecord = {
         storeVersion: SESSION_STORE_VERSION,
         jobId,
@@ -190,8 +212,14 @@ export async function createFsSessionStore(
         createdAt: now,
         updatedAt: now,
       };
-      // Anti-replay: reserve the agreement hash FIRST via the atomic O_EXCL bind,
-      // and REJECT before persisting the session if it's owned by another session
+      // Reject a duplicate jobId BEFORE reserving the hash — otherwise the bind
+      // below would permanently attach the hash to a create that then fails (#67).
+      // (Non-atomic pre-check; the O_EXCL session create below stays the arbiter.)
+      if ((await readSession(jobId)).status !== "missing") {
+        throw new DacsError(`session ${jobId} already exists`);
+      }
+      // Anti-replay: reserve the agreement hash via the atomic O_EXCL bind, and
+      // REJECT before persisting the session if it's owned by another session
       // — never leave a session persisted against a hash it doesn't own (#67).
       if (agreementHash) {
         const bound = await bindHashImpl(agreementHash, jobId, "agreement");
@@ -202,11 +230,16 @@ export async function createFsSessionStore(
         }
       }
       // Exclusive-create the session file so a concurrent create can't clobber it.
+      // On ANY failure, release the just-taken hash reservation — a binding must
+      // never outlive a create that produced no session (#67). (A crash in this
+      // window leaves an orphan reservation; bindHashImpl self-heals it on the
+      // next claim by reclaiming a binding whose session is missing.)
       try {
         const handle = await open(sessionPath(jobId), "wx", FILE_MODE);
         await handle.writeFile(JSON.stringify(record));
         await handle.close();
       } catch (e) {
+        if (agreementHash) await unlink(hashPath(agreementHash)).catch(() => {});
         if ((e as NodeJS.ErrnoException).code === "EEXIST") {
           throw new DacsError(`session ${jobId} already exists`);
         }
@@ -262,7 +295,12 @@ export async function createFsSessionStore(
       });
     },
 
-    async acquireLease({ jobId, owner, ttlMs, now = 0 }) {
+    async acquireLease({ jobId, owner, ttlMs, now = Date.now() }) {
+      // Same clock/TTL discipline as the in-memory store (#67): an epoch-zero
+      // default silently voids lease mutual exclusion on the money path.
+      if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+        throw new DacsError(`acquireLease ttlMs must be a positive number, got ${ttlMs}`);
+      }
       return withLock(jobId, async () => {
         const loaded = await readSession(jobId);
         if (loaded.status !== "ok") return { ok: false };
