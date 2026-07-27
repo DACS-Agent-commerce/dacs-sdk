@@ -7,8 +7,8 @@ addresses (does not close) #40.
 
 | Field | Value |
 | --- | --- |
-| Date | 2026-07-20 |
-| Repo commit | `f6e53d5` |
+| Date | 2026-07-27 |
+| Repo commit | `b405797` |
 | `package-lock.json` object hash | `0a56ac8d582d2f269cf5e74745569257949f33b6` |
 | npm | 11.7.0 |
 | node | v25.2.1 |
@@ -16,7 +16,11 @@ addresses (does not close) #40.
 
 Advisories can change without a `@kynesyslabs/demosdk` bump (a new advisory can be
 published against an already-installed version), so refresh this snapshot on the
-schedule in [Audit policy](#audit-policy), not only on dependency updates.
+schedule in [Audit policy](#audit-policy), not only on dependency updates. This
+refresh is itself an example: with the **same** `package-lock.json` object hash as
+the 2026-07-20 baseline, the count moved from 132 → 134 (a new transitive `tar`
+critical and a new `form-data` high advisory landed against unchanged installed
+versions). Both are transitive; the direct-dependency gate stays green.
 
 ## Result
 
@@ -24,11 +28,11 @@ schedule in [Audit policy](#audit-policy), not only on dependency updates.
 
 | Severity | Count |
 | --- | --- |
-| critical | 4 |
+| critical | 5 |
 | high | 63 |
 | moderate | 37 |
-| low | 28 |
-| **total** | **132** |
+| low | 29 |
+| **total** | **134** |
 
 The SDK's own direct dependencies are `@kynesyslabs/demosdk`, `@x402/core`,
 `@x402/evm`, `@x402/fetch`, `viem`. None carry an advisory *in the package
@@ -56,7 +60,7 @@ was inaccurate and is corrected here.
 - **`npm audit fix`:** viem's pinned `ws` range is not user-overridable here; the
   fix is a viem bump (tracked against the upstream dependency).
 
-### The "4 critical" are 2 advisories, not 4
+### The 5 critical nodes are 3 advisories
 
 `npm audit` labels a package node `critical` when it **inherits** that severity
 through a `via` edge. Deriving the real advisories from the tree:
@@ -65,10 +69,11 @@ through a `via` edge. Deriving the real advisories from the tree:
 | --- | --- |
 | `form-data` | **Yes** — GHSA-fjxv-7rqg-78g4 |
 | `protobufjs` | **Yes** — GHSA-xq3m-2v4x-88gg |
+| `tar` | **Yes** — GHSA-23hp-3jrh-7fpw (node-tar decompression/parse DoS; new since the 2026-07-20 baseline) |
 | `aptos` | No — inherits critical only `via form-data`; `aptos` itself has no critical advisory |
 | `request` | No — its own advisory is GHSA-p8p7-x288-28g6 (**moderate** SSRF); its critical is inherited `via form-data` |
 
-So there are **two** underlying critical advisories. Their per-advisory
+So there are **three** underlying critical advisories. Their per-advisory
 reachability:
 
 #### GHSA-fjxv-7rqg-78g4 — `form-data` predictable multipart boundary (critical)
@@ -104,6 +109,18 @@ reachability:
   surfaces never import CosmJS.
 - **Preconditions to exploit:** decoding attacker-controlled protobuf/Cosmos proof
   bytes with the vulnerable reflection path.
+
+#### GHSA-23hp-3jrh-7fpw — `tar` decompression/parse DoS (critical)
+
+- **Installed vulnerable copy:** `tar@4.4.19` — `@kynesyslabs/demosdk → tar`.
+- **Affected behavior:** unbounded input during decompression/parse lets a crafted
+  archive exhaust memory/CPU (denial of service). New advisory since the baseline;
+  it landed against the unchanged installed version.
+- **Reachable from a DACS SDK path?** **No.** Nothing in the SDK extracts or parses
+  a tar archive — `tar` is a build/packaging-time dependency deep in demosdk's
+  tree, not on any anchor / settle / verify / identity path.
+- **Preconditions to exploit:** feeding an attacker-controlled tar stream to
+  `tar`'s extract/parse — a code path this SDK never invokes.
 
 ### Why the pure surface is unaffected
 
