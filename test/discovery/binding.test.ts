@@ -35,11 +35,22 @@ describe("resolveBinding (§6.3.4 (c) published logical→native binding)", () =
     expect(resolveBinding([binding()], logicalFor(2), SELLER)).toEqual({ status: "absent" });
   });
 
-  test("OWNER BINDING: a squatted entry by another writer does NOT resolve", () => {
-    // Anyone can publish an index entry; without owner binding this would
-    // redirect the consumer to attacker-controlled content.
+  test("owner filter: an entry claiming a DIFFERENT owner does not resolve for this writer", () => {
+    // Filters out entries that don't even claim the expected writer.
     const squat = binding({ owner: OTHER, nativeAddress: "stor-evil" });
     expect(resolveBinding([squat], logicalFor(1), SELLER)).toEqual({ status: "absent" });
+  });
+
+  test("DISCOVERY-NOT-TRUST: a forged entry copying the real owner DOES resolve — the read must be verified", () => {
+    // `owner` is self-asserted; a forger can set it to the real seller. Resolution
+    // therefore returns the forged native address — the binding is a pointer, and
+    // the security boundary is post-read signature + content-hash verification, NOT
+    // this lookup. This test documents the limitation honestly so nobody mistakes
+    // owner-binding for a trust check.
+    const forged = binding({ owner: SELLER, nativeAddress: "stor-forged" });
+    const r = resolveBinding([forged], logicalFor(1), SELLER);
+    expect(r.status).toBe("present");
+    if (r.status === "present") expect(r.binding.nativeAddress).toBe("stor-forged");
   });
 
   test("a squatted entry alongside the real one still resolves to the REAL native address", () => {

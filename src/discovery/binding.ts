@@ -1,19 +1,18 @@
 /**
- * Published logical→native anchor binding (#54, DACS-1 §6.3.4 points (b)/(c)).
+ * Published logical→native anchor binding (#54, DACS-1 §6.3.4 point (c)).
  *
  * On a WRITE-INPUT-MAPPING substrate — Demos, where the native StorageProgram
  * address folds in the deployer address and the per-write transaction nonce — the
  * native address is NOT recomputable from the logical address. §6.3.4 therefore
- * requires an implementation to:
+ * requires an implementation to (a) anchor at the native address, (b) carry the
+ * logical address as record metadata, and (c) PUBLISH the logical→native binding
+ * (listings index §6.3.5 / catalog §6.3.6) with consumers resolving through it.
  *
- *   (a) anchor at the native address;
- *   (b) carry the logical address as descriptive metadata on the anchored record;
- *   (c) PUBLISH the logical→native binding (listings index §6.3.5 / catalog
- *       §6.3.6), and have consumers resolve through that published binding.
- *
- * This module is (b) + (c). It is deliberately SUBSTRATE-NEUTRAL and pure: the
- * binding is data, and resolution is a lookup over that data, so the same surface
- * serves an in-memory index, a `/.well-known` listings index, or a catalog API.
+ * This module is (c): the published binding and its resolution. It is
+ * SUBSTRATE-NEUTRAL and pure — the binding is data, resolution is a lookup — so
+ * the same surface serves an in-memory index, a `/.well-known` listings index, or
+ * a catalog API. (Point (b), the on-record logical-address metadata, is the
+ * writer's job at anchor time, not this module's.)
  *
  * WHY NOT RESOLVE BY PROGRAM NAME: the spec is explicit that the native program
  * name is an implementation-defined OPAQUE write input and MUST NOT be used as a
@@ -21,11 +20,16 @@
  * producers may pick different names for the same logical address. Name lookup is
  * therefore not an interoperable resolution mechanism; the published binding is.
  *
- * OWNER BINDING IS LOAD-BEARING. A logical address embeds the seller's primary
- * claim, but an index entry is just data — anyone can publish one. Resolution is
- * therefore always owner-bound: a binding only resolves when its `owner` matches
- * the writer the caller expects, so a forged or squatted entry cannot redirect a
- * consumer to attacker-controlled content.
+ * ⚠ RESOLUTION IS DISCOVERY, NOT TRUST. An index entry is untrusted data — anyone
+ * can publish one, and `owner` is a self-asserted field INSIDE that same untrusted
+ * entry. Owner-binding here only filters out entries that don't even *claim* the
+ * expected writer; a forger who copies the real owner into a forged entry WILL
+ * resolve, pointing the consumer at attacker-chosen bytes. So the binding is a
+ * POINTER, never a trust boundary. A consumer MUST, after dereferencing the
+ * resolved native address, verify the record itself — its domain-separated
+ * signature by the expected signer AND its content hash — before trusting it.
+ * That post-read verification is the actual security boundary; this resolution is
+ * a hint that survives a wrong hint only because the read is verified.
  */
 
 /** A published logical→native binding entry (§6.3.4 (c)). */
@@ -34,7 +38,11 @@ export interface AnchorBinding {
   logicalAddress: string;
   /** The substrate-native address the record actually lives at (e.g. `stor-…`). */
   nativeAddress: string;
-  /** The writer that anchored it. Resolution is owner-bound against this. */
+  /**
+   * The writer that anchored it, as SELF-ASSERTED by the entry. Resolution
+   * filters on this, but it is not a trust signal (a forger can copy it) — trust
+   * comes from verifying the dereferenced record, not from this field.
+   */
   owner: string;
   /**
    * Content hash of the record's signed scope, when the publisher knows it. A
@@ -76,7 +84,11 @@ function eligible(
 }
 
 /**
- * Resolve one logical address against a set of published bindings, owner-bound.
+ * Resolve one logical address against a set of published bindings, filtered to
+ * entries claiming `expectedOwner`. This is DISCOVERY, not trust: `owner` is
+ * self-asserted, so a forged entry copying the real owner resolves too — the
+ * caller MUST verify the dereferenced record's signature + content hash (see the
+ * module header). This step only narrows which native address to read.
  *
  * A CONFLICT — two live bindings for the same (logicalAddress, owner) pointing at
  * different native addresses — resolves `indeterminate`, never "pick one". The
