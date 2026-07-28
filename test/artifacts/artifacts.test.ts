@@ -119,6 +119,23 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         settlementFinality: { ...valid.settlementFinality, model: "observed" },
       }),
     ).toBe(false);
+    // Finality is success-only.
+    expect(
+      isSettlementEvidence({ ...valid, outcome: "failure", settlementFinality: undefined }),
+    ).toBe(true);
+    expect(isSettlementEvidence({ ...valid, outcome: "failure" })).toBe(false);
+    expect(isSettlementEvidence({ ...valid, settlementFinality: undefined })).toBe(false);
+    // finalityBlocks belongs only to block-depth.
+    expect(
+      isSettlementEvidence({
+        ...valid,
+        settlementFinality: {
+          model: "bft-final",
+          finalityBlocks: 1,
+          finalityObservedAt: valid.settlementFinality.finalityObservedAt,
+        },
+      }),
+    ).toBe(false);
   });
 });
 
