@@ -65,7 +65,7 @@ Global done-for-every-task: unit tests pass; the 5 `DACS-Standard` validators st
 - *Done when:* these have their own unit tests, no demo-specific imports, and **pass the §14 canonical-form / signing / CD-1 vectors** (this is the precision-critical, highest-risk part — the vectors are what de-risk it).
 
 **T3 · Move the artifact model in**
-- *What:* the builders + validators for the spine artifacts the fixed-price + x402 path uses (IdentityBundle, Listing, AgreementDocument, SettlementEvidence, AttestationBundle, RatingRecord).
+- *What:* the builders + validators for the spine artifacts the fixed-price + x402 path uses (IdentityBundle, Listing, AgreementDocument, SettlementEvidence, legacy AttestationBundle, v0.3 FaultAttestationBundle, RatingRecord).
 - *Done when:* each round-trips its §14 fixtures.
 
 ### Phase 2 — Give it a clean, obvious API

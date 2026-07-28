@@ -1,15 +1,16 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { AttestationBundle, BundleParty } from "../artifacts/types.js";
+import type { AnyAttestationBundle, BundleParty } from "../artifacts/types.js";
 import {
   isAgreementDocument,
-  isAttestationBundle,
+  isAnyAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
+import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
 
 /**
  * Attestation-bundle verification (DACS-5). Two independent checks must BOTH
@@ -17,8 +18,8 @@ import { type Verifier } from "./signedArtifact.js";
  *
  *  1. Signature — the bundle's signed scope is its canonical form omitting
  *     `signatures` + `anchoredByRole` (§10.4.1); each `signatures[]` entry is an
- *     Ed25519 signature over `signedBytes("dacs-bundle:v1:", contentHash(scope))`
- *     by a party. We resolve each party's key and check its signature. Verdicts
+ *     Ed25519 signature over the type-specific legacy or fault-bundle domain
+ *     plus `contentHash(scope)` by a party. We resolve each party's key and check its signature. Verdicts
  *     are honestly four-stated: `valid`, `invalid` (tampering/wrong key), `error`
  *     (key resolved but malformed — §10.4.1 ERROR, not a false FAIL),
  *     `unverified` (no key resolvable).
@@ -62,7 +63,7 @@ export interface BundleVerification {
   reason?: string;
   /** Every signature verified against a resolved key. */
   fullyVerified: boolean;
-  bundle?: AttestationBundle;
+  bundle?: AnyAttestationBundle;
   signatures: SignatureCheck[];
   /** Per-referenced-artifact integrity results. */
   refs: RefCheck[];
@@ -129,7 +130,7 @@ function isAgreementCommitPhase(kind: string): boolean {
   return kind === "commit" || kind.startsWith("commit-");
 }
 
-function requiresAgreementRef(bundle: AttestationBundle): boolean {
+function requiresAgreementRef(bundle: AnyAttestationBundle): boolean {
   return (
     bundle.outcome === "completed" ||
     bundle.phaseSummary.some(
@@ -157,7 +158,7 @@ function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer"
 }
 
 function requiredSignatureClaims(
-  bundle: AttestationBundle,
+  bundle: AnyAttestationBundle,
   agreement: Record<string, unknown> | null,
 ): string[] {
   if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome)) return [];
@@ -177,7 +178,17 @@ export async function verifyBundleCore(
   deps: VerifyBundleDeps,
 ): Promise<BundleVerification> {
   const raw = await deps.readArtifact(bundleRef);
-  if (!raw || !isAttestationBundle(stripSignature(raw))) {
+  const unsigned = raw ? stripSignature(raw) : null;
+  if (unsigned && isFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
+    return {
+      ok: false,
+      reason: "faultedParty is not permitted for outcome and anchoredByRole",
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+    };
+  }
+  if (!raw || !unsigned || !isAnyAttestationBundle(unsigned)) {
     return {
       ok: false,
       reason: "not an attestation bundle",
@@ -186,7 +197,7 @@ export async function verifyBundleCore(
       refs: [],
     };
   }
-  const bundle = stripSignature(raw) as unknown as AttestationBundle;
+  const bundle = unsigned;
   if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) && !ABORT_OUTCOMES.has(bundle.outcome)) {
     return {
       ok: false,
@@ -197,13 +208,14 @@ export async function verifyBundleCore(
       bundle,
     };
   }
-
   // Signed scope = canonical form omitting signatures + anchoredByRole (§10.4.1).
   const scope = { ...raw };
   delete scope["signatures"];
   delete scope["anchoredByRole"];
   const message = signedBytes(
-    ARTIFACT_SEPARATORS.AttestationBundle,
+    isFaultBundle(bundle)
+      ? ARTIFACT_SEPARATORS.FaultAttestationBundle
+      : ARTIFACT_SEPARATORS.AttestationBundle,
     contentHash(scope),
   );
 

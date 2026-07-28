@@ -1,11 +1,9 @@
 /**
- * DACS-5 §10.4.1/§10.4.2 — two-sided co-signed AttestationBundle production.
+ * DACS-5 §10.4.1/§10.4.2 — v0.3 FaultAttestationBundle production.
  *
- * Both parties co-sign the anchored copy content; each anchors its own copy, marked with its
- * own `anchoredByRole`. The co-signed copies are canonically EQUAL because
- * `anchoredByRole` is excluded from the hashed scope alongside `signatures` (§10.4.1). Fault
- * outcomes are not rewritten per copy; a consumer applies perspective only when one side's copy
- * is absent (§10.5 / §10.11).
+ * Each signing party anchors a role-specific copy. `faultedParty` is absolute and hashed;
+ * `outcome` is spelled from that copy's role. Fault pairs therefore share one fault and outcome
+ * class while using the required perspective-partner outcome spellings.
  *
  * Why this module owns the omission set: `canonical/hash.ts` strips only
  * `signature`/`signatures`, so `contentHash()` — and therefore `signArtifact()` — computes
@@ -19,10 +17,25 @@ import type { KeyObject } from "node:crypto";
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import { isFaultAttestationBundle } from "../artifacts/validators.js";
 import { ed25519Sign, privateKeyFromSeed } from "../crypto/ed25519.js";
 import { signedBytes } from "../crypto/signing.js";
 import { DacsError } from "../errors.js";
-import type { AttestationBundle, BundleParty, BundleSignature } from "../artifacts/types.js";
+import type {
+  AnyAttestationBundle,
+  BundleParty,
+  BundlePartyRole,
+  BundleSignature,
+  FaultAttestationBundle,
+  FaultedParty,
+} from "../artifacts/types.js";
+import {
+  BUNDLE_OUTCOMES,
+  bundleOutcomeClass,
+  isBundleOutcome,
+  roleRelativeOutcome,
+  type BundleOutcome,
+} from "./bundleSemantics.js";
 
 /**
  * The bundle's hash-excluded fields (§10.4.1). SINGLE SOURCE — a producer and a verifier that
@@ -40,36 +53,15 @@ export const BUNDLE_SIGNED_SCOPE_OMIT = Object.freeze(["signatures", "anchoredBy
  * §10.4.1 orders consumers to drop. The spec's own structure is an allowlist; mirror it.
  */
 const SINGLE_SIGNATURE_PERMITTED = new Set<string>(["aborted-by-self", "aborted-by-other"]);
-const PERSPECTIVE_BEARING_OUTCOMES = new Set<string>([
-  "failed-perm",
-  "failed-counterparty",
-  "aborted-by-self",
-  "aborted-by-other",
-]);
-
-/**
- * The CLOSED set of bundle outcomes (§10.4.1, the `outcome` field of the AttestationBundle type).
- * An outcome outside this set is not a DACS-5 bundle at all, however many signatures it carries —
- * so it is rejected at construction, not merely when a signature is missing.
- */
-export const BUNDLE_OUTCOMES = Object.freeze([
-  "completed",
-  "failed-perm",
-  "failed-counterparty",
-  "failed-substrate",
-  "aborted-by-self",
-  "aborted-by-other",
-] as const);
-
-export type BundleOutcome = (typeof BUNDLE_OUTCOMES)[number];
+export { BUNDLE_OUTCOMES, type BundleOutcome } from "./bundleSemantics.js";
 
 /** The roles that can anchor a copy of a bundle (§10.4.2). */
-export type BundleAnchorRole = "buyer" | "seller" | "orchestrator";
+export type BundleAnchorRole = BundlePartyRole;
 
 type SessionSigner = Uint8Array | KeyObject | ((bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array);
 
 /** The §B.2 canonical form of a bundle: the document minus `signatures` and `anchoredByRole`. */
-export function bundleSignedScope(bundle: AttestationBundle): Record<string, unknown> {
+export function bundleSignedScope(bundle: AnyAttestationBundle): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(bundle)) {
     if (!(BUNDLE_SIGNED_SCOPE_OMIT as readonly string[]).includes(k)) out[k] = v;
@@ -81,7 +73,7 @@ export function bundleSignedScope(bundle: AttestationBundle): Record<string, unk
  * `attestation_bundle_hash` (§10.4.1): sha256 of the JCS canonical form of the signed scope.
  * Distinct from `BundleParty.bundleHash`, which hashes a party's IdentityBundle.
  */
-export function attestationBundleHash(bundle: AttestationBundle): string {
+export function attestationBundleHash(bundle: AnyAttestationBundle): string {
   return sha256Hex(canonicalize(bundleSignedScope(bundle)));
 }
 
@@ -116,14 +108,16 @@ export interface TwoSidedSession {
    * on the artifact, not on the type system.
    */
   outcome: BundleOutcome;
-  listingRef: AttestationBundle["listingRef"];
-  agreementRef?: AttestationBundle["agreementRef"];
-  cancellation?: AttestationBundle["cancellation"];
-  phaseSummary: AttestationBundle["phaseSummary"];
-  vetRecords: AttestationBundle["vetRecords"];
-  settlementEvidence: AttestationBundle["settlementEvidence"];
-  amendments?: AttestationBundle["amendments"];
-  ratingRefs?: AttestationBundle["ratingRefs"];
+  /** Required for fault/abort classes; omitted for completed/failed-substrate. */
+  faultedParty?: Exclude<FaultedParty, "none">;
+  listingRef: AnyAttestationBundle["listingRef"];
+  agreementRef?: AnyAttestationBundle["agreementRef"];
+  cancellation?: AnyAttestationBundle["cancellation"];
+  phaseSummary: AnyAttestationBundle["phaseSummary"];
+  vetRecords: AnyAttestationBundle["vetRecords"];
+  settlementEvidence: AnyAttestationBundle["settlementEvidence"];
+  amendments?: AnyAttestationBundle["amendments"];
+  ratingRefs?: AnyAttestationBundle["ratingRefs"];
   recipeRegistryVersion: number;
   railRegistryVersion: number;
   finalisedAt: number;
@@ -139,13 +133,13 @@ export interface TwoSidedSession {
    * REQUIRED." Omit it for the ordinary two-party session, where no third signature is required.
    */
   orchestrator?: SigningSessionParty;
-  bundleVersion?: "1";
+  faultBundleVersion?: "1";
 }
 
 export interface TwoSidedBundles {
-  buyerCopy?: AttestationBundle;
-  sellerCopy?: AttestationBundle;
-  orchestratorCopy?: AttestationBundle;
+  buyerCopy?: FaultAttestationBundle;
+  sellerCopy?: FaultAttestationBundle;
+  orchestratorCopy?: FaultAttestationBundle;
 }
 
 /** Party identity is the primary claim (§10.4.1 `parties[].primaryClaim` = `bundle.presentedBy`). */
@@ -162,7 +156,7 @@ function isAgreementCommitPhase(kind: string): boolean {
 }
 
 async function signOver(party: SigningSessionParty, hash: string): Promise<BundleSignature> {
-  const payload = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, hash);
+  const payload = signedBytes(ARTIFACT_SEPARATORS.FaultAttestationBundle, hash);
   const raw =
     typeof party.signer === "function"
       ? await party.signer(payload)
@@ -178,12 +172,10 @@ async function signOver(party: SigningSessionParty, hash: string): Promise<Bundl
 }
 
 /**
- * Build the two anchored copies of a session's AttestationBundle.
+ * Build the applicable anchored copies of a session's FaultAttestationBundle.
  *
- * Co-signed completed/failed-substrate copies carry both parties and both signatures over one
- * identical canonical content, differing only in the unhashed `anchoredByRole`. Perspective-bearing
- * fault outcomes are emitted as one all-signed canonical copy; a second role-local copy with the
- * same literal outcome would be misread as that role's own perspective by §10.5 consumers.
+ * Completed/failed-substrate copies are canonically equal. Fault/abort copies carry the same
+ * absolute `faultedParty` and class, with role-relative outcomes per §10.4.1.
  *
  * A single-signed bundle is valid ONLY for an abort outcome (§10.4.1): a single-signed
  * `completed`/`failed-*` MUST be dropped by every consumer, so this refuses to produce one. In
@@ -199,19 +191,42 @@ export async function buildTwoSidedBundle(
   // non-existent outcome (`failed-buyer`, a typo, a future version's) rides through as a fully
   // co-signed bundle: every signature verifies, and the artifact is still not a DACS-5 bundle.
   // The missing-seller guard below cannot catch that, because nothing is missing.
-  if (!(BUNDLE_OUTCOMES as readonly string[]).includes(outcome)) {
+  if (!isBundleOutcome(outcome)) {
     throw new DacsError(
       `outcome "${outcome}" is not a DACS-5 bundle outcome (§10.4.1). ` +
         `Expected one of: ${BUNDLE_OUTCOMES.join(", ")}.`,
     );
   }
 
-  if (session.bundleVersion !== undefined && session.bundleVersion !== "1") {
+  if (session.faultBundleVersion !== undefined && session.faultBundleVersion !== "1") {
     throw new DacsError(
-      `bundleVersion "${session.bundleVersion}" is not supported by this v1 bundle signer. ` +
-        "Use bundleVersion \"1\" or omit it.",
+      `faultBundleVersion "${session.faultBundleVersion}" is not supported by this v1 bundle signer. ` +
+        "Use faultBundleVersion \"1\" or omit it.",
     );
   }
+
+  const outcomeClass = bundleOutcomeClass(outcome)!;
+  const suppliedFault = session.faultedParty as unknown;
+  if (
+    (outcomeClass === "completed" || outcomeClass === "failed-substrate") &&
+    suppliedFault !== undefined
+  ) {
+    throw new DacsError(`outcome "${outcome}" must not declare faultedParty.`);
+  }
+  if (
+    (outcomeClass === "failure" || outcomeClass === "abort") &&
+    suppliedFault !== "buyer" &&
+    suppliedFault !== "seller" &&
+    suppliedFault !== "orchestrator"
+  ) {
+    throw new DacsError(
+      `outcome "${outcome}" requires absolute faultedParty buyer, seller, or orchestrator for FaultAttestationBundle production.`,
+    );
+  }
+  const faultedParty: FaultedParty =
+    outcomeClass === "completed" || outcomeClass === "failed-substrate"
+      ? "none"
+      : (suppliedFault as BundlePartyRole);
 
   if (!seller) {
     throw new DacsError(
@@ -301,13 +316,24 @@ export async function buildTwoSidedBundle(
       : []),
   ];
 
+  const sessionRoles = new Set(parties.map((party) => party.role));
+  if (faultedParty !== "none" && !sessionRoles.has(faultedParty)) {
+    throw new DacsError(
+      `faultedParty "${faultedParty}" is not a role in this session's parties[].`,
+    );
+  }
+
   const singlePartyAbort =
     SINGLE_SIGNATURE_PERMITTED.has(outcome) &&
     Number(Boolean(buyerSigner)) + Number(Boolean(sellerSigner)) === 1;
-  if (singlePartyAbort && outcome !== "aborted-by-other") {
+  const singleSignerRole: BundleAnchorRole | undefined = singlePartyAbort
+    ? buyerSigner
+      ? "buyer"
+      : "seller"
+    : undefined;
+  if (singleSignerRole && faultedParty === singleSignerRole) {
     throw new DacsError(
-      "single-signed abort bundles must use signer-perspective aborted-by-other (§10.11); " +
-        "aborted-by-self is the absent non-signer's derived outcome.",
+      "single-signed abort must name a non-signer as faultedParty (§10.11 suppression).",
     );
   }
   if (singlePartyAbort && orchestrator) {
@@ -316,13 +342,11 @@ export async function buildTwoSidedBundle(
         "omit the orchestrator or provide both buyer and seller signatures.",
     );
   }
-  const singleCanonicalFaultCopy =
-    !singlePartyAbort && PERSPECTIVE_BEARING_OUTCOMES.has(outcome);
-
-  const bodyFor = () => ({
-    bundleVersion: session.bundleVersion ?? "1",
+  const bodyFor = (role: BundleAnchorRole) => ({
+    faultBundleVersion: session.faultBundleVersion ?? "1",
     jobId: session.jobId,
-    outcome: singlePartyAbort ? "aborted-by-other" : outcome,
+    outcome: roleRelativeOutcome(outcomeClass, faultedParty, role),
+    faultedParty,
     listingRef: session.listingRef,
     ...(session.agreementRef ? { agreementRef: session.agreementRef } : {}),
     ...(session.cancellation ? { cancellation: session.cancellation } : {}),
@@ -335,7 +359,7 @@ export async function buildTwoSidedBundle(
     recipeRegistryVersion: session.recipeRegistryVersion,
     railRegistryVersion: session.railRegistryVersion,
     finalisedAt: session.finalisedAt,
-  }) as unknown as AttestationBundle;
+  }) as FaultAttestationBundle;
 
   const signers: SigningSessionParty[] = [
     ...(buyerSigner ? [buyerSigner] : []),
@@ -346,20 +370,22 @@ export async function buildTwoSidedBundle(
     ? buyerSigner
       ? ["buyer"]
       : ["seller"]
-    : singleCanonicalFaultCopy
-      ? ["buyer"]
     : [
         "buyer",
         ...(sellerSigner ? (["seller"] as const) : []),
         ...(orchestrator ? (["orchestrator"] as const) : []),
       ];
 
-  const copy = async (role: BundleAnchorRole): Promise<AttestationBundle> => {
-    const body = bodyFor();
-    const hash = attestationBundleHash(body);
+  const copy = async (role: BundleAnchorRole): Promise<FaultAttestationBundle> => {
+    const body = bodyFor(role);
+    const candidate = { ...body, anchoredByRole: role };
+    if (!isFaultAttestationBundle(candidate)) {
+      throw new DacsError("session facts do not form a valid FaultAttestationBundle");
+    }
+    const hash = attestationBundleHash(candidate);
     const signatures: BundleSignature[] = [];
     for (const signer of signers) signatures.push(await signOver(signer, hash));
-    return { ...body, anchoredByRole: role, signatures } as AttestationBundle;
+    return { ...candidate, signatures };
   };
 
   const out: TwoSidedBundles = {};

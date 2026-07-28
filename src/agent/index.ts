@@ -37,6 +37,7 @@ export {
   verifyBundleCopy,
   ABORT_OUTCOMES,
   type BundleCopyDeps,
+  type BundleCopyRole,
   type CopyValidity,
 } from "./bundleCopyValidity.js";
 export { computeReputation } from "./reputation.js";

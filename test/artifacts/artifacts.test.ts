@@ -10,6 +10,7 @@ import {
   contentHash,
   isAgreementDocument,
   isAttestationBundle,
+  isFaultAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
   isPricingSpec,
@@ -33,6 +34,7 @@ const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
   AgreementDocument: isAgreementDocument,
   SettlementEvidence: isSettlementEvidence,
   AttestationBundle: isAttestationBundle,
+  FaultAttestationBundle: isFaultAttestationBundle,
 };
 
 describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
@@ -136,6 +138,71 @@ describe.skipIf(!have)("isAttestationBundle: phaseSummary[].attestationRef is OP
     const b = bundle();
     b.phaseSummary[0].attestationRef = { kind: "x" }; // missing id/contentHash
     expect(isAttestationBundle(b)).toBe(false);
+  });
+});
+
+describe.skipIf(!have)("FaultAttestationBundle discriminator", () => {
+  const faultBundle = () => {
+    const bundle = JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+    delete bundle.bundleVersion;
+    bundle.faultBundleVersion = "1";
+    bundle.faultedParty = bundle.outcome === "completed" ? "none" : "seller";
+    return bundle;
+  };
+
+  it("accepts exactly the fault discriminator plus required absolute fault", () => {
+    const bundle = faultBundle();
+    expect(isFaultAttestationBundle(bundle)).toBe(true);
+    expect(isAttestationBundle(bundle)).toBe(false);
+  });
+
+  it("rejects missing or cross-type discriminator fields", () => {
+    const missing = faultBundle();
+    delete missing.faultedParty;
+    expect(isFaultAttestationBundle(missing)).toBe(false);
+
+    const confused = faultBundle();
+    confused.bundleVersion = "1";
+    expect(isFaultAttestationBundle(confused)).toBe(false);
+    expect(isAttestationBundle(confused)).toBe(false);
+  });
+
+  it("requires one buyer and seller role and unique phase indices", () => {
+    const missingSeller = faultBundle();
+    missingSeller.parties = missingSeller.parties.filter(
+      (party: { role: string }) => party.role !== "seller",
+    );
+    expect(isFaultAttestationBundle(missingSeller)).toBe(false);
+
+    const duplicatePhase = faultBundle();
+    duplicatePhase.phaseSummary.push({ ...duplicatePhase.phaseSummary[0] });
+    expect(isFaultAttestationBundle(duplicatePhase)).toBe(false);
+  });
+
+  it("rejects phase outcomes and error classes outside the closed DACS enums", () => {
+    const invalidOutcome = faultBundle();
+    invalidOutcome.phaseSummary[0].outcome = "garbage";
+    expect(isFaultAttestationBundle(invalidOutcome)).toBe(false);
+
+    const invalidErrorClass = faultBundle();
+    invalidErrorClass.phaseSummary[0].errorClass = "garbage";
+    expect(isFaultAttestationBundle(invalidErrorClass)).toBe(false);
+
+    const invalidTxRef = faultBundle();
+    invalidTxRef.phaseSummary[0].txRefs = [{ rail: "pay-x402" }];
+    expect(isFaultAttestationBundle(invalidTxRef)).toBe(false);
+  });
+
+  it("rejects an absolute fault that contradicts the outcome and anchor role", () => {
+    const completedWithFault = faultBundle();
+    completedWithFault.faultedParty = "seller";
+    expect(isFaultAttestationBundle(completedWithFault)).toBe(false);
+
+    const wrongSelfFault = faultBundle();
+    wrongSelfFault.outcome = "failed-perm";
+    wrongSelfFault.anchoredByRole = "buyer";
+    wrongSelfFault.faultedParty = "seller";
+    expect(isFaultAttestationBundle(wrongSelfFault)).toBe(false);
   });
 });
 

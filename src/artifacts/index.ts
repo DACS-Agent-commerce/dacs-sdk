@@ -21,8 +21,14 @@ export type {
   Rating,
   BundleParty,
   PhaseSummaryEntry,
+  BundlePhaseOutcome,
+  BundlePhaseErrorClass,
   BundleSignature,
   AttestationBundle,
+  FaultAttestationBundle,
+  AnyAttestationBundle,
+  BundlePartyRole,
+  FaultedParty,
 } from "./types.js";
 export {
   ARTIFACT_SEPARATORS,
@@ -36,4 +42,6 @@ export {
   isAgreementDocument,
   isSettlementEvidence,
   isAttestationBundle,
+  isFaultAttestationBundle,
+  isAnyAttestationBundle,
 } from "./validators.js";

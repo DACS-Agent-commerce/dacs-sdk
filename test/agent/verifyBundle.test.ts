@@ -148,12 +148,15 @@ async function resignFixture(fx: Fixture, signers: Array<{ party: string; sign: 
   const scope = { ...fx.bundle };
   delete scope["signatures"];
   delete scope["anchoredByRole"];
+  const separator = fx.bundle.faultBundleVersion === "1"
+    ? ARTIFACT_SEPARATORS.FaultAttestationBundle
+    : ARTIFACT_SEPARATORS.AttestationBundle;
   fx.bundle.signatures = await Promise.all(
     signers.map(async ({ party, sign }) => ({
       party,
       algorithm: "ed25519",
       value: Buffer.from(
-        await sign(signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope))),
+        await sign(signedBytes(separator, contentHash(scope))),
       ).toString("base64url"),
     })),
   );
@@ -199,6 +202,56 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     ]);
     expect(res.refs.every((r) => r.verdict === "ok")).toBe(true);
     expect(res.bundle?.outcome).toBe("completed");
+  });
+
+  test("v0.3 FaultAttestationBundle verifies under its distinct domain", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    delete fx.bundle.bundleVersion;
+    fx.bundle.faultBundleVersion = "1";
+    fx.bundle.faultedParty = "none";
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const res = await verifyBundleCore("ref", depsFor(fx));
+    expect(res.ok).toBe(true);
+    expect(res.bundle).toMatchObject({ faultBundleVersion: "1", faultedParty: "none" });
+  });
+
+  test("fault-bundle discriminator and permissible fault fail closed", async () => {
+    const both = await buildFixture(buyerDid, signBuyer);
+    both.bundle.faultBundleVersion = "1";
+    expect((await verifyBundleCore("ref", depsFor(both))).reason).toMatch(/not an attestation bundle/i);
+
+    const invalid = await buildFixture(buyerDid, signBuyer);
+    delete invalid.bundle.bundleVersion;
+    invalid.bundle.faultBundleVersion = "1";
+    invalid.bundle.faultedParty = "buyer";
+    await resignFixture(invalid, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const result = await verifyBundleCore("ref", depsFor(invalid));
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/faultedParty/);
+  });
+
+  test("legacy-domain signatures cannot replay as fault-bundle signatures", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    delete fx.bundle.bundleVersion;
+    fx.bundle.faultBundleVersion = "1";
+    fx.bundle.faultedParty = "none";
+    const scope = { ...fx.bundle };
+    delete scope.signatures;
+    delete scope.anchoredByRole;
+    const legacyMessage = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope));
+    fx.bundle.signatures = [
+      { party: buyerDid, algorithm: "ed25519", value: Buffer.from(await signBuyer(legacyMessage)).toString("base64url") },
+      { party: sellerDid, algorithm: "ed25519", value: Buffer.from(await signSeller(legacyMessage)).toString("base64url") },
+    ];
+    const result = await verifyBundleCore("ref", depsFor(fx));
+    expect(result.ok).toBe(false);
+    expect(result.signatures.every((entry) => entry.verdict === "invalid")).toBe(true);
   });
 
   test("tampered bundle body => signature invalid, not ok", async () => {
