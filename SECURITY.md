@@ -101,26 +101,34 @@ reachability:
   **Note:** the other installed copy, `protobufjs@7.6.3` (direct under demosdk),
   is **> 7.5.5 and NOT vulnerable to this critical** (it carries only lower-severity
   advisories). The critical is confined to the CosmJS/ICS23 `6.11.6` copy.
-- **Affected behavior:** prototype-pollution while populating message objects from
-  untrusted input via reflection, escalating to code execution.
-- **Reachable from a DACS SDK path?** **No.** `@confio/ics23` decodes Cosmos
-  IAVL / ICS-23 membership proofs under `@cosmjs/stargate`; it runs only if an app
-  performs **Cosmos/IBC** chain operations through the Demos adapter. The SDK's own
-  surfaces never import CosmJS.
-- **Preconditions to exploit:** decoding attacker-controlled protobuf/Cosmos proof
-  bytes with the vulnerable reflection path.
+- **Affected behavior:** generated JavaScript is derived from protobuf schema
+  metadata. If an attacker controls a `.proto` definition or JSON descriptor
+  loaded through protobufjs reflection APIs, crafted type names or references can
+  reach runtime code generation and execute arbitrary JavaScript.
+- **Reachable from a DACS SDK path?** **No, on this installed path.**
+  `@confio/ics23` ships a pre-generated static codec that imports
+  `protobufjs/minimal`; it does not load protobuf definitions or JSON descriptors
+  at runtime. Cosmos proof bytes are decoded against that package-defined schema,
+  and the SDK's own surfaces never import CosmJS.
+- **Preconditions to exploit:** the application must load an attacker-controlled
+  protobuf definition or JSON descriptor through reflection and then exercise the
+  generated-code path. Supplying attacker-controlled Cosmos proof bytes to this
+  static codec does not meet those preconditions.
 
 #### GHSA-23hp-3jrh-7fpw — `tar` decompression/parse DoS (critical)
 
-- **Installed vulnerable copy:** `tar@4.4.19` — `@kynesyslabs/demosdk → tar`.
+- **Installed vulnerable copy:** `tar@4.4.19` —
+  `@kynesyslabs/demosdk → rubic-sdk → web3@1.10.4 → web3-bzz@1.10.4 → swarm-js@0.1.42 → tar`.
 - **Affected behavior:** unbounded input during decompression/parse lets a crafted
-  archive exhaust memory/CPU (denial of service). New advisory since the baseline;
-  it landed against the unchanged installed version.
-- **Reachable from a DACS SDK path?** **No.** Nothing in the SDK extracts or parses
-  a tar archive — `tar` is a build/packaging-time dependency deep in demosdk's
-  tree, not on any anchor / settle / verify / identity path.
-- **Preconditions to exploit:** feeding an attacker-controlled tar stream to
-  `tar`'s extract/parse — a code path this SDK never invokes.
+  archive exhaust disk/CPU resources (denial of service). This advisory is new
+  since the baseline and applies to the unchanged installed version.
+- **Reachable from a DACS SDK path?** **No, on the shipped SDK paths.** `tar` is a
+  runtime dependency of `swarm-js` in legacy Web3's Bzz subtree, not merely a
+  build/packaging dependency. The SDK does not invoke Bzz/Swarm archive handling
+  or call `tar` extraction/parse from its anchor, settle, verify, or identity paths.
+- **Preconditions to exploit:** an application must pass an attacker-controlled
+  compressed archive into the Bzz/Swarm archive path so that `tar` extracts or
+  parses it; the SDK does not expose or invoke that operation.
 
 ### Why the pure surface is unaffected
 
