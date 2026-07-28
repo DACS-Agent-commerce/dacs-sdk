@@ -266,7 +266,10 @@ export async function createFsSessionStore(
           return { ok: false, reason: "revision-mismatch", record };
         }
         // A live lease held by a DIFFERENT owner blocks the transition (#67).
-        const leaseNow = input.now ?? record.updatedAt;
+        // Default to the REAL clock (not record.updatedAt): a stale timestamp
+        // never advances past expiresAt, so an already-expired lease would read
+        // as still-held and a legitimate takeover be wrongly rejected (#67).
+        const leaseNow = input.now ?? Date.now();
         if (record.lease && record.lease.expiresAt > leaseNow && input.owner !== record.lease.owner) {
           return { ok: false, reason: "lease-held", record };
         }
@@ -277,7 +280,7 @@ export async function createFsSessionStore(
             return { ok: false, reason: "immutable-receipt", record };
           }
         }
-        const now = input.now ?? record.updatedAt;
+        const now = input.now ?? Date.now();
         record.revision += 1;
         record.updatedAt = now;
         if (input.phase !== undefined) record.phase = input.phase;

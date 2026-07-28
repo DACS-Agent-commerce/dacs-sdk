@@ -244,7 +244,10 @@ export function createInMemorySessionStore(): SessionStore {
       }
       // A live lease held by a DIFFERENT owner blocks the transition (#67) — a
       // guarded phase can only be advanced by the worker that holds the lease.
-      const leaseNow = input.now ?? record.updatedAt;
+      // Default to the REAL clock (not record.updatedAt): a stale timestamp never
+      // advances past the lease's expiresAt, so an already-expired lease would be
+      // read as still-held and a legitimate takeover wrongly rejected (#67).
+      const leaseNow = input.now ?? Date.now();
       if (record.lease && record.lease.expiresAt > leaseNow && input.owner !== record.lease.owner) {
         return { ok: false, reason: "lease-held", record: clone(record) };
       }
@@ -257,7 +260,7 @@ export function createInMemorySessionStore(): SessionStore {
           return { ok: false, reason: "immutable-receipt", record: clone(record) };
         }
       }
-      const now = input.now ?? record.updatedAt;
+      const now = input.now ?? Date.now();
       const next: SessionRecord = clone(record);
       next.revision += 1;
       next.updatedAt = now;

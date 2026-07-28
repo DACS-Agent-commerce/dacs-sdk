@@ -97,6 +97,20 @@ describe("SessionStore in-memory conformance (#55)", () => {
     expect(a.ok).toBe(true);
   });
 
+  test("transition defaults to the REAL clock: an expired lease never blocks a takeover (#67)", async () => {
+    const s = fresh();
+    await s.create({ jobId: "j1", now: 0 });
+    // A lease acquired at epoch 0 with a 1ms TTL expired in 1970 — long before the
+    // real clock. A transition by a DIFFERENT owner that omits `now` must read the
+    // real time and see the lease as expired, not fall back to record.updatedAt
+    // (which would freeze `now` at the last write and keep the dead lease "live").
+    await s.acquireLease({ jobId: "j1", owner: "A", ttlMs: 1, now: 0 });
+    const cur = await s.load("j1");
+    const rev = cur.status === "ok" ? cur.record.revision : 0;
+    const b = await s.transition({ jobId: "j1", expectedRevision: rev, owner: "B", phase: "settling" });
+    expect(b.ok).toBe(true);
+  });
+
   test("anti-replay: an agreement/tx hash cannot be reused across sessions", async () => {
     const s = fresh();
     await s.create({ jobId: "j1" });
