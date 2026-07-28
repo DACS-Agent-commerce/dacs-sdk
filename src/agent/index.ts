@@ -1,5 +1,6 @@
 export {
   createAgent,
+  buildAgent,
   type Agent,
   type AgentConfig,
   type PublishResult,
@@ -16,6 +17,14 @@ export {
   type RefVerdict,
 } from "./verifyBundleCore.js";
 export {
+  bundleConsistency,
+  bundlesDiverge,
+  type ConsistencyVerdict,
+  type BundleCopies,
+  type BundleConsistencyDeps,
+  type BundleRole,
+} from "./bundleConsistency.js";
+export {
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
@@ -24,6 +33,12 @@ export {
   type EvidenceRailContext,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
+export {
+  verifyBundleCopy,
+  ABORT_OUTCOMES,
+  type BundleCopyDeps,
+  type CopyValidity,
+} from "./bundleCopyValidity.js";
 export { computeReputation } from "./reputation.js";
 export {
   deriveReputation,
@@ -58,7 +73,7 @@ export {
   BUNDLE_SIGNED_SCOPE_OMIT,
   BUNDLE_OUTCOMES,
   type BundleOutcome,
-  type BundleRole,
+  type BundleAnchorRole,
   type SessionParty,
   type SigningSessionParty,
   type TwoSidedSession,

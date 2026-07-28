@@ -1,7 +1,7 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { AttestationBundle } from "../artifacts/types.js";
+import type { AttestationBundle, BundleParty } from "../artifacts/types.js";
 import {
   isAgreementDocument,
   isAttestationBundle,
@@ -73,14 +73,20 @@ export interface VerifyBundleDeps {
   readArtifact: (ref: string) => Promise<Record<string, unknown> | null>;
   /**
    * Resolve a referenced session artifact to its stored signed form, by ref kind
-   * + the bundle's jobId (the session's artifacts live at deterministic,
-   * jobId-keyed addresses). Returns null if unresolvable. Omit only if
-   * dereferencing isn't possible — the refs then report `unresolved` and the
-   * bundle cannot be `ok`.
+   * + the bundle's jobId. Session artifacts are anchored BY A SESSION PARTY (the
+   * buyer orchestrates and anchors in this SDK), so name resolution must be
+   * owner-bound to THAT party — not to whoever happens to be verifying (#70):
+   * a third-party verifier resolving under its own address finds nothing, and
+   * owner-binding to the wrong party would let a name-squatter serve forged
+   * artifacts. `parties` is the bundle's party list; derive the anchoring
+   * party's substrate address from its primaryClaim. Returns null if
+   * unresolvable. Omit only if dereferencing isn't possible — the refs then
+   * report `unresolved` and the bundle cannot be `ok`.
    */
   resolveRef?: (
     kind: string,
     jobId: string,
+    parties: readonly BundleParty[],
   ) => Promise<Record<string, unknown> | null>;
   /** Resolve a signer DID/claim to its ed25519 public key (null if unknown). */
   resolvePublicKey: (did: string) => Promise<Uint8Array | null>;
@@ -231,17 +237,17 @@ export async function verifyBundleCore(
     refs.push({ kind: "dacs-3-agreement", id: "agreementRef", verdict: "missing" });
   }
   if (!deps.resolveRef) {
-      const note = (kind: string, id: string) =>
-        refs.push({ kind, id, verdict: "unresolved" as const });
-      if (bundle.agreementRef) note(bundle.agreementRef.kind, bundle.agreementRef.id);
-      for (const ev of bundle.settlementEvidence) note(ev.kind, ev.id);
-      for (const vr of bundle.vetRecords) note(vr.kind, vr.id);
-      for (const amendment of bundle.amendments ?? []) note(amendment.kind, amendment.id);
-      for (const rating of bundle.ratingRefs ?? []) note(rating.kind, rating.id);
-      note("dacs-1-listing", String(bundle.listingRef.listingId));
-    } else {
+    const note = (kind: string, id: string) =>
+      refs.push({ kind, id, verdict: "unresolved" as const });
+    if (bundle.agreementRef) note(bundle.agreementRef.kind, bundle.agreementRef.id);
+    for (const ev of bundle.settlementEvidence) note(ev.kind, ev.id);
+    for (const vr of bundle.vetRecords) note(vr.kind, vr.id);
+    for (const amendment of bundle.amendments ?? []) note(amendment.kind, amendment.id);
+    for (const rating of bundle.ratingRefs ?? []) note(rating.kind, rating.id);
+    note("dacs-1-listing", String(bundle.listingRef.listingId));
+  } else {
     const agr = bundle.agreementRef
-      ? await deps.resolveRef(bundle.agreementRef.kind, bundle.jobId)
+      ? await deps.resolveRef(bundle.agreementRef.kind, bundle.jobId, bundle.parties)
       : null;
     agreementArtifact = agr;
     if (bundle.agreementRef) {
@@ -256,7 +262,7 @@ export async function verifyBundleCore(
       );
     }
     for (const ev of bundle.settlementEvidence) {
-      const r = await deps.resolveRef(ev.kind, bundle.jobId);
+      const r = await deps.resolveRef(ev.kind, bundle.jobId, bundle.parties);
       const check = checkArtifact(
         ev.kind,
         ev.id,
@@ -276,56 +282,56 @@ export async function verifyBundleCore(
       }
       refs.push(check);
     }
-      for (const vr of bundle.vetRecords) {
-        const r = await deps.resolveRef(vr.kind, bundle.jobId);
-        refs.push(
+    for (const vr of bundle.vetRecords) {
+      const r = await deps.resolveRef(vr.kind, bundle.jobId, bundle.parties);
+      refs.push(
         checkArtifact(
           vr.kind,
           vr.id,
           vr.contentHash,
           isCompositeVerificationRecord,
           r,
-          ),
-        );
-      }
-      for (const amendment of bundle.amendments ?? []) {
-        const r = await deps.resolveRef(amendment.kind, bundle.jobId);
-        refs.push(
-          checkArtifact(
-            amendment.kind,
-            amendment.id,
-            amendment.contentHash,
-            isAnyRecord,
-            r,
-          ),
-        );
-      }
-      for (const rating of bundle.ratingRefs ?? []) {
-        const r = await deps.resolveRef(rating.kind, bundle.jobId);
-        refs.push(
-          checkArtifact(
-            rating.kind,
-            rating.id,
-            rating.contentHash,
-            isAnyRecord,
-            r,
-          ),
-        );
-      }
-      // The listing isn't a jobId-keyed session artifact; resolve it through the
-      // agreement's listingRef (its storage address) when there is an agreement.
-      // Pre-commit terminal bundles omit agreementRef, so callers can also expose
-      // the listing through resolveRef("dacs-1-listing", jobId).
-      const listingId = String(bundle.listingRef.listingId);
-      const listingAddr =
-        agr &&
+        ),
+      );
+    }
+    for (const amendment of bundle.amendments ?? []) {
+      const r = await deps.resolveRef(amendment.kind, bundle.jobId, bundle.parties);
+      refs.push(
+        checkArtifact(
+          amendment.kind,
+          amendment.id,
+          amendment.contentHash,
+          isAnyRecord,
+          r,
+        ),
+      );
+    }
+    for (const rating of bundle.ratingRefs ?? []) {
+      const r = await deps.resolveRef(rating.kind, bundle.jobId, bundle.parties);
+      refs.push(
+        checkArtifact(
+          rating.kind,
+          rating.id,
+          rating.contentHash,
+          isAnyRecord,
+          r,
+        ),
+      );
+    }
+    // The listing isn't a jobId-keyed session artifact; resolve it through the
+    // agreement's listingRef (its storage address) when there is an agreement.
+    // Pre-commit terminal bundles omit agreementRef, so callers can also expose
+    // the listing through resolveRef("dacs-1-listing", jobId).
+    const listingId = String(bundle.listingRef.listingId);
+    const listingAddr =
+      agr &&
       typeof (stripSignature(agr) as { listingRef?: unknown }).listingRef ===
         "string"
         ? ((stripSignature(agr) as { listingRef: string }).listingRef)
         : null;
-      const listing = listingAddr
-        ? await deps.readArtifact(listingAddr)
-        : await deps.resolveRef("dacs-1-listing", bundle.jobId);
+    const listing = listingAddr
+      ? await deps.readArtifact(listingAddr)
+      : await deps.resolveRef("dacs-1-listing", bundle.jobId, bundle.parties);
     refs.push(
       checkArtifact(
         "dacs-1-listing",

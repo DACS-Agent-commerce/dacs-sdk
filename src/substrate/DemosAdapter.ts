@@ -1,119 +1,30 @@
 import { Demos } from "@kynesyslabs/demosdk/websdk";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
-import { createHash } from "node:crypto";
 
+import { logicalToStorageProgramName } from "../canonical/index.js";
 import { SubstrateError } from "../errors.js";
-import { canonicalize } from "../canonical/index.js";
 import { parseClaimRef } from "../identity/index.js";
+import {
+  classifyAnchorResolution,
+  type AnchorResolution,
+  type CandidateOutcome,
+} from "./anchorResolution.js";
 import type {
   AnchorRef,
-  AnchorOptions,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
 
-// Fixed address-derivation inputs so a logical name always resolves to the same
-// storage address (any reader can re-derive it from the writer address + name).
-const ANCHOR_NONCE = 0;
-const ANCHOR_SALT = "dacs:v1";
-
-interface SignedDemosTransaction {
-  content: Record<string, unknown>;
-  hash?: string;
-  signature?: { type: string; data: string } | null;
-  ed25519_signature?: string;
-}
-
-interface DemosTransactionSigner {
-  algorithm: string;
-  crypto: {
-    sign(
-      algorithm: string,
-      bytes: Uint8Array,
-    ): Promise<{ signature: Uint8Array }>;
-  };
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export interface ConfirmationRetryOptions {
-  attempts?: number;
-  timeoutMs?: number;
-  retryDelayMs?: number;
-}
-
 /**
- * Bound the node's pre-broadcast confirmTx RPC. A timed-out confirmation has
- * not mutated chain state, so callers can freshly sign the same payload with
- * the same reserved nonce and safely retry another validator response.
+ * Address-derivation salt. EMPTY per the observed on-chain convention
+ * (DACS-Standard #242) — `deriveStorageAddress` hashes
+ * `{deployer}:{programName}:{nonce}:{salt}`, and live deals derive with an empty
+ * salt. (Was `"dacs:v1"`, which produced addresses no live reader could match.)
  */
-export async function confirmWithRetry<T>(
-  confirm: (attempt: number) => Promise<T>,
-  options: ConfirmationRetryOptions = {},
-): Promise<T> {
-  const attempts = options.attempts ?? 3;
-  const timeoutMs = options.timeoutMs ?? 12_000;
-  const retryDelayMs = options.retryDelayMs ?? 300;
-  if (!Number.isInteger(attempts) || attempts < 1 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error("invalid confirmation retry options");
-  }
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        confirm(attempt),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`confirmTx timed out after ${timeoutMs}ms (attempt ${attempt}/${attempts})`)),
-            timeoutMs,
-          );
-        }),
-      ]);
-    } catch (error) {
-      lastError = error;
-      if (attempt < attempts && retryDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-      }
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("confirmTx failed without an error");
-}
-
-/**
- * Repair demosdk <=4.0.16's single-byte string hash at the final wire boundary.
- * ASCII transactions are unaffected. Non-ASCII transaction content is hashed
- * again as UTF-8 and signed over the exact public wire shape the node validates.
- */
-export async function ensureUtf8TransactionHash<T extends SignedDemosTransaction>(
-  transaction: T,
-  signer: DemosTransactionSigner,
-): Promise<T> {
-  const hash = createHash("sha256")
-    .update(JSON.stringify(transaction.content), "utf8")
-    .digest("hex");
-  if (hash === transaction.hash) return transaction;
-
-  transaction.hash = hash;
-  const bytes = new TextEncoder().encode(hash);
-  const signature = await signer.crypto.sign(signer.algorithm, bytes);
-  transaction.signature = {
-    type: signer.algorithm,
-    data: bytesToHex(signature.signature),
-  };
-  if (transaction.ed25519_signature !== undefined) {
-    const ed25519 = await signer.crypto.sign("ed25519", bytes);
-    transaction.ed25519_signature = bytesToHex(ed25519.signature);
-  }
-  return transaction;
-}
+const ANCHOR_SALT = "";
 
 export interface DemosAdapterConfig {
   /** Demos node RPC URL (e.g. https://node2.demos.sh). */
@@ -152,10 +63,6 @@ export class DemosAdapter implements SubstrateAdapter {
     await this.demos.connect(this.config.rpc);
     if (this.config.secret) {
       await this.demos.connectWallet(this.config.secret);
-      // Seed demosdk's wallet-local sequential nonce allocator. Concurrent
-      // same-wallet transactions then reserve N+1, N+2, ... without waiting
-      // for the confirmed nonce projection to catch up.
-      this.demos.enableAutoNonce();
     }
     this.connected = true;
   }
@@ -185,103 +92,96 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * SR-2 anchoring via Demos Storage Programs. A logical name maps to one
-   * storage program at a deterministic address (`deriveStorageAddress` of the
-   * writer + name + fixed nonce/salt), so the same name re-resolves to the same
-   * address and re-anchoring updates it in place. First write creates the
-   * program (public-read ACL); later writes update it. (Mirrors the
-   * agent-commerce-demo's proven create-or-write + sign→confirm→broadcast flow.)
+   * storage program, created at `deriveStorageAddress(writer, name, nonce, "")`
+   * where `nonce` is the writer's NEXT account nonce (#58 / DACS-Standard #242) —
+   * the node enforces sequential nonces and rejects the skeleton default 0. First
+   * write creates the program (public-read ACL); later writes update it in place
+   * at that address.
+   *
+   * Because the address folds in the create-time nonce, it is NOT re-derivable by
+   * a third party: readers must resolve by program name via the node's name index.
    */
-  /** The deterministic storage address a name anchors to (no write) — for resume. */
-  anchorAddress(name: string): string {
+  /**
+   * The account nonce a NEW storage program will be created under: the writer's
+   * next nonce (`getAddressNonce` + 1) per DACS-Standard #242. The node enforces
+   * sequential nonces and REJECTS the skeleton default of 0, so a fixed nonce
+   * made every live create fail (#58).
+   */
+  private async nextAnchorNonce(): Promise<number> {
+    return (await this.demos.getAddressNonce(this.demos.getAddress())) + 1;
+  }
+
+  /**
+   * The storage address a name would anchor to, for THIS writer, right now.
+   *
+   * IMPORTANT (#58 / DACS-Standard #242): this is NOT third-party derivable. The
+   * physical address folds in the writer's account nonce at create time, so only
+   * the writer can compute it, and only BEFORE the create lands. A reader that
+   * doesn't know the write nonce MUST resolve by program name through the node's
+   * name index — precomputing the address is not a discovery mechanism.
+   */
+  async anchorAddress(name: string): Promise<string> {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
     return StorageProgram.deriveStorageAddress(
       this.demos.getAddress(),
-      name,
-      ANCHOR_NONCE,
+      logicalToStorageProgramName(name), // Demos requires colon-free names (§6.3.4)
+      await this.nextAnchorNonce(),
       ANCHOR_SALT,
     );
   }
 
-  async anchor(name: string, value: object, options: AnchorOptions = {}): Promise<AnchorRef> {
+  async anchor(name: string, value: object): Promise<AnchorRef> {
     const data = value as Record<string, unknown>;
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    const address = this.anchorAddress(name);
-
-    // Per-job deterministic slots are known-new by construction. Avoid making
-    // their first write wait for the eventually-consistent storage projection.
-    let exists = false;
-    if (options.writeMode !== "known-new") {
-      try {
-        const probe = (await this.demos.storagePrograms.read(address)) as {
-          success?: boolean;
-          data?: unknown;
-        };
-        exists = probe?.success === true && probe.data != null;
-      } catch {
-        exists = false;
-      }
+    // Create-or-update keyed on the NAME, not on a re-derived address (#70). The
+    // physical address folds in the create-time nonce, so a fresh derivation
+    // NEVER matches an existing program — the previous "derive, probe, else
+    // create" flow created a DUPLICATE on every re-anchor. Resolve the writer's
+    // own program by name first; update it in place if present.
+    const self = this.demos.getAddress();
+    const resolution = await this.resolveAnchorByName(name, self);
+    if (resolution.status === "indeterminate") {
+      // Never create on an unresolved lookup — that risks a duplicate program for
+      // a name that may already exist. Surface it as a substrate fault instead.
+      throw new SubstrateError(
+        `anchor ${name}: could not determine whether the program already exists (${resolution.reason})`,
+      );
     }
 
-    let payload = exists
-      ? StorageProgram.writeStorage(address, data, "json")
-      : StorageProgram.createStorageProgram(
-          this.demos.getAddress(),
-          name,
-          data,
-          "json",
-          StorageProgram.publicACL(),
-          { nonce: ANCHOR_NONCE, salt: ANCHOR_SALT },
-        );
+    // Demos requires colon-free program names (§6.3.4); the logical `name` is the
+    // metadata-of-record, this is the string fed into the native derivation.
+    const programName = logicalToStorageProgramName(name);
+    let address: string;
+    let payload: ReturnType<typeof StorageProgram.writeStorage>;
+    if (resolution.status === "present") {
+      address = resolution.address;
+      payload = StorageProgram.writeStorage(address, data, "json");
+    } else {
+      // Absent → create under the writer's NEXT account nonce; the address the
+      // program lands at is derived from that same nonce.
+      const nonce = await this.nextAnchorNonce();
+      address = StorageProgram.deriveStorageAddress(self, programName, nonce, ANCHOR_SALT);
+      payload = StorageProgram.createStorageProgram(
+        self,
+        programName,
+        data,
+        "json",
+        StorageProgram.publicACL(),
+        { nonce, salt: ANCHOR_SALT },
+      );
+    }
 
-    let signed: SignedDemosTransaction | undefined;
-    let reservedNonce: number | undefined = options.nonce;
-    type BroadcastResult = {
+    const signed = await this.demos.storagePrograms.sign(payload);
+    const validity = await this.demos.tx.confirm(signed, this.demos);
+    const broadcast = (await this.demos.tx.broadcast(validity, this.demos)) as {
       result?: number;
       response?: { hash?: string; message?: string };
-      extra?: { confirmationBlock?: number } | unknown;
+      extra?: unknown;
     };
-    const signAndBroadcast = async (): Promise<BroadcastResult> => {
-      const validity = await confirmWithRetry(async () => {
-        const candidate = await ensureUtf8TransactionHash(
-          await this.demos.storagePrograms.sign(
-            payload,
-            reservedNonce === undefined ? undefined : { nonce: reservedNonce },
-          ) as SignedDemosTransaction,
-          this.demos as unknown as DemosTransactionSigner,
-        );
-        const candidateNonce = candidate.content.nonce;
-        if (!Number.isSafeInteger(candidateNonce)) {
-          throw new Error("storage transaction omitted its sequential nonce");
-        }
-        if (reservedNonce !== undefined && Number(candidateNonce) !== reservedNonce) {
-          throw new Error("confirmation retry changed the reserved transaction nonce");
-        }
-        reservedNonce = Number(candidateNonce);
-        signed = candidate;
-        return this.demos.tx.confirm(candidate, this.demos);
-      });
-      if (!signed) throw new Error("anchor confirmation returned without a signed transaction");
-      return this.demos.tx.broadcast(validity, this.demos) as Promise<BroadcastResult>;
-    };
-
-    let broadcast = await signAndBroadcast();
-    if (broadcast?.result !== 200 && options.writeMode === "known-new" && !exists) {
-      // On recovery, only turn a rejected create into an idempotent write when
-      // the existing public value is provably the same canonical value.
-      const probe = await this.demos.storagePrograms.read(address).catch(() => null) as {
-        success?: boolean;
-        data?: unknown;
-      } | null;
-      if (probe?.success === true && probe.data != null && canonicalize(probe.data) === canonicalize(data)) {
-        payload = StorageProgram.writeStorage(address, data, "json");
-        signed = undefined;
-        broadcast = await signAndBroadcast();
-      }
-    }
     if (broadcast?.result !== 200) {
       // The node rejected the anchor tx — a substrate-side fault, blameless to
       // the counterparty (T9: substrate fault ≠ party fault).
@@ -293,25 +193,69 @@ export class DemosAdapter implements SubstrateAdapter {
         }`,
       );
     }
-    if (!signed) throw new Error("anchor broadcast returned without a signed transaction");
 
-    const expectedConfirmationBlock = typeof broadcast.extra === "object"
-      && broadcast.extra !== null
-      && Number.isSafeInteger((broadcast.extra as { confirmationBlock?: number }).confirmationBlock)
-      ? Number((broadcast.extra as { confirmationBlock?: number }).confirmationBlock)
-      : undefined;
-    const broadcastAt = Date.now();
-    const nonce = Number.isSafeInteger(signed.content.nonce)
-      ? Number(signed.content.nonce)
-      : undefined;
     return {
       address,
-      txRef: broadcast.response?.hash ?? signed.hash,
-      broadcastAt,
-      transactionContent: JSON.parse(JSON.stringify(signed.content)) as Record<string, unknown>,
-      ...(nonce === undefined ? {} : { nonce }),
-      ...(expectedConfirmationBlock === undefined ? {} : { expectedConfirmationBlock }),
+      txRef: broadcast.response?.hash ?? (signed as { hash?: string }).hash,
     };
+  }
+
+  /**
+   * SR-2 discovery — resolve a logical program NAME to its storage address,
+   * bound to the expected writer (#58 / DACS-Standard #242).
+   *
+   * This is the reader-side counterpart to {@link anchorAddress}: because the
+   * physical address folds in the writer's create-time nonce, a third party
+   * cannot precompute it and MUST look the name up through the node's name index.
+   *
+   * OWNER BINDING IS LOAD-BEARING: a program name is not exclusive — anyone can
+   * create a program with the same name — so resolving by name ALONE would let an
+   * attacker squat a well-known name (e.g. a listing address) and serve forged
+   * content. We therefore confirm each candidate's `owner` equals `expectedOwner`
+   * before returning it. (The node's name-index rows don't carry the owner, so the
+   * check costs one read per candidate.) Returns null when nothing matches.
+   */
+  async resolveAnchorByName(
+    name: string,
+    expectedOwner: string,
+  ): Promise<AnchorResolution> {
+    // Resolve by the colon-free program name the record was actually stored under
+    // (§6.3.4) — the logical `name` never reaches the node index.
+    const programName = logicalToStorageProgramName(name);
+    let candidates: Awaited<ReturnType<typeof StorageProgram.searchByName>>;
+    try {
+      candidates = await StorageProgram.searchByName(this.config.rpc, programName, {
+        exactMatch: true, // the default is SUBSTRING matching — never rely on it here
+      });
+    } catch (e) {
+      // A failed name lookup is NOT an absence — treat it as indeterminate so a
+      // caller never mistakes a substrate hiccup for "never created" (#70).
+      return {
+        status: "indeterminate",
+        reason: `name lookup failed: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+    // Confirm ownership of each exact-name candidate (the index rows carry no
+    // owner, so this is one read per candidate). Read failures become
+    // `error: true` so classification can fail closed to `indeterminate`.
+    const outcomes: CandidateOutcome[] = [];
+    for (const c of candidates) {
+      if (c.programName !== programName) continue; // exactMatch is the node's contract, not ours to assume
+      try {
+        const res = (await this.demos.storagePrograms.read(c.storageAddress)) as {
+          success?: boolean;
+          owner?: string;
+        };
+        outcomes.push({
+          address: c.storageAddress,
+          owner: res?.success && typeof res.owner === "string" ? res.owner : null,
+          error: false,
+        });
+      } catch {
+        outcomes.push({ address: c.storageAddress, owner: null, error: true });
+      }
+    }
+    return classifyAnchorResolution(outcomes, expectedOwner);
   }
 
   async readAnchor(address: string): Promise<Record<string, unknown> | null> {

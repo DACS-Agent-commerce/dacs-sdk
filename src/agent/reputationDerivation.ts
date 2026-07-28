@@ -1,6 +1,7 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import type { AttestationBundle, AttestationRef } from "../artifacts/types.js";
+import { bundlesDiverge } from "./bundleDivergence.js";
 
 /**
  * DACS-5 §10.5 reputation derivation — the spec-faithful, windowed reputation
@@ -102,33 +103,10 @@ function perspectiveFlip(outcome: string): string {
   }
 }
 
-/** §10.4.3(d) "canonically diverge": contradictory outcome or phaseSummary kind/outcome/errorClass. */
-function canonicallyDiverge(a: AttestationBundle, b: AttestationBundle): boolean {
-  if (a.outcome !== b.outcome) return true;
-  const indexed = (bundle: AttestationBundle) => {
-    const map = new Map<number, { kind: unknown; outcome: unknown; errorClass: unknown }>();
-    for (const phase of bundle.phaseSummary ?? []) {
-      const index = phase.index;
-      if (!Number.isSafeInteger(index) || Number(index) < 0 || map.has(Number(index))) return null;
-      map.set(Number(index), {
-        kind: phase.kind,
-        outcome: phase.outcome,
-        errorClass: (phase as { errorClass?: unknown }).errorClass,
-      });
-    }
-    return map;
-  };
-  const pa = indexed(a);
-  const pb = indexed(b);
-  if (!pa || !pb || pa.size !== pb.size) return true;
-  for (const [index, left] of pa) {
-    const right = pb.get(index);
-    if (!right || left.kind !== right.kind) return true;
-    if (left.outcome !== right.outcome) return true;
-    if (left.errorClass !== right.errorClass) return true;
-  }
-  return false;
-}
+// §10.4.3(d) divergence uses the ONE shared predicate (bundleDivergence.js),
+// identical to the two-sided consistency verdict — presence-mismatch by phase
+// `index` counts as divergence (#224). Previously a private by-position copy here
+// that disagreed with bundleConsistency on length-mismatched phaseSummary.
 
 /** §10.4.1 signed-scope content hash of a bundle (omit signatures + anchoredByRole). */
 function bundleContentHash(bundle: AttestationBundle): string {
@@ -232,7 +210,7 @@ export function deriveReputation(
     const selfCopy = valid.find((b) => b.anchoredByRole === roleOfParty);
     const cp = valid.find((b) => b.anchoredByRole !== roleOfParty);
     if (selfCopy) {
-      if (cp && canonicallyDiverge(cp, selfCopy)) continue; // genuine dispute → exclude
+      if (cp && bundlesDiverge(cp, selfCopy)) continue; // genuine dispute → exclude
       reconciled.push(selfCopy);
       outcomes.push(selfCopy.outcome);
     } else if (cp && (roleOfParty === "buyer" || roleOfParty === "seller")) {

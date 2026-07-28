@@ -29,6 +29,7 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  logicalToStorageProgramName,
   storAddress,
   bundleAddress,
   sha256Hex,
@@ -94,6 +95,33 @@ export {
   type CciWalletClaim,
   type ParsedClaimRef,
 } from "./identity/index.js";
+
+// Discovery (§6.3.4 (b)/(c), #54): the PUBLISHED logical→native anchor binding.
+// On Demos the native address folds in the writer's nonce, so it isn't
+// recomputable — consumers resolve through this binding, never by program name
+// (which the spec defines as an opaque write input, not a resolution key). Pure
+// and substrate-neutral: the same surface serves an in-memory index, a
+// `/.well-known` listings index (§6.3.5), or a catalog API (§6.3.6).
+export {
+  resolveBinding,
+  resolveLatestVersion,
+  createInMemoryBindingIndex,
+  resolveAndRead,
+  classifyAnchor,
+  scanAnchorPage,
+  scanAllAnchors,
+  type AnchorBinding,
+  type BindingResolution,
+  type BindingIndex,
+  type VerifiedRead,
+  type VerifiedReadDeps,
+  type AnchorKind,
+  type RawAnchorEntry,
+  type RawScanPage,
+  type ScannedAnchor,
+  type ScanPage,
+  type ScanOptions,
+} from "./discovery/index.js";
 
 // Deterministic identityTier derivation (DACS-1 §6.3.2.1, IT-1..IT-3).
 export {
@@ -161,6 +189,12 @@ export {
   type SignatureVerdict,
   type RefCheck,
   type RefVerdict,
+  bundleConsistency,
+  bundlesDiverge,
+  type ConsistencyVerdict,
+  type BundleCopies,
+  type BundleConsistencyDeps,
+  type BundleRole,
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
@@ -168,6 +202,10 @@ export {
   type EvidenceAgreementContext,
   type EvidenceRailContext,
   type EvidenceDeps,
+  verifyBundleCopy,
+  ABORT_OUTCOMES,
+  type BundleCopyDeps,
+  type CopyValidity,
   computeReputation,
   deriveReputation,
   type ReputationDerivation,
@@ -201,7 +239,7 @@ export {
   BUNDLE_SIGNED_SCOPE_OMIT,
   BUNDLE_OUTCOMES,
   type BundleOutcome,
-  type BundleRole,
+  type BundleAnchorRole,
   type SessionParty,
   type SigningSessionParty,
   type TwoSidedSession,
@@ -229,6 +267,12 @@ export {
   createEvmErc20Rail,
   evmErc20Settle,
   evmErc20SettleCore,
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  settlementKey,
+  type SettlementIdempotencyStore,
+  type SettlementLog,
+  type SettlementReconcile,
   type EvmErc20Rail,
   type EvmErc20RailConfig,
   type EvmErc20SettleParams,

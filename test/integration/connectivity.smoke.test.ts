@@ -27,7 +27,7 @@ describe("live node connectivity (SDK <-> Demos node)", () => {
 
       // Read a derived (almost certainly empty) anchor address — exercises a
       // real node read; should resolve to null rather than throw.
-      const probe = adapter.anchorAddress("dacs:connectivity:probe");
+      const probe = await adapter.anchorAddress("dacs:connectivity:probe");
       const value = await adapter.readAnchor(probe);
       console.log("[connectivity] read", probe, "=>", value);
       expect(value === null || typeof value === "object").toBe(true);

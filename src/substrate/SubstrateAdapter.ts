@@ -1,3 +1,5 @@
+import type { AnchorResolution } from "./anchorResolution.js";
+
 /**
  * SubstrateAdapter — the single seam between dacs-sdk and the underlying
  * substrate. DACS is substrate-agnostic by design; the SDK speaks only to this
@@ -23,29 +25,6 @@ export interface AnchorRef {
   address: string;
   /** Substrate transaction reference for the write, if available. */
   txRef?: string;
-  /** Node-estimated inclusion block returned when the transaction is accepted. */
-  expectedConfirmationBlock?: number;
-  /** Local unix-ms timestamp immediately after the node accepted broadcast. */
-  broadcastAt?: number;
-  /** Sequential sender nonce carried by the signed transaction. */
-  nonce?: number;
-  /**
-   * Exact public transaction content used to derive `txRef`. Consumers may
-   * hash this JSON and combine it with an authoritative `included` status to
-   * verify the write before eventually-consistent transaction indexes hydrate.
-   */
-  transactionContent?: Record<string, unknown>;
-}
-
-export interface AnchorOptions {
-  /** Explicit sender nonce reserved by a wallet-local transaction queue. */
-  nonce?: number;
-  /**
-   * Skip the eventually-consistent storage projection when the caller owns a
-   * deterministic slot guaranteed to be new for this operation. A create
-   * collision must fail closed unless the existing value is canonically equal.
-   */
-  writeMode?: "auto" | "known-new";
 }
 
 export interface ProxyFetchRequest {
@@ -90,9 +69,29 @@ export interface SubstrateAdapter {
    * address it was written to (deterministic from the writer + name) and the
    * tx ref. Consumers re-canonicalise the value to verify its content hash.
    */
-  anchor(name: string, value: object, options?: AnchorOptions): Promise<AnchorRef>;
-  /** SR-2 — the deterministic storage address a name anchors to, without writing. */
-  anchorAddress(name: string): string;
+  anchor(name: string, value: object): Promise<AnchorRef>;
+  /**
+   * SR-2 — the storage address a name would anchor to for THIS writer, without
+   * writing. NOT third-party derivable (#58 / DACS-Standard #242): the physical
+   * address folds in the writer's account nonce at create time, so a reader that
+   * doesn't know that nonce must resolve by program name through the node's name
+   * index instead of precomputing an address.
+   */
+  anchorAddress(name: string): Promise<string>;
+  /**
+   * SR-2 discovery — resolve a logical program name to its storage address, bound
+   * to the expected writer. The reader-side counterpart to `anchorAddress`: the
+   * physical address folds in the writer's create-time nonce, so a third party
+   * must resolve by name rather than precompute. Owner binding is required — a
+   * program name is not exclusive, so name-only resolution is squattable.
+   *
+   * Returns a TYPED {@link AnchorResolution}: `present` (owned by the writer),
+   * `absent` (readable candidates, none the writer's), or `indeterminate` (the
+   * lookup itself failed) — so a transient substrate failure is never mistaken
+   * for "never created" (#70).
+   */
+  resolveAnchorByName(name: string, expectedOwner: string): Promise<AnchorResolution>;
+
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 

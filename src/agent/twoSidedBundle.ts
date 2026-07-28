@@ -64,7 +64,7 @@ export const BUNDLE_OUTCOMES = Object.freeze([
 export type BundleOutcome = (typeof BUNDLE_OUTCOMES)[number];
 
 /** The roles that can anchor a copy of a bundle (§10.4.2). */
-export type BundleRole = "buyer" | "seller" | "orchestrator";
+export type BundleAnchorRole = "buyer" | "seller" | "orchestrator";
 
 type SessionSigner = Uint8Array | KeyObject | ((bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array);
 
@@ -342,7 +342,7 @@ export async function buildTwoSidedBundle(
     ...(sellerSigner ? [sellerSigner] : []),
     ...(orchestrator ? [orchestrator] : []),
   ];
-  const roles: BundleRole[] = singlePartyAbort
+  const roles: BundleAnchorRole[] = singlePartyAbort
     ? buyerSigner
       ? ["buyer"]
       : ["seller"]
@@ -354,7 +354,7 @@ export async function buildTwoSidedBundle(
         ...(orchestrator ? (["orchestrator"] as const) : []),
       ];
 
-  const copy = async (role: BundleRole): Promise<AttestationBundle> => {
+  const copy = async (role: BundleAnchorRole): Promise<AttestationBundle> => {
     const body = bodyFor();
     const hash = attestationBundleHash(body);
     const signatures: BundleSignature[] = [];
