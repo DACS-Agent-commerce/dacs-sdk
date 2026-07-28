@@ -24,6 +24,7 @@ function party(seedByte: number) {
 }
 const BUYER = party(11);
 const SELLER = party(22);
+const ORCHESTRATOR = party(33);
 
 const deps: BundleCopyDeps = {
   resolvePublicKey: async (did) => {
@@ -97,7 +98,7 @@ describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
   });
 
   test("a SINGLE-SIGNED ABORT copy stands (§10.11 suppression)", async () => {
-    const copy = sign(body({ outcome: "aborted" }), [BUYER], "buyer");
+    const copy = sign(body({ outcome: "aborted-by-other" }), [BUYER], "buyer");
     const r = await verifyBundleCopy(copy, "buyer", deps);
     expect(r.valid).toBe(true);
     if (r.valid) {
@@ -110,7 +111,52 @@ describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
     const copy = sign(body({ outcome: "completed" }), [BUYER], "buyer");
     const r = await verifyBundleCopy(copy, "buyer", deps);
     expect(r.valid).toBe(false);
-    if (!r.valid) expect(r.reason).toMatch(/single-signed/);
+    if (!r.valid) expect(r.reason).toMatch(/missing required signatures/);
+  });
+
+  test("only the two normative abort outcomes receive single-signature standing", async () => {
+    for (const outcome of ["abort", "aborted", "cancelled", "canceled"]) {
+      const r = await verifyBundleCopy(sign(body({ outcome }), [BUYER], "buyer"), "buyer", deps);
+      expect(r.valid, outcome).toBe(false);
+    }
+  });
+
+  test("the abort exception requires one signature entry, not duplicate entries", async () => {
+    const copy = sign(body({ outcome: "aborted-by-other" }), [BUYER], "buyer");
+    const signatures = copy["signatures"] as unknown[];
+    const r = await verifyBundleCopy(
+      { ...copy, signatures: [signatures[0], signatures[0]] },
+      "buyer",
+      deps,
+    );
+    expect(r.valid).toBe(false);
+  });
+
+  test("a distinct orchestrator is a required signer", async () => {
+    const withOrchestrator = body({
+      parties: [
+        { role: "buyer", bundleHash: sha256Hex(BUYER.did), primaryClaim: BUYER.did },
+        { role: "seller", bundleHash: sha256Hex(SELLER.did), primaryClaim: SELLER.did },
+        {
+          role: "orchestrator",
+          bundleHash: sha256Hex(ORCHESTRATOR.did),
+          primaryClaim: ORCHESTRATOR.did,
+        },
+      ],
+    });
+    const missing = await verifyBundleCopy(
+      sign(withOrchestrator, [BUYER, SELLER], "buyer"),
+      "buyer",
+      deps,
+    );
+    expect(missing.valid).toBe(false);
+    const complete = await verifyBundleCopy(
+      sign(withOrchestrator, [BUYER, SELLER, ORCHESTRATOR], "buyer"),
+      "buyer",
+      deps,
+    );
+    expect(complete.valid).toBe(true);
+    if (complete.valid) expect(complete.fullySigned).toBe(true);
   });
 
   test("WRONG ANCHOR ROLE is rejected (a buyer copy at the seller address)", async () => {
@@ -133,6 +179,19 @@ describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
     const r = await verifyBundleCopy({ ...body(), anchoredByRole: "buyer" }, "buyer", deps);
     expect(r.valid).toBe(false);
   });
+
+  test("malformed, unknown-algorithm, and non-party signature entries fail closed", async () => {
+    const valid = sign(body(), [BUYER, SELLER], "buyer");
+    for (const signatures of [
+      [null],
+      [{ party: BUYER.did, algorithm: "rsa", value: "abc" }],
+      [{ party: "did:demos:not-a-party", algorithm: "ed25519", value: "abc" }],
+      [{ party: BUYER.did, algorithm: "ed25519", value: "***" }],
+    ]) {
+      const r = await verifyBundleCopy({ ...valid, signatures }, "buyer", deps);
+      expect(r.valid, JSON.stringify(signatures)).toBe(false);
+    }
+  });
 });
 
 describe("bundleConsistency wired to the async validator (no fail-open)", () => {
@@ -142,33 +201,73 @@ describe("bundleConsistency wired to the async validator (no fail-open)", () => 
   test("two fully-signed agreeing copies ⇒ unified", async () => {
     const b = sign(body(), [BUYER, SELLER], "buyer");
     const s = sign(body(), [BUYER, SELLER], "seller");
-    expect(await bundleConsistency({ buyer: b, seller: s }, { isValid })).toBe("unified");
+    expect(
+      await bundleConsistency(
+        {
+          buyer: { disposition: "present", bundle: b },
+          seller: { disposition: "present", bundle: s },
+        },
+        { isValid },
+      ),
+    ).toBe("unified");
   });
 
   test("two fully-signed contradicting copies ⇒ divergent", async () => {
     const b = sign(body({ outcome: "completed" }), [BUYER, SELLER], "buyer");
     const s = sign(body({ outcome: "failed-counterparty" }), [BUYER, SELLER], "seller");
-    expect(await bundleConsistency({ buyer: b, seller: s }, { isValid })).toBe("divergent");
+    expect(
+      await bundleConsistency(
+        {
+          buyer: { disposition: "present", bundle: b },
+          seller: { disposition: "present", bundle: s },
+        },
+        { isValid },
+      ),
+    ).toBe("divergent");
   });
 
-  test("REGRESSION: an async gate that rejects actually drops the copy (a Promise is truthy)", async () => {
+  test("REGRESSION: an async gate rejection cannot fail open through a truthy Promise", async () => {
     // Pre-fix, `isValid` was sync — handed this async callback the returned
     // Promise was truthy, so BOTH invalid copies were accepted and the verdict
     // came back `divergent`. It must be `absent`.
     const b = sign(body({ outcome: "completed" }), [BUYER], "buyer"); // single-signed non-abort → invalid
     const s = sign(body({ outcome: "failed-counterparty" }), [SELLER], "seller"); // ditto
-    expect(await bundleConsistency({ buyer: b, seller: s }, { isValid })).toBe("absent");
+    await expect(
+      bundleConsistency(
+        {
+          buyer: { disposition: "present", bundle: b },
+          seller: { disposition: "present", bundle: s },
+        },
+        { isValid },
+      ),
+    ).rejects.toThrow(/invalid content/);
   });
 
   test("a single-signed abort copy alone ⇒ oneSided (suppression arm survives the gate)", async () => {
-    const b = sign(body({ outcome: "aborted" }), [BUYER], "buyer");
-    expect(await bundleConsistency({ buyer: b }, { isValid })).toBe("oneSided");
+    const b = sign(body({ outcome: "aborted-by-other" }), [BUYER], "buyer");
+    expect(
+      await bundleConsistency(
+        {
+          buyer: { disposition: "present", bundle: b },
+          seller: { disposition: "absent" },
+        },
+        { isValid },
+      ),
+    ).toBe("oneSided");
   });
 
-  test("a copy at the wrong role address is dropped ⇒ oneSided, not divergent", async () => {
+  test("a copy at the wrong role address is rejected rather than treated as absent", async () => {
     const b = sign(body({ outcome: "completed" }), [BUYER, SELLER], "buyer");
     // The seller slot holds a copy anchored by the BUYER → invalid there.
     const wrong = sign(body({ outcome: "failed-counterparty" }), [BUYER, SELLER], "buyer");
-    expect(await bundleConsistency({ buyer: b, seller: wrong }, { isValid })).toBe("oneSided");
+    await expect(
+      bundleConsistency(
+        {
+          buyer: { disposition: "present", bundle: b },
+          seller: { disposition: "present", bundle: wrong },
+        },
+        { isValid },
+      ),
+    ).rejects.toThrow(/invalid content.*seller/);
   });
 });

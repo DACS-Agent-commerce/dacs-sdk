@@ -9,7 +9,7 @@
  *    not the other — per DACS-Standard#224 / §10.4.3, presence-mismatch IS a
  *    divergence (a copy asserting a phase the other denies is a contradiction;
  *    the earlier terminal-phase carve-out was dropped); OR
- *  - a shared `phaseSummary` index whose `outcome`/`errorClass` differ.
+ *  - a shared `phaseSummary` index whose `kind`/`outcome`/`errorClass` differ.
  *
  * Advisory-only differences (finalisedAt skew, one-sided ratingRefs,
  * anchoredByRole, amendment ordering) are NOT divergence — they're excluded by
@@ -53,6 +53,7 @@ export function bundlesDiverge(a: DivergenceBundle, b: DivergenceBundle): boolea
   for (const [idx, pa] of ai) {
     const pb = bi.get(idx);
     if (!pb) return true;
+    if (pa["kind"] !== pb["kind"]) return true;
     if (pa["outcome"] !== pb["outcome"]) return true;
     if ((pa["errorClass"] ?? null) !== (pb["errorClass"] ?? null)) return true;
   }

@@ -12,17 +12,11 @@ export { bundlesDiverge };
  * (`…-bundle-buyer`, `…-bundle-seller`). A consumer looking up "the bundle(s)
  * for session X" fetches both and MUST classify what it found:
  *
- *  - `absent`    — no valid copy anchored (incl. §10.4.3(b) third arm: a lone
- *                  single-signed copy with a NON-abort outcome is rejected per
- *                  §10.4.1, leaving no valid bundle — the `isValid` gate MUST
- *                  drop it, so it never reaches `oneSided`).
- *  - `oneSided`  — exactly one valid copy (§10.4.3(b)). Two arms both land here:
- *                  (i) a fully-signed copy whose counterpart is an anchoring
- *                  omission; (ii) a single-signed copy whose outcome is an abort,
- *                  standing via §10.11 bundle-suppression. Both are "the present
- *                  copy is the session bundle"; they are NOT the same as a mere
- *                  omission, so consumers must not read an abort-suppression copy
- *                  as one.
+ *  - `absent`    — both expected addresses authoritatively returned absent.
+ *  - `indeterminate` — fewer than two copies are present and at least one
+ *                  expected address could not be read authoritatively.
+ *  - `oneSided`  — exactly one valid copy is present and the other expected
+ *                  address is authoritatively absent (§10.4.3(b)).
  *  - `unified`   — both present and they do NOT canonically diverge (equal, or
  *                  differing only in advisory fields), §10.4.3(c).
  *  - `divergent` — both present and they contradict, §10.4.3(d) — a genuine
@@ -32,7 +26,7 @@ export { bundlesDiverge };
  * verbatim with the §10.5.1 reputation deriver (#224 raised the drift between the
  * two): the copies differ in `outcome`, a `phaseSummary` entry (by `index`) is
  * present in one copy but not the other (presence-mismatch IS divergence per
- * DACS-Standard#224), or a shared entry's `outcome`/`errorClass` differ. A
+ * DACS-Standard#224), or a shared entry's `kind`/`outcome`/`errorClass` differ. A
  * difference confined to advisory fields (`finalisedAt` skew, one-sided
  * `ratingRefs`, `anchoredByRole`, amendment ordering) is NOT a divergence, so a
  * party cannot force a spurious "disputed" classification by perturbing one.
@@ -71,13 +65,23 @@ export { bundlesDiverge };
  * with verifyBundleCore without importing it.
  */
 
-export type ConsistencyVerdict = "absent" | "oneSided" | "unified" | "divergent";
+export type ConsistencyVerdict =
+  | "absent"
+  | "indeterminate"
+  | "oneSided"
+  | "unified"
+  | "divergent";
 
 export type BundleRole = "buyer" | "seller";
 
+export type BundleCopyRead =
+  | { disposition: "present"; bundle: Record<string, unknown> }
+  | { disposition: "absent" }
+  | { disposition: "indeterminate" };
+
 export interface BundleCopies {
-  buyer?: Record<string, unknown> | null;
-  seller?: Record<string, unknown> | null;
+  buyer: BundleCopyRead;
+  seller: BundleCopyRead;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -86,8 +90,9 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 export interface BundleConsistencyDeps {
   /**
    * §10.4.1 signature/anchor validation (with the §10.11 single-signed-abort
-   * exception and the address-role contract) — an invalid copy is treated as
-   * not-present. Wire {@link verifyBundleCopy}, NOT `verifyBundleCore`.
+   * exception and the address-role contract). Invalid returned content is
+   * rejected; it is never converted into an `absent` disposition. Wire
+   * {@link verifyBundleCopy}, NOT `verifyBundleCore`.
    * May be async; the result is awaited. REQUIRED unless `trustBundles` is set.
    */
   isValid?: (
@@ -104,8 +109,8 @@ export interface BundleConsistencyDeps {
 
 /**
  * Classify the two-sided copies for a session (§10.4.3). `deps.isValid` gates
- * each copy on signature/anchor validity (e.g. wrap verifyBundleCore); an
- * invalid copy is treated as not-present. Supply `isValid` or an explicit
+ * each present copy on signature/anchor validity (e.g. wire verifyBundleCopy);
+ * invalid returned content is rejected. Supply `isValid` or an explicit
  * `trustBundles: true` — deriving a verdict from unvalidated copies is not a
  * safe default, so an absent gate throws.
  */
@@ -122,19 +127,34 @@ export async function bundleConsistency(
   const isValid = deps.isValid;
   // AWAIT the gate: a sync gate handed an async validator would treat the
   // returned Promise as truthy and accept every copy (fail-open).
-  const keep = async (
-    b: Record<string, unknown> | null | undefined,
+  const validate = async (
+    read: BundleCopyRead,
     role: BundleRole,
   ): Promise<Record<string, unknown> | null> => {
-    if (!isObj(b)) return null;
-    if (!isValid) return b;
-    return (await isValid(b, role)) ? b : null;
+    if (read.disposition !== "present") return null;
+    if (!isObj(read.bundle)) {
+      throw new DacsError(`bundleConsistency received malformed present content for ${role}`);
+    }
+    if (isValid && !(await isValid(read.bundle, role))) {
+      throw new DacsError(
+        `bundleConsistency rejected invalid content returned from the ${role} address`,
+      );
+    }
+    return read.bundle;
   };
-  const buyer = await keep(copies.buyer, "buyer");
-  const seller = await keep(copies.seller, "seller");
+  const buyer = await validate(copies.buyer, "buyer");
+  const seller = await validate(copies.seller, "seller");
 
   const present = [buyer, seller].filter((b): b is Record<string, unknown> => b !== null);
-  if (present.length === 0) return "absent";
+  if (present.length === 2) {
+    return bundlesDiverge(buyer!, seller!) ? "divergent" : "unified";
+  }
+  if (
+    copies.buyer.disposition === "indeterminate" ||
+    copies.seller.disposition === "indeterminate"
+  ) {
+    return "indeterminate";
+  }
   if (present.length === 1) return "oneSided";
-  return bundlesDiverge(buyer!, seller!) ? "divergent" : "unified";
+  return "absent";
 }

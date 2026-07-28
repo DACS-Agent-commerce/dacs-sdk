@@ -18,19 +18,18 @@ import type { Verifier } from "./signedArtifact.js";
  *     was fetched from. A copy anchored by one role sitting at the other role's
  *     address is not that party's attestation, so it must not count as present.
  *     A missing `anchoredByRole` fails CLOSED (we can't confirm it belongs here);
- *  3. §10.4.1 SIGNATURES — every `signatures[]` entry that resolves verifies. Any
- *     entry that fails verification taints the whole copy (invalid, not ignored);
- *  4. SIGNER SET — at least one distinct party signed validly, and if EXACTLY one
- *     did, the §10.11 single-signed exception applies: the copy stands only when
- *     its `outcome` is an abort. A single-signed NON-abort copy is rejected per
- *     §10.4.1, so it never reaches `oneSided`.
+ *  3. §10.4.1 SIGNATURES — every `signatures[]` entry is well-formed, uses the
+ *     supported closed algorithm, names a bundle party, resolves, and verifies.
+ *  4. SIGNER SET — buyer + seller are required, plus a distinct orchestrator
+ *     when present. The §10.11 exception permits a single signature only when
+ *     the exact bundle outcome is `aborted-by-self` or `aborted-by-other`.
  *
  * Signature scope matches §10.4.1 exactly: the canonical form omitting
  * `signatures` + `anchoredByRole` (the per-copy fields).
  */
 
 /** Outcomes that count as an abort for the §10.11 single-signed exception. */
-export const ABORT_OUTCOMES = new Set(["abort", "aborted", "cancelled", "canceled"]);
+export const ABORT_OUTCOMES = new Set(["aborted-by-self", "aborted-by-other"]);
 
 export interface BundleCopyDeps {
   /** Resolve a signer DID/claim to its ed25519 public key (null if unknown). */
@@ -42,6 +41,9 @@ export interface BundleCopyDeps {
 export type CopyValidity =
   | { valid: true; signers: string[]; fullySigned: boolean; abortStanding: boolean }
   | { valid: false; reason: string };
+
+const isObj = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 
 /**
  * Validate ONE fetched bundle copy for the role-address it was read from.
@@ -74,21 +76,67 @@ export async function verifyBundleCopy(
   delete scope["anchoredByRole"];
   const message = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope));
 
-  const entries = Array.isArray(bundle["signatures"])
-    ? (bundle["signatures"] as Array<{ party?: unknown; value?: unknown }>)
-    : [];
+  const entries = Array.isArray(bundle["signatures"]) ? bundle["signatures"] : [];
   if (entries.length === 0) return { valid: false, reason: "copy carries no signatures" };
 
+  const parties = bundle["parties"] as Array<Record<string, unknown>>;
+  const partyClaims = new Set(
+    parties
+      .map((party) => party["primaryClaim"])
+      .filter((claim): claim is string => typeof claim === "string" && claim.length > 0),
+  );
+  const buyer = parties.find((party) => party["role"] === "buyer")?.["primaryClaim"];
+  const seller = parties.find((party) => party["role"] === "seller")?.["primaryClaim"];
+  if (typeof buyer !== "string" || typeof seller !== "string") {
+    return { valid: false, reason: "bundle does not identify both required party signers" };
+  }
+  const requiredSigners = new Set([buyer, seller]);
+  for (const party of parties) {
+    const claim = party["primaryClaim"];
+    if (
+      party["role"] === "orchestrator" &&
+      typeof claim === "string" &&
+      claim !== buyer &&
+      claim !== seller
+    ) {
+      requiredSigners.add(claim);
+    }
+  }
+
   const signers = new Set<string>();
-  for (const s of entries) {
-    const party = typeof s.party === "string" ? s.party : "";
+  for (const entry of entries) {
+    if (!isObj(entry)) {
+      return { valid: false, reason: "malformed bundle signature entry" };
+    }
+    const party = entry["party"];
+    const algorithm = entry["algorithm"];
+    const value = entry["value"];
+    if (
+      typeof party !== "string" ||
+      party.length === 0 ||
+      typeof algorithm !== "string" ||
+      typeof value !== "string" ||
+      value.length === 0
+    ) {
+      return { valid: false, reason: "malformed bundle signature entry" };
+    }
+    if (algorithm !== "ed25519") {
+      return { valid: false, reason: `unsupported bundle signature algorithm "${algorithm}"` };
+    }
+    if (!partyClaims.has(party)) {
+      return { valid: false, reason: `signature party "${party}" is not a bundle party` };
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+      return { valid: false, reason: `signature by ${party} is not unpadded base64url` };
+    }
     const key = await deps.resolvePublicKey(party);
-    // An unresolvable signer can't be counted as a valid signer, but it also
-    // isn't proof of forgery — skip it rather than tainting the copy.
-    if (!key || key.length !== 32) continue;
-    const sigBytes = Uint8Array.from(
-      Buffer.from(typeof s.value === "string" ? s.value : "", "base64url"),
-    );
+    if (!key || key.length !== 32) {
+      return { valid: false, reason: `signature party "${party}" could not be resolved` };
+    }
+    const sigBytes = Uint8Array.from(Buffer.from(value, "base64url"));
+    if (sigBytes.length !== 64) {
+      return { valid: false, reason: `signature by ${party} is not 64 bytes` };
+    }
     if (!(await deps.verify(message, sigBytes, key))) {
       // A signature that resolves but does NOT verify taints the copy (§10.4.1).
       return { valid: false, reason: `signature by ${party} failed verification` };
@@ -96,17 +144,23 @@ export async function verifyBundleCopy(
     signers.add(party);
   }
 
-  if (signers.size === 0) return { valid: false, reason: "no signature could be verified" };
-
   // (4) signer set + the §10.11 single-signed-abort exception.
-  const fullySigned = signers.size >= 2;
-  const outcome = typeof bundle["outcome"] === "string" ? bundle["outcome"].toLowerCase() : "";
+  const fullySigned = [...requiredSigners].every((party) => signers.has(party));
+  const outcome = typeof bundle["outcome"] === "string" ? bundle["outcome"] : "";
   const isAbort = ABORT_OUTCOMES.has(outcome);
-  if (!fullySigned && !isAbort) {
+  const singleSignedAbort = entries.length === 1 && signers.size === 1 && isAbort;
+  if (!fullySigned && !singleSignedAbort) {
     return {
       valid: false,
-      reason: `single-signed copy with non-abort outcome "${outcome}" is rejected (§10.4.1; §10.11 covers aborts only)`,
+      reason:
+        `copy is missing required signatures for outcome "${outcome}" ` +
+        "(§10.4.1; §10.11 permits exactly one signer for abort outcomes only)",
     };
   }
-  return { valid: true, signers: [...signers], fullySigned, abortStanding: !fullySigned && isAbort };
+  return {
+    valid: true,
+    signers: [...signers],
+    fullySigned,
+    abortStanding: !fullySigned && singleSignedAbort,
+  };
 }
