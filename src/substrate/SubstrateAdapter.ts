@@ -1,3 +1,5 @@
+import type { AnchorResolution } from "./anchorResolution.js";
+
 /**
  * SubstrateAdapter — the single seam between dacs-sdk and the underlying
  * substrate. DACS is substrate-agnostic by design; the SDK speaks only to this
@@ -91,8 +93,27 @@ export interface SubstrateAdapter {
    * tx ref. Consumers re-canonicalise the value to verify its content hash.
    */
   anchor(name: string, value: object, options?: AnchorOptions): Promise<AnchorRef>;
-  /** SR-2 — the deterministic storage address a name anchors to, without writing. */
-  anchorAddress(name: string): string;
+  /**
+   * SR-2 — the storage address a name would anchor to for THIS writer, without
+   * writing. NOT third-party derivable (#58 / DACS-Standard #242): the physical
+   * address folds in the writer's account nonce at create time, so a reader that
+   * doesn't know that nonce must resolve by program name through the node's name
+   * index instead of precomputing an address.
+   */
+  anchorAddress(name: string): Promise<string>;
+  /**
+   * SR-2 discovery — resolve a logical program name to its storage address, bound
+   * to the expected writer. The reader-side counterpart to `anchorAddress`: the
+   * physical address folds in the writer's create-time nonce, so a third party
+   * must resolve by name rather than precompute. Owner binding is required — a
+   * program name is not exclusive, so name-only resolution is squattable.
+   *
+   * Returns a TYPED {@link AnchorResolution}: `present` (owned by the writer),
+   * `absent` (readable candidates, none the writer's), or `indeterminate` (the
+   * lookup itself failed) — so a transient substrate failure is never mistaken
+   * for "never created" (#70).
+   */
+  resolveAnchorByName(name: string, expectedOwner: string): Promise<AnchorResolution>;
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 

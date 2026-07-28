@@ -4,6 +4,7 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  logicalToStorageProgramName,
   storAddress,
   bundleAddress,
 } from "./addressing.js";

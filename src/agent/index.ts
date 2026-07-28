@@ -1,5 +1,6 @@
 export {
   createAgent,
+  buildAgent,
   type Agent,
   type AgentConfig,
   type PublishResult,

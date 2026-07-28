@@ -1,7 +1,7 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { AttestationBundle } from "../artifacts/types.js";
+import type { AttestationBundle, BundleParty } from "../artifacts/types.js";
 import {
   isAgreementDocument,
   isAttestationBundle,
@@ -73,14 +73,20 @@ export interface VerifyBundleDeps {
   readArtifact: (ref: string) => Promise<Record<string, unknown> | null>;
   /**
    * Resolve a referenced session artifact to its stored signed form, by ref kind
-   * + the bundle's jobId (the session's artifacts live at deterministic,
-   * jobId-keyed addresses). Returns null if unresolvable. Omit only if
-   * dereferencing isn't possible — the refs then report `unresolved` and the
-   * bundle cannot be `ok`.
+   * + the bundle's jobId. Session artifacts are anchored BY A SESSION PARTY (the
+   * buyer orchestrates and anchors in this SDK), so name resolution must be
+   * owner-bound to THAT party — not to whoever happens to be verifying (#70):
+   * a third-party verifier resolving under its own address finds nothing, and
+   * owner-binding to the wrong party would let a name-squatter serve forged
+   * artifacts. `parties` is the bundle's party list; derive the anchoring
+   * party's substrate address from its primaryClaim. Returns null if
+   * unresolvable. Omit only if dereferencing isn't possible — the refs then
+   * report `unresolved` and the bundle cannot be `ok`.
    */
   resolveRef?: (
     kind: string,
     jobId: string,
+    parties: readonly BundleParty[],
   ) => Promise<Record<string, unknown> | null>;
   /** Resolve a signer DID/claim to its ed25519 public key (null if unknown). */
   resolvePublicKey: (did: string) => Promise<Uint8Array | null>;
@@ -173,7 +179,11 @@ export async function verifyBundleCore(
     for (const vr of bundle.vetRecords) note(vr.kind, vr.id);
     note("dacs-1-listing", String(bundle.listingRef.listingId));
   } else {
-    const agr = await deps.resolveRef(bundle.agreementRef.kind, bundle.jobId);
+    const agr = await deps.resolveRef(
+      bundle.agreementRef.kind,
+      bundle.jobId,
+      bundle.parties,
+    );
     refs.push(
       checkArtifact(
         bundle.agreementRef.kind,
@@ -184,7 +194,7 @@ export async function verifyBundleCore(
       ),
     );
     for (const ev of bundle.settlementEvidence) {
-      const r = await deps.resolveRef(ev.kind, bundle.jobId);
+      const r = await deps.resolveRef(ev.kind, bundle.jobId, bundle.parties);
       const check = checkArtifact(
         ev.kind,
         ev.id,
@@ -205,7 +215,7 @@ export async function verifyBundleCore(
       refs.push(check);
     }
     for (const vr of bundle.vetRecords) {
-      const r = await deps.resolveRef(vr.kind, bundle.jobId);
+      const r = await deps.resolveRef(vr.kind, bundle.jobId, bundle.parties);
       refs.push(
         checkArtifact(
           vr.kind,

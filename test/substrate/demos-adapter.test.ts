@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 
 // DemosAdapter lives on the substrate subpath, not the top-level barrel (the
 // barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
@@ -128,12 +129,31 @@ describe("DemosAdapter", () => {
 
   it("creates a known-new slot without waiting for a storage read", async () => {
     const { adapter, raw } = connectedAdapter();
-    const result = await adapter.anchor("fresh-job-slot", { result: 42 }, {
+    const result = await adapter.anchor("fresh:job:slot", { result: 42 }, {
       nonce: 11,
       writeMode: "known-new",
     });
     expect(result.nonce).toBe(11);
     expect(result.transactionContent?.nonce).toBe(11);
+    const createPayload = raw.storagePrograms.sign.mock.calls[0]![0] as {
+      programName: string;
+      salt: string;
+      storageAddress: string;
+    };
+    expect(createPayload.programName).toBe("fresh%3Ajob%3Aslot");
+    expect(createPayload.salt).toBe("");
+    expect(result.address).toBe(StorageProgram.deriveStorageAddress(
+      "0x" + "a".repeat(64),
+      "fresh%3Ajob%3Aslot",
+      11,
+      "",
+    ));
+    expect(result.address).not.toBe(StorageProgram.deriveStorageAddress(
+      "0x" + "a".repeat(64),
+      "fresh:job:slot",
+      0,
+      "dacs:v1",
+    ));
     expect(raw.storagePrograms.read).not.toHaveBeenCalled();
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
