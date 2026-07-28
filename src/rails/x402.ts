@@ -1,16 +1,16 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { CounterpartyError } from "../errors.js";
+import type {
+  PaymentPayloadResult,
+  PaymentRequirements,
+  SchemeNetworkClient,
+} from "@x402/core/types";
 import {
   createIdempotencyStore,
   settlementKey,
   type SettlementIdempotencyStore,
   type SettlementReconcile,
 } from "./idempotency.js";
-import type {
-  PaymentPayloadResult,
-  PaymentRequirements,
-  SchemeNetworkClient,
-} from "@x402/core/types";
 
 /**
  * x402 settlement rail (DACS SR-4 / the reference-backed payment rail).
