@@ -179,12 +179,14 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
 
     async publishListing(listing: Listing): Promise<PublishResult> {
       // Versioned, write-once publish (§6.3.4, #29/#46) — pure core over the
-      // adapter's anchor/read seam.
+      // adapter's owner-bound immutable seam. Do not use anchorAddress() here:
+      // on current Demos it predicts the NEXT nonce-derived create address and
+      // cannot locate an existing version slot (#70).
       return publishListingCore(listing, {
         sign,
-        anchorAddress: (name) => adapter.anchorAddress(name),
-        readAnchor: (addr) => adapter.readAnchor(addr),
-        anchor: (name, value) => adapter.anchor(name, value),
+        scanOwnAnchorsByNamePrefix: (prefix) =>
+          adapter.scanOwnAnchorsByNamePrefix(prefix),
+        anchorWriteOnce: (name, value) => adapter.anchorWriteOnce(name, value),
       });
     },
 

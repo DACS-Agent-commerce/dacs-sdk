@@ -43,7 +43,18 @@ describe("classifyAnchorResolution (#70 — lookup failure is not absence)", () 
     expect(r.status).toBe("indeterminate");
   });
 
-  test("a confirmed writer-owned match WINS even if another candidate errored", () => {
+  test("INDETERMINATE: duplicate writer-owned programs cannot be selected safely", () => {
+    const r = classifyAnchorResolution(
+      [
+        { address: "stor-mine-1", owner: OWNER, error: false },
+        { address: "stor-mine-2", owner: OWNER, error: false },
+      ],
+      OWNER,
+    );
+    expect(r.status).toBe("indeterminate");
+  });
+
+  test("INDETERMINATE: an owner match cannot hide another unreadable candidate", () => {
     const r = classifyAnchorResolution(
       [
         { address: "stor-err", owner: null, error: true },
@@ -51,6 +62,6 @@ describe("classifyAnchorResolution (#70 — lookup failure is not absence)", () 
       ],
       OWNER,
     );
-    expect(r).toEqual({ status: "present", address: "stor-mine" });
+    expect(r.status).toBe("indeterminate");
   });
 });
