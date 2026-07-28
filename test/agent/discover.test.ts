@@ -1,10 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { discoverListings } from "../../src/agent/discover.js";
-import {
-  buildSignedArtifact,
-  verifySignedArtifact,
-} from "../../src/agent/signedArtifact.js";
+import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
   ed25519Sign,
@@ -34,9 +31,12 @@ const store: Record<string, Record<string, unknown>> = {
 };
 const read = async (ref: string) => store[ref] ?? null;
 
+// Resolution/structural behaviour — signatures covered in their own block below.
+const TRUST = { trustListings: true } as const;
+
 describe("discoverListings (resolve + validate caller-supplied refs)", () => {
   test("returns only refs that resolve to valid listings, with the signature stripped", async () => {
-    const found = await discoverListings(["ref:1", "ref:2", "missing", "ref:3"], read);
+    const found = await discoverListings(["ref:1", "ref:2", "missing", "ref:3"], read, TRUST);
     expect(found.map((f) => f.ref)).toEqual(["ref:1", "ref:3"]);
     expect(found[0]!.listing.agentId).toBe("did:demos:agent:alice");
     // returned listing is the signed scope (signature omitted)
@@ -44,56 +44,89 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
   });
 
   test("skips missing refs without throwing", async () => {
-    expect(await discoverListings(["missing", "also-missing"], read)).toEqual([]);
+    expect(await discoverListings(["missing", "also-missing"], read, TRUST)).toEqual([]);
   });
 
   test("empty input yields empty result", async () => {
-    expect(await discoverListings([], read)).toEqual([]);
+    expect(await discoverListings([], read, TRUST)).toEqual([]);
+  });
+
+  test("requires an explicit gate — neither dep rejects (no fail-open)", async () => {
+    await expect(discoverListings(["ref:1"], read)).rejects.toThrow(/verify|trustListings/);
   });
 });
 
 describe("discoverListings signature verification (#41)", () => {
-  const seed = Uint8Array.from(Buffer.alloc(32, 33));
-  const priv = privateKeyFromSeed(seed);
-  const sellerDid = `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
-  const listing = {
-    agentId: sellerDid,
-    serviceId: "svc",
-    name: "n",
-    description: "d",
-    claimRequirements: [],
-    supportedNegotiation: ["negotiate-fixed-price"],
-    supportedPaymentRails: ["pay-x402"],
-    supportedDelivery: ["deliver-attested-payload"],
+  const seller = (n: number) => {
+    const seed = Uint8Array.from(Buffer.alloc(32, n));
+    const priv = privateKeyFromSeed(seed);
+    const hex = Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex");
+    return { priv, hex, did: `did:demos:agent:${hex}` };
   };
-  const verifier = (b: Uint8Array, s: Uint8Array, p: Uint8Array) =>
-    ed25519Verify(b, s, publicKeyFromRaw(p));
-  const didKey = (did: string) => {
-    const hex = did.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
-    return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
-  };
-  // Verify a listing's signature under the advertised seller (what a caller wires).
-  const verifyListing = async (signed: Record<string, unknown>, sellerId: string) => {
-    const key = didKey(sellerId);
-    return key ? verifySignedArtifact(signed, ARTIFACT_SEPARATORS.Listing, key, verifier) : false;
+  const ALICE = seller(7);
+  const MALLORY = seller(9);
+  const verify = (b: Uint8Array, s: Uint8Array, k: Uint8Array) =>
+    ed25519Verify(b, s, publicKeyFromRaw(k));
+  const deps = { verify };
+
+  const signedBy = async (did: string, priv: ReturnType<typeof privateKeyFromSeed>) => {
+    const { signature: _drop, ...body } = { ...LISTING, agentId: did };
+    return (await buildSignedArtifact(body, ARTIFACT_SEPARATORS.Listing, (b) =>
+      ed25519Sign(b, priv),
+    )) as unknown as Record<string, unknown>;
   };
 
-  test("a listing validly signed by its seller is returned", async () => {
-    const signed = await buildSignedArtifact(listing, ARTIFACT_SEPARATORS.Listing, (b) => ed25519Sign(b, priv));
-    const found = await discoverListings(["r"], async () => signed, verifyListing);
-    expect(found.map((f) => f.ref)).toEqual(["r"]);
+  test("a listing signed by its own agentId VERIFIES and is returned", async () => {
+    const ok = await signedBy(ALICE.did, ALICE.priv);
+    const found = await discoverListings(["a"], async () => ok, deps);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.listing.agentId).toBe(ALICE.did);
   });
 
-  test("a forged/unsigned listing (fake `signature`) is DROPPED (#41)", async () => {
-    const forged = { ...listing, signature: "deadbeef" };
-    const found = await discoverListings(["r"], async () => forged, verifyListing);
-    expect(found).toEqual([]);
+  test("WRONG KEY — signed by someone other than the advertised seller is dropped", async () => {
+    // Mallory signs a listing that advertises Alice as the seller.
+    const forged = await signedBy(ALICE.did, MALLORY.priv);
+    expect(await discoverListings(["a"], async () => forged, deps)).toEqual([]);
   });
 
-  test("a listing tampered after signing is DROPPED", async () => {
-    const signed = await buildSignedArtifact(listing, ARTIFACT_SEPARATORS.Listing, (b) => ed25519Sign(b, priv));
-    const tampered = { ...signed, supportedPaymentRails: ["pay-attacker"] }; // swap rail after signing
-    const found = await discoverListings(["r"], async () => tampered, verifyListing);
-    expect(found).toEqual([]);
+  test("TAMPERED — a field changed after signing is dropped", async () => {
+    const ok = await signedBy(ALICE.did, ALICE.priv);
+    const tampered = { ...ok, supportedPaymentRails: ["pay-attacker"] };
+    expect(await discoverListings(["a"], async () => tampered, deps)).toEqual([]);
+  });
+
+  test("MISSING signature is dropped", async () => {
+    const { signature: _drop, ...unsigned } = await signedBy(ALICE.did, ALICE.priv);
+    expect(await discoverListings(["a"], async () => unsigned, deps)).toEqual([]);
+  });
+
+  test("MALFORMED signature is dropped, not thrown", async () => {
+    const ok = await signedBy(ALICE.did, ALICE.priv);
+    const bad = { ...ok, signature: "zzzz-not-hex" };
+    expect(await discoverListings(["a"], async () => bad, deps)).toEqual([]);
+  });
+
+  test("a seller claim with no resolvable key is dropped (signer can't be established)", async () => {
+    const ok = await signedBy(ALICE.did, ALICE.priv);
+    const aliasOnly = { ...ok, agentId: "did:example:alias-only" };
+    expect(await discoverListings(["a"], async () => aliasOnly, deps)).toEqual([]);
+  });
+
+  test("a THROWING key resolver drops only that listing, not the whole batch (#71)", async () => {
+    const bad = await signedBy(ALICE.did, ALICE.priv);
+    const good = await signedBy(ALICE.did, ALICE.priv);
+    const store: Record<string, Record<string, unknown>> = { bad, good };
+    // The resolver throws for the FIRST listing but works for the second.
+    let seen = 0;
+    const found = await discoverListings(["bad", "good"], async (r) => store[r] ?? null, {
+      verify,
+      resolvePublicKey: () => {
+        seen += 1;
+        if (seen === 1) throw new Error("resolver blew up");
+        return Uint8Array.from(Buffer.from(ALICE.hex, "hex"));
+      },
+    });
+    // The throw dropped only "bad"; "good" is still discovered.
+    expect(found.map((f) => f.ref)).toEqual(["good"]);
   });
 });

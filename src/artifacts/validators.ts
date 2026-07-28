@@ -48,7 +48,16 @@ export function isPricingSpec(v: unknown): boolean {
     case "fixed":
       return isPriceTerm(v.price);
     case "negotiable":
-      return isPriceTerm(v.bandCenter) && isNum(v.minPct) && isNum(v.maxPct);
+      // §8.5.2: minPct/maxPct are non-negative percentages, and 0 ≤ minPct < 100
+      // (a floor ≥100% below centre would price at or below zero).
+      return (
+        isPriceTerm(v.bandCenter) &&
+        isNum(v.minPct) &&
+        v.minPct >= 0 &&
+        v.minPct < 100 &&
+        isNum(v.maxPct) &&
+        v.maxPct >= 0
+      );
     case "auction":
       return (
         (v.reservePrice === undefined || isPriceTerm(v.reservePrice)) &&
@@ -174,7 +183,9 @@ export function isAttestationBundle(v: unknown): v is AttestationBundle {
         isNum(ph.index) &&
         isStr(ph.kind) &&
         isStr(ph.outcome) &&
-        isAttestationRef(ph.attestationRef),
+        // §10.4.3 / DACS-Standard#204: attestationRef is OPTIONAL — a bundle MUST
+        // NOT be rejected solely because a phaseSummary entry omits it.
+        (ph.attestationRef === undefined || isAttestationRef(ph.attestationRef)),
     ) &&
     Array.isArray(v.vetRecords) &&
     v.vetRecords.every(isAttestationRef) &&

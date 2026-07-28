@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
+import { buildSignedArtifact, verifySignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
   runSessionCore,
   sessionAnchorName,
@@ -64,6 +64,13 @@ function memSubstrate() {
     },
     anchorAddress: async (name: string) => `stor:${name}`,
     read: async (ref: string) => store.get(ref) ?? null,
+    resolveAnchor: async (name: string) => {
+      const ref = `stor:${name}`;
+      const value = store.get(ref);
+      return value
+        ? { status: "present" as const, ref, value }
+        : { status: "absent" as const };
+    },
   };
 }
 
@@ -140,8 +147,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       // two-signed and independently verifies with buyer + seller coverage.
       countersign: async (bytes) => signSeller(bytes),
       anchor: sub.anchor,
-      anchorAddress: sub.anchorAddress,
-      readAnchor: sub.read,
+      resolveAnchor: sub.resolveAnchor,
       settle: (req) =>
         x402SettleCore(
           {
@@ -168,6 +174,15 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       newJobId: () => "job-e2e",
       now: () => "2026-01-01T00:00:00Z",
       nowMs: () => 1780000000000,
+      // #41 — REAL listing verification end to end: recompute the signature over
+      // the stored artifact and check it against the key in the advertised seller
+      // claim. Proves the happy path runs on a genuinely signed listing.
+      verifyListing: (raw, sellerClaim) => {
+        const key = resolveFromDid(sellerClaim);
+        return key
+          ? verifySignedArtifact(raw, ARTIFACT_SEPARATORS.Listing, key, verify)
+          : false;
+      },
     };
     const result = await runSessionCore(
       listingRef,

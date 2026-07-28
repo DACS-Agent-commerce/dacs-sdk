@@ -25,12 +25,7 @@ import {
 } from "./runSessionCore.js";
 import { discoverListings } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
-import {
-  buildSignedArtifact,
-  verifySignedArtifact,
-  type Signer,
-  type Verifier,
-} from "./signedArtifact.js";
+import { buildSignedArtifact, verifySignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
 import {
   verifyBundleCore,
   type SignatureCheck,
@@ -145,7 +140,18 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     secret: config.wallet,
   });
   await adapter.connect();
+  return buildAgent(adapter, config);
+}
 
+/**
+ * Build the Agent surface over an ALREADY-CONNECTED adapter. Split out from
+ * {@link createAgent} so the full lifecycle (incl. the `runSession` dep wiring
+ * that #41 verification depends on) is exercisable in a NON-LIVE test against an
+ * in-memory adapter — the public-Agent path was previously only reachable via a
+ * live, environment-skipped test, which let the missing `verifyListing` wiring
+ * ship. Not exported from the package barrel; internal test seam.
+ */
+export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
   const sign: Signer = (bytes) => adapter.sign(bytes);
 
   // Full bundle verification (signature coverage §10.4.1 + referenced-artifact
@@ -154,7 +160,10 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
   const verifyBundleAt = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (r) => adapter.readAnchor(r),
-      resolveRef: async (kind, jobId) => {
+      // Session artifacts are resolved BY NAME (kind, jobId → name → address):
+      // the physical address folds in the writer's create-time nonce, so it
+      // can't be recomputed (#70).
+      resolveRef: async (kind, jobId, parties) => {
         const name =
           kind === "dacs-3-agreement"
             ? sessionAnchorName.agreement(jobId)
@@ -164,7 +173,17 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
                 ? sessionAnchorName.vet(jobId)
                 : null;
         if (!name) return null;
-        return adapter.readAnchor(await adapter.anchorAddress(name));
+        // Session artifacts are anchored by the session's BUYER (the orchestrator
+        // in this SDK), so owner-bind resolution to the buyer party from the
+        // bundle — NOT to this verifier's own address, which only works when the
+        // verifier IS the buyer and breaks independent verification (#70). No
+        // resolvable buyer party → fail closed (ref reports unresolved).
+        const buyer = parties.find((p) => p.role === "buyer");
+        const key = buyer ? publicKeyFromDid(buyer.primaryClaim) : null;
+        if (!key) return null;
+        const owner = Buffer.from(key).toString("hex");
+        const r = await adapter.resolveAnchorByName(name, owner);
+        return r.status === "present" ? adapter.readAnchor(r.address) : null;
       },
       resolvePublicKey: async (did) => publicKeyFromDid(did),
       verify: ed25519RawVerify,
@@ -201,26 +220,21 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
       // Bundle signature verification (§7.7) PLUS dereferencing each referenced
-      // artifact and hash-checking it. Session artifacts live at deterministic,
-      // jobId-keyed addresses, so resolveRef maps (kind, jobId) → address → read.
+      // artifact and hash-checking it, via the shared verifyBundleAt helper so
+      // getReputation counts only verified bundles (#42). Session artifacts are
+      // resolved BY NAME with owner-binding to the buyer party (#70).
       return verifyBundleAt(ref);
     },
 
     async discover(
       listingRefs: string[],
     ): Promise<Array<{ ref: string; listing: Listing }>> {
-      // §6.3.4 / #41: require a valid seller signature on each listing before it
-      // enters discovery — a forged/tampered listing is dropped, not returned.
-      return discoverListings(
-        listingRefs,
-        (r) => adapter.readAnchor(r),
-        async (signed, sellerId) => {
-          const key = publicKeyFromDid(sellerId);
-          return key
-            ? verifySignedArtifact(signed, ARTIFACT_SEPARATORS.Listing, key, ed25519RawVerify)
-            : false;
-        },
-      );
+      // Verify every discovered listing against the key in its own agentId (#41)
+      // — an unverified listing must never reach negotiation or settlement.
+      return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
+        verify: ed25519RawVerify,
+        resolvePublicKey: (claim) => publicKeyFromDid(claim),
+      });
     },
 
     async runSession(
@@ -243,8 +257,30 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
             buildSignedArtifact(artifact, separator as DomainSeparator, sign),
           signBytes: async (bytes) => sign(bytes),
           anchor: async (name, value) => (await adapter.anchor(name, value)).address,
-          anchorAddress: async (name) => adapter.anchorAddress(name),
-          readAnchor: (address) => adapter.readAnchor(address),
+          // Resume resolves BY NAME (owner = this agent), failing closed on an
+          // indeterminate lookup rather than re-anchoring/re-settling (#70).
+          resolveAnchor: async (name) => {
+            const r = await adapter.resolveAnchorByName(name, adapter.getAddress());
+            if (r.status === "indeterminate") return { status: "indeterminate", reason: r.reason };
+            if (r.status === "absent") return { status: "absent" };
+            const value = await adapter.readAnchor(r.address);
+            return value
+              ? { status: "present", ref: r.address, value }
+              : { status: "indeterminate", reason: "resolved address was not readable" };
+          },
+          // #41 — verify the listing against the key in its own agentId before
+          // vetting or settlement. Without this the money path would run on an
+          // unverified listing (and the gate below would throw).
+          verifyListing: async (raw, sellerClaim) => {
+            const key = publicKeyFromDid(sellerClaim);
+            if (!key) return false;
+            return verifySignedArtifact(
+              raw,
+              ARTIFACT_SEPARATORS.Listing,
+              key,
+              ed25519RawVerify,
+            );
+          },
           settle: opts.settle,
           vet: opts.vet,
           newJobId: () => randomUUID(),
