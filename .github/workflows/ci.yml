@@ -8,12 +8,19 @@ on:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test the minimum declared engine (^20.19.0 floor) AND a current LTS, so
+        # a floating "20" can never hide a tooling requirement above the floor (#44).
+        node-version: ["20.19.0", "22"]
+    name: build-test (node ${{ matrix.node-version }})
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
         run: npm install
