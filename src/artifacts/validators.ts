@@ -35,6 +35,40 @@ const VERIFICATION_DECISIONS = [
   "error",
 ] as const;
 
+/** A DACS-4 PriceTerm: canonical positive decimal + non-empty currency. */
+const isPriceTerm = (v: unknown): boolean =>
+  isObj(v) && isStr(v.amount) && v.amount !== "" && isStr(v.currency) && v.currency !== "";
+
+const AUCTION_SELECTION = ["lowest-price", "highest-price", "first-acceptable"] as const;
+
+/** A DACS-4 PricingSpec (fixed | negotiable | auction). */
+export function isPricingSpec(v: unknown): boolean {
+  if (!isObj(v)) return false;
+  switch (v.kind) {
+    case "fixed":
+      return isPriceTerm(v.price);
+    case "negotiable":
+      // §8.5.2: minPct/maxPct are non-negative percentages, and 0 ≤ minPct < 100
+      // (a floor ≥100% below centre would price at or below zero).
+      return (
+        isPriceTerm(v.bandCenter) &&
+        isNum(v.minPct) &&
+        v.minPct >= 0 &&
+        v.minPct < 100 &&
+        isNum(v.maxPct) &&
+        v.maxPct >= 0
+      );
+    case "auction":
+      return (
+        (v.reservePrice === undefined || isPriceTerm(v.reservePrice)) &&
+        (isOneOf(AUCTION_SELECTION, v.selectionRule) ||
+          (isStr(v.selectionRule) && v.selectionRule.startsWith("rule-ref:")))
+      );
+    default:
+      return false;
+  }
+}
+
 export function isListing(v: unknown): v is Listing {
   if (!isObj(v)) return false;
   return (
@@ -48,7 +82,10 @@ export function isListing(v: unknown): v is Listing {
     ) &&
     isStrArray(v.supportedNegotiation) &&
     isStrArray(v.supportedPaymentRails) &&
-    isStrArray(v.supportedDelivery)
+    isStrArray(v.supportedDelivery) &&
+    // pricing is OPTIONAL (#34; full required-fidelity in #5) — but if present it
+    // MUST be a well-formed PricingSpec, not any object.
+    (v.pricing === undefined || isPricingSpec(v.pricing))
   );
 }
 
@@ -146,7 +183,9 @@ export function isAttestationBundle(v: unknown): v is AttestationBundle {
         isNum(ph.index) &&
         isStr(ph.kind) &&
         isStr(ph.outcome) &&
-        isAttestationRef(ph.attestationRef),
+        // §10.4.3 / DACS-Standard#204: attestationRef is OPTIONAL — a bundle MUST
+        // NOT be rejected solely because a phaseSummary entry omits it.
+        (ph.attestationRef === undefined || isAttestationRef(ph.attestationRef)),
     ) &&
     Array.isArray(v.vetRecords) &&
     v.vetRecords.every(isAttestationRef) &&

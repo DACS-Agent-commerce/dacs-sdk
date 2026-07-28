@@ -5,6 +5,9 @@ export type {
   Price,
   Delivery,
   Listing,
+  PriceTerm,
+  PricingSpec,
+  ClaimProofRef,
   VerifyResultEntry,
   CompositeVerificationRecord,
   AgreementDocument,
@@ -28,6 +31,7 @@ export {
 } from "./registry.js";
 export {
   isListing,
+  isPricingSpec,
   isCompositeVerificationRecord,
   isAgreementDocument,
   isSettlementEvidence,

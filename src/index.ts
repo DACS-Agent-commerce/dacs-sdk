@@ -29,6 +29,7 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  logicalToStorageProgramName,
   storAddress,
   bundleAddress,
   sha256Hex,
@@ -64,6 +65,21 @@ export type {
   ProxyFetchResult,
   ResolvedIdentity,
 } from "./substrate/index.js";
+
+// CLI helpers (pure/read-only by default). The executable entry is `dacs`.
+export {
+  formatDoctorText,
+  redactRpcUrl,
+  redactSecret,
+  runDoctor,
+  sanitizeText,
+  type DoctorAdapter,
+  type DoctorCheck,
+  type DoctorMode,
+  type DoctorOptions,
+  type DoctorReport,
+  type DoctorStatus,
+} from "./cli/index.js";
 
 // Identity (DACS-1): cross-context identity resolution + claim helpers. Pure —
 // no substrate import — so verifiers can parse/inspect CCI records too.
@@ -112,7 +128,6 @@ export {
   MIN_SALT_BYTES,
   MIN_COMMIT_LEAD_MS,
   MIN_REVEAL_WINDOW_SECONDS,
-  type PriceTerm,
   type SealedBid,
   type AnchoredCommit,
   type AnchoredReveal,
@@ -147,6 +162,13 @@ export {
   type SignatureVerdict,
   type RefCheck,
   type RefVerdict,
+  verifySettlementEvidence,
+  type EvidenceDecision,
+  type EvidenceVerification,
+  type EvidenceContext,
+  type EvidenceAgreementContext,
+  type EvidenceRailContext,
+  type EvidenceDeps,
   computeReputation,
   deriveReputation,
   type ReputationDerivation,
@@ -160,6 +182,15 @@ export {
   type VetRequest,
   type VetProxyResult,
   type Reputation,
+  // Injectable buyer-session core (F1 #14): run the lifecycle against any
+  // SubstrateAdapter (mock/simulation/non-Demos). NOTE: `sessionAnchorName` is
+  // deliberately NOT exported — its current MVP address strings are not the
+  // normative §6.3.x schemes (dacs2:composite:{jobId}:{evaluatedParty},
+  // dacs4:payment:{jobId}:{railId}:{phaseIndex}, role-specific bundle addr), and
+  // freezing them into the public API would mislead third-party verifiers.
+  // It stays internal until canonical addressing lands (tracked with #5/#48).
+  runSessionCore,
+  type SessionDeps,
   type RunSessionOptions,
   type SessionResult,
   type SessionTerms,
@@ -188,6 +219,12 @@ export {
   createEvmErc20Rail,
   evmErc20Settle,
   evmErc20SettleCore,
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  settlementKey,
+  type SettlementIdempotencyStore,
+  type SettlementLog,
+  type SettlementReconcile,
   type EvmErc20Rail,
   type EvmErc20RailConfig,
   type EvmErc20SettleParams,
@@ -236,6 +273,9 @@ export {
   type Price,
   type Delivery,
   type Listing,
+  type PriceTerm,
+  type PricingSpec,
+  type ClaimProofRef,
   type VerifyResultEntry,
   type CompositeVerificationRecord,
   type AgreementDocument,
@@ -255,6 +295,7 @@ export {
   RATING_SEPARATOR,
   separatorFor,
   isListing,
+  isPricingSpec,
   isCompositeVerificationRecord,
   isAgreementDocument,
   isSettlementEvidence,

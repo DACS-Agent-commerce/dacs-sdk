@@ -1,5 +1,11 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { CounterpartyError } from "../errors.js";
+import {
+  createIdempotencyStore,
+  settlementKey,
+  type SettlementIdempotencyStore,
+  type SettlementReconcile,
+} from "./idempotency.js";
 
 /**
  * x402 settlement rail (DACS SR-4 / the reference-backed payment rail).
@@ -293,13 +299,23 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
 export function x402Settle(
   rail: X402Rail,
   paywall: { url: string; network: string; recipientEvm: string; asset: string },
+  opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
-  return (req) =>
-    rail.settle({
-      paywallUrl: paywall.url,
-      network: paywall.network,
-      recipientEvm: paywall.recipientEvm,
-      amount: req.amount,
-      asset: paywall.asset,
-    });
+  const store = opts.store ?? createIdempotencyStore();
+  return (req) => {
+    const submit = () =>
+      rail.settle({
+        paywallUrl: paywall.url,
+        network: paywall.network,
+        recipientEvm: paywall.recipientEvm,
+        amount: req.amount,
+        asset: paywall.asset,
+      });
+    // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
+    // idempotency store (in-process default; inject a durable one for cross-process
+    // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
+    // on a reconciled resubmit is the SB-3 work in #33 — supplied via `reconcile`;
+    // absent it, an unresolved intent fails closed instead of resubmitting.
+    return store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), submit, opts.reconcile);
+  };
 }

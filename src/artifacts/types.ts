@@ -29,7 +29,44 @@ export interface Delivery {
   format: string;
 }
 
-/** DACS-1 — a signed, anchored service listing. */
+/**
+ * DACS-4 PriceTerm — a canonical priced amount. `amount` is a CD-1 canonical
+ * decimal string (minimal-digit, no exponent) and MUST be positive; `currency`
+ * is an ISO 4217 code or asset id (e.g. "USDC", "SOL", "usd-stablecoin").
+ */
+export interface PriceTerm {
+  amount: string;
+  currency: string;
+}
+
+/**
+ * DACS-4 PricingSpec — how a listing prices its service (referenced by DACS-1
+ * `Listing.pricing`). One of: a `fixed` price; a `negotiable` band around a
+ * centre (min/maxPct half-up per §8.5.2); or an `auction` with a selection rule.
+ * The `auction.selectionRule` set is the SAME enum as the §8.4.3 phase-step
+ * parameter, incl. the templated `rule-ref:<contentHash>:<uri>` form.
+ */
+export type PricingSpec =
+  | { kind: "fixed"; price: PriceTerm }
+  | { kind: "negotiable"; bandCenter: PriceTerm; minPct: number; maxPct: number }
+  | {
+      kind: "auction";
+      reservePrice?: PriceTerm;
+      selectionRule:
+        | "lowest-price"
+        | "highest-price"
+        | "first-acceptable"
+        | `rule-ref:${string}`;
+    };
+
+/**
+ * DACS-1 — a signed, anchored service listing.
+ *
+ * NOTE: this is the SDK's reduced MVP shape, not the full normative Listing
+ * (which also carries `pipeline`, `terms`, `validity`, `signature`, …). `pricing`
+ * is the DACS-1 `pricing: PricingSpec` field (#34); it is OPTIONAL here because
+ * the full required-field fidelity pass is tracked as one coherent change in #5.
+ */
 export interface Listing {
   agentId: string;
   serviceId: string;
@@ -39,6 +76,8 @@ export interface Listing {
   supportedNegotiation: string[];
   supportedPaymentRails: string[];
   supportedDelivery: string[];
+  /** DACS-1 `pricing: PricingSpec` (§ Listing) — how the service is priced. */
+  pricing?: PricingSpec;
 }
 
 /**
@@ -48,6 +87,17 @@ export interface Listing {
  */
 export type VerificationDecision = "pass" | "fail" | "indeterminate" | "error";
 
+/**
+ * An honestly-typed claim proof reference. `kind` says whether `value` is a
+ * digest (`hash`) or a raw reference such as a `/.well-known` URL or signature
+ * (`raw`), so a consumer never has to guess whether the field is a hash. Used
+ * for evidence that is NOT a DAHR attestation (see {@link VerifyResultEntry}).
+ */
+export interface ClaimProofRef {
+  kind: "hash" | "raw";
+  value: string;
+}
+
 /** DACS-2 — one method result inside a composite verification record. */
 export interface VerifyResultEntry {
   claimRef: ClaimRef;
@@ -56,10 +106,19 @@ export interface VerifyResultEntry {
   authority?: string;
   /**
    * DAHR attestation of the proxied response body (the consensus-backed evidence
-   * this result rests on), when the method fetched one. Recorded so the vet
-   * record carries verifiable evidence, not just a status.
+   * this result rests on) — STRICTLY a hash. Populated only by methods that run a
+   * DAHR proxy fetch (consensus-backed-proxy, ofac-screen). A method with no proxy
+   * fetch (e.g. cci-claim) MUST NOT populate it — its evidence goes in `proof`.
    */
   responseHash?: string;
+  /**
+   * The claim's attested proof, when the method rests on one that is NOT a DAHR
+   * attestation (e.g. a cci-claim's stored `/.well-known` URL, proof hash, or
+   * signature). Honestly typed as {@link ClaimProofRef} so consumers know whether
+   * the value is a digest or a raw reference — the #31 fix for the raw-proof-in-a-
+   * hash-named-field bug.
+   */
+  proof?: ClaimProofRef;
 }
 
 /** DACS-2 — aggregated verification outcome for a subject. */
@@ -176,7 +235,13 @@ export interface PhaseSummaryEntry {
   kind: string;
   outcome: string;
   txRefs?: TxRef[];
-  attestationRef: AttestationRef;
+  /**
+   * OPTIONAL per DACS-5 §10.4.3 / DACS-Standard#204: the authoritative
+   * attestation set is the top-level `vetRecords[]` / `settlementEvidence[]`, so
+   * a phaseSummary entry MAY omit its attestationRef. Producers SHOULD still emit
+   * it for attestation-bearing phases (runSessionCore does).
+   */
+  attestationRef?: AttestationRef;
 }
 
 /** A per-party bundle signature: `{ party, algorithm, value }`. */
