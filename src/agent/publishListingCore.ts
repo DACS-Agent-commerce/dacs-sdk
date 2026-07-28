@@ -52,8 +52,8 @@ export interface PublishListingResult {
 export interface PublishListingDeps {
   /** Sign the listing artifact under its domain separator. */
   sign: Signer;
-  /** Deterministic storage address for a logical name (without writing). */
-  anchorAddress: (name: string) => string;
+  /** The storage address a name would anchor to (without writing) — async (#70). */
+  anchorAddress: (name: string) => Promise<string>;
   /** Read the artifact anchored at an address (null if absent). */
   readAnchor: (address: string) => Promise<Record<string, unknown> | null>;
   /** Anchor a value under a name; returns the storage address + optional txRef. */
@@ -76,7 +76,7 @@ export async function publishListingCore(
   // substrate actually accepts). Anchor under the encoded name; return both.
   const logicalAddress = listingAddress(listing.agentId, listing.serviceId, version);
   const storageName = logicalToStorageProgramName(logicalAddress);
-  const address = deps.anchorAddress(storageName);
+  const address = await deps.anchorAddress(storageName);
 
   const existing = await deps.readAnchor(address);
   if (existing) {

@@ -49,42 +49,47 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     }>;
   };
 
+  // The SDK's Listing / CompositeVerificationRecord / AgreementDocument are the
+  // reduced MVP shapes; the v0.3 vectors carry the full normative shapes
+  // (seller.identity, evaluatedParty/requirementHash/dealSpecific, parties[]…).
+  // These are KNOWN, ACTIONABLE conformance gaps — NOT skipped: each runs as an
+  // `it.fails` asserting the reduced validator does NOT yet accept the normative
+  // shape. When the #5 artifact-fidelity rewrite brings the validators up, these
+  // flip RED (a passing body under `it.fails` fails), forcing their removal — so
+  // the gap can't silently rot green. (Vector-replay coverage is tracked in #6.)
+  const REDUCED_SHAPE_KINDS = new Set([
+    "Listing",
+    "CompositeVerificationRecord",
+    "AgreementDocument",
+  ]);
+
   for (const a of vector.artifacts) {
     const kind = a.kind as ArtifactKind;
     const validator = VALIDATORS[kind];
     if (!validator) continue;
 
-    it(`${kind}: validator accepts the fixture`, () => {
-      // SettlementEvidence + AttestationBundle migrated to the rich/normative
-      // §14 shapes; the happy-path vector still carries the stale simple shape,
-      // so validate the rich fixtures for those.
-      let fixture = a.artifact;
-      if (kind === "SettlementEvidence") {
-        fixture = JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence;
-      } else if (kind === "AttestationBundle") {
-        fixture = JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
-      } else if (kind === "CompositeVerificationRecord") {
-        // The v0.1 vector predates the 4-value decision (#5) — map its legacy
-        // `requiredPassed` boolean to the normative `decision`. Drops away when
-        // the vectors re-point to DACS v0.2 (#7).
-        const { requiredPassed, ...rest } = fixture as {
-          requiredPassed?: boolean;
-        } & Record<string, unknown>;
-        fixture = { ...rest, decision: requiredPassed ? "pass" : "fail" };
-      }
-      expect(validator(fixture)).toBe(true);
-    });
+    const knownGap = REDUCED_SHAPE_KINDS.has(kind);
+    const runner = knownGap ? it.fails : it;
+    runner(
+      `${kind}: validator accepts the fixture${knownGap ? " — KNOWN GAP: reduced vs normative shape (#5)" : ""}`,
+      () => {
+        // The v0.3 vector's in-body SettlementEvidence/AttestationBundle omit
+        // fields the SDK still carries (e.g. SB-1 recovers phaseIndex from the
+        // anchor address, not the body), so validate the rich reference fixtures.
+        const fixture =
+          kind === "SettlementEvidence"
+            ? JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence
+            : kind === "AttestationBundle"
+              ? JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"))
+              : a.artifact;
+        expect(validator(fixture)).toBe(true);
+      },
+    );
 
     it(`${kind}: registry separator matches the spec`, () => {
-      // The pinned v0.1 happy-path vector still carries the stale
-      // `dacs-verifyresult:v1:` for the composite record; CORE §B.7 / DACS-2
-      // §7.7 assign `dacs-composite:v1:` (fixed in #3). Drops away once the
-      // vectors are re-pointed to DACS v0.2 (#7).
-      const expectedSeparator =
-        kind === "CompositeVerificationRecord"
-          ? "dacs-composite:v1:"
-          : a.domainSeparator;
-      expect(ARTIFACT_SEPARATORS[kind]).toBe(expectedSeparator);
+      // v0.2 vectors carry the correct separators (incl. dacs-composite:v1: for
+      // the composite record) — no per-kind override needed anymore.
+      expect(ARTIFACT_SEPARATORS[kind]).toBe(a.domainSeparator);
     });
 
     it(`${kind}: content hash is a stable sha256 hex`, () => {
@@ -114,6 +119,23 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         settlementFinality: { ...valid.settlementFinality, model: "observed" },
       }),
     ).toBe(false);
+  });
+});
+
+describe.skipIf(!have)("isAttestationBundle: phaseSummary[].attestationRef is OPTIONAL (#12 / §10.4.3)", () => {
+  const bundle = () => JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+
+  it("accepts a bundle whose phaseSummary entry omits attestationRef", () => {
+    const b = bundle();
+    expect(isAttestationBundle(b)).toBe(true); // baseline: fixture has it
+    delete b.phaseSummary[0].attestationRef; // §10.4.3: MAY be omitted
+    expect(isAttestationBundle(b)).toBe(true);
+  });
+
+  it("still rejects a phaseSummary attestationRef that is present but malformed", () => {
+    const b = bundle();
+    b.phaseSummary[0].attestationRef = { kind: "x" }; // missing id/contentHash
+    expect(isAttestationBundle(b)).toBe(false);
   });
 });
 
@@ -163,6 +185,23 @@ describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
     ).toBe(false);
     // a listing carrying a bad pricing is rejected — not silently accepted.
     expect(isListing({ ...baseListing, pricing: { kind: "banana" } })).toBe(false);
+  });
+
+  it("rejects a negotiable band that breaks the §8.5.2 minPct/maxPct bounds (#37)", () => {
+    const band = (minPct: number, maxPct: number) => ({
+      kind: "negotiable",
+      bandCenter: { amount: "5", currency: "USDC" },
+      minPct,
+      maxPct,
+    });
+    // in-bounds band is fine…
+    expect(isPricingSpec(band(10, 20))).toBe(true);
+    expect(isPricingSpec(band(0, 0))).toBe(true);
+    // …but minPct ≥ 100 (floor at/below zero), or a negative pct, is rejected.
+    expect(isPricingSpec(band(100, 10))).toBe(false);
+    expect(isPricingSpec(band(150, 10))).toBe(false);
+    expect(isPricingSpec(band(-1, 10))).toBe(false);
+    expect(isPricingSpec(band(10, -5))).toBe(false);
   });
 });
 

@@ -14,14 +14,14 @@ const sign = (bytes: Uint8Array) => ed25519Sign(bytes, priv);
 /** In-memory anchor store implementing the write-once seam. */
 function fakeDeps() {
   const store = new Map<string, Record<string, unknown>>();
-  const anchorAddress = (name: string) => `stor:${name}`;
+  const anchorAddress = async (name: string) => `stor:${name}`;
   const deps: PublishListingDeps & { store: Map<string, Record<string, unknown>> } = {
     store,
     sign,
     anchorAddress,
     readAnchor: async (addr) => store.get(addr) ?? null,
     anchor: async (name, value) => {
-      const address = anchorAddress(name);
+      const address = await anchorAddress(name);
       store.set(address, value as Record<string, unknown>);
       return { address, txRef: `tx-${address}` };
     },

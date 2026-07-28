@@ -14,8 +14,10 @@ const REPO =
   process.env.DACS_STANDARD_REPO ||
   "https://github.com/DACS-Agent-commerce/DACS-Standard.git";
 // Pinned for reproducible conformance runs. Bump deliberately.
+// v0.3 tag (cc01cda) — the latest released Standard. Was v0.1 (239d646); v0.2
+// (7a3117e) was obsolete by the time this landed. See #7.
 const REF =
-  process.env.DACS_STANDARD_REF || "239d646ca0ef97e5e4ce79fd6b7ab30ff3ddebba";
+  process.env.DACS_STANDARD_REF || "cc01cdaee14e7def1c293e648a0bd30e7111cf8e";
 
 function git(args, cwd) {
   execFileSync("git", args, { cwd, stdio: "inherit" });

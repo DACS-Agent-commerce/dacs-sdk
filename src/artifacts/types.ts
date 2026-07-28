@@ -241,7 +241,13 @@ export interface PhaseSummaryEntry {
   kind: string;
   outcome: string;
   txRefs?: TxRef[];
-  attestationRef: AttestationRef;
+  /**
+   * OPTIONAL per DACS-5 §10.4.3 / DACS-Standard#204: the authoritative
+   * attestation set is the top-level `vetRecords[]` / `settlementEvidence[]`, so
+   * a phaseSummary entry MAY omit its attestationRef. Producers SHOULD still emit
+   * it for attestation-bearing phases (runSessionCore does).
+   */
+  attestationRef?: AttestationRef;
 }
 
 /** A per-party bundle signature: `{ party, algorithm, value }`. */
