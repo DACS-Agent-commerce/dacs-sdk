@@ -14,10 +14,14 @@ describe("DACS-1 Demos agent ClaimReference", () => {
     expect(demosAgentClaimRef(`0x${hex.toUpperCase()}`)).toBe(claim);
   });
 
-  test("resolves only the canonical DID profile", () => {
+  test("resolves the canonical DID profile and case-insensitive scheme", () => {
     expect(Buffer.from(demosAgentPublicKey(claim) ?? []).toString("hex")).toBe(hex);
     expect(isDemosAgentClaimRef(claim)).toBe(true);
+    expect(Buffer.from(demosAgentPublicKey(`DID:demos:agent:${hex}`) ?? []).toString("hex")).toBe(hex);
+    expect(demosAgentClaimRef(demosAgentPublicKey(`DID:demos:agent:${hex}`)!)).toBe(claim);
+    expect(isDemosAgentClaimRef(`DiD:demos:agent:${hex}`)).toBe(true);
     expect(demosAgentPublicKey(`did:demos:agent:${hex.toUpperCase()}`)).toBeNull();
+    expect(demosAgentPublicKey(`did:DEMOS:agent:${hex}`)).toBeNull();
     expect(demosAgentPublicKey(`demos:0x${hex}`)).toBeNull();
     expect(isDemosAgentClaimRef(`demos:0x${hex}`)).toBe(false);
   });

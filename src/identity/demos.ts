@@ -1,6 +1,6 @@
 import { DacsError } from "../errors.js";
 
-const CANONICAL_DEMOS_AGENT_DID = /^did:demos:agent:([0-9a-f]{64})$/;
+const DEMOS_AGENT_DID = /^[dD][iI][dD]:demos:agent:([0-9a-f]{64})$/;
 
 /** Build the canonical DACS-1 Demos agent ClaimReference from a raw Ed25519 key. */
 export function demosAgentClaimRef(publicKey: Uint8Array | string): string {
@@ -14,15 +14,16 @@ export function demosAgentClaimRef(publicKey: Uint8Array | string): string {
 }
 
 /**
- * Resolve a canonical Demos agent ClaimReference to its raw Ed25519 key.
- * Non-canonical spellings and the unregistered `demos:0x…` address notation
- * return null instead of being silently aliased.
+ * Resolve a Demos agent ClaimReference to its raw Ed25519 key. The registered
+ * `did` scheme is case-insensitive on read; method components and key material
+ * remain strict. The unregistered `demos:0x…` address notation returns null
+ * instead of being silently aliased.
  */
 export function demosAgentPublicKey(claimRef: string): Uint8Array | null {
-  const match = CANONICAL_DEMOS_AGENT_DID.exec(claimRef);
+  const match = DEMOS_AGENT_DID.exec(claimRef);
   return match ? Uint8Array.from(Buffer.from(match[1]!, "hex")) : null;
 }
 
 export function isDemosAgentClaimRef(claimRef: string): boolean {
-  return CANONICAL_DEMOS_AGENT_DID.test(claimRef);
+  return DEMOS_AGENT_DID.test(claimRef);
 }
