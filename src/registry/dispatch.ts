@@ -17,7 +17,7 @@ export interface RailDispatchOptions {
   /** Buyer EVM private key used by EVM rails to sign payment. */
   evmPrivateKey: string;
   /** Per-deal paywall coordinates (from the listing/agreement, not the registry). */
-  paywall: { url: string; network: string; recipientEvm: string };
+  paywall: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
   /** JSON-RPC URL — required by the direct-transfer (evm-erc20) rail. */
   rpcUrl?: string;
   /** Demos node RPC URL — required by the D402 (pay-d402) rail. */
@@ -52,6 +52,7 @@ export async function settleFromRail(
       const rail = await createX402Rail({
         evmPrivateKey: opts.evmPrivateKey,
         fetchImpl: opts.fetchImpl,
+        requireSessionBinding: true,
       });
       return x402Settle(rail, { ...opts.paywall, asset: tokenAddress });
     }
