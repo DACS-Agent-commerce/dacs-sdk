@@ -1,6 +1,12 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import {
+  createIdempotencyStore,
+  settlementKey,
+  type SettlementIdempotencyStore,
+  type SettlementReconcile,
+} from "./idempotency.js";
 
 /** §9.5.9: the native asset this rail settles. */
 export const DEM_CURRENCY = "DEM";
@@ -170,13 +176,9 @@ export interface PayDemRail {
  * demosdk so the SDK core stays importable without the chain deps installed.
  * Submits via the proven sign → confirm → broadcastAndWait flow.
  *
- * NOT retry-idempotent on its own: every call signs a FRESH transaction, and the
- * payer's nonce is assigned per signing — so a second `settle` for the same
- * session submits a SECOND transfer. (An earlier note here claimed a resubmit
- * reuses the same nonce; that is not true of this implementation.) A crash after
- * chain inclusion but before the SR-2 evidence anchor would therefore pay twice,
- * so the caller MUST run this rail behind the session/phase-keyed settlement
- * idempotency store (#43/#52) — see `payDemSettle`.
+ * The low-level rail signs a fresh transaction on every call. The exported
+ * runSession bridge, {@link payDemSettle}, therefore wraps it in the shared
+ * session/phase-keyed settlement idempotency store (#43/#52).
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
   if (!config?.rpc) throw new DacsError("pay-dem rail requires an rpc URL");
@@ -246,6 +248,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
  * payee-bound-artifact path is separate follow-up work; here `req.payee` is the
  * listing seller carried through the fixed-price agreement.
  *
+ * SAFE BY DEFAULT (#43/#52): settlement is submitted at most once per
+ * `(railId, jobId, phaseIndex)`. The default store protects concurrent and
+ * same-process retries; inject a durable store and reconcile capability for
+ * restart/crash recovery.
+ *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
  * chain moves integer OS base units (1 DEM = 10^9 OS). This asserts the currency
@@ -255,7 +262,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 export function payDemSettle(
   rail: PayDemRail,
   cfg: { recipient?: string; network?: string } = {},
+  opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
+  const store = opts.store ?? createIdempotencyStore();
   return async (req) => {
     if (req.asset !== DEM_CURRENCY) {
       throw new DacsError(
@@ -283,10 +292,16 @@ export function payDemSettle(
     // Decimal DEM → integer OS base units (string/integer math, no float).
     // baseUnits also rejects sub-OS precision (> 9 fractional digits).
     const amountOs = baseUnits(req.amount, DEM_DECIMALS);
-    return rail.settle({
-      recipient: payeeAddress,
-      amount: amountOs,
-      network: cfg.network ?? "demos",
-    });
+    const submit = () =>
+      rail.settle({
+        recipient: payeeAddress,
+        amount: amountOs,
+        network: cfg.network ?? "demos",
+      });
+    return store.once(
+      settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0),
+      submit,
+      opts.reconcile,
+    );
   };
 }

@@ -82,10 +82,11 @@ describe("runSession orchestration (T4)", () => {
       }),
     );
     const ev = anchored.evidence as {
-      settlementFinality: { model: string };
+      settlementFinality: { model: string; finalityBlocks?: number };
       paymentTxRefs: Array<{ kind: string; blockNumber?: number }>;
     };
     expect(ev.settlementFinality.model).toBe("bft-final");
+    expect(ev.settlementFinality.finalityBlocks).toBeUndefined();
     expect(ev.paymentTxRefs[0]!.kind).toBe("demos");
     expect(ev.paymentTxRefs[0]!.blockNumber).toBe(909);
   });
@@ -103,16 +104,17 @@ describe("runSession orchestration (T4)", () => {
       }),
     );
     const ev = anchored.evidence as {
-      settlementFinality: { model: string; finalityBlocks: number };
+      settlementFinality: { model: string; finalityBlocks?: number };
       paymentTxRefs: Array<{ kind: string; blockNumber?: number }>;
     };
     expect(ev.settlementFinality.model).toBe("provider-receipt");
-    expect(ev.settlementFinality.finalityBlocks).toBe(0);
+    expect(ev.settlementFinality.finalityBlocks).toBeUndefined();
     expect(ev.paymentTxRefs[0]!.kind).toBe("payment");
     expect(ev.paymentTxRefs[0]!.blockNumber).toBeUndefined();
   });
 
   test("failed settlement yields outcome=failed", async () => {
+    const anchored: Record<string, unknown> = {};
     const res = await runSessionCore(
       "stor-listing",
       TERMS,
@@ -124,9 +126,43 @@ describe("runSession orchestration (T4)", () => {
           payer: "p",
           payee: "q",
         }),
+        anchor: async (name: string, value: object) => {
+          if (name.includes("evidence")) anchored.evidence = value;
+          return `stor-${name}`;
+        },
       }),
     );
     expect(res.outcome).toBe("failed");
+    expect(
+      (anchored.evidence as { settlementFinality?: unknown }).settlementFinality,
+    ).toBeUndefined();
+  });
+
+  test("block-depth success requires and records finalityBlocks", async () => {
+    const anchored: Record<string, unknown> = {};
+    await runSessionCore(
+      "stor-listing",
+      TERMS,
+      makeDeps({
+        settle: async () => ({
+          ok: true,
+          txHash: "0xdepth",
+          chainId: "eip155:1",
+          payer: "0xbob",
+          payee: "0xalice",
+          finality: { model: "block-depth", finalityBlocks: 12 },
+        }),
+        anchor: async (name: string, value: object) => {
+          if (name.includes("evidence")) anchored.evidence = value;
+          return `stor-${name}`;
+        },
+      }),
+    );
+    expect(
+      (anchored.evidence as {
+        settlementFinality: { model: string; finalityBlocks: number };
+      }).settlementFinality,
+    ).toMatchObject({ model: "block-depth", finalityBlocks: 12 });
   });
 
   test("rejects a rail the listing doesn't offer", async () => {

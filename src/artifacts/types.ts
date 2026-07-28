@@ -186,11 +186,17 @@ export type SettlementFinalityModel =
   | "bft-final";
 
 /** Settlement finality model for a payment. */
-export interface SettlementFinality {
-  model: SettlementFinalityModel;
-  finalityBlocks: number;
-  finalityObservedAt: number;
-}
+export type SettlementFinality =
+  | {
+      model: "block-depth";
+      finalityBlocks: number;
+      finalityObservedAt: number;
+    }
+  | {
+      model: Exclude<SettlementFinalityModel, "block-depth">;
+      finalityBlocks?: never;
+      finalityObservedAt: number;
+    };
 
 /** Detached signature on a standalone artifact: `{ algorithm, signer, value }`. */
 export interface ArtifactSignature {
@@ -200,19 +206,29 @@ export interface ArtifactSignature {
 }
 
 /** DACS-4 — evidence of a settlement (payment / delivery) phase. */
-export interface SettlementEvidence {
+interface SettlementEvidenceBase {
   evidenceVersion: string;
   jobId: string;
   phase: string;
   phaseIndex: number;
-  outcome: SettlementOutcome;
   paymentTxRefs: TxRef[];
-  paymentAmount: PaymentAmount;
-  settlementFinality: SettlementFinality;
   observedAt: number;
   /** Omitted from the signed scope when hashing. */
   signature?: ArtifactSignature;
 }
+
+export type SettlementEvidence =
+  | (SettlementEvidenceBase & {
+      outcome: "success";
+      paymentAmount: PaymentAmount;
+      settlementFinality: SettlementFinality;
+    })
+  | (SettlementEvidenceBase & {
+      outcome: "failure";
+      reason?: string;
+      paymentAmount?: PaymentAmount;
+      settlementFinality?: never;
+    });
 
 /** DACS-5 — a rating recorded as a standalone RatingRecord (§10.6). */
 export interface Rating {

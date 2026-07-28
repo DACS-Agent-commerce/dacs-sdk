@@ -366,6 +366,8 @@ export async function runSessionCore(
         return { ok: false, reason: `jobId ${e.jobId} ≠ ${jobId}` };
       if (e.phase !== terms.price.rail)
         return { ok: false, reason: `rail ${e.phase} ≠ ${terms.price.rail}` };
+      if (!e.paymentAmount)
+        return { ok: false, reason: "settlement evidence has no payment amount" };
       if (e.paymentAmount.amount !== terms.price.amount)
         return { ok: false, reason: "settled amount mismatch" };
       if (e.paymentAmount.currency !== terms.price.asset)
@@ -392,12 +394,11 @@ export async function runSessionCore(
       // model — e.g. §9.5.9 pay-dem's `bft-final` + block height — reports it via
       // `pay.finality` / `pay.blockNumber` / `pay.txRefKind`, so the evidence
       // asserts the finality model that actually settled, not a hardcoded one (F7/#22).
-      const evidence: SettlementEvidence = {
+      const evidenceBase = {
         evidenceVersion: "1",
         jobId,
         phase: terms.price.rail,
         phaseIndex: 0,
-        outcome: settledOk ? "success" : "failure",
         paymentTxRefs: [
           {
             rail: pay.chainId,
@@ -407,13 +408,28 @@ export async function runSessionCore(
           },
         ],
         paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
-        settlementFinality: {
-          model: pay.finality?.model ?? "provider-receipt",
-          finalityBlocks: pay.finality?.finalityBlocks ?? 0,
-          finalityObservedAt: observedAt,
-        },
         observedAt,
       };
+      let evidence: SettlementEvidence;
+      if (!settledOk) {
+        evidence = { ...evidenceBase, outcome: "failure" };
+      } else {
+        const model = pay.finality?.model ?? "provider-receipt";
+        if (model === "block-depth" && pay.finality?.finalityBlocks === undefined) {
+          throw new CounterpartyError(
+            "settlement rail reported block-depth finality without finalityBlocks",
+          );
+        }
+        const settlementFinality =
+          model === "block-depth"
+            ? {
+                model,
+                finalityBlocks: pay.finality!.finalityBlocks!,
+                finalityObservedAt: observedAt,
+              }
+            : { model, finalityObservedAt: observedAt };
+        evidence = { ...evidenceBase, outcome: "success", settlementFinality };
+      }
       return deps.sign(evidence, ARTIFACT_SEPARATORS.SettlementEvidence);
     },
   );

@@ -7,6 +7,10 @@ import {
   type DemosTransferResult,
   type PayDemRail,
 } from "../../src/rails/payDem.js";
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+} from "../../src/rails/idempotency.js";
 
 const RECIPIENT = "demos1recipientaddress0000000000000000000000";
 const PAYER = "demos1payeraddress00000000000000000000000000";
@@ -154,6 +158,40 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const client = fakeClient();
     await settleWith(client)(req({ amount: "5.1" }));
     expect(client.sent!.amountOs).toBe(5_100_000_000n);
+  });
+
+  test("SAFE BY DEFAULT: repeated settlement for one session phase submits once", async () => {
+    const client = fakeClient();
+    let transfers = 0;
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: async (params) => {
+        transfers += 1;
+        return payDemSettleCore(params, client);
+      },
+    };
+    const settle = payDemSettle(rail, { network: "demos" });
+    const first = await settle(req());
+    const second = await settle(req());
+    expect(transfers).toBe(1);
+    expect(second).toEqual(first);
+  });
+
+  test("an injected durable store dedupes across bridge instances after restart", async () => {
+    const client = fakeClient();
+    let transfers = 0;
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: async (params) => {
+        transfers += 1;
+        return payDemSettleCore(params, client);
+      },
+    };
+    const store = createIdempotencyStore(createInMemorySettlementLog());
+    await payDemSettle(rail, { network: "demos" }, { store })(req());
+    const resumed = await payDemSettle(rail, { network: "demos" }, { store })(req());
+    expect(transfers).toBe(1);
+    expect(resumed.txHash).toBe("demos:0xabc");
   });
 
   test("rejects a non-DEM asset (pay-dem settles DEM only)", async () => {
