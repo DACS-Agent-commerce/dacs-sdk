@@ -26,20 +26,55 @@
 export type AnchorKind =
   | "listing"
   | "listing-revocation"
-  | "verification"
-  | "agreement"
+  | "verification-result"
+  | "verification-composite"
+  | "verification-registry"
+  | "agreement-commitment"
+  | "rail-registry"
   | "settlement-evidence"
+  | "deliverable"
+  | "entitlement"
+  | "settlement-amendment"
   | "bundle"
+  | "rating"
   | "unknown";
 
-/** Classify a DACS logical address by its `dacsN[...]:` structural prefix. */
+/**
+ * Classify exact current-profile logical-address structures. Broad `dacsN:`
+ * prefix matching is deliberately insufficient: ratings are not bundles, and
+ * only `dacs4:payment:` is SettlementEvidence.
+ */
 export function classifyAnchor(logicalAddress: string): AnchorKind {
-  if (logicalAddress.startsWith("dacs1-revoked:")) return "listing-revocation";
-  if (logicalAddress.startsWith("dacs1:")) return "listing";
-  if (logicalAddress.startsWith("dacs2:")) return "verification";
-  if (logicalAddress.startsWith("dacs3:")) return "agreement";
-  if (logicalAddress.startsWith("dacs4:")) return "settlement-evidence";
-  if (logicalAddress.startsWith("dacs5:")) return "bundle";
+  const segment = "[^:]+";
+  if (new RegExp(`^dacs1-revoked:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
+    return "listing-revocation";
+  }
+  if (new RegExp(`^dacs1:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
+    return "listing";
+  }
+  if (logicalAddress === "dacs2:registry:v0.1") return "verification-registry";
+  if (new RegExp(`^dacs2:composite:${segment}:${segment}$`).test(logicalAddress)) {
+    return "verification-composite";
+  }
+  if (new RegExp(`^dacs2:${segment}:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
+    return "verification-result";
+  }
+  if (new RegExp(`^dacs3:commit:${segment}$`).test(logicalAddress)) {
+    return "agreement-commitment";
+  }
+  if (logicalAddress === "dacs4:registry:v0.1") return "rail-registry";
+  if (new RegExp(`^dacs4:payment:${segment}:${segment}:(0|[1-9][0-9]*)(:resolved)?$`).test(logicalAddress)) {
+    return "settlement-evidence";
+  }
+  if (new RegExp(`^dacs4:deliverable:${segment}$`).test(logicalAddress)) return "deliverable";
+  if (new RegExp(`^dacs4:entitlement:${segment}:(0|[1-9][0-9]*)$`).test(logicalAddress)) {
+    return "entitlement";
+  }
+  if (new RegExp(`^dacs4:amendment:${segment}:[0-9a-f]{64}:(0|[1-9][0-9]*)$`).test(logicalAddress)) {
+    return "settlement-amendment";
+  }
+  if (/^stor-[0-9a-f]{64}$/.test(logicalAddress)) return "bundle";
+  if (new RegExp(`^dacs5:rating:${segment}:${segment}$`).test(logicalAddress)) return "rating";
   return "unknown";
 }
 

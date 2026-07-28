@@ -14,9 +14,11 @@ import type { AnchorBinding, BindingIndex } from "./binding.js";
  *     points at attacker bytes fails here (the hash won't match the record the
  *     honest producer signed). Injected `contentHashOf` so this stays pure and
  *     substrate-neutral (wire `contentHash ∘ stripSignature`).
- *  2. SIGNATURE — an optional injected check. When supplied, the record's
- *     signature MUST verify; when omitted, the caller takes responsibility for
- *     the signature separately (e.g. via the artifact-specific verifier).
+ *  2. ARTIFACT VERIFICATION — an injected artifact-specific check must validate
+ *     the canonical signed scope, registered separator, supported version,
+ *     signature algorithm, authorized signer, and expected owner/role. Without
+ *     that check the bytes remain `unverifiable`, even when their hash matches an
+ *     untrusted binding selected by an attacker.
  *
  * Every failure mode is a distinct, fail-closed status — a substrate hiccup
  * (`indeterminate`) is never conflated with a real absence (`absent`) or a
@@ -45,9 +47,9 @@ export interface VerifiedReadDeps {
    */
   contentHashOf: (record: Record<string, unknown>) => string;
   /**
-   * OPTIONAL signature check over the read record. When supplied, the record MUST
-   * verify or the read is `signature-invalid`. When omitted, `verified` asserts
-   * only the content-hash binding and the caller MUST verify the signature itself.
+   * Artifact-specific signature and authorization check. When omitted the record
+   * can be returned for inspection, but it MUST remain `unverifiable`: the
+   * binding, including its contentHash, is untrusted discovery data.
    */
   verifySignature?: (
     record: Record<string, unknown>,
@@ -94,7 +96,8 @@ export async function resolveAndRead(
     }
   }
 
-  // (2) Signature: when a verifier is supplied it MUST pass.
+  // (2) Authorship/authorization: a hash against an untrusted pointer is never
+  // enough to call attacker-selected bytes verified.
   if (deps.verifySignature) {
     let ok: boolean;
     try {
@@ -108,14 +111,12 @@ export async function resolveAndRead(
       };
     }
     if (!ok) return { status: "signature-invalid", nativeAddress, record };
-  } else if (binding.contentHash === undefined) {
-    // Nothing to check here: no binding hash AND no signature verifier. The record
-    // is returned but NOT verified — the caller must verify it before trusting it.
+  } else {
     return {
       status: "unverifiable",
       nativeAddress,
       record,
-      reason: "binding carries no contentHash and no signature verifier was supplied",
+      reason: "no artifact-specific signature and signer-authorisation verifier was supplied",
     };
   }
 

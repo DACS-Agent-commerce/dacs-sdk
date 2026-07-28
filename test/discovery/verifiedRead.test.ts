@@ -40,9 +40,12 @@ function depsWith(
 }
 
 describe("resolveAndRead (#54 typed read-with-verification)", () => {
-  test("verified: binding resolves, record reads, content hash matches", async () => {
+  test("verified: binding resolves and the artifact-specific verifier authorizes the record", async () => {
     const index = createInMemoryBindingIndex([binding()]);
-    const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith({ "stor-real": RECORD }));
+    const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith(
+      { "stor-real": RECORD },
+      { verifySignature: (rec) => rec.signature === "sig-real" },
+    ));
     expect(r.status).toBe("verified");
     if (r.status === "verified") expect(r.record).toEqual(RECORD);
   });
@@ -55,6 +58,17 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     const index = createInMemoryBindingIndex([forged]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith({ "stor-forged": { evil: true } }));
     expect(r.status).toBe("hash-mismatch");
+  });
+
+  test("FORGERY DEFENSE: attacker-selected pointer, hash and bytes remain unverifiable", async () => {
+    const evil = { owner: SELLER, payload: "attacker-controlled" };
+    const forged = binding({
+      nativeAddress: "stor-forged",
+      contentHash: contentHashOf(evil),
+    });
+    const index = createInMemoryBindingIndex([forged]);
+    const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith({ "stor-forged": evil }));
+    expect(r.status).toBe("unverifiable");
   });
 
   test("absent: no binding for this owner", async () => {

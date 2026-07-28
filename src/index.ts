@@ -106,11 +106,20 @@ export {
   resolveLatestVersion,
   createInMemoryBindingIndex,
   resolveAndRead,
+  classifyAnchor,
+  scanAnchorPage,
+  scanAllAnchors,
   type AnchorBinding,
   type BindingResolution,
   type BindingIndex,
   type VerifiedRead,
   type VerifiedReadDeps,
+  type AnchorKind,
+  type RawAnchorEntry,
+  type RawScanPage,
+  type ScannedAnchor,
+  type ScanPage,
+  type ScanOptions,
 } from "./discovery/index.js";
 
 // Deterministic identityTier derivation (DACS-1 §6.3.2.1, IT-1..IT-3).

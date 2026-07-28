@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -6,15 +7,28 @@ import {
   scanAnchorPage,
   type RawScanPage,
 } from "../../src/discovery/index.js";
+import {
+  classifyAnchor as classifyAnchorFromRoot,
+  scanAllAnchors as scanAllAnchorsFromRoot,
+  scanAnchorPage as scanAnchorPageFromRoot,
+} from "../../src/index.js";
 
 describe("classifyAnchor (§6.3.4 logical-address kinds)", () => {
-  test("classifies each dacsN kind by structural prefix", () => {
+  test("classifies exact current-profile logical address structures", () => {
     expect(classifyAnchor("dacs1:0xseller:svc:v1")).toBe("listing");
     expect(classifyAnchor("dacs1-revoked:0xseller:svc:v1")).toBe("listing-revocation");
-    expect(classifyAnchor("dacs2:verifyrecord:job-1")).toBe("verification");
-    expect(classifyAnchor("dacs3:agreement:job-1")).toBe("agreement");
-    expect(classifyAnchor("dacs4:evidence:job-1")).toBe("settlement-evidence");
-    expect(classifyAnchor("dacs5:bundle:job-1")).toBe("bundle");
+    expect(classifyAnchor("dacs2:job-1:web2-domain:example.com:v1")).toBe("verification-result");
+    expect(classifyAnchor("dacs2:composite:job-1:did%3Ademos%3Aagent%3Aabc")).toBe("verification-composite");
+    expect(classifyAnchor("dacs2:registry:v0.1")).toBe("verification-registry");
+    expect(classifyAnchor("dacs3:commit:job-1")).toBe("agreement-commitment");
+    expect(classifyAnchor("dacs4:registry:v0.1")).toBe("rail-registry");
+    expect(classifyAnchor("dacs4:payment:job-1:pay-x402:3")).toBe("settlement-evidence");
+    expect(classifyAnchor("dacs4:payment:job-1:pay-x402:3:resolved")).toBe("settlement-evidence");
+    expect(classifyAnchor("dacs4:deliverable:job-1")).toBe("deliverable");
+    expect(classifyAnchor("dacs4:entitlement:job-1:0")).toBe("entitlement");
+    expect(classifyAnchor(`dacs4:amendment:job-1:${"a".repeat(64)}:0`)).toBe("settlement-amendment");
+    expect(classifyAnchor(`stor-${"b".repeat(64)}`)).toBe("bundle");
+    expect(classifyAnchor("dacs5:rating:job-1:did%3Ademos%3Aagent%3Aabc")).toBe("rating");
   });
 
   test("revocation is not misread as a listing (prefix order matters)", () => {
@@ -25,6 +39,18 @@ describe("classifyAnchor (§6.3.4 logical-address kinds)", () => {
   test("a non-DACS / unknown address is `unknown`", () => {
     expect(classifyAnchor("stor-abc")).toBe("unknown");
     expect(classifyAnchor("dacs9:whatever")).toBe("unknown");
+    expect(classifyAnchor("dacs5:bundle:job-1")).toBe("unknown");
+    expect(classifyAnchor("dacs4:deliverable:job-1")).not.toBe("settlement-evidence");
+  });
+
+  test("the scanner is reachable from the supported package root", () => {
+    expect(classifyAnchorFromRoot).toBe(classifyAnchor);
+    expect(scanAnchorPageFromRoot).toBe(scanAnchorPage);
+    expect(scanAllAnchorsFromRoot).toBe(scanAllAnchors);
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+      exports: Record<string, unknown>;
+    };
+    expect(packageJson.exports["./discovery"]).toBeDefined();
   });
 });
 
@@ -49,7 +75,7 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
         entries: [
           entry("stor-1", "dacs1:s:svc:v1"),
           entry("stor-2"), // no logical metadata → not a DACS anchor
-          entry("stor-3", "dacs5:bundle:j1"),
+          entry("stor-3", `stor-${"3".repeat(64)}`),
         ],
         nextCursor: null,
       },
@@ -66,7 +92,7 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
     const seen = new Set<string>();
     const fetch = pagedFetcher([
       { entries: [entry("stor-1", "dacs1:s:svc:v1")], nextCursor: "1" },
-      { entries: [entry("stor-1", "dacs1:s:svc:v1"), entry("stor-2", "dacs5:bundle:j1")], nextCursor: null },
+      { entries: [entry("stor-1", "dacs1:s:svc:v1"), entry("stor-2", `stor-${"2".repeat(64)}`)], nextCursor: null },
     ]);
     const p1 = await scanAnchorPage(fetch, null, { seen });
     const p2 = await scanAnchorPage(fetch, "1", { seen });
@@ -95,14 +121,14 @@ describe("scanAllAnchors (drain the whole history)", () => {
   test("accumulates every page, deduped, until nextCursor is null", async () => {
     const fetch = pagedFetcher([
       { entries: [entry("a", "dacs1:s:svc:v1")], nextCursor: "1" },
-      { entries: [entry("b", "dacs3:agreement:j1"), entry("a", "dacs1:s:svc:v1")], nextCursor: "2" },
-      { entries: [entry("c", "dacs5:bundle:j1")], nextCursor: null },
+      { entries: [entry("b", "dacs3:commit:j1"), entry("a", "dacs1:s:svc:v1")], nextCursor: "2" },
+      { entries: [entry("c", `stor-${"c".repeat(64)}`)], nextCursor: null },
     ]);
     const res = await scanAllAnchors(fetch);
     expect(res.status).toBe("complete");
     if (res.status === "complete") {
       expect(res.anchors.map((x) => x.nativeAddress)).toEqual(["a", "b", "c"]); // dedup across pages
-      expect(res.anchors.map((x) => x.kind)).toEqual(["listing", "agreement", "bundle"]);
+      expect(res.anchors.map((x) => x.kind)).toEqual(["listing", "agreement-commitment", "bundle"]);
     }
   });
 
