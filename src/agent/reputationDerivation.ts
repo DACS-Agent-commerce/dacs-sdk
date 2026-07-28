@@ -1,6 +1,7 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import type { AttestationBundle, AttestationRef } from "../artifacts/types.js";
+import { bundlesDiverge } from "./bundleDivergence.js";
 
 /**
  * DACS-5 §10.5 reputation derivation — the spec-faithful, windowed reputation
@@ -101,22 +102,10 @@ function perspectiveFlip(outcome: string): string {
   }
 }
 
-/** §10.4.3(d) "canonically diverge": contradictory outcome or phaseSummary outcome/errorClass. */
-function canonicallyDiverge(a: AttestationBundle, b: AttestationBundle): boolean {
-  if (a.outcome !== b.outcome) return true;
-  const pa = a.phaseSummary ?? [];
-  const pb = b.phaseSummary ?? [];
-  if (pa.length !== pb.length) return true;
-  for (let i = 0; i < pa.length; i++) {
-    if (pa[i]!.outcome !== pb[i]!.outcome) return true;
-    if (
-      (pa[i] as { errorClass?: unknown }).errorClass !==
-      (pb[i] as { errorClass?: unknown }).errorClass
-    )
-      return true;
-  }
-  return false;
-}
+// §10.4.3(d) divergence uses the ONE shared predicate (bundleDivergence.js),
+// identical to the two-sided consistency verdict — presence-mismatch by phase
+// `index` counts as divergence (#224). Previously a private by-position copy here
+// that disagreed with bundleConsistency on length-mismatched phaseSummary.
 
 /** §10.4.1 signed-scope content hash of a bundle (omit signatures + anchoredByRole). */
 function bundleContentHash(bundle: AttestationBundle): string {
@@ -209,7 +198,7 @@ export function deriveReputation(
     const selfCopy = valid.find((b) => b.anchoredByRole === roleOfParty);
     const cp = valid.find((b) => b.anchoredByRole !== roleOfParty);
     if (selfCopy) {
-      if (cp && canonicallyDiverge(cp, selfCopy)) continue; // genuine dispute → exclude
+      if (cp && bundlesDiverge(cp, selfCopy)) continue; // genuine dispute → exclude
       reconciled.push(selfCopy);
       outcomes.push(selfCopy.outcome);
     } else if (cp) {
