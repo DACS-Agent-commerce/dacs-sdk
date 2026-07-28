@@ -23,6 +23,7 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
+import { publishListingCore } from "./publishListingCore.js";
 import { discoverListings } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
 import { buildSignedArtifact, verifySignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
@@ -78,8 +79,12 @@ export interface AgentConfig {
 }
 
 export interface PublishResult {
-  /** Storage address the listing was anchored at. */
+  /** Native storage address the listing was anchored at. */
   ref: string;
+  /** §6.3.4 colon-bearing LOGICAL address — the discovery key / metadata (#46). */
+  logicalAddress: string;
+  /** Colon-free NATIVE storage-program name the logical address encodes to (#46). */
+  storageName: string;
   txRef?: string;
 }
 
@@ -173,14 +178,16 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
     },
 
     async publishListing(listing: Listing): Promise<PublishResult> {
-      const signed = await buildSignedArtifact(
-        listing,
-        ARTIFACT_SEPARATORS.Listing,
+      // Versioned, write-once publish (§6.3.4, #29/#46) — pure core over the
+      // adapter's owner-bound immutable seam. Do not use anchorAddress() here:
+      // on current Demos it predicts the NEXT nonce-derived create address and
+      // cannot locate an existing version slot (#70).
+      return publishListingCore(listing, {
         sign,
-      );
-      const name = `dacs1:listing:${listing.agentId}:${listing.serviceId}`;
-      const { address, txRef } = await adapter.anchor(name, signed);
-      return { ref: address, txRef };
+        scanOwnAnchorsByNamePrefix: (prefix) =>
+          adapter.scanOwnAnchorsByNamePrefix(prefix),
+        anchorWriteOnce: (name, value) => adapter.anchorWriteOnce(name, value),
+      });
     },
 
     async verifyBundle(ref: string): Promise<BundleVerification> {

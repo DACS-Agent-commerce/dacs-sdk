@@ -85,7 +85,16 @@ export function isListing(v: unknown): v is Listing {
     isStrArray(v.supportedDelivery) &&
     // pricing is OPTIONAL (#34; full required-fidelity in #5) — but if present it
     // MUST be a well-formed PricingSpec, not any object.
-    (v.pricing === undefined || isPricingSpec(v.pricing))
+    (v.pricing === undefined || isPricingSpec(v.pricing)) &&
+    // listingVersion is OPTIONAL (absent ⇒ v1) — but if present it MUST be a
+    // positive integer (#46/#29). runSessionCore copies it into
+    // listingRef.version, so an unvalidated value (e.g. a string) would flow
+    // into the bundle's version pin on the READ path even though publish
+    // validates its own writes.
+    (v.listingVersion === undefined ||
+      (typeof v.listingVersion === "number" &&
+        Number.isInteger(v.listingVersion) &&
+        v.listingVersion >= 1))
   );
 }
 

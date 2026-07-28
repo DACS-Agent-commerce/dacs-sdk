@@ -21,6 +21,22 @@ export interface CandidateOutcome {
   error: boolean;
 }
 
+/** One readable anchor confirmed as owned by the connected writer. */
+export interface OwnedAnchor {
+  address: string;
+  programName: string;
+  value: Record<string, unknown>;
+}
+
+/**
+ * Fail-closed result of scanning the connected writer's anchors by an exact
+ * program-name prefix. An RPC/read failure is never represented as an empty
+ * successful result.
+ */
+export type OwnedAnchorScan =
+  | { status: "ok"; anchors: OwnedAnchor[] }
+  | { status: "indeterminate"; reason: string };
+
 /**
  * Classify a name resolution from the per-candidate owner-confirmation outcomes.
  *
@@ -38,16 +54,26 @@ export function classifyAnchorResolution(
   expectedOwner: string,
 ): AnchorResolution {
   const want = expectedOwner.trim().toLowerCase();
-  for (const o of outcomes) {
-    if (!o.error && o.owner != null && o.owner.trim().toLowerCase() === want) {
-      return { status: "present", address: o.address };
-    }
+  const matches = outcomes.filter(
+    (o) =>
+      !o.error &&
+      o.owner != null &&
+      o.owner.trim().toLowerCase() === want,
+  );
+  if (matches.length > 1) {
+    return {
+      status: "indeterminate",
+      reason: "multiple programs with the same name are owned by the expected writer",
+    };
   }
   if (outcomes.some((o) => o.error)) {
     return {
       status: "indeterminate",
       reason: "a candidate program could not be read to confirm ownership",
     };
+  }
+  if (matches.length === 1) {
+    return { status: "present", address: matches[0]!.address };
   }
   return { status: "absent" };
 }
