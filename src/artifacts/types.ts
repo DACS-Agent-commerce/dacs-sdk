@@ -78,6 +78,14 @@ export interface Listing {
   supportedDelivery: string[];
   /** DACS-1 `pricing: PricingSpec` (§ Listing) — how the service is priced. */
   pricing?: PricingSpec;
+  /**
+   * DACS-1 `listingVersion` (§6.3.4) — monotonic per listingId. A listing is
+   * anchored at a VERSIONED address (`dacs1:<claim>:<listingId>:v<N>`), so an
+   * edit is published as a NEW version at a NEW address and prior versions stay
+   * immutable — old bundles keep verifying against the version they pinned (#29).
+   * Optional here for back-compat; treated as 1 when absent.
+   */
+  listingVersion?: number;
 }
 
 /**
@@ -163,6 +171,8 @@ export interface TxRef {
   rail: string;
   txHash: string;
   kind: string;
+  /** Block/ledger height the tx landed at — carried by rails that report it (e.g. §9.5.9 `demos`). */
+  blockNumber?: number;
 }
 
 /** A settled payment amount. */
@@ -184,11 +194,17 @@ export type SettlementFinalityModel =
   | "bft-final";
 
 /** Settlement finality model for a payment. */
-export interface SettlementFinality {
-  model: SettlementFinalityModel;
-  finalityBlocks: number;
-  finalityObservedAt: number;
-}
+export type SettlementFinality =
+  | {
+      model: "block-depth";
+      finalityBlocks: number;
+      finalityObservedAt: number;
+    }
+  | {
+      model: Exclude<SettlementFinalityModel, "block-depth">;
+      finalityBlocks?: never;
+      finalityObservedAt: number;
+    };
 
 /** Detached signature on a standalone artifact: `{ algorithm, signer, value }`. */
 export interface ArtifactSignature {
@@ -198,19 +214,29 @@ export interface ArtifactSignature {
 }
 
 /** DACS-4 — evidence of a settlement (payment / delivery) phase. */
-export interface SettlementEvidence {
+interface SettlementEvidenceBase {
   evidenceVersion: string;
   jobId: string;
   phase: string;
   phaseIndex: number;
-  outcome: SettlementOutcome;
   paymentTxRefs: TxRef[];
-  paymentAmount: PaymentAmount;
-  settlementFinality: SettlementFinality;
   observedAt: number;
   /** Omitted from the signed scope when hashing. */
   signature?: ArtifactSignature;
 }
+
+export type SettlementEvidence =
+  | (SettlementEvidenceBase & {
+      outcome: "success";
+      paymentAmount: PaymentAmount;
+      settlementFinality: SettlementFinality;
+    })
+  | (SettlementEvidenceBase & {
+      outcome: "failure";
+      reason?: string;
+      paymentAmount?: PaymentAmount;
+      settlementFinality?: never;
+    });
 
 /** DACS-5 — a rating recorded as a standalone RatingRecord (§10.6). */
 export interface Rating {

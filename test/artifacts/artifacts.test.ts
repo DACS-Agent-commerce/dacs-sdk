@@ -119,6 +119,23 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         settlementFinality: { ...valid.settlementFinality, model: "observed" },
       }),
     ).toBe(false);
+    // Finality is success-only.
+    expect(
+      isSettlementEvidence({ ...valid, outcome: "failure", settlementFinality: undefined }),
+    ).toBe(true);
+    expect(isSettlementEvidence({ ...valid, outcome: "failure" })).toBe(false);
+    expect(isSettlementEvidence({ ...valid, settlementFinality: undefined })).toBe(false);
+    // finalityBlocks belongs only to block-depth.
+    expect(
+      isSettlementEvidence({
+        ...valid,
+        settlementFinality: {
+          model: "bft-final",
+          finalityBlocks: 1,
+          finalityObservedAt: valid.settlementFinality.finalityObservedAt,
+        },
+      }),
+    ).toBe(false);
   });
 });
 
@@ -202,5 +219,36 @@ describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
     expect(isPricingSpec(band(150, 10))).toBe(false);
     expect(isPricingSpec(band(-1, 10))).toBe(false);
     expect(isPricingSpec(band(10, -5))).toBe(false);
+  });
+});
+
+// Ungated (no vendored vectors needed): the READ-path guard for listingVersion.
+// Publish validates its own writes, but a listing anchored by another writer (or
+// an older SDK) reaches consumers only through isListing — so the version pin
+// that flows into listingRef.version must be validated HERE (#46/#29).
+describe("isListing — listingVersion clause (#46/#29)", () => {
+  const base = {
+    agentId: "did:demos:agent:seller",
+    serviceId: "svc-1",
+    name: "n",
+    description: "d",
+    claimRequirements: [],
+    supportedNegotiation: ["fixed-price"],
+    supportedPaymentRails: ["pay-x402"],
+    supportedDelivery: ["inline"],
+  };
+
+  it("accepts an absent listingVersion (⇒ v1) and positive integers", () => {
+    expect(isListing(base)).toBe(true);
+    expect(isListing({ ...base, listingVersion: 1 })).toBe(true);
+    expect(isListing({ ...base, listingVersion: 7 })).toBe(true);
+  });
+
+  it("rejects a non-integer, zero, negative, fractional, or string version", () => {
+    expect(isListing({ ...base, listingVersion: "bad" })).toBe(false);
+    expect(isListing({ ...base, listingVersion: 0 })).toBe(false);
+    expect(isListing({ ...base, listingVersion: -1 })).toBe(false);
+    expect(isListing({ ...base, listingVersion: 1.5 })).toBe(false);
+    expect(isListing({ ...base, listingVersion: null })).toBe(false);
   });
 });

@@ -52,6 +52,52 @@ describe("SessionStore in-memory conformance (#55)", () => {
     }
   });
 
+  test("semantic checkpoint claim cannot be reacquired after the revision advances", async () => {
+    const s = fresh();
+    await s.create({ jobId: "j1", now: 0 });
+    const first = await s.claimCheckpoint({
+      jobId: "j1",
+      key: "settle:0",
+      data: { rail: "pay-x402" },
+      phase: "settling",
+      now: 1,
+    });
+    expect(first.ok).toBe(true);
+
+    // This worker starts later and therefore observes the revision written by
+    // the first claimant. A plain revision CAS would let it append another
+    // intent; the semantic claim must still report the in-flight effect as held.
+    const staggered = await s.claimCheckpoint({
+      jobId: "j1",
+      key: "settle:0",
+      data: { rail: "pay-x402" },
+      phase: "settling",
+      now: 2,
+    });
+    expect(staggered.ok).toBe(false);
+    if (!staggered.ok) expect(staggered.reason).toBe("held");
+
+    if (first.ok) {
+      await s.transition({
+        jobId: "j1",
+        expectedRevision: first.record.revision,
+        checkpoint: {
+          key: "settle:0",
+          stage: "outcome",
+          data: { txHash: "0xpaid", chainId: "eip155:84532", ok: true },
+        },
+        now: 3,
+      });
+    }
+    const completed = await s.claimCheckpoint({
+      jobId: "j1",
+      key: "settle:0",
+      now: 4,
+    });
+    expect(completed.ok).toBe(false);
+    if (!completed.ok) expect(completed.reason).toBe("completed");
+  });
+
   test("receipts are immutable: a different ref for a recorded kind is rejected; same ref is idempotent", async () => {
     const s = fresh();
     await s.create({ jobId: "j1", now: 0 });

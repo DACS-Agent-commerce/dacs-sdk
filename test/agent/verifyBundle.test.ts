@@ -74,7 +74,6 @@ function buildArtifacts() {
     paymentAmount: { amount: "1000000", currency: "USDC" },
     settlementFinality: {
       model: "provider-receipt",
-      finalityBlocks: 0,
       finalityObservedAt: 1780000000000,
     },
     observedAt: 1780000000000,
@@ -206,8 +205,11 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     // The signed evidence the bundle points at is altered after the fact: its
     // content hash no longer matches the ref, even though the bundle signature
-    // is still valid.
-    fx.evidence.outcome = "failure";
+    // is still valid. Tamper a benign field (observedAt) so the artifact stays a
+    // structurally-valid SettlementEvidence and the mismatch surfaces as a
+    // hash-mismatch — NOT invalid-shape (flipping outcome→failure would also
+    // strip the required finality and trip the shape check first, §9.7).
+    fx.evidence.observedAt = 1780000000001;
     const res = await verifyBundleCore("ref", depsFor(fx));
     expect(res.signatures[0]?.verdict).toBe("valid");
     expect(res.ok).toBe(false);

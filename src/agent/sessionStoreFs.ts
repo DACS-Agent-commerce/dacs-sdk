@@ -1,10 +1,23 @@
-import { mkdir, readFile, writeFile, rename, unlink, readdir, open, stat } from "node:fs/promises";
+import {
+  link,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { DacsError } from "../errors.js";
 import {
   assertSecretFreeCheckpoint,
   SESSION_STORE_VERSION,
+  type CheckpointClaimInput,
+  type CheckpointClaimResult,
   type SessionLoad,
   type SessionRecord,
   type SessionStore,
@@ -17,9 +30,12 @@ import {
  * for a single host. Each session is one JSON file written via temp-file +
  * `rename` (atomic on POSIX); a per-session lock file serialises read-modify-write
  * so compare-and-set and lease semantics hold across concurrent workers/processes;
- * anti-replay hash bindings are one file per hash created with `O_EXCL`, so a
- * cross-session reuse is rejected atomically. Files are written mode 0600 and
- * directories 0700 — and records carry only references, never secrets.
+ * anti-replay hash bindings are one file per hash published with an atomic
+ * no-overwrite hard-link, so a cross-session reuse is rejected. Session creation uses a recoverable
+ * session-first transaction: atomically persist the complete session, then commit
+ * its hash binding. A crash leaves an unbound but recoverable session, never a
+ * binding that another live creator can mistake for an orphan. Files are written
+ * mode 0600 and directories 0700 — and records carry only references, never secrets.
  *
  * `load` fails CLOSED: unparseable state is `corrupt` (including a field of the
  * wrong type, not just bad JSON) and a newer schema is `unsupported` — neither is
@@ -85,6 +101,24 @@ export async function createFsSessionStore(
     const tmp = `${path}.tmp`;
     await writeFile(tmp, JSON.stringify(value), { mode: FILE_MODE });
     await rename(tmp, path);
+  }
+
+  /**
+   * Publish a complete JSON file only if `path` does not exist. The hard-link is
+   * the atomic commit: readers never observe a partially-written session or hash
+   * binding, and concurrent creators cannot overwrite one another.
+   */
+  async function exclusiveWriteJson(path: string, value: unknown): Promise<void> {
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tmp, JSON.stringify(value), {
+        mode: FILE_MODE,
+        flag: "wx",
+      });
+      await link(tmp, path);
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
   }
 
   async function readSession(jobId: string): Promise<SessionLoad> {
@@ -164,40 +198,64 @@ export async function createFsSessionStore(
   ): Promise<{ ok: boolean; boundTo?: string }> => {
     const path = hashPath(hash);
     try {
-      const handle = await open(path, "wx", FILE_MODE); // atomic reserve
-      await handle.writeFile(JSON.stringify({ jobId, kind }));
-      await handle.close();
+      await exclusiveWriteJson(path, { jobId, kind });
       return { ok: true, boundTo: jobId };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const existing = JSON.parse(await readFile(path, "utf8")) as { jobId: string };
+      let existing: { jobId?: unknown; kind?: unknown };
+      try {
+        existing = JSON.parse(await readFile(path, "utf8")) as {
+          jobId?: unknown;
+          kind?: unknown;
+        };
+      } catch {
+        throw new DacsError(`hash binding ${hash} is corrupt; refusing to reclaim it`);
+      }
+      if (
+        typeof existing.jobId !== "string" ||
+        (existing.kind !== "agreement" && existing.kind !== "transaction")
+      ) {
+        throw new DacsError(`hash binding ${hash} has an invalid shape; refusing to reclaim it`);
+      }
       if (existing.jobId === jobId) {
         return { ok: true, boundTo: jobId }; // idempotent for the same session
-      }
-      // Self-heal an ORPHAN reservation: a crash between the hash reserve and the
-      // exclusive session-file create (#67) leaves a binding pointing at a session
-      // that never existed. If the bound session is missing, the reservation is
-      // stale — reclaim it via unlink + one O_EXCL retry (two concurrent healers
-      // race the O_EXCL; exactly one wins, the loser re-reads a live binding).
-      const boundSession = await readSession(existing.jobId);
-      if (boundSession.status === "missing") {
-        await unlink(path).catch(() => {});
-        try {
-          const handle = await open(path, "wx", FILE_MODE);
-          await handle.writeFile(JSON.stringify({ jobId, kind }));
-          await handle.close();
-          return { ok: true, boundTo: jobId };
-        } catch (e2) {
-          if ((e2 as NodeJS.ErrnoException).code !== "EEXIST") throw e2;
-          const winner = JSON.parse(await readFile(path, "utf8")) as { jobId: string };
-          return winner.jobId === jobId
-            ? { ok: true, boundTo: jobId }
-            : { ok: false, boundTo: winner.jobId };
-        }
       }
       return { ok: false, boundTo: existing.jobId }; // replay across sessions
     }
   };
+
+  /**
+   * Find a complete session left between the session and hash commits. This is
+   * the only crash residue created by the session-first protocol. A later create
+   * finalizes its binding instead of stealing the hash.
+   */
+  async function findUnboundAgreementOwner(
+    agreementHash: string,
+    exceptJobId: string,
+  ): Promise<string | undefined> {
+    const files = (await readdir(sessionsDir)).filter(
+      (f) => f.endsWith(".json") && !f.endsWith(".tmp"),
+    );
+    const candidates: SessionRecord[] = [];
+    for (const file of files) {
+      let record: SessionRecord;
+      try {
+        record = JSON.parse(await readFile(join(sessionsDir, file), "utf8")) as SessionRecord;
+      } catch {
+        continue;
+      }
+      if (
+        record.storeVersion === SESSION_STORE_VERSION &&
+        record.jobId !== exceptJobId &&
+        record.agreementHash === agreementHash &&
+        schemaViolation(record) === null
+      ) {
+        candidates.push(record);
+      }
+    }
+    candidates.sort((a, b) => a.createdAt - b.createdAt || a.jobId.localeCompare(b.jobId));
+    return candidates[0]?.jobId;
+  }
 
   return {
     async create({ jobId, agreementHash, phase = "created", now = Date.now() }) {
@@ -212,38 +270,60 @@ export async function createFsSessionStore(
         createdAt: now,
         updatedAt: now,
       };
-      // Reject a duplicate jobId BEFORE reserving the hash — otherwise the bind
-      // below would permanently attach the hash to a create that then fails (#67).
-      // (Non-atomic pre-check; the O_EXCL session create below stays the arbiter.)
+      // Reject a duplicate jobId before starting the transaction. The exclusive
+      // session publish below remains the arbiter for a concurrent duplicate.
       if ((await readSession(jobId)).status !== "missing") {
         throw new DacsError(`session ${jobId} already exists`);
       }
-      // Anti-replay: reserve the agreement hash via the atomic O_EXCL bind, and
-      // REJECT before persisting the session if it's owned by another session
-      // — never leave a session persisted against a hash it doesn't own (#67).
+
+      // Recover a crash after another creator committed its session but before it
+      // committed the hash. Crucially, there is no binding-before-session window:
+      // a live creator's ownership can never be mistaken for an orphan and stolen.
       if (agreementHash) {
-        const bound = await bindHashImpl(agreementHash, jobId, "agreement");
-        if (!bound.ok) {
+        const recoverableOwner = await findUnboundAgreementOwner(agreementHash, jobId);
+        if (recoverableOwner) {
+          const recovered = await bindHashImpl(
+            agreementHash,
+            recoverableOwner,
+            "agreement",
+          );
           throw new DacsError(
-            `agreement hash is already bound to session ${bound.boundTo} (anti-replay); cannot create ${jobId}`,
+            `agreement hash is already bound to session ${recovered.boundTo ?? recoverableOwner} ` +
+              `(anti-replay); cannot create ${jobId}`,
           );
         }
       }
-      // Exclusive-create the session file so a concurrent create can't clobber it.
-      // On ANY failure, release the just-taken hash reservation — a binding must
-      // never outlive a create that produced no session (#67). (A crash in this
-      // window leaves an orphan reservation; bindHashImpl self-heals it on the
-      // next claim by reclaiming a binding whose session is missing.)
+
+      // Recoverable transaction:
+      //   1. atomically publish the complete session;
+      //   2. atomically commit the hash binding;
+      //   3. remove only OUR session if another creator won the hash race.
+      // A crash between 1 and 2 is recovered by findUnboundAgreementOwner().
       try {
-        const handle = await open(sessionPath(jobId), "wx", FILE_MODE);
-        await handle.writeFile(JSON.stringify(record));
-        await handle.close();
+        await exclusiveWriteJson(sessionPath(jobId), record);
       } catch (e) {
-        if (agreementHash) await unlink(hashPath(agreementHash)).catch(() => {});
         if ((e as NodeJS.ErrnoException).code === "EEXIST") {
           throw new DacsError(`session ${jobId} already exists`);
         }
         throw e;
+      }
+
+      if (agreementHash) {
+        try {
+          const bound = await bindHashImpl(agreementHash, jobId, "agreement");
+          if (!bound.ok) {
+            throw new DacsError(
+              `agreement hash is already bound to session ${bound.boundTo} ` +
+                `(anti-replay); cannot create ${jobId}`,
+            );
+          }
+        } catch (e) {
+          // The binding either belongs to another session or could not be trusted.
+          // Roll back only the session this invocation exclusively published;
+          // never unlink a hash binding whose ownership we did not establish.
+          await unlink(sessionPath(jobId)).catch(() => {});
+          throw e;
+        }
       }
       return record;
     },
@@ -293,6 +373,46 @@ export async function createFsSessionStore(
         }
         if (input.lease === null) delete record.lease;
         else if (input.lease) record.lease = input.lease;
+        await atomicWriteJson(sessionPath(input.jobId), record);
+        return { ok: true, record };
+      });
+    },
+
+    async claimCheckpoint(
+      input: CheckpointClaimInput,
+    ): Promise<CheckpointClaimResult> {
+      return withLock(input.jobId, async () => {
+        const loaded = await readSession(input.jobId);
+        if (loaded.status === "missing") return { ok: false, reason: "not-found" };
+        if (loaded.status === "corrupt") return { ok: false, reason: "corrupt" };
+        if (loaded.status === "unsupported") return { ok: false, reason: "unsupported" };
+        const record = loaded.record;
+        const now = input.now ?? Date.now();
+        if (
+          record.lease &&
+          record.lease.expiresAt > now &&
+          input.owner !== record.lease.owner
+        ) {
+          return { ok: false, reason: "lease-held", record };
+        }
+        const prior = [...record.checkpoints].reverse().find((cp) => cp.key === input.key);
+        if (prior) {
+          return {
+            ok: false,
+            reason: prior.stage === "outcome" ? "completed" : "held",
+            record,
+          };
+        }
+        const checkpoint = {
+          key: input.key,
+          stage: "intent" as const,
+          ...(input.data ? { data: input.data } : {}),
+        };
+        assertSecretFreeCheckpoint(checkpoint);
+        record.revision += 1;
+        record.updatedAt = now;
+        if (input.phase !== undefined) record.phase = input.phase;
+        record.checkpoints.push(checkpoint);
         await atomicWriteJson(sessionPath(input.jobId), record);
         return { ok: true, record };
       });

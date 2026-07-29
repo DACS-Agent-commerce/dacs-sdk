@@ -136,19 +136,91 @@ describe("createFsSessionStore (durable conformance #55)", () => {
     );
     expect(results.filter((r) => r.ok)).toHaveLength(1); // exactly one winner
   });
+
+  test("staggered semantic checkpoint claims cannot both win", async () => {
+    await store.create({ jobId: "j1", now: 0 });
+    const first = await store.claimCheckpoint({
+      jobId: "j1",
+      key: "settle:0",
+      data: { rail: "pay-x402" },
+      phase: "settling",
+      now: 1,
+    });
+    expect(first.ok).toBe(true);
+    const later = await store.claimCheckpoint({
+      jobId: "j1",
+      key: "settle:0",
+      data: { rail: "pay-x402" },
+      phase: "settling",
+      now: 2,
+    });
+    expect(later.ok).toBe(false);
+    if (!later.ok) expect(later.reason).toBe("held");
+  });
 });
 
 describe("crash-window hardening (#67 round 3)", () => {
-  test("a binding orphaned by a crash mid-create is reclaimed by the next create", async () => {
-    // Simulate the crash: hash reservation exists, session file never landed.
+  test("a session persisted before its hash commit is recovered, never stolen", async () => {
+    const first = await createFsSessionStore({ dir });
+    const second = await createFsSessionStore({ dir });
+    // Simulate creator A paused/crashed in the new protocol's only open window:
+    // its complete session is durable, but the hash commit has not happened yet.
     await writeFile(
-      join(dir, "hashes", encodeURIComponent("0xorphan") + ".json"),
-      JSON.stringify({ jobId: "j-crashed", kind: "agreement" }),
+      join(dir, "sessions", encodeURIComponent("j-first") + ".json"),
+      JSON.stringify({
+        storeVersion: 1,
+        jobId: "j-first",
+        agreementHash: "0xshared",
+        phase: "created",
+        revision: 0,
+        checkpoints: [],
+        receipts: [],
+        createdAt: 1,
+        updatedAt: 1,
+      }),
     );
-    // The reservation points at a MISSING session → stale → self-healed.
-    await store.create({ jobId: "j-new", agreementHash: "0xorphan" });
-    const bound = await store.bindHash({ hash: "0xorphan", jobId: "j-new", kind: "agreement" });
-    expect(bound).toEqual({ ok: true, boundTo: "j-new" });
+    expect((await first.load("j-first")).status).toBe("ok");
+
+    // Creator B must finalize A's ownership and reject its own create. It must
+    // never infer "missing binding" means the live/persisted candidate is stale.
+    await expect(
+      second.create({ jobId: "j-second", agreementHash: "0xshared" }),
+    ).rejects.toThrow(/already bound to session j-first/);
+    expect(await second.load("j-second")).toEqual({ status: "missing" });
+    expect(
+      await first.bindHash({
+        hash: "0xshared",
+        jobId: "j-first",
+        kind: "agreement",
+      }),
+    ).toEqual({ ok: true, boundTo: "j-first" });
+  });
+
+  test("two store instances racing the same agreement hash leave exactly one session", async () => {
+    const a = await createFsSessionStore({ dir });
+    const b = await createFsSessionStore({ dir });
+    const results = await Promise.allSettled([
+      a.create({ jobId: "j-a", agreementHash: "0xraced", now: 1 }),
+      b.create({ jobId: "j-b", agreementHash: "0xraced", now: 1 }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
+
+    const aLoad = await a.load("j-a");
+    const bLoad = await b.load("j-b");
+    const liveIds = [
+      ...(aLoad.status === "ok" ? ["j-a"] : []),
+      ...(bLoad.status === "ok" ? ["j-b"] : []),
+    ];
+    expect(liveIds).toHaveLength(1);
+    const loser = liveIds[0] === "j-a" ? "j-b" : "j-a";
+    expect(
+      await a.bindHash({
+        hash: "0xraced",
+        jobId: loser,
+        kind: "agreement",
+      }),
+    ).toEqual({ ok: false, boundTo: liveIds[0] });
   });
 
   test("a binding bound to a LIVE session is never reclaimed", async () => {

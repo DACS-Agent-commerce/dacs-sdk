@@ -1,4 +1,7 @@
-import type { AnchorResolution } from "./anchorResolution.js";
+import type {
+  AnchorResolution,
+  OwnedAnchorScan,
+} from "./anchorResolution.js";
 
 /**
  * SubstrateAdapter — the single seam between dacs-sdk and the underlying
@@ -25,6 +28,13 @@ export interface AnchorRef {
   address: string;
   /** Substrate transaction reference for the write, if available. */
   txRef?: string;
+}
+
+export interface AnchorWriteOnceOptions {
+  /** Maximum time to reconcile inclusion, read visibility, and name-index visibility. */
+  timeoutMs?: number;
+  /** Poll interval while waiting for visibility or a concurrent winner. */
+  pollMs?: number;
 }
 
 export interface ProxyFetchRequest {
@@ -70,6 +80,31 @@ export interface SubstrateAdapter {
    * tx ref. Consumers re-canonicalise the value to verify its content hash.
    */
   anchor(name: string, value: object): Promise<AnchorRef>;
+  /**
+   * SR-2 — create an immutable, write-once anchor or return an existing
+   * signed-scope-identical value. Resolution MUST be owner-bound and fail closed
+   * when lookup/read state is indeterminate. Unlike {@link anchor}, this method
+   * MUST NEVER update an existing program with different content.
+   *
+   * Implementations must serialize concurrent calls from one adapter instance;
+   * a create returns only after the exact written bytes are read-visible so an
+   * immediate retry cannot mistake an accepted-but-not-visible write for absence.
+   * A failed same-wallet create must also be reconciled against an owner-bound
+   * concurrent winner: identical content returns that winner; different content
+   * is rejected.
+   */
+  anchorWriteOnce(
+    name: string,
+    value: object,
+    opts?: AnchorWriteOnceOptions,
+  ): Promise<AnchorRef>;
+  /**
+   * SR-2 — scan anchors owned by this connected writer whose native program
+   * names begin with `prefix`. Implementations MUST fail closed: transport,
+   * pagination, or candidate-read failures return `indeterminate`, never an
+   * empty successful history.
+   */
+  scanOwnAnchorsByNamePrefix(prefix: string): Promise<OwnedAnchorScan>;
   /**
    * SR-2 — the storage address a name would anchor to for THIS writer, without
    * writing. NOT third-party derivable (#58 / DACS-Standard #242): the physical

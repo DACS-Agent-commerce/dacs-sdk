@@ -28,10 +28,22 @@ describe("live node connectivity (SDK <-> Demos node)", () => {
 
       // Read a derived (almost certainly empty) anchor address — exercises a
       // real node read; should resolve to null rather than throw.
-      const probe = await adapter.anchorAddress("dacs:connectivity:probe");
+      const probeName = `dacs:connectivity:probe:${Date.now()}`;
+      const probe = await adapter.anchorAddress(probeName);
       const value = await adapter.readAnchor(probe);
       console.log("[connectivity] read", probe, "=>", value);
       expect(value === null || typeof value === "object").toBe(true);
+
+      // Exercise the fail-closed raw name-search path used by immutable listing
+      // publication. The unique probe was never written, so both exact lookup
+      // and owner-prefix scan must report genuine absence rather than an RPC
+      // error disguised as an empty result.
+      await expect(
+        adapter.resolveAnchorByName(probeName, addr),
+      ).resolves.toEqual({ status: "absent" });
+      await expect(
+        adapter.scanOwnAnchorsByNamePrefix(probeName),
+      ).resolves.toEqual({ status: "ok", anchors: [] });
     },
     60_000,
   );

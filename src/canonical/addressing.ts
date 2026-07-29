@@ -81,17 +81,21 @@ export function listingAddress(
 }
 
 /**
- * Encode a colon-bearing logical address into the colon-free Demos StorageProgram
- * NAME (DACS-1 §6.3.4 Demos binding): `storageProgramName := colon-free encoding
- * of logical_address`. Demos requires colon-free program names, so the remaining
- * STRUCTURAL `:` separators are percent-encoded to `%3A` — the same `%3A` scheme
- * CF-4 already uses for the variable segments — making the whole string colon-free
- * and deterministic. The logical address itself is carried separately as record
- * metadata + the published logical→native binding (§6.3.5/§6.3.6); this is only
- * the name fed into `deriveStorageAddress(deployer, programName, nonce, salt)`.
+ * Encode a colon-bearing logical address into a colon-free Demos StorageProgram
+ * NAME (DACS-1 §6.3.4 Demos binding). Demos rejects `:` in program names; the
+ * spec's contract is `storageProgramName := implementation-defined colon-free
+ * StorageProgram name // opaque write input`. This `%3A` percent-encoding is
+ * THIS SDK's implementation-defined choice (deterministic and collision-free),
+ * NOT a spec-mandated or reversible mapping: §6.3.4 explicitly defines no
+ * `logical_address → storageProgramName` encoding, and the name MUST be treated
+ * as an opaque write input — never as a canonical identifier or a CONSUMER
+ * resolution key. Consumers resolve through the published logical→native
+ * binding (§6.3.5/§6.3.6); the logical address is the metadata-of-record. This
+ * string's only job is to be fed into
+ * `deriveStorageAddress(deployer, programName, nonce, salt)` at write time.
  *
- * NOT reversible on its own (the logical address is the metadata of record) — its
- * one job is to be a colon-free, collision-free function of the logical address.
+ * Idempotent — encoding an already-colon-free name is a no-op — so it's safe to
+ * apply at the call site AND again in the substrate adapter.
  */
 export function logicalToStorageProgramName(logicalAddress: string): string {
   return logicalAddress.replace(/:/g, "%3A");

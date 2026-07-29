@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
   runSessionCore,
+  sessionAnchorName,
   type SessionDeps,
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
@@ -140,6 +141,55 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(resumed.settleCalls.n).toBe(0); // did NOT pay again — reconciled from the checkpoint
   });
 
+  test("restart replay preserves rail finality and tx-ref metadata from the checkpoint", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    const settle = async (req: { payee: string }): Promise<SettleResult> => {
+      settleCalls += 1;
+      return {
+        ok: true,
+        txHash: "0xdemos-paid",
+        chainId: "demos:testnet",
+        payer: "demos:buyer",
+        payee: req.payee,
+        finality: { model: "bft-final" },
+        blockNumber: 42,
+        txRefKind: "demos",
+      };
+    };
+    const interrupted = await makeDeps(store, {
+      kv,
+      settle,
+      anchor: async (name, value) => {
+        if (name === sessionAnchorName.evidence("job-1")) {
+          throw new Error("crash after settlement metadata checkpoint");
+        }
+        kv.set(`stor:${name}`, value as Record<string, unknown>);
+        return `stor:${name}`;
+      },
+    });
+    await expect(
+      runSessionCore(interrupted.listingRef, terms, interrupted.deps),
+    ).rejects.toThrow(/metadata checkpoint/);
+
+    const resumed = await makeDeps(store, { kv, settle });
+    await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
+    expect(settleCalls).toBe(1);
+    const evidence = kv.get(`stor:${sessionAnchorName.evidence("job-1")}`);
+    expect(evidence?.paymentTxRefs).toEqual([
+      {
+        rail: "demos:testnet",
+        txHash: "0xdemos-paid",
+        kind: "demos",
+        blockNumber: 42,
+      },
+    ]);
+    expect(evidence?.settlementFinality).toMatchObject({
+      model: "bft-final",
+    });
+  });
+
   test("fail-closed: untrustworthy (corrupt) durable state refuses to settle (#67)", async () => {
     // A store whose load reports `corrupt` for this session — payment must be
     // refused BEFORE the effect, never run against state we can't trust.
@@ -153,11 +203,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(settleCalls.n).toBe(0); // never paid
   });
 
-  test("two CONCURRENT resumes settle AT MOST ONCE — the intent CAS is the ownership claim (#67)", async () => {
-    // The reviewer's repro: leave an intent-only session (interrupt the first
-    // settle), then run two concurrent resumes for the same jobId. Without an
-    // ownership boundary both reach deps.settle (count 2); the intent-checkpoint
-    // compare-and-set must let exactly one win.
+  test("an unresolved prior intent blocks resubmission until the rail outcome is reconciled (#67)", async () => {
     const store = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();
 
@@ -170,22 +216,57 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(runSessionCore(boom.listingRef, terms, boom.deps)).rejects.toThrow(/interrupted/);
 
-    // Two concurrent resumes sharing the store + kv, each counting its settle calls.
+    // A later resume must not reacquire the semantic claim. The durable rail
+    // outcome must be reconciled first; blindly calling settle again would reopen
+    // the post-payment crash window.
     const counter = { n: 0 };
     const settle = async (req: { payee: string }): Promise<SettleResult> => {
       counter.n += 1;
-      await Promise.resolve();
       return { ok: true, txHash: "0xpaid", chainId: "c", payer: "b", payee: req.payee };
+    };
+    const resumed = await makeDeps(store, { kv, settle });
+    await expect(
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+    ).rejects.toThrow(/unresolved intent|reconcile/);
+    expect(counter.n).toBe(0);
+  });
+
+  test("a staggered resume cannot settle while the first worker is in flight (#67)", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    let release!: () => void;
+    let entered!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const inSettle = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const counter = { n: 0 };
+    const settle = async (req: { payee: string }): Promise<SettleResult> => {
+      counter.n += 1;
+      entered();
+      await hold;
+      return {
+        ok: true,
+        txHash: "0xpaid",
+        chainId: "c",
+        payer: "b",
+        payee: req.payee,
+      };
     };
     const a = await makeDeps(store, { kv, settle });
     const b = await makeDeps(store, { kv, settle });
-    const results = await Promise.allSettled([
-      runSessionCore(a.listingRef, terms, a.deps, "job-1"),
-      runSessionCore(b.listingRef, terms, b.deps, "job-1"),
-    ]);
 
-    expect(counter.n).toBe(1); // exactly one settled — the CAS claim gated the other
-    expect(results.some((r) => r.status === "fulfilled")).toBe(true);
-    expect(results.some((r) => r.status === "rejected")).toBe(true); // the loser aborted
+    const firstRun = runSessionCore(a.listingRef, terms, a.deps, "job-1");
+    await inSettle; // A has persisted intent and is paused inside the payment.
+    await expect(
+      runSessionCore(b.listingRef, terms, b.deps, "job-1"),
+    ).rejects.toThrow(/unresolved intent|reconcile/);
+    expect(counter.n).toBe(1);
+
+    release();
+    await expect(firstRun).resolves.toMatchObject({ outcome: "completed" });
+    expect(counter.n).toBe(1);
   });
 });

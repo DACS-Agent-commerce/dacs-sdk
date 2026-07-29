@@ -113,6 +113,32 @@ export type TransitionResult =
       record?: SessionRecord;
     };
 
+/**
+ * Result of atomically claiming a checkpoint key.
+ *
+ * `held` means an intent already exists without an outcome; the caller MUST
+ * reconcile that external effect rather than submit it again. `completed`
+ * means the key already has an outcome and the caller should replay it.
+ */
+export type CheckpointClaimResult =
+  | { ok: true; record: SessionRecord }
+  | {
+      ok: false;
+      reason: "not-found" | "held" | "completed" | "lease-held" | "corrupt" | "unsupported";
+      record?: SessionRecord;
+    };
+
+export interface CheckpointClaimInput {
+  jobId: string;
+  /** Stable side-effect key, e.g. `settle:0`. */
+  key: string;
+  /** Secret-free intent metadata persisted with the claim. */
+  data?: Record<string, CheckpointValue>;
+  phase?: SessionPhase;
+  owner?: string;
+  now?: number;
+}
+
 export interface TransitionInput {
   jobId: string;
   /** The `revision` the caller last observed — the transition fails if it moved. */
@@ -149,6 +175,16 @@ export interface SessionStore {
    * `expectedRevision` — so two workers cannot both advance the same phase.
    */
   transition(input: TransitionInput): Promise<TransitionResult>;
+
+  /**
+   * Atomically append the first `intent` for a side-effect key.
+   *
+   * Unlike a revision CAS performed after `load()`, this semantic claim cannot
+   * be reacquired by a worker that starts after the first claimant advanced the
+   * revision. An unresolved prior intent returns `held`; an existing outcome
+   * returns `completed`.
+   */
+  claimCheckpoint(input: CheckpointClaimInput): Promise<CheckpointClaimResult>;
 
   /**
    * Acquire an exclusive worker lease. Succeeds if unheld, expired, or already
@@ -274,6 +310,36 @@ export function createInMemorySessionStore(): SessionStore {
       }
       if (input.lease === null) delete next.lease;
       else if (input.lease) next.lease = clone(input.lease);
+      sessions.set(input.jobId, next);
+      return { ok: true, record: clone(next) };
+    },
+
+    async claimCheckpoint(input) {
+      const record = sessions.get(input.jobId);
+      if (!record) return { ok: false, reason: "not-found" };
+      const now = input.now ?? Date.now();
+      if (leaseHeldByOther(record, input.owner ?? "", now)) {
+        return { ok: false, reason: "lease-held", record: clone(record) };
+      }
+      const prior = [...record.checkpoints].reverse().find((cp) => cp.key === input.key);
+      if (prior) {
+        return {
+          ok: false,
+          reason: prior.stage === "outcome" ? "completed" : "held",
+          record: clone(record),
+        };
+      }
+      const checkpoint: SessionCheckpoint = {
+        key: input.key,
+        stage: "intent",
+        ...(input.data ? { data: input.data } : {}),
+      };
+      assertSecretFreeCheckpoint(checkpoint);
+      const next = clone(record);
+      next.revision += 1;
+      next.updatedAt = now;
+      if (input.phase !== undefined) next.phase = input.phase;
+      next.checkpoints.push(clone(checkpoint));
       sessions.set(input.jobId, next);
       return { ok: true, record: clone(next) };
     },

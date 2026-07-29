@@ -85,7 +85,16 @@ export function isListing(v: unknown): v is Listing {
     isStrArray(v.supportedDelivery) &&
     // pricing is OPTIONAL (#34; full required-fidelity in #5) — but if present it
     // MUST be a well-formed PricingSpec, not any object.
-    (v.pricing === undefined || isPricingSpec(v.pricing))
+    (v.pricing === undefined || isPricingSpec(v.pricing)) &&
+    // listingVersion is OPTIONAL (absent ⇒ v1) — but if present it MUST be a
+    // positive integer (#46/#29). runSessionCore copies it into
+    // listingRef.version, so an unvalidated value (e.g. a string) would flow
+    // into the bundle's version pin on the READ path even though publish
+    // validates its own writes.
+    (v.listingVersion === undefined ||
+      (typeof v.listingVersion === "number" &&
+        Number.isInteger(v.listingVersion) &&
+        v.listingVersion >= 1))
   );
 }
 
@@ -141,7 +150,7 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
   if (!isObj(v)) return false;
   const amt = v.paymentAmount;
   const fin = v.settlementFinality;
-  return (
+  const baseValid =
     isStr(v.evidenceVersion) &&
     isStr(v.jobId) &&
     isStr(v.phase) &&
@@ -149,15 +158,23 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
     isOneOf(SETTLEMENT_OUTCOMES, v.outcome) &&
     Array.isArray(v.paymentTxRefs) &&
     v.paymentTxRefs.every(isTxRef) &&
-    isObj(amt) &&
-    isStr(amt.amount) &&
-    isStr(amt.currency) &&
-    isObj(fin) &&
-    isOneOf(FINALITY_MODELS, fin.model) &&
-    isNum(fin.finalityBlocks) &&
-    isNum(fin.finalityObservedAt) &&
-    isNum(v.observedAt)
-  );
+    isNum(v.observedAt);
+  if (!baseValid) return false;
+  if (v.outcome === "failure") {
+    return (
+      fin === undefined &&
+      (amt === undefined || (isObj(amt) && isStr(amt.amount) && isStr(amt.currency)))
+    );
+  }
+  if (!isObj(amt) || !isStr(amt.amount) || !isStr(amt.currency) || !isObj(fin)) {
+    return false;
+  }
+  if (!isOneOf(FINALITY_MODELS, fin.model) || !isNum(fin.finalityObservedAt)) {
+    return false;
+  }
+  return fin.model === "block-depth"
+    ? isNum(fin.finalityBlocks)
+    : fin.finalityBlocks === undefined;
 }
 
 export function isAttestationBundle(v: unknown): v is AttestationBundle {
