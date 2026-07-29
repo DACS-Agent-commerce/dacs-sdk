@@ -37,6 +37,7 @@ export {
   verifyBundleCopy,
   ABORT_OUTCOMES,
   type BundleCopyDeps,
+  type BundleCopyRole,
   type CopyValidity,
 } from "./bundleCopyValidity.js";
 export { computeReputation } from "./reputation.js";
@@ -66,6 +67,19 @@ export {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
+export {
+  buildTwoSidedBundle,
+  bundleSignedScope,
+  attestationBundleHash,
+  BUNDLE_SIGNED_SCOPE_OMIT,
+  BUNDLE_OUTCOMES,
+  type BundleOutcome,
+  type BundleAnchorRole,
+  type SessionParty,
+  type SigningSessionParty,
+  type TwoSidedSession,
+  type TwoSidedBundles,
+} from "./twoSidedBundle.js";
 export {
   buildSignedArtifact,
   verifySignedArtifact,

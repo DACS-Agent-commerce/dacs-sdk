@@ -1,9 +1,10 @@
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { isAttestationBundle } from "../artifacts/validators.js";
+import { isAnyAttestationBundle } from "../artifacts/validators.js";
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import type { BundleRole } from "./bundleConsistency.js";
 import type { Verifier } from "./signedArtifact.js";
+import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
 
 /**
  * §10.4.3(b) COPY VALIDITY — the dedicated validator `bundleConsistency` gates
@@ -13,14 +14,15 @@ import type { Verifier } from "./signedArtifact.js";
  * address-role contract a consistency verdict depends on.
  *
  * A copy is valid iff ALL of:
- *  1. it is structurally an AttestationBundle;
+ *  1. it is structurally a legacy AttestationBundle or FaultAttestationBundle;
  *  2. ADDRESS-ROLE contract — `anchoredByRole` equals the role of the address it
  *     was fetched from. A copy anchored by one role sitting at the other role's
  *     address is not that party's attestation, so it must not count as present.
  *     A missing `anchoredByRole` fails CLOSED (we can't confirm it belongs here);
- *  3. §10.4.1 SIGNATURES — every `signatures[]` entry is well-formed, uses the
+ *  3. a FaultAttestationBundle's absolute fault is permissible for its outcome/anchor;
+ *  4. §10.4.1 SIGNATURES — every `signatures[]` entry is well-formed, uses the
  *     supported closed algorithm, names a bundle party, resolves, and verifies.
- *  4. SIGNER SET — buyer + seller are required, plus a distinct orchestrator
+ *  5. SIGNER SET — buyer + seller are required, plus a distinct orchestrator
  *     when present. The §10.11 exception permits a single signature only when
  *     the exact bundle outcome is `aborted-by-self` or `aborted-by-other`.
  *
@@ -38,6 +40,8 @@ export interface BundleCopyDeps {
   verify: Verifier;
 }
 
+export type BundleCopyRole = BundleRole | "orchestrator";
+
 export type CopyValidity =
   | { valid: true; signers: string[]; fullySigned: boolean; abortStanding: boolean }
   | { valid: false; reason: string };
@@ -51,11 +55,18 @@ const isObj = (value: unknown): value is Record<string, unknown> =>
  */
 export async function verifyBundleCopy(
   bundle: Record<string, unknown>,
-  role: BundleRole,
+  role: BundleCopyRole,
   deps: BundleCopyDeps,
 ): Promise<CopyValidity> {
-  if (!isAttestationBundle(stripSignature(bundle))) {
+  const unsigned = stripSignature(bundle);
+  if (isFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
+    return { valid: false, reason: "faultedParty is not permitted for outcome and anchoredByRole" };
+  }
+  if (!isAnyAttestationBundle(unsigned)) {
     return { valid: false, reason: "not an attestation bundle" };
+  }
+  if (!unsigned.parties.some((party) => party.role === role)) {
+    return { valid: false, reason: `anchor role "${role}" is absent from parties[]` };
   }
 
   // (2) address-role contract — fail closed when absent or mismatched.
@@ -74,7 +85,10 @@ export async function verifyBundleCopy(
   const scope = { ...bundle };
   delete scope["signatures"];
   delete scope["anchoredByRole"];
-  const message = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope));
+  const separator = isFaultBundle(unsigned)
+    ? ARTIFACT_SEPARATORS.FaultAttestationBundle
+    : ARTIFACT_SEPARATORS.AttestationBundle;
+  const message = signedBytes(separator, contentHash(scope));
 
   const entries = Array.isArray(bundle["signatures"]) ? bundle["signatures"] : [];
   if (entries.length === 0) return { valid: false, reason: "copy carries no signatures" };

@@ -1,4 +1,4 @@
-import type { AttestationBundle } from "../artifacts/types.js";
+import type { AnyAttestationBundle } from "../artifacts/types.js";
 
 /**
  * Reputation for a primary claim, derived purely from its attestation bundles
@@ -23,7 +23,7 @@ export interface Reputation {
  */
 export function computeReputation(
   primaryClaim: string,
-  bundles: AttestationBundle[],
+  bundles: AnyAttestationBundle[],
 ): Reputation {
   const mine = bundles.filter((b) =>
     b.parties.some((p) => p.primaryClaim === primaryClaim),

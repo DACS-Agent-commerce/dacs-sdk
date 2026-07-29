@@ -49,9 +49,10 @@ describe("signing (§7.7)", () => {
     expect(verifyArtifact("dacs-bundle:v1:", GOLDEN.doc, sig, pub)).toBe(false);
   });
 
-  it("sig-registry-closed-17: the domain-separator registry is the closed set of 17", () => {
-    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(17);
-    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(17);
+  it("sig-registry-closed-18: the domain-separator registry includes the v0.3 fault bundle", () => {
+    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(18);
+    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(18);
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toContain("dacs-fault-bundle:v1:");
   });
 
   it("#62: the DACS-3 payee-bound agreement separator is registered", () => {

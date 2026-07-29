@@ -198,18 +198,22 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     return { sub, listingRef, result };
   }
 
-  test("completes and the bundle independently verifies end to end", async () => {
+  test("completes and strict verification fail-closes the legacy one-sided bundle", async () => {
     const { sub, listingRef, result } = await runFlow();
 
     expect(result.outcome).toBe("completed");
     expect(result.agreementRef).toBe("stor:dacs3:agreement:job-e2e");
     expect(result.settlementRef).toBe("stor:dacs4:evidence:job-e2e");
 
-    // A third party verifies the anchored bundle from scratch.
+    // runSessionCore still emits the legacy MVP buyer-only bundle. A strict
+    // third-party verifier must reject it until the two-sided producer helper
+    // is wired into this orchestration path.
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
 
-    expect(v.ok).toBe(true);
-    expect(v.fullyVerified).toBe(true);
+    expect(v.ok).toBe(false);
+    expect(v.fullyVerified).toBe(false);
+    expect(v.reason).toMatch(/missing required signature/);
+    expect(v.reason).toContain(sellerDid);
     // The bundle's buyer signature verifies over the §10.4.1 signed scope.
     expect(v.signatures).toEqual([{ party: buyerDid, verdict: "valid" }]);
     // Full 5-stage spec bundle: content-addressed listing/agreement refs +
@@ -219,7 +223,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(v.bundle?.vetRecords).toHaveLength(1);
     expect(v.bundle?.settlementEvidence).toHaveLength(1);
     expect(v.bundle?.listingRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(v.bundle?.agreementRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(v.bundle?.agreementRef?.contentHash).toMatch(/^[0-9a-f]{64}$/);
 
     // Settlement evidence carries the rail's reported tx hash.
     const evidence = sub.store.get(result.settlementRef);
@@ -267,9 +271,9 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
 
   test("tampering the anchored bundle breaks signature verification", async () => {
     const { sub, result } = await runFlow();
-    // Mutate a signed-scope field of the bundle after it was signed.
+    // Mutate a supported signed-scope field of the bundle after it was signed.
     const bundle = { ...sub.store.get(result.bundleRef)! };
-    bundle.outcome = "failed";
+    bundle.finalisedAt = 1780000000001;
     sub.store.set(result.bundleRef, bundle);
 
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));

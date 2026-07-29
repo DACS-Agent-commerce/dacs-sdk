@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { DemosAdapter } from "../../src/substrate/index.js";
-
 // Throwaway mnemonic — local key derivation only, no funds needed. We're just
 // checking the SDK can reach a live Demos node and do a read round-trip.
 const MNEMONIC =
@@ -19,6 +17,7 @@ describe("live node connectivity (SDK <-> Demos node)", () => {
   it(
     "connects, derives an address, and does a read round-trip",
     async () => {
+      const { DemosAdapter } = await import("../../src/substrate/index.js");
       const adapter = new DemosAdapter({ rpc: RPC, secret: MNEMONIC });
       await adapter.connect();
 

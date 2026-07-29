@@ -117,6 +117,21 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
     ).toBe("divergent");
   });
 
+  test("duplicate phase indices fail closed as divergence", () => {
+    const buyer = {
+      outcome: "completed",
+      phaseSummary: [
+        { index: 0, kind: "settle", outcome: "ok" },
+        { index: 0, kind: "settle", outcome: "fail" },
+      ],
+    };
+    const seller = {
+      outcome: "completed",
+      phaseSummary: [{ index: 0, kind: "settle", outcome: "fail" }],
+    };
+    expect(bundlesDiverge(buyer, seller)).toBe(true);
+  });
+
   test("identical phase sets (by index) are unified — reordering is not divergence", async () => {
     const buyer = {
       outcome: "completed",
@@ -172,6 +187,52 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
       phaseSummary: [{ index: 0, kind: "settle", outcome: "ok" }],
     };
     expect(bundlesDiverge(buyer, seller)).toBe(true);
+  });
+
+  test("v0.3 perspective copies reconcile on absolute fault and outcome class", () => {
+    const parties = [{ role: "buyer" }, { role: "seller" }];
+    const buyer = {
+      faultBundleVersion: "1",
+      outcome: "failed-counterparty",
+      faultedParty: "seller",
+      anchoredByRole: "buyer",
+      parties,
+      phaseSummary: [],
+    };
+    const seller = {
+      ...buyer,
+      outcome: "failed-perm",
+      anchoredByRole: "seller",
+    };
+    expect(bundlesDiverge(buyer, seller)).toBe(false);
+    expect(bundlesDiverge(buyer, { ...seller, faultedParty: "buyer" })).toBe(true);
+  });
+
+  test("legacy perspective partners and compatible mixed pairs reconcile", () => {
+    const parties = [{ role: "buyer" }, { role: "seller" }];
+    const legacyBuyer = {
+      bundleVersion: "1",
+      outcome: "aborted-by-other",
+      anchoredByRole: "buyer",
+      parties,
+      phaseSummary: [],
+    };
+    const legacySeller = {
+      ...legacyBuyer,
+      outcome: "aborted-by-self",
+      anchoredByRole: "seller",
+    };
+    const faultBuyer = {
+      faultBundleVersion: "1",
+      outcome: "aborted-by-other",
+      faultedParty: "seller",
+      anchoredByRole: "buyer",
+      parties,
+      phaseSummary: [],
+    };
+    expect(bundlesDiverge(legacyBuyer, legacySeller)).toBe(false);
+    expect(bundlesDiverge(faultBuyer, legacySeller)).toBe(false);
+    expect(bundlesDiverge({ ...faultBuyer, faultedParty: "buyer" }, legacySeller)).toBe(true);
   });
 });
 

@@ -13,6 +13,7 @@ export const ARTIFACT_SEPARATORS = {
   AgreementDocument: "dacs-agreement:v1:",
   SettlementEvidence: "dacs-evidence:v1:",
   AttestationBundle: "dacs-bundle:v1:",
+  FaultAttestationBundle: "dacs-fault-bundle:v1:",
 } as const satisfies Record<ArtifactKind, DomainSeparator>;
 
 /** Domain separator for a bundle rating record (DACS-5 §10.6). */
