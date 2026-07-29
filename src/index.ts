@@ -219,6 +219,15 @@ export {
   type VetDeps,
   type VetRequest,
   type VetProxyResult,
+  // DACS-2 §7.4.1 ParserSpec — signed recipe content rules (#49) + the engine seam.
+  evaluateParserSpec,
+  defaultParserEngine,
+  type ParserSpec,
+  type ParserFormat,
+  type IndeterminatePredicate,
+  type ParserEngine,
+  type ParserEvalContext,
+  type ParserEvaluation,
   type Reputation,
   // Injectable buyer-session core (F1 #14): run the lifecycle against any
   // SubstrateAdapter (mock/simulation/non-Demos). NOTE: `sessionAnchorName` is

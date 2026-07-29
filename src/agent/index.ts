@@ -57,6 +57,20 @@ export {
   type VetProxyResult,
 } from "./vetCore.js";
 export {
+  evaluateParserSpec,
+  defaultParserEngine,
+  successExpr,
+  predicateExpr,
+  type ParserSpec,
+  type ParserFormat,
+  type IndeterminatePredicate,
+  type ParserEngine,
+  type ParserEvalContext,
+  type ParserEvaluation,
+  type ParserDecision,
+  type PredicateResult,
+} from "./parserSpec.js";
+export {
   runSessionCore,
   // sessionAnchorName intentionally NOT re-exported — MVP address strings are
   // non-normative (see the note in the top-level barrel / #48). Kept internal to

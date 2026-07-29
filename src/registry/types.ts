@@ -8,6 +8,8 @@
  * mutated, only superseded.
  */
 
+import type { ParserSpec } from "../agent/parserSpec.js";
+
 export type Availability = "live" | "deprecated" | "planned";
 
 /** A payment-rail descriptor (steward-signed under `dacs-rail:v1:`). */
@@ -27,6 +29,20 @@ export interface RecipeDescriptor {
   method: string;
   availability: Availability;
   params: Record<string, unknown>;
+  /**
+   * DACS-2 §7.4.1 ParserSpec — the signed rules a `consensus-backed-proxy`
+   * applies to the attested body (PSP-1..5), so the content verdict is
+   * deterministic from the recipe rather than a caller callback.
+   */
+  parserRules?: ParserSpec;
+  /** PSP-2: a match means "listed" — invert the outcome (e.g. ofac-clear). */
+  negativeMatch?: boolean;
+  /**
+   * PSP-5: this negative-match recipe decides on ABSENCE from a full-list
+   * download, so a `pass` requires a provably-complete response (else
+   * `indeterminate`). Only meaningful with `negativeMatch: true`.
+   */
+  requiresListCompleteness?: boolean;
 }
 
 /** An anchored registry document: a versioned list of steward-signed entries. */

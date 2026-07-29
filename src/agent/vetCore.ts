@@ -7,6 +7,11 @@ import type {
 } from "../artifacts/types.js";
 import type { RecipeDescriptor } from "../registry/types.js";
 import { cciHasClaim, cciClaimProof, type CciRecord } from "../identity/index.js";
+import {
+  evaluateParserSpec,
+  defaultParserEngine,
+  type ParserEngine,
+} from "./parserSpec.js";
 
 /**
  * Composite decision over per-method results (DACS-2 §7.7) — worst result
@@ -30,6 +35,27 @@ function compositeDecision(
  */
 function classifyClaimProof(value: string): ClaimProofRef {
   return { kind: /^[0-9a-f]{64}$/i.test(value) ? "hash" : "raw", value };
+}
+
+/**
+ * Map a proxied HTTP status that is NOT 2xx to a verification decision (DACS-2).
+ * A 2xx returns null → the caller proceeds to the ParserSpec / status-only pass.
+ * The normative behavior distinguishes a definite "no record" (404) from a
+ * reachable error (5xx / other) the verifier can't turn into a clean result:
+ *  - 404 → the authority has no record of the subject. For a positive-match
+ *    recipe that is a `fail` (the asserted credential is absent); for a
+ *    negative-match recipe a bare 404 is NOT a completeness-confirmed "not listed",
+ *    so it is `indeterminate` (fail-closed, PSP-5 spirit) rather than a silent pass.
+ *  - any other non-2xx (3xx / other 4xx / 5xx) → `error`: reachable but with no
+ *    trustworthy determination — never a silent `fail` or `pass`.
+ */
+function mapProxyStatus(
+  httpStatus: number,
+  negativeMatch: boolean,
+): { decision: VerificationDecision } | null {
+  if (httpStatus >= 200 && httpStatus < 300) return null;
+  if (httpStatus === 404) return { decision: negativeMatch ? "indeterminate" : "fail" };
+  return { decision: "error" };
 }
 
 /**
@@ -69,8 +95,13 @@ function readSanctioned(
  * MVP methods:
  *  - self-signed: the subject self-asserts; recorded as a pass with the subject
  *    as its own authority.
- *  - consensus-backed-proxy: a DAHR proxy fetch of the recipe's authority URL;
- *    a 2xx is a pass, attested by the proxy's response hash.
+ *  - consensus-backed-proxy: a DAHR proxy fetch of the recipe's authority URL.
+ *    A 2xx is evaluated through the signed §7.4.1 `parserRules` ParserSpec;
+ *    missing rules or body fail closed as `error`. The attested body is
+ *    evaluated (PSP-1..5) for a content-based, DETERMINISTIC verdict —
+ *    polarity (negativeMatch), indeterminateOn precedence, parse-error → error,
+ *    and the PSP-5 completeness floor — via an injected parser engine that only
+ *    reports predicate matches, never the decision.
  *  - cci-claim: the subject must hold a specific linked claim in its CCI record
  *    (DACS-1) — e.g. a verified X handle or a bound wallet. Resolves the record
  *    and passes iff `params.requiredClaim` is present.
@@ -91,6 +122,14 @@ export interface VetProxyResult {
   responseHash: string;
   /** The proxied response body, when the method needs to inspect it (e.g. ofac-screen). */
   body?: string;
+  /**
+   * PSP-5 completeness signal: whether the proxy confirmed the response was
+   * COMPLETE (declared record-count / end-of-list sentinel / Content-Length ==
+   * received bytes). Only consulted for a `requiresListCompleteness` negative-
+   * match recipe — a `pass` on an unconfirmed/partial response is downgraded to
+   * `indeterminate`.
+   */
+  complete?: boolean;
 }
 
 export interface VetDeps {
@@ -103,6 +142,15 @@ export interface VetDeps {
    * `cci-claim` and `ofac-screen` methods — e.g. wire `(s) => agent.resolveIdentity(s)`.
    */
   resolveCci?: (subject: string) => Promise<CciRecord>;
+  /**
+   * Parser-engine seam (DACS-2 §7.4.1 / #16). When a `consensus-backed-proxy`
+   * recipe carries `parserRules`, the signed ParserSpec is evaluated against the
+   * attested body per PSP-1..5 — the engine only reports low-level predicate
+   * matches (JSONPath/selector/XPath/regex), while the deterministic decision
+   * (polarity, indeterminateOn, error/completeness mapping) is fixed by the
+   * recipe, NOT this dep. Defaults to {@link defaultParserEngine} (json + raw).
+   */
+  parserEngine?: ParserEngine;
 }
 
 export interface VetRequest {
@@ -139,14 +187,48 @@ export async function vetCore(
         );
       }
       const res = await deps.proxyFetch({ url });
-      const ok = res.status >= 200 && res.status < 300;
+      const negativeMatch = recipe.negativeMatch === true;
+      // HTTP status first: a 2xx proceeds; a non-2xx is mapped so that a definite
+      // "no record" (404) is distinguished from a reachable error (5xx / other →
+      // `error`) rather than collapsing every non-2xx to `fail`. On a 2xx, if the
+      // signed recipe MUST carry a ParserSpec (§7.4.1), evaluated against the
+      // DAHR-attested body. Missing rules or body are `error`, never the old
+      // status-only `2xx ⇒ pass` trust path.
+      let status: VerificationDecision;
+      let data: Record<string, unknown> | undefined;
+      const httpMap = mapProxyStatus(res.status, negativeMatch);
+      if (httpMap) {
+        status = httpMap.decision;
+      } else if (recipe.parserRules) {
+        if (typeof res.body !== "string") {
+          status = "error";
+        } else {
+          const engine: ParserEngine = deps.parserEngine ?? defaultParserEngine;
+          try {
+            const evaluation = evaluateParserSpec(recipe.parserRules, res.body, engine, {
+              negativeMatch,
+              requiresCompleteness: recipe.requiresListCompleteness === true,
+              listComplete: res.complete === true,
+            });
+            status = evaluation.decision;
+            data = evaluation.data; // PSP-3: record the parsed data map on the result
+          } catch {
+            // JS callers can bypass the TS ParserSpec shape. A malformed signed
+            // rule is a verification error, never an exception or status-only pass.
+            status = "error";
+          }
+        }
+      } else {
+        status = "error";
+      }
       results.push({
         claimRef: subject,
         method: "consensus-backed-proxy",
-        status: ok ? "pass" : "fail",
+        status,
         authority: url,
         // Record the DAHR attestation so the vet record carries the evidence.
         ...(res.responseHash ? { responseHash: res.responseHash } : {}),
+        ...(data ? { data } : {}),
       });
       break;
     }
