@@ -73,6 +73,52 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
     expect(r.data).toEqual({ name: "acme", missing: null });
   });
 
+  it("PSP-3 preserves structured selected values", () => {
+    const spec: ParserSpec = {
+      format: "json",
+      successJsonPath: "$.ok",
+      dataMap: {
+        active: "$.active",
+        count: "$.count",
+        details: "$.details",
+        tags: "$.tags",
+      },
+    };
+    const r = evaluateParserSpec(
+      spec,
+      JSON.stringify({
+        ok: true,
+        active: true,
+        count: 3,
+        details: { status: "ISSUED" },
+        tags: ["lei", "active"],
+      }),
+      defaultParserEngine,
+    );
+    expect(r.data).toEqual({
+      active: true,
+      count: 3,
+      details: { status: "ISSUED" },
+      tags: ["lei", "active"],
+    });
+  });
+
+  it("PSP-3 dataMap is retained when indeterminateOn decides early", () => {
+    const spec: ParserSpec = {
+      format: "json",
+      successJsonPath: "$.issued",
+      indeterminateOn: [{ jsonPath: "$.lapsed" }],
+      dataMap: { status: "$.status" },
+    };
+    const r = evaluateParserSpec(
+      spec,
+      JSON.stringify({ issued: true, lapsed: true, status: "LAPSED" }),
+      defaultParserEngine,
+    );
+    expect(r.decision).toBe("indeterminate");
+    expect(r.data).toEqual({ status: "LAPSED" });
+  });
+
   it("PSP-4 deterministic: same spec + body ⇒ same decision", () => {
     const spec: ParserSpec = { format: "json", successJsonPath: "$.a" };
     const body = JSON.stringify({ a: 1 });

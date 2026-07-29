@@ -9,7 +9,7 @@ function recipe(over: Partial<RecipeDescriptor>): RecipeDescriptor {
 }
 
 const deps = (proxyStatus = 200): VetDeps => ({
-  proxyFetch: async () => ({ status: proxyStatus, responseHash: "0xhash" }),
+  proxyFetch: async () => ({ status: proxyStatus, responseHash: "0xhash", body: "" }),
   now: () => "2026-01-01T00:00:00Z",
 });
 
@@ -29,7 +29,7 @@ describe("vetCore (DACS-2 Vet stage)", () => {
     ]);
   });
 
-  test("consensus-backed-proxy passes on a 2xx from the authority", async () => {
+  test("consensus-backed-proxy passes on a 2xx body matching its signed rules", async () => {
     const cvr = await vetCore(
       {
         subject: "domain:alice.example",
@@ -37,6 +37,7 @@ describe("vetCore (DACS-2 Vet stage)", () => {
           id: "domain-acme",
           method: "consensus-backed-proxy",
           params: { authorityUrl: "https://alice.example/.well-known/dacs" },
+          parserRules: { format: "raw", matcher: "^$" },
         }),
       },
       deps(200),
@@ -105,12 +106,14 @@ describe("vetCore (DACS-2 Vet stage)", () => {
       format: "json",
       successJsonPath: "$.login",
       indeterminateOn: [{ jsonPath: "$.pending" }],
+      dataMap: { status: "$.status" },
     };
     const cvr = await vetCore(
       req({ parserRules: rules }),
-      bodyDeps(JSON.stringify({ login: "alice", pending: true })),
+      bodyDeps(JSON.stringify({ login: "alice", pending: true, status: "LAPSED" })),
     );
     expect(cvr.decision).toBe("indeterminate");
+    expect(cvr.results[0]!.data).toEqual({ status: "LAPSED" });
   });
 
   test("ParserSpec on a malformed body ⇒ error, never fail (PSP-2)", async () => {
@@ -171,9 +174,62 @@ describe("vetCore (DACS-2 Vet stage)", () => {
     expect(cvr.results[0]!.data).toEqual({ status: "ISSUED", id: "abc" });
   });
 
-  test("no parserRules ⇒ status-only 2xx pass (back-compat)", async () => {
+  test("PSP-3 preserves structured dataMap values on the VerifyResult", async () => {
+    const rules: RecipeDescriptor["parserRules"] = {
+      format: "json",
+      successJsonPath: "$.status",
+      dataMap: { active: "$.active", count: "$.count", details: "$.details" },
+    };
+    const cvr = await vetCore(
+      req({ parserRules: rules }),
+      bodyDeps(
+        JSON.stringify({
+          status: "ISSUED",
+          active: true,
+          count: 3,
+          details: { jurisdiction: "GB" },
+        }),
+      ),
+    );
+    expect(cvr.results[0]!.data).toEqual({
+      active: true,
+      count: 3,
+      details: { jurisdiction: "GB" },
+    });
+  });
+
+  test("missing body with parserRules is error; a present empty body may match", async () => {
+    const rules: RecipeDescriptor["parserRules"] = {
+      format: "raw",
+      matcher: "^$",
+    };
+    const missing = await vetCore(req({ parserRules: rules }), {
+      proxyFetch: async () => ({ status: 200, responseHash: "0xhash" }),
+      now: () => "2026-01-01T00:00:00Z",
+    });
+    expect(missing.decision).toBe("error");
+    expect(
+      (await vetCore(req({ parserRules: rules }), bodyDeps(""))).decision,
+    ).toBe("pass");
+  });
+
+  test("no parserRules ⇒ fail-closed error, never a status-only 2xx pass", async () => {
     const cvr = await vetCore(req({}), bodyDeps("anything"));
-    expect(cvr.decision).toBe("pass");
+    expect(cvr.decision).toBe("error");
+  });
+
+  test("malformed runtime parserRules fail closed as error", async () => {
+    const malformed = {
+      format: "json",
+      successJsonPath: "$.ok",
+      indeterminateOn: "not-an-array",
+    } as unknown as NonNullable<RecipeDescriptor["parserRules"]>;
+    await expect(
+      vetCore(
+        req({ parserRules: malformed }),
+        bodyDeps(JSON.stringify({ ok: true })),
+      ),
+    ).resolves.toMatchObject({ decision: "error" });
   });
 
   test("consensus-backed-proxy without an authorityUrl is rejected", async () => {

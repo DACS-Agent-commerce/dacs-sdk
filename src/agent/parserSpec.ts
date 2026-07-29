@@ -38,8 +38,11 @@ export type PredicateResult = { parseError: true } | { parseError?: false; match
 export interface ParserEngine {
   /** Does `expr` select ≥1 node/element/match in `body`? `parseError` if the body is malformed for `format`. */
   evalPredicate(format: ParserFormat, expr: string, body: string): PredicateResult;
-  /** PSP-3 dataMap extraction (audit-only). Optional; returns null when nothing resolves. */
-  extract?(format: ParserFormat, expr: string, body: string): string | null;
+  /**
+   * PSP-3 dataMap extraction (audit-only). Preserve the selected value's JSON
+   * shape; return null when nothing resolves.
+   */
+  extract?(format: ParserFormat, expr: string, body: string): unknown;
 }
 
 export interface ParserEvalContext {
@@ -61,7 +64,7 @@ export type ParserDecision = "pass" | "fail" | "error" | "indeterminate";
 export interface ParserEvaluation {
   decision: ParserDecision;
   /** PSP-3 extracted data (audit-only; never changes the decision). */
-  data?: Record<string, string | null>;
+  data?: Record<string, unknown>;
   reason?: string;
 }
 
@@ -99,6 +102,31 @@ export function evaluateParserSpec(
 ): ParserEvaluation {
   const format = spec.format;
 
+  // PSP-3 dataMap extraction is audit-only and MUST be retained for every
+  // decision reached over the body, including an early `indeterminateOn`
+  // decision. A throwing extractor records null and never changes the verdict.
+  let data: Record<string, unknown> | undefined;
+  const dataMap = "dataMap" in spec ? spec.dataMap : undefined;
+  if (dataMap && engine.extract) {
+    const extract = engine.extract;
+    data = {};
+    for (const [field, expr] of Object.entries(dataMap)) {
+      try {
+        data[field] = extract(format, expr, body) ?? null;
+      } catch {
+        data[field] = null;
+      }
+    }
+  }
+  const result = (
+    decision: ParserDecision,
+    reason?: string,
+  ): ParserEvaluation => ({
+    decision,
+    ...(data ? { data } : {}),
+    ...(reason ? { reason } : {}),
+  });
+
   // A thrown parser engine is a verifier-side inability to obtain a decision, NOT
   // a claim `fail` — map it to a parse error so it becomes `error`, never escaping.
   const evalPredicate = (expr: string): PredicateResult => {
@@ -118,21 +146,24 @@ export function evaluateParserSpec(
       // A predicate whose kind doesn't match the spec format is a MALFORMED signed
       // recipe. Skipping it would fail open (a guard silently not evaluated); a
       // malformed rule must be `error`, never ignored.
-      return {
-        decision: "error",
-        reason: `indeterminateOn predicate kind does not match format "${format}" (malformed recipe)`,
-      };
+      return result(
+        "error",
+        `indeterminateOn predicate kind does not match format "${format}" (malformed recipe)`,
+      );
     }
     const r = evalPredicate(expr);
-    if (r.parseError) return { decision: "error", reason: "response body did not parse (PSP-2)" };
+    if (r.parseError) return result("error", "response body did not parse (PSP-2)");
     if (r.matched) {
-      return { decision: "indeterminate", reason: "an indeterminateOn predicate matched (PSP-2)" };
+      return result(
+        "indeterminate",
+        "an indeterminateOn predicate matched (PSP-2)",
+      );
     }
   }
 
   // PSP-1: the success match predicate.
   const m = evalPredicate(successExpr(spec));
-  if (m.parseError) return { decision: "error", reason: "response body did not parse (PSP-2)" };
+  if (m.parseError) return result("error", "response body did not parse (PSP-2)");
 
   // PSP-2 decision mapping (polarity).
   const neg = ctx.negativeMatch === true;
@@ -147,28 +178,13 @@ export function evaluateParserSpec(
   // PSP-5: a negative-match `pass` that rests on ABSENCE from a full list is only
   // trustworthy over a provably-complete response — else `indeterminate`.
   if (neg && decision === "pass" && ctx.requiresCompleteness && ctx.listComplete !== true) {
-    return {
-      decision: "indeterminate",
-      reason: "negative-match pass requires a confirmed-complete response (PSP-5)",
-    };
+    return result(
+      "indeterminate",
+      "negative-match pass requires a confirmed-complete response (PSP-5)",
+    );
   }
 
-  // PSP-3: dataMap extraction is audit-only and MUST NOT change the decision.
-  let data: Record<string, string | null> | undefined;
-  const dataMap = "dataMap" in spec ? spec.dataMap : undefined;
-  if (dataMap && engine.extract) {
-    const extract = engine.extract;
-    data = {};
-    for (const [field, expr] of Object.entries(dataMap)) {
-      try {
-        data[field] = extract(format, expr, body) ?? null;
-      } catch {
-        data[field] = null; // audit-only: a throwing extractor never affects the decision
-      }
-    }
-  }
-
-  return data ? { decision, data } : { decision };
+  return result(decision);
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -305,8 +321,7 @@ export const defaultParserEngine: ParserEngine = {
       }
       const nodes = resolveJsonPath(root, expr);
       if (nodes === null) return null; // unsupported expression extracts nothing
-      const v = nodes[0];
-      return v == null ? null : typeof v === "string" ? v : JSON.stringify(v);
+      return nodes[0] ?? null;
     }
     if (format === "raw") {
       if (!isRe2Compatible(expr)) return null;

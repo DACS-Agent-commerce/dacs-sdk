@@ -95,10 +95,10 @@ function readSanctioned(
  * MVP methods:
  *  - self-signed: the subject self-asserts; recorded as a pass with the subject
  *    as its own authority.
- *  - consensus-backed-proxy: a DAHR proxy fetch of the recipe's authority URL;
- *    a 2xx is a pass, attested by the proxy's response hash. When the signed
- *    recipe carries a §7.4.1 `parserRules` ParserSpec, the attested body is
- *    evaluated against it (PSP-1..5) for a content-based, DETERMINISTIC verdict —
+ *  - consensus-backed-proxy: a DAHR proxy fetch of the recipe's authority URL.
+ *    A 2xx is evaluated through the signed §7.4.1 `parserRules` ParserSpec;
+ *    missing rules or body fail closed as `error`. The attested body is
+ *    evaluated (PSP-1..5) for a content-based, DETERMINISTIC verdict —
  *    polarity (negativeMatch), indeterminateOn precedence, parse-error → error,
  *    and the PSP-5 completeness floor — via an injected parser engine that only
  *    reports predicate matches, never the decision.
@@ -191,26 +191,35 @@ export async function vetCore(
       // HTTP status first: a 2xx proceeds; a non-2xx is mapped so that a definite
       // "no record" (404) is distinguished from a reachable error (5xx / other →
       // `error`) rather than collapsing every non-2xx to `fail`. On a 2xx, if the
-      // signed recipe carries a ParserSpec (§7.4.1), evaluate it against the
-      // DAHR-attested body — the verdict (polarity, indeterminateOn, parse-error,
-      // PSP-5 completeness) is fixed deterministically by the recipe, not the
-      // caller. Absent parserRules, status-only `2xx ⇒ pass`.
+      // signed recipe MUST carry a ParserSpec (§7.4.1), evaluated against the
+      // DAHR-attested body. Missing rules or body are `error`, never the old
+      // status-only `2xx ⇒ pass` trust path.
       let status: VerificationDecision;
-      let data: Record<string, string | null> | undefined;
+      let data: Record<string, unknown> | undefined;
       const httpMap = mapProxyStatus(res.status, negativeMatch);
       if (httpMap) {
         status = httpMap.decision;
       } else if (recipe.parserRules) {
-        const engine: ParserEngine = deps.parserEngine ?? defaultParserEngine;
-        const evaluation = evaluateParserSpec(recipe.parserRules, res.body ?? "", engine, {
-          negativeMatch,
-          requiresCompleteness: recipe.requiresListCompleteness === true,
-          listComplete: res.complete === true,
-        });
-        status = evaluation.decision;
-        data = evaluation.data; // PSP-3: record the parsed data map on the result
+        if (typeof res.body !== "string") {
+          status = "error";
+        } else {
+          const engine: ParserEngine = deps.parserEngine ?? defaultParserEngine;
+          try {
+            const evaluation = evaluateParserSpec(recipe.parserRules, res.body, engine, {
+              negativeMatch,
+              requiresCompleteness: recipe.requiresListCompleteness === true,
+              listComplete: res.complete === true,
+            });
+            status = evaluation.decision;
+            data = evaluation.data; // PSP-3: record the parsed data map on the result
+          } catch {
+            // JS callers can bypass the TS ParserSpec shape. A malformed signed
+            // rule is a verification error, never an exception or status-only pass.
+            status = "error";
+          }
+        }
       } else {
-        status = "pass";
+        status = "error";
       }
       results.push({
         claimRef: subject,

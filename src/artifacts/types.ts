@@ -124,7 +124,7 @@ export interface VerifyResultEntry {
    * the attested body (audit-only — it never changes the decision). Recorded so the
    * verification is reproducible from the signed recipe + attested body.
    */
-  data?: Record<string, string | null>;
+  data?: Record<string, unknown>;
 }
 
 /** DACS-2 — aggregated verification outcome for a subject. */
