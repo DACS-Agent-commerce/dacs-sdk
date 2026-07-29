@@ -240,7 +240,14 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     // Deal struck against listing v2, anchored at the versioned §6.3.4 address.
     const { result } = await runFlow(sub, 2);
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
-    expect(v.ok).toBe(true);
+    // Strict two-sided verification fail-closes the legacy buyer-only bundle
+    // (see the first test) — assert that the missing seller signature is the
+    // ONLY failure: every referenced artifact, including the v2 listing at its
+    // versioned §6.3.4 address, must still dereference and hash-match. That
+    // ref integrity is what #29's version pinning is about.
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/missing required signature/);
+    expect(v.refs.every((r) => r.verdict === "ok")).toBe(true);
     // The bundle records the exact version it pinned, not a hardcoded 1.
     expect(v.bundle?.listingRef.version).toBe(2);
     const pinnedHash = v.bundle?.listingRef.contentHash;
@@ -265,7 +272,10 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     await sub.anchor(listingAddress(sellerDid, "market-data", 3), v3Signed);
 
     const after = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
-    expect(after.ok).toBe(true);
+    // Still only the one-sided gap — v3's publication changed nothing: the
+    // pinned v2 ref still resolves and hash-matches at its own address.
+    expect(after.reason).toMatch(/missing required signature/);
+    expect(after.refs.every((r) => r.verdict === "ok")).toBe(true);
     expect(after.bundle?.listingRef.contentHash).toBe(pinnedHash);
   });
 
