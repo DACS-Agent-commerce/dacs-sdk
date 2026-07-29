@@ -374,8 +374,9 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           paymentTxRefs: [{ rail: NETWORK, txHash: settlement.txHash, kind: "payment" }],
           paymentAmount: { amount: AMOUNT, currency: "USDC" },
           settlementFinality: {
+            // finalityBlocks is block-depth-only (§9.7, enforced since #32) —
+            // a provider-receipt finality carries no block depth.
             model: "provider-receipt",
-            finalityBlocks: 0,
             finalityObservedAt: observedAt,
           },
           observedAt,
