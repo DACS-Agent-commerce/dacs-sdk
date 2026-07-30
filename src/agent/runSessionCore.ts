@@ -779,7 +779,7 @@ export async function runSessionCore(
       // `pay.finality` / `pay.blockNumber` / `pay.txRefKind`, so the evidence
       // asserts the finality model that actually settled, not a hardcoded one (F7/#22).
       const evidenceBase = {
-        evidenceVersion: "1",
+        evidenceVersion: "1" as const,
         jobId,
         phase: terms.price.rail,
         phaseIndex: 0,
