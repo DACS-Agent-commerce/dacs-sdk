@@ -78,6 +78,56 @@ To resume an interrupted session safely, pass the prior `jobId` to `runSession` 
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
+### Fault-aware bundle helper
+
+`buildTwoSidedBundle(session)` is the low-level DACS-5 v0.3 producer. It emits a
+`FaultAttestationBundle` copy for each signing buyer, seller, and distinct
+orchestrator. Fault and abort inputs require an absolute `faultedParty`; each
+copy gets the matching role-relative `outcome` and signs under
+`dacs-fault-bundle:v1:`. Consumers continue to accept legacy
+`AttestationBundle` records, and consistency/reputation reconciliation supports
+legacy, fault-aware, and mixed pairs. The helper is not yet wired into
+`runSessionCore`.
+
+## Doctor
+
+The package ships a read-only preflight command:
+
+```sh
+dacs doctor --offline
+dacs doctor --json --rpc https://node2.demos.sh
+dacs doctor --json --rpc-file ./rpc.url
+dacs doctor --json --wallet-secret-file ./wallet.secret --rpc https://node2.demos.sh
+```
+
+The first slice checks runtime/package state, optional RPC reachability, secret
+redaction, and rail availability without funding, transferring, anchoring, or
+broadcasting. StorageProgram binding resolution and read-visible anchor
+completion currently report `blocked` until the resolver/completion work lands
+(tracked by dacs-sdk #58 and #57).
+
+The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
+engine contract and the Vitest/Rolldown toolchain requirement.
+
+Secrets must not be passed directly as command-line values. Direct `--rpc` only
+accepts origin-only URLs such as `https://node2.demos.sh`. For RPC URLs with
+credentials, path tokens, query strings, or fragments, use `--rpc-file <path>`,
+`--rpc-file -`, or `--rpc-env <name>`. For wallet secrets, use
+`--wallet-secret-file <path>`, `--wallet-secret-file -`, or
+`--wallet-secret-env <name>` so secret material
+does not appear in shell history or process listings.
+
+Exit codes are stable:
+
+- `0`: all required checks passed or warned. In this first slice, required
+  funding/storage/cost checks are still `blocked`, so a complete preflight is
+  expected to exit `5` until those follow-up checks are implemented.
+- `1`: at least one non-RPC check failed.
+- `2`: invalid CLI usage.
+- `3`: requested RPC check failed.
+- `4`: unexpected doctor internal error.
+- `5`: required checks are still blocked/incomplete.
+
 ## Imports
 
 The package ships ESM with subpath exports so the substrate-free surface can be
@@ -86,6 +136,7 @@ used without pulling in `demosdk`:
 | Import | Needs `demosdk` | Use for |
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | yes (`createAgent` / `DemosAdapter`) | building live agents |
+| `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |

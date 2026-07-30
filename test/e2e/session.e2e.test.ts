@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
+import { buildSignedArtifact, verifySignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
   runSessionCore,
   sessionAnchorName,
@@ -12,6 +12,7 @@ import {
   type VerifyBundleDeps,
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { listingAddress } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -64,6 +65,13 @@ function memSubstrate() {
     },
     anchorAddress: async (name: string) => `stor:${name}`,
     read: async (ref: string) => store.get(ref) ?? null,
+    resolveAnchor: async (name: string) => {
+      const ref = `stor:${name}`;
+      const value = store.get(ref);
+      return value
+        ? { status: "present" as const, ref, value }
+        : { status: "absent" as const };
+    },
   };
 }
 
@@ -108,8 +116,9 @@ function fakeFetch(): typeof fetch {
 }
 
 describe("end-to-end session (publish → negotiate → x402 settle → verify)", () => {
-  async function runFlow(sub = memSubstrate()) {
-    // 1. Seller publishes a signed, anchored fixed-price listing.
+  async function runFlow(sub = memSubstrate(), listingVersion?: number) {
+    // 1. Seller publishes a signed, anchored fixed-price listing. When a
+    // listingVersion is given, anchor at the versioned §6.3.4 address (#29).
     const listingSigned = await buildSignedArtifact(
       {
         agentId: sellerDid,
@@ -120,12 +129,15 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
         supportedNegotiation: ["negotiate-fixed-price"],
         supportedPaymentRails: ["pay-x402"],
         supportedDelivery: ["deliver-attested-payload"],
+        ...(listingVersion !== undefined ? { listingVersion } : {}),
       },
       ARTIFACT_SEPARATORS.Listing,
       signSeller,
     );
     const listingRef = await sub.anchor(
-      `dacs1:listing:${sellerDid}:market-data`,
+      listingVersion !== undefined
+        ? listingAddress(sellerDid, "market-data", listingVersion)
+        : `dacs1:listing:${sellerDid}:market-data`,
       listingSigned,
     );
 
@@ -137,8 +149,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
         buildSignedArtifact(artifact, sep as never, signBuyer),
       signBytes: async (bytes) => signBuyer(bytes),
       anchor: sub.anchor,
-      anchorAddress: sub.anchorAddress,
-      readAnchor: sub.read,
+      resolveAnchor: sub.resolveAnchor,
       settle: (req) =>
         x402SettleCore(
           {
@@ -165,6 +176,15 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       newJobId: () => "job-e2e",
       now: () => "2026-01-01T00:00:00Z",
       nowMs: () => 1780000000000,
+      // #41 — REAL listing verification end to end: recompute the signature over
+      // the stored artifact and check it against the key in the advertised seller
+      // claim. Proves the happy path runs on a genuinely signed listing.
+      verifyListing: (raw, sellerClaim) => {
+        const key = resolveFromDid(sellerClaim);
+        return key
+          ? verifySignedArtifact(raw, ARTIFACT_SEPARATORS.Listing, key, verify)
+          : false;
+      },
     };
     const result = await runSessionCore(
       listingRef,
@@ -178,18 +198,22 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     return { sub, listingRef, result };
   }
 
-  test("completes and the bundle independently verifies end to end", async () => {
+  test("completes and strict verification fail-closes the legacy one-sided bundle", async () => {
     const { sub, listingRef, result } = await runFlow();
 
     expect(result.outcome).toBe("completed");
     expect(result.agreementRef).toBe("stor:dacs3:agreement:job-e2e");
     expect(result.settlementRef).toBe("stor:dacs4:evidence:job-e2e");
 
-    // A third party verifies the anchored bundle from scratch.
+    // runSessionCore still emits the legacy MVP buyer-only bundle. A strict
+    // third-party verifier must reject it until the two-sided producer helper
+    // is wired into this orchestration path.
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
 
-    expect(v.ok).toBe(true);
-    expect(v.fullyVerified).toBe(true);
+    expect(v.ok).toBe(false);
+    expect(v.fullyVerified).toBe(false);
+    expect(v.reason).toMatch(/missing required signature/);
+    expect(v.reason).toContain(sellerDid);
     // The bundle's buyer signature verifies over the §10.4.1 signed scope.
     expect(v.signatures).toEqual([{ party: buyerDid, verdict: "valid" }]);
     // Full 5-stage spec bundle: content-addressed listing/agreement refs +
@@ -199,7 +223,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(v.bundle?.vetRecords).toHaveLength(1);
     expect(v.bundle?.settlementEvidence).toHaveLength(1);
     expect(v.bundle?.listingRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(v.bundle?.agreementRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(v.bundle?.agreementRef?.contentHash).toMatch(/^[0-9a-f]{64}$/);
 
     // Settlement evidence carries the rail's reported tx hash.
     const evidence = sub.store.get(result.settlementRef);
@@ -211,11 +235,55 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     });
   });
 
+  test("versioned listing (#29): the bundle pins the version it was struck against, and a later version doesn't break it", async () => {
+    const sub = memSubstrate();
+    // Deal struck against listing v2, anchored at the versioned §6.3.4 address.
+    const { result } = await runFlow(sub, 2);
+    const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
+    // Strict two-sided verification fail-closes the legacy buyer-only bundle
+    // (see the first test) — assert that the missing seller signature is the
+    // ONLY failure: every referenced artifact, including the v2 listing at its
+    // versioned §6.3.4 address, must still dereference and hash-match. That
+    // ref integrity is what #29's version pinning is about.
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/missing required signature/);
+    expect(v.refs.every((r) => r.verdict === "ok")).toBe(true);
+    // The bundle records the exact version it pinned, not a hardcoded 1.
+    expect(v.bundle?.listingRef.version).toBe(2);
+    const pinnedHash = v.bundle?.listingRef.contentHash;
+
+    // The seller publishes v3 (a new address); v2's anchor is untouched, so the
+    // historical bundle still verifies against the version it pinned.
+    const v3Signed = await buildSignedArtifact(
+      {
+        agentId: sellerDid,
+        serviceId: "market-data",
+        name: "Market Data",
+        description: "EOD prices + intraday", // edited content
+        claimRequirements: [],
+        supportedNegotiation: ["negotiate-fixed-price"],
+        supportedPaymentRails: ["pay-x402"],
+        supportedDelivery: ["deliver-attested-payload"],
+        listingVersion: 3,
+      },
+      ARTIFACT_SEPARATORS.Listing,
+      signSeller,
+    );
+    await sub.anchor(listingAddress(sellerDid, "market-data", 3), v3Signed);
+
+    const after = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
+    // Still only the one-sided gap — v3's publication changed nothing: the
+    // pinned v2 ref still resolves and hash-matches at its own address.
+    expect(after.reason).toMatch(/missing required signature/);
+    expect(after.refs.every((r) => r.verdict === "ok")).toBe(true);
+    expect(after.bundle?.listingRef.contentHash).toBe(pinnedHash);
+  });
+
   test("tampering the anchored bundle breaks signature verification", async () => {
     const { sub, result } = await runFlow();
-    // Mutate a signed-scope field of the bundle after it was signed.
+    // Mutate a supported signed-scope field of the bundle after it was signed.
     const bundle = { ...sub.store.get(result.bundleRef)! };
-    bundle.outcome = "failed";
+    bundle.finalisedAt = 1780000000001;
     sub.store.set(result.bundleRef, bundle);
 
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));

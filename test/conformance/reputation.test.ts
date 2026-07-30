@@ -41,7 +41,12 @@ describe.skipIf(!haveVectors)("§14 conformance — reputation (§10.5)", () => 
       computedAt: fixture.computedAt,
       windowingBasis: fixture.windowingBasis,
     },
-    { trustBundles: true },
+    {
+      trustBundles: true,
+      // The frozen golden supplies one authoritative copy per job and models
+      // the counterpart addresses as absent outside the fixture payload.
+      copyAbsence: () => "absent",
+    },
   );
 
   it("excludes the out-of-window bundle (bundleCount matches golden)", () => {

@@ -1,5 +1,6 @@
 export {
   createAgent,
+  buildAgent,
   type Agent,
   type AgentConfig,
   type PublishResult,
@@ -16,6 +17,14 @@ export {
   type RefVerdict,
 } from "./verifyBundleCore.js";
 export {
+  bundleConsistency,
+  bundlesDiverge,
+  type ConsistencyVerdict,
+  type BundleCopies,
+  type BundleConsistencyDeps,
+  type BundleRole,
+} from "./bundleConsistency.js";
+export {
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
@@ -24,6 +33,13 @@ export {
   type EvidenceRailContext,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
+export {
+  verifyBundleCopy,
+  ABORT_OUTCOMES,
+  type BundleCopyDeps,
+  type BundleCopyRole,
+  type CopyValidity,
+} from "./bundleCopyValidity.js";
 export { computeReputation } from "./reputation.js";
 export {
   deriveReputation,
@@ -41,6 +57,20 @@ export {
   type VetProxyResult,
 } from "./vetCore.js";
 export {
+  evaluateParserSpec,
+  defaultParserEngine,
+  successExpr,
+  predicateExpr,
+  type ParserSpec,
+  type ParserFormat,
+  type IndeterminatePredicate,
+  type ParserEngine,
+  type ParserEvalContext,
+  type ParserEvaluation,
+  type ParserDecision,
+  type PredicateResult,
+} from "./parserSpec.js";
+export {
   runSessionCore,
   // sessionAnchorName intentionally NOT re-exported — MVP address strings are
   // non-normative (see the note in the top-level barrel / #48). Kept internal to
@@ -51,6 +81,19 @@ export {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
+export {
+  buildTwoSidedBundle,
+  bundleSignedScope,
+  attestationBundleHash,
+  BUNDLE_SIGNED_SCOPE_OMIT,
+  BUNDLE_OUTCOMES,
+  type BundleOutcome,
+  type BundleAnchorRole,
+  type SessionParty,
+  type SigningSessionParty,
+  type TwoSidedSession,
+  type TwoSidedBundles,
+} from "./twoSidedBundle.js";
 export {
   buildSignedArtifact,
   verifySignedArtifact,

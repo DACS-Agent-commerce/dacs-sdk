@@ -49,9 +49,25 @@ describe("signing (§7.7)", () => {
     expect(verifyArtifact("dacs-bundle:v1:", GOLDEN.doc, sig, pub)).toBe(false);
   });
 
-  it("sig-registry-closed-16: the domain-separator registry is the closed set of 16", () => {
-    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(16);
-    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(16);
+  it("sig-registry-closed-18: the domain-separator registry includes the v0.3 fault bundle", () => {
+    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(18);
+    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(18);
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toContain("dacs-fault-bundle:v1:");
+  });
+
+  it("#62: the DACS-3 payee-bound agreement separator is registered", () => {
+    expect(isRegisteredSeparator("dacs-payee-bound-agreement:v1:")).toBe(true);
+  });
+
+  it("#62: payee-bound and legacy agreement signatures are cross-domain (SIG-2)", () => {
+    // A signature under dacs-agreement:v1: MUST NOT verify as a payee-bound
+    // agreement, and vice versa — the whole point of a distinct domain.
+    const legacy = signArtifact("dacs-agreement:v1:", GOLDEN.doc, seed);
+    expect(verifyArtifact("dacs-payee-bound-agreement:v1:", GOLDEN.doc, legacy, pub)).toBe(false);
+    const payeeBound = signArtifact("dacs-payee-bound-agreement:v1:", GOLDEN.doc, seed);
+    expect(verifyArtifact("dacs-agreement:v1:", GOLDEN.doc, payeeBound, pub)).toBe(false);
+    // …each still verifies under its own domain.
+    expect(verifyArtifact("dacs-payee-bound-agreement:v1:", GOLDEN.doc, payeeBound, pub)).toBe(true);
   });
 
   it("sig-sig4-dacsx-disjoint: DACS-X separators are dacs-x-* and disjoint from the registry", () => {

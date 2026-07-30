@@ -4,7 +4,7 @@ import {
   deriveReputation,
   type ReputationWindow,
 } from "../../src/agent/reputationDerivation.js";
-import type { AttestationBundle } from "../../src/artifacts/types.js";
+import type { AttestationBundle, FaultAttestationBundle } from "../../src/artifacts/types.js";
 
 const PARTY = "did:demos:buyer";
 const CP = "did:demos:seller";
@@ -13,6 +13,10 @@ const WINDOW: ReputationWindow = {
   windowEnd: 2000,
   computedAt: 3000,
   windowingBasis: "finalisedAt",
+};
+const TRUSTED_WITH_ABSENCE = {
+  trustBundles: true,
+  copyAbsence: () => "absent" as const,
 };
 
 /** Minimal valid-enough AttestationBundle for the deriver (it reads a few fields). */
@@ -43,6 +47,26 @@ function bundle(
   } as unknown as AttestationBundle;
 }
 
+function faultBundle(
+  jobId: string,
+  outcome: string,
+  faultedParty: "buyer" | "seller" | "orchestrator" | "none",
+  anchoredByRole: "buyer" | "seller",
+  parties = [
+    { role: "buyer", bundleHash: "h", primaryClaim: PARTY },
+    { role: "seller", bundleHash: "h", primaryClaim: CP },
+  ],
+): FaultAttestationBundle {
+  const { bundleVersion: _legacy, ...shared } = bundle(
+    jobId,
+    outcome,
+    1100,
+    anchoredByRole,
+    parties,
+  );
+  return { ...shared, faultBundleVersion: "1", faultedParty } as FaultAttestationBundle;
+}
+
 describe("deriveReputation (DACS-5 §10.5)", () => {
   test("windowing: bundles outside [start,end] on finalisedAt are excluded", () => {
     const r = deriveReputation(
@@ -53,7 +77,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("late", "completed", 2500),
       ],
       WINDOW,
-      { trustBundles: true },
+      TRUSTED_WITH_ABSENCE,
     );
     expect(r.bundleCount).toBe(1);
     expect(r.metrics.completionRate).toBe(1);
@@ -68,7 +92,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("b", "failed-substrate", 1200),
       ],
       WINDOW,
-      { trustBundles: true },
+      TRUSTED_WITH_ABSENCE,
     );
     expect(r.bundleCount).toBe(2); // both counted in bundleCount
     expect(r.metrics.completionRate).toBe(1); // but denom excludes substrate
@@ -85,7 +109,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("d", "aborted-by-self", 1400), // party's own fault, not counterparty
       ],
       WINDOW,
-      { trustBundles: true },
+      TRUSTED_WITH_ABSENCE,
     );
     expect(r.metrics.counterpartyFaultRate).toBe(0.5); // 2 / 4
     expect(r.metrics.completionRate).toBe(0.25); // 1 / 4
@@ -96,14 +120,14 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       PARTY,
       [bundle("a", "failed-substrate", 1100), bundle("b", "failed-substrate", 1200)],
       WINDOW,
-      { trustBundles: true },
+      TRUSTED_WITH_ABSENCE,
     );
     expect(r.metrics.completionRate).toBeNull();
     expect(r.metrics.counterpartyFaultRate).toBeNull();
   });
 
   test("empty scoped set → zeroed derivation with null scalar metrics", () => {
-    const r = deriveReputation(PARTY, [], WINDOW, { trustBundles: true });
+    const r = deriveReputation(PARTY, [], WINDOW, TRUSTED_WITH_ABSENCE);
     expect(r.bundleCount).toBe(0);
     expect(r.bundleRefs).toEqual([]);
     expect(r.metrics.completionRate).toBeNull();
@@ -118,7 +142,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("j1", "completed", 1100, "seller"), // counterparty copy, same job
       ],
       WINDOW,
-      { trustBundles: true },
+      TRUSTED_WITH_ABSENCE,
     );
     expect(r.bundleCount).toBe(1); // deduped by jobId
   });
@@ -132,21 +156,143 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("j2", "completed", 1200, "buyer"),
       ],
       WINDOW,
-      { trustBundles: true },
+      TRUSTED_WITH_ABSENCE,
     );
     // j1 dropped (dispute); only j2 remains.
     expect(r.bundleCount).toBe(1);
     expect(r.metrics.completionRate).toBe(1);
   });
 
-  test("counterparty-only copy is perspective-flipped (aborted-by-self → other)", () => {
-    // Only the seller's copy exists; from the buyer's view its 'aborted-by-self'
-    // becomes 'aborted-by-other' (counterparty fault).
+  test("legacy perspective-partner outcomes reconcile to one event", () => {
+    const copies = [
+      bundle("j1", "failed-counterparty", 1100, "buyer"),
+      bundle("j1", "failed-perm", 1100, "seller"),
+    ];
+    const buyer = deriveReputation(PARTY, copies, WINDOW, TRUSTED_WITH_ABSENCE);
+    expect(buyer.bundleCount).toBe(1);
+    expect(buyer.metrics.counterpartyFaultRate).toBe(1);
+
+    const seller = deriveReputation(CP, copies, WINDOW, TRUSTED_WITH_ABSENCE);
+    expect(seller.bundleCount).toBe(1);
+    expect(seller.metrics.counterpartyFaultRate).toBe(0);
+    expect(seller.metrics.completionRate).toBe(0);
+  });
+
+  test("fault-bundle perspective pair scores the same absolute fault for both parties", () => {
+    const copies = [
+      faultBundle("j1", "failed-counterparty", "seller", "buyer"),
+      faultBundle("j1", "failed-perm", "seller", "seller"),
+    ];
+    const buyer = deriveReputation(PARTY, copies, WINDOW, TRUSTED_WITH_ABSENCE);
+    expect(buyer.bundleCount).toBe(1);
+    expect(buyer.metrics.counterpartyFaultRate).toBe(1);
+    const seller = deriveReputation(CP, copies, WINDOW, TRUSTED_WITH_ABSENCE);
+    expect(seller.bundleCount).toBe(1);
+    expect(seller.metrics.counterpartyFaultRate).toBe(0);
+  });
+
+  test("mixed pair uses its compatible fault bundle and orchestrator fault is neutral", () => {
+    const mixed = [
+      bundle("j1", "failed-counterparty", 1100, "buyer"),
+      faultBundle("j1", "failed-perm", "seller", "seller"),
+    ];
+    expect(deriveReputation(PARTY, mixed, WINDOW, TRUSTED_WITH_ABSENCE).metrics.counterpartyFaultRate).toBe(1);
+
+    const parties = [
+      { role: "buyer", bundleHash: "h", primaryClaim: PARTY },
+      { role: "seller", bundleHash: "h", primaryClaim: CP },
+      { role: "orchestrator", bundleHash: "h", primaryClaim: "did:demos:orchestrator" },
+    ];
+    const neutral = deriveReputation(
+      PARTY,
+      [faultBundle("j2", "failed-counterparty", "orchestrator", "buyer", parties)],
+      WINDOW,
+      TRUSTED_WITH_ABSENCE,
+    );
+    expect(neutral.bundleCount).toBe(1);
+    expect(neutral.metrics.completionRate).toBeNull();
+    expect(neutral.metrics.counterpartyFaultRate).toBeNull();
+  });
+
+  test("two present perspective-flipped phase error classes are divergent and excluded", () => {
+    const buyerCopy = bundle("j1", "completed", 1100, "buyer");
+    buyerCopy.phaseSummary = [
+      { index: 0, kind: "settle", outcome: "fail", errorClass: "counterparty" } as never,
+    ];
+    const sellerCopy = bundle("j1", "completed", 1100, "seller");
+    sellerCopy.phaseSummary = [
+      { index: 0, kind: "settle", outcome: "fail", errorClass: "permanent" } as never,
+    ];
+    const r = deriveReputation(PARTY, [buyerCopy, sellerCopy], WINDOW, TRUSTED_WITH_ABSENCE);
+    expect(r.bundleCount).toBe(0);
+    expect(r.metrics.counterpartyFaultRate).toBeNull();
+  });
+
+  test("two present perspective-flipped phase outcomes are divergent and excluded", () => {
+    const buyerCopy = bundle("j1", "completed", 1100, "buyer");
+    buyerCopy.phaseSummary = [
+      { index: 0, kind: "settle", outcome: "failed-counterparty" } as never,
+    ];
+    const sellerCopy = bundle("j1", "completed", 1100, "seller");
+    sellerCopy.phaseSummary = [
+      { index: 0, kind: "settle", outcome: "failed-perm" } as never,
+    ];
+    const r = deriveReputation(PARTY, [buyerCopy, sellerCopy], WINDOW, TRUSTED_WITH_ABSENCE);
+    expect(r.bundleCount).toBe(0);
+    expect(r.metrics.completionRate).toBeNull();
+  });
+
+  test("shared-index phase kind mismatch is divergent and excluded", () => {
+    const buyerCopy = bundle("j1", "completed", 1100, "buyer");
+    buyerCopy.phaseSummary = [
+      { index: 2, kind: "commit-agreement", outcome: "ok" } as never,
+    ];
+    const sellerCopy = bundle("j1", "completed", 1100, "seller");
+    sellerCopy.phaseSummary = [
+      { index: 2, kind: "deliver-storage-program", outcome: "ok" } as never,
+    ];
+    const r = deriveReputation(PARTY, [buyerCopy, sellerCopy], WINDOW, TRUSTED_WITH_ABSENCE);
+    expect(r.bundleCount).toBe(0);
+    expect(r.metrics.completionRate).toBeNull();
+  });
+
+  test("counterparty-only copy without authoritative absence evidence is excluded", () => {
     const r = deriveReputation(
       PARTY,
       [bundle("j1", "aborted-by-self", 1100, "seller")],
       WINDOW,
       { trustBundles: true },
+    );
+    expect(r.bundleCount).toBe(0);
+    expect(r.metrics.counterpartyFaultRate).toBeNull();
+    expect(r.metrics.completionRate).toBeNull();
+  });
+
+  test("self-only copy without authoritative absence evidence is excluded", () => {
+    const r = deriveReputation(
+      PARTY,
+      [faultBundle("j1", "completed", "none", "buyer")],
+      WINDOW,
+      { trustBundles: true },
+    );
+    expect(r.bundleCount).toBe(0);
+    expect(r.metrics.completionRate).toBeNull();
+  });
+
+  test("counterparty-only copy is attributed with authoritative absence evidence", () => {
+    const r = deriveReputation(
+      PARTY,
+      [bundle("j1", "aborted-by-self", 1100, "seller")],
+      WINDOW,
+      {
+        trustBundles: true,
+        copyAbsence: ({ jobId, missingRole, presentRole }) => {
+          expect(jobId).toBe("j1");
+          expect(missingRole).toBe("buyer");
+          expect(presentRole).toBe("seller");
+          return "absent";
+        },
+      },
     );
     expect(r.metrics.counterpartyFaultRate).toBe(1);
     expect(r.metrics.completionRate).toBe(0);
@@ -157,7 +303,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       PARTY,
       [bundle("a", "completed", 1100), bundle("b", "completed", 1200)],
       WINDOW,
-      { isValid: (b) => b.jobId === "a" },
+      { isValid: (b) => b.jobId === "a", copyAbsence: () => "absent" },
     );
     expect(r.bundleCount).toBe(1);
   });
@@ -180,7 +326,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
         bundle("d", "aborted-by-self", 1400),
       ],
       WINDOW,
-      { trustBundles: true },
+      TRUSTED_WITH_ABSENCE,
     );
     expect(r.metrics.counterpartyAdjustedCompletionRate).toBe(0.5);
   });
@@ -190,7 +336,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       PARTY,
       [bundle("a", "failed-counterparty", 1100), bundle("b", "aborted-by-other", 1200)],
       WINDOW,
-      { trustBundles: true },
+      TRUSTED_WITH_ABSENCE,
     );
     expect(r.metrics.counterpartyAdjustedCompletionRate).toBeNull(); // blame denom 0
   });

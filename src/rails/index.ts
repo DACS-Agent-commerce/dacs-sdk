@@ -21,6 +21,14 @@ export {
   type EvmTransferClient,
 } from "./evmErc20.js";
 export {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  settlementKey,
+  type SettlementIdempotencyStore,
+  type SettlementLog,
+  type SettlementReconcile,
+} from "./idempotency.js";
+export {
   createPayD402Rail,
   payD402Settle,
   payD402SettleCore,
@@ -34,3 +42,13 @@ export {
   type D402PaymentRequirement,
   type D402SettlementResult,
 } from "./payD402.js";
+export {
+  createPayDemRail,
+  payDemSettle,
+  payDemSettleCore,
+  type PayDemRail,
+  type PayDemRailConfig,
+  type PayDemSettleParams,
+  type DemosNativeClient,
+  type DemosTransferResult,
+} from "./payDem.js";

@@ -3,6 +3,7 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
 import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
 import { createPayD402Rail, payD402Settle } from "../rails/payD402.js";
+import { createPayDemRail, payDemSettle } from "../rails/payDem.js";
 import type { RailDescriptor } from "./types.js";
 
 /**
@@ -17,7 +18,7 @@ export interface RailDispatchOptions {
   /** Buyer EVM private key used by EVM rails to sign payment. */
   evmPrivateKey: string;
   /** Per-deal paywall coordinates (from the listing/agreement, not the registry). */
-  paywall: { url: string; network: string; recipientEvm: string };
+  paywall: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
   /** JSON-RPC URL — required by the direct-transfer (evm-erc20) rail. */
   rpcUrl?: string;
   /** Demos node RPC URL — required by the D402 (pay-d402) rail. */
@@ -52,6 +53,7 @@ export async function settleFromRail(
       const rail = await createX402Rail({
         evmPrivateKey: opts.evmPrivateKey,
         fetchImpl: opts.fetchImpl,
+        requireSessionBinding: true,
       });
       return x402Settle(rail, { ...opts.paywall, asset: tokenAddress });
     }
@@ -105,6 +107,26 @@ export async function settleFromRail(
       });
       return payD402Settle(rail, {
         url: opts.paywall.url,
+        recipient: opts.paywall.recipientEvm,
+        network: opts.paywall.network,
+      });
+    }
+    case "dem": {
+      // Native DEM transfer rail (§9.5.9, live). The recipient + network are
+      // per-deal (paywall); the Demos RPC + wallet secret are caller secrets.
+      // `payTo` (paywall.recipientEvm) carries the Demos recipient address.
+      if (!opts.demosRpc) {
+        throw new DacsError("pay-dem rail requires opts.demosRpc");
+      }
+      if (!opts.demosSecret) {
+        throw new DacsError("pay-dem rail requires opts.demosSecret");
+      }
+      const rail = await createPayDemRail({
+        rpc: opts.demosRpc,
+        secret: opts.demosSecret,
+        network: opts.paywall.network,
+      });
+      return payDemSettle(rail, {
         recipient: opts.paywall.recipientEvm,
         network: opts.paywall.network,
       });

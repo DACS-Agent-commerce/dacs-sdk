@@ -10,6 +10,7 @@ import {
   contentHash,
   isAgreementDocument,
   isAttestationBundle,
+  isFaultAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
   isPricingSpec,
@@ -33,6 +34,7 @@ const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
   AgreementDocument: isAgreementDocument,
   SettlementEvidence: isSettlementEvidence,
   AttestationBundle: isAttestationBundle,
+  FaultAttestationBundle: isFaultAttestationBundle,
 };
 
 describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
@@ -119,6 +121,23 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         settlementFinality: { ...valid.settlementFinality, model: "observed" },
       }),
     ).toBe(false);
+    // Finality is success-only.
+    expect(
+      isSettlementEvidence({ ...valid, outcome: "failure", settlementFinality: undefined }),
+    ).toBe(true);
+    expect(isSettlementEvidence({ ...valid, outcome: "failure" })).toBe(false);
+    expect(isSettlementEvidence({ ...valid, settlementFinality: undefined })).toBe(false);
+    // finalityBlocks belongs only to block-depth.
+    expect(
+      isSettlementEvidence({
+        ...valid,
+        settlementFinality: {
+          model: "bft-final",
+          finalityBlocks: 1,
+          finalityObservedAt: valid.settlementFinality.finalityObservedAt,
+        },
+      }),
+    ).toBe(false);
   });
 });
 
@@ -136,6 +155,71 @@ describe.skipIf(!have)("isAttestationBundle: phaseSummary[].attestationRef is OP
     const b = bundle();
     b.phaseSummary[0].attestationRef = { kind: "x" }; // missing id/contentHash
     expect(isAttestationBundle(b)).toBe(false);
+  });
+});
+
+describe.skipIf(!have)("FaultAttestationBundle discriminator", () => {
+  const faultBundle = () => {
+    const bundle = JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+    delete bundle.bundleVersion;
+    bundle.faultBundleVersion = "1";
+    bundle.faultedParty = bundle.outcome === "completed" ? "none" : "seller";
+    return bundle;
+  };
+
+  it("accepts exactly the fault discriminator plus required absolute fault", () => {
+    const bundle = faultBundle();
+    expect(isFaultAttestationBundle(bundle)).toBe(true);
+    expect(isAttestationBundle(bundle)).toBe(false);
+  });
+
+  it("rejects missing or cross-type discriminator fields", () => {
+    const missing = faultBundle();
+    delete missing.faultedParty;
+    expect(isFaultAttestationBundle(missing)).toBe(false);
+
+    const confused = faultBundle();
+    confused.bundleVersion = "1";
+    expect(isFaultAttestationBundle(confused)).toBe(false);
+    expect(isAttestationBundle(confused)).toBe(false);
+  });
+
+  it("requires one buyer and seller role and unique phase indices", () => {
+    const missingSeller = faultBundle();
+    missingSeller.parties = missingSeller.parties.filter(
+      (party: { role: string }) => party.role !== "seller",
+    );
+    expect(isFaultAttestationBundle(missingSeller)).toBe(false);
+
+    const duplicatePhase = faultBundle();
+    duplicatePhase.phaseSummary.push({ ...duplicatePhase.phaseSummary[0] });
+    expect(isFaultAttestationBundle(duplicatePhase)).toBe(false);
+  });
+
+  it("rejects phase outcomes and error classes outside the closed DACS enums", () => {
+    const invalidOutcome = faultBundle();
+    invalidOutcome.phaseSummary[0].outcome = "garbage";
+    expect(isFaultAttestationBundle(invalidOutcome)).toBe(false);
+
+    const invalidErrorClass = faultBundle();
+    invalidErrorClass.phaseSummary[0].errorClass = "garbage";
+    expect(isFaultAttestationBundle(invalidErrorClass)).toBe(false);
+
+    const invalidTxRef = faultBundle();
+    invalidTxRef.phaseSummary[0].txRefs = [{ rail: "pay-x402" }];
+    expect(isFaultAttestationBundle(invalidTxRef)).toBe(false);
+  });
+
+  it("rejects an absolute fault that contradicts the outcome and anchor role", () => {
+    const completedWithFault = faultBundle();
+    completedWithFault.faultedParty = "seller";
+    expect(isFaultAttestationBundle(completedWithFault)).toBe(false);
+
+    const wrongSelfFault = faultBundle();
+    wrongSelfFault.outcome = "failed-perm";
+    wrongSelfFault.anchoredByRole = "buyer";
+    wrongSelfFault.faultedParty = "seller";
+    expect(isFaultAttestationBundle(wrongSelfFault)).toBe(false);
   });
 });
 
@@ -202,5 +286,36 @@ describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
     expect(isPricingSpec(band(150, 10))).toBe(false);
     expect(isPricingSpec(band(-1, 10))).toBe(false);
     expect(isPricingSpec(band(10, -5))).toBe(false);
+  });
+});
+
+// Ungated (no vendored vectors needed): the READ-path guard for listingVersion.
+// Publish validates its own writes, but a listing anchored by another writer (or
+// an older SDK) reaches consumers only through isListing — so the version pin
+// that flows into listingRef.version must be validated HERE (#46/#29).
+describe("isListing — listingVersion clause (#46/#29)", () => {
+  const base = {
+    agentId: "did:demos:agent:seller",
+    serviceId: "svc-1",
+    name: "n",
+    description: "d",
+    claimRequirements: [],
+    supportedNegotiation: ["fixed-price"],
+    supportedPaymentRails: ["pay-x402"],
+    supportedDelivery: ["inline"],
+  };
+
+  it("accepts an absent listingVersion (⇒ v1) and positive integers", () => {
+    expect(isListing(base)).toBe(true);
+    expect(isListing({ ...base, listingVersion: 1 })).toBe(true);
+    expect(isListing({ ...base, listingVersion: 7 })).toBe(true);
+  });
+
+  it("rejects a non-integer, zero, negative, fractional, or string version", () => {
+    expect(isListing({ ...base, listingVersion: "bad" })).toBe(false);
+    expect(isListing({ ...base, listingVersion: 0 })).toBe(false);
+    expect(isListing({ ...base, listingVersion: -1 })).toBe(false);
+    expect(isListing({ ...base, listingVersion: 1.5 })).toBe(false);
+    expect(isListing({ ...base, listingVersion: null })).toBe(false);
   });
 });

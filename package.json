@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "exports": {
     ".": {
@@ -28,6 +28,10 @@
       "types": "./dist/identity/index.d.ts",
       "import": "./dist/identity/index.js"
     },
+    "./discovery": {
+      "types": "./dist/discovery/index.d.ts",
+      "import": "./dist/discovery/index.js"
+    },
     "./negotiate": {
       "types": "./dist/negotiate/index.d.ts",
       "import": "./dist/negotiate/index.js"
@@ -40,10 +44,17 @@
       "types": "./dist/registry/index.d.ts",
       "import": "./dist/registry/index.js"
     },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
+    },
     "./substrate": {
       "types": "./dist/substrate/index.d.ts",
       "import": "./dist/substrate/index.js"
     }
+  },
+  "bin": {
+    "dacs": "./dist/bin/dacs.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -71,6 +82,7 @@
   },
   "devDependencies": {
     "@types/node": "^20",
+    "ganache": "7.9.2",
     "typescript": "^5",
     "vitest": "^4.0.18"
   }

@@ -1,6 +1,8 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
-import type { AttestationBundle, AttestationRef } from "../artifacts/types.js";
+import type { AnyAttestationBundle, AttestationRef } from "../artifacts/types.js";
+import { bundlesDiverge } from "./bundleDivergence.js";
+import { isFaultBundle, scoredBundleOutcome } from "./bundleSemantics.js";
 
 /**
  * DACS-5 §10.5 reputation derivation — the spec-faithful, windowed reputation
@@ -12,7 +14,8 @@ import type { AttestationBundle, AttestationRef } from "../artifacts/types.js";
  *    (`finalisedAt`) is within [windowStart, windowEnd].
  *  - Per-jobId reconciliation: collapse buyer/seller-anchored copies of one job
  *    to a single perspective-adjusted outcome; a genuine cross-copy divergence
- *    (§10.4.3(d)) excludes the job from ALL metrics.
+ *    (§10.4.3(d)) excludes the job from ALL metrics. A one-copy attribution
+ *    requires authoritative absence of the missing role's copy.
  *  - Blameless substrate (§10.5, "failed-substrate denominator"):
  *    `party_fault_denom = |outcomes| − |failed-substrate|`, so substrate-induced
  *    failures never damage either party's reputation.
@@ -84,42 +87,13 @@ export interface ReputationWindow {
   windowingBasis?: "finalisedAt" | "sr2-anchor-timestamp";
 }
 
-/** Flip a counterparty-anchored outcome to the scored party's perspective (§10.5.1). */
-function perspectiveFlip(outcome: string): string {
-  switch (outcome) {
-    case "aborted-by-self":
-      return "aborted-by-other";
-    case "aborted-by-other":
-      return "aborted-by-self";
-    case "failed-perm":
-      return "failed-counterparty";
-    case "failed-counterparty":
-      return "failed-perm";
-    default:
-      // completed / failed-substrate are perspective-invariant.
-      return outcome;
-  }
-}
-
-/** §10.4.3(d) "canonically diverge": contradictory outcome or phaseSummary outcome/errorClass. */
-function canonicallyDiverge(a: AttestationBundle, b: AttestationBundle): boolean {
-  if (a.outcome !== b.outcome) return true;
-  const pa = a.phaseSummary ?? [];
-  const pb = b.phaseSummary ?? [];
-  if (pa.length !== pb.length) return true;
-  for (let i = 0; i < pa.length; i++) {
-    if (pa[i]!.outcome !== pb[i]!.outcome) return true;
-    if (
-      (pa[i] as { errorClass?: unknown }).errorClass !==
-      (pb[i] as { errorClass?: unknown }).errorClass
-    )
-      return true;
-  }
-  return false;
-}
+// §10.4.3(d) divergence uses the ONE shared predicate (bundleDivergence.js),
+// identical to the two-sided consistency verdict — presence-mismatch by phase
+// `index` counts as divergence (#224). Previously a private by-position copy here
+// that disagreed with bundleConsistency on length-mismatched phaseSummary.
 
 /** §10.4.1 signed-scope content hash of a bundle (omit signatures + anchoredByRole). */
-function bundleContentHash(bundle: AttestationBundle): string {
+function bundleContentHash(bundle: AnyAttestationBundle): string {
   const scope = { ...stripSignature(bundle as unknown as Record<string, unknown>) };
   delete (scope as Record<string, unknown>)["anchoredByRole"];
   return contentHash(scope);
@@ -132,13 +106,24 @@ export interface DeriveReputationDeps {
    * reputation from unvalidated bundles is a fail-open trap, so the caller must
    * make the choice explicit.
    */
-  isValid?: (bundle: AttestationBundle) => boolean;
+  isValid?: (bundle: AnyAttestationBundle) => boolean;
   /**
    * Explicit, grep-able opt-out of signature validation (accept every copy).
    * Only for callers that have already validated the bundles upstream. Ignored
    * when `isValid` is supplied.
    */
   trustBundles?: boolean;
+  /**
+   * §10.5.1 SR-2 absence evidence. When only one buyer/seller copy is present,
+   * a deriver may attribute it only if the other role's copy is authoritatively
+   * absent. Ordinary not-found, transport failure, stale reads, or bindings
+   * without an absence policy are indeterminate and must exclude.
+   */
+  copyAbsence?: (context: {
+    jobId: string;
+    missingRole: "buyer" | "seller";
+    presentRole: "buyer" | "seller";
+  }) => "absent" | "indeterminate";
 }
 
 /**
@@ -147,7 +132,7 @@ export interface DeriveReputationDeps {
  */
 export function deriveReputation(
   party: string,
-  bundles: AttestationBundle[],
+  bundles: AnyAttestationBundle[],
   window: ReputationWindow,
   deps: DeriveReputationDeps = {},
 ): ReputationDerivation {
@@ -191,30 +176,53 @@ export function deriveReputation(
 
   // Group by jobId and reconcile to one authoritative, perspective-adjusted
   // outcome per job.
-  const byJob = new Map<string, AttestationBundle[]>();
+  const byJob = new Map<string, AnyAttestationBundle[]>();
   for (const b of scoped) {
     const arr = byJob.get(b.jobId) ?? [];
     arr.push(b);
     byJob.set(b.jobId, arr);
   }
 
-  const reconciled: AttestationBundle[] = [];
+  const reconciled: AnyAttestationBundle[] = [];
   const outcomes: string[] = [];
+  const orchestratorFaultJobs = new Set<string>();
   for (const copies of byJob.values()) {
     const valid = copies
       .filter((b) => isValid(b))
       .filter((b) => b.anchoredByRole === "buyer" || b.anchoredByRole === "seller");
     if (valid.length === 0) continue;
     const roleOfParty = valid[0]!.parties.find((p) => p.primaryClaim === party)?.role;
+    if (roleOfParty !== "buyer" && roleOfParty !== "seller") continue;
     const selfCopy = valid.find((b) => b.anchoredByRole === roleOfParty);
     const cp = valid.find((b) => b.anchoredByRole !== roleOfParty);
+    if (!selfCopy || !cp) {
+      const present = selfCopy ?? cp;
+      const presentRole = present?.anchoredByRole;
+      if (!present || (presentRole !== "buyer" && presentRole !== "seller")) continue;
+      const missingRole = presentRole === "buyer" ? "seller" : "buyer";
+      const absence = deps.copyAbsence?.({
+        jobId: present.jobId,
+        missingRole,
+        presentRole,
+      }) ?? "indeterminate";
+      if (absence !== "absent") continue;
+    }
+    let authoritative: AnyAttestationBundle | undefined;
     if (selfCopy) {
-      if (cp && canonicallyDiverge(cp, selfCopy)) continue; // genuine dispute → exclude
-      reconciled.push(selfCopy);
-      outcomes.push(selfCopy.outcome);
+      if (cp && bundlesDiverge(cp, selfCopy)) continue; // genuine dispute → exclude
+      authoritative = cp && isFaultBundle(cp) !== isFaultBundle(selfCopy)
+        ? (isFaultBundle(cp) ? cp : selfCopy)
+        : selfCopy;
     } else if (cp) {
-      reconciled.push(cp);
-      outcomes.push(perspectiveFlip(cp.outcome));
+      authoritative = cp;
+    }
+    if (!authoritative) continue;
+    const scored = scoredBundleOutcome(authoritative, roleOfParty);
+    if (!scored) continue;
+    reconciled.push(authoritative);
+    outcomes.push(scored);
+    if (isFaultBundle(authoritative) && authoritative.faultedParty === "orchestrator") {
+      orchestratorFaultJobs.add(authoritative.jobId);
     }
   }
 
@@ -223,8 +231,12 @@ export function deriveReputation(
   const count = (o: string) => outcomes.filter((x) => x === o).length;
   const completed = count("completed");
   const failedSubstrate = count("failed-substrate");
-  const counterpartyFault = count("aborted-by-other") + count("failed-counterparty");
-  const partyFaultDenom = outcomes.length - failedSubstrate;
+  const counterpartyFault = outcomes.filter(
+    (outcome, index) =>
+      !orchestratorFaultJobs.has(reconciled[index]!.jobId) &&
+      (outcome === "aborted-by-other" || outcome === "failed-counterparty"),
+  ).length;
+  const partyFaultDenom = outcomes.length - failedSubstrate - orchestratorFaultJobs.size;
   const rate = (n: number) => (partyFaultDenom > 0 ? n / partyFaultDenom : null);
   // §10.5.1 (v0.2): strip counterparty-caused failures from the denominator so
   // the rate reflects only the party's own blameable performance.

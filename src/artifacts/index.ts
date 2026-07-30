@@ -23,8 +23,14 @@ export type {
   Rating,
   BundleParty,
   PhaseSummaryEntry,
+  BundlePhaseOutcome,
+  BundlePhaseErrorClass,
   BundleSignature,
   AttestationBundle,
+  FaultAttestationBundle,
+  AnyAttestationBundle,
+  BundlePartyRole,
+  FaultedParty,
 } from "./types.js";
 export {
   COMPONENT_SIGNATURE_ALGORITHMS,
@@ -55,4 +61,6 @@ export {
   isAgreementDocument,
   isSettlementEvidence,
   isAttestationBundle,
+  isFaultAttestationBundle,
+  isAnyAttestationBundle,
 } from "./validators.js";

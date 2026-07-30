@@ -1,7 +1,9 @@
 import type {
   AgreementDocument,
+  AnyAttestationBundle,
   AttestationBundle,
   CompositeVerificationRecord,
+  FaultAttestationBundle,
   Listing,
   SettlementEvidence,
 } from "./types.js";
@@ -26,6 +28,14 @@ const FINALITY_MODELS = [
   "htlc-reveal",
   "liquidity-tank",
   "bft-final",
+] as const;
+const BUNDLE_PHASE_OUTCOMES = ["ok", "fail"] as const;
+const BUNDLE_PHASE_ERROR_CLASSES = [
+  "permanent",
+  "transient",
+  "counterparty",
+  "substrate",
+  "settlement-atomicity",
 ] as const;
 // DACS-2 §7.7 verification verdicts.
 const VERIFICATION_DECISIONS = [
@@ -85,7 +95,16 @@ export function isListing(v: unknown): v is Listing {
     isStrArray(v.supportedDelivery) &&
     // pricing is OPTIONAL (#34; full required-fidelity in #5) — but if present it
     // MUST be a well-formed PricingSpec, not any object.
-    (v.pricing === undefined || isPricingSpec(v.pricing))
+    (v.pricing === undefined || isPricingSpec(v.pricing)) &&
+    // listingVersion is OPTIONAL (absent ⇒ v1) — but if present it MUST be a
+    // positive integer (#46/#29). runSessionCore copies it into
+    // listingRef.version, so an unvalidated value (e.g. a string) would flow
+    // into the bundle's version pin on the READ path even though publish
+    // validates its own writes.
+    (v.listingVersion === undefined ||
+      (typeof v.listingVersion === "number" &&
+        Number.isInteger(v.listingVersion) &&
+        v.listingVersion >= 1))
   );
 }
 
@@ -137,11 +156,69 @@ const isTxRef = (v: unknown): boolean =>
 const isAttestationRef = (v: unknown): boolean =>
   isObj(v) && isStr(v.kind) && isStr(v.id) && isStr(v.contentHash);
 
+function isLegacyBundleParties(v: unknown): boolean {
+  return (
+    Array.isArray(v) &&
+    v.every(
+      (p) => isObj(p) && isStr(p.role) && isStr(p.bundleHash) && isStr(p.primaryClaim),
+    )
+  );
+}
+
+function isFaultBundleParties(v: unknown): boolean {
+  if (!Array.isArray(v)) return false;
+  if (
+    !v.every(
+      (p) =>
+        isObj(p) &&
+        isOneOf(["buyer", "seller", "orchestrator"], p.role) &&
+        isStr(p.bundleHash) &&
+        isStr(p.primaryClaim),
+    )
+  ) {
+    return false;
+  }
+  const parties = v as Array<Record<string, unknown>>;
+  const roles = parties.map((party) => party.role as string);
+  if (new Set(roles).size !== roles.length || !roles.includes("buyer") || !roles.includes("seller")) {
+    return false;
+  }
+  const orchestrator = parties.find((party) => party.role === "orchestrator")?.primaryClaim;
+  if (typeof orchestrator === "string") {
+    const buyer = parties.find((party) => party.role === "buyer")?.primaryClaim;
+    const seller = parties.find((party) => party.role === "seller")?.primaryClaim;
+    if (orchestrator === buyer || orchestrator === seller) return false;
+  }
+  return true;
+}
+
+/** DACS-5 §10.4.1 permissible set for one absolute-fault copy. */
+export function faultedPartyIsPermitted(bundle: Record<string, unknown>): boolean {
+  const anchor = bundle.anchoredByRole;
+  const faulted = bundle.faultedParty;
+  const outcome = bundle.outcome;
+  if (anchor !== "buyer" && anchor !== "seller" && anchor !== "orchestrator") return false;
+  if (!Array.isArray(bundle.parties)) return false;
+  const roles = new Set<unknown>(
+    bundle.parties
+      .filter(isObj)
+      .map((party) => party.role)
+      .filter((role) => role === "buyer" || role === "seller" || role === "orchestrator"),
+  );
+  if (!roles.has(anchor)) return false;
+  if (outcome === "completed" || outcome === "failed-substrate") return faulted === "none";
+  if (outcome === "failed-perm" || outcome === "aborted-by-self") return faulted === anchor;
+  if (outcome === "failed-counterparty" || outcome === "aborted-by-other") {
+    return faulted !== "none" && faulted !== anchor && roles.has(faulted);
+  }
+  return false;
+}
+
 export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
   if (!isObj(v)) return false;
   const amt = v.paymentAmount;
   const fin = v.settlementFinality;
-  return (
+  const baseValid =
     isStr(v.evidenceVersion) &&
     isStr(v.jobId) &&
     isStr(v.phase) &&
@@ -149,50 +226,95 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
     isOneOf(SETTLEMENT_OUTCOMES, v.outcome) &&
     Array.isArray(v.paymentTxRefs) &&
     v.paymentTxRefs.every(isTxRef) &&
-    isObj(amt) &&
-    isStr(amt.amount) &&
-    isStr(amt.currency) &&
-    isObj(fin) &&
-    isOneOf(FINALITY_MODELS, fin.model) &&
-    isNum(fin.finalityBlocks) &&
-    isNum(fin.finalityObservedAt) &&
-    isNum(v.observedAt)
-  );
+    isNum(v.observedAt);
+  if (!baseValid) return false;
+  if (v.outcome === "failure") {
+    return (
+      fin === undefined &&
+      (amt === undefined || (isObj(amt) && isStr(amt.amount) && isStr(amt.currency)))
+    );
+  }
+  if (!isObj(amt) || !isStr(amt.amount) || !isStr(amt.currency) || !isObj(fin)) {
+    return false;
+  }
+  if (!isOneOf(FINALITY_MODELS, fin.model) || !isNum(fin.finalityObservedAt)) {
+    return false;
+  }
+  return fin.model === "block-depth"
+    ? isNum(fin.finalityBlocks)
+    : fin.finalityBlocks === undefined;
 }
 
-export function isAttestationBundle(v: unknown): v is AttestationBundle {
-  if (!isObj(v)) return false;
+function hasBundleFields(
+  v: Record<string, unknown>,
+  partiesAreValid: (parties: unknown) => boolean,
+): boolean {
   const lr = v.listingRef;
   return (
-    isStr(v.bundleVersion) &&
     isStr(v.jobId) &&
     isStr(v.outcome) &&
+    (v.anchoredByRole === undefined ||
+      isOneOf(["buyer", "seller", "orchestrator"], v.anchoredByRole)) &&
     isObj(lr) &&
     isStr(lr.listingId) &&
     isNum(lr.version) &&
     isStr(lr.contentHash) &&
-    isAttestationRef(v.agreementRef) &&
-    Array.isArray(v.parties) &&
-    v.parties.every(
-      (p) => isObj(p) && isStr(p.role) && isStr(p.bundleHash) && isStr(p.primaryClaim),
-    ) &&
+    (v.agreementRef === undefined || isAttestationRef(v.agreementRef)) &&
+    (v.cancellation === undefined ||
+      (isObj(v.cancellation) &&
+        v.cancellation.claimedPolicy === "pre-commit" &&
+        (v.outcome === "aborted-by-self" || v.outcome === "aborted-by-other") &&
+        v.agreementRef === undefined)) &&
+    partiesAreValid(v.parties) &&
     Array.isArray(v.phaseSummary) &&
     v.phaseSummary.every(
       (ph) =>
         isObj(ph) &&
         isNum(ph.index) &&
         isStr(ph.kind) &&
-        isStr(ph.outcome) &&
-        // §10.4.3 / DACS-Standard#204: attestationRef is OPTIONAL — a bundle MUST
-        // NOT be rejected solely because a phaseSummary entry omits it.
+        isOneOf(BUNDLE_PHASE_OUTCOMES, ph.outcome) &&
+        (ph.errorClass === undefined || isOneOf(BUNDLE_PHASE_ERROR_CLASSES, ph.errorClass)) &&
+        (ph.txRefs === undefined ||
+          (Array.isArray(ph.txRefs) && ph.txRefs.every(isTxRef))) &&
         (ph.attestationRef === undefined || isAttestationRef(ph.attestationRef)),
     ) &&
+    new Set(v.phaseSummary.map((ph) => (ph as Record<string, unknown>).index)).size ===
+      v.phaseSummary.length &&
     Array.isArray(v.vetRecords) &&
     v.vetRecords.every(isAttestationRef) &&
     Array.isArray(v.settlementEvidence) &&
     v.settlementEvidence.every(isAttestationRef) &&
+    (v.amendments === undefined ||
+      (Array.isArray(v.amendments) && v.amendments.every(isAttestationRef))) &&
+    (v.ratingRefs === undefined ||
+      (Array.isArray(v.ratingRefs) && v.ratingRefs.every(isAttestationRef))) &&
     isNum(v.recipeRegistryVersion) &&
     isNum(v.railRegistryVersion) &&
     isNum(v.finalisedAt)
   );
+}
+
+export function isAttestationBundle(v: unknown): v is AttestationBundle {
+  if (!isObj(v)) return false;
+  return (
+    isStr(v.bundleVersion) &&
+    v.faultBundleVersion === undefined &&
+    v.faultedParty === undefined &&
+    hasBundleFields(v, isLegacyBundleParties)
+  );
+}
+
+export function isFaultAttestationBundle(v: unknown): v is FaultAttestationBundle {
+  if (!isObj(v)) return false;
+  return (
+    v.faultBundleVersion === "1" &&
+    v.bundleVersion === undefined &&
+    isOneOf(["buyer", "seller", "orchestrator", "none"], v.faultedParty) &&
+    hasBundleFields(v, isFaultBundleParties) &&
+    faultedPartyIsPermitted(v)
+  );
+}
+
+export function isAnyAttestationBundle(v: unknown): v is AnyAttestationBundle {
+  return isAttestationBundle(v) || isFaultAttestationBundle(v);
 }

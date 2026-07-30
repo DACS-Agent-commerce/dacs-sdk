@@ -29,6 +29,7 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  logicalToStorageProgramName,
   storAddress,
   bundleAddress,
   sha256Hex,
@@ -65,6 +66,21 @@ export type {
   ResolvedIdentity,
 } from "./substrate/index.js";
 
+// CLI helpers (pure/read-only by default). The executable entry is `dacs`.
+export {
+  formatDoctorText,
+  redactRpcUrl,
+  redactSecret,
+  runDoctor,
+  sanitizeText,
+  type DoctorAdapter,
+  type DoctorCheck,
+  type DoctorMode,
+  type DoctorOptions,
+  type DoctorReport,
+  type DoctorStatus,
+} from "./cli/index.js";
+
 // Identity (DACS-1): cross-context identity resolution + claim helpers. Pure —
 // no substrate import — so verifiers can parse/inspect CCI records too.
 export {
@@ -79,6 +95,33 @@ export {
   type CciWalletClaim,
   type ParsedClaimRef,
 } from "./identity/index.js";
+
+// Discovery (§6.3.4 (b)/(c), #54): the PUBLISHED logical→native anchor binding.
+// On Demos the native address folds in the writer's nonce, so it isn't
+// recomputable — consumers resolve through this binding, never by program name
+// (which the spec defines as an opaque write input, not a resolution key). Pure
+// and substrate-neutral: the same surface serves an in-memory index, a
+// `/.well-known` listings index (§6.3.5), or a catalog API (§6.3.6).
+export {
+  resolveBinding,
+  resolveLatestVersion,
+  createInMemoryBindingIndex,
+  resolveAndRead,
+  classifyAnchor,
+  scanAnchorPage,
+  scanAllAnchors,
+  type AnchorBinding,
+  type BindingResolution,
+  type BindingIndex,
+  type VerifiedRead,
+  type VerifiedReadDeps,
+  type AnchorKind,
+  type RawAnchorEntry,
+  type RawScanPage,
+  type ScannedAnchor,
+  type ScanPage,
+  type ScanOptions,
+} from "./discovery/index.js";
 
 // Deterministic identityTier derivation (DACS-1 §6.3.2.1, IT-1..IT-3).
 export {
@@ -146,6 +189,12 @@ export {
   type SignatureVerdict,
   type RefCheck,
   type RefVerdict,
+  bundleConsistency,
+  bundlesDiverge,
+  type ConsistencyVerdict,
+  type BundleCopies,
+  type BundleConsistencyDeps,
+  type BundleRole,
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
@@ -153,6 +202,11 @@ export {
   type EvidenceAgreementContext,
   type EvidenceRailContext,
   type EvidenceDeps,
+  verifyBundleCopy,
+  ABORT_OUTCOMES,
+  type BundleCopyDeps,
+  type BundleCopyRole,
+  type CopyValidity,
   computeReputation,
   deriveReputation,
   type ReputationDerivation,
@@ -165,6 +219,15 @@ export {
   type VetDeps,
   type VetRequest,
   type VetProxyResult,
+  // DACS-2 §7.4.1 ParserSpec — signed recipe content rules (#49) + the engine seam.
+  evaluateParserSpec,
+  defaultParserEngine,
+  type ParserSpec,
+  type ParserFormat,
+  type IndeterminatePredicate,
+  type ParserEngine,
+  type ParserEvalContext,
+  type ParserEvaluation,
   type Reputation,
   // Injectable buyer-session core (F1 #14): run the lifecycle against any
   // SubstrateAdapter (mock/simulation/non-Demos). NOTE: `sessionAnchorName` is
@@ -180,6 +243,17 @@ export {
   type SessionTerms,
   type SettleRequest,
   type SettleResult,
+  buildTwoSidedBundle,
+  bundleSignedScope,
+  attestationBundleHash,
+  BUNDLE_SIGNED_SCOPE_OMIT,
+  BUNDLE_OUTCOMES,
+  type BundleOutcome,
+  type BundleAnchorRole,
+  type SessionParty,
+  type SigningSessionParty,
+  type TwoSidedSession,
+  type TwoSidedBundles,
   buildSignedArtifact,
   verifySignedArtifact,
   type SignedArtifact,
@@ -203,6 +277,12 @@ export {
   createEvmErc20Rail,
   evmErc20Settle,
   evmErc20SettleCore,
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  settlementKey,
+  type SettlementIdempotencyStore,
+  type SettlementLog,
+  type SettlementReconcile,
   type EvmErc20Rail,
   type EvmErc20RailConfig,
   type EvmErc20SettleParams,
@@ -219,6 +299,14 @@ export {
   type D402ClientLike,
   type D402PaymentRequirement,
   type D402SettlementResult,
+  createPayDemRail,
+  payDemSettle,
+  payDemSettleCore,
+  type PayDemRail,
+  type PayDemRailConfig,
+  type PayDemSettleParams,
+  type DemosNativeClient,
+  type DemosTransferResult,
 } from "./rails/index.js";
 
 // Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
@@ -261,8 +349,14 @@ export {
   type Rating,
   type BundleParty,
   type PhaseSummaryEntry,
+  type BundlePhaseOutcome,
+  type BundlePhaseErrorClass,
   type BundleSignature,
   type AttestationBundle,
+  type FaultAttestationBundle,
+  type AnyAttestationBundle,
+  type BundlePartyRole,
+  type FaultedParty,
   ARTIFACT_SEPARATORS,
   RATING_SEPARATOR,
   separatorFor,
@@ -272,6 +366,8 @@ export {
   isAgreementDocument,
   isSettlementEvidence,
   isAttestationBundle,
+  isFaultAttestationBundle,
+  isAnyAttestationBundle,
   COMPONENT_SIGNATURE_ALGORITHMS,
   isComponentSignature,
   buildComponentSignature,

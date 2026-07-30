@@ -1,7 +1,7 @@
 import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { CounterpartyError } from "../errors.js";
+import { CounterpartyError, DacsError, SubstrateError } from "../errors.js";
 import type {
   AgreementDocument,
   AttestationBundle,
@@ -10,6 +10,7 @@ import type {
   PhaseSummaryEntry,
   Price,
   SettlementEvidence,
+  SettlementFinalityModel,
 } from "../artifacts/types.js";
 import {
   isAgreementDocument,
@@ -47,6 +48,12 @@ export interface SettleRequest {
   asset: string;
   payee: string;
   jobId: string;
+  /**
+   * The settlement phase index — part of the `(railId, jobId, phaseIndex)`
+   * idempotency key a rail dedupes on (#43). Defaults to 0 (the single MVP
+   * settle phase) when the caller omits it.
+   */
+  phaseIndex?: number;
 }
 
 export interface SettleResult {
@@ -55,7 +62,29 @@ export interface SettleResult {
   chainId: string;
   payer: string;
   payee: string;
+  /**
+   * Rail-specific finality (§9.5.x / PC-6). When a rail knows the finality model
+   * it settled under, it reports it here and runSessionCore records it on the
+   * evidence instead of the default provider-receipt. E.g. §9.5.9 pay-dem →
+   * `{ model: "bft-final" }`. Omit for a receipt-confirmed rail.
+   */
+  finality?: { model: SettlementFinalityModel; finalityBlocks?: number };
+  /** Block/ledger height the settlement landed at, when the rail reports it (§9.5.9 `demos`). */
+  blockNumber?: number;
+  /** The txRef kind the rail's tx is (e.g. §9.5.9 `demos`); defaults to `payment`. */
+  txRefKind?: string;
 }
+
+/**
+ * Result of resolving whether a session artifact is already anchored, for resume
+ * (#70). `indeterminate` (the lookup failed) is DISTINCT from `absent` — the
+ * session must never treat a substrate failure as "never anchored", which would
+ * reopen duplicate-settlement risk.
+ */
+export type AnchorLookup =
+  | { status: "present"; ref: string; value: Record<string, unknown> }
+  | { status: "absent" }
+  | { status: "indeterminate"; reason: string };
 
 export interface SessionDeps {
   /** The buyer agent's id / primary claim. */
@@ -68,10 +97,16 @@ export interface SessionDeps {
   signBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
   /** Anchor a value under a name; returns the storage address. */
   anchor: (name: string, value: object) => Promise<string>;
-  /** Deterministic storage address for a name (without writing) — for resume. */
-  anchorAddress: (name: string) => Promise<string>;
-  /** Read the artifact anchored at an address (null if absent) — for resume. */
-  readAnchor: (address: string) => Promise<Record<string, unknown> | null>;
+  /**
+   * Resolve whether the artifact for `name` is already anchored, for RESUME.
+   * Returns the stored value + its ref when present; `absent` when not yet
+   * anchored; `indeterminate` when the lookup itself failed. Resolution MUST be
+   * by NAME, not by a re-derived address: the physical address folds in the
+   * writer's create-time nonce and can't be recomputed (#70). On `indeterminate`
+   * the session refuses to proceed rather than treat a substrate hiccup as
+   * "absent" and risk a duplicate anchor or a double settlement.
+   */
+  resolveAnchor: (name: string) => Promise<AnchorLookup>;
   /** Execute payment on the chosen rail. */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -86,6 +121,26 @@ export interface SessionDeps {
   now: () => string;
   /** Current unix-ms timestamp (used where the spec field is a number). */
   nowMs: () => number;
+  /**
+   * Verify the anchored listing before ANY action is taken on it (#41). Receives
+   * the raw stored artifact (signature intact) and the seller claim it advertises;
+   * must return true only if the signature verifies AND binds to that seller.
+   *
+   * This is enforced INDEPENDENTLY of discovery: a session may be handed a ref
+   * that never passed through `discover`, and the listing drives vetting, rail
+   * and recipient selection, and payment. Verification therefore happens before
+   * the vet step and before settlement — a forged listing must never reach the
+   * money path. REQUIRED unless `trustListing` is set.
+   */
+  verifyListing?: (
+    raw: Record<string, unknown>,
+    sellerClaim: string,
+  ) => Promise<boolean> | boolean;
+  /**
+   * Explicit, grep-able opt-out of listing verification, for callers that
+   * verified upstream. Ignored when `verifyListing` is supplied.
+   */
+  trustListing?: boolean;
 }
 
 export interface SessionResult {
@@ -129,6 +184,32 @@ export async function runSessionCore(
     supportedDelivery: string[];
   };
 
+  // #41 — verify the listing BEFORE vetting, rail selection or settlement. A
+  // forged/tampered listing steers the recipient and rail, so an unverified one
+  // must never reach the money path. Fails closed; the gate is not defaultable.
+  if (!deps.verifyListing && !deps.trustListing) {
+    throw new DacsError(
+      "runSessionCore requires deps.verifyListing or an explicit deps.trustListing: true opt-out — " +
+        "acting on an unverified listing lets a forged listing drive payment (#41)",
+    );
+  }
+  if (deps.verifyListing) {
+    let verified = false;
+    try {
+      verified = await deps.verifyListing(
+        stored as Record<string, unknown>,
+        listing.agentId,
+      );
+    } catch {
+      verified = false; // a throwing verifier is not a pass
+    }
+    if (!verified) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} failed signature verification for seller ${listing.agentId} (#41)`,
+      );
+    }
+  }
+
   if (!listing.supportedPaymentRails.includes(terms.price.rail)) {
     throw new Error(`rail ${terms.price.rail} not offered by the listing`);
   }
@@ -154,16 +235,24 @@ export async function runSessionCore(
     match: (v: Record<string, unknown>) => Match,
     build: () => Promise<object>,
   ): Promise<{ ref: string; value: Record<string, unknown>; existing: boolean }> => {
-    const address = await deps.anchorAddress(name);
-    const existing = await deps.readAnchor(address);
-    if (existing) {
-      const m = match(stripSignature(existing));
+    // Resolve BY NAME (the address can't be recomputed). Fail closed on an
+    // indeterminate lookup: proceeding as if absent could re-anchor a duplicate
+    // or, for evidence, defeat the no-double-pay guard and settle twice (#70).
+    const found = await deps.resolveAnchor(name);
+    if (found.status === "indeterminate") {
+      throw new SubstrateError(
+        `resume: could not determine whether "${name}" is already anchored (${found.reason}); ` +
+          `refusing to proceed rather than risk a duplicate anchor or double settlement`,
+      );
+    }
+    if (found.status === "present") {
+      const m = match(stripSignature(found.value));
       if (!m.ok) {
         throw new CounterpartyError(
-          `resume: artifact anchored at ${address} does not match the requested deal: ${m.reason}`,
+          `resume: artifact anchored at ${found.ref} does not match the requested deal: ${m.reason}`,
         );
       }
-      return { ref: address, value: existing, existing: true };
+      return { ref: found.ref, value: found.value, existing: true };
     }
     const built = (await build()) as Record<string, unknown>;
     const ref = await deps.anchor(name, built);
@@ -277,6 +366,8 @@ export async function runSessionCore(
         return { ok: false, reason: `jobId ${e.jobId} ≠ ${jobId}` };
       if (e.phase !== terms.price.rail)
         return { ok: false, reason: `rail ${e.phase} ≠ ${terms.price.rail}` };
+      if (!e.paymentAmount)
+        return { ok: false, reason: "settlement evidence has no payment amount" };
       if (e.paymentAmount.amount !== terms.price.amount)
         return { ok: false, reason: "settled amount mismatch" };
       if (e.paymentAmount.currency !== terms.price.asset)
@@ -290,6 +381,7 @@ export async function runSessionCore(
         asset: terms.price.asset,
         payee: listing.agentId,
         jobId,
+        phaseIndex: 0,
       });
       // Defense in depth (independent of the rail): a settlement is only a
       // success if it produced a verifiable on-chain tx id. A rail reporting
@@ -297,26 +389,47 @@ export async function runSessionCore(
       settledOk = pay.ok && pay.txHash.trim().length > 0;
       const observedAt = deps.nowMs();
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
-      // tx hash become a payment txRef. Finality is the rail's receipt
-      // (§9.7 `provider-receipt`) — the rail seam confirms via receipt, not
-      // block depth, so finalityBlocks is 0.
-      const evidence: SettlementEvidence = {
+      // tx hash become a payment txRef. Finality defaults to the rail's receipt
+      // (§9.7 `provider-receipt`, finalityBlocks 0) but a rail that knows its own
+      // model — e.g. §9.5.9 pay-dem's `bft-final` + block height — reports it via
+      // `pay.finality` / `pay.blockNumber` / `pay.txRefKind`, so the evidence
+      // asserts the finality model that actually settled, not a hardcoded one (F7/#22).
+      const evidenceBase = {
         evidenceVersion: "1",
         jobId,
         phase: terms.price.rail,
         phaseIndex: 0,
-        outcome: settledOk ? "success" : "failure",
         paymentTxRefs: [
-          { rail: pay.chainId, txHash: pay.txHash, kind: "payment" },
+          {
+            rail: pay.chainId,
+            txHash: pay.txHash,
+            kind: pay.txRefKind ?? "payment",
+            ...(pay.blockNumber !== undefined ? { blockNumber: pay.blockNumber } : {}),
+          },
         ],
         paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
-        settlementFinality: {
-          model: "provider-receipt",
-          finalityBlocks: 0,
-          finalityObservedAt: observedAt,
-        },
         observedAt,
       };
+      let evidence: SettlementEvidence;
+      if (!settledOk) {
+        evidence = { ...evidenceBase, outcome: "failure" };
+      } else {
+        const model = pay.finality?.model ?? "provider-receipt";
+        if (model === "block-depth" && pay.finality?.finalityBlocks === undefined) {
+          throw new CounterpartyError(
+            "settlement rail reported block-depth finality without finalityBlocks",
+          );
+        }
+        const settlementFinality =
+          model === "block-depth"
+            ? {
+                model,
+                finalityBlocks: pay.finality!.finalityBlocks!,
+                finalityObservedAt: observedAt,
+              }
+            : { model, finalityObservedAt: observedAt };
+        evidence = { ...evidenceBase, outcome: "success", settlementFinality };
+      }
       return deps.sign(evidence, ARTIFACT_SEPARATORS.SettlementEvidence);
     },
   );
@@ -327,10 +440,10 @@ export async function runSessionCore(
       "success";
   }
 
-  // Verify (DACS-5): assemble + sign + anchor the attestation bundle in the
-  // spec shape. MVP emits the one-sided form (the buyer's copy) — spec-valid
-  // per DACS-VERIFY-L3-ONE-SIDED; the seller-side copy / two-sided reconcile is
-  // a follow-up. Refs are content-addressed; registry versions are pinned at 1.
+  // Verify (legacy MVP): assemble + sign + anchor the buyer's one-sided bundle shape.
+  // Strict DACS-5 consumers reject terminal completed/failed bundles that lack the
+  // seller signature; use buildTwoSidedBundle for conformant two-sided bundles.
+  // Refs are content-addressed; registry versions are pinned at 1.
   const outcome: SessionResult["outcome"] = settledOk ? "completed" : "failed";
   const listingScope = stripSignature(stored as Record<string, unknown>);
   const evidenceRef = refTo("dacs-4-evidence", `settlement-${jobId}`, evidenceValue);
@@ -377,7 +490,9 @@ export async function runSessionCore(
         anchoredByRole: "buyer",
         listingRef: {
           listingId: (listingScope as { serviceId?: string }).serviceId ?? jobId,
-          version: 1,
+          // Pin the version the deal was struck against (§6.3.4) so the bundle
+          // resolves the exact immutable listing version, not "latest" (#29).
+          version: (listingScope as { listingVersion?: number }).listingVersion ?? 1,
           contentHash: contentHash(listingScope),
         },
         agreementRef: refTo("dacs-3-agreement", `agreement-${jobId}`, agreementValue),
