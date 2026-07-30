@@ -100,6 +100,7 @@ export {
   createFsSessionStore,
   type FsSessionStoreOptions,
 } from "./sessionStoreFs.js";
+export {
   buildTwoSidedBundle,
   bundleSignedScope,
   attestationBundleHash,
