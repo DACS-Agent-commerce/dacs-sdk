@@ -17,9 +17,12 @@ import { DacsError } from "../errors.js";
  * worker lease, and anti-replay hash binding, so a crash/restart/second-worker
  * reconciles completed side effects instead of repeating them.
  *
- * Records carry only references (jobId, agreement/tx hashes, receipt refs) — NEVER
- * wallet secrets or model credentials. Every record is schema-versioned so a
- * future reader can distinguish `unsupported` from `corrupt` from `missing`.
+ * Records are designed to carry references (jobId, agreement/tx hashes, receipt
+ * refs), never wallet secrets or model credentials. Checkpoint data is deliberately
+ * limited to primitive values, but a generic store cannot infer whether an opaque
+ * string is a credential: callers MUST enforce that policy at their domain
+ * boundary. Every record is schema-versioned so a future reader can distinguish
+ * `unsupported` from `corrupt` from `missing`.
  */
 
 export const SESSION_STORE_VERSION = 1 as const;
@@ -27,7 +30,7 @@ export const SESSION_STORE_VERSION = 1 as const;
 /** The lifecycle phase a session is in (free string so recipes can extend it). */
 export type SessionPhase = string;
 
-/** An immutable, secret-free receipt for a recorded session side effect. */
+/** An immutable reference receipt for a recorded session side effect. */
 export interface SessionReceipt {
   kind: "agreement" | "settlement" | "delivery" | "fulfilment" | "bundle";
   /** Content hash / tx hash / anchor address — the audit pointer. */
@@ -36,9 +39,13 @@ export interface SessionReceipt {
 }
 
 /**
- * A checkpoint payload value. PRIMITIVES ONLY (string / number / boolean) — a
- * closed, secret-free shape so a caller can't smuggle credentials / nested
- * objects into durable state (#67). Enforced at write time by the store.
+ * A checkpoint payload value. PRIMITIVES ONLY (string / finite number / boolean)
+ * so checkpoint state stays bounded and portable across store implementations.
+ *
+ * This is a serialization constraint, not semantic secret detection: a credential
+ * is still a string. Callers MUST persist references/identifiers only and keep
+ * wallet keys, bearer tokens, API keys, and model credentials out of checkpoint
+ * data.
  */
 export type CheckpointValue = string | number | boolean;
 
@@ -51,25 +58,92 @@ export interface SessionCheckpoint {
   /** The guarded step, e.g. "settle:0" or "deliver:0". */
   key: string;
   stage: "intent" | "outcome";
-  /** Opaque, secret-free payload — PRIMITIVE values only (rail id, idempotency key, tx ref, …). */
+  /**
+   * Opaque primitive payload (rail id, idempotency key, tx ref, …).
+   * Callers MUST NOT place credentials or wallet secrets here.
+   */
   data?: Record<string, CheckpointValue>;
 }
 
-/**
- * Enforce the closed, secret-free checkpoint payload shape (#67): every `data`
- * value MUST be a primitive. Rejects nested objects/arrays/functions so
- * credentials or large blobs can't be persisted into durable session state.
- */
-export function assertSecretFreeCheckpoint(cp: SessionCheckpoint): void {
-  if (!cp.data) return;
-  for (const [k, v] of Object.entries(cp.data)) {
-    const t = typeof v;
-    if (t !== "string" && t !== "number" && t !== "boolean") {
-      throw new DacsError(
-        `checkpoint.data.${k} must be a primitive (string/number/boolean); nested/complex values are rejected so secrets can't be persisted`,
-      );
+const RECEIPT_KINDS = new Set<SessionReceipt["kind"]>([
+  "agreement",
+  "settlement",
+  "delivery",
+  "fulfilment",
+  "bundle",
+]);
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+function unexpectedKey(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+): string | undefined {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).find((key) => !allowedSet.has(key));
+}
+
+function checkpointShapeViolation(value: unknown): string | null {
+  if (!isPlainRecord(value)) return "checkpoint must be an object";
+  const extra = unexpectedKey(value, ["key", "stage", "data"]);
+  if (extra) return `checkpoint.${extra} is not a v1 field`;
+  if (typeof value.key !== "string" || value.key.length === 0) {
+    return "checkpoint.key must be a non-empty string";
+  }
+  if (value.stage !== "intent" && value.stage !== "outcome") {
+    return "checkpoint.stage must be intent or outcome";
+  }
+  if (value.data !== undefined) {
+    if (!isPlainRecord(value.data)) return "checkpoint.data must be an object";
+    for (const [key, item] of Object.entries(value.data)) {
+      const type = typeof item;
+      if (
+        type !== "string" &&
+        type !== "boolean" &&
+        !isFiniteNumber(item)
+      ) {
+        return `checkpoint.data.${key} must be a string, boolean, or finite number`;
+      }
     }
   }
+  return null;
+}
+
+function receiptShapeViolation(value: unknown): string | null {
+  if (!isPlainRecord(value)) return "receipt must be an object";
+  const extra = unexpectedKey(value, ["kind", "ref", "recordedAt"]);
+  if (extra) return `receipt.${extra} is not a v1 field`;
+  if (!RECEIPT_KINDS.has(value.kind as SessionReceipt["kind"])) {
+    return "receipt.kind is invalid";
+  }
+  if (typeof value.ref !== "string" || value.ref.length === 0) {
+    return "receipt.ref must be a non-empty string";
+  }
+  if (value.recordedAt !== undefined && !isFiniteNumber(value.recordedAt)) {
+    return "receipt.recordedAt must be a finite number";
+  }
+  return null;
+}
+
+/**
+ * Enforce the portable checkpoint payload shape: every `data` value MUST be a
+ * string, boolean, or finite number. This rejects nested/complex values and JSON
+ * lossy numbers (`NaN`/`Infinity`); it deliberately does NOT claim to identify
+ * secrets hidden in opaque strings.
+ */
+export function assertCheckpointPayloadShape(cp: SessionCheckpoint): void {
+  const violation = checkpointShapeViolation(cp);
+  if (violation) throw new DacsError(violation);
+}
+
+/** Validate a receipt before it is admitted to either store implementation. */
+export function assertSessionReceiptShape(receipt: SessionReceipt): void {
+  const violation = receiptShapeViolation(receipt);
+  if (violation) throw new DacsError(violation);
 }
 
 /** An exclusive worker lease over a session's active phase. */
@@ -93,9 +167,79 @@ export interface SessionRecord {
 }
 
 /**
+ * Validate the complete persisted v1 record. Filesystem readers use this before
+ * returning `ok`; mutation paths use the narrower checkpoint/receipt validators
+ * before a bad value can be written.
+ */
+export function sessionRecordShapeViolation(value: unknown): string | null {
+  if (!isPlainRecord(value)) return "session record must be an object";
+  const extra = unexpectedKey(value, [
+    "storeVersion",
+    "jobId",
+    "agreementHash",
+    "phase",
+    "revision",
+    "lease",
+    "checkpoints",
+    "receipts",
+    "createdAt",
+    "updatedAt",
+  ]);
+  if (extra) return `${extra} is not a v1 session-record field`;
+  if (value.storeVersion !== SESSION_STORE_VERSION) {
+    return "storeVersion does not match this reader";
+  }
+  if (typeof value.jobId !== "string" || value.jobId.length === 0) {
+    return "jobId missing or not a non-empty string";
+  }
+  if (
+    value.agreementHash !== undefined &&
+    (typeof value.agreementHash !== "string" || value.agreementHash.length === 0)
+  ) {
+    return "agreementHash must be a non-empty string when present";
+  }
+  if (typeof value.phase !== "string" || value.phase.length === 0) {
+    return "phase missing or not a non-empty string";
+  }
+  if (
+    !Number.isInteger(value.revision) ||
+    (value.revision as number) < 0
+  ) {
+    return "revision must be a non-negative integer";
+  }
+  if (!isFiniteNumber(value.createdAt)) return "createdAt must be a finite number";
+  if (!isFiniteNumber(value.updatedAt)) return "updatedAt must be a finite number";
+  if (value.lease !== undefined) {
+    if (!isPlainRecord(value.lease)) return "lease must be an object";
+    const leaseExtra = unexpectedKey(value.lease, ["owner", "expiresAt"]);
+    if (leaseExtra) return `lease.${leaseExtra} is not a v1 field`;
+    if (
+      typeof value.lease.owner !== "string" ||
+      value.lease.owner.length === 0
+    ) {
+      return "lease.owner must be a non-empty string";
+    }
+    if (!isFiniteNumber(value.lease.expiresAt)) {
+      return "lease.expiresAt must be a finite number";
+    }
+  }
+  if (!Array.isArray(value.checkpoints)) return "checkpoints missing or not an array";
+  for (let index = 0; index < value.checkpoints.length; index++) {
+    const violation = checkpointShapeViolation(value.checkpoints[index]);
+    if (violation) return `checkpoints[${index}]: ${violation}`;
+  }
+  if (!Array.isArray(value.receipts)) return "receipts missing or not an array";
+  for (let index = 0; index < value.receipts.length; index++) {
+    const violation = receiptShapeViolation(value.receipts[index]);
+    if (violation) return `receipts[${index}]: ${violation}`;
+  }
+  return null;
+}
+
+/**
  * A load result that distinguishes `missing` (nothing stored) from `corrupt`
  * (state exists but cannot be parsed/trusted) from `unsupported` (a newer schema
- * version) — a consumer MUST fail closed on `corrupt`/`unsupported`, never treat
+ * schema version) — a consumer MUST fail closed on `corrupt`/`unsupported`, never treat
  * them as `missing` and silently reset anti-replay state.
  */
 export type SessionLoad =
@@ -132,7 +276,7 @@ export interface CheckpointClaimInput {
   jobId: string;
   /** Stable side-effect key, e.g. `settle:0`. */
   key: string;
-  /** Secret-free intent metadata persisted with the claim. */
+  /** Primitive intent metadata; callers MUST keep credentials and wallet secrets out. */
   data?: Record<string, CheckpointValue>;
   phase?: SessionPhase;
   owner?: string;
@@ -256,6 +400,8 @@ export function createInMemorySessionStore(): SessionStore {
         createdAt: now,
         updatedAt: now,
       };
+      const violation = sessionRecordShapeViolation(record);
+      if (violation) throw new DacsError(`invalid session record: ${violation}`);
       sessions.set(jobId, record);
       if (agreementHash) hashBindings.set(agreementHash, { jobId, kind: "agreement" });
       return clone(record);
@@ -287,7 +433,8 @@ export function createInMemorySessionStore(): SessionStore {
       if (record.lease && record.lease.expiresAt > leaseNow && input.owner !== record.lease.owner) {
         return { ok: false, reason: "lease-held", record: clone(record) };
       }
-      if (input.checkpoint) assertSecretFreeCheckpoint(input.checkpoint);
+      if (input.checkpoint) assertCheckpointPayloadShape(input.checkpoint);
+      if (input.receipt) assertSessionReceiptShape(input.receipt);
       // Receipts are immutable: re-recording the same kind+ref is idempotent, but
       // a different ref for a kind already recorded is rejected.
       if (input.receipt) {
@@ -310,6 +457,8 @@ export function createInMemorySessionStore(): SessionStore {
       }
       if (input.lease === null) delete next.lease;
       else if (input.lease) next.lease = clone(input.lease);
+      const violation = sessionRecordShapeViolation(next);
+      if (violation) throw new DacsError(`invalid session transition: ${violation}`);
       sessions.set(input.jobId, next);
       return { ok: true, record: clone(next) };
     },
@@ -334,12 +483,14 @@ export function createInMemorySessionStore(): SessionStore {
         stage: "intent",
         ...(input.data ? { data: input.data } : {}),
       };
-      assertSecretFreeCheckpoint(checkpoint);
+      assertCheckpointPayloadShape(checkpoint);
       const next = clone(record);
       next.revision += 1;
       next.updatedAt = now;
       if (input.phase !== undefined) next.phase = input.phase;
       next.checkpoints.push(clone(checkpoint));
+      const violation = sessionRecordShapeViolation(next);
+      if (violation) throw new DacsError(`invalid checkpoint claim: ${violation}`);
       sessions.set(input.jobId, next);
       return { ok: true, record: clone(next) };
     },
@@ -358,6 +509,8 @@ export function createInMemorySessionStore(): SessionStore {
       next.revision += 1;
       next.updatedAt = now;
       next.lease = { owner, expiresAt: now + ttlMs };
+      const violation = sessionRecordShapeViolation(next);
+      if (violation) throw new DacsError(`invalid lease: ${violation}`);
       sessions.set(jobId, next);
       return { ok: true, record: clone(next) };
     },

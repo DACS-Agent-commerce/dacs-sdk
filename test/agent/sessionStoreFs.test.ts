@@ -68,6 +68,14 @@ describe("createFsSessionStore (durable conformance #55)", () => {
     expect(loaded).toEqual({ status: "unsupported", version: 999 });
   });
 
+  test("load fails CLOSED on older/unknown schema versions too", async () => {
+    await writeFile(
+      join(dir, "sessions", `${encodeURIComponent("legacy")}.json`),
+      JSON.stringify({ storeVersion: 0, jobId: "legacy" }),
+    );
+    expect(await store.load("legacy")).toEqual({ status: "unsupported", version: 0 });
+  });
+
   test("session files are written with restrictive 0600 permissions", async () => {
     await store.create({ jobId: "j1", now: 0 });
     const st = await stat(join(dir, "sessions", `${encodeURIComponent("j1")}.json`));
@@ -100,6 +108,35 @@ describe("createFsSessionStore (durable conformance #55)", () => {
     expect((await store.load("j1")).status).toBe("corrupt");
   });
 
+  test("load validates nested checkpoint, receipt, and lease entries before returning `ok`", async () => {
+    const path = join(dir, "sessions", `${encodeURIComponent("j1")}.json`);
+    const valid = {
+      storeVersion: 1,
+      jobId: "j1",
+      phase: "created",
+      revision: 0,
+      checkpoints: [],
+      receipts: [],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    for (const malformed of [
+      { ...valid, apiKey: "opaque-string-that-must-not-be-an-unknown-v1-field" },
+      { ...valid, checkpoints: [null] },
+      { ...valid, checkpoints: [{ key: "settle:0", stage: "unknown" }] },
+      {
+        ...valid,
+        checkpoints: [{ key: "settle:0", stage: "intent", credential: "unexpected" }],
+      },
+      { ...valid, receipts: [{ kind: "settlement", ref: 42 }] },
+      { ...valid, lease: { owner: "worker", expiresAt: "tomorrow" } },
+      { ...valid, lease: { owner: "worker", expiresAt: 10, token: "unexpected" } },
+    ]) {
+      await writeFile(path, JSON.stringify(malformed));
+      expect((await store.load("j1")).status).toBe("corrupt");
+    }
+  });
+
   test("a stale lock left by a crashed holder is reclaimed, not blocked forever (#67)", async () => {
     const staleStore = await createFsSessionStore({ dir, lockStaleMs: 50 });
     await staleStore.create({ jobId: "j1", now: 0 });
@@ -113,7 +150,16 @@ describe("createFsSessionStore (durable conformance #55)", () => {
     expect(r.ok).toBe(true);
   });
 
-  test("checkpoint payload is secret-free: a nested value is rejected (#67)", async () => {
+  test("a non-positive or non-finite stale-lock window is rejected", async () => {
+    await expect(createFsSessionStore({ dir, lockStaleMs: 0 })).rejects.toThrow(
+      /lockStaleMs must be a positive finite number/,
+    );
+    await expect(
+      createFsSessionStore({ dir, lockStaleMs: Number.NaN }),
+    ).rejects.toThrow(/lockStaleMs must be a positive finite number/);
+  });
+
+  test("checkpoint payload is primitive-only: nested and lossy numeric values are rejected", async () => {
     await store.create({ jobId: "j1", now: 0 });
     await expect(
       store.transition({
@@ -123,7 +169,15 @@ describe("createFsSessionStore (durable conformance #55)", () => {
         checkpoint: { key: "settle:0", stage: "intent", data: { secret: { apiKey: "sk-live" } } as any },
         now: 1,
       }),
-    ).rejects.toThrow(/primitive|secret/);
+    ).rejects.toThrow(/checkpoint\.data|string.*finite number/);
+    await expect(
+      store.transition({
+        jobId: "j1",
+        expectedRevision: 0,
+        checkpoint: { key: "settle:0", stage: "intent", data: { blockNumber: Number.NaN } },
+        now: 1,
+      }),
+    ).rejects.toThrow(/finite number/);
   });
 
   test("concurrent CAS transitions: only ONE of many racing writers advances", async () => {

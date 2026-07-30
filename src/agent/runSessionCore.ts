@@ -111,16 +111,34 @@ export interface SessionDeps {
   /**
    * Execute payment on the chosen rail.
    *
-   * CRASH-WINDOW NOTE (#67/#52): the session store's intent CAS makes CONCURRENT
-   * resumes settle at most once, but it cannot close the window where the process
-   * dies AFTER `settle` moved value but BEFORE the outcome checkpoint is written —
-   * an intent alone can't prove the external effect occurred. To be safe there,
-   * wire `settle` through the durable rail idempotency store (#43/#52): on resume
-   * it returns the recorded outcome instead of paying again. The SessionStore and
-   * the rail store are complementary — one guards concurrency, the other the
+   * CRASH-WINDOW NOTE (#67/#52): this seam starts a freshly claimed payment. A
+   * SessionStore intent cannot prove what happened if the process dies AFTER
+   * `settle` moved value but BEFORE its outcome checkpoint. When `sessionStore` is
+   * wired, callers must therefore also wire `resumeSettlement` to the durable
+   * rail-idempotency/reconciliation path. The SessionStore and rail store are
+   * complementary: one guards the orchestration claim, the other resolves the
    * post-payment crash window.
    */
   settle: (req: SettleRequest) => Promise<SettleResult>;
+  /**
+   * Restart-safe recovery for a previously claimed settlement whose SessionStore
+   * still carries only `settle:intent`.
+   *
+   * This MUST use the original `(rail, jobId, phaseIndex)` idempotency binding,
+   * return the prior definitive result when payment landed, resubmit only after a
+   * rail query proves no payment landed, and throw while state is indeterminate.
+   * It MUST also serialize recovery with a possibly-live original submitter; a
+   * non-observation is not proof of absence while that worker can still submit.
+   * The durable #52 `SettlementIdempotencyStore.once(..., reconcile)` wrapper is
+   * the intended implementation when its documented single-writer/leased recovery
+   * precondition is met. Callers may then wire the same wrapper as both `settle`
+   * and `resumeSettlement`.
+   *
+   * `runSessionCore` deliberately does not call the ordinary `settle` seam under
+   * an unresolved SessionStore intent because it cannot assume every implementation
+   * is restart-safe.
+   */
+  resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
    * Optional Vet step: verify the seller before paying. Returns a
    * CompositeVerificationRecord; unless the decision is `pass` the session
@@ -161,7 +179,8 @@ export interface SessionDeps {
    *      deal can never reach `settle`.
    *   2. Write-ahead a `settle:intent` checkpoint BEFORE the payment and a
    *      `settle:outcome` checkpoint (with the tx ref) AFTER — a crash in the
-   *      gap is visible on restart and reconciled, never re-paid.
+   *      gap is visible on restart and is reconciled through
+   *      `resumeSettlement`, never blindly re-paid.
    *   3. The agreement/settlement/bundle receipts + final status are recorded
    *      for restart-safe status/receipt queries without an app-specific job DB.
    * Fully additive: with no store wired the session behaves exactly as before.
@@ -214,6 +233,36 @@ const isSettlementFinalityModel = (
   value === "liquidity-tank" ||
   value === "bft-final";
 
+function durableSettlementOutcome(result: SettleResult): DurableSettlementOutcome {
+  const ok = result.ok && result.txHash.trim().length > 0;
+  return {
+    txHash: result.txHash,
+    chainId: result.chainId,
+    ok,
+    ...(result.finality ? { finalityModel: result.finality.model } : {}),
+    ...(result.finality?.finalityBlocks !== undefined
+      ? { finalityBlocks: result.finality.finalityBlocks }
+      : {}),
+    ...(result.blockNumber !== undefined ? { blockNumber: result.blockNumber } : {}),
+    ...(result.txRefKind !== undefined ? { txRefKind: result.txRefKind } : {}),
+  };
+}
+
+function sameSettlementOutcome(
+  left: DurableSettlementOutcome,
+  right: DurableSettlementOutcome,
+): boolean {
+  return (
+    left.txHash === right.txHash &&
+    left.chainId === right.chainId &&
+    left.ok === right.ok &&
+    left.finalityModel === right.finalityModel &&
+    left.finalityBlocks === right.finalityBlocks &&
+    left.blockNumber === right.blockNumber &&
+    left.txRefKind === right.txRefKind
+  );
+}
+
 /**
  * Extract the most recent settlement OUTCOME write-ahead checkpoint from a
  * loaded session — the reconciliation point a resumed run reads to avoid
@@ -254,8 +303,9 @@ function findSettleOutcome(
 /**
  * Record a completed/failed session to the durable store (#55): create-or-load,
  * bind the agreement hash for cross-session anti-replay, and checkpoint each
- * receipt + the final phase via compare-and-set. Best-effort/idempotent — a
- * single-writer session never contends, and a resumed session reuses its record.
+ * receipt + the final phase via compare-and-set. Every store result is checked:
+ * silently dropping a receipt would make a successful return disagree with the
+ * public status surface callers use for restart recovery.
  */
 async function recordSessionOutcome(
   store: SessionStore,
@@ -265,18 +315,60 @@ async function recordSessionOutcome(
   const loaded = await store.load(jobId);
   if (loaded.status === "missing") {
     await store.create({ jobId, agreementHash: input.agreementHash, phase: input.phase, now: input.now });
+  } else if (loaded.status !== "ok") {
+    throw new CounterpartyError(
+      `could not record session outcome for ${jobId}: durable state is ${loaded.status}`,
+    );
   }
-  await store.bindHash({ hash: input.agreementHash, jobId, kind: "agreement" });
+  const bound = await store.bindHash({
+    hash: input.agreementHash,
+    jobId,
+    kind: "agreement",
+  });
+  if (!bound.ok) {
+    throw new CounterpartyError(
+      `agreement hash for ${jobId} is bound to ${bound.boundTo}; refusing to record inconsistent receipts`,
+    );
+  }
   for (const receipt of input.receipts) {
-    const cur = await store.load(jobId);
-    if (cur.status !== "ok") break;
-    await store.transition({
-      jobId,
-      expectedRevision: cur.record.revision,
-      receipt,
-      phase: input.phase,
-      now: input.now,
-    });
+    let recorded = false;
+    for (let attempt = 0; attempt < 4 && !recorded; attempt++) {
+      const cur = await store.load(jobId);
+      if (cur.status !== "ok") {
+        throw new CounterpartyError(
+          `could not record ${receipt.kind} receipt for ${jobId}: durable state is ${cur.status}`,
+        );
+      }
+      const prior = cur.record.receipts.find((item) => item.kind === receipt.kind);
+      if (prior) {
+        if (prior.ref !== receipt.ref) {
+          throw new CounterpartyError(
+            `could not record ${receipt.kind} receipt for ${jobId}: immutable receipt conflicts with ${prior.ref}`,
+          );
+        }
+        recorded = true;
+        break;
+      }
+      const result = await store.transition({
+        jobId,
+        expectedRevision: cur.record.revision,
+        receipt,
+        phase: input.phase,
+        now: input.now,
+      });
+      if (result.ok) {
+        recorded = true;
+      } else if (result.reason !== "revision-mismatch") {
+        throw new CounterpartyError(
+          `could not record ${receipt.kind} receipt for ${jobId}: ${result.reason}`,
+        );
+      }
+    }
+    if (!recorded) {
+      throw new CounterpartyError(
+        `could not record ${receipt.kind} receipt for ${jobId}: repeated concurrent updates`,
+      );
+    }
   }
 }
 
@@ -481,6 +573,11 @@ export async function runSessionCore(
     } else {
       // Resume: enforce that the live record's bound hash is THIS deal's — a
       // mismatch is a replayed/altered agreement under a reused jobId.
+      if (loaded.record.agreementHash !== agreementHash) {
+        throw new CounterpartyError(
+          `session ${jobId} agreement hash does not match the resumed agreement; refusing to settle`,
+        );
+      }
       const bound = await store.bindHash({ hash: agreementHash, jobId, kind: "agreement" });
       if (!bound.ok) {
         throw new CounterpartyError(
@@ -526,9 +623,31 @@ export async function runSessionCore(
     );
   };
 
-  /** Persist the rail outcome after the claimed effect; never ignore a failed write. */
+  /**
+   * Bind the transaction BEFORE publishing the outcome checkpoint. If the process
+   * dies between these two writes, resume/reconciliation sees an idempotent binding
+   * owned by this job; the opposite order left a completed outcome whose tx was
+   * never bound and whose resume path skipped binding entirely.
+   */
+  const bindSettlementTransaction = async (
+    outcome: DurableSettlementOutcome,
+  ): Promise<void> => {
+    if (!store || outcome.txHash.trim().length === 0) return;
+    const bound = await store.bindHash({
+      hash: outcome.txHash,
+      jobId,
+      kind: "transaction",
+    });
+    if (!bound.ok) {
+      throw new CounterpartyError(
+        `settlement tx ${outcome.txHash} is already bound to session ${bound.boundTo} (transaction replay)`,
+      );
+    }
+  };
+
+  /** Persist the rail outcome idempotently; never ignore a failed write. */
   const completeSettlement = async (
-    data: Record<string, string | number | boolean>,
+    outcome: DurableSettlementOutcome,
     phase: string,
   ): Promise<void> => {
     if (!store) return;
@@ -538,18 +657,32 @@ export async function runSessionCore(
         `could not record settlement outcome for ${jobId}: durable state is ${cur.status}`,
       );
     }
+    const prior = findSettleOutcome(cur);
+    if (prior) {
+      if (sameSettlementOutcome(prior, outcome)) return;
+      throw new CounterpartyError(
+        `could not record settlement outcome for ${jobId}: existing outcome conflicts with ${outcome.txHash}`,
+      );
+    }
     const res = await store.transition({
       jobId,
       expectedRevision: cur.record.revision,
       phase,
-      checkpoint: { key: "settle:0", stage: "outcome", data },
+      checkpoint: { key: "settle:0", stage: "outcome", data: { ...outcome } },
       now: deps.nowMs(),
     });
-    if (!res.ok) {
-      throw new CounterpartyError(
-        `could not record settlement outcome for ${jobId}: transition failed (${res.reason})`,
-      );
+    if (res.ok) return;
+
+    // A reconciler and the original worker may race to write the same outcome.
+    // Accept the winner only when it wrote byte-equivalent settlement metadata.
+    if (res.reason === "revision-mismatch") {
+      const latest = await store.load(jobId);
+      const recorded = findSettleOutcome(latest);
+      if (recorded && sameSettlementOutcome(recorded, outcome)) return;
     }
+    throw new CounterpartyError(
+      `could not record settlement outcome for ${jobId}: transition failed (${res.reason})`,
+    );
   };
 
   // Settle on the chosen rail — but only if evidence isn't already anchored
@@ -578,14 +711,22 @@ export async function runSessionCore(
       return { ok: true };
     },
     async () => {
+      const settleRequest: SettleRequest = {
+        rail: terms.price.rail,
+        amount: terms.price.amount,
+        asset: terms.price.asset,
+        payee: listing.agentId,
+        jobId,
+        phaseIndex: 0,
+      };
       // Reconcile across a crash (#52): if a prior run already PAID — recorded a
       // `settle:outcome` write-ahead — but crashed before the evidence was
       // anchored, rebuild the evidence from the recorded tx ref instead of paying
       // again. Without this the anchoring guard alone would re-pay in that window.
       const prior = store ? findSettleOutcome(await store.load(jobId)) : undefined;
       let settlement: DurableSettlementOutcome;
+      let needsOutcomeCheckpoint = false;
       if (prior) {
-        settledOk = prior.ok;
         settlement = prior;
       } else {
         // CLAIM the settlement phase via the intent checkpoint's atomic CAS, AND
@@ -594,58 +735,41 @@ export async function runSessionCore(
         // settle twice (#67). (When no store is wired this always claims.)
         const claim = await claimSettlement({ rail: terms.price.rail, agreementHash });
         if (claim.status === "completed" && claim.outcome) {
-          settledOk = claim.outcome.ok;
           settlement = claim.outcome;
-        } else if (claim.status !== "claimed") {
+        } else if (claim.status === "held") {
+          if (!deps.resumeSettlement) {
+            throw new CounterpartyError(
+              `settlement for ${jobId} has an unresolved intent; ` +
+                `resumeSettlement is required to reconcile the durable rail outcome`,
+            );
+          }
+          // PC-7 recovery: this seam is explicitly contracted to reuse the original
+          // rail idempotency binding, adopt a landed payment, and resubmit only when
+          // the rail proves no payment landed. It is safe where ordinary `settle`
+          // would be an unproven second submission.
+          const recovered = await deps.resumeSettlement(settleRequest);
+          settlement = durableSettlementOutcome(recovered);
+          needsOutcomeCheckpoint = true;
+        } else if (claim.status === "completed") {
           throw new CounterpartyError(
-            `settlement for ${jobId} has an unresolved intent held by another worker; ` +
-              `reconcile the durable rail outcome before retrying`,
+            `settlement for ${jobId} is marked completed without a valid durable outcome`,
           );
         } else {
-          const pay = await deps.settle({
-            rail: terms.price.rail,
-            amount: terms.price.amount,
-            asset: terms.price.asset,
-            payee: listing.agentId,
-            jobId,
-            phaseIndex: 0,
-          });
+          const pay = await deps.settle(settleRequest);
           // Defense in depth (independent of the rail): a settlement is only a
           // success if it produced a verifiable on-chain tx id. A rail reporting
           // ok:true with no txHash cannot back a provider-receipt claim.
-          settledOk = pay.ok && pay.txHash.trim().length > 0;
-          settlement = {
-            txHash: pay.txHash,
-            chainId: pay.chainId,
-            ok: settledOk,
-            ...(pay.finality ? { finalityModel: pay.finality.model } : {}),
-            ...(pay.finality?.finalityBlocks !== undefined
-              ? { finalityBlocks: pay.finality.finalityBlocks }
-              : {}),
-            ...(pay.blockNumber !== undefined ? { blockNumber: pay.blockNumber } : {}),
-            ...(pay.txRefKind !== undefined ? { txRefKind: pay.txRefKind } : {}),
-          };
-          // Reconcile: record the outcome (tx ref) AFTER the effect completes —
-          // this is the checkpoint a resumed run reads to avoid re-paying.
-          await completeSettlement(
-            { ...settlement },
-            settledOk ? "settled" : "failed",
-          );
-          // Cross-session TRANSACTION-hash anti-replay (#67): reserve the
-          // settlement tx so the same payment cannot back a second session.
-          if (store && settledOk && settlement.txHash) {
-            const bound = await store.bindHash({
-              hash: settlement.txHash,
-              jobId,
-              kind: "transaction",
-            });
-            if (!bound.ok) {
-              throw new CounterpartyError(
-                `settlement tx ${settlement.txHash} is already bound to session ${bound.boundTo} (transaction replay)`,
-              );
-            }
-          }
+          settlement = durableSettlementOutcome(pay);
+          needsOutcomeCheckpoint = true;
         }
+      }
+      settledOk = settlement.ok;
+
+      // Binding first closes the outcome→binding crash window. The call is also
+      // made for replayed outcomes, so any historical residue is self-healed.
+      await bindSettlementTransaction(settlement);
+      if (needsOutcomeCheckpoint) {
+        await completeSettlement(settlement, settledOk ? "settled" : "failed");
       }
       const observedAt = deps.nowMs();
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +

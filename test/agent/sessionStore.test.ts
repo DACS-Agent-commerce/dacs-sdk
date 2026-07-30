@@ -188,7 +188,7 @@ describe("SessionStore in-memory conformance (#55)", () => {
     expect(await s.load("j2")).toEqual({ status: "missing" }); // j2 was NOT persisted
   });
 
-  test("checkpoint payload is secret-free: a nested/complex value is rejected (#67)", async () => {
+  test("checkpoint payload is primitive-only: a nested/complex value is rejected", async () => {
     const s = fresh();
     await s.create({ jobId: "j1", now: 0 });
     // A nested object could smuggle a credential into durable state → rejected.
@@ -200,7 +200,7 @@ describe("SessionStore in-memory conformance (#55)", () => {
         checkpoint: { key: "settle:0", stage: "intent", data: { secret: { apiKey: "sk-live-xyz" } } as any },
         now: 1,
       }),
-    ).rejects.toThrow(/primitive|secret/);
+    ).rejects.toThrow(/checkpoint\.data|string.*finite number/);
     // The rejected write must not have advanced the session.
     const loaded = await s.load("j1");
     expect(loaded.status === "ok" && loaded.record.revision).toBe(0);

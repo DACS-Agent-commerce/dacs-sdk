@@ -14,8 +14,10 @@ import { join } from "node:path";
 
 import { DacsError } from "../errors.js";
 import {
-  assertSecretFreeCheckpoint,
+  assertCheckpointPayloadShape,
+  assertSessionReceiptShape,
   SESSION_STORE_VERSION,
+  sessionRecordShapeViolation,
   type CheckpointClaimInput,
   type CheckpointClaimResult,
   type SessionLoad,
@@ -35,10 +37,12 @@ import {
  * session-first transaction: atomically persist the complete session, then commit
  * its hash binding. A crash leaves an unbound but recoverable session, never a
  * binding that another live creator can mistake for an orphan. Files are written
- * mode 0600 and directories 0700 — and records carry only references, never secrets.
+ * mode 0600 and directories 0700. The store validates the primitive checkpoint
+ * shape; callers remain responsible for persisting references rather than opaque
+ * string credentials.
  *
  * `load` fails CLOSED: unparseable state is `corrupt` (including a field of the
- * wrong type, not just bad JSON) and a newer schema is `unsupported` — neither is
+ * wrong type, not just bad JSON) and an unknown schema is `unsupported` — neither is
  * ever silently treated as `missing`, which would reset anti-replay. A lock is
  * released in `finally`; one left by a hard-crashed holder is reclaimed once it
  * passes the stale window (`lockStaleMs`), so a session can't be blocked forever.
@@ -55,22 +59,6 @@ const safe = (s: string) => encodeURIComponent(s);
 /** Default age after which a lock left by a crashed process is reclaimable. */
 const DEFAULT_LOCK_STALE_MS = 30_000;
 
-/**
- * Validate the persisted record's shape beyond storeVersion. Returns a reason
- * string if any required field is the wrong type (→ `corrupt`), else null. A
- * half-written or tampered file must never load as `ok` (#67).
- */
-function schemaViolation(r: SessionRecord): string | null {
-  if (typeof r.jobId !== "string" || r.jobId.length === 0) return "jobId missing or not a string";
-  if (typeof r.phase !== "string") return "phase missing or not a string";
-  if (typeof r.revision !== "number") return "revision missing or not a number";
-  if (typeof r.createdAt !== "number") return "createdAt missing or not a number";
-  if (typeof r.updatedAt !== "number") return "updatedAt missing or not a number";
-  if (!Array.isArray(r.checkpoints)) return "checkpoints missing or not an array";
-  if (!Array.isArray(r.receipts)) return "receipts missing or not an array";
-  return null;
-}
-
 export interface FsSessionStoreOptions {
   /** Directory the store owns (created if missing). */
   dir: string;
@@ -86,6 +74,11 @@ export async function createFsSessionStore(
   opts: FsSessionStoreOptions,
 ): Promise<SessionStore> {
   const lockStaleMs = opts.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
+  if (!Number.isFinite(lockStaleMs) || lockStaleMs <= 0) {
+    throw new DacsError(
+      `lockStaleMs must be a positive finite number, got ${lockStaleMs}`,
+    );
+  }
   const sessionsDir = join(opts.dir, "sessions");
   const hashesDir = join(opts.dir, "hashes");
   const locksDir = join(opts.dir, "locks");
@@ -129,26 +122,31 @@ export async function createFsSessionStore(
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
       throw e;
     }
-    let record: SessionRecord;
+    let parsed: unknown;
     try {
-      record = JSON.parse(text) as SessionRecord;
+      parsed = JSON.parse(text) as unknown;
     } catch {
       return { status: "corrupt", reason: "session file is not valid JSON" };
     }
     // Check the schema version BEFORE the field shape: a newer writer may use a
     // shape this version doesn't understand, and that is `unsupported`, not
     // `corrupt` (#67 — never conflate the two).
-    if (typeof record?.storeVersion !== "number") {
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("storeVersion" in parsed) ||
+      typeof parsed.storeVersion !== "number"
+    ) {
       return { status: "corrupt", reason: "session file is missing storeVersion" };
     }
-    if (record.storeVersion > SESSION_STORE_VERSION) {
-      return { status: "unsupported", version: record.storeVersion };
+    if (parsed.storeVersion !== SESSION_STORE_VERSION) {
+      return { status: "unsupported", version: parsed.storeVersion };
     }
-    // Fuller shape validation: a partially-written or tampered file whose fields
-    // are the wrong type is `corrupt`, never silently loaded (#67).
-    const bad = schemaViolation(record);
+    // Validate the COMPLETE nested shape: corrupt checkpoint/receipt/lease entries
+    // must never load as `ok` and crash a later money-path mutation.
+    const bad = sessionRecordShapeViolation(parsed);
     if (bad) return { status: "corrupt", reason: bad };
-    return { status: "ok", record };
+    return { status: "ok", record: parsed as SessionRecord };
   }
 
   /** Reclaim a lock left behind by a crashed holder once it's older than the stale window. */
@@ -238,17 +236,18 @@ export async function createFsSessionStore(
     );
     const candidates: SessionRecord[] = [];
     for (const file of files) {
-      let record: SessionRecord;
+      let parsed: unknown;
       try {
-        record = JSON.parse(await readFile(join(sessionsDir, file), "utf8")) as SessionRecord;
+        parsed = JSON.parse(await readFile(join(sessionsDir, file), "utf8")) as unknown;
       } catch {
         continue;
       }
+      if (sessionRecordShapeViolation(parsed) !== null) continue;
+      const record = parsed as SessionRecord;
       if (
-        record.storeVersion === SESSION_STORE_VERSION &&
         record.jobId !== exceptJobId &&
         record.agreementHash === agreementHash &&
-        schemaViolation(record) === null
+        record.storeVersion === SESSION_STORE_VERSION
       ) {
         candidates.push(record);
       }
@@ -270,6 +269,8 @@ export async function createFsSessionStore(
         createdAt: now,
         updatedAt: now,
       };
+      const violation = sessionRecordShapeViolation(record);
+      if (violation) throw new DacsError(`invalid session record: ${violation}`);
       // Reject a duplicate jobId before starting the transaction. The exclusive
       // session publish below remains the arbiter for a concurrent duplicate.
       if ((await readSession(jobId)).status !== "missing") {
@@ -353,7 +354,8 @@ export async function createFsSessionStore(
         if (record.lease && record.lease.expiresAt > leaseNow && input.owner !== record.lease.owner) {
           return { ok: false, reason: "lease-held", record };
         }
-        if (input.checkpoint) assertSecretFreeCheckpoint(input.checkpoint);
+        if (input.checkpoint) assertCheckpointPayloadShape(input.checkpoint);
+        if (input.receipt) assertSessionReceiptShape(input.receipt);
         if (input.receipt) {
           const prior = record.receipts.find((r) => r.kind === input.receipt!.kind);
           if (prior && prior.ref !== input.receipt.ref) {
@@ -373,6 +375,8 @@ export async function createFsSessionStore(
         }
         if (input.lease === null) delete record.lease;
         else if (input.lease) record.lease = input.lease;
+        const violation = sessionRecordShapeViolation(record);
+        if (violation) throw new DacsError(`invalid session transition: ${violation}`);
         await atomicWriteJson(sessionPath(input.jobId), record);
         return { ok: true, record };
       });
@@ -408,11 +412,13 @@ export async function createFsSessionStore(
           stage: "intent" as const,
           ...(input.data ? { data: input.data } : {}),
         };
-        assertSecretFreeCheckpoint(checkpoint);
+        assertCheckpointPayloadShape(checkpoint);
         record.revision += 1;
         record.updatedAt = now;
         if (input.phase !== undefined) record.phase = input.phase;
         record.checkpoints.push(checkpoint);
+        const violation = sessionRecordShapeViolation(record);
+        if (violation) throw new DacsError(`invalid checkpoint claim: ${violation}`);
         await atomicWriteJson(sessionPath(input.jobId), record);
         return { ok: true, record };
       });
@@ -434,6 +440,8 @@ export async function createFsSessionStore(
         record.revision += 1;
         record.updatedAt = now;
         record.lease = { owner, expiresAt: now + ttlMs };
+        const violation = sessionRecordShapeViolation(record);
+        if (violation) throw new DacsError(`invalid lease: ${violation}`);
         await atomicWriteJson(sessionPath(jobId), record);
         return { ok: true, record };
       });
@@ -448,8 +456,10 @@ export async function createFsSessionStore(
       const records: SessionRecord[] = [];
       for (const f of files) {
         try {
-          const record = JSON.parse(await readFile(join(sessionsDir, f), "utf8")) as SessionRecord;
-          if (record?.storeVersion === SESSION_STORE_VERSION) records.push(record);
+          const parsed = JSON.parse(await readFile(join(sessionsDir, f), "utf8")) as unknown;
+          if (sessionRecordShapeViolation(parsed) === null) {
+            records.push(parsed as SessionRecord);
+          }
         } catch {
           // Skip an unreadable/partial file in a listing (load() still reports it corrupt).
         }

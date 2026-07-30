@@ -234,7 +234,7 @@ export {
   type SettleRequest,
   type SettleResult,
   // Durable session store / checkpoint API (#55) — restart-safe orchestration.
-  assertSecretFreeCheckpoint,
+  assertCheckpointPayloadShape,
   createInMemorySessionStore,
   SESSION_STORE_VERSION,
   type SessionStore,

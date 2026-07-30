@@ -40,6 +40,7 @@ const terms = {
 interface DepOverrides {
   kv?: Map<string, Record<string, unknown>>;
   settle?: SessionDeps["settle"];
+  resumeSettlement?: SessionDeps["resumeSettlement"];
   anchor?: SessionDeps["anchor"];
   newJobId?: () => string;
 }
@@ -75,6 +76,9 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
         settleCalls.n++;
         return { ok: true, txHash: "0xpaid", chainId: "eip155:84532", payer: "0xbuyer", payee: req.payee };
       }),
+    ...(over.resumeSettlement
+      ? { resumeSettlement: over.resumeSettlement }
+      : {}),
     newJobId: over.newJobId ?? (() => "job-1"),
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
@@ -229,6 +233,135 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
     ).rejects.toThrow(/unresolved intent|reconcile/);
     expect(counter.n).toBe(0);
+  });
+
+  test("a durable rail outcome reconciles an intent-only crash without resubmitting", async () => {
+    const base = createInMemorySessionStore();
+    let failFirstOutcomeWrite = true;
+    const store: NonNullable<SessionDeps["sessionStore"]> = {
+      ...base,
+      transition: async (input) => {
+        if (
+          failFirstOutcomeWrite &&
+          input.checkpoint?.key === "settle:0" &&
+          input.checkpoint.stage === "outcome"
+        ) {
+          failFirstOutcomeWrite = false;
+          return { ok: false, reason: "revision-mismatch" };
+        }
+        return base.transition(input);
+      },
+    };
+    const kv = new Map<string, Record<string, unknown>>();
+    let submits = 0;
+    let recoveries = 0;
+    let durableRailOutcome: SettleResult | undefined;
+    const settle: SessionDeps["settle"] = async (req) => {
+      submits += 1;
+      durableRailOutcome = {
+        ok: true,
+        txHash: "0xdurable-paid",
+        chainId: "eip155:84532",
+        payer: "0xbuyer",
+        payee: req.payee,
+      };
+      return durableRailOutcome;
+    };
+    const resumeSettlement: NonNullable<SessionDeps["resumeSettlement"]> = async () => {
+      recoveries += 1;
+      if (!durableRailOutcome) throw new Error("rail outcome is indeterminate");
+      return durableRailOutcome;
+    };
+
+    // The rail records success, transaction binding commits, then the process loses
+    // the SessionStore outcome write. Only the intent remains in the session file.
+    const first = await makeDeps(store, { kv, settle, resumeSettlement });
+    await expect(runSessionCore(first.listingRef, terms, first.deps)).rejects.toThrow(
+      /could not record settlement outcome/,
+    );
+    expect(submits).toBe(1);
+    expect(
+      await store.bindHash({
+        hash: "0xdurable-paid",
+        jobId: "other",
+        kind: "transaction",
+      }),
+    ).toEqual({ ok: false, boundTo: "job-1" });
+
+    // Resume invokes the explicit #52 recovery seam, adopts the durable result,
+    // completes the outcome checkpoint, and never calls the submit seam again.
+    const resumed = await makeDeps(store, { kv, settle, resumeSettlement });
+    await expect(
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(submits).toBe(1);
+    expect(recoveries).toBe(1);
+    const loaded = await store.load("job-1");
+    expect(
+      loaded.status === "ok" &&
+        loaded.record.checkpoints.some(
+          (checkpoint) =>
+            checkpoint.key === "settle:0" &&
+            checkpoint.stage === "outcome" &&
+            checkpoint.data?.txHash === "0xdurable-paid",
+        ),
+    ).toBe(true);
+  });
+
+  test("a reconciled definitive failure is checkpointed instead of leaving the intent stuck", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+
+    const interrupted = await makeDeps(store, {
+      kv,
+      settle: async () => {
+        throw new Error("interrupted before the rail result was returned");
+      },
+    });
+    await expect(
+      runSessionCore(interrupted.listingRef, terms, interrupted.deps),
+    ).rejects.toThrow(/interrupted/);
+
+    let freshSubmits = 0;
+    let recoveries = 0;
+    const resumed = await makeDeps(store, {
+      kv,
+      settle: async (req) => {
+        freshSubmits += 1;
+        return {
+          ok: true,
+          txHash: "0xmust-not-submit",
+          chainId: "eip155:84532",
+          payer: "0xbuyer",
+          payee: req.payee,
+        };
+      },
+      resumeSettlement: async (req) => {
+        recoveries += 1;
+        return {
+          ok: false,
+          txHash: "",
+          chainId: "eip155:84532",
+          payer: "0xbuyer",
+          payee: req.payee,
+        };
+      },
+    });
+    await expect(
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+    ).resolves.toMatchObject({ outcome: "failed" });
+    expect(freshSubmits).toBe(0);
+    expect(recoveries).toBe(1);
+    const loaded = await store.load("job-1");
+    expect(
+      loaded.status === "ok" &&
+        loaded.record.checkpoints.some(
+          (checkpoint) =>
+            checkpoint.key === "settle:0" &&
+            checkpoint.stage === "outcome" &&
+            checkpoint.data?.ok === false,
+        ),
+    ).toBe(true);
   });
 
   test("a staggered resume cannot settle while the first worker is in flight (#67)", async () => {

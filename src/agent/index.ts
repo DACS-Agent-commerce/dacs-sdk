@@ -67,7 +67,7 @@ export {
   type SettleResult,
 } from "./runSessionCore.js";
 export {
-  assertSecretFreeCheckpoint,
+  assertCheckpointPayloadShape,
   createInMemorySessionStore,
   SESSION_STORE_VERSION,
   type SessionStore,
