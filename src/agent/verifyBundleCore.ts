@@ -1,15 +1,16 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { AttestationBundle, BundleParty } from "../artifacts/types.js";
+import type { AnyAttestationBundle, BundleParty } from "../artifacts/types.js";
 import {
   isAgreementDocument,
-  isAttestationBundle,
+  isAnyAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
+import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
 
 /**
  * Attestation-bundle verification (DACS-5). Two independent checks must BOTH
@@ -17,13 +18,13 @@ import { type Verifier } from "./signedArtifact.js";
  *
  *  1. Signature — the bundle's signed scope is its canonical form omitting
  *     `signatures` + `anchoredByRole` (§10.4.1); each `signatures[]` entry is an
- *     Ed25519 signature over `signedBytes("dacs-bundle:v1:", contentHash(scope))`
- *     by a party. We resolve each party's key and check its signature. Verdicts
+ *     Ed25519 signature over the type-specific legacy or fault-bundle domain
+ *     plus `contentHash(scope)` by a party. We resolve each party's key and check its signature. Verdicts
  *     are honestly four-stated: `valid`, `invalid` (tampering/wrong key), `error`
  *     (key resolved but malformed — §10.4.1 ERROR, not a false FAIL),
  *     `unverified` (no key resolvable).
  *
- *  2. Referenced-artifact integrity — the bundle's refs (agreementRef,
+ *  2. Referenced-artifact integrity — the bundle's refs (optional agreementRef,
  *     settlementEvidence[], vetRecords[], listingRef) are content-addressed
  *     `{kind,id,contentHash}`. A valid bundle signature only binds those *hashes*;
  *     it does NOT prove the referenced artifacts exist or are untampered. So we
@@ -62,7 +63,7 @@ export interface BundleVerification {
   reason?: string;
   /** Every signature verified against a resolved key. */
   fullyVerified: boolean;
-  bundle?: AttestationBundle;
+  bundle?: AnyAttestationBundle;
   signatures: SignatureCheck[];
   /** Per-referenced-artifact integrity results. */
   refs: RefCheck[];
@@ -121,12 +122,73 @@ function checkArtifact(
   return { kind, id, verdict: "ok" };
 }
 
+function isAnyRecord(v: Record<string, unknown>): boolean {
+  return typeof v === "object" && v !== null;
+}
+
+function isAgreementCommitPhase(kind: string): boolean {
+  return kind === "commit" || kind.startsWith("commit-");
+}
+
+function requiresAgreementRef(bundle: AnyAttestationBundle): boolean {
+  return (
+    bundle.outcome === "completed" ||
+    bundle.phaseSummary.some(
+      (phase) => phase.outcome === "ok" && isAgreementCommitPhase(phase.kind),
+    ) ||
+    bundle.settlementEvidence.length > 0 ||
+    (bundle.amendments?.length ?? 0) > 0 ||
+    (bundle.ratingRefs?.length ?? 0) > 0
+  );
+}
+
+const CO_SIGNATURE_REQUIRED_OUTCOMES = new Set([
+  "completed",
+  "failed-perm",
+  "failed-counterparty",
+  "failed-substrate",
+]);
+const ABORT_OUTCOMES = new Set(["aborted-by-self", "aborted-by-other"]);
+
+function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer" | "seller"): string | undefined {
+  if (!agreement) return undefined;
+  const scope = stripSignature(agreement);
+  if (!isAgreementDocument(scope)) return undefined;
+  return scope[role];
+}
+
+function requiredSignatureClaims(
+  bundle: AnyAttestationBundle,
+  agreement: Record<string, unknown> | null,
+): string[] {
+  if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome)) return [];
+  const buyer = bundle.parties.find((party) => party.role === "buyer")?.primaryClaim;
+  const seller = bundle.parties.find((party) => party.role === "seller")?.primaryClaim;
+  const claims = [
+    agreementClaim(agreement, "buyer") ?? buyer ?? "role:buyer",
+    agreementClaim(agreement, "seller") ?? seller ?? "role:seller",
+  ];
+  const orchestrator = bundle.parties.find((party) => party.role === "orchestrator")?.primaryClaim;
+  if (orchestrator && orchestrator !== buyer && orchestrator !== seller) claims.push(orchestrator);
+  return [...new Set(claims)];
+}
+
 export async function verifyBundleCore(
   bundleRef: string,
   deps: VerifyBundleDeps,
 ): Promise<BundleVerification> {
   const raw = await deps.readArtifact(bundleRef);
-  if (!raw || !isAttestationBundle(stripSignature(raw))) {
+  const unsigned = raw ? stripSignature(raw) : null;
+  if (unsigned && isFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
+    return {
+      ok: false,
+      reason: "faultedParty is not permitted for outcome and anchoredByRole",
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+    };
+  }
+  if (!raw || !unsigned || !isAnyAttestationBundle(unsigned)) {
     return {
       ok: false,
       reason: "not an attestation bundle",
@@ -135,14 +197,25 @@ export async function verifyBundleCore(
       refs: [],
     };
   }
-  const bundle = stripSignature(raw) as unknown as AttestationBundle;
-
+  const bundle = unsigned;
+  if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) && !ABORT_OUTCOMES.has(bundle.outcome)) {
+    return {
+      ok: false,
+      reason: `unsupported DACS-5 bundle outcome: ${bundle.outcome}`,
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+      bundle,
+    };
+  }
   // Signed scope = canonical form omitting signatures + anchoredByRole (§10.4.1).
   const scope = { ...raw };
   delete scope["signatures"];
   delete scope["anchoredByRole"];
   const message = signedBytes(
-    ARTIFACT_SEPARATORS.AttestationBundle,
+    isFaultBundle(bundle)
+      ? ARTIFACT_SEPARATORS.FaultAttestationBundle
+      : ARTIFACT_SEPARATORS.AttestationBundle,
     contentHash(scope),
   );
 
@@ -171,28 +244,35 @@ export async function verifyBundleCore(
 
   // ── Referenced-artifact integrity ──────────────────────────────────────────
   const refs: RefCheck[] = [];
+  let agreementArtifact: Record<string, unknown> | null = null;
+  if (!bundle.agreementRef && requiresAgreementRef(bundle)) {
+    refs.push({ kind: "dacs-3-agreement", id: "agreementRef", verdict: "missing" });
+  }
   if (!deps.resolveRef) {
     const note = (kind: string, id: string) =>
       refs.push({ kind, id, verdict: "unresolved" as const });
-    note(bundle.agreementRef.kind, bundle.agreementRef.id);
+    if (bundle.agreementRef) note(bundle.agreementRef.kind, bundle.agreementRef.id);
     for (const ev of bundle.settlementEvidence) note(ev.kind, ev.id);
     for (const vr of bundle.vetRecords) note(vr.kind, vr.id);
+    for (const amendment of bundle.amendments ?? []) note(amendment.kind, amendment.id);
+    for (const rating of bundle.ratingRefs ?? []) note(rating.kind, rating.id);
     note("dacs-1-listing", String(bundle.listingRef.listingId));
   } else {
-    const agr = await deps.resolveRef(
-      bundle.agreementRef.kind,
-      bundle.jobId,
-      bundle.parties,
-    );
-    refs.push(
-      checkArtifact(
-        bundle.agreementRef.kind,
-        bundle.agreementRef.id,
-        bundle.agreementRef.contentHash,
-        isAgreementDocument,
-        agr,
-      ),
-    );
+    const agr = bundle.agreementRef
+      ? await deps.resolveRef(bundle.agreementRef.kind, bundle.jobId, bundle.parties)
+      : null;
+    agreementArtifact = agr;
+    if (bundle.agreementRef) {
+      refs.push(
+        checkArtifact(
+          bundle.agreementRef.kind,
+          bundle.agreementRef.id,
+          bundle.agreementRef.contentHash,
+          isAgreementDocument,
+          agr,
+        ),
+      );
+    }
     for (const ev of bundle.settlementEvidence) {
       const r = await deps.resolveRef(ev.kind, bundle.jobId, bundle.parties);
       const check = checkArtifact(
@@ -226,9 +306,34 @@ export async function verifyBundleCore(
         ),
       );
     }
+    for (const amendment of bundle.amendments ?? []) {
+      const r = await deps.resolveRef(amendment.kind, bundle.jobId, bundle.parties);
+      refs.push(
+        checkArtifact(
+          amendment.kind,
+          amendment.id,
+          amendment.contentHash,
+          isAnyRecord,
+          r,
+        ),
+      );
+    }
+    for (const rating of bundle.ratingRefs ?? []) {
+      const r = await deps.resolveRef(rating.kind, bundle.jobId, bundle.parties);
+      refs.push(
+        checkArtifact(
+          rating.kind,
+          rating.id,
+          rating.contentHash,
+          isAnyRecord,
+          r,
+        ),
+      );
+    }
     // The listing isn't a jobId-keyed session artifact; resolve it through the
-    // agreement's listingRef (its storage address) and hash-check the bundle's
-    // ListingRef against it.
+    // agreement's listingRef (its storage address) when there is an agreement.
+    // Pre-commit terminal bundles omit agreementRef, so callers can also expose
+    // the listing through resolveRef("dacs-1-listing", jobId).
     const listingId = String(bundle.listingRef.listingId);
     const listingAddr =
       agr &&
@@ -238,7 +343,7 @@ export async function verifyBundleCore(
         : null;
     const listing = listingAddr
       ? await deps.readArtifact(listingAddr)
-      : null;
+      : await deps.resolveRef("dacs-1-listing", bundle.jobId, bundle.parties);
     refs.push(
       checkArtifact(
         "dacs-1-listing",
@@ -253,14 +358,22 @@ export async function verifyBundleCore(
   const anyInvalid = signatures.some((c) => c.verdict === "invalid");
   const anyError = signatures.some((c) => c.verdict === "error");
   const anyValid = signatures.some((c) => c.verdict === "valid");
+  const validSignatureClaims = new Set(
+    signatures.filter((c) => c.verdict === "valid").map((c) => c.party),
+  );
+  const missingRequiredSignatures = requiredSignatureClaims(bundle, agreementArtifact).filter(
+    (claim) => !validSignatureClaims.has(claim),
+  );
   const sigOk = anyValid && !anyInvalid && !anyError;
   const fullyVerified =
-    signatures.length > 0 && signatures.every((c) => c.verdict === "valid");
+    signatures.length > 0 &&
+    signatures.every((c) => c.verdict === "valid") &&
+    missingRequiredSignatures.length === 0;
   const badRef = refs.find((r) => r.verdict !== "ok");
   const refsOk = !badRef;
 
   return {
-    ok: sigOk && refsOk,
+    ok: sigOk && missingRequiredSignatures.length === 0 && refsOk,
     reason:
       signatures.length === 0
         ? "bundle has no signatures"
@@ -268,6 +381,8 @@ export async function verifyBundleCore(
           ? "one or more signatures failed verification"
           : anyError
             ? "one or more signer keys were malformed (could not verify)"
+            : missingRequiredSignatures.length > 0
+              ? `missing required signature(s): ${missingRequiredSignatures.join(", ")}`
             : !anyValid
               ? "no signer key could be resolved"
               : badRef

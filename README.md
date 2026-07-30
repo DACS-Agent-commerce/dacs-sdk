@@ -78,6 +78,17 @@ To resume an interrupted session safely, pass the prior `jobId` to `runSession` 
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
+### Fault-aware bundle helper
+
+`buildTwoSidedBundle(session)` is the low-level DACS-5 v0.3 producer. It emits a
+`FaultAttestationBundle` copy for each signing buyer, seller, and distinct
+orchestrator. Fault and abort inputs require an absolute `faultedParty`; each
+copy gets the matching role-relative `outcome` and signs under
+`dacs-fault-bundle:v1:`. Consumers continue to accept legacy
+`AttestationBundle` records, and consistency/reputation reconciliation supports
+legacy, fault-aware, and mixed pairs. The helper is not yet wired into
+`runSessionCore`.
+
 ## Doctor
 
 The package ships a read-only preflight command:

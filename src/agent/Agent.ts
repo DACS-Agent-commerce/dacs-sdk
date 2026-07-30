@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type {
-  AttestationBundle,
+  AnyAttestationBundle,
   CompositeVerificationRecord,
   Listing,
 } from "../artifacts/types.js";
-import { isAttestationBundle } from "../artifacts/validators.js";
+import { isAnyAttestationBundle } from "../artifacts/validators.js";
 import { stripSignature } from "../canonical/index.js";
 import {
   ed25519Verify,
@@ -293,11 +293,11 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       primaryClaim: string,
       bundleRefs: string[],
     ): Promise<Reputation> {
-      const bundles: AttestationBundle[] = [];
+      const bundles: AnyAttestationBundle[] = [];
       for (const ref of bundleRefs) {
         const raw = await adapter.readAnchor(ref);
-        if (raw && isAttestationBundle(stripSignature(raw))) {
-          bundles.push(stripSignature(raw) as unknown as AttestationBundle);
+        if (raw && isAnyAttestationBundle(stripSignature(raw))) {
+          bundles.push(stripSignature(raw) as unknown as AnyAttestationBundle);
         }
       }
       return computeReputation(primaryClaim, bundles);

@@ -14,8 +14,7 @@ import {
  * produced under one separator MUST NOT validate under any other (SIG-2). The
  * three composite-payload separators (session-binding, auto-accept-*) and the
  * sealed-bid commitment-hash tag are intentionally excluded — this is the set
- * of 17 single-hash signature separators (incl. the DACS-3 payee-bound
- * agreement domain, #62).
+ * of registered single-hash signature separators.
  */
 export const SIGNATURE_DOMAIN_SEPARATORS = [
   "dacs-listing:v1:",
@@ -34,6 +33,7 @@ export const SIGNATURE_DOMAIN_SEPARATORS = [
   "dacs-rail:v1:",
   "dacs-entitlement:v1:",
   "dacs-bundle:v1:",
+  "dacs-fault-bundle:v1:",
   "dacs-rating:v1:",
 ] as const;
 

@@ -74,7 +74,10 @@ function sign(
   const scope = { ...bodyObj };
   delete scope["signatures"];
   delete scope["anchoredByRole"];
-  const message = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope));
+  const separator = bodyObj["faultBundleVersion"] === "1"
+    ? ARTIFACT_SEPARATORS.FaultAttestationBundle
+    : ARTIFACT_SEPARATORS.AttestationBundle;
+  const message = signedBytes(separator, contentHash(scope));
   return {
     ...bodyObj,
     anchoredByRole,
@@ -95,6 +98,67 @@ describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
       expect(r.fullySigned).toBe(true);
       expect(r.signers.sort()).toEqual([BUYER.did, SELLER.did].sort());
     }
+  });
+
+  test("a v0.3 copy verifies only with a permissible absolute fault", async () => {
+    const faultBody = body({
+      bundleVersion: undefined,
+      faultBundleVersion: "1",
+      outcome: "failed-counterparty",
+      faultedParty: "seller",
+    });
+    expect((await verifyBundleCopy(sign(faultBody, [BUYER, SELLER], "buyer"), "buyer", deps)).valid).toBe(true);
+    const invalid = body({
+      bundleVersion: undefined,
+      faultBundleVersion: "1",
+      outcome: "failed-counterparty",
+      faultedParty: "buyer",
+    });
+    const result = await verifyBundleCopy(sign(invalid, [BUYER, SELLER], "buyer"), "buyer", deps);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/faultedParty/);
+  });
+
+  test("an orchestrator copy can bind to the orchestrator role address", async () => {
+    const faultBody = body({
+      bundleVersion: undefined,
+      faultBundleVersion: "1",
+      outcome: "failed-counterparty",
+      faultedParty: "seller",
+      parties: [
+        { role: "buyer", bundleHash: sha256Hex(BUYER.did), primaryClaim: BUYER.did },
+        { role: "seller", bundleHash: sha256Hex(SELLER.did), primaryClaim: SELLER.did },
+        { role: "orchestrator", bundleHash: sha256Hex(ORCHESTRATOR.did), primaryClaim: ORCHESTRATOR.did },
+      ],
+    });
+    const result = await verifyBundleCopy(
+      sign(faultBody, [BUYER, SELLER, ORCHESTRATOR], "orchestrator"),
+      "orchestrator",
+      deps,
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  test("a copy cannot claim an anchor role absent from its signed party roster", async () => {
+    const faultBody = body({
+      bundleVersion: undefined,
+      faultBundleVersion: "1",
+      faultedParty: "none",
+    });
+    const result = await verifyBundleCopy(
+      sign(faultBody, [BUYER, SELLER], "orchestrator"),
+      "orchestrator",
+      deps,
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/faultedParty/);
+  });
+
+  test("a legacy copy cannot claim an anchor role absent from its signed party roster", async () => {
+    const copy = sign(body(), [BUYER, SELLER], "orchestrator");
+    const result = await verifyBundleCopy(copy, "orchestrator", deps);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/anchor role.*absent/i);
   });
 
   test("a SINGLE-SIGNED ABORT copy stands (§10.11 suppression)", async () => {

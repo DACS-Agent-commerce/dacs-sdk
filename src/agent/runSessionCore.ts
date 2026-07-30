@@ -826,10 +826,10 @@ export async function runSessionCore(
       "success";
   }
 
-  // Verify (DACS-5): assemble + sign + anchor the attestation bundle in the
-  // spec shape. MVP emits the one-sided form (the buyer's copy) — spec-valid
-  // per DACS-VERIFY-L3-ONE-SIDED; the seller-side copy / two-sided reconcile is
-  // a follow-up. Refs are content-addressed; registry versions are pinned at 1.
+  // Verify (legacy MVP): assemble + sign + anchor the buyer's one-sided bundle shape.
+  // Strict DACS-5 consumers reject terminal completed/failed bundles that lack the
+  // seller signature; use buildTwoSidedBundle for conformant two-sided bundles.
+  // Refs are content-addressed; registry versions are pinned at 1.
   const outcome: SessionResult["outcome"] = settledOk ? "completed" : "failed";
   const listingScope = stripSignature(stored as Record<string, unknown>);
   const evidenceRef = refTo("dacs-4-evidence", `settlement-${jobId}`, evidenceValue);

@@ -1,5 +1,10 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { CounterpartyError } from "../errors.js";
+import type {
+  PaymentPayloadResult,
+  PaymentRequirements,
+  SchemeNetworkClient,
+} from "@x402/core/types";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -61,6 +66,10 @@ export interface X402SettleParams {
    * resolved token, not the Price.asset symbol.
    */
   asset: string;
+  /** DACS session identifier bound into the EIP-3009 authorization nonce. */
+  jobId?: string;
+  /** Zero-based index of the pay-x402 phase in the signed pipeline. */
+  phaseIndex?: number;
   requestInit?: RequestInit;
 }
 
@@ -252,6 +261,8 @@ export interface X402RailConfig {
   evmPrivateKey: string;
   /** Override fetch (tests / custom transport). Defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /** Refuse to create a random-nonce authorization without DACS session binding. */
+  requireSessionBinding?: boolean;
 }
 
 export interface X402Rail {
@@ -259,6 +270,44 @@ export interface X402Rail {
   readonly address: string;
   /** Settle one session's payment via the x402 402-dance. */
   settle(params: X402SettleParams): Promise<SettleResult>;
+}
+
+/** Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase. */
+export async function dacsX402AuthorizationNonce(input: {
+  jobId: string;
+  phaseIndex: number;
+}): Promise<`0x${string}`> {
+  if (
+    typeof input.jobId !== "string" ||
+    input.jobId.length === 0 ||
+    !Number.isSafeInteger(input.phaseIndex) ||
+    input.phaseIndex < 0
+  ) {
+    throw new Error("x402 DACS binding requires jobId and a non-negative phaseIndex");
+  }
+  const { sha256, stringToHex } = await import("viem");
+  const preimage = `dacs-sb3:v1:${input.jobId.normalize("NFC")}:${input.phaseIndex}`;
+  return sha256(stringToHex(preimage));
+}
+
+export type DacsX402BindingVerdict =
+  | "present-and-matches"
+  | "present-and-mismatches"
+  | "malformed";
+
+/**
+ * Recompute and classify the normative textual EIP-3009 nonce form. A
+ * well-formed mismatch is a hard SB-3 rejection; malformed input is an error,
+ * not the absent/unverifiable fallback used when no binding can be recovered.
+ */
+export async function verifyDacsX402AuthorizationNonce(
+  input: { jobId: string; phaseIndex: number },
+  presentedNonce: string,
+): Promise<DacsX402BindingVerdict> {
+  if (!/^0x[0-9a-f]{64}$/.test(presentedNonce)) return "malformed";
+  return presentedNonce === await dacsX402AuthorizationNonce(input)
+    ? "present-and-matches"
+    : "present-and-mismatches";
 }
 
 /**
@@ -271,16 +320,84 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
   const { ExactEvmScheme } = await import("@x402/evm/exact/client");
 
   const account = privateKeyToAccount(config.evmPrivateKey as `0x${string}`);
-  // ExactEvmScheme handles any eip155 chain; the wildcard keeps one client
-  // usable across base / base-sepolia / future EVM networks.
-  const core = new x402Client().register("eip155:*", new ExactEvmScheme(account));
-  const client = new x402HTTPClient(core) as unknown as X402ClientLike;
   const fetchImpl = config.fetchImpl ?? fetch;
 
   return {
     address: account.address,
-    settle: (params) =>
-      x402SettleCore(params, { client, fetchImpl, payerAddress: account.address }),
+    settle: async (params) => {
+      if (config.requireSessionBinding && (params.jobId === undefined || params.phaseIndex === undefined)) {
+        throw new Error("pay-x402 requires the DACS jobId/phaseIndex authorization binding");
+      }
+
+      let scheme: SchemeNetworkClient = new ExactEvmScheme(account);
+      if (params.jobId !== undefined && params.phaseIndex !== undefined) {
+        const nonce = await dacsX402AuthorizationNonce({
+          jobId: params.jobId,
+          phaseIndex: params.phaseIndex,
+        });
+        scheme = {
+          scheme: "exact",
+          async createPaymentPayload(
+            version: number,
+            requirements: PaymentRequirements,
+          ): Promise<PaymentPayloadResult> {
+            if (version !== 2) throw new Error("DACS pay-x402 requires x402 protocol version 2");
+            const extra = requirements.extra as { name?: unknown; version?: unknown } | undefined;
+            if (typeof extra?.name !== "string" || typeof extra.version !== "string") {
+              throw new Error("x402 EIP-712 domain name/version are required");
+            }
+            const { getAddress } = await import("viem");
+            const chainId = Number(String(requirements.network).split(":")[1]);
+            if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+              throw new Error("x402 EVM network is invalid");
+            }
+            const now = Math.floor(Date.now() / 1_000);
+            const authorization = {
+              from: account.address,
+              to: getAddress(String(requirements.payTo)),
+              value: String(requirements.amount),
+              validAfter: "0",
+              validBefore: String(now + Number(requirements.maxTimeoutSeconds)),
+              nonce,
+            };
+            const signature = await account.signTypedData({
+              domain: {
+                name: extra.name,
+                version: extra.version,
+                chainId,
+                verifyingContract: getAddress(String(requirements.asset)),
+              },
+              types: {
+                TransferWithAuthorization: [
+                  { name: "from", type: "address" },
+                  { name: "to", type: "address" },
+                  { name: "value", type: "uint256" },
+                  { name: "validAfter", type: "uint256" },
+                  { name: "validBefore", type: "uint256" },
+                  { name: "nonce", type: "bytes32" },
+                ],
+              },
+              primaryType: "TransferWithAuthorization",
+              message: {
+                from: getAddress(authorization.from),
+                to: getAddress(authorization.to),
+                value: BigInt(authorization.value),
+                validAfter: BigInt(authorization.validAfter),
+                validBefore: BigInt(authorization.validBefore),
+                nonce: authorization.nonce,
+              },
+            });
+            return { x402Version: version, payload: { authorization, signature } };
+          },
+        };
+      }
+
+      // ExactEvmScheme handles any eip155 chain; the wildcard keeps one client
+      // usable across base / base-sepolia / future EVM networks.
+      const core = new x402Client().register("eip155:*", scheme);
+      const client = new x402HTTPClient(core) as unknown as X402ClientLike;
+      return x402SettleCore(params, { client, fetchImpl, payerAddress: account.address });
+    },
   };
 }
 
@@ -298,11 +415,26 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
  */
 export function x402Settle(
   rail: X402Rail,
-  paywall: { url: string; network: string; recipientEvm: string; asset: string },
+  paywall: {
+    url: string;
+    network: string;
+    recipientEvm: string;
+    asset: string;
+    phaseIndex?: number;
+  },
   opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
   const store = opts.store ?? createIdempotencyStore();
   return (req) => {
+    // phaseIndex is a property of the SETTLEMENT REQUEST, not the static paywall
+    // descriptor: the SB-3 authorization nonce MUST bind the same phase the
+    // idempotency key dedupes on, or the on-chain single-use nonce and the
+    // (railId, jobId, phaseIndex) key describe different phases. Source it from
+    // `req` (falling back to the paywall override, then 0) and use the one value
+    // for BOTH. (The prior `paywall.phaseIndex`-only wiring made the production
+    // `requireSessionBinding` path throw whenever the paywall omitted it, even
+    // though the session carried a phase.)
+    const phaseIndex = req.phaseIndex ?? paywall.phaseIndex ?? 0;
     const submit = () =>
       rail.settle({
         paywallUrl: paywall.url,
@@ -310,12 +442,14 @@ export function x402Settle(
         recipientEvm: paywall.recipientEvm,
         amount: req.amount,
         asset: paywall.asset,
+        jobId: req.jobId,
+        phaseIndex,
       });
     // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
     // idempotency store (in-process default; inject a durable one for cross-process
     // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
     // on a reconciled resubmit is the SB-3 work in #33 — supplied via `reconcile`;
     // absent it, an unresolved intent fails closed instead of resubmitting.
-    return store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), submit, opts.reconcile);
+    return store.once(settlementKey(req.rail, req.jobId, phaseIndex), submit, opts.reconcile);
   };
 }

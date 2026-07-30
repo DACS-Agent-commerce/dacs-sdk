@@ -127,6 +127,12 @@ export interface VerifyResultEntry {
    * hash-named-field bug.
    */
   proof?: ClaimProofRef;
+  /**
+   * PSP-3 parsed data map: the fields a §7.4.1 ParserSpec `dataMap` extracted from
+   * the attested body (audit-only — it never changes the decision). Recorded so the
+   * verification is reproducible from the signed recipe + attested body.
+   */
+  data?: Record<string, unknown>;
 }
 
 /** DACS-2 — aggregated verification outcome for a subject. */
@@ -253,11 +259,20 @@ export interface BundleParty {
   primaryClaim: ClaimRef;
 }
 
+export type BundlePhaseOutcome = "ok" | "fail";
+export type BundlePhaseErrorClass =
+  | "permanent"
+  | "transient"
+  | "counterparty"
+  | "substrate"
+  | "settlement-atomicity";
+
 /** A phase entry in the bundle's phaseSummary. */
 export interface PhaseSummaryEntry {
   index: number;
   kind: string;
-  outcome: string;
+  outcome: BundlePhaseOutcome;
+  errorClass?: BundlePhaseErrorClass;
   txRefs?: TxRef[];
   /**
    * OPTIONAL per DACS-5 §10.4.3 / DACS-Standard#204: the authoritative
@@ -268,6 +283,10 @@ export interface PhaseSummaryEntry {
   attestationRef?: AttestationRef;
 }
 
+export interface CancellationMarker {
+  claimedPolicy: string;
+}
+
 /** A per-party bundle signature: `{ party, algorithm, value }`. */
 export interface BundleSignature {
   party: string;
@@ -275,19 +294,24 @@ export interface BundleSignature {
   value: string;
 }
 
-/** DACS-5 — the session audit unit referencing every artifact (spec shape). */
-export interface AttestationBundle {
-  bundleVersion: string;
+export type BundlePartyRole = "buyer" | "seller" | "orchestrator";
+export type FaultedParty = BundlePartyRole | "none";
+
+/** Fields shared by the legacy and v0.3 DACS-5 bundle types. */
+interface BundleFields {
   jobId: string;
   outcome: string;
   /** Per-copy field; omitted from the signed scope (§10.4.1). */
-  anchoredByRole?: string;
+  anchoredByRole?: BundlePartyRole;
   listingRef: ListingRef;
-  agreementRef: AttestationRef;
+  agreementRef?: AttestationRef;
+  cancellation?: CancellationMarker;
   parties: BundleParty[];
   phaseSummary: PhaseSummaryEntry[];
   vetRecords: AttestationRef[];
   settlementEvidence: AttestationRef[];
+  amendments?: AttestationRef[];
+  ratingRefs?: AttestationRef[];
   recipeRegistryVersion: number;
   railRegistryVersion: number;
   finalisedAt: number;
@@ -295,10 +319,27 @@ export interface AttestationBundle {
   signatures?: BundleSignature[];
 }
 
+/** DACS-5 legacy session audit unit; retained for consumer compatibility. */
+export interface AttestationBundle extends BundleFields {
+  bundleVersion: string;
+  faultBundleVersion?: never;
+  faultedParty?: never;
+}
+
+/** DACS-5 v0.3 production type with absolute, hashed fault attribution. */
+export interface FaultAttestationBundle extends BundleFields {
+  faultBundleVersion: "1";
+  faultedParty: FaultedParty;
+  bundleVersion?: never;
+}
+
+export type AnyAttestationBundle = AttestationBundle | FaultAttestationBundle;
+
 /** Discriminator for the spine artifact kinds (matches the vector `kind`). */
 export type ArtifactKind =
   | "Listing"
   | "CompositeVerificationRecord"
   | "AgreementDocument"
   | "SettlementEvidence"
-  | "AttestationBundle";
+  | "AttestationBundle"
+  | "FaultAttestationBundle";
