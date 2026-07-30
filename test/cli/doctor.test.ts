@@ -151,12 +151,12 @@ describe("dacs doctor", () => {
     expect(report.checks.find((c) => c.id === "rail.availability")?.status).toBe("fail");
   });
 
-  it("reports pay-d402 as experimental", async () => {
+  it("reports pay-d402 as operator_gated (§9.4.4 vocabulary)", async () => {
     const report = await runDoctor({ offline: true, rail: "pay-d402" });
 
     const rail = report.checks.find((c) => c.id === "rail.availability");
     expect(rail?.status).toBe("warn");
-    expect(rail?.data?.availability).toBe("experimental");
+    expect(rail?.data?.availability).toBe("operator_gated");
   });
 
   it("formats compact human output without tables", async () => {

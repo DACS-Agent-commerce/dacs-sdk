@@ -219,7 +219,7 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
   const amt = v.paymentAmount;
   const fin = v.settlementFinality;
   const baseValid =
-    isStr(v.evidenceVersion) &&
+    v.evidenceVersion === "1" &&
     isStr(v.jobId) &&
     isStr(v.phase) &&
     isNum(v.phaseIndex) &&
@@ -297,7 +297,7 @@ function hasBundleFields(
 export function isAttestationBundle(v: unknown): v is AttestationBundle {
   if (!isObj(v)) return false;
   return (
-    isStr(v.bundleVersion) &&
+    v.bundleVersion === "1" &&
     v.faultBundleVersion === undefined &&
     v.faultedParty === undefined &&
     hasBundleFields(v, isLegacyBundleParties)

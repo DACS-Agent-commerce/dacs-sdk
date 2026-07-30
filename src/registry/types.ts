@@ -10,7 +10,21 @@
 
 import type { ParserSpec } from "../agent/parserSpec.js";
 
-export type Availability = "live" | "deprecated" | "planned";
+/**
+ * §9.4.4 / §7.4.5 availability values — the CLOSED spec set (issue #5: the
+ * previous `live|deprecated|planned` trio was an SDK invention; `mocked` in
+ * particular must be expressible so RAV-3 can treat it as `error`). Resolution
+ * gates on exactly `"live"` (registry/resolve.ts), so every other value stays
+ * fail-closed by construction.
+ */
+export type Availability =
+  | "live"
+  | "operator_gated"
+  | "closed_data"
+  | "bilateral"
+  | "mocked"
+  | "disabled"
+  | "failed";
 
 /** A payment-rail descriptor (steward-signed under `dacs-rail:v1:`). */
 export interface RailDescriptor {
