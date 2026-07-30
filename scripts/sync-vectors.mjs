@@ -13,11 +13,13 @@ const VENDOR = join(ROOT, "vendor", "DACS-Standard");
 const REPO =
   process.env.DACS_STANDARD_REPO ||
   "https://github.com/DACS-Agent-commerce/DACS-Standard.git";
-// Pinned for reproducible conformance runs. Bump deliberately.
-// v0.3 tag (cc01cda) — the latest released Standard. Was v0.1 (239d646); v0.2
-// (7a3117e) was obsolete by the time this landed. See #7.
+// Pinned for reproducible conformance runs. The pin is the SDK's test oracle,
+// so moving it changes what "conformant" means — bump deliberately, in a
+// change that re-runs the suite and reconciles any drift.
+// Currently: DACS-Standard `next` @ 2026-07-30 (234 manifest cases).
+// Was v0.3 tag cc01cda (187 cases); before that v0.1 (239d646). See #6, #7.
 const REF =
-  process.env.DACS_STANDARD_REF || "cc01cdaee14e7def1c293e648a0bd30e7111cf8e";
+  process.env.DACS_STANDARD_REF || "9a77966de947e5395b22e0969c3230c63be82302";
 
 function git(args, cwd) {
   execFileSync("git", args, { cwd, stdio: "inherit" });
