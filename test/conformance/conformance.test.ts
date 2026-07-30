@@ -14,6 +14,7 @@ import {
   decodeAddressSegment,
   encodeAddressSegment,
   listingAddress,
+  sha256Hex,
 } from "../../src/canonical/index.js";
 import {
   SIGNATURE_DOMAIN_SEPARATORS,
@@ -37,7 +38,6 @@ import { deriveReputation } from "../../src/agent/reputationDerivation.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import {
-  claimHasStructuralProof,
   deriveIdentityTier,
   type BundleClaimLike,
 } from "../../src/identity/tier.js";
@@ -46,14 +46,15 @@ import type { AnyAttestationBundle, AttestationBundle } from "../../src/artifact
 /**
  * DACS-Standard §14 conformance — the manifest-driven harness (#6).
  *
- * Every MANIFEST.json case whose data maps onto an exported SDK surface is
- * REPLAYED here: the case's pinned `want` is asserted against the SDK's actual
- * output (inputs come from the vendored fixtures / vectors/golden.json, or —
- * for the primitive canonicalize/decimal cases — from the inputs the case
- * summary specifies, since dacs-verify constructs those inputs in run.ts and
- * ships only the outputs). Cases whose inputs are not shipped, or whose subject
- * surface the SDK does not export yet, stay visible as `it.todo` with the
- * reason — never a vacuous assertion.
+ * Every GOLDEN MANIFEST.json case whose data maps onto an exported SDK surface
+ * is REPLAYED here: the case's pinned `want` is asserted against the SDK's
+ * actual output (inputs come from the vendored fixtures / vectors/golden.json,
+ * or — for primitive cases — from the exact inputs used by the reference
+ * generator). Candidate cases are never promoted locally: they stay visible as
+ * `it.todo` with the upstream reason until the Standard regenerates and promotes
+ * them. Golden cases whose inputs are not shipped, or whose subject surface the
+ * SDK does not export yet, likewise stay visible as reasoned todos — never as
+ * vacuous assertions.
  *
  * Known divergences are pinned with `it.fails` (the vector expectation is
  * asserted and expected to fail against today's SDK) so a fix flips them loudly.
@@ -72,6 +73,7 @@ interface ManifestCase {
   spec: string;
   summary: string;
   status: string;
+  reason: string;
   want: unknown;
 }
 
@@ -194,10 +196,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       partyPrimaryClaim: string;
       bundles: AttestationBundle[];
     };
-  const deriveRep = (
-    bundles: AnyAttestationBundle[],
-    opts: { withAbsenceContext: boolean },
-  ) => {
+  const deriveCurrentRep = (bundles: AnyAttestationBundle[]) => {
     const fx = repFixture();
     return deriveReputation(
       fx.partyPrimaryClaim,
@@ -211,10 +210,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       {
         trustBundles: true,
         // §10.5.1 guard (iv): a one-copy attribution needs authoritative
-        // absence of the other role's copy. The "current" golden models NO
-        // retained absence context (copies indeterminate → excluded); the
-        // legacy candidate models authoritative absence.
-        copyAbsence: () => (opts.withAbsenceContext ? "absent" : "indeterminate"),
+        // absence of the other role's copy. The current golden models NO
+        // retained absence context, so every missing copy is indeterminate.
+        copyAbsence: () => "indeterminate",
       },
     );
   };
@@ -247,17 +245,57 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     return evidence;
   };
 
-  const tierClaim = (ref: string, verified = false): BundleClaimLike =>
-    verified
-      ? {
-          ref,
-          verifiedBy: {
-            anchor: { kind: "storage-program", locator: `stor-verify-${ref}` },
-            contentHash: "a".repeat(64),
-            recipeVersion: 1,
-          },
-        }
-      : { ref };
+  // Mirrors the pinned generator's deterministic VerifyResult resolver and
+  // wrapper freshness gate. A structurally-complete verifiedBy is not enough:
+  // its hash must bind (claim ref, locator, pass), and the claim must be fresh.
+  const IDENTITY_NOW = 1_900_000_000_000;
+  const resolvedAndFreshClaim = (claim: BundleClaimLike): boolean => {
+    const verifiedBy = claim.verifiedBy;
+    const locator = verifiedBy?.anchor?.locator;
+    if (
+      !verifiedBy ||
+      verifiedBy.anchor?.kind !== "storage-program" ||
+      typeof locator !== "string" ||
+      !Number.isSafeInteger(verifiedBy.recipeVersion) ||
+      verifiedBy.contentHash !==
+        sha256Hex(`verify-result:${claim.ref}:${locator}:pass`)
+    ) {
+      return false;
+    }
+
+    const expiresAt = (claim as BundleClaimLike & { expiresAt?: unknown })
+      .expiresAt;
+    if (claim.issuedAt === undefined && expiresAt === undefined) return false;
+    if (
+      claim.issuedAt !== undefined &&
+      (!Number.isSafeInteger(claim.issuedAt) ||
+        claim.issuedAt > IDENTITY_NOW)
+    ) {
+      return false;
+    }
+    if (
+      expiresAt !== undefined &&
+      (!Number.isSafeInteger(expiresAt) ||
+        IDENTITY_NOW > (expiresAt as number))
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  const tierClaim = (ref: string, verified = false): BundleClaimLike => {
+    if (!verified) return { ref };
+    const locator = `stor-verify-${ref.replaceAll(":", "-")}`;
+    return {
+      ref,
+      issuedAt: IDENTITY_NOW - 1_000,
+      verifiedBy: {
+        anchor: { kind: "storage-program", locator },
+        contentHash: sha256Hex(`verify-result:${ref}:${locator}:pass`),
+        recipeVersion: 1,
+      },
+    };
+  };
 
   // ── Per-case runners ──────────────────────────────────────────────────────
   // Inputs for the primitive canonicalize/decimal cases follow each case's
@@ -298,16 +336,23 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     },
     "cd1-reject-exponent": (want) => {
       expect(want).toEqual(["throws", "throws", "throws"]);
-      for (const bad of ["1e2", "+1", "abc"]) {
+      for (const bad of ["1e3", "+1", "abc"]) {
         expect(() => canonicalizeDecimal(bad)).toThrow();
       }
     },
     "cd1-economic-equality": (want) => {
       const canonicalEqual =
-        contentHash({ amount: canonicalizeDecimal("1.50") }) ===
-        contentHash({ amount: canonicalizeDecimal("1.5") });
+        contentHash({
+          amount: canonicalizeDecimal("1.50"),
+          currency: "USDC",
+        }) ===
+        contentHash({
+          amount: canonicalizeDecimal("1.500"),
+          currency: "USDC",
+        });
       const rawDiffers =
-        contentHash({ amount: "1.50" }) !== contentHash({ amount: "1.5" });
+        contentHash({ amount: "1.50", currency: "USDC" }) !==
+        contentHash({ amount: "1.500", currency: "USDC" });
       expect({ canonicalEqual, rawDiffers }).toEqual(want);
     },
     "cd1-positivity": (want) => {
@@ -330,7 +375,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       const sep = golden.signing.separator as DomainSeparator;
       const sig = b64u(golden.signing.signature);
       const pub = hex(golden.signing.publicKeyHex);
-      const tampered = { ...golden.signing.doc, listingId: "tampered" };
+      const tampered = { ...golden.signing.doc, listingVersion: 2 };
       expect(verifyArtifact(sep, tampered, sig, pub)).toBe(want);
     },
     "sig-sig2-cross-domain": (want) => {
@@ -373,18 +418,21 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "identity-tier-institutional": (want) => {
       const fx = read("conformance/fixtures/identity/identity-tier-institutional.json");
       expect(
-        deriveIdentityTier(fx.identityBundle as never, claimHasStructuralProof),
+        deriveIdentityTier(fx.identityBundle as never, resolvedAndFreshClaim),
       ).toBe(want);
     },
     "identity-tier-verified": (want) => {
       const fx = read("conformance/fixtures/identity/identity-tier-verified.json");
       expect(
-        deriveIdentityTier(fx.identityBundle as never, claimHasStructuralProof),
+        deriveIdentityTier(fx.identityBundle as never, resolvedAndFreshClaim),
       ).toBe(want);
     },
     "identity-tier-raw-key": (want) => {
       expect(
-        deriveIdentityTier({ claims: [tierClaim("key:aaaaaaaa")] }, claimHasStructuralProof),
+        deriveIdentityTier(
+          { claims: [tierClaim("key:aaaaaaaa")] },
+          resolvedAndFreshClaim,
+        ),
       ).toBe(want);
     },
     "identity-tier-self-asserted-ignored": (want) => {
@@ -392,30 +440,31 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       // The fixture bundle self-asserts a higher identityTier; derivation must
       // ignore it and recompute from the (unverified) claims.
       expect(
-        deriveIdentityTier(fx.identityBundle as never, claimHasStructuralProof),
+        deriveIdentityTier(fx.identityBundle as never, resolvedAndFreshClaim),
       ).toBe(want);
     },
     "identity-tier-highest-wins": (want) => {
       expect(
         deriveIdentityTier(
           { claims: [tierClaim("domain:example.com", true), tierClaim("lei:529900T8BM49AURSDO55", true)] },
-          claimHasStructuralProof,
+          resolvedAndFreshClaim,
         ),
       ).toBe(want);
     },
     "identity-tier-stale-not-elevated": (want) => {
-      // A structurally-complete verifiedBy whose resolution is STALE: the
-      // caller's predicate (which owns the §6.3.2 freshness gate) says no.
+      const staleClaim = {
+        ...tierClaim("lei:529900T8BM49AURSDO55", true),
+        expiresAt: IDENTITY_NOW - 1,
+      };
       expect(
         deriveIdentityTier(
-          { claims: [tierClaim("lei:529900T8BM49AURSDO55", true)] },
-          () => false,
+          { claims: [staleClaim] },
+          resolvedAndFreshClaim,
         ),
       ).toBe(want);
     },
     "identity-tier-forged-unresolved": (want) => {
-      // Malformed verifiedBy (no contentHash / anchor) fails even the
-      // structural predicate — a forged ref cannot elevate.
+      // Malformed verifiedBy (no contentHash / anchor) cannot resolve.
       expect(
         deriveIdentityTier(
           {
@@ -423,7 +472,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
               { ref: "lei:529900T8BM49AURSDO55", verifiedBy: { recipeVersion: 1 } },
             ],
           },
-          claimHasStructuralProof,
+          resolvedAndFreshClaim,
         ),
       ).toBe(want);
     },
@@ -475,9 +524,22 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     // result envelope + the golden orchestrator key).
     "settlement-payment-pass": async (want) => {
       const fx = read("conformance/fixtures/settlement-evidence-payment-success.json") as any;
+      const price = fx.paymentInput.agreement.terms.price;
+      const rail = fx.paymentInput.rail;
       const r = await verifySettlementEvidence(
         fx.evidence,
-        { orchestrator: "did:demos:orchestrator", attestationRef: fx.result.attestationRef },
+        {
+          orchestrator: "did:demos:orchestrator",
+          attestationRef: fx.result.attestationRef,
+          result: { ok: fx.result.ok, errorClass: fx.result.errorClass },
+          agreement: { amount: price.amount, currency: price.currency },
+          rail: {
+            railId: rail.railId,
+            railType: rail.railType,
+            asset: rail.asset.symbol,
+            handler: rail.phaseHandler,
+          },
+        },
         settlementDeps(golden.settlement.publicKeys),
       );
       expect(r.reasons).toEqual([]);
@@ -487,7 +549,12 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       const fx = read("conformance/fixtures/settlement-evidence-delivery-success.json") as any;
       const r = await verifySettlementEvidence(
         fx.evidence,
-        { orchestrator: "did:demos:orchestrator", attestationRef: fx.result.attestationRef },
+        {
+          orchestrator: "did:demos:orchestrator",
+          attestationRef: fx.result.attestationRef,
+          result: { ok: fx.result.ok, errorClass: fx.result.errorClass },
+          expectedAnchorLocator: fx.evidence.deliverableAnchor.locator,
+        },
         settlementDeps(golden.settlement.publicKeys),
       );
       expect(r.reasons).toEqual([]);
@@ -536,15 +603,6 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         ).decision,
       ).toBe(want);
     },
-    "settlement-wrong-anchor-fail": async (want) => {
-      expect(
-        (
-          await verifyEvidence(deliveryEvidence(), {
-            expectedAnchorLocator: "stor-somewhere-else",
-          })
-        ).decision,
-      ).toBe(want);
-    },
     "settlement-attestationref-hash-mismatch-fail": async (want) => {
       expect(
         (
@@ -585,26 +643,22 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(result.decision).toBe(want);
     },
     "settlement-phase-rail-mismatch-fail": async (want) => {
+      const evidence = paymentEvidence();
+      evidence.phase = "pay-solana-spl";
       expect(
         (
-          await verifyEvidence(paymentEvidence(), {
-            rail: { railType: "solana-spl" },
-          })
-        ).decision,
-      ).toBe(want);
-    },
-    "settlement-txrefs-mismatch-fail": async (want) => {
-      expect(
-        (
-          await verifyEvidence(paymentEvidence(), {
-            rail: { railId: "some-other-rail" },
+          await verifyEvidence(evidence, {
+            rail: {
+              railType: "evm-erc20",
+              handler: "pay-evm-erc20",
+            },
           })
         ).decision,
       ).toBe(want);
     },
     "settlement-noncanonical-amount-fail": async (want) => {
       const evidence = paymentEvidence();
-      evidence.paymentAmount.amount = "5.00";
+      evidence.paymentAmount.amount = "1.50";
       expect((await verifyEvidence(evidence)).decision).toBe(want);
     },
     "settlement-nonpositive-amount-fail": async (want) => {
@@ -646,16 +700,12 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "settlement-delivery-missing-deliverable-fail": async (want) => {
       const evidence = deliveryEvidence();
       delete evidence.deliverableContentHash;
+      delete evidence.deliverableAnchor;
       expect((await verifyEvidence(evidence)).decision).toBe(want);
     },
     "settlement-delivery-malformed-contenthash-fail": async (want) => {
       const evidence = deliveryEvidence();
       evidence.deliverableContentHash = "not-a-hash";
-      expect((await verifyEvidence(evidence)).decision).toBe(want);
-    },
-    "settlement-storage-anchored-as-entitlement-fail": async (want) => {
-      const evidence = deliveryEvidence();
-      evidence.deliverableAnchor.kind = "entitlement";
       expect((await verifyEvidence(evidence)).decision).toBe(want);
     },
     "settlement-negative-fee-fail": async (want) => {
@@ -664,10 +714,12 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect((await verifyEvidence(evidence)).decision).toBe(want);
     },
     "settlement-underpayment-vs-agreement-fail": async (want) => {
+      const evidence = paymentEvidence();
+      evidence.paymentAmount.amount = "1";
       expect(
         (
-          await verifyEvidence(paymentEvidence(), {
-            agreement: { amount: "10", currency: "USDC" },
+          await verifyEvidence(evidence, {
+            agreement: { amount: "5", currency: "USDC" },
           })
         ).decision,
       ).toBe(want);
@@ -680,15 +732,6 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
               railType: "evm-erc20",
               handler: "pay-solana-spl",
             },
-          })
-        ).decision,
-      ).toBe(want);
-    },
-    "settlement-rail-network-mismatch-fail": async (want) => {
-      expect(
-        (
-          await verifyEvidence(paymentEvidence(), {
-            rail: { network: "ethereum" },
           })
         ).decision,
       ).toBe(want);
@@ -756,28 +799,6 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         (
           await verifyEvidence(evidence, {
             rail: { railType: "cross-chain-liquidity-tank" },
-          })
-        ).decision,
-      ).toBe(want);
-    },
-    "settlement-cross-chainid-matching-kind-pass": async (want) => {
-      const evidence = htlcEvidence();
-      evidence.paymentTxRefs = [
-        {
-          rail: "polygon-amoy-usdc",
-          txHash: "polygon-amoy:0xclaim",
-          kind: "htlc-claim",
-        },
-      ];
-      expect(
-        (
-          await verifyEvidence(evidence, {
-            rail: {
-              railType: "cross-chain-htlc",
-              sourceFinalitySec: 120,
-              safetyWindowSec: 600,
-            },
-            htlcExpiry: { source: 10_000, dest: 5_000 },
           })
         ).decision,
       ).toBe(want);
@@ -882,7 +903,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "verify-reputation-unqualified-one-copy-excluded": (want) => {
       // Guard (iv): the same one-copy fixture with NO retained
       // authoritative-absence context is excluded from every metric.
-      const d = deriveRep(repFixture().bundles, { withAbsenceContext: false });
+      const d = deriveCurrentRep(repFixture().bundles);
       expect(d.bundleCount).toBe(want.bundleCount);
       expect(d.metrics.completionRate).toBe(want.completionRate);
       expect(d.metrics.counterpartyAdjustedCompletionRate).toBe(
@@ -891,55 +912,6 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(d.metrics.counterpartyFaultRate).toBe(want.counterpartyFaultRate);
       expect(d.metrics.transactionCountByCurrency).toEqual(want.transactionCountByCurrency);
       expect(d.bundleRefs).toEqual(want.bundleRefs);
-    },
-    "verify-reputation-denominator": (want) => {
-      const d = deriveRep(repFixture().bundles, { withAbsenceContext: true });
-      expect(d.bundleCount).toBe(want.bundleCount);
-      expect(d.metrics.completionRate).toBe(want.completionRate);
-      expect(d.metrics.counterpartyAdjustedCompletionRate).toBe(
-        want.counterpartyAdjustedCompletionRate,
-      );
-      expect(d.metrics.counterpartyFaultRate).toBe(want.counterpartyFaultRate);
-      expect(d.metrics.transactionCountByCurrency).toEqual(want.transactionCountByCurrency);
-      expect(d.bundleRefs.length).toBe(want.bundleRefs);
-    },
-    "verify-reputation-null-not-zero": (want) => {
-      // One failed-substrate bundle: party_fault_denom 0 → null rates, not 0.
-      const substrateOnly = repFixture().bundles.filter(
-        (b) => b.outcome === "failed-substrate",
-      );
-      const d = deriveRep(substrateOnly, { withAbsenceContext: true });
-      expect(d.bundleCount).toBe(want.bundleCount);
-      expect(d.metrics.completionRate).toBe(want.completionRate);
-      expect(d.metrics.counterpartyAdjustedCompletionRate).toBe(
-        want.counterpartyAdjustedCompletionRate,
-      );
-      expect(d.metrics.counterpartyFaultRate).toBe(want.counterpartyFaultRate);
-      expect(d.metrics.completionRate === 0).toBe(want.completionIsZero);
-      expect(d.metrics.counterpartyAdjustedCompletionRate === 0).toBe(
-        want.counterpartyAdjustedIsZero,
-      );
-      expect(d.metrics.counterpartyFaultRate === 0).toBe(want.faultIsZero);
-      expect(d.metrics.transactionCountByCurrency).toEqual(want.transactionCountByCurrency);
-    },
-    "verify-reputation-ratings-volume-l3-null": (want) => {
-      const d = deriveRep(repFixture().bundles, { withAbsenceContext: true });
-      expect(d.metrics.averageBuyerRating).toBe(want.averageBuyerRating);
-      expect(d.metrics.averageSellerRating).toBe(want.averageSellerRating);
-      expect(d.metrics.observedTransactionalVolume).toEqual(want.observedTransactionalVolume);
-      expect(d.metrics.transactionCountByCurrency).toEqual(want.transactionCountByCurrency);
-    },
-    "verify-reputation-determinism-receipt": (want) => {
-      const d = deriveRep(repFixture().bundles, { withAbsenceContext: true });
-      expect(d.windowingBasis).toBe(want.windowingBasis);
-      const hashes = d.bundleRefs.map((r) => r.contentHash);
-      expect([...hashes].sort()).toEqual(hashes);
-      expect(hashes.length === d.bundleCount).toBe(want.sortedBundleRefs);
-      // Re-derivation over the same inputs reproduces the pinned metrics.
-      const rerun = deriveRep(repFixture().bundles, { withAbsenceContext: true });
-      expect(rerun.metrics).toEqual(d.metrics);
-      expect(rerun.metrics).toMatchObject(want.rerunMetrics);
-      expect(rerun.bundleCount).toBe(want.rerunBundleCount);
     },
   };
 
@@ -973,6 +945,16 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "cf4-dacs4-payment-address": "no exported dacs4 payment address builder (#5/#48)",
     "cf4-dacs5-rating-address": "no exported dacs5 rating address builder (#5/#48)",
     "vet-cm2-address": "no exported dacs2 attestation address builder (#5/#48)",
+    "settlement-wrong-anchor-fail":
+      "EvidenceContext cannot validate the result.attestationRef payment-address id (PC-2)",
+    "settlement-txrefs-mismatch-fail":
+      "EvidenceContext does not carry handler-result txRefs for comparison with signed evidence.paymentTxRefs",
+    "settlement-storage-anchored-as-entitlement-fail":
+      "EvidenceContext does not carry attestationRef.id for dacs4 namespace validation",
+    "settlement-rail-network-mismatch-fail":
+      "EvidenceRailContext does not represent asset/network kinds for RD-5 coherence",
+    "settlement-cross-chainid-matching-kind-pass":
+      "EvidenceRailContext does not represent asset.chainId/network.chainId",
   };
 
   // ── Drive the manifest ────────────────────────────────────────────────────
@@ -986,6 +968,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   for (const area of [...byArea.keys()].sort()) {
     describe(`area: ${area}`, () => {
       for (const c of byArea.get(area)!) {
+        if (c.status !== "golden") {
+          it.todo(`${c.id} (${c.spec}, ${c.status}) — ${c.reason}`);
+          continue;
+        }
         const runner = RUNNERS[c.id] as Runner | undefined;
         if (!runner) {
           const reason =
@@ -1002,17 +988,22 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   }
 
   it("every runner id exists in the manifest (no orphaned runners)", () => {
-    const ids = new Set(manifest.cases.map((c) => c.id));
+    const casesById = new Map(manifest.cases.map((c) => [c.id, c]));
     for (const id of Object.keys(RUNNERS)) {
-      expect(ids.has(id), `runner for unknown case id: ${id}`).toBe(true);
+      const manifestCase = casesById.get(id);
+      expect(manifestCase, `runner for unknown case id: ${id}`).toBeDefined();
+      expect(
+        manifestCase?.status,
+        `runner for non-golden case id: ${id}`,
+      ).toBe("golden");
     }
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 234 cases. Seventy-eight have non-vacuous SDK runners in
+    // This pin has 234 cases. Sixty-nine golden cases have non-vacuous SDK runners in
     // this change; deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(78);
+    expect(Object.keys(RUNNERS)).toHaveLength(69);
     expect(manifest.cases).toHaveLength(234);
   });
 });
