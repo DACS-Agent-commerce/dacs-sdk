@@ -212,7 +212,31 @@ export type SettlementFinality =
       finalityObservedAt: number;
     };
 
-/** Detached signature on a standalone artifact: `{ algorithm, signer, value }`. */
+/** Algorithms permitted by the DACS v0.x ComponentSignature envelope. */
+export type ComponentSignatureAlgorithm =
+  | "ed25519"
+  | "ecdsa-secp256k1"
+  | "sr1-aggregate";
+
+/**
+ * Detached signature on a standalone artifact (CORE §B.7 / DACS-4 §9.7).
+ * The artifact-specific section determines which role `signer` must hold.
+ */
+export interface ComponentSignature {
+  algorithm: ComponentSignatureAlgorithm;
+  /**
+   * Primary ClaimReference of the artifact-specific signing role. ClaimReference
+   * is currently an SDK-wide string alias; validate its grammar here once the
+   * shared ClaimReference parser lands.
+   */
+  signer: string;
+  value: string;
+}
+
+/**
+ * @deprecated Use {@link ComponentSignature}. Its broad `algorithm` field is
+ * retained so existing consumers are not broken by introducing the foundation.
+ */
 export interface ArtifactSignature {
   algorithm: string;
   signer: string;
