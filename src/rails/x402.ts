@@ -276,26 +276,38 @@ export interface X402Rail {
 export async function dacsX402AuthorizationNonce(input: {
   jobId: string;
   phaseIndex: number;
-  payer: string;
-  payee: string;
-  amount: string;
-  asset: string;
-  network: string;
 }): Promise<`0x${string}`> {
-  if (!input.jobId || !Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0) {
+  if (
+    typeof input.jobId !== "string" ||
+    input.jobId.length === 0 ||
+    !Number.isSafeInteger(input.phaseIndex) ||
+    input.phaseIndex < 0
+  ) {
     throw new Error("x402 DACS binding requires jobId and a non-negative phaseIndex");
   }
-  const { keccak256, stringToHex } = await import("viem");
-  return keccak256(stringToHex([
-    "dacs-pay-x402-eip3009-v1",
-    input.jobId,
-    String(input.phaseIndex),
-    input.network,
-    input.asset.toLowerCase(),
-    input.payer.toLowerCase(),
-    input.payee.toLowerCase(),
-    BigInt(input.amount).toString(),
-  ].join("\n")));
+  const { sha256, stringToHex } = await import("viem");
+  const preimage = `dacs-sb3:v1:${input.jobId.normalize("NFC")}:${input.phaseIndex}`;
+  return sha256(stringToHex(preimage));
+}
+
+export type DacsX402BindingVerdict =
+  | "present-and-matches"
+  | "present-and-mismatches"
+  | "malformed";
+
+/**
+ * Recompute and classify the normative textual EIP-3009 nonce form. A
+ * well-formed mismatch is a hard SB-3 rejection; malformed input is an error,
+ * not the absent/unverifiable fallback used when no binding can be recovered.
+ */
+export async function verifyDacsX402AuthorizationNonce(
+  input: { jobId: string; phaseIndex: number },
+  presentedNonce: string,
+): Promise<DacsX402BindingVerdict> {
+  if (!/^0x[0-9a-f]{64}$/.test(presentedNonce)) return "malformed";
+  return presentedNonce === await dacsX402AuthorizationNonce(input)
+    ? "present-and-matches"
+    : "present-and-mismatches";
 }
 
 /**
@@ -322,11 +334,6 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
         const nonce = await dacsX402AuthorizationNonce({
           jobId: params.jobId,
           phaseIndex: params.phaseIndex,
-          payer: account.address,
-          payee: params.recipientEvm,
-          amount: params.amount,
-          asset: params.asset,
-          network: params.network,
         });
         scheme = {
           scheme: "exact",
@@ -419,6 +426,15 @@ export function x402Settle(
 ): (req: SettleRequest) => Promise<SettleResult> {
   const store = opts.store ?? createIdempotencyStore();
   return (req) => {
+    // phaseIndex is a property of the SETTLEMENT REQUEST, not the static paywall
+    // descriptor: the SB-3 authorization nonce MUST bind the same phase the
+    // idempotency key dedupes on, or the on-chain single-use nonce and the
+    // (railId, jobId, phaseIndex) key describe different phases. Source it from
+    // `req` (falling back to the paywall override, then 0) and use the one value
+    // for BOTH. (The prior `paywall.phaseIndex`-only wiring made the production
+    // `requireSessionBinding` path throw whenever the paywall omitted it, even
+    // though the session carried a phase.)
+    const phaseIndex = req.phaseIndex ?? paywall.phaseIndex ?? 0;
     const submit = () =>
       rail.settle({
         paywallUrl: paywall.url,
@@ -427,13 +443,13 @@ export function x402Settle(
         amount: req.amount,
         asset: paywall.asset,
         jobId: req.jobId,
-        ...(paywall.phaseIndex === undefined ? {} : { phaseIndex: paywall.phaseIndex }),
+        phaseIndex,
       });
     // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
     // idempotency store (in-process default; inject a durable one for cross-process
     // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
     // on a reconciled resubmit is the SB-3 work in #33 — supplied via `reconcile`;
     // absent it, an unresolved intent fails closed instead of resubmitting.
-    return store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), submit, opts.reconcile);
+    return store.once(settlementKey(req.rail, req.jobId, phaseIndex), submit, opts.reconcile);
   };
 }

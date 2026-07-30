@@ -5,6 +5,7 @@ import {
   createX402Rail,
   dacsX402AuthorizationNonce,
   termsMatch,
+  verifyDacsX402AuthorizationNonce,
   x402Settle,
   x402SettleCore,
   type X402ClientLike,
@@ -20,20 +21,62 @@ const HARDHAT_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784e7bf4f2ff80";
 
 describe("DACS EIP-3009 session binding", () => {
-  test("derives a deterministic nonce from the signed job, phase, and rail terms", async () => {
-    const input = {
-      jobId: "job-1",
-      phaseIndex: 3,
-      payer: PAYER,
-      payee: RECIPIENT,
-      amount: "1000000",
-      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-      network: NETWORK,
-    };
-    const first = await dacsX402AuthorizationNonce(input);
-    expect(await dacsX402AuthorizationNonce({ ...input })).toBe(first);
-    expect(await dacsX402AuthorizationNonce({ ...input, jobId: "job-2" })).not.toBe(first);
-    expect(await dacsX402AuthorizationNonce({ ...input, phaseIndex: 4 })).not.toBe(first);
+  test("reproduces the normative SB-3 live, phase, job, NFC and ULID vectors", async () => {
+    const vectors = [
+      ["practice-dacs-0001", 3, "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff"],
+      ["practice-dacs-0001", 4, "0x80fa47321a52f728f5ecbde7a5ceb44dd6086c9902dd8b95980b05909e5ea969"],
+      ["practice-dacs-0002", 3, "0x69256a3bf1c9bd6a5ba1ffc93705d44c5322e03de8f1e3ad6b6d709f4254ce29"],
+      ["cafe\u0301-job", 0, "0xc4d6eb3c8774ff6078765567559c1ce1953badb01ba1ea8a5252561712294397"],
+      ["01ARZ3NDEKTSV4RRFFQ69G5FAV", 3, "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
+    ] as const;
+    for (const [jobId, phaseIndex, expected] of vectors) {
+      expect(await dacsX402AuthorizationNonce({ jobId, phaseIndex })).toBe(expected);
+    }
+  });
+
+  test("classifies matching, mismatching and malformed presented nonces", async () => {
+    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
+    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
+    expect(await verifyDacsX402AuthorizationNonce(
+      input,
+      expected,
+    )).toBe("present-and-matches");
+    expect(await verifyDacsX402AuthorizationNonce(
+      { ...input, phaseIndex: 4 },
+      expected,
+    )).toBe("present-and-mismatches");
+    expect(await verifyDacsX402AuthorizationNonce(
+      input,
+      `0x${"0".repeat(64)}`,
+    )).toBe("present-and-mismatches");
+    expect(await verifyDacsX402AuthorizationNonce(
+      input,
+      `0x${"0".repeat(62)}`,
+    )).toBe("malformed");
+    expect(await verifyDacsX402AuthorizationNonce(input, "0".repeat(64))).toBe("malformed");
+    expect(await verifyDacsX402AuthorizationNonce(input, `0x${"A".repeat(64)}`)).toBe("malformed");
+  });
+
+  test("the three normative retry cases retain the same derived nonce", async () => {
+    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
+    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
+    // used+same-transfer resumes, used+different-transfer refuses, and cancelled
+    // refuses at the reconcile layer; none may mint a replacement nonce.
+    for (const _state of ["used-same", "used-different", "cancelled"]) {
+      expect(await dacsX402AuthorizationNonce(input)).toBe(expected);
+    }
+  });
+
+  test("rejects malformed derivation inputs", async () => {
+    await expect(dacsX402AuthorizationNonce({
+      jobId: "practice-dacs-0001",
+      phaseIndex: -1,
+    })).rejects.toThrow(/non-negative phaseIndex/);
+    await expect(dacsX402AuthorizationNonce({
+      jobId: "practice-dacs-0001",
+      // @ts-expect-error — exercising the canonical integer runtime guard
+      phaseIndex: "03",
+    })).rejects.toThrow(/non-negative phaseIndex/);
   });
 
   test("fails closed when a production rail is asked to settle without a session binding", async () => {
@@ -290,5 +333,60 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     expect(captured?.amount).toBe("1000000");
     expect(captured?.jobId).toBe("j1");
     expect(captured?.phaseIndex).toBe(3);
+  });
+
+  test("binds the SESSION's phaseIndex (from req), not the static paywall config", async () => {
+    // Regression: the bridge must source phaseIndex from the SettleRequest — the
+    // same value the idempotency key uses — so the SB-3 nonce and the dedup key
+    // describe the SAME phase. The paywall descriptor omits phaseIndex here (the
+    // normal production shape); the session carries phase 2.
+    let captured: X402SettleParams | undefined;
+    const rail: X402Rail = {
+      address: PAYER,
+      settle: async (p) => {
+        captured = p;
+        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+      },
+    };
+    const settle = x402Settle(rail, {
+      url: "https://seller.example/deliver",
+      network: NETWORK,
+      recipientEvm: RECIPIENT,
+      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      // no phaseIndex on the paywall — the old wiring omitted it to the rail,
+      // which (with requireSessionBinding) threw on every settle.
+    });
+
+    await settle({
+      rail: "pay-x402",
+      amount: "1000000",
+      asset: "USDC",
+      payee: RECIPIENT,
+      jobId: "j1",
+      phaseIndex: 2,
+    });
+
+    expect(captured?.phaseIndex).toBe(2);
+  });
+
+  test("a session with no phaseIndex binds phase 0 (never undefined) so the binding stays active", async () => {
+    let captured: X402SettleParams | undefined;
+    const rail: X402Rail = {
+      address: PAYER,
+      settle: async (p) => {
+        captured = p;
+        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+      },
+    };
+    const settle = x402Settle(rail, {
+      url: "https://seller.example/deliver",
+      network: NETWORK,
+      recipientEvm: RECIPIENT,
+      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    });
+
+    await settle({ rail: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, jobId: "j1" });
+
+    expect(captured?.phaseIndex).toBe(0);
   });
 });
