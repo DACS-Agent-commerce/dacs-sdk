@@ -172,7 +172,7 @@ describe("payD402SettleCore", () => {
 
 describe("createPayD402Rail — experimental quarantine (RAV-R1)", () => {
   test("is marked non-live", () => {
-    expect(PAY_D402_AVAILABILITY).toBe("experimental");
+    expect(PAY_D402_AVAILABILITY).toBe("operator_gated"); // §9.4.4 spec vocabulary (#5)
   });
 
   test("refuses to build without acknowledgeExperimental (never wired as live by accident)", async () => {

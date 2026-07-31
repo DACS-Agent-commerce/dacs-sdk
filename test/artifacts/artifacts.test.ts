@@ -319,3 +319,41 @@ describe("isListing — listingVersion clause (#46/#29)", () => {
     expect(isListing({ ...base, listingVersion: null })).toBe(false);
   });
 });
+
+// Ungated: §9.7 / §10.4.1 version literals are PINNED (#5) — a non-"1" version
+// is an out-of-spec artifact, not a forward-compatible one (§11.1.2 forward
+// readability is carried by SIG-5 unknown-field retention, not version drift).
+describe("version literal pinning (#5)", () => {
+  it("isSettlementEvidence rejects a non-'1' evidenceVersion", () => {
+    const base = {
+      evidenceVersion: "2",
+      jobId: "j",
+      phase: "pay-x402",
+      phaseIndex: 0,
+      outcome: "success",
+      paymentTxRefs: [],
+      paymentAmount: { amount: "1", currency: "USDC" },
+      settlementFinality: { model: "provider-receipt", finalityObservedAt: 1 },
+      observedAt: 1,
+    };
+    expect(isSettlementEvidence(base)).toBe(false);
+    expect(isSettlementEvidence({ ...base, evidenceVersion: "1" })).toBe(true);
+  });
+
+  it("isAttestationBundle rejects a non-'1' bundleVersion", () => {
+    const base = {
+      bundleVersion: "2",
+      jobId: "j",
+      outcome: "completed",
+      parties: [],
+      phaseSummary: [],
+      vetRecords: [],
+      settlementEvidence: [],
+      listingRef: { listingId: "l", version: 1, contentHash: "a".repeat(64) },
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+      finalisedAt: 1,
+    };
+    expect(isAttestationBundle(base)).toBe(false);
+  });
+});

@@ -245,7 +245,8 @@ export interface ArtifactSignature {
 
 /** DACS-4 — evidence of a settlement (payment / delivery) phase. */
 interface SettlementEvidenceBase {
-  evidenceVersion: string;
+  /** Pinned literal per DACS-4 §9.7 (verifySettlementEvidence already enforces it). */
+  evidenceVersion: "1";
   jobId: string;
   phase: string;
   phaseIndex: number;
@@ -345,7 +346,8 @@ interface BundleFields {
 
 /** DACS-5 legacy session audit unit; retained for consumer compatibility. */
 export interface AttestationBundle extends BundleFields {
-  bundleVersion: string;
+  /** Pinned literal per DACS-5 §10.4.1 (legacy two-party bundle line). */
+  bundleVersion: "1";
   faultBundleVersion?: never;
   faultedParty?: never;
 }

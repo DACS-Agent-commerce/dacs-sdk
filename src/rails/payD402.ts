@@ -196,8 +196,15 @@ export async function payD402SettleCore(
   };
 }
 
-/** This rail's availability (§9.4.4). NOT `live` — D402 isn't node-enabled. */
-export const PAY_D402_AVAILABILITY = "experimental" as const;
+/**
+ * This rail's availability, in the §9.4.4 spec vocabulary (issue #5: the
+ * previous `"experimental"` was a fourth, SDK-local vocabulary). D402 is
+ * quarantined pending node-side enablement — that is `operator_gated`: not
+ * selectable until an operator enables it, and never auto-selected (RAV-R1).
+ * The `acknowledgeExperimental` config flag keeps its name (API stability);
+ * it is the caller-side acknowledgement this gate requires.
+ */
+export const PAY_D402_AVAILABILITY = "operator_gated" as const;
 
 export interface PayD402RailConfig {
   /** Demos node RPC URL. */
