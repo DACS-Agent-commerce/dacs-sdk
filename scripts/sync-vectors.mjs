@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Sync the DACS-Standard §14 conformance vectors (the test oracle) into vendor/.
 // The SDK's conformance suite runs against these — the dependency points
-// SDK → spec, so the SDK is provably conformant (IMPLEMENTATION.md §1.4).
+// SDK → spec, so the SDK is tested against a reproducible, pinned dacs-verify
+// vector set (IMPLEMENTATION.md §1.4).
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";

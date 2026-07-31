@@ -329,10 +329,14 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
 
     // decimal — §14.4 CD-1 / §9.3, via src/canonical/decimal.ts
     "cd1-trailing-zeros": (want) => {
-      expect(["1.50", "01.5", "1.500"].map(canonicalizeDecimal)).toEqual(want);
+      expect(
+        ["1.50", "01.5", "1.500"].map((s) => canonicalizeDecimal(s)),
+      ).toEqual(want);
     },
     "cd1-normal-forms": (want) => {
-      expect(["0.0", ".5", "0.50"].map(canonicalizeDecimal)).toEqual(want);
+      expect(
+        ["0.0", ".5", "0.50"].map((s) => canonicalizeDecimal(s)),
+      ).toEqual(want);
     },
     "cd1-reject-exponent": (want) => {
       expect(want).toEqual(["throws", "throws", "throws"]);
@@ -926,7 +930,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   const TODO_AREA_REASON: Record<string, string> = {
     dacs1:
       "no exported §6.3.2/§6.3.3 requirement-matching, freshness-gate, control-gate (#170) or §6.3.4 listing-conformance surface",
-    vet: "pure §7.5.1/§7.6.1/§7.7.1 classification, retry and aggregation predicates are internal to vetCore/runSessionCore, not exported",
+    vet: "§7.5.1/§7.6.1/§7.7.1 classification, retry and aggregation predicates are internal to the exported vetCore/runSessionCore orchestration, not independently exported",
     negotiate:
       "no exported §8.5.1/§8.5.2 agreement-vs-listing conformance checker; sealed-envelope SE-8 vectors need constructed listing/agreement inputs the vectors do not ship",
     governance: "no GOV-1..3 governance surface in the SDK",
@@ -952,7 +956,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "settlement-storage-anchored-as-entitlement-fail":
       "EvidenceContext does not carry attestationRef.id for dacs4 namespace validation",
     "settlement-rail-network-mismatch-fail":
-      "EvidenceRailContext does not represent asset/network kinds for RD-5 coherence",
+      "EvidenceRailContext carries only opaque asset/network strings, not the categorical or chainId structure needed for RD-5 coherence",
     "settlement-cross-chainid-matching-kind-pass":
       "EvidenceRailContext does not represent asset.chainId/network.chainId",
   };
@@ -1005,5 +1009,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     // converting the case back into an `it.todo`.
     expect(Object.keys(RUNNERS)).toHaveLength(69);
     expect(manifest.cases).toHaveLength(234);
+  });
+
+  it("pins the known #86 separator-registry divergence precondition", () => {
+    // Keep `it.fails` for sig-registry-closed honest: a partial or complete #86
+    // fix must fail this positive pin instead of satisfying an unrelated throw.
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(18);
   });
 });
