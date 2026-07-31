@@ -9,9 +9,18 @@ export {
 export {
   SIGNATURE_DOMAIN_SEPARATORS,
   type DomainSeparator,
+  COMPOSITE_DOMAIN_SEPARATORS,
+  type CompositeDomainSeparator,
   isRegisteredSeparator,
+  isCompositeSeparator,
   dacsXSeparator,
   signedBytes,
   signArtifact,
   verifyArtifact,
+  sessionBindingBytes,
+  signSessionBinding,
+  verifySessionBinding,
+  autoAcceptInstanceBytes,
+  signAutoAcceptInstance,
+  verifyAutoAcceptInstance,
 } from "./signing.js";

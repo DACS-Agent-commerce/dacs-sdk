@@ -46,11 +46,20 @@ export {
   ed25519Verify,
   SIGNATURE_DOMAIN_SEPARATORS,
   type DomainSeparator,
+  COMPOSITE_DOMAIN_SEPARATORS,
+  type CompositeDomainSeparator,
   isRegisteredSeparator,
+  isCompositeSeparator,
   dacsXSeparator,
   signedBytes,
   signArtifact,
   verifyArtifact,
+  sessionBindingBytes,
+  signSessionBinding,
+  verifySessionBinding,
+  autoAcceptInstanceBytes,
+  signAutoAcceptInstance,
+  verifyAutoAcceptInstance,
 } from "./crypto/index.js";
 
 // Types only — the `DemosAdapter` *value* lives on the
