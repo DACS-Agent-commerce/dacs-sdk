@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
 
-import { canonicalize, canonicalSignedScope } from "../../src/index.js";
+import { canonicalize, canonicalSignedScope, DacsError } from "../../src/index.js";
 
 // §7.1 / §7.2 canonicalize vectors (DACS-Standard §14).
 describe("canonicalize (§7.1)", () => {
@@ -26,12 +27,69 @@ describe("canonicalize (§7.1)", () => {
     expect(canonicalize(9007199254740991)).toBe("9007199254740991");
   });
 
-  it("canon-noninteger-throws: non-integer numbers are rejected", () => {
-    expect(() => canonicalize(1.5)).toThrow();
-    expect(() => canonicalize(9007199254740993)).toThrow(); // beyond safe-integer
+  it("canon-number: safe fractional numbers use RFC 8785 serialization", () => {
+    expect(canonicalize(1.5)).toBe("1.5");
+    expect(canonicalize(1e-7)).toBe("1e-7");
+    expect(canonicalize(-0)).toBe("0");
+    expect(() => canonicalize(9007199254740993)).toThrow(DacsError); // beyond safe-integer
+  });
+
+  it("rejects NFC-normalized key collisions", () => {
+    expect(() => canonicalize({ "e\u0301": 1, "é": 2 })).toThrow(/NFC key collision/);
+  });
+
+  it("rejects lone UTF-16 surrogates with a typed error", () => {
+    expect(() => canonicalize("\ud800")).toThrow(DacsError);
+    expect(() => canonicalize("\ud800")).toThrow(/lone high surrogate/);
+    expect(() => canonicalize("\udc00")).toThrow(/lone low surrogate/);
+  });
+
+  it("rejects sparse arrays without dispatching through input-controlled map", () => {
+    const sparse = Array(1) as unknown[];
+    expect(() => canonicalize(sparse)).toThrow(/sparse array/);
+
+    const value = [1, 2] as number[] & { map: () => never };
+    value.map = () => {
+      throw new Error("must not run");
+    };
+    expect(canonicalize(value)).toBe("[1,2]");
+  });
+
+  it("rejects non-plain objects and cycles with typed bounded errors", () => {
+    expect(() => canonicalize(new Date("2020-01-01T00:00:00Z"))).toThrow(DacsError);
+
+    const cycle: Record<string, unknown> = {};
+    cycle["self"] = cycle;
+    expect(() => canonicalize(cycle)).toThrow(DacsError);
+    expect(() => canonicalize(cycle)).toThrow(/cyclic/);
+  });
+
+  it("accepts plain JSON objects created in another realm", () => {
+    const crossRealm = runInNewContext(`JSON.parse('{"a":1}')`) as unknown;
+    expect(canonicalize(crossRealm)).toBe('{"a":1}');
+  });
+
+  it("rejects objects with a custom null-rooted prototype", () => {
+    const customPrototype = Object.assign(Object.create(null) as object, {
+      constructor: Object,
+    });
+    const value = Object.assign(Object.create(customPrototype) as object, { a: 1 });
+    expect(() => canonicalize(value)).toThrow(/plain JSON objects/);
+  });
+
+  it("accepts 64 nesting levels and rejects deeper input", () => {
+    expect(() => canonicalize(nestedArrays(64))).not.toThrow();
+    expect(() => canonicalize(nestedArrays(65))).toThrow(DacsError);
+    expect(() => canonicalize(nestedArrays(200_000))).toThrow(/nesting depth exceeds 64/);
   });
 
   it("canon-without-signature: the signed scope excludes the signature field", () => {
     expect(canonicalSignedScope({ a: 1, signature: "deadbeef" })).toBe('{"a":1}');
   });
 });
+
+function nestedArrays(depth: number): unknown {
+  let value: unknown = null;
+  for (let index = 0; index < depth; index += 1) value = [value];
+  return value;
+}

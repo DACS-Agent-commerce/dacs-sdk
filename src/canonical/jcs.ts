@@ -1,6 +1,8 @@
 import { DacsError } from "../errors.js";
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER; // 2^53 - 1
+const MAX_NESTING_DEPTH = 64;
+const OBJECT_CONSTRUCTOR_SOURCE = Function.prototype.toString.call(Object);
 
 /**
  * RFC 8785 (JCS) string serialisation with the DACS CF-1 rule applied: the
@@ -9,6 +11,7 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER; // 2^53 - 1
  * points are NOT escaped.
  */
 function canonString(value: string): string {
+  assertNoLoneSurrogates(value);
   const nfc = value.normalize("NFC");
   let out = '"';
   for (const ch of nfc) {
@@ -47,7 +50,7 @@ function canonString(value: string): string {
   return out + '"';
 }
 
-function canonValue(value: unknown): string {
+function canonValue(value: unknown, ancestors: Set<object>, depth: number): string {
   if (value === null) return "null";
 
   const t = typeof value;
@@ -59,17 +62,12 @@ function canonValue(value: unknown): string {
     if (!Number.isFinite(n)) {
       throw new DacsError(`canonical form: non-finite number (${n})`);
     }
-    if (!Number.isInteger(n)) {
-      throw new DacsError(
-        `canonical form: non-integer JSON number not allowed (${n}); carry as a decimal string`,
-      );
-    }
     if (Math.abs(n) > MAX_SAFE) {
       throw new DacsError(
         `canonical form: number outside IEEE-754 safe-integer range (${n}); carry as a string`,
       );
     }
-    return String(n);
+    return JSON.stringify(n);
   }
 
   if (t === "bigint") {
@@ -79,19 +77,49 @@ function canonValue(value: unknown): string {
   }
 
   if (Array.isArray(value)) {
-    return "[" + value.map((item) => canonValue(item)).join(",") + "]";
+    return withCycleGuard(value, ancestors, () => {
+      assertNestingDepth(depth);
+      const items: string[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index)) {
+          throw new DacsError(`canonical form: sparse array entry at index ${index}`);
+        }
+        items.push(canonValue(value[index], ancestors, depth + 1));
+      }
+      return "[" + items.join(",") + "]";
+    });
   }
 
   if (t === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .map(([k, v]) => [k.normalize("NFC"), v] as const)
-      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-    return (
-      "{" +
-      entries.map(([k, v]) => canonString(k) + ":" + canonValue(v)).join(",") +
-      "}"
-    );
+    const object = value as object;
+    return withCycleGuard(object, ancestors, () => {
+      assertNestingDepth(depth);
+      if (!isPlainJsonObject(object)) {
+        throw new DacsError("canonical form: only plain JSON objects are supported");
+      }
+
+      const normalizedEntries = new Map<string, unknown>();
+      for (const [rawKey, entry] of Object.entries(object)) {
+        if (entry === undefined) continue;
+        assertNoLoneSurrogates(rawKey);
+        const key = rawKey.normalize("NFC");
+        if (normalizedEntries.has(key)) {
+          throw new DacsError(`canonical form: NFC key collision for "${key}"`);
+        }
+        normalizedEntries.set(key, entry);
+      }
+
+      const entries = [...normalizedEntries.entries()].sort((a, b) =>
+        a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+      );
+      return (
+        "{" +
+        entries
+          .map(([key, entry]) => canonString(key) + ":" + canonValue(entry, ancestors, depth + 1))
+          .join(",") +
+        "}"
+      );
+    });
   }
 
   throw new DacsError(`canonical form: unsupported value type (${t})`);
@@ -99,10 +127,59 @@ function canonValue(value: unknown): string {
 
 /**
  * RFC 8785 JSON Canonicalization Scheme serialisation with the DACS profile:
- * NFC-normalised strings (CF-1) and integer-only JSON numbers within the
- * safe-integer range (everything larger must be a string). Throws on any value
+ * NFC-normalised strings (CF-1) and finite JSON numbers within the IEEE-754
+ * safe-integer magnitude range (everything larger must be a string). Throws on any value
  * that has no reproducible canonical form.
  */
 export function canonicalize(value: unknown): string {
-  return canonValue(value);
+  return canonValue(value, new Set<object>(), 0);
+}
+
+function assertNoLoneSurrogates(value: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new DacsError("canonical form: lone high surrogate");
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new DacsError("canonical form: lone low surrogate");
+    }
+  }
+}
+
+function assertNestingDepth(depth: number): void {
+  if (depth >= MAX_NESTING_DEPTH) {
+    throw new DacsError(`canonical form: nesting depth exceeds ${MAX_NESTING_DEPTH}`);
+  }
+}
+
+function isPlainJsonObject(value: object): boolean {
+  const prototype = Object.getPrototypeOf(value) as object | null;
+  if (prototype === null) return true;
+
+  const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
+  return (
+    typeof constructor === "function" &&
+    constructor.prototype === prototype &&
+    Function.prototype.toString.call(constructor) === OBJECT_CONSTRUCTOR_SOURCE
+  );
+}
+
+function withCycleGuard<T>(
+  value: object,
+  ancestors: Set<object>,
+  operation: () => T,
+): T {
+  if (ancestors.has(value)) {
+    throw new DacsError("canonical form: cyclic structure");
+  }
+  ancestors.add(value);
+  try {
+    return operation();
+  } finally {
+    ancestors.delete(value);
+  }
 }
