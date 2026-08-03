@@ -1,7 +1,13 @@
 /**
- * DACS v0.1 spine artifacts for the MVP fixed-price + x402 path (T3).
- * Field shapes track the §14 conformance vectors (the source of truth) —
- * see DACS-Standard/conformance/vectors/dacs-v0.1-happy-path.json.
+ * DACS spine artifacts for the MVP fixed-price + x402 path (T3).
+ * Field shapes track the reproducibly pinned DACS-Standard §14 oracle selected
+ * by scripts/sync-vectors.mjs.
+ *
+ * The current oracle still identifies itself as dacsVersion 0.1 and retains
+ * the legacy AttestationRef / ChainTxRef shapes even though the v0.3 prose has
+ * moved on. That upstream oracle/prose divergence is tracked in
+ * DACS-Standard#308; these types must not claim v0.3 fidelity until the oracle
+ * and normative prose agree.
  *
  * Each artifact is signed under its domain separator (see ./registry) over the
  * content hash of its signed scope (the object with the signature field omitted).

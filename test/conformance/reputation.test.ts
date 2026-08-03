@@ -10,8 +10,8 @@ import type { AttestationBundle } from "../../src/artifacts/types.js";
 /**
  * DACS-Standard §14 conformance — reputation derivation (DACS-5 §10.5). Drives
  * the reference session-bundles fixture through deriveReputation and asserts the
- * whole golden ReputationDerivation (window, bundleCount, completion /
- * counterparty-fault rates, and the byte-stable ascending-contentHash bundleRefs).
+ * whole golden ReputationDerivation. The fixture contains only one copy per job
+ * and no authoritative absence evidence, so guard (iv) excludes every bundle.
  */
 
 const VENDOR = join(
@@ -43,25 +43,27 @@ describe.skipIf(!haveVectors)("§14 conformance — reputation (§10.5)", () => 
     },
     {
       trustBundles: true,
-      // The frozen golden supplies one authoritative copy per job and models
-      // the counterpart addresses as absent outside the fixture payload.
-      copyAbsence: () => "absent",
+      // Ordinary absence from this fixture is not authoritative SR-2 absence
+      // evidence. Guard (iv) therefore excludes every one-copy record.
+      copyAbsence: () => "indeterminate",
     },
   );
 
-  it("excludes the out-of-window bundle (bundleCount matches golden)", () => {
-    // 6 bundles in, one finalised past windowEnd → 5 counted.
+  it("excludes raw one-copy bundles without authoritative absence context", () => {
     expect(derived.bundleCount).toBe(golden.bundleCount);
+    expect(derived.bundleCount).toBe(0);
   });
 
-  it("completionRate excludes blameless failed-substrate from the denominator", () => {
+  it("returns null completionRate when guard (iv) leaves no denominator", () => {
     expect(derived.metrics.completionRate).toBe(golden.metrics.completionRate);
+    expect(derived.metrics.completionRate).toBeNull();
   });
 
-  it("counterpartyFaultRate matches golden (aborted-by-other + failed-counterparty)", () => {
+  it("returns null counterpartyFaultRate when guard (iv) excludes every job", () => {
     expect(derived.metrics.counterpartyFaultRate).toBe(
       golden.metrics.counterpartyFaultRate,
     );
+    expect(derived.metrics.counterpartyFaultRate).toBeNull();
   });
 
   it("ratings + volume are null / [] until RatingRecords are wired", () => {
@@ -70,31 +72,28 @@ describe.skipIf(!haveVectors)("§14 conformance — reputation (§10.5)", () => 
     expect(derived.metrics.observedTransactionalVolume).toEqual([]);
   });
 
-  it("bundleRefs match the golden set in ascending-contentHash order (byte-stable)", () => {
+  it("emits no bundleRefs for excluded records", () => {
     expect(derived.bundleRefs).toEqual(golden.bundleRefs);
+    expect(derived.bundleRefs).toEqual([]);
   });
 
-  it("derives the v0.2 metrics: counterpartyAdjustedCompletionRate + transactionCountByCurrency", () => {
-    // The vendored golden predates the v0.2 fields (DACS-Standard#215 refreshes
-    // them on `next`); assert the derived values directly until it's vendored.
-    // party_fault_denom 4, counterparty-caused 2 → blame denom 2 → 1/2.
-    expect(derived.metrics.counterpartyAdjustedCompletionRate).toBe(0.5);
-    expect(derived.metrics.transactionCountByCurrency).toEqual([]);
+  it("returns the golden v0.2 metric fields for the empty derivation", () => {
+    expect(derived.metrics.counterpartyAdjustedCompletionRate).toBe(
+      golden.metrics.counterpartyAdjustedCompletionRate,
+    );
+    expect(derived.metrics.transactionCountByCurrency).toEqual(
+      golden.metrics.transactionCountByCurrency,
+    );
   });
 
-  it("reproduces the full golden ReputationDerivation (+ the v0.2 metric fields)", () => {
+  it("reproduces the full golden ReputationDerivation", () => {
     expect(derived).toEqual({
       derivationVersion: "1",
       partyPrimaryClaim: fixture.partyPrimaryClaim,
       windowStart: golden.windowStart,
       windowEnd: golden.windowEnd,
       bundleCount: golden.bundleCount,
-      metrics: {
-        ...golden.metrics,
-        // v0.2 fields not yet in the vendored golden (see #215).
-        counterpartyAdjustedCompletionRate: 0.5,
-        transactionCountByCurrency: [],
-      },
+      metrics: golden.metrics,
       computedAt: golden.computedAt,
       windowingBasis: golden.windowingBasis,
       bundleRefs: golden.bundleRefs,
