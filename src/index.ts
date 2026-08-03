@@ -69,11 +69,22 @@ export {
 export type {
   DemosAdapterConfig,
   SubstrateAdapter,
+  AnchorAttemptReceipt,
+  AnchorAttempts,
+  AnchorCompletion,
   AnchorRef,
+  AnchorReceipt,
+  AnchorState,
+  AnchorTimings,
+  AnchorWaitFailureCode,
+  AnchorWaitOptions,
+  AnchorWriteOnceOptions,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
 } from "./substrate/index.js";
+// Pure error value: exporting this directly does not eagerly load demosdk.
+export { AnchorWaitError } from "./substrate/AnchorWaitError.js";
 
 // CLI helpers (pure/read-only by default). The executable entry is `dacs`.
 export {

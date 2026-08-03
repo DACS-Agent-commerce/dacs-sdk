@@ -1,7 +1,4 @@
-import type {
-  AnchorResolution,
-  OwnedAnchorScan,
-} from "./anchorResolution.js";
+import type { AnchorResolution, OwnedAnchorScan } from "./anchorResolution.js";
 
 /**
  * SubstrateAdapter — the single seam between dacs-sdk and the underlying
@@ -28,6 +25,81 @@ export interface AnchorRef {
   address: string;
   /** Substrate transaction reference for the write, if available. */
   txRef?: string;
+  /** The completion level actually reached (#57). */
+  completion?: AnchorCompletion;
+  /** Block/ledger height the write was included at, when observed. */
+  blockNumber?: number;
+}
+
+/**
+ * How far an anchor write was confirmed before returning (#57). Node acceptance
+ * is not the same as inclusion, and inclusion is not the same as read visibility.
+ */
+export type AnchorCompletion = "accepted" | "included" | "read-visible";
+
+/** The last state the SDK could establish without guessing. */
+export type AnchorState =
+  | "not-broadcast"
+  | "broadcast-unknown"
+  | "accepted"
+  | "included"
+  | "read-visible"
+  | "failed";
+
+export interface AnchorAttempts {
+  inclusionPolls: number;
+  visibilityReads: number;
+}
+
+export interface AnchorTimings {
+  startedAt: number;
+  acceptedAt?: number;
+  includedAt?: number;
+  readVisibleAt?: number;
+  finishedAt: number;
+  elapsedMs: number;
+}
+
+/**
+ * Structured progress/failure evidence. `address` is optional because an
+ * owner-bound lookup can fail before a physical address can be established.
+ */
+export interface AnchorAttemptReceipt {
+  name: string;
+  address?: string;
+  txRef?: string;
+  completion?: AnchorCompletion;
+  blockNumber?: number;
+  state: AnchorState;
+  lastObservedState?: string;
+  attempts: AnchorAttempts;
+  timings: AnchorTimings;
+}
+
+/** A successful anchor attempt always has a physical address. */
+export interface AnchorReceipt extends AnchorAttemptReceipt, AnchorRef {
+  address: string;
+}
+
+export type AnchorWaitFailureCode =
+  | "cancelled"
+  | "timeout"
+  | "read-failed"
+  | "prepare-failed"
+  | "broadcast-failed"
+  | "inclusion-failed";
+
+export interface AnchorWaitOptions {
+  /** Confirmation level to reach before returning (default `read-visible`). */
+  completion?: AnchorCompletion;
+  /** Total operation budget, including queueing and preparation. */
+  timeoutMs?: number;
+  /** Delay between transaction/read polls. */
+  pollMs?: number;
+  /** Cancel the caller's wait. An ambiguous submitted write is still reconciled. */
+  signal?: AbortSignal;
+  /** Immutable progress snapshots; observer exceptions never alter execution. */
+  onProgress?: (receipt: AnchorAttemptReceipt) => void;
 }
 
 export interface AnchorWriteOnceOptions {
@@ -79,14 +151,25 @@ export interface SubstrateAdapter {
    * address it was written to (deterministic from the writer + name) and the
    * tx ref. Consumers re-canonicalise the value to verify its content hash.
    */
-  anchor(name: string, value: object): Promise<AnchorRef>;
+  anchor(name: string, value: object): Promise<AnchorReceipt>;
+  /**
+   * SR-2 — anchor and wait for an explicit completion level (#57). Same-wallet
+   * writes are serialized across adapter instances in this JS process until the
+   * submitted transaction reaches a nonce-safe terminal state. Separate
+   * processes and external writers still require an external wallet lease.
+   */
+  anchorAndWait(
+    name: string,
+    value: object,
+    opts?: AnchorWaitOptions,
+  ): Promise<AnchorReceipt>;
   /**
    * SR-2 — create an immutable, write-once anchor or return an existing
    * signed-scope-identical value. Resolution MUST be owner-bound and fail closed
    * when lookup/read state is indeterminate. Unlike {@link anchor}, this method
    * MUST NEVER update an existing program with different content.
    *
-   * Implementations must serialize concurrent calls from one adapter instance;
+   * Implementations must serialize same-wallet concurrent calls in one process;
    * a create returns only after the exact written bytes are read-visible so an
    * immediate retry cannot mistake an accepted-but-not-visible write for absence.
    * A failed same-wallet create must also be reconciled against an owner-bound
@@ -125,7 +208,10 @@ export interface SubstrateAdapter {
    * lookup itself failed) — so a transient substrate failure is never mistaken
    * for "never created" (#70).
    */
-  resolveAnchorByName(name: string, expectedOwner: string): Promise<AnchorResolution>;
+  resolveAnchorByName(
+    name: string,
+    expectedOwner: string,
+  ): Promise<AnchorResolution>;
 
   /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
