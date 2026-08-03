@@ -922,8 +922,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   // Divergences: assert the vector expectation but expect the test to FAIL
   // against today's SDK (it.fails flips loudly when the divergence is fixed).
   const DIVERGENT = new Set<string>([
-    // SDK registry has 18 separators vs the golden's closed set of 24 (§B.7).
-    "sig-registry-closed",
+    // (none — #86 reconciled the registry to the closed §B.7 set of 24.)
   ]);
 
   // Why un-runnable cases are todo, per area (with per-case overrides).
@@ -1011,9 +1010,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     expect(manifest.cases).toHaveLength(234);
   });
 
-  it("pins the known #86 separator-registry divergence precondition", () => {
-    // Keep `it.fails` for sig-registry-closed honest: a partial or complete #86
-    // fix must fail this positive pin instead of satisfying an unrelated throw.
-    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(18);
+  it("#86 closed the separator-registry divergence: the SDK exposes all 24", () => {
+    // Was pinned at 18 with sig-registry-closed as an it.fails divergence; #86
+    // reconciled the SDK to the closed §B.7 set, so it is now a passing case.
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(24);
   });
 });
