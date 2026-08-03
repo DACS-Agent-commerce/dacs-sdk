@@ -1,6 +1,7 @@
 import { contentHash } from "../canonical/index.js";
 import {
   type DomainSeparator,
+  isCompositeSeparator,
   isRegisteredSeparator,
   signedBytes,
 } from "../crypto/index.js";
@@ -75,6 +76,7 @@ export type ComponentSignatureMalformedReason =
   | "invalid-value"
   | "ambiguous-signature-fields"
   | "unregistered-domain-separator"
+  | "composite-domain-separator"
   | "signed-scope-not-canonicalizable";
 
 export type ComponentSignatureUnresolvedReason =
@@ -196,6 +198,14 @@ export async function buildComponentSignature(
   if (!isRegisteredSeparator(separator)) {
     throw new DacsError(`unregistered domain separator: ${separator}`);
   }
+  if (isCompositeSeparator(separator)) {
+    // A ComponentSignature is a single-hash envelope; a composite-payload
+    // separator (§B.7) must use its recipe-specific signer, not this path.
+    throw new DacsError(
+      `composite-payload separator ${separator} is not a single-hash ` +
+        `ComponentSignature recipe (§B.7)`,
+    );
+  }
   if (!ALGORITHM_SET.has(options.algorithm)) {
     throw new DacsError(`unsupported signature algorithm: ${options.algorithm}`);
   }
@@ -234,6 +244,9 @@ export async function verifyComponentSignature<TKey>(
 ): Promise<ComponentSignatureVerification> {
   if (!isRegisteredSeparator(separator)) {
     return { status: "malformed", reason: "unregistered-domain-separator" };
+  }
+  if (isCompositeSeparator(separator)) {
+    return { status: "malformed", reason: "composite-domain-separator" };
   }
   if (!Object.prototype.hasOwnProperty.call(artifact, "signature")) {
     return { status: "missing" };
