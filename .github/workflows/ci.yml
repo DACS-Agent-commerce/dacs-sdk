@@ -38,7 +38,7 @@ jobs:
         run: |
           mkdir -p package-smoke/app
           npm pack --pack-destination package-smoke
-          npm install --prefix package-smoke/app --omit=optional --ignore-scripts package-smoke/*.tgz
+          npm install --prefix package-smoke/app --omit=optional --ignore-scripts "$GITHUB_WORKSPACE"/package-smoke/*.tgz
           node -e "import('./package-smoke/app/node_modules/@kynesyslabs/dacs/dist/index.js').then(m => { if (typeof m.verifyBundleCore !== 'function') process.exit(1) })"
           npm audit --prefix package-smoke/app --omit=dev --omit=optional
 
