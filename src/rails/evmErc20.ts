@@ -113,9 +113,18 @@ export interface EvmErc20Rail {
 export async function createEvmErc20Rail(
   config: EvmErc20RailConfig,
 ): Promise<EvmErc20Rail> {
-  const { createWalletClient, createPublicClient, http, defineChain } =
-    await import("viem");
-  const { privateKeyToAccount } = await import("viem/accounts");
+  const viem = await import("viem").catch(() => {
+    throw new DacsError(
+      "createEvmErc20Rail requires the optional peer viem",
+    );
+  });
+  const accounts = await import("viem/accounts").catch(() => {
+    throw new DacsError(
+      "createEvmErc20Rail requires the optional peer viem",
+    );
+  });
+  const { createWalletClient, createPublicClient, http, defineChain } = viem;
+  const { privateKeyToAccount } = accounts;
 
   const id = chainIdFromCaip2(config.network);
   const chain = defineChain({

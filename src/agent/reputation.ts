@@ -18,16 +18,23 @@ export interface Reputation {
 }
 
 /**
- * Aggregate reputation from a set of bundles. Counts bundles where the claim is
- * one of the `parties`; `completed` counts those whose `outcome` is "completed".
+ * Aggregate reputation from already-validated bundles. At most one copy
+ * contributes per jobId, preventing buyer/seller copies or repeated refs from
+ * double-counting a session. Use `deriveReputation` when role-perspective
+ * reconciliation and the full DACS-5 metrics are required.
  */
 export function computeReputation(
   primaryClaim: string,
   bundles: AnyAttestationBundle[],
 ): Reputation {
-  const mine = bundles.filter((b) =>
-    b.parties.some((p) => p.primaryClaim === primaryClaim),
-  );
+  const mineByJob = new Map<string, AnyAttestationBundle>();
+  for (const bundle of bundles) {
+    if (
+      bundle.parties.some((party) => party.primaryClaim === primaryClaim) &&
+      !mineByJob.has(bundle.jobId)
+    ) mineByJob.set(bundle.jobId, bundle);
+  }
+  const mine = [...mineByJob.values()];
   const completed = mine.filter((b) => b.outcome === "completed").length;
   return {
     primaryClaim,

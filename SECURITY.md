@@ -1,6 +1,14 @@
 # Security — dependency audit & policy
 
-## Audit snapshot (reproducibility)
+## Current production install
+
+The live Demos and EVM/x402 integrations are optional peers. A core SDK install
+therefore contains no production dependency tree, and
+`npm audit --omit=dev` reports zero vulnerabilities. Consumers
+that enable a live adapter must install its peers explicitly and should audit
+that application-level tree under the reachability guidance below.
+
+## Historical pre-remediation audit snapshot (reproducibility)
 
 This record is a point-in-time **baseline**, not a post-remediation result. It
 addresses (does not close) #40.
@@ -22,7 +30,7 @@ the 2026-07-20 baseline, the count moved from 132 → 134 (a new transitive `tar
 critical and a new `form-data` high advisory landed against unchanged installed
 versions). Both are transitive; the direct-dependency gate stays green.
 
-## Result
+## Historical result
 
 `npm audit --omit=dev` reports:
 
@@ -159,7 +167,7 @@ WebSocket transport — an app already running a full chain stack with these dep
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.
 
-## Recommended remediation (needs a packaging decision)
+## Remediation implemented
 
 The structural fix is to stop shipping the multichain tree to consumers who only
 need the pure surface. Note that `optionalDependencies` does **not** achieve this —
@@ -178,9 +186,10 @@ pure-surface install are:
    `import()` to throw a clear "install @kynesyslabs/demosdk" error when absent, and
    update + test the build/runtime contract.
 
-Either changes the install contract and needs the test/build wiring updated to
-match, so it is a deliberate packaging decision tracked as follow-up, not folded
-into this audit record.
+This SDK implements option 2: Demos, x402, and viem are optional peers, retained
+as development dependencies for build/test coverage, and their live constructors
+emit an explicit install message when a peer is absent. Package smoke tests cover
+the dependency-free root import and production audit contract.
 
 ## Reporting a vulnerability
 

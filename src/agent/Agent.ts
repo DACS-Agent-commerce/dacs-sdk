@@ -6,8 +6,6 @@ import type {
   CompositeVerificationRecord,
   Listing,
 } from "../artifacts/types.js";
-import { isAnyAttestationBundle } from "../artifacts/validators.js";
-import { stripSignature } from "../canonical/index.js";
 import {
   ed25519Verify,
   publicKeyFromRaw,
@@ -139,7 +137,11 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
   // Lazy-load the adapter so importing the package barrel doesn't eagerly pull
   // @kynesyslabs/demosdk, whose ESM packaging breaks plain-Node-ESM imports of
   // the pure/verify surface. demosdk loads only when an agent is actually built.
-  const { DemosAdapter } = await import("../substrate/index.js");
+  const { DemosAdapter } = await import("../substrate/index.js").catch(() => {
+    throw new Error(
+      "createAgent requires the optional peer @kynesyslabs/demosdk; install it to use the Demos adapter",
+    );
+  });
   const adapter = new DemosAdapter({
     rpc: config.demosRpc,
     secret: config.wallet,
@@ -158,6 +160,31 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
  */
 export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
   const sign: Signer = (bytes) => adapter.sign(bytes);
+  const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
+    verifyBundleCore(ref, {
+      readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
+      resolveRef: async (kind, jobId, parties) => {
+        const name =
+          kind === "dacs-3-agreement"
+            ? sessionAnchorName.agreement(jobId)
+            : kind === "dacs-4-evidence"
+              ? sessionAnchorName.evidence(jobId)
+              : kind === "dacs-2-verifyresult"
+                ? sessionAnchorName.vet(jobId)
+                : null;
+        if (!name) return null;
+        const buyer = parties.find((party) => party.role === "buyer");
+        const key = buyer ? publicKeyFromDid(buyer.primaryClaim) : null;
+        if (!key) return null;
+        const owner = Buffer.from(key).toString("hex");
+        const resolved = await adapter.resolveAnchorByName(name, owner);
+        return resolved.status === "present"
+          ? adapter.readAnchor(resolved.address)
+          : null;
+      },
+      resolvePublicKey: async (did) => publicKeyFromDid(did),
+      verify: ed25519RawVerify,
+    });
 
   return {
     adapter,
@@ -195,33 +222,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       // artifact and hash-checking it. Session artifacts are resolved BY NAME
       // (kind, jobId → name → address): the physical address folds in the writer's
       // create-time nonce, so it can't be recomputed (#70).
-      return verifyBundleCore(ref, {
-        readArtifact: (r) => adapter.readAnchor(r),
-        resolveRef: async (kind, jobId, parties) => {
-          const name =
-            kind === "dacs-3-agreement"
-              ? sessionAnchorName.agreement(jobId)
-              : kind === "dacs-4-evidence"
-                ? sessionAnchorName.evidence(jobId)
-                : kind === "dacs-2-verifyresult"
-                  ? sessionAnchorName.vet(jobId)
-                  : null;
-          if (!name) return null;
-          // Session artifacts are anchored by the session's BUYER (the orchestrator
-          // in this SDK), so owner-bind resolution to the buyer party from the
-          // bundle — NOT to this verifier's own address, which only works when the
-          // verifier IS the buyer and breaks independent verification (#70). No
-          // resolvable buyer party → fail closed (ref reports unresolved).
-          const buyer = parties.find((p) => p.role === "buyer");
-          const key = buyer ? publicKeyFromDid(buyer.primaryClaim) : null;
-          if (!key) return null;
-          const owner = Buffer.from(key).toString("hex");
-          const r = await adapter.resolveAnchorByName(name, owner);
-          return r.status === "present" ? adapter.readAnchor(r.address) : null;
-        },
-        resolvePublicKey: async (did) => publicKeyFromDid(did),
-        verify: ed25519RawVerify,
-      });
+      return verifyBundleAtRef(ref);
     },
 
     async discover(
@@ -295,9 +296,9 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
     ): Promise<Reputation> {
       const bundles: AnyAttestationBundle[] = [];
       for (const ref of bundleRefs) {
-        const raw = await adapter.readAnchor(ref);
-        if (raw && isAnyAttestationBundle(stripSignature(raw))) {
-          bundles.push(stripSignature(raw) as unknown as AnyAttestationBundle);
+        const verdict = await verifyBundleAtRef(ref);
+        if (verdict.ok && verdict.fullyVerified && verdict.bundle) {
+          bundles.push(verdict.bundle);
         }
       }
       return computeReputation(primaryClaim, bundles);
