@@ -154,8 +154,17 @@ describe("DemosAdapter", () => {
       .mockResolvedValueOnce({ status: "absent" })
       .mockResolvedValueOnce({ status: "present", address });
     vi.spyOn(adapter, "readAnchor").mockResolvedValue(value);
+    vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
+    vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
+      state: "included",
+    } as never);
     vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
-      async (payload: unknown) => payload as never,
+      async (payload: unknown) =>
+        ({
+          ...(payload as Record<string, unknown>),
+          hash: "tx-create",
+          content: { nonce: 1 },
+        }) as never,
     );
     vi.spyOn(adapter.raw.tx, "confirm").mockImplementation(
       async (payload: unknown) => payload as never,
@@ -207,8 +216,17 @@ describe("DemosAdapter", () => {
         resolveByName,
       );
       vi.spyOn(adapter, "readAnchor").mockImplementation(async () => winner);
+      vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
+      vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
+        state: "included",
+      } as never);
       vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
-        async (payload: unknown) => payload as never,
+        async (payload: unknown) =>
+          ({
+            ...(payload as Record<string, unknown>),
+            hash: "tx-winner",
+            content: { nonce: 1 },
+          }) as never,
       );
       vi.spyOn(adapter.raw.tx, "confirm").mockImplementation(
         async (payload: unknown) => payload as never,

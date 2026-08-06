@@ -50,6 +50,19 @@ const STORAGE_SEARCH_PAGE_SIZE = 100;
 const STORAGE_SEARCH_MAX_PAGES = 100;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function normalizeRpcQueueKey(rpc: string): string {
+  try {
+    const url = new URL(rpc);
+    url.hash = "";
+    url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+    return url.toString();
+  } catch {
+    // connect() owns URL validation. Keep queueing fail-safe for custom
+    // transports while still collapsing the common trailing-slash spelling.
+    return rpc.trim().replace(/\/+$/, "");
+  }
+}
+
 type MutableReceipt = Omit<AnchorAttemptReceipt, "attempts" | "timings"> & {
   attempts: { inclusionPolls: number; visibilityReads: number };
   timings: {
@@ -77,6 +90,7 @@ interface QueuedWrite<T> {
 
 interface UnresolvedWrite {
   txRef: string;
+  signedNonce: number;
   receipt: AnchorAttemptReceipt;
   pollMs: number;
 }
@@ -127,19 +141,14 @@ function httpStatus(error: unknown): number | undefined {
     : undefined;
 }
 
-const NO_SERVER_CONTACT_CODES = new Set([
-  "ECONNREFUSED",
-  "ENOTFOUND",
-  "ECONNRESET",
-  "ETIMEDOUT",
-]);
-
-function isNoServerContact(error: unknown): boolean {
-  if (!isRecord(error)) return false;
+function isDefinitiveBroadcastRejection(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const result = value.result;
   return (
-    httpStatus(error) === undefined &&
-    typeof error.code === "string" &&
-    NO_SERVER_CONTACT_CODES.has(error.code)
+    typeof result === "number" &&
+    Number.isFinite(result) &&
+    result >= 400 &&
+    result < 500
   );
 }
 
@@ -164,7 +173,7 @@ export class DemosAdapter implements SubstrateAdapter {
   private connected = false;
 
   private walletQueueKey(): string {
-    return `${this.config.rpc.replace(/\/+$/, "")}\^@${this.getAddress().toLowerCase()}`;
+    return `${normalizeRpcQueueKey(this.config.rpc)}\0${this.getAddress().toLowerCase()}`;
   }
 
   private snapshot(
@@ -597,21 +606,74 @@ export class DemosAdapter implements SubstrateAdapter {
     }
   }
 
+  /**
+   * Inclusion can become visible before the account read reflects the consumed
+   * nonce. demosdk 4.0.13 reads that account value again when it signs the next
+   * storage transaction, so releasing the wallet queue at inclusion alone can
+   * sign two writes with the same nonce. Keep the queue held until the
+   * authoritative account nonce has caught up with the transaction we signed.
+   */
+  private async waitForNonceAdvancement(
+    signedNonce: number,
+    ctx: AnchorContext,
+  ): Promise<void> {
+    for (;;) {
+      let accountNonce: number;
+      try {
+        accountNonce = await this.waitFor(
+          ctx,
+          this.demos.getAddressNonce(this.demos.getAddress()),
+          "account nonce advancement",
+        );
+      } catch (error) {
+        if (error instanceof AnchorWaitError) throw error;
+        ctx.receipt.lastObservedState = "account-nonce-read-error";
+        this.emit(ctx);
+        await this.delay(ctx);
+        continue;
+      }
+
+      if (Number.isSafeInteger(accountNonce) && accountNonce >= signedNonce) {
+        return;
+      }
+      ctx.receipt.lastObservedState =
+        `account-nonce-${String(accountNonce)}-before-${signedNonce}`;
+      this.emit(ctx);
+      await this.delay(ctx);
+    }
+  }
+
+  private async reconcileUntilNonceSafe(
+    txRef: string,
+    signedNonce: number,
+    ctx: AnchorContext,
+  ): Promise<void> {
+    const terminal =
+      ctx.receipt.state === "included"
+        ? "included"
+        : await this.waitForTerminal(txRef, ctx);
+    if (terminal === "included") {
+      await this.waitForNonceAdvancement(signedNonce, ctx);
+    }
+  }
+
   private async resolveInBackground(
     key: string,
     txRef: string,
+    signedNonce: number,
     receipt: AnchorAttemptReceipt,
     pollMs: number,
   ): Promise<void> {
     const ctx = this.recoveryContext(receipt, pollMs);
     try {
-      await this.waitForTerminal(txRef, ctx);
+      await this.reconcileUntilNonceSafe(txRef, signedNonce, ctx);
       unresolvedWrites.delete(key);
     } catch {
       // A later queued call must reconcile this tx hash before preparing another
       // transaction; silently reusing an ambiguous nonce is unsafe.
       unresolvedWrites.set(key, {
         txRef,
+        signedNonce,
         receipt: this.snapshot(ctx.receipt),
         pollMs,
       });
@@ -629,7 +691,11 @@ export class DemosAdapter implements SubstrateAdapter {
     ctx.deadline = current.deadline;
     ctx.signal = current.signal;
     try {
-      await this.waitForTerminal(unresolved.txRef, ctx);
+      await this.reconcileUntilNonceSafe(
+        unresolved.txRef,
+        unresolved.signedNonce,
+        ctx,
+      );
       unresolvedWrites.delete(key);
     } catch (error) {
       if (error instanceof AnchorWaitError) {
@@ -647,42 +713,57 @@ export class DemosAdapter implements SubstrateAdapter {
   private safeAfterUnknownBroadcast(
     key: string,
     txRef: string,
+    signedNonce: number,
     broadcastPromise: Promise<unknown>,
     ctx: AnchorContext,
   ): Promise<void> {
-    return broadcastPromise
-      .then(async (value) => {
-        const response = isRecord(value) ? value : undefined;
-        if (response?.result === 200) {
-          ctx.receipt.state = "accepted";
-          ctx.receipt.completion = "accepted";
-          ctx.receipt.timings.acceptedAt = Date.now();
-          await this.resolveInBackground(
-            key,
-            txRef,
-            this.snapshot(ctx.receipt),
-            ctx.pollMs,
-          );
-          return;
-        }
-        if (response?.result === 500) {
-          await this.resolveInBackground(
-            key,
-            txRef,
-            this.snapshot(ctx.receipt),
-            ctx.pollMs,
-          );
-        }
-      })
-      .catch(async (error: unknown) => {
-        if (isNoServerContact(error)) return;
-        await this.resolveInBackground(
-          key,
+    const controller = new AbortController();
+    const recovery = this.recoveryContext(
+      this.snapshot(ctx.receipt),
+      ctx.pollMs,
+    );
+    recovery.signal = controller.signal;
+
+    // Start status reconciliation immediately from the hash computed before
+    // broadcast. It must not wait for the HTTP request to settle: the node may
+    // have accepted the transaction even when the transport hangs forever.
+    const reconciliation = (async () => {
+      try {
+        await this.reconcileUntilNonceSafe(txRef, signedNonce, recovery);
+        unresolvedWrites.delete(key);
+      } catch {
+        if (controller.signal.aborted) return;
+        unresolvedWrites.set(key, {
           txRef,
-          this.snapshot(ctx.receipt),
-          ctx.pollMs,
-        );
-      });
+          signedNonce,
+          receipt: this.snapshot(recovery.receipt),
+          pollMs: recovery.pollMs,
+        });
+      }
+    })();
+
+    const broadcastDecision = broadcastPromise
+      .then((value): "reconcile" | "definitive" => {
+        return isDefinitiveBroadcastRejection(value)
+          ? "definitive"
+          : "reconcile";
+      })
+      // A thrown transport error is never evidence that the request was not
+      // accepted: timeouts and connection resets can happen after submission.
+      // With a precomputed tx hash, fail closed and reconcile every such case.
+      .catch((): "reconcile" => "reconcile");
+
+    return Promise.race([
+      reconciliation.then(() => "reconciled" as const),
+      broadcastDecision,
+    ]).then(async (outcome) => {
+      if (outcome === "definitive") {
+        controller.abort();
+        await reconciliation;
+        return;
+      }
+      if (outcome === "reconcile") await reconciliation;
+    });
   }
 
   private async waitForVisibility(
@@ -778,10 +859,32 @@ export class DemosAdapter implements SubstrateAdapter {
     const validityRecord = validity as unknown as {
       response?: { data?: { transaction?: { hash?: string } } };
     };
-    const signedRecord = signed as unknown as { hash?: string };
+    const signedRecord = signed as unknown as {
+      hash?: string;
+      content?: { nonce?: unknown };
+    };
+    const signedNonceValue = signedRecord.content?.nonce;
+    if (
+      !Number.isSafeInteger(signedNonceValue) ||
+      (signedNonceValue as number) < 0
+    ) {
+      throw this.fail(
+        ctx,
+        "prepare-failed",
+        `signed anchor ${prepared.address} has no valid transaction nonce`,
+      );
+    }
+    const signedNonce = signedNonceValue as number;
     const preBroadcastTxRef =
       validityRecord.response?.data?.transaction?.hash ?? signedRecord.hash;
-    if (preBroadcastTxRef) ctx.receipt.txRef = preBroadcastTxRef;
+    if (!preBroadcastTxRef) {
+      throw this.fail(
+        ctx,
+        "prepare-failed",
+        `confirmed anchor ${prepared.address} has no transaction hash`,
+      );
+    }
+    ctx.receipt.txRef = preBroadcastTxRef;
     ctx.receipt.state = "broadcast-unknown";
     this.emit(ctx);
 
@@ -806,7 +909,13 @@ export class DemosAdapter implements SubstrateAdapter {
       return {
         result: Promise.reject(wrapped),
         safe: txRef
-          ? this.safeAfterUnknownBroadcast(key, txRef, broadcastPromise, ctx)
+          ? this.safeAfterUnknownBroadcast(
+              key,
+              txRef,
+              signedNonce,
+              broadcastPromise,
+              ctx,
+            )
           : broadcastPromise.then(
               () => undefined,
               () => undefined,
@@ -825,7 +934,8 @@ export class DemosAdapter implements SubstrateAdapter {
     if (txRef) ctx.receipt.txRef = txRef;
 
     if (response?.result !== 200 || !txRef) {
-      ctx.receipt.state = "failed";
+      const ambiguous = Boolean(txRef) && !isDefinitiveBroadcastRejection(response);
+      ctx.receipt.state = ambiguous ? "broadcast-unknown" : "failed";
       this.emit(ctx);
       const error = this.fail(
         ctx,
@@ -836,10 +946,11 @@ export class DemosAdapter implements SubstrateAdapter {
       return {
         result: Promise.reject(error),
         safe:
-          response?.result === 500 && txRef
+          ambiguous && txRef
             ? this.resolveInBackground(
                 key,
                 txRef,
+                signedNonce,
                 this.snapshot(ctx.receipt),
                 ctx.pollMs,
               )
@@ -856,11 +967,12 @@ export class DemosAdapter implements SubstrateAdapter {
     if (completion === "accepted") {
       return {
         result: Promise.resolve(this.successReceipt(ctx, acceptedAt)),
-        // The caller returns now; the wallet queue remains held until terminal
-        // inclusion/failure makes reuse of the next nonce safe.
+        // The caller returns now; the wallet queue remains held through
+        // inclusion and authoritative account-nonce advancement.
         safe: this.resolveInBackground(
           key,
           txRef,
+          signedNonce,
           this.snapshot(ctx.receipt),
           ctx.pollMs,
         ),
@@ -896,6 +1008,7 @@ export class DemosAdapter implements SubstrateAdapter {
         safe: this.resolveInBackground(
           key,
           txRef,
+          signedNonce,
           this.snapshot(ctx.receipt),
           ctx.pollMs,
         ),
@@ -905,15 +1018,27 @@ export class DemosAdapter implements SubstrateAdapter {
     if (completion === "included") {
       return {
         result: Promise.resolve(this.successReceipt(ctx)),
-        safe: Promise.resolve(),
+        safe: this.resolveInBackground(
+          key,
+          txRef,
+          signedNonce,
+          this.snapshot(ctx.receipt),
+          ctx.pollMs,
+        ),
       };
     }
 
     return {
-      // Inclusion is the nonce-critical safe point. Visibility can continue
-      // independently while the next queued write prepares.
+      // Read visibility can continue independently, but same-wallet writes stay
+      // queued until the account read reflects this transaction's signed nonce.
       result: this.waitForVisibility(expected!, ctx),
-      safe: Promise.resolve(),
+      safe: this.resolveInBackground(
+        key,
+        txRef,
+        signedNonce,
+        this.snapshot(ctx.receipt),
+        ctx.pollMs,
+      ),
     };
   }
 
@@ -1106,14 +1231,36 @@ export class DemosAdapter implements SubstrateAdapter {
     }
 
     const data = value as Record<string, unknown>;
-    const run = async (): Promise<AnchorRef> => {
+    const key = this.walletQueueKey();
+
+    // Share the same process-wide RPC+wallet queue as anchor()/anchorAndWait().
+    // The immutable result remains part of the safe point so a second publisher
+    // cannot race a first create whose name index is not visible yet. Once a
+    // transaction is signed, nonce reconciliation runs independently so a hung
+    // broadcast transport cannot hold every same-wallet write forever.
+    return queueWalletWrite(key, (turn) => turn, async () => {
+      const ctx = this.newContext(name, timeoutMs, pollMs);
+      await this.reconcilePrevious(key, ctx);
       const owner = this.demos.getAddress();
-      const existing = await this.resolveExistingImmutable(name, data, owner);
-      if (existing) return existing;
+      const existing = await this.waitFor(
+        ctx,
+        this.resolveExistingImmutable(name, data, owner),
+        "immutable owner-bound lookup",
+      );
+      if (existing) {
+        return {
+          result: Promise.resolve(existing),
+          safe: Promise.resolve(),
+        };
+      }
 
       // Absent → CREATE ONLY. Never call the update-capable anchor() path here.
       const programName = logicalToStorageProgramName(name);
-      const nonce = await this.nextAnchorNonce();
+      const nonce = await this.waitFor(
+        ctx,
+        this.nextAnchorNonce(),
+        "immutable nonce acquisition",
+      );
       const address = StorageProgram.deriveStorageAddress(
         owner,
         programName,
@@ -1128,64 +1275,122 @@ export class DemosAdapter implements SubstrateAdapter {
         StorageProgram.publicACL(),
         { nonce, salt: ANCHOR_SALT },
       );
-      const deadline = Date.now() + timeoutMs;
-      const signed = await this.demos.storagePrograms.sign(payload);
-      const validity = await this.demos.tx.confirm(signed, this.demos);
-      let result: {
+      const deadline = ctx.deadline;
+      ctx.receipt.address = address;
+      const signed = await this.waitFor(
+        ctx,
+        this.demos.storagePrograms.sign(payload),
+        "immutable signing",
+      );
+      const validity = await this.waitFor(
+        ctx,
+        this.demos.tx.confirm(signed, this.demos),
+        "immutable confirmation",
+      );
+      const signedRecord = signed as unknown as {
+        hash?: string;
+        content?: { nonce?: unknown };
+      };
+      const signedNonceValue = signedRecord.content?.nonce;
+      if (
+        !Number.isSafeInteger(signedNonceValue) ||
+        (signedNonceValue as number) < 0
+      ) {
+        throw new SubstrateError(
+          `immutable anchor ${name} signed without a valid transaction nonce`,
+        );
+      }
+      const signedNonce = signedNonceValue as number;
+      const validityRecord = validity as unknown as {
+        response?: { data?: { transaction?: { hash?: string } } };
+      };
+      const txRef =
+        validityRecord.response?.data?.transaction?.hash ?? signedRecord.hash;
+      if (!txRef) {
+        throw new SubstrateError(
+          `immutable anchor ${name} signed without a transaction hash`,
+        );
+      }
+
+      ctx.receipt.txRef = txRef;
+      if (this.remaining(ctx) <= 0) {
+        throw this.fail(
+          ctx,
+          "timeout",
+          `immutable anchor ${name} timed out before broadcast`,
+        );
+      }
+      ctx.receipt.state = "broadcast-unknown";
+      const broadcastPromise = this.demos.broadcastAndWait(validity, {
+        timeoutMs: Math.max(1, this.remaining(ctx)),
+        pollIntervalMs: pollMs,
+      }) as Promise<{
         broadcast: { response?: { hash?: string } };
         status: { state: "included" | "failed"; blockNumber?: number };
-      };
-      try {
-        result = (await this.demos.broadcastAndWait(validity)) as typeof result;
-      } catch (error) {
-        // A thrown submission/transport/nonce error does not prove absence.
-        return this.waitForConcurrentImmutableWinner(
-          name,
-          data,
-          owner,
-          deadline,
-          pollMs,
-          error,
-        );
-      }
-      if (result.status.state !== "included") {
-        return this.waitForConcurrentImmutableWinner(
-          name,
-          data,
-          owner,
-          deadline,
-          pollMs,
-          new Error(`terminal state=${result.status.state}`),
-        );
-      }
-      return this.waitForCreatedImmutable(
-        name,
-        data,
-        owner,
-        address,
-        result.broadcast?.response?.hash ?? (signed as { hash?: string }).hash,
-        deadline,
+      }>;
+
+      const result = this.waitFor(
+        ctx,
+        (async (): Promise<AnchorRef> => {
+          let observed: Awaited<typeof broadcastPromise>;
+          try {
+            observed = await this.waitFor(
+              ctx,
+              broadcastPromise,
+              "immutable inclusion",
+            );
+          } catch (error) {
+            // A thrown submission/transport/timeout error does not prove absence.
+            return this.waitForConcurrentImmutableWinner(
+              name,
+              data,
+              owner,
+              deadline,
+              pollMs,
+              error,
+            );
+          }
+          if (observed.status.state !== "included") {
+            return this.waitForConcurrentImmutableWinner(
+              name,
+              data,
+              owner,
+              deadline,
+              pollMs,
+              new Error(`terminal state=${observed.status.state}`),
+            );
+          }
+          return this.waitForCreatedImmutable(
+            name,
+            data,
+            owner,
+            address,
+            observed.broadcast?.response?.hash ?? txRef,
+            deadline,
+            pollMs,
+          );
+        })(),
+        "immutable completion",
+      );
+
+      const nonceSafe = this.resolveInBackground(
+        key,
+        txRef,
+        signedNonce,
+        this.snapshot(ctx.receipt),
         pollMs,
       );
-    };
-
-    // Share the same process-wide RPC+wallet queue as anchor()/anchorAndWait().
-    // Otherwise an immutable create could consume the nonce between another
-    // adapter's lookup and sign/broadcast sequence.
-    return queueWalletWrite(
-      this.walletQueueKey(),
-      (turn) => turn,
-      async () => {
-        const result = run();
-        return {
-          result,
-          safe: result.then(
+      return {
+        result,
+        safe: Promise.all([
+          nonceSafe,
+          result.then(
             () => undefined,
             () => undefined,
           ),
-        };
-      },
-    );
+        ]).then(() => undefined),
+      };
+    });
   }
 
   async scanOwnAnchorsByNamePrefix(prefix: string): Promise<OwnedAnchorScan> {

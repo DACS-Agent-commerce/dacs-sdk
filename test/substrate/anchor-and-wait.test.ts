@@ -49,10 +49,12 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
     adapter as unknown as { nextAnchorNonce(): Promise<number> },
     "nextAnchorNonce",
   ).mockResolvedValue(1);
+  raw.getAddressNonce = vi.fn(async () => signedCount);
   raw.storagePrograms.read = vi.fn().mockRejectedValue(notFound());
   raw.storagePrograms.sign = vi.fn(async () => {
+    const nonce = (await raw.getAddressNonce(wallet)) + 1;
     signedCount += 1;
-    return { hash: `tx-${id}-${signedCount}` };
+    return { hash: `tx-${id}-${signedCount}`, content: { nonce } };
   });
   raw.tx.confirm = vi.fn(async (signed: { hash: string }) => ({
     response: { data: { transaction: { hash: signed.hash } } },
@@ -128,6 +130,30 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).not.toHaveBeenCalled();
   });
 
+  it("refuses to broadcast a transaction that cannot be hash-reconciled", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.storagePrograms.sign.mockResolvedValue({ content: { nonce: 1 } });
+    raw.tx.confirm.mockResolvedValue({
+      response: { data: { transaction: {} } },
+    });
+
+    const error = asAnchorError(
+      await adapter
+        .anchorAndWait(
+          "missing-hash",
+          { value: 1 },
+          { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+    expect(error).toMatchObject({
+      code: "prepare-failed",
+      receipt: { state: "not-broadcast" },
+    });
+    expect(error.receipt.txRef).toBeUndefined();
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
   it("distinguishes genuine 404 absence from transient read failures", async () => {
     const { adapter, raw } = await makeAdapter();
 
@@ -183,7 +209,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it("releases the nonce queue at inclusion, before slow read visibility", async () => {
+  it("releases the nonce queue after nonce advancement, before slow read visibility", async () => {
     const { adapter, raw } = await makeAdapter();
     const firstValue = { value: "first" };
     const secondValue = { value: "second" };
@@ -226,6 +252,52 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(2);
   });
 
+  it("holds the wallet queue until the authoritative account nonce catches up", async () => {
+    fixtureId += 1;
+    const rpc = `https://nonce-lag-${fixtureId}.test`;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const first = await makeAdapter({ rpc, wallet });
+    const second = await makeAdapter({ rpc, wallet });
+    let accountNonce = 0;
+    const signedNonces: number[] = [];
+
+    for (const fixture of [first, second]) {
+      fixture.raw.getAddressNonce.mockImplementation(async () => accountNonce);
+      fixture.raw.storagePrograms.sign.mockImplementation(async () => {
+        const nonce = (await fixture.raw.getAddressNonce(wallet)) + 1;
+        signedNonces.push(nonce);
+        return {
+          hash: `tx-nonce-lag-${signedNonces.length}`,
+          content: { nonce },
+        };
+      });
+    }
+
+    await expect(
+      first.adapter.anchorAndWait(
+        "one",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({ state: "included" });
+
+    const queued = second.adapter.anchorAndWait(
+      "two",
+      { value: 2 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(second.raw.storagePrograms.sign).not.toHaveBeenCalled();
+    expect(signedNonces).toEqual([1]);
+
+    accountNonce = 1;
+    await expect(queued).resolves.toMatchObject({ state: "included" });
+    expect(signedNonces).toEqual([1, 2]);
+    accountNonce = 2;
+  });
+
   it("coordinates accepted writes across adapter instances sharing a wallet", async () => {
     fixtureId += 1;
     const rpc = `https://shared-${fixtureId}.test`;
@@ -260,6 +332,160 @@ describe("DemosAdapter.anchorAndWait", () => {
     firstIncluded = true;
     await expect(queued).resolves.toMatchObject({ state: "included" });
     expect(second.raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
+  });
+
+  it("coordinates equivalent spellings of the same RPC endpoint", async () => {
+    fixtureId += 1;
+    const endpointId = fixtureId;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const first = await makeAdapter({
+      rpc: `HTTPS://EQUIVALENT-${endpointId}.TEST:443/`,
+      wallet,
+    });
+    const second = await makeAdapter({
+      rpc: `https://equivalent-${endpointId}.test`,
+      wallet,
+    });
+    let firstIncluded = false;
+    first.raw.nodeCall.mockImplementation(async () =>
+      firstIncluded ? { state: "included" } : { state: "pending" },
+    );
+
+    await first.adapter.anchorAndWait(
+      "one",
+      { value: 1 },
+      { completion: "accepted", timeoutMs: 1_000, pollMs: 1 },
+    );
+    const queued = second.adapter.anchorAndWait(
+      "two",
+      { value: 2 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(second.raw.storagePrograms.sign).not.toHaveBeenCalled();
+    firstIncluded = true;
+    await expect(queued).resolves.toMatchObject({ state: "included" });
+  });
+
+  it("keeps anchorWriteOnce and anchorAndWait serialized through nonce advancement", async () => {
+    fixtureId += 1;
+    const rpc = `https://cross-surface-${fixtureId}.test`;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const immutable = await makeAdapter({ rpc, wallet });
+    const mutable = await makeAdapter({ rpc, wallet });
+    const name = "immutable";
+    const value = { value: 1 };
+    const address = await immutable.adapter.anchorAddress(name);
+    let accountNonce = 0;
+    const signedNonces: number[] = [];
+
+    for (const fixture of [immutable, mutable]) {
+      fixture.raw.getAddressNonce.mockImplementation(async () => accountNonce);
+      fixture.raw.storagePrograms.sign.mockImplementation(async () => {
+        const nonce = (await fixture.raw.getAddressNonce(wallet)) + 1;
+        signedNonces.push(nonce);
+        return {
+          hash: `tx-cross-surface-${signedNonces.length}`,
+          content: { nonce },
+        };
+      });
+    }
+    vi.mocked(immutable.adapter.resolveAnchorByName)
+      .mockResolvedValueOnce({ status: "absent" })
+      .mockResolvedValueOnce({ status: "present", address });
+    immutable.raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      data: value,
+    });
+    immutable.raw.broadcastAndWait = vi.fn(async () => ({
+      broadcast: { response: { hash: "tx-cross-surface-1" } },
+      status: { state: "included" },
+    }));
+
+    await expect(
+      immutable.adapter.anchorWriteOnce(name, value, {
+        timeoutMs: 1_000,
+        pollMs: 1,
+      }),
+    ).resolves.toMatchObject({ address });
+
+    const queued = mutable.adapter.anchorAndWait(
+      "mutable",
+      { value: 2 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(mutable.raw.storagePrograms.sign).not.toHaveBeenCalled();
+    expect(signedNonces).toEqual([1]);
+
+    accountNonce = 1;
+    await expect(queued).resolves.toMatchObject({ state: "included" });
+    expect(signedNonces).toEqual([1, 2]);
+    accountNonce = 2;
+  });
+
+  it("bounds a hung anchorWriteOnce broadcast without poisoning the shared queue", async () => {
+    fixtureId += 1;
+    const rpc = `https://hung-immutable-${fixtureId}.test`;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const immutable = await makeAdapter({ rpc, wallet });
+    const mutable = await makeAdapter({ rpc, wallet });
+    immutable.raw.broadcastAndWait = vi.fn(
+      () => deferred<never>().promise,
+    );
+
+    const first = immutable.adapter.anchorWriteOnce(
+      "hung-immutable",
+      { value: 1 },
+      { timeoutMs: 20, pollMs: 1 },
+    );
+    const queued = mutable.adapter.anchorAndWait(
+      "after-hung-immutable",
+      { value: 2 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    );
+
+    await expect(first).rejects.toThrow(/no owner-bound winner|create failed/);
+    await expect(queued).resolves.toMatchObject({ state: "included" });
+    expect(mutable.raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds hung anchorWriteOnce preparation without poisoning the shared queue", async () => {
+    fixtureId += 1;
+    const rpc = `https://hung-immutable-sign-${fixtureId}.test`;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const immutable = await makeAdapter({ rpc, wallet });
+    const mutable = await makeAdapter({ rpc, wallet });
+    immutable.raw.storagePrograms.sign.mockImplementation(
+      () => deferred<never>().promise,
+    );
+
+    const first = immutable.adapter.anchorWriteOnce(
+      "hung-immutable-sign",
+      { value: 1 },
+      { timeoutMs: 20, pollMs: 1 },
+    );
+    const queued = mutable.adapter.anchorAndWait(
+      "after-hung-immutable-sign",
+      { value: 2 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    );
+
+    await expect(first).rejects.toMatchObject({
+      code: "timeout",
+      receipt: { state: "not-broadcast" },
+    });
+    await expect(queued).resolves.toMatchObject({ state: "included" });
+    expect(mutable.raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
   });
 
   it("includes queueing in the total timeout and never signs a timed-out write", async () => {
@@ -392,6 +618,110 @@ describe("DemosAdapter.anchorAndWait", () => {
     broadcast.resolve({ result: 200, response: { hash: error.receipt.txRef } });
     await vi.waitFor(() => expect(raw.nodeCall).toHaveBeenCalled());
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles a never-settling broadcast without permanently holding the queue", async () => {
+    fixtureId += 1;
+    const rpc = `https://hung-broadcast-${fixtureId}.test`;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const first = await makeAdapter({ rpc, wallet });
+    const second = await makeAdapter({ rpc, wallet });
+    first.raw.tx.broadcast.mockImplementation(() => deferred<unknown>().promise);
+
+    const error = asAnchorError(
+      await first.adapter
+        .anchorAndWait(
+          "hung",
+          { value: 1 },
+          { completion: "included", timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+    expect(error).toMatchObject({
+      code: "timeout",
+      receipt: { state: "broadcast-unknown" },
+    });
+
+    await expect(
+      second.adapter.anchorAndWait(
+        "after-hung",
+        { value: 2 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({ state: "included" });
+    expect(second.raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([500, 503])(
+    "keeps an ambiguous result-%i receipt unknown while reconciling inclusion",
+    async (result) => {
+      const { adapter, raw } = await makeAdapter();
+      raw.tx.broadcast.mockImplementation(async (validity: any) => ({
+        result,
+        response: { hash: validity.response.data.transaction.hash },
+      }));
+
+      const error = asAnchorError(
+        await adapter
+          .anchorAndWait(
+            `ambiguous-${result}`,
+            { value: 1 },
+            { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+          )
+          .catch((caught: unknown) => caught),
+      );
+      expect(error).toMatchObject({
+        code: "broadcast-failed",
+        receipt: { state: "broadcast-unknown" },
+      });
+      expect(error.receipt.txRef).toMatch(/^tx-/);
+      await vi.waitFor(() => expect(raw.nodeCall).toHaveBeenCalled());
+    },
+  );
+
+  it("treats a thrown transport timeout as ambiguous until hash reconciliation", async () => {
+    fixtureId += 1;
+    const rpc = `https://transport-timeout-${fixtureId}.test`;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const first = await makeAdapter({ rpc, wallet });
+    const second = await makeAdapter({ rpc, wallet });
+    let firstIncluded = false;
+    first.raw.tx.broadcast.mockRejectedValue(
+      Object.assign(new Error("socket timed out"), { code: "ETIMEDOUT" }),
+    );
+    first.raw.nodeCall.mockImplementation(async () =>
+      firstIncluded ? { state: "included" } : { state: "pending" },
+    );
+
+    const error = asAnchorError(
+      await first.adapter
+        .anchorAndWait(
+          "transport-timeout",
+          { value: 1 },
+          { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+    expect(error).toMatchObject({
+      code: "broadcast-failed",
+      receipt: { state: "broadcast-unknown" },
+    });
+
+    const queued = second.adapter.anchorAndWait(
+      "after-transport-timeout",
+      { value: 2 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(second.raw.storagePrograms.sign).not.toHaveBeenCalled();
+
+    firstIncluded = true;
+    await expect(queued).resolves.toMatchObject({ state: "included" });
+    expect(second.raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
   });
 
   it("cancels during inclusion with a receipt and reconciles safely", async () => {
