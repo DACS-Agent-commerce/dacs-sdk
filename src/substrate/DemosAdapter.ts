@@ -95,6 +95,11 @@ interface UnresolvedWrite {
   pollMs: number;
 }
 
+type BroadcastObservation =
+  | { state: "accepted" }
+  | { state: "ambiguous" }
+  | { state: "rejected"; cause: unknown };
+
 // Coordinates every adapter instance in this JS process. RPC is part of the
 // key so the same wallet used on different networks does not block itself.
 const walletWriteTails = new Map<string, Promise<void>>();
@@ -554,7 +559,28 @@ export class DemosAdapter implements SubstrateAdapter {
   private async waitForTerminal(
     txRef: string,
     ctx: AnchorContext,
+    broadcastPromise?: Promise<unknown>,
   ): Promise<"included" | "failed"> {
+    let broadcast: BroadcastObservation | undefined;
+    if (broadcastPromise) {
+      void broadcastPromise.then(
+        (value) => {
+          const response = isRecord(value) ? value : undefined;
+          broadcast =
+            response?.result === 200
+              ? { state: "accepted" }
+              : isDefinitiveBroadcastRejection(value)
+                ? { state: "rejected", cause: value }
+                : { state: "ambiguous" };
+        },
+        () => {
+          // A transport error can happen after the node accepted the bytes.
+          // The precomputed hash remains safe to poll and must not be retried.
+          broadcast = { state: "ambiguous" };
+        },
+      );
+    }
+
     for (;;) {
       ctx.receipt.attempts.inclusionPolls += 1;
       let status: unknown;
@@ -586,6 +612,14 @@ export class DemosAdapter implements SubstrateAdapter {
 
       if (state === "included") {
         const now = Date.now();
+        // Inclusion proves the node accepted the signed transaction even if
+        // its broadcast response is still in flight or was lost.
+        if (ctx.receipt.timings.acceptedAt == null) {
+          ctx.receipt.state = "accepted";
+          ctx.receipt.completion = "accepted";
+          ctx.receipt.timings.acceptedAt = now;
+          this.emit(ctx);
+        }
         ctx.receipt.state = "included";
         ctx.receipt.completion = "included";
         ctx.receipt.timings.includedAt = now;
@@ -594,6 +628,30 @@ export class DemosAdapter implements SubstrateAdapter {
         }
         this.emit(ctx);
         return "included";
+      }
+
+      // A chain observation is authoritative. Only after checking it do we use
+      // a definitive 4xx broadcast response to fail promptly. Ambiguous 5xx,
+      // timeout, and connection errors keep polling the already-known hash.
+      if (broadcast?.state === "rejected") {
+        ctx.receipt.state = "failed";
+        this.emit(ctx);
+        throw this.fail(
+          ctx,
+          "broadcast-failed",
+          `anchor ${ctx.receipt.address ?? txRef} was rejected by the node`,
+          broadcast.cause,
+        );
+      }
+      if (
+        broadcast?.state === "accepted" &&
+        ctx.receipt.state === "broadcast-unknown"
+      ) {
+        const now = Date.now();
+        ctx.receipt.state = "accepted";
+        ctx.receipt.completion = "accepted";
+        ctx.receipt.timings.acceptedAt = now;
+        this.emit(ctx);
       }
       if (state === "failed") {
         ctx.receipt.state = "failed";
@@ -892,6 +950,79 @@ export class DemosAdapter implements SubstrateAdapter {
       validity,
       this.demos,
     ) as Promise<unknown>;
+
+    // For inclusion/read visibility, the signed hash is the authoritative
+    // progress handle. Poll it immediately: the transaction may be included
+    // even when the broadcast HTTP response is delayed or lost.
+    if (completion !== "accepted") {
+      try {
+        const terminal = await this.waitForTerminal(
+          preBroadcastTxRef,
+          ctx,
+          broadcastPromise,
+        );
+        if (terminal === "failed") {
+          return {
+            result: Promise.reject(
+              this.fail(
+                ctx,
+                "inclusion-failed",
+                `anchor ${prepared.address} failed on chain`,
+              ),
+            ),
+            safe: Promise.resolve(),
+          };
+        }
+      } catch (error) {
+        const wrapped =
+          error instanceof AnchorWaitError
+            ? error
+            : this.fail(
+                ctx,
+                "inclusion-failed",
+                `anchor inclusion failed for ${prepared.address}`,
+                error,
+              );
+        return {
+          result: Promise.reject(wrapped),
+          safe:
+            wrapped.code === "broadcast-failed"
+              ? Promise.resolve()
+              : this.resolveInBackground(
+                  key,
+                  preBroadcastTxRef,
+                  signedNonce,
+                  this.snapshot(ctx.receipt),
+                  ctx.pollMs,
+                ),
+        };
+      }
+
+      if (completion === "included") {
+        return {
+          result: Promise.resolve(this.successReceipt(ctx)),
+          safe: this.resolveInBackground(
+            key,
+            preBroadcastTxRef,
+            signedNonce,
+            this.snapshot(ctx.receipt),
+            ctx.pollMs,
+          ),
+        };
+      }
+
+      return {
+        result: this.waitForVisibility(expected!, ctx),
+        safe: this.resolveInBackground(
+          key,
+          preBroadcastTxRef,
+          signedNonce,
+          this.snapshot(ctx.receipt),
+          ctx.pollMs,
+        ),
+      };
+    }
+
     let broadcast: unknown;
     try {
       broadcast = await this.waitFor(ctx, broadcastPromise, "broadcast");
@@ -1321,23 +1452,20 @@ export class DemosAdapter implements SubstrateAdapter {
         );
       }
       ctx.receipt.state = "broadcast-unknown";
-      const broadcastPromise = this.demos.broadcastAndWait(validity, {
-        timeoutMs: Math.max(1, this.remaining(ctx)),
-        pollIntervalMs: pollMs,
-      }) as Promise<{
-        broadcast: { response?: { hash?: string } };
-        status: { state: "included" | "failed"; blockNumber?: number };
-      }>;
+      const broadcastPromise = this.demos.tx.broadcast(
+        validity,
+        this.demos,
+      ) as Promise<unknown>;
 
       const result = this.waitFor(
         ctx,
         (async (): Promise<AnchorRef> => {
-          let observed: Awaited<typeof broadcastPromise>;
+          let terminal: "included" | "failed";
           try {
-            observed = await this.waitFor(
+            terminal = await this.waitForTerminal(
+              txRef,
               ctx,
               broadcastPromise,
-              "immutable inclusion",
             );
           } catch (error) {
             // A thrown submission/transport/timeout error does not prove absence.
@@ -1350,14 +1478,14 @@ export class DemosAdapter implements SubstrateAdapter {
               error,
             );
           }
-          if (observed.status.state !== "included") {
+          if (terminal !== "included") {
             return this.waitForConcurrentImmutableWinner(
               name,
               data,
               owner,
               deadline,
               pollMs,
-              new Error(`terminal state=${observed.status.state}`),
+              new Error(`terminal state=${terminal}`),
             );
           }
           return this.waitForCreatedImmutable(
@@ -1365,7 +1493,7 @@ export class DemosAdapter implements SubstrateAdapter {
             data,
             owner,
             address,
-            observed.broadcast?.response?.hash ?? txRef,
+            txRef,
             deadline,
             pollMs,
           );
