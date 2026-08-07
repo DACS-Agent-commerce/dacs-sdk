@@ -254,7 +254,14 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           sign: (artifact, separator) =>
             buildSignedArtifact(artifact, separator as DomainSeparator, sign),
           signBytes: async (bytes) => sign(bytes),
-          anchor: async (name, value) => (await adapter.anchor(name, value)).address,
+          // Do not move to payment or the next artifact after mere node
+          // acceptance. The current phase must be canonical and readable.
+          anchor: async (name, value) =>
+            (
+              await adapter.anchorAndWait(name, value, {
+                completion: "read-visible",
+              })
+            ).address,
           // Resume resolves BY NAME (owner = this agent), failing closed on an
           // indeterminate lookup rather than re-anchoring/re-settling (#70).
           resolveAnchor: async (name) => {
