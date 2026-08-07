@@ -21,6 +21,15 @@ describe("classifyAnchorResolution (#70 — lookup failure is not absence)", () 
     expect(r).toEqual({ status: "present", address: "stor-x" });
   });
 
+  test("owner match treats the optional 0x prefix as cosmetic", () => {
+    expect(
+      classifyAnchorResolution(
+        [{ address: "stor-x", owner: "0xabcdef", error: false }],
+        "ABCDEF",
+      ),
+    ).toEqual({ status: "present", address: "stor-x" });
+  });
+
   test("absent: candidates were readable but none is the writer's (name squatted)", () => {
     const r = classifyAnchorResolution(
       [{ address: "stor-2", owner: "0xSomeoneElse", error: false }],

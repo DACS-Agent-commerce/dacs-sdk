@@ -231,7 +231,7 @@ describe("DemosAdapter", () => {
       vi.spyOn(adapter.raw.tx, "confirm").mockImplementation(
         async (payload: unknown) => payload as never,
       );
-      vi.spyOn(adapter.raw, "broadcastAndWait").mockImplementation(
+      vi.spyOn(adapter.raw.tx, "broadcast").mockImplementation(
         broadcast as never,
       );
     }
@@ -265,7 +265,7 @@ describe("DemosAdapter", () => {
     expect(
       adapters.reduce(
         (count, adapter) =>
-          count + vi.mocked(adapter.raw.broadcastAndWait).mock.calls.length,
+          count + vi.mocked(adapter.raw.tx.broadcast).mock.calls.length,
         0,
       ),
     ).toBe(1);

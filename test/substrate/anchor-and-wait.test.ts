@@ -429,32 +429,27 @@ describe("DemosAdapter.anchorAndWait", () => {
     accountNonce = 2;
   });
 
-  it("bounds a hung anchorWriteOnce broadcast without poisoning the shared queue", async () => {
-    fixtureId += 1;
-    const rpc = `https://hung-immutable-${fixtureId}.test`;
-    const wallet = `${WALLET.slice(0, -4)}${fixtureId
-      .toString(16)
-      .padStart(4, "0")}`;
-    const immutable = await makeAdapter({ rpc, wallet });
-    const mutable = await makeAdapter({ rpc, wallet });
-    immutable.raw.broadcastAndWait = vi.fn(
-      () => deferred<never>().promise,
-    );
+  it("completes an immutable write by hash while its broadcast response hangs", async () => {
+    const { adapter, raw } = await makeAdapter();
+    const name = "hung-immutable";
+    const value = { value: 1 };
+    const address = await adapter.anchorAddress(name);
+    vi.mocked(adapter.resolveAnchorByName)
+      .mockResolvedValueOnce({ status: "absent" })
+      .mockResolvedValueOnce({ status: "present", address });
+    raw.storagePrograms.read.mockResolvedValue({ success: true, data: value });
+    raw.tx.broadcast.mockImplementation(() => deferred<never>().promise);
 
-    const first = immutable.adapter.anchorWriteOnce(
-      "hung-immutable",
-      { value: 1 },
-      { timeoutMs: 20, pollMs: 1 },
+    await expect(
+      adapter.anchorWriteOnce(name, value, {
+        timeoutMs: 1_000,
+        pollMs: 1,
+      }),
+    ).resolves.toEqual({ address, txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.nodeCall).toHaveBeenCalledWith(
+      "getTransactionStatus",
+      expect.objectContaining({ hash: expect.stringMatching(/^tx-/) }),
     );
-    const queued = mutable.adapter.anchorAndWait(
-      "after-hung-immutable",
-      { value: 2 },
-      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
-    );
-
-    await expect(first).rejects.toThrow(/no owner-bound winner|create failed/);
-    await expect(queued).resolves.toMatchObject({ state: "included" });
-    expect(mutable.raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
   });
 
   it("bounds hung anchorWriteOnce preparation without poisoning the shared queue", async () => {
@@ -587,9 +582,8 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it("cancels an in-flight broadcast as unknown and reconciles in background", async () => {
+  it("returns included when the hash lands while the broadcast response hangs", async () => {
     const { adapter, raw } = await makeAdapter();
-    const controller = new AbortController();
     const broadcast = deferred<unknown>();
     raw.tx.broadcast.mockImplementation(() => broadcast.promise);
 
@@ -600,27 +594,20 @@ describe("DemosAdapter.anchorAndWait", () => {
         completion: "included",
         timeoutMs: 1_000,
         pollMs: 1,
-        signal: controller.signal,
       },
     );
     await vi.waitFor(() => expect(raw.tx.broadcast).toHaveBeenCalled());
-    controller.abort();
 
-    const error = asAnchorError(
-      await operation.catch((caught: unknown) => caught),
-    );
-    expect(error).toMatchObject({
-      code: "cancelled",
-      receipt: { state: "broadcast-unknown" },
+    await expect(operation).resolves.toMatchObject({
+      state: "included",
+      completion: "included",
     });
-    expect(error.receipt.txRef).toMatch(/^tx-/);
-
-    broadcast.resolve({ result: 200, response: { hash: error.receipt.txRef } });
-    await vi.waitFor(() => expect(raw.nodeCall).toHaveBeenCalled());
+    broadcast.resolve({ result: 200, response: { hash: "late-response" } });
+    expect(raw.nodeCall).toHaveBeenCalled();
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it("reconciles a never-settling broadcast without permanently holding the queue", async () => {
+  it("uses hash inclusion despite a never-settling broadcast response", async () => {
     fixtureId += 1;
     const rpc = `https://hung-broadcast-${fixtureId}.test`;
     const wallet = `${WALLET.slice(0, -4)}${fixtureId
@@ -630,18 +617,15 @@ describe("DemosAdapter.anchorAndWait", () => {
     const second = await makeAdapter({ rpc, wallet });
     first.raw.tx.broadcast.mockImplementation(() => deferred<unknown>().promise);
 
-    const error = asAnchorError(
-      await first.adapter
-        .anchorAndWait(
-          "hung",
-          { value: 1 },
-          { completion: "included", timeoutMs: 20, pollMs: 1 },
-        )
-        .catch((caught: unknown) => caught),
-    );
-    expect(error).toMatchObject({
-      code: "timeout",
-      receipt: { state: "broadcast-unknown" },
+    await expect(
+      first.adapter.anchorAndWait(
+        "hung",
+        { value: 1 },
+        { completion: "included", timeoutMs: 20, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({
+      state: "included",
+      completion: "included",
     });
 
     await expect(
@@ -655,7 +639,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it.each([500, 503])(
-    "keeps an ambiguous result-%i receipt unknown while reconciling inclusion",
+    "accepts authoritative inclusion despite an ambiguous result-%i response",
     async (result) => {
       const { adapter, raw } = await makeAdapter();
       raw.tx.broadcast.mockImplementation(async (validity: any) => ({
@@ -663,23 +647,40 @@ describe("DemosAdapter.anchorAndWait", () => {
         response: { hash: validity.response.data.transaction.hash },
       }));
 
-      const error = asAnchorError(
-        await adapter
-          .anchorAndWait(
-            `ambiguous-${result}`,
-            { value: 1 },
-            { completion: "included", timeoutMs: 1_000, pollMs: 1 },
-          )
-          .catch((caught: unknown) => caught),
-      );
-      expect(error).toMatchObject({
-        code: "broadcast-failed",
-        receipt: { state: "broadcast-unknown" },
+      await expect(
+        adapter.anchorAndWait(
+          `ambiguous-${result}`,
+          { value: 1 },
+          { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+        ),
+      ).resolves.toMatchObject({
+        state: "included",
+        completion: "included",
       });
-      expect(error.receipt.txRef).toMatch(/^tx-/);
-      await vi.waitFor(() => expect(raw.nodeCall).toHaveBeenCalled());
+      expect(raw.nodeCall).toHaveBeenCalled();
     },
   );
+
+  it("fails promptly when broadcast is definitively rejected and the hash is absent", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.tx.broadcast.mockResolvedValue({ result: 400, response: "invalid tx" });
+    raw.nodeCall.mockResolvedValue({ state: "unknown" });
+
+    const error = asAnchorError(
+      await adapter
+        .anchorAndWait(
+          "definitive-rejection",
+          { value: 1 },
+          { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+    expect(error).toMatchObject({
+      code: "broadcast-failed",
+      receipt: { state: "failed" },
+    });
+    expect(error.receipt.attempts.inclusionPolls).toBeGreaterThan(0);
+  });
 
   it("treats a thrown transport timeout as ambiguous until hash reconciliation", async () => {
     fixtureId += 1;
@@ -707,7 +708,7 @@ describe("DemosAdapter.anchorAndWait", () => {
         .catch((caught: unknown) => caught),
     );
     expect(error).toMatchObject({
-      code: "broadcast-failed",
+      code: "timeout",
       receipt: { state: "broadcast-unknown" },
     });
 
