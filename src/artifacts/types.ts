@@ -13,7 +13,7 @@
  * content hash of its signed scope (the object with the signature field omitted).
  */
 
-/** A cross-context identity reference, e.g. "web2:domain:alice.example" or "did:demos:agent:…". */
+/** A cross-context identity reference, e.g. "domain:alice.example" or "did:demos:agent:…". */
 export type ClaimRef = string;
 
 export interface ClaimRequirement {

@@ -138,8 +138,9 @@ export interface SubstrateAdapter {
   /**
    * SR-1 (reverse) — find the subject primary claims (Demos pubkeys) that have a
    * given linked claim bound to them. `claimRef` is a canonical linked-claim ref
-   * (`web2:<platform>:<handle>` or `xm:<chainType>:<address>`); returns the
-   * matching subjects (usually one), or [] if none.
+   * (`domain:<host>`, `web2:<platform>:<handle>`, or `xm:<chainType>:<address>`);
+   * `web2:domain:<host>` is permanently accepted as a historical alias of
+   * `domain:<host>`. Returns the matching subjects (usually one), or [] if none.
    */
   findSubjectsByClaim(claimRef: string): Promise<string[]>;
 }
