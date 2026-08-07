@@ -922,8 +922,14 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   // Divergences: assert the vector expectation but expect the test to FAIL
   // against today's SDK (it.fails flips loudly when the divergence is fixed).
   const DIVERGENT = new Set<string>([
-    // (none — #86 reconciled the registry to the closed §B.7 set of 24.)
+    // The pinned oracle still rejects fractional JSON numbers even though
+    // RFC 8785 and CORE B.2 admit finite values within the magnitude bound.
+    "canon-noninteger-throws",
   ]);
+
+  it("preserves fractional canonicalization independently of the stale oracle", () => {
+    expect(canonicalize(1.5)).toBe("1.5");
+  });
 
   // Why un-runnable cases are todo, per area (with per-case overrides).
   const TODO_AREA_REASON: Record<string, string> = {
