@@ -26,9 +26,9 @@ const party = (claim: string) => ({ role: "seller", bundleHash: "h", primaryClai
 describe("computeReputation", () => {
   test("counts bundles the subject is a party to, and completed ones", () => {
     const r = computeReputation("did:alice", [
-      bundle({ parties: [party("did:alice")], outcome: "completed" }),
-      bundle({ parties: [party("did:alice")], outcome: "failed" }),
-      bundle({ parties: [party("did:bob")], outcome: "completed" }), // not a party
+      bundle({ jobId: "j1", parties: [party("did:alice")], outcome: "completed" }),
+      bundle({ jobId: "j2", parties: [party("did:alice")], outcome: "failed" }),
+      bundle({ jobId: "j3", parties: [party("did:bob")], outcome: "completed" }), // not a party
     ]);
     expect(r).toEqual({
       primaryClaim: "did:alice",
@@ -56,5 +56,13 @@ describe("computeReputation", () => {
       completed: 0,
       avgRating: null,
     });
+  });
+
+  test("deduplicates multiple bundle copies for the same session", () => {
+    const copies = [
+      bundle({ jobId: "same", anchoredByRole: "buyer" }),
+      bundle({ jobId: "same", anchoredByRole: "seller" }),
+    ];
+    expect(computeReputation("did:alice", copies).totalAgreements).toBe(1);
   });
 });

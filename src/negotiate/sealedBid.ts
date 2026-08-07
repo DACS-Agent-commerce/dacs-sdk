@@ -162,13 +162,15 @@ export function commitsInWindow(
   return commits.filter((c) => c.anchorTs <= commitDeadline);
 }
 
-/** SE-3: keep only reveals anchored at or before (commitDeadline + revealWindow). */
+/** §8.4.3 / SE-3: reveal window is inclusive from commitDeadline through expiry. */
 export function revealsInWindow(
   reveals: AnchoredReveal[],
   params: SealedEnvelopeParams,
 ): AnchoredReveal[] {
   const expiry = params.commitDeadline + params.revealWindow * 1000;
-  return reveals.filter((r) => r.anchorTs <= expiry);
+  return reveals.filter(
+    (r) => r.anchorTs >= params.commitDeadline && r.anchorTs <= expiry,
+  );
 }
 
 /**

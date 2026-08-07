@@ -79,6 +79,11 @@ function buildArtifacts() {
       finalityObservedAt: 1780000000000,
     },
     observedAt: 1780000000000,
+    signature: {
+      algorithm: "ed25519",
+      signer: buyerDid,
+      value: "signed-evidence",
+    },
   };
   return { listing, agreement, evidence };
 }
@@ -298,20 +303,26 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(ev?.verdict).toBe("hash-mismatch");
   });
 
-  test("optional verifyEvidence: a hash-matched but semantically-invalid evidence => invalid-evidence, not ok", async () => {
-    const fx = await buildFixture(buyerDid, signBuyer);
-    // The evidence hash-matches (bundle signature valid), but the wired §9.7
-    // verifier rejects it — e.g. wrong finality model — so the ref is downgraded.
-    const res = await verifyBundleCore(
-      "ref",
-      depsFor(fx, { verifyEvidence: async () => ({ decision: "fail" }) }),
-    );
-    expect(res.signatures[0]?.verdict).toBe("valid");
-    expect(res.ok).toBe(false);
-    const ev = res.refs.find((r) => r.kind === "dacs-4-evidence");
-    expect(ev?.verdict).toBe("invalid-evidence");
-    expect(res.reason).toMatch(/invalid-evidence/);
-  });
+  test.each(["fail", "error", "indeterminate"] as const)(
+    "optional verifyEvidence: %s fails closed and receives the signed record",
+    async (decision) => {
+      const fx = await buildFixture(buyerDid, signBuyer);
+      const res = await verifyBundleCore(
+        "ref",
+        depsFor(fx, {
+          verifyEvidence: async (evidence) => {
+            expect(evidence.signature).toEqual(fx.evidence.signature);
+            return { decision };
+          },
+        }),
+      );
+      expect(res.signatures[0]?.verdict).toBe("valid");
+      expect(res.ok).toBe(false);
+      const ev = res.refs.find((r) => r.kind === "dacs-4-evidence");
+      expect(ev?.verdict).toBe("invalid-evidence");
+      expect(res.reason).toMatch(/invalid-evidence/);
+    },
+  );
 
   test("optional verifyEvidence: a passing evidence keeps the bundle ok", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);

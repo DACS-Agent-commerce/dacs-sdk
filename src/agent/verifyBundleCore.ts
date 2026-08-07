@@ -97,7 +97,7 @@ export interface VerifyBundleDeps {
    * OPTIONAL semantic check of a hash-matched SettlementEvidence artifact
    * (DACS-4 §9.7) — wire `verifySettlementEvidence` (with the caller's
    * agreement/rail/orchestrator context) here. When supplied, a settlement ref
-   * that hash-matches but whose evidence does NOT verify (`fail`/`error`) is
+   * that hash-matches but whose evidence does NOT verify is
    * downgraded to `invalid-evidence` and the bundle is not `ok`. Omitted by
    * default — hash + shape integrity only, unchanged behaviour.
    */
@@ -287,8 +287,11 @@ export async function verifyBundleCore(
       // signer, …). If the caller wired a verifier, run it and downgrade a
       // non-passing record — a signature over the bundle only binds the hash.
       if (check.verdict === "ok" && deps.verifyEvidence && r) {
-        const verdict = await deps.verifyEvidence(stripSignature(r));
-        if (verdict.decision === "fail" || verdict.decision === "error") {
+        // Pass the signed record intact: §9.7 verification includes the
+        // orchestrator signature. Every non-pass decision fails closed;
+        // `indeterminate` is explicitly not evidence of validity.
+        const verdict = await deps.verifyEvidence(r);
+        if (verdict.decision !== "pass") {
           check.verdict = "invalid-evidence";
         }
       }

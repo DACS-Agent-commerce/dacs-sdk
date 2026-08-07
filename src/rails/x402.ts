@@ -315,9 +315,24 @@ export async function verifyDacsX402AuthorizationNonce(
  * SDK core stays importable without the rail's chain deps installed.
  */
 export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> {
-  const { privateKeyToAccount } = await import("viem/accounts");
-  const { x402Client, x402HTTPClient } = await import("@x402/fetch");
-  const { ExactEvmScheme } = await import("@x402/evm/exact/client");
+  const accounts = await import("viem/accounts").catch(() => {
+    throw new CounterpartyError(
+      "createX402Rail requires the optional peer viem",
+    );
+  });
+  const x402Fetch = await import("@x402/fetch").catch(() => {
+    throw new CounterpartyError(
+      "createX402Rail requires the optional peer @x402/fetch",
+    );
+  });
+  const x402Evm = await import("@x402/evm/exact/client").catch(() => {
+    throw new CounterpartyError(
+      "createX402Rail requires the optional peer @x402/evm",
+    );
+  });
+  const { privateKeyToAccount } = accounts;
+  const { x402Client, x402HTTPClient } = x402Fetch;
+  const { ExactEvmScheme } = x402Evm;
 
   const account = privateKeyToAccount(config.evmPrivateKey as `0x${string}`);
   const fetchImpl = config.fetchImpl ?? fetch;

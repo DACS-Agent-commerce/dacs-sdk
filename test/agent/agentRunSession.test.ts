@@ -109,4 +109,33 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     ).rejects.toThrow(/failed signature verification/);
     expect(settled).toBe(false);
   });
+
+  test("getReputation ignores a structurally plausible but unverified bundle", async () => {
+    const { adapter, store } = memAdapter();
+    store.set("stor:forged-bundle", {
+      bundleVersion: "1",
+      jobId: "forged",
+      outcome: "completed",
+      anchoredByRole: "buyer",
+      listingRef: { listingId: "svc", version: 1, contentHash: "h" },
+      parties: [
+        { role: "buyer", bundleHash: "h", primaryClaim: buyerDid },
+        { role: "seller", bundleHash: "h", primaryClaim: sellerDid },
+      ],
+      phaseSummary: [],
+      vetRecords: [],
+      settlementEvidence: [],
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+      finalisedAt: Date.now(),
+      // Deliberately unsigned: the old getReputation path counted this anyway.
+    });
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    await expect(agent.getReputation(buyerDid, ["stor:forged-bundle"]))
+      .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
+  });
 });

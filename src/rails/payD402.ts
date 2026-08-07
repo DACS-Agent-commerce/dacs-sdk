@@ -245,8 +245,18 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
   if (!config?.rpc) throw new DacsError("pay-d402 rail requires an rpc URL");
   if (!config?.secret) throw new DacsError("pay-d402 rail requires a wallet secret to sign payments");
 
-  const { Demos } = await import("@kynesyslabs/demosdk/websdk");
-  const { D402Client } = await import("@kynesyslabs/demosdk/d402/client");
+  const demosSdk = await import("@kynesyslabs/demosdk/websdk").catch(() => {
+    throw new DacsError(
+      "createPayD402Rail requires the optional peer @kynesyslabs/demosdk",
+    );
+  });
+  const d402 = await import("@kynesyslabs/demosdk/d402/client").catch(() => {
+    throw new DacsError(
+      "createPayD402Rail requires the optional peer @kynesyslabs/demosdk",
+    );
+  });
+  const { Demos } = demosSdk;
+  const { D402Client } = d402;
 
   const demos = new Demos();
   await demos.connect(config.rpc);
