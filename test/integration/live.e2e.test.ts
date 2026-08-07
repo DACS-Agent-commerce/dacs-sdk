@@ -215,7 +215,11 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         // Strict two-sided finality must honestly remain false until the seller
         // co-signature is wired into orchestration.
         expect(verdict.ok).toBe(false);
-        expect(verdict.reason).toMatch(/missing required signature.*seller/i);
+        // The SDK names the missing co-signer by its ClaimReference (DID), so
+        // assert the reason is a missing-required-signature verdict AND that it
+        // is specifically the seller's DID that is missing.
+        expect(verdict.reason).toMatch(/missing required signature/i);
+        expect(verdict.reason).toContain(env.SELLER_DID!);
       } finally {
         await localPaywall?.close();
       }
