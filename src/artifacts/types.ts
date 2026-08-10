@@ -268,8 +268,37 @@ export interface Listing {
   signature: ListingSignature;
 }
 
+/** DACS-1 §6.3.4 reader-step envelope before the major-version gate. */
+export type ListingEnvelope = Omit<Listing, "dacsVersion"> & {
+  dacsVersion: string;
+};
+
 /** DACS-1 §6.3.4 ListingSignature (CORE §B.7 SIG-6 value encoding). */
 export type ListingSignature = ComponentSignature;
+
+/** DACS-1 §6.3.4 RB-1 seller-signed withdrawal of one Listing version. */
+export interface RevocationMarker {
+  listingId: string;
+  listingVersion: number;
+  listingContentHash: string;
+  revokedAt: number;
+  reason?: string;
+  signature: ComponentSignature;
+}
+
+/**
+ * DACS-1 §6.3.4 RB-2 discovery-only pointer to an anchored
+ * {@link RevocationMarker}. The binding is never itself authority.
+ */
+export interface RevocationBinding {
+  sellerPrimaryClaim: ClaimRef;
+  listingId: string;
+  listingVersion: number;
+  listingContentHash: string;
+  logicalAddress: string;
+  markerAnchor: { kind: string; locator: string };
+  markerContentHash: string;
+}
 
 /** Unsigned DACS-1 §6.3.4 input accepted by Listing publication. */
 export type ListingDraft = Omit<Listing, "signature">;

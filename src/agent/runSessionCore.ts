@@ -14,6 +14,7 @@ import type {
   SettlementFinality,
   SettlementFinalityModel,
 } from "../artifacts/types.js";
+import type { ListingValidationResult } from "./listingValidation.js";
 import {
   type LegacyMvpAgreementDocument as AgreementDocument,
   type LegacyMvpAttestationBundle as AttestationBundle,
@@ -192,6 +193,15 @@ export interface SessionDeps {
    * verified upstream. Ignored when `verifyListing` is supplied.
    */
   trustListing?: boolean;
+  /**
+   * DACS-1 §6.3.4 LR-2/LR-3 full ordered validation result. A normative
+   * Listing cannot start a new session without this result, and only
+   * `verified` is admissible; `rejected`, `revoked`, and `indeterminate` all
+   * fail closed before Vet, rail selection, or settlement.
+   */
+  validateListing?: (
+    raw: Record<string, unknown>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult;
   /**
    * OPTIONAL durable session store (#55). When wired, the store is the
    * settlement BOUNDARY PROTOCOL (#52/#67), not just an after-the-fact log:
@@ -464,10 +474,43 @@ export async function runSessionCore(
     pin: ListingPin;
   } = listing;
 
+  if (readableListing.compatibility === "normative") {
+    if (!deps.validateListing) {
+      throw new DacsError(
+        "runSessionCore requires deps.validateListing for normative DACS-1 Listings; " +
+          "LR-3 permits new sessions only when the disposition is verified",
+      );
+    }
+    let validation: ListingValidationResult;
+    try {
+      validation = await deps.validateListing(storedRecord);
+    } catch {
+      throw new CounterpartyError(
+        `listing at ${listingRef} validation was indeterminate (validator threw)`,
+      );
+    }
+    if (validation.disposition !== "verified") {
+      throw new CounterpartyError(
+        `listing at ${listingRef} is ${validation.disposition} at DACS-1 reader step ` +
+          `${validation.step} (${validation.reason}); LR-3 refuses the new session`,
+      );
+    }
+    if (validation.listingContentHash !== listingView.pin.contentHash) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} validation result is not bound to the exact LR-1 ` +
+          `content hash; refusing the new session`,
+      );
+    }
+  }
+
   // #41 — verify the listing BEFORE vetting, rail selection or settlement. A
   // forged/tampered listing steers the recipient and rail, so an unverified one
   // must never reach the money path. Fails closed; the gate is not defaultable.
-  if (!deps.verifyListing && !deps.trustListing) {
+  if (
+    readableListing.compatibility === "legacy-mvp" &&
+    !deps.verifyListing &&
+    !deps.trustListing
+  ) {
     throw new DacsError(
       "runSessionCore requires deps.verifyListing or an explicit deps.trustListing: true opt-out — " +
         "acting on an unverified listing lets a forged listing drive payment (#41)",
