@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import { buildAgent } from "../../src/agent/Agent.js";
-import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import {
   ed25519Sign,
   privateKeyFromSeed,
@@ -49,25 +49,67 @@ function memAdapter() {
 }
 
 const TERMS = {
-  price: { amount: "1000000", asset: "USDC", decimals: 6, rail: "pay-x402" },
+  price: {
+    amount: "1000000",
+    asset: "USDC",
+    decimals: 6,
+    rail: "x402:default",
+  },
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
 
 async function anchorListing(store: Map<string, Record<string, unknown>>, priv = sellerPriv, agentId = sellerDid) {
-  const signed = await buildSignedArtifact(
+  const signed = await signComponentArtifact(
     {
-      agentId,
-      serviceId: "svc",
-      name: "Market Data",
-      description: "d",
-      claimRequirements: [],
-      supportedNegotiation: ["negotiate-fixed-price"],
-      supportedPaymentRails: ["pay-x402"],
-      supportedDelivery: ["deliver-attested-payload"],
+      dacsVersion: "1",
+      listingVersion: 1,
+      listingId: "svc",
+      seller: {
+        identity: {
+          bundleVersion: "1",
+          presentedBy: agentId,
+          presentedAt: 1_780_000_000_000,
+          claims: [{ ref: agentId }],
+          presentation: {
+            kind: "per-claim",
+            signatures: [{ ref: agentId, signature: "identity-presentation" }],
+          },
+        },
+        displayName: "Market Data",
+        publicEndpoint: "https://seller.example/dacs",
+      },
+      offering: {
+        title: "Market Data",
+        description: "d",
+        category: "data.finance",
+        tags: ["market-data"],
+        deliverable: {
+          kind: "attested-payload",
+          payloadFormat: "application/json",
+        },
+      },
+      buyerRequirement: { requirementVersion: "1", required: [] },
+      pipeline: [
+        { kind: "negotiate-fixed-price" },
+        { kind: "commit-agreement" },
+        { kind: "pay-x402", parameters: { rail: "x402:default" } },
+        { kind: "deliver-attested-payload" },
+      ],
+      pricing: {
+        kind: "fixed",
+        price: { amount: "1", currency: "USDC" },
+      },
+      acceptedRails: [{ railId: "x402:default" }],
+      terms: { deadlineSecAfterCommit: 3_600 },
+      validity: { notBefore: 1_700_000_000_000 },
     },
     ARTIFACT_SEPARATORS.Listing,
-    (b) => ed25519Sign(b, priv),
+    {
+      algorithm: "ed25519",
+      signer: agentId,
+      sign: (bytes) => ed25519Sign(bytes, priv),
+    },
   );
   store.set("stor:listing", signed as Record<string, unknown>);
   return "stor:listing";

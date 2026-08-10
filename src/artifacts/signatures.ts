@@ -29,6 +29,22 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.trim() === value;
 
+/** CORE §B.7 SIG-6 canonical unpadded Base64URL encoding. */
+export function isCanonicalBase64Url(value: unknown): value is string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    return false;
+  }
+  try {
+    return Buffer.from(value, "base64url").toString("base64url") === value;
+  } catch {
+    return false;
+  }
+}
+
 export function isComponentSignature(
   value: unknown,
 ): value is ComponentSignature {

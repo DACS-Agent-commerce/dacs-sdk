@@ -13,6 +13,7 @@ import {
   isFaultAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
+  isLegacyMvpListing,
   isPricingSpec,
   isSettlementEvidence,
 } from "../../src/index.js";
@@ -51,15 +52,12 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     }>;
   };
 
-  // The SDK's Listing / CompositeVerificationRecord / AgreementDocument are the
-  // reduced MVP shapes; the v0.3 vectors carry the full normative shapes
-  // (seller.identity, evaluatedParty/requirementHash/dealSpecific, parties[]…).
-  // These are KNOWN, ACTIONABLE conformance gaps — NOT skipped: each runs as an
-  // `it.fails` asserting the reduced validator does NOT yet accept the normative
-  // shape. When the #5 artifact-fidelity rewrite brings the validators up, these
-  // flip RED (a passing body under `it.fails` fails), forcing their removal — so
-  // the gap can't silently rot green. (Vector-replay coverage is tracked in #6.)
-  const REDUCED_SHAPE_KINDS = new Set([
+  // CompositeVerificationRecord / AgreementDocument remain reduced MVP shapes.
+  // The happy-path Listing fixture itself predates the Standard's SIG-6
+  // unpadded-Base64URL rule and still carries padded standard Base64, so it is
+  // not accepted as a current normative Listing. Listing fidelity is exercised
+  // against the dedicated signed SIG-5 vector in listing.test.ts instead.
+  const PINNED_VECTOR_DIVERGENCES = new Set([
     "Listing",
     "CompositeVerificationRecord",
     "AgreementDocument",
@@ -70,10 +68,14 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     const validator = VALIDATORS[kind];
     if (!validator) continue;
 
-    const knownGap = REDUCED_SHAPE_KINDS.has(kind);
+    const knownGap = PINNED_VECTOR_DIVERGENCES.has(kind);
     const runner = knownGap ? it.fails : it;
+    const gapReason =
+      kind === "Listing"
+        ? " — PINNED VECTOR DEBT: padded pre-SIG-6 signature"
+        : " — KNOWN GAP: reduced vs normative shape (#5)";
     runner(
-      `${kind}: validator accepts the fixture${knownGap ? " — KNOWN GAP: reduced vs normative shape (#5)" : ""}`,
+      `${kind}: validator accepts the fixture${knownGap ? gapReason : ""}`,
       () => {
         // The v0.3 vector's in-body SettlementEvidence/AttestationBundle omit
         // fields the SDK still carries (e.g. SB-1 recovers phaseIndex from the
@@ -223,7 +225,7 @@ describe.skipIf(!have)("FaultAttestationBundle discriminator", () => {
   });
 });
 
-describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
+describe("DACS-4 §9.3 PricingSpec + legacy Listing compatibility", () => {
   const baseListing = {
     agentId: "did:demos:seller",
     serviceId: "svc",
@@ -235,8 +237,9 @@ describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
     supportedDelivery: ["deliver-attested-payload"],
   };
 
-  it("a listing with no pricing is still valid (optional; #5 tracks required-fidelity)", () => {
-    expect(isListing(baseListing)).toBe(true);
+  it("keeps the reduced no-pricing shape in the explicit legacy read validator", () => {
+    expect(isLegacyMvpListing(baseListing)).toBe(true);
+    expect(isListing(baseListing)).toBe(false);
   });
 
   it("accepts each PricingSpec kind", () => {
@@ -251,11 +254,22 @@ describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
     ).toBe(true);
     expect(isPricingSpec({ kind: "auction", selectionRule: "lowest-price" })).toBe(true);
     expect(
-      isPricingSpec({ kind: "auction", selectionRule: "rule-ref:abc:https://x" }),
+      isPricingSpec({
+        kind: "auction",
+        selectionRule: `rule-ref:${"a".repeat(64)}:https://x`,
+      }),
     ).toBe(true);
-    // …and a valid pricing rides along on the listing.
     expect(
-      isListing({ ...baseListing, pricing: { kind: "fixed", price: { amount: "5", currency: "USDC" } } }),
+      isPricingSpec({
+        kind: "metered",
+        unitPrice: { amount: "0.5", currency: "USDC" },
+        unit: "request",
+        minTotal: { amount: "1", currency: "USDC" },
+      }),
+    ).toBe(true);
+    // A valid pre-metered pricing variant remains readable on the legacy shape.
+    expect(
+      isLegacyMvpListing({ ...baseListing, pricing: { kind: "fixed", price: { amount: "5", currency: "USDC" } } }),
     ).toBe(true);
   });
 
@@ -268,7 +282,7 @@ describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
       isPricingSpec({ kind: "negotiable", bandCenter: { amount: "5", currency: "USDC" }, minPct: "x", maxPct: 1 }),
     ).toBe(false);
     // a listing carrying a bad pricing is rejected — not silently accepted.
-    expect(isListing({ ...baseListing, pricing: { kind: "banana" } })).toBe(false);
+    expect(isLegacyMvpListing({ ...baseListing, pricing: { kind: "banana" } })).toBe(false);
   });
 
   it("rejects a negotiable band that breaks the §8.5.2 minPct/maxPct bounds (#37)", () => {
@@ -293,7 +307,7 @@ describe("DACS-1 Listing.pricing (#34) — optional PricingSpec", () => {
 // Publish validates its own writes, but a listing anchored by another writer (or
 // an older SDK) reaches consumers only through isListing — so the version pin
 // that flows into listingRef.version must be validated HERE (#46/#29).
-describe("isListing — listingVersion clause (#46/#29)", () => {
+describe("isLegacyMvpListing — historical listingVersion clause (#46/#29)", () => {
   const base = {
     agentId: "did:demos:agent:seller",
     serviceId: "svc-1",
@@ -306,17 +320,17 @@ describe("isListing — listingVersion clause (#46/#29)", () => {
   };
 
   it("accepts an absent listingVersion (⇒ v1) and positive integers", () => {
-    expect(isListing(base)).toBe(true);
-    expect(isListing({ ...base, listingVersion: 1 })).toBe(true);
-    expect(isListing({ ...base, listingVersion: 7 })).toBe(true);
+    expect(isLegacyMvpListing(base)).toBe(true);
+    expect(isLegacyMvpListing({ ...base, listingVersion: 1 })).toBe(true);
+    expect(isLegacyMvpListing({ ...base, listingVersion: 7 })).toBe(true);
   });
 
   it("rejects a non-integer, zero, negative, fractional, or string version", () => {
-    expect(isListing({ ...base, listingVersion: "bad" })).toBe(false);
-    expect(isListing({ ...base, listingVersion: 0 })).toBe(false);
-    expect(isListing({ ...base, listingVersion: -1 })).toBe(false);
-    expect(isListing({ ...base, listingVersion: 1.5 })).toBe(false);
-    expect(isListing({ ...base, listingVersion: null })).toBe(false);
+    expect(isLegacyMvpListing({ ...base, listingVersion: "bad" })).toBe(false);
+    expect(isLegacyMvpListing({ ...base, listingVersion: 0 })).toBe(false);
+    expect(isLegacyMvpListing({ ...base, listingVersion: -1 })).toBe(false);
+    expect(isLegacyMvpListing({ ...base, listingVersion: 1.5 })).toBe(false);
+    expect(isLegacyMvpListing({ ...base, listingVersion: null })).toBe(false);
   });
 });
 

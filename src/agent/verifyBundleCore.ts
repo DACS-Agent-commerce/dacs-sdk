@@ -6,7 +6,8 @@ import {
   isAgreementDocument,
   isAnyAttestationBundle,
   isCompositeVerificationRecord,
-  isListing,
+  isLegacyMvpListing,
+  isListingDraft,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
@@ -124,6 +125,15 @@ function checkArtifact(
 
 function isAnyRecord(v: Record<string, unknown>): boolean {
   return typeof v === "object" && v !== null;
+}
+
+/**
+ * Bundle refs hash and validate the unsigned Listing scope. DACS-1 §6.3.4
+ * Listings therefore use `isListingDraft` here, while historical SDK bundles
+ * remain readable only through the explicit MVP compatibility validator.
+ */
+function isReadableListingScope(v: Record<string, unknown>): boolean {
+  return isListingDraft(v) || isLegacyMvpListing(v);
 }
 
 function isAgreementCommitPhase(kind: string): boolean {
@@ -352,7 +362,7 @@ export async function verifyBundleCore(
         "dacs-1-listing",
         listingId,
         bundle.listingRef.contentHash,
-        isListing,
+        isReadableListingScope,
         listing,
       ),
     );

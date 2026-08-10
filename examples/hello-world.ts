@@ -10,6 +10,7 @@
  *   SELLER_WALLET      seller agent mnemonic / private key
  *   BUYER_WALLET       buyer agent mnemonic / private key
  *   SELLER_DID         seller agent id (CCI / did embedding its ed25519 pubkey)
+ *   SELLER_IDENTITY_BUNDLE_JSON  verified DACS-1 §6.3.2 IdentityBundle JSON
  *   BUYER_DID          buyer agent id
  *   BUYER_EVM_KEY      buyer EVM private key (0x…) used to sign the x402 payment
  *   PAYWALL_URL        seller's paywalled delivery URL (returns HTTP 402)
@@ -19,7 +20,13 @@
  *   npx tsx examples/hello-world.ts
  */
 
-import { createAgent, createX402Rail, vetCore, x402Settle } from "../src/index.js";
+import {
+  createAgent,
+  createX402Rail,
+  vetCore,
+  x402Settle,
+  type IdentityBundle,
+} from "../src/index.js";
 
 const env = (k: string): string => {
   const v = process.env[k];
@@ -35,17 +42,45 @@ async function main(): Promise<void> {
     identity: { agentId: env("SELLER_DID") },
   });
 
+  const sellerIdentity = JSON.parse(
+    env("SELLER_IDENTITY_BUNDLE_JSON"),
+  ) as IdentityBundle;
   const published = await seller.publishListing({
-    agentId: env("SELLER_DID"),
-    serviceId: "market-data",
-    name: "Market Data",
-    description: "End-of-day prices, JSON.",
-    claimRequirements: [],
-    supportedNegotiation: ["negotiate-fixed-price"],
-    supportedPaymentRails: ["pay-x402"],
-    supportedDelivery: ["deliver-attested-payload"],
+    dacsVersion: "1",
+    listingVersion: 1,
+    listingId: "market-data",
+    seller: {
+      identity: sellerIdentity,
+      displayName: "Market Data",
+      publicEndpoint: env("PAYWALL_URL"),
+    },
+    offering: {
+      title: "Market Data",
+      description: "End-of-day prices, JSON.",
+      category: "data.finance.market",
+      tags: ["market-data"],
+      deliverable: {
+        kind: "attested-payload",
+        payloadFormat: "application/json",
+        verificationMethod: { kind: "self-signed" },
+      },
+    },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [
+      { kind: "negotiate-fixed-price" },
+      { kind: "commit-agreement" },
+      { kind: "pay-x402", parameters: { rail: "x402:default" } },
+      { kind: "deliver-attested-payload" },
+    ],
+    pricing: {
+      kind: "fixed",
+      price: { amount: "1", currency: "USDC" },
+    },
+    acceptedRails: [{ railId: "x402:default" }],
+    terms: { deadlineSecAfterCommit: 3_600 },
+    validity: { notBefore: Date.now() },
   });
-  console.log("listing anchored at", published.ref);
+  console.log("listing anchored at", published.ref, published.listingPin);
 
   // ── Buyer: run the session, settling via the x402 rail ──
   const buyer = await createAgent({
@@ -59,7 +94,12 @@ async function main(): Promise<void> {
   const session = await buyer.runSession(published.ref, {
     terms: {
       // amount is integer base units (USDC has 6 decimals → 1000000 = 1.0 USDC)
-      price: { amount: "1000000", asset: "USDC", decimals: 6, rail: "pay-x402" },
+      price: {
+        amount: "1000000",
+        asset: "USDC",
+        decimals: 6,
+        rail: "x402:default",
+      },
       deliveryPhase: "deliver-attested-payload",
       deliveryFormat: "application/json",
     },
