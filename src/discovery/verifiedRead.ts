@@ -67,7 +67,15 @@ export async function resolveAndRead(
   expectedOwner: string,
   deps: VerifiedReadDeps,
 ): Promise<VerifiedRead> {
-  const resolution = await index.resolve(logicalAddress, expectedOwner);
+  let resolution;
+  try {
+    resolution = await index.resolve(logicalAddress, expectedOwner);
+  } catch (e) {
+    return {
+      status: "indeterminate",
+      reason: `binding resolution failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
   if (resolution.status === "indeterminate") {
     return { status: "indeterminate", reason: resolution.reason };
   }

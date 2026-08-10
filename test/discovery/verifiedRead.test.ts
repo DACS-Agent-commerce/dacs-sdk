@@ -102,6 +102,23 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     expect(r.status).toBe("indeterminate");
   });
 
+  test("indeterminate: an index that THROWS is not an absence", async () => {
+    const r = await resolveAndRead(
+      {
+        resolve: async () => {
+          throw new Error("catalog unavailable");
+        },
+      },
+      LOGICAL,
+      SELLER,
+      depsWith({}),
+    );
+    expect(r).toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("catalog unavailable"),
+    });
+  });
+
   test("signature verifier: a valid signature keeps the read verified", async () => {
     const index = createInMemoryBindingIndex([binding()]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, {

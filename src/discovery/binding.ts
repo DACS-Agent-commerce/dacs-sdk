@@ -150,6 +150,55 @@ export interface BindingIndex {
 }
 
 /**
+ * Outcome of publishing a logical→native binding. Publication is deliberately
+ * separate from anchoring: on a real deployment it may update a well-known index
+ * or catalog after the substrate write has already succeeded. `indeterminate`
+ * therefore means callers MUST retain the anchored native address and retry the
+ * same publication; it never means the anchor should be recreated.
+ */
+export type BindingPublication =
+  | { status: "published"; binding: AnchorBinding }
+  | { status: "already-published"; binding: AnchorBinding }
+  | { status: "conflict"; reason: string; existing?: AnchorBinding }
+  | { status: "indeterminate"; reason: string };
+
+/** A target that can publish the binding produced by an anchor write. */
+export interface BindingPublisher {
+  publish(binding: AnchorBinding): Promise<BindingPublication>;
+}
+
+/** Combined read/write binding surface used by the reference repository. */
+export interface BindingStore extends BindingIndex, BindingPublisher {
+  /** Immutable snapshot for persistence, inspection, or test hand-off. */
+  snapshot(): readonly AnchorBinding[];
+}
+
+function cloneBinding(binding: AnchorBinding): AnchorBinding {
+  return { ...binding };
+}
+
+function cloneResolution(resolution: BindingResolution): BindingResolution {
+  return resolution.status === "present"
+    ? { status: "present", binding: cloneBinding(resolution.binding) }
+    : { ...resolution };
+}
+
+function sameOwner(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+function sameBinding(left: AnchorBinding, right: AnchorBinding): boolean {
+  return (
+    left.logicalAddress === right.logicalAddress &&
+    left.nativeAddress === right.nativeAddress &&
+    sameOwner(left.owner, right.owner) &&
+    left.contentHash === right.contentHash &&
+    left.version === right.version &&
+    (left.revoked === true) === (right.revoked === true)
+  );
+}
+
+/**
  * An in-memory {@link BindingIndex} over a fixed set of published bindings —
  * the reference implementation, and what a consumer wraps a fetched
  * `listings.json` / catalog page in.
@@ -157,10 +206,65 @@ export interface BindingIndex {
 export function createInMemoryBindingIndex(
   bindings: readonly AnchorBinding[],
 ): BindingIndex {
-  const snapshot = [...bindings];
+  const snapshot = bindings.map(cloneBinding);
   return {
     async resolve(logicalAddress, expectedOwner) {
-      return resolveBinding(snapshot, logicalAddress, expectedOwner);
+      return cloneResolution(
+        resolveBinding(snapshot, logicalAddress, expectedOwner),
+      );
+    },
+  };
+}
+
+/**
+ * Mutable in-memory reference store for the complete publish→resolve lifecycle.
+ * It models a shared well-known index/catalog without pretending that an SDK can
+ * autonomously update either one: production users provide a {@link BindingStore}
+ * backed by their actual publication authority.
+ *
+ * Exact re-publication is idempotent. A second live entry for the same
+ * `(logicalAddress, owner)` that changes the native address, hash, version, or
+ * revocation state is a conflict and is NOT inserted.
+ */
+export function createInMemoryBindingStore(
+  initial: readonly AnchorBinding[] = [],
+): BindingStore {
+  const bindings = initial.map(cloneBinding);
+
+  return {
+    async resolve(logicalAddress, expectedOwner) {
+      return cloneResolution(
+        resolveBinding(bindings, logicalAddress, expectedOwner),
+      );
+    },
+
+    async publish(binding) {
+      const existing = bindings.filter(
+        (candidate) =>
+          candidate.logicalAddress === binding.logicalAddress &&
+          sameOwner(candidate.owner, binding.owner),
+      );
+      if (existing.length > 0) {
+        if (existing.every((candidate) => sameBinding(candidate, binding))) {
+          return {
+            status: "already-published",
+            binding: cloneBinding(existing[0]!),
+          };
+        }
+        return {
+          status: "conflict",
+          reason: `a different binding is already published for ${binding.logicalAddress} and owner ${binding.owner}`,
+          existing: cloneBinding(existing[0]!),
+        };
+      }
+
+      const published = cloneBinding(binding);
+      bindings.push(published);
+      return { status: "published", binding: cloneBinding(published) };
+    },
+
+    snapshot() {
+      return bindings.map(cloneBinding);
     },
   };
 }
