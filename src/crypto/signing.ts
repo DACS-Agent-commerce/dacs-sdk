@@ -12,7 +12,7 @@ import {
 /**
  * The closed §B.7 registry of signature domain separators — the full 25-entry
  * set at this revision (issue #86; oracle pin
- * 625df63908fe5965f5f3f0b83cf53ee7031c6d16). A signature produced under one
+ * c2ecd9fa658776f5511f2414d7b4c3e23b847463). A signature produced under one
  * separator MUST NOT validate under any other (SIG-2).
  *
  * Registry membership (all 25) is distinct from *generic single-hash signing

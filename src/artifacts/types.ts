@@ -317,9 +317,13 @@ export interface LegacyMvpListing {
   listingVersion?: number;
 }
 
-/** Explicit read boundary for normative and historical Listing artifacts. */
+/**
+ * Explicit read boundary for normative and historical Listing artifacts.
+ * A normative branch is only a structurally readable reader-step envelope;
+ * consumers MUST obtain a `verified` ordered validation result before use.
+ */
 export type ReadableListing =
-  | { compatibility: "normative"; listing: Listing }
+  | { compatibility: "normative"; listing: ListingEnvelope }
   | { compatibility: "legacy-mvp"; listing: LegacyMvpListing };
 
 /** DACS-1 §6.3.4 / LR-1 exact Listing tuple pinned by a session. */

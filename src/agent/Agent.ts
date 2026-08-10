@@ -26,8 +26,11 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
-import type { ListingValidationResult } from "./listingValidation.js";
-import type { ListingRailAuthorityInput } from "./listingValidation.js";
+import type {
+  ListingRailAuthorityInput,
+  ListingValidationResult,
+  PayloadVerificationCapabilityResolver,
+} from "./listingValidation.js";
 import { publishListingCore } from "./publishListingCore.js";
 import {
   discoverListings,
@@ -101,6 +104,8 @@ export interface AgentConfig {
   loadListingRailResolution?: (
     listing: Readonly<ListingDraft>,
   ) => Promise<ListingRailAuthorityInput> | ListingRailAuthorityInput;
+  /** DACS-4 DPA-1 local producer support for attested-payload Listings. */
+  resolvePayloadVerificationCapability?: PayloadVerificationCapabilityResolver;
   /**
    * DACS-1 §6.3.4 full reader validation shared by normative discovery and,
    * unless overridden per call, new-session admission.
@@ -277,6 +282,8 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           adapter.scanOwnAnchorsByNamePrefix(prefix),
         anchorWriteOnce: (name, value) => adapter.anchorWriteOnce(name, value),
         loadRailResolution: config.loadListingRailResolution,
+        resolvePayloadVerificationCapability:
+          config.resolvePayloadVerificationCapability,
       });
     },
 

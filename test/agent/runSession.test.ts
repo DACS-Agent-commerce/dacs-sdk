@@ -5,7 +5,12 @@ import {
   type SessionDeps,
   type SessionTerms,
 } from "../../src/agent/runSessionCore.js";
-import { contentHash } from "../../src/canonical/index.js";
+import type { Listing } from "../../src/artifacts/types.js";
+import {
+  canonicalize,
+  contentHash,
+  sha256Hex,
+} from "../../src/canonical/index.js";
 
 const LISTING = {
   agentId: "did:demos:agent:alice",
@@ -24,57 +29,6 @@ const TERMS: SessionTerms = {
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
-
-const normativeListing = () => ({
-  dacsVersion: "1" as const,
-  listingVersion: 7,
-  listingId: "market-data-vendor",
-  seller: {
-    identity: {
-      bundleVersion: "1" as const,
-      presentedBy: "did:demos:agent:alice",
-      presentedAt: 1_770_000_000_000,
-      claims: [{ ref: "did:demos:agent:alice" }],
-      presentation: {
-        kind: "per-claim" as const,
-        signatures: [
-          { ref: "did:demos:agent:alice", signature: "presentation" },
-        ],
-      },
-    },
-    displayName: "Alice",
-    publicEndpoint: "https://alice.example/dacs",
-  },
-  offering: {
-    title: "Market Data",
-    description: "Pinned listing",
-    category: "data.finance",
-    tags: ["market"],
-    deliverable: {
-      kind: "attested-payload" as const,
-      payloadFormat: "application/json",
-    },
-  },
-  buyerRequirement: { requirementVersion: "1" as const, required: [] },
-  pipeline: [
-    { kind: "negotiate-fixed-price" as const },
-    { kind: "commit-agreement" as const },
-    { kind: "pay-x402" as const, parameters: { rail: "x402:default" } },
-    { kind: "deliver-attested-payload" as const },
-  ],
-  pricing: {
-    kind: "fixed" as const,
-    price: { amount: "1", currency: "USDC" },
-  },
-  acceptedRails: [{ railId: "x402:default" }],
-  terms: { deadlineSecAfterCommit: 3_600 },
-  validity: { notBefore: 1_770_000_000_000 },
-  signature: {
-    algorithm: "ed25519" as const,
-    signer: "did:demos:agent:alice",
-    value: "AQ",
-  },
-});
 
 function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
   return {
@@ -101,6 +55,88 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
   };
 }
 
+function normativeDpaListing(): Listing {
+  return {
+    dacsVersion: "1",
+    listingVersion: 7,
+    listingId: "market-data-vendor",
+    seller: {
+      identity: {
+        bundleVersion: "1",
+        presentedBy: "did:demos:agent:alice",
+        presentedAt: 1_770_000_000_000,
+        claims: [{ ref: "did:demos:agent:alice" }],
+        presentation: {
+          kind: "per-claim",
+          signatures: [
+            { ref: "did:demos:agent:alice", signature: "presentation" },
+          ],
+        },
+      },
+      displayName: "Alice",
+      publicEndpoint: "https://alice.example/dacs",
+    },
+    offering: {
+      title: "Market Data",
+      description: "Pinned listing",
+      category: "data.finance",
+      tags: ["market"],
+      deliverable: {
+        kind: "attested-payload",
+        payloadFormat: "application/json",
+        verificationMethod: { kind: "self-signed" },
+      },
+    },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [
+      { kind: "negotiate-fixed-price" },
+      { kind: "commit-agreement" },
+      { kind: "pay-x402", parameters: { rail: "x402:default" } },
+      { kind: "deliver-attested-payload" },
+    ],
+    pricing: {
+      kind: "fixed",
+      price: { amount: "1", currency: "USDC" },
+    },
+    acceptedRails: [{ railId: "x402:default" }],
+    terms: { deadlineSecAfterCommit: 3_600 },
+    validity: { notBefore: 1_770_000_000_000 },
+    signature: {
+      algorithm: "ed25519",
+      signer: "did:demos:agent:alice",
+      value: "AQ",
+    },
+  };
+}
+
+function verifiedAdmissionFor(listing: Listing) {
+  const deliverable = listing.offering.deliverable;
+  if (
+    deliverable.kind !== "attested-payload" ||
+    !deliverable.verificationMethod
+  ) {
+    throw new Error("fixture drift");
+  }
+  return {
+    disposition: "verified" as const,
+    step: 9 as const,
+    reason: "verified",
+    listing,
+    listingContentHash: contentHash(
+      listing as unknown as Record<string, unknown>,
+    ),
+    payloadVerificationCapability: {
+      disposition: "supported" as const,
+      reason: "supported",
+      verificationMethodKind: deliverable.verificationMethod.kind,
+      verificationMethodHash: sha256Hex(
+        canonicalize(deliverable.verificationMethod),
+      ),
+      deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
+    },
+  };
+}
+
 describe("runSession orchestration (T4)", () => {
   test("happy path anchors agreement+evidence+bundle and completes", async () => {
     const res = await runSessionCore("stor-listing", TERMS, makeDeps());
@@ -112,7 +148,7 @@ describe("runSession orchestration (T4)", () => {
   });
 
   test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {
-    const normative = normativeListing();
+    const normative = normativeDpaListing();
     let evidence: Record<string, unknown> | undefined;
     let selectedRail: string | undefined;
     const res = await runSessionCore(
@@ -123,12 +159,7 @@ describe("runSession orchestration (T4)", () => {
       },
       makeDeps({
         readListing: async () => normative,
-        validateListing: () => ({
-          disposition: "verified",
-          step: 9,
-          reason: "verified",
-          listingContentHash: contentHash(normative),
-        }),
+        validateListing: () => verifiedAdmissionFor(normative),
         settle: async (request) => {
           selectedRail = request.rail;
           return {
@@ -206,7 +237,7 @@ describe("runSession orchestration (T4)", () => {
   });
 
   test("refuses to pay presentedBy when a different carried claim signed", async () => {
-    const normative = normativeListing();
+    const normative = normativeDpaListing();
     normative.seller.identity.claims.push({ ref: "did:demos:agent:signer" });
     normative.signature.signer = "did:demos:agent:signer";
     let settles = 0;
@@ -220,12 +251,7 @@ describe("runSession orchestration (T4)", () => {
         },
         makeDeps({
           readListing: async () => normative,
-          validateListing: () => ({
-            disposition: "verified",
-            step: 9,
-            reason: "verified",
-            listingContentHash: contentHash(normative),
-          }),
+          validateListing: () => verifiedAdmissionFor(normative),
           settle: async () => {
             settles += 1;
             throw new Error("must not settle");
@@ -234,6 +260,113 @@ describe("runSession orchestration (T4)", () => {
       ),
     ).rejects.toThrow(/not payee-bound|signer must equal/i);
     expect(settles).toBe(0);
+  });
+
+  test("a readable missing-method envelope reaches ordered DPA-1 step 7 and never pays", async () => {
+    const envelope = normativeDpaListing();
+    delete (envelope.offering.deliverable as { verificationMethod?: unknown })
+      .verificationMethod;
+    let validationCalls = 0;
+    let settled = false;
+
+    await expect(
+      runSessionCore(
+        "stor-missing-method",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => envelope,
+          validateListing: () => {
+            validationCalls += 1;
+            return {
+              disposition: "rejected",
+              step: 7,
+              reason: "pipeline-invalid",
+            };
+          },
+          settle: async () => {
+            settled = true;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/rejected at DACS-1 reader step 7.*LR-3/);
+    expect(validationCalls).toBe(1);
+    expect(settled).toBe(false);
+  });
+
+  test.each(["absent", "mismatched"] as const)(
+    "a stale verified result with %s DPA capability never reaches payment",
+    async (capabilityCase) => {
+      const listing = normativeDpaListing();
+      const admission = verifiedAdmissionFor(listing);
+      if (capabilityCase === "absent") {
+        delete (
+          admission as {
+            payloadVerificationCapability?: unknown;
+          }
+        ).payloadVerificationCapability;
+      } else {
+        admission.payloadVerificationCapability.verificationMethodHash =
+          "0".repeat(64);
+      }
+      let settled = false;
+
+      await expect(
+        runSessionCore(
+          "stor-stale-capability",
+          {
+            ...TERMS,
+            price: { ...TERMS.price, rail: "x402:default" },
+          },
+          makeDeps({
+            readListing: async () => listing,
+            validateListing: () => admission,
+            settle: async () => {
+              settled = true;
+              throw new Error("must not settle");
+            },
+          }),
+        ),
+      ).rejects.toThrow(/capability-incomplete.*DPA-1/);
+      expect(settled).toBe(false);
+    },
+  );
+
+  test("an unknown delivery envelope cannot be admitted by a stale verified result", async () => {
+    const listing = normativeDpaListing();
+    listing.pipeline[3] = { kind: "deliver-future" as never };
+    let settled = false;
+
+    await expect(
+      runSessionCore(
+        "stor-unknown-delivery",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+          deliveryPhase: "deliver-future",
+        },
+        makeDeps({
+          readListing: async () => listing,
+          validateListing: () => ({
+            disposition: "verified",
+            step: 9,
+            reason: "stale-validator-pass",
+            listing,
+            listingContentHash: contentHash(
+              listing as unknown as Record<string, unknown>,
+            ),
+          }),
+          settle: async () => {
+            settled = true;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/stale, substituted, or capability-incomplete/);
+    expect(settled).toBe(false);
   });
 
   test("rail-reported finality flows onto the evidence (bft-final / demos / block), F7/#22", async () => {
