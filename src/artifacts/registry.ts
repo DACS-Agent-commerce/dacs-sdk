@@ -11,6 +11,7 @@ export const ARTIFACT_SEPARATORS = {
   Listing: "dacs-listing:v1:",
   CompositeVerificationRecord: "dacs-composite:v1:",
   AgreementDocument: "dacs-agreement:v1:",
+  PayeeBoundAgreementDocument: "dacs-payee-bound-agreement:v1:",
   SettlementEvidence: "dacs-evidence:v1:",
   AttestationBundle: "dacs-bundle:v1:",
   FaultAttestationBundle: "dacs-fault-bundle:v1:",

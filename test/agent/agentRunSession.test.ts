@@ -1,13 +1,17 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { buildAgent } from "../../src/agent/Agent.js";
-import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
   signComponentArtifact,
   verifyComponentSignature,
 } from "../../src/artifacts/signatures.js";
-import { contentHash, stripSignature } from "../../src/canonical/index.js";
+import {
+  contentHash,
+  listingAddress,
+  logicalToStorageProgramName,
+  stripSignature,
+} from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -169,6 +173,10 @@ async function anchorListing(
     },
   );
   store.set("stor:listing", signed as Record<string, unknown>);
+  store.set(
+    `stor:${logicalToStorageProgramName(listingAddress(agentId, "svc", 1))}`,
+    signed as Record<string, unknown>,
+  );
   return "stor:listing";
 }
 
@@ -546,20 +554,55 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const buyerPriv = privateKeyFromSeed(buyerSeed);
     const buyerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(buyerSeed))).toString("hex");
     const normativeBuyerDid = `did:demos:agent:${buyerHex}`;
-    const agreement = await buildSignedArtifact(
-      {
-        jobId: "normative-ref-job",
-        pattern: "fixed-price",
-        buyer: normativeBuyerDid,
-        seller: sellerDid,
-        listingRef,
-        price: TERMS.price,
-        delivery: { phase: TERMS.deliveryPhase, format: TERMS.deliveryFormat },
-        expiresAt: "2026-08-10T12:00:00.000Z",
+    const agreement = {
+      agreementVersion: "1",
+      jobId: "normative-ref-job",
+      listingRef: {
+        listingId: "svc",
+        version: 1,
+        contentHash: contentHash(stripSignature(listing)),
       },
-      ARTIFACT_SEPARATORS.AgreementDocument,
-      (bytes) => ed25519Sign(bytes, buyerPriv),
-    );
+      parties: [
+        {
+          role: "buyer",
+          bundleHash: "a".repeat(64),
+          primaryClaim: normativeBuyerDid,
+          vetRecordRef: {
+            anchor: { kind: "storage-program", locator: "stor:buyer-vet" },
+            contentHash: "c".repeat(64),
+          },
+        },
+        {
+          role: "seller",
+          bundleHash: "b".repeat(64),
+          primaryClaim: sellerDid,
+          vetRecordRef: {
+            anchor: { kind: "storage-program", locator: "stor:seller-vet" },
+            contentHash: "d".repeat(64),
+          },
+        },
+      ],
+      terms: {
+        deliverable: { deliverableType: "attested-payload", hash: "e".repeat(64) },
+        price: { amount: "1", currency: "USDC" },
+        rail: { railId: "x402:default" },
+        deadline: 1786366800000,
+      },
+      derivedFromPattern: "fixed-price",
+      generatedAt: 1786363200000,
+      signatures: [
+        {
+          party: normativeBuyerDid,
+          algorithm: "ed25519",
+          value: Buffer.alloc(64, 7).toString("base64url"),
+        },
+        {
+          party: sellerDid,
+          algorithm: "ed25519",
+          value: Buffer.alloc(64, 8).toString("base64url"),
+        },
+      ],
+    };
     store.set("stor:agreement", agreement as Record<string, unknown>);
 
     const unsigned = {

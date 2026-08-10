@@ -1,4 +1,13 @@
 export {
+  deriveFixedPriceAgreement,
+  signFixedPriceAgreement,
+  type VerifiedListingInput,
+  type FixedPricePartyInput,
+  type FixedPriceAgreementInput,
+  type UnsignedAgreementArtifact,
+  type AgreementSigner,
+} from "./fixedPrice.js";
+export {
   computeBidHash,
   generateSalt,
   saltHasEnoughEntropy,

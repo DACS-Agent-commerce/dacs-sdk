@@ -6,16 +6,18 @@ import type {
   AnyAttestationBundle,
   AttestationRef,
   BundleParty,
+  ListingPin,
 } from "../artifacts/types.js";
 import {
   type LegacyMvpAnyAttestationBundle,
   type LegacyMvpAttestationRef,
   isLegacyMvpAnyAttestationBundle,
+  isLegacyMvpAgreementDocument,
   isLegacyMvpAttestationRef,
   isLegacyMvpSettlementEvidence,
 } from "../artifacts/legacyMvp.js";
 import {
-  isAgreementDocument,
+  isAgreementArtifact,
   isAnyAttestationBundle,
   isAttestationRef,
   isCompositeVerificationRecord,
@@ -109,6 +111,11 @@ export interface VerifyBundleDeps {
     jobId: string,
     parties: readonly BundleParty[],
   ) => Promise<Record<string, unknown> | null>;
+  /** Resolve the exact DACS-1 LR-1 Listing tuple carried by a normative bundle. */
+  resolveListingRef?: (
+    listingRef: Readonly<ListingPin>,
+    parties: readonly BundleParty[],
+  ) => Promise<Record<string, unknown> | null>;
   /**
    * @deprecated Pre-#308 MVP resolver keyed by SDK-only artifact kind. It is
    * retained solely for explicit legacy reads and the pre-commit listing
@@ -193,9 +200,12 @@ const ABORT_OUTCOMES = new Set(["aborted-by-self", "aborted-by-other"]);
 
 function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer" | "seller"): string | undefined {
   if (!agreement) return undefined;
+  if (isAgreementArtifact(agreement)) {
+    return agreement.parties.find((party) => party.role === role)?.primaryClaim;
+  }
   const scope = stripSignature(agreement);
-  if (!isAgreementDocument(scope)) return undefined;
-  return scope[role];
+  if (isLegacyMvpAgreementDocument(scope)) return scope[role];
+  return undefined;
 }
 
 function requiredSignatureClaims(
@@ -371,7 +381,9 @@ export async function verifyBundleCore(
     const agreement = await checkReadableRef(
       "dacs-3-agreement",
       bundle.agreementRef,
-      isAgreementDocument,
+      isLegacyMvpAttestationRef(bundle.agreementRef)
+        ? isLegacyMvpAgreementDocument
+        : isAgreementArtifact,
     );
     refs.push(agreement.check);
     agreementArtifact = agreement.value;
@@ -422,18 +434,34 @@ export async function verifyBundleCore(
   // The listing is not a session AttestationRef. Follow the agreement's signed
   // listing address, or use the explicit legacy resolver for pre-commit reads.
   const listingId = String(bundle.listingRef.listingId);
+  const agreementListingPin =
+    agreementArtifact && isAgreementArtifact(agreementArtifact)
+      ? agreementArtifact.listingRef
+      : null;
   const listingAddr =
     agreementArtifact &&
     typeof (stripSignature(agreementArtifact) as { listingRef?: unknown })
       .listingRef === "string"
       ? (stripSignature(agreementArtifact) as { listingRef: string }).listingRef
       : null;
-  const canResolveListing = Boolean(listingAddr || deps.resolveRef);
-  const listingRead = listingAddr
-    ? await deps.readArtifact(listingAddr)
-    : deps.resolveRef
-      ? await deps.resolveRef("dacs-1-listing", bundle.jobId, bundle.parties)
-      : null;
+  const canResolveListing = Boolean(
+    (agreementListingPin && deps.resolveListingRef) ||
+      listingAddr ||
+      deps.resolveRef,
+  );
+  const listingRead =
+    agreementListingPin && deps.resolveListingRef
+      ? await deps.resolveListingRef(agreementListingPin, bundle.parties)
+      : listingAddr
+        ? await deps.readArtifact(listingAddr)
+        : deps.resolveRef
+          ? await deps.resolveRef("dacs-1-listing", bundle.jobId, bundle.parties)
+          : null;
+  const listingPinCoherent =
+    !agreementListingPin ||
+    (agreementListingPin.listingId === bundle.listingRef.listingId &&
+      agreementListingPin.version === bundle.listingRef.version &&
+      agreementListingPin.contentHash === bundle.listingRef.contentHash);
   let listing: Record<string, unknown> | null = null;
   let listingMalformed = false;
   if (listingRead !== null) {
@@ -444,20 +472,26 @@ export async function verifyBundleCore(
     }
   }
   refs.push(
-    canResolveListing
-      ? listingMalformed
-        ? {
-            kind: "dacs-1-listing",
-            id: listingId,
-            verdict: "invalid-shape",
-          }
-        : checkArtifact(
-            "dacs-1-listing",
-            listingId,
-            bundle.listingRef.contentHash,
-            isReadableListingScope,
-            listing,
-          )
+    !listingPinCoherent
+      ? {
+          kind: "dacs-1-listing",
+          id: listingId,
+          verdict: "hash-mismatch",
+        }
+      : canResolveListing
+        ? listingMalformed
+          ? {
+              kind: "dacs-1-listing",
+              id: listingId,
+              verdict: "invalid-shape",
+            }
+          : checkArtifact(
+              "dacs-1-listing",
+              listingId,
+              bundle.listingRef.contentHash,
+              isReadableListingScope,
+              listing,
+            )
       : {
           kind: "dacs-1-listing",
           id: listingId,
