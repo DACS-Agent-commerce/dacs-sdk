@@ -13,6 +13,7 @@ import {
   resolveRail,
   resolveRecipe,
   settleFromRail,
+  type RecipeDescriptor,
   type RegistryResolveDeps,
 } from "../../src/registry/index.js";
 
@@ -64,6 +65,33 @@ function depsFor(doc: Record<string, unknown> | null): RegistryResolveDeps {
 }
 
 describe("registry resolution (T12/T13)", () => {
+  test("the public recipe type requires PSP-5 completeness for negative matches", () => {
+    const acceptsRecipe = (_recipe: RecipeDescriptor) => true;
+    expect(
+      acceptsRecipe({
+        id: "safe-negative",
+        method: "consensus-backed-proxy",
+        availability: "live",
+        params: {},
+        negativeMatch: true,
+        parserRules: {
+          format: "raw",
+          matcher: "BLOCKED",
+          completeness: { kind: "sentinel", expression: "END-OF-LIST" },
+        },
+      }),
+    ).toBe(true);
+    // @ts-expect-error PSP-5 completeness is required by the negative-match arm.
+    acceptsRecipe({
+      id: "unsafe-negative",
+      method: "consensus-backed-proxy",
+      availability: "live",
+      params: {},
+      negativeMatch: true,
+      parserRules: { format: "raw", matcher: "BLOCKED" },
+    });
+  });
+
   test("resolves a live, steward-signed rail by id", async () => {
     const desc = await resolveRail("anchor", "x402:default", depsFor(await railRegistry()));
     expect(desc).toMatchObject({ id: "x402:default", kind: "x402", availability: "live" });
@@ -116,6 +144,76 @@ describe("registry resolution (T12/T13)", () => {
     } as Record<string, unknown>;
     const desc = await resolveRecipe("anchor", "self-signed", depsFor(doc));
     expect(desc).toMatchObject({ id: "self-signed", method: "self-signed" });
+  });
+
+  test("resolveRecipe rejects a signed negative-match recipe with no PSP-5 basis", async () => {
+    const recipe = await buildSignedArtifact(
+      {
+        id: "unsafe-negative",
+        method: "consensus-backed-proxy",
+        availability: "live",
+        params: { authorityUrl: "https://example.com/full-list" },
+        negativeMatch: true,
+        parserRules: { format: "json", successJsonPath: "$.listed" },
+      },
+      "dacs-recipe:v1:",
+      signerFor(STEWARD_SEED),
+    );
+    const doc = { entries: [recipe] } as Record<string, unknown>;
+    await expect(
+      resolveRecipe("anchor", "unsafe-negative", depsFor(doc)),
+    ).rejects.toThrow(/invalid descriptor shape/);
+  });
+
+  test("resolveRecipe accepts a negative-match recipe with a signed completeness check", async () => {
+    const recipe = await buildSignedArtifact(
+      {
+        id: "safe-negative",
+        method: "consensus-backed-proxy",
+        availability: "live",
+        params: { authorityUrl: "https://example.com/full-list" },
+        negativeMatch: true,
+        parserRules: {
+          format: "json",
+          successJsonPath: "$.listed",
+          completeness: {
+            kind: "record-count",
+            declaredCountExpression: "$.count",
+            recordsExpression: "$.records[*]",
+          },
+        },
+      },
+      "dacs-recipe:v1:",
+      signerFor(STEWARD_SEED),
+    );
+    const doc = { entries: [recipe] } as Record<string, unknown>;
+    await expect(
+      resolveRecipe("anchor", "safe-negative", depsFor(doc)),
+    ).resolves.toMatchObject({ id: "safe-negative", negativeMatch: true });
+  });
+
+  test("resolveRecipe rejects the retired requiresListCompleteness Boolean", async () => {
+    const recipe = await buildSignedArtifact(
+      {
+        id: "legacy-negative",
+        method: "consensus-backed-proxy",
+        availability: "live",
+        params: { authorityUrl: "https://example.com/full-list" },
+        negativeMatch: true,
+        requiresListCompleteness: true,
+        parserRules: {
+          format: "raw",
+          matcher: "BLOCKED",
+          completeness: { kind: "sentinel", expression: "END-OF-LIST" },
+        },
+      },
+      "dacs-recipe:v1:",
+      signerFor(STEWARD_SEED),
+    );
+    const doc = { entries: [recipe] } as Record<string, unknown>;
+    await expect(
+      resolveRecipe("anchor", "legacy-negative", depsFor(doc)),
+    ).rejects.toThrow(/invalid descriptor shape/);
   });
 });
 

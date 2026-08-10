@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   defaultParserEngine,
   evaluateParserSpec,
+  type CompleteParserSpec,
   type ParserSpec,
 } from "../../src/agent/parserSpec.js";
 
@@ -23,7 +24,11 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
   });
 
   it("PSP-2 negative-match inverts: match ⇒ fail, none ⇒ pass", () => {
-    const spec: ParserSpec = { format: "raw", matcher: "SANCTIONED" };
+    const spec: CompleteParserSpec = {
+      format: "raw",
+      matcher: "SANCTIONED",
+      completeness: { kind: "sentinel", expression: ".*" },
+    };
     expect(evalSpec(spec, "SANCTIONED", { negativeMatch: true })).toBe("fail");
     expect(evalSpec(spec, "clean", { negativeMatch: true })).toBe("pass");
   });
@@ -47,15 +52,57 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
     expect(evalSpec({ format: "xml", successXPath: "//x" }, "<x/>")).toBe("error");
   });
 
-  it("PSP-5 negative-match absence requires a complete response", () => {
+  it("PSP-5 derives record-count completeness from the signed ParserSpec", () => {
+    const spec: CompleteParserSpec = {
+      format: "json",
+      successJsonPath: "$.hit",
+      completeness: {
+        kind: "record-count",
+        declaredCountExpression: "$.count",
+        recordsExpression: "$.records[*]",
+      },
+    };
+    const ctx = { negativeMatch: true };
+    expect(
+      evalSpec(spec, JSON.stringify({ count: 2, records: [{}] }), ctx),
+    ).toBe("indeterminate");
+    expect(
+      evalSpec(spec, JSON.stringify({ count: 1, records: [{}] }), ctx),
+    ).toBe("pass");
+  });
+
+  it("PSP-5 checks Content-Length against received bytes rather than trusting a Boolean", () => {
+    const spec: CompleteParserSpec = {
+      format: "json",
+      successJsonPath: "$.hit",
+      completeness: { kind: "content-length" },
+    };
+    const body = JSON.stringify({ records: ["é"] });
+    expect(
+      evalSpec(spec, body, {
+        negativeMatch: true,
+        declaredContentLength: 99,
+      }),
+    ).toBe("indeterminate");
+    expect(
+      evalSpec(spec, body, {
+        negativeMatch: true,
+        declaredContentLength: Buffer.byteLength(body),
+      }),
+    ).toBe("pass");
+    expect(Buffer.byteLength(body)).toBeGreaterThan(body.length);
+  });
+
+  it("PSP-5 rejects a negative-match recipe with no signed completeness basis", () => {
     const spec: ParserSpec = { format: "json", successJsonPath: "$.hit" };
-    const ctx = (listComplete: boolean) => ({
-      negativeMatch: true,
-      requiresCompleteness: true,
-      listComplete,
-    });
-    expect(evalSpec(spec, JSON.stringify({ records: [] }), ctx(false))).toBe("indeterminate");
-    expect(evalSpec(spec, JSON.stringify({ records: [] }), ctx(true))).toBe("pass");
+    const result = evaluateParserSpec(
+      spec,
+      JSON.stringify({ records: [] }),
+      defaultParserEngine,
+      { negativeMatch: true },
+    );
+    expect(result.decision).toBe("error");
+    expect(result.reason).toMatch(/missing.*completeness/i);
   });
 
   it("PSP-3 dataMap is extracted for audit but never changes the decision", () => {

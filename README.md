@@ -47,6 +47,7 @@ import {
   createX402Rail,
   x402Settle,
   resolveRecipe,
+  standardsParserEngine,
   vetCore,
 } from "@kynesyslabs/dacs";
 
@@ -88,6 +89,33 @@ copy gets the matching role-relative `outcome` and signs under
 `AttestationBundle` records, and consistency/reputation reconciliation supports
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
+
+### ParserSpec engines and PSP-5
+
+`defaultParserEngine` is intentionally small and fail-closed. It supports JSONPath
+`$`, `.key`, `[n]`, and `[*]`, plus actual linear-time RE2 raw expressions.
+Filtered JSONPath, CSS selectors, XPath, and unsupported expressions return
+`error`; the default never silently converts an unsupported expression into a
+no-match verdict.
+
+For steward recipes using the full DACS-2 examples, inject
+`standardsParserEngine`. It uses safe filtered JSONPath, local-only HTML/CSS and
+XML/XPath selection, and actual linear-time RE2 execution:
+
+```ts
+vetCore({ subject, recipe }, {
+  proxyFetch,
+  now,
+  parserEngine: standardsParserEngine,
+});
+```
+
+Negative-match recipes require a signed `parserRules.completeness` check. The
+supported PSP-5 bases are `record-count` (declared count versus selected records),
+`sentinel` (a documented end-of-list selector), and `content-length` (the proxy
+supplies `declaredContentLength`, which is checked against the attested body).
+An omitted, mismatched, or unavailable signal can never produce a negative-match
+`pass`.
 
 ## Doctor
 

@@ -1,11 +1,28 @@
 import { describe, expect, test } from "vitest";
 
+import type {
+  CompleteParserSpec,
+  ParserSpec,
+} from "../../src/agent/parserSpec.js";
 import { vetCore, type VetDeps } from "../../src/agent/vetCore.js";
 import { parseCciRecord } from "../../src/identity/cci.js";
 import type { RecipeDescriptor } from "../../src/registry/types.js";
 
-function recipe(over: Partial<RecipeDescriptor>): RecipeDescriptor {
-  return { id: "r", method: "self-signed", availability: "live", params: {}, ...over };
+type RecipeOverrides = Partial<
+  Pick<RecipeDescriptor, "id" | "method" | "availability" | "params">
+> & {
+  negativeMatch?: boolean;
+  parserRules?: ParserSpec | CompleteParserSpec;
+};
+
+function recipe(over: RecipeOverrides): RecipeDescriptor {
+  return {
+    id: "r",
+    method: "self-signed",
+    availability: "live",
+    params: {},
+    ...over,
+  } as RecipeDescriptor;
 }
 
 const deps = (proxyStatus = 200): VetDeps => ({
@@ -66,13 +83,23 @@ describe("vetCore (DACS-2 Vet stage)", () => {
 
   // #16/#49 — a signed ParserSpec drives a DETERMINISTIC content verdict from the
   // DAHR-attested body (PSP-1..5), evaluated by the default json/raw engine.
-  const bodyDeps = (body: string, complete?: boolean): VetDeps => ({
-    proxyFetch: async () => ({ status: 200, responseHash: "0xhash", body, ...(complete !== undefined ? { complete } : {}) }),
+  const bodyDeps = (
+    body: string,
+    declaredContentLength?: number,
+  ): VetDeps => ({
+    proxyFetch: async () => ({
+      status: 200,
+      responseHash: "0xhash",
+      body,
+      ...(declaredContentLength !== undefined
+        ? { declaredContentLength }
+        : {}),
+    }),
     now: () => "2026-01-01T00:00:00Z",
   });
-  const proxyRecipe = (over: Partial<RecipeDescriptor>) =>
+  const proxyRecipe = (over: RecipeOverrides) =>
     recipe({ method: "consensus-backed-proxy", params: { authorityUrl: "https://x/y" }, ...over });
-  const req = (over: Partial<RecipeDescriptor>) => ({
+  const req = (over: RecipeOverrides) => ({
     subject: "did:demos:agent:alice",
     recipe: proxyRecipe(over),
   });
@@ -91,13 +118,22 @@ describe("vetCore (DACS-2 Vet stage)", () => {
   });
 
   test("ParserSpec negative-match: a match ⇒ fail (listed), no match ⇒ pass (PSP-2)", async () => {
-    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.listed" };
-    const opts = { parserRules: rules, negativeMatch: true };
+    const rules: CompleteParserSpec = {
+      format: "json",
+      successJsonPath: "$.listed",
+      completeness: { kind: "sentinel", expression: "$.complete" },
+    };
+    const opts: RecipeOverrides = { parserRules: rules, negativeMatch: true };
     expect(
       (await vetCore(req(opts), bodyDeps(JSON.stringify({ listed: true })))).decision,
     ).toBe("fail");
     expect(
-      (await vetCore(req(opts), bodyDeps(JSON.stringify({ clean: true })))).decision,
+      (
+        await vetCore(
+          req(opts),
+          bodyDeps(JSON.stringify({ clean: true, complete: true })),
+        )
+      ).decision,
     ).toBe("pass");
   });
 
@@ -123,16 +159,43 @@ describe("vetCore (DACS-2 Vet stage)", () => {
   });
 
   test("PSP-5: a negative-match pass on an unconfirmed-complete list ⇒ indeterminate", async () => {
-    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.hit" };
-    const opts = { parserRules: rules, negativeMatch: true, requiresListCompleteness: true };
+    const rules: CompleteParserSpec = {
+      format: "json",
+      successJsonPath: "$.hit",
+      completeness: { kind: "content-length" },
+    };
+    const opts: RecipeOverrides = { parserRules: rules, negativeMatch: true };
+    const body = JSON.stringify({ records: [] });
     // No hit (would be "not listed" = pass) but completeness unconfirmed → indeterminate.
     expect(
-      (await vetCore(req(opts), bodyDeps(JSON.stringify({ records: [] }), false))).decision,
+      (
+        await vetCore(
+          req(opts),
+          bodyDeps(body, 99),
+        )
+      ).decision,
     ).toBe("indeterminate");
     // …confirmed complete → the pass stands.
     expect(
-      (await vetCore(req(opts), bodyDeps(JSON.stringify({ records: [] }), true))).decision,
+      (
+        await vetCore(
+          req(opts),
+          bodyDeps(body, Buffer.byteLength(body)),
+        )
+      ).decision,
     ).toBe("pass");
+  });
+
+  test("PSP-5: a negative-match recipe without a signed completeness basis is an error", async () => {
+    const incomplete: ParserSpec = {
+      format: "json",
+      successJsonPath: "$.hit",
+    };
+    const result = await vetCore(
+      req({ parserRules: incomplete, negativeMatch: true }),
+      bodyDeps(JSON.stringify({ records: [] })),
+    );
+    expect(result.decision).toBe("error");
   });
 
   test("a non-2xx fails first — parserRules are not consulted", async () => {
@@ -145,7 +208,7 @@ describe("vetCore (DACS-2 Vet stage)", () => {
   });
 
   test("HTTP status mapping: 404 (no record) differs from 5xx (reachable error)", async () => {
-    const at = (status: number, over: Partial<RecipeDescriptor> = {}) =>
+    const at = (status: number, over: RecipeOverrides = {}) =>
       vetCore(req(over), {
         proxyFetch: async () => ({ status, responseHash: "0xhash", body: "{}" }),
         now: () => "2026-01-01T00:00:00Z",

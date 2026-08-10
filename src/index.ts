@@ -231,12 +231,18 @@ export {
   // DACS-2 §7.4.1 ParserSpec — signed recipe content rules (#49) + the engine seam.
   evaluateParserSpec,
   defaultParserEngine,
+  standardsParserEngine,
+  standardsParserEngineCapabilities,
   type ParserSpec,
+  type CompleteParserSpec,
+  type CompletenessCheck,
   type ParserFormat,
   type IndeterminatePredicate,
   type ParserEngine,
   type ParserEvalContext,
   type ParserEvaluation,
+  type PredicateResult,
+  type ParserSelectionResult,
   type Reputation,
   // Injectable buyer-session core (F1 #14): run the lifecycle against any
   // SubstrateAdapter (mock/simulation/non-Demos). NOTE: `sessionAnchorName` is

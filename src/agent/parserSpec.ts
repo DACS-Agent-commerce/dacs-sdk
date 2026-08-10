@@ -13,6 +13,8 @@
  * reach different verdicts from the same recipe.
  */
 
+import { RE2 } from "re2-wasm";
+
 export type ParserFormat = "json" | "html" | "xml" | "raw";
 
 export type IndeterminatePredicate =
@@ -27,8 +29,40 @@ export type ParserSpec =
   | { format: "xml"; successXPath: string; indeterminateOn?: IndeterminatePredicate[]; dataMap?: Record<string, string> }
   | { format: "raw"; matcher: string; indeterminateOn?: IndeterminatePredicate[] };
 
+/**
+ * PSP-5 completeness proof declared inside a steward-signed negative-match
+ * recipe. The verifier evaluates the selected signal itself; callers cannot
+ * substitute a precomputed "complete" Boolean.
+ */
+export type CompletenessCheck =
+  | {
+      kind: "record-count";
+      /** Select exactly one non-negative integer declared by the authority. */
+      declaredCountExpression: string;
+      /** Select every downloaded record; the selection cardinality is compared. */
+      recordsExpression: string;
+    }
+  | {
+      kind: "sentinel";
+      /** Select the authority-documented end-of-list sentinel. */
+      expression: string;
+    }
+  | {
+      kind: "content-length";
+    };
+
+/** A ParserSpec that is completeness-gated by construction for PSP-5. */
+export type CompleteParserSpec = ParserSpec & {
+  completeness: CompletenessCheck;
+};
+
 /** Result of evaluating ONE predicate expression against a body. */
 export type PredicateResult = { parseError: true } | { parseError?: false; matched: boolean };
+
+/** Nodes/values selected by one expression, used for PSP-3 and record counts. */
+export type ParserSelectionResult =
+  | { parseError: true }
+  | { parseError?: false; values: readonly unknown[] };
 
 /**
  * The pluggable predicate evaluator (PSP-1/PSP-4). MUST be deterministic and MUST
@@ -43,20 +77,21 @@ export interface ParserEngine {
    * shape; return null when nothing resolves.
    */
   extract?(format: ParserFormat, expr: string, body: string): unknown;
+  /**
+   * Select every matching node/value. Required only for PSP-5 record-count
+   * checks; engines without it fail closed for that completeness mode.
+   */
+  select?(format: ParserFormat, expr: string, body: string): ParserSelectionResult;
 }
 
 export interface ParserEvalContext {
   /** PSP-2: a match means "listed" — invert the outcome (recipe.negativeMatch). */
   negativeMatch?: boolean;
   /**
-   * PSP-5 completeness floor: for a negative-match "absence in a full list" recipe,
-   * a `pass` (= "not listed") is only trustworthy over a provably-complete response.
-   * Pass the completeness verdict (record-count / sentinel / Content-Length checked
-   * by the caller). When the recipe is completeness-gated and this is not `true`,
-   * the `pass` is downgraded to `indeterminate`. Omit for non-list recipes.
+   * PSP-5 Content-Length declared by the authority for the attested response.
+   * The evaluator compares it with the UTF-8 byte length of `body` itself.
    */
-  requiresCompleteness?: boolean;
-  listComplete?: boolean;
+  declaredContentLength?: number;
 }
 
 export type ParserDecision = "pass" | "fail" | "error" | "indeterminate";
@@ -67,6 +102,9 @@ export interface ParserEvaluation {
   data?: Record<string, unknown>;
   reason?: string;
 }
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
 
 /** The success match-predicate expression for a spec (PSP-1). */
 export function successExpr(spec: ParserSpec): string {
@@ -89,6 +127,136 @@ export function predicateExpr(format: ParserFormat, p: IndeterminatePredicate): 
   if (format === "xml" && "xPath" in p) return p.xPath;
   if (format === "raw" && "matcher" in p) return p.matcher;
   return null;
+}
+
+type CompletenessEvaluation =
+  | { decision: "complete" }
+  | { decision: "indeterminate"; reason: string }
+  | { decision: "error"; reason: string };
+
+function declaredRecordCount(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)) {
+    const count = Number(value);
+    return Number.isSafeInteger(count) ? count : null;
+  }
+  return null;
+}
+
+function evaluateCompleteness(
+  spec: ParserSpec,
+  body: string,
+  engine: ParserEngine,
+  ctx: ParserEvalContext,
+): CompletenessEvaluation {
+  const raw = (spec as ParserSpec & { completeness?: unknown }).completeness;
+  if (!isObj(raw) || typeof raw["kind"] !== "string") {
+    return {
+      decision: "error",
+      reason: "negative-match recipe is missing a signed PSP-5 completeness check",
+    };
+  }
+
+  if (raw["kind"] === "content-length") {
+    const declared = ctx.declaredContentLength;
+    const received = Buffer.byteLength(body, "utf8");
+    if (
+      !Number.isSafeInteger(declared) ||
+      (declared ?? -1) < 0 ||
+      declared !== received
+    ) {
+      return {
+        decision: "indeterminate",
+        reason: "declared Content-Length did not confirm the received byte count (PSP-5)",
+      };
+    }
+    return { decision: "complete" };
+  }
+
+  if (raw["kind"] === "sentinel") {
+    const expression = raw["expression"];
+    if (typeof expression !== "string" || expression.length === 0) {
+      return {
+        decision: "error",
+        reason: "PSP-5 sentinel completeness check is malformed",
+      };
+    }
+    let sentinel: PredicateResult;
+    try {
+      sentinel = engine.evalPredicate(spec.format, expression, body);
+    } catch {
+      sentinel = { parseError: true };
+    }
+    if (sentinel.parseError) {
+      return {
+        decision: "error",
+        reason: "PSP-5 sentinel could not be evaluated",
+      };
+    }
+    return sentinel.matched
+      ? { decision: "complete" }
+      : {
+          decision: "indeterminate",
+          reason: "documented end-of-list sentinel was not present (PSP-5)",
+        };
+  }
+
+  if (raw["kind"] === "record-count") {
+    const declaredExpression = raw["declaredCountExpression"];
+    const recordsExpression = raw["recordsExpression"];
+    if (
+      typeof declaredExpression !== "string" ||
+      declaredExpression.length === 0 ||
+      typeof recordsExpression !== "string" ||
+      recordsExpression.length === 0
+    ) {
+      return {
+        decision: "error",
+        reason: "PSP-5 record-count completeness check is malformed",
+      };
+    }
+    if (!engine.select) {
+      return {
+        decision: "error",
+        reason: "parser engine cannot evaluate PSP-5 record-count completeness",
+      };
+    }
+    let declared: ParserSelectionResult;
+    let records: ParserSelectionResult;
+    try {
+      declared = engine.select(spec.format, declaredExpression, body);
+      records = engine.select(spec.format, recordsExpression, body);
+    } catch {
+      return {
+        decision: "error",
+        reason: "PSP-5 record-count expressions could not be evaluated",
+      };
+    }
+    if (declared.parseError || records.parseError) {
+      return {
+        decision: "error",
+        reason: "PSP-5 record-count expressions could not be evaluated",
+      };
+    }
+    const expected =
+      declared.values.length === 1
+        ? declaredRecordCount(declared.values[0])
+        : null;
+    if (expected === null || expected !== records.values.length) {
+      return {
+        decision: "indeterminate",
+        reason: "declared record count did not match downloaded records (PSP-5)",
+      };
+    }
+    return { decision: "complete" };
+  }
+
+  return {
+    decision: "error",
+    reason: "PSP-5 completeness check has an unsupported kind",
+  };
 }
 
 /**
@@ -175,20 +343,17 @@ export function evaluateParserSpec(
       ? "pass"
       : "fail";
 
-  // PSP-5: a negative-match `pass` that rests on ABSENCE from a full list is only
-  // trustworthy over a provably-complete response — else `indeterminate`.
-  if (neg && decision === "pass" && ctx.requiresCompleteness && ctx.listComplete !== true) {
-    return result(
-      "indeterminate",
-      "negative-match pass requires a confirmed-complete response (PSP-5)",
-    );
+  // PSP-5: every signed negative-match recipe carries its completeness basis.
+  // The evaluator verifies that basis itself before allowing absence => pass.
+  if (neg && decision === "pass") {
+    const completeness = evaluateCompleteness(spec, body, engine, ctx);
+    if (completeness.decision !== "complete") {
+      return result(completeness.decision, completeness.reason);
+    }
   }
 
   return result(decision);
 }
-
-const isObj = (v: unknown): v is Record<string, unknown> =>
-  !!v && typeof v === "object" && !Array.isArray(v);
 
 type JsonPathToken = { key: string } | { index: number } | { wildcard: true };
 
@@ -250,88 +415,50 @@ function resolveJsonPath(root: unknown, path: string): unknown[] | null {
   return cur;
 }
 
-/**
- * Reject a regex that uses features outside RE2's guarantees — backreferences
- * (`\1`, `\k<name>`) and lookaround (`(?=)`, `(?!)`, `(?<=)`, `(?<!)`). The spec
- * mandates RE2 semantics (linear-time, no catastrophic backtracking) for an
- * untrusted signed matcher, so a non-RE2 pattern is a malformed matcher rather
- * than something to run through JS `RegExp` (whose backtracking differs).
- */
-function isRe2Compatible(src: string): boolean {
-  for (let i = 0; i < src.length; i++) {
-    const c = src[i];
-    if (c === "\\") {
-      const n = src[i + 1];
-      if (n !== undefined && n >= "1" && n <= "9") return false; // numeric backreference
-      if (n === "k") return false; // named backreference \k<name>
-      i++; // skip the escaped char
-      continue;
-    }
-    if (c === "(" && src[i + 1] === "?") {
-      const n2 = src[i + 2];
-      if (n2 === "=" || n2 === "!") return false; // lookahead
-      if (n2 === "<" && (src[i + 3] === "=" || src[i + 3] === "!")) return false; // lookbehind
+function defaultSelect(
+  format: ParserFormat,
+  expr: string,
+  body: string,
+): ParserSelectionResult {
+  if (format === "raw") {
+    try {
+      const match = new RE2(expr, "u").exec(body);
+      return {
+        values: match ? [match[1] ?? match[0]] : [],
+      };
+    } catch {
+      return { parseError: true };
     }
   }
-  return true;
+  if (format === "json") {
+    let root: unknown;
+    try {
+      root = JSON.parse(body);
+    } catch {
+      return { parseError: true };
+    }
+    const nodes = resolveJsonPath(root, expr);
+    return nodes === null ? { parseError: true } : { values: nodes };
+  }
+  return { parseError: true };
 }
 
 /**
- * The built-in {@link ParserEngine} for `json` (the supported JSONPath subset)
- * and `raw` (RE2-compatible regex only — a pattern using backreferences/lookaround
- * is rejected as a parse error, NOT run through JS `RegExp`). An unsupported
- * JSONPath construct is likewise a parse error, never a silent no-match.
- * `html`/`xml` need a real parser and are reported as a verifier-side failure
- * (`error`) until an engine that supports them is injected.
+ * Lightweight, fail-closed built-in engine. It supports JSONPath `$`, `.key`,
+ * `[n]`, and `[*]`, plus actual linear-time RE2 raw expressions. It deliberately
+ * reports filters, CSS, XPath, and other constructs as parse errors. Use
+ * `standardsParserEngine` for the full ParserSpec selector examples.
  */
 export const defaultParserEngine: ParserEngine = {
   evalPredicate(format, expr, body) {
-    if (format === "raw") {
-      if (!isRe2Compatible(expr)) return { parseError: true }; // non-RE2 matcher
-      let re: RegExp;
-      try {
-        re = new RegExp(expr);
-      } catch {
-        // A malformed matcher is a verifier-side inability to obtain a decision.
-        return { parseError: true };
-      }
-      return { matched: re.test(body) };
-    }
-    if (format === "json") {
-      let root: unknown;
-      try {
-        root = JSON.parse(body);
-      } catch {
-        return { parseError: true };
-      }
-      const nodes = resolveJsonPath(root, expr);
-      if (nodes === null) return { parseError: true }; // unsupported JSONPath — reject, don't guess
-      return { matched: nodes.length > 0 };
-    }
-    // html / xml unsupported by the default engine → verifier-side failure.
-    return { parseError: true };
+    const selected = defaultSelect(format, expr, body);
+    return selected.parseError
+      ? selected
+      : { matched: selected.values.length > 0 };
   },
   extract(format, expr, body) {
-    if (format === "json") {
-      let root: unknown;
-      try {
-        root = JSON.parse(body);
-      } catch {
-        return null;
-      }
-      const nodes = resolveJsonPath(root, expr);
-      if (nodes === null) return null; // unsupported expression extracts nothing
-      return nodes[0] ?? null;
-    }
-    if (format === "raw") {
-      if (!isRe2Compatible(expr)) return null;
-      try {
-        const mm = new RegExp(expr).exec(body);
-        return mm ? (mm[1] ?? mm[0]) : null;
-      } catch {
-        return null;
-      }
-    }
-    return null;
+    const selected = defaultSelect(format, expr, body);
+    return selected.parseError ? null : (selected.values[0] ?? null);
   },
+  select: defaultSelect,
 };

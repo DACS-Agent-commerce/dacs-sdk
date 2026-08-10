@@ -123,13 +123,10 @@ export interface VetProxyResult {
   /** The proxied response body, when the method needs to inspect it (e.g. ofac-screen). */
   body?: string;
   /**
-   * PSP-5 completeness signal: whether the proxy confirmed the response was
-   * COMPLETE (declared record-count / end-of-list sentinel / Content-Length ==
-   * received bytes). Only consulted for a `requiresListCompleteness` negative-
-   * match recipe — a `pass` on an unconfirmed/partial response is downgraded to
-   * `indeterminate`.
+   * PSP-5 HTTP Content-Length declared by the authority, when that is the
+   * recipe's signed completeness basis. Must describe the same attested body.
    */
-  complete?: boolean;
+  declaredContentLength?: number;
 }
 
 export interface VetDeps {
@@ -207,8 +204,9 @@ export async function vetCore(
           try {
             const evaluation = evaluateParserSpec(recipe.parserRules, res.body, engine, {
               negativeMatch,
-              requiresCompleteness: recipe.requiresListCompleteness === true,
-              listComplete: res.complete === true,
+              ...(res.declaredContentLength !== undefined
+                ? { declaredContentLength: res.declaredContentLength }
+                : {}),
             });
             status = evaluation.decision;
             data = evaluation.data; // PSP-3: record the parsed data map on the result

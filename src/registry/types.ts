@@ -8,7 +8,10 @@
  * mutated, only superseded.
  */
 
-import type { ParserSpec } from "../agent/parserSpec.js";
+import type {
+  CompleteParserSpec,
+  ParserSpec,
+} from "../agent/parserSpec.js";
 
 /**
  * §9.4.4 / §7.4.5 availability values — the CLOSED spec set (issue #5: the
@@ -36,28 +39,36 @@ export interface RailDescriptor {
   params: Record<string, unknown>;
 }
 
-/** A verification-recipe descriptor (steward-signed under `dacs-recipe:v1:`). */
-export interface RecipeDescriptor {
+interface RecipeDescriptorBase {
   id: string;
   /** Verification method the recipe drives (self-signed, consensus-backed-proxy, …). */
   method: string;
   availability: Availability;
   params: Record<string, unknown>;
-  /**
-   * DACS-2 §7.4.1 ParserSpec — the signed rules a `consensus-backed-proxy`
-   * applies to the attested body (PSP-1..5), so the content verdict is
-   * deterministic from the recipe rather than a caller callback.
-   */
-  parserRules?: ParserSpec;
-  /** PSP-2: a match means "listed" — invert the outcome (e.g. ofac-clear). */
-  negativeMatch?: boolean;
-  /**
-   * PSP-5: this negative-match recipe decides on ABSENCE from a full-list
-   * download, so a `pass` requires a provably-complete response (else
-   * `indeterminate`). Only meaningful with `negativeMatch: true`.
-   */
-  requiresListCompleteness?: boolean;
 }
+
+/**
+ * A verification-recipe descriptor (steward-signed under `dacs-recipe:v1:`).
+ * Negative-match recipes are completeness-gated by construction: omitting the
+ * signed PSP-5 basis is a type error and registry resolution rejects it at runtime.
+ */
+export type RecipeDescriptor = RecipeDescriptorBase &
+  (
+    | {
+        /** PSP-2: presence means "listed", so the match outcome is inverted. */
+        negativeMatch: true;
+        /** PSP-1..5 parser rules, including the required completeness basis. */
+        parserRules: CompleteParserSpec;
+      }
+    | {
+        negativeMatch?: false;
+        /**
+         * DACS-2 §7.4.1 ParserSpec — signed deterministic response rules.
+         * Required at runtime for `consensus-backed-proxy` recipes.
+         */
+        parserRules?: ParserSpec;
+      }
+  );
 
 /** An anchored registry document: a versioned list of steward-signed entries. */
 export interface Registry<T> {

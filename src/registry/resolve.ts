@@ -87,7 +87,45 @@ function isRailDescriptor(e: Record<string, unknown>): boolean {
   );
 }
 
+function isCompletenessCheck(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const check = value as Record<string, unknown>;
+  if (check["kind"] === "content-length") return true;
+  if (check["kind"] === "sentinel") {
+    return typeof check["expression"] === "string" && check["expression"].length > 0;
+  }
+  return (
+    check["kind"] === "record-count" &&
+    typeof check["declaredCountExpression"] === "string" &&
+    check["declaredCountExpression"].length > 0 &&
+    typeof check["recordsExpression"] === "string" &&
+    check["recordsExpression"].length > 0
+  );
+}
+
 function isRecipeDescriptor(e: Record<string, unknown>): boolean {
+  const negativeMatch = e["negativeMatch"];
+  if (
+    (negativeMatch !== undefined && typeof negativeMatch !== "boolean") ||
+    "requiresListCompleteness" in e
+  ) {
+    return false;
+  }
+  if (negativeMatch === true) {
+    const parserRules = e["parserRules"];
+    if (
+      typeof parserRules !== "object" ||
+      parserRules === null ||
+      Array.isArray(parserRules) ||
+      !isCompletenessCheck(
+        (parserRules as Record<string, unknown>)["completeness"],
+      )
+    ) {
+      return false;
+    }
+  }
   return (
     typeof e["id"] === "string" &&
     typeof e["method"] === "string" &&

@@ -62,6 +62,8 @@ export {
   successExpr,
   predicateExpr,
   type ParserSpec,
+  type CompleteParserSpec,
+  type CompletenessCheck,
   type ParserFormat,
   type IndeterminatePredicate,
   type ParserEngine,
@@ -69,7 +71,12 @@ export {
   type ParserEvaluation,
   type ParserDecision,
   type PredicateResult,
+  type ParserSelectionResult,
 } from "./parserSpec.js";
+export {
+  standardsParserEngine,
+  standardsParserEngineCapabilities,
+} from "./standardsParserEngine.js";
 export {
   runSessionCore,
   // sessionAnchorName intentionally NOT re-exported — MVP address strings are

@@ -73,6 +73,13 @@
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.10",
+    "fontoxpath": "^3.34.0",
+    "jsonpath-plus": "^10.4.0",
+    "linkedom": "^0.18.13",
+    "re2-wasm": "^1.0.2"
+  },
   "peerDependencies": {
     "@kynesyslabs/demosdk": "^4.0.12",
     "@x402/evm": "^2.15.0",
