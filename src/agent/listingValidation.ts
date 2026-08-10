@@ -89,7 +89,9 @@ export type PayloadVerificationCapabilityResolver = (
 
 export type ListingPayloadVerificationCapability =
   | { disposition: "not-applicable"; reason: "not-applicable" }
+  | { disposition: "error"; reason: string; operation?: never }
   | {
+      operation: PayloadVerificationCapabilityInput["operation"];
       disposition: "supported" | "unsupported" | "indeterminate" | "error";
       reason: string;
       verificationMethodKind?: VerificationMethod["kind"];
@@ -160,6 +162,7 @@ export function isVerifiedListingAdmission(
     return (
       deliverable.kind === "attested-payload" &&
       !!deliverable.verificationMethod &&
+      capability?.operation === "verify" &&
       capability?.disposition === "supported" &&
       capability.verificationMethodHash ===
         sha256Hex(canonicalize(deliverable.verificationMethod)) &&
@@ -372,6 +375,69 @@ export type ListingRailAuthorityInput = Omit<
   "payPhases" | "acceptedRails"
 >;
 
+const isRailRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const isRailString = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.trim() === value;
+const isRailVersion = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+function isRailDefinitionProofValue(value: unknown): value is RailDefinitionProof {
+  return isRailRecord(value) &&
+    isRailRecord(value.unsigned) &&
+    typeof value.indexContentHash === "string" &&
+    /^[0-9a-f]{64}$/.test(value.indexContentHash) &&
+    isRailString(value.stewardPublicKey) &&
+    isRailString(value.signature);
+}
+
+function isRailDefinitionValue(value: unknown): value is ListingRailDefinition {
+  return isRailRecord(value) &&
+    isRailString(value.railId) &&
+    isRailVersion(value.railVersion) &&
+    isRailString(value.phaseHandler) &&
+    (value.state === undefined ||
+      value.state === "verified-finalized" ||
+      value.state === "verified-included" ||
+      value.state === "unavailable") &&
+    (value.governanceAnchoring === undefined ||
+      isRailString(value.governanceAnchoring)) &&
+    (value.signatureValid === undefined ||
+      typeof value.signatureValid === "boolean") &&
+    (value.proof === undefined || isRailDefinitionProofValue(value.proof));
+}
+
+function isRailRegistryEntryValue(value: unknown): value is RailRegistryEntry {
+  return isRailRecord(value) &&
+    isRailString(value.railId) &&
+    isRailVersion(value.latestVersion) &&
+    Array.isArray(value.versions) &&
+    value.versions.every(isRailVersion);
+}
+
+function isRailAuthorityShape(
+  value: Record<string, unknown>,
+): boolean {
+  if (value.trustPhase !== "PA-1" && value.trustPhase !== "PA-2" &&
+      value.trustPhase !== "PA-3") return false;
+  if (value.trustPolicyAcceptsPA1 !== undefined &&
+      typeof value.trustPolicyAcceptsPA1 !== "boolean") return false;
+  if (!isRailRecord(value.registry) ||
+      (value.registry.state !== "verified-finalized" &&
+        value.registry.state !== "verified-included" &&
+        value.registry.state !== "unavailable" &&
+        value.registry.state !== "absent" &&
+        value.registry.state !== "invalid-authority" &&
+        value.registry.state !== "not-used") ||
+      !Array.isArray(value.registry.entries) ||
+      !value.registry.entries.every(isRailRegistryEntryValue) ||
+      !Array.isArray(value.registry.definitions) ||
+      !value.registry.definitions.every(isRailDefinitionValue)) return false;
+  return value.inCodeDefinitions === undefined ||
+    (Array.isArray(value.inCodeDefinitions) &&
+      value.inCodeDefinitions.every(isRailDefinitionValue));
+}
+
 const railResult = (
   disposition: ListingRailResolution,
   reason: string,
@@ -468,7 +534,7 @@ function handlerCheck(
 function resolvePa1(
   input: ListingRailResolutionInput,
 ): ListingRailResolutionResult {
-  if (!input.trustPolicyAcceptsPA1) {
+  if (input.trustPolicyAcceptsPA1 !== true) {
     return railResult("indeterminate", "pa1-not-accepted", "pa1-in-code");
   }
   const rails = input.acceptedRails as PaymentRailRef[];
@@ -530,6 +596,12 @@ function resolveAnchoredRegistry(
       );
     case "verified-finalized":
       break;
+    default:
+      return railResult(
+        "indeterminate",
+        "rail-authority-malformed",
+        authorityBasis,
+      );
   }
 
   const rails = input.acceptedRails as PaymentRailRef[];
@@ -596,11 +668,27 @@ function resolveAnchoredRegistry(
 export function resolveListingRails(
   input: ListingRailResolutionInput,
 ): ListingRailResolutionResult {
-  const staticFailure = staticRailBinding(input);
+  let snapshot: unknown;
+  try {
+    snapshot = structuredClone(input);
+  } catch {
+    return railResult("indeterminate", "rail-authority-malformed");
+  }
+  if (!isRailRecord(snapshot)) {
+    return railResult("indeterminate", "rail-authority-malformed");
+  }
+  if (!Array.isArray(snapshot.payPhases) || !Array.isArray(snapshot.acceptedRails)) {
+    return railResult("rejected", "malformed-listing-rail-input");
+  }
+  if (!isRailAuthorityShape(snapshot)) {
+    return railResult("indeterminate", "rail-authority-malformed");
+  }
+  const authority = snapshot as unknown as ListingRailResolutionInput;
+  const staticFailure = staticRailBinding(authority);
   if (staticFailure) return staticFailure;
-  return input.trustPhase === "PA-1"
-    ? resolvePa1(input)
-    : resolveAnchoredRegistry(input);
+  return authority.trustPhase === "PA-1"
+    ? resolvePa1(authority)
+    : resolveAnchoredRegistry(authority);
 }
 
 function isCapabilityDecision(
@@ -631,13 +719,34 @@ export async function resolveListingPayloadVerificationCapability(
   operation: PayloadVerificationCapabilityInput["operation"],
   resolver?: PayloadVerificationCapabilityResolver,
 ): Promise<ListingPayloadVerificationCapability> {
-  if (!listing.pipeline.some((phase) => phase.kind === "deliver-attested-payload")) {
+  if (operation !== "produce" && operation !== "verify") {
+    return {
+      disposition: "error",
+      reason: "payload-verification-capability-operation-invalid",
+    };
+  }
+  let listingSnapshot: Listing | ListingDraft;
+  try {
+    // This helper is public and asynchronous. Own the complete Listing before
+    // inspecting its pipeline so a caller-held alias cannot swap the method or
+    // DeliverableSpec while the capability resolver is running.
+    listingSnapshot = structuredClone(listing);
+  } catch {
+    return {
+      operation,
+      disposition: "error",
+      reason: "payload-verification-capability-input-not-canonicalizable",
+    };
+  }
+
+  if (!listingSnapshot.pipeline.some((phase) => phase.kind === "deliver-attested-payload")) {
     return { disposition: "not-applicable", reason: "not-applicable" };
   }
 
-  const deliverable = listing.offering.deliverable;
+  const deliverable = listingSnapshot.offering.deliverable;
   if (deliverable.kind !== "attested-payload" || !deliverable.verificationMethod) {
     return {
+      operation,
       disposition: "unsupported",
       reason: "attested-payload-method-missing-or-malformed",
     };
@@ -661,6 +770,7 @@ export async function resolveListingPayloadVerificationCapability(
     deliverableSpecHash = sha256Hex(deliverableSpecCanonical);
   } catch {
     return {
+      operation,
       disposition: "error",
       reason: "payload-verification-capability-input-not-canonicalizable",
       verificationMethodKind: deliverable.verificationMethod.kind,
@@ -668,6 +778,7 @@ export async function resolveListingPayloadVerificationCapability(
   }
 
   const details = {
+    operation,
     verificationMethodKind: deliverable.verificationMethod.kind,
     verificationMethodHash,
     deliverableSpecHash,
@@ -680,9 +791,9 @@ export async function resolveListingPayloadVerificationCapability(
     };
   }
 
-  let decision: PayloadVerificationCapabilityDecision;
+  let rawDecision: PayloadVerificationCapabilityDecision;
   try {
-    decision = await resolver({
+    rawDecision = await resolver({
       operation,
       // Pass complete clones, not reconstructed normative projections.
       verificationMethod,
@@ -694,6 +805,19 @@ export async function resolveListingPayloadVerificationCapability(
     return {
       disposition: "error",
       reason: "payload-verification-capability-resolution-threw",
+      ...details,
+    };
+  }
+  let decision: PayloadVerificationCapabilityDecision;
+  try {
+    // A resolver result is a security-bearing admission decision. Snapshot it
+    // before its discriminator or reason is read so getters, Proxies and
+    // retained aliases cannot turn one decision into another across reads.
+    decision = structuredClone(rawDecision);
+  } catch {
+    return {
+      disposition: "error",
+      reason: "payload-verification-capability-resolution-invalid",
       ...details,
     };
   }
@@ -802,10 +926,10 @@ export async function validateListingArtifact(
   const listingContentHash = contentHash(candidate);
   let listingSignatureValid = false;
   try {
-    listingSignatureValid = await deps.verifyListingSignature({
+    listingSignatureValid = (await deps.verifyListingSignature({
       signedBytes: signedBytes("dacs-listing:v1:", listingContentHash),
       signature: structuredClone(listing.signature),
-    });
+    })) === true;
   } catch {
     listingSignatureValid = false;
   }
@@ -836,10 +960,10 @@ export async function validateListingArtifact(
 
   let identityVerified = false;
   try {
-    identityVerified = await deps.verifyIdentityPresentation({
+    identityVerified = (await deps.verifyIdentityPresentation({
       bundle: structuredClone(listing.seller.identity),
       signedBytes: identityPresentationBytes(listing.seller.identity),
-    });
+    })) === true;
   } catch {
     identityVerified = false;
   }
@@ -911,8 +1035,11 @@ export async function validateListingArtifact(
       railResolution = railResult("indeterminate", "rail-authority-unavailable");
     } else {
       try {
+        const authority = structuredClone(
+          await deps.loadRailResolution(structuredClone(listing)),
+        );
         railResolution = resolveListingRails({
-          ...(await deps.loadRailResolution(structuredClone(listing))),
+          ...authority,
           payPhases,
           acceptedRails: listing.acceptedRails ?? [],
         });
@@ -940,10 +1067,10 @@ export async function validateListingArtifact(
   let signerControlled = false;
   if (signerIsCarried) {
     try {
-      signerControlled = await deps.verifySellerControl({
+      signerControlled = (await deps.verifySellerControl({
         bundle: structuredClone(listing.seller.identity),
         signer: listing.signature.signer,
-      });
+      })) === true;
     } catch {
       signerControlled = false;
     }

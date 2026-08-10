@@ -82,7 +82,16 @@ export async function verifyReadableListingArtifact(
   raw: Record<string, unknown>,
   deps: DiscoverDeps,
 ): Promise<ReadableListing | null> {
-  const readable = readListingArtifact(raw);
+  let candidate: Record<string, unknown>;
+  try {
+    // Signature verification and ordered admission are asynchronous. Keep one
+    // owned artifact so a resolver/caller alias cannot change the Listing
+    // after its signature or DPA-1 decision.
+    candidate = structuredClone(raw);
+  } catch {
+    return null;
+  }
+  const readable = readListingArtifact(candidate);
   if (!readable) return null;
   if (!deps.verify && !deps.trustListings) {
     throw new DacsError(
@@ -107,7 +116,7 @@ export async function verifyReadableListingArtifact(
       const key = await resolveKey(readable.listing.agentId);
       if (!key || key.length !== 32) return null;
       const valid = await verifySignedArtifact(
-        raw,
+        candidate,
         ARTIFACT_SEPARATORS.Listing,
         key,
         deps.verify,
@@ -124,7 +133,7 @@ export async function verifyReadableListingArtifact(
   if (readable.listing.signature.algorithm !== "ed25519") return null;
 
   const verdict = await verifyComponentSignature(
-    raw,
+    candidate,
     ARTIFACT_SEPARATORS.Listing,
     {
       // DACS-1 §6.3.4: signer MUST occur in seller.identity.claims.
@@ -173,13 +182,16 @@ export async function discoverListings(
             "Listings; signature validity alone is not a verified disposition",
         );
       }
+      const admittedRaw = readable.listing as unknown as Record<string, unknown>;
       let validation: ListingValidationResult;
       try {
-        validation = await deps.validateListing(raw);
+        validation = structuredClone(
+          await deps.validateListing(structuredClone(admittedRaw)),
+        );
       } catch {
         continue;
       }
-      if (!isVerifiedListingAdmission(raw, validation)) {
+      if (!isVerifiedListingAdmission(admittedRaw, validation)) {
         continue;
       }
       // Promote an envelope only from the exact ordered-validation result.

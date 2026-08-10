@@ -108,6 +108,35 @@ function listingHistoryPrefix(listing: ListingDraft): string {
   );
 }
 
+function isOwnedAnchorScanValue(value: unknown): value is OwnedAnchorScan {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const scan = value as Record<string, unknown>;
+  if (scan.status === "indeterminate") {
+    return Object.keys(scan).every((key) => key === "status" || key === "reason") &&
+      typeof scan.reason === "string" && scan.reason.length > 0;
+  }
+  if (scan.status !== "ok" ||
+      Object.keys(scan).some((key) => key !== "status" && key !== "anchors") ||
+      !Array.isArray(scan.anchors)) return false;
+  return scan.anchors.every((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return false;
+    }
+    const anchor = entry as Record<string, unknown>;
+    return Object.keys(anchor).every((key) => [
+      "address",
+      "programName",
+      "value",
+    ].includes(key)) &&
+      typeof anchor.address === "string" && anchor.address.length > 0 &&
+      typeof anchor.programName === "string" && anchor.programName.length > 0 &&
+      anchor.value !== null && typeof anchor.value === "object" &&
+      !Array.isArray(anchor.value);
+  });
+}
+
 function assertContiguousHistory(
   listing: ListingDraft,
   prefix: string,
@@ -248,8 +277,11 @@ export async function publishListingCore(
     }
     let railResolution;
     try {
+      const authority = structuredClone(
+        await deps.loadRailResolution(structuredClone(candidate)),
+      );
       railResolution = resolveListingRails({
-        ...(await deps.loadRailResolution(structuredClone(candidate))),
+        ...authority,
         payPhases: candidate.pipeline
           .filter((phase) => phase.kind.startsWith("pay-"))
           .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail })),
@@ -280,11 +312,18 @@ export async function publishListingCore(
   );
   const storageName = logicalToStorageProgramName(logicalAddress);
   const historyPrefix = listingHistoryPrefix(candidate);
-  const versions = assertContiguousHistory(
-    candidate,
-    historyPrefix,
-    await deps.scanOwnAnchorsByNamePrefix(historyPrefix),
-  );
+  let history: OwnedAnchorScan;
+  try {
+    history = structuredClone(
+      await deps.scanOwnAnchorsByNamePrefix(historyPrefix),
+    );
+  } catch {
+    throw new SubstrateError("listing version history returned an invalid snapshot");
+  }
+  if (!isOwnedAnchorScanValue(history)) {
+    throw new SubstrateError("listing version history returned a malformed result");
+  }
+  const versions = assertContiguousHistory(candidate, historyPrefix, history);
   if (!versions.has(version)) {
     const expected = versions.size + 1;
     if (version !== expected) {
@@ -295,6 +334,11 @@ export async function publishListingCore(
   }
 
   if (payloadCapability.disposition === "supported") {
+    if (payloadCapability.operation !== "produce") {
+      throw new DacsError(
+        "attested-payload publication requires a producer capability decision",
+      );
+    }
     const deliverable = candidate.offering.deliverable;
     if (
       deliverable.kind !== "attested-payload" ||
@@ -310,7 +354,7 @@ export async function publishListingCore(
     }
   }
 
-  const signed = await signComponentArtifact(
+  const rawSigned = await signComponentArtifact(
     candidate,
     ARTIFACT_SEPARATORS.Listing,
     {
@@ -319,16 +363,73 @@ export async function publishListingCore(
       sign: (bytes) => deps.sign(bytes),
     },
   );
+  let signed: typeof rawSigned;
+  let signedCanonical: string;
+  let signedContentHash: string;
+  try {
+    // signComponentArtifact shallow-spreads its input. Detach the signed
+    // artifact from the candidate before an effect adapter sees either one.
+    signed = structuredClone(rawSigned);
+    signedCanonical = canonicalize(signed);
+    signedContentHash = contentHash(
+      signed as unknown as Record<string, unknown>,
+    );
+  } catch {
+    throw new DacsError("signed Listing could not be retained as an exact snapshot");
+  }
   if (!isListing(signed)) {
     throw new DacsError(
       "signed Listing failed DACS-1 §6.3.4 structural/signature-envelope validation",
     );
   }
-  const { address: anchored, txRef } = await deps.anchorWriteOnce(storageName, signed);
+  let writeInput: typeof signed;
+  let rawWrite: unknown;
+  try {
+    writeInput = structuredClone(signed);
+    rawWrite = await deps.anchorWriteOnce(storageName, writeInput);
+  } catch (error) {
+    throw new SubstrateError(
+      `Listing publication was indeterminate: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  let write: { address: string; txRef?: string };
+  try {
+    if (canonicalize(writeInput) !== signedCanonical ||
+        canonicalize(signed) !== signedCanonical ||
+        contentHash(signed as unknown as Record<string, unknown>) !==
+          signedContentHash) {
+      throw new TypeError("anchor adapter mutated the exact signed Listing");
+    }
+    const snapshot = structuredClone(rawWrite);
+    if (snapshot === null || typeof snapshot !== "object" ||
+        Array.isArray(snapshot)) throw new TypeError("malformed anchor result");
+    const result = snapshot as Record<string, unknown>;
+    if (typeof result.address !== "string" || result.address.length === 0 ||
+        (result.txRef !== undefined &&
+          (typeof result.txRef !== "string" || result.txRef.length === 0)) ||
+        Object.keys(result).some((key) => key !== "address" && key !== "txRef")) {
+      throw new TypeError("malformed anchor result");
+    }
+    write = snapshot as { address: string; txRef?: string };
+  } catch (error) {
+    throw new SubstrateError(
+      `Listing publication result was indeterminate: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
   const listingPin = {
     listingId: candidate.listingId,
     version,
-    contentHash: contentHash(signed as unknown as Record<string, unknown>),
+    contentHash: signedContentHash,
   };
-  return { ref: anchored, logicalAddress, storageName, listingPin, txRef };
+  return {
+    ref: write.address,
+    logicalAddress,
+    storageName,
+    listingPin,
+    ...(write.txRef ? { txRef: write.txRef } : {}),
+  };
 }
