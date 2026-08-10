@@ -5,6 +5,7 @@ import {
 } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
+import type { DemosAdapterConfig } from "./DemosAdapterConfig.js";
 import {
   canonicalize,
   contentHash,
@@ -41,13 +42,6 @@ const WRITE_ONCE_VISIBILITY_POLL_MS = 1_000;
 const STORAGE_SEARCH_PAGE_SIZE = 100;
 const STORAGE_SEARCH_MAX_PAGES = 100;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-export interface DemosAdapterConfig {
-  /** Demos node RPC URL (e.g. https://node2.demos.sh). */
-  rpc: string;
-  /** Wallet secret — mnemonic or private key. Optional for read-only use. */
-  secret?: string;
-}
 
 /**
  * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`.

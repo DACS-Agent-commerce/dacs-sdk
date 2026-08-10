@@ -6,7 +6,8 @@ export type {
   ResolvedIdentity,
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
-export { DemosAdapter, type DemosAdapterConfig } from "./DemosAdapter.js";
+export type { DemosAdapterConfig } from "./DemosAdapterConfig.js";
+export { DemosAdapter } from "./DemosAdapter.js";
 export type {
   AnchorResolution,
   CandidateOutcome,

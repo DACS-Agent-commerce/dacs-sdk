@@ -36,11 +36,17 @@ jobs:
 
       - name: Package smoke (core install without live peers)
         run: |
-          mkdir -p package-smoke/app
-          npm pack --pack-destination package-smoke
-          npm install --prefix package-smoke/app --omit=optional --ignore-scripts "$GITHUB_WORKSPACE"/package-smoke/*.tgz
-          node -e "import('./package-smoke/app/node_modules/@kynesyslabs/dacs/dist/index.js').then(m => { if (typeof m.verifyBundleCore !== 'function') process.exit(1) })"
-          npm audit --prefix package-smoke/app --omit=dev --omit=optional
+          smoke_root="$RUNNER_TEMP/dacs-package-smoke"
+          mkdir -p "$smoke_root/app"
+          cp test/package-consumer/package.json test/package-consumer/tsconfig.json test/package-consumer/index.ts "$smoke_root/app/"
+          npm pack --pack-destination "$smoke_root"
+          npm install --prefix "$smoke_root/app" --save-dev typescript@^5 @types/node@^20
+          npm install --prefix "$smoke_root/app" --omit=optional --ignore-scripts "$smoke_root"/*.tgz
+          test ! -d "$smoke_root/app/node_modules/@kynesyslabs/demosdk"
+          test ! -d "$smoke_root/app/node_modules/viem"
+          "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.json"
+          node -e "import('$RUNNER_TEMP/dacs-package-smoke/app/node_modules/@kynesyslabs/dacs/dist/index.js').then(m => { if (typeof m.verifyBundleCore !== 'function') process.exit(1) })"
+          npm audit --prefix "$smoke_root/app" --omit=dev --omit=optional
 
       - name: Test (unit + conformance harness)
         run: npm test

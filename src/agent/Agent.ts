@@ -12,7 +12,7 @@ import {
   type DomainSeparator,
 } from "../crypto/index.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
-import type { DemosAdapter } from "../substrate/index.js";
+import type { SubstrateAdapter } from "../substrate/SubstrateAdapter.js";
 import {
   runSessionCore,
   sessionAnchorName,
@@ -91,8 +91,8 @@ export interface PublishResult {
  * adapter, artifact model, and signing are wired underneath.
  */
 export interface Agent {
-  /** Escape hatch to the underlying substrate adapter. */
-  readonly adapter: DemosAdapter;
+  /** Escape hatch to the substrate-neutral adapter seam. */
+  readonly adapter: SubstrateAdapter;
   /**
    * Anyone: resolve a subject's full cross-context identity (DACS-1) — its
    * primary claim plus the linked Web2 handles and cross-chain wallets bound to
@@ -158,7 +158,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
  * live, environment-skipped test, which let the missing `verifyListing` wiring
  * ship. Not exported from the package barrel; internal test seam.
  */
-export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
+export function buildAgent(adapter: SubstrateAdapter, config: AgentConfig): Agent {
   const sign: Signer = (bytes) => adapter.sign(bytes);
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {

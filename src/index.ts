@@ -3,8 +3,9 @@
  * Standards) agents across the Identify → Vet → Negotiate → Settle → Verify
  * lifecycle.
  *
- * T1 scaffold: this exports the substrate seam (SubstrateAdapter + DemosAdapter)
- * and package metadata. The agent-facing public API (`createAgent`,
+ * T1 scaffold: this exports the peer-free substrate seam and package metadata;
+ * the concrete DemosAdapter lives on the `./substrate` subpath. The agent-facing
+ * public API (`createAgent`,
  * `publishListing`, `discover`, `runSession`, `verifyBundle`, `getReputation`)
  * is designed in T4 — see IMPLEMENTATION.md.
  */
@@ -67,13 +68,13 @@ export {
 // an eager @kynesyslabs/demosdk load (its ESM packaging breaks plain-Node-ESM
 // consumers of the pure/verify surface). createAgent lazy-loads it when needed.
 export type {
-  DemosAdapterConfig,
   SubstrateAdapter,
   AnchorRef,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
-} from "./substrate/index.js";
+} from "./substrate/SubstrateAdapter.js";
+export type { DemosAdapterConfig } from "./substrate/DemosAdapterConfig.js";
 
 // CLI helpers (pure/read-only by default). The executable entry is `dacs`.
 export {
