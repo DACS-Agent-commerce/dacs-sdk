@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { createAgent, createX402Rail, x402Settle } from "../../src/index.js";
+import {
+  createAgent,
+  createEvmChainFinalityVerifier,
+  createX402Rail,
+  x402Settle,
+} from "../../src/index.js";
 
 /**
  * LIVE on-chain end-to-end gate (the path unit tests + the in-memory e2e can't
@@ -12,7 +17,8 @@ import { createAgent, createX402Rail, x402Settle } from "../../src/index.js";
  *
  *   DEMOS_RPC=… SELLER_WALLET=… SELLER_DID=… BUYER_WALLET=… BUYER_DID=… \
  *   BUYER_EVM_KEY=0x… PAYWALL_URL=… PAY_NETWORK=eip155:84532 SELLER_EVM=0x… \
- *   PAY_TOKEN=0x…(ERC-20 contract) npx vitest run test/integration/live.e2e.test.ts
+ *   PAY_RPC=… PAY_FINALITY_BLOCKS=12 PAY_TOKEN=0x…(ERC-20 contract) \
+ *   npx vitest run test/integration/live.e2e.test.ts
  */
 
 const ENV = [
@@ -24,6 +30,8 @@ const ENV = [
   "BUYER_EVM_KEY",
   "PAYWALL_URL",
   "PAY_NETWORK",
+  "PAY_RPC",
+  "PAY_FINALITY_BLOCKS",
   "SELLER_EVM",
   "PAY_TOKEN",
 ] as const;
@@ -61,12 +69,19 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
       });
       expect(published.ref).toBeTruthy();
 
+      const finalityBlocks = Number(env.PAY_FINALITY_BLOCKS!);
+      const verifyChainFinality = await createEvmChainFinalityVerifier(env.PAY_RPC!);
       const buyer = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.BUYER_WALLET!,
         identity: { agentId: env.BUYER_DID! },
+        railEvidence: { verifyChainFinality },
       });
-      const rail = await createX402Rail({ evmPrivateKey: env.BUYER_EVM_KEY! });
+      const rail = await createX402Rail({
+        evmPrivateKey: env.BUYER_EVM_KEY!,
+        rpcUrl: env.PAY_RPC!,
+        finalityBlocks,
+      });
 
       const session = await buyer.runSession(published.ref, {
         terms: {

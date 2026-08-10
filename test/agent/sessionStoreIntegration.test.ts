@@ -145,21 +145,35 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(resumed.settleCalls.n).toBe(0); // did NOT pay again — reconciled from the checkpoint
   });
 
-  test("restart replay preserves rail finality and tx-ref metadata from the checkpoint", async () => {
+  test("restart replay preserves x402 receipt and finality metadata from the checkpoint", async () => {
     const store = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();
+    const x402TxHash = `0x${"b".repeat(64)}`;
+    const facilitatorReceiptJcs = `{"network":"eip155:84532","transaction":"${x402TxHash}","x402Version":2}`;
     let settleCalls = 0;
     const settle = async (req: { payee: string }): Promise<SettleResult> => {
       settleCalls += 1;
       return {
         ok: true,
-        txHash: "0xdemos-paid",
-        chainId: "demos:testnet",
-        payer: "demos:buyer",
+        txHash: x402TxHash,
+        chainId: "eip155:84532",
+        payer: "0xbuyer",
         payee: req.payee,
-        finality: { model: "bft-final" },
+        finality: { model: "block-depth", finalityBlocks: 12 },
         blockNumber: 42,
-        txRefKind: "demos",
+        txRefKind: "x402",
+        receipt: {
+          kind: "x402",
+          httpResource: "https://seller.example/deliver",
+          paymentReceiptHash: "a".repeat(64),
+          protocolVersion: 2,
+          facilitatorReceiptJcs,
+          settlementTxHash: x402TxHash,
+          chainId: "eip155:84532",
+          blockNumber: 42,
+          blockTimestamp: 1780000000000,
+          finalityBlocks: 12,
+        },
       };
     };
     const interrupted = await makeDeps(store, {
@@ -183,14 +197,24 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const evidence = kv.get(`stor:${sessionAnchorName.evidence("job-1")}`);
     expect(evidence?.paymentTxRefs).toEqual([
       {
-        rail: "demos:testnet",
-        txHash: "0xdemos-paid",
-        kind: "demos",
+        rail: "eip155:84532",
+        txHash: x402TxHash,
+        kind: "x402",
+        httpResource: "https://seller.example/deliver",
+        paymentReceiptHash: "a".repeat(64),
+        protocolVersion: 2,
+        facilitatorReceiptJcs,
+        settlementTxHash: x402TxHash,
+        chainId: "eip155:84532",
         blockNumber: 42,
+        blockTimestamp: 1780000000000,
+        finalityBlocks: 12,
       },
     ]);
     expect(evidence?.settlementFinality).toMatchObject({
-      model: "bft-final",
+      model: "block-depth",
+      finalityBlocks: 12,
+      finalityObservedAt: 1780000000000,
     });
   });
 

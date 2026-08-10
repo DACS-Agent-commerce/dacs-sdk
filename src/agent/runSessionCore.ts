@@ -74,6 +74,28 @@ export interface SettleResult {
   blockNumber?: number;
   /** The txRef kind the rail's tx is (e.g. §9.5.9 `demos`); defaults to `payment`. */
   txRefKind?: string;
+  /** Rail-native receipt fields preserved into durable state and evidence. */
+  receipt?:
+    | {
+        kind: "evm-erc20";
+        blockNumber: number;
+        blockTimestamp: number;
+        blockHash?: string;
+        finalityBlocks: number;
+      }
+    | {
+        kind: "x402";
+        httpResource: string;
+        paymentReceiptHash: string;
+        protocolVersion: number;
+        facilitatorReceiptJcs: string;
+        facilitatorSignature?: string;
+        settlementTxHash?: string;
+        chainId: string;
+        blockNumber?: number;
+        blockTimestamp?: number;
+        finalityBlocks?: number;
+      };
 }
 
 /**
@@ -221,6 +243,16 @@ interface DurableSettlementOutcome {
   finalityBlocks?: number;
   blockNumber?: number;
   txRefKind?: string;
+  receiptKind?: "evm-erc20" | "x402";
+  blockTimestamp?: number;
+  blockHash?: string;
+  httpResource?: string;
+  paymentReceiptHash?: string;
+  protocolVersion?: number;
+  facilitatorReceiptJcs?: string;
+  facilitatorSignature?: string;
+  settlementTxHash?: string;
+  receiptChainId?: string;
 }
 
 const isSettlementFinalityModel = (
@@ -234,7 +266,17 @@ const isSettlementFinalityModel = (
   value === "bft-final";
 
 function durableSettlementOutcome(result: SettleResult): DurableSettlementOutcome {
-  const ok = result.ok && result.txHash.trim().length > 0;
+  const receipt = result.receipt;
+  const verifiedProviderReceipt =
+    receipt?.kind === "x402" &&
+    result.finality?.model === "provider-receipt" &&
+    result.txHash.trim().length === 0 &&
+    receipt.settlementTxHash === undefined &&
+    typeof receipt.facilitatorSignature === "string" &&
+    receipt.facilitatorSignature.length > 0;
+  const ok =
+    result.ok &&
+    (result.txHash.trim().length > 0 || verifiedProviderReceipt);
   return {
     txHash: result.txHash,
     chainId: result.chainId,
@@ -245,6 +287,28 @@ function durableSettlementOutcome(result: SettleResult): DurableSettlementOutcom
       : {}),
     ...(result.blockNumber !== undefined ? { blockNumber: result.blockNumber } : {}),
     ...(result.txRefKind !== undefined ? { txRefKind: result.txRefKind } : {}),
+    ...(receipt ? { receiptKind: receipt.kind } : {}),
+    ...(receipt?.blockTimestamp !== undefined
+      ? { blockTimestamp: receipt.blockTimestamp }
+      : {}),
+    ...(receipt?.kind === "evm-erc20" && receipt.blockHash !== undefined
+      ? { blockHash: receipt.blockHash }
+      : {}),
+    ...(receipt?.kind === "x402"
+      ? {
+          httpResource: receipt.httpResource,
+          paymentReceiptHash: receipt.paymentReceiptHash,
+          protocolVersion: receipt.protocolVersion,
+          facilitatorReceiptJcs: receipt.facilitatorReceiptJcs,
+          ...(receipt.facilitatorSignature !== undefined
+            ? { facilitatorSignature: receipt.facilitatorSignature }
+            : {}),
+          ...(receipt.settlementTxHash !== undefined
+            ? { settlementTxHash: receipt.settlementTxHash }
+            : {}),
+          receiptChainId: receipt.chainId,
+        }
+      : {}),
   };
 }
 
@@ -259,7 +323,17 @@ function sameSettlementOutcome(
     left.finalityModel === right.finalityModel &&
     left.finalityBlocks === right.finalityBlocks &&
     left.blockNumber === right.blockNumber &&
-    left.txRefKind === right.txRefKind
+    left.txRefKind === right.txRefKind &&
+    left.receiptKind === right.receiptKind &&
+    left.blockTimestamp === right.blockTimestamp &&
+    left.blockHash === right.blockHash &&
+    left.httpResource === right.httpResource &&
+    left.paymentReceiptHash === right.paymentReceiptHash &&
+    left.protocolVersion === right.protocolVersion &&
+    left.facilitatorReceiptJcs === right.facilitatorReceiptJcs &&
+    left.facilitatorSignature === right.facilitatorSignature &&
+    left.settlementTxHash === right.settlementTxHash &&
+    left.receiptChainId === right.receiptChainId
   );
 }
 
@@ -284,6 +358,16 @@ function findSettleOutcome(
       finalityBlocks,
       blockNumber,
       txRefKind,
+      receiptKind,
+      blockTimestamp,
+      blockHash,
+      httpResource,
+      paymentReceiptHash,
+      protocolVersion,
+      facilitatorReceiptJcs,
+      facilitatorSignature,
+      settlementTxHash,
+      receiptChainId,
     } = cp.data;
     if (typeof txHash === "string" && typeof ok === "boolean") {
       return {
@@ -294,6 +378,24 @@ function findSettleOutcome(
         ...(typeof finalityBlocks === "number" ? { finalityBlocks } : {}),
         ...(typeof blockNumber === "number" ? { blockNumber } : {}),
         ...(typeof txRefKind === "string" ? { txRefKind } : {}),
+        ...(receiptKind === "evm-erc20" || receiptKind === "x402"
+          ? { receiptKind }
+          : {}),
+        ...(typeof blockTimestamp === "number" ? { blockTimestamp } : {}),
+        ...(typeof blockHash === "string" ? { blockHash } : {}),
+        ...(typeof httpResource === "string" ? { httpResource } : {}),
+        ...(typeof paymentReceiptHash === "string"
+          ? { paymentReceiptHash }
+          : {}),
+        ...(typeof protocolVersion === "number" ? { protocolVersion } : {}),
+        ...(typeof facilitatorReceiptJcs === "string"
+          ? { facilitatorReceiptJcs }
+          : {}),
+        ...(typeof facilitatorSignature === "string"
+          ? { facilitatorSignature }
+          : {}),
+        ...(typeof settlementTxHash === "string" ? { settlementTxHash } : {}),
+        ...(typeof receiptChainId === "string" ? { receiptChainId } : {}),
       };
     }
   }
@@ -632,15 +734,21 @@ export async function runSessionCore(
   const bindSettlementTransaction = async (
     outcome: DurableSettlementOutcome,
   ): Promise<void> => {
-    if (!store || outcome.txHash.trim().length === 0) return;
+    if (!store) return;
+    const bindingHash = outcome.txHash.trim().length > 0
+      ? outcome.txHash
+      : outcome.receiptKind === "x402"
+        ? outcome.paymentReceiptHash ?? ""
+        : "";
+    if (bindingHash.length === 0) return;
     const bound = await store.bindHash({
-      hash: outcome.txHash,
+      hash: bindingHash,
       jobId,
       kind: "transaction",
     });
     if (!bound.ok) {
       throw new CounterpartyError(
-        `settlement tx ${outcome.txHash} is already bound to session ${bound.boundTo} (transaction replay)`,
+        `settlement reference ${bindingHash} is already bound to session ${bound.boundTo} (transaction replay)`,
       );
     }
   };
@@ -756,9 +864,8 @@ export async function runSessionCore(
           );
         } else {
           const pay = await deps.settle(settleRequest);
-          // Defense in depth (independent of the rail): a settlement is only a
-          // success if it produced a verifiable on-chain tx id. A rail reporting
-          // ok:true with no txHash cannot back a provider-receipt claim.
+          // Defense in depth (independent of the rail): success needs either a
+          // transaction id or x402's explicitly verified, signed no-tx receipt.
           settlement = durableSettlementOutcome(pay);
           needsOutcomeCheckpoint = true;
         }
@@ -772,9 +879,56 @@ export async function runSessionCore(
         await completeSettlement(settlement, settledOk ? "settled" : "failed");
       }
       const observedAt = deps.nowMs();
+      const paymentTxRef =
+        settlement.receiptKind === "evm-erc20"
+          ? {
+              rail: settlement.chainId,
+              txHash: settlement.txHash,
+              kind: "evm-erc20" as const,
+              blockNumber: settlement.blockNumber!,
+              blockTimestamp: settlement.blockTimestamp!,
+              ...(settlement.blockHash !== undefined
+                ? { blockHash: settlement.blockHash }
+                : {}),
+              finalityBlocks: settlement.finalityBlocks!,
+            }
+          : settlement.receiptKind === "x402"
+            ? {
+                rail: settlement.chainId,
+                txHash: settlement.txHash,
+                kind: "x402" as const,
+                httpResource: settlement.httpResource!,
+                paymentReceiptHash: settlement.paymentReceiptHash!,
+                protocolVersion: settlement.protocolVersion!,
+                facilitatorReceiptJcs: settlement.facilitatorReceiptJcs!,
+                ...(settlement.facilitatorSignature !== undefined
+                  ? { facilitatorSignature: settlement.facilitatorSignature }
+                  : {}),
+                ...(settlement.settlementTxHash !== undefined
+                  ? { settlementTxHash: settlement.settlementTxHash }
+                  : {}),
+                chainId: settlement.receiptChainId!,
+                ...(settlement.blockNumber !== undefined
+                  ? { blockNumber: settlement.blockNumber }
+                  : {}),
+                ...(settlement.blockTimestamp !== undefined
+                  ? { blockTimestamp: settlement.blockTimestamp }
+                  : {}),
+                ...(settlement.finalityBlocks !== undefined
+                  ? { finalityBlocks: settlement.finalityBlocks }
+                  : {}),
+              }
+            : {
+                rail: settlement.chainId,
+                txHash: settlement.txHash,
+                kind: settlement.txRefKind ?? "payment",
+                ...(settlement.blockNumber !== undefined
+                  ? { blockNumber: settlement.blockNumber }
+                  : {}),
+              };
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
       // tx hash become a payment txRef. Finality defaults to the rail's receipt
-      // (§9.7 `provider-receipt`, finalityBlocks 0) but a rail that knows its own
+      // (§9.7 `provider-receipt`, with no block depth) but a rail that knows its own
       // model — e.g. §9.5.9 pay-dem's `bft-final` + block height — reports it via
       // `pay.finality` / `pay.blockNumber` / `pay.txRefKind`, so the evidence
       // asserts the finality model that actually settled, not a hardcoded one (F7/#22).
@@ -783,16 +937,7 @@ export async function runSessionCore(
         jobId,
         phase: terms.price.rail,
         phaseIndex: 0,
-        paymentTxRefs: [
-          {
-            rail: settlement.chainId,
-            txHash: settlement.txHash,
-            kind: settlement.txRefKind ?? "payment",
-            ...(settlement.blockNumber !== undefined
-              ? { blockNumber: settlement.blockNumber }
-              : {}),
-          },
-        ],
+        paymentTxRefs: [paymentTxRef],
         paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
         observedAt,
       };
@@ -811,9 +956,12 @@ export async function runSessionCore(
             ? {
                 model,
                 finalityBlocks: settlement.finalityBlocks!,
-                finalityObservedAt: observedAt,
+                finalityObservedAt: settlement.blockTimestamp ?? observedAt,
               }
-            : { model, finalityObservedAt: observedAt };
+            : {
+                model,
+                finalityObservedAt: settlement.blockTimestamp ?? observedAt,
+              };
         evidence = { ...evidenceBase, outcome: "success", settlementFinality };
       }
       return deps.sign(evidence, ARTIFACT_SEPARATORS.SettlementEvidence);

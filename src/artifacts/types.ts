@@ -178,14 +178,42 @@ export interface ListingRef {
   contentHash: string;
 }
 
-/** An on-chain transaction reference. */
-export interface TxRef {
+/** Generic on-chain transaction reference used by non-EVM/non-x402 rails. */
+export interface GenericTxRef {
   rail: string;
   txHash: string;
   kind: string;
   /** Block/ledger height the tx landed at — carried by rails that report it (e.g. §9.5.9 `demos`). */
   blockNumber?: number;
 }
+
+export interface EvmSettlementTxRef extends GenericTxRef {
+  kind: "evm-erc20";
+  blockNumber: number;
+  blockTimestamp: number;
+  blockHash?: string;
+  finalityBlocks: number;
+}
+
+export interface X402SettlementTxRef extends GenericTxRef {
+  kind: "x402";
+  httpResource: string;
+  paymentReceiptHash: string;
+  protocolVersion: number;
+  facilitatorReceiptJcs: string;
+  facilitatorSignature?: string;
+  chainId: string;
+  settlementTxHash?: string;
+  blockNumber?: number;
+  blockTimestamp?: number;
+  finalityBlocks?: number;
+}
+
+/** Rail-discriminated transaction/reference evidence. */
+export type TxRef =
+  | EvmSettlementTxRef
+  | X402SettlementTxRef
+  | GenericTxRef;
 
 /** A settled payment amount. */
 export interface PaymentAmount {

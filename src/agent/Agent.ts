@@ -24,6 +24,10 @@ import {
 import { publishListingCore } from "./publishListingCore.js";
 import { discoverListings } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
+import {
+  verifyRailReceiptEvidence,
+  type RailEvidenceDeps,
+} from "../rails/receiptEvidence.js";
 import { buildSignedArtifact, verifySignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
 import {
   verifyBundleCore,
@@ -74,6 +78,8 @@ export interface AgentConfig {
   wallet: string;
   /** Optional identity metadata (e.g. the agent's DID / primary claim). */
   identity?: { agentId?: string };
+  /** Trust/provider hooks used to revalidate rail-native settlement receipts. */
+  railEvidence?: RailEvidenceDeps;
 }
 
 export interface PublishResult {
@@ -184,6 +190,8 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       },
       resolvePublicKey: async (did) => publicKeyFromDid(did),
       verify: ed25519RawVerify,
+      verifyEvidence: (evidence) =>
+        verifyRailReceiptEvidence(evidence, config.railEvidence),
     });
 
   return {

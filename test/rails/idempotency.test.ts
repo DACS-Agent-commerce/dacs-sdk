@@ -192,7 +192,12 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     jobId: "job-1",
     phaseIndex: 0,
   };
-  const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
+  const cfg = {
+    tokenAddress: "0xtoken",
+    network: "eip155:84532",
+    recipientEvm: "0xpayee",
+    finalityBlocks: 12,
+  };
 
   test("SAFE BY DEFAULT: twice with the same request → one transfer (no opt-in store needed)", async () => {
     const rail = countingRail();

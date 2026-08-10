@@ -52,3 +52,10 @@ export {
   type DemosNativeClient,
   type DemosTransferResult,
 } from "./payDem.js";
+export {
+  createEvmChainFinalityVerifier,
+  verifyRailReceiptEvidence,
+  type RailEvidenceDecision,
+  type RailEvidenceVerification,
+  type RailEvidenceDeps,
+} from "./receiptEvidence.js";

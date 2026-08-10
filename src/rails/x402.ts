@@ -1,4 +1,5 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { CounterpartyError } from "../errors.js";
 import type {
   PaymentPayloadResult,
@@ -47,7 +48,7 @@ export interface X402ClientLike {
   encodePaymentSignatureHeader(payload: unknown): Record<string, string>;
   getPaymentSettleResponse(
     getHeader: (name: string) => string | null,
-  ): { transaction?: string } | undefined;
+  ): Record<string, unknown> | undefined;
 }
 
 /** Per-session settlement inputs, derived from the negotiated agreement. */
@@ -152,6 +153,21 @@ export interface X402SettleCoreDeps {
   fetchImpl: typeof fetch;
   /** The buyer's EVM address (recorded as `payer` on the result). */
   payerAddress: string;
+  /** Verify settlement-chain depth when the facilitator returns an on-chain tx. */
+  verifyChainFinality?: (input: {
+    txHash: string;
+    chainId: string;
+  }) => Promise<{
+    status: "success" | "reverted" | "reorged" | "not-final" | "wrong-chain";
+    blockNumber: number;
+    blockTimestamp: number;
+    finalityBlocks: number;
+  }>;
+  /** Required for the exceptional no-tx provider-receipt fallback. */
+  verifyFacilitatorReceipt?: (
+    receipt: Readonly<Record<string, unknown>>,
+    canonicalReceipt: string,
+  ) => Promise<boolean> | boolean;
 }
 
 /**
@@ -232,27 +248,114 @@ export async function x402SettleCore(
     headers,
   });
 
-  // 5. Read the settlement tx hash from X-PAYMENT-RESPONSE. A money-safe receipt
-  //    needs a verifiable on-chain transaction id — without it the SettlementEvidence
-  //    would assert a provider-receipt finality that nobody can independently
-  //    check. So success REQUIRES both a passing gate (final.ok) and a non-empty
-  //    transaction id; a 200 with no parseable tx is reported as a non-success
-  //    settlement (ok:false) rather than an unverifiable "success".
-  let txHash = "";
+  // 5. Canonicalize and bind the facilitator receipt. On-chain receipts are
+  //    independently checked to the configured block depth. A no-tx receipt is
+  //    accepted only when an injected facilitator-signature verifier trusts it.
+  let receipt: Record<string, unknown> | undefined;
   try {
-    txHash =
-      client.getPaymentSettleResponse((name) => final.headers.get(name))
-        ?.transaction ?? "";
+    receipt = client.getPaymentSettleResponse((name) => final.headers.get(name));
   } catch {
-    txHash = "";
+    receipt = undefined;
+  }
+  if (!receipt) {
+    throw new CounterpartyError("x402: missing or malformed facilitator receipt");
+  }
+  const protocolVersionRaw = receipt["x402Version"];
+  const protocolVersion = Number(protocolVersionRaw);
+  if (!Number.isSafeInteger(protocolVersion) || protocolVersion !== 2) {
+    throw new CounterpartyError("x402: facilitator receipt is missing protocol version 2");
+  }
+  const canonicalReceipt = canonicalize(receipt);
+  const paymentReceiptHash = sha256Hex(canonicalReceipt);
+  const facilitatorSignature =
+    typeof receipt["signature"] === "string"
+      ? receipt["signature"]
+      : undefined;
+  const txHash =
+    typeof receipt["transaction"] === "string"
+      ? receipt["transaction"].trim()
+      : "";
+  const receiptChain =
+    typeof receipt["network"] === "string"
+      ? receipt["network"]
+      : typeof receipt["chainId"] === "string"
+        ? receipt["chainId"]
+        : undefined;
+  if (receiptChain !== params.network) {
+    throw new CounterpartyError(
+      `x402: facilitator receipt chain ${String(receiptChain)} does not match ${params.network}`,
+    );
   }
 
+  if (txHash) {
+    if (!deps.verifyChainFinality) {
+      throw new CounterpartyError(
+        "x402: settlement transaction requires an independent chain-finality verifier",
+      );
+    }
+    const finality = await deps.verifyChainFinality({
+      txHash,
+      chainId: receiptChain,
+    });
+    const ok =
+      final.ok &&
+      finality.status === "success" &&
+      Number.isSafeInteger(finality.finalityBlocks) &&
+      finality.finalityBlocks >= 1;
+    return {
+      ok,
+      txHash,
+      chainId: receiptChain,
+      payer: payerAddress,
+      payee: params.recipientEvm,
+      finality: {
+        model: "block-depth",
+        finalityBlocks: finality.finalityBlocks,
+      },
+      blockNumber: finality.blockNumber,
+      txRefKind: "x402",
+      receipt: {
+        kind: "x402",
+        httpResource: params.paywallUrl,
+        paymentReceiptHash,
+        protocolVersion,
+        facilitatorReceiptJcs: canonicalReceipt,
+        ...(facilitatorSignature ? { facilitatorSignature } : {}),
+        settlementTxHash: txHash,
+        chainId: receiptChain,
+        blockNumber: finality.blockNumber,
+        blockTimestamp: finality.blockTimestamp,
+        finalityBlocks: finality.finalityBlocks,
+      },
+    };
+  }
+
+  if (
+    !facilitatorSignature ||
+    !deps.verifyFacilitatorReceipt ||
+    !(await deps.verifyFacilitatorReceipt(receipt, canonicalReceipt))
+  ) {
+    throw new CounterpartyError(
+      "x402: no-tx provider receipt lacks a valid facilitator signature",
+    );
+  }
   return {
-    ok: final.ok && txHash.trim().length > 0,
-    txHash,
+    ok: final.ok,
+    txHash: "",
     chainId: params.network,
     payer: payerAddress,
     payee: params.recipientEvm,
+    finality: { model: "provider-receipt" },
+    txRefKind: "x402",
+    receipt: {
+      kind: "x402",
+      httpResource: params.paywallUrl,
+      paymentReceiptHash,
+      protocolVersion,
+      facilitatorReceiptJcs: canonicalReceipt,
+      ...(facilitatorSignature ? { facilitatorSignature } : {}),
+      chainId: receiptChain,
+    },
   };
 }
 
@@ -263,6 +366,12 @@ export interface X402RailConfig {
   fetchImpl?: typeof fetch;
   /** Refuse to create a random-nonce authorization without DACS session binding. */
   requireSessionBinding?: boolean;
+  /** RPC used to independently confirm a returned settlement transaction. */
+  rpcUrl: string;
+  /** Pinned confirmation depth from the steward-signed rail descriptor. */
+  finalityBlocks: number;
+  /** Facilitator trust hook for the exceptional no-transaction fallback. */
+  verifyFacilitatorReceipt?: X402SettleCoreDeps["verifyFacilitatorReceipt"];
 }
 
 export interface X402Rail {
@@ -336,6 +445,42 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
 
   const account = privateKeyToAccount(config.evmPrivateKey as `0x${string}`);
   const fetchImpl = config.fetchImpl ?? fetch;
+  if (!Number.isSafeInteger(config.finalityBlocks) || config.finalityBlocks < 1) {
+    throw new CounterpartyError("createX402Rail requires finalityBlocks >= 1");
+  }
+  const { createPublicClient, http } = await import("viem");
+  const publicClient = createPublicClient({ transport: http(config.rpcUrl) });
+  const verifyChainFinality: NonNullable<X402SettleCoreDeps["verifyChainFinality"]> =
+    async ({ txHash, chainId }) => {
+      const rpcChainId = await publicClient.getChainId();
+      const chainMatch = /^eip155:(\d+)$/.exec(chainId);
+      const expectedChainId = Number(chainMatch?.[1]);
+      if (!Number.isSafeInteger(expectedChainId) || rpcChainId !== expectedChainId) {
+        return {
+          status: "wrong-chain",
+          blockNumber: 0,
+          blockTimestamp: 0,
+          finalityBlocks: config.finalityBlocks,
+        };
+      }
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash as `0x${string}`,
+        confirmations: config.finalityBlocks,
+      });
+      const block = await publicClient.getBlock({
+        blockNumber: receipt.blockNumber,
+      });
+      return {
+        status: block.hash !== receipt.blockHash
+            ? "reorged"
+            : receipt.status === "success"
+              ? "success"
+              : "reverted",
+        blockNumber: Number(receipt.blockNumber),
+        blockTimestamp: Number(block.timestamp) * 1_000,
+        finalityBlocks: config.finalityBlocks,
+      };
+    };
 
   return {
     address: account.address,
@@ -411,7 +556,15 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
       // usable across base / base-sepolia / future EVM networks.
       const core = new x402Client().register("eip155:*", scheme);
       const client = new x402HTTPClient(core) as unknown as X402ClientLike;
-      return x402SettleCore(params, { client, fetchImpl, payerAddress: account.address });
+      return x402SettleCore(params, {
+        client,
+        fetchImpl,
+        payerAddress: account.address,
+        verifyChainFinality,
+        ...(config.verifyFacilitatorReceipt
+          ? { verifyFacilitatorReceipt: config.verifyFacilitatorReceipt }
+          : {}),
+      });
     },
   };
 }

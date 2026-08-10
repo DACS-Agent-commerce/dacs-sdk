@@ -14,12 +14,20 @@
  *   BUYER_EVM_KEY      buyer EVM private key (0x…) used to sign the x402 payment
  *   PAYWALL_URL        seller's paywalled delivery URL (returns HTTP 402)
  *   PAY_NETWORK        CAIP-2 network, e.g. eip155:84532 (Base Sepolia)
+ *   PAY_RPC            JSON-RPC URL for the payment network
+ *   PAY_FINALITY_BLOCKS required confirmation depth, e.g. 12
  *   SELLER_EVM         seller EVM address that x402 pays
  *
  *   npx tsx examples/hello-world.ts
  */
 
-import { createAgent, createX402Rail, vetCore, x402Settle } from "../src/index.js";
+import {
+  createAgent,
+  createEvmChainFinalityVerifier,
+  createX402Rail,
+  vetCore,
+  x402Settle,
+} from "../src/index.js";
 
 const env = (k: string): string => {
   const v = process.env[k];
@@ -48,13 +56,21 @@ async function main(): Promise<void> {
   console.log("listing anchored at", published.ref);
 
   // ── Buyer: run the session, settling via the x402 rail ──
+  const payRpc = env("PAY_RPC");
+  const finalityBlocks = Number(env("PAY_FINALITY_BLOCKS"));
+  const verifyChainFinality = await createEvmChainFinalityVerifier(payRpc);
   const buyer = await createAgent({
     demosRpc: env("DEMOS_RPC"),
     wallet: env("BUYER_WALLET"),
     identity: { agentId: env("BUYER_DID") },
+    railEvidence: { verifyChainFinality },
   });
 
-  const rail = await createX402Rail({ evmPrivateKey: env("BUYER_EVM_KEY") });
+  const rail = await createX402Rail({
+    evmPrivateKey: env("BUYER_EVM_KEY"),
+    rpcUrl: payRpc,
+    finalityBlocks,
+  });
 
   const session = await buyer.runSession(published.ref, {
     terms: {

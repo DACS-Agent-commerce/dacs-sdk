@@ -14,7 +14,14 @@ function client(over: Partial<EvmTransferClient> = {}): EvmTransferClient {
   return {
     address: PAYER,
     transfer: async () => "0xtransfer",
-    waitForSuccess: async () => true,
+    waitForFinality: async (_tx, confirmations) => ({
+      status: "success",
+      chainId: NETWORK,
+      blockNumber: 100,
+      blockTimestamp: 1780000000000,
+      blockHash: "0xblock",
+      confirmations,
+    }),
     ...over,
   };
 }
@@ -24,6 +31,7 @@ const params = {
   tokenAddress: TOKEN,
   recipientEvm: RECIPIENT,
   amount: "1000000",
+  finalityBlocks: 12,
 };
 
 describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
@@ -45,16 +53,58 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
       chainId: NETWORK,
       payer: PAYER,
       payee: RECIPIENT,
+      finality: { model: "block-depth", finalityBlocks: 12 },
+      blockNumber: 100,
+      txRefKind: "evm-erc20",
+      receipt: {
+        kind: "evm-erc20",
+        blockNumber: 100,
+        blockTimestamp: 1780000000000,
+        blockHash: "0xblock",
+        finalityBlocks: 12,
+      },
     });
   });
 
   test("ok=false when the transfer does not mine successfully", async () => {
     const res = await evmErc20SettleCore(
       params,
-      client({ waitForSuccess: async () => false }),
+      client({
+        waitForFinality: async () => ({
+          status: "reverted",
+          chainId: NETWORK,
+          blockNumber: 100,
+          blockTimestamp: 1780000000000,
+          confirmations: 12,
+        }),
+      }),
     );
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("0xtransfer");
+  });
+
+  test.each([
+    ["reorged", NETWORK, 12],
+    ["not-final", NETWORK, 11],
+    ["success", "eip155:1", 12],
+  ] as const)("fails closed for %s/wrong-chain/insufficient-depth", async (status, chainId, confirmations) => {
+    const res = await evmErc20SettleCore(
+      params,
+      client({
+        waitForFinality: async (_hash, requested) => {
+          expect(requested).toBe(12);
+          return {
+            status,
+            chainId,
+            blockNumber: 100,
+            blockTimestamp: 1780000000000,
+            confirmations,
+          };
+        },
+      }),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.finality).toEqual({ model: "block-depth", finalityBlocks: 12 });
   });
 
   test("rejects a non-positive amount before sending", async () => {

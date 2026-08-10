@@ -44,20 +44,27 @@ Rails and verification recipes are resolved from **steward-signed registries** (
 ```ts
 import {
   createAgent,
+  createEvmChainFinalityVerifier,
   createX402Rail,
   x402Settle,
   resolveRecipe,
   vetCore,
 } from "@kynesyslabs/dacs";
 
-const agent = createAgent({ demosRpc, wallet, identity: { agentId } });
+const verifyChainFinality = await createEvmChainFinalityVerifier(payRpc);
+const agent = await createAgent({
+  demosRpc,
+  wallet,
+  identity: { agentId },
+  railEvidence: { verifyChainFinality },
+});
 
 // seller — sign + anchor a fixed-price listing
 const { ref } = await agent.publishListing(spec);
 
 // buyer — discover, then vet → negotiate → settle → verify (anchoring the bundle)
 const [{ ref: listingRef }] = await agent.discover([ref]);
-const rail = await createX402Rail({ evmPrivateKey });
+const rail = await createX402Rail({ evmPrivateKey, rpcUrl: payRpc, finalityBlocks: 12 });
 const session = await agent.runSession(listingRef, {
   terms,
   // optional Vet step: resolve a steward recipe + verify the seller before paying
@@ -69,7 +76,7 @@ const session = await agent.runSession(listingRef, {
   settle: x402Settle(rail, { url, network, recipientEvm, asset }),
 });
 
-// anyone — verify the bundle's structure + every artifact signature
+// anyone — verify signatures, canonical rail receipts, and current chain finality
 const verdict = await agent.verifyBundle(session.bundleRef);
 const rep = await agent.getReputation(primaryClaim, bundleRefs);
 ```

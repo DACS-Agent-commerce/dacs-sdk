@@ -102,7 +102,11 @@ function fakeClient(accepts: X402PaymentRequired["accepts"]): X402ClientLike {
     getPaymentRequiredResponse: () => ({ accepts }),
     createPaymentPayload: async (pr) => pr,
     encodePaymentSignatureHeader: () => ({ "X-PAYMENT": "signed" }),
-    getPaymentSettleResponse: () => ({ transaction: "0xsettlement" }),
+    getPaymentSettleResponse: () => ({
+      transaction: "0xsettlement",
+      network: NETWORK,
+      x402Version: 2,
+    }),
   };
 }
 function fakeFetch(): typeof fetch {
@@ -165,6 +169,12 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
             ]),
             fetchImpl: fakeFetch(),
             payerAddress: BUYER_EVM,
+            verifyChainFinality: async () => ({
+              status: "success",
+              blockNumber: 100,
+              blockTimestamp: 1780000000000,
+              finalityBlocks: 12,
+            }),
           },
         ),
       // Vet the seller (self-signed recipe) before paying — full 5-stage flow.
@@ -231,7 +241,20 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(evidence).toMatchObject({
       evidenceVersion: "1",
       outcome: "success",
-      paymentTxRefs: [{ txHash: "0xsettlement", kind: "payment" }],
+      paymentTxRefs: [{
+        txHash: "0xsettlement",
+        kind: "x402",
+        chainId: NETWORK,
+        settlementTxHash: "0xsettlement",
+        blockNumber: 100,
+        blockTimestamp: 1780000000000,
+        finalityBlocks: 12,
+      }],
+      settlementFinality: {
+        model: "block-depth",
+        finalityBlocks: 12,
+        finalityObservedAt: 1780000000000,
+      },
     });
   });
 

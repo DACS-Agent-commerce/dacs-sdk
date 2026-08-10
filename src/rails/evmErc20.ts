@@ -27,6 +27,17 @@ export interface EvmErc20SettleParams {
   recipientEvm: string;
   /** Amount in integer base units (string). */
   amount: string;
+  /** Pinned confirmation depth required by the steward-signed rail descriptor. */
+  finalityBlocks: number;
+}
+
+export interface EvmFinalityReceipt {
+  status: "success" | "reverted" | "reorged" | "not-final" | "wrong-chain";
+  chainId: string;
+  blockNumber: number;
+  blockTimestamp: number;
+  blockHash?: string;
+  confirmations: number;
 }
 
 export interface EvmTransferClient {
@@ -34,8 +45,11 @@ export interface EvmTransferClient {
   address: string;
   /** Submit an ERC-20 transfer; resolves with the tx hash. */
   transfer(args: { token: string; to: string; amount: bigint }): Promise<string>;
-  /** Resolve true iff the tx mined successfully. */
-  waitForSuccess(txHash: string): Promise<boolean>;
+  /** Wait for and report the actual pinned confirmation depth. */
+  waitForFinality(
+    txHash: string,
+    finalityBlocks: number,
+  ): Promise<EvmFinalityReceipt>;
 }
 
 export async function evmErc20SettleCore(
@@ -51,13 +65,20 @@ export async function evmErc20SettleCore(
   if (amount <= 0n) {
     throw new DacsError(`evm-erc20: amount must be > 0 (got ${params.amount})`);
   }
+  if (!Number.isSafeInteger(params.finalityBlocks) || params.finalityBlocks < 1) {
+    throw new DacsError("evm-erc20: finalityBlocks must be a positive integer");
+  }
 
   const txHash = await client.transfer({
     token: params.tokenAddress,
     to: params.recipientEvm,
     amount,
   });
-  const ok = await client.waitForSuccess(txHash);
+  const receipt = await client.waitForFinality(txHash, params.finalityBlocks);
+  const ok =
+    receipt.status === "success" &&
+    receipt.chainId === params.network &&
+    receipt.confirmations >= params.finalityBlocks;
 
   return {
     ok,
@@ -65,6 +86,16 @@ export async function evmErc20SettleCore(
     chainId: params.network,
     payer: client.address,
     payee: params.recipientEvm,
+    finality: { model: "block-depth", finalityBlocks: params.finalityBlocks },
+    blockNumber: receipt.blockNumber,
+    txRefKind: "evm-erc20",
+    receipt: {
+      kind: "evm-erc20",
+      blockNumber: receipt.blockNumber,
+      blockTimestamp: receipt.blockTimestamp,
+      ...(receipt.blockHash !== undefined ? { blockHash: receipt.blockHash } : {}),
+      finalityBlocks: params.finalityBlocks,
+    },
   };
 }
 
@@ -99,6 +130,8 @@ export interface EvmErc20RailConfig {
   rpcUrl: string;
   /** CAIP-2 network, used to derive the chain id. */
   network: string;
+  /** Required confirmation depth from the pinned rail descriptor. */
+  finalityBlocks: number;
 }
 
 export interface EvmErc20Rail {
@@ -127,6 +160,9 @@ export async function createEvmErc20Rail(
   const { privateKeyToAccount } = accounts;
 
   const id = chainIdFromCaip2(config.network);
+  if (!Number.isSafeInteger(config.finalityBlocks) || config.finalityBlocks < 1) {
+    throw new DacsError("evm-erc20 rail requires finalityBlocks >= 1");
+  }
   const chain = defineChain({
     id,
     name: config.network,
@@ -146,11 +182,34 @@ export async function createEvmErc20Rail(
         functionName: "transfer",
         args: [to as `0x${string}`, amount],
       }),
-    waitForSuccess: async (txHash) => {
+    waitForFinality: async (txHash, finalityBlocks) => {
+      const rpcChainId = await pub.getChainId();
+      if (rpcChainId !== id) {
+        return {
+          status: "wrong-chain",
+          chainId: config.network,
+          blockNumber: 0,
+          blockTimestamp: 0,
+          confirmations: 0,
+        };
+      }
       const receipt = await pub.waitForTransactionReceipt({
         hash: txHash as `0x${string}`,
+        confirmations: finalityBlocks,
       });
-      return receipt.status === "success";
+      const block = await pub.getBlock({ blockNumber: receipt.blockNumber });
+      return {
+        status: block.hash !== receipt.blockHash
+            ? "reorged"
+            : receipt.status === "success"
+              ? "success"
+              : "reverted",
+        chainId: config.network,
+        blockNumber: Number(receipt.blockNumber),
+        blockTimestamp: Number(block.timestamp) * 1_000,
+        blockHash: receipt.blockHash,
+        confirmations: finalityBlocks,
+      };
     },
   };
 
@@ -172,7 +231,7 @@ export async function createEvmErc20Rail(
  */
 export function evmErc20Settle(
   rail: EvmErc20Rail,
-  cfg: { tokenAddress: string; network: string; recipientEvm: string },
+  cfg: { tokenAddress: string; network: string; recipientEvm: string; finalityBlocks: number },
   opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
   const store = opts.store ?? createIdempotencyStore();
@@ -183,6 +242,7 @@ export function evmErc20Settle(
         tokenAddress: cfg.tokenAddress,
         recipientEvm: cfg.recipientEvm,
         amount: req.amount,
+        finalityBlocks: cfg.finalityBlocks,
       });
     return store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), submit, opts.reconcile);
   };

@@ -82,6 +82,8 @@ describe("DACS EIP-3009 session binding", () => {
   test("fails closed when a production rail is asked to settle without a session binding", async () => {
     const rail = await createX402Rail({
       evmPrivateKey: HARDHAT_KEY,
+      rpcUrl: "https://sepolia.base.org",
+      finalityBlocks: 12,
       requireSessionBinding: true,
       fetchImpl: fakeFetch(),
     });
@@ -169,12 +171,22 @@ describe("termsMatch (§4.1 abort guard, base-unit amounts)", () => {
 
 // ── A fake x402 client + fetch so the 402-dance is exercised without a chain ──
 
-function fakeClient(accepts: X402PaymentRequired["accepts"], txHash = "0xsettled"): X402ClientLike {
+function fakeClient(
+  accepts: X402PaymentRequired["accepts"],
+  txHash = "0xsettled",
+  receiptOverrides: Record<string, unknown> = {},
+): X402ClientLike {
   return {
     getPaymentRequiredResponse: () => ({ accepts }),
     createPaymentPayload: async (pr) => pr,
     encodePaymentSignatureHeader: () => ({ "X-PAYMENT": "signed" }),
-    getPaymentSettleResponse: () => ({ transaction: txHash }),
+    getPaymentSettleResponse: () => ({
+      transaction: txHash,
+      network: NETWORK,
+      x402Version: 2,
+      ...(txHash ? {} : { signature: "facilitator-signature" }),
+      ...receiptOverrides,
+    }),
   };
 }
 
@@ -199,6 +211,12 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     amount: "1000000",
     asset: "USDC",
   };
+  const chainFinality = async () => ({
+    status: "success" as const,
+    blockNumber: 100,
+    blockTimestamp: 1780000000000,
+    finalityBlocks: 12,
+  });
 
   test("happy path: pays the matching requirement and returns settlement", async () => {
     let paidHeader = "";
@@ -211,16 +229,36 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" },
     ]);
 
-    const res = await x402SettleCore(params, { client, fetchImpl, payerAddress: PAYER });
+    const res = await x402SettleCore(params, {
+      client,
+      fetchImpl,
+      payerAddress: PAYER,
+      verifyChainFinality: chainFinality,
+    });
 
     expect(paidHeader).toBe("signed");
-    expect(res).toEqual({
+    expect(res).toMatchObject({
       ok: true,
       txHash: "0xsettled",
       chainId: NETWORK,
       payer: PAYER,
       payee: RECIPIENT,
+      finality: { model: "block-depth", finalityBlocks: 12 },
+      blockNumber: 100,
+      txRefKind: "x402",
+      receipt: {
+        kind: "x402",
+        httpResource: params.paywallUrl,
+        protocolVersion: 2,
+        settlementTxHash: "0xsettled",
+        chainId: NETWORK,
+        blockNumber: 100,
+        blockTimestamp: 1780000000000,
+        finalityBlocks: 12,
+      },
     });
+    expect(res.receipt?.kind === "x402" && res.receipt.paymentReceiptHash)
+      .toMatch(/^[0-9a-f]{64}$/);
   });
 
   test("picks the matching requirement among several advertised", async () => {
@@ -232,6 +270,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       client,
       fetchImpl: fakeFetch(),
       payerAddress: PAYER,
+      verifyChainFinality: chainFinality,
     });
     expect(res.ok).toBe(true);
   });
@@ -241,7 +280,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       { network: NETWORK, payTo: RECIPIENT, amount: "9999999", asset: "USDC" },
     ]);
     await expect(
-      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
+      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER, verifyChainFinality: chainFinality }),
     ).rejects.toThrow(/does not match negotiated agreement/);
   });
 
@@ -251,20 +290,18 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "DAI" },
     ]);
     await expect(
-      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
+      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER, verifyChainFinality: chainFinality }),
     ).rejects.toThrow(/asset mismatch/);
   });
 
   test("aborts when the 402 omits the asset (can't confirm the token)", async () => {
     const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "1000000" }]);
     await expect(
-      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
+      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER, verifyChainFinality: chainFinality }),
     ).rejects.toThrow(/asset mismatch/);
   });
 
-  test("reports non-success when settlement returns no transaction id", async () => {
-    // Gate passes (HTTP 200) but X-PAYMENT-RESPONSE carries no tx hash — an
-    // unverifiable receipt. Must NOT be reported as a success.
+  test("uses provider-receipt only when the no-tx facilitator signature verifies", async () => {
     const client = fakeClient(
       [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
       "", // empty transaction id
@@ -273,10 +310,96 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       client,
       fetchImpl: fakeFetch(),
       payerAddress: PAYER,
+      verifyFacilitatorReceipt: (_receipt, canonical) =>
+        canonical.includes("facilitator-signature"),
     });
-    expect(res.ok).toBe(false);
+    expect(res.ok).toBe(true);
     expect(res.txHash).toBe("");
+    expect(res.finality).toEqual({ model: "provider-receipt" });
+    expect(res.receipt).toMatchObject({
+      kind: "x402",
+      facilitatorSignature: "facilitator-signature",
+    });
   });
+
+  test("rejects a no-tx receipt with an invalid facilitator signature", async () => {
+    await expect(
+      x402SettleCore(params, {
+        client: fakeClient(
+          [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
+          "",
+        ),
+        fetchImpl: fakeFetch(),
+        payerAddress: PAYER,
+        verifyFacilitatorReceipt: () => false,
+      }),
+    ).rejects.toThrow(/valid facilitator signature/);
+  });
+
+  test("rejects a no-tx receipt that has no facilitator signature", async () => {
+    await expect(
+      x402SettleCore(params, {
+        client: fakeClient(
+          [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
+          "",
+          { signature: undefined },
+        ),
+        fetchImpl: fakeFetch(),
+        payerAddress: PAYER,
+        verifyFacilitatorReceipt: () => true,
+      }),
+    ).rejects.toThrow(/valid facilitator signature/);
+  });
+
+  test("rejects the wrong receipt chain and missing protocol version", async () => {
+    const accepts = [
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" },
+    ];
+    await expect(
+      x402SettleCore(params, {
+        client: fakeClient(accepts, "0xsettled", { network: "eip155:1" }),
+        fetchImpl: fakeFetch(),
+        payerAddress: PAYER,
+        verifyChainFinality: chainFinality,
+      }),
+    ).rejects.toThrow(/receipt chain/);
+
+    let call = 0;
+    const noVersionFetch = (async () => {
+      call += 1;
+      return call === 1
+        ? new Response("{}", { status: 402 })
+        : new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    await expect(
+      x402SettleCore(params, {
+        client: fakeClient(accepts, "0xsettled", { x402Version: undefined }),
+        fetchImpl: noVersionFetch,
+        payerAddress: PAYER,
+        verifyChainFinality: chainFinality,
+      }),
+    ).rejects.toThrow(/protocol version 2/);
+  });
+
+  test.each(["reverted", "reorged", "not-final", "wrong-chain"] as const)(
+    "does not report success for a %s settlement transaction",
+    async (status) => {
+      const res = await x402SettleCore(params, {
+        client: fakeClient([
+          { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" },
+        ]),
+        fetchImpl: fakeFetch(),
+        payerAddress: PAYER,
+        verifyChainFinality: async () => ({
+          status,
+          blockNumber: 100,
+          blockTimestamp: 1780000000000,
+          finalityBlocks: 12,
+        }),
+      });
+      expect(res.ok).toBe(false);
+    },
+  );
 
   test("throws if the paywall doesn't return a 402", async () => {
     const fetchImpl = (async () =>

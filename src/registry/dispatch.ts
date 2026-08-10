@@ -50,10 +50,21 @@ export async function settleFromRail(
           `x402 rail "${descriptor.id}" descriptor missing params.tokenAddress`,
         );
       }
+      const finalityBlocks = descriptor.params["finalityBlocks"];
+      if (!Number.isSafeInteger(finalityBlocks) || (finalityBlocks as number) < 1) {
+        throw new DacsError(
+          `x402 rail "${descriptor.id}" descriptor missing positive params.finalityBlocks`,
+        );
+      }
+      if (!opts.rpcUrl) {
+        throw new DacsError("x402 rail requires opts.rpcUrl for chain finality");
+      }
       const rail = await createX402Rail({
         evmPrivateKey: opts.evmPrivateKey,
         fetchImpl: opts.fetchImpl,
         requireSessionBinding: true,
+        rpcUrl: opts.rpcUrl,
+        finalityBlocks: finalityBlocks as number,
       });
       return x402Settle(rail, { ...opts.paywall, asset: tokenAddress });
     }
@@ -69,15 +80,23 @@ export async function settleFromRail(
       if (!opts.rpcUrl) {
         throw new DacsError("evm-erc20 rail requires opts.rpcUrl");
       }
+      const finalityBlocks = descriptor.params["finalityBlocks"];
+      if (!Number.isSafeInteger(finalityBlocks) || (finalityBlocks as number) < 1) {
+        throw new DacsError(
+          `evm-erc20 rail "${descriptor.id}" descriptor missing positive params.finalityBlocks`,
+        );
+      }
       const rail = await createEvmErc20Rail({
         evmPrivateKey: opts.evmPrivateKey,
         rpcUrl: opts.rpcUrl,
         network: opts.paywall.network,
+        finalityBlocks: finalityBlocks as number,
       });
       return evmErc20Settle(rail, {
         tokenAddress,
         network: opts.paywall.network,
         recipientEvm: opts.paywall.recipientEvm,
+        finalityBlocks: finalityBlocks as number,
       });
     }
     case "d402": {

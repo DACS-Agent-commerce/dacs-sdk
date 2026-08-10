@@ -113,6 +113,43 @@ describe("runSession orchestration (T4)", () => {
     expect(ev.paymentTxRefs[0]!.blockNumber).toBeUndefined();
   });
 
+  test("a verified signed x402 no-tx receipt survives into provider-receipt evidence", async () => {
+    const anchored: Record<string, unknown> = {};
+    await runSessionCore(
+      "stor-listing",
+      TERMS,
+      makeDeps({
+        settle: async () => ({
+          ok: true,
+          txHash: "",
+          chainId: "eip155:84532",
+          payer: "0xbob",
+          payee: "0xalice",
+          finality: { model: "provider-receipt" },
+          txRefKind: "x402",
+          receipt: {
+            kind: "x402",
+            httpResource: "https://seller.example/deliver",
+            paymentReceiptHash: "a".repeat(64),
+            protocolVersion: 2,
+            facilitatorReceiptJcs: "{\"network\":\"eip155:84532\",\"signature\":\"signed\",\"x402Version\":2}",
+            facilitatorSignature: "signed",
+            chainId: "eip155:84532",
+          },
+        }),
+        anchor: async (name: string, value: object) => {
+          if (name.includes("evidence")) anchored.evidence = value;
+          return `stor-${name}`;
+        },
+      }),
+    );
+    expect(anchored.evidence).toMatchObject({
+      outcome: "success",
+      paymentTxRefs: [{ kind: "x402", txHash: "", facilitatorSignature: "signed" }],
+      settlementFinality: { model: "provider-receipt" },
+    });
+  });
+
   test("failed settlement yields outcome=failed", async () => {
     const anchored: Record<string, unknown> = {};
     const res = await runSessionCore(

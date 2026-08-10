@@ -269,7 +269,11 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
             res.writeHead(receipt.status === "success" ? 200 : 500, {
               "content-type": "application/json",
-              "X-PAYMENT-RESPONSE": JSON.stringify({ transaction: txHash }),
+              "X-PAYMENT-RESPONSE": JSON.stringify({
+                transaction: txHash,
+                network: NETWORK,
+                x402Version: 2,
+              }),
             });
             res.end(JSON.stringify({ ok: receipt.status === "success" }));
           } catch (err) {
@@ -342,7 +346,28 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             amount: AMOUNT,
             asset: tokenAddress,
           },
-          { client: x402Client(), fetchImpl: fetch, payerAddress: buyerAccount.address },
+          {
+            client: x402Client(),
+            fetchImpl: fetch,
+            payerAddress: buyerAccount.address,
+            verifyChainFinality: async ({ txHash }) => {
+              const receipt = await publicClient.waitForTransactionReceipt({
+                hash: txHash as `0x${string}`,
+                confirmations: 1,
+              });
+              const block = await publicClient.getBlock({ blockNumber: receipt.blockNumber });
+              return {
+                status: receipt.status !== "success"
+                  ? "reverted"
+                  : block.hash !== receipt.blockHash
+                    ? "reorged"
+                    : "success",
+                blockNumber: Number(receipt.blockNumber),
+                blockTimestamp: Number(block.timestamp) * 1000,
+                finalityBlocks: 1,
+              };
+            },
+          },
         );
         expect(settlement.ok).toBe(true);
         expect(settlement.txHash).toMatch(/^0x[0-9a-f]{64}$/);
@@ -365,19 +390,40 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
         );
 
         const observedAt = 1780000000000;
+        expect(settlement.receipt?.kind).toBe("x402");
+        if (
+          settlement.receipt?.kind !== "x402" ||
+          settlement.blockNumber === undefined ||
+          settlement.receipt.blockTimestamp === undefined ||
+          settlement.receipt.finalityBlocks === undefined
+        ) {
+          throw new Error("x402 settlement did not return a chain-final receipt");
+        }
         const evidence: SettlementEvidence = {
           evidenceVersion: "1",
           jobId: JOB_ID,
           phase: "pay-x402",
           phaseIndex: 2,
           outcome: "success",
-          paymentTxRefs: [{ rail: NETWORK, txHash: settlement.txHash, kind: "payment" }],
+          paymentTxRefs: [{
+            rail: NETWORK,
+            txHash: settlement.txHash,
+            kind: "x402",
+            httpResource: settlement.receipt.httpResource,
+            paymentReceiptHash: settlement.receipt.paymentReceiptHash,
+            protocolVersion: settlement.receipt.protocolVersion,
+            facilitatorReceiptJcs: settlement.receipt.facilitatorReceiptJcs,
+            chainId: settlement.receipt.chainId,
+            settlementTxHash: settlement.receipt.settlementTxHash,
+            blockNumber: settlement.receipt.blockNumber,
+            blockTimestamp: settlement.receipt.blockTimestamp,
+            finalityBlocks: settlement.receipt.finalityBlocks,
+          }],
           paymentAmount: { amount: AMOUNT, currency: "USDC" },
           settlementFinality: {
-            // finalityBlocks is block-depth-only (§9.7, enforced since #32) —
-            // a provider-receipt finality carries no block depth.
-            model: "provider-receipt",
-            finalityObservedAt: observedAt,
+            model: "block-depth",
+            finalityBlocks: settlement.receipt.finalityBlocks,
+            finalityObservedAt: settlement.receipt.blockTimestamp,
           },
           observedAt,
         };
