@@ -146,4 +146,48 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith({ "stor-real": RECORD }));
     expect(r.status).toBe("unverifiable");
   });
+
+  test("unverifiable: a signature verifier cannot compensate for a missing binding hash", async () => {
+    let verifierCalled = false;
+    const index = createInMemoryBindingIndex([
+      binding({ contentHash: undefined }),
+    ]);
+    const r = await resolveAndRead(
+      index,
+      LOGICAL,
+      SELLER,
+      depsWith(
+        { "stor-real": RECORD },
+        {
+          verifySignature: () => {
+            verifierCalled = true;
+            return true;
+          },
+        },
+      ),
+    );
+    expect(r).toMatchObject({
+      status: "unverifiable",
+      reason: expect.stringContaining("does not carry a content hash"),
+    });
+    expect(verifierCalled).toBe(false);
+  });
+
+  test("unverifiable: malformed bytes that cannot be hashed return a diagnostic", async () => {
+    const index = createInMemoryBindingIndex([binding()]);
+    const r = await resolveAndRead(index, LOGICAL, SELLER, {
+      read: async () => RECORD,
+      contentHashOf: () => {
+        throw new Error("non-canonical number");
+      },
+      verifySignature: () => true,
+    });
+
+    expect(r).toMatchObject({
+      status: "unverifiable",
+      nativeAddress: "stor-real",
+      record: RECORD,
+      reason: expect.stringContaining("non-canonical number"),
+    });
+  });
 });

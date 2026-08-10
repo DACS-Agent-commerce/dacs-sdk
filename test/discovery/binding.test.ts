@@ -32,6 +32,19 @@ describe("resolveBinding (§6.3.4 (c) published logical→native binding)", () =
     expect(r.status).toBe("present");
   });
 
+  test("Demos owner keys match with or without the cosmetic 0x prefix", async () => {
+    const key = "ab".repeat(32);
+    const prefixed = binding({ owner: `0x${key}` });
+    expect(resolveBinding([prefixed], logicalFor(1), key).status).toBe(
+      "present",
+    );
+
+    const store = createInMemoryBindingStore([prefixed]);
+    await expect(
+      store.publish({ ...prefixed, owner: key }),
+    ).resolves.toMatchObject({ status: "already-published" });
+  });
+
   test("absent: no binding for that logical address", () => {
     expect(resolveBinding([binding()], logicalFor(2), SELLER)).toEqual({ status: "absent" });
   });
@@ -65,11 +78,37 @@ describe("resolveBinding (§6.3.4 (c) published logical→native binding)", () =
     expect(r).toEqual({ status: "absent" });
   });
 
+  test("CONFLICT: live and revoked state for the same tuple is indeterminate", () => {
+    const r = resolveBinding(
+      [binding(), binding({ revoked: true })],
+      logicalFor(1),
+      SELLER,
+    );
+    expect(r.status).toBe("indeterminate");
+  });
+
   test("CONFLICT: two live bindings disagreeing on the native address ⇒ indeterminate, never a guess", () => {
     const a = binding({ nativeAddress: "stor-aaa" });
     const b = binding({ nativeAddress: "stor-bbb" });
     const r = resolveBinding([a, b], logicalFor(1), SELLER);
     expect(r.status).toBe("indeterminate");
+  });
+
+  test("CONFLICT: the same native address with different hash/version is still indeterminate", () => {
+    expect(
+      resolveBinding(
+        [binding({ contentHash: "hash-a" }), binding({ contentHash: "hash-b" })],
+        logicalFor(1),
+        SELLER,
+      ).status,
+    ).toBe("indeterminate");
+    expect(
+      resolveBinding(
+        [binding({ version: 1 }), binding({ version: 2 })],
+        logicalFor(1),
+        SELLER,
+      ).status,
+    ).toBe("indeterminate");
   });
 
   test("duplicate identical bindings are NOT a conflict", () => {
@@ -79,9 +118,9 @@ describe("resolveBinding (§6.3.4 (c) published logical→native binding)", () =
 });
 
 describe("resolveLatestVersion (#29/#46 version-aware lookup)", () => {
-  const v1 = binding({ logicalAddress: logicalFor(1), nativeAddress: "stor-v1" });
-  const v2 = binding({ logicalAddress: logicalFor(2), nativeAddress: "stor-v2" });
-  const v3 = binding({ logicalAddress: logicalFor(3), nativeAddress: "stor-v3" });
+  const v1 = binding({ logicalAddress: logicalFor(1), nativeAddress: "stor-v1", version: 1 });
+  const v2 = binding({ logicalAddress: logicalFor(2), nativeAddress: "stor-v2", version: 2 });
+  const v3 = binding({ logicalAddress: logicalFor(3), nativeAddress: "stor-v3", version: 3 });
 
   test("selects the highest live version", () => {
     const r = resolveLatestVersion([v1, v3, v2], logicalFor, SELLER, [1, 2, 3]);
@@ -96,14 +135,17 @@ describe("resolveLatestVersion (#29/#46 version-aware lookup)", () => {
     expect(r.status === "present" && r.binding.nativeAddress).toBe("stor-v1");
   });
 
-  test("a revoked latest falls back to the highest live version", () => {
+  test("a tombstoned latest never reactivates an older superseded version", () => {
     const r = resolveLatestVersion(
-      [v1, v2, binding({ logicalAddress: logicalFor(3), revoked: true })],
+      [v1, v2, binding({ logicalAddress: logicalFor(3), version: 3, revoked: true })],
       logicalFor,
       SELLER,
       [1, 2, 3],
     );
-    expect(r.status === "present" && r.binding.version).toBe(2);
+    expect(r).toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("tombstoned"),
+    });
   });
 
   test("absent when no version resolves for this owner", () => {
@@ -111,9 +153,28 @@ describe("resolveLatestVersion (#29/#46 version-aware lookup)", () => {
   });
 
   test("a conflicting version makes 'latest' indeterminate, not a guess", () => {
-    const conflict = binding({ logicalAddress: logicalFor(2), nativeAddress: "stor-other" });
+    const conflict = binding({ logicalAddress: logicalFor(2), nativeAddress: "stor-other", version: 2 });
     const r = resolveLatestVersion([v1, v2, conflict], logicalFor, SELLER, [1, 2]);
     expect(r.status).toBe("indeterminate");
+  });
+
+  test("an absent or inconsistent embedded version is indeterminate", () => {
+    expect(
+      resolveLatestVersion(
+        [binding({ logicalAddress: logicalFor(1), nativeAddress: "stor-v1" })],
+        logicalFor,
+        SELLER,
+        [1],
+      ).status,
+    ).toBe("indeterminate");
+    expect(
+      resolveLatestVersion(
+        [binding({ logicalAddress: logicalFor(1), version: 2 })],
+        logicalFor,
+        SELLER,
+        [1],
+      ).status,
+    ).toBe("indeterminate");
   });
 });
 

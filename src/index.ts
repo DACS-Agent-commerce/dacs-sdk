@@ -151,7 +151,6 @@ export type {
   AnchorAttempts,
   AnchorCompletion,
   AnchorRef,
-  AnchorReceipt,
   AnchorState,
   AnchorTimings,
   AnchorWaitFailureCode,
@@ -160,6 +159,7 @@ export type {
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
+  AnchorReceipt as SubstrateAnchorReceipt,
 } from "./substrate/index.js";
 // Pure error value: exporting this directly does not eagerly load demosdk.
 export { AnchorWaitError } from "./substrate/AnchorWaitError.js";
@@ -297,6 +297,7 @@ export {
   type Agent,
   type AgentConfig,
   type DemosBackedAdapter,
+  type AgentBindingConfig,
   type PublishResult,
   type DiscoveredListing,
   type BundleVerification,

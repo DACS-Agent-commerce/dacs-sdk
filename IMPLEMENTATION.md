@@ -72,8 +72,8 @@ Global done-for-every-task: unit tests pass; the 5 `DACS-Standard` validators st
 
 **T4 · Design the public API**
 - *What:* decide the small set of functions an agent dev calls, and hide the rest. Target surface:
-  - `createAgent({ identity, demosRpc, wallet })`
-  - seller: `publishListing(spec)`
+  - `createAgent({ identity, demosRpc, wallet, bindings })`
+  - seller: `publishListing(spec)` → discriminated binding-publication receipt
   - buyer: `discover()`, `runSession(listingRef)` → result + anchored bundle
   - anyone: `verifyBundle(ref)`, `getReputation(primaryClaim)`
 - *Done when:* `index.ts` exports only these; the rest is internal.

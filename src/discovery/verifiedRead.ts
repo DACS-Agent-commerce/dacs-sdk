@@ -97,11 +97,31 @@ export async function resolveAndRead(
   }
   if (!record) return { status: "unreadable", nativeAddress };
 
-  // (1) Content-hash binding: the read record MUST hash to what the binding pins.
-  if (binding.contentHash !== undefined) {
-    if (deps.contentHashOf(record) !== binding.contentHash) {
-      return { status: "hash-mismatch", nativeAddress, record };
-    }
+  // (1) Content-hash binding: a reader cannot authenticate the pointer without
+  // an exact signed-scope hash, even when the pointed-to record has a valid
+  // signature. A valid artifact at the wrong logical slot is still the wrong
+  // artifact.
+  if (binding.contentHash === undefined) {
+    return {
+      status: "unverifiable",
+      nativeAddress,
+      record,
+      reason: "published binding does not carry a content hash",
+    };
+  }
+  let actualContentHash: string;
+  try {
+    actualContentHash = deps.contentHashOf(record);
+  } catch (e) {
+    return {
+      status: "unverifiable",
+      nativeAddress,
+      record,
+      reason: `content hash computation failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (actualContentHash !== binding.contentHash) {
+    return { status: "hash-mismatch", nativeAddress, record };
   }
 
   // (2) Authorship/authorization: a hash against an untrusted pointer is never

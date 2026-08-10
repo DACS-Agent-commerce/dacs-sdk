@@ -33,7 +33,8 @@ import {
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
  * version-slot immutability (#29 / #46). Pure over injected substrate deps, so
- * it's unit-tested without a node; Agent.publishListing wires the DemosAdapter.
+ * it's unit-tested without a node; Agent.publishListing wires the binding-aware
+ * repository over DemosAdapter.
  *
  * Rules enforced:
  *  - `listingVersion` MUST be a positive integer ≥ 1 (§6.3.4) — 0 / fractional /
@@ -80,14 +81,18 @@ export interface PublishListingDeps {
    */
   scanOwnAnchorsByNamePrefix: (prefix: string) => Promise<OwnedAnchorScan>;
   /**
-   * Owner-bound, fail-closed immutable publication seam. It resolves existing
-   * programs by name, returns signed-scope-identical retries, rejects changed
-   * content, and uses a create-only path when absent.
+   * Binding-aware immutable write seam. The Agent implementation routes this
+   * through BoundArtifactRepository so the physical write and logical→native
+   * publication share one retry-safe receipt.
    */
-  anchorWriteOnce: (
-    name: string,
-    value: object,
-    options?: AnchorWriteOnceOptions,
+  writeArtifact: (
+    logicalAddress: string,
+    value: Record<string, unknown>,
+    options: {
+      storageName: string;
+      version: number;
+      anchor: AnchorWriteOnceOptions;
+    },
   ) => Promise<{ address: string; txRef?: string }>;
   /**
    * DACS-1 §6.3.4 LP-6 authenticated listing-time rail authority. Required
@@ -171,7 +176,7 @@ function capturePublishListingDeps(
       deps,
       "scanOwnAnchorsByNamePrefix",
     ),
-    anchorWriteOnce: captureDataMethod(deps, "anchorWriteOnce"),
+    writeArtifact: captureDataMethod(deps, "writeArtifact"),
     loadRailResolution: captureDataMethod(deps, "loadRailResolution", true),
     resolvePayloadVerificationCapability: captureDataMethod(
       deps,
@@ -590,9 +595,15 @@ export async function publishListingCore(
   };
   let rawWrite: unknown;
   try {
-    rawWrite = await capturedDeps.anchorWriteOnce(storageName, publication, {
-      metadata: { logicalAddress },
-    });
+    rawWrite = await capturedDeps.writeArtifact(
+      logicalAddress,
+      publication as unknown as Record<string, unknown>,
+      {
+        storageName,
+        version,
+        anchor: { metadata: { logicalAddress } },
+      },
+    );
   } catch (cause) {
     if (cause instanceof DacsError) throw cause;
     throw new SubstrateError("Listing publication was indeterminate", { cause });

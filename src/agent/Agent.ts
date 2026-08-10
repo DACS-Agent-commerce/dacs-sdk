@@ -3,23 +3,32 @@ import type {
   AnyAttestationBundle,
   CompositeVerificationRecord,
   ListingDraft,
-  ListingPin,
 } from "../artifacts/types.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { verifyComponentSignature } from "../artifacts/signatures.js";
+import {
+  isAnyAttestationBundle,
+  readListingArtifact,
+} from "../artifacts/validators.js";
+import {
+  contentHash,
+  listingAddress,
+  logicalToStorageProgramName,
+} from "../canonical/index.js";
 import {
   ed25519Verify,
   publicKeyFromRaw,
   signedBytes,
   type DomainSeparator,
 } from "../crypto/index.js";
-import { isAnyAttestationBundle } from "../artifacts/validators.js";
 import { isLegacyMvpAttestationBundle } from "../artifacts/legacyMvp.js";
-import { DacsError } from "../errors.js";
 import {
-  listingAddress,
-  logicalToStorageProgramName,
-} from "../canonical/index.js";
+  createBoundArtifactRepository,
+  type BindingIndex,
+  type BindingPublisher,
+  type BoundArtifactWriteResult,
+} from "../discovery/index.js";
+import { DacsError } from "../errors.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
 import { generateCanonicalJobId } from "../negotiate/jobId.js";
 import type { SubstrateAdapter } from "../substrate/SubstrateAdapter.js";
@@ -41,7 +50,10 @@ import {
 } from "./listingValidation.js";
 import type { StrictCompositeVerification } from "./compositeVerification.js";
 import type { VetProduction } from "./vetCore.js";
-import { publishListingCore } from "./publishListingCore.js";
+import {
+  publishListingCore,
+  type PublishListingResult,
+} from "./publishListingCore.js";
 import {
   authenticateReadableListingArtifact,
   discoverListings,
@@ -188,6 +200,21 @@ function publicKeyFromDid(did: string): Uint8Array | null {
   return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
 }
 
+function normalizedDemosPublicKey(value: string): string | null {
+  const match = value.trim().match(/^(?:0x)?([0-9a-fA-F]{64})$/);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * Current MVP self-certifying publisher claims. The reduced Listing shape does
+ * not yet carry the normative seller.identity authorization chain, so the write
+ * path accepts only claims whose key ownership can be established locally.
+ */
+function publishingKeyFromClaim(claim: string): string | null {
+  const match = claim.match(/^did:demos:agent:([0-9a-f]{64})$/);
+  return match?.[1] ?? null;
+}
+
 /** Verifier that lifts a raw 32-byte key into a KeyObject for ed25519Verify. */
 const ed25519RawVerify: Verifier = (bytes, signature, publicKey) =>
   ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey));
@@ -278,19 +305,75 @@ export interface AgentConfig {
   verifyCompositeRecord?: NonNullable<
     VerifyBundleDeps["verifyCompositeRecord"]
   >;
+
+  /**
+   * Published logical→native binding authority used by listing writes and their
+   * consumer-index readback. `publishListing` refuses to anchor unless this is
+   * configured: a physical write without its independently readable binding
+   * would leave an orphan that consumers cannot resolve safely. Agent-level
+   * typed logical reads remain a separate #54 slice.
+   */
+  bindings?: AgentBindingConfig;
 }
 
-export interface PublishResult {
-  /** Native storage address the listing was anchored at. */
-  ref: string;
-  /** §6.3.4 colon-bearing LOGICAL address — the discovery key / metadata (#46). */
-  logicalAddress: string;
-  /** Colon-free NATIVE storage-program name the logical address encodes to (#46). */
-  storageName: string;
-  /** Exact DACS-1 §6.3.4 LR-1 tuple of the published Listing. */
-  listingPin: ListingPin;
-  txRef?: string;
+export interface AgentBindingConfig {
+  /**
+   * Consumer-facing well-known/catalog index updated by `publisher`; an
+   * acknowledgement is not successful until this view resolves the exact tuple.
+   */
+  index: BindingIndex;
+  /**
+   * Writer-authorized target that updates the deployment's required discovery
+   * surfaces. A production DACS listing publisher is normally composite across
+   * well-known and catalog publication and must report partial success as
+   * indeterminate, not published.
+   */
+  publisher: BindingPublisher;
 }
+
+type PublishedWrite = Extract<
+  BoundArtifactWriteResult,
+  { status: "published" }
+>;
+type AlreadyPublishedWrite = Extract<
+  BoundArtifactWriteResult,
+  { status: "already-published" }
+>;
+type ConflictingWrite = Extract<
+  BoundArtifactWriteResult,
+  { status: "conflict" }
+>;
+type IndeterminateWrite = Extract<
+  BoundArtifactWriteResult,
+  { status: "indeterminate" }
+>;
+
+/**
+ * Seller listing result. A native `ref` is exposed only after the configured
+ * consumer-facing index can resolve the exact published binding. Failure
+ * variants retain the physical receipt under `publication.anchor` for a safe
+ * same-listing retry, but do not expose it as a successfully published ref.
+ * Here `published` means only publisher acknowledgement plus exact configured-
+ * index readback; it is not a portable AnchorReceipt, finality proof, or a claim
+ * that the Listing satisfies the complete DACS activation pipeline.
+ */
+export type PublishResult =
+  | (PublishListingResult & {
+      status: "published";
+      publication: PublishedWrite;
+    })
+  | (PublishListingResult & {
+      status: "already-published";
+      publication: AlreadyPublishedWrite;
+    })
+  | (Pick<PublishListingResult, "logicalAddress" | "storageName"> & {
+      status: "conflict";
+      publication: ConflictingWrite;
+    })
+  | (Pick<PublishListingResult, "logicalAddress" | "storageName"> & {
+      status: "indeterminate";
+      publication: IndeterminateWrite;
+    });
 
 /**
  * Public shape of the adapter returned by {@link createAgent}. `raw` remains an
@@ -491,6 +574,24 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       verify: ed25519RawVerify,
       ...(verifyCompositeRecord ? { verifyCompositeRecord } : {}),
     });
+  if (
+    config.bindings !== undefined &&
+    (typeof config.bindings.index?.resolve !== "function" ||
+      typeof config.bindings.publisher?.publish !== "function")
+  ) {
+    throw new DacsError(
+      "AgentConfig.bindings requires an index resolver and an authorized publisher",
+    );
+  }
+  const artifactRepository =
+    config.bindings === undefined
+      ? null
+      : createBoundArtifactRepository({
+          adapter,
+          index: config.bindings.index,
+          publisher: config.bindings.publisher,
+        });
+  const bindingIndex = config.bindings?.index ?? null;
 
   return {
     adapter,
@@ -510,21 +611,157 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       return adapter.findSubjectsByClaim(claimRef);
     },
 
-    async publishListing(listing: ListingDraft): Promise<PublishResult> {
+    async publishListing(listingInput: ListingDraft): Promise<PublishResult> {
+      if (artifactRepository === null) {
+        throw new DacsError(
+          "publishListing requires AgentConfig.bindings so the logical-to-native binding is published",
+        );
+      }
+      // The Agent callback below performs additional async index checks around
+      // the pure core. Pin once here so both layers see the same listing even if
+      // caller-owned fields are mutated while history lookup is in flight.
+      const listing = structuredClone(listingInput);
+      const sellerKey = publishingKeyFromClaim(
+        listing.seller.identity.presentedBy,
+      );
+      const walletKey = normalizedDemosPublicKey(adapter.getAddress());
+      if (
+        sellerKey === null ||
+        walletKey === null ||
+        sellerKey !== walletKey
+      ) {
+        throw new DacsError(
+          "listing seller identity must be a canonical self-certifying Demos claim for the connected wallet",
+        );
+      }
+      if (bindingIndex === null) {
+        throw new DacsError("publishListing has no configured binding index");
+      }
+      const targetVersion = listing.listingVersion;
       // Versioned, write-once publish (§6.3.4, #29/#46) — pure core over the
-      // adapter's owner-bound immutable seam. Do not use anchorAddress() here:
-      // on current Demos it predicts the NEXT nonce-derived create address and
-      // cannot locate an existing version slot (#70).
-      return publishListingCore(listing, {
+      // binding-aware repository. Do not use anchorAddress() here: on current
+      // Demos it predicts the NEXT nonce-derived create address and cannot
+      // locate an existing version slot (#70).
+      let publication: BoundArtifactWriteResult | undefined;
+      const result = await publishListingCore(listing, {
         sign,
-        scanOwnAnchorsByNamePrefix: (prefix) =>
-          adapter.scanOwnAnchorsByNamePrefix(prefix),
-        anchorWriteOnce: (name, value, options) =>
-          adapter.anchorWriteOnce(name, value, options),
+        scanOwnAnchorsByNamePrefix: async (prefix) => {
+          const scan = await adapter.scanOwnAnchorsByNamePrefix(prefix);
+          if (scan.status === "indeterminate") return scan;
+
+          // A later version must not leapfrog an orphaned earlier physical
+          // anchor. Every prior slot must already be independently resolvable
+          // through the configured index with the exact immutable tuple.
+          for (const anchor of scan.anchors) {
+            const stored = readListingArtifact(anchor.value);
+            if (stored === null) continue;
+            const storedPublisher = stored.compatibility === "normative"
+              ? stored.listing.seller.identity.presentedBy
+              : stored.listing.agentId;
+            const storedId = stored.compatibility === "normative"
+              ? stored.listing.listingId
+              : stored.listing.serviceId;
+            const priorVersion = stored.listing.listingVersion ?? 1;
+            if (
+              !Number.isSafeInteger(priorVersion) ||
+              (priorVersion as number) >= targetVersion ||
+              storedPublisher !== listing.seller.identity.presentedBy ||
+              storedId !== listing.listingId
+            ) {
+              continue;
+            }
+
+            const logicalAddress = listingAddress(
+              listing.seller.identity.presentedBy,
+              listing.listingId,
+              priorVersion as number,
+            );
+            try {
+              const resolution = await bindingIndex.resolve(
+                logicalAddress,
+                adapter.getAddress(),
+              );
+              if (resolution.status !== "present") {
+                return {
+                  status: "indeterminate",
+                  reason:
+                    `prior listing v${String(priorVersion)} binding is ` +
+                    `${resolution.status}; repair it before publishing v${targetVersion}`,
+                };
+              }
+              const binding = resolution.binding;
+              if (
+                binding.logicalAddress !== logicalAddress ||
+                binding.nativeAddress !== anchor.address ||
+                normalizedDemosPublicKey(binding.owner) !== walletKey ||
+                binding.contentHash !== contentHash(anchor.value) ||
+                binding.version !== priorVersion ||
+                binding.revoked === true
+              ) {
+                return {
+                  status: "indeterminate",
+                  reason:
+                    `prior listing v${String(priorVersion)} binding does not ` +
+                    `match its immutable anchor; repair it before publishing v${targetVersion}`,
+                };
+              }
+            } catch (error) {
+              return {
+                status: "indeterminate",
+                reason:
+                  `prior listing v${String(priorVersion)} binding check failed: ` +
+                  (error instanceof Error ? error.message : String(error)),
+              };
+            }
+          }
+          return scan;
+        },
+        writeArtifact: async (logicalAddress, value, options) => {
+          publication = await artifactRepository.write(
+            logicalAddress,
+            value,
+            options,
+          );
+          return publication.anchor;
+        },
         loadRailResolution: loadListingRailResolution,
         resolvePayloadVerificationCapability:
           resolvePayloadVerificationCapability,
       });
+      if (publication === undefined) {
+        throw new DacsError(
+          "publishListing completed without a binding publication receipt",
+        );
+      }
+      if (
+        publication.anchor.address !== result.ref ||
+        publication.binding.logicalAddress !== result.logicalAddress ||
+        publication.storageName !== result.storageName
+      ) {
+        throw new DacsError(
+          "publishListing binding receipt does not match the anchored listing",
+        );
+      }
+      switch (publication.status) {
+        case "published":
+          return { ...result, status: "published", publication };
+        case "already-published":
+          return { ...result, status: "already-published", publication };
+        case "conflict":
+          return {
+            status: "conflict",
+            logicalAddress: result.logicalAddress,
+            storageName: result.storageName,
+            publication,
+          };
+        case "indeterminate":
+          return {
+            status: "indeterminate",
+            logicalAddress: result.logicalAddress,
+            storageName: result.storageName,
+            publication,
+          };
+      }
     },
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
