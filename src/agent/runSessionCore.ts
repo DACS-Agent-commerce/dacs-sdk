@@ -10,6 +10,7 @@ import type { SessionLoad, SessionReceipt, SessionStore } from "./sessionStore.j
 import type {
   AgreementDocument,
   CompositeVerificationRecord,
+  ListingPin,
   Price,
   SettlementFinality,
   SettlementFinalityModel,
@@ -25,7 +26,7 @@ import {
 import {
   isAgreementDocument,
   isCompositeVerificationRecord,
-  isListing,
+  readListingArtifact,
 } from "../artifacts/validators.js";
 
 /**
@@ -210,6 +211,8 @@ export interface SessionDeps {
 export interface SessionResult {
   outcome: "completed" | "failed";
   jobId: string;
+  /** Exact DACS-1 §6.3.4 LR-1 Listing tuple used for this session. */
+  listingPin: ListingPin;
   /** Set when a Vet step ran — the anchored CompositeVerificationRecord. */
   vetRef?: string;
   agreementRef: string;
@@ -398,14 +401,57 @@ export async function runSessionCore(
   resumeJobId?: string,
 ): Promise<SessionResult> {
   const stored = await deps.readListing(listingRef);
-  if (stored == null || !isListing(stripSignature(stored as Record<string, unknown>))) {
+  if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
   }
-  const listing = stripSignature(stored as Record<string, unknown>) as unknown as {
-    agentId: string;
+  const storedRecord = stored as Record<string, unknown>;
+  const readableListing = readListingArtifact(storedRecord);
+  if (!readableListing) {
+    throw new Error(`listing not found or invalid at ${listingRef}`);
+  }
+  const listing =
+    readableListing.compatibility === "normative"
+      ? {
+          sellerClaim: readableListing.listing.seller.identity.presentedBy,
+          supportedPaymentRails:
+            readableListing.listing.acceptedRails?.map((rail) => rail.railId) ?? [],
+          supportedDelivery: readableListing.listing.pipeline
+            .map((phase) => phase.kind)
+            .filter((kind) => kind.startsWith("deliver-")),
+          pin: {
+            listingId: readableListing.listing.listingId,
+            version: readableListing.listing.listingVersion,
+            contentHash: contentHash(storedRecord),
+          },
+        }
+      : {
+          sellerClaim: readableListing.listing.agentId,
+          supportedPaymentRails:
+            readableListing.listing.supportedPaymentRails,
+          supportedDelivery: readableListing.listing.supportedDelivery,
+          pin: {
+            listingId: readableListing.listing.serviceId,
+            version: readableListing.listing.listingVersion ?? 1,
+            contentHash: contentHash(storedRecord),
+          },
+        };
+
+  if (readableListing.compatibility === "normative") {
+    const now = deps.nowMs();
+    const validity = readableListing.listing.validity;
+    if (now < validity.notBefore || (validity.notAfter !== undefined && now > validity.notAfter)) {
+      throw new CounterpartyError(
+        `listing ${listing.pin.listingId} v${listing.pin.version} is outside its DACS-1 §6.3.4 validity window`,
+      );
+    }
+  }
+
+  const listingView: {
+    sellerClaim: string;
     supportedPaymentRails: string[];
     supportedDelivery: string[];
-  };
+    pin: ListingPin;
+  } = listing;
 
   // #41 — verify the listing BEFORE vetting, rail selection or settlement. A
   // forged/tampered listing steers the recipient and rail, so an unverified one
@@ -421,22 +467,22 @@ export async function runSessionCore(
     try {
       verified = await deps.verifyListing(
         stored as Record<string, unknown>,
-        listing.agentId,
+        listingView.sellerClaim,
       );
     } catch {
       verified = false; // a throwing verifier is not a pass
     }
     if (!verified) {
       throw new CounterpartyError(
-        `listing at ${listingRef} failed signature verification for seller ${listing.agentId} (#41)`,
+        `listing at ${listingRef} failed signature verification for seller ${listingView.sellerClaim} (#41)`,
       );
     }
   }
 
-  if (!listing.supportedPaymentRails.includes(terms.price.rail)) {
+  if (!listingView.supportedPaymentRails.includes(terms.price.rail)) {
     throw new Error(`rail ${terms.price.rail} not offered by the listing`);
   }
-  if (!listing.supportedDelivery.includes(terms.deliveryPhase)) {
+  if (!listingView.supportedDelivery.includes(terms.deliveryPhase)) {
     throw new Error(`delivery ${terms.deliveryPhase} not offered by the listing`);
   }
 
@@ -560,16 +606,16 @@ export async function runSessionCore(
         const r = v as unknown as CompositeVerificationRecord;
         // The CVR has no jobId; its load-bearing invariant is the subject — a
         // reused record MUST vet THIS seller, not whoever a stale job vetted.
-        if (r.subject !== listing.agentId)
+        if (r.subject !== listingView.sellerClaim)
           return {
             ok: false,
-            reason: `vet subject ${r.subject} ≠ seller ${listing.agentId}`,
+            reason: `vet subject ${r.subject} ≠ seller ${listingView.sellerClaim}`,
           };
         return { ok: true };
       },
       async () =>
         signSessionArtifact(
-          await deps.vet!(listing.agentId),
+          await deps.vet!(listingView.sellerClaim),
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
         ),
       deps.buyerId,
@@ -581,7 +627,7 @@ export async function runSessionCore(
     // (indeterminate/error are NOT pass; DACS-2 §7.7).
     if (record.decision !== "pass") {
       throw new CounterpartyError(
-        `seller ${listing.agentId} did not pass verification (recipe ${record.recipeId}, decision=${record.decision})`,
+        `seller ${listingView.sellerClaim} did not pass verification (recipe ${record.recipeId}, decision=${record.decision})`,
       );
     }
   }
@@ -597,8 +643,8 @@ export async function runSessionCore(
         return { ok: false, reason: `jobId ${a.jobId} ≠ ${jobId}` };
       if (a.buyer !== deps.buyerId)
         return { ok: false, reason: `buyer ${a.buyer} ≠ ${deps.buyerId}` };
-      if (a.seller !== listing.agentId)
-        return { ok: false, reason: `seller ${a.seller} ≠ ${listing.agentId}` };
+      if (a.seller !== listingView.sellerClaim)
+        return { ok: false, reason: `seller ${a.seller} ≠ ${listingView.sellerClaim}` };
       if (a.listingRef !== listingRef)
         return { ok: false, reason: `listingRef ${a.listingRef} ≠ ${listingRef}` };
       if (!pricesEqual(a.price, terms.price))
@@ -615,7 +661,7 @@ export async function runSessionCore(
         jobId,
         pattern: "negotiate-fixed-price",
         buyer: deps.buyerId,
-        seller: listing.agentId,
+        seller: listingView.sellerClaim,
         listingRef,
         price: terms.price,
         delivery: { phase: terms.deliveryPhase, format: terms.deliveryFormat },
@@ -787,7 +833,7 @@ export async function runSessionCore(
         rail: terms.price.rail,
         amount: terms.price.amount,
         asset: terms.price.asset,
-        payee: listing.agentId,
+        payee: listingView.sellerClaim,
         jobId,
         phaseIndex: 0,
       };
@@ -912,7 +958,6 @@ export async function runSessionCore(
   // seller signature; use buildTwoSidedBundle for conformant two-sided bundles.
   // Refs are content-addressed; registry versions are pinned at 1.
   const outcome: SessionResult["outcome"] = settledOk ? "completed" : "failed";
-  const listingScope = stripSignature(stored as Record<string, unknown>);
   const evidenceRef = refTo("dacs-4-evidence", `settlement-${jobId}`, evidenceValue);
   const phaseSummary: PhaseSummaryEntry[] = [];
   const vetRecords: AttestationRef[] = [];
@@ -955,13 +1000,9 @@ export async function runSessionCore(
         jobId,
         outcome,
         anchoredByRole: "buyer",
-        listingRef: {
-          listingId: (listingScope as { serviceId?: string }).serviceId ?? jobId,
-          // Pin the version the deal was struck against (§6.3.4) so the bundle
-          // resolves the exact immutable listing version, not "latest" (#29).
-          version: (listingScope as { listingVersion?: number }).listingVersion ?? 1,
-          contentHash: contentHash(listingScope),
-        },
+        // DACS-1 §6.3.4 LR-1: use the single tuple derived from the exact
+        // verified bytes at session entry; never re-resolve "latest".
+        listingRef: listingView.pin,
         agreementRef: refTo("dacs-3-agreement", `agreement-${jobId}`, agreementValue),
         parties: [
           // MVP one-sided: the buyer's party. bundleHash stands in for the
@@ -1008,5 +1049,13 @@ export async function runSessionCore(
     });
   }
 
-  return { outcome, jobId, vetRef, agreementRef, settlementRef, bundleRef };
+  return {
+    outcome,
+    jobId,
+    listingPin: listingView.pin,
+    vetRef,
+    agreementRef,
+    settlementRef,
+    bundleRef,
+  };
 }

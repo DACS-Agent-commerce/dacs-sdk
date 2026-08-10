@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 
-import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type {
   AnyAttestationBundle,
   CompositeVerificationRecord,
-  Listing,
+  ListingDraft,
+  ListingPin,
 } from "../artifacts/types.js";
 import {
   ed25519Verify,
@@ -23,7 +23,11 @@ import {
   type SettleResult,
 } from "./runSessionCore.js";
 import { publishListingCore } from "./publishListingCore.js";
-import { discoverListings } from "./discover.js";
+import {
+  discoverListings,
+  verifyReadableListingArtifact,
+  type DiscoveredListing,
+} from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
 import {
   buildSignedArtifact,
@@ -89,6 +93,8 @@ export interface PublishResult {
   logicalAddress: string;
   /** Colon-free NATIVE storage-program name the logical address encodes to (#46). */
   storageName: string;
+  /** Exact DACS-1 §6.3.4 LR-1 tuple of the published Listing. */
+  listingPin: ListingPin;
   txRef?: string;
 }
 
@@ -114,7 +120,7 @@ export interface Agent {
    */
   findByClaim(claimRef: string): Promise<string[]>;
   /** Seller: sign + anchor a fixed-price listing. */
-  publishListing(listing: Listing): Promise<PublishResult>;
+  publishListing(listing: ListingDraft): Promise<PublishResult>;
   /** Anyone: dereference + structurally verify an anchored attestation bundle. */
   verifyBundle(ref: string): Promise<BundleVerification>;
   /**
@@ -124,7 +130,7 @@ export interface Agent {
    * provide. Non-listing / missing refs are skipped. (Seller-identity vetting
    * is the separate Vet stage.)
    */
-  discover(listingRefs: string[]): Promise<Array<{ ref: string; listing: Listing }>>;
+  discover(listingRefs: string[]): Promise<DiscoveredListing[]>;
   /** Buyer: run a fixed-price session (negotiate → settle → verify). */
   runSession(listingRef: string, opts: RunSessionOptions): Promise<SessionResult>;
   /**
@@ -219,7 +225,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       return adapter.findSubjectsByClaim(claimRef);
     },
 
-    async publishListing(listing: Listing): Promise<PublishResult> {
+    async publishListing(listing: ListingDraft): Promise<PublishResult> {
       // Versioned, write-once publish (§6.3.4, #29/#46) — pure core over the
       // adapter's owner-bound immutable seam. Do not use anchorAddress() here:
       // on current Demos it predicts the NEXT nonce-derived create address and
@@ -243,9 +249,9 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
 
     async discover(
       listingRefs: string[],
-    ): Promise<Array<{ ref: string; listing: Listing }>> {
-      // Verify every discovered listing against the key in its own agentId (#41)
-      // — an unverified listing must never reach negotiation or settlement.
+    ): Promise<DiscoveredListing[]> {
+      // DACS-1 §6.3.4: verify the structured signer through seller.identity;
+      // historical string signatures remain in the explicit legacy read arm.
       return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
         verify: ed25519RawVerify,
         resolvePublicKey: (claim) => publicKeyFromDid(claim),
@@ -290,14 +296,16 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           // vetting or settlement. Without this the money path would run on an
           // unverified listing (and the gate below would throw).
           verifyListing: async (raw, sellerClaim) => {
-            const key = publicKeyFromDid(sellerClaim);
-            if (!key) return false;
-            return verifySignedArtifact(
-              raw,
-              ARTIFACT_SEPARATORS.Listing,
-              key,
-              ed25519RawVerify,
-            );
+            const verified = await verifyReadableListingArtifact(raw, {
+              verify: ed25519RawVerify,
+              resolvePublicKey: (claim) => publicKeyFromDid(claim),
+            });
+            if (!verified) return false;
+            const advertisedSeller =
+              verified.compatibility === "normative"
+                ? verified.listing.seller.identity.presentedBy
+                : verified.listing.agentId;
+            return advertisedSeller === sellerClaim;
           },
           settle: opts.settle,
           vet: opts.vet,

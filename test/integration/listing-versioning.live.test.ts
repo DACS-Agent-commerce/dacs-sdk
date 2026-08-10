@@ -32,14 +32,46 @@ describe("LIVE listing version immutability + sequencing (#46)", () => {
       });
       const serviceId = `sdk-46-${Date.now()}`;
       const base = {
-        agentId: DID!,
-        serviceId,
-        name: "SDK #46 live gate",
-        description: "v1",
-        claimRequirements: [],
-        supportedNegotiation: ["negotiate-fixed-price"],
-        supportedPaymentRails: ["pay-x402"],
-        supportedDelivery: ["deliver-attested-payload"],
+        dacsVersion: "1" as const,
+        listingId: serviceId,
+        seller: {
+          identity: {
+            bundleVersion: "1" as const,
+            presentedBy: DID!,
+            presentedAt: Date.now(),
+            claims: [{ ref: DID! }],
+            presentation: {
+              kind: "per-claim" as const,
+              signatures: [{ ref: DID!, signature: "live-wallet-presentation" }],
+            },
+          },
+          displayName: "SDK #46 live gate",
+        },
+        offering: {
+          title: "SDK #46 live gate",
+          description: "v1",
+          category: "sdk.conformance",
+          tags: ["versioning"],
+          deliverable: {
+            kind: "attested-payload" as const,
+            payloadFormat: "application/json",
+            verificationMethod: { kind: "self-signed" as const },
+          },
+        },
+        buyerRequirement: { requirementVersion: "1" as const, required: [] },
+        pipeline: [
+          { kind: "negotiate-fixed-price" as const },
+          { kind: "commit-agreement" as const },
+          { kind: "pay-x402" as const, parameters: { rail: "x402:default" } },
+          { kind: "deliver-attested-payload" as const },
+        ],
+        pricing: {
+          kind: "fixed" as const,
+          price: { amount: "1", currency: "USDC" },
+        },
+        acceptedRails: [{ railId: "x402:default" }],
+        terms: { deadlineSecAfterCommit: 3_600 },
+        validity: { notBefore: Date.now() - 1_000 },
       };
 
       const v1 = await agent.publishListing({ ...base, listingVersion: 1 });
@@ -50,21 +82,21 @@ describe("LIVE listing version immutability + sequencing (#46)", () => {
         agent.publishListing({
           ...base,
           listingVersion: 1,
-          description: "forbidden overwrite",
+          offering: { ...base.offering, description: "forbidden overwrite" },
         }),
       ).rejects.toThrow(/different signed-scope content/);
       await expect(
         agent.publishListing({
           ...base,
           listingVersion: 3,
-          description: "skipped v2",
+          offering: { ...base.offering, description: "skipped v2" },
         }),
       ).rejects.toThrow(/expected 2, got 3/);
 
       const v2 = await agent.publishListing({
         ...base,
         listingVersion: 2,
-        description: "v2",
+        offering: { ...base.offering, description: "v2" },
       });
       expect(v2.ref).not.toBe(v1.ref);
     },

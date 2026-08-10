@@ -49,7 +49,12 @@ export {
   type SessionOutcome,
   type DeriveReputationDeps,
 } from "./reputationDerivation.js";
-export { discoverListings } from "./discover.js";
+export {
+  discoverListings,
+  verifyReadableListingArtifact,
+  type DiscoverDeps,
+  type DiscoveredListing,
+} from "./discover.js";
 export {
   vetCore,
   type VetDeps,

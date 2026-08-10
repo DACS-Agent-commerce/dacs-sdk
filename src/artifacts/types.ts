@@ -9,12 +9,78 @@
  * content hash of its signed scope (the object with the signature field omitted).
  */
 
-/** A cross-context identity reference, e.g. "domain:alice.example" or "did:demos:agent:…". */
+/** DACS-1 §6.3.1 ClaimReference in its canonical wire form. */
 export type ClaimRef = string;
 
+/** DACS-1 §6.3.3 requirement for one claim scheme. */
 export interface ClaimRequirement {
-  claimRef: ClaimRef;
-  required: boolean;
+  scheme: string;
+  verificationRequired: boolean;
+  maxAge?: number;
+  recipeVersion?: number;
+  parameters?: Record<string, unknown>;
+}
+
+/** DACS-2 §7.7 VerifyResultRef used by DACS-1 §6.3.2 BundleClaim. */
+export interface VerifyResultRef {
+  anchor: {
+    kind: "storage-program" | "ipfs" | "https";
+    locator: string;
+  };
+  contentHash: string;
+  recipeVersion: number;
+}
+
+/** DACS-1 §6.3.2 claim carried by an IdentityBundle. */
+export interface BundleClaim {
+  ref: ClaimRef;
+  verifiedBy?: VerifyResultRef;
+  issuedAt?: number;
+  expiresAt?: number;
+  metadata?: Record<string, unknown>;
+}
+
+/** DACS-1 §6.3.2 presentation variants. */
+export type PresentationSignature =
+  | { kind: "siwd"; message: string; signature: string; address: string }
+  | {
+      kind: "per-claim";
+      signatures: Array<{ ref: ClaimRef; signature: string }>;
+    }
+  | {
+      kind: "session-key";
+      key: string;
+      signature: string;
+      rootBinding?: string;
+    }
+  | {
+      kind: "sr1-root";
+      rootClaim: ClaimRef;
+      aggregateSignature: string;
+    };
+
+/** DACS-1 §6.3.2 normative IdentityBundle artifact. */
+export interface IdentityBundle {
+  bundleVersion: "1";
+  presentedBy: ClaimRef;
+  presentedAt: number;
+  sessionNonce?: string;
+  claims: BundleClaim[];
+  presentation: PresentationSignature;
+}
+
+/** DACS-1 §6.3.3 normative buyer requirement. */
+export interface BundleRequirement {
+  requirementVersion: "1";
+  required: ClaimRequirement[];
+  oneOf?: ClaimRequirement[][];
+  preferredPresentation?:
+    | "siwd"
+    | "sr1-root"
+    | "per-claim"
+    | "session-key"
+    | "any";
+  primaryClaimSelector?: string;
 }
 
 export interface Price {
@@ -39,6 +105,7 @@ export interface Delivery {
 export interface PriceTerm {
   amount: string;
   currency: string;
+  unit?: string;
 }
 
 /**
@@ -59,35 +126,171 @@ export type PricingSpec =
         | "highest-price"
         | "first-acceptable"
         | `rule-ref:${string}`;
+    }
+  | {
+      kind: "metered";
+      unitPrice: PriceTerm;
+      unit: string;
+      minTotal?: PriceTerm;
     };
 
+/** DACS-2 §7.4.1 VerificationMethod variants referenced by DACS-4 §9.3. */
+export type VerificationMethod =
+  | {
+      kind: "verifiable-credential";
+      issuerAllowList?: ClaimRef[];
+      schemaUrl?: string;
+    }
+  | { kind: "tlsnotary"; endpoint: string; sessionTemplate?: string }
+  | { kind: "zktls"; provider: string; programId: string }
+  | {
+      kind: "consensus-backed-proxy";
+      endpoint: {
+        method: "GET" | "POST";
+        urlTemplate: string;
+        headers?: Record<string, string>;
+        body?: string;
+      };
+    }
+  | {
+      kind: "oauth-attested";
+      provider: string;
+      scopes: string[];
+      maxTokenAgeSec: number;
+    }
+  | {
+      kind: "evm-rpc";
+      chainId: number;
+      contract: string;
+      method: string;
+      args?: unknown[];
+    }
+  | {
+      kind: "domain-tls-control";
+      challengeType: "http-01" | "dns-01" | "tls-alpn-01";
+    }
+  | { kind: "self-signed" }
+  | { kind: "demos-gcr-domain" };
+
+/** DACS-4 §9.3 DeliverableSpec closed discriminated union. */
+export type DeliverableSpec =
+  | {
+      kind: "storage-program";
+      schemaUrl?: string;
+      expectedSizeBytes?: number;
+      accessModel?: "public" | "buyer-only" | "encrypt-to-buyer";
+    }
+  | { kind: "entitlement"; durationSec: number; renewable: boolean }
+  | {
+      kind: "attested-payload";
+      payloadFormat: string;
+      verificationMethod?: VerificationMethod;
+      expectedSizeBytes?: number;
+    }
+  | {
+      kind: "external";
+      description: string;
+      verificationMethod?: VerificationMethod;
+    };
+
+/** DACS-4 §9.3 reference to one accepted payment rail. */
+export interface PaymentRailRef {
+  railId: string;
+  railVersion?: number;
+  parameters?: Record<string, unknown>;
+}
+
+/** DACS-1 §6.3.4 substrate capabilities a Listing can require. */
+export type SubstrateRequirement = "SR-1" | "SR-2" | "SR-3" | "SR-4" | "SR-5";
+
+/** DACS-1 §6.3.4 PhaseStep; parameter validation is kind-owned. */
+export interface PhaseStep {
+  kind: PhaseType;
+  parameters?: Record<string, unknown>;
+}
+
+/** DACS-1 §6.3.4 Listing terms. */
+export interface ListingTerms {
+  termsOfServiceUrl?: string;
+  termsOfServiceHash?: string;
+  jurisdictions?: string[];
+  conflictOfLawsRule?:
+    | "buyer-jurisdiction"
+    | "seller-jurisdiction"
+    | `rule-ref:${string}`;
+  deadlineSecAfterCommit?: number;
+  acceptanceModel?: "auto-accept";
+  cancellationPolicy?: "none" | "pre-commit" | "with-fee";
+  retentionYears?: number;
+  transcriptDisclosurePolicy?:
+    | "none"
+    | "encrypted-anchored-recommended"
+    | "encrypted-anchored-required";
+}
+
 /**
- * DACS-1 — a signed, anchored service listing.
- *
- * NOTE: this is the SDK's reduced MVP shape, not the full normative Listing
- * (which also carries `pipeline`, `terms`, `validity`, `signature`, …). `pricing`
- * is the DACS-1 `pricing: PricingSpec` field (#34); it is OPTIONAL here because
- * the full required-field fidelity pass is tracked as one coherent change in #5.
+ * DACS-1 §6.3.4 normative signed Listing. Unknown additive fields are preserved
+ * by the canonical signed scope (CORE §B.7 SIG-5); action discriminators remain
+ * closed and unsupported variants fail validation.
  */
 export interface Listing {
+  dacsVersion: "1";
+  listingVersion: number;
+  listingId: string;
+  requiredCapabilities?: SubstrateRequirement[];
+  seller: {
+    identity: IdentityBundle;
+    displayName: string;
+    publicEndpoint?: string;
+  };
+  offering: {
+    title: string;
+    description: string;
+    category: string;
+    tags: string[];
+    deliverable: DeliverableSpec;
+    extendedDescriptionUrl?: string;
+    extendedDescriptionHash?: string;
+  };
+  buyerRequirement: BundleRequirement;
+  pipeline: PhaseStep[];
+  pricing: PricingSpec;
+  acceptedRails?: PaymentRailRef[];
+  terms: ListingTerms;
+  validity: { notBefore: number; notAfter?: number };
+  signature: ListingSignature;
+}
+
+/** DACS-1 §6.3.4 ListingSignature (CORE §B.7 SIG-6 value encoding). */
+export type ListingSignature = ComponentSignature;
+
+/** Unsigned DACS-1 §6.3.4 input accepted by Listing publication. */
+export type ListingDraft = Omit<Listing, "signature">;
+
+/** Historical SDK MVP artifact. Read-only compatibility; never a new write. */
+export interface LegacyMvpListing {
   agentId: string;
   serviceId: string;
   name: string;
   description: string;
-  claimRequirements: ClaimRequirement[];
+  claimRequirements: Array<{ claimRef: ClaimRef; required: boolean }>;
   supportedNegotiation: string[];
   supportedPaymentRails: string[];
   supportedDelivery: string[];
-  /** DACS-1 `pricing: PricingSpec` (§ Listing) — how the service is priced. */
-  pricing?: PricingSpec;
-  /**
-   * DACS-1 `listingVersion` (§6.3.4) — monotonic per listingId. A listing is
-   * anchored at a VERSIONED address (`dacs1:<claim>:<listingId>:v<N>`), so an
-   * edit is published as a NEW version at a NEW address and prior versions stay
-   * immutable — old bundles keep verifying against the version they pinned (#29).
-   * Optional here for back-compat; treated as 1 when absent.
-   */
+  pricing?: Exclude<PricingSpec, { kind: "metered" }>;
   listingVersion?: number;
+}
+
+/** Explicit read boundary for normative and historical Listing artifacts. */
+export type ReadableListing =
+  | { compatibility: "normative"; listing: Listing }
+  | { compatibility: "legacy-mvp"; listing: LegacyMvpListing };
+
+/** DACS-1 §6.3.4 / LR-1 exact Listing tuple pinned by a session. */
+export interface ListingPin {
+  listingId: string;
+  version: number;
+  contentHash: string;
 }
 
 /**

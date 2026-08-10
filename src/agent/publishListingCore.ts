@@ -1,9 +1,19 @@
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { Listing } from "../artifacts/types.js";
-import { listingAddress, logicalToStorageProgramName } from "../canonical/index.js";
+import { signComponentArtifact } from "../artifacts/signatures.js";
+import type { ListingDraft, ListingPin } from "../artifacts/types.js";
+import {
+  isListing,
+  isListingDraft,
+  readListingArtifact,
+} from "../artifacts/validators.js";
+import {
+  contentHash,
+  listingAddress,
+  logicalToStorageProgramName,
+} from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
-import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
+import type { Signer } from "./signedArtifact.js";
 
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
@@ -12,7 +22,7 @@ import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
  *
  * Rules enforced:
  *  - `listingVersion` MUST be a positive integer ≥ 1 (§6.3.4) — 0 / fractional /
- *    negative are rejected. Absent → the initial version 1.
+ *    negative are rejected.
  *  - Versions MUST be contiguous and monotonic: an absent target may be created
  *    only when it is exactly `max(existing versions) + 1`, and the visible
  *    owner-bound history must contain every version from 1 through max.
@@ -41,6 +51,8 @@ export interface PublishListingResult {
   logicalAddress: string;
   /** Colon-free NATIVE storage-program name the logical address encodes to. */
   storageName: string;
+  /** DACS-1 §6.3.4 LR-1 tuple for the exact signed Listing version. */
+  listingPin: ListingPin;
   txRef?: string;
 }
 
@@ -63,16 +75,20 @@ export interface PublishListingDeps {
   ) => Promise<{ address: string; txRef?: string }>;
 }
 
-function listingHistoryPrefix(listing: Listing): string {
+function listingHistoryPrefix(listing: ListingDraft): string {
   // Passing the already-prefixed version token "v" yields the logical prefix
   // `...:v`; the storage binding is idempotently colon-encoded.
   return logicalToStorageProgramName(
-    listingAddress(listing.agentId, listing.serviceId, "v"),
+    listingAddress(
+      listing.seller.identity.presentedBy,
+      listing.listingId,
+      "v",
+    ),
   );
 }
 
 function assertContiguousHistory(
-  listing: Listing,
+  listing: ListingDraft,
   prefix: string,
   scan: OwnedAnchorScan,
 ): Set<number> {
@@ -99,10 +115,27 @@ function assertContiguousHistory(
       );
     }
 
-    const storedVersion = anchor.value["listingVersion"] ?? 1;
+    const stored = readListingArtifact(anchor.value);
+    if (!stored) {
+      throw new DacsError(
+        `listing history anchor ${anchor.address} is not a readable signed Listing`,
+      );
+    }
+    // DACS-1 §6.3.4 prior versions remain readable. Historical reduced MVP
+    // versions participate only through this explicit read compatibility arm;
+    // the new version written below must still be normative.
+    const storedPublisher =
+      stored.compatibility === "normative"
+        ? stored.listing.seller.identity.presentedBy
+        : stored.listing.agentId;
+    const storedId =
+      stored.compatibility === "normative"
+        ? stored.listing.listingId
+        : stored.listing.serviceId;
+    const storedVersion = stored.listing.listingVersion ?? 1;
     if (
-      anchor.value["agentId"] !== listing.agentId ||
-      anchor.value["serviceId"] !== listing.serviceId ||
+      storedPublisher !== listing.seller.identity.presentedBy ||
+      storedId !== listing.listingId ||
       storedVersion !== version
     ) {
       throw new DacsError(
@@ -126,19 +159,36 @@ function assertContiguousHistory(
 }
 
 export async function publishListingCore(
-  listing: Listing,
+  listing: ListingDraft,
   deps: PublishListingDeps,
 ): Promise<PublishListingResult> {
-  const version = listing.listingVersion ?? 1;
-  if (!Number.isInteger(version) || version < 1) {
+  const candidateVersion = (listing as { listingVersion?: unknown })
+    .listingVersion;
+  if (
+    !Number.isSafeInteger(candidateVersion) ||
+    (candidateVersion as number) < 1
+  ) {
     throw new DacsError(
-      `listingVersion must be a positive integer ≥ 1 (§6.3.4), got ${version}`,
+      `listingVersion must be a positive integer within the safe range (§6.3.4), got ${String(candidateVersion)}`,
     );
   }
+  // DACS-1 §6.3.4 LP-2 and CORE §11.1.2: new writes are normative only.
+  // Historical MVP artifacts are accepted solely by readListingArtifact().
+  if (!isListingDraft(listing)) {
+    throw new DacsError(
+      "publishListing requires a normative unsigned DACS-1 §6.3.4 Listing; " +
+        "legacy MVP shapes are read-only",
+    );
+  }
+  const version = listing.listingVersion;
 
   // Logical (colon-bearing, discovery key) vs native (colon-free program name the
   // substrate actually accepts). Anchor under the encoded name; return both.
-  const logicalAddress = listingAddress(listing.agentId, listing.serviceId, version);
+  const logicalAddress = listingAddress(
+    listing.seller.identity.presentedBy,
+    listing.listingId,
+    version,
+  );
   const storageName = logicalToStorageProgramName(logicalAddress);
   const historyPrefix = listingHistoryPrefix(listing);
   const versions = assertContiguousHistory(
@@ -155,11 +205,25 @@ export async function publishListingCore(
     }
   }
 
-  const signed = await buildSignedArtifact(
+  const signed = await signComponentArtifact(
     listing,
     ARTIFACT_SEPARATORS.Listing,
-    deps.sign,
+    {
+      algorithm: "ed25519",
+      signer: listing.seller.identity.presentedBy,
+      sign: (bytes) => deps.sign(bytes),
+    },
   );
+  if (!isListing(signed)) {
+    throw new DacsError(
+      "signed Listing failed DACS-1 §6.3.4 structural/signature-envelope validation",
+    );
+  }
   const { address: anchored, txRef } = await deps.anchorWriteOnce(storageName, signed);
-  return { ref: anchored, logicalAddress, storageName, txRef };
+  const listingPin = {
+    listingId: listing.listingId,
+    version,
+    contentHash: contentHash(signed as unknown as Record<string, unknown>),
+  };
+  return { ref: anchored, logicalAddress, storageName, listingPin, txRef };
 }
