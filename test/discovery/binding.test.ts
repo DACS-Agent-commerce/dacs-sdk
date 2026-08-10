@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   createInMemoryBindingIndex,
+  createInMemoryBindingStore,
   resolveBinding,
   resolveLatestVersion,
   type AnchorBinding,
@@ -129,5 +130,47 @@ describe("createInMemoryBindingIndex", () => {
     live.push(binding({ nativeAddress: "stor-injected" })); // would otherwise conflict
     const r = await index.resolve(logicalFor(1), SELLER);
     expect(r.status).toBe("present");
+  });
+});
+
+describe("createInMemoryBindingStore", () => {
+  test("publishes a binding which is immediately resolvable", async () => {
+    const store = createInMemoryBindingStore();
+    expect(await store.publish(binding())).toMatchObject({ status: "published" });
+    const r = await store.resolve(logicalFor(1), SELLER);
+    expect(r.status === "present" && r.binding.nativeAddress).toBe("stor-aaa");
+  });
+
+  test("exact re-publication is idempotent and does not add a duplicate", async () => {
+    const store = createInMemoryBindingStore();
+    await store.publish(binding());
+    expect(await store.publish(binding())).toMatchObject({
+      status: "already-published",
+    });
+    expect(store.snapshot()).toHaveLength(1);
+  });
+
+  test("a different binding for the same logical address and owner conflicts", async () => {
+    const store = createInMemoryBindingStore([binding()]);
+    const r = await store.publish(binding({ nativeAddress: "stor-other" }));
+    expect(r).toMatchObject({ status: "conflict" });
+    expect(store.snapshot()).toEqual([binding()]);
+  });
+
+  test("caller mutation cannot change stored or returned bindings", async () => {
+    const input = binding();
+    const store = createInMemoryBindingStore();
+    await store.publish(input);
+    input.nativeAddress = "stor-mutated-input";
+    const snapshot = store.snapshot();
+    snapshot[0]!.nativeAddress = "stor-mutated-snapshot";
+
+    const firstResolution = await store.resolve(logicalFor(1), SELLER);
+    if (firstResolution.status === "present") {
+      firstResolution.binding.nativeAddress = "stor-mutated-resolution";
+    }
+
+    const r = await store.resolve(logicalFor(1), SELLER);
+    expect(r.status === "present" && r.binding.nativeAddress).toBe("stor-aaa");
   });
 });
