@@ -34,7 +34,11 @@ export {
   type X402TransferObservation,
   type SellerReceiptClaim,
   type SellerReceiptClaimResult,
+  type SellerReceiptPermitResult,
   type SellerReceiptStore,
+  type SellerPaymentAuthorization,
+  type X402ReceiptExtensionVerification,
+  type X402SettlementChainClassification,
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeResult,
 } from "./paymentIntake.js";

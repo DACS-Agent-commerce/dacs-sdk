@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
+import { isListing } from "../../src/artifacts/validators.js";
 import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
+import { identityBundleHash } from "../../src/identity/index.js";
 import {
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,
@@ -12,6 +14,8 @@ import {
   type DemosTransferObservation,
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeInput,
+  type SellerPaymentEvidenceInput,
+  type SellerReceiptClaim,
   type SellerReceiptStore,
   type SellerSupportedRailDefinition,
   type X402TransferObservation,
@@ -26,6 +30,8 @@ const PAYEE = `0x${"22".repeat(20)}`;
 const DEMOS_TX = `0x${"ab".repeat(32)}`;
 const EVM_TX = `0x${"cd".repeat(32)}`;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+const PAYMENT_PHASE_INDEX = 2;
+const AGREEMENT_SIGNATURE = Buffer.alloc(64, 7).toString("base64url");
 
 function identity(primary: string, extraClaim?: string): IdentityBundle {
   const refs = extraClaim ? [primary, extraClaim] : [primary];
@@ -39,10 +45,6 @@ function identity(primary: string, extraClaim?: string): IdentityBundle {
       signatures: refs.map((ref) => ({ ref, signature: "c2ln" })),
     },
   };
-}
-
-function hashBundle(bundle: IdentityBundle): string {
-  return sha256Hex(canonicalize(bundle));
 }
 
 type Context = {
@@ -119,10 +121,15 @@ function makeContext(
       description: "One verified deliverable",
       category: "software",
       tags: ["test"],
-      deliverable: { kind: "external", description: "test output" },
+      deliverable: {
+        kind: "attested-payload",
+        payloadFormat: "application/json",
+        verificationMethod: { kind: "self-signed" },
+      },
     },
     buyerRequirement: { requirementVersion: "1", required: [] },
     pipeline: [
+      { kind: "negotiate-fixed-price" },
       { kind: "commit-payee-bound-agreement" },
       { kind, parameters: { rail: railRef.railId } },
       { kind: "deliver-attested-payload" },
@@ -132,10 +139,11 @@ function makeContext(
       price: { amount: isDemos ? "1.25" : "2.5", currency: isDemos ? "DEM" : "USDC" },
     },
     acceptedRails: [railRef],
-    terms: {},
+    terms: { deadlineSecAfterCommit: 9 },
     validity: { notBefore: 0, notAfter: 20_000 },
     signature: { algorithm: "ed25519", signer: sellerBundle.presentedBy, value: "c2ln" },
   };
+  if (!isListing(listing)) throw new Error("payment fixture must be a normative Listing");
   const listingRef = {
     listingId: listing.listingId,
     version: listing.listingVersion,
@@ -148,15 +156,21 @@ function makeContext(
     parties: [
       {
         role: "buyer",
-        bundleHash: hashBundle(buyerBundle),
+        bundleHash: identityBundleHash(buyerBundle),
         primaryClaim: buyerBundle.presentedBy,
-        vetRecordRef: { kind: "composite", id: "buyer-vet", contentHash: "01" },
+        vetRecordRef: {
+          anchor: { kind: "storage-program", locator: "buyer-vet" },
+          contentHash: "01".repeat(32),
+        },
       },
       {
         role: "seller",
-        bundleHash: hashBundle(sellerBundle),
+        bundleHash: identityBundleHash(sellerBundle),
         primaryClaim: sellerBundle.presentedBy,
-        vetRecordRef: { kind: "composite", id: "seller-vet", contentHash: "02" },
+        vetRecordRef: {
+          anchor: { kind: "storage-program", locator: "seller-vet" },
+          contentHash: "02".repeat(32),
+        },
       },
     ],
     terms: {
@@ -169,15 +183,23 @@ function makeContext(
       deadline: 10_000,
       payoutBindings: [{
         railId: railRef.railId,
-        phaseIndex: 1,
+        phaseIndex: PAYMENT_PHASE_INDEX,
         payeeAddress: isDemos ? "bb".repeat(32) : PAYEE,
       }],
     },
     derivedFromPattern: "fixed-price",
     generatedAt: 500,
     signatures: [
-      { party: buyerBundle.presentedBy, algorithm: "ed25519", value: "c2ln" },
-      { party: sellerBundle.presentedBy, algorithm: "ed25519", value: "c2ln" },
+      {
+        party: buyerBundle.presentedBy,
+        algorithm: "ed25519",
+        value: AGREEMENT_SIGNATURE,
+      },
+      {
+        party: sellerBundle.presentedBy,
+        algorithm: "ed25519",
+        value: AGREEMENT_SIGNATURE,
+      },
     ],
   };
   const agreementHash = contentHash(agreement);
@@ -192,6 +214,7 @@ function makeContext(
       listingRef,
       committedAt: 1_000,
     },
+    railRegistryVersion: 7,
   };
 
   const receiptObject = {
@@ -206,14 +229,14 @@ function makeContext(
   const input: SellerPaymentIntakeInput = isDemos
     ? {
         jobId: JOB_ID,
-        phaseIndex: 1,
+        phaseIndex: PAYMENT_PHASE_INDEX,
         railId: railRef.railId,
         payerPayingKey: BUYER_DEMOS,
         receipt: { kind: "pay-dem", txHash: DEMOS_TX },
       }
     : {
         jobId: JOB_ID,
-        phaseIndex: 1,
+        phaseIndex: PAYMENT_PHASE_INDEX,
         railId: railRef.railId,
         payerPayingKey: `cci-xm:evm:base:${PAYER}`,
         receipt: {
@@ -249,8 +272,12 @@ function makeContext(
       decimals: 6,
     },
     confirmations: 3,
+    includedAt: 4_000,
     finalityObservedAt: 5_000,
-    sessionBinding: { kind: "eip3009", nonce: x402Eip3009Nonce(JOB_ID, 1) },
+    sessionBinding: {
+      kind: "eip3009",
+      nonce: x402Eip3009Nonce(JOB_ID, PAYMENT_PHASE_INDEX),
+    },
   };
   const ctx = {} as Context;
   Object.assign(ctx, {
@@ -275,10 +302,14 @@ function makeContext(
       revocation: "absent",
       railResolution: { disposition: "verified", reason: "verified" },
     }),
-    resolveRail: async () => ({ disposition: "verified", rail: ctx.rail }),
+    resolveRail: async ({ railRegistryVersion }) => ({
+      disposition: "verified",
+      rail: ctx.rail,
+      railRegistryVersion,
+    }),
     resolveIdentityBundle: async (hash) => ({
       disposition: "verified",
-      bundle: hash === hashBundle(ctx.buyerBundle) ? ctx.buyerBundle : ctx.sellerBundle,
+      bundle: hash === identityBundleHash(ctx.buyerBundle) ? ctx.buyerBundle : ctx.sellerBundle,
     }),
     resolvePayerAddress: async () => ({ disposition: "verified", address: PAYER }),
     resolvePayeeDestination: async () => ({
@@ -288,6 +319,8 @@ function makeContext(
     }),
     observeDemosTransfer: async () => ctx.demosObservation,
     observeX402Transfer: async () => ctx.x402Observation,
+    verifyX402ReceiptExtensions: async () => ({ disposition: "pass" }),
+    classifyX402SettlementChain: async () => ({ disposition: "l2" }),
     receiptStore: store,
   };
   return ctx;
@@ -297,6 +330,85 @@ function refreshCommitment(ctx: Context): void {
   const agreementHash = contentHash(ctx.agreement);
   ctx.committed.agreementHash = agreementHash;
   ctx.committed.commitment.agreementHash = agreementHash;
+}
+
+function repinListing(ctx: Context): void {
+  const listingRef = {
+    listingId: ctx.listing.listingId,
+    version: ctx.listing.listingVersion,
+    contentHash: contentHash(ctx.listing as unknown as Record<string, unknown>),
+  };
+  ctx.agreement.listingRef = listingRef;
+  ctx.committed.commitment.listingRef = structuredClone(listingRef);
+  ctx.deps.resolveListingAtCommit = async () => ({
+    disposition: "verified",
+    step: 9,
+    reason: "verified",
+    listing: ctx.listing,
+    listingContentHash: listingRef.contentHash,
+    revocation: "absent",
+    railResolution: { disposition: "verified", reason: "verified" },
+  });
+  refreshCommitment(ctx);
+}
+
+function mutateX402Receipt(
+  ctx: Context,
+  mutate: (receipt: Record<string, unknown>) => void,
+): void {
+  if (ctx.input.receipt.kind !== "pay-x402") throw new Error("x402 fixture required");
+  const receipt = JSON.parse(
+    Buffer.from(ctx.input.receipt.responseHeader.value, "base64").toString("utf8"),
+  ) as Record<string, unknown>;
+  mutate(receipt);
+  ctx.input.receipt.responseHeader.value = Buffer.from(JSON.stringify(receipt)).toString("base64");
+  ctx.input.receipt.paymentReceiptHash = sha256Hex(canonicalize(receipt));
+}
+
+function receiptClaim(overrides: Partial<{
+  settlementId: string;
+  jobId: string;
+  phaseIndex: number;
+  observedAt: number;
+}> = {}): SellerReceiptClaim {
+  const settlementId = overrides.settlementId ?? `demos:${"ef".repeat(32)}`;
+  const jobId = overrides.jobId ?? JOB_ID;
+  const phaseIndex = overrides.phaseIndex ?? PAYMENT_PHASE_INDEX;
+  const observedAt = overrides.observedAt ?? 5_000;
+  const evidenceInput: SellerPaymentEvidenceInput = {
+    evidenceVersion: "1",
+    jobId,
+    phase: "pay-dem",
+    outcome: "success",
+    paymentTxRefs: [{ kind: "demos", txHash: `0x${"ef".repeat(32)}`, blockNumber: 1 }],
+    paymentAmount: { amount: "1", currency: "DEM" },
+    settlementFinality: { model: "bft-final", finalityObservedAt: observedAt },
+    observedAt,
+  };
+  const evidenceHash = sha256Hex(canonicalize(evidenceInput));
+  const authorization = {
+    jobId,
+    phaseIndex,
+    agreementHash: "aa".repeat(32),
+    listingRef: {
+      listingId: "listing-store-test",
+      version: 1,
+      contentHash: "bb".repeat(32),
+    },
+    railId: "demos-native:DEM",
+    settlementId,
+    evidenceHash,
+    evidenceInput,
+    payoutBindingTier: 1 as const,
+  };
+  return {
+    settlementId,
+    jobId,
+    phaseIndex,
+    observedAt,
+    evidenceHash,
+    authorization,
+  };
 }
 
 describe("verifySellerPaymentIntake", () => {
@@ -370,6 +482,298 @@ describe("verifySellerPaymentIntake", () => {
     expect(result.evidenceInput).not.toHaveProperty("responseHeader");
   });
 
+  it("accepts a distinct post-Vet seller bundle under the Listing seller claim", async () => {
+    const ctx = makeContext("pay-dem");
+    const sessionSeller = structuredClone(ctx.sellerBundle);
+    sessionSeller.sessionNonce = "post-vet-session-0123456789";
+    ctx.sellerBundle = sessionSeller;
+    const parties = ctx.agreement.parties as Array<Record<string, unknown>>;
+    const seller = parties.find((party) => party.role === "seller");
+    if (!seller) throw new Error("fixture");
+    seller.bundleHash = identityBundleHash(sessionSeller);
+    refreshCommitment(ctx);
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+    });
+  });
+
+  it("reuses the complete fixed-price Agreement-to-Listing verifier", async () => {
+    const underpriced = makeContext("pay-dem");
+    const underpricedTerms = underpriced.agreement.terms as Record<string, unknown>;
+    underpricedTerms.price = { amount: "0.5", currency: "DEM" };
+    refreshCommitment(underpriced);
+    await expect(verifySellerPaymentIntake(underpriced.input, underpriced.deps))
+      .resolves.toMatchObject({
+        disposition: "rejected",
+        reason: "agreement-listing-conformance-failed",
+      });
+
+    const wrongPattern = makeContext("pay-dem");
+    wrongPattern.agreement.derivedFromPattern = "rfq";
+    refreshCommitment(wrongPattern);
+    await expect(verifySellerPaymentIntake(wrongPattern.input, wrongPattern.deps))
+      .resolves.toMatchObject({
+        disposition: "rejected",
+        reason: "agreement-listing-conformance-failed",
+      });
+
+    const wrongCommit = makeContext("pay-dem");
+    wrongCommit.listing.pipeline[1] = { kind: "commit-agreement" };
+    repinListing(wrongCommit);
+    await expect(verifySellerPaymentIntake(wrongCommit.input, wrongCommit.deps))
+      .resolves.toMatchObject({
+        disposition: "rejected",
+        reason: "agreement-listing-conformance-failed",
+      });
+
+    const wrongSeller = makeContext("pay-dem");
+    const otherSeller = `did:demos:${"99".repeat(32)}`;
+    wrongSeller.listing.seller.identity.presentedBy = otherSeller;
+    wrongSeller.listing.seller.identity.claims = [{ ref: otherSeller }];
+    wrongSeller.listing.seller.identity.presentation = {
+      kind: "per-claim",
+      signatures: [{ ref: otherSeller, signature: "c2ln" }],
+    };
+    wrongSeller.listing.signature.signer = otherSeller;
+    repinListing(wrongSeller);
+    await expect(verifySellerPaymentIntake(wrongSeller.input, wrongSeller.deps))
+      .resolves.toMatchObject({
+        disposition: "rejected",
+        reason: "agreement-listing-conformance-failed",
+      });
+  });
+
+  it("accepts fixed-price derivation from an exact negotiable bandCenter", async () => {
+    const ctx = makeContext("pay-dem");
+    const price = { amount: "1.25", currency: "DEM" } as const;
+    ctx.listing.pricing = {
+      kind: "negotiable",
+      bandCenter: price,
+      minPct: 5,
+      maxPct: 5,
+    };
+    repinListing(ctx);
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+    });
+  });
+
+  it("requires the authenticated session rail-registry snapshot", async () => {
+    const ctx = makeContext("pay-dem");
+    let requestedVersion: number | undefined;
+    ctx.deps.resolveRail = async ({ railRegistryVersion }) => {
+      requestedVersion = railRegistryVersion;
+      return {
+        disposition: "verified",
+        rail: ctx.rail,
+        railRegistryVersion: railRegistryVersion + 1,
+      };
+    };
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      reason: "unsupported-or-mismatched-rail",
+    });
+    expect(requestedVersion).toBe(7);
+  });
+
+  it("rejects a transaction included before commitment even if finalized later", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.x402Observation.status !== "finalized") throw new Error("fixture");
+    ctx.x402Observation.includedAt = 500;
+    ctx.x402Observation.finalityObservedAt = 5_000;
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      reason: "payment-before-finalized-commitment",
+    });
+  });
+
+  it("enforces registered signed-extension verification and preserves unknown members", async () => {
+    const invalid = makeContext("pay-x402");
+    let seen: Record<string, unknown> | undefined;
+    invalid.deps.verifyX402ReceiptExtensions = async ({ receipt }) => {
+      seen = structuredClone(receipt);
+      return { disposition: "fail", reason: "invalid-signature" };
+    };
+    const rejected = await verifySellerPaymentIntake(invalid.input, invalid.deps);
+    expect(rejected).toMatchObject({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "x402-extension-invalid-signature",
+    });
+    expect(seen?.extensions).toEqual({ "org.example.audit": { retained: true } });
+
+    const unavailable = makeContext("pay-x402");
+    unavailable.deps.verifyX402ReceiptExtensions = async () => ({
+      disposition: "indeterminate",
+      reason: "registry-unavailable",
+    });
+    await expect(verifySellerPaymentIntake(unavailable.input, unavailable.deps))
+      .resolves.toMatchObject({
+        disposition: "indeterminate",
+        fulfilment: "none",
+        reason: "x402-extension-registry-unavailable",
+      });
+  });
+
+  it("classifies malformed x402 receipt bytes as permanent rejection", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.input.receipt.kind !== "pay-x402") throw new Error("fixture");
+    ctx.input.receipt.responseHeader.value = "not base64***";
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "x402-invalid-base64",
+    });
+  });
+
+  it("uses the chain-aware finality default for Ethereum mainnet", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.rail.railType !== "x402" || ctx.input.receipt.kind !== "pay-x402" ||
+        ctx.x402Observation.status !== "finalized") throw new Error("fixture");
+    ctx.rail.asset.chainId = 1;
+    delete ctx.rail.parameters.finalityBlocks;
+    ctx.input.receipt.chainId = 1;
+    ctx.x402Observation.chainId = 1;
+    ctx.x402Observation.confirmations = 1;
+    mutateX402Receipt(ctx, (receipt) => { receipt.network = "eip155:1"; });
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      reason: "x402-finality-mismatch",
+    });
+
+    ctx.x402Observation.confirmations = 12;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      evidenceInput: { settlementFinality: { model: "block-depth", finalityBlocks: 12 } },
+    });
+  });
+
+  it("applies the one-block default only after local L2 classification", async () => {
+    const base = makeContext("pay-x402");
+    if (base.rail.railType !== "x402" ||
+        base.x402Observation.status !== "finalized") throw new Error("fixture");
+    delete base.rail.parameters.finalityBlocks;
+    base.x402Observation.confirmations = 1;
+    await expect(verifySellerPaymentIntake(base.input, base.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      evidenceInput: { settlementFinality: { finalityBlocks: 1 } },
+    });
+
+    const unknown = makeContext("pay-x402");
+    if (unknown.rail.railType !== "x402" ||
+        unknown.input.receipt.kind !== "pay-x402" ||
+        unknown.x402Observation.status !== "finalized") throw new Error("fixture");
+    delete unknown.rail.parameters.finalityBlocks;
+    unknown.rail.asset.chainId = 999;
+    unknown.input.receipt.chainId = 999;
+    unknown.x402Observation.chainId = 999;
+    mutateX402Receipt(unknown, (receipt) => { receipt.network = "eip155:999"; });
+    unknown.deps.classifyX402SettlementChain = async () => ({
+      disposition: "unsupported",
+      reason: "not-configured",
+    });
+    await expect(verifySellerPaymentIntake(unknown.input, unknown.deps))
+      .resolves.toMatchObject({
+        disposition: "rejected",
+        reason: "x402-chain-not-configured",
+      });
+  });
+
+  it("implements the exact SB-3 session-binding branches", async () => {
+    for (const sessionBinding of [
+      { kind: "absent" as const },
+      { kind: "unverifiable" as const, reason: "historical-state-pruned" },
+    ]) {
+      const ctx = makeContext("pay-x402");
+      if (ctx.x402Observation.status !== "finalized") throw new Error("fixture");
+      ctx.x402Observation.sessionBinding = sessionBinding;
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "verified",
+        sessionBinding: "not-established",
+      });
+    }
+
+    const unknown = makeContext("pay-x402");
+    if (unknown.x402Observation.status !== "finalized") throw new Error("fixture");
+    unknown.x402Observation.sessionBinding = { kind: "future-binding" } as never;
+    await expect(verifySellerPaymentIntake(unknown.input, unknown.deps))
+      .resolves.toMatchObject({
+        disposition: "error",
+        fulfilment: "none",
+        reason: "x402-session-binding-unsupported",
+      });
+
+    const malformed = makeContext("pay-x402");
+    if (malformed.x402Observation.status !== "finalized") throw new Error("fixture");
+    malformed.x402Observation.sessionBinding = { kind: "unverifiable", reason: "" };
+    await expect(verifySellerPaymentIntake(malformed.input, malformed.deps))
+      .resolves.toMatchObject({
+        disposition: "error",
+        fulfilment: "none",
+        reason: "x402-session-binding-malformed",
+      });
+  });
+
+  it("reports malformed SB-1 identities and EIP-3009 nonces as verifier errors", async () => {
+    const demos = makeContext("pay-dem");
+    if (demos.input.receipt.kind !== "pay-dem") throw new Error("fixture");
+    demos.input.receipt.txHash = "0x1234";
+    await expect(verifySellerPaymentIntake(demos.input, demos.deps)).resolves.toMatchObject({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "malformed-settlement-identity",
+    });
+
+    const x402 = makeContext("pay-x402");
+    if (x402.x402Observation.status !== "finalized") throw new Error("fixture");
+    x402.x402Observation.sessionBinding = { kind: "eip3009", nonce: "0x1234" };
+    await expect(verifySellerPaymentIntake(x402.input, x402.deps)).resolves.toMatchObject({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "x402-session-nonce-malformed",
+    });
+
+    const malformedX402Identity = makeContext("pay-x402");
+    if (malformedX402Identity.input.receipt.kind !== "pay-x402" ||
+        malformedX402Identity.x402Observation.status !== "finalized") {
+      throw new Error("fixture");
+    }
+    mutateX402Receipt(malformedX402Identity, (receipt) => {
+      receipt.transaction = "0x1234";
+    });
+    malformedX402Identity.input.receipt.settlementTxHash = "0x1234";
+    malformedX402Identity.x402Observation.txHash = "0x1234";
+    await expect(verifySellerPaymentIntake(
+      malformedX402Identity.input,
+      malformedX402Identity.deps,
+    ))
+      .resolves.toMatchObject({
+        disposition: "error",
+        fulfilment: "none",
+        reason: "malformed-settlement-identity",
+      });
+
+    for (const chainId of [-1, 1.5]) {
+      const malformedChain = makeContext("pay-x402");
+      if (malformedChain.input.receipt.kind !== "pay-x402") throw new Error("fixture");
+      malformedChain.input.receipt.chainId = chainId;
+      await expect(verifySellerPaymentIntake(malformedChain.input, malformedChain.deps))
+        .resolves.toMatchObject({
+          disposition: "error",
+          fulfilment: "none",
+          reason: "malformed-settlement-identity",
+        });
+    }
+  });
+
   it("uses SB-1/SB-2 canonical identities and rejects cross-session reuse", async () => {
     expect(canonicalSellerSettlementId({ kind: "demos", txHash: DEMOS_TX }))
       .toBe(`demos:${"ab".repeat(32)}`);
@@ -380,12 +784,12 @@ describe("verifySellerPaymentIntake", () => {
       kind: "evm", chainId: 84532, txHash: "abc", logIndex: 2,
     })).toBeNull();
 
-    const store = createInMemorySellerReceiptStore([{
+    const store = createInMemorySellerReceiptStore([receiptClaim({
       settlementId: `demos:${"ab".repeat(32)}`,
       jobId: "another-job",
       phaseIndex: 1,
-      evidenceHash: "ef".repeat(32),
-    }]);
+      observedAt: 4_000,
+    })]);
     const ctx = makeContext("pay-dem", store);
     const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
     expect(result).toMatchObject({
@@ -439,19 +843,25 @@ describe("verifySellerPaymentIntake", () => {
         continue;
       }
       expect(settlementId, vector.name).not.toBeNull();
-      const initial = Object.entries(vector.consumed).map(([id, binding]) => ({
-        settlementId: id,
-        jobId: binding.jobId,
-        phaseIndex: binding.phaseIndex,
-        evidenceHash: "00".repeat(32),
-      }));
-      const store = createInMemorySellerReceiptStore(initial);
-      const result = await store.claim({
+      const store = createInMemorySellerReceiptStore();
+      for (const [id, binding] of Object.entries(vector.consumed)) {
+        const consumed = await store.claim(receiptClaim({
+          settlementId: id,
+          jobId: binding.jobId,
+          phaseIndex: binding.phaseIndex,
+          observedAt: 0,
+        }));
+        if (consumed.status !== "claimed" && consumed.status !== "already-claimed") {
+          throw new Error(`invalid consumed fixture: ${vector.name}`);
+        }
+        await store.consumePermit(consumed.permitId);
+      }
+      const result = await store.claim(receiptClaim({
         settlementId: settlementId!,
         jobId: vector.record.jobId!,
         phaseIndex: vector.record.phaseIndex!,
-        evidenceHash: "00".repeat(32),
-      });
+        observedAt: 1,
+      }));
       const expectedStatus = vector.effect === "count"
         ? "claimed"
         : vector.effect === "already-counted"
@@ -463,17 +873,150 @@ describe("verifySellerPaymentIntake", () => {
 
   it("atomically grants one fulfilment claim under concurrent retries", async () => {
     const store = createInMemorySellerReceiptStore();
-    const request = {
+    const request = receiptClaim({
       settlementId: `demos:${"ef".repeat(32)}`,
       jobId: JOB_ID,
-      phaseIndex: 1,
-      evidenceHash: "01".repeat(32),
-    };
+      phaseIndex: PAYMENT_PHASE_INDEX,
+    });
     const results = await Promise.all(
       Array.from({ length: 12 }, () => store.claim(request)),
     );
     expect(results.filter((result) => result.status === "claimed")).toHaveLength(1);
     expect(results.filter((result) => result.status === "already-claimed")).toHaveLength(11);
+    const permits = results.flatMap((result) =>
+      result.status === "conflict" ? [] : [result.permitId]);
+    expect(new Set(permits).size).toBe(1);
+    const consumptions = await Promise.all(
+      permits.map((permitId) => store.consumePermit(permitId)),
+    );
+    expect(consumptions.filter((result) => result.status === "consumed")).toHaveLength(1);
+    expect(consumptions.filter((result) => result.status === "already-consumed"))
+      .toHaveLength(11);
+  });
+
+  it("returns the store-retained authorization on a same-phase retry", async () => {
+    const store = createInMemorySellerReceiptStore();
+    const firstClaim = receiptClaim({ observedAt: 100 });
+    const first = await store.claim(firstClaim);
+    if (first.status !== "claimed") throw new Error("fixture");
+
+    const changedRetry = receiptClaim({ observedAt: 200 });
+    const retry = await store.claim(changedRetry);
+    expect(retry).toMatchObject({
+      status: "already-claimed",
+      permitId: first.permitId,
+      claim: {
+        observedAt: 100,
+        evidenceHash: firstClaim.evidenceHash,
+        authorization: { evidenceInput: { observedAt: 100 } },
+      },
+    });
+
+    const changedAgreement = structuredClone(changedRetry);
+    changedAgreement.authorization.agreementHash = "cc".repeat(32);
+    await expect(store.claim(changedAgreement)).resolves.toMatchObject({
+      status: "conflict",
+      reason: "authorization-scope-conflict",
+      existing: { authorization: { agreementHash: "aa".repeat(32) } },
+    });
+  });
+
+  it("fails closed when an injected receipt store returns a malformed permit", async () => {
+    const ctx = makeContext("pay-dem");
+    ctx.deps.receiptStore = {
+      async claim(input) {
+        return { status: "claimed", permitId: "", claim: input };
+      },
+      async consumePermit() {
+        return { status: "invalid" };
+      },
+    };
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "indeterminate",
+      fulfilment: "none",
+      reason: "receipt-store-invalid-result",
+    });
+  });
+
+  it("selects the SB-2 winner by observedAt then evidence hash, independent of arrival", async () => {
+    const settlementId = `demos:${"12".repeat(32)}`;
+    const later = receiptClaim({
+      settlementId,
+      jobId: "job-later",
+      observedAt: 200,
+    });
+    const earlier = receiptClaim({
+      settlementId,
+      jobId: "job-earlier",
+      observedAt: 100,
+    });
+    const store = createInMemorySellerReceiptStore();
+    const first = await store.claim(later);
+    const second = await store.claim(earlier);
+    expect(first.status).toBe("claimed");
+    expect(second.status).toBe("claimed");
+    if (first.status !== "claimed" || second.status !== "claimed") throw new Error("fixture");
+    expect(await store.consumePermit(first.permitId)).toEqual({ status: "invalid" });
+    expect(await store.consumePermit(second.permitId)).toMatchObject({
+      status: "consumed",
+      claim: { jobId: "job-earlier", observedAt: 100 },
+    });
+
+    const tieA = receiptClaim({ settlementId, jobId: "job-tie-a", observedAt: 300 });
+    const tieB = receiptClaim({ settlementId, jobId: "job-tie-b", observedAt: 300 });
+    const [lower, higher] = tieA.evidenceHash < tieB.evidenceHash
+      ? [tieA, tieB]
+      : [tieB, tieA];
+    const tieStore = createInMemorySellerReceiptStore();
+    expect((await tieStore.claim(higher)).status).toBe("claimed");
+    const replacement = await tieStore.claim(lower);
+    expect(replacement.status).toBe("claimed");
+    if (replacement.status !== "claimed") throw new Error("fixture");
+    expect(await tieStore.consumePermit(replacement.permitId)).toMatchObject({
+      status: "consumed",
+      claim: { evidenceHash: lower.evidenceHash },
+    });
+  });
+
+  it("retains the canonical winner when it is discovered after consumption", async () => {
+    const settlementId = `demos:${"34".repeat(32)}`;
+    const store = createInMemorySellerReceiptStore();
+    const first = await store.claim(receiptClaim({
+      settlementId,
+      jobId: "job-first",
+      observedAt: 200,
+    }));
+    if (first.status !== "claimed") throw new Error("fixture");
+    expect((await store.consumePermit(first.permitId)).status).toBe("consumed");
+
+    const lateEarlier = await store.claim(receiptClaim({
+      settlementId,
+      jobId: "job-late-earlier",
+      observedAt: 100,
+    }));
+    expect(lateEarlier).toMatchObject({
+      status: "conflict",
+      reason: "winner-already-consumed",
+      existing: { jobId: "job-late-earlier", observedAt: 100 },
+      consumed: { jobId: "job-first", observedAt: 200 },
+    });
+
+    const replayOld = await store.claim(receiptClaim({
+      settlementId,
+      jobId: "job-first",
+      observedAt: 200,
+    }));
+    expect(replayOld).toMatchObject({
+      status: "conflict",
+      reason: "lower-priority",
+      existing: { jobId: "job-late-earlier" },
+      consumed: { jobId: "job-first" },
+    });
+    expect(await store.consumePermit(first.permitId)).toMatchObject({
+      status: "already-consumed",
+      claim: { jobId: "job-first" },
+    });
   });
 
   it("replays the Standard SB-3 EIP-3009 nonce derivation vectors", () => {
@@ -534,7 +1077,9 @@ describe("verifySellerPaymentIntake", () => {
     mutate: (ctx: Context) => void;
   }> = [
     { name: "job", mutate: (ctx) => { ctx.input.jobId = "wrong-job"; } },
-    { name: "phase", mutate: (ctx) => { ctx.input.phaseIndex = 2; } },
+    { name: "phase", mutate: (ctx) => {
+      ctx.input.phaseIndex = PAYMENT_PHASE_INDEX + 1;
+    } },
     { name: "agreement", mutate: (ctx) => {
       (ctx.agreement.terms as Record<string, unknown>).deadline = 9_999;
     } },

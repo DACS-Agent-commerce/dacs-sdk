@@ -547,7 +547,10 @@ function validateRailAndPayoutCoverage(
 }
 
 function selectFixedPriceArtifact(
-  input: CapturedCommitmentBindingInput,
+  input: Pick<
+    CapturedCommitmentBindingInput,
+    "agreement" | "verifiedListing"
+  >,
   options: { allowLegacyJobId?: boolean } = {},
 ): { agreement: AgreementArtifact; listing: Listing } {
   const agreement = input.agreement;
@@ -810,6 +813,101 @@ function validateProvisionalTime(
       "agreement deadline exceeds the provisional Listing limit",
     );
   }
+}
+
+/**
+ * Pure DACS-3 §8.5.2 AgreementArtifact → exact pinned Listing verifier for a
+ * caller that has already authenticated CA-7 signatures and CA-8 finality.
+ * This deliberately does not replace the stricter commitment/session gate:
+ * seller intake supplies the authenticated finality timestamp and uses this
+ * only to re-check the complete agreement/listing commerce binding.
+ */
+export function validateFixedPriceAgreementBinding(callerInput: {
+  agreement: AgreementArtifact;
+  verifiedListing: VerifiedListingInput;
+  committedAt: number;
+}): FixedPriceBinding {
+  const input = snapshotCanonicalJson(
+    callerInput,
+    "fixed-price agreement binding input",
+  );
+  if (
+    !isRecord(input) ||
+    !hasExactKeys(input, ["agreement", "verifiedListing", "committedAt"])
+  ) {
+    throw new DacsError("fixed-price agreement binding input is not exact");
+  }
+  const selected = selectFixedPriceArtifact(input);
+  const { agreement, listing } = selected;
+  const pin: ListingPin = {
+    listingId: listing.listingId,
+    version: listing.listingVersion,
+    contentHash: contentHash(listing as unknown as Record<string, unknown>),
+  };
+  if (
+    !listingPinEquals(input.verifiedListing.pin, pin) ||
+    !listingPinEquals(agreement.listingRef, pin)
+  ) {
+    throw new DacsError(
+      "agreement commitment does not bind the exact verified Listing pin",
+    );
+  }
+  if (agreement.derivedFromPattern !== "fixed-price") {
+    throw new DacsError(
+      "this commitment core supports only fixed-price agreements",
+    );
+  }
+  validatePricingBinding(listing, agreement);
+  if (!exact(agreement.terms.deliverable, expectedDeliverable(listing))) {
+    throw new DacsError(
+      "agreement deliverable does not match the pinned Listing",
+    );
+  }
+  validateRailAndPayoutCoverage(listing, agreement);
+
+  const buyer = agreement.parties.find((party) => party.role === "buyer");
+  const seller = agreement.parties.find((party) => party.role === "seller");
+  if (
+    !buyer ||
+    !seller ||
+    buyer.primaryClaim === seller.primaryClaim ||
+    seller.primaryClaim !== listing.seller.identity.presentedBy
+  ) {
+    throw new DacsError(
+      "agreement parties do not match the pinned Listing seller",
+    );
+  }
+  const deadlineSeconds = listing.terms.deadlineSecAfterCommit;
+  if (
+    !Number.isSafeInteger(deadlineSeconds) ||
+    (deadlineSeconds ?? 0) <= 0 ||
+    !isSafeTime(input.committedAt) ||
+    agreement.generatedAt > input.committedAt ||
+    input.committedAt < listing.validity.notBefore ||
+    (listing.validity.notAfter !== undefined &&
+      input.committedAt > listing.validity.notAfter)
+  ) {
+    throw new DacsError(
+      "agreement commitment fails its authenticated finality time checks",
+    );
+  }
+  const deadlineLimit = input.committedAt + deadlineSeconds! * 1_000;
+  if (
+    !Number.isSafeInteger(deadlineLimit) ||
+    agreement.terms.deadline > deadlineLimit
+  ) {
+    throw new DacsError(
+      "agreement deadline exceeds the authenticated finality Listing limit",
+    );
+  }
+  return {
+    agreementHash: contentHash(
+      agreement as unknown as Record<string, unknown>,
+    ),
+    pin,
+    parties: [buyer.primaryClaim, seller.primaryClaim],
+    deadlineSeconds: deadlineSeconds!,
+  };
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {

@@ -36,6 +36,7 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { identityBundleHash } from "../identity/bundle.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1094,10 +1095,9 @@ function captureListingValidationDeps(
 }
 
 const identityPresentationBytes = (bundle: IdentityBundle): Uint8Array => {
-  const { presentation: _presentation, ...signedScope } = bundle;
   return signedBytes(
     "dacs-bundle-presentation:v1:",
-    sha256Hex(canonicalize(signedScope)),
+    identityBundleHash(bundle),
   );
 };
 

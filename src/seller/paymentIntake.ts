@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import type { IdentityBundle, Listing, ListingRef, PaymentRailRef } from "../artifacts/types.js";
 import {
   assertPositiveAmount,
@@ -8,6 +10,9 @@ import {
 } from "../canonical/index.js";
 import { demosAddressFromClaim, DEM_CURRENCY, DEM_DECIMALS } from "../rails/payDem.js";
 import type { ListingValidationResult } from "../agent/listingValidation.js";
+import { isPayeeBoundAgreementDocument } from "../artifacts/validators.js";
+import { identityBundleHash } from "../identity/bundle.js";
+import { validateFixedPriceAgreementBinding } from "../negotiate/commitment.js";
 import {
   verifyX402ReceiptClaim,
   type X402ResponseHeader,
@@ -16,7 +21,8 @@ import {
 export type SellerPaymentIntakeDisposition =
   | "verified"
   | "rejected"
-  | "indeterminate";
+  | "indeterminate"
+  | "error";
 
 export type SellerFulfilmentPermit = "claim" | "already-claimed" | "none";
 
@@ -87,8 +93,11 @@ export interface SellerPaymentIntakeInput {
 
 /**
  * Operational projection of a verified/finalized DACS-3 §8.6 commitment.
- * This is not a signed SDK artifact; the injected resolver verifies the actual
- * `FinalityCommitmentRecord` and returns the fields the intake gate consumes.
+ * This is not a signed SDK artifact. Before returning `verified`, the injected
+ * resolver MUST verify the actual `FinalityCommitmentRecord` and both required
+ * Agreement party signatures, including signer/party binding, as required by
+ * DACS-3 CA-7. Structural Agreement validation or hash matching alone is not
+ * sufficient. The resolver then returns the fields the intake gate consumes.
  */
 export type CommittedAgreementResolution =
   | {
@@ -102,6 +111,8 @@ export type CommittedAgreementResolution =
         listingRef: ListingRef;
         committedAt: number;
       };
+      /** Verified DACS-5 SessionRecord rail-registry pin. */
+      railRegistryVersion: number;
     }
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
@@ -142,7 +153,12 @@ export type SellerSupportedRailDefinition =
   | SellerX402RailDefinition;
 
 export type SellerRailResolution =
-  | { disposition: "verified"; rail: SellerSupportedRailDefinition }
+  | {
+      disposition: "verified";
+      rail: SellerSupportedRailDefinition;
+      /** Authenticated registry snapshot from which `rail` was resolved. */
+      railRegistryVersion: number;
+    }
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
 export type AddressResolution =
@@ -187,6 +203,8 @@ export type X402TransferObservation =
       amountBaseUnits: string;
       asset: { contract: string; symbol: string; decimals: number };
       confirmations: number;
+      /** Authenticated timestamp of the settlement event's inclusion block. */
+      includedAt: number;
       finalityObservedAt: number;
       sessionBinding: X402SessionBinding;
     };
@@ -195,24 +213,97 @@ export interface SellerReceiptClaim {
   settlementId: string;
   jobId: string;
   phaseIndex: number;
+  /** DACS-4 SB-2 primary winner key. */
+  observedAt: number;
+  /** DACS-4 SB-2 tie-breaker and the exact authorization evidence binding. */
   evidenceHash: string;
+  authorization: SellerPaymentAuthorization;
 }
 
 export type SellerReceiptClaimResult =
-  | { status: "claimed" }
-  | { status: "already-claimed" }
-  | { status: "conflict"; existing: SellerReceiptClaim };
+  | {
+      status: "claimed" | "already-claimed";
+      permitId: string;
+      /** Authoritative store-retained winner for this permit. */
+      claim: SellerReceiptClaim;
+    }
+  | {
+      status: "conflict";
+      reason:
+        | "lower-priority"
+        | "winner-already-consumed"
+        | "authorization-scope-conflict";
+      /** Current canonical SB-2 winner, even if another claim was consumed. */
+      existing: SellerReceiptClaim;
+      /** Immutable side-effect binding when consumption preceded winner discovery. */
+      consumed?: SellerReceiptClaim;
+    };
 
-/** Durable implementations MUST make `claim` one atomic compare-and-set. */
-export interface SellerReceiptStore {
-  claim(input: SellerReceiptClaim): Promise<SellerReceiptClaimResult>;
+export type SellerReceiptPermitResult =
+  | {
+      /** Only `consumed` grants this caller the one-shot fulfilment right. */
+      status: "consumed" | "already-consumed";
+      claim: SellerReceiptClaim;
+    }
+  | { status: "invalid" };
+
+/**
+ * Authoritative operational payment facts retained behind an opaque permit.
+ * The fulfilment boundary consumes this store-backed value instead of trusting
+ * a caller-constructible `SellerPaymentIntakeResult`. This is not a signed
+ * DACS artifact and MUST NOT be published as one.
+ */
+export interface SellerPaymentAuthorization {
+  jobId: string;
+  phaseIndex: number;
+  agreementHash: string;
+  listingRef: ListingRef;
+  railId: string;
+  settlementId: string;
+  evidenceHash: string;
+  evidenceInput: SellerPaymentEvidenceInput;
+  payoutBindingTier: 1 | 2 | 3;
+  sessionBinding?: SellerSessionBindingGuarantee;
 }
 
+/**
+ * Durable implementations MUST make winner selection and permit consumption
+ * atomic. Permit ids are bearer capabilities and MUST be unpredictable,
+ * confidential, and bound to the retained authorization. Consumers MUST NOT
+ * invoke an irreversible callback for `already-consumed`; that disposition is
+ * reconciliation-only.
+ */
+export interface SellerReceiptStore {
+  claim(input: SellerReceiptClaim): Promise<SellerReceiptClaimResult>;
+  consumePermit(permitId: string): Promise<SellerReceiptPermitResult>;
+}
+
+export type X402ReceiptExtensionVerification =
+  | { disposition: "pass" }
+  | {
+      disposition: "fail" | "indeterminate" | "error";
+      reason: string;
+    };
+
+/** Local registry classification used only when a rail omits finalityBlocks. */
+export type X402SettlementChainClassification =
+  | { disposition: "l2" }
+  | { disposition: "unsupported" | "indeterminate" | "error"; reason: string };
+
 export interface SellerPaymentIntakeDeps {
+  /**
+   * Trusted CA-7 boundary. A `verified` result MUST mean that the finalized
+   * commitment and both Agreement party signatures have been cryptographically
+   * verified with their required party bindings; see
+   * `CommittedAgreementResolution`.
+   */
   resolveCommittedAgreement(jobId: string): Promise<CommittedAgreementResolution>;
   /** Historical DACS-1 validation at commitment time; later revocation is irrelevant. */
   resolveListingAtCommit(listingRef: ListingRef): Promise<ListingValidationResult>;
-  resolveRail(ref: PaymentRailRef): Promise<SellerRailResolution>;
+  resolveRail(input: {
+    ref: PaymentRailRef;
+    railRegistryVersion: number;
+  }): Promise<SellerRailResolution>;
   resolveIdentityBundle(bundleHash: string): Promise<IdentityBundleResolution>;
   resolvePayerAddress(input: {
     payingKey: string;
@@ -230,6 +321,23 @@ export interface SellerPaymentIntakeDeps {
     chainId: number;
     txHash: string;
   }): Promise<X402TransferObservation>;
+  /**
+   * Verify every recognized signed extension under its owning x402 registry.
+   * Unknown/unsigned members remain hash-bound and preserved. DACS does not
+   * invent one universal extension-signature schema.
+   */
+  verifyX402ReceiptExtensions(input: {
+    protocolVersion: string;
+    receipt: Readonly<Record<string, unknown>>;
+  }): Promise<X402ReceiptExtensionVerification> | X402ReceiptExtensionVerification;
+  /**
+   * Classify a non-mainnet EVM chain using the local authenticated rail/chain
+   * registry. DACS-4's one-block default applies only after an `l2` result.
+   */
+  classifyX402SettlementChain(input: {
+    chainId: number;
+    rail: Readonly<SellerX402RailDefinition>;
+  }): Promise<X402SettlementChainClassification> | X402SettlementChainClassification;
   receiptStore: SellerReceiptStore;
 }
 
@@ -245,6 +353,8 @@ export interface SellerPaymentIntakeResult {
   evidenceInput?: SellerPaymentEvidenceInput;
   payoutBindingTier?: 1 | 2 | 3;
   sessionBinding?: SellerSessionBindingGuarantee;
+  /** Opaque store capability required by the seller fulfilment boundary. */
+  permitId?: string;
 }
 
 interface AgreementPartyView {
@@ -264,6 +374,7 @@ interface AgreementView {
   listingRef: ListingRef;
   buyer: AgreementPartyView;
   seller: AgreementPartyView;
+  derivedFromPattern: "fixed-price" | "rfq" | "sealed-envelope";
   terms: {
     price: { amount: string; currency: string; unit?: string };
     rail: PaymentRailRef;
@@ -293,6 +404,10 @@ function indeterminate(reason: string): SellerPaymentIntakeResult {
   return { disposition: "indeterminate", fulfilment: "none", reason };
 }
 
+function verifierError(reason: string): SellerPaymentIntakeResult {
+  return { disposition: "error", fulfilment: "none", reason };
+}
+
 function sameListingRef(left: ListingRef, right: ListingRef): boolean {
   return left.listingId === right.listingId &&
     left.version === right.version &&
@@ -316,6 +431,48 @@ function parseListingRef(value: unknown): ListingRef | null {
     version: value.version,
     contentHash: String(value.contentHash),
   };
+}
+
+function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim {
+  if (
+    !isRecord(value) ||
+    typeof value.settlementId !== "string" ||
+    value.settlementId.length === 0 ||
+    typeof value.jobId !== "string" ||
+    value.jobId.length === 0 ||
+    !isSafeUint(value.phaseIndex) ||
+    !isSafeUint(value.observedAt) ||
+    !HASH_RE.test(String(value.evidenceHash)) ||
+    !isRecord(value.authorization)
+  ) return false;
+
+  const authorization = value.authorization;
+  const evidenceInput = authorization.evidenceInput;
+  if (
+    authorization.jobId !== value.jobId ||
+    authorization.phaseIndex !== value.phaseIndex ||
+    authorization.settlementId !== value.settlementId ||
+    authorization.evidenceHash !== value.evidenceHash ||
+    !HASH_RE.test(String(authorization.agreementHash)) ||
+    parseListingRef(authorization.listingRef) === null ||
+    typeof authorization.railId !== "string" ||
+    authorization.railId.length === 0 ||
+    (authorization.payoutBindingTier !== 1 &&
+      authorization.payoutBindingTier !== 2 &&
+      authorization.payoutBindingTier !== 3) ||
+    (authorization.sessionBinding !== undefined &&
+      authorization.sessionBinding !== "established" &&
+      authorization.sessionBinding !== "not-established") ||
+    !isRecord(evidenceInput) ||
+    evidenceInput.jobId !== value.jobId ||
+    evidenceInput.observedAt !== value.observedAt
+  ) return false;
+
+  try {
+    return sha256Hex(canonicalize(evidenceInput)) === value.evidenceHash;
+  } catch {
+    return false;
+  }
 }
 
 function parseParty(value: unknown): AgreementPartyView | null {
@@ -411,6 +568,7 @@ function parseAgreement(raw: Record<string, unknown>): AgreementView | null {
     listingRef,
     buyer,
     seller,
+    derivedFromPattern: raw.derivedFromPattern as AgreementView["derivedFromPattern"],
     terms: {
       price: {
         amount: terms.price.amount,
@@ -429,50 +587,6 @@ function parseAgreement(raw: Record<string, unknown>): AgreementView | null {
       payoutBindings,
     },
   };
-}
-
-function pipelinePaymentBindings(listing: Listing): PayoutBindingView[] | null {
-  const bindings: PayoutBindingView[] = [];
-  for (let phaseIndex = 0; phaseIndex < listing.pipeline.length; phaseIndex += 1) {
-    const phase = listing.pipeline[phaseIndex]!;
-    if (!phase.kind.startsWith("pay-")) continue;
-    const railId = phase.parameters?.rail;
-    if (typeof railId !== "string" || railId.length === 0) return null;
-    // The destination comes from the agreement, not the Listing. A placeholder
-    // here lets the caller compare the complete key coverage separately.
-    bindings.push({ railId, phaseIndex, payeeAddress: "" });
-  }
-  return bindings;
-}
-
-function payoutCoverageMatches(
-  expected: PayoutBindingView[],
-  actual: PayoutBindingView[],
-): boolean {
-  if (expected.length !== actual.length) return false;
-  const keys = new Set<string>();
-  for (const binding of actual) {
-    const key = `${binding.railId}\u0000${binding.phaseIndex}`;
-    if (keys.has(key)) return false;
-    keys.add(key);
-  }
-  return expected.every((binding) =>
-    actual.some((candidate) =>
-      candidate.railId === binding.railId &&
-      candidate.phaseIndex === binding.phaseIndex));
-}
-
-function acceptedRailMatches(listing: Listing, rail: PaymentRailRef): boolean {
-  try {
-    return listing.acceptedRails?.some((candidate) =>
-      canonicalize(candidate) === canonicalize(rail)) === true;
-  } catch {
-    return false;
-  }
-}
-
-function bundleHash(bundle: IdentityBundle): string {
-  return sha256Hex(canonicalize(bundle));
 }
 
 function canonicalTxHash(txHash: string): string | null {
@@ -498,23 +612,172 @@ export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
   return `0x${sha256Hex(`dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`)}`;
 }
 
+/**
+ * Process-local reference store for tests and single-process deployments.
+ * Recovery-capable sellers MUST inject a durable implementation with the same
+ * atomic winner-selection and one-shot-consumption guarantees.
+ */
 export function createInMemorySellerReceiptStore(
   initial: readonly SellerReceiptClaim[] = [],
 ): SellerReceiptStore {
-  const claims = new Map(initial.map((claim) => [claim.settlementId, { ...claim }]));
+  interface StoredClaim {
+    selected: SellerReceiptClaim;
+    pendingPermitId?: string;
+    consumed?: { permitId: string; claim: SellerReceiptClaim };
+  }
+
+  const claims = new Map<string, StoredClaim>();
+  const permits = new Map<string, string>();
+  const permitId = (): string =>
+    `seller-payment:${randomBytes(32).toString("base64url")}`;
+  const cloneClaim = (claim: SellerReceiptClaim): SellerReceiptClaim =>
+    structuredClone(claim);
+  const validateClaim = (claim: SellerReceiptClaim): void => {
+    if (!isValidSellerReceiptClaim(claim)) {
+      throw new TypeError("seller receipt claim is malformed or internally inconsistent");
+    }
+  };
+  const exactClaim = (left: SellerReceiptClaim, right: SellerReceiptClaim): boolean =>
+    canonicalize(left) === canonicalize(right);
+  const winnerOrder = (left: SellerReceiptClaim, right: SellerReceiptClaim): number => {
+    if (left.observedAt !== right.observedAt) {
+      return left.observedAt < right.observedAt ? -1 : 1;
+    }
+    if (left.evidenceHash !== right.evidenceHash) {
+      return left.evidenceHash < right.evidenceHash ? -1 : 1;
+    }
+    // Equal signed-scope hashes cannot bind different sessions without a hash
+    // collision. Keep the store deterministic even under malformed/colliding
+    // external state; the lower canonical binding wins.
+    const leftBinding = `${left.jobId}\u0000${left.phaseIndex}`;
+    const rightBinding = `${right.jobId}\u0000${right.phaseIndex}`;
+    return leftBinding < rightBinding ? -1 : leftBinding > rightBinding ? 1 : 0;
+  };
+  const install = (claim: SellerReceiptClaim): StoredClaim => {
+    const pendingPermitId = permitId();
+    const stored = { selected: cloneClaim(claim), pendingPermitId };
+    claims.set(claim.settlementId, stored);
+    permits.set(pendingPermitId, claim.settlementId);
+    return stored;
+  };
+  const replacePendingSelection = (
+    stored: StoredClaim,
+    claim: SellerReceiptClaim,
+  ): string => {
+    if (stored.pendingPermitId) permits.delete(stored.pendingPermitId);
+    const nextPermitId = permitId();
+    stored.selected = cloneClaim(claim);
+    stored.pendingPermitId = nextPermitId;
+    permits.set(nextPermitId, claim.settlementId);
+    return nextPermitId;
+  };
+
+  for (const candidate of initial) {
+    validateClaim(candidate);
+    const existing = claims.get(candidate.settlementId);
+    if (!existing) {
+      install(candidate);
+    } else if (winnerOrder(candidate, existing.selected) < 0) {
+      replacePendingSelection(existing, candidate);
+    }
+  }
+
   return {
     async claim(input) {
-      const existing = claims.get(input.settlementId);
+      validateClaim(input);
+      const candidate = cloneClaim(input);
+      const existing = claims.get(candidate.settlementId);
       if (!existing) {
-        claims.set(input.settlementId, { ...input });
-        return { status: "claimed" };
+        const stored = install(candidate);
+        return {
+          status: "claimed",
+          permitId: stored.pendingPermitId!,
+          claim: cloneClaim(stored.selected),
+        };
       }
-      if (
-        existing.jobId === input.jobId &&
-        existing.phaseIndex === input.phaseIndex &&
-        existing.evidenceHash === input.evidenceHash
-      ) return { status: "already-claimed" };
-      return { status: "conflict", existing: { ...existing } };
+      const order = winnerOrder(candidate, existing.selected);
+      const sameSelectedSession = existing.selected.jobId === candidate.jobId &&
+        existing.selected.phaseIndex === candidate.phaseIndex;
+      const sameAuthorizationScope =
+        existing.selected.authorization.agreementHash ===
+          candidate.authorization.agreementHash &&
+        sameListingRef(
+          existing.selected.authorization.listingRef,
+          candidate.authorization.listingRef,
+        ) &&
+        existing.selected.authorization.railId === candidate.authorization.railId;
+      if (sameSelectedSession && !sameAuthorizationScope) {
+        return {
+          status: "conflict",
+          reason: "authorization-scope-conflict",
+          existing: cloneClaim(existing.selected),
+          ...(existing.consumed ? { consumed: cloneClaim(existing.consumed.claim) } : {}),
+        };
+      }
+      if (order < 0) {
+        existing.selected = cloneClaim(candidate);
+        if (existing.consumed) {
+          return {
+            status: "conflict",
+            reason: "winner-already-consumed",
+            existing: cloneClaim(existing.selected),
+            consumed: cloneClaim(existing.consumed.claim),
+          };
+        }
+        const nextPermitId = replacePendingSelection(existing, candidate);
+        return {
+          status: "claimed",
+          permitId: nextPermitId,
+          claim: cloneClaim(existing.selected),
+        };
+      }
+      if (exactClaim(existing.selected, candidate) ||
+          (sameSelectedSession && sameAuthorizationScope)) {
+        if (existing.consumed) {
+          if (!exactClaim(existing.selected, existing.consumed.claim)) {
+            return {
+              status: "conflict",
+              reason: "winner-already-consumed",
+              existing: cloneClaim(existing.selected),
+              consumed: cloneClaim(existing.consumed.claim),
+            };
+          }
+          return {
+            status: "already-claimed",
+            permitId: existing.consumed.permitId,
+            claim: cloneClaim(existing.consumed.claim),
+          };
+        }
+        if (!existing.pendingPermitId) {
+          throw new TypeError("seller receipt store lost its pending permit");
+        }
+        return {
+          status: "already-claimed",
+          permitId: existing.pendingPermitId,
+          claim: cloneClaim(existing.selected),
+        };
+      }
+      return {
+        status: "conflict",
+        reason: "lower-priority",
+        existing: cloneClaim(existing.selected),
+        ...(existing.consumed ? { consumed: cloneClaim(existing.consumed.claim) } : {}),
+      };
+    },
+    async consumePermit(candidatePermitId) {
+      const settlementId = permits.get(candidatePermitId);
+      if (!settlementId) return { status: "invalid" };
+      const stored = claims.get(settlementId);
+      if (!stored) return { status: "invalid" };
+      if (stored.consumed?.permitId === candidatePermitId) {
+        return { status: "already-consumed", claim: cloneClaim(stored.consumed.claim) };
+      }
+      if (stored.pendingPermitId !== candidatePermitId || stored.consumed) {
+        return { status: "invalid" };
+      }
+      stored.consumed = { permitId: candidatePermitId, claim: cloneClaim(stored.selected) };
+      stored.pendingPermitId = undefined;
+      return { status: "consumed", claim: cloneClaim(stored.consumed.claim) };
     },
   };
 }
@@ -541,31 +804,6 @@ function verifyAgreementListing(
   phaseIndex: number,
   railId: string,
 ): string | null {
-  if (listing.listingId !== agreement.listingRef.listingId ||
-      listing.listingVersion !== agreement.listingRef.version) {
-    return "agreement-listing-tuple-mismatch";
-  }
-  const listingHash = contentHash(listing as unknown as Record<string, unknown>);
-  if (listingHash !== agreement.listingRef.contentHash) return "agreement-listing-hash-mismatch";
-  if (listing.seller.identity.presentedBy !== agreement.seller.primaryClaim) {
-    return "agreement-seller-mismatch";
-  }
-  if (bundleHash(listing.seller.identity) !== agreement.seller.bundleHash) {
-    return "agreement-seller-bundle-mismatch";
-  }
-  if (agreement.terms.deliverable.deliverableType !== listing.offering.deliverable.kind ||
-      agreement.terms.deliverable.hash !== sha256Hex(canonicalize(listing.offering.deliverable)) ||
-      agreement.terms.deliverable.schemaUrl !==
-        ("schemaUrl" in listing.offering.deliverable
-          ? listing.offering.deliverable.schemaUrl
-          : undefined)) {
-    return "agreement-deliverable-mismatch";
-  }
-  if (!acceptedRailMatches(listing, agreement.terms.rail)) return "agreement-rail-not-accepted";
-  const expectedBindings = pipelinePaymentBindings(listing);
-  if (!expectedBindings || !payoutCoverageMatches(expectedBindings, agreement.terms.payoutBindings)) {
-    return "agreement-payout-coverage-mismatch";
-  }
   const phase = listing.pipeline[phaseIndex];
   if (!phase || phase.kind !== "pay-dem" && phase.kind !== "pay-x402") {
     return "phase-is-not-supported-payment";
@@ -596,7 +834,10 @@ function validRailShape(rail: SellerSupportedRailDefinition): boolean {
 }
 
 async function settleReplay(
-  base: Omit<SellerPaymentIntakeResult, "disposition" | "fulfilment" | "reason"> & {
+  base: Omit<
+    SellerPaymentAuthorization,
+    "jobId" | "phaseIndex" | "evidenceHash"
+  > & {
     evidenceInput: SellerPaymentEvidenceInput;
     settlementId: string;
   },
@@ -604,24 +845,73 @@ async function settleReplay(
   store: SellerReceiptStore,
 ): Promise<SellerPaymentIntakeResult> {
   const evidenceHash = sha256Hex(canonicalize(base.evidenceInput));
-  let claim: SellerReceiptClaimResult;
+  const authorization: SellerPaymentAuthorization = {
+    jobId: input.jobId,
+    phaseIndex: input.phaseIndex,
+    ...base,
+    evidenceHash,
+  };
+  const candidate: SellerReceiptClaim = {
+    settlementId: base.settlementId,
+    jobId: input.jobId,
+    phaseIndex: input.phaseIndex,
+    observedAt: base.evidenceInput.observedAt,
+    evidenceHash,
+    authorization,
+  };
+  let rawClaim: unknown;
   try {
-    claim = await store.claim({
-      settlementId: base.settlementId,
-      jobId: input.jobId,
-      phaseIndex: input.phaseIndex,
-      evidenceHash,
-    });
+    rawClaim = await store.claim(candidate);
   } catch {
     return indeterminate("receipt-store-unavailable");
   }
-  if (claim.status === "conflict") return reject("settlement-identity-replay");
+  if (!isRecord(rawClaim) ||
+      !["claimed", "already-claimed", "conflict"].includes(String(rawClaim.status))) {
+    return indeterminate("receipt-store-invalid-result");
+  }
+  const claim = rawClaim as SellerReceiptClaimResult;
+  if (claim.status === "conflict") {
+    if (
+      ![
+        "lower-priority",
+        "winner-already-consumed",
+        "authorization-scope-conflict",
+      ].includes(String(claim.reason)) ||
+      !isValidSellerReceiptClaim(claim.existing) ||
+      claim.existing.settlementId !== candidate.settlementId ||
+      (claim.consumed !== undefined &&
+        (!isValidSellerReceiptClaim(claim.consumed) ||
+          claim.consumed.settlementId !== candidate.settlementId)) ||
+      (claim.reason === "winner-already-consumed" && claim.consumed === undefined)
+    ) return indeterminate("receipt-store-invalid-result");
+    if (claim.reason === "authorization-scope-conflict") {
+      return reject("settlement-authorization-scope-conflict");
+    }
+    return claim.reason === "winner-already-consumed"
+      ? indeterminate("settlement-winner-conflict-after-consumption")
+      : reject("settlement-identity-replay");
+  }
+  if (
+    typeof claim.permitId !== "string" ||
+    claim.permitId.length === 0 ||
+    !isValidSellerReceiptClaim(claim.claim) ||
+    claim.claim.settlementId !== candidate.settlementId ||
+    claim.claim.jobId !== candidate.jobId ||
+    claim.claim.phaseIndex !== candidate.phaseIndex ||
+    claim.claim.authorization.agreementHash !== candidate.authorization.agreementHash ||
+    !sameListingRef(
+      claim.claim.authorization.listingRef,
+      candidate.authorization.listingRef,
+    ) ||
+    claim.claim.authorization.railId !== candidate.authorization.railId ||
+    (claim.status === "claimed" && canonicalize(claim.claim) !== canonicalize(candidate))
+  ) return indeterminate("receipt-store-invalid-result");
   return {
     disposition: "verified",
     fulfilment: claim.status === "claimed" ? "claim" : "already-claimed",
     reason: claim.status === "claimed" ? "payment-verified" : "payment-already-claimed",
-    ...base,
-    evidenceHash,
+    ...claim.claim.authorization,
+    permitId: claim.permitId,
   };
 }
 
@@ -634,7 +924,7 @@ export async function verifySellerPaymentIntake(
   deps: SellerPaymentIntakeDeps,
 ): Promise<SellerPaymentIntakeResult> {
   if (!input.jobId || !isSafeUint(input.phaseIndex) || !input.railId || !input.payerPayingKey) {
-    return reject("invalid-intake-input");
+    return verifierError("invalid-intake-input");
   }
 
   let committed: CommittedAgreementResolution;
@@ -648,6 +938,10 @@ export async function verifySellerPaymentIntake(
       ? indeterminate(`agreement-${committed.reason}`)
       : reject(`agreement-${committed.reason}`);
   }
+  if (!isPayeeBoundAgreementDocument(committed.agreement)) {
+    return reject("unsupported-or-malformed-agreement");
+  }
+  const agreementArtifact = committed.agreement;
   const agreement = parseAgreement(committed.agreement);
   if (!agreement) return reject("unsupported-or-malformed-agreement");
   const computedAgreementHash = contentHash(committed.agreement);
@@ -659,6 +953,8 @@ export async function verifySellerPaymentIntake(
     committed.commitment.agreementHash !== computedAgreementHash ||
     !sameListingRef(committed.commitment.listingRef, agreement.listingRef) ||
     !isSafeUint(committed.commitment.committedAt) ||
+    !isSafeUint(committed.railRegistryVersion) ||
+    committed.railRegistryVersion === 0 ||
     committed.commitment.committedAt > agreement.terms.deadline
   ) return reject("commitment-agreement-mismatch");
 
@@ -674,16 +970,18 @@ export async function verifySellerPaymentIntake(
       ? indeterminate(`listing-${listingResult.reason}`)
       : reject(`listing-${listingResult.reason}`);
   }
-  if (listingResult.listing.validity.notAfter !== undefined &&
-      listingResult.listing.validity.notAfter < committed.commitment.committedAt) {
-    return reject("listing-expired-before-commitment");
-  }
-  const deadlineWindow = listingResult.listing.terms.deadlineSecAfterCommit;
-  if (deadlineWindow !== undefined) {
-    const latestDeadline = committed.commitment.committedAt + deadlineWindow * 1_000;
-    if (!Number.isSafeInteger(latestDeadline) || agreement.terms.deadline > latestDeadline) {
-      return reject("agreement-deadline-exceeds-listing-window");
-    }
+  try {
+    validateFixedPriceAgreementBinding({
+      agreement: agreementArtifact,
+      verifiedListing: {
+        disposition: "verified",
+        listing: listingResult.listing,
+        pin: { ...agreement.listingRef },
+      },
+      committedAt: committed.commitment.committedAt,
+    });
+  } catch {
+    return reject("agreement-listing-conformance-failed");
   }
   const listingMismatch = verifyAgreementListing(
     agreement,
@@ -700,7 +998,10 @@ export async function verifySellerPaymentIntake(
 
   let railResult: SellerRailResolution;
   try {
-    railResult = await deps.resolveRail(agreement.terms.rail);
+    railResult = await deps.resolveRail({
+      ref: structuredClone(agreement.terms.rail),
+      railRegistryVersion: committed.railRegistryVersion,
+    });
   } catch {
     return indeterminate("rail-resolution-unavailable");
   }
@@ -710,7 +1011,9 @@ export async function verifySellerPaymentIntake(
       : reject(`rail-${railResult.reason}`);
   }
   const rail = railResult.rail;
-  if (!validRailShape(rail) || rail.railId !== input.railId ||
+  if (!isSafeUint(railResult.railRegistryVersion) ||
+      railResult.railRegistryVersion !== committed.railRegistryVersion ||
+      !validRailShape(rail) || rail.railId !== input.railId ||
       agreement.terms.rail.railVersion !== undefined &&
       agreement.terms.rail.railVersion !== rail.railVersion) {
     return reject("unsupported-or-mismatched-rail");
@@ -740,9 +1043,9 @@ export async function verifySellerPaymentIntake(
   }
   const buyerBundle = buyerResult.bundle;
   const sellerBundle = sellerResult.bundle;
-  if (bundleHash(buyerBundle) !== agreement.buyer.bundleHash ||
+  if (identityBundleHash(buyerBundle) !== agreement.buyer.bundleHash ||
       buyerBundle.presentedBy !== agreement.buyer.primaryClaim ||
-      bundleHash(sellerBundle) !== agreement.seller.bundleHash ||
+      identityBundleHash(sellerBundle) !== agreement.seller.bundleHash ||
       sellerBundle.presentedBy !== agreement.seller.primaryClaim) {
     return reject("party-bundle-agreement-mismatch");
   }
@@ -764,7 +1067,7 @@ export async function verifySellerPaymentIntake(
       return reject("payee-destination-binding-mismatch");
     }
     const claimedTxHash = canonicalTxHash(input.receipt.txHash);
-    if (!claimedTxHash) return reject("malformed-settlement-identity");
+    if (!claimedTxHash) return verifierError("malformed-settlement-identity");
     let observed: DemosTransferObservation;
     try {
       observed = await deps.observeDemosTransfer(input.receipt.txHash);
@@ -798,7 +1101,7 @@ export async function verifySellerPaymentIntake(
     }
     if (observed.includedAt > agreement.terms.deadline) return reject("payment-after-deadline");
     const settlementId = canonicalSellerSettlementId({ kind: "demos", txHash: observed.txHash });
-    if (!settlementId) return reject("malformed-settlement-identity");
+    if (!settlementId) return verifierError("malformed-settlement-identity");
     const evidenceInput: SellerPaymentEvidenceInput = {
       evidenceVersion: "1",
       jobId: input.jobId,
@@ -844,7 +1147,41 @@ export async function verifySellerPaymentIntake(
     },
   });
   if (receiptVerification.disposition !== "pass" || !receiptVerification.receipt) {
-    return reject(`x402-${receiptVerification.reason}`);
+    // X402-4 classifies malformed/non-success/hash-mismatched receipts as a
+    // permanent refusal. The SB-1 `error` class below is narrower: it is for a
+    // settlement event identity that cannot be canonicalised.
+    return receiptVerification.reason === "invalid-chainId"
+      ? verifierError("malformed-settlement-identity")
+      : reject(`x402-${receiptVerification.reason}`);
+  }
+  let extensionVerification: X402ReceiptExtensionVerification;
+  try {
+    extensionVerification = await deps.verifyX402ReceiptExtensions({
+      protocolVersion: input.receipt.protocolVersion,
+      receipt: structuredClone(receiptVerification.receipt),
+    });
+  } catch {
+    return indeterminate("x402-extension-verification-unavailable");
+  }
+  if (
+    !isRecord(extensionVerification) ||
+    !["pass", "fail", "indeterminate", "error"].includes(
+      String(extensionVerification.disposition),
+    ) ||
+    (extensionVerification.disposition !== "pass" &&
+      (typeof extensionVerification.reason !== "string" ||
+        extensionVerification.reason.length === 0))
+  ) {
+    return verifierError("x402-extension-verifier-invalid-result");
+  }
+  if (extensionVerification.disposition === "fail") {
+    return reject(`x402-extension-${extensionVerification.reason}`);
+  }
+  if (extensionVerification.disposition === "indeterminate") {
+    return indeterminate(`x402-extension-${extensionVerification.reason}`);
+  }
+  if (extensionVerification.disposition === "error") {
+    return verifierError(`x402-extension-${extensionVerification.reason}`);
   }
   if (input.receipt.settlementTxHash === undefined || input.receipt.chainId === undefined) {
     // SB-1 requires event-level EVM identity. Provider-receipt fallback cannot
@@ -852,6 +1189,47 @@ export async function verifySellerPaymentIntake(
     return indeterminate("x402-settlement-identity-unavailable");
   }
   if (input.receipt.chainId !== rail.asset.chainId) return reject("x402-chain-mismatch");
+  const claimedTxHash = canonicalTxHash(input.receipt.settlementTxHash);
+  if (!claimedTxHash) return verifierError("malformed-settlement-identity");
+
+  let finalityBlocks: number;
+  if (rail.parameters.finalityBlocks !== undefined) {
+    if (!Number.isSafeInteger(rail.parameters.finalityBlocks) ||
+        rail.parameters.finalityBlocks <= 0) {
+      return reject("x402-finality-policy-invalid");
+    }
+    finalityBlocks = rail.parameters.finalityBlocks;
+  } else if (rail.asset.chainId === 1) {
+    finalityBlocks = 12;
+  } else {
+    let classification: X402SettlementChainClassification;
+    try {
+      classification = await deps.classifyX402SettlementChain({
+        chainId: rail.asset.chainId,
+        rail: structuredClone(rail),
+      });
+    } catch {
+      return indeterminate("x402-chain-classification-unavailable");
+    }
+    if (!isRecord(classification) ||
+        !["l2", "unsupported", "indeterminate", "error"].includes(
+          String(classification.disposition),
+        ) ||
+        (classification.disposition !== "l2" &&
+          (typeof classification.reason !== "string" || classification.reason.length === 0))) {
+      return verifierError("x402-chain-classifier-invalid-result");
+    }
+    if (classification.disposition === "unsupported") {
+      return reject(`x402-chain-${classification.reason}`);
+    }
+    if (classification.disposition === "indeterminate") {
+      return indeterminate(`x402-chain-${classification.reason}`);
+    }
+    if (classification.disposition === "error") {
+      return verifierError(`x402-chain-${classification.reason}`);
+    }
+    finalityBlocks = 1;
+  }
 
   let payerResolution: AddressResolution;
   let destinationResolution: DestinationBindingResolution;
@@ -896,7 +1274,6 @@ export async function verifySellerPaymentIntake(
       ? reject("x402-transfer-failed")
       : indeterminate(`x402-${observed.status}`);
   }
-  const claimedTxHash = canonicalTxHash(input.receipt.settlementTxHash);
   if (
     observed.chainId !== input.receipt.chainId ||
     canonicalTxHash(observed.txHash) !== claimedTxHash ||
@@ -919,31 +1296,52 @@ export async function verifySellerPaymentIntake(
   if (!INTEGER_RE.test(observed.amountBaseUnits) || observed.amountBaseUnits !== expectedBaseUnits) {
     return reject("payment-amount-mismatch");
   }
-  const finalityBlocks = rail.parameters.finalityBlocks ?? 1;
-  if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0 ||
-      !isSafeUint(observed.confirmations) || observed.confirmations < finalityBlocks ||
-      !isSafeUint(observed.finalityObservedAt)) {
+  if (!isSafeUint(observed.confirmations) || observed.confirmations < finalityBlocks ||
+      !isSafeUint(observed.includedAt) || !isSafeUint(observed.finalityObservedAt) ||
+      observed.finalityObservedAt < observed.includedAt) {
     return reject("x402-finality-mismatch");
   }
-  if (observed.finalityObservedAt < committed.commitment.committedAt) {
+  if (observed.includedAt < committed.commitment.committedAt) {
     return reject("payment-before-finalized-commitment");
   }
   if (observed.finalityObservedAt > agreement.terms.deadline) return reject("payment-after-deadline");
 
   let sessionBinding: SellerSessionBindingGuarantee = "not-established";
-  if (observed.sessionBinding.kind === "eip3009") {
-    if (!/^0x[0-9a-f]{64}$/.test(observed.sessionBinding.nonce)) {
-      return reject("x402-session-nonce-malformed");
-    }
-    if (observed.sessionBinding.nonce !== x402Eip3009Nonce(input.jobId, input.phaseIndex)) {
-      return reject("x402-session-binding-mismatch");
-    }
-    sessionBinding = "established";
-  } else if (observed.sessionBinding.kind === "permit2") {
-    if (observed.sessionBinding.jobId !== input.jobId) {
-      return reject("x402-session-binding-mismatch");
-    }
-    sessionBinding = "established";
+  if (!isRecord(observed.sessionBinding) ||
+      typeof observed.sessionBinding.kind !== "string") {
+    return verifierError("x402-session-binding-malformed");
+  }
+  switch (observed.sessionBinding.kind) {
+    case "eip3009":
+      if (typeof observed.sessionBinding.nonce !== "string" ||
+          !/^0x[0-9a-f]{64}$/.test(observed.sessionBinding.nonce)) {
+        return verifierError("x402-session-nonce-malformed");
+      }
+      if (observed.sessionBinding.nonce !== x402Eip3009Nonce(input.jobId, input.phaseIndex)) {
+        return reject("x402-session-binding-mismatch");
+      }
+      sessionBinding = "established";
+      break;
+    case "permit2":
+      if (typeof observed.sessionBinding.jobId !== "string" ||
+          observed.sessionBinding.jobId.length === 0) {
+        return verifierError("x402-session-binding-malformed");
+      }
+      if (observed.sessionBinding.jobId !== input.jobId) {
+        return reject("x402-session-binding-mismatch");
+      }
+      sessionBinding = "established";
+      break;
+    case "absent":
+      break;
+    case "unverifiable":
+      if (typeof observed.sessionBinding.reason !== "string" ||
+          observed.sessionBinding.reason.length === 0) {
+        return verifierError("x402-session-binding-malformed");
+      }
+      break;
+    default:
+      return verifierError("x402-session-binding-unsupported");
   }
 
   const settlementId = canonicalSellerSettlementId({
@@ -952,7 +1350,7 @@ export async function verifySellerPaymentIntake(
     txHash: observed.txHash,
     logIndex: observed.logIndex,
   });
-  if (!settlementId) return reject("malformed-settlement-identity");
+  if (!settlementId) return verifierError("malformed-settlement-identity");
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1",
     jobId: input.jobId,
