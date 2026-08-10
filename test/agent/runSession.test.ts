@@ -117,13 +117,70 @@ describe("runSession orchestration (T4)", () => {
         ...TERMS,
         price: { ...TERMS.price, rail: "x402:default" },
       },
-      makeDeps({ readListing: async () => normative }),
+      makeDeps({
+        readListing: async () => normative,
+        validateListing: () => ({
+          disposition: "verified",
+          step: 9,
+          reason: "verified",
+          listingContentHash: contentHash(normative),
+        }),
+      }),
     );
     expect(res.listingPin).toEqual({
       listingId: "market-data-vendor",
       version: 7,
       contentHash: contentHash(normative),
     });
+
+    await expect(
+      runSessionCore(
+        "stor-normative-v7",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => normative,
+          validateListing: () => ({
+            disposition: "verified",
+            step: 9,
+            reason: "verified-different-content",
+            listingContentHash: "0".repeat(64),
+          }),
+        }),
+      ),
+    ).rejects.toThrow(/not bound to the exact LR-1 content hash/);
+
+    for (const disposition of [
+      "rejected",
+      "revoked",
+      "indeterminate",
+    ] as const) {
+      let settled = false;
+      await expect(
+        runSessionCore(
+          "stor-normative-v7",
+          {
+            ...TERMS,
+            price: { ...TERMS.price, rail: "x402:default" },
+          },
+          makeDeps({
+            readListing: async () => normative,
+            validateListing: () => ({
+              disposition,
+              step: disposition === "revoked" ? 5 : 8,
+              reason: `test-${disposition}`,
+            }),
+            settle: async () => {
+              settled = true;
+              throw new Error("must not settle");
+            },
+          }),
+        ),
+      ).rejects.toThrow(new RegExp(`${disposition}.*LR-3`));
+      expect(settled).toBe(false);
+    }
   });
 
   test("rail-reported finality flows onto the evidence (bft-final / demos / block), F7/#22", async () => {

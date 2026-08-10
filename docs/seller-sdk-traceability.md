@@ -18,7 +18,7 @@ on a private service, deployment, transport, repository, or URL.
 | Concern | Normative source | Required public behavior | `main` baseline before this PR | Tracker / focused delivery |
 | --- | --- | --- | --- | --- |
 | Listing artifact and seller identity | DACS-1 §6.3.4 (`Listing`, `ListingSignature`, reader validation steps 1–9; LP-1..LP-6; LR-1..LR-3); DACS-1 §6.3.2 (`IdentityBundle`); DACS-1 §6.3.3 (`BundleRequirement`); CORE §B.7 (SIG-1..SIG-6) | New publications use the complete normative `Listing` shape. `seller.identity` is the publisher identity, `seller.displayName` is bounded to 200 characters, and optional `seller.publicEndpoint` is HTTPS. The listing signer appears in `seller.identity.claims`; the signature is a structured, domain-separated, unpadded-Base64URL `ListingSignature`. Unknown inert fields remain in the signed scope, while unknown action variants fail closed. | `Listing` is a reduced MVP artifact (`agentId`, `serviceId`, flat capability arrays) with a legacy string signature. Shape validation and signing are non-normative. | #5 (shared type/validator substrate), #41 (Listing signature migration). This focused PR adds normative Listing publication and an explicit legacy-read boundary; it does not claim full DACS-1 reader-disposition or rail-registry conformance. |
-| Listing engagement and reachability | DACS-1 §6.3.4 “Operational engagement and reachability” (LP-5); §6.3.6 (`reachabilityHint` and bounded server-side probing); Standard PR #296 | `seller.publicEndpoint`, when present, is an HTTPS engagement surface. Reachability is operational evidence only: it never changes hash, signature, validity, revocation, identity, or reputation. Network probing is outside artifact validation and must apply the §6.3.6 SSRF, DNS-rebinding, redirect, timeout, response-size, and ambient-credential controls. Non-HTTPS coordinates are owned by the applicable negotiation or rail registry; the SDK must not invent `communication[]`. | No normative seller structure or public endpoint. Discovery accepts caller-supplied anchor refs and has no endpoint projection. | Missing dedicated tracker. This focused PR carries and validates `seller.publicEndpoint` without performing network probes. Hosted HTTP/WebSocket/L2PS surfaces remain outside core. |
+| Listing engagement and reachability | DACS-1 §6.3.4 “Operational engagement and reachability” (LP-5); §6.3.6 (`reachabilityHint` and bounded server-side probing); Standard PR #296 | `seller.publicEndpoint`, when present, is an HTTPS engagement surface. Reachability is operational evidence only: it never changes hash, signature, validity, revocation, identity, or reputation. Network probing is outside artifact validation and must apply the §6.3.6 SSRF, DNS-rebinding, redirect, timeout, response-size, and ambient-credential controls. Non-HTTPS coordinates are owned by the applicable negotiation or rail registry; the SDK must not invent `communication[]`. | No normative seller structure or public endpoint. Discovery accepts caller-supplied anchor refs and has no endpoint projection. | #112 adds a separate operational result plus HTTPS, DNS/public-address, redirect, timeout, response-size, and credential-free probe contracts. Hosted HTTP/WebSocket/L2PS surfaces remain outside core. |
 | Exact Listing version pin | DACS-1 §6.3.4 versioning and LR-1; DACS-3 §8.4.1 `listingHash` / `listingRef`; DACS-3 §8.5 `AgreementArtifact.listingRef` | A session pins `(listingId, listingVersion, contentHash)` from the exact verified listing bytes. Newer listing versions never alter a committed or in-progress session. | Bundle production partially derives a version but falls back from reduced fields; the reduced agreement carries only a string anchor ref. | #98 owns complete agreement fidelity. This focused PR introduces one exact `ListingPin` derivation and uses it wherever the existing session path records a Listing tuple; no new agreement shape is invented. |
 | Fixed-price term derivation | DACS-3 §8.4.1 procedure 1–5; §8.5.2 checks 1–9 and MTR-1..MTR-5; DACS-4 §9.3 (`PricingSpec`, `PriceTerm`, `DeliverableSpec`, `PaymentRailRef`) | Copy fixed terms from the pinned Listing, select a complete accepted rail, hash the anchored deliverable, derive the deadline, reject unsupported pricing variants, and never accept caller-selected economic terms as authority. | `runSessionCore` accepts caller-selected price, delivery, and expiry after membership-only checks. | #98. Separate post-Listing PR; not widened into this PR. |
 | Seller authorization | DACS-3 §8.4.1 steps 2–3 and auto-accept rules; §8.5 (`AgreementSignature`); §8.5.2; CORE §B.7 | Fixed-price agreements carry valid buyer and seller signatures. Auto-accept requires an anchored, unrevoked, in-window commitment plus a live per-instance seller signature bound to the agreement hash. | Buyer/orchestrator-only agreement and final bundle production; strict verification correctly refuses the missing seller authorization. | #17 (seller lifecycle), #53 (RFQ buyer/seller), #81 (strict bundle producer), #98 (fixed-price authorization). |
@@ -67,7 +67,23 @@ The first PR implements only the DACS-1 artifact boundary:
 - Standard-backed positive and negative vector tests, including SIG-5
   preserve-unknown and unknown-phase refusal.
 
-Full revocation resolution (DACS-1 §6.3.4 RB-1..RB-6), authoritative rail
-registry resolution (LRR-1..LRR-6), fixed-price agreement derivation (DACS-3
-§8.4.1/§8.5.2), hosting, network probing, payment, delivery, and final bundle
-production remain in their focused trackers above.
+## Listing validation-disposition PR (#112)
+
+The follow-on PR implements the reader and publisher gates deliberately left
+out of the artifact-fidelity PR:
+
+| SDK surface | Normative source | Conformance evidence |
+| --- | --- | --- |
+| `validateListingArtifact` / `ListingValidationDisposition` | DACS-1 §6.3.4 reader steps 1–9, LR-2/LR-3 | Ordered positive/negative tests, including LRR-indeterminate followed by signer rejection |
+| `RevocationMarker`, `RevocationBinding`, `checkListingRevocation` | DACS-1 §6.3.4 RB-1..RB-6; CORE §B.7 | All 14 `revocation-binding-v0.3` Standard vectors |
+| `resolveListingRails` | DACS-1 §6.3.4 LRR-1..LRR-6; DACS-4 §9.4.3 RD-1..RD-6 | All 29 `listing-rail-registry-resolution-v0.4` vectors from Standard `next` commit `625df63908fe5965f5f3f0b83cf53ee7031c6d16` |
+| pay-bearing publication gate | DACS-1 §6.3.4 LP-6 | Rejects missing, rejected, and indeterminate authority before signing/anchoring |
+| normative discovery/session-admission gates | DACS-1 §6.3.4 LRR-5, LR-2/LR-3 | Discovery returns only exact-hash `verified` Listings; `runSessionCore` rejects `rejected`, `revoked`, and `indeterminate` before Vet/payment |
+| `assessListingReachability` | DACS-1 §6.3.4 LP-5; §6.3.6 | Separate operational evidence with private-address, DNS, redirect, timeout, size, and no-credential controls |
+
+The registry and discovery reads remain injected and substrate-neutral. The SDK
+owns their normative evaluation and precedence; no private URL, transport,
+hosted catalog, or in-code fallback is assumed.
+
+Fixed-price agreement derivation (DACS-3 §8.4.1/§8.5.2), hosting, payment,
+delivery, and final bundle production remain in their focused trackers above.
