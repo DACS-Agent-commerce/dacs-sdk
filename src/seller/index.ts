@@ -22,6 +22,8 @@ export {
   type SellerPaymentClaim,
   type SellerPaymentIntakeInput,
   type CommittedAgreementResolution,
+  type SellerPayloadVerificationProducerAdmission,
+  type SellerListingAtCommitResolution,
   type IdentityBundleResolution,
   type SellerDemosRailDefinition,
   type SellerX402RailDefinition,

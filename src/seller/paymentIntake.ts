@@ -1,6 +1,12 @@
 import { randomBytes } from "node:crypto";
 
-import type { IdentityBundle, Listing, ListingRef, PaymentRailRef } from "../artifacts/types.js";
+import type {
+  IdentityBundle,
+  Listing,
+  ListingRef,
+  PaymentRailRef,
+  VerificationMethod,
+} from "../artifacts/types.js";
 import {
   assertPositiveAmount,
   baseUnits,
@@ -9,8 +15,14 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { demosAddressFromClaim, DEM_CURRENCY, DEM_DECIMALS } from "../rails/payDem.js";
-import type { ListingValidationResult } from "../agent/listingValidation.js";
-import { isPayeeBoundAgreementDocument } from "../artifacts/validators.js";
+import {
+  isVerifiedListingAdmission,
+  type ListingValidationResult,
+} from "../agent/listingValidation.js";
+import {
+  isIdentityBundle,
+  isPayeeBoundAgreementDocument,
+} from "../artifacts/validators.js";
 import { identityBundleHash } from "../identity/bundle.js";
 import { validateFixedPriceAgreementBinding } from "../negotiate/commitment.js";
 import {
@@ -115,6 +127,32 @@ export type CommittedAgreementResolution =
       railRegistryVersion: number;
     }
   | { disposition: "rejected" | "indeterminate"; reason: string };
+
+/**
+ * Local DACS-4 §9.6.3 DPA-1 producer admission captured before commitment.
+ * This is operational session state, not a normative signed DACS artifact.
+ */
+export interface SellerPayloadVerificationProducerAdmission {
+  operation: "produce";
+  disposition: "supported";
+  listingRef: ListingRef;
+  verificationMethodKind: VerificationMethod["kind"];
+  verificationMethodHash: string;
+  deliverableSpecHash: string;
+  admittedAt: number;
+}
+
+/**
+ * One authoritative historical Listing checkpoint. The resolver MUST return
+ * the exact raw Listing and the DACS-1 §6.3.4 reader result produced for those
+ * bytes atomically with any DPA-1 producer admission captured before the
+ * DACS-3 §8.6 commitment. It MUST NOT reconstruct admission from live state.
+ */
+export interface SellerListingAtCommitResolution {
+  rawListing: Record<string, unknown>;
+  validation: ListingValidationResult;
+  payloadVerificationProducerAdmission?: SellerPayloadVerificationProducerAdmission;
+}
 
 export type IdentityBundleResolution =
   | { disposition: "verified"; bundle: IdentityBundle }
@@ -264,6 +302,8 @@ export interface SellerPaymentAuthorization {
   evidenceInput: SellerPaymentEvidenceInput;
   payoutBindingTier: 1 | 2 | 3;
   sessionBinding?: SellerSessionBindingGuarantee;
+  /** Local DPA-1 producer authority; present exactly when the Listing selects DPA. */
+  payloadVerificationProducerAdmission?: SellerPayloadVerificationProducerAdmission;
 }
 
 /**
@@ -274,7 +314,8 @@ export interface SellerPaymentAuthorization {
  * reconciliation-only.
  */
 export interface SellerReceiptStore {
-  claim(input: SellerReceiptClaim): Promise<SellerReceiptClaimResult>;
+  /** The SDK supplies an owned, deeply frozen claim snapshot. */
+  claim(input: Readonly<SellerReceiptClaim>): Promise<SellerReceiptClaimResult>;
   consumePermit(permitId: string): Promise<SellerReceiptPermitResult>;
 }
 
@@ -290,6 +331,11 @@ export type X402SettlementChainClassification =
   | { disposition: "l2" }
   | { disposition: "unsupported" | "indeterminate" | "error"; reason: string };
 
+/**
+ * Every structured callback input is an owned, deeply frozen canonical
+ * snapshot. Security-bearing outputs MUST be cloneable plain data; the SDK
+ * snapshots them before reading a discriminator or field.
+ */
 export interface SellerPaymentIntakeDeps {
   /**
    * Trusted CA-7 boundary. A `verified` result MUST mean that the finalized
@@ -298,8 +344,13 @@ export interface SellerPaymentIntakeDeps {
    * `CommittedAgreementResolution`.
    */
   resolveCommittedAgreement(jobId: string): Promise<CommittedAgreementResolution>;
-  /** Historical DACS-1 validation at commitment time; later revocation is irrelevant. */
-  resolveListingAtCommit(listingRef: ListingRef): Promise<ListingValidationResult>;
+  /**
+   * Atomic historical DACS-1/DACS-4 admission at commitment time. Later
+   * revocation is irrelevant; live capability reconstruction is forbidden.
+   */
+  resolveListingAtCommit(
+    listingRef: ListingRef,
+  ): Promise<SellerListingAtCommitResolution>;
   resolveRail(input: {
     ref: PaymentRailRef;
     railRegistryVersion: number;
@@ -353,6 +404,7 @@ export interface SellerPaymentIntakeResult {
   evidenceInput?: SellerPaymentEvidenceInput;
   payoutBindingTier?: 1 | 2 | 3;
   sessionBinding?: SellerSessionBindingGuarantee;
+  payloadVerificationProducerAdmission?: SellerPayloadVerificationProducerAdmission;
   /** Opaque store capability required by the seller fulfilment boundary. */
   permitId?: string;
 }
@@ -387,6 +439,17 @@ interface AgreementView {
 const HASH_RE = /^[0-9a-f]{64}$/;
 const TX_HASH_RE = /^(?:0[xX])?[0-9a-fA-F]{64}$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
+const VERIFICATION_METHOD_KINDS: ReadonlySet<string> = new Set([
+  "verifiable-credential",
+  "tlsnotary",
+  "zktls",
+  "consensus-backed-proxy",
+  "oauth-attested",
+  "evm-rpc",
+  "domain-tls-control",
+  "self-signed",
+  "demos-gcr-domain",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -394,6 +457,152 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isSafeUint(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  return Object.keys(value).length === expected.length &&
+    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+type SecurityBoundaryResult<T> =
+  | { status: "ok"; value: T }
+  | { status: "threw" | "invalid-input" | "invalid-output" | "mutated-input" };
+
+function deepFreezeJson<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreezeJson(child, seen);
+  }
+  return Object.freeze(value);
+}
+
+/** Snapshot a security-bearing callback result before its first property read. */
+async function callSecurityBoundary<T>(
+  call: () => T | Promise<T>,
+): Promise<SecurityBoundaryResult<T>> {
+  let raw: unknown;
+  try {
+    raw = await call();
+  } catch {
+    return { status: "threw" };
+  }
+  try {
+    return { status: "ok", value: structuredClone(raw) as T };
+  } catch {
+    return { status: "invalid-output" };
+  }
+}
+
+/**
+ * Give a callback one isolated exact input, snapshot its result immediately,
+ * and reject any mutation of the input retained across the asynchronous call.
+ */
+async function callSecurityBoundaryWithInput<I, O>(
+  input: I,
+  call: (isolated: I) => O | Promise<O>,
+): Promise<SecurityBoundaryResult<O>> {
+  let isolated: I;
+  let canonical: string;
+  try {
+    isolated = deepFreezeJson(structuredClone(input));
+    canonical = canonicalize(isolated);
+  } catch {
+    return { status: "invalid-input" };
+  }
+
+  let raw: unknown;
+  let threw = false;
+  try {
+    raw = await call(isolated);
+  } catch {
+    threw = true;
+  }
+
+  let output: O | undefined;
+  let outputInvalid = false;
+  if (!threw) {
+    try {
+      // Do this before inspecting or post-processing any callback output.
+      output = structuredClone(raw) as O;
+    } catch {
+      outputInvalid = true;
+    }
+  }
+
+  try {
+    if (canonicalize(isolated) !== canonical) {
+      return { status: "mutated-input" };
+    }
+  } catch {
+    return { status: "mutated-input" };
+  }
+  if (threw) return { status: "threw" };
+  if (outputInvalid) return { status: "invalid-output" };
+  return { status: "ok", value: output as O };
+}
+
+function snapshotPaymentIntakeInput(value: unknown): SellerPaymentIntakeInput | null {
+  let snapshot: unknown;
+  try {
+    snapshot = structuredClone(value);
+  } catch {
+    return null;
+  }
+  if (!isRecord(snapshot) || !hasExactKeys(snapshot, [
+    "jobId",
+    "phaseIndex",
+    "railId",
+    "payerPayingKey",
+    "receipt",
+  ]) ||
+      typeof snapshot.jobId !== "string" || snapshot.jobId.length === 0 ||
+      !isSafeUint(snapshot.phaseIndex) ||
+      typeof snapshot.railId !== "string" || snapshot.railId.length === 0 ||
+      typeof snapshot.payerPayingKey !== "string" || snapshot.payerPayingKey.length === 0 ||
+      !isRecord(snapshot.receipt)) return null;
+
+  const receipt = snapshot.receipt;
+  if (receipt.kind === "pay-dem") {
+    return hasExactKeys(receipt, ["kind", "txHash"]) &&
+      typeof receipt.txHash === "string" && receipt.txHash.length > 0
+      ? snapshot as unknown as SellerPaymentIntakeInput
+      : null;
+  }
+  if (receipt.kind !== "pay-x402" || !hasOnlyKeys(receipt, [
+    "kind",
+    "protocolVersion",
+    "responseHeader",
+    "httpResource",
+    "paymentReceiptHash",
+    "settlementTxHash",
+    "chainId",
+  ]) ||
+      !["kind", "protocolVersion", "responseHeader", "httpResource", "paymentReceiptHash"]
+        .every((key) => Object.prototype.hasOwnProperty.call(receipt, key)) ||
+      typeof receipt.protocolVersion !== "string" || receipt.protocolVersion.length === 0 ||
+      typeof receipt.httpResource !== "string" || receipt.httpResource.length === 0 ||
+      typeof receipt.paymentReceiptHash !== "string" || receipt.paymentReceiptHash.length === 0 ||
+      (receipt.settlementTxHash !== undefined &&
+        (typeof receipt.settlementTxHash !== "string" || receipt.settlementTxHash.length === 0)) ||
+      (receipt.chainId !== undefined && typeof receipt.chainId !== "number") ||
+      !isRecord(receipt.responseHeader) ||
+      !hasExactKeys(receipt.responseHeader, ["name", "value"]) ||
+      typeof receipt.responseHeader.name !== "string" ||
+      receipt.responseHeader.name.length === 0 ||
+      typeof receipt.responseHeader.value !== "string" ||
+      receipt.responseHeader.value.length === 0) return null;
+  return snapshot as unknown as SellerPaymentIntakeInput;
 }
 
 function reject(reason: string): SellerPaymentIntakeResult {
@@ -421,39 +630,351 @@ function normalizeAddress(address: string): string {
 function parseListingRef(value: unknown): ListingRef | null {
   if (
     !isRecord(value) ||
+    !hasExactKeys(value, ["listingId", "version", "contentHash"]) ||
     typeof value.listingId !== "string" ||
     value.listingId.length === 0 ||
     !isSafeUint(value.version) ||
-    !HASH_RE.test(String(value.contentHash))
+    typeof value.contentHash !== "string" ||
+    !HASH_RE.test(value.contentHash)
   ) return null;
   return {
     listingId: value.listingId,
     version: value.version,
-    contentHash: String(value.contentHash),
+    contentHash: value.contentHash,
   };
+}
+
+function parseProducerAdmission(
+  value: unknown,
+): SellerPayloadVerificationProducerAdmission | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "operation",
+    "disposition",
+    "listingRef",
+    "verificationMethodKind",
+    "verificationMethodHash",
+    "deliverableSpecHash",
+    "admittedAt",
+  ]) ||
+      value.operation !== "produce" ||
+      value.disposition !== "supported" ||
+      typeof value.verificationMethodKind !== "string" ||
+      !VERIFICATION_METHOD_KINDS.has(value.verificationMethodKind) ||
+      typeof value.verificationMethodHash !== "string" ||
+      !HASH_RE.test(value.verificationMethodHash) ||
+      typeof value.deliverableSpecHash !== "string" ||
+      !HASH_RE.test(value.deliverableSpecHash) ||
+      !isSafeUint(value.admittedAt)) return null;
+  const listingRef = parseListingRef(value.listingRef);
+  if (!listingRef) return null;
+  return {
+    operation: "produce",
+    disposition: "supported",
+    listingRef,
+    verificationMethodKind:
+      value.verificationMethodKind as VerificationMethod["kind"],
+    verificationMethodHash: value.verificationMethodHash,
+    deliverableSpecHash: value.deliverableSpecHash,
+    admittedAt: value.admittedAt,
+  };
+}
+
+function sameProducerAdmission(
+  left: SellerPayloadVerificationProducerAdmission | undefined,
+  right: SellerPayloadVerificationProducerAdmission | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return left.operation === right.operation &&
+    left.disposition === right.disposition &&
+    sameListingRef(left.listingRef, right.listingRef) &&
+    left.verificationMethodKind === right.verificationMethodKind &&
+    left.verificationMethodHash === right.verificationMethodHash &&
+    left.deliverableSpecHash === right.deliverableSpecHash &&
+    left.admittedAt === right.admittedAt;
+}
+
+function isCommittedAgreementResolutionValue(
+  value: unknown,
+): value is CommittedAgreementResolution {
+  if (!isRecord(value)) return false;
+  if (value.disposition === "rejected" || value.disposition === "indeterminate") {
+    return hasExactKeys(value, ["disposition", "reason"]) &&
+      typeof value.reason === "string" && value.reason.length > 0;
+  }
+  if (value.disposition !== "verified" || !hasExactKeys(value, [
+    "disposition",
+    "agreement",
+    "agreementHash",
+    "commitment",
+    "railRegistryVersion",
+  ]) ||
+      !isRecord(value.agreement) ||
+      typeof value.agreementHash !== "string" ||
+      !HASH_RE.test(value.agreementHash) ||
+      !isRecord(value.commitment) ||
+      !hasExactKeys(value.commitment, [
+        "finality",
+        "jobId",
+        "agreementHash",
+        "listingRef",
+        "committedAt",
+      ]) ||
+      value.commitment.finality !== "finalized" ||
+      typeof value.commitment.jobId !== "string" ||
+      value.commitment.jobId.length === 0 ||
+      typeof value.commitment.agreementHash !== "string" ||
+      !HASH_RE.test(value.commitment.agreementHash) ||
+      parseListingRef(value.commitment.listingRef) === null ||
+      !isSafeUint(value.commitment.committedAt) ||
+      !isSafeUint(value.railRegistryVersion) ||
+      value.railRegistryVersion === 0) return false;
+  try {
+    canonicalize(value.agreement);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isIdentityBundleResolutionValue(
+  value: unknown,
+): value is IdentityBundleResolution {
+  if (!isRecord(value)) return false;
+  if (value.disposition === "rejected" || value.disposition === "indeterminate") {
+    return hasExactKeys(value, ["disposition", "reason"]) &&
+      typeof value.reason === "string" && value.reason.length > 0;
+  }
+  if (!(value.disposition === "verified" &&
+    hasExactKeys(value, ["disposition", "bundle"]) &&
+    isIdentityBundle(value.bundle))) return false;
+  try {
+    identityBundleHash(value.bundle);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isSellerRailResolutionValue(value: unknown): value is SellerRailResolution {
+  if (!isRecord(value)) return false;
+  if (value.disposition === "rejected" || value.disposition === "indeterminate") {
+    return hasExactKeys(value, ["disposition", "reason"]) &&
+      typeof value.reason === "string" && value.reason.length > 0;
+  }
+  if (!(value.disposition === "verified" &&
+    hasExactKeys(value, ["disposition", "rail", "railRegistryVersion"]) &&
+    validRailShape(value.rail) &&
+    isSafeUint(value.railRegistryVersion) && value.railRegistryVersion > 0)) return false;
+  try {
+    canonicalize(value.rail);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isAddressResolutionValue(value: unknown): value is AddressResolution {
+  if (!isRecord(value)) return false;
+  if (value.disposition === "verified") {
+    return hasExactKeys(value, ["disposition", "address"]) &&
+      typeof value.address === "string" && value.address.length > 0;
+  }
+  return (value.disposition === "rejected" || value.disposition === "indeterminate") &&
+    hasExactKeys(value, ["disposition", "reason"]) &&
+    typeof value.reason === "string" && value.reason.length > 0;
+}
+
+function isDestinationBindingResolutionValue(
+  value: unknown,
+): value is DestinationBindingResolution {
+  if (!isRecord(value) ||
+      value.tier !== 1 && value.tier !== 2 && value.tier !== 3) return false;
+  if (value.disposition === "bound") {
+    return hasExactKeys(value, ["disposition", "address", "tier"]) &&
+      typeof value.address === "string" && value.address.length > 0;
+  }
+  if (value.disposition === "mismatch") {
+    return hasExactKeys(value, ["disposition", "reason", "tier"]) &&
+      typeof value.reason === "string" && value.reason.length > 0;
+  }
+  return value.disposition === "indeterminate" && value.tier === 2 &&
+    hasExactKeys(value, ["disposition", "reason", "tier"]) &&
+    typeof value.reason === "string" && value.reason.length > 0;
+}
+
+function isDemosTransferObservationValue(
+  value: unknown,
+): value is DemosTransferObservation {
+  if (!isRecord(value) || typeof value.status !== "string") return false;
+  if (value.status === "pending" || value.status === "not-found" ||
+      value.status === "unavailable" || value.status === "failed") {
+    return hasOnlyKeys(value, ["status", "reason"]) &&
+      (value.reason === undefined || typeof value.reason === "string");
+  }
+  return value.status === "included" && hasExactKeys(value, [
+    "status",
+    "txHash",
+    "payer",
+    "payee",
+    "amountOs",
+    "blockNumber",
+    "includedAt",
+  ]) &&
+    typeof value.txHash === "string" &&
+    typeof value.payer === "string" &&
+    typeof value.payee === "string" &&
+    typeof value.amountOs === "string" &&
+    isSafeUint(value.blockNumber) &&
+    isSafeUint(value.includedAt);
+}
+
+function isX402TransferObservationValue(
+  value: unknown,
+): value is X402TransferObservation {
+  if (!isRecord(value) || typeof value.status !== "string") return false;
+  if (value.status === "pending" || value.status === "not-found" ||
+      value.status === "unavailable" || value.status === "failed") {
+    return hasOnlyKeys(value, ["status", "reason"]) &&
+      (value.reason === undefined || typeof value.reason === "string");
+  }
+  return value.status === "finalized" && hasExactKeys(value, [
+    "status",
+    "chainId",
+    "txHash",
+    "logIndex",
+    "payer",
+    "payee",
+    "amountBaseUnits",
+    "asset",
+    "confirmations",
+    "includedAt",
+    "finalityObservedAt",
+    "sessionBinding",
+  ]) &&
+    isSafeUint(value.chainId) &&
+    typeof value.txHash === "string" &&
+    isSafeUint(value.logIndex) &&
+    typeof value.payer === "string" &&
+    typeof value.payee === "string" &&
+    typeof value.amountBaseUnits === "string" &&
+    isRecord(value.asset) &&
+    hasExactKeys(value.asset, ["contract", "symbol", "decimals"]) &&
+    typeof value.asset.contract === "string" &&
+    typeof value.asset.symbol === "string" &&
+    isSafeUint(value.asset.decimals) &&
+    isSafeUint(value.confirmations) &&
+    isSafeUint(value.includedAt) &&
+    isSafeUint(value.finalityObservedAt) &&
+    isRecord(value.sessionBinding) &&
+    typeof value.sessionBinding.kind === "string";
+}
+
+function isX402ReceiptExtensionVerificationValue(
+  value: unknown,
+): value is X402ReceiptExtensionVerification {
+  if (!isRecord(value)) return false;
+  if (value.disposition === "pass") {
+    return hasExactKeys(value, ["disposition"]);
+  }
+  return (value.disposition === "fail" || value.disposition === "indeterminate" ||
+    value.disposition === "error") &&
+    hasExactKeys(value, ["disposition", "reason"]) &&
+    typeof value.reason === "string" && value.reason.length > 0;
+}
+
+function isX402SettlementChainClassificationValue(
+  value: unknown,
+): value is X402SettlementChainClassification {
+  if (!isRecord(value)) return false;
+  if (value.disposition === "l2") {
+    return hasExactKeys(value, ["disposition"]);
+  }
+  return (value.disposition === "unsupported" ||
+    value.disposition === "indeterminate" || value.disposition === "error") &&
+    hasExactKeys(value, ["disposition", "reason"]) &&
+    typeof value.reason === "string" && value.reason.length > 0;
+}
+
+function isSellerReceiptClaimResultValue(
+  value: unknown,
+): value is SellerReceiptClaimResult {
+  if (!isRecord(value) || typeof value.status !== "string") return false;
+  if (value.status === "claimed" || value.status === "already-claimed") {
+    return hasExactKeys(value, ["status", "permitId", "claim"]) &&
+      typeof value.permitId === "string" && value.permitId.length > 0 &&
+      isValidSellerReceiptClaim(value.claim);
+  }
+  if (value.status !== "conflict" || !hasOnlyKeys(value, [
+    "status",
+    "reason",
+    "existing",
+    "consumed",
+  ]) ||
+      !["status", "reason", "existing"].every((key) =>
+        Object.prototype.hasOwnProperty.call(value, key)) ||
+      (value.reason !== "lower-priority" &&
+        value.reason !== "winner-already-consumed" &&
+        value.reason !== "authorization-scope-conflict") ||
+      !isValidSellerReceiptClaim(value.existing)) return false;
+  const consumedWasReturned = Object.prototype.hasOwnProperty.call(value, "consumed");
+  return !consumedWasReturned || isValidSellerReceiptClaim(value.consumed);
 }
 
 function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim {
   if (
     !isRecord(value) ||
+    !hasExactKeys(value, [
+      "settlementId",
+      "jobId",
+      "phaseIndex",
+      "observedAt",
+      "evidenceHash",
+      "authorization",
+    ]) ||
     typeof value.settlementId !== "string" ||
     value.settlementId.length === 0 ||
     typeof value.jobId !== "string" ||
     value.jobId.length === 0 ||
     !isSafeUint(value.phaseIndex) ||
     !isSafeUint(value.observedAt) ||
-    !HASH_RE.test(String(value.evidenceHash)) ||
+    typeof value.evidenceHash !== "string" ||
+    !HASH_RE.test(value.evidenceHash) ||
     !isRecord(value.authorization)
   ) return false;
 
   const authorization = value.authorization;
   const evidenceInput = authorization.evidenceInput;
   if (
+    !hasOnlyKeys(authorization, [
+      "jobId",
+      "phaseIndex",
+      "agreementHash",
+      "listingRef",
+      "railId",
+      "settlementId",
+      "evidenceHash",
+      "evidenceInput",
+      "payoutBindingTier",
+      "sessionBinding",
+      "payloadVerificationProducerAdmission",
+    ]) ||
+    ![
+      "jobId",
+      "phaseIndex",
+      "agreementHash",
+      "listingRef",
+      "railId",
+      "settlementId",
+      "evidenceHash",
+      "evidenceInput",
+      "payoutBindingTier",
+    ].every((key) => Object.prototype.hasOwnProperty.call(authorization, key)) ||
     authorization.jobId !== value.jobId ||
     authorization.phaseIndex !== value.phaseIndex ||
     authorization.settlementId !== value.settlementId ||
     authorization.evidenceHash !== value.evidenceHash ||
-    !HASH_RE.test(String(authorization.agreementHash)) ||
+    typeof authorization.agreementHash !== "string" ||
+    !HASH_RE.test(authorization.agreementHash) ||
     parseListingRef(authorization.listingRef) === null ||
     typeof authorization.railId !== "string" ||
     authorization.railId.length === 0 ||
@@ -463,6 +984,12 @@ function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim 
     (authorization.sessionBinding !== undefined &&
       authorization.sessionBinding !== "established" &&
       authorization.sessionBinding !== "not-established") ||
+    (Object.prototype.hasOwnProperty.call(
+      authorization,
+      "payloadVerificationProducerAdmission",
+    ) && parseProducerAdmission(
+      authorization.payloadVerificationProducerAdmission,
+    ) === null) ||
     !isRecord(evidenceInput) ||
     evidenceInput.jobId !== value.jobId ||
     evidenceInput.observedAt !== value.observedAt
@@ -475,18 +1002,79 @@ function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim 
   }
 }
 
+/**
+ * An SB-2 retry may recover the store's earlier canonical observation, but it
+ * may not substitute different payment semantics. The only evidence fields
+ * allowed to move are the monotonic observation/finality timestamp. For SB-3,
+ * a retained weaker result is conservative; a retained stronger result may
+ * not override a fresh weaker observation.
+ */
+function isCanonicalReplayWinner(
+  stored: SellerReceiptClaim,
+  candidate: SellerReceiptClaim,
+): boolean {
+  const storedWinsSb2 = stored.observedAt < candidate.observedAt ||
+    stored.observedAt === candidate.observedAt &&
+      stored.evidenceHash <= candidate.evidenceHash;
+  if (!storedWinsSb2 ||
+      stored.authorization.payoutBindingTier !==
+        candidate.authorization.payoutBindingTier) return false;
+
+  const storedHasSessionBinding = Object.prototype.hasOwnProperty.call(
+    stored.authorization,
+    "sessionBinding",
+  );
+  const candidateHasSessionBinding = Object.prototype.hasOwnProperty.call(
+    candidate.authorization,
+    "sessionBinding",
+  );
+  if (storedHasSessionBinding !== candidateHasSessionBinding) return false;
+  if (storedHasSessionBinding) {
+    const storedBinding = stored.authorization.sessionBinding;
+    const candidateBinding = candidate.authorization.sessionBinding;
+    if (storedBinding !== candidateBinding &&
+        !(storedBinding === "not-established" &&
+          candidateBinding === "established")) return false;
+  }
+
+  const storedEvidence = stored.authorization.evidenceInput;
+  const candidateEvidence = candidate.authorization.evidenceInput;
+  if (!isRecord(storedEvidence.settlementFinality) ||
+      !isRecord(candidateEvidence.settlementFinality) ||
+      storedEvidence.observedAt !== stored.observedAt ||
+      candidateEvidence.observedAt !== candidate.observedAt ||
+      storedEvidence.settlementFinality.finalityObservedAt !== stored.observedAt ||
+      candidateEvidence.settlementFinality.finalityObservedAt !==
+        candidate.observedAt) return false;
+
+  try {
+    const normalizedStoredEvidence = {
+      ...storedEvidence,
+      observedAt: candidate.observedAt,
+      settlementFinality: {
+        ...storedEvidence.settlementFinality,
+        finalityObservedAt: candidate.observedAt,
+      },
+    };
+    return canonicalize(normalizedStoredEvidence) === canonicalize(candidateEvidence);
+  } catch {
+    return false;
+  }
+}
+
 function parseParty(value: unknown): AgreementPartyView | null {
   if (
     !isRecord(value) ||
     (value.role !== "buyer" && value.role !== "seller") ||
-    !HASH_RE.test(String(value.bundleHash)) ||
+    typeof value.bundleHash !== "string" ||
+    !HASH_RE.test(value.bundleHash) ||
     typeof value.primaryClaim !== "string" ||
     value.primaryClaim.length === 0 ||
     !isRecord(value.vetRecordRef)
   ) return null;
   return {
     role: value.role,
-    bundleHash: String(value.bundleHash),
+    bundleHash: value.bundleHash,
     primaryClaim: value.primaryClaim,
   };
 }
@@ -537,7 +1125,8 @@ function parseAgreement(raw: Record<string, unknown>): AgreementView | null {
     !isSafeUint(terms.deadline) ||
     !isRecord(terms.deliverable) ||
     typeof terms.deliverable.deliverableType !== "string" ||
-    !HASH_RE.test(String(terms.deliverable.hash)) ||
+    typeof terms.deliverable.hash !== "string" ||
+    !HASH_RE.test(terms.deliverable.hash) ||
     (terms.deliverable.schemaUrl !== undefined && typeof terms.deliverable.schemaUrl !== "string") ||
     !Array.isArray(terms.payoutBindings)
   ) return null;
@@ -579,7 +1168,7 @@ function parseAgreement(raw: Record<string, unknown>): AgreementView | null {
       deadline: terms.deadline,
       deliverable: {
         deliverableType: terms.deliverable.deliverableType,
-        hash: String(terms.deliverable.hash),
+        hash: terms.deliverable.hash,
         ...(terms.deliverable.schemaUrl === undefined
           ? {}
           : { schemaUrl: terms.deliverable.schemaUrl }),
@@ -705,7 +1294,11 @@ export function createInMemorySellerReceiptStore(
           existing.selected.authorization.listingRef,
           candidate.authorization.listingRef,
         ) &&
-        existing.selected.authorization.railId === candidate.authorization.railId;
+        existing.selected.authorization.railId === candidate.authorization.railId &&
+        sameProducerAdmission(
+          existing.selected.authorization.payloadVerificationProducerAdmission,
+          candidate.authorization.payloadVerificationProducerAdmission,
+        );
       if (sameSelectedSession && !sameAuthorizationScope) {
         return {
           status: "conflict",
@@ -814,22 +1407,49 @@ function verifyAgreementListing(
   return null;
 }
 
-function validRailShape(rail: SellerSupportedRailDefinition): boolean {
-  if (
-    !Number.isSafeInteger(rail.railVersion) || rail.railVersion <= 0 ||
-    !["live", "operator_gated", "closed_data", "bilateral"].includes(rail.availability)
-  ) return false;
+function validRailShape(rail: unknown): rail is SellerSupportedRailDefinition {
+  if (!isRecord(rail) || !hasExactKeys(rail, [
+    "railVersion",
+    "railId",
+    "railType",
+    "asset",
+    "network",
+    "phaseHandler",
+    "parameters",
+    "availability",
+  ]) ||
+      typeof rail.railVersion !== "number" ||
+      !Number.isSafeInteger(rail.railVersion) || rail.railVersion <= 0 ||
+      typeof rail.railId !== "string" || rail.railId.length === 0 ||
+      typeof rail.availability !== "string" ||
+      !["live", "operator_gated", "closed_data", "bilateral"].includes(
+        rail.availability,
+      ) ||
+      !isRecord(rail.asset) || !isRecord(rail.network) ||
+      !isRecord(rail.parameters)) return false;
   if (rail.railType === "demos-native") {
-    return rail.phaseHandler === "pay-dem" && rail.asset.kind === "native-dem" &&
+    return rail.phaseHandler === "pay-dem" &&
+      hasExactKeys(rail.asset, ["kind", "symbol", "decimals"]) &&
+      rail.asset.kind === "native-dem" &&
       rail.asset.symbol === DEM_CURRENCY && rail.asset.decimals === DEM_DECIMALS &&
-      rail.network.kind === "demos";
+      hasExactKeys(rail.network, ["kind"]) && rail.network.kind === "demos";
   }
   if (rail.railType !== "x402") return false;
-  return rail.phaseHandler === "pay-x402" && rail.asset.kind === "erc20" &&
+  return rail.phaseHandler === "pay-x402" &&
+    hasExactKeys(rail.asset, [
+      "kind",
+      "chainId",
+      "contract",
+      "symbol",
+      "decimals",
+    ]) &&
+    rail.asset.kind === "erc20" &&
     isSafeUint(rail.asset.chainId) && typeof rail.asset.contract === "string" &&
     rail.asset.contract.length > 0 && typeof rail.asset.symbol === "string" &&
     rail.asset.symbol.length > 0 && isSafeUint(rail.asset.decimals) &&
+    hasExactKeys(rail.network, ["kind", "resourceBaseUrl"]) &&
     rail.network.kind === "x402-resource" &&
+    typeof rail.network.resourceBaseUrl === "string" &&
     resourceAllowed(rail.network.resourceBaseUrl, rail.network.resourceBaseUrl);
 }
 
@@ -842,7 +1462,7 @@ async function settleReplay(
     settlementId: string;
   },
   input: SellerPaymentIntakeInput,
-  store: SellerReceiptStore,
+  claimReceipt: SellerReceiptStore["claim"],
 ): Promise<SellerPaymentIntakeResult> {
   const evidenceHash = sha256Hex(canonicalize(base.evidenceInput));
   const authorization: SellerPaymentAuthorization = {
@@ -859,29 +1479,23 @@ async function settleReplay(
     evidenceHash,
     authorization,
   };
-  let rawClaim: unknown;
-  try {
-    rawClaim = await store.claim(candidate);
-  } catch {
+  const stored = await callSecurityBoundaryWithInput(
+    candidate,
+    claimReceipt,
+  );
+  if (stored.status === "threw") {
     return indeterminate("receipt-store-unavailable");
   }
-  if (!isRecord(rawClaim) ||
-      !["claimed", "already-claimed", "conflict"].includes(String(rawClaim.status))) {
+  if (stored.status !== "ok" ||
+      !isSellerReceiptClaimResultValue(stored.value)) {
     return indeterminate("receipt-store-invalid-result");
   }
-  const claim = rawClaim as SellerReceiptClaimResult;
+  const claim = stored.value;
   if (claim.status === "conflict") {
     if (
-      ![
-        "lower-priority",
-        "winner-already-consumed",
-        "authorization-scope-conflict",
-      ].includes(String(claim.reason)) ||
-      !isValidSellerReceiptClaim(claim.existing) ||
       claim.existing.settlementId !== candidate.settlementId ||
       (claim.consumed !== undefined &&
-        (!isValidSellerReceiptClaim(claim.consumed) ||
-          claim.consumed.settlementId !== candidate.settlementId)) ||
+        claim.consumed.settlementId !== candidate.settlementId) ||
       (claim.reason === "winner-already-consumed" && claim.consumed === undefined)
     ) return indeterminate("receipt-store-invalid-result");
     if (claim.reason === "authorization-scope-conflict") {
@@ -904,7 +1518,21 @@ async function settleReplay(
       candidate.authorization.listingRef,
     ) ||
     claim.claim.authorization.railId !== candidate.authorization.railId ||
-    (claim.status === "claimed" && canonicalize(claim.claim) !== canonicalize(candidate))
+    Object.prototype.hasOwnProperty.call(
+      claim.claim.authorization,
+      "payloadVerificationProducerAdmission",
+    ) !== Object.prototype.hasOwnProperty.call(
+      candidate.authorization,
+      "payloadVerificationProducerAdmission",
+    ) ||
+    !sameProducerAdmission(
+      claim.claim.authorization.payloadVerificationProducerAdmission,
+      candidate.authorization.payloadVerificationProducerAdmission,
+    ) ||
+    (claim.status === "claimed" &&
+      canonicalize(claim.claim) !== canonicalize(candidate)) ||
+    (claim.status === "already-claimed" &&
+      !isCanonicalReplayWinner(claim.claim, candidate))
   ) return indeterminate("receipt-store-invalid-result");
   return {
     disposition: "verified",
@@ -923,17 +1551,57 @@ export async function verifySellerPaymentIntake(
   input: SellerPaymentIntakeInput,
   deps: SellerPaymentIntakeDeps,
 ): Promise<SellerPaymentIntakeResult> {
-  if (!input.jobId || !isSafeUint(input.phaseIndex) || !input.railId || !input.payerPayingKey) {
+  // Own the complete public request before its first property read. The caller
+  // may retain and mutate its object while any dependency below is awaited.
+  const request = snapshotPaymentIntakeInput(input);
+  if (!request) {
     return verifierError("invalid-intake-input");
   }
 
-  let committed: CommittedAgreementResolution;
-  try {
-    committed = await deps.resolveCommittedAgreement(input.jobId);
-  } catch {
+  // Capture each callback once before the first await. Runtime JavaScript can
+  // otherwise swap a method on the dependency object between security gates.
+  const resolveCommittedAgreement = deps.resolveCommittedAgreement;
+  const resolveListingAtCommit = deps.resolveListingAtCommit;
+  const resolveRail = deps.resolveRail;
+  const resolveIdentityBundle = deps.resolveIdentityBundle;
+  const resolvePayerAddress = deps.resolvePayerAddress;
+  const resolvePayeeDestination = deps.resolvePayeeDestination;
+  const observeDemosTransfer = deps.observeDemosTransfer;
+  const observeX402Transfer = deps.observeX402Transfer;
+  const verifyX402ReceiptExtensions = deps.verifyX402ReceiptExtensions;
+  const classifyX402SettlementChain = deps.classifyX402SettlementChain;
+  const receiptStore = deps.receiptStore;
+  if (
+    typeof resolveCommittedAgreement !== "function" ||
+    typeof resolveListingAtCommit !== "function" ||
+    typeof resolveRail !== "function" ||
+    typeof resolveIdentityBundle !== "function" ||
+    typeof resolvePayerAddress !== "function" ||
+    typeof resolvePayeeDestination !== "function" ||
+    typeof observeDemosTransfer !== "function" ||
+    typeof observeX402Transfer !== "function" ||
+    typeof verifyX402ReceiptExtensions !== "function" ||
+    typeof classifyX402SettlementChain !== "function" ||
+    !receiptStore || typeof receiptStore.claim !== "function"
+  ) return verifierError("invalid-intake-dependencies");
+  const claimReceiptMethod = receiptStore.claim;
+  const claimReceipt: SellerReceiptStore["claim"] = (claim) =>
+    claimReceiptMethod.call(receiptStore, claim);
+
+  const committedCall = await callSecurityBoundary(() =>
+    resolveCommittedAgreement.call(deps, request.jobId));
+  if (committedCall.status === "threw") {
     return indeterminate("agreement-resolution-unavailable");
   }
+  if (committedCall.status !== "ok" ||
+      !isCommittedAgreementResolutionValue(committedCall.value)) {
+    return verifierError("agreement-resolution-invalid-result");
+  }
+  const committed = committedCall.value;
   if (committed.disposition !== "verified") {
+    if (typeof committed.reason !== "string" || committed.reason.length === 0) {
+      return verifierError("agreement-resolution-invalid-result");
+    }
     return committed.disposition === "indeterminate"
       ? indeterminate(`agreement-${committed.reason}`)
       : reject(`agreement-${committed.reason}`);
@@ -946,10 +1614,10 @@ export async function verifySellerPaymentIntake(
   if (!agreement) return reject("unsupported-or-malformed-agreement");
   const computedAgreementHash = contentHash(committed.agreement);
   if (
-    agreement.jobId !== input.jobId ||
+    agreement.jobId !== request.jobId ||
     committed.agreementHash !== computedAgreementHash ||
     committed.commitment.finality !== "finalized" ||
-    committed.commitment.jobId !== input.jobId ||
+    committed.commitment.jobId !== request.jobId ||
     committed.commitment.agreementHash !== computedAgreementHash ||
     !sameListingRef(committed.commitment.listingRef, agreement.listingRef) ||
     !isSafeUint(committed.commitment.committedAt) ||
@@ -958,24 +1626,80 @@ export async function verifySellerPaymentIntake(
     committed.commitment.committedAt > agreement.terms.deadline
   ) return reject("commitment-agreement-mismatch");
 
-  let listingResult: ListingValidationResult;
-  try {
-    listingResult = await deps.resolveListingAtCommit(agreement.listingRef);
-  } catch {
+  const listingCall = await callSecurityBoundaryWithInput(
+    agreement.listingRef,
+    (listingRef) => resolveListingAtCommit.call(deps, listingRef),
+  );
+  if (listingCall.status === "threw") {
     return indeterminate("listing-resolution-unavailable");
   }
-  if (listingResult.disposition !== "verified" || !listingResult.listing ||
-      listingResult.listingContentHash !== agreement.listingRef.contentHash) {
+  if (listingCall.status !== "ok" || !isRecord(listingCall.value) ||
+      !hasOnlyKeys(listingCall.value, [
+        "rawListing",
+        "validation",
+        "payloadVerificationProducerAdmission",
+      ]) ||
+      !Object.prototype.hasOwnProperty.call(listingCall.value, "rawListing") ||
+      !Object.prototype.hasOwnProperty.call(listingCall.value, "validation") ||
+      !isRecord(listingCall.value.rawListing) ||
+      !isRecord(listingCall.value.validation)) {
+    return indeterminate("listing-at-commit-admission-unavailable");
+  }
+  const listingAtCommit = listingCall.value as unknown as SellerListingAtCommitResolution;
+  const listingResult = listingAtCommit.validation;
+  if (listingResult.disposition !== "verified") {
+    if (typeof listingResult.reason !== "string" || listingResult.reason.length === 0) {
+      return verifierError("listing-resolution-invalid-result");
+    }
     return listingResult.disposition === "indeterminate"
       ? indeterminate(`listing-${listingResult.reason}`)
       : reject(`listing-${listingResult.reason}`);
+  }
+  if (!isVerifiedListingAdmission(listingAtCommit.rawListing, listingResult) ||
+      listingResult.listingContentHash !== agreement.listingRef.contentHash) {
+    return reject("listing-at-commit-admission-mismatch");
+  }
+
+  const listing = listingResult.listing;
+  const dpaSelected = listing.pipeline.some(
+    (phase) => phase.kind === "deliver-attested-payload",
+  );
+  const producerAdmissionWasReturned = Object.prototype.hasOwnProperty.call(
+    listingAtCommit,
+    "payloadVerificationProducerAdmission",
+  );
+  let producerAdmission: SellerPayloadVerificationProducerAdmission | undefined;
+  if (!dpaSelected) {
+    if (producerAdmissionWasReturned) {
+      return reject("payload-verification-producer-admission-unexpected");
+    }
+  } else {
+    if (!producerAdmissionWasReturned) {
+      return indeterminate("payload-verification-producer-admission-unavailable");
+    }
+    producerAdmission = parseProducerAdmission(
+      listingAtCommit.payloadVerificationProducerAdmission,
+    ) ?? undefined;
+    const deliverable = listing.offering.deliverable;
+    if (!producerAdmission || deliverable.kind !== "attested-payload" ||
+        !deliverable.verificationMethod ||
+        !sameListingRef(producerAdmission.listingRef, agreement.listingRef) ||
+        producerAdmission.verificationMethodKind !==
+          deliverable.verificationMethod.kind ||
+        producerAdmission.verificationMethodHash !==
+          sha256Hex(canonicalize(deliverable.verificationMethod)) ||
+        producerAdmission.deliverableSpecHash !==
+          sha256Hex(canonicalize(deliverable)) ||
+        producerAdmission.admittedAt > committed.commitment.committedAt) {
+      return reject("payload-verification-producer-admission-mismatch");
+    }
   }
   try {
     validateFixedPriceAgreementBinding({
       agreement: agreementArtifact,
       verifiedListing: {
         disposition: "verified",
-        listing: listingResult.listing,
+        listing,
         pin: { ...agreement.listingRef },
       },
       committedAt: committed.commitment.committedAt,
@@ -985,27 +1709,33 @@ export async function verifySellerPaymentIntake(
   }
   const listingMismatch = verifyAgreementListing(
     agreement,
-    listingResult.listing,
-    input.phaseIndex,
-    input.railId,
+    listing,
+    request.phaseIndex,
+    request.railId,
   );
   if (listingMismatch) return reject(listingMismatch);
 
   const payoutBindings = agreement.terms.payoutBindings.filter((binding) =>
-    binding.railId === input.railId && binding.phaseIndex === input.phaseIndex);
+    binding.railId === request.railId && binding.phaseIndex === request.phaseIndex);
   if (payoutBindings.length !== 1) return reject("payout-binding-mismatch");
   const payout = payoutBindings[0]!;
 
-  let railResult: SellerRailResolution;
-  try {
-    railResult = await deps.resolveRail({
+  const railCall = await callSecurityBoundaryWithInput({
       ref: structuredClone(agreement.terms.rail),
       railRegistryVersion: committed.railRegistryVersion,
-    });
-  } catch {
+    }, (railInput) => resolveRail.call(deps, railInput));
+  if (railCall.status === "threw") {
     return indeterminate("rail-resolution-unavailable");
   }
+  if (railCall.status !== "ok" ||
+      !isSellerRailResolutionValue(railCall.value)) {
+    return verifierError("rail-resolution-invalid-result");
+  }
+  const railResult = railCall.value;
   if (railResult.disposition !== "verified") {
+    if (typeof railResult.reason !== "string" || railResult.reason.length === 0) {
+      return verifierError("rail-resolution-invalid-result");
+    }
     return railResult.disposition === "indeterminate"
       ? indeterminate(`rail-${railResult.reason}`)
       : reject(`rail-${railResult.reason}`);
@@ -1013,30 +1743,42 @@ export async function verifySellerPaymentIntake(
   const rail = railResult.rail;
   if (!isSafeUint(railResult.railRegistryVersion) ||
       railResult.railRegistryVersion !== committed.railRegistryVersion ||
-      !validRailShape(rail) || rail.railId !== input.railId ||
+      !validRailShape(rail) || rail.railId !== request.railId ||
       agreement.terms.rail.railVersion !== undefined &&
       agreement.terms.rail.railVersion !== rail.railVersion) {
     return reject("unsupported-or-mismatched-rail");
   }
-  if (rail.phaseHandler !== input.receipt.kind) return reject("receipt-rail-kind-mismatch");
+  if (rail.phaseHandler !== request.receipt.kind) return reject("receipt-rail-kind-mismatch");
   if (agreement.terms.price.currency !== rail.asset.symbol) return reject("payment-asset-mismatch");
 
-  let buyerResult: IdentityBundleResolution;
-  let sellerResult: IdentityBundleResolution;
-  try {
-    [buyerResult, sellerResult] = await Promise.all([
-      deps.resolveIdentityBundle(agreement.buyer.bundleHash),
-      deps.resolveIdentityBundle(agreement.seller.bundleHash),
-    ]);
-  } catch {
+  const [buyerCall, sellerCall] = await Promise.all([
+    callSecurityBoundary(() =>
+      resolveIdentityBundle.call(deps, agreement.buyer.bundleHash)),
+    callSecurityBoundary(() =>
+      resolveIdentityBundle.call(deps, agreement.seller.bundleHash)),
+  ]);
+  if (buyerCall.status === "threw" || sellerCall.status === "threw") {
     return indeterminate("party-bundle-resolution-unavailable");
   }
+  if (buyerCall.status !== "ok" || sellerCall.status !== "ok" ||
+      !isIdentityBundleResolutionValue(buyerCall.value) ||
+      !isIdentityBundleResolutionValue(sellerCall.value)) {
+    return verifierError("party-bundle-resolution-invalid-result");
+  }
+  const buyerResult = buyerCall.value;
+  const sellerResult = sellerCall.value;
   if (buyerResult.disposition !== "verified") {
+    if (typeof buyerResult.reason !== "string" || buyerResult.reason.length === 0) {
+      return verifierError("party-bundle-resolution-invalid-result");
+    }
     return buyerResult.disposition === "indeterminate"
       ? indeterminate(`buyer-bundle-${buyerResult.reason}`)
       : reject(`buyer-bundle-${buyerResult.reason}`);
   }
   if (sellerResult.disposition !== "verified") {
+    if (typeof sellerResult.reason !== "string" || sellerResult.reason.length === 0) {
+      return verifierError("party-bundle-resolution-invalid-result");
+    }
     return sellerResult.disposition === "indeterminate"
       ? indeterminate(`seller-bundle-${sellerResult.reason}`)
       : reject(`seller-bundle-${sellerResult.reason}`);
@@ -1049,31 +1791,39 @@ export async function verifySellerPaymentIntake(
       sellerBundle.presentedBy !== agreement.seller.primaryClaim) {
     return reject("party-bundle-agreement-mismatch");
   }
-  if (!buyerBundle.claims.some((claim) => claim.ref === input.payerPayingKey)) {
+  if (!buyerBundle.claims.some((claim) => claim.ref === request.payerPayingKey)) {
     return reject("payer-paying-key-not-in-bundle");
   }
 
   const common = {
     agreementHash: computedAgreementHash,
     listingRef: agreement.listingRef,
-    railId: input.railId,
+    railId: request.railId,
+    ...(producerAdmission
+      ? { payloadVerificationProducerAdmission: producerAdmission }
+      : {}),
   };
 
-  if (rail.railType === "demos-native" && input.receipt.kind === "pay-dem") {
-    const payerAddress = demosAddressFromClaim(input.payerPayingKey);
+  if (rail.railType === "demos-native" && request.receipt.kind === "pay-dem") {
+    const receipt = request.receipt;
+    const payerAddress = demosAddressFromClaim(request.payerPayingKey);
     const payeeAddress = demosAddressFromClaim(agreement.seller.primaryClaim);
     if (!payerAddress) return reject("payer-address-not-demos-bound");
     if (!payeeAddress || normalizeAddress(payout.payeeAddress) !== payeeAddress) {
       return reject("payee-destination-binding-mismatch");
     }
-    const claimedTxHash = canonicalTxHash(input.receipt.txHash);
+    const claimedTxHash = canonicalTxHash(receipt.txHash);
     if (!claimedTxHash) return verifierError("malformed-settlement-identity");
-    let observed: DemosTransferObservation;
-    try {
-      observed = await deps.observeDemosTransfer(input.receipt.txHash);
-    } catch {
+    const observation = await callSecurityBoundary(() =>
+      observeDemosTransfer.call(deps, receipt.txHash));
+    if (observation.status === "threw") {
       return indeterminate("demos-observation-unavailable");
     }
+    if (observation.status !== "ok" ||
+        !isDemosTransferObservationValue(observation.value)) {
+      return verifierError("demos-observation-invalid-result");
+    }
+    const observed = observation.value;
     if (observed.status !== "included") {
       return observed.status === "failed"
         ? reject("demos-transfer-failed")
@@ -1104,7 +1854,7 @@ export async function verifySellerPaymentIntake(
     if (!settlementId) return verifierError("malformed-settlement-identity");
     const evidenceInput: SellerPaymentEvidenceInput = {
       evidenceVersion: "1",
-      jobId: input.jobId,
+      jobId: request.jobId,
       phase: "pay-dem",
       outcome: "success",
       paymentTxRefs: [{
@@ -1124,26 +1874,26 @@ export async function verifySellerPaymentIntake(
       settlementId,
       evidenceInput,
       payoutBindingTier: 1,
-    }, input, deps.receiptStore);
+    }, request, claimReceipt);
   }
 
-  if (rail.railType !== "x402" || input.receipt.kind !== "pay-x402") {
+  if (rail.railType !== "x402" || request.receipt.kind !== "pay-x402") {
     return reject("receipt-rail-kind-mismatch");
   }
-  if (!resourceAllowed(input.receipt.httpResource, rail.network.resourceBaseUrl)) {
+  if (!resourceAllowed(request.receipt.httpResource, rail.network.resourceBaseUrl)) {
     return reject("x402-http-resource-mismatch");
   }
   const pinnedResource = agreement.terms.rail.parameters?.httpResource;
-  if (typeof pinnedResource === "string" && pinnedResource !== input.receipt.httpResource) {
+  if (typeof pinnedResource === "string" && pinnedResource !== request.receipt.httpResource) {
     return reject("x402-http-resource-mismatch");
   }
   const receiptVerification = verifyX402ReceiptClaim({
-    protocolVersion: input.receipt.protocolVersion,
-    responseHeader: input.receipt.responseHeader,
+    protocolVersion: request.receipt.protocolVersion,
+    responseHeader: request.receipt.responseHeader,
     evidence: {
-      paymentReceiptHash: input.receipt.paymentReceiptHash,
-      settlementTxHash: input.receipt.settlementTxHash,
-      chainId: input.receipt.chainId,
+      paymentReceiptHash: request.receipt.paymentReceiptHash,
+      settlementTxHash: request.receipt.settlementTxHash,
+      chainId: request.receipt.chainId,
     },
   });
   if (receiptVerification.disposition !== "pass" || !receiptVerification.receipt) {
@@ -1154,24 +1904,19 @@ export async function verifySellerPaymentIntake(
       ? verifierError("malformed-settlement-identity")
       : reject(`x402-${receiptVerification.reason}`);
   }
-  let extensionVerification: X402ReceiptExtensionVerification;
-  try {
-    extensionVerification = await deps.verifyX402ReceiptExtensions({
-      protocolVersion: input.receipt.protocolVersion,
+  const extensionCall = await callSecurityBoundaryWithInput({
+      protocolVersion: request.receipt.protocolVersion,
       receipt: structuredClone(receiptVerification.receipt),
-    });
-  } catch {
+    }, (extensionInput) =>
+      verifyX402ReceiptExtensions.call(deps, extensionInput));
+  if (extensionCall.status === "threw") {
     return indeterminate("x402-extension-verification-unavailable");
   }
-  if (
-    !isRecord(extensionVerification) ||
-    !["pass", "fail", "indeterminate", "error"].includes(
-      String(extensionVerification.disposition),
-    ) ||
-    (extensionVerification.disposition !== "pass" &&
-      (typeof extensionVerification.reason !== "string" ||
-        extensionVerification.reason.length === 0))
-  ) {
+  if (extensionCall.status !== "ok") {
+    return verifierError("x402-extension-verifier-invalid-result");
+  }
+  const extensionVerification = extensionCall.value;
+  if (!isX402ReceiptExtensionVerificationValue(extensionVerification)) {
     return verifierError("x402-extension-verifier-invalid-result");
   }
   if (extensionVerification.disposition === "fail") {
@@ -1183,13 +1928,13 @@ export async function verifySellerPaymentIntake(
   if (extensionVerification.disposition === "error") {
     return verifierError(`x402-extension-${extensionVerification.reason}`);
   }
-  if (input.receipt.settlementTxHash === undefined || input.receipt.chainId === undefined) {
+  if (request.receipt.settlementTxHash === undefined || request.receipt.chainId === undefined) {
     // SB-1 requires event-level EVM identity. Provider-receipt fallback cannot
     // mint a seller fulfilment permit until such an identity is recoverable.
     return indeterminate("x402-settlement-identity-unavailable");
   }
-  if (input.receipt.chainId !== rail.asset.chainId) return reject("x402-chain-mismatch");
-  const claimedTxHash = canonicalTxHash(input.receipt.settlementTxHash);
+  if (request.receipt.chainId !== rail.asset.chainId) return reject("x402-chain-mismatch");
+  const claimedTxHash = canonicalTxHash(request.receipt.settlementTxHash);
   if (!claimedTxHash) return verifierError("malformed-settlement-identity");
 
   let finalityBlocks: number;
@@ -1202,21 +1947,19 @@ export async function verifySellerPaymentIntake(
   } else if (rail.asset.chainId === 1) {
     finalityBlocks = 12;
   } else {
-    let classification: X402SettlementChainClassification;
-    try {
-      classification = await deps.classifyX402SettlementChain({
+    const classificationCall = await callSecurityBoundaryWithInput({
         chainId: rail.asset.chainId,
         rail: structuredClone(rail),
-      });
-    } catch {
+      }, (classificationInput) =>
+        classifyX402SettlementChain.call(deps, classificationInput));
+    if (classificationCall.status === "threw") {
       return indeterminate("x402-chain-classification-unavailable");
     }
-    if (!isRecord(classification) ||
-        !["l2", "unsupported", "indeterminate", "error"].includes(
-          String(classification.disposition),
-        ) ||
-        (classification.disposition !== "l2" &&
-          (typeof classification.reason !== "string" || classification.reason.length === 0))) {
+    if (classificationCall.status !== "ok") {
+      return verifierError("x402-chain-classifier-invalid-result");
+    }
+    const classification = classificationCall.value;
+    if (!isX402SettlementChainClassificationValue(classification)) {
       return verifierError("x402-chain-classifier-invalid-result");
     }
     if (classification.disposition === "unsupported") {
@@ -1231,27 +1974,43 @@ export async function verifySellerPaymentIntake(
     finalityBlocks = 1;
   }
 
-  let payerResolution: AddressResolution;
-  let destinationResolution: DestinationBindingResolution;
-  try {
-    [payerResolution, destinationResolution] = await Promise.all([
-      deps.resolvePayerAddress({ payingKey: input.payerPayingKey, buyerBundle, rail }),
-      deps.resolvePayeeDestination({
+  const [payerCall, destinationCall] = await Promise.all([
+    callSecurityBoundaryWithInput({
+      payingKey: request.payerPayingKey,
+      buyerBundle,
+      rail,
+    }, (payerInput) => resolvePayerAddress.call(deps, payerInput)),
+    callSecurityBoundaryWithInput({
         payeePrimaryClaim: agreement.seller.primaryClaim,
         payeeBundle: sellerBundle,
         payoutAddress: payout.payeeAddress,
         rail,
-      }),
-    ]);
-  } catch {
+      }, (destinationInput) =>
+        resolvePayeeDestination.call(deps, destinationInput)),
+  ]);
+  if (payerCall.status === "threw" || destinationCall.status === "threw") {
     return indeterminate("address-binding-resolution-unavailable");
   }
+  if (payerCall.status !== "ok" || destinationCall.status !== "ok" ||
+      !isAddressResolutionValue(payerCall.value) ||
+      !isDestinationBindingResolutionValue(destinationCall.value)) {
+    return verifierError("address-binding-resolution-invalid-result");
+  }
+  const payerResolution = payerCall.value;
+  const destinationResolution = destinationCall.value;
   if (payerResolution.disposition !== "verified") {
+    if (typeof payerResolution.reason !== "string" || payerResolution.reason.length === 0) {
+      return verifierError("address-binding-resolution-invalid-result");
+    }
     return payerResolution.disposition === "indeterminate"
       ? indeterminate(`payer-address-${payerResolution.reason}`)
       : reject(`payer-address-${payerResolution.reason}`);
   }
   if (destinationResolution.disposition !== "bound") {
+    if (typeof destinationResolution.reason !== "string" ||
+        destinationResolution.reason.length === 0) {
+      return verifierError("address-binding-resolution-invalid-result");
+    }
     return destinationResolution.disposition === "indeterminate"
       ? indeterminate(`payee-destination-${destinationResolution.reason}`)
       : reject(`payee-destination-${destinationResolution.reason}`);
@@ -1260,25 +2019,32 @@ export async function verifySellerPaymentIntake(
     return reject("payee-destination-binding-mismatch");
   }
 
-  let observed: X402TransferObservation;
-  try {
-    observed = await deps.observeX402Transfer({
-      chainId: input.receipt.chainId,
-      txHash: input.receipt.settlementTxHash,
-    });
-  } catch {
+  const observation = await callSecurityBoundaryWithInput({
+      chainId: request.receipt.chainId,
+      txHash: request.receipt.settlementTxHash,
+    }, (observationInput) => observeX402Transfer.call(deps, observationInput));
+  if (observation.status === "threw") {
     return indeterminate("x402-observation-unavailable");
   }
+  if (observation.status !== "ok" ||
+      !isX402TransferObservationValue(observation.value)) {
+    return verifierError("x402-observation-invalid-result");
+  }
+  const observed = observation.value;
   if (observed.status !== "finalized") {
     return observed.status === "failed"
       ? reject("x402-transfer-failed")
       : indeterminate(`x402-${observed.status}`);
   }
+  const receiptPayer = receiptVerification.receipt.payer;
+  if (typeof receiptPayer !== "string" || receiptPayer.length === 0) {
+    return verifierError("x402-receipt-payer-malformed");
+  }
   if (
-    observed.chainId !== input.receipt.chainId ||
+    observed.chainId !== request.receipt.chainId ||
     canonicalTxHash(observed.txHash) !== claimedTxHash ||
     normalizeAddress(observed.payer) !== normalizeAddress(payerResolution.address) ||
-    normalizeAddress(String(receiptVerification.receipt.payer)) !==
+    normalizeAddress(receiptPayer) !==
       normalizeAddress(payerResolution.address) ||
     normalizeAddress(observed.payee) !== normalizeAddress(payout.payeeAddress)
   ) return reject("x402-transfer-party-or-identity-mismatch");
@@ -1313,29 +2079,36 @@ export async function verifySellerPaymentIntake(
   }
   switch (observed.sessionBinding.kind) {
     case "eip3009":
-      if (typeof observed.sessionBinding.nonce !== "string" ||
+      if (!hasExactKeys(observed.sessionBinding, ["kind", "nonce"]) ||
+          typeof observed.sessionBinding.nonce !== "string" ||
           !/^0x[0-9a-f]{64}$/.test(observed.sessionBinding.nonce)) {
         return verifierError("x402-session-nonce-malformed");
       }
-      if (observed.sessionBinding.nonce !== x402Eip3009Nonce(input.jobId, input.phaseIndex)) {
+      if (observed.sessionBinding.nonce !==
+          x402Eip3009Nonce(request.jobId, request.phaseIndex)) {
         return reject("x402-session-binding-mismatch");
       }
       sessionBinding = "established";
       break;
     case "permit2":
-      if (typeof observed.sessionBinding.jobId !== "string" ||
+      if (!hasExactKeys(observed.sessionBinding, ["kind", "jobId"]) ||
+          typeof observed.sessionBinding.jobId !== "string" ||
           observed.sessionBinding.jobId.length === 0) {
         return verifierError("x402-session-binding-malformed");
       }
-      if (observed.sessionBinding.jobId !== input.jobId) {
+      if (observed.sessionBinding.jobId !== request.jobId) {
         return reject("x402-session-binding-mismatch");
       }
       sessionBinding = "established";
       break;
     case "absent":
+      if (!hasExactKeys(observed.sessionBinding, ["kind"])) {
+        return verifierError("x402-session-binding-malformed");
+      }
       break;
     case "unverifiable":
-      if (typeof observed.sessionBinding.reason !== "string" ||
+      if (!hasExactKeys(observed.sessionBinding, ["kind", "reason"]) ||
+          typeof observed.sessionBinding.reason !== "string" ||
           observed.sessionBinding.reason.length === 0) {
         return verifierError("x402-session-binding-malformed");
       }
@@ -1353,16 +2126,16 @@ export async function verifySellerPaymentIntake(
   if (!settlementId) return verifierError("malformed-settlement-identity");
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1",
-    jobId: input.jobId,
+    jobId: request.jobId,
     phase: "pay-x402",
     outcome: "success",
     paymentTxRefs: [{
       kind: "x402",
-      httpResource: input.receipt.httpResource,
-      paymentReceiptHash: input.receipt.paymentReceiptHash,
-      settlementTxHash: input.receipt.settlementTxHash,
-      chainId: input.receipt.chainId,
-      protocolVersion: input.receipt.protocolVersion,
+      httpResource: request.receipt.httpResource,
+      paymentReceiptHash: request.receipt.paymentReceiptHash,
+      settlementTxHash: request.receipt.settlementTxHash,
+      chainId: request.receipt.chainId,
+      protocolVersion: request.receipt.protocolVersion,
     }],
     paymentAmount: { ...agreement.terms.price },
     settlementFinality: {
@@ -1378,5 +2151,5 @@ export async function verifySellerPaymentIntake(
     evidenceInput,
     payoutBindingTier: destinationResolution.tier,
     sessionBinding,
-  }, input, deps.receiptStore);
+  }, request, claimReceipt);
 }
