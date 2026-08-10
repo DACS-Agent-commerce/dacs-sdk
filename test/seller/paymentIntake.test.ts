@@ -22,8 +22,8 @@ import {
   type X402TransferObservation,
 } from "../../src/seller/index.js";
 
-const BUYER_DEMOS = `did:demos:${"aa".repeat(32)}`;
-const SELLER_DEMOS = `did:demos:${"bb".repeat(32)}`;
+const BUYER_DEMOS = `did:demos:agent:${"aa".repeat(32)}`;
+const SELLER_DEMOS = `did:demos:agent:${"bb".repeat(32)}`;
 const BUYER = "did:example:buyer";
 const SELLER = "did:example:seller";
 const PAYER = `0x${"11".repeat(20)}`;
@@ -381,6 +381,41 @@ function refreshCommitment(ctx: Context): void {
   ctx.committed.commitment.agreementHash = agreementHash;
 }
 
+function rebindDemosSellerClaim(
+  ctx: Context,
+  primaryClaim: string,
+  payoutAddress: string,
+): void {
+  const sellerBundle = identity(primaryClaim);
+  ctx.sellerBundle = sellerBundle;
+  ctx.listing.seller.identity = sellerBundle;
+  ctx.listing.signature.signer = primaryClaim;
+
+  const parties = ctx.agreement.parties as Array<{
+    role: string;
+    primaryClaim: string;
+    bundleHash: string;
+  }>;
+  const seller = parties.find((party) => party.role === "seller");
+  if (!seller) throw new Error("fixture");
+  seller.primaryClaim = primaryClaim;
+  seller.bundleHash = identityBundleHash(sellerBundle);
+
+  const signatures = ctx.agreement.signatures as Array<{ party: string }>;
+  const sellerSignature = signatures.find((signature) =>
+    signature.party === SELLER_DEMOS);
+  if (!sellerSignature) throw new Error("fixture");
+  sellerSignature.party = primaryClaim;
+
+  const terms = ctx.agreement.terms as {
+    payoutBindings: Array<{ payeeAddress: string }>;
+  };
+  terms.payoutBindings[0]!.payeeAddress = payoutAddress;
+  if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+  ctx.demosObservation.payee = payoutAddress;
+  repinListing(ctx);
+}
+
 function repinListing(ctx: Context): void {
   const listingRef = {
     listingId: ctx.listing.listingId,
@@ -495,6 +530,70 @@ describe("verifySellerPaymentIntake", () => {
       fulfilment: "already-claimed",
     });
   });
+
+  it("accepts the PB-2 vector's Demos cci-xm seller and equivalent native forms", async () => {
+    const ctx = makeContext("pay-dem");
+    const sellerAddress = "11".repeat(32);
+    rebindDemosSellerClaim(
+      ctx,
+      `cci-xm:demos:testnet:0x${sellerAddress}`,
+      `0x${sellerAddress}`,
+    );
+    if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+    ctx.demosObservation.payer = `0x${"aa".repeat(32)}`;
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+      payoutBindingTier: 1,
+    });
+  });
+
+  it.each([
+    `cci-xm:demos::0x${"11".repeat(32)}`,
+    `cci-xm:demos:testnet:${"11".repeat(32)}`,
+    `cci-xm:demos:testnet:0x${"11".repeat(31)}`,
+    `cci-xm:evm:testnet:0x${"11".repeat(32)}`,
+  ])("rejects a malformed or foreign pay-DEM seller claim: %s", async (claim) => {
+    const ctx = makeContext("pay-dem");
+    rebindDemosSellerClaim(ctx, claim, `0x${"11".repeat(32)}`);
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "payee-destination-binding-mismatch",
+    });
+  });
+
+  it("does not accept a ClaimReference in the native payout-address field", async () => {
+    const ctx = makeContext("pay-dem");
+    const terms = ctx.agreement.terms as {
+      payoutBindings: Array<{ payeeAddress: string }>;
+    };
+    terms.payoutBindings[0]!.payeeAddress = SELLER_DEMOS;
+    refreshCommitment(ctx);
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "payee-destination-binding-mismatch",
+    });
+  });
+
+  it.each(["payer", "payee"] as const)(
+    "does not accept a ClaimReference in the observed native %s field",
+    async (party) => {
+      const ctx = makeContext("pay-dem");
+      if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+      ctx.demosObservation[party] = party === "payer" ? BUYER_DEMOS : SELLER_DEMOS;
+
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "rejected",
+        fulfilment: "none",
+        reason: "demos-transfer-party-or-identity-mismatch",
+      });
+    },
+  );
 
   it("verifies x402 receipt, chain transfer, finality and SB-3 binding", async () => {
     const ctx = makeContext("pay-x402");
@@ -907,7 +1006,7 @@ describe("verifySellerPaymentIntake", () => {
       });
 
     const wrongSeller = makeContext("pay-dem");
-    const otherSeller = `did:demos:${"99".repeat(32)}`;
+    const otherSeller = `did:demos:agent:${"99".repeat(32)}`;
     wrongSeller.listing.seller.identity.presentedBy = otherSeller;
     wrongSeller.listing.seller.identity.claims = [{ ref: otherSeller }];
     wrongSeller.listing.seller.identity.presentation = {
@@ -1517,6 +1616,41 @@ describe("verifySellerPaymentIntake", () => {
       disposition: "verified",
       fulfilment: "claim",
       sessionBinding: "not-established",
+    });
+  });
+
+  it("preserves a PB-2 tier-2 destination resolver error", async () => {
+    const ctx = makeContext("pay-x402");
+    ctx.deps.resolvePayeeDestination = async () => ({
+      disposition: "error",
+      reason: "credential-verification-error",
+      tier: 2,
+    });
+
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+
+    expect(result).toEqual({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "payee-destination-credential-verification-error",
+    });
+  });
+
+  it("rejects a false intrinsic tier-1 binding for x402", async () => {
+    const ctx = makeContext("pay-x402");
+    // Deliberately bypass the TypeScript boundary to exercise runtime input.
+    ctx.deps.resolvePayeeDestination = (async () => ({
+      disposition: "bound",
+      address: PAYEE,
+      tier: 1,
+    })) as unknown as SellerPaymentIntakeDeps["resolvePayeeDestination"];
+
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+
+    expect(result).toEqual({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "address-binding-resolution-invalid-result",
     });
   });
 
