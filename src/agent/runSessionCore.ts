@@ -1,4 +1,9 @@
-import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  sha256Hex,
+  stripSignature,
+} from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
@@ -55,6 +60,119 @@ export interface SessionTerms {
   price: Price;
   deliveryPhase: string;
   deliveryFormat: string;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+/**
+ * Own and runtime-check an anchor lookup before it can influence resume or
+ * payment. The dependency is a public async trust boundary: its compile-time
+ * union does not make live objects, Proxies, or malformed JavaScript values
+ * safe at runtime.
+ */
+function snapshotAnchorLookup(value: unknown): AnchorLookup | null {
+  let snapshot: unknown;
+  try {
+    snapshot = structuredClone(value);
+  } catch {
+    return null;
+  }
+  if (!isRecord(snapshot) || typeof snapshot.status !== "string") return null;
+
+  if (snapshot.status === "absent") {
+    return hasOnlyKeys(snapshot, ["status"])
+      ? { status: "absent" }
+      : null;
+  }
+  if (snapshot.status === "indeterminate") {
+    return hasOnlyKeys(snapshot, ["status", "reason"]) &&
+      typeof snapshot.reason === "string" && snapshot.reason.length > 0
+      ? { status: "indeterminate", reason: snapshot.reason }
+      : null;
+  }
+  if (snapshot.status === "present") {
+    if (
+      !hasOnlyKeys(snapshot, ["status", "ref", "value"]) ||
+      typeof snapshot.ref !== "string" ||
+      snapshot.ref.length === 0 ||
+      !isRecord(snapshot.value)
+    ) {
+      return null;
+    }
+    try {
+      // Reject values that cannot have a stable DACS canonical representation.
+      canonicalize(snapshot.value);
+    } catch {
+      return null;
+    }
+    return { status: "present", ref: snapshot.ref, value: snapshot.value };
+  }
+  return null;
+}
+
+function snapshotCanonicalArtifact(
+  value: unknown,
+): { value: Record<string, unknown>; canonical: string } | null {
+  let snapshot: unknown;
+  try {
+    snapshot = structuredClone(value);
+    if (!isRecord(snapshot)) return null;
+    return { value: snapshot, canonical: canonicalize(snapshot) };
+  } catch {
+    return null;
+  }
+}
+
+/** Freeze the isolated effect input so an adapter cannot rewrite it in place. */
+function deepFreezeJson<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreezeJson(child, seen);
+  }
+  return Object.freeze(value);
+}
+
+function snapshotSessionTerms(value: unknown): SessionTerms | null {
+  let snapshot: unknown;
+  try {
+    snapshot = structuredClone(value);
+  } catch {
+    return null;
+  }
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return null;
+  }
+  const candidate = snapshot as Record<string, unknown>;
+  if (Object.keys(candidate).some((key) => ![
+    "price",
+    "deliveryPhase",
+    "deliveryFormat",
+  ].includes(key)) ||
+      typeof candidate.deliveryPhase !== "string" ||
+      candidate.deliveryPhase.length === 0 ||
+      typeof candidate.deliveryFormat !== "string" ||
+      candidate.deliveryFormat.length === 0 ||
+      candidate.price === null || typeof candidate.price !== "object" ||
+      Array.isArray(candidate.price)) return null;
+  const price = candidate.price as Record<string, unknown>;
+  if (Object.keys(price).some((key) => ![
+    "amount",
+    "asset",
+    "decimals",
+    "rail",
+  ].includes(key)) ||
+      typeof price.amount !== "string" || price.amount.length === 0 ||
+      typeof price.asset !== "string" || price.asset.length === 0 ||
+      typeof price.rail !== "string" || price.rail.length === 0 ||
+      typeof price.decimals !== "number" ||
+      !Number.isSafeInteger(price.decimals) || price.decimals < 0) return null;
+  return snapshot as SessionTerms;
 }
 
 export interface SettleRequest {
@@ -414,7 +532,19 @@ export async function runSessionCore(
   deps: SessionDeps,
   resumeJobId?: string,
 ): Promise<SessionResult> {
-  const stored = await deps.readListing(listingRef);
+  const sessionTerms = snapshotSessionTerms(terms);
+  if (!sessionTerms) {
+    throw new DacsError("runSessionCore requires cloneable, well-formed fixed terms");
+  }
+  let stored: unknown;
+  try {
+    // Own the resolver result before the first validation await. The exact
+    // Listing admitted by DPA-1 must remain the Listing that drives terms,
+    // rail selection and payment.
+    stored = structuredClone(await deps.readListing(listingRef));
+  } catch {
+    throw new Error(`listing not found or invalid at ${listingRef}`);
+  }
   if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
   }
@@ -439,7 +569,9 @@ export async function runSessionCore(
     }
     let validation: ListingValidationResult;
     try {
-      validation = await deps.validateListing(storedRecord);
+      validation = structuredClone(
+        await deps.validateListing(structuredClone(storedRecord)),
+      );
     } catch {
       throw new CounterpartyError(
         `listing at ${listingRef} validation was indeterminate (validator threw)`,
@@ -524,10 +656,10 @@ export async function runSessionCore(
   if (deps.verifyListing) {
     let verified = false;
     try {
-      verified = await deps.verifyListing(
-        stored as Record<string, unknown>,
+      verified = (await deps.verifyListing(
+        structuredClone(stored as Record<string, unknown>),
         listingView.sellerClaim,
-      );
+      )) === true;
     } catch {
       verified = false; // a throwing verifier is not a pass
     }
@@ -538,8 +670,8 @@ export async function runSessionCore(
     }
   }
 
-  if (!listingView.supportedPaymentRails.includes(terms.price.rail)) {
-    throw new Error(`rail ${terms.price.rail} not offered by the listing`);
+  if (!listingView.supportedPaymentRails.includes(sessionTerms.price.rail)) {
+    throw new Error(`rail ${sessionTerms.price.rail} not offered by the listing`);
   }
   const paymentEvidencePhase =
     readableListing.compatibility === "normative"
@@ -547,19 +679,19 @@ export async function runSessionCore(
           const matching = readableListing.listing.pipeline.filter(
             (phase) =>
               phase.kind.startsWith("pay-") &&
-              phase.parameters?.rail === terms.price.rail,
+              phase.parameters?.rail === sessionTerms.price.rail,
           );
           if (matching.length !== 1) {
             throw new CounterpartyError(
-              `rail ${terms.price.rail} must select exactly one normative payment ` +
+              `rail ${sessionTerms.price.rail} must select exactly one normative payment ` +
                 `phase; found ${matching.length}`,
             );
           }
           return matching[0]!.kind;
         })()
-      : terms.price.rail;
-  if (!listingView.supportedDelivery.includes(terms.deliveryPhase)) {
-    throw new Error(`delivery ${terms.deliveryPhase} not offered by the listing`);
+      : sessionTerms.price.rail;
+  if (!listingView.supportedDelivery.includes(sessionTerms.deliveryPhase)) {
+    throw new Error(`delivery ${sessionTerms.deliveryPhase} not offered by the listing`);
   }
 
   // A caller-supplied jobId resumes an interrupted session; otherwise fresh.
@@ -624,7 +756,12 @@ export async function runSessionCore(
     // Resolve BY NAME (the address can't be recomputed). Fail closed on an
     // indeterminate lookup: proceeding as if absent could re-anchor a duplicate
     // or, for evidence, defeat the no-double-pay guard and settle twice (#70).
-    const found = await deps.resolveAnchor(name);
+    const found = snapshotAnchorLookup(await deps.resolveAnchor(name));
+    if (!found) {
+      throw new SubstrateError(
+        `resume: anchor lookup for "${name}" returned a live, malformed, or non-canonical result`,
+      );
+    }
     if (found.status === "indeterminate") {
       throw new SubstrateError(
         `resume: could not determine whether "${name}" is already anchored (${found.reason}); ` +
@@ -651,9 +788,55 @@ export async function runSessionCore(
       }
       return { ref: found.ref, value: found.value, existing: true };
     }
-    const built = (await build()) as Record<string, unknown>;
-    const ref = await deps.anchor(name, built);
-    return { ref, value: built, existing: false };
+    // `build` can cross a public signer/verifier boundary. Own its result
+    // immediately, then apply the SAME semantic and signer checks used for a
+    // resumed artifact. This prevents a signer from swapping admitted terms in
+    // the object it returns and prevents an invalid artifact from being written
+    // merely because this is the first run rather than a resume.
+    const builtSnapshot = snapshotCanonicalArtifact(await build());
+    if (!builtSnapshot) {
+      throw new CounterpartyError(
+        `new artifact for "${name}" was live, malformed, or non-canonical`,
+      );
+    }
+    if (expectedComponentSigner) {
+      const signatureMatch = storedComponentSignatureMatches(
+        builtSnapshot.value,
+        expectedComponentSigner,
+      );
+      if (!signatureMatch.ok) {
+        throw new CounterpartyError(
+          `new artifact for "${name}" has unacceptable signature: ${signatureMatch.reason}`,
+        );
+      }
+    }
+    const builtMatch = match(stripSignature(builtSnapshot.value));
+    if (!builtMatch.ok) {
+      throw new CounterpartyError(
+        `new artifact for "${name}" does not match the requested deal: ${builtMatch.reason}`,
+      );
+    }
+
+    // Give the irreversible anchor effect a separate, read-only clone. Even a
+    // retaining or mutating adapter cannot alter the retained signed artifact
+    // subsequently hashed into evidence/bundle refs. Re-check both copies after
+    // the await as defense against an adapter that tried to rewrite its input.
+    const anchorInput = deepFreezeJson(
+      structuredClone(builtSnapshot.value),
+    );
+    const ref = await deps.anchor(name, anchorInput);
+    if (typeof ref !== "string" || ref.length === 0) {
+      throw new SubstrateError(`anchor for "${name}" returned an invalid ref`);
+    }
+    if (
+      canonicalize(builtSnapshot.value) !== builtSnapshot.canonical ||
+      canonicalize(anchorInput) !== builtSnapshot.canonical
+    ) {
+      throw new SubstrateError(
+        `anchor for "${name}" mutated the signed artifact; refusing to continue`,
+      );
+    }
+    return { ref, value: builtSnapshot.value, existing: false };
   };
 
   const pricesEqual = (a: Price, b: Price): boolean =>
@@ -723,11 +906,11 @@ export async function runSessionCore(
         return { ok: false, reason: `seller ${a.seller} ≠ ${listingView.sellerClaim}` };
       if (a.listingRef !== listingRef)
         return { ok: false, reason: `listingRef ${a.listingRef} ≠ ${listingRef}` };
-      if (!pricesEqual(a.price, terms.price))
+      if (!pricesEqual(a.price, sessionTerms.price))
         return { ok: false, reason: "price mismatch" };
       if (
-        a.delivery.phase !== terms.deliveryPhase ||
-        a.delivery.format !== terms.deliveryFormat
+        a.delivery.phase !== sessionTerms.deliveryPhase ||
+        a.delivery.format !== sessionTerms.deliveryFormat
       )
         return { ok: false, reason: "delivery mismatch" };
       return { ok: true };
@@ -739,11 +922,17 @@ export async function runSessionCore(
         buyer: deps.buyerId,
         seller: listingView.sellerClaim,
         listingRef,
-        price: terms.price,
-        delivery: { phase: terms.deliveryPhase, format: terms.deliveryFormat },
+        price: structuredClone(sessionTerms.price),
+        delivery: {
+          phase: sessionTerms.deliveryPhase,
+          format: sessionTerms.deliveryFormat,
+        },
         expiresAt: deps.now(),
       };
-      return deps.sign(agreement, ARTIFACT_SEPARATORS.AgreementDocument);
+      return deps.sign(
+        structuredClone(agreement),
+        ARTIFACT_SEPARATORS.AgreementDocument,
+      );
     },
   );
 
@@ -901,17 +1090,17 @@ export async function runSessionCore(
         };
       if (!e.paymentAmount)
         return { ok: false, reason: "settlement evidence has no payment amount" };
-      if (e.paymentAmount.amount !== terms.price.amount)
+      if (e.paymentAmount.amount !== sessionTerms.price.amount)
         return { ok: false, reason: "settled amount mismatch" };
-      if (e.paymentAmount.currency !== terms.price.asset)
+      if (e.paymentAmount.currency !== sessionTerms.price.asset)
         return { ok: false, reason: "settled currency mismatch" };
       return { ok: true };
     },
     async () => {
       const settleRequest: SettleRequest = {
-        rail: terms.price.rail,
-        amount: terms.price.amount,
-        asset: terms.price.asset,
+        rail: sessionTerms.price.rail,
+        amount: sessionTerms.price.amount,
+        asset: sessionTerms.price.asset,
         payee: listingView.sellerClaim,
         jobId,
         phaseIndex: 0,
@@ -930,7 +1119,10 @@ export async function runSessionCore(
         // write-ahead the intent, BEFORE the irreversible payment. A lost claim
         // means a concurrent worker already advanced this phase — abort rather than
         // settle twice (#67). (When no store is wired this always claims.)
-        const claim = await claimSettlement({ rail: terms.price.rail, agreementHash });
+        const claim = await claimSettlement({
+          rail: sessionTerms.price.rail,
+          agreementHash,
+        });
         if (claim.status === "completed" && claim.outcome) {
           settlement = claim.outcome;
         } else if (claim.status === "held") {
@@ -994,7 +1186,10 @@ export async function runSessionCore(
               : {}),
           },
         ],
-        paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
+        paymentAmount: {
+          amount: sessionTerms.price.amount,
+          currency: sessionTerms.price.asset,
+        },
         observedAt,
       };
       let evidence: SettlementEvidence;

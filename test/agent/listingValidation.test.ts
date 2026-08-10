@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   assessListingReachability,
   checkListingRevocation,
+  resolveListingPayloadVerificationCapability,
   resolveListingRails,
   validateListingArtifact,
   type ListingRailResolutionInput,
@@ -86,6 +87,41 @@ describe("DACS-1 §6.3.4 LRR-1..LRR-6", () => {
       reason: "rail-definition-unavailable",
       authorityBasis: "pa2",
     });
+  });
+
+  const validPa1 = (): ListingRailResolutionInput => ({
+    trustPhase: "PA-1",
+    trustPolicyAcceptsPA1: true,
+    payPhases: [{ kind: "pay-x402", rail: "x402:default" }],
+    acceptedRails: [{ railId: "x402:default" }],
+    registry: { state: "not-used", entries: [], definitions: [] },
+    inCodeDefinitions: [{
+      railId: "x402:default",
+      railVersion: 1,
+      phaseHandler: "pay-x402",
+      governanceAnchoring: "in-code",
+      signatureValid: true,
+    }],
+  });
+
+  it.each([
+    ["trust phase", (input: Record<string, unknown>) => {
+      input.trustPhase = "PA-future";
+    }],
+    ["PA-1 policy", (input: Record<string, unknown>) => {
+      input.trustPolicyAcceptsPA1 = "yes";
+    }],
+    ["registry state", (input: Record<string, unknown>) => {
+      (input.registry as Record<string, unknown>).state = "future";
+    }],
+  ] as const)("fails closed on a malformed runtime %s", (_name, mutate) => {
+    const input = validPa1() as unknown as Record<string, unknown>;
+    mutate(input);
+    expect(resolveListingRails(input as unknown as ListingRailResolutionInput))
+      .toEqual({
+        disposition: "indeterminate",
+        reason: "rail-authority-malformed",
+      });
   });
 
 });
@@ -247,6 +283,7 @@ describe("ordered ListingValidationDisposition", () => {
       throw new Error("fixture drift");
     }
     return {
+      operation: "verify" as const,
       disposition: "supported" as const,
       reason: "supported",
       verificationMethodKind: deliverable.verificationMethod.kind,
@@ -339,6 +376,24 @@ describe("ordered ListingValidationDisposition", () => {
     expect(controlReads).toBe(0);
   });
 
+  it("rejects an unknown capability operation without invoking the resolver", async () => {
+    let calls = 0;
+    await expect(
+      resolveListingPayloadVerificationCapability(
+        fixture(),
+        "future" as never,
+        () => {
+          calls += 1;
+          return { disposition: "supported" };
+        },
+      ),
+    ).resolves.toEqual({
+      disposition: "error",
+      reason: "payload-verification-capability-operation-invalid",
+    });
+    expect(calls).toBe(0);
+  });
+
   it.each([
     ["indeterminate", "notary-temporarily-unavailable"],
     ["error", "method-dependency-failed"],
@@ -394,6 +449,48 @@ describe("ordered ListingValidationDisposition", () => {
         disposition: "error",
         reason: "payload-verification-capability-resolution-threw",
       },
+    });
+  });
+
+  it("fails closed on a non-snapshotable DPA-1 capability decision", async () => {
+    const listing = fixture();
+    const deps = baseDeps();
+    deps.verifyListingSignature = () => true;
+    deps.resolvePayloadVerificationCapability = () => new Proxy(
+      { disposition: "supported" as const },
+      {},
+    );
+
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      step: 7,
+      reason: "payload-verification-method-error",
+      payloadVerificationCapability: {
+        disposition: "error",
+        reason: "payload-verification-capability-resolution-invalid",
+      },
+    });
+  });
+
+  it("requires exact boolean passes from security verifiers", async () => {
+    const listing = fixture();
+    const deps = baseDeps();
+    deps.verifyListingSignature = () => ({}) as unknown as boolean;
+
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "rejected",
+      step: 4,
+      reason: "listing-signature-invalid",
     });
   });
 
@@ -521,6 +618,43 @@ describe("ordered ListingValidationDisposition", () => {
         }),
       }),
     ).resolves.toHaveLength(1);
+
+    const liveAdmission = {
+      disposition: "verified" as const,
+      step: 9 as const,
+      reason: "verified",
+      listing: exactListing,
+      listingContentHash: contentHash(listing),
+      payloadVerificationCapability: admissionCapability(exactListing),
+    };
+    await expect(
+      discoverListings(["listing"], async () => listing, {
+        ...common,
+        validateListing: () => new Proxy(liveAdmission, {}),
+      }),
+    ).resolves.toEqual([]);
+
+    await expect(
+      discoverListings(["listing"], async () => listing, {
+        ...common,
+        validateListing: (candidate) => {
+          const rewritten = candidate as unknown as Listing;
+          const deliverable = rewritten.offering.deliverable;
+          if (deliverable.kind !== "attested-payload") {
+            throw new Error("fixture drift");
+          }
+          deliverable.payloadFormat = "text/plain";
+          return {
+            disposition: "verified",
+            step: 9,
+            reason: "mutated-validator-pass",
+            listing: rewritten,
+            listingContentHash: contentHash(candidate),
+            payloadVerificationCapability: admissionCapability(rewritten),
+          };
+        },
+      }),
+    ).resolves.toEqual([]);
 
     await expect(
       discoverListings(["listing"], async () => listing, {
@@ -654,6 +788,57 @@ describe("ordered ListingValidationDisposition", () => {
       },
     });
   });
+
+  it.each([
+    ["trust phase", (authority: Record<string, unknown>) => {
+      authority.trustPhase = "PA-future";
+    }],
+    ["PA-1 policy", (authority: Record<string, unknown>) => {
+      authority.trustPolicyAcceptsPA1 = "yes";
+    }],
+    ["registry state", (authority: Record<string, unknown>) => {
+      (authority.registry as Record<string, unknown>).state = "future";
+    }],
+  ] as const)(
+    "keeps malformed runtime rail authority %s out of Listing admission",
+    async (_name, mutate) => {
+      const listing = fixture();
+      listing.pipeline.splice(2, 0, {
+        kind: "pay-x402",
+        parameters: { rail: "x402:default" },
+      });
+      listing.acceptedRails = [{ railId: "x402:default" }];
+      const authority: Record<string, unknown> = {
+        trustPhase: "PA-1",
+        trustPolicyAcceptsPA1: true,
+        registry: { state: "not-used", entries: [], definitions: [] },
+        inCodeDefinitions: [{
+          railId: "x402:default",
+          railVersion: 1,
+          phaseHandler: "pay-x402",
+          governanceAnchoring: "in-code",
+          signatureValid: true,
+        }],
+      };
+      mutate(authority);
+
+      await expect(
+        validateListingArtifact(
+          listing as unknown as Record<string, unknown>,
+          {
+            ...baseDeps(),
+            verifyListingSignature: () => true,
+            verifyIdentityPresentation: () => true,
+            loadRailResolution: () => authority as never,
+          },
+        ),
+      ).resolves.toMatchObject({
+        disposition: "indeterminate",
+        step: 8,
+        reason: "rail-authority-malformed",
+      });
+    },
+  );
 
   it("rejects an unknown action discriminator at reader step 7", async () => {
     const listing = fixture();

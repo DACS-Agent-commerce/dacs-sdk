@@ -126,6 +126,7 @@ function verifiedAdmissionFor(listing: Listing) {
       listing as unknown as Record<string, unknown>,
     ),
     payloadVerificationCapability: {
+      operation: "verify" as const,
       disposition: "supported" as const,
       reason: "supported",
       verificationMethodKind: deliverable.verificationMethod.kind,
@@ -145,6 +146,131 @@ describe("runSession orchestration (T4)", () => {
     expect(res.agreementRef).toBe("stor-dacs3:agreement:job-1");
     expect(res.settlementRef).toBe("stor-dacs4:evidence:job-1");
     expect(res.bundleRef).toBe("stor-dacs5:bundle:job-1");
+  });
+
+  test("snapshots caller-owned fixed terms before any awaited dependency", async () => {
+    const terms = structuredClone(TERMS);
+    let settled: Parameters<SessionDeps["settle"]>[0] | undefined;
+    const result = await runSessionCore(
+      "stor-listing",
+      terms,
+      makeDeps({
+        readListing: async () => {
+          terms.price.rail = "pay-evil";
+          terms.price.amount = "999999999";
+          terms.deliveryPhase = "deliver-evil";
+          return LISTING;
+        },
+        settle: async (request) => {
+          settled = request;
+          return {
+            ok: true,
+            txHash: "0xabc",
+            chainId: "eip155:11155111",
+            payer: "0xbob",
+            payee: "0xalice",
+          };
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("completed");
+    expect(settled).toMatchObject({
+      rail: "pay-x402",
+      amount: "1000000",
+      asset: "USDC",
+    });
+  });
+
+  test("rejects a signer that rewrites admitted agreement terms before anchor or payment", async () => {
+    let anchorCalls = 0;
+    let settleCalls = 0;
+
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          sign: async (artifact) => {
+            const agreement = artifact as {
+              price: { rail: string; amount: string };
+            };
+            agreement.price.rail = "pay-evil";
+            agreement.price.amount = "999999999";
+            return { ...agreement, signature: "sig" };
+          },
+          anchor: async (name) => {
+            anchorCalls += 1;
+            return `stor-${name}`;
+          },
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/new artifact.*does not match.*price mismatch/);
+
+    expect(anchorCalls).toBe(0);
+    expect(settleCalls).toBe(0);
+    expect(TERMS.price).toMatchObject({ rail: "pay-x402", amount: "1000000" });
+  });
+
+  test("an anchor adapter cannot rewrite the retained signed agreement", async () => {
+    let settleCalls = 0;
+
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          anchor: async (name, value) => {
+            if (name.startsWith("dacs3:agreement:")) {
+              const agreement = value as {
+                price: { rail: string; amount: string };
+              };
+              agreement.price.rail = "pay-evil";
+              agreement.price.amount = "999999999";
+            }
+            return `stor-${name}`;
+          },
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow();
+
+    expect(settleCalls).toBe(0);
+    expect(TERMS.price).toMatchObject({ rail: "pay-x402", amount: "1000000" });
+  });
+
+  test("a live or proxied anchor lookup fails closed before write or payment", async () => {
+    let anchorCalls = 0;
+    let settleCalls = 0;
+
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          resolveAnchor: async () =>
+            new Proxy({ status: "absent" as const }, {}),
+          anchor: async (name) => {
+            anchorCalls += 1;
+            return `stor-${name}`;
+          },
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/live, malformed, or non-canonical/);
+
+    expect(anchorCalls).toBe(0);
+    expect(settleCalls).toBe(0);
   });
 
   test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {
@@ -297,7 +423,7 @@ describe("runSession orchestration (T4)", () => {
     expect(settled).toBe(false);
   });
 
-  test.each(["absent", "mismatched"] as const)(
+  test.each(["absent", "mismatched", "wrong-operation"] as const)(
     "a stale verified result with %s DPA capability never reaches payment",
     async (capabilityCase) => {
       const listing = normativeDpaListing();
@@ -308,9 +434,15 @@ describe("runSession orchestration (T4)", () => {
             payloadVerificationCapability?: unknown;
           }
         ).payloadVerificationCapability;
-      } else {
+      } else if (capabilityCase === "mismatched") {
         admission.payloadVerificationCapability.verificationMethodHash =
           "0".repeat(64);
+      } else {
+        (
+          admission.payloadVerificationCapability as {
+            operation: "produce" | "verify";
+          }
+        ).operation = "produce";
       }
       let settled = false;
 
@@ -334,6 +466,66 @@ describe("runSession orchestration (T4)", () => {
       expect(settled).toBe(false);
     },
   );
+
+  test("a live or proxied Listing admission result never reaches payment", async () => {
+    const listing = normativeDpaListing();
+    const admission = verifiedAdmissionFor(listing);
+    let settled = false;
+
+    await expect(
+      runSessionCore(
+        "stor-live-admission",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => listing,
+          validateListing: () => new Proxy(admission, {}),
+          settle: async () => {
+            settled = true;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/validation was indeterminate \(validator threw\)/);
+    expect(settled).toBe(false);
+  });
+
+  test("a validator cannot rewrite the signed Listing baseline before payment", async () => {
+    const listing = normativeDpaListing();
+    let settled = false;
+
+    await expect(
+      runSessionCore(
+        "stor-validator-rewrite",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => listing,
+          validateListing: (candidate) => {
+            const rewritten = candidate as unknown as Listing;
+            const deliverable = rewritten.offering.deliverable;
+            if (deliverable.kind !== "attested-payload") {
+              throw new Error("fixture drift");
+            }
+            deliverable.payloadFormat = "text/plain";
+            return verifiedAdmissionFor(rewritten);
+          },
+          settle: async () => {
+            settled = true;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/not bound to the exact LR-1 content hash|stale, substituted/);
+    expect(settled).toBe(false);
+    expect(listing.offering.deliverable).toMatchObject({
+      payloadFormat: "application/json",
+    });
+  });
 
   test("an unknown delivery envelope cannot be admitted by a stale verified result", async () => {
     const listing = normativeDpaListing();
