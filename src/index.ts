@@ -217,6 +217,7 @@ export {
   createAgent,
   type Agent,
   type AgentConfig,
+  type AgentBindingConfig,
   type PublishResult,
   type BundleVerification,
   type SignatureCheck,

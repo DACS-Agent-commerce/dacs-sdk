@@ -44,8 +44,9 @@ function fakeDeps() {
           value: store.get(address)!,
         })),
     }),
-    anchorWriteOnce: async (name, value, options) => {
-      stats.lastMetadata = options?.metadata;
+    writeArtifact: async (_logicalAddress, value, options) => {
+      const name = options.storageName;
+      stats.lastMetadata = options.anchor.metadata;
       const existingAddress = addresses.get(name);
       if (existingAddress) {
         const existing = store.get(existingAddress)!;
@@ -100,6 +101,47 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
     await expect(
       publishListingCore(listing({ serviceId: "caf\u0065\u0301" }), deps),
     ).rejects.toThrow(/logical address must be NFC-normalized/);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("pins one deep listing snapshot across asynchronous history lookup", async () => {
+    const deps = fakeDeps();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    deps.scanOwnAnchorsByNamePrefix = async () => {
+      await gate;
+      return { status: "ok", anchors: [] };
+    };
+    const input = listing();
+    const expectedLogical = listingAddress(SELLER, "market-data", 1);
+
+    const pending = publishListingCore(input, deps);
+    input.serviceId = "mutated-after-call";
+    (input.claimRequirements as unknown[]).push({ type: "mutated" });
+    release();
+
+    const result = await pending;
+    expect(result.logicalAddress).toBe(expectedLogical);
+    expect(deps.store.get(result.ref)).toMatchObject({
+      serviceId: "market-data",
+      claimRequirements: [],
+    });
+  });
+
+  test("rejects a Listing shape the reader cannot consume before scanning or anchoring", async () => {
+    const deps = fakeDeps();
+    deps.scanOwnAnchorsByNamePrefix = async () => {
+      throw new Error("history scan must not run");
+    };
+
+    await expect(
+      publishListingCore(
+        listing({ supportedDelivery: "not-an-array" }) as never,
+        deps,
+      ),
+    ).rejects.toThrow(/supported Listing shape/);
     expect(deps.stats.creates).toBe(0);
   });
 
@@ -228,7 +270,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("fails closed when immutable name resolution is indeterminate", async () => {
     const deps = fakeDeps();
-    deps.anchorWriteOnce = async () => {
+    deps.writeArtifact = async () => {
       throw new SubstrateError(
         "immutable anchor lookup was indeterminate (candidate unreadable)",
       );

@@ -9,17 +9,24 @@
  *   DEMOS_RPC          Demos node RPC URL (e.g. https://node2.demos.sh)
  *   SELLER_WALLET      seller agent mnemonic / private key
  *   BUYER_WALLET       buyer agent mnemonic / private key
- *   SELLER_DID         seller agent id (CCI / did embedding its ed25519 pubkey)
+ *   SELLER_DID         canonical did:demos:agent:<lowercase-ed25519-pubkey-hex>
  *   BUYER_DID          buyer agent id
  *   BUYER_EVM_KEY      buyer EVM private key (0x…) used to sign the x402 payment
  *   PAYWALL_URL        seller's paywalled delivery URL (returns HTTP 402)
  *   PAY_NETWORK        CAIP-2 network, e.g. eip155:84532 (Base Sepolia)
+ *   PAY_TOKEN          ERC-20 contract address advertised by the x402 paywall
  *   SELLER_EVM         seller EVM address that x402 pays
  *
  *   npx tsx examples/hello-world.ts
  */
 
-import { createAgent, createX402Rail, vetCore, x402Settle } from "../src/index.js";
+import {
+  createAgent,
+  createInMemoryBindingStore,
+  createX402Rail,
+  vetCore,
+  x402Settle,
+} from "../src/index.js";
 
 const env = (k: string): string => {
   const v = process.env[k];
@@ -29,10 +36,14 @@ const env = (k: string): string => {
 
 async function main(): Promise<void> {
   // ── Seller: publish a signed, anchored fixed-price listing ──
+  // Replace this same-process reference store with a well-known/catalog-backed
+  // index + publisher in production.
+  const bindings = createInMemoryBindingStore();
   const seller = await createAgent({
     demosRpc: env("DEMOS_RPC"),
     wallet: env("SELLER_WALLET"),
     identity: { agentId: env("SELLER_DID") },
+    bindings: { index: bindings, publisher: bindings },
   });
 
   const published = await seller.publishListing({
@@ -45,6 +56,14 @@ async function main(): Promise<void> {
     supportedPaymentRails: ["pay-x402"],
     supportedDelivery: ["deliver-attested-payload"],
   });
+  if (
+    published.status !== "published" &&
+    published.status !== "already-published"
+  ) {
+    throw new Error(
+      `listing binding was not published: ${published.status}`,
+    );
+  }
   console.log("listing anchored at", published.ref);
 
   // ── Buyer: run the session, settling via the x402 rail ──
@@ -75,6 +94,7 @@ async function main(): Promise<void> {
       url: env("PAYWALL_URL"),
       network: env("PAY_NETWORK"),
       recipientEvm: env("SELLER_EVM"),
+      asset: env("PAY_TOKEN"),
     }),
   });
   console.log("session", session.outcome, "→ bundle", session.bundleRef);
@@ -82,8 +102,8 @@ async function main(): Promise<void> {
   // ── Anyone: independently verify the attestation bundle ──
   const verdict = await buyer.verifyBundle(session.bundleRef);
   console.log("bundle ok:", verdict.ok, "| fully verified:", verdict.fullyVerified);
-  for (const a of verdict.artifacts) {
-    console.log(`  ${a.kind}: ${a.signature}`);
+  for (const ref of verdict.refs) {
+    console.log(`  ${ref.kind}: ${ref.verdict}`);
   }
 }
 

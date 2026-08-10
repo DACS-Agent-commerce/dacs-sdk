@@ -17,6 +17,7 @@ import {
   type VerifiedRead,
   type VerifiedReadDeps,
 } from "./verifiedRead.js";
+import { normalizedBindingOwner } from "./owner.js";
 
 /** Minimal substrate seam needed for binding-aware immutable artifacts. */
 export interface BoundArtifactAdapter {
@@ -33,7 +34,10 @@ export interface BoundArtifactRepositoryDeps {
   adapter: BoundArtifactAdapter;
   /** Consumer-facing published index. May be remote and read-only. */
   index: BindingIndex;
-  /** Writer-authorized publication target for that index/catalog. */
+  /**
+   * Writer-authorized publication target for that index/catalog. Successful
+   * acknowledgement is checked against `index` before write returns success.
+   */
   publisher: BindingPublisher;
 }
 
@@ -59,7 +63,8 @@ interface BoundArtifactWriteBase {
 }
 
 export type BoundArtifactWriteResult =
-  | (BoundArtifactWriteBase & { status: "published" | "already-published" })
+  | (BoundArtifactWriteBase & { status: "published" })
+  | (BoundArtifactWriteBase & { status: "already-published" })
   | (BoundArtifactWriteBase & {
       status: "conflict";
       reason: string;
@@ -71,7 +76,9 @@ export interface BoundArtifactRepository {
   /**
    * Anchor immutable bytes and publish the resulting logical→native binding.
    * A retry uses `anchorWriteOnce`, so a publication failure never creates a
-   * second physical artifact with different content or a new nonce.
+   * second physical artifact with different content or a new nonce. A success
+   * status means the exact tuple was also read back through the configured
+   * consumer index.
    */
   write(
     logicalAddress: string,
@@ -88,10 +95,6 @@ export interface BoundArtifactRepository {
     expectedOwner: string,
     verifySignature?: VerifiedReadDeps["verifySignature"],
   ): Promise<VerifiedRead>;
-}
-
-function normalizedOwner(owner: string): string {
-  return owner.trim().toLowerCase();
 }
 
 function anchorOptionsWithLogicalAddress(
@@ -129,17 +132,19 @@ function publicationMatches(
   return (
     expected.logicalAddress === actual.logicalAddress &&
     expected.nativeAddress === actual.nativeAddress &&
-    normalizedOwner(expected.owner) === normalizedOwner(actual.owner) &&
+    normalizedBindingOwner(expected.owner) ===
+      normalizedBindingOwner(actual.owner) &&
     expected.contentHash === actual.contentHash &&
     expected.version === actual.version &&
     (expected.revoked === true) === (actual.revoked === true)
   );
 }
 
-function writeResult(
+async function writeResult(
   base: BoundArtifactWriteBase,
   publication: BindingPublication,
-): BoundArtifactWriteResult {
+  index: BindingIndex,
+): Promise<BoundArtifactWriteResult> {
   if (
     publication.status === "published" ||
     publication.status === "already-published"
@@ -150,6 +155,47 @@ function writeResult(
         status: "conflict",
         reason: "publisher reported success for a binding that does not match the anchored artifact",
         existing: publication.binding,
+      };
+    }
+    let resolution;
+    try {
+      resolution = await index.resolve(
+        base.binding.logicalAddress,
+        base.binding.owner,
+      );
+    } catch (error) {
+      return {
+        ...base,
+        status: "indeterminate",
+        reason:
+          "binding publication was acknowledged but index readback failed: " +
+          (error instanceof Error ? error.message : String(error)),
+      };
+    }
+    if (resolution.status === "indeterminate") {
+      return {
+        ...base,
+        status: "indeterminate",
+        reason:
+          "binding publication was acknowledged but index readback was indeterminate: " +
+          resolution.reason,
+      };
+    }
+    if (resolution.status === "absent") {
+      return {
+        ...base,
+        status: "indeterminate",
+        reason:
+          "binding publication was acknowledged but is not yet visible in the configured index",
+      };
+    }
+    if (!publicationMatches(base.binding, resolution.binding)) {
+      return {
+        ...base,
+        status: "conflict",
+        reason:
+          "configured index resolved a binding that does not match the anchored artifact",
+        existing: resolution.binding,
       };
     }
     return { ...base, status: publication.status };
@@ -185,12 +231,29 @@ export function createBoundArtifactRepository(
         throw new Error("storageName must not be empty");
       }
 
-      // Pin the exact input supplied by the caller before crossing an async
-      // adapter boundary; any later mutation fails readback verification.
-      const artifactContentHash = contentHash(artifact);
+      // Deep-pin the exact JSON supplied by the caller before crossing an async
+      // adapter boundary. Hash and anchor the same snapshot; caller mutation can
+      // never turn the published hash into a pointer to different bytes.
+      let pinnedArtifact: Record<string, unknown>;
+      try {
+        const pinned = structuredClone(artifact) as unknown;
+        if (
+          typeof pinned !== "object" ||
+          pinned === null ||
+          Array.isArray(pinned)
+        ) {
+          throw new Error("artifact is not a JSON object");
+        }
+        pinnedArtifact = pinned as Record<string, unknown>;
+      } catch (error) {
+        throw new Error("artifact must be a canonicalizable JSON object", {
+          cause: error,
+        });
+      }
+      const artifactContentHash = contentHash(pinnedArtifact);
       const anchor = await deps.adapter.anchorWriteOnce(
         storageName,
-        artifact,
+        pinnedArtifact,
         anchorOptionsWithLogicalAddress(logicalAddress, options?.anchor),
       );
       if (anchor.address.trim().length === 0) {
@@ -218,7 +281,7 @@ export function createBoundArtifactRepository(
           reason: `binding publication failed: ${e instanceof Error ? e.message : String(e)}`,
         };
       }
-      return writeResult(base, publication);
+      return writeResult(base, publication, deps.index);
     },
 
     async read(logicalAddress, expectedOwner, verifySignature) {

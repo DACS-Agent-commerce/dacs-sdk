@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createPublicClient, erc20Abi, http } from "viem";
 
-import { createAgent, createX402Rail, x402Settle } from "../../src/index.js";
+import {
+  createAgent,
+  createInMemoryBindingStore,
+  createX402Rail,
+  x402Settle,
+} from "../../src/index.js";
 import { startLiveX402Paywall } from "./live-x402-paywall.js";
 
 /**
@@ -123,10 +128,12 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         );
       }
 
+      const sellerBindings = createInMemoryBindingStore();
       const seller = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.SELLER_WALLET!,
         identity: { agentId: env.SELLER_DID! },
+        bindings: { index: sellerBindings, publisher: sellerBindings },
       });
       const buyer = await createAgent({
         demosRpc: env.DEMOS_RPC!,
@@ -185,6 +192,10 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           supportedPaymentRails: ["pay-x402"],
           supportedDelivery: ["deliver-attested-payload"],
         });
+        expect(published.status).toBe("published");
+        if (published.status !== "published") {
+          throw new Error("live listing binding publication failed");
+        }
         expect(published.ref).toBeTruthy();
 
         const session = await buyer.runSession(published.ref, {

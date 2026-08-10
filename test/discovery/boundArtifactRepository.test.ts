@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { contentHash } from "../../src/canonical/index.js";
 import {
   createBoundArtifactRepository,
+  createInMemoryBindingIndex,
   createInMemoryBindingStore,
   type BindingPublisher,
   type BoundArtifactAdapter,
@@ -132,6 +133,46 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     expect(bindings.snapshot()).toHaveLength(1);
   });
 
+  test("hashes and anchors one deep snapshot across an asynchronous adapter write", async () => {
+    const bindings = createInMemoryBindingStore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let anchored: Record<string, unknown> | undefined;
+    const adapter: BoundArtifactAdapter = {
+      getAddress: () => SELLER,
+      async anchorWriteOnce(_name, value) {
+        await gate;
+        anchored = value as Record<string, unknown>;
+        return { address: "stor-pinned", txRef: "tx-pinned" };
+      },
+      async readAnchor() {
+        return anchored ?? null;
+      },
+    };
+    const repository = createBoundArtifactRepository({
+      adapter,
+      index: bindings,
+      publisher: bindings,
+    });
+    const input = {
+      ...RECORD,
+      nested: { labels: ["original"] },
+    };
+    const expected = structuredClone(input);
+
+    const pending = repository.write(LOGICAL, input, { version: 1 });
+    input.serviceId = "mutated-after-call";
+    input.nested.labels.push("mutated-after-call");
+    release();
+
+    const result = await pending;
+    expect(result.status).toBe("published");
+    expect(anchored).toEqual(expected);
+    expect(result.binding.contentHash).toBe(contentHash(expected));
+  });
+
   test("preserves caller metadata but reserves the logical-address keys", async () => {
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
@@ -219,6 +260,88 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       anchor: { address: "stor-1" },
     });
     expect(backend.writes).toBe(1);
+  });
+
+  test("publisher acknowledgement is indeterminate until the configured index can read it", async () => {
+    const backend = createBackend();
+    const visible = createInMemoryBindingStore();
+    let acknowledged = false;
+    const publisher: BindingPublisher = {
+      async publish(binding) {
+        const status = acknowledged ? "already-published" : "published";
+        acknowledged = true;
+        return { status, binding: { ...binding } };
+      },
+    };
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend),
+      index: visible,
+      publisher,
+    });
+
+    const pending = await repository.write(LOGICAL, RECORD);
+    expect(pending).toMatchObject({
+      status: "indeterminate",
+      anchor: { address: "stor-1" },
+      reason: expect.stringContaining("not yet visible"),
+    });
+    expect(backend.writes).toBe(1);
+
+    await visible.publish(pending.binding);
+    const retry = await repository.write(LOGICAL, RECORD);
+    expect(retry).toMatchObject({
+      status: "already-published",
+      anchor: { address: "stor-1" },
+    });
+    expect(backend.writes).toBe(1);
+  });
+
+  test("accepts equivalent Demos owner spellings from publisher and index readback", async () => {
+    const backend = createBackend();
+    const key = "ab".repeat(32);
+    const visible = createInMemoryBindingStore();
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(`0x${key}`, backend),
+      index: visible,
+      publisher: {
+        async publish(binding) {
+          const normalized = { ...binding, owner: key };
+          await visible.publish(normalized);
+          return { status: "published", binding: normalized };
+        },
+      },
+    });
+
+    await expect(repository.write(LOGICAL, RECORD)).resolves.toMatchObject({
+      status: "published",
+      binding: { owner: `0x${key}` },
+    });
+  });
+
+  test("publisher acknowledgement conflicts when index readback has a different tuple", async () => {
+    const backend = createBackend();
+    const stale = {
+      logicalAddress: LOGICAL,
+      nativeAddress: "stor-stale",
+      owner: SELLER,
+      contentHash: "stale",
+    };
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend),
+      index: createInMemoryBindingIndex([stale]),
+      publisher: {
+        async publish(binding) {
+          return { status: "published", binding: { ...binding } };
+        },
+      },
+    });
+
+    expect(await repository.write(LOGICAL, RECORD)).toMatchObject({
+      status: "conflict",
+      anchor: { address: "stor-1" },
+      existing: stale,
+      reason: expect.stringContaining("does not match"),
+    });
   });
 
   test("a pre-existing different binding conflicts and is never overwritten", async () => {

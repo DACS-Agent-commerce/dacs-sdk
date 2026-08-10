@@ -1,6 +1,10 @@
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { Listing } from "../artifacts/types.js";
-import { listingAddress, logicalToStorageProgramName } from "../canonical/index.js";
+import { isListing } from "../artifacts/validators.js";
+import {
+  listingAddress,
+  logicalToStorageProgramName,
+} from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
 import type { AnchorWriteOnceOptions } from "../substrate/SubstrateAdapter.js";
@@ -9,7 +13,8 @@ import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
  * version-slot immutability (#29 / #46). Pure over injected substrate deps, so
- * it's unit-tested without a node; Agent.publishListing wires the DemosAdapter.
+ * it's unit-tested without a node; Agent.publishListing wires the binding-aware
+ * repository over DemosAdapter.
  *
  * Rules enforced:
  *  - `listingVersion` MUST be a positive integer ≥ 1 (§6.3.4) — 0 / fractional /
@@ -54,14 +59,18 @@ export interface PublishListingDeps {
    */
   scanOwnAnchorsByNamePrefix: (prefix: string) => Promise<OwnedAnchorScan>;
   /**
-   * Owner-bound, fail-closed immutable publication seam. It resolves existing
-   * programs by name, returns signed-scope-identical retries, rejects changed
-   * content, and uses a create-only path when absent.
+   * Binding-aware immutable write seam. The Agent implementation routes this
+   * through BoundArtifactRepository so the physical write and logical→native
+   * publication share one retry-safe receipt.
    */
-  anchorWriteOnce: (
-    name: string,
-    value: object,
-    options?: AnchorWriteOnceOptions,
+  writeArtifact: (
+    logicalAddress: string,
+    value: Record<string, unknown>,
+    options: {
+      storageName: string;
+      version: number;
+      anchor: AnchorWriteOnceOptions;
+    },
   ) => Promise<{ address: string; txRef?: string }>;
 }
 
@@ -128,14 +137,25 @@ function assertContiguousHistory(
 }
 
 export async function publishListingCore(
-  listing: Listing,
+  listingInput: Listing,
   deps: PublishListingDeps,
 ): Promise<PublishListingResult> {
+  // Address derivation, history validation, signing, and anchoring must all
+  // observe one deep snapshot even if the caller mutates its object while an
+  // async scan/signature is in flight. structuredClone preserves the existing
+  // validation semantics (notably non-NFC strings and fractional numbers).
+  const listing = structuredClone(listingInput);
   const version = listing.listingVersion ?? 1;
   if (!Number.isInteger(version) || version < 1) {
     throw new DacsError(
       `listingVersion must be a positive integer ≥ 1 (§6.3.4), got ${version}`,
     );
+  }
+  // Runtime callers can bypass the TypeScript surface. Reject a record that the
+  // SDK's reduced Listing reader would not accept before history lookup,
+  // signing, or an immutable write burns the version slot.
+  if (!isListing(listing)) {
+    throw new DacsError("listing does not satisfy the supported Listing shape");
   }
 
   // Logical (colon-bearing, discovery key) vs native (colon-free program name the
@@ -165,10 +185,14 @@ export async function publishListingCore(
     ARTIFACT_SEPARATORS.Listing,
     deps.sign,
   );
-  const { address: anchored, txRef } = await deps.anchorWriteOnce(
-    storageName,
-    signed,
-    { metadata: { logicalAddress } },
+  const { address: anchored, txRef } = await deps.writeArtifact(
+    logicalAddress,
+    signed as unknown as Record<string, unknown>,
+    {
+      storageName,
+      version,
+      anchor: { metadata: { logicalAddress } },
+    },
   );
   return { ref: anchored, logicalAddress, storageName, txRef };
 }

@@ -44,18 +44,35 @@ Rails and verification recipes are resolved from **steward-signed registries** (
 ```ts
 import {
   createAgent,
+  createInMemoryBindingStore,
   createX402Rail,
   x402Settle,
   resolveRecipe,
   vetCore,
 } from "@kynesyslabs/dacs";
 
-const agent = createAgent({ demosRpc, wallet, identity: { agentId } });
+// A production deployment supplies a well-known/catalog-backed implementation.
+// This in-memory store is suitable only for a same-process example or tests.
+const bindings = createInMemoryBindingStore();
+const agent = await createAgent({
+  demosRpc,
+  wallet,
+  identity: { agentId },
+  bindings: { index: bindings, publisher: bindings },
+});
 
-// seller — sign + anchor a fixed-price listing
-const { ref } = await agent.publishListing(spec);
+// seller — sign + anchor + publish the logical→native binding
+const published = await agent.publishListing(spec);
+if (
+  published.status !== "published" &&
+  published.status !== "already-published"
+) {
+  throw new Error(`listing binding was not published: ${published.status}`);
+}
+const { ref } = published;
 
-// buyer — discover, then vet → negotiate → settle → verify (anchoring the bundle)
+// buyer — the current Agent helper still takes a native ref. Agent-level typed
+// logical resolution through `bindings` remains a separate #54 slice.
 const [{ ref: listingRef }] = await agent.discover([ref]);
 const rail = await createX402Rail({ evmPrivateKey });
 const session = await agent.runSession(listingRef, {
@@ -75,6 +92,14 @@ const rep = await agent.getReputation(primaryClaim, bundleRefs);
 ```
 
 To resume an interrupted session safely, pass the prior `jobId` to `runSession` — anchored artifacts are reused and settlement is never repeated.
+
+`publishListing` requires `AgentConfig.bindings` and fails before anchoring when
+no publication authority is configured. Its top-level `ref` exists only on a
+`published` or `already-published` result. On conflict or indeterminate, retain
+`publication.anchor` and retry the same listing; never create a replacement
+anchor. These success statuses mean the publisher acknowledged the exact binding
+and the configured index read it back; they do not by themselves prove portable
+anchor finality, active-listing eligibility, or complete DACS conformance.
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
