@@ -1,4 +1,17 @@
 export {
+  FINALITY_COMMITMENT_SEPARATOR,
+  finalityCommitmentAddress,
+  commitFixedPriceAgreement,
+  type CommitmentVerificationDisposition,
+  type CommitmentSignatureVerificationInput,
+  type CommitmentSignatureVerifier,
+  type AnchoredFinalityCommitment,
+  type FinalityCommitmentLookup,
+  type FinalityCommitmentProvider,
+  type CommitFixedPriceAgreementInput,
+  type FinalizedAgreementCommitment,
+} from "./commitment.js";
+export {
   deriveFixedPriceAgreement,
   signFixedPriceAgreement,
   type VerifiedListingInput,
