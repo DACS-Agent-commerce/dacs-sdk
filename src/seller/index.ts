@@ -142,3 +142,18 @@ export {
   createFsFencedSessionStore,
   type FsFencedSessionStoreOptions,
 } from "../agent/fencedSessionStoreFs.js";
+export {
+  finalizeCompletedSellerBundleCore,
+  type SellerBundleVerificationDisposition,
+  type SellerBundleDependencyKind,
+  type FinalizedSellerBundleDependency,
+  type SellerBundleDependencyRequirement,
+  type SellerBundleDependencyLookup,
+  type AnchoredSellerBundle,
+  type SellerBundleLookup,
+  type SellerBundleBindingLookup,
+  type SellerBundleBindingPublication,
+  type SellerBundleFinalizationProvider,
+  type FinalizeCompletedSellerBundleInput,
+  type FinalizedSellerBundle,
+} from "./bundleFinalization.js";

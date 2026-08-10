@@ -1006,6 +1006,19 @@ export interface FaultAttestationBundle extends BundleFields {
 
 export type AnyAttestationBundle = AttestationBundle | FaultAttestationBundle;
 
+/** DACS-5 §10.4.2 — signed logical-to-native mapping for one anchored bundle copy. */
+export interface BundleBinding {
+  bindingVersion: "1";
+  jobId: string;
+  role: BundlePartyRole;
+  logicalAddress: string;
+  nativeAddress: string;
+  bundleContentHash: string;
+  anchorTx?: string;
+  signer: ClaimRef;
+  signature: ComponentSignature;
+}
+
 /** Discriminator for the spine artifact kinds (matches the vector `kind`). */
 export type ArtifactKind =
   | "Listing"
