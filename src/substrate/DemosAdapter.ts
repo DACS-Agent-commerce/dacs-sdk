@@ -14,6 +14,7 @@ import {
 import { DacsError, SubstrateError } from "../errors.js";
 import { parseClaimRef } from "../identity/index.js";
 import { AnchorWaitError } from "./AnchorWaitError.js";
+import { createDemosHistoryPageFetcher } from "./demosHistory.js";
 import {
   classifyAnchorResolution,
   type AnchorResolution,
@@ -33,6 +34,7 @@ import type {
   ResolvedIdentity,
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
+import type { AnchorHistoryPageFetcher } from "../discovery/scanner.js";
 
 /**
  * Address-derivation salt. EMPTY per the observed on-chain convention
@@ -134,6 +136,10 @@ function queueWalletWrite<T>(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && !Array.isArray(value);
 }
 
 function httpStatus(error: unknown): number | undefined {
@@ -435,6 +441,20 @@ export class DemosAdapter implements SubstrateAdapter {
   /** Underlying demosdk instance — escape hatch while the seam fills out. */
   get raw(): Demos {
     return this.demos;
+  }
+
+  /**
+   * Concrete Demos transaction-history seam for the public discovery scanner.
+   * The owner is explicit so a read-only Directory can enumerate another
+   * producer without possessing that producer's wallet.
+   */
+  createAnchorHistoryPageFetcher(
+    expectedOwner: string,
+  ): AnchorHistoryPageFetcher {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    return createDemosHistoryPageFetcher(this.demos, expectedOwner);
   }
 
   async connect(): Promise<void> {
@@ -1267,6 +1287,7 @@ export class DemosAdapter implements SubstrateAdapter {
     name: string,
     data: Record<string, unknown>,
     owner: string,
+    expectedMetadata?: Record<string, unknown>,
   ): Promise<AnchorRef | null> {
     const resolution = await this.resolveAnchorByName(name, owner);
     if (resolution.status === "indeterminate") {
@@ -1276,7 +1297,14 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     if (resolution.status === "absent") return null;
 
-    const existing = await this.readAnchor(resolution.address);
+    const record =
+      expectedMetadata === undefined
+        ? null
+        : await this.readImmutableAnchor(resolution.address);
+    const existing =
+      expectedMetadata === undefined
+        ? await this.readAnchor(resolution.address)
+        : record?.data;
     if (!existing) {
       throw new SubstrateError(
         `immutable anchor ${name}: resolved address ${resolution.address} was not readable`,
@@ -1287,13 +1315,86 @@ export class DemosAdapter implements SubstrateAdapter {
         `immutable anchor ${name} already exists with different signed-scope content`,
       );
     }
+    if (expectedMetadata !== undefined) {
+      if (!this.metadataMatches(record?.metadata ?? null, expectedMetadata)) {
+        throw new DacsError(
+          `immutable anchor ${name} already exists with different descriptive metadata`,
+        );
+      }
+    }
     return { address: resolution.address };
+  }
+
+  private async readImmutableAnchor(
+    address: string,
+  ): Promise<{
+    data: Record<string, unknown>;
+    metadata: Record<string, unknown> | null;
+  } | null> {
+    try {
+      const result = (await this.demos.storagePrograms.read(address)) as {
+        success?: boolean;
+        data?: unknown;
+        metadata?: unknown;
+        error?: string;
+        errorCode?: string;
+      };
+      if (result?.success === true) {
+        if (!isJsonObject(result.data)) {
+          throw new SubstrateError(
+            `read immutable anchor ${address} returned malformed data`,
+          );
+        }
+        if (
+          result.metadata !== undefined &&
+          result.metadata !== null &&
+          !isJsonObject(result.metadata)
+        ) {
+          throw new SubstrateError(
+            `read immutable anchor ${address} returned malformed metadata`,
+          );
+        }
+        return {
+          data: result.data,
+          metadata: result.metadata ?? null,
+        };
+      }
+      const marker =
+        `${result?.errorCode ?? ""} ${result?.error ?? ""}`.toLowerCase();
+      if (marker.includes("not_found") || marker.includes("not found")) {
+        return null;
+      }
+      throw new SubstrateError(
+        `read immutable anchor ${address} returned an indeterminate response`,
+      );
+    } catch (error) {
+      if (httpStatus(error) === 404) return null;
+      if (error instanceof SubstrateError) throw error;
+      throw new SubstrateError(`read immutable anchor ${address} failed`, {
+        cause: error,
+      });
+    }
+  }
+
+  private metadataMatches(
+    actual: Record<string, unknown> | null,
+    expected: Record<string, unknown>,
+  ): boolean {
+    try {
+      return actual !== null && canonicalize(actual) === canonicalize(expected);
+    } catch (error) {
+      throw new SubstrateError(
+        "read immutable anchor returned non-canonicalizable metadata",
+        { cause: error },
+      );
+    }
   }
 
   private async waitForConcurrentImmutableWinner(
     name: string,
     data: Record<string, unknown>,
     owner: string,
+    expectedMetadata: Record<string, unknown> | undefined,
     deadline: number,
     pollMs: number,
     cause: unknown,
@@ -1301,7 +1402,12 @@ export class DemosAdapter implements SubstrateAdapter {
     let lastState = "absent";
     for (;;) {
       try {
-        const winner = await this.resolveExistingImmutable(name, data, owner);
+        const winner = await this.resolveExistingImmutable(
+          name,
+          data,
+          owner,
+          expectedMetadata,
+        );
         if (winner) return winner;
         lastState = "absent";
       } catch (error) {
@@ -1326,14 +1432,36 @@ export class DemosAdapter implements SubstrateAdapter {
     owner: string,
     address: string,
     txRef: string | undefined,
+    expectedMetadata: Record<string, unknown> | undefined,
     deadline: number,
     pollMs: number,
   ): Promise<AnchorRef> {
     const expected = sha256Hex(canonicalize(data));
     let lastState = "not read-visible";
     for (;;) {
-      const readBack = await this.readAnchor(address);
-      if (readBack && sha256Hex(canonicalize(readBack)) === expected) {
+      let readBack: Record<string, unknown> | null = null;
+      let metadataMatches = expectedMetadata === undefined;
+      if (expectedMetadata === undefined) {
+        readBack = await this.readAnchor(address);
+      } else {
+        try {
+          const record = await this.readImmutableAnchor(address);
+          readBack = record?.data ?? null;
+          metadataMatches = this.metadataMatches(
+            record?.metadata ?? null,
+            expectedMetadata,
+          );
+          if (!metadataMatches) lastState = "descriptive metadata mismatch";
+        } catch (error) {
+          lastState =
+            error instanceof Error ? error.message : "metadata read failed";
+        }
+      }
+      if (
+        readBack &&
+        sha256Hex(canonicalize(readBack)) === expected &&
+        metadataMatches
+      ) {
         const resolution = await this.resolveAnchorByName(name, owner);
         if (resolution.status === "present" && resolution.address === address) {
           return { address, ...(txRef ? { txRef } : {}) };
@@ -1393,6 +1521,21 @@ export class DemosAdapter implements SubstrateAdapter {
     }
 
     const data = value as Record<string, unknown>;
+    let metadata: Record<string, unknown> | undefined;
+    if (opts?.metadata !== undefined) {
+      if (!isJsonObject(opts.metadata)) {
+        throw new DacsError("anchorWriteOnce metadata must be a JSON object");
+      }
+      try {
+        const pinned = JSON.parse(canonicalize(opts.metadata)) as unknown;
+        if (!isJsonObject(pinned)) throw new Error("metadata is not an object");
+        metadata = pinned;
+      } catch (error) {
+        throw new DacsError("anchorWriteOnce metadata must be canonicalizable JSON", {
+          cause: error,
+        });
+      }
+    }
     const key = this.walletQueueKey();
 
     // Share the same process-wide RPC+wallet queue as anchor()/anchorAndWait().
@@ -1406,7 +1549,7 @@ export class DemosAdapter implements SubstrateAdapter {
       const owner = this.demos.getAddress();
       const existing = await this.waitFor(
         ctx,
-        this.resolveExistingImmutable(name, data, owner),
+        this.resolveExistingImmutable(name, data, owner, metadata),
         "immutable owner-bound lookup",
       );
       if (existing) {
@@ -1435,7 +1578,11 @@ export class DemosAdapter implements SubstrateAdapter {
         data,
         "json",
         StorageProgram.publicACL(),
-        { nonce, salt: ANCHOR_SALT },
+        {
+          nonce,
+          salt: ANCHOR_SALT,
+          ...(metadata === undefined ? {} : { metadata }),
+        },
       );
       const deadline = ctx.deadline;
       ctx.receipt.address = address;
@@ -1509,6 +1656,7 @@ export class DemosAdapter implements SubstrateAdapter {
               name,
               data,
               owner,
+              metadata,
               deadline,
               pollMs,
               error,
@@ -1519,6 +1667,7 @@ export class DemosAdapter implements SubstrateAdapter {
               name,
               data,
               owner,
+              metadata,
               deadline,
               pollMs,
               new Error(`terminal state=${terminal}`),
@@ -1530,6 +1679,7 @@ export class DemosAdapter implements SubstrateAdapter {
             owner,
             address,
             txRef,
+            metadata,
             deadline,
             pollMs,
           );

@@ -85,6 +85,10 @@ export type {
 } from "./substrate/index.js";
 // Pure error value: exporting this directly does not eagerly load demosdk.
 export { AnchorWaitError } from "./substrate/AnchorWaitError.js";
+export {
+  createDemosHistoryPageFetcher,
+  type DemosHistoryClient,
+} from "./substrate/demosHistory.js";
 
 // CLI helpers (pure/read-only by default). The executable entry is `dacs`.
 export {
@@ -146,11 +150,13 @@ export {
   type VerifiedRead,
   type VerifiedReadDeps,
   type AnchorKind,
+  type AnchorHistoryPageFetcher,
   type RawAnchorEntry,
   type RawScanPage,
   type ScannedAnchor,
   type ScanPage,
   type ScanOptions,
+  type ScanSeen,
 } from "./discovery/index.js";
 
 // Deterministic identityTier derivation (DACS-1 §6.3.2.1, IT-1..IT-3).

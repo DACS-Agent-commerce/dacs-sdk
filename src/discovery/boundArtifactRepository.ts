@@ -94,6 +94,34 @@ function normalizedOwner(owner: string): string {
   return owner.trim().toLowerCase();
 }
 
+function anchorOptionsWithLogicalAddress(
+  logicalAddress: string,
+  options: AnchorWriteOnceOptions | undefined,
+): AnchorWriteOnceOptions {
+  const supplied = options?.metadata;
+  if (
+    supplied !== undefined &&
+    (typeof supplied !== "object" || supplied === null || Array.isArray(supplied))
+  ) {
+    throw new Error("anchor metadata must be an object");
+  }
+  for (const key of ["logicalAddress", "logical_address"] as const) {
+    if (
+      supplied !== undefined &&
+      Object.prototype.hasOwnProperty.call(supplied, key) &&
+      supplied[key] !== logicalAddress
+    ) {
+      throw new Error(
+        `anchor metadata ${key} conflicts with the repository logical address`,
+      );
+    }
+  }
+  return {
+    ...options,
+    metadata: { ...supplied, logicalAddress },
+  };
+}
+
 function publicationMatches(
   expected: AnchorBinding,
   actual: AnchorBinding,
@@ -140,8 +168,12 @@ export function createBoundArtifactRepository(
 ): BoundArtifactRepository {
   return {
     async write(logicalAddress, artifact, options) {
-      if (logicalAddress.trim().length === 0) {
+      const canonicalLogicalAddress = logicalAddress.trim().normalize("NFC");
+      if (canonicalLogicalAddress.length === 0) {
         throw new Error("logicalAddress must not be empty");
+      }
+      if (logicalAddress !== canonicalLogicalAddress) {
+        throw new Error("logicalAddress must be trimmed and NFC-normalized");
       }
       const owner = deps.adapter.getAddress();
       if (owner.trim().length === 0) {
@@ -159,7 +191,7 @@ export function createBoundArtifactRepository(
       const anchor = await deps.adapter.anchorWriteOnce(
         storageName,
         artifact,
-        options?.anchor,
+        anchorOptionsWithLogicalAddress(logicalAddress, options?.anchor),
       );
       if (anchor.address.trim().length === 0) {
         throw new Error("anchorWriteOnce returned an empty native address");

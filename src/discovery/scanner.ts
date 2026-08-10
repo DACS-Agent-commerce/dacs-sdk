@@ -93,6 +93,12 @@ export interface RawScanPage {
   nextCursor: string | null;
 }
 
+/** Substrate page seam consumed by the scanner. */
+export type AnchorHistoryPageFetcher = (
+  cursor: string | null,
+  limit: number,
+) => Promise<RawScanPage>;
+
 /** A classified, DACS-recognised anchor. */
 export interface ScannedAnchor {
   nativeAddress: string;
@@ -105,6 +111,13 @@ export type ScanPage =
   | { status: "page"; anchors: ScannedAnchor[]; nextCursor: string | null }
   | { status: "indeterminate"; reason: string; cursor: string | null };
 
+/**
+ * Incremental dedup state. A Map is preferred because its logical-address value
+ * preserves conflict detection when state is persisted and reconstructed. A
+ * Set remains accepted for backwards-compatible address-only deduplication.
+ */
+export type ScanSeen = Set<string> | Map<string, string>;
+
 export interface ScanOptions {
   /** Max entries per page (bounded so a huge history can't be pulled at once). */
   limit?: number;
@@ -113,12 +126,63 @@ export interface ScanOptions {
    * The caller owns it and reuses it between {@link scanAnchorPage} calls. Newly
    * yielded addresses are added to it.
    */
-  seen?: Set<string>;
+  seen?: ScanSeen;
   /** Keep `unknown`-kind anchors (default drops them — they aren't DACS artifacts). */
   includeUnknown?: boolean;
 }
 
 const DEFAULT_LIMIT = 100;
+const logicalMetadataByLegacySeenSet = new WeakMap<
+  Set<string>,
+  Map<string, string>
+>();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateRawPage(value: unknown): RawScanPage {
+  if (!isRecord(value) || !Array.isArray(value.entries)) {
+    throw new Error("history page must contain an entries array");
+  }
+  if (value.nextCursor !== null && typeof value.nextCursor !== "string") {
+    throw new Error("history page nextCursor must be a string or null");
+  }
+
+  const entries: RawAnchorEntry[] = value.entries.map((candidate, index) => {
+    if (!isRecord(candidate)) {
+      throw new Error(`history entry ${index} must be an object`);
+    }
+    if (
+      typeof candidate.nativeAddress !== "string" ||
+      candidate.nativeAddress.trim().length === 0
+    ) {
+      throw new Error(`history entry ${index} has no native address`);
+    }
+    if (
+      candidate.logicalAddress !== undefined &&
+      (typeof candidate.logicalAddress !== "string" ||
+        candidate.logicalAddress.trim().length === 0)
+    ) {
+      throw new Error(`history entry ${index} has invalid logical metadata`);
+    }
+    if (
+      candidate.owner !== undefined &&
+      (typeof candidate.owner !== "string" || candidate.owner.trim().length === 0)
+    ) {
+      throw new Error(`history entry ${index} has an invalid owner`);
+    }
+    return {
+      nativeAddress: candidate.nativeAddress,
+      ...(candidate.logicalAddress === undefined
+        ? {}
+        : { logicalAddress: candidate.logicalAddress }),
+      ...(candidate.owner === undefined ? {} : { owner: candidate.owner }),
+    };
+  });
+
+  return { entries, nextCursor: value.nextCursor };
+}
 
 /**
  * Fetch, classify, and dedup ONE page from `cursor`. Returns the classified
@@ -126,16 +190,34 @@ const DEFAULT_LIMIT = 100;
  * when the page fetch fails — the caller retries the same cursor, never skipping.
  */
 export async function scanAnchorPage(
-  fetchPage: (cursor: string | null, limit: number) => Promise<RawScanPage>,
+  fetchPage: AnchorHistoryPageFetcher,
   cursor: string | null,
   opts: ScanOptions = {},
 ): Promise<ScanPage> {
   const limit = opts.limit ?? DEFAULT_LIMIT;
-  const seen = opts.seen ?? new Set<string>();
+  const seen = opts.seen ?? new Map<string, string>();
+  let seenLogicalMetadata: Map<string, string>;
+  if (seen instanceof Map) {
+    seenLogicalMetadata = seen;
+  } else {
+    seenLogicalMetadata = logicalMetadataByLegacySeenSet.get(seen) ?? new Map();
+    logicalMetadataByLegacySeenSet.set(seen, seenLogicalMetadata);
+  }
+
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    return {
+      status: "indeterminate",
+      reason: "page limit must be a positive safe integer",
+      cursor,
+    };
+  }
 
   let page: RawScanPage;
   try {
-    page = await fetchPage(cursor, limit);
+    page = validateRawPage(await fetchPage(cursor, limit));
+    if (cursor !== null && page.nextCursor === cursor) {
+      throw new Error("history page cursor did not advance");
+    }
   } catch (e) {
     return {
       status: "indeterminate",
@@ -145,18 +227,48 @@ export async function scanAnchorPage(
   }
 
   const anchors: ScannedAnchor[] = [];
+  const pendingLogicalMetadata = new Map<string, string>();
+  const pendingSeen = new Set<string>();
   for (const entry of page.entries) {
     if (!entry.logicalAddress) continue; // not a DACS anchor (no logical metadata)
-    if (seen.has(entry.nativeAddress)) continue; // duplicate tx across pages
+    const previousLogicalAddress =
+      pendingLogicalMetadata.get(entry.nativeAddress) ??
+      seenLogicalMetadata.get(entry.nativeAddress);
+    if (
+      previousLogicalAddress !== undefined &&
+      previousLogicalAddress !== entry.logicalAddress
+    ) {
+      return {
+        status: "indeterminate",
+        reason:
+          `conflicting logical metadata for ${entry.nativeAddress}: ` +
+          `${previousLogicalAddress} vs ${entry.logicalAddress}`,
+        cursor,
+      };
+    }
+    pendingLogicalMetadata.set(entry.nativeAddress, entry.logicalAddress);
+    if (seen.has(entry.nativeAddress) || pendingSeen.has(entry.nativeAddress)) {
+      continue; // duplicate tx within/across pages
+    }
     const kind = classifyAnchor(entry.logicalAddress);
     if (kind === "unknown" && !opts.includeUnknown) continue;
-    seen.add(entry.nativeAddress);
+    pendingSeen.add(entry.nativeAddress);
     anchors.push({
       nativeAddress: entry.nativeAddress,
       logicalAddress: entry.logicalAddress,
       ...(entry.owner !== undefined ? { owner: entry.owner } : {}),
       kind,
     });
+  }
+  for (const [nativeAddress, logicalAddress] of pendingLogicalMetadata) {
+    seenLogicalMetadata.set(nativeAddress, logicalAddress);
+  }
+  for (const nativeAddress of pendingSeen) {
+    if (seen instanceof Map) {
+      seen.set(nativeAddress, pendingLogicalMetadata.get(nativeAddress)!);
+    } else {
+      seen.add(nativeAddress);
+    }
   }
   return { status: "page", anchors, nextCursor: page.nextCursor };
 }
@@ -168,16 +280,17 @@ export async function scanAnchorPage(
  * so nothing is silently dropped. `maxPages` bounds a runaway/adversarial history.
  */
 export async function scanAllAnchors(
-  fetchPage: (cursor: string | null, limit: number) => Promise<RawScanPage>,
+  fetchPage: AnchorHistoryPageFetcher,
   opts: ScanOptions & { startCursor?: string | null; maxPages?: number } = {},
 ): Promise<
   | { status: "complete"; anchors: ScannedAnchor[] }
   | { status: "aborted"; anchors: ScannedAnchor[]; resumeCursor: string | null; reason: string }
 > {
-  const seen = opts.seen ?? new Set<string>();
+  const seen = opts.seen ?? new Map<string, string>();
   const all: ScannedAnchor[] = [];
   let cursor = opts.startCursor ?? null;
   const maxPages = opts.maxPages ?? 10_000;
+  const visitedCursors = new Set<string>();
 
   for (let i = 0; i < maxPages; i++) {
     const res = await scanAnchorPage(fetchPage, cursor, { ...opts, seen });
@@ -186,6 +299,15 @@ export async function scanAllAnchors(
     }
     all.push(...res.anchors);
     if (res.nextCursor === null) return { status: "complete", anchors: all };
+    if (visitedCursors.has(res.nextCursor)) {
+      return {
+        status: "aborted",
+        anchors: all,
+        resumeCursor: cursor,
+        reason: `history cursor cycle detected at ${res.nextCursor}`,
+      };
+    }
+    if (cursor !== null) visitedCursors.add(cursor);
     cursor = res.nextCursor;
   }
   return {

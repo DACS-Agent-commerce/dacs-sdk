@@ -186,7 +186,8 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
         sign,
         scanOwnAnchorsByNamePrefix: (prefix) =>
           adapter.scanOwnAnchorsByNamePrefix(prefix),
-        anchorWriteOnce: (name, value) => adapter.anchorWriteOnce(name, value),
+        anchorWriteOnce: (name, value, options) =>
+          adapter.anchorWriteOnce(name, value, options),
       });
     },
 

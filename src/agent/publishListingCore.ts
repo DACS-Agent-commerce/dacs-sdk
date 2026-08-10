@@ -3,6 +3,7 @@ import type { Listing } from "../artifacts/types.js";
 import { listingAddress, logicalToStorageProgramName } from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
+import type { AnchorWriteOnceOptions } from "../substrate/SubstrateAdapter.js";
 import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
 
 /**
@@ -27,11 +28,11 @@ import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
  * The name anchored under is therefore `logicalToStorageProgramName(logical)` —
  * this SDK's implementation-defined colon-free name (the spec mandates only that
  * the name be colon-free and treated as an opaque write input, NOT a specific
- * or reversible encoding) — and the result RETURNS the binding
- * — `logicalAddress` + the native `ref` — so the logical→native mapping is
- * discoverable (spec point (c), via return). Carrying the logical address as
- * on-record metadata + a published index (points (b)/(c)-via-index) is the fuller
- * discovery surface, tracked with #54.
+ * or reversible encoding) — and the result RETURNS `logicalAddress` + native
+ * `ref` to its caller. This is a write receipt, not the independently readable
+ * index/catalog publication required by point (c). The logical address is also
+ * carried as immutable StorageProgram metadata (point (b)); consumer resolution
+ * still requires a separately published logical→native binding.
  */
 
 export interface PublishListingResult {
@@ -60,6 +61,7 @@ export interface PublishListingDeps {
   anchorWriteOnce: (
     name: string,
     value: object,
+    options?: AnchorWriteOnceOptions,
   ) => Promise<{ address: string; txRef?: string }>;
 }
 
@@ -139,6 +141,9 @@ export async function publishListingCore(
   // Logical (colon-bearing, discovery key) vs native (colon-free program name the
   // substrate actually accepts). Anchor under the encoded name; return both.
   const logicalAddress = listingAddress(listing.agentId, listing.serviceId, version);
+  if (logicalAddress !== logicalAddress.normalize("NFC")) {
+    throw new DacsError("listing logical address must be NFC-normalized");
+  }
   const storageName = logicalToStorageProgramName(logicalAddress);
   const historyPrefix = listingHistoryPrefix(listing);
   const versions = assertContiguousHistory(
@@ -160,6 +165,10 @@ export async function publishListingCore(
     ARTIFACT_SEPARATORS.Listing,
     deps.sign,
   );
-  const { address: anchored, txRef } = await deps.anchorWriteOnce(storageName, signed);
+  const { address: anchored, txRef } = await deps.anchorWriteOnce(
+    storageName,
+    signed,
+    { metadata: { logicalAddress } },
+  );
   return { ref: anchored, logicalAddress, storageName, txRef };
 }

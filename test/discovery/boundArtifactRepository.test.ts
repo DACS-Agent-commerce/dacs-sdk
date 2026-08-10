@@ -19,6 +19,7 @@ const RECORD = {
 interface FakeBackend {
   nextAddress: number;
   writes: number;
+  anchorMetadata: Array<Record<string, unknown> | undefined>;
   byOwnerAndName: Map<string, string>;
   records: Map<string, Record<string, unknown>>;
 }
@@ -27,6 +28,7 @@ function createBackend(): FakeBackend {
   return {
     nextAddress: 1,
     writes: 0,
+    anchorMetadata: [],
     byOwnerAndName: new Map(),
     records: new Map(),
   };
@@ -35,7 +37,10 @@ function createBackend(): FakeBackend {
 function fakeAdapter(owner: string, backend: FakeBackend): BoundArtifactAdapter {
   return {
     getAddress: () => owner,
-    async anchorWriteOnce(name, value) {
+    async anchorWriteOnce(name, value, options) {
+      backend.anchorMetadata.push(
+        options?.metadata === undefined ? undefined : { ...options.metadata },
+      );
       const key = `${owner.toLowerCase()}\u0000${name}`;
       const existing = backend.byOwnerAndName.get(key);
       if (existing) {
@@ -82,6 +87,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       },
     });
     expect(written.storageName).not.toContain(":");
+    expect(backend.anchorMetadata).toEqual([{ logicalAddress: LOGICAL }]);
 
     // A separate repository instance has no nonce or storage-name input. It only
     // receives the logical address, expected signer, and published index.
@@ -124,6 +130,60 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     });
     expect(backend.writes).toBe(1);
     expect(bindings.snapshot()).toHaveLength(1);
+  });
+
+  test("preserves caller metadata but reserves the logical-address keys", async () => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend),
+      index: bindings,
+      publisher: bindings,
+    });
+
+    await expect(
+      repository.write(LOGICAL, RECORD, {
+        anchor: { metadata: { source: "catalog", logical_address: LOGICAL } },
+      }),
+    ).resolves.toMatchObject({ status: "published" });
+    expect(backend.anchorMetadata[0]).toEqual({
+      source: "catalog",
+      logical_address: LOGICAL,
+      logicalAddress: LOGICAL,
+    });
+
+    const conflicting = createBackend();
+    const conflictRepository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, conflicting),
+      index: createInMemoryBindingStore(),
+      publisher: createInMemoryBindingStore(),
+    });
+    await expect(
+      conflictRepository.write(LOGICAL, RECORD, {
+        anchor: { metadata: { logicalAddress: "dacs1:other" } },
+      }),
+    ).rejects.toThrow(/conflicts with the repository logical address/);
+    expect(conflicting.writes).toBe(0);
+  });
+
+  test("rejects non-canonical logical addresses before anchoring", async () => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend),
+      index: bindings,
+      publisher: bindings,
+    });
+
+    await expect(repository.write(` ${LOGICAL}`, RECORD)).rejects.toThrow(
+      /trimmed and NFC-normalized/,
+    );
+    const decomposed = "dacs1:seller:caf\u0065\u0301:v1";
+    expect(decomposed).not.toBe(decomposed.normalize("NFC"));
+    await expect(repository.write(decomposed, RECORD)).rejects.toThrow(
+      /trimmed and NFC-normalized/,
+    );
+    expect(backend.writes).toBe(0);
   });
 
   test("publication failure is indeterminate and a retry does not duplicate the anchor", async () => {
