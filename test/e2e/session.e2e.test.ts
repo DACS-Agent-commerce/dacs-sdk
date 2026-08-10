@@ -12,6 +12,7 @@ import {
   type VerifyBundleDeps,
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { verifyComponentSignature } from "../../src/artifacts/signatures.js";
 import { listingAddress } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -204,6 +205,30 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(result.outcome).toBe("completed");
     expect(result.agreementRef).toBe("stor:dacs3:agreement:job-e2e");
     expect(result.settlementRef).toBe("stor:dacs4:evidence:job-e2e");
+
+    // The verifier below did not participate in production. Artifacts whose
+    // normative schema uses ComponentSignature must authenticate independently.
+    // AgreementSignature[] migration is owned by #98.
+    const lifecycleArtifacts = [
+      [result.vetRef!, ARTIFACT_SEPARATORS.CompositeVerificationRecord],
+      [result.settlementRef, ARTIFACT_SEPARATORS.SettlementEvidence],
+    ] as const;
+    for (const [ref, separator] of lifecycleArtifacts) {
+      const artifact = sub.store.get(ref)!;
+      await expect(
+        verifyComponentSignature(artifact, separator, {
+          isSignerAuthorized: (_record, signature) =>
+            signature.signer === buyerDid,
+          resolvePublicKey: (signature) => resolveFromDid(signature.signer),
+          verify: ({ signedBytes, signature, publicKey }) =>
+            verify(
+              signedBytes,
+              Uint8Array.from(Buffer.from(signature.value, "base64url")),
+              publicKey,
+            ),
+        }),
+      ).resolves.toMatchObject({ status: "valid" });
+    }
 
     // runSessionCore still emits the legacy MVP buyer-only bundle. A strict
     // third-party verifier must reject it until the two-sided producer helper

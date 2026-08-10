@@ -415,4 +415,5 @@ describe("runSession orchestration (T4)", () => {
     );
     expect(settleCalls).toBe(0); // a transient evidence-lookup failure must NOT re-settle
   });
+
 });

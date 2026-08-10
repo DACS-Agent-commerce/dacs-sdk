@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
+import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -26,27 +27,28 @@ function signerFor(seed: Uint8Array): Signer {
   return (bytes) => ed25519Sign(bytes, priv);
 }
 const stewardPublicKey = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
+const stewardSigner = `did:demos:steward:${Buffer.from(stewardPublicKey).toString("hex")}`;
 const verify = (b: Uint8Array, s: Uint8Array, p: Uint8Array) =>
   ed25519Verify(b, s, publicKeyFromRaw(p));
 
 async function railRegistry() {
   const sign = signerFor(STEWARD_SEED);
   const imposter = signerFor(IMPOSTOR_SEED);
-  const x402 = await buildSignedArtifact(
+  const x402 = await signComponentArtifact(
     { id: "x402:default", kind: "x402", availability: "live", params: { network: "eip155:84532" } },
     "dacs-rail:v1:",
-    sign,
+    { algorithm: "ed25519", signer: stewardSigner, sign },
   );
-  const deprecated = await buildSignedArtifact(
-    { id: "x402:old", kind: "x402", availability: "deprecated", params: {} },
+  const deprecated = await signComponentArtifact(
+    { id: "x402:old", kind: "x402", availability: "disabled", params: {} },
     "dacs-rail:v1:",
-    sign,
+    { algorithm: "ed25519", signer: stewardSigner, sign },
   );
   // Signed by an impostor, not the steward — must be rejected.
-  const forged = await buildSignedArtifact(
+  const forged = await signComponentArtifact(
     { id: "evm-erc20:usdc", kind: "evm-erc20", availability: "live", params: {} },
     "dacs-rail:v1:",
-    imposter,
+    { algorithm: "ed25519", signer: stewardSigner, sign: imposter },
   );
   return {
     registryId: "dacs4:registry:v0.1",
@@ -59,6 +61,7 @@ function depsFor(doc: Record<string, unknown> | null): RegistryResolveDeps {
   return {
     readRegistry: async () => doc,
     stewardPublicKey,
+    stewardSigner,
     verify,
   };
 }
@@ -104,10 +107,14 @@ describe("registry resolution (T12/T13)", () => {
   });
 
   test("resolveRecipe verifies under the recipe separator", async () => {
-    const recipe = await buildSignedArtifact(
+    const recipe = await signComponentArtifact(
       { id: "self-signed", method: "self-signed", availability: "live", params: {} },
       "dacs-recipe:v1:",
-      signerFor(STEWARD_SEED),
+      {
+        algorithm: "ed25519",
+        signer: stewardSigner,
+        sign: signerFor(STEWARD_SEED),
+      },
     );
     const doc = {
       registryId: "dacs2:registry:v0.1",
@@ -116,6 +123,28 @@ describe("registry resolution (T12/T13)", () => {
     } as Record<string, unknown>;
     const desc = await resolveRecipe("anchor", "self-signed", depsFor(doc));
     expect(desc).toMatchObject({ id: "self-signed", method: "self-signed" });
+  });
+
+  test("legacy registry signatures require an explicit policy and are normalised", async () => {
+    const legacy = await buildSignedArtifact(
+      { id: "legacy", kind: "x402", availability: "live", params: {} },
+      "dacs-rail:v1:",
+      signerFor(STEWARD_SEED),
+    );
+    const doc = { entries: [legacy] } as Record<string, unknown>;
+
+    await expect(resolveRail("anchor", "legacy", depsFor(doc))).rejects.toThrow(
+      /legacy signature is rejected/,
+    );
+    const resolved = await resolveRail("anchor", "legacy", {
+      ...depsFor(doc),
+      legacySignatures: "verify-with-pinned-key",
+    });
+    expect(resolved.signature).toMatchObject({
+      algorithm: "ed25519",
+      signer: stewardSigner,
+    });
+    expect(resolved.signature.value).not.toMatch(/=/);
   });
 });
 

@@ -9,6 +9,7 @@
  */
 
 import type { ParserSpec } from "../agent/parserSpec.js";
+import type { ComponentSignature } from "../artifacts/types.js";
 
 /**
  * §9.4.4 / §7.4.5 availability values — the CLOSED spec set (issue #5: the
@@ -63,5 +64,5 @@ export interface RecipeDescriptor {
 export interface Registry<T> {
   registryId: string;
   version: string;
-  entries: Array<T & { signature: string }>;
+  entries: Array<T & { signature: ComponentSignature }>;
 }

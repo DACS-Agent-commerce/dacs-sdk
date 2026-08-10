@@ -29,6 +29,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.trim() === value;
 
+/** True only for the canonical, unpadded RFC 4648 base64url spelling. */
+function isCanonicalBase64Url(value: unknown): value is string {
+  if (!isNonEmptyString(value) || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  try {
+    return Buffer.from(value, "base64url").toString("base64url") === value;
+  } catch {
+    return false;
+  }
+}
+
 export function isComponentSignature(
   value: unknown,
 ): value is ComponentSignature {
@@ -37,7 +47,7 @@ export function isComponentSignature(
     typeof value.algorithm === "string" &&
     ALGORITHM_SET.has(value.algorithm) &&
     isNonEmptyString(value.signer) &&
-    isNonEmptyString(value.value)
+    isCanonicalBase64Url(value.value)
   );
 }
 
@@ -48,8 +58,8 @@ export type ComponentSignedArtifact<T extends object> = Omit<T, "signature"> & {
 
 /**
  * Signs the already-domain-separated bytes. Returning bytes uses the SDK's
- * unpadded base64url encoding; returning a string preserves a wallet's
- * native wire encoding.
+ * unpadded base64url encoding. String-returning wallets must already return
+ * that canonical wire encoding; alternate encodings are rejected.
  */
 export type ComponentSigner = (
   bytes: Uint8Array,
@@ -151,7 +161,7 @@ function signatureShapeReason(
     return "unsupported-algorithm";
   }
   if (!isNonEmptyString(value.signer)) return "invalid-signer";
-  if (!isNonEmptyString(value.value)) return "invalid-value";
+  if (!isCanonicalBase64Url(value.value)) return "invalid-value";
   return null;
 }
 
@@ -176,8 +186,10 @@ function encodedSignatureValue(value: Uint8Array | string): string {
     typeof value === "string"
       ? value
       : Buffer.from(value).toString("base64url");
-  if (!isNonEmptyString(encoded)) {
-    throw new DacsError("component signer returned an empty signature value");
+  if (!isCanonicalBase64Url(encoded)) {
+    throw new DacsError(
+      "component signer must return a canonical unpadded base64url signature value",
+    );
   }
   return encoded;
 }

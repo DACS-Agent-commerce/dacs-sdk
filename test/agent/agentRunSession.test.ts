@@ -3,10 +3,13 @@ import { describe, expect, test } from "vitest";
 import { buildAgent } from "../../src/agent/Agent.js";
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { verifyComponentSignature } from "../../src/artifacts/signatures.js";
 import { contentHash, stripSignature } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
+  ed25519Verify,
   privateKeyFromSeed,
+  publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
   signedBytes,
@@ -19,17 +22,20 @@ import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 // no non-live test covered it (the only Agent lifecycle test is env-skipped).
 
 const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 3));
+const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 7));
 const sellerPriv = privateKeyFromSeed(SELLER_SEED);
+const buyerPriv = privateKeyFromSeed(BUYER_SEED);
 const sellerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(SELLER_SEED))).toString("hex");
 const sellerDid = `did:demos:agent:${sellerHex}`;
-const buyerDid = "did:demos:agent:buyer";
+const buyerPublicKey = rawPublicKey(publicKeyFromSeed(BUYER_SEED));
+const buyerDid = `did:demos:agent:${Buffer.from(buyerPublicKey).toString("hex")}`;
 
 /** In-memory adapter — just the surface buildAgent's runSession path touches. */
 function memAdapter() {
   const store = new Map<string, Record<string, unknown>>();
   const adapter = {
     store,
-    sign: async () => new Uint8Array(64), // buyer's artifact/bundle signature (not verified here)
+    sign: async (bytes: Uint8Array) => ed25519Sign(bytes, buyerPriv),
     anchor: async (name: string, value: object) => {
       const address = `stor:${name}`;
       store.set(address, value as Record<string, unknown>);
@@ -91,6 +97,24 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     expect(res.outcome).toBe("completed");
     expect(settled).toBe(true);
+
+    await expect(
+      verifyComponentSignature(
+        store.get(res.settlementRef)!,
+        ARTIFACT_SEPARATORS.SettlementEvidence,
+        {
+          isSignerAuthorized: (_artifact, signature) =>
+            signature.signer === buyerDid,
+          resolvePublicKey: () => buyerPublicKey,
+          verify: ({ signedBytes, signature, publicKey }) =>
+            ed25519Verify(
+              signedBytes,
+              Uint8Array.from(Buffer.from(signature.value, "base64url")),
+              publicKeyFromRaw(publicKey),
+            ),
+        },
+      ),
+    ).resolves.toMatchObject({ status: "valid" });
   });
 
   test("a listing signed by the WRONG key aborts before settlement — never pays", async () => {
