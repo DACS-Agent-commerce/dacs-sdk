@@ -31,6 +31,8 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
+import type { ListingValidationResult } from "./listingValidation.js";
+import type { ListingRailAuthorityInput } from "./listingValidation.js";
 import { publishListingCore } from "./publishListingCore.js";
 import {
   authenticateReadableListingArtifact,
@@ -145,6 +147,13 @@ export interface RunSessionOptions {
    * key and reconcile every ordered `req.priorAttempts` entry before returning.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
+  /**
+   * Full DACS-1 §6.3.4 reader validation. Required at runtime for normative
+   * Listings; only a `verified` disposition may start a new session (LR-3).
+   */
+  validateListing?: (
+    raw: Record<string, unknown>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult;
 }
 
 export interface AgentConfig {
@@ -154,6 +163,17 @@ export interface AgentConfig {
   wallet: string;
   /** Optional identity metadata (e.g. the agent's DID / primary claim). */
   identity?: { agentId?: string };
+  /** DACS-1 §6.3.4 LP-6 authority read for pay-bearing Listing publication. */
+  loadListingRailResolution?: (
+    listing: Readonly<ListingDraft>,
+  ) => Promise<ListingRailAuthorityInput> | ListingRailAuthorityInput;
+  /**
+   * DACS-1 §6.3.4 full reader validation shared by normative discovery and,
+   * unless overridden per call, new-session admission.
+   */
+  validateListing?: (
+    raw: Record<string, unknown>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult;
 }
 
 export interface PublishResult {
@@ -339,6 +359,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
         scanOwnAnchorsByNamePrefix: (prefix) =>
           adapter.scanOwnAnchorsByNamePrefix(prefix),
         anchorWriteOnce: (name, value) => adapter.anchorWriteOnce(name, value),
+        loadRailResolution: config.loadListingRailResolution,
       });
     },
 
@@ -359,6 +380,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
         verify: ed25519RawVerify,
         resolvePublicKey: (claim) => publicKeyFromDid(claim),
+        validateListing: config.validateListing,
       });
     },
 
@@ -665,6 +687,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           resumeSettlement,
           vet,
           newJobId: () => generateCanonicalJobId(),
+          validateListing: opts.validateListing ?? config.validateListing,
           now: () => new Date().toISOString(),
           nowMs: () => Date.now(),
           sessionStore,

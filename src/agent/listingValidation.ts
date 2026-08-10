@@ -1,0 +1,948 @@
+import { isIP } from "node:net";
+
+import type {
+  ComponentSignature,
+  IdentityBundle,
+  Listing,
+  PaymentRailRef,
+  RevocationBinding,
+  RevocationMarker,
+} from "../artifacts/types.js";
+import {
+  isListingEnvelope,
+  isListingPipelineValid,
+  isPaymentRailRef,
+  isRevocationBinding,
+  isRevocationMarker,
+} from "../artifacts/validators.js";
+import {
+  canonicalize,
+  contentHash,
+  encodeAddressSegment,
+  sha256Hex,
+} from "../canonical/index.js";
+import {
+  ed25519Verify,
+  publicKeyFromRaw,
+  signedBytes,
+} from "../crypto/index.js";
+
+/** DACS-1 §6.3.4 reader result; LR-3 permits new sessions only for `verified`. */
+export type ListingValidationDisposition =
+  | "verified"
+  | "rejected"
+  | "revoked"
+  | "indeterminate";
+
+/** DACS-1 §6.3.4 RB-4..RB-6 three-way revocation result. */
+export type RevocationCheck = "absent" | "revoked" | "indeterminate";
+
+/** DACS-1 §6.3.4 LRR-1..LRR-6 listing-time rail result. */
+export type ListingRailResolution =
+  | "verified"
+  | "rejected"
+  | "indeterminate";
+
+export interface ListingRailResolutionResult {
+  disposition: ListingRailResolution;
+  reason: string;
+  /** DACS-1 §6.3.4 LRR-6 disclosed authority basis. */
+  authorityBasis?: "pa1-in-code" | "pa2" | "pa3";
+}
+
+export interface ListingValidationResult {
+  disposition: ListingValidationDisposition;
+  /** Normative reader step that determined the result. */
+  step: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+  reason: string;
+  listing?: Listing;
+  listingContentHash?: string;
+  revocation?: RevocationCheck;
+  railResolution?: ListingRailResolutionResult;
+}
+
+export type SignatureVerifier = (input: {
+  signedBytes: Uint8Array;
+  signature: Readonly<ComponentSignature>;
+}) => Promise<boolean> | boolean;
+
+export interface RevocationSurface {
+  /** DACS-1 §6.3.5/§6.3.6 discovery surface consulted under RB-6. */
+  kind: "well-known" | "catalog";
+  status: "active" | "revoked";
+  /** Explicit RB-6 transport/read outcome; failures are never omitted as absence. */
+  readStatus?: "ok" | "unavailable";
+  readFailureReason?: string;
+  /** A well-known index is usable only after its listings/indexHash check. */
+  integrity?: "verified" | "indeterminate";
+  /** Catalog observation time; an entry older than 24h cannot establish absence. */
+  catalogObservedAt?: number;
+  binding?: RevocationBinding;
+}
+
+export interface ListingRevocationDeps {
+  nowMs: () => number;
+  surfaces: RevocationSurface[];
+  readMarker: (
+    anchor: RevocationBinding["markerAnchor"],
+  ) => Promise<Record<string, unknown> | null>;
+  verifyMarkerSignature: SignatureVerifier;
+}
+
+export interface RevocationCheckResult {
+  disposition: RevocationCheck;
+  reason: string;
+}
+
+const revocationLogicalAddress = (listing: Listing): string =>
+  `dacs1-revoked:${encodeAddressSegment(
+    listing.seller.identity.presentedBy,
+  )}:${listing.listingId}:v${listing.listingVersion}`;
+
+async function checkRevokedSurface(
+  listing: Listing,
+  listingContentHash: string,
+  surface: RevocationSurface,
+  deps: ListingRevocationDeps,
+): Promise<RevocationCheckResult> {
+  if (surface.readStatus === "unavailable") {
+    return {
+      disposition: "indeterminate",
+      reason: surface.readFailureReason ?? "surface-unavailable",
+    };
+  }
+  if (surface.kind === "well-known" && surface.integrity !== "verified") {
+    return { disposition: "indeterminate", reason: "surface-integrity" };
+  }
+  if (
+    surface.kind === "catalog" &&
+    (surface.catalogObservedAt === undefined ||
+      surface.catalogObservedAt > deps.nowMs() ||
+      deps.nowMs() - surface.catalogObservedAt > 24 * 60 * 60 * 1_000)
+  ) {
+    return { disposition: "indeterminate", reason: "catalog-stale" };
+  }
+  if (surface.status === "active") {
+    return surface.binding
+      ? { disposition: "indeterminate", reason: "active-record-has-binding" }
+      : { disposition: "absent", reason: "integrity-consistent-active-record" };
+  }
+  if (!surface.binding || !isRevocationBinding(surface.binding)) {
+    return { disposition: "indeterminate", reason: "required-binding-missing" };
+  }
+
+  const binding = surface.binding;
+  if (
+    binding.sellerPrimaryClaim !== listing.seller.identity.presentedBy ||
+    binding.listingId !== listing.listingId ||
+    binding.listingVersion !== listing.listingVersion ||
+    binding.listingContentHash !== listingContentHash
+  ) {
+    return { disposition: "indeterminate", reason: "binding-tuple-mismatch" };
+  }
+  if (binding.logicalAddress !== revocationLogicalAddress(listing)) {
+    return { disposition: "indeterminate", reason: "logical-address-mismatch" };
+  }
+
+  let raw: Record<string, unknown> | null;
+  try {
+    raw = await deps.readMarker(binding.markerAnchor);
+  } catch {
+    return { disposition: "indeterminate", reason: "marker-fetch-failed" };
+  }
+  if (!raw || !isRevocationMarker(raw)) {
+    return { disposition: "indeterminate", reason: "marker-unreadable" };
+  }
+  const marker: RevocationMarker = raw;
+  if (contentHash(raw) !== binding.markerContentHash) {
+    return { disposition: "indeterminate", reason: "marker-content-hash-mismatch" };
+  }
+  if (
+    marker.listingId !== listing.listingId ||
+    marker.listingVersion !== listing.listingVersion ||
+    marker.listingContentHash !== listingContentHash
+  ) {
+    return { disposition: "indeterminate", reason: "marker-tuple-mismatch" };
+  }
+  if (marker.signature.signer !== listing.signature.signer) {
+    return { disposition: "indeterminate", reason: "marker-signer-mismatch" };
+  }
+  let signatureValid = false;
+  try {
+    signatureValid = await deps.verifyMarkerSignature({
+      signedBytes: signedBytes("dacs-revocation:v1:", contentHash(raw)),
+      signature: marker.signature,
+    });
+  } catch {
+    signatureValid = false;
+  }
+  return signatureValid
+    ? { disposition: "revoked", reason: "verified-revocation-marker" }
+    : { disposition: "indeterminate", reason: "marker-signature-invalid" };
+}
+
+/**
+ * Execute DACS-1 §6.3.4 RB-4..RB-6. A binding is discovery only: this function
+ * fetches and verifies the marker before returning `revoked`.
+ */
+export async function checkListingRevocation(
+  listing: Listing,
+  listingContentHash: string,
+  deps: ListingRevocationDeps,
+): Promise<RevocationCheckResult> {
+  if (deps.surfaces.length === 0) {
+    return { disposition: "indeterminate", reason: "no-revocation-surface" };
+  }
+  const checks: RevocationCheckResult[] = [];
+  for (const surface of deps.surfaces) {
+    checks.push(
+      await checkRevokedSurface(listing, listingContentHash, surface, deps),
+    );
+  }
+  return (
+    checks.find((result) => result.disposition === "revoked") ??
+    checks.find((result) => result.disposition === "indeterminate") ??
+    checks[0]!
+  );
+}
+
+export interface ListingPayPhaseClaim {
+  kind: unknown;
+  rail: unknown;
+}
+
+export interface RailRegistryEntry {
+  railId: string;
+  latestVersion: number;
+  versions: number[];
+}
+
+export interface RailDefinitionProof {
+  unsigned: Record<string, unknown>;
+  indexContentHash: string;
+  stewardPublicKey: string;
+  signature: string;
+}
+
+export interface ListingRailDefinition {
+  railId: string;
+  railVersion: number;
+  phaseHandler: string;
+  state?: "verified-finalized" | "verified-included" | "unavailable";
+  governanceAnchoring?: string;
+  signatureValid?: boolean;
+  proof?: RailDefinitionProof;
+}
+
+export interface ListingRailResolutionInput {
+  trustPhase: "PA-1" | "PA-2" | "PA-3";
+  trustPolicyAcceptsPA1?: boolean;
+  payPhases: ListingPayPhaseClaim[];
+  acceptedRails: unknown[];
+  registry: {
+    state:
+      | "verified-finalized"
+      | "verified-included"
+      | "unavailable"
+      | "absent"
+      | "invalid-authority"
+      | "not-used";
+    entries: RailRegistryEntry[];
+    definitions: ListingRailDefinition[];
+  };
+  inCodeDefinitions?: ListingRailDefinition[];
+}
+
+/**
+ * DACS-1 §6.3.4 LRR-2/LRR-6 authority material supplied by an integration.
+ * Signed Listing inputs are intentionally excluded and reattached by the SDK,
+ * so a loader cannot accidentally validate a different rail claim set.
+ */
+export type ListingRailAuthorityInput = Omit<
+  ListingRailResolutionInput,
+  "payPhases" | "acceptedRails"
+>;
+
+const railResult = (
+  disposition: ListingRailResolution,
+  reason: string,
+  authorityBasis?: ListingRailResolutionResult["authorityBasis"],
+): ListingRailResolutionResult => ({
+  disposition,
+  reason,
+  ...(authorityBasis ? { authorityBasis } : {}),
+});
+
+function validateRailProof(
+  proof: RailDefinitionProof,
+): "valid" | "hash-mismatch" | "signature-invalid" {
+  let hash: string;
+  try {
+    hash = sha256Hex(canonicalize(proof.unsigned));
+  } catch {
+    return "hash-mismatch";
+  }
+  if (hash !== proof.indexContentHash) return "hash-mismatch";
+  try {
+    const key = Buffer.from(proof.stewardPublicKey, "base64url");
+    const signature = Buffer.from(proof.signature, "base64url");
+    if (key.length !== 32 || signature.length !== 64) return "signature-invalid";
+    return ed25519Verify(
+      signedBytes("dacs-rail:v1:", hash),
+      signature,
+      publicKeyFromRaw(key),
+    )
+      ? "valid"
+      : "signature-invalid";
+  } catch {
+    return "signature-invalid";
+  }
+}
+
+function staticRailBinding(
+  input: ListingRailResolutionInput,
+): ListingRailResolutionResult | null {
+  if (input.payPhases.length === 0) {
+    return railResult("verified", "not-applicable");
+  }
+  if (input.acceptedRails.length === 0) {
+    return railResult("rejected", "missing-accepted-rails");
+  }
+  if (!input.acceptedRails.every(isPaymentRailRef)) {
+    return railResult("rejected", "malformed-accepted-rail");
+  }
+  if (
+    input.payPhases.some(
+      (phase) =>
+        typeof phase.kind !== "string" ||
+        !phase.kind.startsWith("pay-") ||
+        typeof phase.rail !== "string" ||
+        phase.rail.length === 0,
+    )
+  ) {
+    return railResult("rejected", "malformed-pay-rail");
+  }
+  const rails = input.acceptedRails as PaymentRailRef[];
+  const canonical = rails.map((rail) => canonicalize(rail));
+  if (new Set(canonical).size !== canonical.length) {
+    return railResult("rejected", "duplicate-accepted-rail-ref");
+  }
+  if (
+    input.payPhases.some(
+      (phase) => !rails.some((rail) => rail.railId === phase.rail),
+    )
+  ) {
+    return railResult("rejected", "pay-rail-not-accepted");
+  }
+  return null;
+}
+
+function handlerCheck(
+  payPhases: ListingPayPhaseClaim[],
+  definitions: ListingRailDefinition[],
+): ListingRailResolutionResult | null {
+  for (const phase of payPhases) {
+    const matching = definitions.filter((definition) => definition.railId === phase.rail);
+    if (
+      matching.some(
+        (definition) =>
+          definition.phaseHandler !== phase.kind ||
+          definition.phaseHandler !== matching[0]?.phaseHandler,
+      )
+    ) {
+      return railResult("rejected", "phase-handler-mismatch");
+    }
+  }
+  return null;
+}
+
+function resolvePa1(
+  input: ListingRailResolutionInput,
+): ListingRailResolutionResult {
+  if (!input.trustPolicyAcceptsPA1) {
+    return railResult("indeterminate", "pa1-not-accepted", "pa1-in-code");
+  }
+  const rails = input.acceptedRails as PaymentRailRef[];
+  const available = input.inCodeDefinitions ?? [];
+  const selected: ListingRailDefinition[] = [];
+  let indeterminateReason: string | undefined;
+
+  for (const ref of rails) {
+    const versions = available.filter((definition) => definition.railId === ref.railId);
+    if (versions.length === 0) {
+      return railResult("rejected", "unknown-rail", "pa1-in-code");
+    }
+    if (new Set(versions.map((definition) => definition.phaseHandler)).size !== 1) {
+      return railResult("rejected", "pa1-handler-version-drift", "pa1-in-code");
+    }
+    const targetVersion =
+      ref.railVersion ?? Math.max(...versions.map((definition) => definition.railVersion));
+    const matches = versions.filter(
+      (definition) => definition.railVersion === targetVersion,
+    );
+    if (matches.length === 0) {
+      return railResult("rejected", "unknown-rail-version", "pa1-in-code");
+    }
+    if (matches.length > 1) {
+      return railResult("rejected", "pa1-ambiguous-version", "pa1-in-code");
+    }
+    const definition = matches[0]!;
+    selected.push(definition);
+    if (
+      definition.governanceAnchoring !== "in-code" ||
+      definition.signatureValid !== true
+    ) {
+      indeterminateReason ??= "pa1-definition-unverifiable";
+    }
+  }
+  const handler = handlerCheck(input.payPhases, selected);
+  if (handler) return { ...handler, authorityBasis: "pa1-in-code" };
+  return indeterminateReason
+    ? railResult("indeterminate", indeterminateReason, "pa1-in-code")
+    : railResult("verified", "verified-pa1", "pa1-in-code");
+}
+
+function resolveAnchoredRegistry(
+  input: ListingRailResolutionInput,
+): ListingRailResolutionResult {
+  const authorityBasis = input.trustPhase === "PA-3" ? "pa3" : "pa2";
+  switch (input.registry.state) {
+    case "unavailable":
+    case "absent":
+      return railResult("indeterminate", "registry-unavailable", authorityBasis);
+    case "verified-included":
+      return railResult("indeterminate", "registry-not-finalized", authorityBasis);
+    case "invalid-authority":
+    case "not-used":
+      return railResult(
+        "indeterminate",
+        "registry-unverifiable-no-fallback",
+        authorityBasis,
+      );
+    case "verified-finalized":
+      break;
+  }
+
+  const rails = input.acceptedRails as PaymentRailRef[];
+  const selections: Array<{
+    ref: PaymentRailRef;
+    version: number;
+    entry: RailRegistryEntry;
+  }> = [];
+  for (const ref of rails) {
+    const entries = input.registry.entries.filter((entry) => entry.railId === ref.railId);
+    if (entries.length !== 1) {
+      return railResult("rejected", "unknown-rail", authorityBasis);
+    }
+    const entry = entries[0]!;
+    const version = ref.railVersion ?? entry.latestVersion;
+    if (!entry.versions.includes(version)) {
+      return railResult("rejected", "unknown-rail-version", authorityBasis);
+    }
+    selections.push({ ref, version, entry });
+  }
+
+  const selected: ListingRailDefinition[] = [];
+  let indeterminateReason: string | undefined;
+  for (const selection of selections) {
+    const matches = input.registry.definitions.filter(
+      (definition) =>
+        definition.railId === selection.ref.railId &&
+        definition.railVersion === selection.version,
+    );
+    if (matches.length !== 1) {
+      indeterminateReason ??= "rail-definition-unavailable";
+      continue;
+    }
+    const definition = matches[0]!;
+    selected.push(definition);
+    if (definition.state !== "verified-finalized") {
+      indeterminateReason ??= "rail-definition-unavailable";
+      continue;
+    }
+    if (definition.proof) {
+      const proof = validateRailProof(definition.proof);
+      if (proof === "hash-mismatch") {
+        indeterminateReason ??= "rail-definition-hash-mismatch";
+      } else if (proof === "signature-invalid") {
+        indeterminateReason ??= "rail-definition-signature-invalid";
+      } else if (
+        definition.proof.unsigned.railId !== definition.railId ||
+        definition.proof.unsigned.railVersion !== definition.railVersion ||
+        definition.proof.unsigned.phaseHandler !== definition.phaseHandler
+      ) {
+        return railResult("rejected", "rail-definition-tuple-mismatch", authorityBasis);
+      }
+    }
+  }
+
+  const handler = handlerCheck(input.payPhases, selected);
+  if (handler) return { ...handler, authorityBasis };
+  return indeterminateReason
+    ? railResult("indeterminate", indeterminateReason, authorityBasis)
+    : railResult("verified", "verified", authorityBasis);
+}
+
+/** Execute DACS-1 §6.3.4 LRR-1..LRR-6 over one authenticated snapshot. */
+export function resolveListingRails(
+  input: ListingRailResolutionInput,
+): ListingRailResolutionResult {
+  const staticFailure = staticRailBinding(input);
+  if (staticFailure) return staticFailure;
+  return input.trustPhase === "PA-1"
+    ? resolvePa1(input)
+    : resolveAnchoredRegistry(input);
+}
+
+export interface ListingValidationDeps {
+  nowMs: () => number;
+  verifyListingSignature: SignatureVerifier;
+  revocation: Omit<ListingRevocationDeps, "nowMs">;
+  /** DACS-1 §6.3.2 BP-1..BP-4 verifier over the exact presentation payload. */
+  verifyIdentityPresentation: (input: {
+    bundle: Readonly<IdentityBundle>;
+    signedBytes: Uint8Array;
+  }) => Promise<boolean> | boolean;
+  /** Load the authenticated DACS-4 authority view required by LRR-2/LRR-6. */
+  loadRailResolution?: (
+    listing: Readonly<Listing>,
+  ) => Promise<ListingRailAuthorityInput> | ListingRailAuthorityInput;
+  /** DACS-1 §6.3.4 step 9 control proof; claim membership alone is insufficient. */
+  verifySellerControl: (input: {
+    bundle: Readonly<IdentityBundle>;
+    signer: string;
+  }) => Promise<boolean> | boolean;
+}
+
+const identityPresentationBytes = (bundle: IdentityBundle): Uint8Array => {
+  const { presentation: _presentation, ...signedScope } = bundle;
+  return signedBytes(
+    "dacs-bundle-presentation:v1:",
+    sha256Hex(canonicalize(signedScope)),
+  );
+};
+
+/**
+ * Execute the ordered DACS-1 §6.3.4 reader algorithm. LRR `indeterminate` is
+ * retained through step 9 so a signer-control failure still terminates as
+ * `rejected`, exactly as the Standard requires.
+ */
+export async function validateListingArtifact(
+  raw: Record<string, unknown>,
+  deps: ListingValidationDeps,
+): Promise<ListingValidationResult> {
+  if (!isListingEnvelope(raw)) {
+    return { disposition: "rejected", step: 1, reason: "schema-invalid" };
+  }
+  const envelope = raw;
+  if (envelope.dacsVersion !== "1") {
+    return {
+      disposition: "rejected",
+      step: 2,
+      reason: "unsupported-dacs-major-version",
+    };
+  }
+  const listing = envelope as Listing;
+  const now = deps.nowMs();
+  if (
+    now < listing.validity.notBefore ||
+    (listing.validity.notAfter !== undefined && now > listing.validity.notAfter)
+  ) {
+    return { disposition: "rejected", step: 3, reason: "outside-validity-window", listing };
+  }
+
+  const listingContentHash = contentHash(raw);
+  let listingSignatureValid = false;
+  try {
+    listingSignatureValid = await deps.verifyListingSignature({
+      signedBytes: signedBytes("dacs-listing:v1:", listingContentHash),
+      signature: listing.signature,
+    });
+  } catch {
+    listingSignatureValid = false;
+  }
+  if (!listingSignatureValid) {
+    return {
+      disposition: "rejected",
+      step: 4,
+      reason: "listing-signature-invalid",
+      listing,
+      listingContentHash,
+    };
+  }
+
+  const revocation = await checkListingRevocation(listing, listingContentHash, {
+    ...deps.revocation,
+    nowMs: deps.nowMs,
+  });
+  if (revocation.disposition !== "absent") {
+    return {
+      disposition: revocation.disposition,
+      step: 5,
+      reason: revocation.reason,
+      listing,
+      listingContentHash,
+      revocation: revocation.disposition,
+    };
+  }
+
+  let identityVerified = false;
+  try {
+    identityVerified = await deps.verifyIdentityPresentation({
+      bundle: listing.seller.identity,
+      signedBytes: identityPresentationBytes(listing.seller.identity),
+    });
+  } catch {
+    identityVerified = false;
+  }
+  if (!identityVerified) {
+    return {
+      disposition: "rejected",
+      step: 6,
+      reason: "identity-presentation-invalid",
+      listing,
+      listingContentHash,
+      revocation: "absent",
+    };
+  }
+  if (!isListingPipelineValid(listing)) {
+    return {
+      disposition: "rejected",
+      step: 7,
+      reason: "pipeline-invalid",
+      listing,
+      listingContentHash,
+      revocation: "absent",
+    };
+  }
+
+  const payPhases = listing.pipeline
+    .filter((phase) => phase.kind.startsWith("pay-"))
+    .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail }));
+  let railResolution = railResult("verified", "not-applicable");
+  if (payPhases.length > 0) {
+    if (!deps.loadRailResolution) {
+      railResolution = railResult("indeterminate", "rail-authority-unavailable");
+    } else {
+      try {
+        railResolution = resolveListingRails({
+          ...(await deps.loadRailResolution(listing)),
+          payPhases,
+          acceptedRails: listing.acceptedRails ?? [],
+        });
+      } catch {
+        railResolution = railResult("indeterminate", "rail-authority-unavailable");
+      }
+    }
+    if (railResolution.disposition === "rejected") {
+      return {
+        disposition: "rejected",
+        step: 8,
+        reason: railResolution.reason,
+        listing,
+        listingContentHash,
+        revocation: "absent",
+        railResolution,
+      };
+    }
+  }
+
+  const signerIsCarried = listing.seller.identity.claims.some(
+    (claim) => claim.ref === listing.signature.signer,
+  );
+  let signerControlled = false;
+  if (signerIsCarried) {
+    try {
+      signerControlled = await deps.verifySellerControl({
+        bundle: listing.seller.identity,
+        signer: listing.signature.signer,
+      });
+    } catch {
+      signerControlled = false;
+    }
+  }
+  if (!signerIsCarried || !signerControlled) {
+    return {
+      disposition: "rejected",
+      step: 9,
+      reason: signerIsCarried ? "signer-control-invalid" : "signer-not-in-identity",
+      listing,
+      listingContentHash,
+      revocation: "absent",
+      railResolution,
+    };
+  }
+  if (railResolution.disposition === "indeterminate") {
+    return {
+      disposition: "indeterminate",
+      step: 8,
+      reason: railResolution.reason,
+      listing,
+      listingContentHash,
+      revocation: "absent",
+      railResolution,
+    };
+  }
+  return {
+    disposition: "verified",
+    step: 9,
+    reason: "verified",
+    listing,
+    listingContentHash,
+    revocation: "absent",
+    railResolution,
+  };
+}
+
+export type ListingReachability = "reachable" | "unreachable" | "indeterminate";
+
+export interface ReachabilityProbeResult {
+  status: number;
+  bytes: number;
+  redirected?: boolean;
+  actionable: boolean;
+}
+
+export interface ListingReachabilityDeps {
+  nowMs: () => number;
+  resolveHost: (hostname: string) => Promise<string[]>;
+  /**
+   * Implementations MUST connect only to one of `approvedAddresses`, disable
+   * redirects and credentials, enforce `timeoutMs`, stop at `maxBytes` after
+   * decoding, and repeat DNS/address validation before every new connection.
+   */
+  probe: (input: {
+    url: string;
+    approvedAddresses: string[];
+    timeoutMs: number;
+    maxBytes: number;
+    redirect: "error";
+    credentials: "omit";
+  }) => Promise<ReachabilityProbeResult>;
+  timeoutMs?: number;
+  maxBytes?: number;
+  /**
+   * Additional HTTPS surfaces supplied by an authenticated owning rail or
+   * negotiation registry. Non-HTTPS coordinates remain governed and probed by
+   * that registry; they are not reinterpreted as SDK-created URL conventions.
+   */
+  registryHttpsSurfaces?: readonly string[];
+}
+
+export interface ListingReachabilityResult {
+  status: ListingReachability;
+  checkedAt: number;
+  reason: string;
+  url?: string;
+}
+
+const ipv4Number = (address: string): number | null => {
+  if (isIP(address) !== 4) return null;
+  return address
+    .split(".")
+    .map(Number)
+    .reduce((value, part) => value * 256 + part, 0) >>> 0;
+};
+
+const ipv4InCidr = (value: number, base: string, prefix: number): boolean => {
+  const baseValue = ipv4Number(base);
+  if (baseValue === null) return false;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (value & mask) === (baseValue & mask);
+};
+
+function ipv6Number(address: string): bigint | null {
+  if (address.includes("%")) return null; // zone identifiers are link-scoped
+  let value = address.toLowerCase();
+  const ipv4Tail = value.match(/(?:^|:)(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  if (ipv4Tail) {
+    const encoded = ipv4Number(ipv4Tail);
+    if (encoded === null) return null;
+    value = `${value.slice(0, -ipv4Tail.length)}${(encoded >>> 16).toString(16)}:${(
+      encoded & 0xffff
+    ).toString(16)}`;
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0]!.split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1]!.split(":") : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || missing < 0) return null;
+  const groups = [...left, ...Array(missing).fill("0"), ...right];
+  if (
+    groups.length !== 8 ||
+    groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))
+  ) {
+    return null;
+  }
+  return groups.reduce(
+    (result, group) => (result << 16n) | BigInt(parseInt(group, 16)),
+    0n,
+  );
+}
+
+const ipv6InCidr = (value: bigint, base: string, prefix: number): boolean => {
+  const baseValue = ipv6Number(base);
+  if (baseValue === null) return false;
+  const shift = BigInt(128 - prefix);
+  return value >> shift === baseValue >> shift;
+};
+
+function isPublicAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) {
+    const value = ipv4Number(address)!;
+    return ![
+      ["0.0.0.0", 8],
+      ["10.0.0.0", 8],
+      ["100.64.0.0", 10],
+      ["127.0.0.0", 8],
+      ["169.254.0.0", 16],
+      ["172.16.0.0", 12],
+      ["192.0.0.0", 24],
+      ["192.0.2.0", 24],
+      ["192.31.196.0", 24],
+      ["192.52.193.0", 24],
+      ["192.88.99.0", 24],
+      ["192.168.0.0", 16],
+      ["192.175.48.0", 24],
+      ["198.18.0.0", 15],
+      ["198.51.100.0", 24],
+      ["203.0.113.0", 24],
+      ["224.0.0.0", 4],
+      ["240.0.0.0", 4],
+    ].some(([base, prefix]) => ipv4InCidr(value, base as string, prefix as number));
+  }
+  if (family === 6) {
+    const value = ipv6Number(address);
+    if (value === null) return false;
+    return ![
+      ["::", 96],
+      ["::ffff:0:0", 96],
+      ["64:ff9b::", 96],
+      ["64:ff9b:1::", 48],
+      ["100::", 64],
+      ["2001::", 23],
+      ["2001:db8::", 32],
+      ["2002::", 16],
+      ["fc00::", 7],
+      ["fe80::", 10],
+      ["fec0::", 10],
+      ["ff00::", 8],
+    ].some(([base, prefix]) => ipv6InCidr(value, base as string, prefix as number));
+  }
+  return false;
+}
+
+/**
+ * DACS-1 §6.3.4 LP-5 operational reachability. The result is intentionally
+ * separate from Listing validity, signature, revocation, and reputation.
+ */
+async function assessEndpoint(
+  endpoint: string,
+  checkedAt: number,
+  deps: ListingReachabilityDeps,
+): Promise<ListingReachabilityResult> {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return { status: "unreachable", checkedAt, reason: "invalid-endpoint", url: endpoint };
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hostname === "localhost"
+  ) {
+    return { status: "unreachable", checkedAt, reason: "unsafe-endpoint", url: endpoint };
+  }
+  const hostname = url.hostname.startsWith("[") && url.hostname.endsWith("]")
+    ? url.hostname.slice(1, -1)
+    : url.hostname;
+  let addresses: string[];
+  try {
+    addresses = await deps.resolveHost(hostname);
+  } catch {
+    return { status: "indeterminate", checkedAt, reason: "dns-unavailable", url: endpoint };
+  }
+  if (addresses.length === 0) {
+    return { status: "indeterminate", checkedAt, reason: "dns-empty", url: endpoint };
+  }
+  if (!addresses.every(isPublicAddress)) {
+    return { status: "unreachable", checkedAt, reason: "non-public-address", url: endpoint };
+  }
+  try {
+    const timeoutMs =
+      Number.isFinite(deps.timeoutMs) && (deps.timeoutMs ?? 0) > 0
+        ? deps.timeoutMs!
+        : 5_000;
+    const maxBytes =
+      Number.isSafeInteger(deps.maxBytes) && (deps.maxBytes ?? 0) > 0
+        ? deps.maxBytes!
+        : 64 * 1_024;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("probe-timeout")), timeoutMs);
+    });
+    let response: ReachabilityProbeResult;
+    try {
+      response = await Promise.race([
+        deps.probe({
+          url: endpoint,
+          approvedAddresses: [...new Set(addresses)],
+          timeoutMs,
+          maxBytes,
+          redirect: "error",
+          credentials: "omit",
+        }),
+        timeout,
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    if (response.redirected) {
+      return { status: "unreachable", checkedAt, reason: "redirect-refused", url: endpoint };
+    }
+    if (response.bytes > maxBytes) {
+      return { status: "unreachable", checkedAt, reason: "response-too-large", url: endpoint };
+    }
+    return response.status >= 200 && response.status < 300 && response.actionable
+      ? { status: "reachable", checkedAt, reason: "actionable", url: endpoint }
+      : { status: "unreachable", checkedAt, reason: "not-actionable", url: endpoint };
+  } catch (error) {
+    return {
+      status: "indeterminate",
+      checkedAt,
+      reason:
+        error instanceof Error && error.message === "probe-timeout"
+          ? "probe-timeout"
+          : "probe-failed",
+      url: endpoint,
+    };
+  }
+}
+
+export async function assessListingReachability(
+  listing: Listing,
+  deps: ListingReachabilityDeps,
+): Promise<ListingReachabilityResult> {
+  const checkedAt = deps.nowMs();
+  const surfaces = [
+    ...(listing.seller.publicEndpoint ? [listing.seller.publicEndpoint] : []),
+    ...(deps.registryHttpsSurfaces ?? []),
+  ];
+  if (surfaces.length === 0) {
+    return { status: "indeterminate", checkedAt, reason: "no-engagement-surface" };
+  }
+  const results: ListingReachabilityResult[] = [];
+  for (const surface of [...new Set(surfaces)]) {
+    const result = await assessEndpoint(surface, checkedAt, deps);
+    if (result.status === "reachable") return result;
+    results.push(result);
+  }
+  return (
+    results.find((result) => result.status === "indeterminate") ??
+    results[0]!
+  );
+}

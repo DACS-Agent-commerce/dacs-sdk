@@ -40,6 +40,24 @@ function fakeDeps() {
     store,
     stats,
     sign,
+    loadRailResolution: (draft) => ({
+      trustPhase: "PA-1",
+      trustPolicyAcceptsPA1: true,
+      payPhases: draft.pipeline
+        .filter((phase) => phase.kind.startsWith("pay-"))
+        .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail })),
+      acceptedRails: draft.acceptedRails ?? [],
+      registry: { state: "not-used", entries: [], definitions: [] },
+      inCodeDefinitions: [
+        {
+          railId: "x402:default",
+          railVersion: 1,
+          phaseHandler: "pay-x402",
+          governanceAnchoring: "in-code",
+          signatureValid: true,
+        },
+      ],
+    }),
     scanOwnAnchorsByNamePrefix: async (prefix) => ({
       status: "ok",
       anchors: [...addresses.entries()]
@@ -140,6 +158,29 @@ const signedListing = (over: Record<string, unknown> = {}) =>
   });
 
 describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () => {
+  test("LP-6 refuses pay-bearing publication without authoritative rail resolution", async () => {
+    const deps = fakeDeps();
+    delete deps.loadRailResolution;
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(/LP-6/);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("LP-6 refuses an indeterminate rail authority before signing or anchoring", async () => {
+    const deps = fakeDeps();
+    deps.loadRailResolution = (draft) => ({
+      trustPhase: "PA-2",
+      payPhases: draft.pipeline
+        .filter((phase) => phase.kind.startsWith("pay-"))
+        .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail })),
+      acceptedRails: draft.acceptedRails ?? [],
+      registry: { state: "unavailable", entries: [], definitions: [] },
+    });
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /indeterminate.*registry-unavailable.*LP-6/,
+    );
+    expect(deps.stats.creates).toBe(0);
+  });
+
   test("publishes a normative signed v1 and returns its exact LR-1 pin", async () => {
     const deps = fakeDeps();
     const res = await publishListingCore(listing(), deps);

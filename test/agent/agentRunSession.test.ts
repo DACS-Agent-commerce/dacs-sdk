@@ -307,6 +307,12 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     let settled = false;
     const res = await agent.runSession(ref, {
       terms: TERMS,
+      validateListing: (raw) => ({
+        disposition: "verified",
+        step: 9,
+        reason: "verified",
+        listingContentHash: contentHash(raw),
+      }),
       settle: async () => {
         settled = true;
         return { ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
@@ -394,6 +400,12 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     await expect(
       agent.runSession(ref, {
         terms: TERMS,
+        validateListing: (raw) => ({
+          disposition: "verified",
+          step: 9,
+          reason: "verified",
+          listingContentHash: contentHash(raw),
+        }),
         settle: async () => {
           settled = true;
           return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };

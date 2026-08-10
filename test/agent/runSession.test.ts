@@ -266,6 +266,12 @@ describe("runSession orchestration (T4)", () => {
       },
       makeDeps({
         readListing: async () => normative,
+        validateListing: () => ({
+          disposition: "verified",
+          step: 9,
+          reason: "verified",
+          listingContentHash: contentHash(normative),
+        }),
         settle: async (request) => {
           selectedRail = request.rail;
           selectedPhase = request.phase;
@@ -293,6 +299,55 @@ describe("runSession orchestration (T4)", () => {
     expect(selectedRail).toBe("x402:default");
     expect(selectedPhase).toBe("pay-x402");
     expect(evidence?.phase).toBe("pay-x402");
+
+    await expect(
+      runSessionCore(
+        "stor-normative-v7",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => normative,
+          validateListing: () => ({
+            disposition: "verified",
+            step: 9,
+            reason: "verified-different-content",
+            listingContentHash: "0".repeat(64),
+          }),
+        }),
+      ),
+    ).rejects.toThrow(/not bound to the exact LR-1 content hash/);
+
+    for (const disposition of [
+      "rejected",
+      "revoked",
+      "indeterminate",
+    ] as const) {
+      let settled = false;
+      await expect(
+        runSessionCore(
+          "stor-normative-v7",
+          {
+            ...TERMS,
+            price: { ...TERMS.price, rail: "x402:default" },
+          },
+          makeDeps({
+            readListing: async () => normative,
+            validateListing: () => ({
+              disposition,
+              step: disposition === "revoked" ? 5 : 8,
+              reason: `test-${disposition}`,
+            }),
+            settle: async () => {
+              settled = true;
+              throw new Error("must not settle");
+            },
+          }),
+        ),
+      ).rejects.toThrow(new RegExp(`${disposition}.*LR-3`));
+      expect(settled).toBe(false);
+    }
   });
 
   test("treats notAfter as inclusive but never bypasses a future notBefore on resume", async () => {
@@ -435,6 +490,12 @@ describe("runSession orchestration (T4)", () => {
         },
         makeDeps({
           readListing: async () => normative,
+          validateListing: () => ({
+            disposition: "verified",
+            step: 9,
+            reason: "verified",
+            listingContentHash: contentHash(normative),
+          }),
           settle: async () => {
             settles += 1;
             throw new Error("must not settle");

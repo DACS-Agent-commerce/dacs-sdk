@@ -11,6 +11,8 @@ import { readListingArtifact } from "../artifacts/validators.js";
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
+import type { ListingValidationResult } from "./listingValidation.js";
+import { contentHash } from "../canonical/index.js";
 
 /**
  * Resolve, structurally validate, and VERIFY anchored listings at the given refs
@@ -53,6 +55,13 @@ export interface DiscoverDeps {
   trustListings?: boolean;
   /** DACS-1 §6.3.4 reader step 3 clock; defaults to Date.now(). */
   nowMs?: () => number;
+  /**
+   * DACS-1 §6.3.4 ordered reader result. Required for normative Listings;
+   * discovery returns only exact-hash `verified` records.
+   */
+  validateListing?: (
+    raw: Record<string, unknown>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult;
 }
 
 export type DiscoveredListing =
@@ -313,6 +322,26 @@ export async function discoverListings(
     if (!raw) continue;
     const readable = await verifyReadableListingArtifact(raw, capturedDeps);
     if (!readable) continue;
+    if (readable.compatibility === "normative") {
+      if (!deps.validateListing) {
+        throw new DacsError(
+          "discoverListings requires deps.validateListing for normative DACS-1 " +
+            "Listings; signature validity alone is not a verified disposition",
+        );
+      }
+      let validation: ListingValidationResult;
+      try {
+        validation = await deps.validateListing(raw);
+      } catch {
+        continue;
+      }
+      if (
+        validation.disposition !== "verified" ||
+        validation.listingContentHash !== contentHash(raw)
+      ) {
+        continue;
+      }
+    }
     found.push({ ref, ...readable });
   }
   return found;

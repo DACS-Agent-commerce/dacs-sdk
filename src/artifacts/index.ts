@@ -10,7 +10,10 @@ export type {
   Price,
   Delivery,
   Listing,
+  ListingEnvelope,
   ListingSignature,
+  RevocationMarker,
+  RevocationBinding,
   ListingDraft,
   LegacyMvpListing,
   ReadableListing,
@@ -116,6 +119,11 @@ export {
 } from "./registry.js";
 export {
   isListing,
+  isListingEnvelope,
+  isListingPipelineValid,
+  isPaymentRailRef,
+  isRevocationMarker,
+  isRevocationBinding,
   isListingDraft,
   isLegacyMvpListing,
   readListingArtifact,
