@@ -38,10 +38,27 @@ import { deriveReputation } from "../../src/agent/reputationDerivation.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import {
+  assignSealedEnvelopeRoles,
+  buildSealedAgreement,
+  makeCommitment,
+  resolveSealedEnvelopeMode,
+  runSealedEnvelopeCore,
+  validateSealedAgreementForCommit,
+  validateSealedAgreementRoleAssignment,
+  type AnchoredCommit,
+  type AnchoredReveal,
+  type SealedBid,
+  type SelectionRule,
+} from "../../src/negotiate/index.js";
+import {
   deriveIdentityTier,
   type BundleClaimLike,
 } from "../../src/identity/tier.js";
-import type { AnyAttestationBundle, AttestationBundle } from "../../src/artifacts/types.js";
+import type {
+  AnyAttestationBundle,
+  AttestationBundle,
+} from "../../src/artifacts/types.js";
+import type { LegacyMvpAgreementDocument as AgreementDocument } from "../../src/artifacts/legacyMvp.js";
 
 /**
  * DACS-Standard §14 conformance — the manifest-driven harness (#6).
@@ -305,6 +322,79 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     };
   };
 
+  const SEALED_DEADLINE = 1_000_000_120_000;
+  const LISTING_PUBLISHER = "did:demos:agent:listing-publisher";
+  const WINNING_BIDDER = "did:demos:agent:winning-bidder";
+  const LOSING_BIDDER = "did:demos:agent:losing-bidder";
+  const sealedBidder = (claim: string, amount: string, offset: number) => {
+    const sealed = makeCommitment({ price: { amount, currency: "DEM" } });
+    const commit: AnchoredCommit = {
+      bidderClaim: claim,
+      bidHash: sealed.bidHash,
+      anchorTs: SEALED_DEADLINE - 1_000 + offset,
+    };
+    const reveal: AnchoredReveal = {
+      bidderClaim: claim,
+      bid: sealed.bid,
+      salt: sealed.salt,
+      anchorTs: SEALED_DEADLINE + 1_000 + offset,
+    };
+    return { commit, reveal };
+  };
+  const sealedAgreement = (ctx: Parameters<typeof buildSealedAgreement>[0]) =>
+    buildSealedAgreement(ctx, {
+      seller: LISTING_PUBLISHER,
+      listingRef: "stor-sealed-listing",
+      decimals: 0,
+      rail: "pay-dem",
+      deliveryPhase: "deliver-attested-payload",
+      deliveryFormat: "application/json",
+      expiresAt: "2026-12-31T00:00:00Z",
+    });
+  const runProcurement = async (selectionRule: SelectionRule) => {
+    const winner = sealedBidder(WINNING_BIDDER, "3", 0);
+    const loser = sealedBidder(LOSING_BIDDER, "4", 1);
+    const ruleContent = { decision: "accept" };
+    const resolvedSelectionRule = selectionRule.startsWith("rule-ref:")
+      ? `rule-ref:${sha256Hex(canonicalize(ruleContent))}:${selectionRule.slice(selectionRule.lastIndexOf(":") + 1)}` as SelectionRule
+      : selectionRule;
+    let agreement: AgreementDocument | undefined;
+    const result = await runSealedEnvelopeCore(
+      {
+        jobId: "job-procurement",
+        seller: LISTING_PUBLISHER,
+        currency: "DEM",
+        phaseKind: "negotiate-sealed-envelope-procurement",
+        params: {
+          commitDeadline: SEALED_DEADLINE,
+          revealWindow: 120,
+          selectionRule: resolvedSelectionRule,
+          auctionMode: "procurement",
+        },
+      },
+      {
+        readAnchoredCommits: async () => [winner.commit, loser.commit],
+        readAnchoredReveals: async () => [winner.reveal, loser.reveal],
+        ...(selectionRule.startsWith("rule-ref:")
+          ? {
+              resolveRuleContent: async () => ruleContent,
+              evaluateVerifiedRule: () => true,
+            }
+          : {}),
+        commitAgreement: async (ctx) => {
+          agreement = sealedAgreement(ctx);
+          return {
+            agreement,
+            verifiedSignerClaims: [LISTING_PUBLISHER, WINNING_BIDDER],
+            agreementRef: "stor-agreement",
+            agreementHash: "agreement-hash",
+          };
+        },
+      },
+    );
+    return { result, agreement: agreement! };
+  };
+
   // ── Per-case runners ──────────────────────────────────────────────────────
   // Inputs for the primitive canonicalize/decimal cases follow each case's
   // summary verbatim (dacs-verify constructs them in run.ts and pins only the
@@ -420,6 +510,114 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     },
     "cf4-dacs1-listing-address": (want) => {
       expect(listingAddress("cci-xm:evm:mainnet:0x1234", "rfq-lot-x-1", 3)).toBe(want);
+    },
+
+    // negotiate — DACS-3 SE-8 role assignment and commit teeth.
+    "neg-sealed-envelope-default-demand-winner-is-buyer": (want) => {
+      const roles = assignSealedEnvelopeRoles({
+        listingPublisher: LISTING_PUBLISHER,
+        winningBidderClaim: WINNING_BIDDER,
+      });
+      expect(roles.auctionMode).toBe("demand");
+      expect(roles.buyer).toBe(
+        want.buyer === "winningBidder" ? WINNING_BIDDER : LISTING_PUBLISHER,
+      );
+      expect(roles.seller).toBe(
+        want.seller === "listingPublisher" ? LISTING_PUBLISHER : WINNING_BIDDER,
+      );
+    },
+    "neg-sealed-envelope-demand-highest-price-winner-is-buyer": (want) => {
+      const roles = assignSealedEnvelopeRoles({
+        phaseKind: "negotiate-sealed-envelope",
+        auctionMode: want.auctionMode,
+        listingPublisher: LISTING_PUBLISHER,
+        winningBidderClaim: WINNING_BIDDER,
+      });
+      expect(roles.buyer).toBe(WINNING_BIDDER);
+      expect(roles.seller).toBe(LISTING_PUBLISHER);
+    },
+    "neg-sealed-envelope-procurement-lowest-price-winner-is-seller": async (want) => {
+      const { result, agreement } = await runProcurement(want.selectionRule);
+      expect(result).toMatchObject({
+        ok: true,
+        phaseKind: want.phaseKind,
+        contextDeltaKey: want.contextDeltaKey,
+        auctionMode: want.auctionMode,
+        winningBidderClaim: WINNING_BIDDER,
+      });
+      expect(agreement.buyer).toBe(LISTING_PUBLISHER);
+      expect(agreement.seller).toBe(WINNING_BIDDER);
+      expect(agreement.price.amount).toBe("3");
+    },
+    "neg-sealed-envelope-procurement-rule-ref-winner-is-seller": async (want) => {
+      const { result, agreement } = await runProcurement(want.selectionRule);
+      expect(result.contextDeltaKey).toBe(want.contextDeltaKey);
+      expect(agreement.buyer).toBe(LISTING_PUBLISHER);
+      expect(agreement.seller).toBe(WINNING_BIDDER);
+    },
+    "neg-sealed-envelope-procurement-role-inverted-reject": (want) => {
+      const correct = sealedAgreement({
+        jobId: "job-inverted",
+        seller: LISTING_PUBLISHER,
+        listingPublisher: LISTING_PUBLISHER,
+        winningBidderClaim: WINNING_BIDDER,
+        winningBid: { price: { amount: "3", currency: "DEM" } },
+        losingBidderClaims: [],
+        phaseKind: "negotiate-sealed-envelope-procurement",
+        auctionMode: "procurement",
+      });
+      const inverted = {
+        ...correct,
+        buyer: WINNING_BIDDER,
+        seller: LISTING_PUBLISHER,
+      };
+      expect(
+        validateSealedAgreementRoleAssignment(inverted, {
+          phaseKind: want.phaseKind,
+          auctionMode: want.listingAuctionMode,
+          listingPublisher: LISTING_PUBLISHER,
+          winningBidderClaim: WINNING_BIDDER,
+        }),
+      ).toMatchObject({ ok: want.ok, failedAt: want.failedAt });
+    },
+    "neg-sealed-envelope-procurement-missing-publisher-signature-reject": (want) => {
+      const agreement = sealedAgreement({
+        jobId: "job-missing-signature",
+        seller: LISTING_PUBLISHER,
+        listingPublisher: LISTING_PUBLISHER,
+        winningBidderClaim: WINNING_BIDDER,
+        winningBid: { price: { amount: "3", currency: "DEM" } },
+        losingBidderClaims: [],
+        phaseKind: want.phaseKind,
+        auctionMode: want.auctionMode,
+      });
+      expect(
+        validateSealedAgreementForCommit(agreement, {
+          phaseKind: want.phaseKind,
+          auctionMode: want.auctionMode,
+          listingPublisher: LISTING_PUBLISHER,
+          winningBidderClaim: WINNING_BIDDER,
+          verifiedSignerClaims: [WINNING_BIDDER],
+        }),
+      ).toMatchObject({
+        ok: want.ok,
+        failedAt: want.failedAt,
+        missingSigner: LISTING_PUBLISHER,
+      });
+    },
+    "neg-sealed-envelope-procurement-phase-missing-mode-reject": (want) => {
+      expect(resolveSealedEnvelopeMode(want.phaseKind, undefined)).toMatchObject({
+        ok: want.ok,
+        failedAt: want.failedAt,
+        reason: want.reason,
+      });
+    },
+    "neg-sealed-envelope-unresolvable-auctionmode-reject": (want) => {
+      expect(resolveSealedEnvelopeMode("negotiate-sealed-envelope", "unresolvable")).toEqual({
+        ok: want.ok,
+        failedAt: want.failedAt,
+        reason: want.reason,
+      });
     },
 
     // dacs1 — identityTier derivation (§6.3.2.1 IT-1..IT-3), via
@@ -959,7 +1157,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       "no exported §6.3.2/§6.3.3 requirement-matching, freshness-gate, control-gate (#170) or §6.3.4 listing-conformance surface",
     vet: "§7.5.1/§7.6.1/§7.7.1 classification, retry and aggregation predicates are internal to the exported vetCore/runSessionCore orchestration, not independently exported",
     negotiate:
-      "no exported §8.5.1/§8.5.2 agreement-vs-listing conformance checker; sealed-envelope SE-8 vectors need constructed listing/agreement inputs the vectors do not ship",
+      "remaining §8.5.1/§8.5.2 price, fee, listing, and commitment checks need richer constructed inputs or focused SDK surfaces",
     governance: "no GOV-1..3 governance surface in the SDK",
     dispute:
       "no DACS-X §11.2.1 dispute verifier in the SDK; vector inputs are constructed in dacs-verify run.ts, not shipped",
@@ -1031,10 +1229,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 234 cases. Sixty-nine golden cases have non-vacuous SDK runners in
+    // This pin has 234 cases. Seventy-seven golden cases have non-vacuous SDK runners in
     // this change; deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(69);
+    expect(Object.keys(RUNNERS)).toHaveLength(77);
     expect(manifest.cases).toHaveLength(236);
   });
 
