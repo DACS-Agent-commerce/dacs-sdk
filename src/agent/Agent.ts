@@ -11,7 +11,11 @@ import {
   publicKeyFromRaw,
   type DomainSeparator,
 } from "../crypto/index.js";
-import { parseCciRecord, type CciRecord } from "../identity/index.js";
+import {
+  demosAgentPublicKey,
+  parseCciRecord,
+  type CciRecord,
+} from "../identity/index.js";
 import type { DemosAdapter } from "../substrate/index.js";
 import {
   runSessionCore,
@@ -33,16 +37,12 @@ import {
 
 export type { SignatureCheck, BundleVerification, Reputation, CciRecord };
 
-/**
- * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
- * model a CCI *is* the ed25519 public-key hex, so a DID embedding that hex
- * (`did:…:<64-hex>`, `0x<64-hex>`, or a bare `<64-hex>`) resolves directly.
- * Aliases that don't embed the key return null (the artifact stays
- * `unverified` rather than falsely `valid`); alias→CCI lookup is a follow-up.
- */
-function publicKeyFromDid(did: string): Uint8Array | null {
-  const hex = did.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
-  return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
+/** Resolve a direct node address accepted by the identity lookup convenience API. */
+function demosIdentityLookupAddress(subject: string): string {
+  const claimKey = demosAgentPublicKey(subject);
+  if (claimKey) return Buffer.from(claimKey).toString("hex");
+  const address = /^(?:0x)?([0-9a-fA-F]{64})$/.exec(subject)?.[1];
+  return address?.toLowerCase() ?? subject;
 }
 
 /** Verifier that lifts a raw 32-byte key into a KeyObject for ed25519Verify. */
@@ -174,7 +174,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
                 : null;
         if (!name) return null;
         const buyer = parties.find((party) => party.role === "buyer");
-        const key = buyer ? publicKeyFromDid(buyer.primaryClaim) : null;
+        const key = buyer ? demosAgentPublicKey(buyer.primaryClaim) : null;
         if (!key) return null;
         const owner = Buffer.from(key).toString("hex");
         const resolved = await adapter.resolveAnchorByName(name, owner);
@@ -182,7 +182,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           ? adapter.readAnchor(resolved.address)
           : null;
       },
-      resolvePublicKey: async (did) => publicKeyFromDid(did),
+      resolvePublicKey: async (did) => demosAgentPublicKey(did),
       verify: ed25519RawVerify,
     });
 
@@ -194,8 +194,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       // Accept a DID / 0x-prefixed / bare-hex primary key; anything else is
       // handed through as-is. The parsed record keeps `subject` as its primary
       // claim (the canonical form the caller passed).
-      const key = publicKeyFromDid(subject);
-      const address = key ? Buffer.from(key).toString("hex") : subject;
+      const address = demosIdentityLookupAddress(subject);
       const resolved = await adapter.resolveIdentity(address);
       return parseCciRecord(subject, resolved.raw);
     },
@@ -232,7 +231,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       // — an unverified listing must never reach negotiation or settlement.
       return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
         verify: ed25519RawVerify,
-        resolvePublicKey: (claim) => publicKeyFromDid(claim),
+        resolvePublicKey: (claim) => demosAgentPublicKey(claim),
       });
     },
 
@@ -271,7 +270,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           // vetting or settlement. Without this the money path would run on an
           // unverified listing (and the gate below would throw).
           verifyListing: async (raw, sellerClaim) => {
-            const key = publicKeyFromDid(sellerClaim);
+            const key = demosAgentPublicKey(sellerClaim);
             if (!key) return false;
             return verifySignedArtifact(
               raw,

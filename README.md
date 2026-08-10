@@ -78,6 +78,21 @@ To resume an interrupted session safely, pass the prior `jobId` to `runSession` 
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
+### Demos agent ClaimReferences
+
+Use `demosAgentClaimRef(publicKey)` to write the canonical
+`did:demos:agent:<64-lowercase-hex>` form. `demosAgentPublicKey(claimRef)` and
+`isDemosAgentClaimRef(claimRef)` accept case variation only in the leading
+`did` scheme; the `demos` method, `agent` profile, and key remain lowercase and
+strict. An unrelated identifier that merely ends in the same key, including
+`demos:0x<key>`, is not an alias and cannot authorize Listings, bundles, or
+reputation input.
+
+For compatibility, the APIs that explicitly accept a direct node address
+(`resolveIdentity` and pay-dem destination configuration) still accept an exact
+bare or `0x`-prefixed 64-hex address. That address notation is not treated as a
+ClaimReference by artifact signature verification.
+
 ### Fault-aware bundle helper
 
 `buildTwoSidedBundle(session)` is the low-level DACS-5 v0.3 producer. It emits a
@@ -142,6 +157,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
+| `@kynesyslabs/dacs/identity` | no | CCI parsing + canonical Demos agent ClaimReference helpers |
 
 The Demos adapter and live rail clients are optional peers: install
 `@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus

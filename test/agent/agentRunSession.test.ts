@@ -3,12 +3,15 @@ import { describe, expect, test } from "vitest";
 import { buildAgent } from "../../src/agent/Agent.js";
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
+import { sessionAnchorName } from "../../src/agent/runSessionCore.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
@@ -110,6 +113,28 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(settled).toBe(false);
   });
 
+  test("a foreign DID ending in the signing key cannot authorize a Listing", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store, sellerPriv, `did:ethr:${sellerHex}`);
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+
+    let settled = false;
+    await expect(
+      agent.runSession(ref, {
+        terms: TERMS,
+        settle: async () => {
+          settled = true;
+          return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+        },
+      }),
+    ).rejects.toThrow(/failed signature verification/);
+    expect(settled).toBe(false);
+  });
+
   test("getReputation ignores a structurally plausible but unverified bundle", async () => {
     const { adapter, store } = memAdapter();
     store.set("stor:forged-bundle", {
@@ -136,6 +161,98 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       identity: { agentId: buyerDid },
     });
     await expect(agent.getReputation(buyerDid, ["stor:forged-bundle"]))
+      .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
+  });
+
+  test("bundle verification and reputation reject arbitrary-prefix signer aliases", async () => {
+    const { adapter, store } = memAdapter();
+    const buyerSeed = Uint8Array.from(Buffer.alloc(32, 12));
+    const buyerPriv = privateKeyFromSeed(buyerSeed);
+    const buyerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(buyerSeed))).toString("hex");
+    const buyerLookalike = `did:ethr:${buyerHex}`;
+    const jobId = "claim-alias";
+
+    const listing = {
+      agentId: sellerDid,
+      serviceId: "svc-alias",
+      name: "Market Data",
+      description: "d",
+      claimRequirements: [],
+      supportedNegotiation: ["negotiate-fixed-price"],
+      supportedPaymentRails: ["pay-x402"],
+      supportedDelivery: ["deliver-attested-payload"],
+    };
+    const listingAddress = "stor:claim-alias-listing";
+    store.set(listingAddress, listing);
+
+    const agreement = {
+      jobId,
+      pattern: "negotiate-fixed-price",
+      buyer: buyerLookalike,
+      seller: sellerDid,
+      listingRef: listingAddress,
+      price: TERMS.price,
+      delivery: { phase: TERMS.deliveryPhase, format: TERMS.deliveryFormat },
+      expiresAt: "2026-12-31T00:00:00.000Z",
+    };
+    store.set(`stor:${sessionAnchorName.agreement(jobId)}`, agreement);
+
+    const scope = {
+      bundleVersion: "1",
+      jobId,
+      outcome: "completed",
+      listingRef: {
+        listingId: listing.serviceId,
+        version: 1,
+        contentHash: contentHash(listing),
+      },
+      agreementRef: {
+        kind: "dacs-3-agreement",
+        id: `agreement-${jobId}`,
+        contentHash: contentHash(agreement),
+      },
+      parties: [
+        { role: "buyer", bundleHash: "a".repeat(64), primaryClaim: buyerLookalike },
+        { role: "seller", bundleHash: "b".repeat(64), primaryClaim: sellerDid },
+      ],
+      phaseSummary: [],
+      vetRecords: [],
+      settlementEvidence: [],
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+      finalisedAt: 1_780_000_000_000,
+    };
+    const message = signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope));
+    const bundle = {
+      ...scope,
+      anchoredByRole: "buyer",
+      signatures: [
+        {
+          party: buyerLookalike,
+          algorithm: "ed25519",
+          value: Buffer.from(ed25519Sign(message, buyerPriv)).toString("base64url"),
+        },
+        {
+          party: sellerDid,
+          algorithm: "ed25519",
+          value: Buffer.from(ed25519Sign(message, sellerPriv)).toString("base64url"),
+        },
+      ],
+    };
+    store.set("stor:claim-alias-bundle", bundle);
+
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    const verification = await agent.verifyBundle("stor:claim-alias-bundle");
+    expect(verification.ok).toBe(false);
+    expect(verification.signatures).toContainEqual({
+      party: buyerLookalike,
+      verdict: "unverified",
+    });
+    await expect(agent.getReputation(buyerLookalike, ["stor:claim-alias-bundle"]))
       .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
   });
 });

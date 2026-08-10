@@ -3,6 +3,7 @@ import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { Listing } from "../artifacts/types.js";
 import { isListing } from "../artifacts/validators.js";
 import { DacsError } from "../errors.js";
+import { demosAgentPublicKey } from "../identity/index.js";
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
 
 /**
@@ -35,8 +36,9 @@ export interface DiscoverDeps {
   verify?: Verifier;
   /**
    * Resolve a seller claim to its ed25519 public key. Defaults to the intrinsic
-   * Demos form — a claim embedding a 64-hex key (`did:…:<hex>`, `0x<hex>`, bare
-   * `<hex>`). Return null for a claim whose key can't be established.
+   * registered Demos form (`did:demos:agent:<64-lowercase-hex>`; the leading
+   * `did` scheme is case-insensitive on read). Return null for a claim whose
+   * key cannot be established.
    */
   resolvePublicKey?: (claim: string) => Promise<Uint8Array | null> | Uint8Array | null;
   /**
@@ -44,12 +46,6 @@ export interface DiscoverDeps {
    * verified the listings. Ignored when `verify` is supplied.
    */
   trustListings?: boolean;
-}
-
-/** The intrinsic Demos claim→key resolution: a CCI *is* the ed25519 pubkey hex. */
-function intrinsicKey(claim: string): Uint8Array | null {
-  const hex = claim.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
-  return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
 }
 
 export async function discoverListings(
@@ -63,7 +59,7 @@ export async function discoverListings(
         "returning unverified listings lets a forged listing drive negotiation and payment (#41)",
     );
   }
-  const resolveKey = deps.resolvePublicKey ?? intrinsicKey;
+  const resolveKey = deps.resolvePublicKey ?? demosAgentPublicKey;
 
   const found: Array<{ ref: string; listing: Listing }> = [];
   for (const ref of listingRefs) {

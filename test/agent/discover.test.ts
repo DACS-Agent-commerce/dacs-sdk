@@ -112,6 +112,20 @@ describe("discoverListings signature verification (#41)", () => {
     expect(await discoverListings(["a"], async () => aliasOnly, deps)).toEqual([]);
   });
 
+  test("lookalike identifiers ending in the seller key are not Demos ClaimReferences", async () => {
+    for (const lookalike of [
+      `did:ethr:${ALICE.hex}`,
+      `did:demos:other:${ALICE.hex}`,
+      `arbitrary-prefix:${ALICE.hex}`,
+      `demos:0x${ALICE.hex}`,
+      `0x${ALICE.hex}`,
+      ALICE.hex,
+    ]) {
+      const signed = await signedBy(lookalike, ALICE.priv);
+      expect(await discoverListings(["a"], async () => signed, deps), lookalike).toEqual([]);
+    }
+  });
+
   test("a THROWING key resolver drops only that listing, not the whole batch (#71)", async () => {
     const bad = await signedBy(ALICE.did, ALICE.priv);
     const good = await signedBy(ALICE.did, ALICE.priv);

@@ -251,6 +251,20 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(client.sent).toBeUndefined();
   });
 
+  test("STRICT: noncanonical Demos-looking claims do not become payment destinations (#90)", async () => {
+    for (const payee of [
+      `did:demos:other:${SELLER_HEX}`,
+      `did:demos:agent:${SELLER_HEX.toUpperCase()}`,
+      `demos:0x${SELLER_HEX}`,
+    ]) {
+      const client = fakeClient();
+      await expect(
+        settleWith(client, { network: "demos" })(req({ payee })),
+      ).rejects.toThrow(/does not intrinsically resolve/);
+      expect(client.sent).toBeUndefined();
+    }
+  });
+
   test("an equivalent claim form (0x / bare hex) matches the same address", async () => {
     const client = fakeClient();
     await settleWith(client, { recipient: `0x${SELLER_HEX}` })(req());

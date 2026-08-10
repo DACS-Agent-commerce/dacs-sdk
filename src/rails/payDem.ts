@@ -1,6 +1,7 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import { demosAgentPublicKey } from "../identity/index.js";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -17,7 +18,8 @@ export const DEM_DECIMALS = 9;
  * The Demos address a DACS primary claim settles to. In the Demos model a CCI
  * *is* the ed25519 public-key hex, so a Demos claim resolves INTRINSICALLY to its
  * address — no external mapping is trusted. Accepts only the DEMOS forms: a bare
- * `<64-hex>`, `0x<64-hex>`, or a `did:demos:…:<64-hex>` DID.
+ * `<64-hex>`, `0x<64-hex>`, or the registered
+ * `did:demos:agent:<64-lowercase-hex>` ClaimReference.
  *
  * STRICT (#32): a non-Demos scheme that merely *ends* in 64 hex — `did:ethr:…`,
  * `cci-xm:evm:mainnet:0x…`, `web2:…:…` — is NOT Demos-bound and returns null, so
@@ -26,10 +28,10 @@ export const DEM_DECIMALS = 9;
  */
 export function demosAddressFromClaim(claim: string): string | null {
   const c = claim.trim();
+  const claimKey = demosAgentPublicKey(c);
+  if (claimKey) return Buffer.from(claimKey).toString("hex");
   const bare = c.match(/^(?:0x)?([0-9a-fA-F]{64})$/);
   if (bare) return bare[1]!.toLowerCase();
-  const did = c.match(/^did:demos:(?:[^:]+:)*(?:0x)?([0-9a-fA-F]{64})$/);
-  if (did) return did[1]!.toLowerCase();
   return null;
 }
 
