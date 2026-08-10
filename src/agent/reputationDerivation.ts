@@ -3,6 +3,10 @@ import { DacsError } from "../errors.js";
 import type { AnyAttestationBundle, AttestationRef } from "../artifacts/types.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
 import { isFaultBundle, scoredBundleOutcome } from "./bundleSemantics.js";
+import {
+  reconcileSettlementEvidence,
+  type SettlementEvidenceObservation,
+} from "./settlementIdentity.js";
 
 /**
  * DACS-5 §10.5 reputation derivation — the spec-faithful, windowed reputation
@@ -124,6 +128,16 @@ export interface DeriveReputationDeps {
     missingRole: "buyer" | "seller";
     presentRole: "buyer" | "seller";
   }) => "absent" | "indeterminate";
+  /**
+   * Resolve the signed evidence represented by one reconciled bundle. Required
+   * when that bundle carries settlement refs unless uniqueness was already
+   * enforced upstream and `trustSettlementUniqueness` is set.
+   */
+  resolveSettlementEvidence?: (
+    bundle: AnyAttestationBundle,
+  ) => readonly SettlementEvidenceObservation[] | "indeterminate";
+  /** Explicit opt-out for callers whose upstream verifier already applied SB-2. */
+  trustSettlementUniqueness?: boolean;
 }
 
 /**
@@ -183,8 +197,8 @@ export function deriveReputation(
     byJob.set(b.jobId, arr);
   }
 
-  const reconciled: AnyAttestationBundle[] = [];
-  const outcomes: string[] = [];
+  let reconciled: AnyAttestationBundle[] = [];
+  let outcomes: string[] = [];
   const orchestratorFaultJobs = new Set<string>();
   for (const copies of byJob.values()) {
     const valid = copies
@@ -227,6 +241,58 @@ export function deriveReputation(
   }
 
   if (reconciled.length === 0) return empty();
+
+  // DACS-4 §9.5.8 SB-2: a transaction identity can contribute to reputation
+  // under only one (jobId, phaseIndex). Resolution failures and malformed
+  // identities exclude the affected job; collisions use the normative
+  // observedAt/evidence-hash winner and exclude the later binding.
+  if (!deps.trustSettlementUniqueness) {
+    const needingResolution = reconciled.filter(
+      (bundle) => bundle.settlementEvidence.length > 0,
+    );
+    if (needingResolution.length > 0 && !deps.resolveSettlementEvidence) {
+      throw new DacsError(
+        "deriveReputation requires deps.resolveSettlementEvidence for bundles with settlement refs, " +
+          "or an explicit deps.trustSettlementUniqueness: true upstream-verification opt-out",
+      );
+    }
+    if (deps.resolveSettlementEvidence) {
+      const observations: SettlementEvidenceObservation[] = [];
+      const excludedJobs = new Set<string>();
+      for (const bundle of needingResolution) {
+        let resolved: readonly SettlementEvidenceObservation[] | "indeterminate";
+        try {
+          resolved = deps.resolveSettlementEvidence(bundle);
+        } catch {
+          excludedJobs.add(bundle.jobId);
+          continue;
+        }
+        if (
+          resolved === "indeterminate" ||
+          resolved.length !== bundle.settlementEvidence.length ||
+          resolved.some(
+            (observation) => observation.evidence.jobId !== bundle.jobId,
+          )
+        ) {
+          excludedJobs.add(bundle.jobId);
+          continue;
+        }
+        observations.push(...resolved);
+      }
+      for (const check of reconcileSettlementEvidence(observations)) {
+        if (check.verdict !== "accepted") excludedJobs.add(check.jobId);
+      }
+      const retained = reconciled
+        .map((bundle, index) => ({ bundle, outcome: outcomes[index]! }))
+        .filter(({ bundle }) => !excludedJobs.has(bundle.jobId));
+      reconciled = retained.map(({ bundle }) => bundle);
+      outcomes = retained.map(({ outcome }) => outcome);
+      for (const jobId of orchestratorFaultJobs) {
+        if (excludedJobs.has(jobId)) orchestratorFaultJobs.delete(jobId);
+      }
+      if (reconciled.length === 0) return empty();
+    }
+  }
 
   const count = (o: string) => outcomes.filter((x) => x === o).length;
   const completed = count("completed");

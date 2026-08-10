@@ -31,6 +31,7 @@ import {
   type SignatureCheck,
   type BundleVerification,
 } from "./verifyBundleCore.js";
+import { reconcileSettlementEvidence } from "./settlementIdentity.js";
 
 export type { SignatureCheck, BundleVerification, Reputation, CciRecord };
 
@@ -305,7 +306,10 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       primaryClaim: string,
       bundleRefs: string[],
     ): Promise<Reputation> {
-      const bundles: AnyAttestationBundle[] = [];
+      const verified: Array<{
+        bundle: AnyAttestationBundle;
+        settlementObservations: BundleVerification["settlementObservations"];
+      }> = [];
       for (const ref of bundleRefs) {
         const verdict = await verifyBundleAtRef(ref);
         if (
@@ -314,10 +318,33 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           verdict.bundle &&
           isAnyAttestationBundle(verdict.bundle)
         ) {
-          bundles.push(verdict.bundle);
+          // A partial SB-1 set would make cross-session reconciliation fail
+          // open. Count only bundles whose every settlement ref has an
+          // unambiguous `(jobId, phaseIndex)` observation.
+          if (
+            verdict.settlementObservations.length ===
+            verdict.bundle.settlementEvidence.length
+          ) {
+            verified.push({
+              bundle: verdict.bundle,
+              settlementObservations: verdict.settlementObservations,
+            });
+          }
         }
       }
-      return computeReputation(primaryClaim, bundles);
+      const excludedJobs = new Set(
+        reconcileSettlementEvidence(
+          verified.flatMap((entry) => entry.settlementObservations),
+        )
+          .filter((check) => check.verdict !== "accepted")
+          .map((check) => check.jobId),
+      );
+      return computeReputation(
+        primaryClaim,
+        verified
+          .filter((entry) => !excludedJobs.has(entry.bundle.jobId))
+          .map((entry) => entry.bundle),
+      );
     },
   };
 }

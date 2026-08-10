@@ -75,6 +75,137 @@ async function anchorListing(store: Map<string, Record<string, unknown>>, priv =
   return "stor:listing";
 }
 
+async function anchorReputationBundle(
+  store: Map<string, Record<string, unknown>>,
+  input: {
+    ref: string;
+    jobId: string;
+    observedAt: number;
+    buyerDid: string;
+    buyerPriv: ReturnType<typeof privateKeyFromSeed>;
+    listingRef: string;
+    listing: Record<string, unknown>;
+  },
+): Promise<void> {
+  const agreement = await buildSignedArtifact(
+    {
+      jobId: input.jobId,
+      pattern: "fixed-price",
+      buyer: input.buyerDid,
+      seller: sellerDid,
+      listingRef: input.listingRef,
+      price: TERMS.price,
+      delivery: {
+        phase: TERMS.deliveryPhase,
+        format: TERMS.deliveryFormat,
+      },
+      expiresAt: "2026-08-10T12:00:00.000Z",
+    },
+    ARTIFACT_SEPARATORS.AgreementDocument,
+    (bytes) => ed25519Sign(bytes, input.buyerPriv),
+  );
+  const evidence = {
+    evidenceVersion: "1",
+    jobId: input.jobId,
+    phase: "pay-x402",
+    outcome: "success",
+    paymentTxRefs: [
+      {
+        kind: "x402",
+        httpResource: "https://seller.example/pay",
+        paymentReceiptHash: "c".repeat(64),
+        settlementTxHash: `0x${"ab".repeat(32)}`,
+        chainId: 84532,
+        logIndex: 2,
+        protocolVersion: "1",
+      },
+    ],
+    paymentAmount: { amount: "1000000", currency: "USDC" },
+    settlementFinality: {
+      model: "provider-receipt",
+      finalityObservedAt: input.observedAt,
+    },
+    observedAt: input.observedAt,
+    signature: {
+      algorithm: "ed25519",
+      signer: input.buyerDid,
+      value: "AA",
+    },
+  };
+  const agreementLocator = `stor:agreement:${input.jobId}`;
+  const evidenceLocator = `stor:evidence:${input.jobId}`;
+  const agreementRef = {
+    anchor: { kind: "storage-program" as const, locator: agreementLocator },
+    contentHash: contentHash(agreement),
+  };
+  const evidenceRef = {
+    anchor: { kind: "storage-program" as const, locator: evidenceLocator },
+    contentHash: contentHash(evidence),
+  };
+  store.set(agreementLocator, agreement as Record<string, unknown>);
+  store.set(evidenceLocator, evidence);
+
+  const unsigned = {
+    faultBundleVersion: "1" as const,
+    faultedParty: "none" as const,
+    jobId: input.jobId,
+    outcome: "completed" as const,
+    anchoredByRole: "buyer" as const,
+    listingRef: {
+      listingId: "svc",
+      version: 1,
+      contentHash: contentHash(input.listing),
+    },
+    agreementRef,
+    parties: [
+      {
+        role: "buyer",
+        bundleHash: "a".repeat(64),
+        primaryClaim: input.buyerDid,
+      },
+      {
+        role: "seller",
+        bundleHash: "b".repeat(64),
+        primaryClaim: sellerDid,
+      },
+    ],
+    phaseSummary: [
+      {
+        index: 0,
+        kind: "pay-x402" as const,
+        outcome: "ok" as const,
+        attestationRef: evidenceRef,
+      },
+    ],
+    vetRecords: [],
+    settlementEvidence: [evidenceRef],
+    recipeRegistryVersion: 1,
+    railRegistryVersion: 1,
+    finalisedAt: input.observedAt,
+  };
+  const signedScope: Record<string, unknown> = { ...unsigned };
+  delete signedScope.anchoredByRole;
+  const payload = signedBytes(
+    ARTIFACT_SEPARATORS.FaultAttestationBundle,
+    contentHash(signedScope),
+  );
+  store.set(input.ref, {
+    ...unsigned,
+    signatures: [
+      {
+        party: input.buyerDid,
+        algorithm: "ed25519",
+        value: Buffer.from(ed25519Sign(payload, input.buyerPriv)).toString("base64url"),
+      },
+      {
+        party: sellerDid,
+        algorithm: "ed25519",
+        value: Buffer.from(ed25519Sign(payload, sellerPriv)).toString("base64url"),
+      },
+    ],
+  });
+}
+
 describe("Agent.runSession wires the #41 listing verifier (public surface)", () => {
   test("a genuinely signed listing settles through the public runSession", async () => {
     const { adapter, store } = memAdapter();
@@ -219,5 +350,47 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     await expect(agent.getReputation(normativeBuyerDid, ["stor:bundle"]))
       .resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
+  });
+
+  test("getReputation excludes the later session that reuses a settlement transaction", async () => {
+    const { adapter, store } = memAdapter();
+    const listingRef = await anchorListing(store);
+    const listing = store.get(listingRef)!;
+    const buyerPriv = privateKeyFromSeed(Uint8Array.from(Buffer.alloc(32, 11)));
+    const buyerHex = Buffer.from(
+      rawPublicKey(publicKeyFromSeed(Uint8Array.from(Buffer.alloc(32, 11)))),
+    ).toString("hex");
+    const reputationBuyerDid = `did:demos:agent:${buyerHex}`;
+
+    await anchorReputationBundle(store, {
+      ref: "stor:bundle:early",
+      jobId: "job-early",
+      observedAt: 100,
+      buyerDid: reputationBuyerDid,
+      buyerPriv,
+      listingRef,
+      listing,
+    });
+    await anchorReputationBundle(store, {
+      ref: "stor:bundle:late",
+      jobId: "job-late",
+      observedAt: 200,
+      buyerDid: reputationBuyerDid,
+      buyerPriv,
+      listingRef,
+      listing,
+    });
+
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: reputationBuyerDid },
+    });
+    await expect(
+      agent.getReputation(reputationBuyerDid, [
+        "stor:bundle:late",
+        "stor:bundle:early",
+      ]),
+    ).resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
   });
 });

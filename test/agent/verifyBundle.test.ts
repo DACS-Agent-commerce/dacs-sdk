@@ -342,6 +342,91 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.refs.every((r) => r.verdict === "ok")).toBe(true);
   });
 
+  test("retains a hash-valid normative settlement with its exact phase binding", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const evidenceRef = (fx.bundle.settlementEvidence as Array<Record<string, unknown>>)[0]!;
+    fx.bundle.phaseSummary = [
+      {
+        index: 3,
+        kind: "pay-x402",
+        outcome: "ok",
+        attestationRef: evidenceRef,
+      },
+    ];
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+
+    const res = await verifyBundleCore("ref", depsFor(fx));
+    expect(res.ok).toBe(true);
+    expect(res.settlementObservations).toEqual([
+      { evidence: fx.evidence, phaseIndex: 3 },
+    ]);
+  });
+
+  test("recovers phaseIndex from an exact PC-2 locator when phaseSummary omits its ref", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const evidenceRef = (fx.bundle.settlementEvidence as Array<{
+      anchor: { kind: string; locator: string };
+    }>)[0]!;
+    evidenceRef.anchor.locator = "dacs4:payment:j1:pay-x402:4:resolved";
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
+            ? fx.agreement
+            : ref.anchor.locator === "dacs4:payment:j1:pay-x402:4:resolved"
+              ? fx.evidence
+              : null,
+      }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.settlementObservations).toEqual([
+      { evidence: fx.evidence, phaseIndex: 4 },
+    ]);
+  });
+
+  test("does not guess a phase binding when phaseSummary contradicts the PC-2 locator", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const evidenceRef = (fx.bundle.settlementEvidence as Array<{
+      anchor: { kind: string; locator: string };
+    }>)[0]!;
+    evidenceRef.anchor.locator = "dacs4:payment:j1:pay-x402:4";
+    fx.bundle.phaseSummary = [
+      {
+        index: 3,
+        kind: "pay-x402",
+        outcome: "ok",
+        attestationRef: evidenceRef,
+      },
+    ];
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
+            ? fx.agreement
+            : ref.anchor.locator === "dacs4:payment:j1:pay-x402:4"
+              ? fx.evidence
+              : null,
+      }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.settlementObservations).toEqual([]);
+  });
+
   test("missing referenced artifact => not ok", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     const res = await verifyBundleCore(

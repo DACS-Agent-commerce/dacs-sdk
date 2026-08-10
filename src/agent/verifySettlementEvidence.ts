@@ -9,6 +9,7 @@ import {
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
+import { deriveSettlementTxId } from "./settlementIdentity.js";
 
 /**
  * SettlementEvidence verifier (DACS-4 §9.7, driven by DACS-5 §14 settlement
@@ -67,6 +68,13 @@ export interface EvidenceRailContext {
 export interface EvidenceContext {
   /** The phase orchestrator — the only permitted signer of the evidence (§9.7). */
   orchestrator?: string;
+  /**
+   * BundlePhaseEntry.index recovered from the payment-evidence anchor. When
+   * supplied, the verifier enforces SB-1 canonical transaction identity.
+   */
+  phaseIndex?: number;
+  /** SB-3 rail/provider binding result, when the selected rail declares one. */
+  sessionBinding?: "matches" | "mismatches" | "absent" | "unverifiable";
   agreement?: EvidenceAgreementContext;
   rail?: EvidenceRailContext;
   /** The DACS-2 §7.5.2 ref under which this evidence is anchored. */
@@ -342,14 +350,44 @@ export async function verifySettlementEvidence(
       `rail handler "${ctx.rail.handler}" is incoherent with rail type "${ctx.rail.railType}"`,
     );
   }
-  // NOTE (SB scope): this verifier checks each txRef's structural coherence with
-  // the pinned rail (below). It does NOT implement DACS-4 §9.5.8 session-binding
-  // (SB-1 settlement-tx-id keying, SB-2 cross-session uniqueness, SB-3 handler
-  // binding) — that layer is a consumer/aggregation concern (verifyBundle +
-  // reputation reconciliation), normative only from spec v0.2, and the vendored
-  // spec here is v0.1. Tracked as a distinct workstream in issue #33; a record
-  // that passes here can still be a coincidental-citation or cross-session
-  // double-count until SB lands. Do not read a `pass` as SB-clean.
+  // SB-1 canonical settlement identity. Malformed event/instruction references
+  // are input errors, not ordinary settlement failures: a consumer must never
+  // normalize them into a distinct uniqueness key. Cross-record SB-2 collision
+  // handling is exposed by reconcileSettlementEvidence for aggregators.
+  if (txRefs && ctx.phaseIndex !== undefined) {
+    if (!Number.isSafeInteger(ctx.phaseIndex) || ctx.phaseIndex < 0) {
+      sawError = true;
+      reasons.push("SB-1: phaseIndex must be a non-negative safe integer");
+    }
+    for (const txRef of txRefs) {
+      const identity = deriveSettlementTxId(txRef);
+      if (identity.status === "error") {
+        sawError = true;
+        reasons.push(`SB-1: ${identity.reason}`);
+      } else if (
+        identity.status === "not-applicable" &&
+        isPayment
+      ) {
+        sawError = true;
+        reasons.push(`SB-1: ${identity.reason}`);
+      }
+    }
+  }
+  if (ctx.sessionBinding === "mismatches") {
+    fail("SB-3: settlement-side session binding does not match evidence.jobId");
+  } else if (
+    (ctx.sessionBinding === "absent" ||
+      ctx.sessionBinding === "unverifiable") &&
+    ctx.phaseIndex === undefined
+  ) {
+    // SB-3 cannot establish the binding, and the caller supplied no anchor-
+    // recovered phase index with which to apply the mandatory SB-1 fallback.
+    sawIndeterminate = true;
+    reasons.push(
+      "SB-3 binding is absent/unverifiable and SB-1 fallback phaseIndex is unavailable",
+    );
+  }
+
   if (txRefs && ctx.rail) {
     const allowedKinds: Record<string, ReadonlySet<string>> = {
       "evm-erc20": new Set(["evm"]),

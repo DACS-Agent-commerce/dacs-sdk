@@ -229,15 +229,18 @@ export function isChainTxRef(v: unknown): v is ChainTxRef {
   switch (v.kind) {
     case "evm":
       return (
-        hasOnlyKeys(v, ["kind", "chainId", "txHash"]) &&
+        hasOnlyKeys(v, ["kind", "chainId", "txHash", "logIndex"]) &&
         isNonNegativeInt(v.chainId) &&
-        isNonEmptyStr(v.txHash)
+        isNonEmptyStr(v.txHash) &&
+        (v.logIndex === undefined || isNonNegativeInt(v.logIndex))
       );
     case "solana":
       return (
-        hasOnlyKeys(v, ["kind", "cluster", "signature"]) &&
+        hasOnlyKeys(v, ["kind", "cluster", "signature", "instructionIndex"]) &&
         isOneOf(["mainnet", "devnet", "testnet"], v.cluster) &&
-        isNonEmptyStr(v.signature)
+        isNonEmptyStr(v.signature) &&
+        (v.instructionIndex === undefined ||
+          isNonNegativeInt(v.instructionIndex))
       );
     case "demos":
       return (
@@ -274,12 +277,14 @@ export function isChainTxRef(v: unknown): v is ChainTxRef {
           "paymentReceiptHash",
           "settlementTxHash",
           "chainId",
+          "logIndex",
           "protocolVersion",
         ]) &&
         isNonEmptyStr(v.httpResource) &&
         isSha256(v.paymentReceiptHash) &&
         (v.settlementTxHash === undefined || isNonEmptyStr(v.settlementTxHash)) &&
         (v.chainId === undefined || isNonNegativeInt(v.chainId)) &&
+        (v.logIndex === undefined || isNonNegativeInt(v.logIndex)) &&
         isNonEmptyStr(v.protocolVersion)
       );
     case "htlc-lock":

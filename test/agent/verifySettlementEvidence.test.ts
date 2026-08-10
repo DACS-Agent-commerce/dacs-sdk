@@ -81,6 +81,49 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
   test("paymentPass: base record with no context is a clean pass", async () => {
     expect((await verify(payment())).decision).toBe("pass");
   });
+  test("SB-1 phase context rejects a missing event-level identity as error", async () => {
+    const result = await verify(payment(), { phaseIndex: 0 });
+    expect(result.decision).toBe("error");
+    expect(result.reasons).toContainEqual(expect.stringMatching(/SB-1.*logIndex/));
+  });
+  test("SB-1 phase context accepts a canonical event-level identity", async () => {
+    const ev = payment();
+    ev.paymentTxRefs[0].txHash = `0x${"ab".repeat(32)}`;
+    ev.paymentTxRefs[0].logIndex = 0;
+    expect((await verify(ev, { phaseIndex: 0 })).decision).toBe("pass");
+  });
+  test("SB-1 phase context fails closed when a payment variant has no pinned identity", async () => {
+    const ev = payment();
+    ev.phase = "pay-cross-chain-htlc";
+    ev.paymentTxRefs = [
+      {
+        kind: "htlc-claim",
+        chainId: 1,
+        contractAddress: "0xcontract",
+        claimTxHash: `0x${"ab".repeat(32)}`,
+      },
+    ];
+    const result = await verify(ev, { phaseIndex: 0 });
+    expect(result.decision).toBe("error");
+    expect(result.reasons).toContainEqual(
+      expect.stringMatching(/SB-1.*no standalone identity recipe/),
+    );
+  });
+  test("SB-3 mismatch fails; absent/unverifiable requires the SB-1 fallback", async () => {
+    const ev = payment();
+    ev.paymentTxRefs[0].txHash = `0x${"ab".repeat(32)}`;
+    ev.paymentTxRefs[0].logIndex = 0;
+    expect(
+      (await verify(ev, { phaseIndex: 0, sessionBinding: "mismatches" }))
+        .decision,
+    ).toBe("fail");
+    expect(
+      (await verify(ev, { sessionBinding: "unverifiable" })).decision,
+    ).toBe("indeterminate");
+    expect(
+      (await verify(ev, { phaseIndex: 0, sessionBinding: "absent" })).decision,
+    ).toBe("pass");
+  });
   test("deliveryPass: base delivery record passes", async () => {
     expect((await verify(delivery())).decision).toBe("pass");
   });

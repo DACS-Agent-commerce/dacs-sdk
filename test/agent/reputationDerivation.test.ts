@@ -5,6 +5,7 @@ import {
   type ReputationWindow,
 } from "../../src/agent/reputationDerivation.js";
 import type { AttestationBundle, FaultAttestationBundle } from "../../src/artifacts/types.js";
+import { bundleAddress, contentHash } from "../../src/canonical/index.js";
 
 const PARTY = "did:demos:buyer";
 const CP = "did:demos:seller";
@@ -18,6 +19,44 @@ const TRUSTED_WITH_ABSENCE = {
   trustBundles: true,
   copyAbsence: () => "absent" as const,
 };
+
+const SETTLEMENT_TX_HASH = "ab".repeat(32);
+
+function settlementEvidence(jobId: string, observedAt: number) {
+  return {
+    evidenceVersion: "1",
+    jobId,
+    phase: "pay-evm-erc20",
+    outcome: "success",
+    paymentTxRefs: [
+      { kind: "evm", chainId: 1, txHash: SETTLEMENT_TX_HASH, logIndex: 0 },
+    ],
+    paymentAmount: { amount: "1", currency: "USDC" },
+    settlementFinality: {
+      model: "block-depth",
+      finalityObservedAt: observedAt,
+    },
+    observedAt,
+    signature: {
+      algorithm: "ed25519",
+      signer: PARTY,
+      value: "AA",
+    },
+  };
+}
+
+function withSettlement(
+  value: AttestationBundle,
+  evidence: ReturnType<typeof settlementEvidence>,
+): AttestationBundle {
+  value.settlementEvidence = [
+    {
+      anchor: { kind: "storage-program", locator: `evidence:${value.jobId}` },
+      contentHash: contentHash(evidence),
+    },
+  ];
+  return value;
+}
 
 /** Minimal valid-enough AttestationBundle for the deriver (it reads a few fields). */
 function bundle(
@@ -132,6 +171,59 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.bundleRefs).toEqual([]);
     expect(r.metrics.completionRate).toBeNull();
     expect(r.metrics.observedTransactionalVolume).toEqual([]);
+  });
+
+  test("SB-2 excludes the later job when two sessions cite one settlement", () => {
+    const earlyEvidence = settlementEvidence("early", 1_100);
+    const lateEvidence = settlementEvidence("late", 1_200);
+    const records = new Map([
+      ["early", earlyEvidence],
+      ["late", lateEvidence],
+    ]);
+    const result = deriveReputation(
+      PARTY,
+      [
+        withSettlement(bundle("late", "completed", 1_300), lateEvidence),
+        withSettlement(bundle("early", "completed", 1_250), earlyEvidence),
+      ],
+      WINDOW,
+      {
+        ...TRUSTED_WITH_ABSENCE,
+        resolveSettlementEvidence: (candidate) => [
+          { evidence: records.get(candidate.jobId)!, phaseIndex: 0 },
+        ],
+      },
+    );
+
+    expect(result.bundleCount).toBe(1);
+    expect(result.bundleRefs[0]?.anchor.locator).toBe(
+      bundleAddress("early", "buyer"),
+    );
+    expect(result.metrics.completionRate).toBe(1);
+  });
+
+  test("settlement refs require resolution unless uniqueness was verified upstream", () => {
+    const record = settlementEvidence("j1", 1_100);
+    const settled = withSettlement(bundle("j1", "completed", 1_200), record);
+    expect(() =>
+      deriveReputation(PARTY, [settled], WINDOW, TRUSTED_WITH_ABSENCE),
+    ).toThrow(/resolveSettlementEvidence/);
+    expect(
+      deriveReputation(PARTY, [settled], WINDOW, {
+        ...TRUSTED_WITH_ABSENCE,
+        trustSettlementUniqueness: true,
+      }).bundleCount,
+    ).toBe(1);
+  });
+
+  test("indeterminate or incomplete evidence resolution excludes the job", () => {
+    const record = settlementEvidence("j1", 1_100);
+    const settled = withSettlement(bundle("j1", "completed", 1_200), record);
+    const result = deriveReputation(PARTY, [settled], WINDOW, {
+      ...TRUSTED_WITH_ABSENCE,
+      resolveSettlementEvidence: () => "indeterminate",
+    });
+    expect(result.bundleCount).toBe(0);
   });
 
   test("per-jobId reconciliation: two copies of one job count once (self perspective)", () => {

@@ -23,6 +23,7 @@ import {
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
 import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
+import type { SettlementEvidenceObservation } from "./settlementIdentity.js";
 
 /**
  * Attestation-bundle verification (DACS-5). Two independent checks must BOTH
@@ -80,6 +81,11 @@ export interface BundleVerification {
   signatures: SignatureCheck[];
   /** Per-referenced-artifact integrity results. */
   refs: RefCheck[];
+  /**
+   * Hash-valid normative settlement records whose SB-1 `(jobId, phaseIndex)`
+   * binding could be recovered without guessing.
+   */
+  settlementObservations: SettlementEvidenceObservation[];
 }
 
 type ReadableAttestationBundle =
@@ -202,6 +208,51 @@ function requiredSignatureClaims(
   return [...new Set(claims)];
 }
 
+function sameNormativeRef(a: unknown, b: AttestationRef): boolean {
+  return (
+    typeof a === "object" &&
+    a !== null &&
+    isAttestationRef(a) &&
+    a.anchor.kind === b.anchor.kind &&
+    a.anchor.locator === b.anchor.locator &&
+    a.contentHash === b.contentHash
+  );
+}
+
+/** Recover SB-1's phaseIndex from a signed bundle/ref without inventing one. */
+function settlementPhaseIndex(
+  bundle: ReadableAttestationBundle,
+  ref: AttestationRef,
+): number | undefined {
+  const matchingPhases = bundle.phaseSummary.filter((phase) =>
+    sameNormativeRef(phase.attestationRef, ref),
+  );
+
+  const parts = ref.anchor.locator.split(":");
+  if (parts.at(-1) === "resolved") parts.pop();
+  let locatorIndex: number | undefined;
+  if (
+    parts.length === 5 &&
+    parts[0] === "dacs4" &&
+    parts[1] === "payment" &&
+    parts[2] === bundle.jobId &&
+    Boolean(parts[3]) &&
+    /^(0|[1-9][0-9]*)$/.test(parts[4] ?? "")
+  ) {
+    const parsed = Number(parts[4]);
+    if (Number.isSafeInteger(parsed)) locatorIndex = parsed;
+  }
+
+  if (matchingPhases.length > 1) return undefined;
+  if (matchingPhases.length === 1) {
+    const phaseIndex = matchingPhases[0]!.index;
+    return locatorIndex === undefined || locatorIndex === phaseIndex
+      ? phaseIndex
+      : undefined;
+  }
+  return locatorIndex;
+}
+
 export async function verifyBundleCore(
   bundleRef: string,
   deps: VerifyBundleDeps,
@@ -214,6 +265,7 @@ export async function verifyBundleCore(
       fullyVerified: false,
       signatures: [],
       refs: [],
+      settlementObservations: [],
     };
   }
   if (
@@ -226,6 +278,7 @@ export async function verifyBundleCore(
       fullyVerified: false,
       signatures: [],
       refs: [],
+      settlementObservations: [],
     };
   }
   const bundle = raw as ReadableAttestationBundle;
@@ -236,6 +289,7 @@ export async function verifyBundleCore(
       fullyVerified: false,
       signatures: [],
       refs: [],
+      settlementObservations: [],
       bundle,
     };
   }
@@ -275,6 +329,7 @@ export async function verifyBundleCore(
 
   // ── Referenced-artifact integrity ──────────────────────────────────────────
   const refs: RefCheck[] = [];
+  const settlementObservations: SettlementEvidenceObservation[] = [];
   let agreementArtifact: Record<string, unknown> | null = null;
   if (!bundle.agreementRef && requiresAgreementRef(bundle)) {
     refs.push({ kind: "dacs-3-agreement", id: "agreementRef", verdict: "missing" });
@@ -350,6 +405,21 @@ export async function verifyBundleCore(
       const verdict = await deps.verifyEvidence(evidence.value);
       if (verdict.decision !== "pass") {
         evidence.check.verdict = "invalid-evidence";
+      }
+    }
+    if (
+      evidence.check.verdict === "ok" &&
+      evidence.value &&
+      isAttestationRef(ev) &&
+      isSettlementEvidence(evidence.value) &&
+      evidence.value.jobId === bundle.jobId
+    ) {
+      const phaseIndex = settlementPhaseIndex(bundle, ev);
+      if (phaseIndex !== undefined) {
+        settlementObservations.push({
+          evidence: evidence.value,
+          phaseIndex,
+        });
       }
     }
     refs.push(evidence.check);
@@ -445,5 +515,6 @@ export async function verifyBundleCore(
     bundle,
     signatures,
     refs,
+    settlementObservations,
   };
 }

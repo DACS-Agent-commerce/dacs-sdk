@@ -34,6 +34,18 @@ export {
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
 export {
+  deriveSettlementTxId,
+  verifySettlementClaimUniqueness,
+  reconcileSettlementEvidence,
+  type SettlementTxIdentity,
+  type SettlementBinding,
+  type ConsumedSettlementSet,
+  type SettlementClaimCheck,
+  type SettlementEvidenceObservation,
+  type SettlementUniquenessVerdict,
+  type SettlementUniquenessCheck,
+} from "./settlementIdentity.js";
+export {
   verifyBundleCopy,
   ABORT_OUTCOMES,
   type BundleCopyDeps,

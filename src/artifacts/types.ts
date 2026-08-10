@@ -190,11 +190,19 @@ export interface ListingRef {
  * what lets verifiers derive the rail's canonical transaction identity (SB-1).
  */
 export type ChainTxRef =
-  | { kind: "evm"; chainId: number; txHash: string }
+  | {
+      kind: "evm";
+      chainId: number;
+      txHash: string;
+      /** Required when consumed as an SB-1 settlement identity. */
+      logIndex?: number;
+    }
   | {
       kind: "solana";
       cluster: "mainnet" | "devnet" | "testnet";
       signature: string;
+      /** Required when consumed as an SB-1 settlement identity. */
+      instructionIndex?: number;
     }
   | { kind: "demos"; txHash: string; blockNumber?: number }
   | { kind: "storage-program"; address: string; writeTxHash: string }
@@ -211,6 +219,8 @@ export type ChainTxRef =
       paymentReceiptHash: string;
       settlementTxHash?: string;
       chainId?: number;
+      /** Required with settlementTxHash for SB-1 event-level identity. */
+      logIndex?: number;
       protocolVersion: string;
     }
   | {
