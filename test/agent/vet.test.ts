@@ -1,6 +1,18 @@
 import { describe, expect, test } from "vitest";
 
-import { vetCore, type VetDeps } from "../../src/agent/vetCore.js";
+import {
+  selfSignedAssertionAddress,
+  selfSignedAssertionBytes,
+  vetCore,
+  type VetDeps,
+  type VetRequest,
+} from "../../src/agent/vetCore.js";
+import {
+  ed25519Sign,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  rawPublicKey,
+} from "../../src/crypto/index.js";
 import { parseCciRecord } from "../../src/identity/cci.js";
 import type { RecipeDescriptor } from "../../src/registry/types.js";
 
@@ -13,20 +25,189 @@ const deps = (proxyStatus = 200): VetDeps => ({
   now: () => "2026-01-01T00:00:00Z",
 });
 
+const SELF_SEED = Uint8Array.from(Buffer.alloc(32, 7));
+const OTHER_SEED = Uint8Array.from(Buffer.alloc(32, 8));
+const SELF_SUBJECT = `key:${Buffer.from(rawPublicKey(publicKeyFromSeed(SELF_SEED))).toString("hex")}`;
+const OTHER_SUBJECT = `key:${Buffer.from(rawPublicKey(publicKeyFromSeed(OTHER_SEED))).toString("hex")}`;
+const PROOF_HASH = "a".repeat(64);
+const ATTESTATION = {
+  kind: "storage-program",
+  id: "stor-self-signed-assertion",
+  contentHash: PROOF_HASH,
+} as const;
+
+function signatureFor(assertion: string, seed = SELF_SEED): string {
+  return Buffer.from(
+    ed25519Sign(selfSignedAssertionBytes(assertion), privateKeyFromSeed(seed)),
+  ).toString("hex");
+}
+
+function selfSignedRequest(
+  over: Partial<VetRequest> = {},
+): VetRequest {
+  return {
+    subject: SELF_SUBJECT,
+    recipe: recipe({ id: "self-signed", method: "self-signed" }),
+    recipeVersion: "1",
+    jobId: "job-vet-1",
+    selfSigned: {
+      assertion: SELF_SUBJECT,
+      signature: signatureFor(SELF_SUBJECT),
+    },
+    ...over,
+  };
+}
+
+function selfSignedDeps(
+  anchor: NonNullable<VetDeps["anchorSelfSignedAssertion"]> = async () => ({
+    ...ATTESTATION,
+  }),
+): VetDeps {
+  return { ...deps(), anchorSelfSignedAssertion: anchor };
+}
+
 describe("vetCore (DACS-2 Vet stage)", () => {
-  test("self-signed records a pass with the subject as its own authority", async () => {
+  test("self-signed verifies key possession and records anchored evidence", async () => {
+    let anchored: Parameters<NonNullable<VetDeps["anchorSelfSignedAssertion"]>>[0] | undefined;
     const cvr = await vetCore(
-      { subject: "did:demos:agent:alice", recipe: recipe({ id: "self-signed", method: "self-signed" }) },
-      deps(),
+      selfSignedRequest(),
+      selfSignedDeps(async (input) => {
+        anchored = input;
+        return ATTESTATION;
+      }),
     );
+
     expect(cvr).toMatchObject({
-      subject: "did:demos:agent:alice",
+      subject: SELF_SUBJECT,
       recipeId: "self-signed",
       decision: "pass",
     });
     expect(cvr.results).toEqual([
-      { claimRef: "did:demos:agent:alice", method: "self-signed", status: "pass", authority: "did:demos:agent:alice" },
+      {
+        claimRef: SELF_SUBJECT,
+        method: "self-signed",
+        status: "pass",
+        authority: SELF_SUBJECT,
+        attestation: ATTESTATION,
+      },
     ]);
+    expect(anchored).toEqual({
+      logicalAddress: selfSignedAssertionAddress("job-vet-1", SELF_SUBJECT, "1"),
+      subject: SELF_SUBJECT,
+      assertion: SELF_SUBJECT,
+      signature: signatureFor(SELF_SUBJECT),
+    });
+  });
+
+  test("self-signed missing proof input is error, never pass", async () => {
+    const cvr = await vetCore(
+      selfSignedRequest({ selfSigned: undefined }),
+      selfSignedDeps(),
+    );
+    expect(cvr.decision).toBe("error");
+  });
+
+  test("self-signed rejects malformed and non-canonical key ClaimReferences", async () => {
+    for (const subject of [
+      "did:demos:agent:" + "a".repeat(64),
+      "key:0x" + "a".repeat(64),
+      "key:" + "A".repeat(64),
+      "key:abcd",
+    ]) {
+      const cvr = await vetCore(
+        selfSignedRequest({ subject }),
+        selfSignedDeps(),
+      );
+      expect(cvr.decision).toBe("error");
+    }
+    expect(() =>
+      selfSignedAssertionBytes(`${SELF_SUBJECT}?z=last&a=first`),
+    ).toThrow(/canonical key/);
+    expect(() =>
+      selfSignedAssertionBytes(`${SELF_SUBJECT}?purpose=bad%3avalue`),
+    ).toThrow(/canonical key/);
+  });
+
+  test("self-signed malformed signature input is error", async () => {
+    const cvr = await vetCore(
+      selfSignedRequest({
+        selfSigned: { assertion: SELF_SUBJECT, signature: "not-a-signature" },
+      }),
+      selfSignedDeps(),
+    );
+    expect(cvr.decision).toBe("error");
+  });
+
+  test("self-signed signature from the wrong key is fail", async () => {
+    const cvr = await vetCore(
+      selfSignedRequest({
+        selfSigned: {
+          assertion: SELF_SUBJECT,
+          signature: signatureFor(SELF_SUBJECT, OTHER_SEED),
+        },
+      }),
+      selfSignedDeps(),
+    );
+    expect(cvr.decision).toBe("fail");
+    expect(cvr.results[0]!.attestation).toEqual(ATTESTATION);
+  });
+
+  test("self-signed assertion replayed for another claim is fail", async () => {
+    const cvr = await vetCore(
+      selfSignedRequest({
+        subject: OTHER_SUBJECT,
+        selfSigned: {
+          assertion: SELF_SUBJECT,
+          signature: signatureFor(SELF_SUBJECT),
+        },
+      }),
+      selfSignedDeps(),
+    );
+    expect(cvr.decision).toBe("fail");
+  });
+
+  test("self-signed compares CF-3 identity without dropping signed parameters", async () => {
+    const assertion = `${SELF_SUBJECT}?purpose=vet&region=GB`;
+    const cvr = await vetCore(
+      selfSignedRequest({
+        selfSigned: { assertion, signature: signatureFor(assertion) },
+      }),
+      selfSignedDeps(),
+    );
+    expect(cvr.decision).toBe("pass");
+  });
+
+  test("self-signed raw or cross-domain signatures do not verify", async () => {
+    const rawSignature = Buffer.from(
+      ed25519Sign(Buffer.from(SELF_SUBJECT), privateKeyFromSeed(SELF_SEED)),
+    ).toString("hex");
+    const cvr = await vetCore(
+      selfSignedRequest({
+        selfSigned: { assertion: SELF_SUBJECT, signature: rawSignature },
+      }),
+      selfSignedDeps(),
+    );
+    expect(cvr.decision).toBe("fail");
+  });
+
+  test("self-signed SR-2 failure or malformed proof is error", async () => {
+    const unavailable = await vetCore(
+      selfSignedRequest(),
+      selfSignedDeps(async () => {
+        throw new Error("substrate unavailable");
+      }),
+    );
+    expect(unavailable.decision).toBe("error");
+
+    const malformed = await vetCore(
+      selfSignedRequest(),
+      selfSignedDeps(async () => ({
+        kind: "storage-program",
+        id: "stor-self-signed-assertion",
+        contentHash: "not-a-hash",
+      })),
+    );
+    expect(malformed.decision).toBe("error");
   });
 
   test("consensus-backed-proxy passes on a 2xx body matching its signed rules", async () => {

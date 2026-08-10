@@ -1,10 +1,20 @@
 import { DacsError } from "../errors.js";
 import type {
+  AttestationRef,
   ClaimProofRef,
   CompositeVerificationRecord,
   VerificationDecision,
   VerifyResultEntry,
 } from "../artifacts/types.js";
+import {
+  encodeAddressSegment,
+  sha256Hex,
+} from "../canonical/index.js";
+import {
+  ed25519Verify,
+  publicKeyFromRaw,
+  signedBytes,
+} from "../crypto/index.js";
 import type { RecipeDescriptor } from "../registry/types.js";
 import { cciHasClaim, cciClaimProof, type CciRecord } from "../identity/index.js";
 import {
@@ -35,6 +45,136 @@ function compositeDecision(
  */
 function classifyClaimProof(value: string): ClaimProofRef {
   return { kind: /^[0-9a-f]{64}$/i.test(value) ? "hash" : "raw", value };
+}
+
+/**
+ * The self-signed assertion is not a standalone artifact in the closed §B.7
+ * registry, so SIG-4 gives it an experimental, collision-resistant domain.
+ */
+export const SELF_SIGNED_ASSERTION_SEPARATOR =
+  "dacs-x-self-signed-assertion:v1:" as const;
+
+const KEY_CLAIM = /^key:([0-9a-f]{64})(?:\?(.+))?$/;
+const SIGNATURE_HEX = /^[0-9a-f]{128}$/;
+const PARAMETER_ESCAPE = /%(?:3A|3F|26|3D|25)/g;
+
+interface ParsedKeyClaim {
+  identifier: string;
+}
+
+function decodeParameterPart(value: string): string | null {
+  // CF-2 permits the five reserved delimiters only in their uppercase escaped
+  // forms. A stray %, raw reserved delimiter, or non-NFC string is non-canonical.
+  if (/[:?&=]/.test(value)) return null;
+  const withoutEscapes = value.replace(PARAMETER_ESCAPE, "");
+  if (withoutEscapes.includes("%")) return null;
+  const decoded = value
+    .replace(/%3A/g, ":")
+    .replace(/%3F/g, "?")
+    .replace(/%26/g, "&")
+    .replace(/%3D/g, "=")
+    .replace(/%25/g, "%");
+  return decoded.normalize("NFC") === decoded ? decoded : null;
+}
+
+function compareCodePoints(a: string, b: string): number {
+  const left = Array.from(a, (char) => char.codePointAt(0)!);
+  const right = Array.from(b, (char) => char.codePointAt(0)!);
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    if (left[index]! !== right[index]!) return left[index]! - right[index]!;
+  }
+  return left.length - right.length;
+}
+
+function parseCanonicalKeyClaim(value: string): ParsedKeyClaim | null {
+  const match = KEY_CLAIM.exec(value);
+  if (!match) return null;
+  const rawParameters = match[2];
+  if (rawParameters === undefined) return { identifier: match[1]! };
+
+  const keys: string[] = [];
+  for (const parameter of rawParameters.split("&")) {
+    const equalsAt = parameter.indexOf("=");
+    if (equalsAt <= 0 || equalsAt !== parameter.lastIndexOf("=")) return null;
+    const key = decodeParameterPart(parameter.slice(0, equalsAt));
+    const valuePart = decodeParameterPart(parameter.slice(equalsAt + 1));
+    if (key === null || valuePart === null || keys.includes(key)) return null;
+    keys.push(key);
+  }
+  for (let index = 1; index < keys.length; index += 1) {
+    if (compareCodePoints(keys[index - 1]!, keys[index]!) >= 0) return null;
+  }
+  return { identifier: match[1]! };
+}
+
+/** The explicit DACS-2 §7.3.9 proof supplied to the self-signed method. */
+export interface SelfSignedMethodInput {
+  /** Canonical assertion bytes. For the v0.1 `key` recipe this is the ClaimReference itself. */
+  assertion: string;
+  /** Ed25519 signature encoded as 128 lowercase hex characters. */
+  signature: string;
+}
+
+/** Evidence passed to the SR-2 anchoring seam after input-shape validation. */
+export interface SelfSignedAnchorInput {
+  /** CM-2 logical address for the anchored assertion evidence. */
+  logicalAddress: string;
+  subject: string;
+  assertion: string;
+  signature: string;
+}
+
+/**
+ * Bytes a `key:` claim holder signs for a self-signed assertion.
+ *
+ * The assertion is already the canonical ClaimReference byte string. SIG-4 is
+ * then applied using the universal single-hash recipe:
+ * `domain || sha256(assertion)`.
+ */
+export function selfSignedAssertionBytes(assertion: string): Uint8Array {
+  if (!parseCanonicalKeyClaim(assertion)) {
+    throw new DacsError(
+      "self-signed assertion must be a canonical key:<64-lowercase-hex> ClaimReference",
+    );
+  }
+  return signedBytes(SELF_SIGNED_ASSERTION_SEPARATOR, sha256Hex(assertion));
+}
+
+/** DACS-2 CM-2 logical evidence address for the v0.1 `key` recipe. */
+export function selfSignedAssertionAddress(
+  jobId: string,
+  subject: string,
+  recipeVersion: string,
+): string {
+  const claim = parseCanonicalKeyClaim(subject);
+  if (!claim) {
+    throw new DacsError(
+      "self-signed subject must be a canonical key:<64-lowercase-hex> ClaimReference",
+    );
+  }
+  if (!jobId || !/^[0-9]+(?:\.[0-9]+)*$/.test(recipeVersion)) {
+    throw new DacsError("self-signed assertion address requires jobId and recipeVersion");
+  }
+  return (
+    `dacs2:${encodeAddressSegment(jobId)}:key:` +
+    `${encodeAddressSegment(claim.identifier)}:v${recipeVersion}`
+  );
+}
+
+function isAttestationRef(value: unknown): value is AttestationRef {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const ref = value as Partial<AttestationRef>;
+  return (
+    typeof ref.kind === "string" &&
+    ref.kind.length > 0 &&
+    typeof ref.id === "string" &&
+    ref.id.length > 0 &&
+    typeof ref.contentHash === "string" &&
+    /^[0-9a-f]{64}$/.test(ref.contentHash)
+  );
 }
 
 /**
@@ -93,8 +233,8 @@ function readSanctioned(
  * the same way settlement is injected into runSession.
  *
  * MVP methods:
- *  - self-signed: the subject self-asserts; recorded as a pass with the subject
- *    as its own authority.
+ *  - self-signed: verifies an explicit, domain-separated Ed25519 assertion
+ *    against a canonical `key:` ClaimReference and anchors the proof via SR-2.
  *  - consensus-backed-proxy: a DAHR proxy fetch of the recipe's authority URL.
  *    A 2xx is evaluated through the signed §7.4.1 `parserRules` ParserSpec;
  *    missing rules or body fail closed as `error`. The attested body is
@@ -151,6 +291,15 @@ export interface VetDeps {
    * recipe, NOT this dep. Defaults to {@link defaultParserEngine} (json + raw).
    */
   parserEngine?: ParserEngine;
+  /**
+   * SR-2 evidence seam for the self-signed method. The callback MUST anchor the
+   * assertion + signature at `logicalAddress` and return an integrity-bearing
+   * proof reference. Missing/failed anchoring makes the method `error`, never
+   * `pass` or `fail`, because CM-2 was not completed.
+   */
+  anchorSelfSignedAssertion?: (
+    input: SelfSignedAnchorInput,
+  ) => Promise<AttestationRef>;
 }
 
 export interface VetRequest {
@@ -160,6 +309,10 @@ export interface VetRequest {
   recipe: RecipeDescriptor;
   /** Registry version recorded on the record (defaults to "0.1"). */
   recipeVersion?: string;
+  /** Session id used in the CM-2 evidence address; required for self-signed. */
+  jobId?: string;
+  /** Explicit §7.3.9 signed proof; required for the self-signed method. */
+  selfSigned?: SelfSignedMethodInput;
 }
 
 export async function vetCore(
@@ -171,11 +324,83 @@ export async function vetCore(
 
   switch (recipe.method) {
     case "self-signed": {
+      const input = req.selfSigned;
+      const recipeVersion = req.recipeVersion ?? "0.1";
+      const subjectClaim = parseCanonicalKeyClaim(subject);
+      let status: VerificationDecision = "error";
+      let attestation: AttestationRef | undefined;
+
+      // Missing/malformed method input or an unresolvable ClaimReference is a
+      // verifier input error. It is never evidence that the claimed key failed.
+      const shapeIsValid =
+        subjectClaim !== null &&
+        typeof req.jobId === "string" &&
+        req.jobId.length > 0 &&
+        input !== undefined &&
+        typeof input.assertion === "string" &&
+        parseCanonicalKeyClaim(input.assertion) !== null &&
+        typeof input.signature === "string" &&
+        SIGNATURE_HEX.test(input.signature);
+
+      if (shapeIsValid && input) {
+        const assertionClaim = parseCanonicalKeyClaim(input.assertion)!;
+        // CF-3: advisory parameters do not contribute to claim identity. The
+        // signature still binds the exact CF-2 assertion bytes as supplied.
+        const assertionMatches =
+          assertionClaim.identifier === subjectClaim.identifier;
+        if (!assertionMatches) {
+          // A validly-shaped assertion replayed for another claim is a
+          // conclusive proof mismatch, not a parser/transport failure.
+          status = "fail";
+        } else {
+          try {
+            const signature = Uint8Array.from(Buffer.from(input.signature, "hex"));
+            const publicKey = Uint8Array.from(Buffer.from(subjectClaim.identifier, "hex"));
+            status = ed25519Verify(
+              selfSignedAssertionBytes(input.assertion),
+              signature,
+              publicKeyFromRaw(publicKey),
+            )
+              ? "pass"
+              : "fail";
+          } catch {
+            status = "error";
+          }
+        }
+
+        // CM-2 is part of method completion even when the well-formed signature
+        // is invalid: retain the exact evidence that produced pass/fail.
+        if (deps.anchorSelfSignedAssertion) {
+          try {
+            const anchored = await deps.anchorSelfSignedAssertion({
+              logicalAddress: selfSignedAssertionAddress(
+                req.jobId!,
+                subject,
+                recipeVersion,
+              ),
+              subject,
+              assertion: input.assertion,
+              signature: input.signature,
+            });
+            if (isAttestationRef(anchored)) {
+              attestation = anchored;
+            } else {
+              status = "error";
+            }
+          } catch {
+            status = "error";
+          }
+        } else {
+          status = "error";
+        }
+      }
+
       results.push({
         claimRef: subject,
         method: "self-signed",
-        status: "pass",
+        status,
         authority: subject,
+        ...(attestation ? { attestation } : {}),
       });
       break;
     }

@@ -52,9 +52,14 @@ export {
 export { discoverListings } from "./discover.js";
 export {
   vetCore,
+  SELF_SIGNED_ASSERTION_SEPARATOR,
+  selfSignedAssertionBytes,
+  selfSignedAssertionAddress,
   type VetDeps,
   type VetRequest,
   type VetProxyResult,
+  type SelfSignedMethodInput,
+  type SelfSignedAnchorInput,
 } from "./vetCore.js";
 export {
   evaluateParserSpec,

@@ -167,11 +167,25 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
             payerAddress: BUYER_EVM,
           },
         ),
-      // Vet the seller (self-signed recipe) before paying — full 5-stage flow.
+      // Vet the seller before paying — full 5-stage flow. Self-signed proof
+      // construction is covered in vet.test; this orchestration test uses the
+      // deterministic parser-backed method so it stays focused on stage wiring.
       vet: (subject) =>
         vetCore(
-          { subject, recipe: { id: "self-signed", method: "self-signed", availability: "live", params: {} } },
-          { proxyFetch: async () => ({ status: 200, responseHash: "0x" }), now: () => "2026-01-01T00:00:00Z" },
+          {
+            subject,
+            recipe: {
+              id: "e2e-proxy",
+              method: "consensus-backed-proxy",
+              availability: "live",
+              params: { authorityUrl: "https://example.invalid/vet" },
+              parserRules: { format: "raw", matcher: "^$" },
+            },
+          },
+          {
+            proxyFetch: async () => ({ status: 200, responseHash: "0x", body: "" }),
+            now: () => "2026-01-01T00:00:00Z",
+          },
         ),
       newJobId: () => "job-e2e",
       now: () => "2026-01-01T00:00:00Z",
