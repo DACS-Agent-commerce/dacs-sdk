@@ -9,6 +9,7 @@ import {
 } from "../../src/agent/runSessionCore.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import type { SettlementFinalityParameters } from "../../src/artifacts/types.js";
 import {
   ed25519Sign,
   privateKeyFromSeed,
@@ -36,6 +37,23 @@ const terms = {
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
+
+const CHECKPOINT_FINALITIES = [
+  {
+    name: "block depth",
+    finality: { model: "block-depth", finalityBlocks: 12 },
+  },
+  {
+    name: "commitment level",
+    finality: {
+      model: "commitment-level",
+      finalityCommitmentLevel: "finalized",
+    },
+  },
+] satisfies ReadonlyArray<{
+  name: string;
+  finality: SettlementFinalityParameters;
+}>;
 
 interface DepOverrides {
   kv?: Map<string, Record<string, unknown>>;
@@ -192,6 +210,100 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(evidence?.settlementFinality).toMatchObject({
       model: "bft-final",
     });
+  });
+
+  test.each(CHECKPOINT_FINALITIES)(
+    "restart checkpoint round-trip preserves $name parameters",
+    async ({ finality }) => {
+      const store = createInMemorySessionStore();
+      const kv = new Map<string, Record<string, unknown>>();
+      let settleCalls = 0;
+      const settle: SessionDeps["settle"] = async (req) => {
+        settleCalls += 1;
+        return {
+          ok: true,
+          txHash: "0xfinality-checkpoint",
+          chainId: "test:checkpoint",
+          payer: "buyer",
+          payee: req.payee,
+          finality,
+        };
+      };
+      const interrupted = await makeDeps(store, {
+        kv,
+        settle,
+        anchor: async (name, value) => {
+          if (name === sessionAnchorName.evidence("job-1")) {
+            throw new Error("crash after finality checkpoint");
+          }
+          kv.set(`stor:${name}`, value as Record<string, unknown>);
+          return `stor:${name}`;
+        },
+      });
+      await expect(
+        runSessionCore(interrupted.listingRef, terms, interrupted.deps),
+      ).rejects.toThrow(/finality checkpoint/);
+
+      const resumed = await makeDeps(store, { kv, settle });
+      await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
+      expect(settleCalls).toBe(1);
+      const evidence = kv.get(`stor:${sessionAnchorName.evidence("job-1")}`);
+      expect(evidence?.settlementFinality).toEqual({
+        ...finality,
+        finalityObservedAt: 1780000000000,
+      });
+    },
+  );
+
+  test("restart fails closed on a wrong-model finality checkpoint", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    const settle: SessionDeps["settle"] = async (req) => {
+      settleCalls += 1;
+      return {
+        ok: true,
+        txHash: "0xcheckpoint-shape",
+        chainId: "test:checkpoint",
+        payer: "buyer",
+        payee: req.payee,
+        finality: { model: "block-depth", finalityBlocks: 12 },
+      };
+    };
+    const interrupted = await makeDeps(store, {
+      kv,
+      settle,
+      anchor: async (name, value) => {
+        if (name === sessionAnchorName.evidence("job-1")) {
+          throw new Error("crash after checkpoint");
+        }
+        kv.set(`stor:${name}`, value as Record<string, unknown>);
+        return `stor:${name}`;
+      },
+    });
+    await expect(
+      runSessionCore(interrupted.listingRef, terms, interrupted.deps),
+    ).rejects.toThrow(/crash after checkpoint/);
+
+    const malformedStore: NonNullable<SessionDeps["sessionStore"]> = {
+      ...store,
+      load: async (jobId) => {
+        const loaded = await store.load(jobId);
+        if (loaded.status !== "ok") return loaded;
+        const record = structuredClone(loaded.record);
+        const outcome = record.checkpoints.find(
+          (checkpoint) =>
+            checkpoint.key === "settle:0" && checkpoint.stage === "outcome",
+        );
+        if (outcome?.data) outcome.data.finalityModel = "commitment-level";
+        return { status: "ok" as const, record };
+      },
+    };
+    const resumed = await makeDeps(malformedStore, { kv, settle });
+    await expect(
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+    ).rejects.toThrow(/durable settlement checkpoint.*finalityBlocks/);
+    expect(settleCalls).toBe(1);
   });
 
   test("fail-closed: untrustworthy (corrupt) durable state refuses to settle (#67)", async () => {

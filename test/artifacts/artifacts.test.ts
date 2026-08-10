@@ -138,6 +138,55 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         },
       }),
     ).toBe(false);
+
+    const finalityBase = {
+      ...valid,
+      settlementFinality: {
+        model: "provider-receipt",
+        finalityObservedAt: valid.settlementFinality.finalityObservedAt,
+      },
+    };
+    for (const settlementFinality of [
+      { model: "block-depth", finalityObservedAt: 1 },
+      { model: "block-depth", finalityBlocks: 0, finalityObservedAt: 1 },
+      { model: "commitment-level", finalityObservedAt: 1 },
+      {
+        model: "commitment-level",
+        finalityCommitmentLevel: "finalized",
+        finalityObservedAt: 1,
+      },
+      { model: "provider-receipt", finalityObservedAt: 1 },
+      { model: "htlc-reveal", finalityObservedAt: 1 },
+      { model: "liquidity-tank", finalityObservedAt: 1 },
+      { model: "bft-final", finalityObservedAt: 1 },
+    ]) {
+      expect(
+        isSettlementEvidence({ ...finalityBase, settlementFinality }),
+      ).toBe(true);
+    }
+    for (const settlementFinality of [
+      { model: "block-depth", finalityBlocks: -1, finalityObservedAt: 1 },
+      { model: "block-depth", finalityBlocks: 1.5, finalityObservedAt: 1 },
+      {
+        model: "block-depth",
+        finalityCommitmentLevel: "confirmed",
+        finalityObservedAt: 1,
+      },
+      {
+        model: "commitment-level",
+        finalityBlocks: 1,
+        finalityObservedAt: 1,
+      },
+      {
+        model: "commitment-level",
+        finalityCommitmentLevel: "kinda",
+        finalityObservedAt: 1,
+      },
+    ]) {
+      expect(
+        isSettlementEvidence({ ...finalityBase, settlementFinality }),
+      ).toBe(false);
+    }
   });
 });
 

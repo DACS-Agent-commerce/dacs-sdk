@@ -2,7 +2,12 @@ import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { CounterpartyError, DacsError, SubstrateError } from "../errors.js";
-import type { SessionLoad, SessionReceipt, SessionStore } from "./sessionStore.js";
+import type {
+  CheckpointValue,
+  SessionLoad,
+  SessionReceipt,
+  SessionStore,
+} from "./sessionStore.js";
 import type {
   AgreementDocument,
   AttestationBundle,
@@ -11,6 +16,8 @@ import type {
   PhaseSummaryEntry,
   Price,
   SettlementEvidence,
+  SettlementFinality,
+  SettlementFinalityParameters,
   SettlementFinalityModel,
 } from "../artifacts/types.js";
 import {
@@ -67,9 +74,10 @@ export interface SettleResult {
    * Rail-specific finality (§9.5.x / PC-6). When a rail knows the finality model
    * it settled under, it reports it here and runSessionCore records it on the
    * evidence instead of the default provider-receipt. E.g. §9.5.9 pay-dem →
-   * `{ model: "bft-final" }`. Omit for a receipt-confirmed rail.
+   * `{ model: "bft-final" }`; a Solana rail may report the optional
+   * `finalityCommitmentLevel` echo. Omit for a receipt-confirmed rail.
    */
-  finality?: { model: SettlementFinalityModel; finalityBlocks?: number };
+  finality?: SettlementFinalityParameters;
   /** Block/ledger height the settlement landed at, when the rail reports it (§9.5.9 `demos`). */
   blockNumber?: number;
   /** The txRef kind the rail's tx is (e.g. §9.5.9 `demos`); defaults to `payment`. */
@@ -213,15 +221,46 @@ export const sessionAnchorName = {
 /** Result of a resume-time semantic check on an already-anchored artifact. */
 type Match = { ok: boolean; reason?: string };
 
-interface DurableSettlementOutcome {
+interface DurableSettlementOutcomeBase {
   txHash: string;
   chainId: string;
   ok: boolean;
-  finalityModel?: SettlementFinalityModel;
-  finalityBlocks?: number;
   blockNumber?: number;
   txRefKind?: string;
 }
+
+/**
+ * Flat discriminated form of §9.7 finality for primitive-only SessionCheckpoint
+ * payloads. Invalid cross-model field combinations are unrepresentable here and
+ * are rejected again while parsing untrusted persisted state.
+ */
+type DurableSettlementFinality =
+  | {
+      finalityModel?: never;
+      finalityBlocks?: never;
+      finalityCommitmentLevel?: never;
+    }
+  | {
+      finalityModel: "block-depth";
+      finalityBlocks?: number;
+      finalityCommitmentLevel?: never;
+    }
+  | {
+      finalityModel: "commitment-level";
+      finalityBlocks?: never;
+      finalityCommitmentLevel?: "processed" | "confirmed" | "finalized";
+    }
+  | {
+      finalityModel: Exclude<
+        SettlementFinalityModel,
+        "block-depth" | "commitment-level"
+      >;
+      finalityBlocks?: never;
+      finalityCommitmentLevel?: never;
+    };
+
+type DurableSettlementOutcome = DurableSettlementOutcomeBase &
+  DurableSettlementFinality;
 
 const isSettlementFinalityModel = (
   value: unknown,
@@ -233,16 +272,162 @@ const isSettlementFinalityModel = (
   value === "liquidity-tank" ||
   value === "bft-final";
 
+function parseSettlementFinalityParameters(
+  value: unknown,
+  source: string,
+): SettlementFinalityParameters | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new CounterpartyError(`${source} finality must be an object`);
+  }
+
+  const record = value as Record<string, unknown>;
+  const model = record.model;
+  if (!isSettlementFinalityModel(model)) {
+    throw new CounterpartyError(
+      `${source} finality model ${JSON.stringify(model)} is not supported`,
+    );
+  }
+
+  const finalityBlocks = record.finalityBlocks;
+  const finalityCommitmentLevel = record.finalityCommitmentLevel;
+  if (model === "block-depth") {
+    if (
+      finalityBlocks !== undefined &&
+      (typeof finalityBlocks !== "number" ||
+        !Number.isInteger(finalityBlocks) ||
+        finalityBlocks < 0)
+    ) {
+      throw new CounterpartyError(
+        `${source} finalityBlocks must be a non-negative integer`,
+      );
+    }
+    if (finalityCommitmentLevel !== undefined) {
+      throw new CounterpartyError(
+        `${source} finalityCommitmentLevel is not valid for block-depth finality`,
+      );
+    }
+    return {
+      model,
+      ...(finalityBlocks !== undefined ? { finalityBlocks } : {}),
+    };
+  }
+
+  if (model === "commitment-level") {
+    if (finalityBlocks !== undefined) {
+      throw new CounterpartyError(
+        `${source} finalityBlocks is not valid for commitment-level finality`,
+      );
+    }
+    if (
+      finalityCommitmentLevel !== undefined &&
+      finalityCommitmentLevel !== "processed" &&
+      finalityCommitmentLevel !== "confirmed" &&
+      finalityCommitmentLevel !== "finalized"
+    ) {
+      throw new CounterpartyError(
+        `${source} finalityCommitmentLevel must be processed, confirmed, or finalized`,
+      );
+    }
+    return {
+      model,
+      ...(finalityCommitmentLevel !== undefined
+        ? { finalityCommitmentLevel }
+        : {}),
+    };
+  }
+
+  if (finalityBlocks !== undefined || finalityCommitmentLevel !== undefined) {
+    throw new CounterpartyError(
+      `${source} finality model ${model} does not accept model-specific parameters`,
+    );
+  }
+  return { model };
+}
+
+function durableFinalityFields(
+  finality: SettlementFinalityParameters | undefined,
+): DurableSettlementFinality {
+  if (!finality) return {};
+  if (finality.model === "block-depth") {
+    return {
+      finalityModel: finality.model,
+      ...(finality.finalityBlocks !== undefined
+        ? { finalityBlocks: finality.finalityBlocks }
+        : {}),
+    };
+  }
+  if (finality.model === "commitment-level") {
+    return {
+      finalityModel: finality.model,
+      ...(finality.finalityCommitmentLevel !== undefined
+        ? { finalityCommitmentLevel: finality.finalityCommitmentLevel }
+        : {}),
+    };
+  }
+  return { finalityModel: finality.model };
+}
+
+function settlementFinalityFromDurable(
+  outcome: DurableSettlementOutcome,
+): SettlementFinalityParameters | undefined {
+  if (!outcome.finalityModel) return undefined;
+  if (outcome.finalityModel === "block-depth") {
+    return {
+      model: outcome.finalityModel,
+      ...(outcome.finalityBlocks !== undefined
+        ? { finalityBlocks: outcome.finalityBlocks }
+        : {}),
+    };
+  }
+  if (outcome.finalityModel === "commitment-level") {
+    return {
+      model: outcome.finalityModel,
+      ...(outcome.finalityCommitmentLevel !== undefined
+        ? { finalityCommitmentLevel: outcome.finalityCommitmentLevel }
+        : {}),
+    };
+  }
+  return { model: outcome.finalityModel };
+}
+
+function durableSettlementCheckpointData(
+  outcome: DurableSettlementOutcome,
+): Record<string, CheckpointValue> {
+  const data: Record<string, CheckpointValue> = {
+    txHash: outcome.txHash,
+    chainId: outcome.chainId,
+    ok: outcome.ok,
+  };
+  if (outcome.finalityModel !== undefined) {
+    data.finalityModel = outcome.finalityModel;
+  }
+  if (outcome.finalityBlocks !== undefined) {
+    data.finalityBlocks = outcome.finalityBlocks;
+  }
+  if (outcome.finalityCommitmentLevel !== undefined) {
+    data.finalityCommitmentLevel = outcome.finalityCommitmentLevel;
+  }
+  if (outcome.blockNumber !== undefined) {
+    data.blockNumber = outcome.blockNumber;
+  }
+  if (outcome.txRefKind !== undefined) {
+    data.txRefKind = outcome.txRefKind;
+  }
+  return data;
+}
+
 function durableSettlementOutcome(result: SettleResult): DurableSettlementOutcome {
   const ok = result.ok && result.txHash.trim().length > 0;
+  const finality = parseSettlementFinalityParameters(
+    result.finality,
+    "settlement rail reported",
+  );
   return {
     txHash: result.txHash,
     chainId: result.chainId,
     ok,
-    ...(result.finality ? { finalityModel: result.finality.model } : {}),
-    ...(result.finality?.finalityBlocks !== undefined
-      ? { finalityBlocks: result.finality.finalityBlocks }
-      : {}),
+    ...durableFinalityFields(finality),
     ...(result.blockNumber !== undefined ? { blockNumber: result.blockNumber } : {}),
     ...(result.txRefKind !== undefined ? { txRefKind: result.txRefKind } : {}),
   };
@@ -258,6 +443,7 @@ function sameSettlementOutcome(
     left.ok === right.ok &&
     left.finalityModel === right.finalityModel &&
     left.finalityBlocks === right.finalityBlocks &&
+    left.finalityCommitmentLevel === right.finalityCommitmentLevel &&
     left.blockNumber === right.blockNumber &&
     left.txRefKind === right.txRefKind
   );
@@ -282,16 +468,30 @@ function findSettleOutcome(
       ok,
       finalityModel,
       finalityBlocks,
+      finalityCommitmentLevel,
       blockNumber,
       txRefKind,
     } = cp.data;
     if (typeof txHash === "string" && typeof ok === "boolean") {
+      const finality = parseSettlementFinalityParameters(
+        finalityModel === undefined &&
+          finalityBlocks === undefined &&
+          finalityCommitmentLevel === undefined
+          ? undefined
+          : {
+              model: finalityModel,
+              ...(finalityBlocks !== undefined ? { finalityBlocks } : {}),
+              ...(finalityCommitmentLevel !== undefined
+                ? { finalityCommitmentLevel }
+                : {}),
+            },
+        "durable settlement checkpoint",
+      );
       return {
         txHash,
         chainId: typeof chainId === "string" ? chainId : "",
         ok,
-        ...(isSettlementFinalityModel(finalityModel) ? { finalityModel } : {}),
-        ...(typeof finalityBlocks === "number" ? { finalityBlocks } : {}),
+        ...durableFinalityFields(finality),
         ...(typeof blockNumber === "number" ? { blockNumber } : {}),
         ...(typeof txRefKind === "string" ? { txRefKind } : {}),
       };
@@ -668,7 +868,11 @@ export async function runSessionCore(
       jobId,
       expectedRevision: cur.record.revision,
       phase,
-      checkpoint: { key: "settle:0", stage: "outcome", data: { ...outcome } },
+      checkpoint: {
+        key: "settle:0",
+        stage: "outcome",
+        data: durableSettlementCheckpointData(outcome),
+      },
       now: deps.nowMs(),
     });
     if (res.ok) return;
@@ -774,8 +978,9 @@ export async function runSessionCore(
       const observedAt = deps.nowMs();
       // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
       // tx hash become a payment txRef. Finality defaults to the rail's receipt
-      // (§9.7 `provider-receipt`, finalityBlocks 0) but a rail that knows its own
-      // model — e.g. §9.5.9 pay-dem's `bft-final` + block height — reports it via
+      // (§9.7 `provider-receipt`, with no model-specific parameter) but a rail
+      // that knows its own model — e.g. §9.5.9 pay-dem's `bft-final` + block
+      // height — reports it via
       // `pay.finality` / `pay.blockNumber` / `pay.txRefKind`, so the evidence
       // asserts the finality model that actually settled, not a hardcoded one (F7/#22).
       const evidenceBase = {
@@ -800,20 +1005,13 @@ export async function runSessionCore(
       if (!settledOk) {
         evidence = { ...evidenceBase, outcome: "failure" };
       } else {
-        const model = settlement.finalityModel ?? "provider-receipt";
-        if (model === "block-depth" && settlement.finalityBlocks === undefined) {
-          throw new CounterpartyError(
-            "settlement rail reported block-depth finality without finalityBlocks",
-          );
-        }
-        const settlementFinality =
-          model === "block-depth"
-            ? {
-                model,
-                finalityBlocks: settlement.finalityBlocks!,
-                finalityObservedAt: observedAt,
-              }
-            : { model, finalityObservedAt: observedAt };
+        const finality = settlementFinalityFromDurable(settlement) ?? {
+          model: "provider-receipt" as const,
+        };
+        const settlementFinality: SettlementFinality = {
+          ...finality,
+          finalityObservedAt: observedAt,
+        };
         evidence = { ...evidenceBase, outcome: "success", settlementFinality };
       }
       return deps.sign(evidence, ARTIFACT_SEPARATORS.SettlementEvidence);

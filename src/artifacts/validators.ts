@@ -29,6 +29,11 @@ const FINALITY_MODELS = [
   "liquidity-tank",
   "bft-final",
 ] as const;
+const SETTLEMENT_COMMITMENT_LEVELS = [
+  "processed",
+  "confirmed",
+  "finalized",
+] as const;
 const BUNDLE_PHASE_OUTCOMES = ["ok", "fail"] as const;
 const BUNDLE_PHASE_ERROR_CLASSES = [
   "permanent",
@@ -240,9 +245,29 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
   if (!isOneOf(FINALITY_MODELS, fin.model) || !isNum(fin.finalityObservedAt)) {
     return false;
   }
-  return fin.model === "block-depth"
-    ? isNum(fin.finalityBlocks)
-    : fin.finalityBlocks === undefined;
+  if (fin.model === "block-depth") {
+    return (
+      (fin.finalityBlocks === undefined ||
+        (isNum(fin.finalityBlocks) &&
+          Number.isInteger(fin.finalityBlocks) &&
+          fin.finalityBlocks >= 0)) &&
+      fin.finalityCommitmentLevel === undefined
+    );
+  }
+  if (fin.model === "commitment-level") {
+    return (
+      fin.finalityBlocks === undefined &&
+      (fin.finalityCommitmentLevel === undefined ||
+        isOneOf(
+          SETTLEMENT_COMMITMENT_LEVELS,
+          fin.finalityCommitmentLevel,
+        ))
+    );
+  }
+  return (
+    fin.finalityBlocks === undefined &&
+    fin.finalityCommitmentLevel === undefined
+  );
 }
 
 function hasBundleFields(
