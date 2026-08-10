@@ -9,6 +9,26 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER; // 2^53 - 1
  * points are NOT escaped.
  */
 function canonString(value: string): string {
+  // RFC 8785 requires invalid Unicode data (lone UTF-16 surrogates) to fail.
+  // Node's UTF-8 encoder replaces such code units with U+FFFD, so accepting
+  // them would make two semantically different JavaScript strings hash to the
+  // same bytes.
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new DacsError(
+          "canonical form: string contains an unpaired UTF-16 surrogate",
+        );
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new DacsError(
+        "canonical form: string contains an unpaired UTF-16 surrogate",
+      );
+    }
+  }
   const nfc = value.normalize("NFC");
   let out = '"';
   for (const ch of nfc) {
@@ -79,13 +99,70 @@ function canonValue(value: unknown): string {
   }
 
   if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      throw new DacsError(
+        "canonical form: array must use the standard Array prototype",
+      );
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.length !== value.length + 1) {
+      throw new DacsError(
+        "canonical form: arrays must be dense and contain no extra properties",
+      );
+    }
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (
+        descriptor === undefined ||
+        !descriptor.enumerable ||
+        !("value" in descriptor)
+      ) {
+        throw new DacsError(
+          "canonical form: arrays must be dense enumerable data properties",
+        );
+      }
+    }
     return "[" + value.map((item) => canonValue(item)).join(",") + "]";
   }
 
   if (t === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .map(([k, v]) => [k.normalize("NFC"), v] as const)
+    const object = value as Record<string, unknown>;
+    const prototype = Object.getPrototypeOf(object);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new DacsError(
+        "canonical form: object must be a plain JSON object",
+      );
+    }
+    for (const key of Reflect.ownKeys(object)) {
+      if (typeof key !== "string") {
+        throw new DacsError(
+          "canonical form: symbol-keyed properties are not valid JSON",
+        );
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(object, key)!;
+      if (!descriptor.enumerable || !("value" in descriptor)) {
+        throw new DacsError(
+          "canonical form: object properties must be enumerable data properties",
+        );
+      }
+    }
+
+    const normalizedKeys = new Set<string>();
+    const entries = Object.entries(object)
+      // Match JSON object serialization for optional properties. Undefined is
+      // never transportable data; unlike sparse/undefined array elements, an
+      // undefined object member is omitted rather than changing array shape.
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .map(([key, entryValue]) => {
+        const normalizedKey = key.normalize("NFC");
+        if (normalizedKeys.has(normalizedKey)) {
+          throw new DacsError(
+            "canonical form: object contains duplicate NFC-normalized keys",
+          );
+        }
+        normalizedKeys.add(normalizedKey);
+        return [normalizedKey, entryValue] as const;
+      })
       .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     return (
       "{" +

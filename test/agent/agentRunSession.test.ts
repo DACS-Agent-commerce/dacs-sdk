@@ -1,8 +1,17 @@
 import { describe, expect, test } from "vitest";
 
-import { buildAgent } from "../../src/agent/Agent.js";
+import {
+  buildAgent,
+  type AuthenticatedListing,
+} from "../../src/agent/Agent.js";
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import type { Listing } from "../../src/artifacts/types.js";
+import {
+  contentHash,
+  listingAddress,
+  stripSignature,
+} from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   privateKeyFromSeed,
@@ -113,6 +122,51 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         settle: async () => {
           settled = true;
           return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+        },
+      }),
+    ).rejects.toThrow(/failed signature verification/);
+    expect(settled).toBe(false);
+  });
+
+  test("an authenticated selection pins content across the pre-payment reread", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const original = store.get(ref)!;
+    const selected: AuthenticatedListing = {
+      status: "authenticated",
+      compatibility: "legacy-mvp",
+      ref,
+      logicalAddress: listingAddress(sellerDid, "svc", 1),
+      version: 1,
+      contentHash: contentHash(original),
+      listing: stripSignature(original) as unknown as Listing,
+    };
+
+    const attackerSeed = Uint8Array.from(Buffer.alloc(32, 9));
+    const attackerPrivateKey = privateKeyFromSeed(attackerSeed);
+    const attackerPublicKey = rawPublicKey(publicKeyFromSeed(attackerSeed));
+    const attackerDid =
+      `did:demos:agent:${Buffer.from(attackerPublicKey).toString("hex")}`;
+    await anchorListing(store, attackerPrivateKey, attackerDid);
+
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    let settled = false;
+    await expect(
+      agent.runSession(selected, {
+        terms: TERMS,
+        settle: async () => {
+          settled = true;
+          return {
+            ok: true,
+            txHash: "0x",
+            chainId: "c",
+            payer: buyerDid,
+            payee: attackerDid,
+          };
         },
       }),
     ).rejects.toThrow(/failed signature verification/);

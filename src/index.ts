@@ -5,8 +5,9 @@
  *
  * T1 scaffold: this exports the substrate seam (SubstrateAdapter + DemosAdapter)
  * and package metadata. The agent-facing public API (`createAgent`,
- * `publishListing`, `discover`, `runSession`, `verifyBundle`, `getReputation`)
- * is designed in T4 — see IMPLEMENTATION.md.
+ * `publishListing`, `readListing`, `enumerateListings`, `discover`,
+ * `runSession`, `verifyBundle`, `getReputation`) is designed in T4 — see
+ * IMPLEMENTATION.md.
  */
 
 export { VERSION, DACS_SPEC_VERSION } from "./version.js";
@@ -87,6 +88,7 @@ export type {
 export { AnchorWaitError } from "./substrate/AnchorWaitError.js";
 export {
   createDemosHistoryPageFetcher,
+  DEMOS_HISTORY_MAX_PAGE_SIZE,
   type DemosHistoryClient,
 } from "./substrate/demosHistory.js";
 
@@ -219,6 +221,15 @@ export {
   type AgentConfig,
   type AgentBindingConfig,
   type PublishResult,
+  type AuthenticatedListing,
+  type EnumerateListingsOptions,
+  type ListingEnumerationDiagnostic,
+  type ListingEnumerationResult,
+  type ListingReadFailure,
+  type ListingReadRejectionCheck,
+  type ListingReadRejectionCode,
+  type ListingReadResult,
+  type SessionListingInput,
   type BundleVerification,
   type SignatureCheck,
   verifyBundleCore,

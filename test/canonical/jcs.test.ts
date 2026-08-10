@@ -34,4 +34,43 @@ describe("canonicalize (§7.1)", () => {
   it("canon-without-signature: the signed scope excludes the signature field", () => {
     expect(canonicalSignedScope({ a: 1, signature: "deadbeef" })).toBe('{"a":1}');
   });
+
+  it("rejects unpaired UTF-16 surrogates instead of hashing replacement bytes", () => {
+    expect(() => canonicalize("\ud800")).toThrow(/unpaired UTF-16 surrogate/);
+    expect(() => canonicalize("\udc00")).toThrow(/unpaired UTF-16 surrogate/);
+    expect(() =>
+      canonicalize(Object.fromEntries([["\ud800", "invalid key"]])),
+    ).toThrow(/unpaired UTF-16 surrogate/);
+    expect(canonicalize("\ud83d\ude00")).toBe('"😀"');
+  });
+
+  it("rejects non-JSON objects, sparse arrays, and array extensions", () => {
+    const sparse = new Array(1);
+    const extended: unknown[] & { extra?: string } = [];
+    extended.extra = "unsigned";
+    const accessor = new Array(1);
+    Object.defineProperty(accessor, "0", {
+      enumerable: true,
+      get: () => "unsigned",
+    });
+
+    expect(() => canonicalize(sparse)).toThrow(/arrays must be dense/);
+    expect(() => canonicalize(extended)).toThrow(/extra properties/);
+    expect(() => canonicalize(accessor)).toThrow(/enumerable data properties/);
+    expect(() => canonicalize(new Map())).toThrow(/plain JSON object/);
+    expect(() => canonicalize(new Date(0))).toThrow(/plain JSON object/);
+    expect(canonicalize({ omittedByJson: undefined, kept: true })).toBe(
+      '{"kept":true}',
+    );
+  });
+
+  it("rejects object keys that collide after NFC normalization", () => {
+    const colliding = Object.fromEntries([
+      ["é", 1],
+      ["e\u0301", 2],
+    ]);
+    expect(() => canonicalize(colliding)).toThrow(
+      /duplicate NFC-normalized keys/,
+    );
+  });
 });

@@ -129,7 +129,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
         wallet: "secret",
         bindings: { index: {}, publisher: {} },
       } as never),
-    ).toThrow(/index resolver and an authorized publisher/);
+    ).toThrow(/index resolver/);
     expect(state.creates).toBe(0);
   });
 

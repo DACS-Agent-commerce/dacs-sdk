@@ -18,6 +18,7 @@ export { AnchorWaitError } from "./AnchorWaitError.js";
 export { DemosAdapter, type DemosAdapterConfig } from "./DemosAdapter.js";
 export {
   createDemosHistoryPageFetcher,
+  DEMOS_HISTORY_MAX_PAGE_SIZE,
   type DemosHistoryClient,
 } from "./demosHistory.js";
 export type {

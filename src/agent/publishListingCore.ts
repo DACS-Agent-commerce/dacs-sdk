@@ -146,9 +146,9 @@ export async function publishListingCore(
   // validation semantics (notably non-NFC strings and fractional numbers).
   const listing = structuredClone(listingInput);
   const version = listing.listingVersion ?? 1;
-  if (!Number.isInteger(version) || version < 1) {
+  if (!Number.isSafeInteger(version) || version < 1) {
     throw new DacsError(
-      `listingVersion must be a positive integer ≥ 1 (§6.3.4), got ${version}`,
+      `listingVersion must be a positive integer ≥ 1 within the safe range (§6.3.4), got ${version}`,
     );
   }
   // Runtime callers can bypass the TypeScript surface. Reject a record that the
@@ -156,6 +156,9 @@ export async function publishListingCore(
   // signing, or an immutable write burns the version slot.
   if (!isListing(listing)) {
     throw new DacsError("listing does not satisfy the supported Listing shape");
+  }
+  if (listing.serviceId.length === 0) {
+    throw new DacsError("listing serviceId must not be empty");
   }
 
   // Logical (colon-bearing, discovery key) vs native (colon-free program name the

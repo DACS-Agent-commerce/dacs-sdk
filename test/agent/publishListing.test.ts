@@ -283,10 +283,21 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
   });
 
   test("rejects version 0, fractional, and negative (§6.3.4: positive integer ≥ 1)", async () => {
-    for (const bad of [0, 1.5, -1]) {
+    for (const bad of [0, 1.5, -1, Number.MAX_SAFE_INTEGER + 1]) {
       await expect(
         publishListingCore(listing({ listingVersion: bad }), fakeDeps()),
       ).rejects.toThrow(/positive integer/);
     }
+  });
+
+  test("rejects an empty service id before history lookup", async () => {
+    const deps = fakeDeps();
+    deps.scanOwnAnchorsByNamePrefix = async () => {
+      throw new Error("history lookup must not run");
+    };
+    await expect(
+      publishListingCore(listing({ serviceId: "" }), deps),
+    ).rejects.toThrow(/serviceId must not be empty/);
+    expect(deps.stats.creates).toBe(0);
   });
 });

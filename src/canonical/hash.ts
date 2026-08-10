@@ -12,9 +12,17 @@ export function sha256Hex(input: string | Uint8Array): string {
 
 /** Return the document with its signature field(s) omitted — the signed scope (§7.2). */
 export function stripSignature<T extends Record<string, unknown>>(doc: T): Partial<T> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(doc)) {
-    if (!SIGNATURE_FIELDS.includes(k)) out[k] = v;
+  // Define descriptors directly so an own `__proto__` remains signed data and
+  // accessors/non-enumerable/symbol properties remain visible to canonicalize's
+  // JSON-domain rejection. Assigning keys to `{}` would invoke the legacy
+  // prototype setter; Object.entries would silently erase those invalid forms.
+  const out = Object.create(Object.getPrototypeOf(doc)) as Record<
+    PropertyKey,
+    unknown
+  >;
+  for (const key of Reflect.ownKeys(doc)) {
+    if (typeof key === "string" && SIGNATURE_FIELDS.includes(key)) continue;
+    Object.defineProperty(out, key, Object.getOwnPropertyDescriptor(doc, key)!);
   }
   return out as Partial<T>;
 }

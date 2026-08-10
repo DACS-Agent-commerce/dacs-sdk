@@ -54,7 +54,7 @@ import {
 // A production deployment supplies a well-known/catalog-backed implementation.
 // This in-memory store is suitable only for a same-process example or tests.
 const bindings = createInMemoryBindingStore();
-const agent = await createAgent({
+const seller = await createAgent({
   demosRpc,
   wallet,
   identity: { agentId },
@@ -62,20 +62,38 @@ const agent = await createAgent({
 });
 
 // seller — sign + anchor + publish the logical→native binding
-const published = await agent.publishListing(spec);
+const published = await seller.publishListing(spec);
 if (
   published.status !== "published" &&
   published.status !== "already-published"
 ) {
   throw new Error(`listing binding was not published: ${published.status}`);
 }
-const { ref } = published;
 
-// buyer — the current Agent helper still takes a native ref. Agent-level typed
-// logical resolution through `bindings` remains a separate #54 slice.
-const [{ ref: listingRef }] = await agent.discover([ref]);
+// A read-only Directory can omit both wallet and publisher. A session-capable
+// buyer supplies its own wallet but still needs only the consumer index.
+const buyer = await createAgent({
+  demosRpc,
+  wallet: buyerWallet,
+  identity: { agentId: buyerId },
+  bindings: { index: bindings },
+});
+
+// buyer — resolve the stable logical address and authenticate its binding tuple,
+// signed content, seller, service, version, and Listing-domain signature.
+const resolved = await buyer.readListing(published.logicalAddress);
+if (resolved.status !== "authenticated") {
+  throw new Error(`listing could not be authenticated: ${resolved.status}`);
+}
+
+// Or page the historical Listings published by one known seller. This is
+// owner-scoped discovery, not global marketplace search.
+const firstPage = await buyer.enumerateListings(agentId);
+
 const rail = await createX402Rail({ evmPrivateKey });
-const session = await agent.runSession(listingRef, {
+// Passing the authenticated result (not only `resolved.ref`) pins the selected
+// content hash across runSession's pre-payment re-read.
+const session = await buyer.runSession(resolved, {
   terms,
   // optional Vet step: resolve a steward recipe + verify the seller before paying
   vet: (subject) =>
@@ -87,19 +105,47 @@ const session = await agent.runSession(listingRef, {
 });
 
 // anyone — verify the bundle's structure + every artifact signature
-const verdict = await agent.verifyBundle(session.bundleRef);
-const rep = await agent.getReputation(primaryClaim, bundleRefs);
+const verdict = await buyer.verifyBundle(session.bundleRef);
+const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
 
-To resume an interrupted session safely, pass the prior `jobId` to `runSession` — anchored artifacts are reused and settlement is never repeated.
+To resume an interrupted session safely, pass the prior `jobId` and the same
+authenticated Listing to `runSession` — anchored artifacts are reused, the
+Listing content remains pinned, and settlement is never repeated. The legacy
+native-ref input remains available for callers with a separate trusted pin.
 
-`publishListing` requires `AgentConfig.bindings` and fails before anchoring when
-no publication authority is configured. Its top-level `ref` exists only on a
-`published` or `already-published` result. On conflict or indeterminate, retain
+`publishListing` requires `AgentConfig.wallet` and
+`AgentConfig.bindings.publisher`, and fails before anchoring when either write
+authority is absent. Its top-level `ref` exists only on a `published` or
+`already-published` result. On conflict or indeterminate, retain
 `publication.anchor` and retry the same listing; never create a replacement
 anchor. These success statuses mean the publisher acknowledged the exact binding
 and the configured index read it back; they do not by themselves prove portable
 anchor finality, active-listing eligibility, or complete DACS conformance.
+
+`readListing(logicalAddress)` and `enumerateListings(sellerId)` need only
+`AgentConfig.bindings.index`; the Agent wallet and publisher are optional for a
+read-only consumer. An `authenticated` result has
+`compatibility: "legacy-mvp"` and has passed the SDK's exact binding-tuple,
+hash, Listing context, and seller-authorship checks. The binding owner is an
+index assertion; direct lookup does not prove that the seller deployed the
+native anchor. It is also not yet a normative DACS-1 `active`/unrevoked
+eligibility decision. Keep both physical provenance and eligibility separate
+from signed-content authentication.
+
+Enumeration pages one known seller's confirmed Demos create history. Its opaque
+cursor is owner-bound and at-least-once: `historyPageSize` counts raw history
+rows, a page can contain no Listings, and `nextCursor: null` means only that the
+current traversal reached its end. Upsert results idempotently by
+`(logicalAddress, contentHash, ref)`. Restart from a null cursor to see a binding
+repaired after its history page was already consumed. Global/category discovery
+still requires a production catalog.
+
+Handle enumeration results by status. A `page` may contain permanent candidate
+`diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
+it returns no Listings or diagnostics, and the caller retries its unchanged
+`retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
+`historyPageSize`, when supplied, must be an integer from 1 through 100.
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
