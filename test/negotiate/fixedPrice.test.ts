@@ -12,6 +12,7 @@ import {
   ed25519Verify,
   isAgreementDocument,
   isPayeeBoundAgreementDocument,
+  identityBundleHash,
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
@@ -141,7 +142,8 @@ function input(value = listing()) {
 describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
   test("derives every action-bearing term from the exact pinned Listing", () => {
     const value = listing();
-    const draft = deriveFixedPriceAgreement(input(value));
+    const agreementInput = input(value);
+    const draft = deriveFixedPriceAgreement(agreementInput);
     expect(draft).toMatchObject({
       agreementVersion: "1",
       jobId: "job-fixed-1",
@@ -163,6 +165,10 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     expect(draft.parties.map((party) => [party.role, party.primaryClaim])).toEqual([
       ["buyer", BUYER],
       ["seller", SELLER],
+    ]);
+    expect(draft.parties.map((party) => party.bundleHash)).toEqual([
+      identityBundleHash(agreementInput.buyer.identityBundle),
+      identityBundleHash(agreementInput.seller.identityBundle),
     ]);
     expect("signatures" in draft).toBe(false);
   });

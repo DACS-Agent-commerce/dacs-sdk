@@ -29,6 +29,7 @@ import {
   isIdentityBundle,
   isListing,
 } from "../artifacts/validators.js";
+import { identityBundleHash } from "../identity/bundle.js";
 
 export interface VerifiedListingInput {
   /** Overall DACS-1 §6.3.4 disposition after signature, validity, and revocation. */
@@ -92,9 +93,7 @@ function agreementParty(
   }
   return {
     role,
-    bundleHash: contentHash(
-      input.identityBundle as unknown as Record<string, unknown>,
-    ),
+    bundleHash: identityBundleHash(input.identityBundle),
     primaryClaim: input.identityBundle.presentedBy,
     vetRecordRef: input.vetRecordRef,
     ...(input.encryptionKey === undefined
