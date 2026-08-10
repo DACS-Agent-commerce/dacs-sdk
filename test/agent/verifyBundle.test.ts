@@ -90,7 +90,7 @@ function buildArtifacts() {
     signature: {
       algorithm: "ed25519",
       signer: buyerDid,
-      value: "signed-evidence",
+      value: Buffer.alloc(64, 4).toString("base64url"),
     },
   };
   return { listing, agreement, evidence };

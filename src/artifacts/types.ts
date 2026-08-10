@@ -146,6 +146,8 @@ export interface CompositeVerificationRecord {
   /** Composite decision (DACS-2 §7.7); the session proceeds only on `pass`. */
   decision: VerificationDecision;
   verifiedAt: string;
+  /** Normative detached signature when the record is published standalone. */
+  signature?: ComponentSignature;
 }
 
 /** DACS-3 — the agreed terms of a transaction. */

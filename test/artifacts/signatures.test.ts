@@ -77,18 +77,28 @@ describe("ComponentSignature foundation", () => {
     expect(signature.value).toBe("-_8");
   });
 
-  it("preserves string-returning wallet signature values", async () => {
+  it("accepts canonical base64url values from string-returning wallets", async () => {
     const signature = await buildComponentSignature(
       listing,
       "dacs-listing:v1:",
       {
         algorithm: "ed25519",
         signer: seller,
-        sign: () => "wallet-native-value",
+        sign: () => "-_8",
       },
     );
 
-    expect(signature.value).toBe("wallet-native-value");
+    expect(signature.value).toBe("-_8");
+  });
+
+  it("rejects non-canonical or padded wallet signature strings", async () => {
+    await expect(
+      buildComponentSignature(listing, "dacs-listing:v1:", {
+        algorithm: "ed25519",
+        signer: seller,
+        sign: () => "YWJjZA==",
+      }),
+    ).rejects.toThrow("canonical unpadded base64url");
   });
 
   it("signs then verifies a standalone artifact", async () => {
@@ -301,7 +311,7 @@ describe("ComponentSignature foundation", () => {
         signer: seller,
         sign: () => new Uint8Array(),
       }),
-    ).rejects.toThrow("empty signature value");
+    ).rejects.toThrow("canonical unpadded base64url");
   });
 
   it("rejects signing an artifact that already carries signature material", async () => {

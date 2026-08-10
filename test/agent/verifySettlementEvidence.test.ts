@@ -231,6 +231,21 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ev = payment(); // signer is did:demos:orchestrator
     expect((await verify(ev, { orchestrator: "did:demos:someone-else" })).decision).toBe("fail");
   });
+  test("legacy string signature → fail", async () => {
+    const ev = payment();
+    ev.signature = "deadbeef";
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+  test("padded signature value → fail", async () => {
+    const ev = payment();
+    ev.signature.value = "YWJjZA==";
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+  test("singular plus plural signature fields → fail", async () => {
+    const ev = payment();
+    ev.signatures = [];
+    expect((await verify(ev)).decision).toBe("fail");
+  });
 
   // Key-dependent verdicts (error / indeterminate / signature-fail).
   test("unresolvableKey → indeterminate", async () => {

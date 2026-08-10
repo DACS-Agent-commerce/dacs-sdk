@@ -3,6 +3,7 @@ import { canonicalizeDecimal } from "../canonical/decimal.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { AttestationRef } from "../artifacts/types.js";
+import { isComponentSignature } from "../artifacts/signatures.js";
 import {
   isAttestationRef,
   isChainTxRef,
@@ -402,27 +403,48 @@ export async function verifySettlementEvidence(
   }
 
   // ── Signature (§9.7: signer is the phase orchestrator) ───────────────────
-  const sig = isObj(record["signature"]) ? (record["signature"] as Record<string, unknown>) : null;
-  if (!sig || !isStr(sig["signer"]) || !isStr(sig["value"])) {
-    fail("evidence MUST carry a signature {signer, value}");
+  const hasPluralSignatures = Object.prototype.hasOwnProperty.call(
+    record,
+    "signatures",
+  );
+  const sig = record["signature"];
+  if (hasPluralSignatures) {
+    fail("evidence MUST NOT carry ambiguous singular and plural signature fields");
+  }
+  if (!isComponentSignature(sig)) {
+    fail(
+      "evidence MUST carry a ComponentSignature {algorithm, signer, canonical base64url value}",
+    );
   } else {
-    const signer = sig["signer"];
+    const signer = sig.signer;
     if (ctx.orchestrator && signer !== ctx.orchestrator) {
       fail(`signer "${signer}" is not the phase orchestrator "${ctx.orchestrator}"`);
     }
     if (deps.resolvePublicKey && deps.verify) {
-      const key = await deps.resolvePublicKey(signer);
-      if (!key) {
-        sawIndeterminate = true;
-        reasons.push(`signer key for "${signer}" is unresolvable`);
-      } else if (key.length !== 32) {
+      if (sig.algorithm !== "ed25519") {
         sawError = true;
-        reasons.push(`signer key for "${signer}" is malformed`);
+        reasons.push(
+          `evidence verifier has no ${sig.algorithm} backend (only ed25519 is configured)`,
+        );
       } else {
-        const message = signedBytes(ARTIFACT_SEPARATORS.SettlementEvidence, scopeHash);
-        const sigBytes = Uint8Array.from(Buffer.from(sig["value"], "base64url"));
-        if (!(await deps.verify(message, sigBytes, key))) {
-          fail("evidence signature does not verify under the signer's key");
+        const key = await deps.resolvePublicKey(signer);
+        if (!key) {
+          sawIndeterminate = true;
+          reasons.push(`signer key for "${signer}" is unresolvable`);
+        } else if (key.length !== 32) {
+          sawError = true;
+          reasons.push(`signer key for "${signer}" is malformed`);
+        } else {
+          const message = signedBytes(
+            ARTIFACT_SEPARATORS.SettlementEvidence,
+            scopeHash,
+          );
+          const sigBytes = Uint8Array.from(
+            Buffer.from(sig.value, "base64url"),
+          );
+          if (!(await deps.verify(message, sigBytes, key))) {
+            fail("evidence signature does not verify under the signer's key");
+          }
         }
       }
     }
