@@ -389,6 +389,48 @@ export {
   type DemosTransferResult,
 } from "./rails/index.js";
 
+// Transport-independent seller intake (DACS-3 §8.5/§8.6; DACS-4
+// §9.5.1/§9.5.7..§9.5.9). Pure verification only: no server, transport,
+// payment submission, or application callback is coupled to this surface.
+export {
+  verifyX402ReceiptClaim,
+  X402_V1_CHAIN_IDS,
+  verifySellerPaymentIntake,
+  canonicalSellerSettlementId,
+  createInMemorySellerReceiptStore,
+  x402Eip3009Nonce,
+  type X402ReceiptDisposition,
+  type X402ResponseHeader,
+  type X402ReceiptEvidence,
+  type X402ReceiptVerification,
+  type SellerPaymentIntakeDisposition,
+  type SellerFulfilmentPermit,
+  type SellerSessionBindingGuarantee,
+  type SellerDemosTxRef,
+  type SellerX402TxRef,
+  type SellerPaymentTxRef,
+  type SellerPaymentFinality,
+  type SellerPaymentEvidenceInput,
+  type SellerPaymentClaim,
+  type SellerPaymentIntakeInput,
+  type CommittedAgreementResolution,
+  type IdentityBundleResolution,
+  type SellerDemosRailDefinition,
+  type SellerX402RailDefinition,
+  type SellerSupportedRailDefinition,
+  type SellerRailResolution,
+  type AddressResolution,
+  type DestinationBindingResolution,
+  type DemosTransferObservation,
+  type X402SessionBinding,
+  type X402TransferObservation,
+  type SellerReceiptClaim,
+  type SellerReceiptClaimResult,
+  type SellerReceiptStore,
+  type SellerPaymentIntakeDeps,
+  type SellerPaymentIntakeResult,
+} from "./seller/index.js";
+
 // Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
 // dispatch the money path by rail kind.
 export {

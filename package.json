@@ -40,6 +40,10 @@
       "types": "./dist/rails/index.d.ts",
       "import": "./dist/rails/index.js"
     },
+    "./seller": {
+      "types": "./dist/seller/index.d.ts",
+      "import": "./dist/seller/index.js"
+    },
     "./registry": {
       "types": "./dist/registry/index.d.ts",
       "import": "./dist/registry/index.js"

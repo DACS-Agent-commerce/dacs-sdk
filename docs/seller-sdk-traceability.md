@@ -21,7 +21,7 @@ on a private service, deployment, transport, repository, or URL.
 | Fixed-price term derivation | DACS-3 §8.4.1 procedure 1–5; §8.5.2 checks 1–9 and MTR-1..MTR-5; DACS-4 §9.3 (`PricingSpec`, `PriceTerm`, `DeliverableSpec`, `PaymentRailRef`) | Copy fixed terms from the pinned Listing, select a complete accepted rail, hash the anchored deliverable, derive the deadline, reject unsupported pricing variants, and never accept caller-selected economic terms as authority. | `runSessionCore` accepts caller-selected price, delivery, and expiry after membership-only checks. | #98. Separate post-Listing PR; not widened into this PR. |
 | Seller authorization | DACS-3 §8.4.1 steps 2–3 and auto-accept rules; §8.5 (`AgreementSignature`); §8.5.2; CORE §B.7 | Fixed-price agreements carry valid buyer and seller signatures. Auto-accept requires an anchored, unrevoked, in-window commitment plus a live per-instance seller signature bound to the agreement hash. | Buyer/orchestrator-only agreement and final bundle production; strict verification correctly refuses the missing seller authorization. | #17 (seller lifecycle), #53 (RFQ buyer/seller), #81 (strict bundle producer), #98 (fixed-price authorization). |
 | Agreement commitment | DACS-3 §8.6 (CA-1..CA-9; `FinalityCommitmentRecord` / legacy `CommitmentRecord`); DACS-3 §8.5.2 post-finality deadline and validity checks | Validate listing conformance and party signatures, anchor the type-correct commitment, obtain a verified finalized receipt, derive authoritative `committedAt`, and enter DACS-4 only after an `ok` commitment. Retries reconcile the same immutable commitment. | The session anchors the reduced agreement and can settle after broadcast acceptance. | #99. Separate focused PR after normative agreement construction. |
-| Payment destination and payment evidence | DACS-3 §8.5 (`PayeeBoundAgreementDocument`, `PayoutBinding`); DACS-4 §9.5.1 (PC-1..PC-7, PB-1..PB-3); §9.5.7 (X402-1..X402-4); §9.5.8 (SB-1..SB-3); §9.5.9 (pay-DEM); §9.7 (`SettlementEvidence`) | Verify the co-signed payout destination before payment, bind settlement to `(jobId, phaseIndex)`, preserve the rail-specific transaction reference and actual finality, and anchor finalized evidence without resubmitting a rail-final payment. | Buyer rail seams exist; x402/EVM evidence is reduced. There is no transport-neutral seller payment-intake verifier. | #24 (x402 seller/paywall), #33 (settlement identity), #94 (atomic evidence impact), #102 (rail-specific receipts/finality). A seller-side pay-DEM/x402 intake-verification tracker is genuinely missing. |
+| Payment destination and payment evidence | DACS-3 §8.5 (`PayeeBoundAgreementDocument`, `PayoutBinding`); DACS-4 §9.5.1 (PC-1..PC-7, PB-1..PB-3); §9.5.7 (X402-1..X402-4); §9.5.8 (SB-1..SB-3); §9.5.9 (pay-DEM); §9.7 (`SettlementEvidence`) | Verify the co-signed payout destination before payment, bind settlement to `(jobId, phaseIndex)`, preserve the rail-specific transaction reference and actual finality, and anchor finalized evidence without resubmitting a rail-final payment. | Buyer rail seams exist; x402/EVM evidence is reduced. There is no transport-neutral seller payment-intake verifier. | #113 implements the transport-independent pay-DEM/x402 intake gate. #24 owns hosted x402 mechanics, #33 broader settlement identity, #94 atomic evidence impact, and #102 buyer receipt production. |
 | Delivery evidence | DACS-4 §9.6.1–§9.6.3; §9.7 (delivery `SettlementEvidence`); DACS-5 §10.4.3 required references | Invoke an application callback only after the required payment gate, validate the declared delivery variant, anchor delivery evidence, and include its reference in both final bundle copies. Unsupported delivery variants fail closed. | Delivery is a caller-selected string and the bundle has no high-level fulfilment/evidence seam. | #15 (delivery evidence in bundle), #17 (seller fulfilment), #55 (durable seller recovery). |
 | Two-sided final bundles | DACS-5 §10.4, especially §10.4.1 signatures, §10.4.2 BB-1..BB-8, and §10.4.3 production/consumption rules; DACS-5 §10.3.1 ST-11 | Produce role-specific, canonically equal buyer and seller copies, collect required signatures, verify finalized referenced artifacts, publish signed bindings where native addresses cannot be recomputed, and remain `audit-pending` until both copies are final and resolvable. | Low-level two-sided/FaultAttestationBundle support exists; `runSessionCore` emits a legacy buyer-only bundle that strict verification rejects. | #81, with #15 for delivery references and #54 for public binding/index resolution. |
 | Replay, retry, and recovery | CORE §B.8 (SN-1..SN-4); DACS-4 §9.5.1 PC-7, §9.5.6 AP2-5/AP2-6, §9.5.7 X402 retry rules, §9.5.8 SB-1..SB-3; DACS-5 §10.3.1 ST-1, ST-7..ST-11; DACS-5 §10.11 | Persist exact session/listing/agreement/payment/delivery identities; enforce single-use session and settlement identifiers; reconcile ambiguous external effects before retry; never repeat payment or fulfilment after restart; resume only the recorded forward state; keep finalization pending until all required evidence is finalized and resolvable. | `SessionStore` primitives and buyer-side integration exist, but `createAgent().runSession()` does not expose durable-store wiring and there is no seller lifecycle. | #55 (seller recovery), #33 (settlement uniqueness), #81 (bundle finalization), #92 (atomic rollback/idempotency). |
@@ -34,19 +34,20 @@ Existing trackers already cover the following delivery slices:
 - #54: typed Demos artifact storage, logical/native bindings, and indexing.
 - #98 and #99: fixed-price terms/seller authorization and finalized agreement commitment.
 - #17 and #53: transport-independent seller lifecycle and RFQ seller behavior.
-- #24 and #102: x402 server mechanics and rail-specific receipt/finality evidence.
+- #24, #102, and #113: x402 server mechanics, buyer receipt/finality
+  production, and transport-independent seller payment intake respectively.
 - #15 and #55: delivery evidence plus durable seller recovery.
 - #81: strict two-party final bundle production.
 
-Genuinely missing SDK trackers after this audit:
+Gaps identified by this audit (subsequently tracked):
 
 1. Normative Listing fidelity and engagement, including `seller.publicEndpoint`,
    explicit legacy reads, current-only writes, and exact Listing pins. This focused
    PR is the implementation vehicle; a tracker is still useful for any reader
    validation left after merge.
 2. Transport-independent seller-side payment-intake verification shared by
-   pay-DEM and x402. #24 is specifically an HTTP x402 paywall and #102 is
-   rail-receipt production; neither owns the generic seller gate.
+   pay-DEM and x402 is now #113. #24 is specifically an HTTP x402 paywall and
+   #102 is buyer rail-receipt production; neither owns the generic seller gate.
 3. A funded two-agent E2E proving Listing publication, engagement, seller
    authorization, payment verification, delivery evidence, restart safety, and
    strict two-sided finalization using only public SDK APIs.
@@ -85,3 +86,24 @@ hosted catalog, or in-code fallback is assumed.
 
 Fixed-price agreement derivation (DACS-3 §8.4.1/§8.5.2), hosting, payment,
 delivery, and final bundle production remain in their focused trackers above.
+
+## Seller payment-intake PR (#113)
+
+This focused PR adds a pure `@kynesyslabs/dacs/seller` verification surface. It
+does not host a transport, submit or rebroadcast a payment, sign or anchor
+evidence, or invoke application fulfilment. Its injected resolvers return
+verified operational views of the actual Standard artifacts; those views are
+not new signed DACS records.
+
+| SDK surface | Normative source | Enforced behavior / evidence |
+| --- | --- | --- |
+| `verifySellerPaymentIntake` agreement and Listing gate | DACS-3 §8.5 (`PayeeBoundAgreementDocument`, exact payout coverage); §8.6 (finalized commitment); DACS-4 §9.9 PIPE-6 | Selects only `payeeBoundAgreementVersion: "1"`, recomputes the signature-omitting agreement hash, matches the finalized commitment and exact Listing tuple/hash, validates the deliverable hash, accepted rail, pay-phase index, and complete payout coverage before reading a receipt. |
+| payee, payer, amount, and asset checks | DACS-4 §9.5.1 PC-1..PC-7 and PB-1..PB-3 | Requires the paying key in the committed buyer bundle; resolves the strongest-applicable x402 destination binding; derives pay-DEM destinations intrinsically; and compares the observed transfer parties and exact integer base units with the agreement and pinned rail. |
+| `verifyX402ReceiptClaim` | DACS-4 §9.5.7 X402-1..X402-4; CORE §B.2 CF-1 | Selects the versioned response header, strictly decodes Base64/UTF-8/JSON, preserves all response members, recursively NFC/JCS canonicalizes, recomputes `paymentReceiptHash`, and checks receipt transaction/network consistency. All 12 Standard `x402-receipt-hash-v0.1` vectors run directly. |
+| `canonicalSellerSettlementId`, `x402Eip3009Nonce`, and `SellerReceiptStore` | DACS-4 §9.5.8 SB-1..SB-3; CORE §B.8 SN-4 | Uses event-level EVM and Demos settlement identities, byte-exact EIP-3009 session nonces, and one atomic durable claim. Applicable Standard `sb2-settlement-uniqueness-v0.1` cases plus concurrent and simulated-restart tests prove one fulfilment permit. Missing/unverifiable SB-3 binding is disclosed and uses the normative SB-1/SB-2 + amount/payee fallback; mismatch rejects. |
+| `SellerPaymentEvidenceInput` | DACS-4 §9.7, PC-2, PC-6, X402-2 | Returns the exact unsigned success-record fields with rail-specific `ChainTxRef` and actual finality. It deliberately omits `phaseIndex` (recovered from the PC-2 anchor), raw x402 receipt/header bytes, and `signature`; later evidence production signs and anchors this input without inventing fields. |
+
+Ambiguous or unavailable chain observations return `indeterminate` before the
+receipt store is claimed. A later retry re-observes the same deterministic
+transaction identity; no payment submission seam exists in this core, so an
+ambiguous intake result cannot cause a rebroadcast.
