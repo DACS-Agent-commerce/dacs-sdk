@@ -12,6 +12,28 @@ export {
   type X402PaymentRequirement,
 } from "./x402.js";
 export {
+  createX402Paywall,
+  x402PaywallCore,
+  x402PaywallFulfilmentKey,
+  type X402Paywall,
+  type X402PaywallConfig,
+  type X402PaywallCoreDeps,
+  type X402PaywallExpectedTerms,
+  type X402PaywallFacilitatorLike,
+  type X402PaywallFulfilment,
+  type X402PaywallFulfilmentContext,
+  type X402PaywallHandleInput,
+  type X402PaywallHttpAdapter,
+  type X402PaywallHttpContext,
+  type X402PaywallPaymentPayload,
+  type X402PaywallPaymentRequirements,
+  type X402PaywallProcessResult,
+  type X402PaywallResponse,
+  type X402PaywallResult,
+  type X402PaywallServerLike,
+  type X402PaywallSettlementResult,
+} from "./x402Paywall.js";
+export {
   createEvmErc20Rail,
   evmErc20Settle,
   evmErc20SettleCore,
