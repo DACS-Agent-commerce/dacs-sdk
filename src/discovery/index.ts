@@ -28,9 +28,11 @@ export {
   scanAnchorPage,
   scanAllAnchors,
   type AnchorKind,
+  type AnchorHistoryPageFetcher,
   type RawAnchorEntry,
   type RawScanPage,
   type ScannedAnchor,
   type ScanPage,
   type ScanOptions,
+  type ScanSeen,
 } from "./scanner.js";

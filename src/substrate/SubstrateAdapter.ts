@@ -115,6 +115,13 @@ export interface AnchorWriteOnceOptions {
   timeoutMs?: number;
   /** Poll interval while waiting for visibility or a concurrent winner. */
   pollMs?: number;
+  /**
+   * Immutable descriptive metadata stored alongside, but outside, artifact
+   * data. Implementations must compare requested metadata on idempotent retry;
+   * a legacy record with no metadata is a conflict, because immutable metadata
+   * cannot be backfilled without creating a different anchor.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export interface ProxyFetchRequest {

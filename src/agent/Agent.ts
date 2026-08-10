@@ -519,7 +519,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         sign,
         scanOwnAnchorsByNamePrefix: (prefix) =>
           adapter.scanOwnAnchorsByNamePrefix(prefix),
-        anchorWriteOnce: (name, value) => adapter.anchorWriteOnce(name, value),
+        anchorWriteOnce: (name, value, options) =>
+          adapter.anchorWriteOnce(name, value, options),
         loadRailResolution: loadListingRailResolution,
         resolvePayloadVerificationCapability:
           resolvePayloadVerificationCapability,

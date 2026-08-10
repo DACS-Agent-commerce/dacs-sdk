@@ -35,10 +35,16 @@ const sign = (bytes: Uint8Array) => ed25519Sign(bytes, priv);
 function fakeDeps() {
   const store = new Map<string, Record<string, unknown>>();
   const addresses = new Map<string, string>();
-  const stats = { creates: 0 };
+  const stats: {
+    creates: number;
+    lastMetadata?: Record<string, unknown>;
+  } = { creates: 0 };
   const deps: PublishListingDeps & {
     store: Map<string, Record<string, unknown>>;
-    stats: { creates: number };
+    stats: {
+      creates: number;
+      lastMetadata?: Record<string, unknown>;
+    };
   } = {
     store,
     stats,
@@ -72,7 +78,8 @@ function fakeDeps() {
           value: store.get(address)!,
         })),
     }),
-    anchorWriteOnce: async (name, value) => {
+    anchorWriteOnce: async (name, value, options) => {
+      stats.lastMetadata = options?.metadata;
       const existingAddress = addresses.get(name);
       if (existingAddress) {
         const existing = store.get(existingAddress)!;
@@ -502,6 +509,17 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
       version: 1,
       contentHash: contentHash(stored),
     });
+    expect(deps.stats.lastMetadata).toEqual({
+      logicalAddress: listingAddress(SELLER, "market-data", 1),
+    });
+  });
+
+  test("rejects a non-NFC logical address before anchoring", async () => {
+    const deps = fakeDeps();
+    await expect(
+      publishListingCore(listing({ listingId: "caf\u0065\u0301" }), deps),
+    ).rejects.toThrow(/logical address must be NFC-normalized/);
+    expect(deps.stats.creates).toBe(0);
   });
 
   test("publishes the exact input snapshot signed before an async signer mutates the caller draft", async () => {

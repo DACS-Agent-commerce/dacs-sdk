@@ -21,6 +21,7 @@ import {
 } from "../canonical/snapshot.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
+import type { AnchorWriteOnceOptions } from "../substrate/SubstrateAdapter.js";
 import type { Signer } from "./signedArtifact.js";
 import {
   resolveListingPayloadVerificationCapability,
@@ -86,6 +87,7 @@ export interface PublishListingDeps {
   anchorWriteOnce: (
     name: string,
     value: object,
+    options?: AnchorWriteOnceOptions,
   ) => Promise<{ address: string; txRef?: string }>;
   /**
    * DACS-1 §6.3.4 LP-6 authenticated listing-time rail authority. Required
@@ -507,6 +509,9 @@ export async function publishListingCore(
     listing.listingId,
     version,
   );
+  if (logicalAddress !== logicalAddress.normalize("NFC")) {
+    throw new DacsError("listing logical address must be NFC-normalized");
+  }
   const storageName = logicalToStorageProgramName(logicalAddress);
   const historyPrefix = listingHistoryPrefix(listing);
   const versions = assertContiguousHistory(
@@ -585,7 +590,9 @@ export async function publishListingCore(
   };
   let rawWrite: unknown;
   try {
-    rawWrite = await capturedDeps.anchorWriteOnce(storageName, publication);
+    rawWrite = await capturedDeps.anchorWriteOnce(storageName, publication, {
+      metadata: { logicalAddress },
+    });
   } catch (cause) {
     if (cause instanceof DacsError) throw cause;
     throw new SubstrateError("Listing publication was indeterminate", { cause });

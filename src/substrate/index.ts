@@ -17,6 +17,10 @@ export type {
 } from "./SubstrateAdapter.js";
 export { AnchorWaitError } from "./AnchorWaitError.js";
 export { DemosAdapter } from "./DemosAdapter.js";
+export {
+  createDemosHistoryPageFetcher,
+  type DemosHistoryClient,
+} from "./demosHistory.js";
 export type {
   AnchorResolution,
   CandidateOutcome,
