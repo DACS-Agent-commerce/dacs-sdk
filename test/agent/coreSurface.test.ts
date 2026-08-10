@@ -17,6 +17,8 @@ import {
   verifyFinalizedSellerBundleReadOnly,
   finalizeCompletedSellerBundleDurable,
   getSellerBundleFinalizationStatus,
+  createX402Paywall,
+  x402PaywallCore,
   runSessionCore,
   sellerFulfilmentId,
   type SellerFulfilmentDeps,
@@ -43,7 +45,13 @@ import {
   runDurableFulfilmentCore as sellerRunDurableFulfilmentCore,
   verifyDurableSellerTerminalResult as sellerVerifyDurableTerminalResult,
   sellerFulfilmentId as sellerSurfaceFulfilmentId,
+  createX402Paywall as sellerCreateX402Paywall,
+  x402PaywallCore as sellerX402PaywallCore,
 } from "../../src/seller/index.js";
+import {
+  createX402Paywall as railsCreateX402Paywall,
+  x402PaywallCore as railsX402PaywallCore,
+} from "../../src/rails/index.js";
 
 describe("public core surface (#14)", () => {
   it("F1: runSessionCore is exported from the barrel", () => {
@@ -135,6 +143,15 @@ describe("public core surface (#14)", () => {
     expect(sellerGetBundleFinalizationStatus).toBe(
       getSellerBundleFinalizationStatus,
     );
+  });
+
+  it("#24: x402 seller paywall is public on root, seller, and rails entrypoints", () => {
+    expect(typeof createX402Paywall).toBe("function");
+    expect(typeof x402PaywallCore).toBe("function");
+    expect(sellerCreateX402Paywall).toBe(createX402Paywall);
+    expect(railsCreateX402Paywall).toBe(createX402Paywall);
+    expect(sellerX402PaywallCore).toBe(x402PaywallCore);
+    expect(railsX402PaywallCore).toBe(x402PaywallCore);
   });
 
   // NOTE (#48): `sessionAnchorName` is intentionally NOT part of the public

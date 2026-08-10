@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
-import { verifyX402ReceiptClaim } from "../../src/seller/index.js";
+import {
+  deriveX402ReceiptCommitment,
+  verifyX402ReceiptClaim,
+} from "../../src/seller/index.js";
 
 interface ReceiptVector {
   name: string;
@@ -150,5 +153,19 @@ describe("verifyX402ReceiptClaim — DACS-4 §9.5.7", () => {
 
     expect(result.disposition).toBe("pass");
     expect(result.receipt).toEqual(receipt);
+  });
+
+  it("derives the producer-side commitment without requiring a placeholder hash", () => {
+    const passing = vectors.vectors.find((vector) => vector.expected === "pass");
+    if (!passing) throw new Error("missing passing x402 receipt vector");
+    const result = deriveX402ReceiptCommitment({
+      protocolVersion: passing.protocolVersion,
+      responseHeader: passing.responseHeader,
+    });
+    expect(result.disposition).toBe("pass");
+    expect(result.reason).toBe("derived");
+    expect(result.computedPaymentReceiptHash).toBe(
+      passing.want.paymentReceiptHash ?? passing.evidence?.paymentReceiptHash,
+    );
   });
 });

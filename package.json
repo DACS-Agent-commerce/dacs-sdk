@@ -79,12 +79,14 @@
   },
   "peerDependencies": {
     "@kynesyslabs/demosdk": "^4.0.12",
+    "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
     "viem": "^2.52.2"
   },
   "peerDependenciesMeta": {
     "@kynesyslabs/demosdk": { "optional": true },
+    "@x402/core": { "optional": true },
     "@x402/evm": { "optional": true },
     "@x402/fetch": { "optional": true },
     "viem": { "optional": true }
@@ -92,6 +94,7 @@
   "devDependencies": {
     "@kynesyslabs/demosdk": "^4.0.12",
     "@types/node": "^20",
+    "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
     "ganache": "7.9.2",
