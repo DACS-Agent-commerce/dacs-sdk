@@ -67,17 +67,20 @@ describe("createPayDemRail nonce coordination", () => {
       secret: "test-secret",
     });
 
+    const followOnAnchor = vi.fn();
     let completed = false;
     const settlement = rail
       .settle({ recipient: RECIPIENT, amount: "1" })
       .finally(() => {
         completed = true;
       });
+    const sequence = settlement.then(followOnAnchor);
 
     await vi.waitFor(() =>
       expect(sdk.waitForNonce).toHaveBeenCalledWith(WALLET, 7),
     );
     expect(completed).toBe(false);
+    expect(followOnAnchor).not.toHaveBeenCalled();
 
     nonceVisible.resolve();
     await expect(settlement).resolves.toMatchObject({
@@ -85,6 +88,8 @@ describe("createPayDemRail nonce coordination", () => {
       txHash: "tx-pay-dem",
       blockNumber: 42,
     });
+    await sequence;
+    expect(followOnAnchor).toHaveBeenCalledTimes(1);
   });
 
   it("fails transiently instead of allowing a stale-nonce follow-on anchor", async () => {
@@ -103,5 +108,41 @@ describe("createPayDemRail nonce coordination", () => {
     expect((error as Error).message).toMatch(
       /was included, but account nonce 7 did not become readable/,
     );
+  });
+
+  it("keeps the confirmed transaction hash authoritative", async () => {
+    sdk.confirm.mockResolvedValue({
+      response: { data: { transaction: { hash: "tx-confirmed" } } },
+    });
+    sdk.broadcastAndWait.mockResolvedValue({
+      broadcast: { response: { hash: "tx-conflicting-response" } },
+      status: { state: "included", blockNumber: 42 },
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).resolves.toMatchObject({
+      ok: true,
+      txHash: "tx-confirmed",
+      blockNumber: 42,
+    });
+  });
+
+  it("refuses to broadcast a transfer without a signed nonce", async () => {
+    sdk.transfer.mockResolvedValue({ hash: "tx-missing-nonce", content: {} });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/no valid transaction nonce/);
+    expect(sdk.confirm).not.toHaveBeenCalled();
+    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
   });
 });

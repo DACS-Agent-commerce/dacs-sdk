@@ -205,7 +205,21 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       }
       const signedNonce = signedNonceValue as number;
       const validity = await demos.tx.confirm(signed, demos);
-      const fallbackHash = (signed as { hash?: string }).hash ?? "";
+      const signedHash = (signed as { hash?: string }).hash;
+      const confirmedHash = (
+        validity as {
+          response?: { data?: { transaction?: { hash?: string } } };
+        }
+      ).response?.data?.transaction?.hash;
+      // broadcastAndWait polls the confirmed transaction hash. Keep that same
+      // identity authoritative for timeout and success receipts; a broadcast
+      // response is transport metadata and must not substitute another hash.
+      const txHash = confirmedHash ?? signedHash ?? "";
+      if (!txHash) {
+        throw new DacsError(
+          "pay-dem: confirmed transfer has no transaction hash",
+        );
+      }
       let broadcast: { response?: { hash?: string; message?: string } };
       let status: { state: "included" | "failed"; blockNumber?: number };
       try {
@@ -223,7 +237,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         return {
           ok: false,
           state: "timeout",
-          hash: fallbackHash,
+          hash: txHash,
           message: err instanceof Error ? err.message : String(err),
         };
       }
@@ -236,7 +250,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           await demos.waitForNonce(demos.getAddress(), signedNonce);
         } catch (error) {
           throw new TransientError(
-            `pay-dem: transfer ${fallbackHash} was included, but account nonce ${signedNonce} did not become readable; refusing a follow-on anchor`,
+            `pay-dem: transfer ${txHash} was included, but account nonce ${signedNonce} did not become readable; refusing a follow-on anchor`,
             { cause: error },
           );
         }
@@ -245,7 +259,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       return {
         ok: status.state === "included",
         state: status.state,
-        hash: broadcast?.response?.hash ?? fallbackHash,
+        hash: txHash,
         blockNumber: status.blockNumber,
         message: broadcast?.response?.message,
       };

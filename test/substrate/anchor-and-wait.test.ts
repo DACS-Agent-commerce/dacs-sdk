@@ -546,6 +546,23 @@ describe("DemosAdapter.anchorAndWait", () => {
     );
   });
 
+  it("refuses an immutable create signed with a different nonce", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.storagePrograms.sign.mockResolvedValue({
+      hash: "tx-wrong-immutable-nonce",
+      content: { nonce: 2 },
+    });
+
+    await expect(
+      adapter.anchorWriteOnce(
+        "immutable-wrong-nonce",
+        { value: 1 },
+        { timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).rejects.toThrow(/signed with nonce 2; expected 1/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
   it("completes an immutable write by hash while its broadcast response hangs", async () => {
     const { adapter, raw } = await makeAdapter();
     const name = "hung-immutable";
