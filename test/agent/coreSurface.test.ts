@@ -13,6 +13,8 @@ import {
   getSellerFulfilmentStatus,
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  finalizeCompletedSellerBundleDurable,
+  getSellerBundleFinalizationStatus,
   runSessionCore,
   sellerFulfilmentId,
   type SellerFulfilmentDeps,
@@ -31,6 +33,8 @@ import {
   createInMemoryFencedSessionStore as sellerCreateInMemoryFencedSessionStore,
   finalizeCompletedSellerBundleCore as sellerFinalizeCompletedBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest as sellerPrepareCompletedBundleCounterSignatureRequest,
+  finalizeCompletedSellerBundleDurable as sellerFinalizeCompletedBundleDurable,
+  getSellerBundleFinalizationStatus as sellerGetBundleFinalizationStatus,
   getSellerFulfilmentStatus as sellerGetFulfilmentStatus,
   runFulfilmentCore as sellerRunFulfilmentCore,
   runDurableFulfilmentCore as sellerRunDurableFulfilmentCore,
@@ -104,6 +108,21 @@ describe("public core surface (#14)", () => {
     };
     expect(artifacts.settlementEvidence).toEqual([]);
     expect(paymentPhase.phaseIndex).toBe(2);
+  });
+
+  it("#55: durable seller recovery and status are public on both entrypoints", () => {
+    expect(typeof runDurableFulfilmentCore).toBe("function");
+    expect(typeof getSellerFulfilmentStatus).toBe("function");
+    expect(sellerRunDurableFulfilmentCore).toBe(runDurableFulfilmentCore);
+    expect(sellerGetFulfilmentStatus).toBe(getSellerFulfilmentStatus);
+    expect(typeof finalizeCompletedSellerBundleDurable).toBe("function");
+    expect(typeof getSellerBundleFinalizationStatus).toBe("function");
+    expect(sellerFinalizeCompletedBundleDurable).toBe(
+      finalizeCompletedSellerBundleDurable,
+    );
+    expect(sellerGetBundleFinalizationStatus).toBe(
+      getSellerBundleFinalizationStatus,
+    );
   });
 
   // NOTE (#48): `sessionAnchorName` is intentionally NOT part of the public

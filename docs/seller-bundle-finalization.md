@@ -40,6 +40,8 @@ normal Standard pin/version review before release.
 | Existing content is resolved before any write and never overwritten on ambiguity | CORE §5.1 read trichotomy; SR2-9; DACS-5 §10.4.2 | `indeterminate` is never treated as `absent`; an existing exact verified copy resumes without signing or submission. A thrown submission is reconciled by hash before the caller is told to resolve before retry. |
 | Bundle anchor is finalized, independently readable, hash-bound, and proof-verified | DACS-5 §10.3 ST-11(3); CORE §5.1 SR2-4..SR2-9 | The resolved copy, logical/native address, `attestation_bundle_hash`, finalized receipt, and binding-native proof must all verify. |
 | Write-input mappings publish and read back the exact signed `BundleBinding`; pure mappings do not | DACS-5 §10.3 ST-11(4); §10.4.2 BB-1, BB-4, BB-5, BB-7 | The SDK emits the normative object under `dacs-bundle-binding:v1:`, locally verifies its seller signature, publishes it, then independently resolves the exact signed binding before returning. Optional `anchorTx` learning/loss cannot invalidate an otherwise identical mapping, but conflicting known pointers fail. |
+| Restarted signature/write intents reconcile before re-drive | DACS-5 §10.3 ST-7; CORE §5.1 read/lifecycle reconciliation | The durable wrapper invokes separate recovery callbacks; only explicit `safe-to-*` dispositions authorize the ordinary signer/submit/publish callback again. |
+| Durable status reaches `seller:finalised` only after bundle/binding outcomes and immutable bundle receipt persistence | DACS-5 §10.3 ST-6, ST-11 | Checkpoint/status persistence happens after the pure ST-11 gate and contains no normative wire fields. |
 
 ## Provider contract
 
@@ -96,9 +98,24 @@ PayloadAttestationRecord, FaultAttestationBundle, or BundleBinding.
 
 ## Deliberate scope boundary
 
-This core advances seller bundle production in #17 and the delivery-evidence
-path in #15. It does not close durable recovery #55: bundle intent/outcome,
-anchor-reconciliation, and binding-publication checkpoints belong in the next
-focused durability layer. It also does not publish the buyer copy on the
-seller's behalf or replace buyer session orchestration #81; each signing party
-anchors its own role-specific copy as required by DACS-5 §10.4.2.
+`finalizeCompletedSellerBundleDurable` composes this core with the public
+`SessionStore`. It checkpoints the public signature values, seller bundle-anchor
+intent/outcome, applicable binding-publication intent/outcome, finalized native
+bundle receipt, phase, and lease. On restart, an unresolved external-effect
+intent invokes a distinct reconciliation callback. The adapter must return
+`safe-to-submit` / `safe-to-publish` before the ordinary effect may run again;
+`indeterminate` never authorizes a duplicate. This implements DACS-5 ST-7's
+idempotent/safe-to-redrive resume rule while preserving ST-11's non-terminal
+`audit-pending` posture.
+
+The public `getSellerBundleFinalizationStatus` projection exposes checkpoint
+states and the immutable native bundle receipt without requiring an
+application-specific job database. Checkpoints contain references, hashes, and
+already-public signature values only; they are operational recovery state, not
+new signed DACS fields.
+
+Together the pure and durable cores advance seller bundle production in #17,
+the delivery-evidence path in #15, and the remaining bundle recovery scope in
+#55. They do not publish the buyer copy on the seller's behalf or replace buyer
+session orchestration #81; each signing party anchors its own role-specific copy
+as required by DACS-5 §10.4.2.

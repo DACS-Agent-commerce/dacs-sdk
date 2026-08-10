@@ -154,3 +154,17 @@ export {
   type CompletedSellerBundleCounterSignatureRequest,
   type FinalizedSellerBundle,
 } from "./bundleFinalization.js";
+export {
+  finalizeCompletedSellerBundleDurable,
+  getSellerBundleFinalizationStatus,
+  sellerBundleFinalizationCheckpointKey,
+  type SellerBundleFinalizationRole,
+  type SellerBundleSignaturePurpose,
+  type SellerBundleSignatureReconciliation,
+  type SellerBundleAnchorReconciliation,
+  type SellerBundleBindingPublicationReconciliation,
+  type SellerBundleFinalizationDurability,
+  type SellerBundleCheckpointState,
+  type SellerBundlePublicationCheckpointState,
+  type SellerBundleFinalizationStatusLoad,
+} from "./durableBundleFinalization.js";
