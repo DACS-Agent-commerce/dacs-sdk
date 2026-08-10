@@ -13,10 +13,25 @@ import type {
   BundlePhaseErrorClass,
   BundlePhaseOutcome,
   BundleSignature,
+  Delivery,
   ListingRef,
   PaymentAmount,
+  Price,
   SettlementFinality,
 } from "./types.js";
+
+/** Pre-normative buyer-only agreement emitted by early runSessionCore releases. */
+export interface LegacyMvpAgreementDocument {
+  jobId: string;
+  pattern: string;
+  buyer: string;
+  seller: string;
+  listingRef: string;
+  price: Price;
+  delivery: Delivery;
+  expiresAt: string;
+  signature?: unknown;
+}
 
 export interface LegacyMvpAttestationRef {
   kind: string;
@@ -103,6 +118,30 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isString = (value: unknown): value is string => typeof value === "string";
 const isNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
+
+export function isLegacyMvpAgreementDocument(
+  value: unknown,
+): value is LegacyMvpAgreementDocument {
+  if (!isRecord(value)) return false;
+  const price = value.price;
+  const delivery = value.delivery;
+  return (
+    isString(value.jobId) &&
+    isString(value.pattern) &&
+    isString(value.buyer) &&
+    isString(value.seller) &&
+    isString(value.listingRef) &&
+    isRecord(price) &&
+    isString(price.amount) &&
+    isString(price.asset) &&
+    isNumber(price.decimals) &&
+    isString(price.rail) &&
+    isRecord(delivery) &&
+    isString(delivery.phase) &&
+    isString(delivery.format) &&
+    isString(value.expiresAt)
+  );
+}
 
 export function isLegacyMvpAttestationRef(
   value: unknown,

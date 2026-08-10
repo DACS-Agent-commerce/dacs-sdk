@@ -11,11 +11,11 @@ import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact
 import { verifyBundleCore, type VerifyBundleDeps } from "../../src/agent/verifyBundleCore.js";
 import { attestationBundleHash, buildTwoSidedBundle } from "../../src/agent/twoSidedBundle.js";
 import type {
-  AgreementDocument,
   AttestationRef,
   CompositeVerificationRecord,
   LegacyMvpListing,
 } from "../../src/artifacts/types.js";
+import type { LegacyMvpAgreementDocument as AgreementDocument } from "../../src/artifacts/legacyMvp.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import { contentHash, sha256Hex, stripSignature } from "../../src/canonical/index.js";

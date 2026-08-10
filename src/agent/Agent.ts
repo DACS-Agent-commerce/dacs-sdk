@@ -12,6 +12,10 @@ import {
   type DomainSeparator,
 } from "../crypto/index.js";
 import { isAnyAttestationBundle } from "../artifacts/validators.js";
+import {
+  listingAddress,
+  logicalToStorageProgramName,
+} from "../canonical/index.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
 import type { DemosAdapter } from "../substrate/index.js";
 import {
@@ -182,6 +186,23 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
         artifactRef.anchor.kind === "storage-program"
           ? adapter.readAnchor(artifactRef.anchor.locator)
           : null,
+      resolveListingRef: async (listingRef, parties) => {
+        const seller = parties.find((party) => party.role === "seller");
+        const key = seller ? publicKeyFromDid(seller.primaryClaim) : null;
+        if (!seller || !key) return null;
+        const logical = listingAddress(
+          seller.primaryClaim,
+          listingRef.listingId,
+          listingRef.version,
+        );
+        const resolved = await adapter.resolveAnchorByName(
+          logicalToStorageProgramName(logical),
+          Buffer.from(key).toString("hex"),
+        );
+        return resolved.status === "present"
+          ? adapter.readAnchor(resolved.address)
+          : null;
+      },
       // Explicit pre-#308 compatibility for legacy SDK bundles whose refs were
       // keyed only by an SDK artifact kind and the enclosing job id.
       resolveRef: async (kind, jobId, parties) => {

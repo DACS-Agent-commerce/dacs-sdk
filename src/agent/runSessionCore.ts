@@ -8,7 +8,6 @@ import {
 import { CounterpartyError, DacsError, SubstrateError } from "../errors.js";
 import type { SessionLoad, SessionReceipt, SessionStore } from "./sessionStore.js";
 import type {
-  AgreementDocument,
   CompositeVerificationRecord,
   ListingPin,
   Price,
@@ -16,15 +15,16 @@ import type {
   SettlementFinalityModel,
 } from "../artifacts/types.js";
 import {
+  type LegacyMvpAgreementDocument as AgreementDocument,
   type LegacyMvpAttestationBundle as AttestationBundle,
   type LegacyMvpAttestationRef as AttestationRef,
   type LegacyMvpPhaseSummaryEntry as PhaseSummaryEntry,
   type LegacyMvpSettlementEvidence as SettlementEvidence,
   isLegacyMvpAttestationBundle as isAttestationBundle,
+  isLegacyMvpAgreementDocument as isAgreementDocument,
   isLegacyMvpSettlementEvidence as isSettlementEvidence,
 } from "../artifacts/legacyMvp.js";
 import {
-  isAgreementDocument,
   isCompositeVerificationRecord,
   readListingArtifact,
 } from "../artifacts/validators.js";
@@ -104,7 +104,8 @@ export interface SessionDeps {
   readListing: (ref: string) => Promise<unknown>;
   /**
    * Sign the reduced-MVP AgreementDocument compatibility artifact. The exact
-   * DACS-3 AgreementSignature[] producer replaces this seam in #98.
+   * DACS-3 producer is exposed by the transport-independent fixed-price core;
+   * wiring it into this legacy public orchestration path remains in #98.
    */
   sign: (artifact: object, separator: string) => Promise<object>;
   /** Sign raw bytes for ComponentSignature artifacts and the bundle. */
