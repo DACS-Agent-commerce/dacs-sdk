@@ -235,11 +235,16 @@ export class DemosAdapter implements SubstrateAdapter {
     return Math.max(0, ctx.deadline - Date.now());
   }
 
-  /** Race a non-cancellable demosdk call against the caller's total budget. */
+  /**
+   * Race a non-cancellable demosdk call against the caller's total budget.
+   * Composite stages can retain a more specific failure observed before the
+   * shared deadline instead of replacing it with the outer stage name.
+   */
   private waitFor<T>(
     ctx: AnchorContext,
     promise: Promise<T>,
     stage: string,
+    timeoutFailure?: () => AnchorWaitError | undefined,
   ): Promise<T> {
     if (ctx.signal?.aborted) {
       return Promise.reject(
@@ -249,7 +254,8 @@ export class DemosAdapter implements SubstrateAdapter {
     const remaining = this.remaining(ctx);
     if (remaining <= 0) {
       return Promise.reject(
-        this.fail(ctx, "timeout", `anchor timed out during ${stage}`),
+        timeoutFailure?.() ??
+          this.fail(ctx, "timeout", `anchor timed out during ${stage}`),
       );
     }
 
@@ -272,7 +278,8 @@ export class DemosAdapter implements SubstrateAdapter {
         () =>
           finish(() =>
             reject(
-              this.fail(ctx, "timeout", `anchor timed out during ${stage}`),
+              timeoutFailure?.() ??
+                this.fail(ctx, "timeout", `anchor timed out during ${stage}`),
             ),
           ),
         remaining,
@@ -1294,9 +1301,8 @@ export class DemosAdapter implements SubstrateAdapter {
     name: string,
     data: Record<string, unknown>,
     owner: string,
-    deadline: number,
-    pollMs: number,
-    cause: unknown,
+    ctx: AnchorContext,
+    cause: AnchorWaitError,
   ): Promise<AnchorRef> {
     let lastState = "absent";
     for (;;) {
@@ -1309,14 +1315,16 @@ export class DemosAdapter implements SubstrateAdapter {
         if (error instanceof DacsError) throw error;
         lastState = error instanceof Error ? error.message : String(error);
       }
-      if (Date.now() >= deadline) {
-        const reason = cause instanceof Error ? cause.message : String(cause);
-        throw new SubstrateError(
-          `immutable anchor ${name} create failed (${reason}); no owner-bound ` +
-            `winner became visible before timeout (last state: ${lastState})`,
+      if (Date.now() >= ctx.deadline) {
+        throw this.fail(
+          ctx,
+          cause.code,
+          `${cause.message}; no owner-bound winner became visible before ` +
+            `timeout (last state: ${lastState})`,
+          cause,
         );
       }
-      await sleep(pollMs);
+      await sleep(ctx.pollMs);
     }
   }
 
@@ -1493,6 +1501,7 @@ export class DemosAdapter implements SubstrateAdapter {
         this.demos,
       ) as Promise<unknown>;
 
+      let completionFailure: AnchorWaitError | undefined;
       const result = this.waitFor(
         ctx,
         (async (): Promise<AnchorRef> => {
@@ -1505,23 +1514,36 @@ export class DemosAdapter implements SubstrateAdapter {
             );
           } catch (error) {
             // A thrown submission/transport/timeout error does not prove absence.
+            completionFailure =
+              error instanceof AnchorWaitError
+                ? error
+                : this.fail(
+                    ctx,
+                    "inclusion-failed",
+                    `immutable anchor ${name} status reconciliation failed`,
+                    error,
+                  );
             return this.waitForConcurrentImmutableWinner(
               name,
               data,
               owner,
-              deadline,
-              pollMs,
-              error,
+              ctx,
+              completionFailure,
             );
           }
           if (terminal !== "included") {
+            completionFailure = this.fail(
+              ctx,
+              "inclusion-failed",
+              `immutable anchor ${name} reached terminal state failed`,
+              new Error(`terminal state=${terminal}`),
+            );
             return this.waitForConcurrentImmutableWinner(
               name,
               data,
               owner,
-              deadline,
-              pollMs,
-              new Error(`terminal state=${terminal}`),
+              ctx,
+              completionFailure,
             );
           }
           return this.waitForCreatedImmutable(
@@ -1535,6 +1557,33 @@ export class DemosAdapter implements SubstrateAdapter {
           );
         })(),
         "immutable completion",
+        () => {
+          // The outer and inner waits share one deadline. On some runtimes the
+          // outer timer can fire before the inner rejection assigns
+          // completionFailure, so derive a specific failure from live receipt
+          // state instead of falling back to the generic composite-stage name.
+          if (completionFailure) {
+            return this.fail(
+              ctx,
+              completionFailure.code,
+              `${completionFailure.message}; no owner-bound winner became ` +
+                "visible before timeout",
+              completionFailure,
+            );
+          }
+          return ctx.receipt.state === "included"
+            ? this.fail(
+                ctx,
+                "timeout",
+                `immutable anchor ${name} was included but did not become ` +
+                  "exact-byte and uniquely name-index visible before timeout",
+              )
+            : this.fail(
+                ctx,
+                "timeout",
+                `immutable anchor ${name} timed out during inclusion`,
+              );
+        },
       );
 
       const nonceSafe = this.resolveInBackground(

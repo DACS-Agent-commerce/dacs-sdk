@@ -586,6 +586,122 @@ describe("DemosAdapter.anchorAndWait", () => {
     );
   });
 
+  it("preserves immutable terminal-failure evidence after winner reconciliation", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.nodeCall.mockResolvedValue({ state: "failed" });
+
+    const error = asAnchorError(
+      await adapter
+        .anchorWriteOnce(
+          "failed-immutable",
+          { value: 1 },
+          { timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+
+    expect(error).toMatchObject({
+      code: "inclusion-failed",
+      receipt: {
+        name: "failed-immutable",
+        state: "failed",
+        lastObservedState: "failed",
+        txRef: expect.stringMatching(/^tx-/),
+      },
+    });
+    expect(error.message).toMatch(/terminal state failed/);
+    const preservedCause = (error as Error & { cause?: unknown }).cause;
+    expect(preservedCause).toMatchObject({
+      code: "inclusion-failed",
+      receipt: {
+        state: "failed",
+        lastObservedState: "failed",
+        txRef: error.receipt.txRef,
+      },
+    });
+    expect((preservedCause as Error & { cause?: unknown }).cause).toMatchObject(
+      { message: "terminal state=failed" },
+    );
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves immutable inclusion-timeout evidence at the shared completion deadline", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.nodeCall
+      .mockResolvedValueOnce({ state: "pending" })
+      .mockImplementation(() => deferred<never>().promise);
+
+    const error = asAnchorError(
+      await adapter
+        .anchorWriteOnce(
+          "pending-immutable",
+          { value: 1 },
+          { timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+
+    expect(error).toMatchObject({
+      code: "timeout",
+      receipt: {
+        name: "pending-immutable",
+        state: "accepted",
+        lastObservedState: "pending",
+        txRef: expect.stringMatching(/^tx-/),
+      },
+    });
+    expect(error.message).toMatch(/timed out during inclusion/);
+    expect(error.message).not.toMatch(/immutable completion/);
+    const inclusionCause = (error as Error & { cause?: unknown }).cause;
+    if (inclusionCause !== undefined) {
+      expect(inclusionCause).toMatchObject({
+        code: "timeout",
+        receipt: {
+          state: "accepted",
+          lastObservedState: "pending",
+          txRef: error.receipt.txRef,
+        },
+      });
+    }
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves immutable visibility-timeout evidence at the shared completion deadline", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.storagePrograms.read.mockImplementation(
+      () => deferred<never>().promise,
+    );
+
+    const error = asAnchorError(
+      await adapter
+        .anchorWriteOnce(
+          "invisible-immutable",
+          { value: 1 },
+          { timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+
+    expect(error).toMatchObject({
+      code: "timeout",
+      receipt: {
+        name: "invisible-immutable",
+        state: "included",
+        completion: "included",
+        lastObservedState: "included",
+        blockNumber: 42,
+        txRef: expect.stringMatching(/^tx-/),
+      },
+    });
+    expect(error.message).toMatch(
+      /included but did not become exact-byte and uniquely name-index visible/,
+    );
+    expect(error.message).not.toMatch(/immutable completion/);
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+    expect(raw.storagePrograms.read).toHaveBeenCalledTimes(1);
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it("bounds hung anchorWriteOnce preparation without poisoning the shared queue", async () => {
     fixtureId += 1;
     const rpc = `https://hung-immutable-sign-${fixtureId}.test`;
