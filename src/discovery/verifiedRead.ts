@@ -1,4 +1,5 @@
 import type { AnchorBinding, BindingIndex } from "./binding.js";
+import { normalizedBindingOwner } from "./owner.js";
 
 /**
  * Typed read-with-verification over the published binding (#54). This is the
@@ -28,6 +29,7 @@ export type VerifiedRead =
   | { status: "verified"; nativeAddress: string; record: Record<string, unknown> }
   | { status: "hash-mismatch"; nativeAddress: string; record: Record<string, unknown> }
   | { status: "signature-invalid"; nativeAddress: string; record: Record<string, unknown> }
+  | { status: "binding-mismatch"; reason: string }
   | {
       status: "unverifiable";
       nativeAddress: string;
@@ -81,7 +83,39 @@ export async function resolveAndRead(
   }
   if (resolution.status === "absent") return { status: "absent" };
 
-  const { binding } = resolution;
+  let binding: AnchorBinding;
+  try {
+    const snapshot: unknown = structuredClone(resolution.binding);
+    if (
+      typeof snapshot !== "object" ||
+      snapshot === null ||
+      Array.isArray(snapshot)
+    ) {
+      throw new Error("binding is not an object");
+    }
+    binding = snapshot as AnchorBinding;
+  } catch (e) {
+    return {
+      status: "indeterminate",
+      reason: `binding snapshot failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (
+    typeof binding.logicalAddress !== "string" ||
+    binding.logicalAddress !== logicalAddress ||
+    typeof binding.owner !== "string" ||
+    normalizedBindingOwner(binding.owner) !==
+      normalizedBindingOwner(expectedOwner) ||
+    typeof binding.nativeAddress !== "string" ||
+    binding.nativeAddress.trim().length === 0 ||
+    binding.revoked === true
+  ) {
+    return {
+      status: "binding-mismatch",
+      reason:
+        "binding index returned a logical address, owner, native address, or state that does not match the request",
+    };
+  }
   const nativeAddress = binding.nativeAddress;
 
   let record: Record<string, unknown> | null;
@@ -96,6 +130,22 @@ export async function resolveAndRead(
     };
   }
   if (!record) return { status: "unreadable", nativeAddress };
+  try {
+    const snapshot: unknown = structuredClone(record);
+    if (
+      typeof snapshot !== "object" ||
+      snapshot === null ||
+      Array.isArray(snapshot)
+    ) {
+      throw new Error("record is not an object");
+    }
+    record = snapshot as Record<string, unknown>;
+  } catch (e) {
+    return {
+      status: "indeterminate",
+      reason: `read record snapshot failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 
   // (1) Content-hash binding: a reader cannot authenticate the pointer without
   // an exact signed-scope hash, even when the pointed-to record has a valid
@@ -129,7 +179,10 @@ export async function resolveAndRead(
   if (deps.verifySignature) {
     let ok: boolean;
     try {
-      ok = await deps.verifySignature(record, binding);
+      ok = await deps.verifySignature(
+        structuredClone(record),
+        structuredClone(binding),
+      );
     } catch (e) {
       return {
         status: "unverifiable",

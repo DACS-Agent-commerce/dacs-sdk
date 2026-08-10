@@ -166,6 +166,13 @@ export interface SessionDeps {
   /** Read the (signed) listing at a ref. */
   readListing: (ref: string) => Promise<unknown>;
   /**
+   * Optional caller-held LR-1 tuple selected before entering the session. The
+   * core still re-reads and validates the Listing independently, then requires
+   * the tuple derived from those exact bytes to match this snapshot before Vet
+   * or payment. Omit for the historical unpinned string-ref flow.
+   */
+  expectedListingPin?: ListingPin;
+  /**
    * Sign the reduced-MVP AgreementDocument compatibility artifact. The exact
    * DACS-3 producer is exposed by the transport-independent fixed-price core;
    * wiring it into this legacy public orchestration path remains in #98.
@@ -588,6 +595,19 @@ function isListingPinValue(value: unknown): value is ListingPin {
     typeof pin.contentHash === "string" &&
     /^[0-9a-f]{64}$/.test(pin.contentHash)
   );
+}
+
+function snapshotExpectedListingPin(
+  value: unknown,
+): ListingPin | undefined {
+  if (value === undefined) return undefined;
+  const captured = snapshotCanonicalJsonRead(value, "expected Listing pin");
+  if (!isListingPinValue(captured)) {
+    throw new DacsError(
+      "expectedListingPin must be an exact canonical ListingPin",
+    );
+  }
+  return captured;
 }
 
 function sameListingPin(left: ListingPin, right: ListingPin): boolean {
@@ -1315,6 +1335,9 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
           "deps.expectedSettlementPayee",
           { allowColon: true },
         );
+  const expectedListingPin = snapshotExpectedListingPin(
+    stableDataProperty(input, "expectedListingPin", "deps.expectedListingPin"),
+  );
 
   const newJobId = stableDataMethod<SessionDeps["newJobId"]>(
     input,
@@ -1333,6 +1356,7 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
 
   return Object.freeze({
     buyerId,
+    expectedListingPin,
     readListing: stableDataMethod<SessionDeps["readListing"]>(
       input,
       "readListing",
@@ -2383,6 +2407,17 @@ export async function runSessionCore(
     };
   }
 
+  if (
+    runtime.expectedListingPin !== undefined &&
+    !sameListingPin(runtime.expectedListingPin, listingView.pin)
+  ) {
+    throw new CounterpartyError(
+      `listing at ${requestedListingRef} does not match the caller-held expected ` +
+        `Listing pin (${describeListingPin(runtime.expectedListingPin)} != ` +
+        `${describeListingPin(listingView.pin)})`,
+    );
+  }
+
   // #41 — authenticate the listing before any external effect. Fresh admission
   // preserves the existing early gate. An expired recovery deliberately waits
   // until the exact signed Agreement and successful SettlementEvidence prove
@@ -2984,6 +3019,60 @@ export async function runSessionCore(
     id,
     contentHash: contentHash(stripSignature(value)),
   });
+
+  const matchSessionBundle = (v: Record<string, unknown>): Match => {
+    if (!isAttestationBundle(v)) {
+      return { ok: false, reason: "not an attestation bundle" };
+    }
+    const bundle = v as unknown as AttestationBundle;
+    if (bundle.jobId !== jobId) {
+      return { ok: false, reason: `jobId ${bundle.jobId} ≠ ${jobId}` };
+    }
+    if (!sameListingPin(bundle.listingRef, listingView.pin)) {
+      return {
+        ok: false,
+        reason:
+          `listing pin ${describeListingPin(bundle.listingRef)} ≠ ` +
+          describeListingPin(listingView.pin),
+      };
+    }
+    return { ok: true };
+  };
+
+  // A completed bundle already carries the exact LR-1 tuple. Check it before
+  // Vet or settlement on an explicit resume, rather than discovering a stale
+  // job/listing pairing only after payment evidence has been processed.
+  if (requestedResumeJobId !== undefined) {
+    const bundleName = sessionAnchorName.bundle(jobId);
+    let resumedBundle: AnchorLookup;
+    try {
+      resumedBundle = snapshotAnchorLookup(
+        await runtime.resolveAnchor(bundleName),
+        `resume bundle lookup for ${bundleName}`,
+      );
+    } catch {
+      throw new SubstrateError(
+        `resume: bundle lookup for "${bundleName}" returned a live, malformed, or non-canonical result`,
+      );
+    }
+    if (resumedBundle.status === "indeterminate") {
+      throw new SubstrateError(
+        `resume: could not determine whether "${bundleName}" is already anchored ` +
+          `(${resumedBundle.reason}); refusing to proceed with a potentially stale Listing pin`,
+      );
+    }
+    if (resumedBundle.status === "present") {
+      const match = matchSessionBundle(
+        stripSignature(resumedBundle.value) as Record<string, unknown>,
+      );
+      if (!match.ok) {
+        throw new CounterpartyError(
+          `resume: artifact anchored at ${resumedBundle.ref} does not match the ` +
+            `requested deal: ${match.reason}`,
+        );
+      }
+    }
+  }
 
   // Vet (DACS-2): verify the seller before paying. Abort before settlement if
   // verification fails — never pay a seller that didn't clear the recipe.

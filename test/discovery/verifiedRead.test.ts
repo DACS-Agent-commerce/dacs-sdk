@@ -119,6 +119,24 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     });
   });
 
+  test("binding-mismatch: a custom index cannot substitute another logical address or owner", async () => {
+    for (const substituted of [
+      binding({ logicalAddress: "dacs1:other" }),
+      binding({ owner: "0xother" }),
+      binding({ revoked: true }),
+    ]) {
+      const r = await resolveAndRead(
+        {
+          resolve: async () => ({ status: "present", binding: substituted }),
+        },
+        LOGICAL,
+        SELLER,
+        depsWith({ "stor-real": RECORD }),
+      );
+      expect(r.status).toBe("binding-mismatch");
+    }
+  });
+
   test("signature verifier: a valid signature keeps the read verified", async () => {
     const index = createInMemoryBindingIndex([binding()]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, {
@@ -188,6 +206,51 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       nativeAddress: "stor-real",
       record: RECORD,
       reason: expect.stringContaining("non-canonical number"),
+    });
+  });
+
+  test("snapshots binding and record before asynchronous artifact verification", async () => {
+    const mutableBinding = binding();
+    const mutableRecord = { ...RECORD };
+    let entered!: () => void;
+    const verifierEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = resolveAndRead(
+      {
+        resolve: async () => ({
+          status: "present",
+          binding: mutableBinding,
+        }),
+      },
+      LOGICAL,
+      SELLER,
+      {
+        read: async () => mutableRecord,
+        contentHashOf,
+        verifySignature: async (record, resolvedBinding) => {
+          entered();
+          await gate;
+          return (
+            record.serviceId === "market-data" &&
+            resolvedBinding.nativeAddress === "stor-real"
+          );
+        },
+      },
+    );
+    await verifierEntered;
+    mutableBinding.nativeAddress = "stor-mutated";
+    mutableRecord.serviceId = "mutated";
+    release();
+
+    await expect(pending).resolves.toMatchObject({
+      status: "verified",
+      nativeAddress: "stor-real",
+      record: { serviceId: "market-data" },
     });
   });
 });

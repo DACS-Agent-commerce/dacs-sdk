@@ -182,7 +182,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
         ...PUBLICATION_CAPABILITIES,
         bindings: { index: {}, publisher: {} },
       } as never),
-    ).toThrow(/index resolver and an authorized publisher/);
+    ).toThrow(/index resolver/);
     expect(state.creates).toBe(0);
   });
 

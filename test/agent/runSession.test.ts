@@ -8,6 +8,7 @@ import {
 import type {
   CompositeVerificationRecord,
   Listing,
+  ListingPin,
   VerificationDecision,
 } from "../../src/artifacts/types.js";
 import {
@@ -214,6 +215,14 @@ function verifiedAdmissionFor(listing: Listing) {
       ),
       deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
     },
+  };
+}
+
+function listingPinFor(listing: Listing): ListingPin {
+  return {
+    listingId: listing.listingId,
+    version: listing.listingVersion,
+    contentHash: contentHash(listing as unknown as Record<string, unknown>),
   };
 }
 
@@ -580,6 +589,73 @@ describe("runSession orchestration (T4)", () => {
       ),
     ).rejects.toThrow(/outside.*validity window/i);
     expect(effects).toBe(0);
+  });
+
+  test("rejects a substituted Listing against the caller-held pin before Vet or payment", async () => {
+    const selected = normativeDpaListing();
+    const expectedListingPin = listingPinFor(selected);
+    const substituted = structuredClone(selected);
+    substituted.offering.title = "Substituted after buyer selection";
+    let vetCalls = 0;
+    let anchorCalls = 0;
+    let settleCalls = 0;
+
+    await expect(
+      runSessionCore(
+        "stor-normative-v7",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          expectedListingPin,
+          readListing: async () => substituted,
+          validateListing: () => verifiedAdmissionFor(substituted),
+          vet: async () => {
+            vetCalls += 1;
+            throw new Error("must not Vet a substituted Listing");
+          },
+          anchor: async (name) => {
+            anchorCalls += 1;
+            return `stor-${name}`;
+          },
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not pay a substituted Listing");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/caller-held expected Listing pin/);
+
+    expect(vetCalls).toBe(0);
+    expect(anchorCalls).toBe(0);
+    expect(settleCalls).toBe(0);
+  });
+
+  test("snapshots the caller-held Listing pin before the first listing-read await", async () => {
+    const normative = normativeDpaListing();
+    const expectedListingPin = listingPinFor(normative);
+    const selectedPin = structuredClone(expectedListingPin);
+
+    const result = await runSessionCore(
+      "stor-normative-v7",
+      {
+        ...TERMS,
+        price: { ...TERMS.price, rail: "x402:default" },
+      },
+      makeDeps({
+        expectedListingPin,
+        readListing: async () => {
+          expectedListingPin.contentHash = "0".repeat(64);
+          expectedListingPin.listingId = "mutated-selection";
+          return normative;
+        },
+        validateListing: () => verifiedAdmissionFor(normative),
+      }),
+    );
+
+    expect(result.listingPin).toEqual(selectedPin);
+    expect(expectedListingPin).not.toEqual(selectedPin);
   });
 
   test("admits PIPE-5 repetitions of the same payment phase kind", async () => {
@@ -1918,17 +1994,81 @@ describe("runSession orchestration (T4)", () => {
     }
   });
 
-  test("resume aborts when the anchored artifact is for a different deal", async () => {
+  test("resume rejects a bundle carrying a stale Listing pin before another payment", async () => {
+    const normative = normativeDpaListing();
+    const expectedListingPin = listingPinFor(normative);
     const store = new Map<string, Record<string, unknown>>();
     let settleCalls = 0;
-    // A prior session at this jobId's address negotiated a DIFFERENT price.
+    const deps = makeDeps({
+      expectedListingPin,
+      readListing: async () => normative,
+      validateListing: () => verifiedAdmissionFor(normative),
+      anchor: async (name, value) => {
+        const ref = `stor-${name}`;
+        store.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      settle: async () => {
+        settleCalls += 1;
+        return {
+          ok: true,
+          txHash: "0xabc",
+          chainId: "eip155:8453",
+          payer: "0xbob",
+          payee: "0xalice",
+        };
+      },
+    });
+    const terms = {
+      ...TERMS,
+      price: { ...TERMS.price, rail: "x402:default" },
+    };
+
+    const first = await runSessionCore(
+      "stor-normative-v7",
+      terms,
+      deps,
+      "job-STALE-BUNDLE-PIN",
+    );
+    expect(settleCalls).toBe(1);
+
+    const staleBundle = structuredClone(store.get(first.bundleRef)!);
+    staleBundle.listingRef = {
+      ...expectedListingPin,
+      contentHash: "0".repeat(64),
+    };
+    store.set(first.bundleRef, staleBundle);
+
+    await expect(
+      runSessionCore(
+        "stor-normative-v7",
+        terms,
+        deps,
+        "job-STALE-BUNDLE-PIN",
+      ),
+    ).rejects.toThrow(/listing pin .* ≠/);
+    expect(settleCalls).toBe(1);
+  });
+
+  test("resume aborts when the anchored agreement binds another Listing ref", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    // The compatibility agreement cannot carry an LR-1 tuple, but its native
+    // Listing binding must still be exact on resume.
     store.set("stor-dacs3:agreement:job-WRONG", {
       jobId: "job-WRONG",
       pattern: "negotiate-fixed-price",
       buyer: "did:demos:agent:bob",
       seller: "did:demos:agent:alice",
-      listingRef: "stor-listing",
-      price: { amount: "999", asset: "USDC", decimals: 6, rail: "pay-x402" },
+      listingRef: "stor-another-listing",
+      price: TERMS.price,
       delivery: { phase: "deliver-attested-payload", format: "application/json" },
       expiresAt: "2026-01-01T00:00:00Z",
       signature: "sig",

@@ -4,7 +4,7 @@ import type {
 } from "../discovery/scanner.js";
 
 const CURSOR_PREFIX = "dacs-demos-history-v1.";
-const MAX_PAGE_SIZE = 100;
+export const DEMOS_HISTORY_MAX_PAGE_SIZE = 100;
 const NATIVE_ADDRESS = /^stor-[0-9a-f]{40}$/;
 const DEMOS_OWNER = /^(?:0x)?[0-9a-f]{64}$/i;
 const STORAGE_OPERATIONS = new Set([
@@ -224,8 +224,14 @@ export function createDemosHistoryPageFetcher(
   const logicalByNativeAddress = new Map<string, string>();
 
   return async (cursorValue, limit) => {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) {
-      throw new Error(`Demos history limit must be an integer from 1 to ${MAX_PAGE_SIZE}`);
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > DEMOS_HISTORY_MAX_PAGE_SIZE
+    ) {
+      throw new Error(
+        `Demos history limit must be an integer from 1 to ${DEMOS_HISTORY_MAX_PAGE_SIZE}`,
+      );
     }
 
     const cursor =
@@ -250,7 +256,7 @@ export function createDemosHistoryPageFetcher(
         client,
         owner,
         pageStart,
-        MAX_PAGE_SIZE,
+        DEMOS_HISTORY_MAX_PAGE_SIZE,
       );
       const boundaryIndexes = overlapAndRows.flatMap((row, index) =>
         transactionHash(row, pageStart + index) === cursor.boundaryTxHash
@@ -267,7 +273,7 @@ export function createDemosHistoryPageFetcher(
       rows = afterBoundary.slice(0, limit);
       rowsStart = pageStart + boundaryIndex + 1;
       bufferedRowsRemain = afterBoundary.length > rows.length;
-      pageWasShort = overlapAndRows.length < MAX_PAGE_SIZE;
+      pageWasShort = overlapAndRows.length < DEMOS_HISTORY_MAX_PAGE_SIZE;
       pageEndOffset = pageStart + overlapAndRows.length;
     }
 

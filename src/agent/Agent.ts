@@ -3,11 +3,14 @@ import type {
   AnyAttestationBundle,
   CompositeVerificationRecord,
   ListingDraft,
+  ListingPin,
 } from "../artifacts/types.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { verifyComponentSignature } from "../artifacts/signatures.js";
 import {
   isAnyAttestationBundle,
+  isLegacyMvpListing,
+  isListing,
   readListingArtifact,
 } from "../artifacts/validators.js";
 import {
@@ -24,6 +27,7 @@ import {
 import { isLegacyMvpAttestationBundle } from "../artifacts/legacyMvp.js";
 import {
   createBoundArtifactRepository,
+  type AnchorHistoryPageFetcher,
   type BindingIndex,
   type BindingPublisher,
   type BoundArtifactWriteResult,
@@ -63,7 +67,6 @@ import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { computeReputation, type Reputation } from "./reputation.js";
 import {
   buildSignedArtifact,
-  verifySignedArtifact,
   type Signer,
   type Verifier,
 } from "./signedArtifact.js";
@@ -76,8 +79,26 @@ import {
   type BundleVerification,
   type VerifyBundleDeps,
 } from "./verifyBundleCore.js";
+import {
+  enumerateListingsForSeller,
+  readListingByLogicalAddress,
+  type AuthenticatedListing,
+  type EnumerateListingsOptions,
+  type ListingEnumerationResult,
+  type ListingReadResult,
+} from "./listingDiscovery.js";
 
 export type { SignatureCheck, BundleVerification, Reputation, CciRecord };
+export type {
+  AuthenticatedListing,
+  EnumerateListingsOptions,
+  ListingEnumerationDiagnostic,
+  ListingEnumerationResult,
+  ListingReadFailure,
+  ListingReadRejectionCheck,
+  ListingReadRejectionCode,
+  ListingReadResult,
+} from "./listingDiscovery.js";
 
 function stableAgentData(
   source: object,
@@ -276,11 +297,23 @@ export interface RunSessionOptions {
   listingValidationDeps?: ListingValidationDeps;
 }
 
+/**
+ * Prefer an authenticated logical-read result so the session pins the exact
+ * signed content selected by the buyer across its pre-payment re-read. A native
+ * string ref remains supported for callers that obtained it through another
+ * trusted, already-pinned flow.
+ */
+export type SessionListingInput = string | AuthenticatedListing;
+
 export interface AgentConfig {
   /** Demos node RPC URL. */
   demosRpc: string;
-  /** Wallet secret — mnemonic or private key — used to sign artifacts/txs. */
-  wallet: string;
+  /**
+   * Wallet secret — mnemonic or private key — used to sign artifacts/txs.
+   * Optional for a read-only Directory/consumer; write and session methods fail
+   * before side effects when it is absent.
+   */
+  wallet?: string;
   /** Optional identity metadata (e.g. the agent's DID / primary claim). */
   identity?: { agentId?: string };
   /** DACS-1 §6.3.4 LP-6 authority read for pay-bearing Listing publication. */
@@ -311,7 +344,7 @@ export interface AgentConfig {
    * consumer-index readback. `publishListing` refuses to anchor unless this is
    * configured: a physical write without its independently readable binding
    * would leave an orphan that consumers cannot resolve safely. Agent-level
-   * typed logical reads remain a separate #54 slice.
+   * typed logical reads and owner-scoped enumeration require only `index`.
    */
   bindings?: AgentBindingConfig;
 }
@@ -326,9 +359,10 @@ export interface AgentBindingConfig {
    * Writer-authorized target that updates the deployment's required discovery
    * surfaces. A production DACS listing publisher is normally composite across
    * well-known and catalog publication and must report partial success as
-   * indeterminate, not published.
+   * indeterminate, not published. Optional for read-only consumers; required by
+   * `publishListing`.
    */
-  publisher: BindingPublisher;
+  publisher?: BindingPublisher;
 }
 
 type PublishedWrite = Extract<
@@ -408,8 +442,22 @@ export interface Agent<
    * the matching primary claims (Demos pubkeys), usually one, or [] if none.
    */
   findByClaim(claimRef: string): Promise<string[]>;
-  /** Seller: sign + anchor a fixed-price listing. */
+  /** Seller: sign, immutably anchor, and publish a normative Listing binding. */
   publishListing(listing: ListingDraft): Promise<PublishResult>;
+  /**
+   * Buyer/Directory: resolve and authenticate one historical Listing by its
+   * canonical logical address. This authenticates binding, content, context,
+   * and authorship; ordered active/revocation admission remains separate.
+   */
+  readListing(logicalAddress: string): Promise<ListingReadResult>;
+  /**
+   * Buyer/Directory: page through one known seller's Demos Listing history.
+   * This is owner-scoped discovery, not global marketplace search.
+   */
+  enumerateListings(
+    sellerId: string,
+    options?: EnumerateListingsOptions,
+  ): Promise<ListingEnumerationResult>;
   /**
    * Anyone: verify an anchored bundle's signatures, referenced artifacts, and
    * strict DACS-2 vet closure. Bundles with vet records fail closed unless
@@ -419,13 +467,16 @@ export interface Agent<
   /**
    * Buyer: resolve + structurally validate anchored listings at the given refs.
    * Refs are caller-supplied (shared out-of-band / via a directory) — a
-   * marketplace crawl needs an indexer the deterministic substrate doesn't
-   * provide. Non-listing / missing refs are skipped. (Seller-identity vetting
-   * is the separate Vet stage.)
+   * global marketplace crawl still needs a catalog; use `enumerateListings` for
+   * one known seller's history. Non-listing / missing refs are skipped.
+   * (Seller-identity vetting is the separate Vet stage.)
    */
   discover(listingRefs: string[]): Promise<DiscoveredListing[]>;
   /** Buyer: run a fixed-price session (negotiate → settle → verify). */
-  runSession(listingRef: string, opts: RunSessionOptions): Promise<SessionResult>;
+  runSession(
+    listing: SessionListingInput,
+    opts: RunSessionOptions,
+  ): Promise<SessionResult>;
   /**
    * Anyone: derive reputation for a primary claim from its bundles. The bundle
    * refs are caller-supplied (enumerating a claim's bundles is an indexer
@@ -436,8 +487,8 @@ export interface Agent<
 }
 
 /**
- * Create a connected agent. Connects the substrate adapter with the wallet and
- * wires artifact signing to it.
+ * Create a connected agent. A wallet is connected and artifact signing is wired
+ * only when `config.wallet` is present; read-only consumers can omit it.
  */
 export async function createAgent(
   config: AgentConfig,
@@ -452,7 +503,7 @@ export async function createAgent(
   });
   const adapter = new DemosAdapter({
     rpc: config.demosRpc,
-    secret: config.wallet,
+    ...(config.wallet === undefined ? {} : { secret: config.wallet }),
   });
   await adapter.connect();
   return buildAgent(adapter, config);
@@ -574,17 +625,31 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       verify: ed25519RawVerify,
       ...(verifyCompositeRecord ? { verifyCompositeRecord } : {}),
     });
+  const hasWallet =
+    typeof config.wallet === "string" && config.wallet.length > 0;
+  const bindingsValue: unknown = config.bindings;
+  const runtimeBindings =
+    typeof bindingsValue === "object" && bindingsValue !== null
+      ? (bindingsValue as { index?: unknown; publisher?: unknown })
+      : null;
+  const publisherValue = runtimeBindings?.publisher;
   if (
-    config.bindings !== undefined &&
-    (typeof config.bindings.index?.resolve !== "function" ||
-      typeof config.bindings.publisher?.publish !== "function")
+    bindingsValue !== undefined &&
+    (runtimeBindings === null ||
+      typeof (runtimeBindings.index as { resolve?: unknown } | undefined)
+        ?.resolve !== "function" ||
+      (publisherValue !== undefined &&
+        (typeof publisherValue !== "object" ||
+          publisherValue === null ||
+          typeof (publisherValue as { publish?: unknown }).publish !==
+            "function")))
   ) {
     throw new DacsError(
-      "AgentConfig.bindings requires an index resolver and an authorized publisher",
+      "AgentConfig.bindings requires an index resolver and, when supplied, a valid publisher",
     );
   }
   const artifactRepository =
-    config.bindings === undefined
+    config.bindings?.publisher === undefined
       ? null
       : createBoundArtifactRepository({
           adapter,
@@ -592,6 +657,13 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           publisher: config.bindings.publisher,
         });
   const bindingIndex = config.bindings?.index ?? null;
+  const historyPageFetcherFactory = (
+    adapter as SubstrateAdapter & {
+      createAnchorHistoryPageFetcher?: (
+        expectedOwner: string,
+      ) => AnchorHistoryPageFetcher;
+    }
+  ).createAnchorHistoryPageFetcher;
 
   return {
     adapter,
@@ -614,7 +686,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     async publishListing(listingInput: ListingDraft): Promise<PublishResult> {
       if (artifactRepository === null) {
         throw new DacsError(
-          "publishListing requires AgentConfig.bindings so the logical-to-native binding is published",
+          "publishListing requires AgentConfig.bindings.publisher so the logical-to-native binding is published",
+        );
+      }
+      if (!hasWallet) {
+        throw new DacsError(
+          "publishListing requires AgentConfig.wallet for signing and anchoring",
         );
       }
       // The Agent callback below performs additional async index checks around
@@ -764,6 +841,51 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       }
     },
 
+    async readListing(logicalAddress: string): Promise<ListingReadResult> {
+      if (bindingIndex === null) {
+        throw new DacsError(
+          "readListing requires AgentConfig.bindings.index for logical resolution",
+        );
+      }
+      return readListingByLogicalAddress(logicalAddress, {
+        index: bindingIndex,
+        readAnchor: (nativeAddress) => adapter.readAnchor(nativeAddress),
+        verify: ed25519RawVerify,
+        ...(config.listingValidationDeps
+          ? { listingValidationDeps: config.listingValidationDeps }
+          : {}),
+      });
+    },
+
+    async enumerateListings(
+      sellerId: string,
+      options?: EnumerateListingsOptions,
+    ): Promise<ListingEnumerationResult> {
+      if (bindingIndex === null) {
+        throw new DacsError(
+          "enumerateListings requires AgentConfig.bindings.index for logical resolution",
+        );
+      }
+      return enumerateListingsForSeller(
+        sellerId,
+        {
+          index: bindingIndex,
+          readAnchor: (nativeAddress) => adapter.readAnchor(nativeAddress),
+          verify: ed25519RawVerify,
+          ...(config.listingValidationDeps
+            ? { listingValidationDeps: config.listingValidationDeps }
+            : {}),
+          ...(typeof historyPageFetcherFactory === "function"
+            ? {
+                createHistoryPageFetcher: (expectedOwner: string) =>
+                  historyPageFetcherFactory.call(adapter, expectedOwner),
+              }
+            : {}),
+        },
+        options,
+      );
+    },
+
     async verifyBundle(ref: string): Promise<BundleVerification> {
       // Bundle signature verification (§7.7) PLUS dereferencing each referenced
       // artifact and hash-checking it. Normative DACS-2 §7.5.2 refs resolve the
@@ -786,9 +908,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     },
 
     async runSession(
-      listingRef: string,
+      listingInput: SessionListingInput,
       opts: RunSessionOptions,
     ): Promise<SessionResult> {
+      if (!hasWallet) {
+        throw new Error("runSession requires createAgent({ wallet })");
+      }
       if (opts === null || typeof opts !== "object" || nodeTypes.isProxy(opts)) {
         throw new DacsError("Agent.runSession options must be stable data");
       }
@@ -925,6 +1050,95 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         });
         return verdict.status === "valid";
       };
+      let listingRef: string;
+      let expectedContentHash: string | null = null;
+      let expectedListingPin: ListingPin | undefined;
+      if (typeof listingInput === "string") {
+        listingRef = listingInput;
+      } else {
+        let selectedValue: unknown;
+        try {
+          selectedValue = structuredClone(listingInput);
+        } catch (error) {
+          throw new DacsError(
+            "runSession Listing selection could not be snapshotted",
+            { cause: error },
+          );
+        }
+        if (
+          typeof selectedValue !== "object" ||
+          selectedValue === null ||
+          Array.isArray(selectedValue) ||
+          !("listing" in selectedValue)
+        ) {
+          throw new DacsError(
+            "runSession requires an internally consistent authenticated Listing selection",
+          );
+        }
+        const selected = selectedValue as AuthenticatedListing;
+        let selectedSeller: string;
+        let selectedListingId: string;
+        let selectedVersion: number;
+        if (
+          selected.compatibility === "normative" &&
+          selected.status === "verified" &&
+          isListing(selected.listing)
+        ) {
+          selectedSeller = selected.listing.seller.identity.presentedBy;
+          selectedListingId = selected.listing.listingId;
+          selectedVersion = selected.listing.listingVersion;
+        } else if (
+          selected.compatibility === "legacy-mvp" &&
+          selected.status === "authenticated" &&
+          isLegacyMvpListing(selected.listing) &&
+          !Object.prototype.hasOwnProperty.call(selected.listing, "signature") &&
+          !Object.prototype.hasOwnProperty.call(selected.listing, "signatures")
+        ) {
+          selectedSeller = selected.listing.agentId;
+          selectedListingId = selected.listing.serviceId;
+          selectedVersion = selected.listing.listingVersion ?? 1;
+        } else {
+          throw new DacsError(
+            "runSession requires an internally consistent authenticated Listing selection",
+          );
+        }
+        let selectedHash: string;
+        try {
+          selectedHash = contentHash(
+            selected.listing as unknown as Record<string, unknown>,
+          );
+        } catch (error) {
+          throw new DacsError("runSession Listing selection is not canonical", {
+            cause: error,
+          });
+        }
+        if (
+          typeof selected.ref !== "string" ||
+          selected.ref.trim().length === 0 ||
+          typeof selected.contentHash !== "string" ||
+          !/^[0-9a-f]{64}$/.test(selected.contentHash) ||
+          selectedHash !== selected.contentHash ||
+          typeof selected.listingPin !== "object" ||
+          selected.listingPin === null ||
+          selected.listingPin.listingId !== selectedListingId ||
+          selected.listingPin.version !== selectedVersion ||
+          selected.listingPin.contentHash !== selected.contentHash ||
+          !Number.isSafeInteger(selected.version) ||
+          selected.version !== selectedVersion ||
+          listingAddress(
+            selectedSeller,
+            selectedListingId,
+            selectedVersion,
+          ) !== selected.logicalAddress
+        ) {
+          throw new DacsError(
+            "runSession requires an internally consistent authenticated Listing selection",
+          );
+        }
+        listingRef = selected.ref;
+        expectedContentHash = selected.contentHash;
+        expectedListingPin = structuredClone(selected.listingPin);
+      }
       return runSessionCore(
         listingRef,
         options.terms,
@@ -960,6 +1174,13 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           // vetting or settlement. Without this the money path would run on an
           // unverified listing (and the gate below would throw).
           verifyListing: async (raw, sellerClaim) => {
+            if (expectedContentHash !== null) {
+              try {
+                if (contentHash(raw) !== expectedContentHash) return false;
+              } catch {
+                return false;
+              }
+            }
             // Authenticate the exact Listing independently of its current
             // wall-clock validity. runSessionCore applies that admission policy:
             // fresh sessions must be in-window, while an expired recovery must
@@ -1115,6 +1336,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           ),
           verifyVetRecord,
           authenticateVetFinality,
+          ...(expectedListingPin ? { expectedListingPin } : {}),
           now: () => new Date().toISOString(),
           nowMs: () => Date.now(),
           sessionStore,

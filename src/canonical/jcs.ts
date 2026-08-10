@@ -79,12 +79,35 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
   if (Array.isArray(value)) {
     return withCycleGuard(value, ancestors, () => {
       assertNestingDepth(depth);
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        throw new DacsError(
+          "canonical form: array must use the standard Array prototype",
+        );
+      }
       const items: string[] = [];
       for (let index = 0; index < value.length; index += 1) {
         if (!Object.hasOwn(value, index)) {
-          throw new DacsError(`canonical form: sparse array entry at index ${index}`);
+          throw new DacsError(
+            `canonical form: sparse array; arrays must be dense (missing entry at index ${index})`,
+          );
         }
-        items.push(canonValue(value[index], ancestors, depth + 1));
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (
+          descriptor === undefined ||
+          !descriptor.enumerable ||
+          !("value" in descriptor)
+        ) {
+          throw new DacsError(
+            "canonical form: arrays must be dense enumerable data properties",
+          );
+        }
+        items.push(canonValue(descriptor.value, ancestors, depth + 1));
+      }
+      const ownKeys = Reflect.ownKeys(value);
+      if (ownKeys.length !== value.length + 1) {
+        throw new DacsError(
+          "canonical form: arrays must be dense and contain no extra properties",
+        );
       }
       return "[" + items.join(",") + "]";
     });
@@ -98,13 +121,29 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
         throw new DacsError("canonical form: only plain JSON objects are supported");
       }
 
+      for (const key of Reflect.ownKeys(object)) {
+        if (typeof key !== "string") {
+          throw new DacsError(
+            "canonical form: symbol-keyed properties are not valid JSON",
+          );
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(object, key)!;
+        if (!descriptor.enumerable || !("value" in descriptor)) {
+          throw new DacsError(
+            "canonical form: object properties must be enumerable data properties",
+          );
+        }
+      }
+
       const normalizedEntries = new Map<string, unknown>();
       for (const [rawKey, entry] of Object.entries(object)) {
         if (entry === undefined) continue;
         assertNoLoneSurrogates(rawKey);
         const key = rawKey.normalize("NFC");
         if (normalizedEntries.has(key)) {
-          throw new DacsError(`canonical form: NFC key collision for "${key}"`);
+          throw new DacsError(
+            `canonical form: duplicate NFC-normalized keys (NFC key collision) for "${key}"`,
+          );
         }
         normalizedEntries.set(key, entry);
       }
@@ -141,11 +180,15 @@ function assertNoLoneSurrogates(value: string): void {
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
       if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new DacsError("canonical form: lone high surrogate");
+        throw new DacsError(
+          "canonical form: unpaired UTF-16 surrogate: lone high surrogate",
+        );
       }
       index += 1;
     } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new DacsError("canonical form: lone low surrogate");
+      throw new DacsError(
+        "canonical form: unpaired UTF-16 surrogate: lone low surrogate",
+      );
     }
   }
 }
