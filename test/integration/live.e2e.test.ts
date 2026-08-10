@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 import { createPublicClient, erc20Abi, http } from "viem";
 
@@ -150,7 +152,6 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
             `requires ${PAYMENT_AMOUNT}; refusing all Demos writes`,
         );
       }
-
       console.info("LIVE E2E preflight", {
         rpc: env.DEMOS_RPC,
         sellerAddress: seller.adapter.getAddress(),
@@ -175,17 +176,59 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           : undefined;
 
       try {
+        const runStartedAt = Date.now();
+        const listingId = `live-e2e-${runStartedAt}-${randomUUID()}`;
         const published = await seller.publishListing({
-          agentId: env.SELLER_DID!,
-          serviceId: `live-e2e-${Date.now()}`,
-          name: "Live E2E",
-          description: "integration test listing",
-          claimRequirements: [],
-          supportedNegotiation: ["negotiate-fixed-price"],
-          supportedPaymentRails: ["pay-x402"],
-          supportedDelivery: ["deliver-attested-payload"],
+          dacsVersion: "1",
+          listingVersion: 1,
+          listingId,
+          seller: {
+            identity: {
+              bundleVersion: "1",
+              presentedBy: env.SELLER_DID!,
+              presentedAt: runStartedAt,
+              claims: [{ ref: env.SELLER_DID! }],
+              presentation: {
+                kind: "per-claim",
+                signatures: [
+                  {
+                    ref: env.SELLER_DID!,
+                    signature: "live-wallet-presentation",
+                  },
+                ],
+              },
+            },
+            displayName: "Live E2E",
+            publicEndpoint: localPaywall?.url ?? env.PAYWALL_URL!,
+          },
+          offering: {
+            title: "Live E2E",
+            description: "integration test listing",
+            category: "sdk.integration",
+            tags: ["live", "x402"],
+            deliverable: {
+              kind: "attested-payload",
+              payloadFormat: "application/json",
+              verificationMethod: { kind: "self-signed" },
+            },
+          },
+          buyerRequirement: { requirementVersion: "1", required: [] },
+          pipeline: [
+            { kind: "negotiate-fixed-price" },
+            { kind: "commit-agreement" },
+            { kind: "pay-x402", parameters: { rail: "x402:default" } },
+            { kind: "deliver-attested-payload" },
+          ],
+          pricing: {
+            kind: "fixed",
+            price: { amount: "1", currency: "USDC" },
+          },
+          acceptedRails: [{ railId: "x402:default" }],
+          terms: { deadlineSecAfterCommit: 3_600 },
+          validity: { notBefore: runStartedAt - 1_000 },
         });
         expect(published.ref).toBeTruthy();
+        expect(published.listingPin.listingId).toBe(listingId);
 
         const session = await buyer.runSession(published.ref, {
           terms: {
@@ -193,7 +236,7 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
               amount: PAYMENT_AMOUNT.toString(),
               asset: "USDC",
               decimals: 6,
-              rail: "pay-x402",
+              rail: "x402:default",
             },
             deliveryPhase: "deliver-attested-payload",
             deliveryFormat: "application/json",

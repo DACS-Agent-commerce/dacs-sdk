@@ -14,7 +14,7 @@ import type {
   AgreementDocument,
   AttestationRef,
   CompositeVerificationRecord,
-  Listing,
+  LegacyMvpListing,
 } from "../../src/artifacts/types.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
@@ -289,7 +289,7 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
         const signBuyer = signerFor(BUYER_SEED);
         const sub = memStore();
 
-        const listing: Listing = {
+        const listing: LegacyMvpListing = {
           agentId: sellerDid,
           serviceId: "local-chain-x402",
           name: "Local Chain x402 Desk",

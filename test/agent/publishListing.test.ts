@@ -4,6 +4,8 @@ import {
   publishListingCore,
   type PublishListingDeps,
 } from "../../src/agent/publishListingCore.js";
+import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import {
   contentHash,
   listingAddress,
@@ -65,24 +67,86 @@ function fakeDeps() {
   return deps;
 }
 
-const listing = (over: Record<string, unknown> = {}) => ({
-  agentId: SELLER,
-  serviceId: "market-data",
-  name: "Market Data",
-  description: "EOD prices",
-  claimRequirements: [],
-  supportedNegotiation: ["negotiate-fixed-price"],
-  supportedPaymentRails: ["pay-x402"],
-  supportedDelivery: ["deliver-attested-payload"],
-  ...over,
-});
+const listing = (over: Record<string, unknown> = {}) => {
+  const { description, ...topLevel } = over;
+  return {
+    dacsVersion: "1" as const,
+    listingVersion: 1,
+    listingId: "market-data",
+    seller: {
+      identity: {
+        bundleVersion: "1" as const,
+        presentedBy: SELLER,
+        presentedAt: 1_780_000_000_000,
+        claims: [{ ref: SELLER }],
+        presentation: {
+          kind: "per-claim" as const,
+          signatures: [{ ref: SELLER, signature: "identity-presentation" }],
+        },
+      },
+      displayName: "Market Data",
+      publicEndpoint: "https://seller.example/dacs",
+    },
+    offering: {
+      title: "Market Data",
+      description:
+        typeof description === "string" ? description : "EOD prices",
+      category: "data.finance",
+      tags: ["market-data"],
+      deliverable: {
+        kind: "attested-payload" as const,
+        payloadFormat: "application/json",
+        verificationMethod: { kind: "self-signed" as const },
+      },
+    },
+    buyerRequirement: { requirementVersion: "1" as const, required: [] },
+    pipeline: [
+      { kind: "negotiate-fixed-price" as const },
+      { kind: "commit-agreement" as const },
+      { kind: "pay-x402" as const, parameters: { rail: "x402:default" } },
+      { kind: "deliver-attested-payload" as const },
+    ],
+    pricing: {
+      kind: "fixed" as const,
+      price: { amount: "1", currency: "USDC" },
+    },
+    acceptedRails: [{ railId: "x402:default" }],
+    terms: { deadlineSecAfterCommit: 3_600 },
+    validity: { notBefore: 1_780_000_000_000 },
+    ...topLevel,
+  };
+};
+
+const signedListing = (over: Record<string, unknown> = {}) =>
+  signComponentArtifact(listing(over), ARTIFACT_SEPARATORS.Listing, {
+    algorithm: "ed25519",
+    signer: SELLER,
+    sign,
+  });
 
 describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () => {
-  test("anchors v1 (default) under the colon-free §6.3.4 program name", async () => {
+  test("publishes a normative signed v1 and returns its exact LR-1 pin", async () => {
     const deps = fakeDeps();
     const res = await publishListingCore(listing(), deps);
     expect(res.ref).toBe("stor-1");
     expect(res.txRef).toBeDefined();
+    const stored = deps.store.get(res.ref)!;
+    expect(stored.seller).toMatchObject({
+      displayName: "Market Data",
+      publicEndpoint: "https://seller.example/dacs",
+    });
+    expect(stored.signature).toMatchObject({
+      algorithm: "ed25519",
+      signer: SELLER,
+    });
+    expect((stored.signature as { value: string }).value).toMatch(
+      /^[A-Za-z0-9_-]+$/,
+    );
+    expect(res.listingPin).toEqual({
+      listingId: "market-data",
+      version: 1,
+      contentHash: contentHash(stored),
+    });
   });
 
   test("§6.3.4: the native program name is colon-free and the logical address is the returned binding (#46)", async () => {
@@ -155,6 +219,40 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
     expect(deps.stats.creates).toBe(3);
   });
 
+  test("reads an existing legacy MVP version only through the compatibility boundary", async () => {
+    const deps = fakeDeps();
+    const prefix = logicalToStorageProgramName(
+      listingAddress(SELLER, "market-data", "v"),
+    );
+    deps.scanOwnAnchorsByNamePrefix = async () => ({
+      status: "ok",
+      anchors: [
+        {
+          address: "stor-legacy-v1",
+          programName: `${prefix}1`,
+          value: {
+            agentId: SELLER,
+            serviceId: "market-data",
+            name: "Legacy Market Data",
+            description: "Historical SDK Listing",
+            claimRequirements: [],
+            supportedNegotiation: ["negotiate-fixed-price"],
+            supportedPaymentRails: ["pay-x402"],
+            supportedDelivery: ["deliver-attested-payload"],
+            listingVersion: 1,
+            signature: "legacy-signature",
+          },
+        },
+      ],
+    });
+
+    const result = await publishListingCore(
+      listing({ listingVersion: 2 }),
+      deps,
+    );
+    expect(result.listingPin.version).toBe(2);
+  });
+
   test("fails closed when the visible owner-bound history already has a gap", async () => {
     const deps = fakeDeps();
     const prefix = logicalToStorageProgramName(
@@ -166,12 +264,12 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
         {
           address: "stor-v1",
           programName: `${prefix}1`,
-          value: listing({ listingVersion: 1 }),
+          value: await signedListing({ listingVersion: 1 }),
         },
         {
           address: "stor-v3",
           programName: `${prefix}3`,
-          value: listing({ listingVersion: 3 }),
+          value: await signedListing({ listingVersion: 3 }),
         },
       ],
     });
@@ -228,5 +326,20 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
         publishListingCore(listing({ listingVersion: bad }), fakeDeps()),
       ).rejects.toThrow(/positive integer/);
     }
+  });
+
+  test("refuses the historical MVP shape on the write path", async () => {
+    const deps = fakeDeps();
+    await expect(
+      publishListingCore(
+        {
+          listingVersion: 1,
+          agentId: SELLER,
+          serviceId: "legacy",
+        } as never,
+        deps,
+      ),
+    ).rejects.toThrow(/normative unsigned|legacy MVP shapes are read-only/);
+    expect(deps.stats.creates).toBe(0);
   });
 });

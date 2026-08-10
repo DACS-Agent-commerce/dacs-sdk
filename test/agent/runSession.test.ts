@@ -5,6 +5,7 @@ import {
   type SessionDeps,
   type SessionTerms,
 } from "../../src/agent/runSessionCore.js";
+import { contentHash } from "../../src/canonical/index.js";
 
 const LISTING = {
   agentId: "did:demos:agent:alice",
@@ -57,6 +58,72 @@ describe("runSession orchestration (T4)", () => {
     expect(res.agreementRef).toBe("stor-dacs3:agreement:job-1");
     expect(res.settlementRef).toBe("stor-dacs4:evidence:job-1");
     expect(res.bundleRef).toBe("stor-dacs5:bundle:job-1");
+  });
+
+  test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {
+    const normative = {
+      dacsVersion: "1",
+      listingVersion: 7,
+      listingId: "market-data-vendor",
+      seller: {
+        identity: {
+          bundleVersion: "1",
+          presentedBy: "did:demos:agent:alice",
+          presentedAt: 1_770_000_000_000,
+          claims: [{ ref: "did:demos:agent:alice" }],
+          presentation: {
+            kind: "per-claim",
+            signatures: [
+              { ref: "did:demos:agent:alice", signature: "presentation" },
+            ],
+          },
+        },
+        displayName: "Alice",
+        publicEndpoint: "https://alice.example/dacs",
+      },
+      offering: {
+        title: "Market Data",
+        description: "Pinned listing",
+        category: "data.finance",
+        tags: ["market"],
+        deliverable: {
+          kind: "attested-payload",
+          payloadFormat: "application/json",
+        },
+      },
+      buyerRequirement: { requirementVersion: "1", required: [] },
+      pipeline: [
+        { kind: "negotiate-fixed-price" },
+        { kind: "commit-agreement" },
+        { kind: "pay-x402", parameters: { rail: "x402:default" } },
+        { kind: "deliver-attested-payload" },
+      ],
+      pricing: {
+        kind: "fixed",
+        price: { amount: "1", currency: "USDC" },
+      },
+      acceptedRails: [{ railId: "x402:default" }],
+      terms: { deadlineSecAfterCommit: 3_600 },
+      validity: { notBefore: 1_770_000_000_000 },
+      signature: {
+        algorithm: "ed25519",
+        signer: "did:demos:agent:alice",
+        value: "AQ",
+      },
+    };
+    const res = await runSessionCore(
+      "stor-normative-v7",
+      {
+        ...TERMS,
+        price: { ...TERMS.price, rail: "x402:default" },
+      },
+      makeDeps({ readListing: async () => normative }),
+    );
+    expect(res.listingPin).toEqual({
+      listingId: "market-data-vendor",
+      version: 7,
+      contentHash: contentHash(normative),
+    });
   });
 
   test("rail-reported finality flows onto the evidence (bft-final / demos / block), F7/#22", async () => {

@@ -38,7 +38,12 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
   test("returns only refs that resolve to valid listings, with the signature stripped", async () => {
     const found = await discoverListings(["ref:1", "ref:2", "missing", "ref:3"], read, TRUST);
     expect(found.map((f) => f.ref)).toEqual(["ref:1", "ref:3"]);
-    expect(found[0]!.listing.agentId).toBe("did:demos:agent:alice");
+    expect(found[0]!.compatibility).toBe("legacy-mvp");
+    expect(
+      found[0]!.compatibility === "legacy-mvp"
+        ? found[0]!.listing.agentId
+        : undefined,
+    ).toBe("did:demos:agent:alice");
     // returned listing is the signed scope (signature omitted)
     expect("signature" in found[0]!.listing).toBe(false);
   });
@@ -80,7 +85,12 @@ describe("discoverListings signature verification (#41)", () => {
     const ok = await signedBy(ALICE.did, ALICE.priv);
     const found = await discoverListings(["a"], async () => ok, deps);
     expect(found).toHaveLength(1);
-    expect(found[0]!.listing.agentId).toBe(ALICE.did);
+    expect(found[0]!.compatibility).toBe("legacy-mvp");
+    expect(
+      found[0]!.compatibility === "legacy-mvp"
+        ? found[0]!.listing.agentId
+        : undefined,
+    ).toBe(ALICE.did);
   });
 
   test("WRONG KEY — signed by someone other than the advertised seller is dropped", async () => {
