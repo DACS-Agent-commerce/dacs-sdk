@@ -123,6 +123,9 @@ export type CommittedAgreementResolution =
       agreementHash: string;
       commitment: {
         finality: "finalized";
+        /** Authenticated SR-2 reference and signature-omitting record hash. */
+        ref: string;
+        contentHash: string;
         jobId: string;
         agreementHash: string;
         listingRef: ListingRef;
@@ -264,6 +267,50 @@ export interface SellerReceiptClaim {
   authorization: SellerPaymentAuthorization;
 }
 
+/**
+ * Exact, resumable seller work retained atomically with permit consumption.
+ *
+ * The receipt store treats this as opaque operational state. The fulfilment
+ * core is responsible for deriving and re-validating every binding and the
+ * complete candidate before an idempotent submit. Keeping the complete
+ * candidate (rather than only its hash) closes the crash window between
+ * one-shot permit consumption and the first external delivery effect.
+ */
+export interface SellerFulfilmentHandoff {
+  handoffVersion: "1";
+  fulfilmentId: string;
+  jobId: string;
+  agreementRef: string;
+  agreementHash: string;
+  commitmentRef: string;
+  authorizationHash: string;
+  settlementId: string;
+  paymentEvidenceHash: string;
+  paymentPhaseIndex: number;
+  deliveryPhaseIndex: number;
+  phase:
+    | "deliver-storage-program"
+    | "deliver-entitlement"
+    | "deliver-attested-payload";
+  logicalAddress: string;
+  deliverableSpecHash: string;
+  candidate:
+    | {
+        status: "prepared";
+        validatedAt: number;
+        artifactHash: string;
+        delivery: {
+          artifact: unknown;
+          payloadAttestationRecord?: unknown;
+        };
+      }
+    | {
+        status: "preparation-failed";
+        validatedAt: number;
+        reason: string;
+      };
+}
+
 export type SellerReceiptClaimResult =
   | {
       /**
@@ -294,6 +341,17 @@ export type SellerReceiptPermitResult =
       /** Only `consumed` grants this caller the one-shot fulfilment right. */
       status: "consumed" | "already-consumed";
       claim: SellerReceiptClaim;
+      /** Immutable work selected by the first successful consumption. */
+      handoff: SellerFulfilmentHandoff;
+    }
+  | { status: "invalid" };
+
+export type SellerReceiptInspectionResult =
+  | { status: "available"; claim: SellerReceiptClaim }
+  | {
+      status: "already-consumed";
+      claim: SellerReceiptClaim;
+      handoff: SellerFulfilmentHandoff;
     }
   | { status: "invalid" };
 
@@ -309,6 +367,12 @@ export interface SellerPaymentAuthorization {
   agreementHash: string;
   listingRef: ListingRef;
   railId: string;
+  /** Exact authenticated DACS-5 SessionRecord rail-registry snapshot. */
+  railRegistryVersion: number;
+  /** Exact finalized DACS-3 commitment that existed before payment inclusion. */
+  commitment: SellerPaymentCommitmentBinding;
+  /** Canonical event-level SB-1 identity retained behind the opaque permit. */
+  settlementIdentity: SellerSettlementIdentity;
   settlementId: string;
   evidenceHash: string;
   evidenceInput: SellerPaymentEvidenceInput;
@@ -318,17 +382,53 @@ export interface SellerPaymentAuthorization {
   payloadVerificationProducerAdmission?: SellerPayloadVerificationProducerAdmission;
 }
 
+export interface SellerPaymentCommitmentBinding {
+  ref: string;
+  contentHash: string;
+  finalizedAt: number;
+}
+
+export type SellerSettlementIdentity =
+  | {
+      kind: "demos";
+      txHash: string;
+      blockNumber: number;
+      includedAt: number;
+    }
+  | {
+      kind: "evm";
+      chainId: number;
+      txHash: string;
+      logIndex: number;
+      includedAt: number;
+    };
+
 /**
- * Durable implementations MUST make winner selection and permit consumption
- * atomic. Permit ids are bearer capabilities and MUST be unpredictable,
- * confidential, and bound to the retained authorization. Consumers MUST NOT
- * invoke an irreversible callback for `already-consumed`; that disposition is
- * reconciliation-only.
+ * Durable implementations MUST make winner selection atomic and MUST commit
+ * permit consumption, the retained authorization, and the complete fulfilment
+ * handoff in one transaction. Permit ids are bearer capabilities and MUST be
+ * unpredictable, confidential, and bound to that retained state. A recovered
+ * `already-consumed` permit may resume only the exact retained candidate under
+ * the same stable idempotency key; it can never authorize replacement work.
  */
 export interface SellerReceiptStore {
   /** The SDK supplies an owned, deeply frozen claim snapshot. */
   claim(input: Readonly<SellerReceiptClaim>): Promise<SellerReceiptClaimResult>;
-  consumePermit(permitId: string): Promise<SellerReceiptPermitResult>;
+  /** Atomically retain the exact resumable work with the consumed permit. */
+  consumePermit(
+    permitId: string,
+    handoff: Readonly<SellerFulfilmentHandoff>,
+  ): Promise<SellerReceiptPermitResult>;
+  /**
+   * Read-only fulfilment preflight; this does not grant permission to invoke
+   * an effect. Implementations used only for intake need not expose it.
+   */
+  inspectPermit?(permitId: string): Promise<SellerReceiptInspectionResult>;
+}
+
+/** Receipt-store surface required at the fulfilment authorization boundary. */
+export interface SellerFulfilmentReceiptStore extends SellerReceiptStore {
+  inspectPermit(permitId: string): Promise<SellerReceiptInspectionResult>;
 }
 
 export type X402ReceiptExtensionVerification =
@@ -414,6 +514,9 @@ export interface SellerPaymentIntakeResult {
   agreementHash?: string;
   listingRef?: ListingRef;
   railId?: string;
+  railRegistryVersion?: number;
+  commitment?: SellerPaymentCommitmentBinding;
+  settlementIdentity?: SellerSettlementIdentity;
   settlementId?: string;
   evidenceHash?: string;
   evidenceInput?: SellerPaymentEvidenceInput;
@@ -492,6 +595,79 @@ function hasExactKeys(
 ): boolean {
   return Object.keys(value).length === expected.length &&
     expected.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+/** Runtime guard for the opaque receipt-store handoff envelope. */
+export function isSellerFulfilmentHandoff(
+  value: unknown,
+): value is SellerFulfilmentHandoff {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "handoffVersion",
+    "fulfilmentId",
+    "jobId",
+    "agreementRef",
+    "agreementHash",
+    "commitmentRef",
+    "authorizationHash",
+    "settlementId",
+    "paymentEvidenceHash",
+    "paymentPhaseIndex",
+    "deliveryPhaseIndex",
+    "phase",
+    "logicalAddress",
+    "deliverableSpecHash",
+    "candidate",
+  ])) return false;
+  const nonEmpty = (candidate: unknown): candidate is string =>
+    typeof candidate === "string" &&
+    candidate.length > 0 &&
+    candidate.trim() === candidate;
+  if (
+    value.handoffVersion !== "1" ||
+    !nonEmpty(value.fulfilmentId) ||
+    !nonEmpty(value.jobId) ||
+    !nonEmpty(value.agreementRef) ||
+    !nonEmpty(value.commitmentRef) ||
+    !nonEmpty(value.settlementId) ||
+    !nonEmpty(value.logicalAddress) ||
+    !HASH_RE.test(value.agreementHash as string) ||
+    !HASH_RE.test(value.authorizationHash as string) ||
+    !HASH_RE.test(value.paymentEvidenceHash as string) ||
+    !HASH_RE.test(value.deliverableSpecHash as string) ||
+    !isSafeUint(value.paymentPhaseIndex) ||
+    !isSafeUint(value.deliveryPhaseIndex) ||
+    ![
+      "deliver-storage-program",
+      "deliver-entitlement",
+      "deliver-attested-payload",
+    ].includes(value.phase as string) ||
+    !isRecord(value.candidate)
+  ) return false;
+  const candidate = value.candidate;
+  if (candidate.status === "preparation-failed") {
+    if (!hasExactKeys(candidate, ["status", "validatedAt", "reason"]) ||
+        !isSafeUint(candidate.validatedAt) || !nonEmpty(candidate.reason)) return false;
+  } else if (candidate.status === "prepared") {
+    if (!hasExactKeys(candidate, [
+      "status",
+      "validatedAt",
+      "artifactHash",
+      "delivery",
+    ]) || !isSafeUint(candidate.validatedAt) ||
+        !HASH_RE.test(candidate.artifactHash as string) ||
+        !isRecord(candidate.delivery) ||
+        !hasOnlyKeys(candidate.delivery, ["artifact", "payloadAttestationRecord"]) ||
+        !Object.prototype.hasOwnProperty.call(candidate.delivery, "artifact") ||
+        !isRecord(candidate.delivery.artifact)) return false;
+  } else {
+    return false;
+  }
+  try {
+    structuredClone(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 type SecurityBoundaryResult<T> =
@@ -651,9 +827,9 @@ function parseListingRef(value: unknown): ListingRef | null {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ["listingId", "version", "contentHash"]) ||
-    typeof value.listingId !== "string" ||
-    value.listingId.length === 0 ||
-    !isSafeUint(value.version) ||
+      typeof value.listingId !== "string" ||
+      value.listingId.length === 0 ||
+      !isSafeUint(value.version) || value.version === 0 ||
     typeof value.contentHash !== "string" ||
     !HASH_RE.test(value.contentHash)
   ) return null;
@@ -662,6 +838,86 @@ function parseListingRef(value: unknown): ListingRef | null {
     version: value.version,
     contentHash: value.contentHash,
   };
+}
+
+function isValidPaymentEvidenceInput(value: unknown): value is SellerPaymentEvidenceInput {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "evidenceVersion",
+      "jobId",
+      "phase",
+      "outcome",
+      "paymentTxRefs",
+      "paymentAmount",
+      "settlementFinality",
+      "observedAt",
+    ]) ||
+    value.evidenceVersion !== "1" ||
+    typeof value.jobId !== "string" ||
+    value.jobId.length === 0 ||
+    (value.phase !== "pay-dem" && value.phase !== "pay-x402") ||
+    value.outcome !== "success" ||
+    !Array.isArray(value.paymentTxRefs) ||
+    value.paymentTxRefs.length !== 1 ||
+    !isRecord(value.paymentAmount) ||
+    !hasOnlyKeys(value.paymentAmount, ["amount", "currency", "unit"]) ||
+    typeof value.paymentAmount.amount !== "string" ||
+    typeof value.paymentAmount.currency !== "string" ||
+    value.paymentAmount.currency.length === 0 ||
+    (value.paymentAmount.unit !== undefined &&
+      (typeof value.paymentAmount.unit !== "string" || value.paymentAmount.unit.length === 0)) ||
+    !isRecord(value.settlementFinality) ||
+    !isSafeUint(value.observedAt)
+  ) return false;
+  try {
+    if (assertPositiveAmount(value.paymentAmount.amount) !== value.paymentAmount.amount) return false;
+  } catch {
+    return false;
+  }
+
+  const txRef = value.paymentTxRefs[0];
+  if (!isRecord(txRef) || typeof txRef.kind !== "string") return false;
+  if (value.phase === "pay-dem") {
+    if (
+      !hasOnlyKeys(txRef, ["kind", "txHash", "blockNumber"]) ||
+      txRef.kind !== "demos" ||
+      typeof txRef.txHash !== "string" ||
+      canonicalTxHash(txRef.txHash) === null ||
+      (txRef.blockNumber !== undefined && !isSafeUint(txRef.blockNumber)) ||
+      !hasOnlyKeys(value.settlementFinality, ["model", "finalityObservedAt"]) ||
+      value.settlementFinality.model !== "bft-final" ||
+      !isSafeUint(value.settlementFinality.finalityObservedAt)
+    ) return false;
+  } else if (
+    !hasOnlyKeys(txRef, [
+      "kind",
+      "httpResource",
+      "paymentReceiptHash",
+      "settlementTxHash",
+      "chainId",
+      "protocolVersion",
+    ]) ||
+    txRef.kind !== "x402" ||
+    typeof txRef.httpResource !== "string" ||
+    txRef.httpResource.length === 0 ||
+    !HASH_RE.test(String(txRef.paymentReceiptHash)) ||
+    typeof txRef.settlementTxHash !== "string" ||
+    canonicalTxHash(txRef.settlementTxHash) === null ||
+    !isSafeUint(txRef.chainId) || txRef.chainId === 0 ||
+    typeof txRef.protocolVersion !== "string" ||
+    txRef.protocolVersion.length === 0 ||
+    !hasOnlyKeys(value.settlementFinality, [
+      "model",
+      "finalityBlocks",
+      "finalityObservedAt",
+    ]) ||
+    value.settlementFinality.model !== "block-depth" ||
+    !isSafeUint(value.settlementFinality.finalityBlocks) ||
+    value.settlementFinality.finalityBlocks === 0 ||
+    !isSafeUint(value.settlementFinality.finalityObservedAt)
+  ) return false;
+  return value.settlementFinality.finalityObservedAt === value.observedAt;
 }
 
 function parseProducerAdmission(
@@ -764,12 +1020,18 @@ function isCommittedAgreementResolutionValue(
       !isRecord(value.commitment) ||
       !hasExactKeys(value.commitment, [
         "finality",
+        "ref",
+        "contentHash",
         "jobId",
         "agreementHash",
         "listingRef",
         "committedAt",
       ]) ||
       value.commitment.finality !== "finalized" ||
+      typeof value.commitment.ref !== "string" ||
+      value.commitment.ref.length === 0 ||
+      typeof value.commitment.contentHash !== "string" ||
+      !HASH_RE.test(value.commitment.contentHash) ||
       typeof value.commitment.jobId !== "string" ||
       value.commitment.jobId.length === 0 ||
       typeof value.commitment.agreementHash !== "string" ||
@@ -972,7 +1234,7 @@ function isSellerReceiptClaimResultValue(
   return !consumedWasReturned || isValidSellerReceiptClaim(value.consumed);
 }
 
-function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim {
+export function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
@@ -1003,6 +1265,9 @@ function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim 
       "agreementHash",
       "listingRef",
       "railId",
+      "railRegistryVersion",
+      "commitment",
+      "settlementIdentity",
       "settlementId",
       "evidenceHash",
       "evidenceInput",
@@ -1016,6 +1281,9 @@ function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim 
       "agreementHash",
       "listingRef",
       "railId",
+      "railRegistryVersion",
+      "commitment",
+      "settlementIdentity",
       "settlementId",
       "evidenceHash",
       "evidenceInput",
@@ -1030,6 +1298,16 @@ function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim 
     parseListingRef(authorization.listingRef) === null ||
     typeof authorization.railId !== "string" ||
     authorization.railId.length === 0 ||
+    !isSafeUint(authorization.railRegistryVersion) ||
+    authorization.railRegistryVersion === 0 ||
+    !isRecord(authorization.commitment) ||
+    !hasExactKeys(authorization.commitment, ["ref", "contentHash", "finalizedAt"]) ||
+    typeof authorization.commitment.ref !== "string" ||
+    authorization.commitment.ref.length === 0 ||
+    typeof authorization.commitment.contentHash !== "string" ||
+    !HASH_RE.test(authorization.commitment.contentHash) ||
+    !isSafeUint(authorization.commitment.finalizedAt) ||
+    !isRecord(authorization.settlementIdentity) ||
     (authorization.payoutBindingTier !== 1 &&
       authorization.payoutBindingTier !== 2 &&
       authorization.payoutBindingTier !== 3) ||
@@ -1042,10 +1320,40 @@ function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim 
     ) && parseProducerAdmission(
       authorization.payloadVerificationProducerAdmission,
     ) === null) ||
-    !isRecord(evidenceInput) ||
+    !isValidPaymentEvidenceInput(evidenceInput) ||
     evidenceInput.jobId !== value.jobId ||
-    evidenceInput.observedAt !== value.observedAt
+    evidenceInput.observedAt !== value.observedAt ||
+    evidenceInput.observedAt < authorization.commitment.finalizedAt
   ) return false;
+
+  const identity = authorization.settlementIdentity;
+  const txRef = evidenceInput.paymentTxRefs[0];
+  if (evidenceInput.phase === "pay-dem") {
+    if (!hasExactKeys(identity, ["kind", "txHash", "blockNumber", "includedAt"]) ||
+        identity.kind !== "demos" || typeof identity.txHash !== "string" ||
+        canonicalTxHash(identity.txHash) === null || !isSafeUint(identity.blockNumber) ||
+        !isSafeUint(identity.includedAt) || identity.includedAt !== evidenceInput.observedAt ||
+        identity.includedAt < authorization.commitment.finalizedAt || txRef.kind !== "demos" ||
+        canonicalTxHash(txRef.txHash) !== canonicalTxHash(identity.txHash) ||
+        txRef.blockNumber !== identity.blockNumber ||
+        canonicalSellerSettlementId({ kind: "demos", txHash: identity.txHash }) !==
+          value.settlementId) return false;
+  } else {
+    if (!hasExactKeys(identity, ["kind", "chainId", "txHash", "logIndex", "includedAt"]) ||
+        identity.kind !== "evm" || !isSafeUint(identity.chainId) || identity.chainId === 0 ||
+        typeof identity.txHash !== "string" || canonicalTxHash(identity.txHash) === null ||
+        !isSafeUint(identity.logIndex) || !isSafeUint(identity.includedAt) ||
+        identity.includedAt < authorization.commitment.finalizedAt ||
+        identity.includedAt > evidenceInput.observedAt || txRef.kind !== "x402" ||
+        txRef.chainId !== identity.chainId ||
+        canonicalTxHash(txRef.settlementTxHash!) !== canonicalTxHash(identity.txHash) ||
+        canonicalSellerSettlementId({
+          kind: "evm",
+          chainId: identity.chainId,
+          txHash: identity.txHash,
+          logIndex: identity.logIndex,
+        }) !== value.settlementId) return false;
+  }
 
   try {
     return sha256Hex(canonicalize(evidenceInput)) === value.evidenceHash;
@@ -1061,6 +1369,19 @@ function isValidSellerReceiptClaim(value: unknown): value is SellerReceiptClaim 
  * a retained weaker result is conservative; a retained stronger result may
  * not override a fresh weaker observation.
  */
+function sameSettlementEventIdentity(
+  left: SellerSettlementIdentity,
+  right: SellerSettlementIdentity,
+): boolean {
+  if (left.kind !== right.kind || canonicalTxHash(left.txHash) !== canonicalTxHash(right.txHash)) {
+    return false;
+  }
+  return left.kind === "demos" && right.kind === "demos"
+    ? left.blockNumber === right.blockNumber
+    : left.kind === "evm" && right.kind === "evm" &&
+      left.chainId === right.chainId && left.logIndex === right.logIndex;
+}
+
 function isCanonicalReplayWinner(
   stored: SellerReceiptClaim,
   candidate: SellerReceiptClaim,
@@ -1070,7 +1391,11 @@ function isCanonicalReplayWinner(
       stored.evidenceHash <= candidate.evidenceHash;
   if (!storedWinsSb2 ||
       stored.authorization.payoutBindingTier !==
-        candidate.authorization.payoutBindingTier) return false;
+        candidate.authorization.payoutBindingTier ||
+      !sameSettlementEventIdentity(
+        stored.authorization.settlementIdentity,
+        candidate.authorization.settlementIdentity,
+      )) return false;
 
   const storedHasSessionBinding = Object.prototype.hasOwnProperty.call(
     stored.authorization,
@@ -1243,7 +1568,7 @@ export function canonicalSellerSettlementId(input:
   const txHash = canonicalTxHash(input.txHash);
   if (!txHash) return null;
   if (input.kind === "demos") return `demos:${txHash}`;
-  if (!isSafeUint(input.chainId) || !isSafeUint(input.logIndex)) return null;
+  if (!isSafeUint(input.chainId) || input.chainId === 0 || !isSafeUint(input.logIndex)) return null;
   return `evm:${input.chainId}:${txHash}:${input.logIndex}`;
 }
 
@@ -1260,11 +1585,15 @@ export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
  */
 export function createInMemorySellerReceiptStore(
   initial: readonly SellerReceiptClaim[] = [],
-): SellerReceiptStore {
+): SellerFulfilmentReceiptStore {
   interface StoredClaim {
     selected: SellerReceiptClaim;
     pendingPermitId?: string;
-    consumed?: { permitId: string; claim: SellerReceiptClaim };
+    consumed?: {
+      permitId: string;
+      claim: SellerReceiptClaim;
+      handoff: SellerFulfilmentHandoff;
+    };
   }
 
   const claims = new Map<string, StoredClaim>();
@@ -1273,6 +1602,8 @@ export function createInMemorySellerReceiptStore(
     `seller-payment:${randomBytes(32).toString("base64url")}`;
   const cloneClaim = (claim: SellerReceiptClaim): SellerReceiptClaim =>
     structuredClone(claim);
+  const cloneHandoff = (handoff: SellerFulfilmentHandoff): SellerFulfilmentHandoff =>
+    structuredClone(handoff);
   const validateClaim = (claim: SellerReceiptClaim): void => {
     if (!isValidSellerReceiptClaim(claim)) {
       throw new TypeError("seller receipt claim is malformed or internally inconsistent");
@@ -1347,6 +1678,14 @@ export function createInMemorySellerReceiptStore(
           candidate.authorization.listingRef,
         ) &&
         existing.selected.authorization.railId === candidate.authorization.railId &&
+        existing.selected.authorization.railRegistryVersion ===
+          candidate.authorization.railRegistryVersion &&
+        canonicalize(existing.selected.authorization.commitment) ===
+          canonicalize(candidate.authorization.commitment) &&
+        sameSettlementEventIdentity(
+          existing.selected.authorization.settlementIdentity,
+          candidate.authorization.settlementIdentity,
+        ) &&
         sameProducerAdmission(
           existing.selected.authorization.payloadVerificationProducerAdmission,
           candidate.authorization.payloadVerificationProducerAdmission,
@@ -1419,20 +1758,55 @@ export function createInMemorySellerReceiptStore(
         ...(existing.consumed ? { consumed: cloneClaim(existing.consumed.claim) } : {}),
       };
     },
-    async consumePermit(candidatePermitId) {
+    async inspectPermit(candidatePermitId) {
       const settlementId = permits.get(candidatePermitId);
       if (!settlementId) return { status: "invalid" };
       const stored = claims.get(settlementId);
       if (!stored) return { status: "invalid" };
       if (stored.consumed?.permitId === candidatePermitId) {
-        return { status: "already-consumed", claim: cloneClaim(stored.consumed.claim) };
+        return {
+          status: "already-consumed",
+          claim: cloneClaim(stored.consumed.claim),
+          handoff: cloneHandoff(stored.consumed.handoff),
+        };
       }
       if (stored.pendingPermitId !== candidatePermitId || stored.consumed) {
         return { status: "invalid" };
       }
-      stored.consumed = { permitId: candidatePermitId, claim: cloneClaim(stored.selected) };
+      return { status: "available", claim: cloneClaim(stored.selected) };
+    },
+    async consumePermit(candidatePermitId, handoffInput) {
+      if (!isSellerFulfilmentHandoff(handoffInput)) {
+        throw new TypeError("seller fulfilment handoff is malformed");
+      }
+      const handoff = cloneHandoff(handoffInput);
+      const settlementId = permits.get(candidatePermitId);
+      if (!settlementId) return { status: "invalid" };
+      const stored = claims.get(settlementId);
+      if (!stored) return { status: "invalid" };
+      if (stored.consumed?.permitId === candidatePermitId) {
+        return {
+          status: "already-consumed",
+          claim: cloneClaim(stored.consumed.claim),
+          handoff: cloneHandoff(stored.consumed.handoff),
+        };
+      }
+      if (stored.pendingPermitId !== candidatePermitId || stored.consumed) {
+        return { status: "invalid" };
+      }
+      // One synchronous mutation is the in-memory implementation's atomic
+      // commit point. Durable stores MUST commit these three values together.
+      stored.consumed = {
+        permitId: candidatePermitId,
+        claim: cloneClaim(stored.selected),
+        handoff,
+      };
       stored.pendingPermitId = undefined;
-      return { status: "consumed", claim: cloneClaim(stored.consumed.claim) };
+      return {
+        status: "consumed",
+        claim: cloneClaim(stored.consumed.claim),
+        handoff: cloneHandoff(stored.consumed.handoff),
+      };
     },
   };
 }
@@ -1675,6 +2049,8 @@ export async function verifySellerPaymentIntake(
     agreement.jobId !== request.jobId ||
     committed.agreementHash !== computedAgreementHash ||
     committed.commitment.finality !== "finalized" ||
+    typeof committed.commitment.ref !== "string" || committed.commitment.ref.length === 0 ||
+    !HASH_RE.test(committed.commitment.contentHash) ||
     committed.commitment.jobId !== request.jobId ||
     committed.commitment.agreementHash !== computedAgreementHash ||
     !sameListingRef(committed.commitment.listingRef, agreement.listingRef) ||
@@ -1857,6 +2233,12 @@ export async function verifySellerPaymentIntake(
     agreementHash: computedAgreementHash,
     listingRef: agreement.listingRef,
     railId: request.railId,
+    railRegistryVersion: committed.railRegistryVersion,
+    commitment: {
+      ref: committed.commitment.ref,
+      contentHash: committed.commitment.contentHash,
+      finalizedAt: committed.commitment.committedAt,
+    },
     ...(producerAdmission
       ? { payloadVerificationProducerAdmission: producerAdmission }
       : {}),
@@ -1933,6 +2315,12 @@ export async function verifySellerPaymentIntake(
     return settleReplay({
       ...common,
       settlementId,
+      settlementIdentity: {
+        kind: "demos",
+        txHash: observed.txHash,
+        blockNumber: observed.blockNumber,
+        includedAt: observed.includedAt,
+      },
       evidenceInput,
       payoutBindingTier: 1,
     }, request, claimReceipt);
@@ -2217,6 +2605,13 @@ export async function verifySellerPaymentIntake(
   return settleReplay({
     ...common,
     settlementId,
+    settlementIdentity: {
+      kind: "evm",
+      chainId: observed.chainId,
+      txHash: observed.txHash,
+      logIndex: observed.logIndex,
+      includedAt: observed.includedAt,
+    },
     evidenceInput,
     payoutBindingTier: destinationResolution.tier,
     sessionBinding,
