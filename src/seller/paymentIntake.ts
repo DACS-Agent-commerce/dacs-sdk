@@ -14,7 +14,12 @@ import {
   contentHash,
   sha256Hex,
 } from "../canonical/index.js";
-import { demosAddressFromClaim, DEM_CURRENCY, DEM_DECIMALS } from "../rails/payDem.js";
+import {
+  demosAddressFromClaim,
+  normalizeDemosNativeAddress,
+  DEM_CURRENCY,
+  DEM_DECIMALS,
+} from "../rails/payDem.js";
 import {
   isVerifiedListingAdmission,
   type ListingValidationResult,
@@ -205,9 +210,10 @@ export type AddressResolution =
 
 /** DACS-4 §9.5.1 PB-2 strongest-applicable destination result. */
 export type DestinationBindingResolution =
-  | { disposition: "bound"; address: string; tier: 1 | 2 | 3 }
-  | { disposition: "mismatch"; reason: string; tier: 1 | 2 | 3 }
-  | { disposition: "indeterminate"; reason: string; tier: 2 };
+  | { disposition: "bound"; address: string; tier: 2 | 3 }
+  | { disposition: "mismatch"; reason: string; tier: 2 | 3 }
+  | { disposition: "indeterminate"; reason: string; tier: 2 }
+  | { disposition: "error"; reason: string; tier: 2 };
 
 export type DemosTransferObservation =
   | { status: "pending" | "not-found" | "unavailable"; reason?: string }
@@ -788,7 +794,7 @@ function isDestinationBindingResolutionValue(
   value: unknown,
 ): value is DestinationBindingResolution {
   if (!isRecord(value) ||
-      value.tier !== 1 && value.tier !== 2 && value.tier !== 3) return false;
+      value.tier !== 2 && value.tier !== 3) return false;
   if (value.disposition === "bound") {
     return hasExactKeys(value, ["disposition", "address", "tier"]) &&
       typeof value.address === "string" && value.address.length > 0;
@@ -797,7 +803,8 @@ function isDestinationBindingResolutionValue(
     return hasExactKeys(value, ["disposition", "reason", "tier"]) &&
       typeof value.reason === "string" && value.reason.length > 0;
   }
-  return value.disposition === "indeterminate" && value.tier === 2 &&
+  return (value.disposition === "indeterminate" ||
+    value.disposition === "error") && value.tier === 2 &&
     hasExactKeys(value, ["disposition", "reason", "tier"]) &&
     typeof value.reason === "string" && value.reason.length > 0;
 }
@@ -1808,8 +1815,9 @@ export async function verifySellerPaymentIntake(
     const receipt = request.receipt;
     const payerAddress = demosAddressFromClaim(request.payerPayingKey);
     const payeeAddress = demosAddressFromClaim(agreement.seller.primaryClaim);
+    const payoutAddress = normalizeDemosNativeAddress(payout.payeeAddress);
     if (!payerAddress) return reject("payer-address-not-demos-bound");
-    if (!payeeAddress || normalizeAddress(payout.payeeAddress) !== payeeAddress) {
+    if (!payeeAddress || !payoutAddress || payoutAddress !== payeeAddress) {
       return reject("payee-destination-binding-mismatch");
     }
     const claimedTxHash = canonicalTxHash(receipt.txHash);
@@ -1829,10 +1837,12 @@ export async function verifySellerPaymentIntake(
         ? reject("demos-transfer-failed")
         : indeterminate(`demos-${observed.status}`);
     }
+    const observedPayer = normalizeDemosNativeAddress(observed.payer);
+    const observedPayee = normalizeDemosNativeAddress(observed.payee);
     if (
       canonicalTxHash(observed.txHash) !== claimedTxHash ||
-      normalizeAddress(observed.payer) !== payerAddress ||
-      normalizeAddress(observed.payee) !== payeeAddress
+      !observedPayer || observedPayer !== payerAddress ||
+      !observedPayee || observedPayee !== payeeAddress
     ) return reject("demos-transfer-party-or-identity-mismatch");
     let expectedAmountOs: string;
     try {
@@ -2011,9 +2021,17 @@ export async function verifySellerPaymentIntake(
         destinationResolution.reason.length === 0) {
       return verifierError("address-binding-resolution-invalid-result");
     }
-    return destinationResolution.disposition === "indeterminate"
-      ? indeterminate(`payee-destination-${destinationResolution.reason}`)
-      : reject(`payee-destination-${destinationResolution.reason}`);
+    if (destinationResolution.disposition === "indeterminate") {
+      return indeterminate(
+        `payee-destination-${destinationResolution.reason}`,
+      );
+    }
+    if (destinationResolution.disposition === "error") {
+      return verifierError(
+        `payee-destination-${destinationResolution.reason}`,
+      );
+    }
+    return reject(`payee-destination-${destinationResolution.reason}`);
   }
   if (normalizeAddress(destinationResolution.address) !== normalizeAddress(payout.payeeAddress)) {
     return reject("payee-destination-binding-mismatch");
