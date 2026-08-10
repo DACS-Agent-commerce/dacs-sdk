@@ -2,6 +2,7 @@ export {
   FINALITY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
   commitFixedPriceAgreement,
+  validateFixedPriceAgreementBinding,
   type CommitmentVerificationDisposition,
   type CommitmentSignatureVerificationInput,
   type CommitmentSignatureVerifier,

@@ -183,8 +183,13 @@ function validateRailAndPayoutCoverage(
   }
 }
 
+type FixedPriceBindingInput = Pick<
+  CommitFixedPriceAgreementInput,
+  "agreement" | "verifiedListing" | "createdAt"
+>;
+
 function selectFixedPriceArtifact(
-  input: CommitFixedPriceAgreementInput,
+  input: Pick<FixedPriceBindingInput, "agreement" | "verifiedListing">,
 ): { agreement: AgreementArtifact; listing: Listing } {
   const agreement = input.agreement;
   const verified = input.verifiedListing;
@@ -227,7 +232,7 @@ function selectFixedPriceArtifact(
 }
 
 function fixedPriceBinding(
-  input: CommitFixedPriceAgreementInput,
+  input: FixedPriceBindingInput,
   selected: ReturnType<typeof selectFixedPriceArtifact>,
 ): {
   agreementHash: string;
@@ -293,6 +298,24 @@ function fixedPriceBinding(
     parties: [buyer.primaryClaim, seller.primaryClaim],
     deadlineSeconds: deadlineSeconds!,
   };
+}
+
+/**
+ * Pure DACS-3 §8.5.2 fixed-price AgreementArtifact → pinned Listing verifier.
+ * `committedAt` is the authenticated CA-8 finality timestamp, never a caller
+ * clock. Unsupported negotiation patterns fail closed through `DacsError`.
+ */
+export function validateFixedPriceAgreementBinding(input: {
+  agreement: AgreementArtifact;
+  verifiedListing: VerifiedListingInput;
+  committedAt: number;
+}): ReturnType<typeof fixedPriceBinding> {
+  const bindingInput: FixedPriceBindingInput = {
+    agreement: input.agreement,
+    verifiedListing: input.verifiedListing,
+    createdAt: input.committedAt,
+  };
+  return fixedPriceBinding(bindingInput, selectFixedPriceArtifact(bindingInput));
 }
 
 async function requireSignature(

@@ -30,6 +30,7 @@ import {
   publicKeyFromRaw,
   signedBytes,
 } from "../crypto/index.js";
+import { identityBundleHash } from "../identity/bundle.js";
 
 /** DACS-1 §6.3.4 reader result; LR-3 permits new sessions only for `verified`. */
 export type ListingValidationDisposition =
@@ -881,10 +882,9 @@ export interface ListingValidationDeps {
 }
 
 const identityPresentationBytes = (bundle: IdentityBundle): Uint8Array => {
-  const { presentation: _presentation, ...signedScope } = bundle;
   return signedBytes(
     "dacs-bundle-presentation:v1:",
-    sha256Hex(canonicalize(signedScope)),
+    identityBundleHash(bundle),
   );
 };
 
