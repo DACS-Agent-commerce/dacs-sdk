@@ -527,6 +527,11 @@ export async function publishListingCore(
   }
 
   if (payloadCapability.disposition === "supported") {
+    if (payloadCapability.operation !== "produce") {
+      throw new DacsError(
+        "attested-payload publication requires a producer capability decision",
+      );
+    }
     const deliverable = listing.offering.deliverable;
     if (
       deliverable.kind !== "attested-payload" ||
@@ -578,8 +583,15 @@ export async function publishListingCore(
     version,
     contentHash: listingContentHash,
   };
+  let rawWrite: unknown;
+  try {
+    rawWrite = await capturedDeps.anchorWriteOnce(storageName, publication);
+  } catch (cause) {
+    if (cause instanceof DacsError) throw cause;
+    throw new SubstrateError("Listing publication was indeterminate", { cause });
+  }
   const { address: anchored, txRef } = snapshotAnchorWriteResult(
-    await capturedDeps.anchorWriteOnce(storageName, publication),
+    rawWrite,
   );
   return { ref: anchored, logicalAddress, storageName, listingPin, txRef };
 }

@@ -74,6 +74,7 @@ const verifiedAdmissionFor = (listing: Listing) => {
       listing as unknown as Record<string, unknown>,
     ),
     payloadVerificationCapability: {
+      operation: "verify" as const,
       disposition: "supported" as const,
       reason: "supported",
       verificationMethodKind: deliverable.verificationMethod.kind,

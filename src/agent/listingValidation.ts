@@ -135,7 +135,9 @@ export type PayloadVerificationCapabilityResolver = (
 
 export type ListingPayloadVerificationCapability =
   | { disposition: "not-applicable"; reason: "not-applicable" }
+  | { disposition: "error"; reason: string; operation?: never }
   | {
+      operation: PayloadVerificationCapabilityInput["operation"];
       disposition: "supported" | "unsupported" | "indeterminate" | "error";
       reason: string;
       verificationMethodKind?: VerificationMethod["kind"];
@@ -206,6 +208,7 @@ export function isVerifiedListingAdmission(
     return (
       deliverable.kind === "attested-payload" &&
       !!deliverable.verificationMethod &&
+      capability?.operation === "verify" &&
       capability?.disposition === "supported" &&
       capability.verificationMethodHash ===
         sha256Hex(canonicalize(deliverable.verificationMethod)) &&
@@ -864,13 +867,34 @@ export async function resolveListingPayloadVerificationCapability(
   operation: PayloadVerificationCapabilityInput["operation"],
   resolver?: PayloadVerificationCapabilityResolver,
 ): Promise<ListingPayloadVerificationCapability> {
-  if (!listing.pipeline.some((phase) => phase.kind === "deliver-attested-payload")) {
+  if (operation !== "produce" && operation !== "verify") {
+    return {
+      disposition: "error",
+      reason: "payload-verification-capability-operation-invalid",
+    };
+  }
+  let listingSnapshot: Listing | ListingDraft;
+  try {
+    listingSnapshot = snapshotCanonicalJson(
+      listing,
+      "payload verification capability Listing",
+    );
+  } catch {
+    return {
+      operation,
+      disposition: "error",
+      reason: "payload-verification-capability-input-not-canonicalizable",
+    };
+  }
+
+  if (!listingSnapshot.pipeline.some((phase) => phase.kind === "deliver-attested-payload")) {
     return { disposition: "not-applicable", reason: "not-applicable" };
   }
 
-  const deliverable = listing.offering.deliverable;
+  const deliverable = listingSnapshot.offering.deliverable;
   if (deliverable.kind !== "attested-payload" || !deliverable.verificationMethod) {
     return {
+      operation,
       disposition: "unsupported",
       reason: "attested-payload-method-missing-or-malformed",
     };
@@ -894,6 +918,7 @@ export async function resolveListingPayloadVerificationCapability(
     deliverableSpecHash = sha256Hex(deliverableSpecCanonical);
   } catch {
     return {
+      operation,
       disposition: "error",
       reason: "payload-verification-capability-input-not-canonicalizable",
       verificationMethodKind: deliverable.verificationMethod.kind,
@@ -901,6 +926,7 @@ export async function resolveListingPayloadVerificationCapability(
   }
 
   const details = {
+    operation,
     verificationMethodKind: deliverable.verificationMethod.kind,
     verificationMethodHash,
     deliverableSpecHash,
@@ -913,9 +939,9 @@ export async function resolveListingPayloadVerificationCapability(
     };
   }
 
-  let decision: PayloadVerificationCapabilityDecision;
+  let rawDecision: PayloadVerificationCapabilityDecision;
   try {
-    decision = await resolver({
+    rawDecision = await resolver({
       operation,
       // Pass complete clones, not reconstructed normative projections.
       verificationMethod,
@@ -927,6 +953,19 @@ export async function resolveListingPayloadVerificationCapability(
     return {
       disposition: "error",
       reason: "payload-verification-capability-resolution-threw",
+      ...details,
+    };
+  }
+  let decision: PayloadVerificationCapabilityDecision;
+  try {
+    decision = snapshotCanonicalJsonRead(
+      rawDecision,
+      "payload verification capability decision",
+    );
+  } catch {
+    return {
+      disposition: "error",
+      reason: "payload-verification-capability-resolution-invalid",
       ...details,
     };
   }

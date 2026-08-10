@@ -383,12 +383,86 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
     expect(deps.stats.creates).toBe(0);
   });
 
+  test("a live capability-decision envelope cannot authorize publication", async () => {
+    const deps = fakeDeps();
+    let signCalls = 0;
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    deps.resolvePayloadVerificationCapability = () => new Proxy(
+      { disposition: "supported" as const },
+      {},
+    );
+
+    await expect(publishListingCore(listing(), deps)).rejects.toMatchObject({
+      message: expect.stringMatching(/resolution-invalid/),
+      category: "permanent",
+    });
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
   test("LP-6 refuses pay-bearing publication without authoritative rail resolution", async () => {
     const deps = fakeDeps();
     delete deps.loadRailResolution;
     await expect(publishListingCore(listing(), deps)).rejects.toThrow(/LP-6/);
     expect(deps.stats.creates).toBe(0);
   });
+
+  test("LP-6 snapshots the rail-authority result before reading it", async () => {
+    const deps = fakeDeps();
+    const load = deps.loadRailResolution!;
+    let signCalls = 0;
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    deps.loadRailResolution = async (draft) => new Proxy(
+      await load(draft),
+      {},
+    );
+
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /rail resolution was indeterminate/,
+    );
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test.each([
+    ["trust phase", (authority: Record<string, unknown>) => {
+      authority.trustPhase = "PA-future";
+    }],
+    ["PA-1 policy", (authority: Record<string, unknown>) => {
+      authority.trustPolicyAcceptsPA1 = "yes";
+    }],
+    ["registry state", (authority: Record<string, unknown>) => {
+      (authority.registry as Record<string, unknown>).state = "future";
+    }],
+  ] as const)(
+    "LP-6 rejects malformed runtime rail authority %s before signing",
+    async (_name, mutate) => {
+      const deps = fakeDeps();
+      const load = deps.loadRailResolution!;
+      let signCalls = 0;
+      deps.sign = (bytes) => {
+        signCalls += 1;
+        return sign(bytes);
+      };
+      deps.loadRailResolution = async (draft) => {
+        const authority = structuredClone(await load(draft)) as unknown as Record<string, unknown>;
+        mutate(authority);
+        return authority as never;
+      };
+
+      await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+        /rail resolution is indeterminate \(malformed-rail-authority\)/,
+      );
+      expect(signCalls).toBe(0);
+      expect(deps.stats.creates).toBe(0);
+    },
+  );
 
   test("LP-6 refuses an indeterminate rail authority before signing or anchoring", async () => {
     const deps = fakeDeps();
@@ -803,6 +877,51 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
     await expect(publishListingCore(listing(), deps)).rejects.toThrow(
       /history lookup was indeterminate/,
+    );
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("snapshots listing-history results before enforcing monotonicity", async () => {
+    const deps = fakeDeps();
+    const scan = deps.scanOwnAnchorsByNamePrefix;
+    deps.scanOwnAnchorsByNamePrefix = async (prefix) => new Proxy(
+      await scan(prefix),
+      {},
+    );
+
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /history scan returned an unstable or non-wire result/,
+    );
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("an anchor adapter cannot mutate the signed Listing after DPA-1 approval", async () => {
+    const deps = fakeDeps();
+    deps.anchorWriteOnce = async (_name, value) => {
+      const candidate = value as ListingDraft;
+      const deliverable = candidate.offering.deliverable;
+      if (deliverable.kind !== "attested-payload") {
+        throw new Error("fixture drift");
+      }
+      deliverable.payloadFormat = "text/plain";
+      return { address: "stor-mutated" };
+    };
+
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /publication was indeterminate/i,
+    );
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("a live anchor result cannot establish successful publication", async () => {
+    const deps = fakeDeps();
+    deps.anchorWriteOnce = async () => new Proxy(
+      { address: "stor-live" },
+      {},
+    );
+
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /anchor returned an unstable or non-wire result/,
     );
     expect(deps.stats.creates).toBe(0);
   });

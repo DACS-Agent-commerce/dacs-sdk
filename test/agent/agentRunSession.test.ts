@@ -121,6 +121,7 @@ const verifiedListing = (raw: Record<string, unknown>) => {
     listing: raw,
     listingContentHash: contentHash(raw),
     payloadVerificationCapability: {
+      operation: "verify" as const,
       disposition: "supported" as const,
       reason: "supported",
       verificationMethodKind: deliverable.verificationMethod.kind,
@@ -228,6 +229,7 @@ function verifiedAdmission(raw: Record<string, unknown>) {
     listing: raw,
     listingContentHash: contentHash(raw),
     payloadVerificationCapability: {
+      operation: "verify" as const,
       disposition: "supported" as const,
       reason: "supported",
       verificationMethodKind: deliverable.verificationMethod.kind,

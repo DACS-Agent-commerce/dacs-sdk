@@ -269,6 +269,7 @@ describe("ordered ListingValidationDisposition", () => {
       throw new Error("fixture drift");
     }
     return {
+      operation: "verify" as const,
       disposition: "supported" as const,
       reason: "supported",
       verificationMethodKind: deliverable.verificationMethod.kind,
