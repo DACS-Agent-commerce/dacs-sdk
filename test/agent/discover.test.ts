@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { discoverListings } from "../../src/agent/discover.js";
+import {
+  discoverListings,
+  discoverValidatedListings,
+  inspectListings,
+} from "../../src/agent/discover.js";
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
@@ -58,6 +62,55 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
 
   test("requires an explicit gate — neither dep rejects (no fail-open)", async () => {
     await expect(discoverListings(["ref:1"], read)).rejects.toThrow(/verify|trustListings/);
+  });
+});
+
+describe("explicit Listing disposition discovery", () => {
+  test("inspection retains failures while discovery returns verified normative listings only", async () => {
+    const normative = {
+      dacsVersion: "1",
+      listingId: "verified",
+    } as never;
+    const records: Record<string, Record<string, unknown>> = {
+      good: { result: "verified" },
+      revoked: { result: "revoked" },
+      legacy: { result: "legacy" },
+    };
+    const validate = async (raw: Readonly<Record<string, unknown>>) => {
+      const disposition = raw.result === "verified"
+        ? "verified" as const
+        : raw.result === "revoked"
+          ? "revoked" as const
+          : "rejected" as const;
+      return {
+        disposition,
+        reasons: disposition === "verified"
+          ? []
+          : [{ step: "schema" as const, code: String(raw.result), message: "not eligible" }],
+        evidence: [],
+        ...(disposition === "verified" ? { listing: normative } : {}),
+      };
+    };
+    const read = async (ref: string) => records[ref] ?? null;
+
+    const inspected = await inspectListings(["good", "revoked", "legacy"], read, validate);
+    expect(inspected.map((entry) => entry.validation.disposition)).toEqual([
+      "verified",
+      "revoked",
+      "rejected",
+    ]);
+
+    const discovered = await discoverValidatedListings(
+      ["good", "revoked", "legacy"],
+      read,
+      validate,
+    );
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({
+      ref: "good",
+      compatibility: "normative",
+      validation: { disposition: "verified" },
+    });
   });
 });
 

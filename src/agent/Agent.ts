@@ -9,8 +9,10 @@ import type {
 import {
   ed25519Verify,
   publicKeyFromRaw,
+  signedBytes,
   type DomainSeparator,
 } from "../crypto/index.js";
+import { contentHash } from "../canonical/index.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
 import type { DemosAdapter } from "../substrate/index.js";
 import {
@@ -23,10 +25,17 @@ import {
 } from "./runSessionCore.js";
 import { publishListingCore } from "./publishListingCore.js";
 import {
-  discoverListings,
-  verifyReadableListingArtifact,
-  type DiscoveredListing,
+  discoverValidatedListings,
+  type ValidatedDiscoveredListing,
 } from "./discover.js";
+import {
+  resolveListingRails,
+  validateListingArtifact,
+  type ArtifactSignatureCheck,
+  type ArtifactSignatureCheckInput,
+  type ListingRailResolutionDeps,
+  type ListingValidationDeps,
+} from "./listingValidation.js";
 import { computeReputation, type Reputation } from "./reputation.js";
 import { buildSignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
 import {
@@ -78,7 +87,24 @@ export interface AgentConfig {
   wallet: string;
   /** Optional identity metadata (e.g. the agent's DID / primary claim). */
   identity?: { agentId?: string };
+  /**
+   * DACS-1 authority policy used for normative Listing publication, discovery,
+   * revocation, identity-control, and rail resolution. The Agent refuses the
+   * relevant operation when this policy is absent; it never upgrades a partial
+   * check into `verified`.
+   */
+  listingValidation?: AgentListingValidationPolicy;
+  /** LP-6-only policy for sellers that publish but do not read Listings. */
+  listingRailResolution?: ListingRailResolutionDeps;
 }
+
+export type AgentListingValidationPolicy = Omit<
+  ListingValidationDeps,
+  "nowMs" | "verifyArtifactSignature"
+> &
+  Partial<
+    Pick<ListingValidationDeps, "nowMs" | "verifyArtifactSignature">
+  >;
 
 export interface PublishResult {
   /** Native storage address the listing was anchored at. */
@@ -118,13 +144,15 @@ export interface Agent {
   /** Anyone: dereference + structurally verify an anchored attestation bundle. */
   verifyBundle(ref: string): Promise<BundleVerification>;
   /**
-   * Buyer: resolve + structurally validate anchored listings at the given refs.
+   * Buyer: resolve + run the complete DACS-1 reader pipeline at the given refs.
    * Refs are caller-supplied (shared out-of-band / via a directory) — a
    * marketplace crawl needs an indexer the deterministic substrate doesn't
-   * provide. Non-listing / missing refs are skipped. (Seller-identity vetting
-   * is the separate Vet stage.)
+   * provide. Only normative Listings with disposition `verified` are returned;
+   * missing, legacy, rejected, revoked, and indeterminate entries are skipped.
+   * Use the pure `inspectListings` API when diagnostics for every disposition
+   * are required. (Counterparty vetting remains the separate Vet stage.)
    */
-  discover(listingRefs: string[]): Promise<DiscoveredListing[]>;
+  discover(listingRefs: string[]): Promise<ValidatedDiscoveredListing[]>;
   /** Buyer: run a fixed-price session (negotiate → settle → verify). */
   runSession(listingRef: string, opts: RunSessionOptions): Promise<SessionResult>;
   /**
@@ -192,6 +220,81 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       verify: ed25519RawVerify,
     });
 
+  const defaultArtifactSignatureCheck = async (
+    input: ArtifactSignatureCheckInput,
+  ): Promise<ArtifactSignatureCheck> => {
+    if (input.signature.algorithm !== "ed25519") {
+      return {
+        status: "indeterminate",
+        reason: `no ${input.signature.algorithm} verifier is configured`,
+      };
+    }
+    const key = publicKeyFromDid(input.signature.signer);
+    if (!key) {
+      return {
+        status: "indeterminate",
+        reason: `signer key cannot be resolved for ${input.signature.signer}`,
+      };
+    }
+    let signature: Uint8Array;
+    try {
+      signature = Uint8Array.from(
+        Buffer.from(input.signature.value, "base64url"),
+      );
+    } catch {
+      return { status: "invalid", reason: "signature value is not Base64URL" };
+    }
+    if (
+      signature.length !== 64 ||
+      Buffer.from(signature).toString("base64url") !== input.signature.value
+    ) {
+      return {
+        status: "invalid",
+        reason: "Ed25519 signature is not canonical unpadded Base64URL for 64 bytes",
+      };
+    }
+    const bytes = signedBytes(
+      input.separator,
+      contentHash(input.artifact as Record<string, unknown>),
+    );
+    return ed25519RawVerify(bytes, signature, key)
+      ? { status: "valid" }
+      : { status: "invalid", reason: "cryptographic verification failed" };
+  };
+
+  const listingValidationDeps = (): ListingValidationDeps => {
+    const policy = config.listingValidation;
+    if (!policy) {
+      throw new Error(
+        "this Listing operation requires AgentConfig.listingValidation with identity, revocation, and PA-1/2/3 rail authority dependencies",
+      );
+    }
+    return {
+      ...policy,
+      nowMs: policy.nowMs ?? (() => Date.now()),
+      verifyArtifactSignature:
+        policy.verifyArtifactSignature ?? defaultArtifactSignatureCheck,
+    };
+  };
+
+  const listingRailResolutionDeps = (): ListingRailResolutionDeps => {
+    const policy = config.listingRailResolution ?? config.listingValidation;
+    if (!policy) {
+      throw new Error(
+        "pay-bearing Listing publication requires AgentConfig.listingRailResolution (or the superset listingValidation)",
+      );
+    }
+    return {
+      ...policy,
+      verifyArtifactSignature:
+        policy.verifyArtifactSignature ?? defaultArtifactSignatureCheck,
+    };
+  };
+
+  const validateListing = (
+    raw: Readonly<Record<string, unknown>>,
+  ) => validateListingArtifact(raw, listingValidationDeps());
+
   return {
     adapter,
 
@@ -217,6 +320,8 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       // cannot locate an existing version slot (#70).
       return publishListingCore(listing, {
         sign,
+        validateRailsForPublication: (draft) =>
+          resolveListingRails(draft, listingRailResolutionDeps()),
         scanOwnAnchorsByNamePrefix: (prefix) =>
           adapter.scanOwnAnchorsByNamePrefix(prefix),
         anchorWriteOnce: (name, value) => adapter.anchorWriteOnce(name, value),
@@ -233,13 +338,12 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
 
     async discover(
       listingRefs: string[],
-    ): Promise<DiscoveredListing[]> {
-      // DACS-1 §6.3.4: verify the structured signer through seller.identity;
-      // historical string signatures remain in the explicit legacy read arm.
-      return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
-        verify: ed25519RawVerify,
-        resolvePublicKey: (claim) => publicKeyFromDid(claim),
-      });
+    ): Promise<ValidatedDiscoveredListing[]> {
+      return discoverValidatedListings(
+        listingRefs,
+        (r) => adapter.readAnchor(r),
+        validateListing,
+      );
     },
 
     async runSession(
@@ -273,21 +377,9 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
               ? { status: "present", ref: r.address, value }
               : { status: "indeterminate", reason: "resolved address was not readable" };
           },
-          // #41 — verify the listing against the key in its own agentId before
-          // vetting or settlement. Without this the money path would run on an
-          // unverified listing (and the gate below would throw).
-          verifyListing: async (raw, sellerClaim) => {
-            const verified = await verifyReadableListingArtifact(raw, {
-              verify: ed25519RawVerify,
-              resolvePublicKey: (claim) => publicKeyFromDid(claim),
-            });
-            if (!verified) return false;
-            const advertisedSeller =
-              verified.compatibility === "normative"
-                ? verified.listing.seller.identity.presentedBy
-                : verified.listing.agentId;
-            return advertisedSeller === sellerClaim;
-          },
+          // LR-3: exact `verified` only. Rejected, revoked, indeterminate, and
+          // historical compatibility reads all stop before vetting/payment.
+          validateListing,
           settle: opts.settle,
           vet: opts.vet,
           newJobId: () => randomUUID(),

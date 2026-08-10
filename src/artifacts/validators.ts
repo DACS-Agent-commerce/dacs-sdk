@@ -477,6 +477,11 @@ function pipelineIsCoherent(listing: Record<string, unknown>): boolean {
   if (!pipeline.some((phase) => phase.kind.startsWith("deliver-"))) {
     return false; // DACS-4 §9.9 PIPE-1.
   }
+  return true;
+}
+
+function listingRailsAreBound(listing: Record<string, unknown>): boolean {
+  const pipeline = listing.pipeline as PhaseStep[];
   const payPhases = pipeline.filter((phase) => phase.kind.startsWith("pay-"));
   const rails = listing.acceptedRails as PaymentRailRef[] | undefined;
   if (payPhases.length > 0) {
@@ -501,7 +506,10 @@ function pipelineIsCoherent(listing: Record<string, unknown>): boolean {
   return true;
 }
 
-function isListingBody(v: unknown): v is ListingDraft {
+function isListingBody(
+  v: unknown,
+  options: { semanticPipeline: boolean },
+): v is ListingDraft {
   if (!isObj(v)) return false;
   return (
     v.dacsVersion === "1" &&
@@ -546,35 +554,55 @@ function isListingBody(v: unknown): v is ListingDraft {
     (v.validity.notAfter === undefined ||
       (isSafeUint(v.validity.notAfter) &&
         v.validity.notAfter >= v.validity.notBefore)) &&
-    pipelineIsCoherent(v)
+    (!options.semanticPipeline ||
+      (pipelineIsCoherent(v) && listingRailsAreBound(v)))
   );
 }
 
 /** Unsigned DACS-1 §6.3.4 publication input; legacy shapes are refused. */
 export function isListingDraft(v: unknown): v is ListingDraft {
-  return isObj(v) && !("signature" in v) && isListingBody(v);
+  return (
+    isObj(v) &&
+    !("signature" in v) &&
+    isListingBody(v, { semanticPipeline: true })
+  );
 }
 
-/** Signed normative DACS-1 §6.3.4 Listing structural validator. */
-export function isListing(v: unknown): v is Listing {
+function isListingWithPipelinePolicy(
+  v: unknown,
+  semanticPipeline: boolean,
+): v is Listing {
   if (
     !isObj(v) ||
     !isComponentSignature(v.signature) ||
     !isCanonicalBase64Url(v.signature.value) ||
-    !isListingBody(v)
+    !isListingBody(v, { semanticPipeline })
   ) {
     return false;
-  }
-  const listing = v as unknown as Listing;
-  const identity = listing.seller.identity;
-  if (!identity.claims.some((claim) => claim.ref === listing.signature.signer)) {
-    return false; // §6.3.4 ListingSignature signer authorization.
   }
   try {
     return Buffer.byteLength(canonicalize(v), "utf8") <= 16_384; // LR-2 size cap.
   } catch {
     return false;
   }
+}
+
+/** Signed normative DACS-1 §6.3.4 Listing conformance validator. */
+export function isListing(v: unknown): v is Listing {
+  return isListingWithPipelinePolicy(v, true);
+}
+
+/**
+ * Structural wire envelope used by the ordered reader. Semantic pipeline and
+ * rail binding are intentionally deferred to steps 7 and 8 respectively.
+ */
+export function isListingWireEnvelope(v: unknown): v is Listing {
+  return isListingWithPipelinePolicy(v, false);
+}
+
+/** DACS-1 reader step 7, excluding the LRR-1 checks owned by step 8. */
+export function isListingPipelineValid(v: Listing): boolean {
+  return pipelineIsCoherent(v as unknown as Record<string, unknown>);
 }
 
 /** Historical reduced SDK shape, deliberately isolated to read compatibility. */

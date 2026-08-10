@@ -4,6 +4,7 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  listingRevocationAddress,
   logicalToStorageProgramName,
   storAddress,
   bundleAddress,

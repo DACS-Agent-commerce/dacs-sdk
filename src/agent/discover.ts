@@ -8,6 +8,9 @@ import type {
 import { readListingArtifact } from "../artifacts/validators.js";
 import { DacsError } from "../errors.js";
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
+import type {
+  ListingValidationResult,
+} from "./listingValidation.js";
 
 /**
  * Resolve, structurally validate, and VERIFY anchored listings at the given refs
@@ -55,6 +58,20 @@ export interface DiscoverDeps {
 export type DiscoveredListing =
   | { ref: string; compatibility: "normative"; listing: Listing }
   | { ref: string; compatibility: "legacy-mvp"; listing: LegacyMvpListing };
+
+/** One resolved artifact with its explicit DACS-1 disposition (including failures). */
+export interface ListingInspection {
+  ref: string;
+  validation: ListingValidationResult;
+}
+
+/** A discovery-eligible normative Listing. Historical compatibility reads cannot enter this type. */
+export interface ValidatedDiscoveredListing {
+  ref: string;
+  compatibility: "normative";
+  listing: Listing;
+  validation: ListingValidationResult & { disposition: "verified" };
+}
 
 /** The intrinsic Demos claim→key resolution: a CCI *is* the ed25519 pubkey hex. */
 function intrinsicKey(claim: string): Uint8Array | null {
@@ -158,4 +175,73 @@ export async function discoverListings(
     found.push({ ref, ...readable });
   }
   return found;
+}
+
+/**
+ * Resolve every readable ref and preserve rejected/revoked/indeterminate
+ * results for diagnostics. Missing anchors are skipped because there is no
+ * artifact to classify; resolver failures should be represented by the caller
+ * as a readable value or handled at its substrate boundary.
+ */
+export async function inspectListings(
+  listingRefs: readonly string[],
+  readAnchor: (ref: string) => Promise<Record<string, unknown> | null>,
+  validate: (
+    raw: Readonly<Record<string, unknown>>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult,
+): Promise<ListingInspection[]> {
+  const inspected: ListingInspection[] = [];
+  for (const ref of listingRefs) {
+    const raw = await readAnchor(ref);
+    if (!raw) continue;
+    let validation: ListingValidationResult;
+    try {
+      validation = await validate(raw);
+    } catch (error) {
+      validation = {
+        disposition: "indeterminate",
+        reasons: [
+          {
+            step: "schema",
+            code: "listing-validation-threw",
+            message: String(error),
+          },
+        ],
+        evidence: [
+          {
+            step: "schema",
+            status: "indeterminate",
+            code: "listing-validation-threw",
+          },
+        ],
+      };
+    }
+    inspected.push({ ref, validation });
+  }
+  return inspected;
+}
+
+/** Return only the exact normative Listings whose complete disposition is verified. */
+export async function discoverValidatedListings(
+  listingRefs: readonly string[],
+  readAnchor: (ref: string) => Promise<Record<string, unknown> | null>,
+  validate: (
+    raw: Readonly<Record<string, unknown>>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult,
+): Promise<ValidatedDiscoveredListing[]> {
+  const inspected = await inspectListings(listingRefs, readAnchor, validate);
+  return inspected.flatMap(({ ref, validation }) =>
+    validation.disposition === "verified" && validation.listing
+      ? [
+          {
+            ref,
+            compatibility: "normative" as const,
+            listing: validation.listing,
+            validation: validation as ListingValidationResult & {
+              disposition: "verified";
+            },
+          },
+        ]
+      : [],
+  );
 }

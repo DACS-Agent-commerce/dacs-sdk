@@ -4,6 +4,7 @@ import {
   decodeAddressSegment,
   encodeAddressSegment,
   listingAddress,
+  listingRevocationAddress,
 } from "../../src/canonical/addressing.js";
 
 describe("CF-4 logical addressing (§6.3.4)", () => {
@@ -33,5 +34,16 @@ describe("CF-4 logical addressing (§6.3.4)", () => {
 
   test("accepts a pre-formatted version segment", () => {
     expect(listingAddress("a", "b", "v3")).toBe("dacs1:a:b:v3");
+  });
+
+  test("assembles the independent RB-1 revocation marker address", () => {
+    expect(
+      listingRevocationAddress("cci-xm:evm:mainnet:0x1234", "rfq:lot", 3),
+    ).toBe(
+      "dacs1-revoked:cci-xm%3Aevm%3Amainnet%3A0x1234:rfq%3Alot:v3",
+    );
+    expect(() => listingRevocationAddress("seller", "listing", 0)).toThrow(
+      /positive safe integer/,
+    );
   });
 });

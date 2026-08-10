@@ -14,6 +14,7 @@ import {
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
 import type { Signer } from "./signedArtifact.js";
+import type { ListingRailResolutionResult } from "./listingValidation.js";
 
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
@@ -73,6 +74,13 @@ export interface PublishListingDeps {
     name: string,
     value: object,
   ) => Promise<{ address: string; txRef?: string }>;
+  /**
+   * DACS-1 LP-6 publication gate. Required for a pay-bearing pipeline and must
+   * execute LRR-1..LRR-6 against authenticated PA-1/2/3 registry material.
+   */
+  validateRailsForPublication?: (
+    listing: Readonly<ListingDraft>,
+  ) => Promise<ListingRailResolutionResult> | ListingRailResolutionResult;
 }
 
 function listingHistoryPrefix(listing: ListingDraft): string {
@@ -181,6 +189,31 @@ export async function publishListingCore(
     );
   }
   const version = listing.listingVersion;
+
+  if (listing.pipeline.some((phase) => phase.kind.startsWith("pay-"))) {
+    if (!deps.validateRailsForPublication) {
+      throw new DacsError(
+        "pay-bearing Listing publication requires validateRailsForPublication (DACS-1 LP-6)",
+      );
+    }
+    let railValidation: ListingRailResolutionResult;
+    try {
+      railValidation = await deps.validateRailsForPublication(listing);
+    } catch (error) {
+      throw new DacsError(
+        `pay-bearing Listing rail resolution was indeterminate (DACS-1 LP-6): ${String(error)}`,
+      );
+    }
+    if (railValidation.disposition !== "verified") {
+      const details = railValidation.reasons
+        .map((entry) => `${entry.code}: ${entry.message}`)
+        .join("; ");
+      throw new DacsError(
+        `pay-bearing Listing rail resolution is ${railValidation.disposition}; ` +
+          `publication requires verified (DACS-1 LP-6)${details ? `: ${details}` : ""}`,
+      );
+    }
+  }
 
   // Logical (colon-bearing, discovery key) vs native (colon-free program name the
   // substrate actually accepts). Anchor under the encoded name; return both.

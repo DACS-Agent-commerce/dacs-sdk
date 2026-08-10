@@ -18,9 +18,11 @@ import {
   isAgreementDocument,
   isAttestationBundle,
   isCompositeVerificationRecord,
+  isListingWireEnvelope,
   readListingArtifact,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
+import type { ListingValidationResult } from "./listingValidation.js";
 
 /**
  * Pure orchestration for the MVP buyer session (T4 runSession): negotiate
@@ -168,8 +170,16 @@ export interface SessionDeps {
     sellerClaim: string,
   ) => Promise<boolean> | boolean;
   /**
+   * Normative DACS-1 reader pipeline. When supplied it supersedes the legacy
+   * boolean verifier and a session is allowed only for exact `verified`.
+   * `rejected`, `revoked`, and `indeterminate` all fail before vetting/payment.
+   */
+  validateListing?: (
+    raw: Readonly<Record<string, unknown>>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult;
+  /**
    * Explicit, grep-able opt-out of listing verification, for callers that
-   * verified upstream. Ignored when `verifyListing` is supplied.
+   * verified upstream. Ignored when `validateListing` or `verifyListing` is supplied.
    */
   trustListing?: boolean;
   /**
@@ -386,7 +396,35 @@ export async function runSessionCore(
     throw new Error(`listing not found or invalid at ${listingRef}`);
   }
   const storedRecord = stored as Record<string, unknown>;
-  const readableListing = readListingArtifact(storedRecord);
+
+  // The normative validator runs before the compatibility parser so a
+  // structurally readable but semantically rejected Listing retains its exact
+  // disposition instead of collapsing into a generic parse failure.
+  let validation: ListingValidationResult | undefined;
+  if (deps.validateListing) {
+    try {
+      validation = await deps.validateListing(storedRecord);
+    } catch (error) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} validation was indeterminate: ${String(error)}`,
+      );
+    }
+    if (validation.disposition !== "verified") {
+      const detail = validation.reasons
+        .map((entry) => entry.code)
+        .join(", ");
+      throw new CounterpartyError(
+        `listing at ${listingRef} has DACS-1 validation disposition ` +
+          `${validation.disposition}${detail ? ` (${detail})` : ""}; refusing new session`,
+      );
+    }
+  }
+
+  const readableListing = validation
+    ? isListingWireEnvelope(storedRecord)
+      ? { compatibility: "normative" as const, listing: storedRecord }
+      : null
+    : readListingArtifact(storedRecord);
   if (!readableListing) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
   }
@@ -437,13 +475,25 @@ export async function runSessionCore(
   // #41 — verify the listing BEFORE vetting, rail selection or settlement. A
   // forged/tampered listing steers the recipient and rail, so an unverified one
   // must never reach the money path. Fails closed; the gate is not defaultable.
-  if (!deps.verifyListing && !deps.trustListing) {
+  if (!deps.validateListing && !deps.verifyListing && !deps.trustListing) {
     throw new DacsError(
-      "runSessionCore requires deps.verifyListing or an explicit deps.trustListing: true opt-out — " +
+      "runSessionCore requires deps.validateListing, deps.verifyListing, or an explicit deps.trustListing: true opt-out — " +
         "acting on an unverified listing lets a forged listing drive payment (#41)",
     );
   }
-  if (deps.verifyListing) {
+  if (validation) {
+    if (
+      readableListing.compatibility !== "normative" ||
+      !validation.listingPin ||
+      validation.listingPin.listingId !== listingView.pin.listingId ||
+      validation.listingPin.version !== listingView.pin.version ||
+      validation.listingPin.contentHash !== listingView.pin.contentHash
+    ) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} validation did not verify the exact pinned Listing tuple`,
+      );
+    }
+  } else if (deps.verifyListing) {
     let verified = false;
     try {
       verified = await deps.verifyListing(

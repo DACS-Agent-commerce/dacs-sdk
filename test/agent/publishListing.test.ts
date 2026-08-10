@@ -30,6 +30,12 @@ function fakeDeps() {
     store,
     stats,
     sign,
+    validateRailsForPublication: async () => ({
+      disposition: "verified",
+      reasons: [],
+      evidence: [],
+      resolved: [],
+    }),
     scanOwnAnchorsByNamePrefix: async (prefix) => ({
       status: "ok",
       anchors: [...addresses.entries()]
@@ -125,6 +131,30 @@ const signedListing = (over: Record<string, unknown> = {}) =>
   });
 
 describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () => {
+  test("refuses a pay-bearing publication without an LP-6 verified rail result", async () => {
+    const deps = fakeDeps();
+    delete deps.validateRailsForPublication;
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(/LP-6/);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test.each(["rejected", "indeterminate"] as const)(
+    "refuses publication when rail resolution is %s",
+    async (disposition) => {
+      const deps = fakeDeps();
+      deps.validateRailsForPublication = async () => ({
+        disposition,
+        reasons: [{ step: "rails", code: "test", message: "not verified" }],
+        evidence: [],
+        resolved: [],
+      });
+      await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+        new RegExp(disposition),
+      );
+      expect(deps.stats.creates).toBe(0);
+    },
+  );
+
   test("publishes a normative signed v1 and returns its exact LR-1 pin", async () => {
     const deps = fakeDeps();
     const res = await publishListingCore(listing(), deps);

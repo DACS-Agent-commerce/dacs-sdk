@@ -50,16 +50,25 @@ import {
   vetCore,
 } from "@kynesyslabs/dacs";
 
-const agent = await createAgent({ demosRpc, wallet, identity: { agentId } });
+// These authority callbacks are application-supplied and transport-neutral.
+// They authenticate one PA-1/2/3 rail snapshot, verify IdentityBundle control,
+// and read every revocation discovery surface in the application's policy.
+const agent = await createAgent({
+  demosRpc,
+  wallet,
+  identity: { agentId },
+  listingValidation,
+});
 
 // seller — sign + anchor a normative DACS-1 §6.3.4 ListingDraft. `spec`
 // carries seller.identity/displayName/publicEndpoint, offering, buyerRequirement,
 // pipeline, pricing, acceptedRails, terms, and validity; see hello-world.ts.
 const { ref } = await agent.publishListing(spec);
 
-// buyer — discovery identifies normative vs explicit legacy-read artifacts.
-const [{ ref: listingRef, compatibility }] = await agent.discover([ref]);
-if (compatibility !== "normative") throw new Error("legacy Listing refused");
+// buyer — only complete `verified` normative Listings are discovery-eligible.
+// inspectListings(...) preserves rejected/revoked/indeterminate diagnostics.
+const [{ ref: listingRef, validation }] = await agent.discover([ref]);
+if (validation.disposition !== "verified") throw new Error("Listing refused");
 const rail = await createX402Rail({ evmPrivateKey });
 const session = await agent.runSession(listingRef, {
   terms,
@@ -81,6 +90,16 @@ const rep = await agent.getReputation(primaryClaim, bundleRefs);
 `(listingId, listingVersion, contentHash)` tuple used by the session. To resume an
 interrupted session safely, pass the prior `jobId` to `runSession` — anchored
 artifacts are reused and settlement is never repeated.
+
+`listingValidation` is deliberately dependency-injected: the SDK executes the
+nine ordered DACS-1 reader gates and their precedence, while the host supplies
+authenticated identity, discovery, registry, signature, and substrate reads.
+A seller that only publishes may instead provide the smaller
+`listingRailResolution` policy. Pay-bearing publication fails unless every
+advertised rail resolves to `verified`; discovery and `runSession` fail closed
+unless the overall Listing disposition is exactly `verified`. Historical MVP
+Listing artifacts remain available through the low-level compatibility reader,
+but can never receive a verified disposition.
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 

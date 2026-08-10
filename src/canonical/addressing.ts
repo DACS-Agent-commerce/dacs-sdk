@@ -81,6 +81,23 @@ export function listingAddress(
 }
 
 /**
+ * Assemble the DACS-1 RB-1 revocation-marker logical address:
+ * `dacs1-revoked:<sellerPrimaryClaim>:<listingId>:v<version>`.
+ */
+export function listingRevocationAddress(
+  sellerPrimaryClaim: string,
+  listingId: string,
+  version: number,
+): string {
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new DacsError(
+      `listing revocation address version must be a positive safe integer: ${version}`,
+    );
+  }
+  return `dacs1-revoked:${encodeAddressSegment(sellerPrimaryClaim)}:${encodeAddressSegment(listingId)}:v${version}`;
+}
+
+/**
  * Encode a colon-bearing logical address into a colon-free Demos StorageProgram
  * NAME (DACS-1 §6.3.4 Demos binding). Demos rejects `:` in program names; the
  * spec's contract is `storageProgramName := implementation-defined colon-free

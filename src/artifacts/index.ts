@@ -74,6 +74,8 @@ export {
 } from "./registry.js";
 export {
   isListing,
+  isListingWireEnvelope,
+  isListingPipelineValid,
   isListingDraft,
   isLegacyMvpListing,
   readListingArtifact,

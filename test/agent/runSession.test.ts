@@ -433,6 +433,54 @@ describe("runSession orchestration (T4)", () => {
     expect(settleCalls).toBe(0);
   });
 
+  test.each(["rejected", "revoked", "indeterminate"] as const)(
+    "the normative disposition gate refuses %s before vetting or settlement",
+    async (disposition) => {
+      let vetCalls = 0;
+      let settleCalls = 0;
+      const deps = makeDeps({
+        trustListing: undefined,
+        validateListing: async () => ({
+          disposition,
+          reasons: [{ step: "rails", code: `test-${disposition}`, message: disposition }],
+          evidence: [],
+        }),
+        vet: async () => {
+          vetCalls += 1;
+          throw new Error("must not vet");
+        },
+        settle: async () => {
+          settleCalls += 1;
+          throw new Error("must not settle");
+        },
+      });
+      await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
+        new RegExp(`disposition ${disposition}`),
+      );
+      expect(vetCalls).toBe(0);
+      expect(settleCalls).toBe(0);
+    },
+  );
+
+  test("a caller cannot upgrade a historical MVP read by returning verified", async () => {
+    const deps = makeDeps({
+      trustListing: undefined,
+      validateListing: async () => ({
+        disposition: "verified",
+        reasons: [],
+        evidence: [],
+        listingPin: {
+          listingId: LISTING.serviceId,
+          version: 1,
+          contentHash: contentHash(LISTING),
+        },
+      }),
+    });
+    await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
+      /listing not found or invalid/,
+    );
+  });
+
   test("the verifier receives the raw artifact and the ADVERTISED seller claim", async () => {
     let seenSeller = "";
     const deps = makeDeps({
