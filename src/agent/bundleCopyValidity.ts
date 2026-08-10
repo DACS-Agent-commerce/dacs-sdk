@@ -62,10 +62,11 @@ export async function verifyBundleCopy(
   if (isFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
     return { valid: false, reason: "faultedParty is not permitted for outcome and anchoredByRole" };
   }
-  if (!isAnyAttestationBundle(unsigned)) {
+  if (!isAnyAttestationBundle(bundle)) {
     return { valid: false, reason: "not an attestation bundle" };
   }
-  if (!unsigned.parties.some((party) => party.role === role)) {
+  const parsed = bundle;
+  if (!parsed.parties.some((party) => party.role === role)) {
     return { valid: false, reason: `anchor role "${role}" is absent from parties[]` };
   }
 
@@ -82,7 +83,7 @@ export async function verifyBundleCopy(
   }
 
   // (3) §10.4.1 signature scope: omit the per-copy fields.
-  const scope = { ...bundle };
+  const scope: Record<string, unknown> = { ...bundle };
   delete scope["signatures"];
   delete scope["anchoredByRole"];
   const separator = isFaultBundle(unsigned)
@@ -93,7 +94,7 @@ export async function verifyBundleCopy(
   const entries = Array.isArray(bundle["signatures"]) ? bundle["signatures"] : [];
   if (entries.length === 0) return { valid: false, reason: "copy carries no signatures" };
 
-  const parties = bundle["parties"] as Array<Record<string, unknown>>;
+  const parties = parsed.parties as unknown as Array<Record<string, unknown>>;
   const partyClaims = new Set(
     parties
       .map((party) => party["primaryClaim"])

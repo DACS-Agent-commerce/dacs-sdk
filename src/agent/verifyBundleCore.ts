@@ -1,10 +1,22 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { AnyAttestationBundle, BundleParty } from "../artifacts/types.js";
+import type {
+  AnyAttestationBundle,
+  AttestationRef,
+  BundleParty,
+} from "../artifacts/types.js";
+import {
+  type LegacyMvpAnyAttestationBundle,
+  type LegacyMvpAttestationRef,
+  isLegacyMvpAnyAttestationBundle,
+  isLegacyMvpAttestationRef,
+  isLegacyMvpSettlementEvidence,
+} from "../artifacts/legacyMvp.js";
 import {
   isAgreementDocument,
   isAnyAttestationBundle,
+  isAttestationRef,
   isCompositeVerificationRecord,
   isListing,
   isSettlementEvidence,
@@ -25,14 +37,15 @@ import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
  *     `unverified` (no key resolvable).
  *
  *  2. Referenced-artifact integrity — the bundle's refs (optional agreementRef,
- *     settlementEvidence[], vetRecords[], listingRef) are content-addressed
- *     `{kind,id,contentHash}`. A valid bundle signature only binds those *hashes*;
- *     it does NOT prove the referenced artifacts exist or are untampered. So we
- *     dereference each (via `resolveRef`, keyed by the bundle's jobId), validate
- *     its shape, and confirm its signed-scope content hash equals the ref. Without
- *     this a correctly-signed bundle could point at missing/tampered evidence and
- *     still report verified. If no `resolveRef` is supplied we cannot attest the
- *     refs, so they are reported `unresolved` and the bundle is NOT ok.
+ *     settlementEvidence[], vetRecords[], listingRef) are content-addressed.
+ *     Normative session refs use DACS-2 §7.5.2
+ *     `{anchor:{kind,locator},contentHash,signer?}`; the pre-#308 `{kind,id,...}`
+ *     record is accepted only by the explicit legacy-MVP read path. A valid
+ *     bundle signature only binds those *hashes*; it does NOT prove the referenced
+ *     artifacts exist or are untampered. We therefore dereference each normative
+ *     ref through `resolveAttestationRef`, validate the artifact, and confirm its
+ *     signed-scope content hash. Without the appropriate resolver, refs report
+ *     `unresolved` and the bundle is NOT ok.
  */
 
 export type SignatureVerdict = "valid" | "invalid" | "error" | "unverified";
@@ -63,11 +76,16 @@ export interface BundleVerification {
   reason?: string;
   /** Every signature verified against a resolved key. */
   fullyVerified: boolean;
-  bundle?: AnyAttestationBundle;
+  bundle?: AnyAttestationBundle | LegacyMvpAnyAttestationBundle;
   signatures: SignatureCheck[];
   /** Per-referenced-artifact integrity results. */
   refs: RefCheck[];
 }
+
+type ReadableAttestationBundle =
+  | AnyAttestationBundle
+  | LegacyMvpAnyAttestationBundle;
+type ReadableAttestationRef = AttestationRef | LegacyMvpAttestationRef;
 
 export interface VerifyBundleDeps {
   /** Read a signed artifact at a storage ref (null if absent). */
@@ -83,6 +101,17 @@ export interface VerifyBundleDeps {
    * party's substrate address from its primaryClaim. Returns null if
    * unresolvable. Omit only if dereferencing isn't possible — the refs then
    * report `unresolved` and the bundle cannot be `ok`.
+   */
+  resolveAttestationRef?: (
+    ref: Readonly<AttestationRef>,
+    jobId: string,
+    parties: readonly BundleParty[],
+  ) => Promise<Record<string, unknown> | null>;
+  /**
+   * @deprecated Pre-#308 MVP resolver keyed by SDK-only artifact kind. It is
+   * retained solely for explicit legacy reads and the pre-commit listing
+   * fallback; normative AttestationRef resolution uses `resolveAttestationRef`
+   * and MUST follow `ref.anchor` (DACS-2 §7.5.2).
    */
   resolveRef?: (
     kind: string,
@@ -116,7 +145,7 @@ function checkArtifact(
 ): RefCheck {
   if (!resolved) return { kind, id, verdict: "missing" };
   const scope = stripSignature(resolved);
-  if (!validate(scope)) return { kind, id, verdict: "invalid-shape" };
+  if (!validate(resolved)) return { kind, id, verdict: "invalid-shape" };
   if (contentHash(scope) !== expectedHash)
     return { kind, id, verdict: "hash-mismatch" };
   return { kind, id, verdict: "ok" };
@@ -130,7 +159,7 @@ function isAgreementCommitPhase(kind: string): boolean {
   return kind === "commit" || kind.startsWith("commit-");
 }
 
-function requiresAgreementRef(bundle: AnyAttestationBundle): boolean {
+function requiresAgreementRef(bundle: ReadableAttestationBundle): boolean {
   return (
     bundle.outcome === "completed" ||
     bundle.phaseSummary.some(
@@ -158,7 +187,7 @@ function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer"
 }
 
 function requiredSignatureClaims(
-  bundle: AnyAttestationBundle,
+  bundle: ReadableAttestationBundle,
   agreement: Record<string, unknown> | null,
 ): string[] {
   if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome)) return [];
@@ -178,8 +207,7 @@ export async function verifyBundleCore(
   deps: VerifyBundleDeps,
 ): Promise<BundleVerification> {
   const raw = await deps.readArtifact(bundleRef);
-  const unsigned = raw ? stripSignature(raw) : null;
-  if (unsigned && isFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
+  if (raw && isFaultBundle(raw) && !faultedPartyIsPermitted(raw)) {
     return {
       ok: false,
       reason: "faultedParty is not permitted for outcome and anchoredByRole",
@@ -188,7 +216,10 @@ export async function verifyBundleCore(
       refs: [],
     };
   }
-  if (!raw || !unsigned || !isAnyAttestationBundle(unsigned)) {
+  if (
+    !raw ||
+    (!isAnyAttestationBundle(raw) && !isLegacyMvpAnyAttestationBundle(raw))
+  ) {
     return {
       ok: false,
       reason: "not an attestation bundle",
@@ -197,7 +228,7 @@ export async function verifyBundleCore(
       refs: [],
     };
   }
-  const bundle = unsigned;
+  const bundle = raw as ReadableAttestationBundle;
   if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) && !ABORT_OUTCOMES.has(bundle.outcome)) {
     return {
       ok: false,
@@ -213,7 +244,7 @@ export async function verifyBundleCore(
   delete scope["signatures"];
   delete scope["anchoredByRole"];
   const message = signedBytes(
-    isFaultBundle(bundle)
+    isFaultBundle(bundle as unknown as Record<string, unknown>)
       ? ARTIFACT_SEPARATORS.FaultAttestationBundle
       : ARTIFACT_SEPARATORS.AttestationBundle,
     contentHash(scope),
@@ -248,115 +279,134 @@ export async function verifyBundleCore(
   if (!bundle.agreementRef && requiresAgreementRef(bundle)) {
     refs.push({ kind: "dacs-3-agreement", id: "agreementRef", verdict: "missing" });
   }
-  if (!deps.resolveRef) {
-    const note = (kind: string, id: string) =>
-      refs.push({ kind, id, verdict: "unresolved" as const });
-    if (bundle.agreementRef) note(bundle.agreementRef.kind, bundle.agreementRef.id);
-    for (const ev of bundle.settlementEvidence) note(ev.kind, ev.id);
-    for (const vr of bundle.vetRecords) note(vr.kind, vr.id);
-    for (const amendment of bundle.amendments ?? []) note(amendment.kind, amendment.id);
-    for (const rating of bundle.ratingRefs ?? []) note(rating.kind, rating.id);
-    note("dacs-1-listing", String(bundle.listingRef.listingId));
-  } else {
-    const agr = bundle.agreementRef
-      ? await deps.resolveRef(bundle.agreementRef.kind, bundle.jobId, bundle.parties)
-      : null;
-    agreementArtifact = agr;
-    if (bundle.agreementRef) {
-      refs.push(
-        checkArtifact(
-          bundle.agreementRef.kind,
-          bundle.agreementRef.id,
-          bundle.agreementRef.contentHash,
-          isAgreementDocument,
-          agr,
-        ),
-      );
+  const refLocator = (ref: ReadableAttestationRef): string =>
+    isAttestationRef(ref) ? ref.anchor.locator : ref.id;
+  const resolveReadableRef = async (
+    ref: ReadableAttestationRef,
+  ): Promise<{ supported: boolean; value: Record<string, unknown> | null }> => {
+    if (isAttestationRef(ref)) {
+      if (!deps.resolveAttestationRef) return { supported: false, value: null };
+      return {
+        supported: true,
+        value: await deps.resolveAttestationRef(ref, bundle.jobId, bundle.parties),
+      };
     }
-    for (const ev of bundle.settlementEvidence) {
-      const r = await deps.resolveRef(ev.kind, bundle.jobId, bundle.parties);
-      const check = checkArtifact(
-        ev.kind,
-        ev.id,
-        ev.contentHash,
-        isSettlementEvidence,
-        r,
-      );
-      // Optional §9.7 semantics: a hash-matched evidence record can still be
-      // internally invalid (wrong finality model, non-canonical amount, bad
-      // signer, …). If the caller wired a verifier, run it and downgrade a
-      // non-passing record — a signature over the bundle only binds the hash.
-      if (check.verdict === "ok" && deps.verifyEvidence && r) {
-        // Pass the signed record intact: §9.7 verification includes the
-        // orchestrator signature. Every non-pass decision fails closed;
-        // `indeterminate` is explicitly not evidence of validity.
-        const verdict = await deps.verifyEvidence(r);
-        if (verdict.decision !== "pass") {
-          check.verdict = "invalid-evidence";
-        }
-      }
-      refs.push(check);
+    if (!deps.resolveRef) return { supported: false, value: null };
+    return {
+      supported: true,
+      value: await deps.resolveRef(ref.kind, bundle.jobId, bundle.parties),
+    };
+  };
+  const checkReadableRef = async (
+    artifactKind: string,
+    ref: ReadableAttestationRef,
+    validate: (value: Record<string, unknown>) => boolean,
+  ): Promise<{ check: RefCheck; value: Record<string, unknown> | null }> => {
+    const resolved = await resolveReadableRef(ref);
+    if (!resolved.supported) {
+      return {
+        check: {
+          kind: artifactKind,
+          id: refLocator(ref),
+          verdict: "unresolved",
+        },
+        value: null,
+      };
     }
-    for (const vr of bundle.vetRecords) {
-      const r = await deps.resolveRef(vr.kind, bundle.jobId, bundle.parties);
-      refs.push(
-        checkArtifact(
-          vr.kind,
-          vr.id,
-          vr.contentHash,
-          isCompositeVerificationRecord,
-          r,
-        ),
-      );
-    }
-    for (const amendment of bundle.amendments ?? []) {
-      const r = await deps.resolveRef(amendment.kind, bundle.jobId, bundle.parties);
-      refs.push(
-        checkArtifact(
-          amendment.kind,
-          amendment.id,
-          amendment.contentHash,
-          isAnyRecord,
-          r,
-        ),
-      );
-    }
-    for (const rating of bundle.ratingRefs ?? []) {
-      const r = await deps.resolveRef(rating.kind, bundle.jobId, bundle.parties);
-      refs.push(
-        checkArtifact(
-          rating.kind,
-          rating.id,
-          rating.contentHash,
-          isAnyRecord,
-          r,
-        ),
-      );
-    }
-    // The listing isn't a jobId-keyed session artifact; resolve it through the
-    // agreement's listingRef (its storage address) when there is an agreement.
-    // Pre-commit terminal bundles omit agreementRef, so callers can also expose
-    // the listing through resolveRef("dacs-1-listing", jobId).
-    const listingId = String(bundle.listingRef.listingId);
-    const listingAddr =
-      agr &&
-      typeof (stripSignature(agr) as { listingRef?: unknown }).listingRef ===
-        "string"
-        ? ((stripSignature(agr) as { listingRef: string }).listingRef)
-        : null;
-    const listing = listingAddr
-      ? await deps.readArtifact(listingAddr)
-      : await deps.resolveRef("dacs-1-listing", bundle.jobId, bundle.parties);
-    refs.push(
-      checkArtifact(
-        "dacs-1-listing",
-        listingId,
-        bundle.listingRef.contentHash,
-        isListing,
-        listing,
+    return {
+      check: checkArtifact(
+        artifactKind,
+        refLocator(ref),
+        ref.contentHash,
+        validate,
+        resolved.value,
       ),
+      value: resolved.value,
+    };
+  };
+
+  if (bundle.agreementRef) {
+    const agreement = await checkReadableRef(
+      "dacs-3-agreement",
+      bundle.agreementRef,
+      isAgreementDocument,
+    );
+    refs.push(agreement.check);
+    agreementArtifact = agreement.value;
+  }
+  for (const ev of bundle.settlementEvidence) {
+    const evidence = await checkReadableRef(
+      "dacs-4-evidence",
+      ev,
+      isLegacyMvpAttestationRef(ev)
+        ? isLegacyMvpSettlementEvidence
+        : isSettlementEvidence,
+    );
+    if (
+      evidence.check.verdict === "ok" &&
+      deps.verifyEvidence &&
+      evidence.value
+    ) {
+      const verdict = await deps.verifyEvidence(evidence.value);
+      if (verdict.decision !== "pass") {
+        evidence.check.verdict = "invalid-evidence";
+      }
+    }
+    refs.push(evidence.check);
+  }
+  for (const vr of bundle.vetRecords) {
+    refs.push(
+      (
+        await checkReadableRef(
+          "dacs-2-verifyresult",
+          vr,
+          isCompositeVerificationRecord,
+        )
+      ).check,
     );
   }
+  for (const amendment of bundle.amendments ?? []) {
+    refs.push(
+      (await checkReadableRef("dacs-4-amendment", amendment, isAnyRecord))
+        .check,
+    );
+  }
+  for (const rating of bundle.ratingRefs ?? []) {
+    refs.push(
+      (await checkReadableRef("dacs-5-rating", rating, isAnyRecord)).check,
+    );
+  }
+
+  // The listing is not a session AttestationRef. Follow the agreement's signed
+  // listing address, or use the explicit legacy resolver for pre-commit reads.
+  const listingId = String(bundle.listingRef.listingId);
+  const listingAddr =
+    agreementArtifact &&
+    typeof (stripSignature(agreementArtifact) as { listingRef?: unknown })
+      .listingRef === "string"
+      ? (stripSignature(agreementArtifact) as { listingRef: string }).listingRef
+      : null;
+  const canResolveListing = Boolean(listingAddr || deps.resolveRef);
+  const listing = listingAddr
+    ? await deps.readArtifact(listingAddr)
+    : deps.resolveRef
+      ? await deps.resolveRef("dacs-1-listing", bundle.jobId, bundle.parties)
+      : null;
+  refs.push(
+    canResolveListing
+      ? checkArtifact(
+          "dacs-1-listing",
+          listingId,
+          bundle.listingRef.contentHash,
+          isListing,
+          listing,
+        )
+      : {
+          kind: "dacs-1-listing",
+          id: listingId,
+          verdict: "unresolved",
+        },
+  );
 
   const anyInvalid = signatures.some((c) => c.verdict === "invalid");
   const anyError = signatures.some((c) => c.verdict === "error");
