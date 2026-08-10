@@ -14,8 +14,10 @@ import {
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
-import type { ListingValidationResult } from "./listingValidation.js";
-import { contentHash } from "../canonical/index.js";
+import {
+  isVerifiedListingAdmission,
+  type ListingValidationResult,
+} from "./listingValidation.js";
 
 /**
  * Resolve, structurally validate, and VERIFY anchored listings at the given refs
@@ -359,12 +361,16 @@ export async function discoverListings(
       } catch {
         continue;
       }
-      if (
-        validation.disposition !== "verified" ||
-        validation.listingContentHash !== contentHash(snapshot)
-      ) {
+      if (!isVerifiedListingAdmission(snapshot, validation)) {
         continue;
       }
+      // Promote an envelope only from the exact ordered-validation result.
+      found.push({
+        ref,
+        compatibility: "normative",
+        listing: validation.listing,
+      });
+      continue;
     }
     found.push({ ref, ...readable });
   }

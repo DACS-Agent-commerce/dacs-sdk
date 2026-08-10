@@ -10,6 +10,7 @@ import {
   resolveListingRails,
   validateListingArtifact,
   type ListingRailResolutionInput,
+  type ListingValidationDeps,
   type RevocationSurface,
 } from "../../src/agent/listingValidation.js";
 import { discoverListings } from "../../src/agent/discover.js";
@@ -20,7 +21,11 @@ import type {
   RevocationMarker,
 } from "../../src/artifacts/types.js";
 import { ed25519Verify, publicKeyFromRaw } from "../../src/crypto/index.js";
-import { contentHash } from "../../src/canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  sha256Hex,
+} from "../../src/canonical/index.js";
 
 const ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -255,6 +260,24 @@ describe("ordered ListingValidationDisposition", () => {
   };
   const fixture = (): Listing =>
     structuredClone(source.fixtures["listing-with-inert-extension"].listing);
+  const admissionCapability = (listing: Listing) => {
+    const deliverable = listing.offering.deliverable;
+    if (
+      deliverable.kind !== "attested-payload" ||
+      !deliverable.verificationMethod
+    ) {
+      throw new Error("fixture drift");
+    }
+    return {
+      disposition: "supported" as const,
+      reason: "supported",
+      verificationMethodKind: deliverable.verificationMethod.kind,
+      verificationMethodHash: sha256Hex(
+        canonicalize(deliverable.verificationMethod),
+      ),
+      deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
+    };
+  };
   const verify = ({
     signedBytes,
     signature,
@@ -270,7 +293,7 @@ describe("ordered ListingValidationDisposition", () => {
         publicKeyFromRaw(Buffer.from(encoded, "base64url")),
       );
   };
-  const baseDeps = () => ({
+  const baseDeps = (): ListingValidationDeps => ({
     nowMs: () => 1_790_000_000_000,
     verifyListingSignature: verify,
     revocation: {
@@ -298,7 +321,148 @@ describe("ordered ListingValidationDisposition", () => {
         signature: { signer: signature.ref, value: signature.signature },
       });
     },
+    resolvePayloadVerificationCapability: () => ({
+      disposition: "supported" as const,
+    }),
     verifySellerControl: () => true,
+  });
+
+  it("rejects a known but locally unconfigured DPA-1 method at step 7", async () => {
+    const listing = fixture();
+    const deps = baseDeps();
+    delete deps.resolvePayloadVerificationCapability;
+    deps.verifyListingSignature = () => true;
+    let railReads = 0;
+    let controlReads = 0;
+    deps.loadRailResolution = () => {
+      railReads += 1;
+      throw new Error("must not resolve rails after DPA-1 failure");
+    };
+    deps.verifySellerControl = () => {
+      controlReads += 1;
+      return true;
+    };
+
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "rejected",
+      step: 7,
+      reason: "payload-verification-method-unsupported",
+      payloadVerificationCapability: {
+        disposition: "unsupported",
+        reason: "payload-verification-capability-unconfigured",
+      },
+    });
+    expect(railReads).toBe(0);
+    expect(controlReads).toBe(0);
+  });
+
+  it.each([
+    ["indeterminate", "notary-temporarily-unavailable"],
+    ["error", "method-dependency-failed"],
+  ] as const)(
+    "preserves DPA-1 %s while returning an overall indeterminate Listing",
+    async (disposition, reason) => {
+      const listing = fixture();
+      const deps = baseDeps();
+      deps.verifyListingSignature = () => true;
+      deps.resolvePayloadVerificationCapability = () => ({
+        disposition,
+        reason,
+      });
+      let railReads = 0;
+      deps.loadRailResolution = () => {
+        railReads += 1;
+        throw new Error("must not resolve rails");
+      };
+
+      await expect(
+        validateListingArtifact(
+          listing as unknown as Record<string, unknown>,
+          deps,
+        ),
+      ).resolves.toMatchObject({
+        disposition: "indeterminate",
+        step: 7,
+        reason: `payload-verification-method-${disposition}`,
+        payloadVerificationCapability: { disposition, reason },
+      });
+      expect(railReads).toBe(0);
+    },
+  );
+
+  it("maps a thrown DPA-1 dependency resolver to method error and Listing indeterminate", async () => {
+    const listing = fixture();
+    const deps = baseDeps();
+    deps.verifyListingSignature = () => true;
+    deps.resolvePayloadVerificationCapability = () => {
+      throw new Error("offline");
+    };
+
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      step: 7,
+      reason: "payload-verification-method-error",
+      payloadVerificationCapability: {
+        disposition: "error",
+        reason: "payload-verification-capability-resolution-threw",
+      },
+    });
+  });
+
+  it("passes the exact signed method/spec and extension-inclusive hashes to the verifier", async () => {
+    const listing = fixture();
+    const deliverable = listing.offering.deliverable;
+    if (deliverable.kind !== "attested-payload") throw new Error("fixture drift");
+    const method = {
+      kind: "tlsnotary" as const,
+      endpoint: "https://notary.example/session",
+      extension: { policy: "exact-bytes" },
+    };
+    deliverable.verificationMethod = method;
+    const deps = baseDeps();
+    deps.verifyListingSignature = () => true;
+    deps.resolvePayloadVerificationCapability = (input) => {
+      expect(input.operation).toBe("verify");
+      expect(input.verificationMethod).not.toBe(method);
+      expect(input.deliverableSpec).not.toBe(deliverable);
+      expect(input.verificationMethod).toEqual(method);
+      expect(input.deliverableSpec).toEqual(deliverable);
+      expect(input.verificationMethod).toHaveProperty(
+        "extension.policy",
+        "exact-bytes",
+      );
+      expect(input.verificationMethodHash).toBe(
+        sha256Hex(canonicalize(method)),
+      );
+      expect(input.deliverableSpecHash).toBe(
+        sha256Hex(canonicalize(deliverable)),
+      );
+      return { disposition: "supported" };
+    };
+
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "verified",
+      payloadVerificationCapability: {
+        disposition: "supported",
+        verificationMethodKind: "tlsnotary",
+        verificationMethodHash: sha256Hex(canonicalize(method)),
+      },
+    });
   });
 
   it("returns verified only after every applicable step succeeds", async () => {
@@ -321,7 +485,7 @@ describe("ordered ListingValidationDisposition", () => {
     const deps = baseDeps();
     deps.verifyListingSignature = (request) => {
       listing.seller.displayName = "mutated concurrently";
-      request.signature.value = "caller-mutated-request";
+      (request.signature as { value: string }).value = "caller-mutated-request";
       return true;
     };
     deps.verifyIdentityPresentation = ({ bundle }) => {
@@ -429,8 +593,38 @@ describe("ordered ListingValidationDisposition", () => {
     });
   });
 
+  it("validates and returns an owned snapshot when caller bytes mutate during an await", async () => {
+    const listing = fixture();
+    const original = structuredClone(listing);
+    const deps = {
+      ...baseDeps(),
+      verifyListingSignature: async () => {
+        await Promise.resolve();
+        listing.listingId = "mutated-by-caller";
+        return true;
+      },
+    };
+    const result = await validateListingArtifact(
+      listing as unknown as Record<string, unknown>,
+      deps,
+    );
+    expect(result).toMatchObject({
+      disposition: "verified",
+      listing: { listingId: original.listingId },
+    });
+    expect(listing.listingId).toBe("mutated-by-caller");
+    expect(result.listing).not.toBe(listing);
+    expect(
+      contentHash(result.listing as unknown as Record<string, unknown>),
+    ).toBe(result.listingContentHash);
+    expect(result.listingContentHash).not.toBe(
+      contentHash(listing as unknown as Record<string, unknown>),
+    );
+  });
+
   it("keeps non-verified normative Listings out of discovery", async () => {
     const listing = fixture() as unknown as Record<string, unknown>;
+    const exactListing = listing as unknown as Listing;
     const common = {
       trustListings: true as const,
       nowMs: () => 1_790_000_000_000,
@@ -458,7 +652,9 @@ describe("ordered ListingValidationDisposition", () => {
           disposition: "verified",
           step: 9,
           reason: "verified",
+          listing: exactListing,
           listingContentHash: contentHash(listing),
+          payloadVerificationCapability: admissionCapability(exactListing),
         }),
       }),
     ).resolves.toHaveLength(1);
@@ -471,6 +667,22 @@ describe("ordered ListingValidationDisposition", () => {
           step: 9,
           reason: "verified-different-content",
           listingContentHash: "0".repeat(64),
+        }),
+      }),
+    ).resolves.toEqual([]);
+
+    const substituted = fixture();
+    substituted.listingId = "substituted-listing";
+    await expect(
+      discoverListings(["listing"], async () => listing, {
+        ...common,
+        validateListing: () => ({
+          disposition: "verified",
+          step: 9,
+          reason: "verified",
+          listing: substituted,
+          listingContentHash: contentHash(listing),
+          payloadVerificationCapability: admissionCapability(substituted),
         }),
       }),
     ).resolves.toEqual([]);
@@ -596,6 +808,94 @@ describe("ordered ListingValidationDisposition", () => {
       step: 7,
       reason: "pipeline-invalid",
     });
+  });
+
+  it("rejects a missing DPA-1 method at step 7 before capability, rail, or control reads", async () => {
+    const listing = fixture();
+    const deliverable = listing.offering.deliverable;
+    if (deliverable.kind !== "attested-payload") throw new Error("fixture drift");
+    delete deliverable.verificationMethod;
+    let capabilityReads = 0;
+    let railReads = 0;
+    let controlReads = 0;
+    const deps = baseDeps();
+    deps.verifyListingSignature = () => true;
+    deps.resolvePayloadVerificationCapability = () => {
+      capabilityReads += 1;
+      return { disposition: "supported" };
+    };
+    deps.loadRailResolution = () => {
+      railReads += 1;
+      throw new Error("must not resolve rails");
+    };
+    deps.verifySellerControl = () => {
+      controlReads += 1;
+      return true;
+    };
+
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "rejected",
+      step: 7,
+      reason: "pipeline-invalid",
+    });
+    expect(capabilityReads).toBe(0);
+    expect(railReads).toBe(0);
+    expect(controlReads).toBe(0);
+
+    let orderedReads = 0;
+    await expect(
+      discoverListings(
+        ["listing"],
+        async () => listing as unknown as Record<string, unknown>,
+        {
+        trustListings: true,
+        nowMs: deps.nowMs,
+        validateListing: (raw) => {
+          orderedReads += 1;
+          return validateListingArtifact(raw, deps);
+        },
+        },
+      ),
+    ).resolves.toEqual([]);
+    expect(orderedReads).toBe(1);
+  });
+
+  it.each([
+    ["tlsnotary", { kind: "tlsnotary", endpoint: "" }],
+    ["zktls-provider", { kind: "zktls", provider: "", programId: "program" }],
+    ["zktls-program", { kind: "zktls", provider: "reclaim", programId: "" }],
+    ["proxy", { kind: "consensus-backed-proxy", endpoint: { method: "GET", urlTemplate: "" } }],
+    ["oauth-provider", { kind: "oauth-attested", provider: "", scopes: ["openid"], maxTokenAgeSec: 60 }],
+    ["oauth-scope", { kind: "oauth-attested", provider: "oidc", scopes: [""], maxTokenAgeSec: 60 }],
+    ["evm-contract", { kind: "evm-rpc", chainId: 1, contract: "0xabc", method: "ownerOf" }],
+    ["evm-method", { kind: "evm-rpc", chainId: 1, contract: `0x${"1".repeat(40)}`, method: "" }],
+  ])("classifies malformed DPA-1 method $0 at ordered reader step 1 before resolution", async (_name, method) => {
+    const listing = fixture();
+    const deliverable = listing.offering.deliverable;
+    if (deliverable.kind !== "attested-payload") throw new Error("fixture drift");
+    deliverable.verificationMethod = method as never;
+    let capabilityReads = 0;
+    const deps = baseDeps();
+    deps.resolvePayloadVerificationCapability = () => {
+      capabilityReads += 1;
+      return { disposition: "supported" };
+    };
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "rejected",
+      step: 1,
+      reason: "schema-invalid",
+    });
+    expect(capabilityReads).toBe(0);
   });
 
   it("rejects a pay phase not bound to an accepted rail at reader step 8", async () => {

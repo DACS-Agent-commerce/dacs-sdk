@@ -3,13 +3,17 @@ import { types as nodeTypes } from "node:util";
 
 import type {
   ComponentSignature,
+  DeliverableSpec,
   IdentityBundle,
   Listing,
+  ListingDraft,
   PaymentRailRef,
   RevocationBinding,
   RevocationMarker,
+  VerificationMethod,
 } from "../artifacts/types.js";
 import {
+  isListing,
   isListingEnvelope,
   isListingPipelineValid,
   isPaymentRailRef,
@@ -96,6 +100,49 @@ export interface ListingRailResolutionResult {
   authorityBasis?: "pa1-in-code" | "pa2" | "pa3";
 }
 
+type AttestedPayloadDeliverable = Extract<
+  DeliverableSpec,
+  { kind: "attested-payload" }
+>;
+
+/**
+ * Local DPA-1 decision. `supported` means this SDK instance can execute the
+ * selected method for exact-byte payload binding, not merely that it recognizes
+ * the method discriminator.
+ */
+export type PayloadVerificationCapabilityDecision =
+  | { disposition: "supported"; reason?: string }
+  | {
+      disposition: "unsupported" | "indeterminate" | "error";
+      reason: string;
+    };
+
+/** Exact signed method/spec objects are supplied; integrations must not project them. */
+export interface PayloadVerificationCapabilityInput {
+  operation: "produce" | "verify";
+  verificationMethod: Readonly<VerificationMethod>;
+  verificationMethodHash: string;
+  deliverableSpec: Readonly<AttestedPayloadDeliverable>;
+  deliverableSpecHash: string;
+}
+
+/** Transport-neutral local capability/dependency resolver for DACS-4 DPA-1. */
+export type PayloadVerificationCapabilityResolver = (
+  input: PayloadVerificationCapabilityInput,
+) =>
+  | Promise<PayloadVerificationCapabilityDecision>
+  | PayloadVerificationCapabilityDecision;
+
+export type ListingPayloadVerificationCapability =
+  | { disposition: "not-applicable"; reason: "not-applicable" }
+  | {
+      disposition: "supported" | "unsupported" | "indeterminate" | "error";
+      reason: string;
+      verificationMethodKind?: VerificationMethod["kind"];
+      verificationMethodHash?: string;
+      deliverableSpecHash?: string;
+    };
+
 export interface ListingValidationResult {
   disposition: ListingValidationDisposition;
   /** Normative reader step that determined the result. */
@@ -105,6 +152,68 @@ export interface ListingValidationResult {
   listingContentHash?: string;
   revocation?: RevocationCheck;
   railResolution?: ListingRailResolutionResult;
+  /** DACS-4 DPA-1 local exact-byte method capability, when applicable. */
+  payloadVerificationCapability?: Exclude<
+    ListingPayloadVerificationCapability,
+    { disposition: "not-applicable" }
+  >;
+}
+
+export type VerifiedListingAdmission = ListingValidationResult & {
+  disposition: "verified";
+  listing: Listing;
+  listingContentHash: string;
+};
+
+/**
+ * Bind an ordered reader result to the exact current Listing admitted by a
+ * public discovery/session boundary. This rejects stale pre-DPA validators,
+ * substituted result objects, and capability decisions for another method or
+ * DeliverableSpec even when a caller supplies a matching raw hash string.
+ */
+export function isVerifiedListingAdmission(
+  raw: Record<string, unknown>,
+  result: ListingValidationResult,
+): result is VerifiedListingAdmission {
+  if (
+    result.disposition !== "verified" ||
+    result.step !== 9 ||
+    !result.listing ||
+    !result.listingContentHash ||
+    !isListing(raw) ||
+    !isListing(result.listing)
+  ) {
+    return false;
+  }
+  try {
+    if (
+      canonicalize(result.listing) !== canonicalize(raw) ||
+      contentHash(raw) !== result.listingContentHash ||
+      contentHash(result.listing as unknown as Record<string, unknown>) !==
+        result.listingContentHash
+    ) {
+      return false;
+    }
+    if (
+      !result.listing.pipeline.some(
+        (phase) => phase.kind === "deliver-attested-payload",
+      )
+    ) {
+      return true;
+    }
+    const deliverable = result.listing.offering.deliverable;
+    const capability = result.payloadVerificationCapability;
+    return (
+      deliverable.kind === "attested-payload" &&
+      !!deliverable.verificationMethod &&
+      capability?.disposition === "supported" &&
+      capability.verificationMethodHash ===
+        sha256Hex(canonicalize(deliverable.verificationMethod)) &&
+      capability.deliverableSpecHash === sha256Hex(canonicalize(deliverable))
+    );
+  } catch {
+    return false;
+  }
 }
 
 export type SignatureVerifier = (input: {
@@ -727,6 +836,132 @@ export function resolveListingRails(
     : resolveAnchoredRegistry(captured);
 }
 
+function isCapabilityDecision(
+  value: unknown,
+): value is PayloadVerificationCapabilityDecision {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.disposition === "supported") {
+    return candidate.reason === undefined || typeof candidate.reason === "string";
+  }
+  return (
+    (candidate.disposition === "unsupported" ||
+      candidate.disposition === "indeterminate" ||
+      candidate.disposition === "error") &&
+    typeof candidate.reason === "string" &&
+    candidate.reason.length > 0
+  );
+}
+
+/**
+ * Resolve DACS-4 §9.6.3 DPA-1 over the exact signed method and deliverable.
+ * This is separate from the structural union check: a known method with no
+ * installed/configured implementation is locally unsupported and must fail
+ * before a session, payment, signature, or anchor side effect.
+ */
+export async function resolveListingPayloadVerificationCapability(
+  listing: Readonly<Listing | ListingDraft>,
+  operation: PayloadVerificationCapabilityInput["operation"],
+  resolver?: PayloadVerificationCapabilityResolver,
+): Promise<ListingPayloadVerificationCapability> {
+  if (!listing.pipeline.some((phase) => phase.kind === "deliver-attested-payload")) {
+    return { disposition: "not-applicable", reason: "not-applicable" };
+  }
+
+  const deliverable = listing.offering.deliverable;
+  if (deliverable.kind !== "attested-payload" || !deliverable.verificationMethod) {
+    return {
+      disposition: "unsupported",
+      reason: "attested-payload-method-missing-or-malformed",
+    };
+  }
+
+  let verificationMethod: VerificationMethod;
+  let deliverableSpec: AttestedPayloadDeliverable;
+  let verificationMethodCanonical: string;
+  let deliverableSpecCanonical: string;
+  let verificationMethodHash: string;
+  let deliverableSpecHash: string;
+  try {
+    // Give the untrusted capability adapter exact-byte-preserving clones. This
+    // retains unknown inert members in the signed/capability identity without
+    // allowing an adapter to mutate the caller's Listing before a failed gate.
+    verificationMethod = structuredClone(deliverable.verificationMethod);
+    deliverableSpec = structuredClone(deliverable);
+    verificationMethodCanonical = canonicalize(verificationMethod);
+    deliverableSpecCanonical = canonicalize(deliverableSpec);
+    verificationMethodHash = sha256Hex(verificationMethodCanonical);
+    deliverableSpecHash = sha256Hex(deliverableSpecCanonical);
+  } catch {
+    return {
+      disposition: "error",
+      reason: "payload-verification-capability-input-not-canonicalizable",
+      verificationMethodKind: deliverable.verificationMethod.kind,
+    };
+  }
+
+  const details = {
+    verificationMethodKind: deliverable.verificationMethod.kind,
+    verificationMethodHash,
+    deliverableSpecHash,
+  } as const;
+  if (!resolver) {
+    return {
+      disposition: "unsupported",
+      reason: "payload-verification-capability-unconfigured",
+      ...details,
+    };
+  }
+
+  let decision: PayloadVerificationCapabilityDecision;
+  try {
+    decision = await resolver({
+      operation,
+      // Pass complete clones, not reconstructed normative projections.
+      verificationMethod,
+      verificationMethodHash,
+      deliverableSpec,
+      deliverableSpecHash,
+    });
+  } catch {
+    return {
+      disposition: "error",
+      reason: "payload-verification-capability-resolution-threw",
+      ...details,
+    };
+  }
+  try {
+    if (
+      canonicalize(verificationMethod) !== verificationMethodCanonical ||
+      canonicalize(deliverableSpec) !== deliverableSpecCanonical
+    ) {
+      return {
+        disposition: "error",
+        reason: "payload-verification-capability-resolution-mutated-input",
+        ...details,
+      };
+    }
+  } catch {
+    return {
+      disposition: "error",
+      reason: "payload-verification-capability-resolution-mutated-input",
+      ...details,
+    };
+  }
+  if (!isCapabilityDecision(decision)) {
+    return {
+      disposition: "error",
+      reason: "payload-verification-capability-resolution-invalid",
+      ...details,
+    };
+  }
+  return {
+    disposition: decision.disposition,
+    reason: decision.reason ?? "supported",
+    ...details,
+  };
+}
+
 export interface ListingValidationDeps {
   nowMs: () => number;
   verifyListingSignature: SignatureVerifier;
@@ -740,6 +975,8 @@ export interface ListingValidationDeps {
   loadRailResolution?: (
     listing: Readonly<Listing>,
   ) => Promise<ListingRailAuthorityInput> | ListingRailAuthorityInput;
+  /** DACS-4 DPA-1 local exact-byte verification support and availability. */
+  resolvePayloadVerificationCapability?: PayloadVerificationCapabilityResolver;
   /** DACS-1 §6.3.4 step 9 control proof; claim membership alone is insufficient. */
   verifySellerControl: (input: {
     bundle: Readonly<IdentityBundle>;
@@ -801,6 +1038,14 @@ function captureListingValidationDeps(
       "rail authority loader",
       true,
     ),
+    resolvePayloadVerificationCapability: stableDataMethod<
+      ListingValidationDeps["resolvePayloadVerificationCapability"]
+    >(
+      value,
+      "resolvePayloadVerificationCapability",
+      "payload verification capability resolver",
+      true,
+    ),
     verifySellerControl: stableDataMethod<ListingValidationDeps["verifySellerControl"]>(
       value,
       "verifySellerControl",
@@ -838,6 +1083,7 @@ export async function validateListingArtifact(
     return { disposition: "rejected", step: 1, reason: "schema-invalid" };
   }
   const envelope = capturedRaw;
+  const candidateCanonical = canonicalize(capturedRaw);
   if (envelope.dacsVersion !== "1") {
     return {
       disposition: "rejected",
@@ -947,6 +1193,44 @@ export async function validateListingArtifact(
     };
   }
 
+  const payloadVerificationCapability =
+    await resolveListingPayloadVerificationCapability(
+      listing,
+      "verify",
+      deps.resolvePayloadVerificationCapability,
+    );
+  if (payloadVerificationCapability.disposition === "unsupported") {
+    return {
+      disposition: "rejected",
+      step: 7,
+      reason: "payload-verification-method-unsupported",
+      listing,
+      listingContentHash,
+      revocation: "absent",
+      payloadVerificationCapability,
+    };
+  }
+  if (
+    payloadVerificationCapability.disposition === "indeterminate" ||
+    payloadVerificationCapability.disposition === "error"
+  ) {
+    // DACS-1 exposes no top-level `error` Listing disposition. Preserve the
+    // method-level result while failing session admission as indeterminate.
+    return {
+      disposition: "indeterminate",
+      step: 7,
+      reason: `payload-verification-method-${payloadVerificationCapability.disposition}`,
+      listing,
+      listingContentHash,
+      revocation: "absent",
+      payloadVerificationCapability,
+    };
+  }
+  const payloadCapabilityField =
+    payloadVerificationCapability.disposition === "supported"
+      ? { payloadVerificationCapability }
+      : {};
+
   const payPhases = listing.pipeline
     .filter((phase) => phase.kind.startsWith("pay-"))
     .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail }));
@@ -981,6 +1265,7 @@ export async function validateListingArtifact(
         listingContentHash,
         revocation: "absent",
         railResolution,
+        ...payloadCapabilityField,
       };
     }
   }
@@ -1026,6 +1311,7 @@ export async function validateListingArtifact(
       listingContentHash,
       revocation: "absent",
       railResolution,
+      ...payloadCapabilityField,
     };
   }
   if (railResolution.disposition === "indeterminate") {
@@ -1037,6 +1323,32 @@ export async function validateListingArtifact(
       listingContentHash,
       revocation: "absent",
       railResolution,
+      ...payloadCapabilityField,
+    };
+  }
+  try {
+    if (canonicalize(listing) !== candidateCanonical) {
+      return {
+        disposition: "indeterminate",
+        step: 9,
+        reason: "listing-validation-snapshot-mutated",
+        listing,
+        listingContentHash,
+        revocation: "absent",
+        railResolution,
+        ...payloadCapabilityField,
+      };
+    }
+  } catch {
+    return {
+      disposition: "indeterminate",
+      step: 9,
+      reason: "listing-validation-snapshot-mutated",
+      listing,
+      listingContentHash,
+      revocation: "absent",
+      railResolution,
+      ...payloadCapabilityField,
     };
   }
   return {
@@ -1047,6 +1359,7 @@ export async function validateListingArtifact(
     listingContentHash,
     revocation: "absent",
     railResolution,
+    ...payloadCapabilityField,
   };
 }
 

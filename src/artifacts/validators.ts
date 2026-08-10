@@ -52,6 +52,9 @@ const isNonEmptyStr = (v: unknown): v is string => isStr(v) && v.length > 0;
 /** CORE §B.1 canonical logical-address spelling for session identifiers. */
 export const isCanonicalJobId = (v: unknown): v is string =>
   isStr(v) && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(v);
+/** Semantic method fields are exact signed values: reject blank/padded input. */
+const isCanonicalNonBlankStr = (v: unknown): v is string =>
+  isStr(v) && v.length > 0 && v.trim() === v;
 const isNonNegativeInt = (v: unknown): v is number =>
   isNum(v) && Number.isInteger(v) && v >= 0;
 const isSha256 = (v: unknown): v is string =>
@@ -329,29 +332,37 @@ export function isVerificationMethod(v: unknown): v is VerificationMethod {
         isOptionalStr(v.schemaUrl)
       );
     case "tlsnotary":
-      return isStr(v.endpoint) && isOptionalStr(v.sessionTemplate);
+      return (
+        isCanonicalNonBlankStr(v.endpoint) &&
+        isOptionalStr(v.sessionTemplate)
+      );
     case "zktls":
-      return isStr(v.provider) && isStr(v.programId);
+      return (
+        isCanonicalNonBlankStr(v.provider) &&
+        isCanonicalNonBlankStr(v.programId)
+      );
     case "consensus-backed-proxy":
       return (
         isObj(v.endpoint) &&
         isOneOf(["GET", "POST"], v.endpoint.method) &&
-        isStr(v.endpoint.urlTemplate) &&
+        isCanonicalNonBlankStr(v.endpoint.urlTemplate) &&
         (v.endpoint.headers === undefined ||
           isRecordOfStrings(v.endpoint.headers)) &&
         isOptionalStr(v.endpoint.body)
       );
     case "oauth-attested":
       return (
-        isStr(v.provider) &&
-        isStrArray(v.scopes) &&
+        isCanonicalNonBlankStr(v.provider) &&
+        Array.isArray(v.scopes) &&
+        v.scopes.every(isCanonicalNonBlankStr) &&
         isSafeUint(v.maxTokenAgeSec)
       );
     case "evm-rpc":
       return (
-        isSafeUint(v.chainId) &&
+        isPositiveSafeInt(v.chainId) &&
         isStr(v.contract) &&
-        isStr(v.method) &&
+        /^0x[0-9a-fA-F]{40}$/.test(v.contract) &&
+        isCanonicalNonBlankStr(v.method) &&
         (v.args === undefined || Array.isArray(v.args))
       );
     case "domain-tls-control":
@@ -542,6 +553,17 @@ function pipelineIsCoherent(
   if (!pipeline.some((phase) => phase.kind.startsWith("deliver-"))) {
     return false; // DACS-4 §9.9 PIPE-1.
   }
+  if (pipeline.some((phase) => phase.kind === "deliver-attested-payload")) {
+    const offering = listing.offering;
+    const deliverable = isObj(offering) ? offering.deliverable : undefined;
+    if (
+      !isObj(deliverable) ||
+      deliverable.kind !== "attested-payload" ||
+      !isVerificationMethod(deliverable.verificationMethod)
+    ) {
+      return false; // DACS-4 §9.6.3 DPA-1: reject before session/payment.
+    }
+  }
   if (!includeRailBinding) return true;
 
   const payPhases = pipeline.filter((phase) => phase.kind.startsWith("pay-"));
@@ -578,7 +600,10 @@ function pipelineIsCoherent(
   return true;
 }
 
-/** DACS-1 §6.3.4 reader step 7, excluding the LRR-1 rail checks in step 8. */
+/**
+ * DACS-1 §6.3.4 reader step 7 and the static DACS-4 §9.6.3 DPA-1
+ * shape/coherence gate, excluding local method capability and step 8 rails.
+ */
 export function isListingPipelineValid(v: unknown): boolean {
   return (
     isObj(v) &&
@@ -753,7 +778,11 @@ export function isLegacyMvpListing(v: unknown): v is LegacyMvpListing {
 
 /** Parse a signed artifact through the explicit normative/legacy read boundary. */
 export function readListingArtifact(v: unknown): ReadableListing | null {
-  if (isListing(v)) return { compatibility: "normative", listing: v };
+  // Ordered DACS-1 validation owns semantic steps 2..9. Keep a structurally
+  // readable normative envelope readable here so unsupported versions,
+  // missing conditional DPA-1 methods, and unknown phase discriminators reach
+  // their required ordered disposition instead of disappearing at parse time.
+  if (isListingEnvelope(v)) return { compatibility: "normative", listing: v };
   if (!isObj(v) || typeof v.signature !== "string") return null;
   const scope = stripSignature(v);
   return isLegacyMvpListing(scope)

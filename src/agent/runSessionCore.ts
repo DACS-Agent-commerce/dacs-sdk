@@ -39,7 +39,10 @@ import type {
   SettlementFinalityModel,
 } from "../artifacts/types.js";
 import { attestationBundleHash } from "./twoSidedBundle.js";
-import type { ListingValidationResult } from "./listingValidation.js";
+import {
+  isVerifiedListingAdmission,
+  type ListingValidationResult,
+} from "./listingValidation.js";
 import {
   type LegacyMvpAgreementDocument as AgreementDocument,
   type LegacyMvpAttestationBundle as AttestationBundle,
@@ -2159,7 +2162,7 @@ export async function runSessionCore(
     listingExpired = validity.notAfter !== undefined && now > validity.notAfter;
   }
 
-  const listingView: {
+  let listingView: {
     sellerClaim: string;
     supportedPaymentRails: string[];
     supportedDelivery: string[];
@@ -2227,12 +2230,50 @@ export async function runSessionCore(
           `${validation.step} (${validation.reason}); LR-3 refuses the new session`,
       );
     }
-    if (validation.listingContentHash !== listingView.pin.contentHash) {
+    const exactRawHash = contentHash(storedRecord);
+    if (validation.listingContentHash !== exactRawHash) {
       throw new CounterpartyError(
         `listing at ${listingRef} validation result is not bound to the exact LR-1 ` +
           `content hash; refusing the new session`,
       );
     }
+    if (!isVerifiedListingAdmission(storedRecord, validation)) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} has a stale, substituted, or capability-incomplete ` +
+          `verified result; DACS-1 LR-3 / DACS-4 DPA-1 refuse the new session`,
+      );
+    }
+    const admitted = validation.listing;
+    if (admitted.signature.signer !== admitted.seller.identity.presentedBy) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} is not payee-bound: the Listing signer must equal ` +
+          `seller.identity.presentedBy until the complete DACS-1 §6.3.2 ` +
+          `presentation is verified`,
+      );
+    }
+    const now = deps.nowMs();
+    if (
+      now < admitted.validity.notBefore ||
+      (admitted.validity.notAfter !== undefined && now > admitted.validity.notAfter)
+    ) {
+      throw new CounterpartyError(
+        `listing ${admitted.listingId} v${admitted.listingVersion} is outside its ` +
+          `DACS-1 §6.3.4 validity window`,
+      );
+    }
+    listingView = {
+      sellerClaim: admitted.seller.identity.presentedBy,
+      supportedPaymentRails:
+        admitted.acceptedRails?.map((rail) => rail.railId) ?? [],
+      supportedDelivery: admitted.pipeline
+        .map((phase) => phase.kind)
+        .filter((kind) => kind.startsWith("deliver-")),
+      pin: {
+        listingId: admitted.listingId,
+        version: admitted.listingVersion,
+        contentHash: validation.listingContentHash,
+      },
+    };
   }
 
   // #41 — authenticate the listing before any external effect. Fresh admission

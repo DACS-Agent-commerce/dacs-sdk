@@ -9,9 +9,11 @@ import {
   readListingArtifact,
 } from "../artifacts/validators.js";
 import {
+  canonicalize,
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
+  sha256Hex,
 } from "../canonical/index.js";
 import {
   snapshotCanonicalJson,
@@ -21,8 +23,10 @@ import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
 import type { Signer } from "./signedArtifact.js";
 import {
+  resolveListingPayloadVerificationCapability,
   resolveListingRails,
   type ListingRailAuthorityInput,
+  type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
 
 /**
@@ -91,6 +95,11 @@ export interface PublishListingDeps {
   loadRailResolution?: (
     listing: Readonly<ListingDraft>,
   ) => Promise<ListingRailAuthorityInput> | ListingRailAuthorityInput;
+  /**
+   * DACS-4 DPA-1 producer capability. A recognized method discriminator is not
+   * sufficient: the local seller must be able to bind the exact payload bytes.
+   */
+  resolvePayloadVerificationCapability?: PayloadVerificationCapabilityResolver;
 }
 
 type CapturedPublishListingDeps = Readonly<PublishListingDeps>;
@@ -162,6 +171,11 @@ function capturePublishListingDeps(
     ),
     anchorWriteOnce: captureDataMethod(deps, "anchorWriteOnce"),
     loadRailResolution: captureDataMethod(deps, "loadRailResolution", true),
+    resolvePayloadVerificationCapability: captureDataMethod(
+      deps,
+      "resolvePayloadVerificationCapability",
+      true,
+    ),
   });
 }
 
@@ -398,7 +412,6 @@ export async function publishListingCore(
     inputListing,
     "publishListing Listing draft",
   ) as ListingDraft;
-
   const candidateVersion = (listing as { listingVersion?: unknown })
     .listingVersion;
   if (
@@ -415,6 +428,35 @@ export async function publishListingCore(
     throw new DacsError(
       "publishListing requires a normative unsigned DACS-1 §6.3.4 Listing; " +
         "legacy MVP shapes are read-only",
+    );
+  }
+  const payloadCapability = await resolveListingPayloadVerificationCapability(
+    listing,
+    "produce",
+    capturedDeps.resolvePayloadVerificationCapability,
+  );
+  if (
+    payloadCapability.disposition !== "not-applicable" &&
+    payloadCapability.disposition !== "supported"
+  ) {
+    const localContractError = new Set([
+      "payload-verification-capability-input-not-canonicalizable",
+      "payload-verification-capability-resolution-invalid",
+      "payload-verification-capability-resolution-mutated-input",
+    ]).has(payloadCapability.reason);
+    throw new DacsError(
+      `attested-payload verification method is ${payloadCapability.disposition} ` +
+      `(${payloadCapability.reason}); DPA-1 refuses publication`,
+      {
+        // DACS-2 VP-R4 does not retry `indeterminate` by default. A method
+        // `error` means resolution did not complete, so a later retry may work.
+        category:
+          (payloadCapability.disposition === "indeterminate" ||
+            payloadCapability.disposition === "error") &&
+          !localContractError
+            ? "transient"
+            : "permanent",
+      },
     );
   }
   if (listing.pipeline.some((phase) => phase.kind.startsWith("pay-"))) {
@@ -480,6 +522,22 @@ export async function publishListingCore(
     if (version !== expected) {
       throw new DacsError(
         `listingVersion must advance monotonically without gaps: expected ${expected}, got ${version}`,
+      );
+    }
+  }
+
+  if (payloadCapability.disposition === "supported") {
+    const deliverable = listing.offering.deliverable;
+    if (
+      deliverable.kind !== "attested-payload" ||
+      !deliverable.verificationMethod ||
+      sha256Hex(canonicalize(deliverable.verificationMethod)) !==
+        payloadCapability.verificationMethodHash ||
+      sha256Hex(canonicalize(deliverable)) !==
+        payloadCapability.deliverableSpecHash
+    ) {
+      throw new DacsError(
+        "attested-payload method/spec changed after DPA-1 capability approval",
       );
     }
   }
