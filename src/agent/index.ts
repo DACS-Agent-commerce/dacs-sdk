@@ -17,6 +17,7 @@ export {
   type BundleVerification,
   type SignatureCheck,
   type Reputation,
+  type ReputationExclusion,
   type RunSessionOptions,
   type SessionListingInput,
 } from "./Agent.js";
@@ -26,6 +27,7 @@ export {
   type SignatureVerdict,
   type RefCheck,
   type RefVerdict,
+  type BundleEvidenceVerificationContext,
 } from "./verifyBundleCore.js";
 export {
   bundleConsistency,

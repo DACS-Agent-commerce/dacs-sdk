@@ -10,6 +10,8 @@ import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { verifyComponentSignature } from "../artifacts/signatures.js";
 import {
   isAnyAttestationBundle,
+  isAgreementDocument,
+  isAttestationRef,
   isLegacyMvpListing,
   isListing,
   readListingArtifact,
@@ -18,6 +20,7 @@ import {
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
+  stripSignature,
 } from "../canonical/index.js";
 import {
   ed25519Verify,
@@ -68,7 +71,11 @@ import {
   type DiscoveredListing,
 } from "./discover.js";
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
-import { computeReputation, type Reputation } from "./reputation.js";
+import {
+  computeReputation,
+  type Reputation,
+  type ReputationExclusion,
+} from "./reputation.js";
 import {
   buildSignedArtifact,
   verifySignedArtifact,
@@ -78,6 +85,7 @@ import {
 import {
   attestationBundleHash,
 } from "./twoSidedBundle.js";
+import { verifySettlementEvidence } from "./verifySettlementEvidence.js";
 import {
   verifyBundleCore,
   type SignatureCheck,
@@ -94,7 +102,13 @@ import {
 } from "./listingDiscovery.js";
 import type { DemosWriteJournal } from "../substrate/demosWriteJournal.js";
 
-export type { SignatureCheck, BundleVerification, Reputation, CciRecord };
+export type {
+  SignatureCheck,
+  BundleVerification,
+  Reputation,
+  ReputationExclusion,
+  CciRecord,
+};
 export type {
   AuthenticatedListing,
   EnumerateListingsOptions,
@@ -214,6 +228,15 @@ function captureAgentListingValidationDeps(
     >(deps, "verifySellerControl", `${label}.verifySellerControl`),
   });
 }
+
+const RAIL_TYPE_BY_HANDLER: Readonly<Record<string, string>> = Object.freeze({
+  "pay-evm-erc20": "evm-erc20",
+  "pay-solana-spl": "solana-spl",
+  "pay-cross-chain-htlc": "cross-chain-htlc",
+  "pay-cross-chain-liquidity-tank": "cross-chain-liquidity-tank",
+  "pay-ap2": "ap2",
+  "pay-x402": "x402",
+});
 
 /**
  * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
@@ -496,8 +519,9 @@ export interface Agent<
   /**
    * Anyone: derive reputation for a primary claim from its bundles. The bundle
    * refs are caller-supplied (enumerating a claim's bundles is an indexer
-   * concern, not the substrate's); non-bundle refs and bundles that fail strict
-   * verification (including unverified vet closure) are skipped.
+   * concern, not the substrate's); invalid refs, bundles that fail strict
+   * verification (including unverified vet closure), and divergent copies are
+   * excluded from the score and reported in the result.
    */
   getReputation(primaryClaim: string, bundleRefs: string[]): Promise<Reputation>;
 }
@@ -643,6 +667,50 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       resolvePublicKey: async (did) => publicKeyFromDid(did),
       verify: ed25519RawVerify,
       ...(verifyCompositeRecord ? { verifyCompositeRecord } : {}),
+      verifyEvidence: async (evidence, context) => {
+        const agreementScope = context.agreement
+          ? stripSignature(context.agreement)
+          : null;
+        if (!agreementScope || !isAgreementDocument(agreementScope)) {
+          return { decision: "fail" as const };
+        }
+        const handler =
+          typeof evidence.phase === "string" ? evidence.phase : "";
+        const railType = RAIL_TYPE_BY_HANDLER[handler];
+        if (!railType) return { decision: "fail" as const };
+        const orchestrator =
+          context.bundle.parties.find(
+            (party) => party.role === "orchestrator",
+          )?.primaryClaim ??
+          context.bundle.parties.find((party) => party.role === "buyer")
+            ?.primaryClaim;
+        if (!orchestrator) return { decision: "fail" as const };
+        return verifySettlementEvidence(
+          evidence,
+          {
+            orchestrator,
+            agreement: {
+              amount: agreementScope.terms.price.amount,
+              currency: agreementScope.terms.price.currency,
+            },
+            rail: {
+              ...(agreementScope.terms.rail
+                ? { railId: agreementScope.terms.rail.railId }
+                : {}),
+              railType,
+              asset: agreementScope.terms.price.currency,
+              handler,
+            },
+            ...(isAttestationRef(context.evidenceRef)
+              ? { attestationRef: context.evidenceRef }
+              : {}),
+          },
+          {
+            resolvePublicKey: async (signer) => publicKeyFromDid(signer),
+            verify: ed25519RawVerify,
+          },
+        );
+      },
     });
   const hasWallet =
     typeof config.wallet === "string" && config.wallet.length > 0;
@@ -1377,6 +1445,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       bundleRefs: string[],
     ): Promise<Reputation> {
       const bundles: AnyAttestationBundle[] = [];
+      const invalid: ReputationExclusion[] = [];
       for (const ref of bundleRefs) {
         const verdict = await verifyBundleAtRef(ref);
         if (
@@ -1386,9 +1455,24 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           isAnyAttestationBundle(verdict.bundle)
         ) {
           bundles.push(verdict.bundle);
+        } else {
+          invalid.push({
+            code: "invalid-bundle",
+            ...(verdict.bundle ? { jobId: verdict.bundle.jobId } : {}),
+            ref,
+            reason: verdict.reason ?? "bundle did not fully verify",
+          });
         }
       }
-      return computeReputation(primaryClaim, bundles);
+      const reputation = computeReputation(primaryClaim, bundles);
+      return {
+        ...reputation,
+        exclusions: [...reputation.exclusions, ...invalid].sort((left, right) =>
+          `${left.jobId ?? ""}:${left.ref ?? ""}:${left.code}`.localeCompare(
+            `${right.jobId ?? ""}:${right.ref ?? ""}:${right.code}`,
+          ),
+        ),
+      };
     },
   };
 }

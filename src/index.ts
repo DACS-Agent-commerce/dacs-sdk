@@ -362,6 +362,7 @@ export {
   type SignatureVerdict,
   type RefCheck,
   type RefVerdict,
+  type BundleEvidenceVerificationContext,
   bundleConsistency,
   bundlesDiverge,
   type ConsistencyVerdict,
@@ -476,6 +477,7 @@ export {
   type ParserEvalContext,
   type ParserEvaluation,
   type Reputation,
+  type ReputationExclusion,
   // Injectable buyer-session core (F1 #14): run the lifecycle against any
   // SubstrateAdapter (mock/simulation/non-Demos). NOTE: `sessionAnchorName` is
   // deliberately NOT exported — its current MVP address strings are not the
