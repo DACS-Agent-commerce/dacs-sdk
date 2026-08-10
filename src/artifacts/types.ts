@@ -199,11 +199,14 @@ export interface X402SettlementTxRef extends GenericTxRef {
   kind: "x402";
   httpResource: string;
   paymentReceiptHash: string;
-  protocolVersion: number;
+  /** Normative wire value is a string; number remains accepted for v0.1 compatibility. */
+  protocolVersion: string | number;
   facilitatorReceiptJcs: string;
   facilitatorSignature?: string;
   chainId: string;
   settlementTxHash?: string;
+  /** Canonical EVM event index used by CORE SB-1 settlement identity. */
+  logIndex?: number;
   blockNumber?: number;
   blockTimestamp?: number;
   finalityBlocks?: number;

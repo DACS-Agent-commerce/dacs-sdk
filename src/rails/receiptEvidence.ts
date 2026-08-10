@@ -112,7 +112,7 @@ export async function verifyRailReceiptEvidence(
       typeof raw["httpResource"] !== "string" ||
       raw["httpResource"].length === 0 ||
       !/^[0-9a-f]{64}$/.test(String(raw["paymentReceiptHash"])) ||
-      raw["protocolVersion"] !== 2 ||
+      (raw["protocolVersion"] !== "2" && raw["protocolVersion"] !== 2) ||
       typeof raw["facilitatorReceiptJcs"] !== "string"
     ) {
       reasons.push("x402 receipt is missing resource/hash/protocol/canonical receipt");
@@ -138,7 +138,8 @@ export async function verifyRailReceiptEvidence(
       typeof raw["chainId"] !== "string" ||
       raw["rail"] !== raw["chainId"] ||
       receiptChain !== raw["chainId"] ||
-      receipt["x402Version"] !== raw["protocolVersion"]
+      (receipt["x402Version"] !== undefined &&
+        String(receipt["x402Version"]) !== String(raw["protocolVersion"]))
     ) {
       reasons.push("x402 protocol/chain fields are incoherent");
       continue;
