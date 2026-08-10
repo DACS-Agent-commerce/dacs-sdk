@@ -11,6 +11,7 @@ import {
   runFulfilmentCore,
   runDurableFulfilmentCore,
   getSellerFulfilmentStatus,
+  finalizeCompletedSellerBundleCore,
   runSessionCore,
   sellerFulfilmentId,
   type SellerFulfilmentDeps,
@@ -25,6 +26,8 @@ import {
 import {
   FENCED_SESSION_STORE_VERSION as sellerFencedSessionStoreVersion,
   createInMemoryFencedSessionStore as sellerCreateInMemoryFencedSessionStore,
+  finalizeCompletedSellerBundleCore as sellerFinalizeCompletedBundleCore,
+  getSellerFulfilmentStatus as sellerGetFulfilmentStatus,
   runFulfilmentCore as sellerRunFulfilmentCore,
   runDurableFulfilmentCore as sellerRunDurableFulfilmentCore,
   sellerFulfilmentId as sellerSurfaceFulfilmentId,
@@ -74,6 +77,8 @@ describe("public core surface (#14)", () => {
 
   it("#17: seller fulfilment core and dependency contract are public", () => {
     expect(typeof runFulfilmentCore).toBe("function");
+    expect(typeof finalizeCompletedSellerBundleCore).toBe("function");
+    expect(sellerFinalizeCompletedBundleCore).toBe(finalizeCompletedSellerBundleCore);
     expect(sellerRunFulfilmentCore).toBe(runFulfilmentCore);
     expect(sellerSurfaceFulfilmentId).toBe(sellerFulfilmentId);
     const partial: Partial<SellerFulfilmentDeps> = { nowMs: () => 1 };

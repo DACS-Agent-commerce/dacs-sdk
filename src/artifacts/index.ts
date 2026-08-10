@@ -82,6 +82,7 @@ export type {
   AttestationBundle,
   FaultAttestationBundle,
   AnyAttestationBundle,
+  BundleBinding,
   BundlePartyRole,
   FaultedParty,
 } from "./types.js";
@@ -122,6 +123,7 @@ export {
 } from "./signatures.js";
 export {
   ARTIFACT_SEPARATORS,
+  BUNDLE_BINDING_SEPARATOR,
   RATING_SEPARATOR,
   separatorFor,
 } from "./registry.js";
@@ -162,5 +164,6 @@ export {
   isSettlementEvidence,
   isAttestationBundle,
   isFaultAttestationBundle,
+  isBundleBinding,
   isAnyAttestationBundle,
 } from "./validators.js";

@@ -10,6 +10,7 @@ import type {
   ChainTxRef,
   CommitmentRecord,
   BundleRequirement,
+  BundleBinding,
   CompositeVerificationRecord,
   DeliverableSpec,
   FaultAttestationBundle,
@@ -36,7 +37,12 @@ import type {
   VerifyResultRef,
 } from "./types.js";
 import { canonicalizeDecimal } from "../canonical/decimal.js";
-import { assertPositiveAmount, canonicalize, stripSignature } from "../canonical/index.js";
+import {
+  assertPositiveAmount,
+  bundleAddress,
+  canonicalize,
+  stripSignature,
+} from "../canonical/index.js";
 import {
   isCanonicalBase64Url,
   isComponentSignature,
@@ -1870,6 +1876,36 @@ export function isFaultAttestationBundle(v: unknown): v is FaultAttestationBundl
       isOneOf(PHASE_TYPES, kind),
     ) &&
     faultedPartyIsPermitted(v)
+  );
+}
+
+/** DACS-5 §10.4.2 BB-4/BB-5 structural and self-consistency gate. */
+export function isBundleBinding(v: unknown): v is BundleBinding {
+  return (
+    isObj(v) &&
+    hasOnlyKeys(v, [
+      "bindingVersion",
+      "jobId",
+      "role",
+      "logicalAddress",
+      "nativeAddress",
+      "bundleContentHash",
+      "anchorTx",
+      "signer",
+      "signature",
+    ]) &&
+    v.bindingVersion === "1" &&
+    isNonEmptyStr(v.jobId) &&
+    isOneOf(["buyer", "seller", "orchestrator"], v.role) &&
+    isNonEmptyStr(v.logicalAddress) &&
+    isNonEmptyStr(v.nativeAddress) &&
+    isSha256(v.bundleContentHash) &&
+    (v.anchorTx === undefined || isNonEmptyStr(v.anchorTx)) &&
+    isNonEmptyStr(v.signer) &&
+    isComponentSignature(v.signature) &&
+    v.signature.signer === v.signer &&
+    v.logicalAddress ===
+      bundleAddress(v.jobId as string, v.role as "buyer" | "seller" | "orchestrator")
   );
 }
 

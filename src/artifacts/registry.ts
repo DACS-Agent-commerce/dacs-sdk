@@ -20,6 +20,10 @@ export const ARTIFACT_SEPARATORS = {
 /** Domain separator for a bundle rating record (DACS-5 §10.6). */
 export const RATING_SEPARATOR: DomainSeparator = "dacs-rating:v1:";
 
+/** Domain separator for DACS-5 §10.4.2 BundleBinding. */
+export const BUNDLE_BINDING_SEPARATOR: DomainSeparator =
+  "dacs-bundle-binding:v1:";
+
 export function separatorFor(kind: ArtifactKind): DomainSeparator {
   return ARTIFACT_SEPARATORS[kind];
 }
