@@ -1,6 +1,6 @@
 import { baseUnits } from "../canonical/decimal.js";
 import { DacsError } from "../errors.js";
-import type { AgreementDocument } from "../artifacts/types.js";
+import type { LegacyMvpAgreementDocument as AgreementDocument } from "../artifacts/legacyMvp.js";
 import {
   commitsInWindow,
   matchRevealsToCommits,

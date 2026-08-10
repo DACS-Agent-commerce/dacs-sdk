@@ -1,5 +1,7 @@
 import type {
   AgreementDocument,
+  AgreementArtifact,
+  AgreementParty,
   AnyAttestationBundle,
   AttestationRef,
   AttestationBundle,
@@ -13,6 +15,7 @@ import type {
   Listing,
   ListingDraft,
   ListingTerms,
+  PayeeBoundAgreementDocument,
   PaymentRailRef,
   PhaseStep,
   ReadableListing,
@@ -43,6 +46,8 @@ const isNonNegativeInt = (v: unknown): v is number =>
   isNum(v) && Number.isInteger(v) && v >= 0;
 const isSha256 = (v: unknown): v is string =>
   isStr(v) && /^[0-9a-f]{64}$/.test(v);
+const isIdentityBundleHash = (v: unknown): v is string =>
+  isSha256(v) || (isStr(v) && /^sha256:[0-9a-f]{64}$/.test(v));
 const hasValidOptionalComponentSignature = (
   v: Record<string, unknown>,
 ): boolean =>
@@ -673,26 +678,192 @@ export function isCompositeVerificationRecord(
   );
 }
 
-export function isAgreementDocument(v: unknown): v is AgreementDocument {
+const isListingPin = (v: unknown): boolean =>
+  isObj(v) &&
+  hasOnlyKeys(v, ["listingId", "version", "contentHash"]) &&
+  isNonEmptyStr(v.listingId) &&
+  isPositiveSafeInt(v.version) &&
+  isSha256(v.contentHash);
+
+const isDeliverableRef = (v: unknown): boolean =>
+  isObj(v) &&
+  hasOnlyKeys(v, ["deliverableType", "hash", "schemaUrl"]) &&
+  isOneOf(["storage-program", "entitlement", "attested-payload", "external"], v.deliverableType) &&
+  isSha256(v.hash) &&
+  (v.schemaUrl === undefined || isStr(v.schemaUrl));
+
+const isAgreementParty = (v: unknown): v is AgreementParty =>
+  isObj(v) &&
+  hasOnlyKeys(v, ["role", "bundleHash", "primaryClaim", "vetRecordRef", "encryptionKey"]) &&
+  isOneOf(["buyer", "seller", "bidder-non-winning"], v.role) &&
+  isIdentityBundleHash(v.bundleHash) &&
+  isClaimRef(v.primaryClaim) &&
+  isAttestationRef(v.vetRecordRef) &&
+  (v.encryptionKey === undefined || isNonEmptyStr(v.encryptionKey));
+
+const isAgreementSignature = (v: unknown): boolean =>
+  isObj(v) &&
+  hasOnlyKeys(v, ["party", "algorithm", "value"]) &&
+  isClaimRef(v.party) &&
+  isOneOf(COMPONENT_SIGNATURE_ALGORITHMS, v.algorithm) &&
+  isCanonicalBase64Url(v.value);
+
+const isFeeRecurrence = (v: unknown): boolean => {
   if (!isObj(v)) return false;
-  const price = v.price;
-  const delivery = v.delivery;
+  const period = v.period;
+  const validPeriod =
+    isOneOf(["daily", "weekly", "monthly", "quarterly", "annual"], period) ||
+    (isObj(period) &&
+      hasOnlyKeys(period, ["everySeconds"]) &&
+      isPositiveSafeInt(period.everySeconds));
   return (
-    isStr(v.jobId) &&
-    isStr(v.pattern) &&
-    isStr(v.buyer) &&
-    isStr(v.seller) &&
-    isStr(v.listingRef) &&
-    isObj(price) &&
-    isStr(price.amount) &&
-    isStr(price.asset) &&
-    isNum(price.decimals) &&
-    isStr(price.rail) &&
-    isObj(delivery) &&
-    isStr(delivery.phase) &&
-    isStr(delivery.format) &&
-    isStr(v.expiresAt)
+    validPeriod &&
+    (v.count === undefined || isPositiveSafeInt(v.count)) &&
+    (v.until === undefined || isSafeUint(v.until)) &&
+    !(v.count !== undefined && v.until !== undefined)
   );
+};
+
+const isFeeItem = (v: unknown): boolean =>
+  isObj(v) &&
+  isOneOf(["network", "platform", "processing", "spread", "subscription", "other"], v.kind) &&
+  (v.collector === "substrate" || isClaimRef(v.collector)) &&
+  (v.label === undefined || isStr(v.label)) &&
+  ((v.fixed !== undefined && isPriceTerm(v.fixed) && v.rateBps === undefined) ||
+    (v.fixed === undefined && isNonNegativeInt(v.rateBps))) &&
+  (v.toleranceBps === undefined || isNonNegativeInt(v.toleranceBps)) &&
+  (v.recurrence === undefined || isFeeRecurrence(v.recurrence));
+
+const isFeeSchedule = (v: unknown, priceCurrency: string): boolean => {
+  if (
+    !isObj(v) ||
+    !isOneOf(["inclusive", "exclusive"], v.priceBasis) ||
+    !Array.isArray(v.items) ||
+    !v.items.every(isFeeItem) ||
+    !isPriceTerm(v.oneOffTotal) ||
+    (v.oneOffTotal as { currency: string }).currency !== priceCurrency ||
+    (v.recurringTotal !== undefined &&
+      (!isPriceTerm(v.recurringTotal) ||
+        (v.recurringTotal as { currency: string }).currency !== priceCurrency)) ||
+    (v.minimumTermSeconds !== undefined && !isNonNegativeInt(v.minimumTermSeconds)) ||
+    (v.earlyTerminationFee !== undefined && !isFeeItem(v.earlyTerminationFee)) ||
+    (v.disclosureNote !== undefined && !isStr(v.disclosureNote))
+  ) {
+    return false;
+  }
+  const hasRecurringItem = v.items.some(
+    (item) => isObj(item) && item.recurrence !== undefined,
+  );
+  return hasRecurringItem === (v.recurringTotal !== undefined);
+};
+
+const isPriceAnchor = (v: unknown): boolean =>
+  isObj(v) &&
+  isNonEmptyStr(v.asset) &&
+  isNonEmptyStr(v.quoteCurrency) &&
+  isCanonicalAmount(v.price) &&
+  isAttestationRef(v.attestationRef) &&
+  isSafeUint(v.observedAt) &&
+  isNonEmptyStr(v.sourceUrl);
+
+const hasAgreementCommon = (
+  v: Record<string, unknown>,
+  payeeBound: boolean,
+): boolean => {
+  const parties = v.parties;
+  const terms = v.terms;
+  if (
+    Object.prototype.hasOwnProperty.call(v, "signature") ||
+    !isNonEmptyStr(v.jobId) ||
+    !isListingPin(v.listingRef) ||
+    !Array.isArray(parties) ||
+    parties.length < 2 ||
+    !parties.every(isAgreementParty) ||
+    !isObj(terms) ||
+    !isDeliverableRef(terms.deliverable) ||
+    !isPriceTerm(terms.price) ||
+    (terms.meteredQuantity !== undefined &&
+      (!isObj(terms.meteredQuantity) ||
+        !/^(0|[1-9][0-9]*)$/.test(String(terms.meteredQuantity.quantity)) ||
+        !isNonEmptyStr(terms.meteredQuantity.unit))) ||
+    (terms.rail !== undefined && !isPaymentRailRef(terms.rail)) ||
+    !isSafeUint(terms.deadline) ||
+    (terms.priceAnchor !== undefined && !isPriceAnchor(terms.priceAnchor)) ||
+    (terms.feeSchedule !== undefined &&
+      !isFeeSchedule(
+        terms.feeSchedule,
+        (terms.price as { currency: string }).currency,
+      )) ||
+    (terms.additionalTerms !== undefined && !isObj(terms.additionalTerms)) ||
+    !isOneOf(["fixed-price", "rfq", "sealed-envelope"], v.derivedFromPattern) ||
+    !isSafeUint(v.generatedAt) ||
+    (v.derivedFromChannel !== undefined &&
+      (!isObj(v.derivedFromChannel) ||
+        !hasOnlyKeys(v.derivedFromChannel, ["subnet", "lastMessageHash"]) ||
+        !isNonEmptyStr(v.derivedFromChannel.subnet) ||
+        !isSha256(v.derivedFromChannel.lastMessageHash))) ||
+    !Array.isArray(v.signatures) ||
+    v.signatures.length !== 2 ||
+    !v.signatures.every(isAgreementSignature)
+  ) {
+    return false;
+  }
+  const buyer = parties.filter((party) => party.role === "buyer");
+  const seller = parties.filter((party) => party.role === "seller");
+  if (buyer.length !== 1 || seller.length !== 1) return false;
+  const required = new Set([buyer[0]!.primaryClaim, seller[0]!.primaryClaim]);
+  const signers = new Set(
+    (v.signatures as Array<Record<string, unknown>>).map((signature) => signature.party),
+  );
+  if (signers.size !== 2 || [...required].some((claim) => !signers.has(claim))) {
+    return false;
+  }
+  if (!payeeBound) {
+    return !Object.prototype.hasOwnProperty.call(terms, "payoutBindings");
+  }
+  if (!Array.isArray(terms.payoutBindings)) {
+    return false;
+  }
+  const keys = new Set<string>();
+  for (const binding of terms.payoutBindings) {
+    if (
+      !isObj(binding) ||
+      !hasOnlyKeys(binding, ["railId", "phaseIndex", "payeeAddress"]) ||
+      !isNonEmptyStr(binding.railId) ||
+      !isNonNegativeInt(binding.phaseIndex) ||
+      !isNonEmptyStr(binding.payeeAddress)
+    ) {
+      return false;
+    }
+    const key = `${binding.railId}\u0000${binding.phaseIndex}`;
+    if (keys.has(key)) return false;
+    keys.add(key);
+  }
+  return true;
+};
+
+export function isAgreementDocument(v: unknown): v is AgreementDocument {
+  return (
+    isObj(v) &&
+    v.agreementVersion === "1" &&
+    v.payeeBoundAgreementVersion === undefined &&
+    hasAgreementCommon(v, false)
+  );
+}
+
+export function isPayeeBoundAgreementDocument(
+  v: unknown,
+): v is PayeeBoundAgreementDocument {
+  return (
+    isObj(v) &&
+    v.payeeBoundAgreementVersion === "1" &&
+    v.agreementVersion === undefined &&
+    hasAgreementCommon(v, true)
+  );
+}
+
+export function isAgreementArtifact(v: unknown): v is AgreementArtifact {
+  return isAgreementDocument(v) || isPayeeBoundAgreementDocument(v);
 }
 
 /** DACS-2 §7.5.2 exact AttestationRef wire shape. */

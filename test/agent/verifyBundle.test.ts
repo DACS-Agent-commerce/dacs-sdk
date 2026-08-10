@@ -57,14 +57,45 @@ function buildArtifacts() {
     supportedDelivery: ["deliver-attested-payload"],
   };
   const agreement = {
+    agreementVersion: "1",
     jobId: "j1",
-    pattern: "negotiate-fixed-price",
-    buyer: buyerDid,
-    seller: sellerDid,
-    listingRef: LISTING_ADDR,
-    price: { amount: "1000000", asset: "USDC", decimals: 6, rail: "pay-x402" },
-    delivery: { phase: "deliver-attested-payload", format: "application/json" },
-    expiresAt: "2026-01-01T00:00:00Z",
+    listingRef: {
+      listingId: listing.serviceId,
+      version: 1,
+      contentHash: contentHash(listing),
+    },
+    parties: [
+      {
+        role: "buyer",
+        bundleHash: h("c"),
+        primaryClaim: buyerDid,
+        vetRecordRef: {
+          anchor: { kind: "storage-program", locator: "buyer-vet-j1" },
+          contentHash: h("1"),
+        },
+      },
+      {
+        role: "seller",
+        bundleHash: h("d"),
+        primaryClaim: sellerDid,
+        vetRecordRef: {
+          anchor: { kind: "storage-program", locator: "seller-vet-j1" },
+          contentHash: h("2"),
+        },
+      },
+    ],
+    terms: {
+      deliverable: { deliverableType: "attested-payload", hash: h("3") },
+      price: { amount: "1", currency: "USDC" },
+      rail: { railId: "x402:default" },
+      deadline: 1780000600000,
+    },
+    derivedFromPattern: "fixed-price",
+    generatedAt: 1780000000000,
+    signatures: [
+      { party: buyerDid, algorithm: "ed25519", value: Buffer.alloc(64, 5).toString("base64url") },
+      { party: sellerDid, algorithm: "ed25519", value: Buffer.alloc(64, 6).toString("base64url") },
+    ],
   };
   const evidence = {
     evidenceVersion: "1",
@@ -195,6 +226,7 @@ function depsFor(
           : ref.anchor.locator === "settlement-j1"
             ? fx.evidence
             : null),
+    resolveListingRef: async () => listing,
     ...(opts.resolveRef ? { resolveRef: opts.resolveRef } : {}),
     resolvePublicKey: async (did) => (opts.resolve ?? resolveFromDid)(did),
     verify,
