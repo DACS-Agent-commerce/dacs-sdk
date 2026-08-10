@@ -1,7 +1,7 @@
 # Normative artifact fidelity
 
 Normative source: DACS-Standard `next` at
-`625df63908fe5965f5f3f0b83cf53ee7031c6d16`, pinned by
+`c2ecd9fa658776f5511f2414d7b4c3e23b847463`, pinned by
 `scripts/sync-vectors.mjs`.
 
 | SDK surface | Normative rule | Runtime behavior |

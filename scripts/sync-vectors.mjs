@@ -17,11 +17,12 @@ const REPO =
 // Pinned for reproducible conformance runs. The pin is the SDK's test oracle,
 // so moving it changes what "conformant" means — bump deliberately, in a
 // change that re-runs the suite and reconciles any drift.
-// Currently: DACS-Standard `next` @ 2026-08-10. This includes Standard PR #310,
-// whose exact AttestationRef/ChainTxRef shape oracle resolved Standard#308.
-// Was 9a77966 (234 cases); before that v0.3 tag cc01cda (187 cases). See #5-#7.
+// Currently: DACS-Standard `next` @ 2026-08-10. This includes Standard PR #324,
+// whose corrected preserve-unknown Listing fixture satisfies DACS-4 DPA-1.
+// Previous pin: 625df63; before that 9a77966 (234 cases) and the v0.3 tag
+// cc01cda (187 cases). See #5-#7 and #137.
 const REF =
-  process.env.DACS_STANDARD_REF || "625df63908fe5965f5f3f0b83cf53ee7031c6d16";
+  process.env.DACS_STANDARD_REF || "c2ecd9fa658776f5511f2414d7b4c3e23b847463";
 
 function git(args, cwd) {
   execFileSync("git", args, { cwd, stdio: "inherit" });

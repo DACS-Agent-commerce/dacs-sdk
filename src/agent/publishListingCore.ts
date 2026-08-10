@@ -7,16 +7,20 @@ import {
   readListingArtifact,
 } from "../artifacts/validators.js";
 import {
+  canonicalize,
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
+  sha256Hex,
 } from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
 import type { Signer } from "./signedArtifact.js";
 import {
+  resolveListingPayloadVerificationCapability,
   resolveListingRails,
   type ListingRailAuthorityInput,
+  type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
 
 /**
@@ -85,6 +89,11 @@ export interface PublishListingDeps {
   loadRailResolution?: (
     listing: Readonly<ListingDraft>,
   ) => Promise<ListingRailAuthorityInput> | ListingRailAuthorityInput;
+  /**
+   * DACS-4 DPA-1 producer capability. A recognized method discriminator is not
+   * sufficient: the local seller must be able to bind the exact payload bytes.
+   */
+  resolvePayloadVerificationCapability?: PayloadVerificationCapabilityResolver;
 }
 
 function listingHistoryPrefix(listing: ListingDraft): string {
@@ -174,7 +183,16 @@ export async function publishListingCore(
   listing: ListingDraft,
   deps: PublishListingDeps,
 ): Promise<PublishListingResult> {
-  const candidateVersion = (listing as { listingVersion?: unknown })
+  let candidate: ListingDraft;
+  try {
+    // Own one exact snapshot for the whole async publication. Capability and
+    // authority adapters receive separate clones, so caller/dependency mutation
+    // can never swap the method/spec after DPA-1 approval but before signing.
+    candidate = structuredClone(listing);
+  } catch {
+    throw new DacsError("publishListing requires a cloneable normative Listing");
+  }
+  const candidateVersion = (candidate as { listingVersion?: unknown })
     .listingVersion;
   if (
     !Number.isSafeInteger(candidateVersion) ||
@@ -186,13 +204,42 @@ export async function publishListingCore(
   }
   // DACS-1 §6.3.4 LP-2 and CORE §11.1.2: new writes are normative only.
   // Historical MVP artifacts are accepted solely by readListingArtifact().
-  if (!isListingDraft(listing)) {
+  if (!isListingDraft(candidate)) {
     throw new DacsError(
       "publishListing requires a normative unsigned DACS-1 §6.3.4 Listing; " +
         "legacy MVP shapes are read-only",
     );
   }
-  if (listing.pipeline.some((phase) => phase.kind.startsWith("pay-"))) {
+  const payloadCapability = await resolveListingPayloadVerificationCapability(
+    candidate,
+    "produce",
+    deps.resolvePayloadVerificationCapability,
+  );
+  if (
+    payloadCapability.disposition !== "not-applicable" &&
+    payloadCapability.disposition !== "supported"
+  ) {
+    const localContractError = new Set([
+      "payload-verification-capability-input-not-canonicalizable",
+      "payload-verification-capability-resolution-invalid",
+      "payload-verification-capability-resolution-mutated-input",
+    ]).has(payloadCapability.reason);
+    throw new DacsError(
+      `attested-payload verification method is ${payloadCapability.disposition} ` +
+      `(${payloadCapability.reason}); DPA-1 refuses publication`,
+      {
+        // DACS-2 VP-R4 does not retry `indeterminate` by default. A method
+        // `error` means resolution did not complete, so a later retry may work.
+        category:
+          (payloadCapability.disposition === "indeterminate" ||
+            payloadCapability.disposition === "error") &&
+          !localContractError
+            ? "transient"
+            : "permanent",
+      },
+    );
+  }
+  if (candidate.pipeline.some((phase) => phase.kind.startsWith("pay-"))) {
     if (!deps.loadRailResolution) {
       throw new DacsError(
         "pay-bearing Listing publication requires an authenticated DACS-4 rail " +
@@ -202,11 +249,11 @@ export async function publishListingCore(
     let railResolution;
     try {
       railResolution = resolveListingRails({
-        ...(await deps.loadRailResolution(listing)),
-        payPhases: listing.pipeline
+        ...(await deps.loadRailResolution(structuredClone(candidate))),
+        payPhases: candidate.pipeline
           .filter((phase) => phase.kind.startsWith("pay-"))
           .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail })),
-        acceptedRails: listing.acceptedRails ?? [],
+        acceptedRails: candidate.acceptedRails ?? [],
       });
     } catch (error) {
       throw new DacsError(
@@ -222,19 +269,19 @@ export async function publishListingCore(
       );
     }
   }
-  const version = listing.listingVersion;
+  const version = candidate.listingVersion;
 
   // Logical (colon-bearing, discovery key) vs native (colon-free program name the
   // substrate actually accepts). Anchor under the encoded name; return both.
   const logicalAddress = listingAddress(
-    listing.seller.identity.presentedBy,
-    listing.listingId,
+    candidate.seller.identity.presentedBy,
+    candidate.listingId,
     version,
   );
   const storageName = logicalToStorageProgramName(logicalAddress);
-  const historyPrefix = listingHistoryPrefix(listing);
+  const historyPrefix = listingHistoryPrefix(candidate);
   const versions = assertContiguousHistory(
-    listing,
+    candidate,
     historyPrefix,
     await deps.scanOwnAnchorsByNamePrefix(historyPrefix),
   );
@@ -247,12 +294,28 @@ export async function publishListingCore(
     }
   }
 
+  if (payloadCapability.disposition === "supported") {
+    const deliverable = candidate.offering.deliverable;
+    if (
+      deliverable.kind !== "attested-payload" ||
+      !deliverable.verificationMethod ||
+      sha256Hex(canonicalize(deliverable.verificationMethod)) !==
+        payloadCapability.verificationMethodHash ||
+      sha256Hex(canonicalize(deliverable)) !==
+        payloadCapability.deliverableSpecHash
+    ) {
+      throw new DacsError(
+        "attested-payload method/spec changed after DPA-1 capability approval",
+      );
+    }
+  }
+
   const signed = await signComponentArtifact(
-    listing,
+    candidate,
     ARTIFACT_SEPARATORS.Listing,
     {
       algorithm: "ed25519",
-      signer: listing.seller.identity.presentedBy,
+      signer: candidate.seller.identity.presentedBy,
       sign: (bytes) => deps.sign(bytes),
     },
   );
@@ -263,7 +326,7 @@ export async function publishListingCore(
   }
   const { address: anchored, txRef } = await deps.anchorWriteOnce(storageName, signed);
   const listingPin = {
-    listingId: listing.listingId,
+    listingId: candidate.listingId,
     version,
     contentHash: contentHash(signed as unknown as Record<string, unknown>),
   };

@@ -14,7 +14,10 @@ import type {
   SettlementFinality,
   SettlementFinalityModel,
 } from "../artifacts/types.js";
-import type { ListingValidationResult } from "./listingValidation.js";
+import {
+  isVerifiedListingAdmission,
+  type ListingValidationResult,
+} from "./listingValidation.js";
 import {
   type LegacyMvpAgreementDocument as AgreementDocument,
   type LegacyMvpAttestationBundle as AttestationBundle,
@@ -420,49 +423,12 @@ export async function runSessionCore(
   if (!readableListing) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
   }
-  const listing =
-    readableListing.compatibility === "normative"
-      ? {
-          sellerClaim: readableListing.listing.seller.identity.presentedBy,
-          supportedPaymentRails:
-            readableListing.listing.acceptedRails?.map((rail) => rail.railId) ?? [],
-          supportedDelivery: readableListing.listing.pipeline
-            .map((phase) => phase.kind)
-            .filter((kind) => kind.startsWith("deliver-")),
-          pin: {
-            listingId: readableListing.listing.listingId,
-            version: readableListing.listing.listingVersion,
-            contentHash: contentHash(storedRecord),
-          },
-        }
-      : {
-          sellerClaim: readableListing.listing.agentId,
-          supportedPaymentRails:
-            readableListing.listing.supportedPaymentRails,
-          supportedDelivery: readableListing.listing.supportedDelivery,
-          pin: {
-            listingId: readableListing.listing.serviceId,
-            version: readableListing.listing.listingVersion ?? 1,
-            contentHash: contentHash(storedRecord),
-          },
-        };
-
-  if (readableListing.compatibility === "normative") {
-    const now = deps.nowMs();
-    const validity = readableListing.listing.validity;
-    if (now < validity.notBefore || (validity.notAfter !== undefined && now > validity.notAfter)) {
-      throw new CounterpartyError(
-        `listing ${listing.pin.listingId} v${listing.pin.version} is outside its DACS-1 §6.3.4 validity window`,
-      );
-    }
-  }
-
-  const listingView: {
+  let listingView: {
     sellerClaim: string;
     supportedPaymentRails: string[];
     supportedDelivery: string[];
     pin: ListingPin;
-  } = listing;
+  };
 
   if (readableListing.compatibility === "normative") {
     if (!deps.validateListing) {
@@ -485,12 +451,54 @@ export async function runSessionCore(
           `${validation.step} (${validation.reason}); LR-3 refuses the new session`,
       );
     }
-    if (validation.listingContentHash !== listingView.pin.contentHash) {
+    const exactRawHash = contentHash(storedRecord);
+    if (validation.listingContentHash !== exactRawHash) {
       throw new CounterpartyError(
         `listing at ${listingRef} validation result is not bound to the exact LR-1 ` +
           `content hash; refusing the new session`,
       );
     }
+    if (!isVerifiedListingAdmission(storedRecord, validation)) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} has a stale, substituted, or capability-incomplete ` +
+          `verified result; DACS-1 LR-3 / DACS-4 DPA-1 refuse the new session`,
+      );
+    }
+    const admitted = validation.listing;
+    const now = deps.nowMs();
+    if (
+      now < admitted.validity.notBefore ||
+      (admitted.validity.notAfter !== undefined && now > admitted.validity.notAfter)
+    ) {
+      throw new CounterpartyError(
+        `listing ${admitted.listingId} v${admitted.listingVersion} is outside its ` +
+          `DACS-1 §6.3.4 validity window`,
+      );
+    }
+    listingView = {
+      sellerClaim: admitted.seller.identity.presentedBy,
+      supportedPaymentRails:
+        admitted.acceptedRails?.map((rail) => rail.railId) ?? [],
+      supportedDelivery: admitted.pipeline
+        .map((phase) => phase.kind)
+        .filter((kind) => kind.startsWith("deliver-")),
+      pin: {
+        listingId: admitted.listingId,
+        version: admitted.listingVersion,
+        contentHash: validation.listingContentHash,
+      },
+    };
+  } else {
+    listingView = {
+      sellerClaim: readableListing.listing.agentId,
+      supportedPaymentRails: readableListing.listing.supportedPaymentRails,
+      supportedDelivery: readableListing.listing.supportedDelivery,
+      pin: {
+        listingId: readableListing.listing.serviceId,
+        version: readableListing.listing.listingVersion ?? 1,
+        contentHash: contentHash(storedRecord),
+      },
+    };
   }
 
   // #41 — verify the listing BEFORE vetting, rail selection or settlement. A

@@ -7,10 +7,13 @@ import { describe, expect, it } from "vitest";
 import { verifyReadableListingArtifact } from "../../src/agent/discover.js";
 import type { Listing, ListingDraft } from "../../src/artifacts/types.js";
 import {
+  isDeliverableSpec,
   isLegacyMvpListing,
   isListing,
   isListingDraft,
+  isListingEnvelope,
   isListingPublicEndpoint,
+  isVerificationMethod,
   readListingArtifact,
 } from "../../src/artifacts/validators.js";
 import { contentHash, stripSignature } from "../../src/canonical/index.js";
@@ -96,7 +99,9 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
       VECTOR.fixtures["listing-with-unknown-phase"].listing,
     );
     expect(isListing(unknown)).toBe(false);
-    expect(readListingArtifact(unknown)).toBeNull();
+    expect(readListingArtifact(unknown)).toMatchObject({
+      compatibility: "normative",
+    });
   });
 
   it("does not reinterpret an unsupported signature algorithm as Ed25519", async () => {
@@ -159,6 +164,76 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
         signature: { ...listing.signature, value: `${listing.signature.value}=` },
       }),
     ).toBe(false);
+  });
+
+  it("keeps the legacy-optional method readable but enforces DPA-1 pipeline coherence", () => {
+    const listing = fixture();
+    const unsigned = stripSignature(
+      listing as unknown as Record<string, unknown>,
+    ) as unknown as ListingDraft;
+    const deliverable = unsigned.offering.deliverable;
+    if (deliverable.kind !== "attested-payload") throw new Error("fixture drift");
+    delete deliverable.verificationMethod;
+
+    // DACS-4 §9.12 retains the optional wire member, so an historical envelope
+    // reaches reader step 7. A current producer/session may not use it.
+    expect(isDeliverableSpec(deliverable)).toBe(true);
+    expect(isListingDraft(unsigned)).toBe(false);
+    const signedWithoutMethod = { ...unsigned, signature: listing.signature };
+    expect(isListingEnvelope(signedWithoutMethod)).toBe(true);
+    expect(isListing(signedWithoutMethod)).toBe(false);
+    expect(readListingArtifact(signedWithoutMethod)).toMatchObject({
+      compatibility: "normative",
+    });
+
+    for (const verificationMethod of [
+      null,
+      { kind: "future-method" },
+      { kind: "tlsnotary" },
+    ]) {
+      const malformed = {
+        kind: "attested-payload",
+        payloadFormat: "application/json",
+        verificationMethod,
+      };
+      expect(isDeliverableSpec(malformed)).toBe(false);
+      expect(
+        isListingDraft({
+          ...unsigned,
+          offering: { ...unsigned.offering, deliverable: malformed },
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it.each([
+    ["blank TLSNotary endpoint", { kind: "tlsnotary", endpoint: "" }],
+    ["padded TLSNotary endpoint", { kind: "tlsnotary", endpoint: " https://notary.example " }],
+    ["blank zkTLS provider", { kind: "zktls", provider: "", programId: "program" }],
+    ["blank zkTLS program", { kind: "zktls", provider: "reclaim", programId: "" }],
+    [
+      "blank proxy URL template",
+      { kind: "consensus-backed-proxy", endpoint: { method: "GET", urlTemplate: "" } },
+    ],
+    ["blank OAuth provider", { kind: "oauth-attested", provider: "", scopes: ["openid"], maxTokenAgeSec: 60 }],
+    ["blank OAuth scope", { kind: "oauth-attested", provider: "oidc", scopes: [""], maxTokenAgeSec: 60 }],
+    ["zero EVM chain", { kind: "evm-rpc", chainId: 0, contract: `0x${"1".repeat(40)}`, method: "ownerOf" }],
+    ["non-address EVM contract", { kind: "evm-rpc", chainId: 1, contract: "0xabc", method: "ownerOf" }],
+    ["blank EVM method", { kind: "evm-rpc", chainId: 1, contract: `0x${"1".repeat(40)}`, method: "" }],
+  ])("rejects a verification method with %s at every structural write/envelope gate", (_name, method) => {
+    expect(isVerificationMethod(method)).toBe(false);
+    const listing = fixture();
+    const unsigned = stripSignature(
+      listing as unknown as Record<string, unknown>,
+    ) as unknown as ListingDraft;
+    unsigned.offering.deliverable = {
+      kind: "attested-payload",
+      payloadFormat: "application/json",
+      verificationMethod: method as never,
+    };
+    expect(isDeliverableSpec(unsigned.offering.deliverable)).toBe(false);
+    expect(isListingDraft(unsigned)).toBe(false);
+    expect(isListingEnvelope({ ...unsigned, signature: listing.signature })).toBe(false);
   });
 });
 
