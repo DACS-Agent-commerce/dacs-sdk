@@ -14,6 +14,7 @@ import {
   type DemosTransferObservation,
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeInput,
+  type SellerListingAtCommitResolution,
   type SellerPaymentEvidenceInput,
   type SellerReceiptClaim,
   type SellerReceiptStore,
@@ -58,6 +59,71 @@ type Context = {
   x402Observation: X402TransferObservation;
   deps: SellerPaymentIntakeDeps;
 };
+
+function listingAtCommitResolution(
+  listing: Listing,
+  admittedAt = 900,
+): SellerListingAtCommitResolution {
+  const listingRef = {
+    listingId: listing.listingId,
+    version: listing.listingVersion,
+    contentHash: contentHash(listing as unknown as Record<string, unknown>),
+  };
+  const dpaSelected = listing.pipeline.some(
+    (phase) => phase.kind === "deliver-attested-payload",
+  );
+  if (!dpaSelected) {
+    return {
+      rawListing: listing as unknown as Record<string, unknown>,
+      validation: {
+        disposition: "verified",
+        step: 9,
+        reason: "verified",
+        listing,
+        listingContentHash: listingRef.contentHash,
+        revocation: "absent",
+        railResolution: { disposition: "verified", reason: "verified" },
+      },
+    };
+  }
+  const deliverable = listing.offering.deliverable;
+  if (deliverable.kind !== "attested-payload" || !deliverable.verificationMethod) {
+    throw new Error("DPA fixture requires an attested-payload verification method");
+  }
+  const verificationMethodHash = sha256Hex(
+    canonicalize(deliverable.verificationMethod),
+  );
+  const deliverableSpecHash = sha256Hex(canonicalize(deliverable));
+  return {
+    rawListing: listing as unknown as Record<string, unknown>,
+    validation: {
+      disposition: "verified",
+      step: 9,
+      reason: "verified",
+      listing,
+      listingContentHash: listingRef.contentHash,
+      revocation: "absent",
+      railResolution: { disposition: "verified", reason: "verified" },
+      payloadVerificationCapability: {
+        operation: "verify",
+        disposition: "supported",
+        reason: "supported",
+        verificationMethodKind: deliverable.verificationMethod.kind,
+        verificationMethodHash,
+        deliverableSpecHash,
+      },
+    },
+    payloadVerificationProducerAdmission: {
+      operation: "produce",
+      disposition: "supported",
+      listingRef,
+      verificationMethodKind: deliverable.verificationMethod.kind,
+      verificationMethodHash,
+      deliverableSpecHash,
+      admittedAt,
+    },
+  };
+}
 
 function makeContext(
   kind: "pay-dem" | "pay-x402",
@@ -284,15 +350,7 @@ function makeContext(
   });
   ctx.deps = {
     resolveCommittedAgreement: async () => ctx.committed,
-    resolveListingAtCommit: async () => ({
-      disposition: "verified",
-      step: 9,
-      reason: "verified",
-      listing: ctx.listing,
-      listingContentHash: listingRef.contentHash,
-      revocation: "absent",
-      railResolution: { disposition: "verified", reason: "verified" },
-    }),
+    resolveListingAtCommit: async () => listingAtCommitResolution(ctx.listing),
     resolveRail: async ({ railRegistryVersion }) => ({
       disposition: "verified",
       rail: ctx.rail,
@@ -331,15 +389,8 @@ function repinListing(ctx: Context): void {
   };
   ctx.agreement.listingRef = listingRef;
   ctx.committed.commitment.listingRef = structuredClone(listingRef);
-  ctx.deps.resolveListingAtCommit = async () => ({
-    disposition: "verified",
-    step: 9,
-    reason: "verified",
-    listing: ctx.listing,
-    listingContentHash: listingRef.contentHash,
-    revocation: "absent",
-    railResolution: { disposition: "verified", reason: "verified" },
-  });
+  ctx.deps.resolveListingAtCommit = async () =>
+    listingAtCommitResolution(ctx.listing);
   refreshCommitment(ctx);
 }
 
@@ -428,6 +479,13 @@ describe("verifySellerPaymentIntake", () => {
       txHash: DEMOS_TX,
       blockNumber: 88,
     });
+    expect(result.payloadVerificationProducerAdmission).toMatchObject({
+      operation: "produce",
+      disposition: "supported",
+      listingRef: first.committed.commitment.listingRef,
+      verificationMethodKind: "self-signed",
+      admittedAt: 900,
+    });
 
     // A fresh core/dependency graph simulates restart; the durable store is shared.
     const restarted = makeContext("pay-dem", store);
@@ -471,6 +529,335 @@ describe("verifySellerPaymentIntake", () => {
       protocolVersion: "2",
     });
     expect(result.evidenceInput).not.toHaveProperty("responseHeader");
+  });
+
+  it("recovers an earlier canonical x402 winner without strengthening SB-3", async () => {
+    const store = createInMemorySellerReceiptStore();
+    const first = makeContext("pay-x402", store);
+    if (first.x402Observation.status !== "finalized") throw new Error("fixture");
+    first.x402Observation.sessionBinding = { kind: "absent" };
+    await expect(verifySellerPaymentIntake(first.input, first.deps))
+      .resolves.toMatchObject({
+        disposition: "verified",
+        fulfilment: "claim",
+        sessionBinding: "not-established",
+      });
+
+    const retry = makeContext("pay-x402", store);
+    if (retry.x402Observation.status !== "finalized") throw new Error("fixture");
+    retry.x402Observation.finalityObservedAt = 6_000;
+    const result = await verifySellerPaymentIntake(retry.input, retry.deps);
+    expect(result).toMatchObject({
+      disposition: "verified",
+      fulfilment: "already-claimed",
+      sessionBinding: "not-established",
+      evidenceInput: {
+        observedAt: 5_000,
+        settlementFinality: { finalityObservedAt: 5_000 },
+      },
+    });
+  });
+
+  it.each([
+    ["missing producer admission", (resolution: SellerListingAtCommitResolution) => {
+      delete resolution.payloadVerificationProducerAdmission;
+    }],
+    ["late producer admission", (resolution: SellerListingAtCommitResolution) => {
+      resolution.payloadVerificationProducerAdmission!.admittedAt = 1_001;
+    }],
+    ["substituted method hash", (resolution: SellerListingAtCommitResolution) => {
+      resolution.payloadVerificationProducerAdmission!.verificationMethodHash =
+        "00".repeat(32);
+    }],
+    ["substituted Listing ref", (resolution: SellerListingAtCommitResolution) => {
+      resolution.payloadVerificationProducerAdmission!.listingRef.contentHash =
+        "11".repeat(32);
+    }],
+  ] as const)("refuses DPA payment before permit claim for %s", async (_name, mutate) => {
+    const ctx = makeContext("pay-dem");
+    const backing = createInMemorySellerReceiptStore();
+    let claims = 0;
+    ctx.deps.receiptStore = {
+      claim: async (candidate) => {
+        claims += 1;
+        return backing.claim(candidate);
+      },
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+    ctx.deps.resolveListingAtCommit = async () => {
+      const resolution = listingAtCommitResolution(ctx.listing);
+      mutate(resolution);
+      return resolution;
+    };
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      fulfilment: "none",
+      reason: expect.stringMatching(/payload-verification-producer-admission/),
+    });
+    expect(claims).toBe(0);
+  });
+
+  it("requires the raw Listing, reader result and producer admission from one checkpoint", async () => {
+    const ctx = makeContext("pay-dem");
+    const resolution = listingAtCommitResolution(ctx.listing);
+    ctx.deps.resolveListingAtCommit = async () =>
+      resolution.validation as never;
+    let claims = 0;
+    const backing = createInMemorySellerReceiptStore();
+    ctx.deps.receiptStore = {
+      claim: async (candidate) => {
+        claims += 1;
+        return backing.claim(candidate);
+      },
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "indeterminate",
+      fulfilment: "none",
+      reason: "listing-at-commit-admission-unavailable",
+    });
+    expect(claims).toBe(0);
+  });
+
+  it("omits producer admission exactly when the Listing does not select DPA", async () => {
+    const ctx = makeContext("pay-dem");
+    ctx.listing.offering.deliverable = {
+      kind: "storage-program",
+      accessModel: "buyer-only",
+    };
+    ctx.listing.pipeline[3] = { kind: "deliver-storage-program" };
+    const terms = ctx.agreement.terms as Record<string, unknown>;
+    terms.deliverable = {
+      deliverableType: "storage-program",
+      hash: sha256Hex(canonicalize(ctx.listing.offering.deliverable)),
+    };
+    repinListing(ctx);
+
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+    expect(result).toMatchObject({ disposition: "verified", fulfilment: "claim" });
+    expect(result).not.toHaveProperty("payloadVerificationProducerAdmission");
+
+    const unexpected = makeContext("pay-dem");
+    unexpected.listing.offering.deliverable = {
+      kind: "storage-program",
+      accessModel: "buyer-only",
+    };
+    unexpected.listing.pipeline[3] = { kind: "deliver-storage-program" };
+    const unexpectedTerms = unexpected.agreement.terms as Record<string, unknown>;
+    unexpectedTerms.deliverable = {
+      deliverableType: "storage-program",
+      hash: sha256Hex(canonicalize(unexpected.listing.offering.deliverable)),
+    };
+    repinListing(unexpected);
+    unexpected.deps.resolveListingAtCommit = async () => ({
+      ...listingAtCommitResolution(unexpected.listing),
+      payloadVerificationProducerAdmission:
+        listingAtCommitResolution(makeContext("pay-dem").listing)
+          .payloadVerificationProducerAdmission!,
+    });
+    await expect(verifySellerPaymentIntake(unexpected.input, unexpected.deps))
+      .resolves.toMatchObject({
+        disposition: "rejected",
+        fulfilment: "none",
+        reason: "payload-verification-producer-admission-unexpected",
+      });
+  });
+
+  it("owns caller input once even when getters and retained aliases later change", async () => {
+    const ctx = makeContext("pay-dem");
+    const original = ctx.input;
+    let railReads = 0;
+    Object.defineProperty(original, "railId", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        railReads += 1;
+        return railReads === 1 ? "demos-native:DEM" : "pay-evil";
+      },
+    });
+    ctx.deps.resolveCommittedAgreement = async () => {
+      if (original.receipt.kind === "pay-dem") {
+        original.receipt.txHash = `0x${"ff".repeat(32)}`;
+      }
+      return ctx.committed;
+    };
+
+    await expect(verifySellerPaymentIntake(original, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+      settlementId: `demos:${"ab".repeat(32)}`,
+    });
+    expect(railReads).toBe(1);
+  });
+
+  it("snapshots callback getters and rejects Proxy callback results before permit", async () => {
+    const getter = makeContext("pay-dem");
+    let dispositionReads = 0;
+    getter.deps.resolveCommittedAgreement = async () => {
+      const resolution = { ...getter.committed };
+      Object.defineProperty(resolution, "disposition", {
+        configurable: true,
+        enumerable: true,
+        get: () => {
+          dispositionReads += 1;
+          return dispositionReads === 1 ? "verified" : "rejected";
+        },
+      });
+      return resolution;
+    };
+    await expect(verifySellerPaymentIntake(getter.input, getter.deps))
+      .resolves.toMatchObject({ disposition: "verified", fulfilment: "claim" });
+    expect(dispositionReads).toBe(1);
+
+    const proxied = makeContext("pay-dem");
+    let claims = 0;
+    const backing = createInMemorySellerReceiptStore();
+    proxied.deps.receiptStore = {
+      claim: async (candidate) => {
+        claims += 1;
+        return backing.claim(candidate);
+      },
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+    proxied.deps.resolveCommittedAgreement = async () =>
+      new Proxy(proxied.committed, {});
+    await expect(verifySellerPaymentIntake(proxied.input, proxied.deps))
+      .resolves.toMatchObject({
+        disposition: "error",
+        fulfilment: "none",
+        reason: "agreement-resolution-invalid-result",
+      });
+    expect(claims).toBe(0);
+  });
+
+  it("isolates retained callback outputs and rejects callback input mutation", async () => {
+    const retained = makeContext("pay-dem");
+    const rawRail = {
+      disposition: "verified" as const,
+      rail: retained.rail,
+      railRegistryVersion: retained.committed.railRegistryVersion,
+    };
+    retained.deps.resolveRail = async () => rawRail;
+    const resolveBundle = retained.deps.resolveIdentityBundle;
+    retained.deps.resolveIdentityBundle = async (hash) => {
+      rawRail.rail.railId = "pay-evil";
+      return resolveBundle(hash);
+    };
+    await expect(verifySellerPaymentIntake(retained.input, retained.deps))
+      .resolves.toMatchObject({ disposition: "verified", fulfilment: "claim" });
+
+    const mutatedInput = makeContext("pay-dem");
+    let claims = 0;
+    const backing = createInMemorySellerReceiptStore();
+    mutatedInput.deps.receiptStore = {
+      claim: async (candidate) => {
+        claims += 1;
+        return backing.claim(candidate);
+      },
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+    mutatedInput.deps.resolveRail = async (railInput) => {
+      railInput.ref.railId = "pay-evil";
+      return {
+        disposition: "verified",
+        rail: mutatedInput.rail,
+        railRegistryVersion: railInput.railRegistryVersion,
+      };
+    };
+    await expect(verifySellerPaymentIntake(mutatedInput.input, mutatedInput.deps))
+      .resolves.toMatchObject({
+        disposition: "indeterminate",
+        fulfilment: "none",
+        reason: "rail-resolution-unavailable",
+      });
+    expect(claims).toBe(0);
+  });
+
+  it("freezes the receipt claim input and snapshots the store result", async () => {
+    const accepted = makeContext("pay-dem");
+    const backing = createInMemorySellerReceiptStore();
+    let sawFrozenClaim = false;
+    accepted.deps.receiptStore = {
+      claim: async (candidate) => {
+        sawFrozenClaim = Object.isFrozen(candidate) &&
+          Object.isFrozen(candidate.authorization) &&
+          Object.isFrozen(candidate.authorization.evidenceInput);
+        return backing.claim(candidate);
+      },
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+    await expect(verifySellerPaymentIntake(accepted.input, accepted.deps))
+      .resolves.toMatchObject({ disposition: "verified", fulfilment: "claim" });
+    expect(sawFrozenClaim).toBe(true);
+
+    const proxied = makeContext("pay-dem");
+    const proxiedBacking = createInMemorySellerReceiptStore();
+    proxied.deps.receiptStore = {
+      claim: async (candidate) => new Proxy(
+        await proxiedBacking.claim(candidate),
+        {},
+      ),
+      consumePermit: (permitId) => proxiedBacking.consumePermit(permitId),
+    };
+    await expect(verifySellerPaymentIntake(proxied.input, proxied.deps))
+      .resolves.toMatchObject({
+        disposition: "indeterminate",
+        fulfilment: "none",
+        reason: "receipt-store-invalid-result",
+      });
+  });
+
+  it.each([
+    ["an extra union field", (result: Record<string, unknown>) => ({
+      ...result,
+      unexpected: true,
+    })],
+    ["a boxed status discriminator", (result: Record<string, unknown>) => ({
+      ...result,
+      status: new String(result.status),
+    })],
+  ] as const)("rejects receipt-store results with %s", async (_name, mutate) => {
+    const ctx = makeContext("pay-dem");
+    const backing = createInMemorySellerReceiptStore();
+    ctx.deps.receiptStore = {
+      claim: async (candidate) => mutate(
+        await backing.claim(candidate) as unknown as Record<string, unknown>,
+      ) as never,
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps))
+      .resolves.toMatchObject({
+        disposition: "indeterminate",
+        fulfilment: "none",
+        reason: "receipt-store-invalid-result",
+      });
+  });
+
+  it("rejects a live Listing checkpoint before any receipt-store side effect", async () => {
+    const ctx = makeContext("pay-dem");
+    let claims = 0;
+    const backing = createInMemorySellerReceiptStore();
+    ctx.deps.receiptStore = {
+      claim: async (candidate) => {
+        claims += 1;
+        return backing.claim(candidate);
+      },
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+    ctx.deps.resolveListingAtCommit = async () => new Proxy(
+      listingAtCommitResolution(ctx.listing),
+      {},
+    );
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps))
+      .resolves.toMatchObject({
+        disposition: "indeterminate",
+        fulfilment: "none",
+        reason: "listing-at-commit-admission-unavailable",
+      });
+    expect(claims).toBe(0);
   });
 
   it("accepts a distinct post-Vet seller bundle under the Listing seller claim", async () => {
@@ -928,6 +1315,76 @@ describe("verifySellerPaymentIntake", () => {
       fulfilment: "none",
       reason: "receipt-store-invalid-result",
     });
+  });
+
+  it.each([
+    "payment amount",
+    "finality depth",
+    "payout tier",
+    "SB-2 ordering",
+    "stronger SB-3 result",
+  ] as const)("rejects an already-claimed store substitution of %s", async (field) => {
+    const backing = createInMemorySellerReceiptStore();
+    const first = makeContext("pay-x402", backing);
+    if (first.x402Observation.status !== "finalized") throw new Error("fixture");
+    if (field === "stronger SB-3 result") {
+      first.x402Observation.sessionBinding = { kind: "absent" };
+    }
+    await expect(verifySellerPaymentIntake(first.input, first.deps))
+      .resolves.toMatchObject({ disposition: "verified", fulfilment: "claim" });
+
+    const retry = makeContext("pay-x402");
+    if (retry.x402Observation.status !== "finalized") throw new Error("fixture");
+    retry.x402Observation.finalityObservedAt = 6_000;
+    if (field === "stronger SB-3 result") {
+      retry.x402Observation.sessionBinding = { kind: "absent" };
+    }
+    retry.deps.receiptStore = {
+      claim: async (candidate) => {
+        const result = await backing.claim(candidate);
+        if (result.status !== "already-claimed") throw new Error("fixture");
+        const altered = structuredClone(result);
+        const claim = altered.claim;
+        switch (field) {
+          case "payment amount":
+            claim.authorization.evidenceInput.paymentAmount.amount = "999";
+            break;
+          case "finality depth": {
+            const finality = claim.authorization.evidenceInput.settlementFinality;
+            if (finality.model !== "block-depth") throw new Error("fixture");
+            finality.finalityBlocks = 1;
+            break;
+          }
+          case "payout tier":
+            claim.authorization.payoutBindingTier = 2;
+            break;
+          case "SB-2 ordering": {
+            claim.observedAt = 7_000;
+            claim.authorization.evidenceInput.observedAt = 7_000;
+            claim.authorization.evidenceInput.settlementFinality.finalityObservedAt =
+              7_000;
+            break;
+          }
+          case "stronger SB-3 result":
+            claim.authorization.sessionBinding = "established";
+            break;
+        }
+        const evidenceHash = sha256Hex(canonicalize(
+          claim.authorization.evidenceInput,
+        ));
+        claim.evidenceHash = evidenceHash;
+        claim.authorization.evidenceHash = evidenceHash;
+        return altered;
+      },
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+
+    await expect(verifySellerPaymentIntake(retry.input, retry.deps))
+      .resolves.toMatchObject({
+        disposition: "indeterminate",
+        fulfilment: "none",
+        reason: "receipt-store-invalid-result",
+      });
   });
 
   it("selects the SB-2 winner by observedAt then evidence hash, independent of arrival", async () => {
