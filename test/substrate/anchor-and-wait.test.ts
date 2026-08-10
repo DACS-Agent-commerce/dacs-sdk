@@ -51,11 +51,14 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
   ).mockResolvedValue(1);
   raw.getAddressNonce = vi.fn(async () => signedCount);
   raw.storagePrograms.read = vi.fn().mockRejectedValue(notFound());
-  raw.storagePrograms.sign = vi.fn(async () => {
-    const nonce = (await raw.getAddressNonce(wallet)) + 1;
-    signedCount += 1;
-    return { hash: `tx-${id}-${signedCount}`, content: { nonce } };
-  });
+  raw.storagePrograms.sign = vi.fn(
+    async (_payload: unknown, options?: { nonce?: number }) => {
+      const nonce =
+        options?.nonce ?? (await raw.getAddressNonce(wallet)) + 1;
+      signedCount += 1;
+      return { hash: `tx-${id}-${signedCount}`, content: { nonce } };
+    },
+  );
   raw.tx.confirm = vi.fn(async (signed: { hash: string }) => ({
     response: { data: { transaction: { hash: signed.hash } } },
   }));
@@ -82,6 +85,75 @@ afterEach(() => {
 });
 
 describe("DemosAdapter.anchorAndWait", () => {
+  it("binds a mutable create to the nonce used to derive its address", async () => {
+    const { adapter, raw } = await makeAdapter();
+
+    await expect(
+      adapter.anchorAndWait(
+        "nonce-bound",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({ state: "included" });
+
+    expect(raw.storagePrograms.sign).toHaveBeenCalledWith(
+      expect.anything(),
+      { nonce: 1 },
+    );
+  });
+
+  it("refuses a mutable create signed with a different nonce", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.storagePrograms.sign.mockResolvedValue({
+      hash: "tx-wrong-nonce",
+      content: { nonce: 2 },
+    });
+
+    const error = asAnchorError(
+      await adapter
+        .anchorAndWait(
+          "wrong-nonce",
+          { value: 1 },
+          { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+
+    expect(error).toMatchObject({
+      code: "prepare-failed",
+      receipt: { state: "not-broadcast" },
+    });
+    expect(error.message).toMatch(/used nonce 2; expected 1/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an accepted response changes the signed transaction hash", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.tx.broadcast.mockResolvedValue({
+      result: 200,
+      response: { hash: "tx-conflicting-response" },
+    });
+
+    const error = asAnchorError(
+      await adapter.anchor("hash-bound", { value: 1 }).catch(
+        (caught: unknown) => caught,
+      ),
+    );
+
+    expect(error).toMatchObject({
+      code: "broadcast-failed",
+      receipt: { state: "broadcast-unknown" },
+    });
+    expect(error.receipt.txRef).toMatch(/^tx-/);
+    expect(error.receipt.txRef).not.toBe("tx-conflicting-response");
+    await vi.waitFor(() =>
+      expect(raw.nodeCall).toHaveBeenCalledWith(
+        "getTransactionStatus",
+        expect.objectContaining({ hash: error.receipt.txRef }),
+      ),
+    );
+  });
+
   it("rejects invalid completion and timing options before any write", async () => {
     const { adapter, raw } = await makeAdapter();
 
@@ -265,14 +337,25 @@ describe("DemosAdapter.anchorAndWait", () => {
 
     for (const fixture of [first, second]) {
       fixture.raw.getAddressNonce.mockImplementation(async () => accountNonce);
-      fixture.raw.storagePrograms.sign.mockImplementation(async () => {
-        const nonce = (await fixture.raw.getAddressNonce(wallet)) + 1;
-        signedNonces.push(nonce);
-        return {
-          hash: `tx-nonce-lag-${signedNonces.length}`,
-          content: { nonce },
-        };
-      });
+      vi.mocked(
+        (
+          fixture.adapter as unknown as {
+            nextAnchorNonce(): Promise<number>;
+          }
+        ).nextAnchorNonce,
+      ).mockImplementation(async () => accountNonce + 1);
+      fixture.raw.storagePrograms.sign.mockImplementation(
+        async (_payload: unknown, options?: { nonce?: number }) => {
+          const nonce =
+            options?.nonce ??
+            (await fixture.raw.getAddressNonce(wallet)) + 1;
+          signedNonces.push(nonce);
+          return {
+            hash: `tx-nonce-lag-${signedNonces.length}`,
+            content: { nonce },
+          };
+        },
+      );
     }
 
     await expect(
@@ -386,14 +469,25 @@ describe("DemosAdapter.anchorAndWait", () => {
 
     for (const fixture of [immutable, mutable]) {
       fixture.raw.getAddressNonce.mockImplementation(async () => accountNonce);
-      fixture.raw.storagePrograms.sign.mockImplementation(async () => {
-        const nonce = (await fixture.raw.getAddressNonce(wallet)) + 1;
-        signedNonces.push(nonce);
-        return {
-          hash: `tx-cross-surface-${signedNonces.length}`,
-          content: { nonce },
-        };
-      });
+      vi.mocked(
+        (
+          fixture.adapter as unknown as {
+            nextAnchorNonce(): Promise<number>;
+          }
+        ).nextAnchorNonce,
+      ).mockImplementation(async () => accountNonce + 1);
+      fixture.raw.storagePrograms.sign.mockImplementation(
+        async (_payload: unknown, options?: { nonce?: number }) => {
+          const nonce =
+            options?.nonce ??
+            (await fixture.raw.getAddressNonce(wallet)) + 1;
+          signedNonces.push(nonce);
+          return {
+            hash: `tx-cross-surface-${signedNonces.length}`,
+            content: { nonce },
+          };
+        },
+      );
     }
     vi.mocked(immutable.adapter.resolveAnchorByName)
       .mockResolvedValueOnce({ status: "absent" })
@@ -427,6 +521,29 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(queued).resolves.toMatchObject({ state: "included" });
     expect(signedNonces).toEqual([1, 2]);
     accountNonce = 2;
+  });
+
+  it("binds an immutable create to the nonce used to derive its address", async () => {
+    const { adapter, raw } = await makeAdapter();
+    const name = "immutable-nonce-bound";
+    const value = { value: 1 };
+    const address = await adapter.anchorAddress(name);
+    vi.mocked(adapter.resolveAnchorByName)
+      .mockResolvedValueOnce({ status: "absent" })
+      .mockResolvedValue({ status: "present", address });
+    raw.storagePrograms.read.mockResolvedValue({ success: true, data: value });
+
+    await expect(
+      adapter.anchorWriteOnce(name, value, {
+        timeoutMs: 1_000,
+        pollMs: 1,
+      }),
+    ).resolves.toEqual({ address, txRef: expect.stringMatching(/^tx-/) });
+
+    expect(raw.storagePrograms.sign).toHaveBeenCalledWith(
+      expect.anything(),
+      { nonce: 1 },
+    );
   });
 
   it("completes an immutable write by hash while its broadcast response hangs", async () => {

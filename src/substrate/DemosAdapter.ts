@@ -528,6 +528,7 @@ export class DemosAdapter implements SubstrateAdapter {
     if (resolution.status === "present") {
       return {
         address: resolution.address,
+        nonce: undefined,
         payload: StorageProgram.writeStorage(resolution.address, data, "json"),
       };
     }
@@ -545,6 +546,7 @@ export class DemosAdapter implements SubstrateAdapter {
     );
     return {
       address,
+      nonce,
       payload: StorageProgram.createStorageProgram(
         owner,
         programName,
@@ -896,7 +898,10 @@ export class DemosAdapter implements SubstrateAdapter {
     try {
       signed = await this.waitFor(
         ctx,
-        this.demos.storagePrograms.sign(prepared.payload),
+        this.demos.storagePrograms.sign(
+          prepared.payload,
+          prepared.nonce === undefined ? undefined : { nonce: prepared.nonce },
+        ),
         "signing",
       );
       validity = await this.waitFor(
@@ -933,6 +938,13 @@ export class DemosAdapter implements SubstrateAdapter {
       );
     }
     const signedNonce = signedNonceValue as number;
+    if (prepared.nonce !== undefined && signedNonce !== prepared.nonce) {
+      throw this.fail(
+        ctx,
+        "prepare-failed",
+        `signed anchor ${prepared.address} used nonce ${signedNonce}; expected ${prepared.nonce}`,
+      );
+    }
     const preBroadcastTxRef =
       validityRecord.response?.data?.transaction?.hash ?? signedRecord.hash;
     if (!preBroadcastTxRef) {
@@ -1058,11 +1070,30 @@ export class DemosAdapter implements SubstrateAdapter {
     const responseData = isRecord(response?.response)
       ? response.response
       : undefined;
-    const txRef =
-      (typeof responseData?.hash === "string"
-        ? responseData.hash
-        : undefined) ?? ctx.receipt.txRef;
-    if (txRef) ctx.receipt.txRef = txRef;
+    const responseTxRef =
+      typeof responseData?.hash === "string" ? responseData.hash : undefined;
+    if (responseTxRef && responseTxRef !== preBroadcastTxRef) {
+      ctx.receipt.state = "broadcast-unknown";
+      this.emit(ctx);
+      return {
+        result: Promise.reject(
+          this.fail(
+            ctx,
+            "broadcast-failed",
+            `anchor ${prepared.address} returned transaction hash ${responseTxRef}; expected ${preBroadcastTxRef}`,
+            response,
+          ),
+        ),
+        safe: this.resolveInBackground(
+          key,
+          preBroadcastTxRef,
+          signedNonce,
+          this.snapshot(ctx.receipt),
+          ctx.pollMs,
+        ),
+      };
+    }
+    const txRef = preBroadcastTxRef;
 
     if (response?.result !== 200 || !txRef) {
       const ambiguous = Boolean(txRef) && !isDefinitiveBroadcastRejection(response);
@@ -1410,7 +1441,7 @@ export class DemosAdapter implements SubstrateAdapter {
       ctx.receipt.address = address;
       const signed = await this.waitFor(
         ctx,
-        this.demos.storagePrograms.sign(payload),
+        this.demos.storagePrograms.sign(payload, { nonce }),
         "immutable signing",
       );
       const validity = await this.waitFor(
@@ -1432,6 +1463,11 @@ export class DemosAdapter implements SubstrateAdapter {
         );
       }
       const signedNonce = signedNonceValue as number;
+      if (signedNonce !== nonce) {
+        throw new SubstrateError(
+          `immutable anchor ${name} signed with nonce ${signedNonce}; expected ${nonce}`,
+        );
+      }
       const validityRecord = validity as unknown as {
         response?: { data?: { transaction?: { hash?: string } } };
       };
