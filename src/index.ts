@@ -613,6 +613,18 @@ export {
   type FinalizeCompletedSellerBundleInput,
   type CompletedSellerBundleCounterSignatureRequest,
   type FinalizedSellerBundle,
+  finalizeCompletedSellerBundleDurable,
+  getSellerBundleFinalizationStatus,
+  sellerBundleFinalizationCheckpointKey,
+  type SellerBundleFinalizationRole,
+  type SellerBundleSignaturePurpose,
+  type SellerBundleSignatureReconciliation,
+  type SellerBundleAnchorReconciliation,
+  type SellerBundleBindingPublicationReconciliation,
+  type SellerBundleFinalizationDurability,
+  type SellerBundleCheckpointState,
+  type SellerBundlePublicationCheckpointState,
+  type SellerBundleFinalizationStatusLoad,
 } from "./seller/index.js";
 
 // Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
