@@ -1295,7 +1295,8 @@ export async function createFsFencedSessionStore(
         if (
           kind === "agreement" &&
           loaded.status === "ok" &&
-          sessionPhaseIsTerminal(loaded.record.phase)
+          (loaded.record.phase === "seller:failed" ||
+            sessionPhaseIsTerminal(loaded.record.phase))
         ) {
           return loaded.record.agreementHash === hash
             ? bindAuthorizationAgreement(hash, jobId)
