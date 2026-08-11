@@ -419,6 +419,13 @@ function fixture(
       phase,
       logicalAddress,
       deliverableSpecHash: sha256Hex(canonicalize(spec)),
+      agreementViewHash: sha256Hex(canonicalize(agreement)),
+      validationFloorAt: Math.max(
+        agreement.commitment.finalizedAt,
+        authorization.evidenceInput.observedAt,
+        session.lastUpdatedAt,
+      ),
+      evidenceAuthority: { primaryClaim: SELLER, algorithm: "ed25519" },
       candidate: {
         status: "prepared",
         validatedAt: NOW,
@@ -610,6 +617,88 @@ describe("runFulfilmentCore", () => {
     expect(left).not.toBe(right);
   });
 
+  test.each(["buyer.storageAddress", "buyer.encryptionKey", "deliverableRef.schemaUrl"] as const)(
+    "rejects an explicitly undefined optional agreement field despite its $field JCS collision",
+    async (field) => {
+      const f = fixture();
+      const omitted = structuredClone(f.agreement) as unknown as Record<string, unknown>;
+      const ambiguous = structuredClone(f.agreement) as unknown as Record<string, unknown>;
+      const [parent, child] = field.split(".") as ["buyer" | "deliverableRef", string];
+      delete (omitted[parent] as Record<string, unknown>)[child];
+      delete (ambiguous[parent] as Record<string, unknown>)[child];
+      (ambiguous[parent] as Record<string, unknown>)[child] = undefined;
+      expect(canonicalize(ambiguous)).toBe(canonicalize(omitted));
+      f.deps.resolveAgreement = async () => ({
+        status: "verified",
+        value: ambiguous as unknown as SellerFulfilmentAgreement,
+      });
+      const consume = vi.spyOn(f.store, "consumePermit");
+
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "agreement-fields-malformed",
+      });
+      expect(consume).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects negative-zero agreement time despite its zero JCS collision", async () => {
+    const f = fixture();
+    expect(canonicalize({ finalizedAt: -0 })).toBe(canonicalize({ finalizedAt: 0 }));
+    f.authorization.commitment.finalizedAt = 0;
+    f.agreement.commitment.finalizedAt = -0;
+    const consume = vi.spyOn(f.store, "consumePermit");
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "agreement-fields-malformed",
+    });
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  test("rejects an undefined DeliverableSpec optional on a consumed retry despite its JCS collision", async () => {
+    const f = fixture(undefined, true);
+    const omitted = structuredClone(f.listing.deliverable);
+    const ambiguous = structuredClone(omitted) as unknown as Record<string, unknown>;
+    ambiguous.expectedSizeBytes = undefined;
+    expect(canonicalize(ambiguous)).toBe(canonicalize(omitted));
+    f.listing.deliverable = ambiguous as unknown as SellerDeliverableSpec;
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "consumed-fulfilment-rejected",
+      safeToRetryDelivery: false,
+      consumedPaymentAuthorization: f.authorization,
+    });
+    expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+  });
+
+  test.each(["resolver-rejected", "signer-mismatch"] as const)(
+    "never exposes a plain rejection for an already-consumed $case retry",
+    async (scenario) => {
+      const f = fixture(undefined, true);
+      if (scenario === "resolver-rejected") {
+        f.deps.resolveAgreement = async () => ({
+          status: "rejected",
+          reason: "agreement is no longer resolvable",
+        });
+      } else {
+        f.deps.evidenceSigner = {
+          ...f.deps.evidenceSigner,
+          signer: "did:demos:unexpected-signer",
+        };
+      }
+
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "indeterminate",
+        code: "consumed-fulfilment-rejected",
+        safeToRetryDelivery: false,
+        consumedPaymentAuthorization: f.authorization,
+      });
+    },
+  );
+
   test("consumes the opaque payment permit, reconciles, and emits verified normative evidence", async () => {
     const f = fixture();
     f.deps.prepareDelivery = vi.fn(f.deps.prepareDelivery);
@@ -718,6 +807,56 @@ describe("runFulfilmentCore", () => {
         ? absent.store.handoffValue!.candidate.delivery.artifact
         : undefined,
     }));
+  });
+
+  test.each(["entitlement", "attested-payload"] as const)(
+    "revalidates a retained $kind candidate against its immutable validation floor",
+    async (kind) => {
+      const spec: SellerDeliverableSpec = kind === "entitlement"
+        ? {
+            kind: "entitlement",
+            durationSec: 3_600,
+            renewable: false,
+          }
+        : {
+            kind: "attested-payload",
+            payloadFormat: "application/json",
+            verificationMethod: { kind: "self-signed" },
+          };
+      const f = fixture(spec, true);
+      // A later authenticated SessionRecord observation must not rewrite the
+      // causal floor atomically retained with the already-consumed candidate.
+      f.session.lastUpdatedAt = NOW - 100;
+      f.deps.prepareDelivery = vi.fn(f.deps.prepareDelivery);
+      f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+
+      const result = await runFulfilmentCore(f.request, f.deps);
+      expect(result, JSON.stringify(result)).toMatchObject({
+        decision: "completed",
+        consumedPaymentAuthorization: f.authorization,
+      });
+      expect(f.deps.prepareDelivery).not.toHaveBeenCalled();
+      expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    },
+  );
+
+  test("retains consumed authority when inspection returns a malformed recovery handoff", async () => {
+    const f = fixture(undefined, true);
+    const retained = structuredClone(f.store.handoffValue!);
+    delete (retained as unknown as Record<string, unknown>).candidate;
+    f.store.inspectPermit = async () => ({
+      status: "already-consumed",
+      claim: structuredClone(f.claim),
+      handoff: retained,
+    }) as never;
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "payment-permit-store-invalid",
+      reasons: ["receipt store returned a malformed consumed handoff"],
+      safeToRetryDelivery: false,
+      consumedPaymentAuthorization: f.authorization,
+    });
   });
 
   test("fails closed when delivery state contradicts a retained preparation failure", async () => {
@@ -908,6 +1047,7 @@ describe("runFulfilmentCore", () => {
       code: "payment-permit-store-invalid",
       reasons: ["receipt store returned a different retained fulfilment handoff"],
       safeToRetryDelivery: false,
+      consumedPaymentAuthorization: f.authorization,
     });
     expect(f.store.consumed).toBe(true);
     expect(f.store.handoffValue?.logicalAddress).toBe("dacs4:deliverable:job-17");
@@ -1677,7 +1817,8 @@ describe("runFulfilmentCore", () => {
   test("fails closed if a reconciler drifts the terminal event time after evidence response loss", async () => {
     const f = fixture();
     let reconciliationCalls = 0;
-    f.deps.nowMs = () => NOW + 1;
+    let clock = NOW;
+    f.deps.nowMs = () => clock;
     f.deps.reconcileDelivery = async () => {
       reconciliationCalls += 1;
       if (reconciliationCalls === 1) {
@@ -1711,6 +1852,7 @@ describe("runFulfilmentCore", () => {
       decision: "indeterminate",
       code: "delivery-evidence-publication-pending",
     });
+    clock = NOW + 1;
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "indeterminate",
       code: "delivery-evidence-publication-pending",
