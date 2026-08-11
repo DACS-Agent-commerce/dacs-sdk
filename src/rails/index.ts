@@ -108,6 +108,29 @@ export {
   type FsX402BuyerSettlementStoreOptions,
 } from "./x402BuyerSettlementFs.js";
 export {
+  EIP3009_AUTHORIZATION_USED_TOPIC,
+  EIP3009_AUTHORIZATION_CANCELED_TOPIC,
+  ERC20_TRANSFER_TOPIC,
+  createX402BuyerEvmAuthorizationProvider,
+  type X402BuyerEip3009Authorization,
+  type X402BuyerEvmFinalityHead,
+  type X402BuyerEvmLog,
+  type X402BuyerEvmTransactionReceipt,
+  type X402BuyerEvmAuthorizationState,
+  type X402BuyerEvmBlockAncestry,
+  type X402BuyerEvmReadClient,
+  type X402BuyerEvmIntentAuthority,
+  type X402BuyerEvmSignatureVerifier,
+  type X402BuyerEvmUnusedConfirmer,
+  type X402BuyerEvmDisclosureRecovery,
+  type X402BuyerEvmAuthorizationProviderOptions,
+  type X402BuyerEvmAuthorizationObservation,
+} from "./x402BuyerEvmAuthorization.js";
+export {
+  createViemX402BuyerEvmReadClient,
+  type ViemX402BuyerEvmReadClientOptions,
+} from "./x402BuyerEvmViem.js";
+export {
   prepareX402BuyerSettlement,
   createX402BuyerPaidRequestTransport,
   type X402BuyerChallengeClient,
