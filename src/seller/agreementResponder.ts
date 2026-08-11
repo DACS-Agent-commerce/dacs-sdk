@@ -19,6 +19,7 @@ import {
   deriveFixedPriceAgreement,
   type AgreementSigner,
   type FixedPriceAgreementInput,
+  type UnsignedAgreementArtifact,
 } from "../negotiate/fixedPrice.js";
 import {
   createFixedPriceAgreementSignatureContribution,
@@ -73,6 +74,8 @@ export interface SellerFixedPriceAgreementContextQuery {
   queryVersion: "1";
   jobId: string;
   listingPin: Readonly<ListingPin>;
+  /** Untrusted candidate terms supplied only so local policy can validate rail, payout, and time. */
+  candidateDraft: Readonly<UnsignedAgreementArtifact>;
   planHash: string;
   agreementHash: string;
   proposalHash: string;
@@ -723,6 +726,7 @@ function contextQuery(
     queryVersion: "1" as const,
     jobId: input.transportIdentity.jobId,
     listingPin: clone(plan.draft.listingRef),
+    candidateDraft: clone(plan.draft),
     planHash: plan.planHash,
     agreementHash: plan.agreementHash,
     proposalHash: input.proposal.proposalHash,
