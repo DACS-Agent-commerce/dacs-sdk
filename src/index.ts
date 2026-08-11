@@ -933,6 +933,7 @@ export {
   type SellerSessionSettlementSignedEvidenceResolution,
   type SellerSessionSettlementAnchorResult,
   type SellerSessionSettlementEvidenceResolution,
+  type SellerSessionSettlementEvidenceSigner,
   type SellerSessionSettlementPublicationDeps,
   type SellerSessionSettlementPublicationResult,
   type X402SellerCommittedSessionResolution,

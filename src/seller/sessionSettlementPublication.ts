@@ -2,7 +2,6 @@ import type {
   AnchorReceipt,
   AttestationRef,
   ComponentSignature,
-  ComponentSignatureAlgorithm,
   SettlementEvidence,
 } from "../artifacts/types.js";
 import {
@@ -125,6 +124,12 @@ export type SellerSessionSettlementEvidenceResolution =
   | { disposition: "absent" }
   | { disposition: "indeterminate"; reason: string };
 
+/** The settlement verifier currently authenticates ed25519 evidence only. */
+export type SellerSessionSettlementEvidenceSigner =
+  Omit<BuildComponentSignatureOptions, "algorithm"> & {
+    algorithm: "ed25519";
+  };
+
 /**
  * Transport-neutral publication boundary. Implementations that require
  * instance state must pass pre-bound functions; callbacks are captured once
@@ -136,7 +141,7 @@ export interface SellerSessionSettlementPublicationDeps {
     inspectPermit(permitId: string): Promise<SellerReceiptInspectionResult>;
   };
   /** Locally owned authority authenticated by the consumed handoff. */
-  evidenceSigner: BuildComponentSignatureOptions;
+  evidenceSigner: SellerSessionSettlementEvidenceSigner;
   /** Independent cryptographic primitives used to self-check signed evidence. */
   evidence: Required<Pick<EvidenceDeps, "resolvePublicKey" | "verify">>;
   /**
@@ -161,7 +166,7 @@ export interface SellerSessionSettlementPublicationDeps {
     evidenceHash: string;
     unsignedEvidence: Readonly<Record<string, unknown>>;
     expectedSigner: string;
-    algorithm: ComponentSignatureAlgorithm;
+    algorithm: "ed25519";
   }>): Promise<SellerSessionSettlementSignedEvidenceResolution>;
   /** Idempotently publish the exact evidence under `effectId`. */
   anchorEvidence(input: Readonly<{
@@ -201,7 +206,7 @@ export type SellerSessionSettlementPublicationResult =
 interface CapturedDeps {
   inspectPermit: (permitId: string) => Promise<SellerReceiptInspectionResult>;
   signer: {
-    algorithm: ComponentSignatureAlgorithm;
+    algorithm: "ed25519";
     signer: string;
     sign: BuildComponentSignatureOptions["sign"];
   };
@@ -282,9 +287,53 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 }
 
 function ownedJson<T>(value: T): T | null {
-  if (!exactJson(value)) return null;
   try {
+    if (!exactJson(value)) return null;
     return deepFreeze(structuredClone(value));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Capture a callback-owned plain record without invoking any property getter.
+ * Proxy descriptor/prototype traps are untrusted too, so every reflective
+ * operation is contained and malformed/revoked proxies simply fail capture.
+ */
+function captureOwnDataRecord(value: unknown): Readonly<Record<string, unknown>> | null {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const snapshot: Record<string, unknown> = Object.create(null);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (typeof key !== "string") return null;
+      const descriptor = descriptors[key];
+      if (!descriptor || descriptor.get || descriptor.set ||
+          !Object.prototype.hasOwnProperty.call(descriptor, "value") ||
+          !descriptor.enumerable || descriptor.value === undefined) return null;
+      Object.defineProperty(snapshot, key, {
+        value: descriptor.value,
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
+    return Object.freeze(snapshot);
+  } catch {
+    return null;
+  }
+}
+
+function copyUint8Array(value: unknown): Uint8Array | null {
+  try {
+    // ArrayBuffer.isView rejects proxies without consulting user properties.
+    if (!ArrayBuffer.isView(value) || !(value instanceof Uint8Array)) return null;
+    const snapshot = new Uint8Array(value);
+    return snapshot.byteLength > 0 ? snapshot : null;
   } catch {
     return null;
   }
@@ -295,6 +344,17 @@ function ownData(source: object, key: string): unknown {
   return descriptor && !descriptor.get && !descriptor.set
     ? descriptor.value
     : undefined;
+}
+
+function advertisesEd25519EvidenceSigner(value: unknown): boolean {
+  try {
+    if (value === null || typeof value !== "object") return false;
+    const signer = ownData(value, "evidenceSigner");
+    return signer !== null && typeof signer === "object" &&
+      ownData(signer, "algorithm") === "ed25519";
+  } catch {
+    return false;
+  }
 }
 
 function captureDeps(
@@ -329,7 +389,7 @@ function captureDeps(
     const verify = ownData(evidence, "verify");
     if (typeof inspectPermit !== "function" || typeof sign !== "function" ||
         typeof resolvePublicKey !== "function" || typeof verify !== "function" ||
-        !["ed25519", "ecdsa-secp256k1", "sr1-aggregate"].includes(String(algorithm)) ||
+        algorithm !== "ed25519" ||
         !isNonEmpty(signer)) return null;
     const call = <T extends Function>(fn: T, args: unknown[]): unknown =>
       Reflect.apply(fn, INERT_RECEIVER, args);
@@ -337,7 +397,7 @@ function captureDeps(
       inspectPermit: (permitId: string) =>
         call(inspectPermit, [permitId]) as Promise<SellerReceiptInspectionResult>,
       signer: Object.freeze({
-        algorithm: algorithm as ComponentSignatureAlgorithm,
+        algorithm,
         signer,
         sign: ((bytes: Uint8Array, context: Pick<ComponentSignature, "algorithm" | "signer">) =>
           call(sign, [bytes, context])) as BuildComponentSignatureOptions["sign"],
@@ -458,52 +518,73 @@ function isNativeProofBinding(
 function captureNativeProofAuthentication(
   value: unknown,
 ): SellerSessionSettlementNativeProofAuthentication | null {
-  if (!isRecord(value)) return null;
-  if (value.disposition !== "authenticated") {
-    const snapshot = ownedJson(value);
-    if (!isRecord(snapshot) ||
-        (snapshot.disposition !== "rejected" && snapshot.disposition !== "error" &&
+  try {
+    const snapshot = captureOwnDataRecord(value);
+    if (!snapshot) return null;
+    if (snapshot.disposition !== "authenticated") {
+      if ((snapshot.disposition !== "rejected" && snapshot.disposition !== "error" &&
           snapshot.disposition !== "indeterminate") ||
-        !exactKeys(snapshot, ["disposition", "reason"]) ||
-        !isNonEmpty(snapshot.reason)) return null;
-    return snapshot as SellerSessionSettlementNativeProofAuthentication;
+          !exactKeys(snapshot as Record<string, unknown>, ["disposition", "reason"]) ||
+          !isNonEmpty(snapshot.reason)) return null;
+      return {
+        disposition: snapshot.disposition,
+        reason: snapshot.reason,
+      };
+    }
+    if (!exactKeys(
+      snapshot as Record<string, unknown>,
+      ["disposition", "binding", "proof"],
+    )) return null;
+    const binding = ownedJson(snapshot.binding);
+    const proof = captureOwnDataRecord(snapshot.proof);
+    if (!binding || !isNativeProofBinding(binding) || !proof) return null;
+    if (proof.encoding === "jcs" &&
+        exactKeys(proof as Record<string, unknown>, [
+          "encoding",
+          "kind",
+          "locator",
+          "artifact",
+        ]) &&
+        isNonEmpty(proof.kind) && isNonEmpty(proof.locator)) {
+      const artifact = ownedJson(proof.artifact);
+      if (!artifact || !isRecord(artifact)) return null;
+      return {
+        disposition: "authenticated",
+        binding,
+        proof: {
+          encoding: "jcs",
+          kind: proof.kind,
+          locator: proof.locator,
+          artifact,
+        },
+      };
+    }
+    if (proof.encoding === "bytes" &&
+        exactKeys(proof as Record<string, unknown>, [
+          "encoding",
+          "kind",
+          "locator",
+          "bytes",
+        ]) &&
+        isNonEmpty(proof.kind) && isNonEmpty(proof.locator)) {
+      const bytes = copyUint8Array(proof.bytes);
+      if (!bytes) return null;
+      return {
+        disposition: "authenticated",
+        binding,
+        proof: {
+          encoding: "bytes",
+          kind: proof.kind,
+          locator: proof.locator,
+          bytes,
+        },
+      };
+    }
+    return null;
+  } catch {
+    // Callback output is untrusted; no malformed object may escape this API.
+    return null;
   }
-  if (!exactKeys(value, ["disposition", "binding", "proof"])) return null;
-  const binding = ownedJson(value.binding);
-  if (!binding || !isNativeProofBinding(binding) || !isRecord(value.proof)) return null;
-  const proof = value.proof;
-  if (proof.encoding === "jcs" &&
-      exactKeys(proof, ["encoding", "kind", "locator", "artifact"]) &&
-      isNonEmpty(proof.kind) && isNonEmpty(proof.locator)) {
-    const artifact = ownedJson(proof.artifact);
-    if (!artifact || !isRecord(artifact)) return null;
-    return {
-      disposition: "authenticated",
-      binding,
-      proof: {
-        encoding: "jcs",
-        kind: proof.kind,
-        locator: proof.locator,
-        artifact,
-      },
-    };
-  }
-  if (proof.encoding === "bytes" &&
-      exactKeys(proof, ["encoding", "kind", "locator", "bytes"]) &&
-      isNonEmpty(proof.kind) && isNonEmpty(proof.locator) &&
-      proof.bytes instanceof Uint8Array && proof.bytes.byteLength > 0) {
-    return {
-      disposition: "authenticated",
-      binding,
-      proof: {
-        encoding: "bytes",
-        kind: proof.kind,
-        locator: proof.locator,
-        bytes: new Uint8Array(proof.bytes),
-      },
-    };
-  }
-  return null;
 }
 
 function captureSignedEvidenceResolution(
@@ -687,14 +768,14 @@ function settlementPublicationEffectId(input: {
   nativeProofRef: Readonly<SessionSettlementNativeProofRef>;
   evidenceAuthority: Readonly<{
     primaryClaim: string;
-    algorithm: ComponentSignatureAlgorithm;
+    algorithm: "ed25519";
   }>;
 }): string {
   if (!validAuthorization(input.authorization) || !isProofRef(input.nativeProofRef) ||
       !isNonEmpty(input.evidenceAuthority?.primaryClaim) ||
-      !["ed25519", "ecdsa-secp256k1", "sr1-aggregate"].includes(
-        String(input.evidenceAuthority?.algorithm),
-      )) throw new TypeError("settlement publication identity input is malformed");
+      input.evidenceAuthority?.algorithm !== "ed25519") {
+    throw new TypeError("settlement publication identity input is malformed");
+  }
   const authorizationHash = sha256Hex(canonicalize(input.authorization));
   return `seller-settlement:v1:${sha256Hex(canonicalize({
     publicationVersion: "1",
@@ -716,8 +797,14 @@ export async function publishSellerSessionSettlement(
   depsInput: SellerSessionSettlementPublicationDeps,
 ): Promise<SellerSessionSettlementPublicationResult> {
   const request = parseRequest(requestInput);
-  const deps = captureDeps(depsInput);
   if (!request) return failure("error", "settlement publication request is not exact canonical data");
+  if (!advertisesEd25519EvidenceSigner(depsInput)) {
+    return failure(
+      "error",
+      "settlement publication evidence signer must use ed25519",
+    );
+  }
+  const deps = captureDeps(depsInput);
   if (!deps) return failure("error", "settlement publication dependencies are incomplete or unsafe");
 
   let inspection: SellerReceiptInspectionResult | null;
@@ -913,7 +1000,16 @@ export async function publishSellerSessionSettlement(
 
   const context = evidenceContext(request.authorization);
   context.orchestrator = deps.signer.signer;
-  const signatureCheck = await verifySettlementEvidence(evidence, context, deps.evidence);
+  let signatureCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
+  try {
+    signatureCheck = await verifySettlementEvidence(evidence, context, deps.evidence);
+  } catch {
+    return failure(
+      "indeterminate",
+      "signed payment evidence verification threw",
+      effectId,
+    );
+  }
   if (signatureCheck.decision !== "pass") {
     return failure(
       mapEvidenceDecision(signatureCheck.decision),
@@ -1037,11 +1133,20 @@ export async function publishSellerSessionSettlement(
       readEvidence.signature.signer !== deps.signer.signer) {
     return failure("rejected", "settlement evidence readback differs from the signed publication", effectId);
   }
-  const readCheck = await verifySettlementEvidence(
-    readEvidence,
-    { ...context, attestationRef: evidenceRef },
-    deps.evidence,
-  );
+  let readCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
+  try {
+    readCheck = await verifySettlementEvidence(
+      readEvidence,
+      { ...context, attestationRef: evidenceRef },
+      deps.evidence,
+    );
+  } catch {
+    return failure(
+      "indeterminate",
+      "published payment evidence verification threw",
+      effectId,
+    );
+  }
   if (readCheck.decision !== "pass") {
     return failure(
       mapEvidenceDecision(readCheck.decision),

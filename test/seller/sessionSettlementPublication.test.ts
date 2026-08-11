@@ -464,6 +464,44 @@ describe("publishSellerSessionSettlement", () => {
     expect(mutating.sign).not.toHaveBeenCalled();
   });
 
+  it("captures accessor and proxy proof outputs without invoking getters or rejecting", async () => {
+    const accessor = harness();
+    let getterCalls = 0;
+    const accessorOutput = Object.defineProperty({}, "disposition", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("untrusted getter must remain inert");
+      },
+    });
+    accessor.deps.resolveAuthenticatedNativeProof = async () => accessorOutput as never;
+    await expect(
+      publishSellerSessionSettlement(request(accessor), accessor.deps),
+    ).resolves.toMatchObject({
+      disposition: "error",
+      reason: expect.stringContaining("malformed"),
+    });
+    expect(getterCalls).toBe(0);
+    expect(accessor.sign).not.toHaveBeenCalled();
+    expect(accessor.anchor).not.toHaveBeenCalled();
+
+    const proxied = harness();
+    const proxyOutput = new Proxy({}, {
+      getPrototypeOf() {
+        throw new Error("untrusted proxy trap");
+      },
+    });
+    proxied.deps.resolveAuthenticatedNativeProof = async () => proxyOutput as never;
+    await expect(
+      publishSellerSessionSettlement(request(proxied), proxied.deps),
+    ).resolves.toMatchObject({
+      disposition: "error",
+      reason: expect.stringContaining("malformed"),
+    });
+    expect(proxied.sign).not.toHaveBeenCalled();
+    expect(proxied.anchor).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["network", (result: Extract<
       SellerSessionSettlementNativeProofAuthentication,
@@ -754,6 +792,78 @@ describe("publishSellerSessionSettlement", () => {
     expect(result.disposition).not.toBe("published");
     if (result.disposition === "published") return;
     expect(result.reason).toContain("verification failed");
+    expect(h.anchor).not.toHaveBeenCalled();
+  });
+
+  it("contains pre-anchor key-resolution and verification throws", async () => {
+    const keyFailure = harness();
+    keyFailure.deps.evidence.resolvePublicKey = async () => {
+      throw new Error("key backend unavailable");
+    };
+    await expect(
+      publishSellerSessionSettlement(request(keyFailure), keyFailure.deps),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      reason: expect.stringContaining("verification threw"),
+      effectId: expect.stringMatching(/^seller-settlement:v1:[0-9a-f]{64}$/),
+    });
+    expect(keyFailure.sign).toHaveBeenCalledOnce();
+    expect(keyFailure.anchor).not.toHaveBeenCalled();
+
+    const verifierFailure = harness();
+    verifierFailure.deps.evidence.verify = async () => {
+      throw new Error("signature backend unavailable");
+    };
+    await expect(
+      publishSellerSessionSettlement(request(verifierFailure), verifierFailure.deps),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      reason: expect.stringContaining("verification threw"),
+      effectId: expect.stringMatching(/^seller-settlement:v1:[0-9a-f]{64}$/),
+    });
+    expect(verifierFailure.sign).toHaveBeenCalledOnce();
+    expect(verifierFailure.anchor).not.toHaveBeenCalled();
+  });
+
+  it("contains a post-readback evidence-verification throw", async () => {
+    const h = harness();
+    let verificationCount = 0;
+    h.deps.evidence.verify = (bytes, signature, publicKey) => {
+      verificationCount += 1;
+      if (verificationCount === 2) {
+        throw new Error("readback verifier unavailable");
+      }
+      return ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey));
+    };
+    await expect(
+      publishSellerSessionSettlement(request(h), h.deps),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      reason: expect.stringContaining("published payment evidence verification threw"),
+      effectId: expect.stringMatching(/^seller-settlement:v1:[0-9a-f]{64}$/),
+    });
+    expect(verificationCount).toBe(2);
+    expect(h.anchor).toHaveBeenCalledOnce();
+  });
+
+  it("advertises and enforces an ed25519-only evidence signer before effects", async () => {
+    const h = harness();
+    const unsupportedSigner = vi.fn(() => new Uint8Array(64));
+    h.deps.evidenceSigner = {
+      // @ts-expect-error settlement publication verification has no secp256k1 backend
+      algorithm: "ecdsa-secp256k1",
+      signer: ORCHESTRATOR,
+      sign: unsupportedSigner,
+    };
+    await expect(
+      publishSellerSessionSettlement(request(h), h.deps),
+    ).resolves.toMatchObject({
+      disposition: "error",
+      reason: expect.stringContaining("must use ed25519"),
+    });
+    expect(h.inspect).not.toHaveBeenCalled();
+    expect(h.resolveProof).not.toHaveBeenCalled();
+    expect(unsupportedSigner).not.toHaveBeenCalled();
     expect(h.anchor).not.toHaveBeenCalled();
   });
 
