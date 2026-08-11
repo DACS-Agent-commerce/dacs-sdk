@@ -233,6 +233,29 @@ describe("durable buyer x402 intent", () => {
     expect(() => assertX402BuyerSettlementIntent(intent)).not.toThrow();
   });
 
+  test("retains exact job identity while NFC-normalizing only the SB-3 nonce preimage", () => {
+    const decomposedJob = "job-cafe\u0301";
+    const draft = intentDraft();
+    draft.jobId = decomposedJob;
+    draft.authorizationNonce = nonce(decomposedJob);
+    const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+    ((payload.payload as Record<string, unknown>).authorization as Record<string, unknown>).nonce =
+      nonce(decomposedJob);
+    draft.signedPaymentPayload = payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+    draft.paymentHeader = {
+      name: "PAYMENT-SIGNATURE",
+      value: encode(payload),
+    };
+    const intent = createX402BuyerSettlementIntent(draft);
+    expect(intent.jobId).toBe(decomposedJob);
+    expect(intent.authorizationNonce).toBe(nonce(decomposedJob.normalize("NFC")));
+    expect(intent.settlementKey).not.toBe(x402BuyerSettlementKey({
+      railId: RAIL_ID,
+      jobId: decomposedJob.normalize("NFC"),
+      phaseIndex: PHASE_INDEX,
+    }));
+  });
+
   test("rejects every authority-bearing intent substitution", () => {
     const original = makeIntent();
     const mutations: Array<(candidate: Record<string, unknown>) => void> = [
@@ -663,6 +686,9 @@ describe("advanceX402BuyerSettlement", () => {
       })],
       ["transaction", (intent) => capturedSettlement(intent, {
         event: signedEvent({ settlementTxHash: `0x${"bb".repeat(32)}` }),
+      })],
+      ["transaction spelling", (intent) => capturedSettlement(intent, {
+        event: signedEvent({ settlementTxHash: TX.toUpperCase().replace("0X", "0x") }),
       })],
       ["resource", (intent) => ({
         ...capturedSettlement(intent),

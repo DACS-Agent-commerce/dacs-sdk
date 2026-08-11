@@ -468,6 +468,14 @@ function nfcString(value: unknown, label: string): string {
   return value;
 }
 
+function exactSessionString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0 ||
+      /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new DacsError(`${label} must be a non-empty string without controls`);
+  }
+  return value;
+}
+
 function asciiString(value: unknown, label: string): string {
   const captured = nfcString(value, label);
   if (!PRINTABLE_ASCII_RE.test(captured)) {
@@ -544,16 +552,19 @@ function expectedNonce(jobId: string, phaseIndex: number): `0x${string}` {
   return `0x${sha256Hex(`dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`)}`;
 }
 
-/** Stable exact-key encoding of (railId, NFC(jobId), phaseIndex). */
+/** Stable exact-byte key encoding of (railId, jobId, phaseIndex). */
 export function x402BuyerSettlementKey(input: {
   railId: string;
   jobId: string;
   phaseIndex: number;
 }): string {
   const railId = asciiString(input?.railId, "x402 buyer railId");
-  const jobId = nfcString(input?.jobId, "x402 buyer jobId");
+  const jobId = exactSessionString(input?.jobId, "x402 buyer jobId");
   const phaseIndex = uint(input?.phaseIndex, "x402 buyer phaseIndex");
-  return `dacs:x402-buyer:${sha256Hex(canonicalize({ railId, jobId, phaseIndex }))}`;
+  const keyPreimage =
+    `dacs-x402-buyer-key:v1:${Buffer.byteLength(railId, "utf8")}:${railId}:` +
+    `${Buffer.byteLength(jobId, "utf8")}:${jobId}:${phaseIndex}`;
+  return `dacs:x402-buyer:${sha256Hex(keyPreimage)}`;
 }
 
 function captureRequirements(
@@ -692,7 +703,7 @@ export function createX402BuyerSettlementIntent(
     "paymentHeader",
     "authorizationNonce",
   ]);
-  const jobId = nfcString(record.jobId, "x402 buyer jobId");
+  const jobId = exactSessionString(record.jobId, "x402 buyer jobId");
   const phaseIndex = uint(record.phaseIndex, "x402 buyer phaseIndex");
   const railId = asciiString(record.railId, "x402 buyer railId");
   const railVersion = asciiString(record.railVersion, "x402 buyer railVersion");
@@ -930,7 +941,7 @@ function captureSettlement(
     httpResource: disclosure.httpResource,
   });
   if (receipt.paymentReceiptHash !== signedEvent.paymentReceiptHash ||
-      receipt.transaction.toLowerCase() !== signedEvent.settlementTxHash.toLowerCase() ||
+      receipt.transaction !== signedEvent.settlementTxHash ||
       receipt.chainId !== signedEvent.chainId || receipt.protocolVersion !== signedEvent.protocolVersion) {
     throw new DacsError("x402 buyer complete receipt does not match the signed x402-event");
   }
