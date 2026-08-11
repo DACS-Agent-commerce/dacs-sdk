@@ -1130,7 +1130,7 @@ class DurableBuyerCoordinator {
   readonly #provider: DurableBuyerBundleFinalizationProvider;
   readonly #durability: BuyerBundleFinalizationDurability;
   #lease?: SessionLeaseToken;
-  #settlement?: VerifiedSessionSettlement;
+  #settlement?: Extract<VerifiedSessionSettlement, { outcome: "success" }>;
   #identity?: BuyerBundleTransportIdentity;
   #authority?: Record<string, CheckpointValue>;
   #request?: CompletedSellerBundleCounterSignatureRequest;
@@ -1201,6 +1201,7 @@ class DurableBuyerCoordinator {
       !isHash(settlement.contextHash) ||
       !isHash(settlement.evidenceHash) ||
       !isHash(settlement.nativeProofHash) ||
+      !isHash(settlement.nativeObservationHash) ||
       !isHash(settlement.observationHash)
     ) {
       throw new DacsError("verified settlement is rebound to another buyer session");
@@ -1518,6 +1519,7 @@ class DurableBuyerCoordinator {
     return {
       ...this.#stableAuthority(),
       settlementObservationHash: this.#settlement.observationHash,
+      settlementNativeObservationHash: this.#settlement.nativeObservationHash,
     };
   }
 
@@ -1532,10 +1534,14 @@ class DurableBuyerCoordinator {
       current.stage !== "outcome" ||
       !current.data ||
       !dataMatches(
-        withoutKeys(current.data, ["settlementObservationHash"]),
+        withoutKeys(current.data, [
+          "settlementObservationHash",
+          "settlementNativeObservationHash",
+        ]),
         stable,
       ) ||
-      !isHash(current.data.settlementObservationHash)
+      !isHash(current.data.settlementObservationHash) ||
+      !isHash(current.data.settlementNativeObservationHash)
     ) {
       throw new DacsError("durable settlement checkpoint is malformed or rebound");
     }
