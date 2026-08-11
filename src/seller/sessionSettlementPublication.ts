@@ -35,8 +35,10 @@ import {
   isValidSellerReceiptClaim,
   type SellerFulfilmentHandoff,
   type SellerPaymentAuthorization,
+  type SellerPaymentFinality,
   type SellerReceiptClaim,
   type SellerReceiptInspectionResult,
+  type SellerSettlementIdentity,
 } from "./paymentIntake.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -50,8 +52,62 @@ const INERT_RECEIVER = Object.freeze(Object.create(null)) as object;
 export interface SellerSessionSettlementPublicationRequest {
   paymentPermitId: string;
   authorization: SellerPaymentAuthorization;
-  nativeProofRef: SessionSettlementNativeProofRef;
+  /** Optional equality-only expectation; this value never grants proof authority. */
+  nativeProofRef?: SessionSettlementNativeProofRef;
 }
+
+/** Exact facts independently authenticated from the retained native proof. */
+export interface SellerSessionSettlementNativeProofBinding {
+  bindingVersion: "1";
+  jobId: string;
+  railId: string;
+  phaseIndex: number;
+  phase: "pay-dem" | "pay-x402";
+  evidenceHash: string;
+  settlementId: string;
+  /** Canonical producer network (`demos` or `eip155:<chainId>`). */
+  network: string;
+  event: SellerSettlementIdentity;
+  settlementFinality: SellerPaymentFinality;
+}
+
+export type SellerSessionSettlementAuthenticatedNativeProof =
+  | {
+      encoding: "jcs";
+      kind: string;
+      locator: string;
+      artifact: Record<string, unknown>;
+    }
+  | {
+      encoding: "bytes";
+      kind: string;
+      locator: string;
+      bytes: Uint8Array;
+    };
+
+/** Four-state authenticated native-proof resolution. */
+export type SellerSessionSettlementNativeProofAuthentication =
+  | {
+      disposition: "authenticated";
+      binding: SellerSessionSettlementNativeProofBinding;
+      proof: SellerSessionSettlementAuthenticatedNativeProof;
+    }
+  | {
+      disposition: "rejected" | "error" | "indeterminate";
+      reason: string;
+    };
+
+/** Durable signed-artifact reconciliation before a possibly nondeterministic sign. */
+export type SellerSessionSettlementSignedEvidenceResolution =
+  | { disposition: "present"; effectId: string; evidence: SettlementEvidence }
+  | {
+      /** Authoritative: neither a signature WAL nor publication exists for this effect. */
+      disposition: "absent";
+    }
+  | {
+      disposition: "rejected" | "error" | "indeterminate";
+      reason: string;
+    };
 
 export type SellerSessionSettlementAnchorResult =
   | {
@@ -83,6 +139,30 @@ export interface SellerSessionSettlementPublicationDeps {
   evidenceSigner: BuildComponentSignatureOptions;
   /** Independent cryptographic primitives used to self-check signed evidence. */
   evidence: Required<Pick<EvidenceDeps, "resolvePublicKey" | "verify">>;
+  /**
+   * Independently resolve and authenticate the exact native proof. An
+   * `authenticated` result asserts that the returned owned proof content was
+   * checked against the native ledger/provider, finality policy, and complete
+   * binding facts. Returning an x402 capture/header alone is insufficient.
+   */
+  resolveAuthenticatedNativeProof(input: Readonly<{
+    authorization: Readonly<SellerPaymentAuthorization>;
+    expectedNativeProofRef?: Readonly<SessionSettlementNativeProofRef>;
+  }>): Promise<SellerSessionSettlementNativeProofAuthentication>;
+  /**
+   * Reconcile a previously signed artifact by stable effect identity before
+   * invoking the signer. A `present` artifact may come from a signature WAL or
+   * an idempotent publication read. `absent` MUST be authoritative and safe to
+   * sign across both signer and publisher systems; after any ambiguous signer
+   * or anchor response, unresolved state is `indeterminate`, never absent.
+   */
+  resolveRetainedSignedEvidence(input: Readonly<{
+    effectId: string;
+    evidenceHash: string;
+    unsignedEvidence: Readonly<Record<string, unknown>>;
+    expectedSigner: string;
+    algorithm: ComponentSignatureAlgorithm;
+  }>): Promise<SellerSessionSettlementSignedEvidenceResolution>;
   /** Idempotently publish the exact evidence under `effectId`. */
   anchorEvidence(input: Readonly<{
     effectId: string;
@@ -126,6 +206,10 @@ interface CapturedDeps {
     sign: BuildComponentSignatureOptions["sign"];
   };
   evidence: Required<Pick<EvidenceDeps, "resolvePublicKey" | "verify">>;
+  resolveAuthenticatedNativeProof:
+    SellerSessionSettlementPublicationDeps["resolveAuthenticatedNativeProof"];
+  resolveRetainedSignedEvidence:
+    SellerSessionSettlementPublicationDeps["resolveRetainedSignedEvidence"];
   anchorEvidence: SellerSessionSettlementPublicationDeps["anchorEvidence"];
   verifyAnchorReceipt: SellerSessionSettlementPublicationDeps["verifyAnchorReceipt"];
   resolveEvidence: SellerSessionSettlementPublicationDeps["resolveEvidence"];
@@ -220,10 +304,20 @@ function captureDeps(
     const receiptStore = ownData(source, "receiptStore");
     const evidenceSigner = ownData(source, "evidenceSigner");
     const evidence = ownData(source, "evidence");
+    const resolveAuthenticatedNativeProof = ownData(
+      source,
+      "resolveAuthenticatedNativeProof",
+    );
+    const resolveRetainedSignedEvidence = ownData(
+      source,
+      "resolveRetainedSignedEvidence",
+    );
     const anchorEvidence = ownData(source, "anchorEvidence");
     const verifyAnchorReceipt = ownData(source, "verifyAnchorReceipt");
     const resolveEvidence = ownData(source, "resolveEvidence");
     if (!isRecord(receiptStore) || !isRecord(evidenceSigner) || !isRecord(evidence) ||
+        typeof resolveAuthenticatedNativeProof !== "function" ||
+        typeof resolveRetainedSignedEvidence !== "function" ||
         typeof anchorEvidence !== "function" ||
         typeof verifyAnchorReceipt !== "function" ||
         typeof resolveEvidence !== "function") return null;
@@ -269,6 +363,16 @@ function captureDeps(
           return result;
         },
       }),
+      resolveAuthenticatedNativeProof: (input: Parameters<
+        SellerSessionSettlementPublicationDeps["resolveAuthenticatedNativeProof"]
+      >[0]) => call(resolveAuthenticatedNativeProof, [input]) as ReturnType<
+        SellerSessionSettlementPublicationDeps["resolveAuthenticatedNativeProof"]
+      >,
+      resolveRetainedSignedEvidence: (input: Parameters<
+        SellerSessionSettlementPublicationDeps["resolveRetainedSignedEvidence"]
+      >[0]) => call(resolveRetainedSignedEvidence, [input]) as ReturnType<
+        SellerSessionSettlementPublicationDeps["resolveRetainedSignedEvidence"]
+      >,
       anchorEvidence: (input: Parameters<
         SellerSessionSettlementPublicationDeps["anchorEvidence"]
       >[0]) => call(anchorEvidence, [input]) as ReturnType<
@@ -303,6 +407,170 @@ function isProofRef(value: unknown): value is SessionSettlementNativeProofRef {
     (value.encoding === "jcs" || value.encoding === "bytes");
 }
 
+function isSettlementIdentity(value: unknown): value is SellerSettlementIdentity {
+  if (!isRecord(value) || !isNonEmpty(value.kind)) return false;
+  if (value.kind === "demos") {
+    return exactKeys(value, ["kind", "txHash", "blockNumber", "includedAt"]) &&
+      typeof value.txHash === "string" && /^(?:0[xX])?[0-9a-fA-F]{64}$/.test(value.txHash) &&
+      isUint(value.blockNumber) && isUint(value.includedAt);
+  }
+  return value.kind === "evm" &&
+    exactKeys(value, ["kind", "chainId", "txHash", "logIndex", "includedAt"]) &&
+    isUint(value.chainId) && value.chainId > 0 &&
+    typeof value.txHash === "string" && /^(?:0[xX])?[0-9a-fA-F]{64}$/.test(value.txHash) &&
+    isUint(value.logIndex) && isUint(value.includedAt);
+}
+
+function isPaymentFinality(value: unknown): value is SellerPaymentFinality {
+  if (!isRecord(value)) return false;
+  if (value.model === "bft-final") {
+    return exactKeys(value, ["model", "finalityObservedAt"]) &&
+      isUint(value.finalityObservedAt);
+  }
+  return value.model === "block-depth" &&
+    exactKeys(value, ["model", "finalityBlocks", "finalityObservedAt"]) &&
+    isUint(value.finalityBlocks) && value.finalityBlocks > 0 &&
+    isUint(value.finalityObservedAt);
+}
+
+function isNativeProofBinding(
+  value: unknown,
+): value is SellerSessionSettlementNativeProofBinding {
+  return isRecord(value) && exactKeys(value, [
+    "bindingVersion",
+    "jobId",
+    "railId",
+    "phaseIndex",
+    "phase",
+    "evidenceHash",
+    "settlementId",
+    "network",
+    "event",
+    "settlementFinality",
+  ]) && value.bindingVersion === "1" && isNonEmpty(value.jobId) &&
+    isNonEmpty(value.railId) && isUint(value.phaseIndex) &&
+    (value.phase === "pay-dem" || value.phase === "pay-x402") &&
+    typeof value.evidenceHash === "string" && HASH_RE.test(value.evidenceHash) &&
+    isNonEmpty(value.settlementId) && isNonEmpty(value.network) &&
+    isSettlementIdentity(value.event) && isPaymentFinality(value.settlementFinality);
+}
+
+function captureNativeProofAuthentication(
+  value: unknown,
+): SellerSessionSettlementNativeProofAuthentication | null {
+  if (!isRecord(value)) return null;
+  if (value.disposition !== "authenticated") {
+    const snapshot = ownedJson(value);
+    if (!isRecord(snapshot) ||
+        (snapshot.disposition !== "rejected" && snapshot.disposition !== "error" &&
+          snapshot.disposition !== "indeterminate") ||
+        !exactKeys(snapshot, ["disposition", "reason"]) ||
+        !isNonEmpty(snapshot.reason)) return null;
+    return snapshot as SellerSessionSettlementNativeProofAuthentication;
+  }
+  if (!exactKeys(value, ["disposition", "binding", "proof"])) return null;
+  const binding = ownedJson(value.binding);
+  if (!binding || !isNativeProofBinding(binding) || !isRecord(value.proof)) return null;
+  const proof = value.proof;
+  if (proof.encoding === "jcs" &&
+      exactKeys(proof, ["encoding", "kind", "locator", "artifact"]) &&
+      isNonEmpty(proof.kind) && isNonEmpty(proof.locator)) {
+    const artifact = ownedJson(proof.artifact);
+    if (!artifact || !isRecord(artifact)) return null;
+    return {
+      disposition: "authenticated",
+      binding,
+      proof: {
+        encoding: "jcs",
+        kind: proof.kind,
+        locator: proof.locator,
+        artifact,
+      },
+    };
+  }
+  if (proof.encoding === "bytes" &&
+      exactKeys(proof, ["encoding", "kind", "locator", "bytes"]) &&
+      isNonEmpty(proof.kind) && isNonEmpty(proof.locator) &&
+      proof.bytes instanceof Uint8Array && proof.bytes.byteLength > 0) {
+    return {
+      disposition: "authenticated",
+      binding,
+      proof: {
+        encoding: "bytes",
+        kind: proof.kind,
+        locator: proof.locator,
+        bytes: new Uint8Array(proof.bytes),
+      },
+    };
+  }
+  return null;
+}
+
+function captureSignedEvidenceResolution(
+  value: unknown,
+): SellerSessionSettlementSignedEvidenceResolution | null {
+  const snapshot = ownedJson(value);
+  if (!isRecord(snapshot)) return null;
+  if (snapshot.disposition === "absent" && exactKeys(snapshot, ["disposition"])) {
+    return { disposition: "absent" };
+  }
+  if (snapshot.disposition === "present" &&
+      exactKeys(snapshot, ["disposition", "effectId", "evidence"]) &&
+      isNonEmpty(snapshot.effectId) &&
+      isSettlementEvidence(snapshot.evidence)) {
+    return snapshot as unknown as SellerSessionSettlementSignedEvidenceResolution;
+  }
+  if ((snapshot.disposition === "rejected" || snapshot.disposition === "error" ||
+      snapshot.disposition === "indeterminate") &&
+      exactKeys(snapshot, ["disposition", "reason"]) &&
+      isNonEmpty(snapshot.reason)) {
+    return snapshot as SellerSessionSettlementSignedEvidenceResolution;
+  }
+  return null;
+}
+
+function unsignedSettlementScope(
+  evidence: SettlementEvidence,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(evidence).filter(([key]) => key !== "signature"),
+  );
+}
+
+function nativeProofBindingMatches(
+  binding: SellerSessionSettlementNativeProofBinding,
+  authorization: SellerPaymentAuthorization,
+): boolean {
+  const expectedNetwork = authorization.settlementIdentity.kind === "demos"
+    ? "demos"
+    : `eip155:${authorization.settlementIdentity.chainId}`;
+  return binding.jobId === authorization.jobId &&
+    binding.railId === authorization.railId &&
+    binding.phaseIndex === authorization.phaseIndex &&
+    binding.phase === authorization.evidenceInput.phase &&
+    binding.evidenceHash === authorization.evidenceHash &&
+    binding.settlementId === authorization.settlementId &&
+    binding.network === expectedNetwork &&
+    canonicalize(binding.event) === canonicalize(authorization.settlementIdentity) &&
+    canonicalize(binding.settlementFinality) ===
+      canonicalize(authorization.evidenceInput.settlementFinality);
+}
+
+function deriveNativeProofRef(
+  proof: SellerSessionSettlementAuthenticatedNativeProof,
+): SessionSettlementNativeProofRef {
+  const contentHash = proof.encoding === "jcs"
+    ? sha256Hex(canonicalize(proof.artifact))
+    : sha256Hex(proof.bytes);
+  return {
+    proofVersion: "1",
+    kind: proof.kind,
+    locator: proof.locator,
+    contentHash,
+    encoding: proof.encoding,
+  };
+}
+
 function validAuthorization(value: unknown): value is SellerPaymentAuthorization {
   if (!isRecord(value) || !isRecord(value.evidenceInput) ||
       !isNonEmpty(value.settlementId) || !isNonEmpty(value.jobId) ||
@@ -322,10 +590,10 @@ function parseRequest(value: unknown): SellerSessionSettlementPublicationRequest
   if (!isRecord(snapshot) || !exactKeys(snapshot, [
     "paymentPermitId",
     "authorization",
-    "nativeProofRef",
-  ]) || !isNonEmpty(snapshot.paymentPermitId) ||
+  ], ["nativeProofRef"]) || !isNonEmpty(snapshot.paymentPermitId) ||
       !validAuthorization(snapshot.authorization) ||
-      !isProofRef(snapshot.nativeProofRef)) return null;
+      (snapshot.nativeProofRef !== undefined &&
+        !isProofRef(snapshot.nativeProofRef))) return null;
   return snapshot as unknown as SellerSessionSettlementPublicationRequest;
 }
 
@@ -348,7 +616,7 @@ function handoffMatches(
 
 function signedSettlementId(
   authorization: SellerPaymentAuthorization,
-): string | undefined {
+): string | null {
   const ref = authorization.evidenceInput.paymentTxRefs[0];
   if (ref.kind === "demos") {
     const txHash = ref.txHash.toLowerCase().replace(/^0x/, "");
@@ -358,10 +626,10 @@ function signedSettlementId(
     const txHash = ref.settlementTxHash.toLowerCase().replace(/^0x/, "");
     return `evm:${ref.chainId}:${txHash}:${ref.logIndex}`;
   }
-  // Legacy transaction-level x402 evidence has no signed logIndex. Consumers
-  // MUST project it through resolveSettlementEventIdentity before granting any
-  // event-level authority; this publisher never invents that missing field.
-  return undefined;
+  // Legacy transaction-level x402 evidence has no signed logIndex. Readers of
+  // retained legacy evidence MUST use resolveSettlementEventIdentity. This
+  // current producer cannot invent the coordinate and therefore rejects it.
+  return null;
 }
 
 function evidenceContext(authorization: SellerPaymentAuthorization) {
@@ -413,8 +681,8 @@ function failure(
   return { disposition, reason, ...(effectId ? { effectId } : {}) };
 }
 
-/** Stable identity for the complete publication effect and retained proof. */
-export function sellerSessionSettlementPublicationEffectId(input: {
+/** Stable identity derived only after proof authentication succeeds. */
+function settlementPublicationEffectId(input: {
   authorization: Readonly<SellerPaymentAuthorization>;
   nativeProofRef: Readonly<SessionSettlementNativeProofRef>;
   evidenceAuthority: Readonly<{
@@ -489,16 +757,64 @@ export async function publishSellerSessionSettlement(
     return failure("rejected", "consumed handoff does not bind the exact authorization and signer");
   }
   const projectedSettlementId = signedSettlementId(request.authorization);
-  if (projectedSettlementId !== undefined &&
-      projectedSettlementId !== request.authorization.settlementId) {
+  if (projectedSettlementId === null) {
+    return failure(
+      "rejected",
+      "current pay-x402 publication requires a signed x402-event chain/tx/log coordinate",
+    );
+  }
+  if (projectedSettlementId !== request.authorization.settlementId) {
     return failure("rejected", "signed settlement event differs from the authorized settlement identity");
+  }
+
+  const proofInput = deepFreeze({
+    authorization: structuredClone(request.authorization),
+    ...(request.nativeProofRef === undefined
+      ? {}
+      : { expectedNativeProofRef: structuredClone(request.nativeProofRef) }),
+  });
+  const proofInputBefore = canonicalize(proofInput);
+  let rawProofResolution: unknown;
+  try {
+    rawProofResolution = await deps.resolveAuthenticatedNativeProof(proofInput);
+  } catch {
+    return failure("indeterminate", "authenticated native proof resolution threw");
+  }
+  if (canonicalize(proofInput) !== proofInputBefore) {
+    return failure("indeterminate", "native proof resolver mutated its exact input");
+  }
+  const proofResolution = captureNativeProofAuthentication(rawProofResolution);
+  if (!proofResolution) {
+    return failure("error", "authenticated native proof resolution is malformed");
+  }
+  if (proofResolution.disposition !== "authenticated") {
+    return failure(
+      proofResolution.disposition,
+      `authenticated native proof: ${proofResolution.reason}`,
+    );
+  }
+  if (!nativeProofBindingMatches(proofResolution.binding, request.authorization)) {
+    return failure(
+      "rejected",
+      "authenticated native proof does not bind the exact settlement event, network, and evidence",
+    );
+  }
+  let authenticatedNativeProofRef: SessionSettlementNativeProofRef;
+  try {
+    authenticatedNativeProofRef = deriveNativeProofRef(proofResolution.proof);
+  } catch {
+    return failure("error", "authenticated native proof content is not canonicalizable");
+  }
+  if (request.nativeProofRef !== undefined &&
+      canonicalize(request.nativeProofRef) !== canonicalize(authenticatedNativeProofRef)) {
+    return failure("rejected", "caller native proof expectation differs from authenticated proof");
   }
 
   let effectId: string;
   try {
-    effectId = sellerSessionSettlementPublicationEffectId({
+    effectId = settlementPublicationEffectId({
       authorization: request.authorization,
-      nativeProofRef: request.nativeProofRef,
+      nativeProofRef: authenticatedNativeProofRef,
       evidenceAuthority: {
         primaryClaim: deps.signer.signer,
         algorithm: deps.signer.algorithm,
@@ -513,40 +829,86 @@ export async function publishSellerSessionSettlement(
   if (evidenceHash !== request.authorization.evidenceHash) {
     return failure("rejected", "payment evidence differs from the store-authorized hash", effectId);
   }
-  const bytes = signedBytes(ARTIFACT_SEPARATORS.SettlementEvidence, evidenceHash);
-  const signerBytes = new Uint8Array(bytes);
-  const signerContext = deepFreeze({
+  const reconciliationInput = deepFreeze({
+    effectId,
+    evidenceHash,
+    unsignedEvidence: structuredClone(unsigned) as unknown as Record<string, unknown>,
+    expectedSigner: deps.signer.signer,
     algorithm: deps.signer.algorithm,
-    signer: deps.signer.signer,
   });
-  const bytesBefore = Buffer.from(signerBytes).toString("base64url");
-  const contextBefore = canonicalize(signerContext);
-  let signatureValue: string;
+  const reconciliationBefore = canonicalize(reconciliationInput);
+  let rawReconciliation: unknown;
   try {
-    const raw = await deps.signer.sign(signerBytes, signerContext);
-    if (Buffer.from(signerBytes).toString("base64url") !== bytesBefore ||
-        canonicalize(signerContext) !== contextBefore) {
-      return failure("indeterminate", "evidence signer mutated its exact input", effectId);
-    }
-    signatureValue = typeof raw === "string"
-      ? raw
-      : raw instanceof Uint8Array
-        ? Buffer.from(new Uint8Array(raw)).toString("base64url")
-        : "";
+    rawReconciliation = await deps.resolveRetainedSignedEvidence(reconciliationInput);
   } catch {
-    return failure("indeterminate", "evidence signing threw", effectId);
+    return failure("indeterminate", "signed evidence reconciliation threw", effectId);
   }
-  if (!isCanonicalBase64Url(signatureValue)) {
-    return failure("error", "evidence signer returned a non-canonical signature", effectId);
+  if (canonicalize(reconciliationInput) !== reconciliationBefore) {
+    return failure("indeterminate", "signed evidence reconciler mutated its exact input", effectId);
   }
-  const signature: ComponentSignature = {
-    ...signerContext,
-    value: signatureValue,
-  };
-  const evidence = deepFreeze({ ...structuredClone(unsigned), signature }) as SettlementEvidence;
-  if (!isComponentSignature(signature) || !isSettlementEvidence(evidence) ||
-      contentHash(evidence as unknown as Record<string, unknown>) !== evidenceHash) {
-    return failure("error", "signed payment evidence is not normative", effectId);
+  const reconciliation = captureSignedEvidenceResolution(rawReconciliation);
+  if (!reconciliation) {
+    return failure("error", "signed evidence reconciliation is malformed", effectId);
+  }
+  if (reconciliation.disposition !== "present" &&
+      reconciliation.disposition !== "absent") {
+    return failure(
+      reconciliation.disposition,
+      `signed evidence reconciliation: ${reconciliation.reason}`,
+      effectId,
+    );
+  }
+
+  let evidence: SettlementEvidence;
+  if (reconciliation.disposition === "present") {
+    evidence = deepFreeze(structuredClone(reconciliation.evidence));
+    if (reconciliation.effectId !== effectId ||
+        evidence.signature.signer !== deps.signer.signer ||
+        evidence.signature.algorithm !== deps.signer.algorithm ||
+        contentHash(evidence as unknown as Record<string, unknown>) !== evidenceHash ||
+        canonicalize(unsignedSettlementScope(evidence)) !== canonicalize(unsigned)) {
+      return failure(
+        "rejected",
+        "retained signed evidence does not bind the exact effect, scope, signer, and algorithm",
+        effectId,
+      );
+    }
+  } else {
+    const bytes = signedBytes(ARTIFACT_SEPARATORS.SettlementEvidence, evidenceHash);
+    const signerBytes = new Uint8Array(bytes);
+    const signerContext = deepFreeze({
+      algorithm: deps.signer.algorithm,
+      signer: deps.signer.signer,
+    });
+    const bytesBefore = Buffer.from(signerBytes).toString("base64url");
+    const contextBefore = canonicalize(signerContext);
+    let signatureValue: string;
+    try {
+      const raw = await deps.signer.sign(signerBytes, signerContext);
+      if (Buffer.from(signerBytes).toString("base64url") !== bytesBefore ||
+          canonicalize(signerContext) !== contextBefore) {
+        return failure("indeterminate", "evidence signer mutated its exact input", effectId);
+      }
+      signatureValue = typeof raw === "string"
+        ? raw
+        : raw instanceof Uint8Array
+          ? Buffer.from(new Uint8Array(raw)).toString("base64url")
+          : "";
+    } catch {
+      return failure("indeterminate", "evidence signing threw", effectId);
+    }
+    if (!isCanonicalBase64Url(signatureValue)) {
+      return failure("error", "evidence signer returned a non-canonical signature", effectId);
+    }
+    const signature: ComponentSignature = {
+      ...signerContext,
+      value: signatureValue,
+    };
+    evidence = deepFreeze({ ...structuredClone(unsigned), signature }) as SettlementEvidence;
+    if (!isComponentSignature(signature) || !isSettlementEvidence(evidence) ||
+        contentHash(evidence as unknown as Record<string, unknown>) !== evidenceHash) {
+      return failure("error", "signed payment evidence is not normative", effectId);
+    }
   }
 
   const context = evidenceContext(request.authorization);
@@ -694,7 +1056,7 @@ export async function publishSellerSessionSettlement(
     evidence: structuredClone(readEvidence),
     evidenceRef: structuredClone(evidenceRef),
     anchorReceipt: structuredClone(anchorReceipt),
-    nativeProofRef: structuredClone(request.nativeProofRef),
+    nativeProofRef: structuredClone(authenticatedNativeProofRef),
   });
   return deepFreeze({
     disposition: "published" as const,

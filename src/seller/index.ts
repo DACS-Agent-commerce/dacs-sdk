@@ -130,8 +130,11 @@ export {
 } from "./fulfilmentAuditSource.js";
 export {
   publishSellerSessionSettlement,
-  sellerSessionSettlementPublicationEffectId,
   type SellerSessionSettlementPublicationRequest,
+  type SellerSessionSettlementNativeProofBinding,
+  type SellerSessionSettlementAuthenticatedNativeProof,
+  type SellerSessionSettlementNativeProofAuthentication,
+  type SellerSessionSettlementSignedEvidenceResolution,
   type SellerSessionSettlementAnchorResult,
   type SellerSessionSettlementEvidenceResolution,
   type SellerSessionSettlementPublicationDeps,

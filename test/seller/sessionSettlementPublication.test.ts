@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AnchorReceipt, SettlementEvidence } from "../../src/artifacts/types.js";
+import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import type {
+  AnchorReceipt,
+  ComponentSignatureAlgorithm,
+  SettlementEvidence,
+} from "../../src/artifacts/types.js";
 import {
   canonicalize,
   contentHash,
@@ -14,6 +19,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 import {
   verifyFinalizedSessionSettlement,
@@ -23,16 +29,15 @@ import {
 } from "../../src/agent/sessionSettlement.js";
 import {
   publishSellerSessionSettlement,
-  sellerSessionSettlementPublicationEffectId,
   type SellerSessionSettlementPublicationDeps,
+  type SellerSessionSettlementPublicationRequest,
+  type SellerSessionSettlementNativeProofAuthentication,
 } from "../../src/seller/sessionSettlementPublication.js";
 import {
   publishSellerSessionSettlement as rootPublishSellerSessionSettlement,
-  sellerSessionSettlementPublicationEffectId as rootSettlementEffectId,
 } from "../../src/index.js";
 import {
   publishSellerSessionSettlement as sellerPublishSellerSessionSettlement,
-  sellerSessionSettlementPublicationEffectId as sellerSettlementEffectId,
 } from "../../src/seller/index.js";
 import type {
   SellerFulfilmentHandoff,
@@ -117,6 +122,7 @@ function claim(value: SellerPaymentAuthorization): SellerReceiptClaim {
 function handoff(
   value: SellerPaymentAuthorization,
   signer = ORCHESTRATOR,
+  algorithm: ComponentSignatureAlgorithm = "ed25519",
 ): SellerFulfilmentHandoff {
   return {
     handoffVersion: "1",
@@ -135,7 +141,7 @@ function handoff(
     deliverableSpecHash: "f".repeat(64),
     agreementViewHash: "1".repeat(64),
     validationFloorAt: NOW,
-    evidenceAuthority: { primaryClaim: signer, algorithm: "ed25519" },
+    evidenceAuthority: { primaryClaim: signer, algorithm },
     candidate: {
       status: "preparation-failed",
       validatedAt: NOW,
@@ -222,12 +228,42 @@ interface Harness {
   nativeProofRef: SessionSettlementNativeProofRef;
   anchored?: SettlementEvidence;
   inspect: ReturnType<typeof vi.fn>;
+  sign: ReturnType<typeof vi.fn>;
+  resolveProof: ReturnType<typeof vi.fn>;
   anchor: ReturnType<typeof vi.fn>;
   deps: SellerSessionSettlementPublicationDeps;
 }
 
-function harness(): Harness {
-  const value = authorization();
+function proofAuthentication(
+  value: SellerPaymentAuthorization,
+  artifact: Record<string, unknown> = proof(value),
+): SellerSessionSettlementNativeProofAuthentication {
+  return {
+    disposition: "authenticated",
+    binding: {
+      bindingVersion: "1",
+      jobId: value.jobId,
+      railId: value.railId,
+      phaseIndex: value.phaseIndex,
+      phase: value.evidenceInput.phase,
+      evidenceHash: value.evidenceHash,
+      settlementId: value.settlementId,
+      network: value.settlementIdentity.kind === "demos"
+        ? "demos"
+        : `eip155:${value.settlementIdentity.chainId}`,
+      event: structuredClone(value.settlementIdentity),
+      settlementFinality: structuredClone(value.evidenceInput.settlementFinality),
+    },
+    proof: {
+      encoding: "jcs",
+      kind: "authenticated-x402-event",
+      locator: `proof:${value.jobId}:${value.phaseIndex}`,
+      artifact: structuredClone(artifact),
+    },
+  };
+}
+
+function harness(value = authorization()): Harness {
   const retainedClaim = claim(value);
   const retainedHandoff = handoff(value);
   const state: { anchored?: SettlementEvidence } = {};
@@ -237,6 +273,8 @@ function harness(): Harness {
     handoff: structuredClone(retainedHandoff),
   }));
   const receiptStore = { inspectPermit: inspect };
+  const sign = vi.fn((bytes: Uint8Array) => ed25519Sign(bytes, PRIVATE_KEY));
+  const resolveProof = vi.fn(async () => proofAuthentication(value));
   const anchor = vi.fn(async (input: Parameters<
     SellerSessionSettlementPublicationDeps["anchorEvidence"]
   >[0]) => {
@@ -256,13 +294,21 @@ function harness(): Harness {
     evidenceSigner: {
       algorithm: "ed25519",
       signer: ORCHESTRATOR,
-      sign: (bytes) => ed25519Sign(bytes, PRIVATE_KEY),
+      sign,
     },
     evidence: {
       resolvePublicKey: async (signer) => signer === ORCHESTRATOR ? PUBLIC_KEY : null,
       verify: (bytes, signature, publicKey) =>
         ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
     },
+    resolveAuthenticatedNativeProof: resolveProof,
+    resolveRetainedSignedEvidence: async (input) => state.anchored
+      ? {
+          disposition: "present",
+          effectId: input.effectId,
+          evidence: structuredClone(state.anchored),
+        }
+      : { disposition: "absent" },
     anchorEvidence: anchor,
     verifyAnchorReceipt: async () => ({ disposition: "pass" }),
     resolveEvidence: async () => state.anchored
@@ -276,12 +322,14 @@ function harness(): Harness {
       return state.anchored;
     },
     inspect,
+    sign,
+    resolveProof,
     anchor,
     deps,
   };
 }
 
-function request(h: Harness) {
+function request(h: Harness): SellerSessionSettlementPublicationRequest {
   return {
     paymentPermitId: "permit-publication-1",
     authorization: structuredClone(h.authorization),
@@ -293,8 +341,6 @@ describe("publishSellerSessionSettlement", () => {
   it("is exported from both the root and seller package surfaces", () => {
     expect(rootPublishSellerSessionSettlement).toBe(publishSellerSessionSettlement);
     expect(sellerPublishSellerSessionSettlement).toBe(publishSellerSessionSettlement);
-    expect(rootSettlementEffectId).toBe(sellerSessionSettlementPublicationEffectId);
-    expect(sellerSettlementEffectId).toBe(sellerSessionSettlementPublicationEffectId);
   });
 
   it("publishes an exact finalized settlement consumable by the public verifier", async () => {
@@ -302,11 +348,7 @@ describe("publishSellerSessionSettlement", () => {
     const result = await publishSellerSessionSettlement(request(h), h.deps);
     expect(result.disposition).toBe("published");
     if (result.disposition !== "published") return;
-    expect(result.effectId).toBe(sellerSessionSettlementPublicationEffectId({
-      authorization: h.authorization,
-      nativeProofRef: h.nativeProofRef,
-      evidenceAuthority: { primaryClaim: ORCHESTRATOR, algorithm: "ed25519" },
-    }));
+    expect(result.effectId).toMatch(/^seller-settlement:v1:[0-9a-f]{64}$/);
     expect(result.evidenceHash).toBe(h.authorization.evidenceHash);
     expect(result.settlement.nativeProofRef).toEqual(h.nativeProofRef);
     expect(result.settlement.evidence.signature.signer).toBe(ORCHESTRATOR);
@@ -370,6 +412,323 @@ describe("publishSellerSessionSettlement", () => {
     expect(await publishSellerSessionSettlement(request(substituted), substituted.deps))
       .toMatchObject({ disposition: "rejected", reason: expect.stringContaining("substituted") });
     expect(substituted.anchor).not.toHaveBeenCalled();
+  });
+
+  it("requires an authenticated native-proof resolver before signing", async () => {
+    const missing = harness();
+    const incomplete = { ...missing.deps } as Partial<
+      SellerSessionSettlementPublicationDeps
+    >;
+    delete incomplete.resolveAuthenticatedNativeProof;
+    expect(await publishSellerSessionSettlement(
+      request(missing),
+      incomplete as SellerSessionSettlementPublicationDeps,
+    )).toMatchObject({ disposition: "error", reason: expect.stringContaining("dependencies") });
+    expect(missing.sign).not.toHaveBeenCalled();
+    expect(missing.anchor).not.toHaveBeenCalled();
+
+    const absent = harness();
+    absent.deps.resolveAuthenticatedNativeProof = async () => ({
+      disposition: "rejected",
+      reason: "native proof absent",
+    });
+    expect(await publishSellerSessionSettlement(request(absent), absent.deps))
+      .toMatchObject({ disposition: "rejected", reason: expect.stringContaining("absent") });
+    expect(absent.sign).not.toHaveBeenCalled();
+
+    const pending = harness();
+    pending.deps.resolveAuthenticatedNativeProof = async () => ({
+      disposition: "indeterminate",
+      reason: "provider unavailable",
+    });
+    expect(await publishSellerSessionSettlement(request(pending), pending.deps))
+      .toMatchObject({ disposition: "indeterminate", reason: expect.stringContaining("unavailable") });
+    expect(pending.sign).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed or input-mutating native-proof resolvers", async () => {
+    const malformed = harness();
+    malformed.deps.resolveAuthenticatedNativeProof = async () =>
+      ({ disposition: "authenticated" }) as never;
+    expect(await publishSellerSessionSettlement(request(malformed), malformed.deps))
+      .toMatchObject({ disposition: "error", reason: expect.stringContaining("malformed") });
+    expect(malformed.sign).not.toHaveBeenCalled();
+
+    const mutating = harness();
+    mutating.deps.resolveAuthenticatedNativeProof = async (input) => {
+      (input.authorization as { jobId: string }).jobId = "job-mutated";
+      return proofAuthentication(mutating.authorization);
+    };
+    expect(await publishSellerSessionSettlement(request(mutating), mutating.deps))
+      .toMatchObject({ disposition: "indeterminate", reason: expect.stringContaining("resolution threw") });
+    expect(mutating.sign).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["network", (result: Extract<
+      SellerSessionSettlementNativeProofAuthentication,
+      { disposition: "authenticated" }
+    >) => {
+      result.binding.network = "eip155:1";
+    }],
+    ["event chain", (result: Extract<
+      SellerSessionSettlementNativeProofAuthentication,
+      { disposition: "authenticated" }
+    >) => {
+      if (result.binding.event.kind === "evm") result.binding.event.chainId = 1;
+    }],
+    ["event transaction", (result: Extract<
+      SellerSessionSettlementNativeProofAuthentication,
+      { disposition: "authenticated" }
+    >) => {
+      result.binding.event.txHash = "f".repeat(64);
+    }],
+    ["event log", (result: Extract<
+      SellerSessionSettlementNativeProofAuthentication,
+      { disposition: "authenticated" }
+    >) => {
+      if (result.binding.event.kind === "evm") result.binding.event.logIndex = 9;
+    }],
+  ] as const)("rejects an authenticated proof with the wrong %s", async (_label, mutate) => {
+    const h = harness();
+    h.deps.resolveAuthenticatedNativeProof = async () => {
+      const result = proofAuthentication(h.authorization);
+      if (result.disposition !== "authenticated") throw new Error("fixture failure");
+      mutate(result);
+      return result;
+    };
+    expect(await publishSellerSessionSettlement(request(h), h.deps)).toMatchObject({
+      disposition: "rejected",
+      reason: expect.stringContaining("event, network, and evidence"),
+    });
+    expect(h.sign).not.toHaveBeenCalled();
+    expect(h.anchor).not.toHaveBeenCalled();
+  });
+
+  it("treats caller proof refs only as equality assertions", async () => {
+    const h = harness();
+    const substituted = request(h);
+    substituted.nativeProofRef!.contentHash = "0".repeat(64);
+    expect(await publishSellerSessionSettlement(substituted, h.deps)).toMatchObject({
+      disposition: "rejected",
+      reason: expect.stringContaining("expectation differs"),
+    });
+    expect(h.sign).not.toHaveBeenCalled();
+    expect(h.anchor).not.toHaveBeenCalled();
+  });
+
+  it("derives effect identity only from authenticated proof content", async () => {
+    const first = harness();
+    const firstRequest = request(first);
+    delete firstRequest.nativeProofRef;
+    const firstResult = await publishSellerSessionSettlement(firstRequest, first.deps);
+    expect(firstResult.disposition).toBe("published");
+    if (firstResult.disposition !== "published") return;
+
+    const replay = harness();
+    const replayRequest = request(replay);
+    delete replayRequest.nativeProofRef;
+    const replayResult = await publishSellerSessionSettlement(replayRequest, replay.deps);
+    expect(replayResult.disposition).toBe("published");
+    if (replayResult.disposition !== "published") return;
+    expect(replayResult.effectId).toBe(firstResult.effectId);
+
+    const refreshed = harness();
+    const refreshedRequest = request(refreshed);
+    delete refreshedRequest.nativeProofRef;
+    refreshed.deps.resolveAuthenticatedNativeProof = async () =>
+      proofAuthentication(refreshed.authorization, {
+        ...proof(refreshed.authorization),
+        authenticatedWitness: "different-exact-proof",
+      });
+    const refreshedResult = await publishSellerSessionSettlement(
+      refreshedRequest,
+      refreshed.deps,
+    );
+    expect(refreshedResult.disposition).toBe("published");
+    if (refreshedResult.disposition !== "published") return;
+    expect(refreshedResult.effectId).not.toBe(firstResult.effectId);
+    expect(refreshedResult.settlement.nativeProofRef.contentHash)
+      .not.toBe(firstResult.settlement.nativeProofRef.contentHash);
+  });
+
+  it("recovers a response-lost anchor without invoking a nondeterministic signer twice", async () => {
+    const h = harness();
+    const signingPayload = signedBytes(
+      ARTIFACT_SEPARATORS.SettlementEvidence,
+      h.authorization.evidenceHash,
+    );
+    const firstSignature = new Uint8Array(64).fill(11);
+    const alternateSignature = new Uint8Array(64).fill(12);
+
+    const scriptedSigner = vi.fn()
+      .mockImplementationOnce(() => firstSignature.slice())
+      .mockImplementationOnce(() => alternateSignature.slice());
+    h.deps.evidenceSigner = {
+      algorithm: "ed25519",
+      signer: ORCHESTRATOR,
+      sign: scriptedSigner,
+    };
+    h.deps.evidence = {
+      resolvePublicKey: async () => new Uint8Array(32).fill(3),
+      verify: (bytes, signature) =>
+        Buffer.from(bytes).equals(Buffer.from(signingPayload)) &&
+        (Buffer.from(signature).equals(Buffer.from(firstSignature)) ||
+          Buffer.from(signature).equals(Buffer.from(alternateSignature))),
+    };
+    expect(await h.deps.evidence.verify(
+      signingPayload,
+      firstSignature,
+      new Uint8Array(32),
+    )).toBe(true);
+    expect(await h.deps.evidence.verify(
+      signingPayload,
+      alternateSignature,
+      new Uint8Array(32),
+    )).toBe(true);
+
+    let committedEvidence: SettlementEvidence | undefined;
+    let committedAnchor:
+      | Extract<
+          Awaited<ReturnType<SellerSessionSettlementPublicationDeps["anchorEvidence"]>>,
+          { disposition: "anchored" }
+        >
+      | undefined;
+    let nativeAnchorCount = 0;
+    h.deps.resolveRetainedSignedEvidence = async (input) => committedEvidence
+      ? {
+          disposition: "present",
+          effectId: input.effectId,
+          evidence: structuredClone(committedEvidence),
+        }
+      : { disposition: "absent" };
+    h.deps.anchorEvidence = async (input) => {
+      if (!committedAnchor) {
+        nativeAnchorCount += 1;
+        committedEvidence = structuredClone(input.evidence);
+        committedAnchor = {
+          disposition: "anchored",
+          evidenceRef: {
+            anchor: { kind: "storage-program", locator: input.logicalAddress },
+            contentHash: input.evidenceHash,
+            signer: ORCHESTRATOR,
+          },
+          anchorReceipt: finalizedReceipt(input.logicalAddress, input.evidenceHash),
+        };
+        return { disposition: "indeterminate", reason: "anchor response lost" };
+      }
+      return structuredClone(committedAnchor);
+    };
+    h.deps.resolveEvidence = async () => committedEvidence
+      ? { disposition: "present", evidence: structuredClone(committedEvidence) }
+      : { disposition: "absent" };
+
+    const first = await publishSellerSessionSettlement(request(h), h.deps);
+    expect(first).toMatchObject({
+      disposition: "indeterminate",
+      reason: "anchor response lost",
+    });
+    expect(scriptedSigner).toHaveBeenCalledOnce();
+    expect(nativeAnchorCount).toBe(1);
+
+    const recovered = await publishSellerSessionSettlement(request(h), h.deps);
+    expect(recovered.disposition).toBe("published");
+    if (recovered.disposition !== "published") return;
+    expect(scriptedSigner).toHaveBeenCalledOnce();
+    expect(nativeAnchorCount).toBe(1);
+    expect(recovered.settlement.evidence.signature.value).toBe(
+      Buffer.from(firstSignature).toString("base64url"),
+    );
+    expect(recovered.settlement.evidence.signature.value).not.toBe(
+      Buffer.from(alternateSignature).toString("base64url"),
+    );
+  });
+
+  it("reconciles a retained signature after an ambiguous signer response", async () => {
+    const h = harness();
+    const signatureBytes = ed25519Sign(
+      signedBytes(
+        ARTIFACT_SEPARATORS.SettlementEvidence,
+        h.authorization.evidenceHash,
+      ),
+      PRIVATE_KEY,
+    );
+    let signerWal: SettlementEvidence | undefined;
+    const ambiguousSigner = vi.fn(() => {
+      signerWal = {
+        ...structuredClone(h.authorization.evidenceInput),
+        signature: {
+          algorithm: "ed25519",
+          signer: ORCHESTRATOR,
+          value: Buffer.from(signatureBytes).toString("base64url"),
+        },
+      };
+      throw new Error("signer response lost");
+    });
+    h.deps.evidenceSigner = {
+      algorithm: "ed25519",
+      signer: ORCHESTRATOR,
+      sign: ambiguousSigner,
+    };
+    h.deps.resolveRetainedSignedEvidence = async (input) => signerWal
+      ? {
+          disposition: "present",
+          effectId: input.effectId,
+          evidence: structuredClone(signerWal),
+        }
+      : { disposition: "absent" };
+
+    expect(await publishSellerSessionSettlement(request(h), h.deps)).toMatchObject({
+      disposition: "indeterminate",
+      reason: expect.stringContaining("signing threw"),
+    });
+    expect(ambiguousSigner).toHaveBeenCalledOnce();
+    expect(h.anchor).not.toHaveBeenCalled();
+
+    const recovered = await publishSellerSessionSettlement(request(h), h.deps);
+    expect(recovered.disposition).toBe("published");
+    expect(ambiguousSigner).toHaveBeenCalledOnce();
+    expect(h.anchor).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed on ambiguous, substituted, or mutating signature reconciliation", async () => {
+    const ambiguous = harness();
+    ambiguous.deps.resolveRetainedSignedEvidence = async () => ({
+      disposition: "indeterminate",
+      reason: "publication lookup unavailable",
+    });
+    expect(await publishSellerSessionSettlement(request(ambiguous), ambiguous.deps))
+      .toMatchObject({ disposition: "indeterminate", reason: expect.stringContaining("unavailable") });
+    expect(ambiguous.sign).not.toHaveBeenCalled();
+    expect(ambiguous.anchor).not.toHaveBeenCalled();
+
+    const substituted = harness();
+    substituted.deps.resolveRetainedSignedEvidence = async (input) => ({
+      disposition: "present",
+      effectId: input.effectId,
+      evidence: {
+        ...structuredClone(substituted.authorization.evidenceInput),
+        observedAt: substituted.authorization.evidenceInput.observedAt + 1,
+        signature: {
+          algorithm: "ed25519",
+          signer: ORCHESTRATOR,
+          value: Buffer.from(new Uint8Array(64).fill(5)).toString("base64url"),
+        },
+      },
+    });
+    expect(await publishSellerSessionSettlement(request(substituted), substituted.deps))
+      .toMatchObject({ disposition: "rejected", reason: expect.stringContaining("retained signed evidence") });
+    expect(substituted.sign).not.toHaveBeenCalled();
+    expect(substituted.anchor).not.toHaveBeenCalled();
+
+    const mutating = harness();
+    mutating.deps.resolveRetainedSignedEvidence = async (input) => {
+      (input as { effectId: string }).effectId = "substituted-effect";
+      return { disposition: "absent" };
+    };
+    expect(await publishSellerSessionSettlement(request(mutating), mutating.deps))
+      .toMatchObject({ disposition: "indeterminate", reason: expect.stringContaining("reconciliation threw") });
+    expect(mutating.sign).not.toHaveBeenCalled();
   });
 
   it("rejects a signer that differs from the consumed authenticated authority", async () => {
@@ -462,6 +821,27 @@ describe("publishSellerSessionSettlement", () => {
     h.authorization.settlementId = `evm:8453:${TX_HASH}:9`;
     const result = await publishSellerSessionSettlement(request(h), h.deps);
     expect(result.disposition).not.toBe("published");
+    expect(h.anchor).not.toHaveBeenCalled();
+  });
+
+  it("does not produce new pay-x402 evidence from a legacy transaction-level ref", async () => {
+    const legacy = authorization();
+    legacy.evidenceInput.paymentTxRefs = [{
+      kind: "x402",
+      httpResource: "https://seller.example/resource",
+      paymentReceiptHash: "d".repeat(64),
+      settlementTxHash: TX_HASH,
+      chainId: 8453,
+      protocolVersion: "2",
+    }];
+    legacy.evidenceHash = sha256Hex(canonicalize(legacy.evidenceInput));
+    const h = harness(legacy);
+    expect(await publishSellerSessionSettlement(request(h), h.deps)).toMatchObject({
+      disposition: "rejected",
+      reason: expect.stringContaining("requires a signed x402-event"),
+    });
+    expect(h.resolveProof).not.toHaveBeenCalled();
+    expect(h.sign).not.toHaveBeenCalled();
     expect(h.anchor).not.toHaveBeenCalled();
   });
 });
