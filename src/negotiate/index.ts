@@ -41,6 +41,19 @@ export {
   type GenerateCanonicalJobIdOptions,
 } from "./jobId.js";
 export {
+  createFixedPriceAgreementSigningPlan,
+  fixedPriceAgreementSignedBytes,
+  createFixedPriceAgreementSignatureContribution,
+  finalizeFixedPriceAgreementContributions,
+  type FixedPriceAgreementSigningRole,
+  type FixedPriceAgreementRequiredSigner,
+  type FixedPriceAgreementSigningPlan,
+  type FixedPriceAgreementSignatureContribution,
+  type FixedPriceAgreementContributionVerificationDisposition,
+  type FixedPriceAgreementContributionVerificationInput,
+  type FixedPriceAgreementContributionVerifier,
+} from "./fixedPriceExchange.js";
+export {
   computeBidHash,
   generateSalt,
   saltHasEnoughEntropy,
