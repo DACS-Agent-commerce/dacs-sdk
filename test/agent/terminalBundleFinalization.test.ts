@@ -287,6 +287,18 @@ describe("terminal bundle authority", () => {
       /absolute faultedParty do not agree/i,
     );
   });
+
+  test.each(["substrate", "settlement-atomicity"] as const)(
+    "rejects party blame for %s terminal evidence",
+    (errorClass) => {
+      const input = failureInput("seller");
+      input.terminalPhase.errorClass = errorClass;
+      input.phaseSummary[2]!.errorClass = errorClass;
+      expect(() => createTerminalBundleAuthority(input)).toThrow(
+        /must be published as blameless failed-substrate/i,
+      );
+    },
+  );
 });
 
 describe("role-relative terminal plan", () => {
