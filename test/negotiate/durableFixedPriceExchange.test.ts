@@ -620,6 +620,43 @@ describe("durable buyer-owned fixed-price agreement exchange", () => {
       } as never),
     ).rejects.toThrow(/must contain exactly/i);
     expect(h.state.calls.signature).toBe(0);
+
+    let verifierCoercions = 0;
+    const hostileDisposition = Object.create(null) as Record<PropertyKey, unknown>;
+    Object.defineProperty(hostileDisposition, Symbol.toPrimitive, {
+      value: () => {
+        verifierCoercions += 1;
+        return "invalid";
+      },
+    });
+    const hostileVerifier = await harness();
+    expect(
+      await advanceFixedPriceAgreementDurable(hostileVerifier.input, {
+        ...hostileVerifier.durability,
+        verifyContribution: () => hostileDisposition as never,
+      }),
+    ).toMatchObject({ disposition: "indeterminate", stage: "buyer-signature" });
+    expect(verifierCoercions).toBe(0);
+
+    let receiptCoercions = 0;
+    const hostileReceiptDisposition = Object.create(null) as Record<PropertyKey, unknown>;
+    Object.defineProperty(hostileReceiptDisposition, Symbol.toPrimitive, {
+      value: () => {
+        receiptCoercions += 1;
+        return "invalid";
+      },
+    });
+    const hostileReceipt = await harness();
+    expect(
+      await advanceFixedPriceAgreementDurable(hostileReceipt.input, {
+        ...hostileReceipt.durability,
+        anchor: {
+          ...hostileReceipt.durability.anchor,
+          verifyAnchorReceipt: () => hostileReceiptDisposition as never,
+        },
+      }),
+    ).toMatchObject({ disposition: "indeterminate", stage: "agreement-anchor" });
+    expect(receiptCoercions).toBe(0);
   });
 
   test("substituted anchor bytes, writer, hash, or unauthenticated receipt never complete", async () => {

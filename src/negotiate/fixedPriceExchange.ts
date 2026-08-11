@@ -186,7 +186,12 @@ function captureData(
       if (descriptor.value === undefined) {
         throw new DacsError(`${subject}.${key} cannot be undefined`);
       }
-      out[key] = captureData(descriptor.value, `${subject}.${key}`, ancestors);
+      Object.defineProperty(out, key, {
+        value: captureData(descriptor.value, `${subject}.${key}`, ancestors),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return out;
   } finally {
