@@ -55,6 +55,12 @@ import {
   type SessionReceipt,
   type FencedSessionStoreV2,
 } from "./fencedSessionStore.js";
+import {
+  createTerminalBundlePlan,
+  type TerminalBundleAuthority,
+  type TerminalBundlePlan,
+  type TerminalBundleSigningMode,
+} from "./terminalBundleFinalization.js";
 
 type PayloadAnchor = NonNullable<SellerFulfilmentDeps["anchorPayloadAttestation"]>;
 type PayloadAnchorInput = Parameters<PayloadAnchor>[0];
@@ -1309,11 +1315,86 @@ function phase(
 const SELLER_DELIVERY_PHASE_RE =
   /^seller:(?:delivery-(?:pending|recovery|completed|failed|rejected)|evidence-(?:pending|recovery)|validation-pending):(0|[1-9][0-9]*)$/;
 
+function terminalSellerPlan(
+  record: SessionRecord,
+): Readonly<TerminalBundlePlan> | undefined {
+  const checkpoint = latestCheckpoint(record, "terminal:seller:authority");
+  const data = checkpoint?.data;
+  if (checkpoint?.stage !== "outcome" || !data || !hasExactKeys(data, [
+    "authorityHash",
+    "planHash",
+    "plan",
+    "planEncodingHash",
+    "signerKeysHash",
+    "localRole",
+    "localClaim",
+  ]) || data.localRole !== "seller" || !isHash(data.authorityHash) ||
+      !isHash(data.planHash) || !isHash(data.planEncodingHash) ||
+      !isHash(data.signerKeysHash) || typeof data.plan !== "string" ||
+      !/^[A-Za-z0-9_-]+$/.test(data.plan) || data.plan.length % 4 === 1) {
+    return undefined;
+  }
+  try {
+    const bytes = Buffer.from(data.plan, "base64url");
+    if (bytes.toString("base64url") !== data.plan) return undefined;
+    const json = bytes.toString("utf8");
+    if (!Buffer.from(json, "utf8").equals(bytes) ||
+        sha256Hex(json) !== data.planEncodingHash) {
+      return undefined;
+    }
+    const parsed = JSON.parse(json) as unknown;
+    if (!isRecord(parsed) || canonicalize(parsed) !== json) return undefined;
+    const plan = createTerminalBundlePlan(
+      parsed.authority as TerminalBundleAuthority,
+      parsed.signingMode as TerminalBundleSigningMode,
+    );
+    const localSigner = plan.requiredSigners.find((signer) => signer.role === "seller");
+    if (!exact(plan, parsed) || plan.authorityHash !== data.authorityHash ||
+        plan.planHash !== data.planHash || plan.authority.jobId !== record.jobId ||
+        localSigner?.primaryClaim !== data.localClaim) {
+      return undefined;
+    }
+    return plan;
+  } catch {
+    return undefined;
+  }
+}
+
+function terminalSellerFailureRepresents(
+  record: SessionRecord,
+  result: Extract<SellerFulfilmentResult, { decision: "failed" }>,
+  phaseIndex: number,
+): boolean {
+  const plan = terminalSellerPlan(record);
+  if (!plan) return false;
+  const authority = plan.authority;
+  const source = result.bundleContribution.phaseSummary;
+  const seller = authority.parties.find((party) => party.role === "seller");
+  const terminalEntry = authority.phaseSummary.find(
+    (entry) => entry.index === authority.terminalPhase.index,
+  );
+  return authority.terminalPhase.state === "failed" &&
+    authority.terminalPhase.index === phaseIndex &&
+    authority.terminalPhase.kind === source.kind &&
+    authority.terminalPhase.errorClass === source.errorClass &&
+    terminalEntry !== undefined && exact(terminalEntry, source) &&
+    seller?.primaryClaim === result.evidence.signature.signer &&
+    exact(authority.listingRef, result.consumedPaymentAuthorization.listingRef) &&
+    authority.agreementRef?.anchor.locator ===
+      result.consumedPaymentAuthorization.commitment.ref &&
+    authority.agreementRef.contentHash ===
+      result.consumedPaymentAuthorization.commitment.contentHash &&
+    authority.settlementEvidence.some(
+      (evidence) => exact(evidence, result.bundleContribution.settlementEvidence),
+    );
+}
+
 function terminalPhaseStillRepresented(
-  persistedPhase: string,
+  record: SessionRecord,
   result: TerminalFulfilmentResult,
   phaseIndex: number,
 ): boolean {
+  const persistedPhase = record.phase;
   const exactPhase = result.decision === "completed"
     ? phase("delivery-completed", phaseIndex)
     : phase("delivery-failed", phaseIndex);
@@ -1325,10 +1406,16 @@ function terminalPhaseStillRepresented(
     "seller:bundle-binding-signing",
     "seller:bundle-binding-publication-pending",
   ].includes(persistedPhase)) return true;
-  // Failed phases cannot advance in FencedSessionStoreV2. A successful earlier
-  // delivery, however, remains an immutable replayable result while the same
-  // job progresses through a strictly later delivery or global finalisation.
-  if (result.decision !== "completed") return false;
+  // A failed delivery can advance only into the seller's terminal FAB
+  // lifecycle. The exact, normatively re-derived authority plan must retain
+  // this result's phase index, source entry, evidence, Listing, agreement, and
+  // settlement reference; the role-local phase name alone proves nothing.
+  if (result.decision !== "completed") {
+    return persistedPhase.startsWith("terminal:seller:") &&
+      terminalSellerFailureRepresents(record, result, phaseIndex);
+  }
+  // A successful earlier delivery remains an immutable replayable result while
+  // the same job progresses through a strictly later delivery.
   const later = SELLER_DELIVERY_PHASE_RE.exec(persistedPhase);
   if (later === null) return false;
   const laterIndex = Number(later[1]);
@@ -2873,7 +2960,7 @@ class DurableCoordinator {
         settlementReceipt?.ref !== this.#authority!.binding.settlementId ||
         deliveryReceipt?.ref !== result.evidenceRef.anchor.locator ||
         !terminalPhaseStillRepresented(
-          record.phase,
+          record,
           result,
           this.#authority!.binding.deliveryPhaseIndex,
         )) {
