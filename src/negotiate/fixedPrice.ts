@@ -29,6 +29,7 @@ import {
   isIdentityBundle,
   isListing,
 } from "../artifacts/validators.js";
+import { identityBundleHash } from "../identity/bundle.js";
 
 export interface VerifiedListingInput {
   /** Overall DACS-1 §6.3.4 disposition after signature, validity, and revocation. */
@@ -40,7 +41,13 @@ export interface VerifiedListingInput {
 }
 
 export interface FixedPricePartyInput {
+  /** Exact DACS-1 bundle whose normative bundle_hash becomes AgreementParty.bundleHash. */
   identityBundle: IdentityBundle;
+  /**
+   * Anchored DACS-2 Vet result for this party. The agreement retains this
+   * reference; recursive DACS-5 verification resolves its subject/bundle
+   * binding rather than treating the ref itself as the IdentityBundle hash.
+   */
   vetRecordRef: AttestationRef;
   encryptionKey?: string;
 }
@@ -92,9 +99,7 @@ function agreementParty(
   }
   return {
     role,
-    bundleHash: contentHash(
-      input.identityBundle as unknown as Record<string, unknown>,
-    ),
+    bundleHash: identityBundleHash(input.identityBundle),
     primaryClaim: input.identityBundle.presentedBy,
     vetRecordRef: input.vetRecordRef,
     ...(input.encryptionKey === undefined
@@ -241,20 +246,17 @@ export function deriveFixedPriceAgreement(
   if (!Number.isSafeInteger(deadlineSec) || (deadlineSec ?? 0) <= 0) {
     throw new DacsError("deadlineSecAfterCommit must be a positive integer");
   }
+  // DACS-1 §6.3.4 validity and DACS-3 generatedAt/deadline use unix ms;
+  // deadlineSecAfterCommit is the one seconds-valued input and is converted once.
   const deadline = input.generatedAt + deadlineSec! * 1_000;
   if (!Number.isSafeInteger(deadline)) throw new DacsError("derived deadline overflows unix ms");
 
-  const price =
-    listing.pricing.kind === "fixed"
-      ? listing.pricing.price
-      : listing.pricing.kind === "negotiable"
-        ? listing.pricing.bandCenter
-        : null;
-  if (!price) {
+  if (listing.pricing.kind !== "fixed") {
     throw new DacsError(
       `${listing.pricing.kind} pricing is unsupported by the fixed-price handler`,
     );
   }
+  const price = listing.pricing.price;
   const { commitment, paymentIndexes } = requirePipeline(listing);
   const rail = requireRail(listing, input.selectedRail, paymentIndexes);
   const buyer = agreementParty("buyer", input.buyer);
