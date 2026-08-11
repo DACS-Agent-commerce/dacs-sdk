@@ -133,7 +133,7 @@ export interface X402PaywallHandleInput {
 
 /** Cloneable, store-retained x402 settlement intent. */
 export interface X402PaywallSettlementIntent {
-  intentVersion: "1";
+  intentVersion: "2";
   settlementKey: string;
   bindingHash: string;
   jobId: string;
@@ -144,6 +144,8 @@ export interface X402PaywallSettlementIntent {
   paymentHeader: string;
   paymentPayload: X402PaywallPaymentPayload;
   paymentRequirements: X402PaywallPaymentRequirements;
+  /** Authenticated pre-settlement session scope retained before value may move. */
+  sessionAuthorization: unknown;
   declaredExtensions?: Record<string, unknown>;
 }
 
@@ -202,7 +204,30 @@ export interface X402PaywallSettlementStore {
 
 export type X402PaywallSettlementReconciliation =
   | { status: "pending" | "indeterminate"; reason: string }
+  | {
+      /**
+       * The exact retained authorization has not settled, and the reconciler
+       * atomically granted this caller the only recovery re-drive. The adapter
+       * must fence any older in-flight invocation before returning this state.
+       */
+      status: "authoritatively-absent";
+      reason: string;
+    }
   | X402PaywallSettlementOutcome;
+
+export interface X402PaywallPreSettlementContext {
+  jobId: string;
+  phaseIndex: number;
+  payer: string;
+  request: X402PaywallHttpAdapter;
+  paymentPayload: Readonly<X402PaywallPaymentPayload>;
+  paymentRequirements: Readonly<X402PaywallPaymentRequirements>;
+  expected: Readonly<X402PaywallExpectedTerms>;
+}
+
+export type X402PaywallPreSettlementAuthorization =
+  | { disposition: "authorized"; authorization: unknown }
+  | { disposition: "rejected" | "indeterminate"; reason: string };
 
 export type X402PaywallPaymentAuthorization<TAuthorization = unknown> =
   | { disposition: "authorized"; authorization: TAuthorization }
@@ -213,6 +238,8 @@ export interface X402PaywallAuthorizationContext {
   phaseIndex: number;
   payer: string;
   request: X402PaywallHttpAdapter;
+  /** Exact authenticated scope retained before settlement was submitted. */
+  sessionAuthorization: unknown;
   paymentClaim: Extract<SellerPaymentClaim, { kind: "pay-x402" }>;
   settlement: X402PaywallSettlementResult & { success: true };
 }
@@ -266,7 +293,9 @@ export type X402PaywallResult<T = unknown> =
       settlement?: X402PaywallSettlementResult;
     }
   | {
-      disposition: "settlement-evidence-indeterminate";
+      disposition:
+        | "settlement-evidence-indeterminate"
+        | "settlement-state-indeterminate";
       settled: true;
       reason: string;
       response: X402PaywallResponse;
@@ -299,6 +328,13 @@ export interface X402PaywallCoreDeps<TAuthorization = unknown, T = unknown> {
   server: X402PaywallServerLike;
   expected: X402PaywallExpectedTerms;
   settlementStore: X402PaywallSettlementStore;
+  /**
+   * Authenticate the finalized DACS session, rail, payee, payer, and exact
+   * configured terms before the settlement intent can be claimed or submitted.
+   */
+  authorizeSettlement(
+    context: Readonly<X402PaywallPreSettlementContext>,
+  ): Promise<X402PaywallPreSettlementAuthorization>;
   reconcileSettlement(
     intent: Readonly<X402PaywallSettlementIntent>,
   ): Promise<X402PaywallSettlementReconciliation>;
@@ -352,6 +388,7 @@ export interface X402PaywallConfig {
 
 export interface X402PaywallHandlers<TAuthorization = unknown, T = unknown> {
   settlementStore: X402PaywallSettlementStore;
+  authorizeSettlement: X402PaywallCoreDeps<TAuthorization, T>["authorizeSettlement"];
   reconcileSettlement: X402PaywallCoreDeps<TAuthorization, T>["reconcileSettlement"];
   authorizePayment: X402PaywallCoreDeps<TAuthorization, T>["authorizePayment"];
   fulfil: X402PaywallCoreDeps<TAuthorization, T>["fulfil"];
@@ -366,11 +403,19 @@ const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const EVM_TX_RE = /^0x[0-9a-fA-F]{64}$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
 const HEADER_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+// RFC 9110 field values permit HTAB, visible ASCII, and obs-text. Reject every
+// other control/non-octet character before a settled response reaches a host
+// framework, whose header writer would otherwise be allowed to throw.
+const HEADER_VALUE_RE = /^[\u0009\u0020-\u007e\u0080-\u00ff]*$/;
 const FULFILMENT_KEY_SEPARATOR = "dacs-x402-fulfil:v1:";
 const SETTLEMENT_KEY_SEPARATOR = "dacs-x402-settlement:v1:";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function bindCallback<T extends Function>(callback: T, owner: unknown): T {
+  return Function.prototype.bind.call(callback, owner) as T;
 }
 
 function sameAddress(left: string, right: string): boolean {
@@ -404,7 +449,8 @@ export function x402PaywallFulfilmentKey(input: {
   phaseIndex: number;
 }): string {
   if (typeof input.jobId !== "string" || input.jobId.length === 0 ||
-      !Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0) {
+      !Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0 ||
+      Object.is(input.phaseIndex, -0)) {
     throw new TypeError("x402 paywall fulfilment key requires jobId and phaseIndex");
   }
   const digest = sha256Hex(
@@ -419,7 +465,8 @@ export function x402PaywallSettlementKey(input: {
   phaseIndex: number;
 }): string {
   if (typeof input.jobId !== "string" || input.jobId.length === 0 ||
-      !Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0) {
+      !Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0 ||
+      Object.is(input.phaseIndex, -0)) {
     throw new TypeError("x402 paywall settlement key requires jobId and phaseIndex");
   }
   const digest = sha256Hex(
@@ -440,7 +487,8 @@ function safeHeaders(headers: Record<string, string> | undefined): Record<string
   const entries: Array<[string, string]> = [];
   const names = new Set<string>();
   for (const [name, value] of Object.entries(headers ?? {})) {
-    if (typeof value !== "string" || !HEADER_NAME_RE.test(name) || /[\r\n]/.test(value)) {
+    if (typeof value !== "string" || !HEADER_NAME_RE.test(name) ||
+        !HEADER_VALUE_RE.test(value)) {
       throw new TypeError("invalid HTTP header");
     }
     const normalized = name.toLowerCase();
@@ -605,19 +653,33 @@ function snapshotCoreInputUnsafe(
   input: X402PaywallHandleInput,
   expected: X402PaywallExpectedTerms,
 ): { snapshot?: X402PaywallRequestSnapshot; reason?: string } {
-  if (typeof input.jobId !== "string" || input.jobId.length === 0) {
+  if (!input) return { reason: "invalid-http-adapter" };
+  const jobId = input?.jobId;
+  const phaseIndex = input?.phaseIndex;
+  const source = input?.request;
+  if (typeof jobId !== "string" || jobId.length === 0) {
     return { reason: "invalid-jobId" };
   }
-  if (!Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0) {
+  if (!Number.isSafeInteger(phaseIndex) || phaseIndex < 0 ||
+      Object.is(phaseIndex, -0)) {
     return { reason: "invalid-phaseIndex" };
   }
-  const source = input.request;
-  if (!source || typeof source.getHeader !== "function" ||
-      typeof source.getMethod !== "function" ||
-      typeof source.getPath !== "function" ||
-      typeof source.getUrl !== "function" ||
-      typeof source.getAcceptHeader !== "function" ||
-      typeof source.getUserAgent !== "function") {
+  const getHeader = source?.getHeader;
+  const getMethod = source?.getMethod;
+  const getPath = source?.getPath;
+  const getUrl = source?.getUrl;
+  const getAcceptHeader = source?.getAcceptHeader;
+  const getUserAgent = source?.getUserAgent;
+  const getQueryParams = source?.getQueryParams;
+  const getQueryParam = source?.getQueryParam;
+  const getBody = source?.getBody;
+  if (!source || typeof getHeader !== "function" ||
+      typeof getMethod !== "function" || typeof getPath !== "function" ||
+      typeof getUrl !== "function" || typeof getAcceptHeader !== "function" ||
+      typeof getUserAgent !== "function" ||
+      (getQueryParams !== undefined && typeof getQueryParams !== "function") ||
+      (getQueryParam !== undefined && typeof getQueryParam !== "function") ||
+      (getBody !== undefined && typeof getBody !== "function")) {
     return { reason: "invalid-http-adapter" };
   }
   if (!validNetwork(expected.network) || !EVM_ADDRESS_RE.test(expected.payTo) ||
@@ -629,13 +691,15 @@ function snapshotCoreInputUnsafe(
   }
 
   try {
-    // Invoke the security-bearing getters exactly once. The server and every
+    const invoke = <T>(method: Function, ...args: unknown[]): T =>
+      Reflect.apply(method, source, args) as T;
+    // Invoke every source getter before the first await. The server and every
     // downstream callback receive this stable adapter, never the mutable source.
-    const method = source.getMethod();
-    const path = source.getPath();
-    const httpResource = source.getUrl();
-    const acceptHeader = source.getAcceptHeader();
-    const userAgent = source.getUserAgent();
+    const method = invoke<string>(getMethod);
+    const path = invoke<string>(getPath);
+    const httpResource = invoke<string>(getUrl);
+    const acceptHeader = invoke<string>(getAcceptHeader);
+    const userAgent = invoke<string>(getUserAgent);
     if (method !== "GET") return { reason: "pay-x402-requires-get" };
     if (typeof path !== "string" || path.length === 0 || path[0] !== "/" ||
         typeof httpResource !== "string" || typeof acceptHeader !== "string" ||
@@ -646,24 +710,37 @@ function snapshotCoreInputUnsafe(
       return { reason: "invalid-http-resource" };
     }
 
-    const queryParams = source.getQueryParams
-      ? structuredClone(source.getQueryParams())
-      : undefined;
-    const body = source.getBody ? structuredClone(source.getBody()) : undefined;
+    let queryParams: Record<string, string | string[]> | undefined;
+    if (getQueryParams) {
+      const supplied = structuredClone(invoke<unknown>(getQueryParams));
+      if (!isRecord(supplied) || Object.values(supplied).some(
+        (entry) => typeof entry !== "string" &&
+          (!Array.isArray(entry) || entry.some((item) => typeof item !== "string")),
+      )) return { reason: "invalid-http-adapter" };
+      queryParams = supplied as Record<string, string | string[]>;
+    } else if (getQueryParam) {
+      queryParams = {};
+      for (const name of new Set(resource.searchParams.keys())) {
+        const values = resource.searchParams.getAll(name);
+        queryParams[name] = values.length === 1 ? values[0]! : values;
+      }
+    }
+    const body = getBody === undefined
+      ? undefined
+      : structuredClone(invoke<unknown>(getBody));
     const headerCache = new Map<string, string | undefined>();
     // These are the only x402 v1/v2 authorization headers. Snapshot both at
     // entry so a mutable host request cannot swap authorization mid-flight.
     for (const name of ["PAYMENT-SIGNATURE", "X-PAYMENT"]) {
-      headerCache.set(name.toLowerCase(), source.getHeader(name));
+      const value = invoke<unknown>(getHeader, name);
+      if (value !== undefined && typeof value !== "string") {
+        return { reason: "invalid-http-adapter" };
+      }
+      headerCache.set(name.toLowerCase(), value as string | undefined);
     }
-    const queryCache = new Map<string, string | string[] | undefined>();
     const request: X402PaywallHttpAdapter = Object.freeze({
       getHeader(name: string) {
-        const normalized = name.toLowerCase();
-        if (!headerCache.has(normalized)) {
-          headerCache.set(normalized, source.getHeader(name));
-        }
-        return headerCache.get(normalized);
+        return headerCache.get(name.toLowerCase());
       },
       getMethod: () => method,
       getPath: () => path,
@@ -673,20 +750,16 @@ function snapshotCoreInputUnsafe(
       ...(queryParams === undefined
         ? {}
         : { getQueryParams: () => structuredClone(queryParams) }),
-      ...(source.getQueryParam === undefined
+      ...(queryParams === undefined
         ? {}
         : {
             getQueryParam(name: string) {
-              if (queryParams !== undefined && Object.prototype.hasOwnProperty.call(queryParams, name)) {
-                return structuredClone(queryParams[name]);
-              }
-              if (!queryCache.has(name)) {
-                queryCache.set(name, structuredClone(source.getQueryParam!(name)));
-              }
-              return structuredClone(queryCache.get(name));
+              return Object.prototype.hasOwnProperty.call(queryParams, name)
+                ? structuredClone(queryParams[name])
+                : undefined;
             },
           }),
-      ...(source.getBody === undefined
+      ...(getBody === undefined
         ? {}
         : { getBody: () => structuredClone(body) }),
     });
@@ -697,8 +770,8 @@ function snapshotCoreInputUnsafe(
     });
     return {
       snapshot: {
-        jobId: input.jobId,
-        phaseIndex: input.phaseIndex,
+        jobId,
+        phaseIndex,
         request,
         context,
         httpResource,
@@ -769,12 +842,41 @@ function settlementClaim(
   };
 }
 
+interface VerifiedSuccessfulSettlement {
+  settlement: X402PaywallSettlementResult & { success: true };
+  protocolHeaders: Record<string, string>;
+  paymentClaim: Extract<SellerPaymentClaim, { kind: "pay-x402" }>;
+}
+
+function verifySuccessfulSettlement(
+  result: X402PaywallSettlementResult & { success: true },
+  expected: X402PaywallExpectedTerms,
+  payer: string,
+  httpResource: string,
+): VerifiedSuccessfulSettlement | null {
+  try {
+    const protocolHeaders = safeSettlementHeaders(result.headers);
+    const settlement = {
+      ...structuredClone(result),
+      headers: protocolHeaders,
+    } as X402PaywallSettlementResult & { success: true };
+    const paymentClaim = settlementClaim(settlement, expected, payer, httpResource);
+    return paymentClaim ? { settlement, protocolHeaders, paymentClaim } : null;
+  } catch {
+    return null;
+  }
+}
+
 function exactData(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(left, right);
 }
 
 function deepFreeze<T>(value: T): Readonly<T> {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    // structuredClone already gave us an owned byte view. V8 refuses to freeze
+    // non-empty typed arrays; no external reference can mutate this copy while
+    // the core validates and returns it.
+    if (ArrayBuffer.isView(value)) return value;
     Object.freeze(value);
     for (const child of Object.values(value as Record<string, unknown>)) {
       deepFreeze(child);
@@ -797,11 +899,12 @@ function settlementIntent(
   paymentHeader: string,
   paymentPayload: X402PaywallPaymentPayload,
   paymentRequirements: X402PaywallPaymentRequirements,
+  sessionAuthorization: unknown,
   declaredExtensions?: Record<string, unknown>,
 ): X402PaywallSettlementIntent | null {
   try {
     const core = {
-      intentVersion: "1" as const,
+      intentVersion: "2" as const,
       settlementKey: x402PaywallSettlementKey(snapshot),
       jobId: snapshot.jobId,
       phaseIndex: snapshot.phaseIndex,
@@ -810,6 +913,7 @@ function settlementIntent(
       paymentHeader,
       paymentPayload: structuredClone(paymentPayload),
       paymentRequirements: structuredClone(paymentRequirements),
+      sessionAuthorization: structuredClone(sessionAuthorization),
       ...(declaredExtensions === undefined
         ? {}
         : { declaredExtensions: structuredClone(declaredExtensions) }),
@@ -822,7 +926,7 @@ function settlementIntent(
 }
 
 function isSettlementIntent(value: unknown): value is X402PaywallSettlementIntent {
-  if (!isRecord(value) || value.intentVersion !== "1" ||
+  if (!isRecord(value) || value.intentVersion !== "2" ||
       typeof value.settlementKey !== "string" ||
       typeof value.bindingHash !== "string" || !/^[0-9a-f]{64}$/.test(value.bindingHash) ||
       typeof value.jobId !== "string" || value.jobId.length === 0 ||
@@ -831,6 +935,8 @@ function isSettlementIntent(value: unknown): value is X402PaywallSettlementInten
       typeof value.payer !== "string" || !EVM_ADDRESS_RE.test(value.payer) ||
       typeof value.paymentHeader !== "string" || value.paymentHeader.length === 0 ||
       !isRecord(value.paymentPayload) || !isRecord(value.paymentRequirements) ||
+      !Object.prototype.hasOwnProperty.call(value, "sessionAuthorization") ||
+      value.sessionAuthorization === undefined ||
       value.declaredExtensions !== undefined && !isRecord(value.declaredExtensions)) {
     return false;
   }
@@ -845,6 +951,7 @@ function isSettlementIntent(value: unknown): value is X402PaywallSettlementInten
     "paymentHeader",
     "paymentPayload",
     "paymentRequirements",
+    "sessionAuthorization",
     "declaredExtensions",
   ];
   if (!Object.keys(value).every((key) => allowed.includes(key))) return false;
@@ -855,7 +962,7 @@ function isSettlementIntent(value: unknown): value is X402PaywallSettlementInten
       phaseIndex: Number(value.phaseIndex),
     });
     const core = {
-      intentVersion: "1",
+      intentVersion: "2",
       settlementKey: value.settlementKey,
       jobId: value.jobId,
       phaseIndex: value.phaseIndex,
@@ -864,6 +971,7 @@ function isSettlementIntent(value: unknown): value is X402PaywallSettlementInten
       paymentHeader: value.paymentHeader,
       paymentPayload: value.paymentPayload,
       paymentRequirements: value.paymentRequirements,
+      sessionAuthorization: value.sessionAuthorization,
       ...(value.declaredExtensions === undefined
         ? {}
         : { declaredExtensions: value.declaredExtensions }),
@@ -893,33 +1001,41 @@ function presentedPaymentPayload(request: X402PaywallHttpAdapter): unknown | nul
 function snapshotProcessResult(value: unknown): X402PaywallProcessResult | null {
   if (!isRecord(value)) return null;
   try {
-    if (value.type === "no-payment-required") {
+    const type = value.type;
+    if (type === "no-payment-required") {
       return { type: "no-payment-required" };
     }
-    if (value.type === "payment-error") {
-      const response = safeProtocolResponse(value.response as X402PaywallResponse);
+    if (type === "payment-error") {
+      const rawResponse = value.response;
+      const response = safeProtocolResponse(rawResponse as X402PaywallResponse);
       return response ? { type: "payment-error", response } : null;
     }
-    if (value.type !== "payment-verified" ||
-        !isRecord(value.cancellationDispatcher) ||
-        typeof value.cancellationDispatcher.cancel !== "function" ||
-        value.declaredExtensions !== undefined && !isRecord(value.declaredExtensions)) {
+    const dispatcher = value.cancellationDispatcher;
+    const paymentPayload = value.paymentPayload;
+    const paymentRequirements = value.paymentRequirements;
+    const declaredExtensions = value.declaredExtensions;
+    const cancelMethod = isRecord(dispatcher) ? dispatcher.cancel : undefined;
+    if (type !== "payment-verified" || !isRecord(dispatcher) ||
+        typeof cancelMethod !== "function" ||
+        declaredExtensions !== undefined && !isRecord(declaredExtensions)) {
       return null;
     }
-    const dispatcher = value.cancellationDispatcher;
-    const cancelMethod = dispatcher.cancel as X402PaymentCancellationDispatcher["cancel"];
+    const boundCancel = bindCallback(
+      cancelMethod as X402PaymentCancellationDispatcher["cancel"],
+      dispatcher,
+    );
     return {
       type: "payment-verified",
       cancellationDispatcher: {
-        cancel: (options) => Promise.resolve(cancelMethod.call(dispatcher, options)),
+        cancel: (options) => Promise.resolve(boundCancel(options)),
       },
-      paymentPayload: structuredClone(value.paymentPayload) as X402PaywallPaymentPayload,
+      paymentPayload: structuredClone(paymentPayload) as X402PaywallPaymentPayload,
       paymentRequirements: structuredClone(
-        value.paymentRequirements,
+        paymentRequirements,
       ) as X402PaywallPaymentRequirements,
-      ...(value.declaredExtensions === undefined
+      ...(declaredExtensions === undefined
         ? {}
-        : { declaredExtensions: structuredClone(value.declaredExtensions) }),
+        : { declaredExtensions: structuredClone(declaredExtensions) }),
     };
   } catch {
     return null;
@@ -1019,12 +1135,14 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   try {
     const server = deps?.server;
     const store = deps?.settlementStore;
-    const expected = deps?.expected ? ownedFrozen(deps.expected) : null;
+    const expectedSource = deps?.expected;
+    const expected = expectedSource === undefined ? null : ownedFrozen(expectedSource);
     const processHTTPRequest = server?.processHTTPRequest;
     const processSettlement = server?.processSettlement;
     const load = store?.load;
     const claim = store?.claim;
     const recordOutcome = store?.recordOutcome;
+    const authorizeSettlement = deps?.authorizeSettlement;
     const reconcileSettlement = deps?.reconcileSettlement;
     const authorizePayment = deps?.authorizePayment;
     const fulfil = deps?.fulfil;
@@ -1032,6 +1150,7 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
         typeof processSettlement !== "function" || !expected || !store ||
         typeof load !== "function" || typeof claim !== "function" ||
         typeof recordOutcome !== "function" ||
+        typeof authorizeSettlement !== "function" ||
         typeof reconcileSettlement !== "function" ||
         typeof authorizePayment !== "function" || typeof fulfil !== "function") {
       throw new TypeError("invalid paywall dependencies");
@@ -1039,18 +1158,19 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
     captured = {
       server: Object.freeze({
         initialize: async () => undefined,
-        processHTTPRequest: processHTTPRequest.bind(server),
-        processSettlement: processSettlement.bind(server),
+        processHTTPRequest: bindCallback(processHTTPRequest, server),
+        processSettlement: bindCallback(processSettlement, server),
       }),
       expected,
       settlementStore: Object.freeze({
-        load: load.bind(store),
-        claim: claim.bind(store),
-        recordOutcome: recordOutcome.bind(store),
+        load: bindCallback(load, store),
+        claim: bindCallback(claim, store),
+        recordOutcome: bindCallback(recordOutcome, store),
       }),
-      reconcileSettlement: reconcileSettlement.bind(deps),
-      authorizePayment: authorizePayment.bind(deps),
-      fulfil: fulfil.bind(deps),
+      authorizeSettlement: bindCallback(authorizeSettlement, deps),
+      reconcileSettlement: bindCallback(reconcileSettlement, deps),
+      authorizePayment: bindCallback(authorizePayment, deps),
+      fulfil: bindCallback(fulfil, deps),
     };
   } catch {
     return {
@@ -1113,6 +1233,17 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
     loaded.intent.httpResource === snapshot.httpResource &&
     presentedHeader === loaded.intent.paymentHeader &&
     isDeepStrictEqual(presented, loaded.intent.paymentPayload);
+  if (loaded.status !== "absent" && !recoverRetained) {
+    // A phase key is already reserved. The retained authorization may be live
+    // or settled, so a different/missing bearer is never an ordinary unpaid
+    // retry and must not be sent back through provider verification.
+    return {
+      disposition: "indeterminate",
+      settled: "unknown",
+      reason: "settlement-authorization-conflict",
+      response: jsonResponse(409, "settlement-authorization-conflict"),
+    };
+  }
   if (recoverRetained && loaded.status !== "absent") {
     // A provider may reject a settled EIP-3009 nonce on replay. Possession of
     // the byte-equivalent retained authorization resumes the already-verified
@@ -1191,7 +1322,7 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   const paymentHeader = snapshot.request.getHeader("PAYMENT-SIGNATURE");
   const presentedPayload = presentedPaymentPayload(snapshot.request);
   const expectedNonce = x402Eip3009Nonce(snapshot.jobId, snapshot.phaseIndex);
-  if (
+  const sessionOrTermsMismatch =
     !cancellationDispatcher || typeof cancellationDispatcher.cancel !== "function" ||
     !isRecord(paymentPayload) || paymentPayload.x402Version !== 2 || !authorization ||
     typeof paymentHeader !== "string" || paymentHeader.length === 0 ||
@@ -1201,8 +1332,19 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
     !requirementsAgree(accepted, paymentRequirements) ||
     !sameAddress(authorization.to, captured.expected.payTo) ||
     authorization.value !== captured.expected.amount ||
-    authorization.nonce !== expectedNonce
-  ) {
+    authorization.nonce !== expectedNonce;
+  if (sessionOrTermsMismatch) {
+    // A retained authorization may already have moved value; configuration
+    // drift or corrupt retained terms can therefore never be reported as an
+    // ordinary unpaid rejection.
+    if (recoverRetained && loaded.status !== "absent") {
+      return {
+        disposition: "indeterminate",
+        settled: "unknown",
+        reason: "settlement-recovery-context-mismatch",
+        response: jsonResponse(503, "settlement-recovery-context-mismatch"),
+      };
+    }
     if (cancellationDispatcher && typeof cancellationDispatcher.cancel === "function") {
       await cancel(cancellationDispatcher, {
         reason: "handler_failed",
@@ -1217,12 +1359,107 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
     };
   }
 
+  let sessionAuthorization: Readonly<unknown>;
+  if (recoverRetained && loaded.status !== "absent") {
+    const retained = ownedFrozen(loaded.intent.sessionAuthorization);
+    if (!retained) {
+      return {
+        disposition: "indeterminate",
+        settled: "unknown",
+        reason: "settlement-store-invalid-result",
+        response: jsonResponse(503, "settlement-store-invalid-result"),
+      };
+    }
+    sessionAuthorization = retained;
+  } else {
+    const payloadSnapshot = ownedFrozen(paymentPayload);
+    const requirementsSnapshot = ownedFrozen(paymentRequirements);
+    if (!payloadSnapshot || !requirementsSnapshot) {
+      return {
+        disposition: "indeterminate",
+        settled: false,
+        reason: "pre-settlement-authorization-input-invalid",
+        response: jsonResponse(503, "pre-settlement-authorization-input-invalid"),
+      };
+    }
+    let rawPreflight: X402PaywallPreSettlementAuthorization;
+    try {
+      rawPreflight = await captured.authorizeSettlement(Object.freeze({
+        jobId: snapshot.jobId,
+        phaseIndex: snapshot.phaseIndex,
+        payer: authorization.payer,
+        request: snapshot.request,
+        paymentPayload: payloadSnapshot,
+        paymentRequirements: requirementsSnapshot,
+        expected: captured.expected,
+      }));
+    } catch {
+      return {
+        disposition: "indeterminate",
+        settled: false,
+        reason: "pre-settlement-authorization-unavailable",
+        response: jsonResponse(503, "pre-settlement-authorization-unavailable"),
+      };
+    }
+    const preflight = ownedFrozen(rawPreflight);
+    if (!preflight || !isRecord(preflight) ||
+        !["authorized", "rejected", "indeterminate"].includes(
+          String(preflight.disposition),
+        ) ||
+        preflight.disposition === "authorized" &&
+          (!Object.prototype.hasOwnProperty.call(preflight, "authorization") ||
+            preflight.authorization === undefined) ||
+        preflight.disposition !== "authorized" &&
+          (typeof preflight.reason !== "string" || preflight.reason.length === 0)) {
+      return {
+        disposition: "indeterminate",
+        settled: false,
+        reason: "pre-settlement-authorization-invalid-result",
+        response: jsonResponse(503, "pre-settlement-authorization-invalid-result"),
+      };
+    }
+    if (preflight.disposition !== "authorized") {
+      const rejected = preflight.disposition === "rejected";
+      await cancel(cancellationDispatcher, {
+        reason: "handler_failed",
+        responseStatus: rejected ? 403 : 503,
+      });
+      return {
+        disposition: rejected ? "rejected" : "indeterminate",
+        settled: false,
+        reason: preflight.reason,
+        response: jsonResponse(rejected ? 403 : 503, preflight.reason),
+      };
+    }
+    const retained = ownedFrozen(preflight.authorization);
+    if (!retained) {
+      return {
+        disposition: "indeterminate",
+        settled: false,
+        reason: "pre-settlement-authorization-invalid-result",
+        response: jsonResponse(503, "pre-settlement-authorization-invalid-result"),
+      };
+    }
+    try {
+      canonicalize(retained);
+    } catch {
+      return {
+        disposition: "indeterminate",
+        settled: false,
+        reason: "pre-settlement-authorization-invalid-result",
+        response: jsonResponse(503, "pre-settlement-authorization-invalid-result"),
+      };
+    }
+    sessionAuthorization = retained;
+  }
+
   const intent = settlementIntent(
     snapshot,
     authorization.payer,
     paymentHeader,
     paymentPayload,
     paymentRequirements,
+    sessionAuthorization,
     processed.declaredExtensions,
   );
   const frozenIntent = intent && ownedFrozen(intent);
@@ -1281,18 +1518,74 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   }
   if (stored.status === "conflict") {
     return {
-      disposition: "rejected",
-      settled: false,
+      disposition: "indeterminate",
+      settled: "unknown",
       reason: "settlement-authorization-conflict",
       response: jsonResponse(409, "settlement-authorization-conflict"),
     };
   }
 
   let outcome: X402PaywallSettlementOutcome | undefined;
+  let verifiedSettlement: VerifiedSuccessfulSettlement | undefined;
   let mustPersist = false;
   let ambiguousSettlement: X402PaywallSettlementResult | undefined;
+  let observedSuccessfulSettlement:
+    | (X402PaywallSettlementResult & { success: true })
+    | undefined;
+  let observedSettlementEvidenceReason: string | undefined;
   let requireReconciliation = stored.status === "held";
-  if (stored.status === "settled" || stored.status === "failed") {
+  const acceptSuccessfulSettlement = (
+    candidate: X402PaywallSettlementResult & { success: true },
+    persist: boolean,
+  ): boolean => {
+    observedSuccessfulSettlement = structuredClone(candidate);
+    const verified = verifySuccessfulSettlement(
+      candidate,
+      captured.expected,
+      authorization.payer,
+      snapshot.httpResource,
+    );
+    if (!verified) {
+      try {
+        safeSettlementHeaders(candidate.headers);
+        observedSettlementEvidenceReason = "settled-receipt-is-not-dacs-verifiable";
+      } catch {
+        observedSettlementEvidenceReason = "invalid-settlement-protocol-response";
+      }
+      return false;
+    }
+    observedSettlementEvidenceReason = undefined;
+    verifiedSettlement = verified;
+    outcome = { status: "settled", settlement: verified.settlement };
+    mustPersist = persist;
+    return true;
+  };
+  const knownSettlementError = (
+    disposition: "settlement-evidence-indeterminate" | "settlement-state-indeterminate",
+    reason: string,
+  ): X402PaywallResult<T> => {
+    const settlement = observedSuccessfulSettlement!;
+    let response = jsonResponse(503, reason);
+    try {
+      response = postSettlementError(503, reason, safeSettlementHeaders(settlement.headers));
+    } catch {
+      // An invalid/missing receipt header is the evidence failure being reported.
+    }
+    return { disposition, settled: true, reason, response, settlement };
+  };
+
+  if (stored.status === "settled") {
+    const retainedSettlement = stored.outcome.status === "settled"
+      ? stored.outcome.settlement
+      : undefined;
+    if (!retainedSettlement ||
+        !acceptSuccessfulSettlement(retainedSettlement, false)) {
+      // Legacy/corrupt terminal evidence is never trusted. Reconciliation may
+      // supply a valid receipt for this call, but no new malformed terminal is
+      // created by this implementation.
+      requireReconciliation = true;
+    }
+  } else if (stored.status === "failed") {
     outcome = structuredClone(stored.outcome);
   } else if (stored.status === "claimed") {
     try {
@@ -1304,11 +1597,10 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
       );
       const owned = ownedFrozen(result);
       if (owned && isRecord(owned) && owned.success === true) {
-        outcome = {
-          status: "settled",
-          settlement: owned as X402PaywallSettlementResult & { success: true },
-        };
-        mustPersist = true;
+        if (!acceptSuccessfulSettlement(
+          owned as X402PaywallSettlementResult & { success: true },
+          true,
+        )) requireReconciliation = true;
       } else {
         if (owned && isRecord(owned) && owned.success === false) {
           ambiguousSettlement = owned as X402PaywallSettlementResult & { success: false };
@@ -1325,6 +1617,12 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
     try {
       reconciled = await captured.reconcileSettlement(frozenIntent);
     } catch {
+      if (observedSuccessfulSettlement) {
+        return knownSettlementError(
+          "settlement-evidence-indeterminate",
+          observedSettlementEvidenceReason ?? "settlement-reconciliation-unavailable",
+        );
+      }
       return {
         disposition: "indeterminate",
         settled: "unknown",
@@ -1335,9 +1633,22 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
     }
     const owned = ownedFrozen(reconciled);
     if (!owned || !isRecord(owned) ||
-        !["pending", "indeterminate", "settled", "failed"].includes(
+        ![
+          "pending",
+          "indeterminate",
+          "authoritatively-absent",
+          "settled",
+          "failed",
+        ].includes(
           String(owned.status),
         )) {
+      if (observedSuccessfulSettlement) {
+        return knownSettlementError(
+          "settlement-evidence-indeterminate",
+          observedSettlementEvidenceReason ??
+            "settlement-reconciliation-invalid-result",
+        );
+      }
       return {
         disposition: "indeterminate",
         settled: "unknown",
@@ -1350,6 +1661,12 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
       const reason = typeof owned.reason === "string" && owned.reason.length > 0
         ? owned.reason
         : "settlement-reconciliation-indeterminate";
+      if (observedSuccessfulSettlement) {
+        return knownSettlementError(
+          "settlement-evidence-indeterminate",
+          observedSettlementEvidenceReason ?? reason,
+        );
+      }
       return {
         disposition: "indeterminate",
         settled: "unknown",
@@ -1358,17 +1675,108 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
         ...(ambiguousSettlement === undefined ? {} : { settlement: ambiguousSettlement }),
       };
     }
-    if (!isSettlementOutcome(owned)) {
-      return {
-        disposition: "indeterminate",
-        settled: "unknown",
-        reason: "settlement-reconciliation-invalid-result",
-        response: jsonResponse(503, "settlement-reconciliation-invalid-result"),
-        ...(ambiguousSettlement === undefined ? {} : { settlement: ambiguousSettlement }),
-      };
+    if (owned.status === "authoritatively-absent") {
+      if (typeof owned.reason !== "string" || owned.reason.length === 0) {
+        if (observedSuccessfulSettlement) {
+          return knownSettlementError(
+            "settlement-state-indeterminate",
+            "settlement-reconciliation-invalid-result",
+          );
+        }
+        return {
+          disposition: "indeterminate",
+          settled: "unknown",
+          reason: "settlement-reconciliation-invalid-result",
+          response: jsonResponse(503, "settlement-reconciliation-invalid-result"),
+        };
+      }
+      if (observedSuccessfulSettlement) {
+        return knownSettlementError(
+          "settlement-state-indeterminate",
+          "settlement-reconciliation-contradicts-observed-success",
+        );
+      }
+      // The reconciler atomically granted this caller the recovery drive. Use
+      // the exact retained authorization and derived nonce; never mint a new
+      // payload or phase identity.
+      let redriven: unknown;
+      try {
+        redriven = await captured.server.processSettlement(
+          frozenIntent.paymentPayload as X402PaywallPaymentPayload,
+          frozenIntent.paymentRequirements as X402PaywallPaymentRequirements,
+          frozenIntent.declaredExtensions as Record<string, unknown> | undefined,
+          { request: snapshot.context },
+        );
+      } catch {
+        return {
+          disposition: "indeterminate",
+          settled: "unknown",
+          reason: "settlement-redrive-indeterminate",
+          response: jsonResponse(503, "settlement-redrive-indeterminate"),
+        };
+      }
+      const redriveResult = ownedFrozen(redriven);
+      if (redriveResult && isRecord(redriveResult) && redriveResult.success === true) {
+        if (!acceptSuccessfulSettlement(
+          redriveResult as X402PaywallSettlementResult & { success: true },
+          true,
+        )) {
+          return knownSettlementError(
+            "settlement-evidence-indeterminate",
+            "settled-receipt-is-not-dacs-verifiable",
+          );
+        }
+      } else {
+        if (redriveResult && isRecord(redriveResult) && redriveResult.success === false) {
+          ambiguousSettlement = redriveResult as X402PaywallSettlementResult & {
+            success: false;
+          };
+        }
+        return {
+          disposition: "indeterminate",
+          settled: "unknown",
+          reason: "settlement-redrive-indeterminate",
+          response: jsonResponse(503, "settlement-redrive-indeterminate"),
+          ...(ambiguousSettlement === undefined ? {} : { settlement: ambiguousSettlement }),
+        };
+      }
+    } else {
+      if (!isSettlementOutcome(owned)) {
+        if (observedSuccessfulSettlement) {
+          return knownSettlementError(
+            "settlement-evidence-indeterminate",
+            "settlement-reconciliation-invalid-result",
+          );
+        }
+        return {
+          disposition: "indeterminate",
+          settled: "unknown",
+          reason: "settlement-reconciliation-invalid-result",
+          response: jsonResponse(503, "settlement-reconciliation-invalid-result"),
+          ...(ambiguousSettlement === undefined ? {} : { settlement: ambiguousSettlement }),
+        };
+      }
+      if (owned.status === "settled") {
+        if (!acceptSuccessfulSettlement(
+          owned.settlement,
+          stored.status !== "settled",
+        )) {
+          return knownSettlementError(
+            "settlement-evidence-indeterminate",
+            "settled-receipt-is-not-dacs-verifiable",
+          );
+        }
+      } else {
+        if (observedSuccessfulSettlement) {
+          return knownSettlementError(
+            "settlement-state-indeterminate",
+            "settlement-reconciliation-contradicts-observed-success",
+          );
+        }
+        outcome = structuredClone(owned);
+        mustPersist = true;
+      }
     }
-    outcome = structuredClone(owned);
-    mustPersist = true;
   }
 
   if (!outcome) {
@@ -1387,26 +1795,18 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
       outcome,
     );
     if (!persisted) {
-      let response = jsonResponse(503, "settlement-outcome-persistence-indeterminate");
       if (outcome.status === "settled") {
-        try {
-          response = postSettlementError(
-            503,
-            "settlement-outcome-persistence-indeterminate",
-            safeSettlementHeaders(outcome.settlement.headers),
-          );
-        } catch {
-          // The settlement result itself is retained below for reconciliation.
-        }
+        return knownSettlementError(
+          "settlement-state-indeterminate",
+          "settlement-outcome-persistence-indeterminate",
+        );
       }
       return {
         disposition: "indeterminate",
         settled: "unknown",
         reason: "settlement-outcome-persistence-indeterminate",
-        response,
-        settlement: outcome.status === "settled"
-          ? outcome.settlement
-          : outcome.settlement ?? ambiguousSettlement,
+        response: jsonResponse(503, "settlement-outcome-persistence-indeterminate"),
+        settlement: outcome.settlement ?? ambiguousSettlement,
       };
     }
     outcome = persisted;
@@ -1425,43 +1825,20 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
     };
   }
 
-  const settlement = outcome.settlement;
-  let protocolHeaders: Record<string, string>;
-  try {
-    protocolHeaders = safeSettlementHeaders(settlement.headers);
-  } catch {
-    return {
-      disposition: "settlement-evidence-indeterminate",
-      settled: true,
-      reason: "invalid-settlement-protocol-response",
-      response: jsonResponse(503, "invalid-settlement-protocol-response"),
-      settlement,
-    };
+  if (!verifiedSettlement) {
+    observedSuccessfulSettlement = outcome.settlement;
+    return knownSettlementError(
+      "settlement-evidence-indeterminate",
+      "settled-receipt-is-not-dacs-verifiable",
+    );
   }
-  const safeSettlement = { ...settlement, headers: protocolHeaders };
-  const paymentClaim = settlementClaim(
-    safeSettlement,
-    captured.expected,
-    authorization.payer,
-    snapshot.httpResource,
-  );
-  if (!paymentClaim) {
-    return {
-      disposition: "settlement-evidence-indeterminate",
-      settled: true,
-      reason: "settled-receipt-is-not-dacs-verifiable",
-      response: postSettlementError(
-        503,
-        "settled-receipt-is-not-dacs-verifiable",
-        protocolHeaders,
-      ),
-      settlement,
-    };
-  }
+  const { settlement, protocolHeaders, paymentClaim } = verifiedSettlement;
 
   const paymentClaimForCallback = ownedFrozen(paymentClaim);
-  const settlementForCallback = ownedFrozen(safeSettlement);
-  if (!paymentClaimForCallback || !settlementForCallback) {
+  const settlementForCallback = ownedFrozen(settlement);
+  const sessionAuthorizationForCallback = ownedFrozen(intent.sessionAuthorization);
+  if (!paymentClaimForCallback || !settlementForCallback ||
+      !sessionAuthorizationForCallback) {
     return {
       disposition: "settlement-evidence-indeterminate",
       settled: true,
@@ -1478,6 +1855,7 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
       phaseIndex: snapshot.phaseIndex,
       payer: authorization.payer,
       request: snapshot.request,
+      sessionAuthorization: sessionAuthorizationForCallback,
       paymentClaim: paymentClaimForCallback,
       settlement: settlementForCallback,
     }));
@@ -1530,7 +1908,7 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   }
 
   const paymentClaimForFulfilment = ownedFrozen(paymentClaim);
-  const settlementForFulfilment = ownedFrozen(safeSettlement);
+  const settlementForFulfilment = ownedFrozen(settlement);
   if (!paymentClaimForFulfilment || !settlementForFulfilment) {
     return {
       disposition: "fulfilment-indeterminate",
@@ -1703,34 +2081,83 @@ function validateConfig(config: X402PaywallConfig): X402PaywallExpectedTerms {
   };
 }
 
+function captureConfig(config: X402PaywallConfig): X402PaywallConfig {
+  const route = config?.route;
+  const network = config?.network;
+  const payTo = config?.payTo;
+  const amount = config?.amount;
+  const asset = config?.asset;
+  const eip712Source = config?.eip712;
+  const eip712Name = eip712Source?.name;
+  const eip712Version = eip712Source?.version;
+  const facilitatorSource = config?.facilitator;
+  const maxTimeoutSeconds = config?.maxTimeoutSeconds;
+  const description = config?.description;
+  const mimeType = config?.mimeType;
+  const serviceName = config?.serviceName;
+  const extraSource = config?.extra;
+  if (!facilitatorSource || typeof facilitatorSource !== "object") {
+    throw new TypeError("createX402Paywall facilitator is invalid");
+  }
+
+  const verify = (facilitatorSource as X402PaywallFacilitatorLike).verify;
+  const settle = (facilitatorSource as X402PaywallFacilitatorLike).settle;
+  const getSupported = (facilitatorSource as X402PaywallFacilitatorLike).getSupported;
+  let facilitator: X402PaywallConfig["facilitator"];
+  if (typeof verify === "function" && typeof settle === "function" &&
+      typeof getSupported === "function") {
+    facilitator = Object.freeze({
+      verify: bindCallback(verify, facilitatorSource),
+      settle: bindCallback(settle, facilitatorSource),
+      getSupported: bindCallback(getSupported, facilitatorSource),
+    });
+  } else {
+    const url = (facilitatorSource as { url?: unknown }).url;
+    const createAuthHeaders = (facilitatorSource as {
+      createAuthHeaders?: unknown;
+    }).createAuthHeaders;
+    if (typeof url !== "string" ||
+        (createAuthHeaders !== undefined && typeof createAuthHeaders !== "function")) {
+      throw new TypeError("createX402Paywall facilitator is invalid");
+    }
+    facilitator = Object.freeze({
+      url,
+      ...(createAuthHeaders === undefined
+        ? {}
+        : {
+            createAuthHeaders: bindCallback(
+              createAuthHeaders as NonNullable<
+                Extract<X402PaywallConfig["facilitator"], { url: string }>["createAuthHeaders"]
+              >,
+              facilitatorSource,
+            ),
+          }),
+    });
+  }
+  const extra = extraSource === undefined ? undefined : ownedFrozen(extraSource);
+  if (extraSource !== undefined && (!extra || !isRecord(extra))) {
+    throw new TypeError("createX402Paywall extra must be a cloneable object");
+  }
+  return Object.freeze({
+    route,
+    network,
+    payTo,
+    amount,
+    asset,
+    eip712: { name: eip712Name, version: eip712Version },
+    facilitator,
+    ...(maxTimeoutSeconds === undefined ? {} : { maxTimeoutSeconds }),
+    ...(description === undefined ? {} : { description }),
+    ...(mimeType === undefined ? {} : { mimeType }),
+    ...(serviceName === undefined ? {} : { serviceName }),
+    ...(extra === undefined ? {} : { extra: extra as Record<string, unknown> }),
+  }) as X402PaywallConfig;
+}
+
 function snapshotConfig(
   config: X402PaywallConfig,
   expected: X402PaywallExpectedTerms,
 ): X402PaywallConfig {
-  const configuredFacilitator = config.facilitator;
-  const facilitator: X402PaywallConfig["facilitator"] = isFacilitator(
-    configuredFacilitator,
-  )
-    ? Object.freeze({
-        verify: configuredFacilitator.verify.bind(configuredFacilitator),
-        settle: configuredFacilitator.settle.bind(configuredFacilitator),
-        getSupported: configuredFacilitator.getSupported.bind(configuredFacilitator),
-      })
-    : Object.freeze({
-        url: configuredFacilitator.url,
-        ...(configuredFacilitator.createAuthHeaders === undefined
-          ? {}
-          : {
-              createAuthHeaders: configuredFacilitator.createAuthHeaders.bind(
-                configuredFacilitator,
-              ),
-            }),
-      });
-  const configuredExtra = config.extra;
-  const extra = configuredExtra === undefined ? undefined : ownedFrozen(configuredExtra);
-  if (configuredExtra !== undefined && !extra) {
-    throw new TypeError("createX402Paywall extra must be cloneable");
-  }
   return Object.freeze({
     route: config.route,
     network: expected.network,
@@ -1738,14 +2165,14 @@ function snapshotConfig(
     amount: expected.amount,
     asset: expected.asset,
     eip712: { ...expected.eip712 },
-    facilitator,
+    facilitator: config.facilitator,
     ...(config.maxTimeoutSeconds === undefined
       ? {}
       : { maxTimeoutSeconds: config.maxTimeoutSeconds }),
     ...(config.description === undefined ? {} : { description: config.description }),
     ...(config.mimeType === undefined ? {} : { mimeType: config.mimeType }),
     ...(config.serviceName === undefined ? {} : { serviceName: config.serviceName }),
-    ...(extra === undefined ? {} : { extra: extra as Record<string, unknown> }),
+    ...(config.extra === undefined ? {} : { extra: config.extra }),
   });
 }
 
@@ -1757,29 +2184,36 @@ export async function createX402Paywall<TAuthorization = unknown, T = unknown>(
   config: X402PaywallConfig,
   handlers: X402PaywallHandlers<TAuthorization, T>,
 ): Promise<X402Paywall<T>> {
-  const expected = validateConfig(config);
-  const capturedConfig = snapshotConfig(config, expected);
-  if (!handlers || !handlers.settlementStore ||
-      typeof handlers.settlementStore.load !== "function" ||
-      typeof handlers.settlementStore.claim !== "function" ||
-      typeof handlers.settlementStore.recordOutcome !== "function" ||
-      typeof handlers.reconcileSettlement !== "function" ||
-      typeof handlers.authorizePayment !== "function" ||
-      typeof handlers.fulfil !== "function") {
+  const configSnapshot = captureConfig(config);
+  const expected = validateConfig(configSnapshot);
+  const capturedConfig = snapshotConfig(configSnapshot, expected);
+  const handlerStore = handlers?.settlementStore;
+  const load = handlerStore?.load;
+  const claim = handlerStore?.claim;
+  const recordOutcome = handlerStore?.recordOutcome;
+  const authorizeSettlement = handlers?.authorizeSettlement;
+  const reconcileSettlement = handlers?.reconcileSettlement;
+  const authorizePayment = handlers?.authorizePayment;
+  const fulfil = handlers?.fulfil;
+  if (!handlers || !handlerStore || typeof load !== "function" ||
+      typeof claim !== "function" || typeof recordOutcome !== "function" ||
+      typeof authorizeSettlement !== "function" ||
+      typeof reconcileSettlement !== "function" ||
+      typeof authorizePayment !== "function" || typeof fulfil !== "function") {
     throw new TypeError(
       "createX402Paywall requires durable settlement recovery, payment authorization, and fulfilment handlers",
     );
   }
-  const handlerStore = handlers.settlementStore;
   const capturedHandlers: X402PaywallHandlers<TAuthorization, T> = Object.freeze({
     settlementStore: Object.freeze({
-      load: handlerStore.load.bind(handlerStore),
-      claim: handlerStore.claim.bind(handlerStore),
-      recordOutcome: handlerStore.recordOutcome.bind(handlerStore),
+      load: bindCallback(load, handlerStore),
+      claim: bindCallback(claim, handlerStore),
+      recordOutcome: bindCallback(recordOutcome, handlerStore),
     }),
-    reconcileSettlement: handlers.reconcileSettlement.bind(handlers),
-    authorizePayment: handlers.authorizePayment.bind(handlers),
-    fulfil: handlers.fulfil.bind(handlers),
+    authorizeSettlement: bindCallback(authorizeSettlement, handlers),
+    reconcileSettlement: bindCallback(reconcileSettlement, handlers),
+    authorizePayment: bindCallback(authorizePayment, handlers),
+    fulfil: bindCallback(fulfil, handlers),
   });
   const core = await import("@x402/core/server").catch((error: unknown) => {
     if (missingOptionalPeer(error, "@x402/core")) {
@@ -1840,6 +2274,7 @@ export async function createX402Paywall<TAuthorization = unknown, T = unknown>(
         server: structuralServer,
         expected,
         settlementStore: capturedHandlers.settlementStore,
+        authorizeSettlement: capturedHandlers.authorizeSettlement,
         reconcileSettlement: capturedHandlers.reconcileSettlement,
         authorizePayment: capturedHandlers.authorizePayment,
         fulfil: capturedHandlers.fulfil,

@@ -319,7 +319,8 @@ export async function dacsX402AuthorizationNonce(input: {
     input.jobId.length === 0 ||
     input.jobId.normalize("NFC") !== input.jobId ||
     !Number.isSafeInteger(input.phaseIndex) ||
-    input.phaseIndex < 0
+    input.phaseIndex < 0 ||
+    Object.is(input.phaseIndex, -0)
   ) {
     throw new Error(
       "x402 DACS binding requires an exact NFC jobId and a non-negative phaseIndex",

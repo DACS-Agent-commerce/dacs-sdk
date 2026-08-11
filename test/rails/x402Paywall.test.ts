@@ -211,6 +211,10 @@ function coreDeps<T = unknown>(
     server,
     expected,
     settlementStore: settlementStore(),
+    authorizeSettlement: async () => ({
+      disposition: "authorized",
+      authorization: { scopeVersion: "test-1", jobId: JOB_ID },
+    }),
     reconcileSettlement: async () => ({ status: "pending", reason: "still-pending" }),
     authorizePayment: async () => ({
       disposition: "authorized",
@@ -400,7 +404,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     expect(fulfil).not.toHaveBeenCalled();
   });
 
-  it("runs verify → settle → authorize → fulfil and emits an exact payment claim", async () => {
+  it("runs verify → pre-authorize → settle → authorize → fulfil and emits an exact payment claim", async () => {
     const { payload, requirements } = await paymentFixture();
     const order: string[] = [];
     const settlement = successfulSettlement(requirements);
@@ -423,8 +427,19 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
       coreDeps(server, {
-        authorizePayment: async () => {
+        authorizeSettlement: async () => {
+          order.push("pre-authorize");
+          return {
+            disposition: "authorized",
+            authorization: { scopeVersion: "test-1", jobId: JOB_ID },
+          };
+        },
+        authorizePayment: async (context) => {
           order.push("authorize");
+          expect(context.sessionAuthorization).toEqual({
+            scopeVersion: "test-1",
+            jobId: JOB_ID,
+          });
           return {
             disposition: "authorized",
             authorization: { permitId: "permit-1" },
@@ -451,7 +466,13 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
       }),
     );
 
-    expect(order).toEqual(["verify", "settle", "authorize", "fulfil"]);
+    expect(order).toEqual([
+      "verify",
+      "pre-authorize",
+      "settle",
+      "authorize",
+      "fulfil",
+    ]);
     expect(result).toMatchObject({
       disposition: "settled",
       settled: true,
@@ -599,8 +620,8 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
       settled: true,
     });
 
-    // Same parsed JSON, different bearer bytes. It must go back through the
-    // provider and must not resume the retained, already-settled authorization.
+    // Same parsed JSON, different bearer bytes. The phase is already reserved,
+    // so this is an indeterminate conflict, never a fresh unpaid request.
     const differentlyEncoded = request({
       "PAYMENT-SIGNATURE": Buffer.from(
         JSON.stringify(payload, null, 2),
@@ -611,8 +632,13 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: differentlyEncoded },
       deps,
     );
-    expect(retried).toMatchObject({ disposition: "payment-required", settled: false });
-    expect(server.processHTTPRequest).toHaveBeenCalledTimes(2);
+    expect(retried).toMatchObject({
+      disposition: "indeterminate",
+      settled: "unknown",
+      reason: "settlement-authorization-conflict",
+      response: { status: 409 },
+    });
+    expect(server.processHTTPRequest).toHaveBeenCalledTimes(1);
     expect(server.processSettlement).toHaveBeenCalledTimes(1);
     expect(authorizePayment).toHaveBeenCalledTimes(1);
     expect(fulfil).not.toHaveBeenCalled();
@@ -788,7 +814,10 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
       deps,
     );
-    expect(first).toMatchObject({ disposition: "indeterminate", settled: "unknown" });
+    expect(first).toMatchObject({
+      disposition: "indeterminate",
+      settled: "unknown",
+    });
     expect(fulfil).not.toHaveBeenCalled();
 
     const resumed = await x402PaywallCore(
@@ -959,7 +988,10 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
       deps,
     );
-    expect(first).toMatchObject({ disposition: "indeterminate", settled: "unknown" });
+    expect(first).toMatchObject({
+      disposition: "settlement-state-indeterminate",
+      settled: true,
+    });
     expect(first.response.headers["PAYMENT-RESPONSE"]).toBe(
       settlement.headers["PAYMENT-RESPONSE"],
     );
@@ -997,6 +1029,10 @@ describe("createX402Paywall", () => {
   };
   const factoryHandlers = <T,>(fulfil: X402PaywallCoreDeps<{ permitId: string }, T>["fulfil"]) => ({
     settlementStore: settlementStore(),
+    authorizeSettlement: async () => ({
+      disposition: "authorized" as const,
+      authorization: { scopeVersion: "test-1", jobId: JOB_ID },
+    }),
     reconcileSettlement: async () => ({ status: "pending" as const, reason: "pending" }),
     authorizePayment: async () => ({
       disposition: "authorized" as const,
