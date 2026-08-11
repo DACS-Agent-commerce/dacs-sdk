@@ -22,6 +22,7 @@ import {
   attestationBundleHash,
   BUNDLE_SIGNED_SCOPE_OMIT,
 } from "../src/agent/twoSidedBundle.js";
+import { verifyBundleCopy } from "../src/agent/bundleCopyValidity.js";
 import type {
   BundleOutcome,
   SigningSessionParty,
@@ -462,7 +463,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     expect(sellerCopy?.outcome).toBe("aborted-by-other");
   });
 
-  test("ISC-10.1 ANTI: single-signed abort with a distinct orchestrator fails closed", async () => {
+  test("ISC-10.1 ANTI: a partial multi-party abort signature set fails closed", async () => {
     const { signer: _signer, ...sellerWithoutSigner } = session().seller;
     const orchSeed = seed(3);
     const orchClaim = `demos:0x${Buffer.from(publicKeyRaw(orchSeed)).toString("hex")}`;
@@ -474,7 +475,79 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
         seller: sellerWithoutSigner,
         orchestrator: { primaryClaim: orchClaim, bundleHash: "f".repeat(64), signer: orchSeed },
       }),
-    ).rejects.toThrow(/single-signed abort with a distinct orchestrator/i);
+    ).rejects.toThrow(/incomplete signer set/i);
+  });
+
+  test("ISC-10.1a: a sole buyer can publish its own three-party suppression copy", async () => {
+    const { signer: _sellerSigner, ...sellerWithoutSigner } = session().seller;
+    const orchSeed = seed(3);
+    const orchClaim = `demos:0x${Buffer.from(publicKeyRaw(orchSeed)).toString("hex")}`;
+    const { buyerCopy, sellerCopy, orchestratorCopy } = await buildTwoSidedBundle({
+      ...session(),
+      outcome: "aborted-by-other",
+      faultedParty: "seller",
+      seller: sellerWithoutSigner,
+      orchestrator: { primaryClaim: orchClaim, bundleHash: "f".repeat(64) },
+    });
+    expect(buyerCopy?.anchoredByRole).toBe("buyer");
+    expect(buyerCopy?.signatures?.map(({ party }) => party)).toEqual([buyerClaim]);
+    expect(buyerCopy?.parties.map(({ role }) => role).sort()).toEqual([
+      "buyer",
+      "orchestrator",
+      "seller",
+    ]);
+    expect(sellerCopy).toBeUndefined();
+    expect(orchestratorCopy).toBeUndefined();
+  });
+
+  test("ISC-10.1b: a sole orchestrator can publish only its own suppression copy", async () => {
+    const { signer: _buyerSigner, ...buyerWithoutSigner } = session().buyer;
+    const { signer: _sellerSigner, ...sellerWithoutSigner } = session().seller;
+    const orchSeed = seed(3);
+    const orchClaim = `demos:0x${Buffer.from(publicKeyRaw(orchSeed)).toString("hex")}`;
+    const { buyerCopy, sellerCopy, orchestratorCopy } = await buildTwoSidedBundle({
+      ...session(),
+      outcome: "aborted-by-other",
+      faultedParty: "seller",
+      buyer: buyerWithoutSigner,
+      seller: sellerWithoutSigner,
+      orchestrator: {
+        primaryClaim: orchClaim,
+        bundleHash: "f".repeat(64),
+        signer: orchSeed,
+      },
+    });
+    expect(buyerCopy).toBeUndefined();
+    expect(sellerCopy).toBeUndefined();
+    expect(orchestratorCopy?.anchoredByRole).toBe("orchestrator");
+    expect(orchestratorCopy?.signatures?.map(({ party }) => party)).toEqual([
+      orchClaim,
+    ]);
+    const validity = await verifyBundleCopy(
+      asRecord(orchestratorCopy!),
+      "orchestrator",
+      {
+        resolvePublicKey: async (claim) =>
+          Uint8Array.from(Buffer.from(claim.replace(/^demos:0x/, ""), "hex")),
+        verify: (bytes, signature, publicKey) => {
+          const spki = Buffer.concat([
+            Buffer.from("302a300506032b6570032100", "hex"),
+            Buffer.from(publicKey),
+          ]);
+          return edVerify(
+            null,
+            bytes,
+            createPublicKey({ key: spki, format: "der", type: "spki" }),
+            signature,
+          );
+        },
+      },
+    );
+    expect(validity).toMatchObject({
+      valid: true,
+      fullySigned: false,
+      abortStanding: true,
+    });
   });
 
   test("ISC-10.2: carries current optional bundle fields in the signed scope", async () => {
