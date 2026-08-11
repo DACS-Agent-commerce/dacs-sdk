@@ -112,6 +112,15 @@ export async function verifyBundleCopy(
   if (entries.length === 0) return { valid: false, reason: "copy carries no signatures" };
 
   const parties = parsed.parties as unknown as Array<Record<string, unknown>>;
+  const anchorRoleClaim = parties.find((party) => party["role"] === role)?.[
+    "primaryClaim"
+  ];
+  if (typeof anchorRoleClaim !== "string" || anchorRoleClaim.length === 0) {
+    return {
+      valid: false,
+      reason: `anchor role "${role}" has no canonical party claim`,
+    };
+  }
   const partyClaims = new Set(
     parties
       .map((party) => party["primaryClaim"])
@@ -180,7 +189,11 @@ export async function verifyBundleCopy(
   const fullySigned = [...requiredSigners].every((party) => signers.has(party));
   const outcome = typeof bundle["outcome"] === "string" ? bundle["outcome"] : "";
   const isAbort = ABORT_OUTCOMES.has(outcome);
-  const singleSignedAbort = entries.length === 1 && signers.size === 1 && isAbort;
+  const singleSignedAbort =
+    entries.length === 1 &&
+    signers.size === 1 &&
+    signers.has(anchorRoleClaim) &&
+    isAbort;
   if (!fullySigned && !singleSignedAbort) {
     return {
       valid: false,
