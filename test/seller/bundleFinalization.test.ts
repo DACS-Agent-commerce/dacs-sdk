@@ -8,8 +8,11 @@ import {
   type AnchorReceipt,
   type AttestationRef,
   type BundleBinding,
+  type ComponentSignature,
+  type CompositeVerificationRecord,
   type FaultAttestationBundle,
   type Listing,
+  type VerifyResult,
   isFaultAttestationBundle,
 } from "../../src/artifacts/index.js";
 import {
@@ -37,6 +40,7 @@ import {
   type SellerFulfilmentResult,
 } from "../../src/agent/runFulfilmentCore.js";
 import type { SellerPaymentEvidenceInput } from "../../src/seller/paymentIntake.js";
+import type { RecipeDescriptor } from "../../src/registry/types.js";
 import {
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
@@ -53,6 +57,25 @@ const SELLER = "did:demos:seller";
 const OUTSIDER = "did:demos:outsider";
 const BUYER_SEED = new Uint8Array(32).fill(31);
 const SELLER_SEED = new Uint8Array(32).fill(32);
+
+function signTestComponent<T extends Record<string, unknown>>(
+  unsigned: T,
+  separator: Parameters<typeof signedBytes>[0],
+): T & { signature: ComponentSignature } {
+  return {
+    ...unsigned,
+    signature: {
+      algorithm: "ed25519",
+      signer: SELLER,
+      value: Buffer.from(
+        ed25519Sign(
+          signedBytes(separator, contentHash(unsigned)),
+          privateKeyFromSeed(SELLER_SEED),
+        ),
+      ).toString("base64url"),
+    },
+  };
+}
 
 function residualPadBitAlias(value: string): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -123,6 +146,7 @@ function fixture(
     procurement?: boolean;
     listingPublisherOverride?: string;
     sellerVerifyDecision?: "pass" | "fail" | "indeterminate" | "error";
+    sellerVetDecision?: "pass" | "fail" | "indeterminate" | "error";
     resolvedPayment?: boolean;
     repeatedPayment?: boolean;
   } = {},
@@ -146,6 +170,23 @@ function fixture(
       },
     ],
   };
+  const verificationRecipe = signTestComponent(
+    {
+      recipeVersion: 1,
+      scheme: "did",
+      defaultMethod: { kind: "self-signed" as const },
+      defaultMaxAgeSec: 3_600,
+      parserRules: { format: "raw" as const, matcher: "identity" },
+      retryClass: "permanent" as const,
+      availability: "live" as const,
+      governance: {
+        proposedBy: SELLER,
+        acceptedAt: NOW - 30_000,
+        anchoring: "single-signer" as const,
+      },
+    },
+    "dacs-recipe:v1:",
+  ) satisfies RecipeDescriptor & { signature: ComponentSignature };
   const deliverable: Listing["offering"]["deliverable"] = attested
     ? {
         kind: "attested-payload",
@@ -241,40 +282,49 @@ function fixture(
     claim: SELLER,
     decision: "pass",
   };
-  const buyerAuthorityRef = ref("buyer-authority", buyerAuthority);
-  const sellerAuthorityRef = ref("seller-authority", sellerAuthority);
+  const buyerAuthorityRef = {
+    ...ref("buyer-authority", buyerAuthority),
+    signer: SELLER,
+  };
+  const sellerAuthorityRef = {
+    ...ref("seller-authority", sellerAuthority),
+    signer: SELLER,
+  };
   const makeVerifyResult = (
     party: string,
     authority: AttestationRef,
-    signatureByte: number,
     decision: "pass" | "fail" | "indeterminate" | "error" = "pass",
-  ) => ({
-    resultVersion: "1" as const,
-    scheme: "did",
-    identifier: party.slice("did:".length),
-    recipeVersion: 1,
-    method: "self-signed",
-    decision,
-    reason: "deterministic identity proof passed",
-    attestation: authority,
-    fetchedAt: NOW - 19_000,
-    verifiedAt: NOW - 18_000,
-    validUntil: NOW + 60_000,
-    signature: {
-      algorithm: "ed25519" as const,
-      signer: SELLER,
-      value: Buffer.alloc(64, signatureByte).toString("base64url"),
-    },
-  });
-  const buyerVerifyResult = makeVerifyResult(BUYER, buyerAuthorityRef, 3);
+  ): VerifyResult =>
+    signTestComponent(
+      {
+        resultVersion: "1" as const,
+        scheme: "did",
+        identifier: party.slice("did:".length),
+        recipeVersion: 1,
+        method: "self-signed" as const,
+        decision,
+        reason: "deterministic identity proof passed",
+        attestation: authority,
+        fetchedAt: NOW - 19_000,
+        verifiedAt: NOW - 18_000,
+        validUntil: NOW + 60_000,
+      },
+      "dacs-verifyresult:v1:",
+    );
+  const buyerVerifyResult = makeVerifyResult(BUYER, buyerAuthorityRef);
   const sellerVerifyResult = makeVerifyResult(
     SELLER,
     sellerAuthorityRef,
-    4,
     options.sellerVerifyDecision,
   );
-  const buyerVerifyAttestationRef = ref("buyer-verify-result", buyerVerifyResult);
-  const sellerVerifyAttestationRef = ref("seller-verify-result", sellerVerifyResult);
+  const buyerVerifyAttestationRef = ref(
+    "buyer-verify-result",
+    buyerVerifyResult as unknown as Record<string, unknown>,
+  );
+  const sellerVerifyAttestationRef = ref(
+    "seller-verify-result",
+    sellerVerifyResult as unknown as Record<string, unknown>,
+  );
   const buyerVerifyRef = {
     ...buyerVerifyAttestationRef,
     recipeVersion: 1,
@@ -283,47 +333,53 @@ function fixture(
     ...sellerVerifyAttestationRef,
     recipeVersion: 1,
   };
+  const buyerVetRequirement = procurement ? sellerRequirement : buyerRequirement;
+  const sellerVetRequirement = procurement ? buyerRequirement : sellerRequirement;
   const makeVetRecord = (
     party: string,
     bundleHash: string,
     verifyRef: typeof buyerVerifyRef,
     requirement: typeof buyerRequirement,
-    signatureByte: number,
-  ) => ({
-    recordVersion: "1" as const,
-    jobId: "seller-finalization-17",
-    evaluatedParty: party,
-    bundleHash,
-    requirementHash: sha256Hex(
-      canonicalize(requirement as unknown as Record<string, unknown>),
-    ),
-    freshness: [],
-    supplementary: [],
-    dealSpecific: [verifyRef],
-    overallDecision: "pass" as const,
-    generatedAt: NOW - 16_000,
-    signature: {
-      algorithm: "ed25519" as const,
-      signer: SELLER,
-      value: Buffer.alloc(64, signatureByte).toString("base64url"),
-    },
-  });
+    overallDecision: CompositeVerificationRecord["overallDecision"] = "pass",
+  ): CompositeVerificationRecord =>
+    signTestComponent(
+      {
+        recordVersion: "1" as const,
+        jobId: "seller-finalization-17",
+        evaluatedParty: party,
+        bundleHash,
+        requirementHash: sha256Hex(
+          canonicalize(requirement as unknown as Record<string, unknown>),
+        ),
+        freshness: [],
+        supplementary: [],
+        dealSpecific: [verifyRef],
+        overallDecision,
+        generatedAt: NOW - 16_000,
+      },
+      "dacs-composite:v1:",
+    );
   const buyerVet = makeVetRecord(
     BUYER,
     "b".repeat(64),
     buyerVerifyRef,
-    procurement ? sellerRequirement : buyerRequirement,
-    5,
+    buyerVetRequirement,
   );
   const sellerVet = makeVetRecord(
     SELLER,
     sellerSessionBundleHash,
     sellerVerifyRef,
-    procurement ? buyerRequirement : sellerRequirement,
-    6,
+    sellerVetRequirement,
+    options.sellerVetDecision,
   );
-  const buyerVetRef = ref("buyer-vet", buyerVet);
-  const sellerVetRef = ref("seller-vet", sellerVet);
+  const buyerVetRef = ref(
+    "buyer-vet",
+    buyerVet as unknown as Record<string, unknown>,
+  );
+  const sellerVetRef = ref(
+    "seller-vet",
+    sellerVet as unknown as Record<string, unknown>,
+  );
   const listingPin = {
     listingId: listingArtifact.listingId,
     version: listingArtifact.listingVersion,
@@ -856,14 +912,34 @@ function fixture(
         {
           vetRecordRef: buyerVetRef,
           evaluatedParty: BUYER,
-          requirement: procurement ? sellerRequirement : buyerRequirement,
+          requirement: buyerVetRequirement,
           verifier: SELLER,
+          freshness: [],
+          dealSpecific: [
+            {
+              ref: buyerVerifyRef,
+              scheme: "did",
+              identifier: BUYER.slice("did:".length),
+              method: "self-signed",
+              requirement: buyerVetRequirement.required[0]!,
+            },
+          ],
         },
         {
           vetRecordRef: sellerVetRef,
           evaluatedParty: SELLER,
-          requirement: procurement ? buyerRequirement : sellerRequirement,
+          requirement: sellerVetRequirement,
           verifier: SELLER,
+          freshness: [],
+          dealSpecific: [
+            {
+              ref: sellerVerifyRef,
+              scheme: "did",
+              identifier: SELLER.slice("did:".length),
+              method: "self-signed",
+              requirement: sellerVetRequirement.required[0]!,
+            },
+          ],
         },
       ],
       settlementEvidence: [
@@ -917,8 +993,14 @@ function fixture(
       : []),
     [buyerVetRef.contentHash, { artifact: buyerVet as unknown as Record<string, unknown> }],
     [sellerVetRef.contentHash, { artifact: sellerVet as unknown as Record<string, unknown> }],
-    [buyerVerifyAttestationRef.contentHash, { artifact: buyerVerifyResult }],
-    [sellerVerifyAttestationRef.contentHash, { artifact: sellerVerifyResult }],
+    [
+      buyerVerifyAttestationRef.contentHash,
+      { artifact: buyerVerifyResult as unknown as Record<string, unknown> },
+    ],
+    [
+      sellerVerifyAttestationRef.contentHash,
+      { artifact: sellerVerifyResult as unknown as Record<string, unknown> },
+    ],
     [buyerAuthorityRef.contentHash, { artifact: buyerAuthority }],
     [sellerAuthorityRef.contentHash, { artifact: sellerAuthority }],
     [
@@ -1020,6 +1102,37 @@ function fixture(
       verify: async (message, signature, key) =>
         ed25519Verify(message, signature, publicKeyFromRaw(key)),
     },
+    compositeVerificationDeps: {
+      resolveRecipe: vi.fn(async (selector, registryVersion) =>
+        registryVersion === 4 &&
+        selector.scheme === "did" &&
+        selector.method === "self-signed" &&
+        selector.recipeVersion === 1
+          ? verificationRecipe
+          : null,
+      ),
+      isRecipeSignerAuthorized: (_recipe, signature) =>
+        signature.signer === SELLER,
+      isVerifyResultSignerAuthorized: (_result, signature) =>
+        signature.signer === SELLER,
+      resolvePublicKey: async (signature) =>
+        signature.signer === SELLER && signature.algorithm === "ed25519"
+          ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
+          : null,
+      verify: ({ signedBytes: payload, signature, publicKey }) =>
+        ed25519Verify(
+          payload,
+          Uint8Array.from(Buffer.from(signature.value, "base64url")),
+          publicKeyFromRaw(publicKey),
+        ),
+      verifyAuthorityAttestation: ({ expected, content }) =>
+        content.encoding === "canonical-json" &&
+        content.value.claim === `did:${expected.identifier}` &&
+        content.value.decision === "pass"
+          ? "valid" as const
+          : "invalid" as const,
+      verifyRequirementParameters: () => true,
+    },
     resolveDependency: vi.fn((dependency) => {
       const resolved = artifacts.get(dependency.anchorReceipt.contentHash);
       return resolved?.bytes
@@ -1104,6 +1217,30 @@ function bindConsumedAuthorizationToRepeatedPayment(
   });
 }
 
+function mutateResolvedArtifact(
+  f: ReturnType<typeof fixture>,
+  targetHash: string,
+  mutate: (artifact: Record<string, unknown>) => Record<string, unknown>,
+): void {
+  const resolve = f.provider.resolveDependency.bind(f.provider);
+  f.provider.resolveDependency = vi.fn(async (dependency, requirement) => {
+    const lookup = await resolve(dependency, requirement);
+    if (
+      dependency.anchorReceipt.contentHash !== targetHash ||
+      lookup.disposition !== "present" ||
+      lookup.artifact === undefined
+    ) {
+      return lookup;
+    }
+    return {
+      disposition: "present" as const,
+      artifact: mutate(
+        structuredClone(lookup.artifact as Record<string, unknown>),
+      ),
+    };
+  });
+}
+
 describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
   test("exports one transport-neutral signed scope and ingests only buyer-produced signatures", () => {
     const f = fixture();
@@ -1159,6 +1296,13 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     );
     expect(f.provider.verifyDependencyReceipt).toHaveBeenCalledTimes(12);
     expect(f.provider.resolveDependency).toHaveBeenCalledTimes(12);
+    expect(
+      f.provider.compositeVerificationDeps.resolveRecipe,
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(f.provider.compositeVerificationDeps.resolveRecipe).mock.calls
+        .map(([, registryVersion]) => registryVersion),
+    ).toEqual([4, 4]);
     expect(f.provider.submitSellerBundle).toHaveBeenCalledOnce();
     expect(f.provider.resolveBundleBinding).not.toHaveBeenCalled();
     expect(f.provider.publishBundleBinding).not.toHaveBeenCalled();
@@ -1549,9 +1693,125 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     });
 
     await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
-      /overallDecision does not match DACS-2 aggregation/,
+      /strict verification failed \(aggregation-mismatch\)/,
     );
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a cryptographically valid composite whose authenticated decision is not pass", async () => {
+    const f = fixture("pure", "storage", false, false, false, {
+      sellerVerifyDecision: "fail",
+      sellerVetDecision: "fail",
+    });
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /does not establish a pass decision/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("cryptographically verifies composite and VerifyResult signatures", async () => {
+    const badRecord = fixture();
+    const recordHash = badRecord.input.sessionArtifacts.vetRecords[0]!.contentHash;
+    mutateResolvedArtifact(badRecord, recordHash, (artifact) => ({
+      ...artifact,
+      signature: {
+        ...(artifact.signature as ComponentSignature),
+        value: Buffer.alloc(64, 99).toString("base64url"),
+      },
+    }));
+    await expect(
+      finalizeCompletedSellerBundleCore(badRecord.input, badRecord.provider),
+    ).rejects.toThrow(/strict verification failed \(record-signature\)/);
+    expect(badRecord.provider.submitSellerBundle).not.toHaveBeenCalled();
+
+    const badResult = fixture();
+    const resultHash = badResult.input.sessionArtifacts.vetRequirements[0]!
+      .dealSpecific[0]!.ref.contentHash;
+    mutateResolvedArtifact(badResult, resultHash, (artifact) => ({
+      ...artifact,
+      signature: {
+        ...(artifact.signature as ComponentSignature),
+        value: Buffer.alloc(64, 98).toString("base64url"),
+      },
+    }));
+    await expect(
+      finalizeCompletedSellerBundleCore(badResult.input, badResult.provider),
+    ).rejects.toThrow(/strict verification failed \(verify-result-signature\)/);
+    expect(badResult.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("binds the exact retained result classification and method-native authority", async () => {
+    const substituted = fixture();
+    const invocation = substituted.input.sessionArtifacts.vetRequirements[0]!;
+    invocation.freshness = invocation.dealSpecific;
+    invocation.dealSpecific = [];
+    await expect(
+      finalizeCompletedSellerBundleCore(substituted.input, substituted.provider),
+    ).rejects.toThrow(/strict verification failed \(freshness-substitution\)/);
+
+    const invalidAuthority = fixture();
+    invalidAuthority.provider.compositeVerificationDeps.verifyAuthorityAttestation =
+      vi.fn(() => "invalid" as const);
+    await expect(
+      finalizeCompletedSellerBundleCore(
+        invalidAuthority.input,
+        invalidAuthority.provider,
+      ),
+    ).rejects.toThrow(/strict verification failed \(authority-signature\)/);
+    expect(invalidAuthority.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("fails closed when strict composite verification dependencies are unavailable", async () => {
+    const f = fixture();
+    f.provider.compositeVerificationDeps = undefined as never;
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /strict CompositeVerificationRecord verifier is unavailable/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects hostile resolver response fields before snapshotting", async () => {
+    const f = fixture();
+    const targetHash = f.input.sessionArtifacts.vetRecords[0]!.contentHash;
+    const resolve = f.provider.resolveDependency.bind(f.provider);
+    f.provider.resolveDependency = vi.fn(async (dependency, requirement) => {
+      const lookup = await resolve(dependency, requirement);
+      if (
+        dependency.anchorReceipt.contentHash !== targetHash ||
+        lookup.disposition !== "present" ||
+        lookup.artifact === undefined
+      ) {
+        return lookup;
+      }
+      return {
+        disposition: "present" as const,
+        artifact: Object.create(lookup.artifact) as Record<string, unknown>,
+      };
+    });
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /resolved to a non-artifact value/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+
+    const hostile = fixture();
+    const hostileHash = hostile.input.sessionArtifacts.vetRecords[0]!.contentHash;
+    const ordinary = hostile.provider.resolveDependency.bind(hostile.provider);
+    const toString = vi.fn(() => "present");
+    hostile.provider.resolveDependency = vi.fn(async (dependency, requirement) => {
+      const lookup = await ordinary(dependency, requirement);
+      if (dependency.anchorReceipt.contentHash !== hostileHash) return lookup;
+      return {
+        disposition: { toString },
+        ...("artifact" in lookup ? { artifact: lookup.artifact } : {}),
+      } as never;
+    });
+    await expect(
+      finalizeCompletedSellerBundleCore(hostile.input, hostile.provider),
+    ).rejects.toThrow(/invalid disposition/);
+    expect(toString).not.toHaveBeenCalled();
   });
 
   test("rejects residual-pad-bit aliases during detached assembly and resumed validation", async () => {
