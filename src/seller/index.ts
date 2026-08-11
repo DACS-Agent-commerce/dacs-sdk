@@ -130,8 +130,16 @@ export {
 } from "../agent/fencedSessionStoreFs.js";
 export {
   finalizeCompletedSellerBundleCore,
+  prepareCompletedSellerBundleCounterSignatureRequest,
   type SellerBundleVerificationDisposition,
   type SellerBundleDependencyKind,
+  type CompletedSellerPhaseHandlerResult,
+  type CompletedSellerPhaseEntry,
+  type CompletedSellerSessionParty,
+  type AuditPendingSellerSessionRecord,
+  type CompletedSellerSessionArtifacts,
+  type CompletedSellerVetRequirementInvocation,
+  type SellerBundleDependencySource,
   type FinalizedSellerBundleDependency,
   type SellerBundleDependencyRequirement,
   type SellerBundleDependencyLookup,
@@ -139,7 +147,9 @@ export {
   type SellerBundleLookup,
   type SellerBundleBindingLookup,
   type SellerBundleBindingPublication,
+  type SellerPaymentPhaseIndexResolution,
   type SellerBundleFinalizationProvider,
   type FinalizeCompletedSellerBundleInput,
+  type CompletedSellerBundleCounterSignatureRequest,
   type FinalizedSellerBundle,
 } from "./bundleFinalization.js";

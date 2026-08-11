@@ -101,6 +101,22 @@ function sign(
   };
 }
 
+function residualPadBitAlias(value: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const decoded = Buffer.from(value, "base64url");
+  for (const replacement of alphabet) {
+    const candidate = `${value.slice(0, -1)}${replacement}`;
+    if (
+      candidate !== value &&
+      Buffer.from(candidate, "base64url").equals(decoded) &&
+      Buffer.from(candidate, "base64url").toString("base64url") !== candidate
+    ) {
+      return candidate;
+    }
+  }
+  throw new Error("fixture signature has no residual-pad-bit alias");
+}
+
 describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
   test("a FULLY SIGNED copy at its own role address is valid", async () => {
     const copy = sign(body(), [BUYER, SELLER], "buyer");
@@ -267,6 +283,19 @@ describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
       const r = await verifyBundleCopy({ ...valid, signatures }, "buyer", deps);
       expect(r.valid, JSON.stringify(signatures)).toBe(false);
     }
+  });
+
+  test("rejects a residual-pad-bit Base64URL alias before cryptographic verification", async () => {
+    const valid = sign(body(), [BUYER, SELLER], "buyer");
+    const signatures = structuredClone(valid["signatures"]) as Array<Record<string, unknown>>;
+    const canonical = signatures[0]!["value"] as string;
+    const alias = residualPadBitAlias(canonical);
+    expect(Buffer.from(alias, "base64url")).toEqual(Buffer.from(canonical, "base64url"));
+    signatures[0]!["value"] = alias;
+
+    const result = await verifyBundleCopy({ ...valid, signatures }, "buyer", deps);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/canonical unpadded base64url/);
   });
 });
 
