@@ -7,6 +7,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -17,11 +18,19 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
+  SELLER_RECEIPT_STORE_VERSION as ROOT_SELLER_RECEIPT_STORE_VERSION,
+  createFsSellerReceiptStore as createRootFsSellerReceiptStore,
+} from "../../src/index.js";
+import {
   type SellerFulfilmentHandoff,
   type SellerPaymentAuthorization,
   type SellerPaymentEvidenceInput,
   type SellerReceiptClaim,
 } from "../../src/seller/paymentIntake.js";
+import {
+  SELLER_RECEIPT_STORE_VERSION as SELLER_SURFACE_RECEIPT_STORE_VERSION,
+  createFsSellerReceiptStore as createSellerSurfaceFsSellerReceiptStore,
+} from "../../src/seller/index.js";
 import {
   SELLER_RECEIPT_STORE_VERSION,
   createFsSellerReceiptStore,
@@ -194,6 +203,70 @@ async function childExit(child: ChildProcess): Promise<void> {
 }
 
 describe("filesystem seller receipt store", () => {
+  test("is exported from both public seller surfaces", () => {
+    expect(createRootFsSellerReceiptStore).toBe(createFsSellerReceiptStore);
+    expect(createSellerSurfaceFsSellerReceiptStore).toBe(createFsSellerReceiptStore);
+    expect(ROOT_SELLER_RECEIPT_STORE_VERSION).toBe(SELLER_RECEIPT_STORE_VERSION);
+    expect(SELLER_SURFACE_RECEIPT_STORE_VERSION).toBe(SELLER_RECEIPT_STORE_VERSION);
+  });
+
+  test("rejects proxy options without invoking traps and rejects a symlinked root", async () => {
+    const dir = await tempStoreDir();
+    let trapCalls = 0;
+    const options = new Proxy({ dir }, {
+      getPrototypeOf() {
+        trapCalls += 1;
+        return Object.prototype;
+      },
+      ownKeys(target) {
+        trapCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor(target, key) {
+        trapCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    await expect(createFsSellerReceiptStore(options)).rejects.toThrow(/plain object/);
+    expect(trapCalls).toBe(0);
+
+    let accessorReads = 0;
+    const accessorOptions: Record<string, unknown> = {};
+    Object.defineProperty(accessorOptions, "dir", {
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return dir;
+      },
+    });
+    await expect(createFsSellerReceiptStore(
+      accessorOptions as unknown as { dir: string },
+    )).rejects.toThrow(/data property/);
+    expect(accessorReads).toBe(0);
+
+    const container = await tempStoreDir();
+    const linkedRoot = join(container, "linked-root");
+    await symlink(dir, linkedRoot);
+    await expect(createFsSellerReceiptStore({ dir: linkedRoot })).rejects.toThrow(
+      /safe directory/,
+    );
+  });
+
+  test("never imports foreign bearer authority through a symlinked state file", async () => {
+    const foreignDir = await tempStoreDir();
+    const foreignStore = await createFsSellerReceiptStore({ dir: foreignDir });
+    const claimed = await foreignStore.claim(receiptClaim());
+    if (claimed.status !== "claimed") throw new Error("fixture");
+
+    const localDir = await tempStoreDir();
+    const localStore = await createFsSellerReceiptStore({ dir: localDir });
+    await symlink(join(foreignDir, STATE_FILE), join(localDir, STATE_FILE));
+    await expect(localStore.inspectPermit(claimed.permitId)).rejects.toThrow(/unsafe/);
+    await expect(localStore.claim(receiptClaim())).rejects.toThrow(/unsafe/);
+    expect(await readFile(join(localDir, STATE_FILE), "utf8"))
+      .toBe(await readFile(join(foreignDir, STATE_FILE), "utf8"));
+  });
+
   test("cold restart retains a pending permit and the exact consumed handoff", async () => {
     const dir = await tempStoreDir();
     const claim = receiptClaim();
@@ -311,6 +384,45 @@ describe("filesystem seller receipt store", () => {
       status: "already-consumed",
       permitId: claimed.permitId,
       claim,
+    });
+  });
+
+  test("persists an earlier SB-2 winner without replacing an already-consumed authorization", async () => {
+    const dir = await tempStoreDir();
+    const store = await createFsSellerReceiptStore({ dir });
+    const consumedClaim = receiptClaim({ jobId: "job-consumed", observedAt: 6_000 });
+    const claimed = await store.claim(consumedClaim);
+    if (claimed.status !== "claimed") throw new Error("fixture");
+    const retainedHandoff = handoff(consumedClaim);
+    await expect(store.consumePermit(claimed.permitId, retainedHandoff)).resolves.toMatchObject({
+      status: "consumed",
+      claim: { jobId: consumedClaim.jobId },
+    });
+
+    const earlierWinner = receiptClaim({ jobId: "job-earlier", observedAt: 4_000 });
+    await expect(store.claim(earlierWinner)).resolves.toEqual({
+      status: "conflict",
+      reason: "winner-already-consumed",
+      existing: earlierWinner,
+      consumed: consumedClaim,
+    });
+
+    const restarted = await createFsSellerReceiptStore({ dir });
+    await expect(restarted.claim(earlierWinner)).resolves.toEqual({
+      status: "conflict",
+      reason: "winner-already-consumed",
+      existing: earlierWinner,
+      consumed: consumedClaim,
+    });
+    await expect(restarted.claim(consumedClaim)).resolves.toEqual({
+      status: "already-consumed",
+      permitId: claimed.permitId,
+      claim: consumedClaim,
+    });
+    await expect(restarted.inspectPermit(claimed.permitId)).resolves.toEqual({
+      status: "already-consumed",
+      claim: consumedClaim,
+      handoff: retainedHandoff,
     });
   });
 
@@ -445,7 +557,27 @@ describe("filesystem seller receipt store", () => {
     );
     expect(await readFile(statePath, "utf8")).toBe("{not-json");
 
-    const newer = JSON.parse(valid) as Record<string, unknown>;
+    const parsedValid = JSON.parse(valid) as Record<string, unknown>;
+    const records = JSON.stringify(parsedValid.records);
+    const permits = JSON.stringify(parsedValid.permits);
+    const noncanonicalStates = [
+      `{"storeVersion":2,"storeVersion":1,"records":${records},"permits":${permits}}`,
+      `{"storeVersion":1,"records":${records},"records":{},"permits":{}}`,
+      ` ${valid}`,
+    ];
+    for (const noncanonical of noncanonicalStates) {
+      await writeFile(statePath, noncanonical, { mode: 0o600 });
+      const noncanonicalStore = await createFsSellerReceiptStore({ dir });
+      await expect(noncanonicalStore.inspectPermit(claimed.permitId)).rejects.toThrow(
+        "filesystem seller receipt store state is corrupt",
+      );
+      await expect(noncanonicalStore.claim(claim)).rejects.toThrow(
+        "filesystem seller receipt store state is corrupt",
+      );
+      expect(await readFile(statePath, "utf8")).toBe(noncanonical);
+    }
+
+    const newer = structuredClone(parsedValid);
     newer.storeVersion = SELLER_RECEIPT_STORE_VERSION + 1;
     await writeFile(statePath, JSON.stringify(newer), { mode: 0o600 });
     const newerStore = await createFsSellerReceiptStore({ dir });
@@ -455,6 +587,13 @@ describe("filesystem seller receipt store", () => {
     expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({
       storeVersion: 2,
     });
+
+    const nonFileDir = await tempStoreDir();
+    const nonFileStore = await createFsSellerReceiptStore({ dir: nonFileDir });
+    await mkdir(join(nonFileDir, STATE_FILE), { mode: 0o700 });
+    await expect(nonFileStore.inspectPermit(claimed.permitId)).rejects.toThrow(
+      "filesystem seller receipt store state is corrupt",
+    );
   });
 
   test("uses restrictive permissions and emits no bearer capability to logs", async () => {

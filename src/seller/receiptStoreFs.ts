@@ -1,7 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import {
   chmod,
   link,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -12,6 +14,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
@@ -75,7 +78,8 @@ interface LockOwner {
 }
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  if (typeof value !== "object" || value === null || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
@@ -316,7 +320,17 @@ export async function createFsSellerReceiptStore(
   const lockPath = join(root, LOCK_DIR);
   const reclaimGatePath = join(root, RECLAIM_GATE);
 
-  await mkdir(root, { recursive: true, mode: DIR_MODE });
+  let rootMetadata;
+  try {
+    rootMetadata = await lstat(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await mkdir(root, { recursive: true, mode: DIR_MODE });
+    rootMetadata = await lstat(root);
+  }
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+    throw new DacsError("filesystem seller receipt store path is not a safe directory");
+  }
   await chmod(root, DIR_MODE);
 
   async function syncRoot(): Promise<void> {
@@ -350,11 +364,23 @@ export async function createFsSellerReceiptStore(
 
   async function readState(): Promise<FsSellerReceiptState> {
     let text: string;
+    let handle;
     try {
-      text = await readFile(statePath, "utf8");
+      handle = await open(
+        statePath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      const metadata = await handle.stat();
+      if (!metadata.isFile()) corruptState();
+      text = await handle.readFile("utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyState();
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+        throw new DacsError("filesystem seller receipt store state path is unsafe");
+      }
       throw error;
+    } finally {
+      await handle?.close();
     }
     let parsed: unknown;
     try {
@@ -362,6 +388,10 @@ export async function createFsSellerReceiptStore(
     } catch {
       return corruptState();
     }
+    // This implementation writes one exact JSON representation. Duplicate
+    // members or alternate whitespace did not come from its atomic writer and
+    // must not be allowed to erase a retained permit after JSON.parse collapse.
+    if (JSON.stringify(parsed) !== text) corruptState();
     return captureState(parsed);
   }
 
