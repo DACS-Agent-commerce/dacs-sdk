@@ -592,6 +592,32 @@ describe("generation-fenced FencedSessionStoreV2 v2", () => {
       phase: "terminal:seller:unknown",
     })).rejects.toThrow(/malformed or unrecognized reserved terminal/i);
 
+    await s.create({ jobId: "failed-unbound", phase: "seller:failed", now: 0 });
+    expect(await s.bindHash({
+      hash: "a".repeat(64),
+      jobId: "failed-unbound",
+      kind: "agreement",
+    })).toEqual({ ok: false, boundTo: "failed-unbound" });
+    const failedUnbound = await s.load("failed-unbound");
+    expect(failedUnbound.status === "ok" && failedUnbound.record.agreementHash).toBeUndefined();
+
+    await s.create({
+      jobId: "failed-prebound",
+      agreementHash: "b".repeat(64),
+      phase: "seller:failed",
+      now: 0,
+    });
+    expect(await s.bindHash({
+      hash: "b".repeat(64),
+      jobId: "failed-prebound",
+      kind: "agreement",
+    })).toEqual({ ok: true, boundTo: "failed-prebound" });
+    expect(await s.bindHash({
+      hash: "c".repeat(64),
+      jobId: "failed-prebound",
+      kind: "agreement",
+    })).toEqual({ ok: false, boundTo: "failed-prebound" });
+
     await s.create({ jobId: "failed-terminal", phase: "seller:failed", now: 0 });
     expect(await s.acquireLease({
       jobId: "failed-terminal",

@@ -238,6 +238,32 @@ describe("generation-fenced filesystem FencedSessionStoreV2 v2", () => {
   });
 
   test("persists and atomically seals the role-local terminal FAB lifecycle", async () => {
+    await store.create({ jobId: "terminal-fs-unbound", phase: "seller:failed", now: 0 });
+    expect(await store.bindHash({
+      hash: "a".repeat(64),
+      jobId: "terminal-fs-unbound",
+      kind: "agreement",
+    })).toEqual({ ok: false, boundTo: "terminal-fs-unbound" });
+    const failedUnbound = await store.load("terminal-fs-unbound");
+    expect(failedUnbound.status === "ok" && failedUnbound.record.agreementHash).toBeUndefined();
+
+    await store.create({
+      jobId: "terminal-fs-prebound",
+      agreementHash: "b".repeat(64),
+      phase: "seller:failed",
+      now: 0,
+    });
+    expect(await store.bindHash({
+      hash: "b".repeat(64),
+      jobId: "terminal-fs-prebound",
+      kind: "agreement",
+    })).toEqual({ ok: true, boundTo: "terminal-fs-prebound" });
+    expect(await store.bindHash({
+      hash: "c".repeat(64),
+      jobId: "terminal-fs-prebound",
+      kind: "agreement",
+    })).toEqual({ ok: false, boundTo: "terminal-fs-prebound" });
+
     await store.create({ jobId: "terminal-fs", phase: "seller:failed", now: 0 });
     expect(await store.acquireLease({
       jobId: "terminal-fs",

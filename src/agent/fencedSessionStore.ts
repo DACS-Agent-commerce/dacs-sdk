@@ -1755,7 +1755,11 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
     async bindHash(rawInput) {
       const { hash, jobId, kind } = snapshotFencedBindHashInput(rawInput);
       const current = sessions.get(jobId);
-      if (kind === "agreement" && current && sessionPhaseIsTerminal(current.phase)) {
+      if (
+        kind === "agreement" &&
+        current &&
+        (current.phase === "seller:failed" || sessionPhaseIsTerminal(current.phase))
+      ) {
         return current.agreementHash === hash
           ? { ok: true, boundTo: jobId }
           : { ok: false, boundTo: jobId };
