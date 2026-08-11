@@ -26,10 +26,11 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
-import type {
-  ListingRailAuthorityInput,
-  ListingValidationResult,
-  PayloadVerificationCapabilityResolver,
+import {
+  validateListingArtifact,
+  type ListingValidationDeps,
+  type ListingRailAuthorityInput,
+  type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
 import { publishListingCore } from "./publishListingCore.js";
 import {
@@ -85,12 +86,11 @@ export interface RunSessionOptions {
    */
   jobId?: string;
   /**
-   * Full DACS-1 §6.3.4 reader validation. Required at runtime for normative
-   * Listings; only a `verified` disposition may start a new session (LR-3).
+   * Low-level DACS-1 reader dependencies. The SDK always executes the
+   * normative `validateListingArtifact` algorithm; callers cannot substitute a
+   * fabricated `verified` result. Overrides the agent-wide dependencies.
    */
-  validateListing?: (
-    raw: Record<string, unknown>,
-  ) => Promise<ListingValidationResult> | ListingValidationResult;
+  listingValidationDeps?: ListingValidationDeps;
 }
 
 export interface AgentConfig {
@@ -107,12 +107,11 @@ export interface AgentConfig {
   /** DACS-4 DPA-1 local producer support for attested-payload Listings. */
   resolvePayloadVerificationCapability?: PayloadVerificationCapabilityResolver;
   /**
-   * DACS-1 §6.3.4 full reader validation shared by normative discovery and,
-   * unless overridden per call, new-session admission.
+   * Low-level DACS-1 reader dependencies shared by normative discovery and,
+   * unless overridden per call, new-session admission. The SDK owns the
+   * ordered validation algorithm and accepts only its exact result.
    */
-  validateListing?: (
-    raw: Record<string, unknown>,
-  ) => Promise<ListingValidationResult> | ListingValidationResult;
+  listingValidationDeps?: ListingValidationDeps;
 }
 
 export interface PublishResult {
@@ -201,6 +200,10 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
  */
 export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
   const sign: Signer = (bytes) => adapter.sign(bytes);
+  const listingValidator = (deps: ListingValidationDeps | undefined) =>
+    deps
+      ? (raw: Record<string, unknown>) => validateListingArtifact(raw, deps)
+      : undefined;
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
@@ -304,7 +307,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
         verify: ed25519RawVerify,
         resolvePublicKey: (claim) => publicKeyFromDid(claim),
-        validateListing: config.validateListing,
+        validateListing: listingValidator(config.listingValidationDeps),
       });
     },
 
@@ -357,7 +360,9 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
                 : verified.listing.agentId;
             return advertisedSeller === sellerClaim;
           },
-          validateListing: opts.validateListing ?? config.validateListing,
+          validateListing: listingValidator(
+            opts.listingValidationDeps ?? config.listingValidationDeps,
+          ),
           settle: opts.settle,
           vet: opts.vet,
           newJobId: () => randomUUID(),
