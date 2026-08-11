@@ -320,6 +320,34 @@ describe("generation-fenced FencedSessionStoreV2 v2", () => {
     expect(transition).toMatchObject({ ok: false, reason: "phase-regression" });
   });
 
+  test.each([
+    "buyer:bundle-review:1",
+    "buyer:counter-signature-pending",
+    "buyer:awaiting-seller-finalization",
+    "buyer:bundle-binding-publication",
+    "buyer:unknown",
+  ])("rejects malformed reserved buyer lifecycle phase %s", async (phase) => {
+    const s = fresh();
+    await expect(s.create({ jobId: "reserved-buyer", phase })).rejects.toThrow(
+      /reserved buyer lifecycle/,
+    );
+    await s.create({ jobId: "buyer-job", phase: "settled", now: 0 });
+    const lease = await s.acquireLease({
+      jobId: "buyer-job",
+      owner: "buyer-worker",
+      ttlMs: 100,
+      now: 0,
+    });
+    if (!lease.ok) throw new Error("reserved buyer phase test lease missing");
+    expect(await s.transition({
+      jobId: "buyer-job",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      phase,
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+  });
+
   test("expired worker stays fenced after takeover and terminal completion", async () => {
     const s = fresh();
     await s.create({ jobId: "j1", now: 0 });
@@ -533,6 +561,161 @@ describe("generation-fenced FencedSessionStoreV2 v2", () => {
       ttlMs: 100,
       now: 11,
     })).toMatchObject({ ok: false, reason: "terminal-state" });
+  });
+
+  test("buyer bundle finalization is unscoped, monotonic, and terminal", async () => {
+    const s = fresh();
+    await expect(s.create({
+      jobId: "created-in-buyer-bundle",
+      phase: "buyer:bundle-review",
+    })).rejects.toThrow(/cannot enter buyer bundle finalization/);
+    await expect(s.create({
+      jobId: "created-buyer-terminal",
+      phase: "buyer:finalised",
+    })).rejects.toThrow(/cannot enter buyer bundle finalization/);
+
+    await s.create({ jobId: "buyer-finalization", phase: "settled", now: 0 });
+    const lease = await s.acquireLease({
+      jobId: "buyer-finalization",
+      owner: "buyer-worker",
+      ttlMs: 100,
+      now: 0,
+    });
+    if (!lease.ok) throw new Error("buyer bundle lease missing");
+
+    const review = await s.claimCheckpoint({
+      jobId: "buyer-finalization",
+      key: "buyer:bundle-review",
+      data: { requestHash: "1".repeat(64) },
+      phase: "buyer:bundle-review",
+      leaseToken: lease.lease,
+      now: 1,
+    });
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+
+    const signing = await s.transition({
+      jobId: "buyer-finalization",
+      expectedRevision: review.record.revision,
+      leaseToken: lease.lease,
+      phase: "buyer:counter-signing",
+      now: 2,
+    });
+    expect(signing.ok).toBe(true);
+    if (!signing.ok) return;
+
+    const publishing = await s.transition({
+      jobId: "buyer-finalization",
+      expectedRevision: signing.record.revision,
+      leaseToken: lease.lease,
+      phase: "buyer:counter-signature-publication-pending",
+      now: 3,
+    });
+    expect(publishing.ok).toBe(true);
+    if (!publishing.ok) return;
+
+    const waiting = await s.transition({
+      jobId: "buyer-finalization",
+      expectedRevision: publishing.record.revision,
+      leaseToken: lease.lease,
+      phase: "buyer:awaiting-seller-finalisation",
+      now: 4,
+    });
+    expect(waiting.ok).toBe(true);
+    if (!waiting.ok) return;
+
+    expect(await s.transition({
+      jobId: "buyer-finalization",
+      expectedRevision: waiting.record.revision,
+      leaseToken: lease.lease,
+      phase: "buyer:counter-signing",
+      now: 5,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await s.transition({
+      jobId: "buyer-finalization",
+      expectedRevision: waiting.record.revision,
+      leaseToken: lease.lease,
+      phase: "seller:bundle-signing",
+      now: 5,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+
+    const anchoring = await s.transition({
+      jobId: "buyer-finalization",
+      expectedRevision: waiting.record.revision,
+      leaseToken: lease.lease,
+      phase: "buyer:bundle-anchor-pending",
+      now: 6,
+    });
+    expect(anchoring.ok).toBe(true);
+    if (!anchoring.ok) return;
+
+    const finalised = await s.transition({
+      jobId: "buyer-finalization",
+      expectedRevision: anchoring.record.revision,
+      leaseToken: lease.lease,
+      phase: "buyer:finalised",
+      receipt: { kind: "bundle", ref: "buyer-bundle-native-address" },
+      lease: null,
+      now: 7,
+    });
+    expect(finalised.ok && finalised.record.phase).toBe("buyer:finalised");
+    if (!finalised.ok) return;
+
+    expect(await s.transition({
+      jobId: "buyer-finalization",
+      expectedRevision: finalised.record.revision,
+      checkpoint: { key: "late-buyer-write", stage: "intent" },
+      now: 8,
+    })).toMatchObject({ ok: false, reason: "terminal-state" });
+    expect(await s.acquireLease({
+      jobId: "buyer-finalization",
+      owner: "late-buyer-worker",
+      ttlMs: 100,
+      now: 8,
+    })).toMatchObject({ ok: false, reason: "terminal-state" });
+  });
+
+  test("buyer bundle lifecycle rejects scoped leases and skipped entry", async () => {
+    const s = fresh();
+    await s.create({ jobId: "buyer-scoped", phase: "settled", now: 0 });
+    const scoped = await s.acquireLease({
+      jobId: "buyer-scoped",
+      owner: "seller-scoped-worker",
+      ttlMs: 100,
+      sellerPhaseIndex: 1,
+      now: 0,
+    });
+    if (!scoped.ok) throw new Error("scoped lease missing");
+    expect(await s.transition({
+      jobId: "buyer-scoped",
+      expectedRevision: scoped.record.revision,
+      leaseToken: scoped.lease,
+      phase: "buyer:bundle-review",
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+
+    const released = await s.transition({
+      jobId: "buyer-scoped",
+      expectedRevision: scoped.record.revision,
+      leaseToken: scoped.lease,
+      lease: null,
+      now: 1,
+    });
+    if (!released.ok) throw new Error("scoped lease release failed");
+    const unscoped = await s.acquireLease({
+      jobId: "buyer-scoped",
+      owner: "buyer-worker",
+      ttlMs: 100,
+      now: 2,
+    });
+    if (!unscoped.ok) throw new Error("buyer unscoped lease missing");
+    expect(await s.transition({
+      jobId: "buyer-scoped",
+      expectedRevision: unscoped.record.revision,
+      leaseToken: unscoped.lease,
+      phase: "buyer:awaiting-seller-finalisation",
+      now: 3,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
   });
 
   test("bundle lifecycle entry rejects missing delivery history, scoped leases, and skipped entry", async () => {
