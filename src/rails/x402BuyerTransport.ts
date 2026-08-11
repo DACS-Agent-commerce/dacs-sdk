@@ -67,6 +67,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasOnlyUnicodeScalars(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function captureAuthority(value: unknown): Readonly<PreparedAuthority> | null {
   const keys = [
     "jobId",
@@ -98,8 +112,12 @@ function captureAuthority(value: unknown): Readonly<PreparedAuthority> | null {
   const data = Object.fromEntries(
     keys.map((key) => [key, descriptors[key]!.value]),
   ) as Record<string, unknown>;
+  const chainMatch = typeof data.network === "string"
+    ? /^eip155:([1-9][0-9]*)$/.exec(data.network)
+    : null;
   if (typeof data.jobId !== "string" || data.jobId.length === 0 ||
       /[\u0000-\u001f\u007f]/.test(data.jobId) ||
+      !hasOnlyUnicodeScalars(data.jobId) ||
       !Number.isSafeInteger(data.phaseIndex) || Number(data.phaseIndex) < 0 ||
       Object.is(data.phaseIndex, -0) ||
       typeof data.railId !== "string" || !/^[\x20-\x7e]+$/.test(data.railId) ||
@@ -107,7 +125,7 @@ function captureAuthority(value: unknown): Readonly<PreparedAuthority> | null {
       ![data.railDescriptorHash, data.agreementHash, data.termsHash,
         data.sessionBindingHash].every((item) =>
         typeof item === "string" && /^[0-9a-f]{64}$/.test(item)) ||
-      typeof data.network !== "string" || !/^eip155:[1-9][0-9]*$/.test(data.network) ||
+      !chainMatch || !Number.isSafeInteger(Number(chainMatch[1])) ||
       ![data.payer, data.payee, data.asset].every((item) =>
         typeof item === "string" && /^0x[0-9a-fA-F]{40}$/.test(item)) ||
       typeof data.amount !== "string" || !/^[1-9][0-9]*$/.test(data.amount) ||
@@ -153,14 +171,19 @@ function chosenRequirements(
     return null;
   }
   if (!isRecord(snapshot) || snapshot.x402Version !== 2 ||
-      !Array.isArray(snapshot.accepts)) return null;
+      !Array.isArray(snapshot.accepts) || !isRecord(snapshot.resource) ||
+      snapshot.resource.url !== authority.httpResource) return null;
   for (const candidate of snapshot.accepts) {
     const requirements = asRequirements(candidate);
     if (!requirements || requirements.scheme !== "exact" ||
         requirements.network !== authority.network ||
         requirements.amount !== authority.amount ||
         !sameAddress(requirements.asset, authority.asset) ||
-        !sameAddress(requirements.payTo, authority.payee)) continue;
+        !sameAddress(requirements.payTo, authority.payee) ||
+        typeof requirements.extra.name !== "string" ||
+        requirements.extra.name.length === 0 ||
+        typeof requirements.extra.version !== "string" ||
+        requirements.extra.version.length === 0) continue;
     const scoped = structuredClone(snapshot);
     scoped.accepts = [structuredClone(requirements)];
     return { paymentRequired: scoped, requirements };

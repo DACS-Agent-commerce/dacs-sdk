@@ -134,21 +134,36 @@ describe("prepareX402BuyerSettlement", () => {
 
   test("rejects substituted challenge terms before invoking the signer", async () => {
     const counters = { signs: 0 };
-    const result = await prepareX402BuyerSettlement(
-      { authority: authority() },
+    const challenges = [
       {
-        client: client(counters),
-        fetchImpl: async () => new Response(JSON.stringify({
-          x402Version: 2,
-          resource: { url: RESOURCE },
-          accepts: [requirements({ payTo: `0x${"99".repeat(20)}` })],
-        }), { status: 402 }),
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ payTo: `0x${"99".repeat(20)}` })],
       },
-    );
-    expect(result).toEqual({
-      disposition: "rejected",
-      reason: "x402-payment-requirements-mismatch",
-    });
+      {
+        x402Version: 2,
+        resource: { url: "https://seller.example/deliver/substituted" },
+        accepts: [requirements()],
+      },
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ extra: { name: "USD Coin" } })],
+      },
+    ];
+    for (const challenge of challenges) {
+      const result = await prepareX402BuyerSettlement(
+        { authority: authority() },
+        {
+          client: client(counters),
+          fetchImpl: async () => new Response(JSON.stringify(challenge), { status: 402 }),
+        },
+      );
+      expect(result).toEqual({
+        disposition: "rejected",
+        reason: "x402-payment-requirements-mismatch",
+      });
+    }
     expect(counters.signs).toBe(0);
   });
 
