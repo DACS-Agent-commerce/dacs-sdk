@@ -362,6 +362,44 @@ describe("ordered ListingValidationDisposition", () => {
     expect(controlReads).toBe(0);
   });
 
+  it("rejects an unknown capability operation without invoking the resolver", async () => {
+    let calls = 0;
+    await expect(
+      resolveListingPayloadVerificationCapability(
+        fixture(),
+        "future" as never,
+        () => {
+          calls += 1;
+          return { disposition: "supported" };
+        },
+      ),
+    ).resolves.toEqual({
+      disposition: "error",
+      reason: "payload-verification-capability-operation-invalid",
+    });
+    expect(calls).toBe(0);
+  });
+
+  it("keys DPA-1 applicability to the signed delivery phase", async () => {
+    const listing = fixture();
+    const deliveryIndex = listing.pipeline.findIndex((phase) =>
+      phase.kind.startsWith("deliver-"),
+    );
+    listing.pipeline[deliveryIndex] = { kind: "deliver-storage-program" };
+    let calls = 0;
+
+    await expect(
+      resolveListingPayloadVerificationCapability(listing, "verify", () => {
+        calls += 1;
+        return { disposition: "supported" };
+      }),
+    ).resolves.toEqual({
+      disposition: "not-applicable",
+      reason: "not-applicable",
+    });
+    expect(calls).toBe(0);
+  });
+
   it.each([
     ["indeterminate", "notary-temporarily-unavailable"],
     ["error", "method-dependency-failed"],
