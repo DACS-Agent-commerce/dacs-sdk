@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
-import type { AnchorReceipt } from "../../src/artifacts/index.js";
+import type {
+  AnchorReceipt,
+  BundlePartyRole,
+  IdentityBundle,
+} from "../../src/artifacts/index.js";
 import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -23,6 +27,7 @@ import {
   type SellerFulfilmentDeps,
   type SellerFulfilmentListing,
   type SellerFulfilmentRequest,
+  type SellerFulfilmentResult,
   type SellerFulfilmentSessionRecord,
   type SellerPayloadAttestationRecord,
   type SignedSellerDeliveryEvidence,
@@ -38,6 +43,18 @@ import {
   type SellerFinalSessionReceiptResult,
   type SellerFulfilmentDurability,
 } from "../../src/agent/runDurableFulfilmentCore.js";
+import {
+  advanceTerminalBundleDurable,
+  type DurableTerminalBundleProvider,
+  type TerminalBundleAnchorPublication,
+  type TerminalBundleTransport,
+} from "../../src/agent/durableTerminalBundleFinalization.js";
+import {
+  createTerminalBundleAuthority,
+  createTerminalBundlePlan,
+  createTerminalBundleSignatureContribution,
+  terminalBundleSignedBytes,
+} from "../../src/agent/terminalBundleFinalization.js";
 import { createInMemoryFencedSessionStore, type FencedSessionStoreV2 } from "../../src/agent/fencedSessionStore.js";
 import { createFsFencedSessionStore } from "../../src/agent/fencedSessionStoreFs.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
@@ -87,6 +104,205 @@ function anchorReceipt(
       : {}),
     evidence: { kind: "test-proof", value: `proof:${hash}` },
   };
+}
+
+const TERMINAL_ROLES = ["buyer", "seller", "orchestrator"] as const;
+const TERMINAL_CLAIMS: Record<BundlePartyRole, string> = {
+  buyer: BUYER,
+  seller: SELLER,
+  orchestrator: ORCHESTRATOR,
+};
+const TERMINAL_SEED_BYTE: Record<BundlePartyRole, number> = {
+  buyer: 31,
+  seller: 17,
+  orchestrator: 33,
+};
+
+function terminalIdentity(role: BundlePartyRole): IdentityBundle {
+  return {
+    bundleVersion: "1",
+    presentedBy: TERMINAL_CLAIMS[role],
+    presentedAt: NOW - 10,
+    sessionNonce: `failed-replay-${role}`,
+    claims: [{ ref: TERMINAL_CLAIMS[role], metadata: { role } }],
+    presentation: {
+      kind: "session-key",
+      key: `failed-replay-key-${role}`,
+      signature: `failed-replay-presentation-${role}`,
+    },
+  };
+}
+
+async function publishFailedTerminalBundle(
+  store: FencedSessionStoreV2,
+  result: Extract<SellerFulfilmentResult, { decision: "failed" }>,
+  options: { sourcePhaseIndex?: number } = {},
+): Promise<void> {
+  const loaded = await store.load("job-17");
+  if (loaded.status !== "ok") throw new Error("failed terminal source record missing");
+  const source = {
+    ...result.bundleContribution.phaseSummary,
+    index: options.sourcePhaseIndex ?? result.bundleContribution.phaseSummary.index,
+  };
+  const authority = createTerminalBundleAuthority({
+    jobId: "job-17",
+    terminalClass: result.errorClass === "substrate" ? "failed-substrate" : "failure",
+    faultedParty: result.errorClass === "substrate" ? "none" : "seller",
+    terminalPhase: {
+      index: source.index,
+      kind: source.kind,
+      state: "failed",
+      ...(source.errorClass ? { errorClass: source.errorClass } : {}),
+    },
+    sessionRecordHash: sha256Hex(canonicalize(loaded.record)),
+    terminalEvidenceHash: result.evidenceHash,
+    dependencySetHash: "3".repeat(64),
+    listingRef: result.consumedPaymentAuthorization.listingRef,
+    agreementRef: {
+      anchor: {
+        kind: "storage-program",
+        locator: result.consumedPaymentAuthorization.commitment.ref,
+      },
+      contentHash: result.consumedPaymentAuthorization.commitment.contentHash,
+    },
+    parties: TERMINAL_ROLES.map((role) => ({
+      role,
+      identityBundle: terminalIdentity(role),
+    })),
+    phaseSummary: [source],
+    vetRecords: [],
+    settlementEvidence: [result.bundleContribution.settlementEvidence],
+    recipeRegistryVersion: 1,
+    railRegistryVersion: result.consumedPaymentAuthorization.railRegistryVersion,
+    finalisedAt: result.evidence.observedAt,
+  });
+  const signingMode = { kind: "co-signed" } as const;
+  const plan = createTerminalBundlePlan(authority, signingMode);
+  const seed = (role: BundlePartyRole) =>
+    new Uint8Array(32).fill(TERMINAL_SEED_BYTE[role]);
+  const contributions = new Map<
+    BundlePartyRole,
+    ReturnType<typeof createTerminalBundleSignatureContribution>
+  >();
+  for (const role of ["buyer", "orchestrator"] as const) {
+    contributions.set(role, createTerminalBundleSignatureContribution(
+      plan,
+      role,
+      plan.copies.map((copy) => ({
+        copyRole: copy.role,
+        value: Buffer.from(ed25519Sign(
+          terminalBundleSignedBytes(copy),
+          privateKeyFromSeed(seed(role)),
+        )).toString("base64url"),
+      })),
+    ));
+  }
+
+  const transport: TerminalBundleTransport = {
+    resolveProposal: () => ({ disposition: "present", value: plan }),
+    publishProposal: () => {
+      throw new Error("the authenticated terminal proposal is already present");
+    },
+    resolveContribution: ({ signerRole }) => {
+      const contribution = contributions.get(signerRole);
+      return contribution
+        ? { disposition: "present", value: contribution }
+        : { disposition: "authoritatively-absent", reason: "local row not published" };
+    },
+    publishContribution: ({ contribution }) => {
+      contributions.set(contribution.signerRole, contribution);
+    },
+  };
+  let publication: TerminalBundleAnchorPublication | undefined;
+  let binding: Parameters<DurableTerminalBundleProvider["publishOwnBundleBinding"]>[0] |
+    undefined;
+  const provider: DurableTerminalBundleProvider = {
+    resolveOwnBundle: () => publication
+      ? { disposition: "present", value: publication }
+      : { disposition: "authoritatively-absent", reason: "bundle not published" },
+    submitOwnBundle: ({ logicalAddress, bundle }) => {
+      const bundleContentHash = plan.copies.find(
+        (copy) => copy.role === "seller",
+      )!.bundleContentHash;
+      const nativeAddress = "native:failed-replay:seller";
+      const anchorTx = "tx:failed-replay:seller";
+      publication = {
+        role: "seller",
+        logicalAddress,
+        nativeAddress,
+        bundleContentHash,
+        bundle,
+        anchorTx,
+        anchorReceipt: {
+          receiptVersion: "1",
+          substrate: "test",
+          finalityProfile: "test-finality",
+          logicalAddress,
+          nativeAddress,
+          contentHash: bundleContentHash,
+          transactionRef: { kind: "test", value: anchorTx },
+          writer: SELLER,
+          state: "finalized",
+          observationDisposition: "established",
+          observedAt: NOW + 2,
+          blockRef: { id: "block:failed-replay", height: "1", timestamp: NOW + 2 },
+          evidence: { kind: "test", value: "proof:failed-replay" },
+        },
+      };
+    },
+    verifyOwnBundlePublication: () => ({ disposition: "valid" }),
+    resolveOwnBundleBinding: () => binding
+      ? { disposition: "present", value: binding }
+      : { disposition: "authoritatively-absent", reason: "binding not published" },
+    publishOwnBundleBinding: (value) => {
+      binding = value;
+    },
+    verifyOwnBundleBinding: () => ({ disposition: "valid" }),
+  };
+  const signatures = new Map<string, string>();
+  const outcome = await advanceTerminalBundleDurable(
+    {
+      authority,
+      signingMode,
+      local: {
+        role: "seller",
+        primaryClaim: SELLER,
+        signer: (bytes, fence) => {
+          const value = Buffer.from(ed25519Sign(
+            bytes,
+            privateKeyFromSeed(seed("seller")),
+          )).toString("base64url");
+          signatures.set(fence.idempotencyKey, value);
+          return value;
+        },
+      },
+      signerKeys: plan.requiredSigners.map(({ role, primaryClaim }) => ({
+        role,
+        primaryClaim,
+        algorithm: "ed25519" as const,
+        publicKey: new Uint8Array(rawPublicKey(publicKeyFromSeed(seed(role)))),
+      })),
+    },
+    provider,
+    {
+      store,
+      workerId: "failed-terminal-publisher",
+      leaseTtlMs: 1_000,
+      leaseNowMs: () => NOW + 1,
+      transport,
+      reconcileSignature: (_input, fence) => {
+        const value = signatures.get(fence.idempotencyKey);
+        return value
+          ? { disposition: "present", value }
+          : { disposition: "authoritatively-absent", reason: "signature absent" };
+      },
+    },
+  );
+  if (outcome.disposition !== "finalised") {
+    throw new Error(
+      `failed-session terminal publication stopped at ${outcome.stage}: ${outcome.reason}`,
+    );
+  }
 }
 
 function paymentAuthorization(): SellerPaymentAuthorization {
@@ -1528,27 +1744,49 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability,
     );
     expect(failed.decision).toBe("failed");
-    const lease = await h.store.acquireLease({
-      jobId: "job-17",
-      owner: "bundle-finaliser",
-      ttlMs: 1_000,
-      now: NOW + 1,
-    });
-    if (!lease.ok) throw new Error("failed-session finalisation lease missing");
-    const finalised = await h.store.transition({
-      jobId: "job-17",
-      expectedRevision: lease.record.revision,
-      leaseToken: lease.lease,
-      phase: "seller:finalised",
-      lease: null,
-      now: NOW + 2,
-    });
-    if (!finalised.ok) throw new Error(`failed-session finalisation failed: ${finalised.reason}`);
+    if (failed.decision !== "failed") throw new Error("failed result missing");
+    await publishFailedTerminalBundle(h.store, failed);
     expect(await runDurableFulfilmentCore(
       h.fixture.request,
       h.deps,
       { ...h.durability, workerId: "failed-replay" },
     )).toEqual(failed);
+  });
+
+  test("does not rebind a failed replay to a terminal bundle for another phase index", async () => {
+    const h = durableHarness();
+    let reconciliationCalls = 0;
+    h.deps.reconcileDelivery = async () => {
+      reconciliationCalls += 1;
+      return reconciliationCalls === 1
+        ? { status: "absent", reason: "authoritative absence" }
+        : {
+            status: "failed",
+            reason: "delivery substrate recorded failure",
+            reconciliationId: "delivery:job-17:1",
+            observedAt: NOW,
+          };
+    };
+    const failed = await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+    if (failed.decision !== "failed") throw new Error("failed result missing");
+    await publishFailedTerminalBundle(h.store, failed, {
+      sourcePhaseIndex: failed.bundleContribution.phaseSummary.index + 1,
+    });
+
+    expect(await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      { ...h.durability, workerId: "wrong-source-replay" },
+    )).toMatchObject({
+      decision: "indeterminate",
+      code: "durable-permit-inspection-failed",
+      reasons: [expect.stringContaining("missing or rebound receipt/phase")],
+      safeToRetryDelivery: false,
+    });
   });
 
   test("status projects the indexed terminal spine without exposing mutable store state", async () => {
