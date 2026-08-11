@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   open,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -338,6 +340,8 @@ export async function createFsX402PaywallSettlementStore(
   const options = snapshotOptions(rawOptions);
   const recordsDir = join(options.dir, "records");
   const locksDir = join(options.dir, "locks");
+  const reclaimGatePath = join(locksDir, ".reclaim");
+  const reclaimQuarantinePrefix = ".reclaim.";
 
   async function prepareOwnedDirectory(path: string): Promise<void> {
     await mkdir(path, { recursive: true, mode: DIR_MODE });
@@ -415,24 +419,201 @@ export async function createFsX402PaywallSettlementStore(
     }
   }
 
+  function sameOwner(left: LockOwner | null, right: LockOwner | null): boolean {
+    return left === null
+      ? right === null
+      : right !== null && left.pid === right.pid && left.token === right.token;
+  }
+
+  async function readFileOwner(path: string): Promise<LockOwner | null> {
+    try {
+      const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+      if (isPlainRecord(parsed) && Number.isSafeInteger(parsed.pid) &&
+          (parsed.pid as number) > 0 && typeof parsed.token === "string" &&
+          parsed.token.length > 0) {
+        return { pid: parsed.pid as number, token: parsed.token };
+      }
+    } catch {
+      // Missing or malformed recovery gates remain authoritative until stale.
+    }
+    return null;
+  }
+
+  async function publishCompleteOwner(path: string, owner: LockOwner): Promise<void> {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      const handle = await open(temporary, "wx", FILE_MODE);
+      try {
+        await handle.writeFile(JSON.stringify(owner), "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      // A hard link publishes complete bytes without an empty-file window.
+      await link(temporary, path);
+      await syncDirectory(locksDir);
+    } finally {
+      await unlink(temporary).catch(() => {});
+    }
+  }
+
+  const reclaimQuarantinePath = (): string =>
+    join(locksDir, `${reclaimQuarantinePrefix}${randomUUID()}.quarantine`);
+
+  async function activeReclaimQuarantines(): Promise<string[]> {
+    const names = (await readdir(locksDir)).filter((name) =>
+      name.startsWith(reclaimQuarantinePrefix) && name.endsWith(".quarantine"));
+    const live: string[] = [];
+    for (const name of names) {
+      const path = join(locksDir, name);
+      try {
+        const metadata = await stat(path);
+        const owner = await readFileOwner(path);
+        if (Date.now() - metadata.mtimeMs <= options.lockStaleMs ||
+            (owner !== null && processIsAlive(owner.pid))) {
+          live.push(path);
+          continue;
+        }
+        await unlink(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return live;
+  }
+
+  async function quarantineStaleReclaimGate(): Promise<void> {
+    let observed;
+    try {
+      observed = await stat(reclaimGatePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (Date.now() - observed.mtimeMs <= options.lockStaleMs) return;
+    const observedOwner = await readFileOwner(reclaimGatePath);
+    if (observedOwner !== null && processIsAlive(observedOwner.pid)) return;
+
+    const quarantine = reclaimQuarantinePath();
+    try {
+      await rename(reclaimGatePath, quarantine);
+      await syncDirectory(locksDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    let moved;
+    try {
+      moved = await stat(quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const movedOwner = await readFileOwner(quarantine);
+    if (moved.dev === observed.dev && moved.ino === observed.ino &&
+        sameOwner(movedOwner, observedOwner) &&
+        Date.now() - moved.mtimeMs > options.lockStaleMs &&
+        (movedOwner === null || !processIsAlive(movedOwner.pid))) {
+      await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
+    // A moved replacement remains as a live quarantine and blocks reclaimers.
+  }
+
+  async function releaseReclaimGate(owner: LockOwner): Promise<void> {
+    const observed = await readFileOwner(reclaimGatePath);
+    if (observed?.pid === owner.pid && observed.token === owner.token) {
+      const quarantine = reclaimQuarantinePath();
+      try {
+        await rename(reclaimGatePath, quarantine);
+        const moved = await readFileOwner(quarantine);
+        if (moved?.pid === owner.pid && moved.token === owner.token) {
+          await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") throw error;
+          });
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    for (const name of (await readdir(locksDir)).filter((item) =>
+      item.startsWith(reclaimQuarantinePrefix) && item.endsWith(".quarantine"))) {
+      const path = join(locksDir, name);
+      const quarantined = await readFileOwner(path);
+      if (quarantined?.pid === owner.pid && quarantined.token === owner.token) {
+        await unlink(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      }
+    }
+    await syncDirectory(locksDir);
+  }
+
+  async function acquireReclaimGate(owner: LockOwner): Promise<boolean> {
+    if ((await activeReclaimQuarantines()).length > 0) return false;
+    try {
+      await publishCompleteOwner(reclaimGatePath, owner);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await quarantineStaleReclaimGate();
+      return false;
+    }
+    if ((await activeReclaimQuarantines()).length > 0) {
+      await releaseReclaimGate(owner);
+      return false;
+    }
+    return true;
+  }
+
   async function maybeReclaimStale(path: string): Promise<boolean> {
     try {
       const metadata = await stat(path);
       if (Date.now() - metadata.mtimeMs <= options.lockStaleMs) return false;
       const owner = await readLockOwner(path);
       if (owner && processIsAlive(owner.pid)) return false;
-      const quarantine = `${path}.${randomUUID()}.stale`;
-      try {
-        await rename(path, quarantine);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        return code === "ENOENT";
-      }
-      await rm(quarantine, { recursive: true, force: true });
-      return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
       throw error;
+    }
+
+    const gateOwner: LockOwner = { pid: process.pid, token: randomUUID() };
+    if (!await acquireReclaimGate(gateOwner)) return false;
+    try {
+      let observed;
+      try {
+        observed = await stat(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw error;
+      }
+      if (Date.now() - observed.mtimeMs <= options.lockStaleMs) return false;
+      const observedOwner = await readLockOwner(path);
+      if (observedOwner !== null && processIsAlive(observedOwner.pid)) return false;
+
+      const quarantine = `${path}.${randomUUID()}.stale`;
+      try {
+        await rename(path, quarantine);
+        await syncDirectory(locksDir);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw error;
+      }
+      const moved = await stat(quarantine);
+      const movedOwner = await readLockOwner(quarantine);
+      if (moved.dev !== observed.dev || moved.ino !== observed.ino ||
+          !sameOwner(movedOwner, observedOwner) ||
+          Date.now() - moved.mtimeMs <= options.lockStaleMs ||
+          (movedOwner !== null && processIsAlive(movedOwner.pid))) {
+        throw new DacsError("x402 paywall lock changed during stale recovery");
+      }
+      await rm(quarantine, { recursive: true, force: true });
+      await syncDirectory(locksDir);
+      return true;
+    } finally {
+      await releaseReclaimGate(gateOwner);
     }
   }
 

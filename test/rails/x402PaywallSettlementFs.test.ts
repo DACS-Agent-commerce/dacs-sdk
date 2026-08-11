@@ -354,6 +354,61 @@ describe("filesystem x402 paywall settlement store", () => {
     expect(parsed.storeVersion).toBe(X402_PAYWALL_SETTLEMENT_STORE_VERSION);
   });
 
+  test("serializes competing stale-lock reclaimers without fencing a live successor", async () => {
+    const directory = await temporaryStoreDirectory();
+    const stores = await Promise.all(Array.from({ length: 8 }, () =>
+      createFsX402PaywallSettlementStore({
+        dir: directory,
+        lockStaleMs: 1,
+        lockTimeoutMs: 5_000,
+        lockPollMs: 1,
+      })));
+    const intent = intentFor();
+    const staleLock = lockDirectory(directory, intent.settlementKey);
+    await mkdir(staleLock, { mode: 0o700 });
+    await writeFile(join(staleLock, "owner.json"), "not-json", { mode: 0o600 });
+    const old = new Date(Date.now() - 10_000);
+    await utimes(staleLock, old, old);
+
+    const results = await Promise.all(stores.map((store) => store.claim(intent)));
+    expect(results.filter((result) => result.status === "claimed")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "held")).toHaveLength(7);
+    for (const store of stores) {
+      await expect(store.load(intent.settlementKey)).resolves.toMatchObject({
+        status: "held",
+        intent: { bindingHash: intent.bindingHash },
+      });
+    }
+    const lockEntries = await readdir(join(directory, "locks"));
+    expect(lockEntries.filter((name) =>
+      name.includes(".reclaim") || name.endsWith(".stale") || name.endsWith(".released")
+    )).toEqual([]);
+  });
+
+  test("recovers a dead stale-reclaimer gate before touching the settlement lock", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = await createFsX402PaywallSettlementStore({
+      dir: directory,
+      lockStaleMs: 1,
+      lockTimeoutMs: 5_000,
+      lockPollMs: 1,
+    });
+    const intent = intentFor();
+    const staleLock = lockDirectory(directory, intent.settlementKey);
+    await mkdir(staleLock, { mode: 0o700 });
+    await writeFile(join(staleLock, "owner.json"), "not-json", { mode: 0o600 });
+    const gate = join(directory, "locks", ".reclaim");
+    await writeFile(gate, "not-json", { mode: 0o600 });
+    const old = new Date(Date.now() - 10_000);
+    await utimes(staleLock, old, old);
+    await utimes(gate, old, old);
+
+    expect((await store.claim(intent)).status).toBe("claimed");
+    expect((await readdir(join(directory, "locks"))).filter((name) =>
+      name.includes(".reclaim") || name.endsWith(".stale")
+    )).toEqual([]);
+  });
+
   test("rejects unsafe options without evaluating getters", async () => {
     let reads = 0;
     const options = {} as { dir: string };
