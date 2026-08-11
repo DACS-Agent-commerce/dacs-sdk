@@ -12,6 +12,7 @@ import {
   runDurableFulfilmentCore,
   getSellerFulfilmentStatus,
   finalizeCompletedSellerBundleCore,
+  prepareCompletedSellerBundleCounterSignatureRequest,
   runSessionCore,
   sellerFulfilmentId,
   type SellerFulfilmentDeps,
@@ -21,12 +22,15 @@ import {
   type SellerFulfilmentDurability,
   type SessionRecord,
   type SessionStore,
+  type CompletedSellerSessionArtifacts,
+  type SellerPaymentPhaseIndexResolution,
   type SessionDeps,
 } from "../../src/index.js";
 import {
   FENCED_SESSION_STORE_VERSION as sellerFencedSessionStoreVersion,
   createInMemoryFencedSessionStore as sellerCreateInMemoryFencedSessionStore,
   finalizeCompletedSellerBundleCore as sellerFinalizeCompletedBundleCore,
+  prepareCompletedSellerBundleCounterSignatureRequest as sellerPrepareCompletedBundleCounterSignatureRequest,
   getSellerFulfilmentStatus as sellerGetFulfilmentStatus,
   runFulfilmentCore as sellerRunFulfilmentCore,
   runDurableFulfilmentCore as sellerRunDurableFulfilmentCore,
@@ -42,6 +46,7 @@ describe("public core surface (#14)", () => {
     expect(typeof runDurableFulfilmentCore).toBe("function");
     expect(typeof getSellerFulfilmentStatus).toBe("function");
     expect(sellerRunDurableFulfilmentCore).toBe(runDurableFulfilmentCore);
+    expect(sellerGetFulfilmentStatus).toBe(getSellerFulfilmentStatus);
     const deps: Partial<DurableSellerFulfilmentDeps> = { nowMs: () => 2 };
     const durability: Partial<SellerFulfilmentDurability> = { workerId: "worker" };
     expect(deps.nowMs?.()).toBe(2);
@@ -78,11 +83,27 @@ describe("public core surface (#14)", () => {
   it("#17: seller fulfilment core and dependency contract are public", () => {
     expect(typeof runFulfilmentCore).toBe("function");
     expect(typeof finalizeCompletedSellerBundleCore).toBe("function");
+    expect(typeof prepareCompletedSellerBundleCounterSignatureRequest).toBe("function");
     expect(sellerFinalizeCompletedBundleCore).toBe(finalizeCompletedSellerBundleCore);
+    expect(sellerPrepareCompletedBundleCounterSignatureRequest).toBe(
+      prepareCompletedSellerBundleCounterSignatureRequest,
+    );
     expect(sellerRunFulfilmentCore).toBe(runFulfilmentCore);
     expect(sellerSurfaceFulfilmentId).toBe(sellerFulfilmentId);
     const partial: Partial<SellerFulfilmentDeps> = { nowMs: () => 1 };
     expect(partial.nowMs?.()).toBe(1);
+    const artifacts: Partial<CompletedSellerSessionArtifacts> = {
+      settlementEvidence: [],
+    };
+    const paymentPhase: SellerPaymentPhaseIndexResolution = {
+      disposition: "valid",
+      jobId: "job-17",
+      railId: "x402:default",
+      phaseIndex: 2,
+      resolved: false,
+    };
+    expect(artifacts.settlementEvidence).toEqual([]);
+    expect(paymentPhase.phaseIndex).toBe(2);
   });
 
   // NOTE (#48): `sessionAnchorName` is intentionally NOT part of the public

@@ -1925,7 +1925,7 @@ function hasBundleFields(
         hasOnlyKeys(signature, ["party", "algorithm", "value"]) &&
         isNonEmptyStr(signature.party) &&
         isOneOf(COMPONENT_SIGNATURE_ALGORITHMS, signature.algorithm) &&
-        isNonEmptyStr(signature.value),
+        isCanonicalBase64Url(signature.value),
     )
   );
 }
