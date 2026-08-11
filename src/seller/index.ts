@@ -138,6 +138,11 @@ export {
   type SellerSessionSettlementPublicationResult,
 } from "./sessionSettlementPublication.js";
 export {
+  SELLER_RECEIPT_STORE_VERSION,
+  createFsSellerReceiptStore,
+  type FsSellerReceiptStoreOptions,
+} from "./receiptStoreFs.js";
+export {
   runFulfilmentCore,
   sellerFulfilmentId,
   type SellerAttestationRef,

@@ -1831,6 +1831,64 @@ export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
   return `0x${sha256Hex(`dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`)}`;
 }
 
+function exactSellerReceiptClaim(
+  left: SellerReceiptClaim,
+  right: SellerReceiptClaim,
+): boolean {
+  return canonicalize(left) === canonicalize(right);
+}
+
+function sellerReceiptWinnerOrder(
+  left: SellerReceiptClaim,
+  right: SellerReceiptClaim,
+): number {
+  if (left.observedAt !== right.observedAt) {
+    return left.observedAt < right.observedAt ? -1 : 1;
+  }
+  if (left.evidenceHash !== right.evidenceHash) {
+    return left.evidenceHash < right.evidenceHash ? -1 : 1;
+  }
+  // Equal signed-scope hashes cannot bind different sessions without a hash
+  // collision. Keep every store deterministic even under malformed/colliding
+  // external state; the lower canonical binding wins.
+  const leftBinding = `${left.jobId}\u0000${left.phaseIndex}`;
+  const rightBinding = `${right.jobId}\u0000${right.phaseIndex}`;
+  return leftBinding < rightBinding ? -1 : leftBinding > rightBinding ? 1 : 0;
+}
+
+function sameSelectedAuthorizationScope(
+  left: SellerReceiptClaim,
+  right: SellerReceiptClaim,
+): boolean {
+  return left.authorization.agreementHash === right.authorization.agreementHash &&
+    sameListingRef(left.authorization.listingRef, right.authorization.listingRef) &&
+    left.authorization.railId === right.authorization.railId &&
+    left.authorization.railRegistryVersion ===
+      right.authorization.railRegistryVersion &&
+    canonicalize(left.authorization.commitment) ===
+      canonicalize(right.authorization.commitment) &&
+    sameSettlementEventIdentity(
+      left.authorization.settlementIdentity,
+      right.authorization.settlementIdentity,
+    ) &&
+    sameProducerAdmission(
+      left.authorization.payloadVerificationProducerAdmission,
+      right.authorization.payloadVerificationProducerAdmission,
+    );
+}
+
+/**
+ * Shared state-machine predicates for SDK receipt-store implementations.
+ * This is intentionally not re-exported from the public seller entry point.
+ */
+export const sellerReceiptStoreInternals = Object.freeze({
+  exactClaim: exactSellerReceiptClaim,
+  winnerOrder: sellerReceiptWinnerOrder,
+  sameSelectedAuthorizationScope,
+  sameClaimAuthorizationScope,
+  isCanonicalReplayWinner,
+});
+
 /**
  * Process-local reference store for tests and single-process deployments.
  * Recovery-capable sellers MUST inject a durable implementation with the same
@@ -1862,22 +1920,6 @@ export function createInMemorySellerReceiptStore(
       throw new TypeError("seller receipt claim is malformed or internally inconsistent");
     }
   };
-  const exactClaim = (left: SellerReceiptClaim, right: SellerReceiptClaim): boolean =>
-    canonicalize(left) === canonicalize(right);
-  const winnerOrder = (left: SellerReceiptClaim, right: SellerReceiptClaim): number => {
-    if (left.observedAt !== right.observedAt) {
-      return left.observedAt < right.observedAt ? -1 : 1;
-    }
-    if (left.evidenceHash !== right.evidenceHash) {
-      return left.evidenceHash < right.evidenceHash ? -1 : 1;
-    }
-    // Equal signed-scope hashes cannot bind different sessions without a hash
-    // collision. Keep the store deterministic even under malformed/colliding
-    // external state; the lower canonical binding wins.
-    const leftBinding = `${left.jobId}\u0000${left.phaseIndex}`;
-    const rightBinding = `${right.jobId}\u0000${right.phaseIndex}`;
-    return leftBinding < rightBinding ? -1 : leftBinding > rightBinding ? 1 : 0;
-  };
   const install = (claim: SellerReceiptClaim): StoredClaim => {
     const pendingPermitId = permitId();
     const stored = { selected: cloneClaim(claim), pendingPermitId };
@@ -1902,7 +1944,7 @@ export function createInMemorySellerReceiptStore(
     const existing = claims.get(candidate.settlementId);
     if (!existing) {
       install(candidate);
-    } else if (winnerOrder(candidate, existing.selected) < 0) {
+    } else if (sellerReceiptWinnerOrder(candidate, existing.selected) < 0) {
       replacePendingSelection(existing, candidate);
     }
   }
@@ -1920,29 +1962,13 @@ export function createInMemorySellerReceiptStore(
           claim: cloneClaim(stored.selected),
         };
       }
-      const order = winnerOrder(candidate, existing.selected);
+      const order = sellerReceiptWinnerOrder(candidate, existing.selected);
       const sameSelectedSession = existing.selected.jobId === candidate.jobId &&
         existing.selected.phaseIndex === candidate.phaseIndex;
-      const sameAuthorizationScope =
-        existing.selected.authorization.agreementHash ===
-          candidate.authorization.agreementHash &&
-        sameListingRef(
-          existing.selected.authorization.listingRef,
-          candidate.authorization.listingRef,
-        ) &&
-        existing.selected.authorization.railId === candidate.authorization.railId &&
-        existing.selected.authorization.railRegistryVersion ===
-          candidate.authorization.railRegistryVersion &&
-        canonicalize(existing.selected.authorization.commitment) ===
-          canonicalize(candidate.authorization.commitment) &&
-        sameSettlementEventIdentity(
-          existing.selected.authorization.settlementIdentity,
-          candidate.authorization.settlementIdentity,
-        ) &&
-        sameProducerAdmission(
-          existing.selected.authorization.payloadVerificationProducerAdmission,
-          candidate.authorization.payloadVerificationProducerAdmission,
-        );
+      const sameAuthorizationScope = sameSelectedAuthorizationScope(
+        existing.selected,
+        candidate,
+      );
       if (existing.consumed &&
           sameClaimAuthorizationScope(existing.consumed.claim, candidate) &&
           isCanonicalReplayWinner(existing.consumed.claim, candidate)) {
@@ -1977,10 +2003,10 @@ export function createInMemorySellerReceiptStore(
           claim: cloneClaim(existing.selected),
         };
       }
-      if (exactClaim(existing.selected, candidate) ||
+      if (exactSellerReceiptClaim(existing.selected, candidate) ||
           (sameSelectedSession && sameAuthorizationScope)) {
         if (existing.consumed) {
-          if (!exactClaim(existing.selected, existing.consumed.claim)) {
+          if (!exactSellerReceiptClaim(existing.selected, existing.consumed.claim)) {
             return {
               status: "conflict",
               reason: "winner-already-consumed",
