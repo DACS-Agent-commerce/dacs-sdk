@@ -581,6 +581,150 @@ describe("generation-fenced FencedSessionStoreV2 v2", () => {
     })).toMatchObject({ ok: false, reason: "terminal-state" });
   });
 
+  test("terminal FAB publication reopens seller failure and seals only after binding publication", async () => {
+    const s = fresh();
+    await expect(s.create({
+      jobId: "direct-terminal",
+      phase: "terminal:seller:authority",
+    })).rejects.toThrow(/cannot enter terminal bundle finalization/);
+    await expect(s.create({
+      jobId: "malformed-terminal",
+      phase: "terminal:seller:unknown",
+    })).rejects.toThrow(/malformed or unrecognized reserved terminal/i);
+
+    await s.create({ jobId: "failed-terminal", phase: "seller:failed", now: 0 });
+    expect(await s.acquireLease({
+      jobId: "failed-terminal",
+      owner: "scoped-worker",
+      ttlMs: 100,
+      sellerPhaseIndex: 1,
+      now: 0,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    const lease = await s.acquireLease({
+      jobId: "failed-terminal",
+      owner: "terminal-worker",
+      ttlMs: 100,
+      now: 0,
+    });
+    if (!lease.ok) throw new Error("terminal lease missing");
+    expect(await s.claimCheckpoint({
+      jobId: "failed-terminal",
+      key: "terminal:buyer:authority",
+      phase: "terminal:buyer:authority",
+      leaseToken: lease.lease,
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await s.claimCheckpoint({
+      jobId: "failed-terminal",
+      key: "unrelated-intent",
+      leaseToken: lease.lease,
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      checkpoint: { key: "unrelated-intent", stage: "intent" },
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:authority",
+      checkpoint: { key: "unrelated-intent", stage: "intent" },
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      receipt: { kind: "bundle", ref: "premature-bundle" },
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await s.bindSessionAuthorization({
+      jobId: "failed-terminal",
+      binding: paymentBinding("e"),
+      leaseToken: lease.lease,
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    const authority = await s.claimCheckpoint({
+      jobId: "failed-terminal",
+      key: "terminal:seller:authority",
+      data: { planHash: "1".repeat(64) },
+      phase: "terminal:seller:authority",
+      leaseToken: lease.lease,
+      now: 1,
+    });
+    expect(authority.ok).toBe(true);
+    if (!authority.ok) return;
+    expect(await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: authority.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:buyer:proposal-publication-pending",
+      now: 2,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: authority.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:finalised",
+      now: 2,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    const bindingPending = await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: authority.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:bundle-binding-publication-pending",
+      now: 2,
+    });
+    expect(bindingPending.ok).toBe(true);
+    if (!bindingPending.ok) return;
+    expect(await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: bindingPending.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:matrix-review",
+      now: 3,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    const resultIntent = await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: bindingPending.record.revision,
+      leaseToken: lease.lease,
+      checkpoint: {
+        key: "terminal:seller:result",
+        stage: "intent",
+        data: { resultHash: "2".repeat(64) },
+      },
+      now: 4,
+    });
+    expect(resultIntent.ok).toBe(true);
+    if (!resultIntent.ok) return;
+    const finalised = await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: resultIntent.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:finalised",
+      checkpoint: {
+        key: "terminal:seller:result",
+        stage: "outcome",
+        data: { resultHash: "2".repeat(64) },
+      },
+      receipt: { kind: "bundle", ref: "native-terminal-bundle" },
+      lease: null,
+      now: 5,
+    });
+    expect(finalised.ok).toBe(true);
+    if (!finalised.ok) return;
+    expect(await s.acquireLease({
+      jobId: "failed-terminal",
+      owner: "late-worker",
+      ttlMs: 100,
+      now: 6,
+    })).toMatchObject({ ok: false, reason: "terminal-state" });
+  });
+
   test("buyer bundle finalization is unscoped, monotonic, and terminal", async () => {
     const s = fresh();
     await expect(s.create({
