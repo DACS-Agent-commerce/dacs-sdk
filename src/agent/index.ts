@@ -91,6 +91,7 @@ export {
 } from "./listingValidation.js";
 export {
   vetCore,
+  partyVetCore,
   SELF_SIGNED_ASSERTION_SEPARATOR,
   selfSignedAssertionBytes,
   selfSignedAssertionAddress,
@@ -98,6 +99,10 @@ export {
   isFinalizedVetAnchorReceipt,
   type VetDeps,
   type VetRequest,
+  type PartyVetRequest,
+  type PartyVetAttemptRequest,
+  type PartyVetDeps,
+  type PartyVetOperationCheckpoint,
   type VetProxyResult,
   type VetProduction,
   type VetMethodOutcome,
@@ -109,6 +114,11 @@ export {
   type SelfSignedAttestationArtifact,
   type SelfSignedAnchorInput,
 } from "./vetCore.js";
+export {
+  partyVetCompositeAddress,
+  type PartyVetRequirementPath,
+  type PartyVetMethodInput,
+} from "./partyVetPlan.js";
 export {
   aggregateCompositeVerification,
   isCompositeBundleRequirement,

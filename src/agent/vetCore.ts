@@ -5,6 +5,7 @@ import type {
   AttestationRef,
   ComponentSignature,
   CompositeVerificationRecord,
+  IdentityBundle,
   SupplementarySignal,
   VerificationDecision,
   VerificationWarning,
@@ -15,14 +16,18 @@ import {
   isAttestationRef,
   isCompositeVerificationRecord,
   isExactJsonRecord,
+  isIdentityBundle,
   isVerifyResult,
 } from "../artifacts/validators.js";
 import {
   signComponentArtifact,
+  verifyComponentSignature,
   type BuildComponentSignatureOptions,
+  type VerifyComponentSignatureDeps,
 } from "../artifacts/signatures.js";
 import { ed25519Verify, publicKeyFromRaw, signedBytes } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
+import { identityBundleHash } from "../identity/index.js";
 import {
   isAuthenticatedRecipeDescriptor,
   type AuthenticatedRecipeDescriptor,
@@ -43,6 +48,16 @@ import {
   defaultParserEngine,
   type ParserEngine,
 } from "./parserSpec.js";
+import {
+  advancePartyVetPlan,
+  createPartyVetPlan,
+  type PartyVetAttemptInput,
+  type PartyVetAttemptOutcome,
+  type PartyVetMethodInput,
+  type PartyVetPlan,
+  type PartyVetRequirementAttempt,
+  type PartyVetRequirementPath,
+} from "./partyVetPlan.js";
 
 /** SIG-4 domain for the method-native self-signed assertion evidence. */
 export const SELF_SIGNED_ASSERTION_SEPARATOR =
@@ -93,7 +108,7 @@ function snapshotValue(
   let symbols: symbol[];
   let prototype: object | null;
   try {
-    descriptors = Object.getOwnPropertyDescriptors(value);
+    descriptors = Object.getOwnPropertyDescriptors(value) as unknown as PropertyDescriptorMap;
     symbols = Object.getOwnPropertySymbols(value);
     prototype = Object.getPrototypeOf(value);
   } catch {
@@ -139,7 +154,12 @@ function snapshotValue(
     ) {
       throw new DacsError(`${label} cannot contain accessors or hidden fields`);
     }
-    copy[key] = snapshotValue(descriptor.value, label, seen);
+    Object.defineProperty(copy, key, {
+      value: snapshotValue(descriptor.value, label, seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   seen.delete(value);
   return copy;
@@ -924,6 +944,35 @@ export interface VetRequest {
   selfSigned?: SelfSignedMethodInput;
 }
 
+export interface PartyVetAttemptRequest {
+  requirementPath: PartyVetRequirementPath;
+  claimSubject: string;
+  /** Exact authenticated recipe; unpinned requirements remain closed until #143. */
+  recipe: AuthenticatedRecipeDescriptor;
+  methodInput: PartyVetMethodInput;
+}
+
+export interface PartyVetRequest {
+  jobId: string;
+  evaluatedParty: string;
+  identityBundle: IdentityBundle;
+  requirement: CompositeBundleRequirement;
+  attempts: PartyVetAttemptRequest[];
+  supplementary?: SupplementarySignal[];
+  warnings?: VerificationWarning[];
+}
+
+/** Additional trust capabilities required by the public party-scoped producer. */
+export interface PartyVetDeps<TKey> extends VetDeps {
+  /** Authenticate BP-4 over the exact captured bundle hash. */
+  verifyIdentityPresentation: (input: {
+    bundle: Readonly<IdentityBundle>;
+    signedBytes: Uint8Array;
+  }) => Promise<boolean> | boolean;
+  /** Role policy, key resolution and cryptographic verifier for signed components. */
+  componentVerifier: VerifyComponentSignatureDeps<TKey>;
+}
+
 const VET_REQUEST_KEYS = new Set([
   "jobId",
   "subject",
@@ -996,13 +1045,251 @@ function captureVetRequest(source: VetRequest): VetRequest {
     );
   }
 
-  const captured: Record<string, unknown> = {};
+  const captured: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >;
   for (const [key, descriptor] of Object.entries(descriptors)) {
-    captured[key] = descriptor.value;
+    Object.defineProperty(captured, key, {
+      value: descriptor.value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return deepFreezeSnapshot(
     snapshot(captured, "Vet request"),
   ) as unknown as VetRequest;
+}
+
+function denseOwnArrayValues(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value) || nodeTypes.isProxy(value)) {
+    throw new DacsError(`${label} must be a dense intrinsic array`);
+  }
+  let prototype: object | null;
+  let keys: (string | symbol)[];
+  let descriptors: PropertyDescriptorMap;
+  try {
+    prototype = Object.getPrototypeOf(value);
+    keys = Reflect.ownKeys(value);
+    descriptors = Object.getOwnPropertyDescriptors(
+      value,
+    ) as unknown as PropertyDescriptorMap;
+  } catch {
+    throw new DacsError(`${label} could not be captured`);
+  }
+  if (
+    prototype !== Array.prototype ||
+    keys.length !== value.length + 1 ||
+    !keys.includes("length")
+  ) {
+    throw new DacsError(`${label} must be a dense intrinsic array`);
+  }
+  const result: unknown[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !("value" in descriptor) ||
+      descriptor.value === undefined
+    ) {
+      throw new DacsError(`${label} must contain only own data elements`);
+    }
+    result.push(descriptor.value);
+  }
+  return result;
+}
+
+function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
+  const descriptors = exactOwnDataDescriptors(
+    source,
+    [
+      "jobId",
+      "evaluatedParty",
+      "identityBundle",
+      "requirement",
+      "attempts",
+    ],
+    ["supplementary", "warnings"],
+    "party Vet request",
+  );
+  const attempts = denseOwnArrayValues(
+    descriptors.attempts!.value,
+    "party Vet attempts",
+  ).map((raw, index): PartyVetAttemptRequest => {
+    const attempt = exactOwnDataDescriptors(
+      raw,
+      ["requirementPath", "claimSubject", "recipe", "methodInput"],
+      [],
+      `party Vet attempt ${index}`,
+    );
+    const recipe = attempt.recipe!.value;
+    if (!isAuthenticatedRecipeDescriptor(recipe)) {
+      throw new DacsError(
+        `party Vet attempt ${index} requires an authenticated recipe`,
+      );
+    }
+    return deepFreezeSnapshot({
+      requirementPath: snapshot(
+        attempt.requirementPath!.value,
+        `party Vet attempt ${index} requirement path`,
+      ),
+      claimSubject: attempt.claimSubject!.value,
+      recipe,
+      methodInput: snapshot(
+        attempt.methodInput!.value,
+        `party Vet attempt ${index} method input`,
+      ),
+    }) as PartyVetAttemptRequest;
+  });
+  return deepFreezeSnapshot({
+    jobId: descriptors.jobId!.value,
+    evaluatedParty: descriptors.evaluatedParty!.value,
+    identityBundle: snapshot(
+      descriptors.identityBundle!.value,
+      "party Vet IdentityBundle",
+    ),
+    requirement: snapshot(
+      descriptors.requirement!.value,
+      "party Vet BundleRequirement",
+    ),
+    attempts,
+    ...(descriptors.supplementary
+      ? {
+          supplementary: snapshot(
+            descriptors.supplementary.value,
+            "party Vet supplementary signals",
+          ),
+        }
+      : {}),
+    ...(descriptors.warnings
+      ? {
+          warnings: snapshot(
+            descriptors.warnings.value,
+            "party Vet warnings",
+          ),
+        }
+      : {}),
+  }) as unknown as PartyVetRequest;
+}
+
+interface CapturedPartyVetDeps<TKey> {
+  vet: VetDeps;
+  verifyIdentityPresentation: PartyVetDeps<TKey>["verifyIdentityPresentation"];
+  componentVerifier: VerifyComponentSignatureDeps<TKey>;
+}
+
+function capturePartyVetDeps<TKey>(
+  source: PartyVetDeps<TKey>,
+): CapturedPartyVetDeps<TKey> {
+  try {
+    const baseKeys = [
+      "proxyFetch",
+      "nowMs",
+      "componentSigner",
+      "anchorFinalizedArtifact",
+      "verifyFinalizedAnchor",
+      "readAnchoredJson",
+      "resolveFinalizedArtifact",
+      "operationStore",
+    ] as const;
+    const optionalBaseKeys = [
+      "matchRequirementParameters",
+      "parserEngine",
+    ] as const;
+    const descriptors = exactOwnDataDescriptors(
+      source,
+      [...baseKeys, "verifyIdentityPresentation", "componentVerifier"],
+      optionalBaseKeys,
+      "party Vet dependencies",
+    );
+    const baseSource = Object.create(null) as Record<string, unknown>;
+    for (const key of [...baseKeys, ...optionalBaseKeys]) {
+      const descriptor = descriptors[key];
+      if (!descriptor) continue;
+      Object.defineProperty(baseSource, key, {
+        value: descriptor.value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    const vet = captureVetDeps(baseSource as unknown as VetDeps);
+    const rawVerifyIdentityPresentation = exactCallback<
+      PartyVetDeps<TKey>["verifyIdentityPresentation"]
+    >(
+      descriptors.verifyIdentityPresentation!.value,
+      "party Vet identity presentation verifier",
+    );
+    const componentSource = descriptors.componentVerifier!.value;
+    const componentDescriptors = exactOwnDataDescriptors(
+      componentSource,
+      ["isSignerAuthorized", "resolvePublicKey", "verify"],
+      [],
+      "party Vet component verifier",
+    );
+    const rawAuthorize = exactCallback<
+      VerifyComponentSignatureDeps<TKey>["isSignerAuthorized"]
+    >(
+      componentDescriptors.isSignerAuthorized!.value,
+      "party Vet component signer policy",
+    );
+    const rawResolvePublicKey = exactCallback<
+      VerifyComponentSignatureDeps<TKey>["resolvePublicKey"]
+    >(
+      componentDescriptors.resolvePublicKey!.value,
+      "party Vet component key resolver",
+    );
+    const rawVerify = exactCallback<
+      VerifyComponentSignatureDeps<TKey>["verify"]
+    >(
+      componentDescriptors.verify!.value,
+      "party Vet component signature verifier",
+    );
+    return {
+      vet,
+      verifyIdentityPresentation: (input) => Reflect.apply(
+        rawVerifyIdentityPresentation,
+        INERT_VET_RECEIVER,
+        [input],
+      ),
+      componentVerifier: Object.freeze({
+        isSignerAuthorized: (
+          artifact: Parameters<
+            VerifyComponentSignatureDeps<TKey>["isSignerAuthorized"]
+          >[0],
+          signature: Parameters<
+            VerifyComponentSignatureDeps<TKey>["isSignerAuthorized"]
+          >[1],
+        ) => Reflect.apply(
+          rawAuthorize,
+          INERT_VET_RECEIVER,
+          [artifact, signature],
+        ),
+        resolvePublicKey: (
+          signature: Parameters<
+            VerifyComponentSignatureDeps<TKey>["resolvePublicKey"]
+          >[0],
+        ) => Reflect.apply(
+          rawResolvePublicKey,
+          INERT_VET_RECEIVER,
+          [signature],
+        ),
+        verify: (
+          input: Parameters<VerifyComponentSignatureDeps<TKey>["verify"]>[0],
+        ) => Reflect.apply(
+          rawVerify,
+          INERT_VET_RECEIVER,
+          [input],
+        ),
+      }),
+    };
+  } catch {
+    throw new DacsError(
+      "party Vet dependencies must expose stable trusted capabilities",
+    );
+  }
 }
 
 async function selfSignedAttestation(
@@ -1685,6 +1972,359 @@ async function reconcileOrPersistFinalizedJson(
   }
 }
 
+type FinalizedVetResultCheckpoint = Extract<
+  VetOperationCheckpoint,
+  { stage: "result-finalized" | "composite-submitting" | "complete" }
+>;
+
+type VetSignedArtifactAuthenticator = (
+  artifact: Readonly<Record<string, unknown>>,
+  separator: "dacs-verifyresult:v1:" | "dacs-composite:v1:",
+) => Promise<void>;
+
+async function executeVetMethod(
+  req: VetRequest,
+  deps: VetDeps,
+  selectedRequirement: CompositeClaimRequirement,
+  selectedMethod: VerificationMethod,
+  context: VetCheckpointContext,
+): Promise<VetMethodOutcome> {
+  const operationHash = context.operationHash;
+  const outcomeValue = await runVetStep(
+    deps.operationStore,
+    context,
+    "method",
+    operationHash,
+    async () => {
+      const methodStartedAt = readClock(deps.nowMs, "Vet method start");
+      if (
+        req.recipe.availability === "mocked" ||
+        req.recipe.availability === "failed"
+      ) {
+        const evidence = deepFreezeSnapshot({
+          availabilityEvidenceVersion: "1",
+          jobId: req.jobId,
+          subject: req.subject,
+          scheme: req.recipe.scheme,
+          recipeVersion: req.recipe.recipeVersion,
+          method: selectedMethod.kind,
+          availability: req.recipe.availability,
+          recipeContentHash: contentHash(
+            req.recipe as unknown as Record<string, unknown>,
+          ),
+        });
+        const logicalAddress = `${context.operationKey}:recipe-availability`;
+        const evidenceValue = await runVetStep(
+          deps.operationStore,
+          context,
+          "method-evidence",
+          exactArtifactHash({ logicalAddress, evidence }),
+          () => reconcileOrPersistFinalizedJson(
+            logicalAddress,
+            evidence,
+            deps,
+            (value) =>
+              isExactJsonRecord(value) && canonicalEqual(value, evidence),
+          ),
+        );
+        if (!isFinalizedVetAnchor(evidenceValue)) {
+          throw new DacsError(
+            "recipe availability evidence returned a corrupt anchor",
+          );
+        }
+        const anchored = await authenticateFinalizedJson(
+          logicalAddress,
+          evidence,
+          evidenceValue,
+          deps,
+          (value) =>
+            isExactJsonRecord(value) && canonicalEqual(value, evidence),
+        );
+        return {
+          decision: "error",
+          attestation: anchored.ref,
+          fetchedAt: methodStartedAt,
+          verifiedAt: readClock(
+            deps.nowMs,
+            "VerifyResult verifiedAt",
+            methodStartedAt,
+          ),
+          data: {
+            recipeAvailability: {
+              availability: req.recipe.availability,
+              recipeContentHash: evidence.recipeContentHash,
+            },
+          },
+        } satisfies VetMethodOutcome;
+      }
+      let outcome: {
+        decision: VerificationDecision;
+        attestation: AttestationRef;
+        fetchedAt: number;
+        data?: Record<string, unknown>;
+      };
+      switch (selectedMethod.kind) {
+        case "self-signed": {
+          const selfSigned = await selfSignedAttestation(req, deps, {
+            operationKey: context.operationKey,
+            operationHash,
+            store: deps.operationStore,
+          });
+          outcome = { ...selfSigned, fetchedAt: methodStartedAt };
+          break;
+        }
+        case "consensus-backed-proxy":
+          outcome = await proxyAttestation(
+            req,
+            deps,
+            selectedMethod,
+            selectedRequirement,
+          );
+          break;
+        default:
+          throw new DacsError(
+            `unsupported current verification method: ${selectedMethod.kind}`,
+          );
+      }
+      if (outcome.fetchedAt < methodStartedAt) {
+        throw new DacsError(
+          "authority fetchedAt predates this verification attempt",
+        );
+      }
+      if (selectedRequirement.parameters !== undefined) {
+        try {
+          const matched = await deps.matchRequirementParameters!(
+            deepFreezeSnapshot({
+              requirement: snapshot(
+                selectedRequirement,
+                "parameter requirement",
+              ),
+              subject: req.subject,
+              recipe: snapshot(req.recipe, "parameter recipe"),
+              method: snapshot(selectedMethod, "parameter method"),
+              decision: outcome.decision,
+              attestation: snapshot(
+                outcome.attestation,
+                "parameter attestation",
+              ),
+              ...(outcome.data
+                ? { data: snapshot(outcome.data, "parameter extracted data") }
+                : {}),
+            }),
+          );
+          if (matched !== true) outcome.decision = "fail";
+        } catch {
+          outcome.decision = "error";
+        }
+      }
+      return {
+        ...outcome,
+        verifiedAt: readClock(
+          deps.nowMs,
+          "VerifyResult verifiedAt",
+          outcome.fetchedAt,
+        ),
+      } satisfies VetMethodOutcome;
+    },
+  );
+  return captureMethodOutcome(outcomeValue);
+}
+
+/**
+ * Shared durable claim boundary. It owns method execution, result signing,
+ * finalized anchoring and exact readback, but deliberately does not create a
+ * composite record. The legacy producer and the party producer therefore use
+ * the same crash-safe result semantics.
+ */
+async function produceDurableVetResult(
+  req: VetRequest,
+  deps: VetDeps,
+  selectedRequirement: CompositeClaimRequirement,
+  selectedMethod: VerificationMethod,
+  context: VetCheckpointContext,
+  authenticateSignedArtifact?: VetSignedArtifactAuthenticator,
+): Promise<{
+  checkpoint: FinalizedVetResultCheckpoint;
+  authenticatedResultAnchor: FinalizedVetAnchor;
+}> {
+  const intent: VetOperationCheckpoint = {
+    operationVersion: "1",
+    operationKey: context.operationKey,
+    operationHash: context.operationHash,
+    stage: "intent",
+  };
+  let checkpoint = await loadVetCheckpoint(deps.operationStore, context);
+  if (checkpoint === null) {
+    checkpoint = (
+      await transitionVetCheckpoint(
+        deps.operationStore,
+        context,
+        null,
+        intent,
+      )
+    ).checkpoint;
+  }
+  if (checkpoint === null) {
+    throw new DacsError("Vet operation intent could not be established");
+  }
+
+  if (checkpoint.stage === "intent") {
+    const methodOutcome = await executeVetMethod(
+      req,
+      deps,
+      selectedRequirement,
+      selectedMethod,
+      context,
+    );
+    const next: VetOperationCheckpoint = {
+      ...intent,
+      stage: "method-complete",
+      methodOutcome,
+      methodOutcomeHash: exactArtifactHash(methodOutcome),
+    };
+    checkpoint = (
+      await transitionVetCheckpoint(
+        deps.operationStore,
+        context,
+        checkpoint,
+        next,
+      )
+    ).checkpoint;
+  }
+
+  if (checkpoint.stage === "method-complete") {
+    const outcome = checkpoint.methodOutcome;
+    const unsignedResult: Omit<VerifyResult, "signature"> = {
+      resultVersion: "1",
+      scheme: context.scheme,
+      identifier: context.identifier,
+      recipeVersion: req.recipe.recipeVersion,
+      method: selectedMethod.kind,
+      decision: outcome.decision,
+      reason: reasonFor(outcome.decision),
+      attestation: outcome.attestation,
+      ...(outcome.data ? { data: outcome.data } : {}),
+      fetchedAt: outcome.fetchedAt,
+      verifiedAt: outcome.verifiedAt,
+    };
+    const unsignedResultHash = contentHash(
+      unsignedResult as unknown as Record<string, unknown>,
+    );
+    const result = snapshot(
+      await runVetStep(
+        deps.operationStore,
+        context,
+        "verify-result",
+        exactArtifactHash(unsignedResult),
+        () => signComponentArtifact(
+          snapshot(unsignedResult, "unsigned VerifyResult"),
+          "dacs-verifyresult:v1:",
+          deps.componentSigner,
+        ),
+      ),
+      "signed VerifyResult",
+    ) as VerifyResult;
+    if (!isVerifyResult(result)) {
+      throw new DacsError("VerifyResult signer produced a non-current artifact");
+    }
+    if (
+      contentHash(result as unknown as Record<string, unknown>) !==
+      unsignedResultHash
+    ) {
+      throw new DacsError("VerifyResult signer changed the signed result scope");
+    }
+    await authenticateSignedArtifact?.(
+      result as unknown as Record<string, unknown>,
+      "dacs-verifyresult:v1:",
+    );
+    const next: VetOperationCheckpoint = {
+      ...intent,
+      stage: "result-submitting",
+      resultAddress: context.resultAddress,
+      result,
+      resultArtifactHash: exactArtifactHash(result),
+    };
+    checkpoint = (
+      await transitionVetCheckpoint(
+        deps.operationStore,
+        context,
+        checkpoint,
+        next,
+      )
+    ).checkpoint;
+  }
+
+  if (
+    checkpoint.stage === "result-submitting" ||
+    checkpoint.stage === "result-finalized" ||
+    checkpoint.stage === "composite-submitting" ||
+    checkpoint.stage === "complete"
+  ) {
+    await authenticateSignedArtifact?.(
+      checkpoint.result as unknown as Record<string, unknown>,
+      "dacs-verifyresult:v1:",
+    );
+  }
+
+  if (checkpoint.stage === "result-submitting") {
+    const submittingResult = checkpoint;
+    const resultAnchorValue = await runVetStep(
+      deps.operationStore,
+      context,
+      "verify-result-anchor",
+      exactArtifactHash({
+        logicalAddress: submittingResult.resultAddress,
+        artifactHash: submittingResult.resultArtifactHash,
+      }),
+      () => reconcileOrPersistFinalizedJson(
+        submittingResult.resultAddress,
+        submittingResult.result as unknown as Record<string, unknown>,
+        deps,
+        isVerifyResult,
+      ),
+    );
+    if (!isFinalizedVetAnchor(resultAnchorValue)) {
+      throw new DacsError("VerifyResult anchor step returned corrupt state");
+    }
+    const resultAnchor = await authenticateFinalizedJson(
+      submittingResult.resultAddress,
+      submittingResult.result as unknown as Record<string, unknown>,
+      resultAnchorValue,
+      deps,
+      isVerifyResult,
+    );
+    const next: VetOperationCheckpoint = {
+      ...checkpoint,
+      stage: "result-finalized",
+      resultAnchor,
+    };
+    checkpoint = (
+      await transitionVetCheckpoint(
+        deps.operationStore,
+        context,
+        checkpoint,
+        next,
+      )
+    ).checkpoint;
+  }
+
+  if (
+    checkpoint.stage === "intent" ||
+    checkpoint.stage === "method-complete" ||
+    checkpoint.stage === "result-submitting"
+  ) {
+    throw new DacsError("Vet operation could not advance beyond result submission");
+  }
+  const authenticatedResultAnchor = await authenticateFinalizedJson(
+    checkpoint.resultAddress,
+    checkpoint.result as unknown as Record<string, unknown>,
+    checkpoint.resultAnchor,
+    deps,
+    isVerifyResult,
+  );
+  return { checkpoint, authenticatedResultAnchor };
+}
+
 /**
  * Run one current DACS-2 method, sign and anchor its VerifyResult, aggregate the
  * exact §7.7 record, and sign that record. No legacy entry/record is emitted and
@@ -1780,236 +2420,15 @@ export async function vetCore(
     req,
     signer: deps.componentSigner,
   };
-  const intent: VetOperationCheckpoint = {
-    operationVersion: "1",
-    operationKey: recordAddress,
-    operationHash,
-    stage: "intent",
-  };
-  let checkpoint = await loadVetCheckpoint(deps.operationStore, context);
-  if (checkpoint === null) {
-    checkpoint = (
-      await transitionVetCheckpoint(
-        deps.operationStore,
-        context,
-        null,
-        intent,
-      )
-    ).checkpoint;
-  }
-  if (checkpoint === null) {
-    throw new DacsError("Vet operation intent could not be established");
-  }
-
-  if (checkpoint.stage === "intent") {
-    const outcomeValue = await runVetStep(
-      deps.operationStore,
-      context,
-      "method",
-      operationHash,
-      async () => {
-        const methodStartedAt = readClock(deps.nowMs, "Vet method start");
-        let outcome: {
-          decision: VerificationDecision;
-          attestation: AttestationRef;
-          fetchedAt: number;
-          data?: Record<string, unknown>;
-        };
-        switch (selectedMethod.kind) {
-          case "self-signed": {
-            const selfSigned = await selfSignedAttestation(req, deps, {
-              operationKey: context.operationKey,
-              operationHash,
-              store: deps.operationStore,
-            });
-            outcome = { ...selfSigned, fetchedAt: methodStartedAt };
-            break;
-          }
-          case "consensus-backed-proxy":
-            outcome = await proxyAttestation(
-              req,
-              deps,
-              selectedMethod,
-              selectedRequirement,
-            );
-            break;
-          default:
-            throw new DacsError(
-              `unsupported current verification method: ${selectedMethod.kind}`,
-            );
-        }
-        if (outcome.fetchedAt < methodStartedAt) {
-          throw new DacsError(
-            "authority fetchedAt predates this verification attempt",
-          );
-        }
-        if (selectedRequirement.parameters !== undefined) {
-          try {
-            const matched = await deps.matchRequirementParameters!(
-              deepFreezeSnapshot({
-                requirement: snapshot(
-                  selectedRequirement,
-                  "parameter requirement",
-                ),
-                subject: req.subject,
-                recipe: snapshot(req.recipe, "parameter recipe"),
-                method: snapshot(selectedMethod, "parameter method"),
-                decision: outcome.decision,
-                attestation: snapshot(
-                  outcome.attestation,
-                  "parameter attestation",
-                ),
-                ...(outcome.data
-                  ? { data: snapshot(outcome.data, "parameter extracted data") }
-                  : {}),
-              }),
-            );
-            if (matched !== true) outcome.decision = "fail";
-          } catch {
-            outcome.decision = "error";
-          }
-        }
-        return {
-          ...outcome,
-          verifiedAt: readClock(
-            deps.nowMs,
-            "VerifyResult verifiedAt",
-            outcome.fetchedAt,
-          ),
-        } satisfies VetMethodOutcome;
-      },
-    );
-    const methodOutcome = captureMethodOutcome(outcomeValue);
-    const next: VetOperationCheckpoint = {
-      ...intent,
-      stage: "method-complete",
-      methodOutcome,
-      methodOutcomeHash: exactArtifactHash(methodOutcome),
-    };
-    checkpoint = (
-      await transitionVetCheckpoint(
-        deps.operationStore,
-        context,
-        checkpoint,
-        next,
-      )
-    ).checkpoint;
-  }
-
-  if (checkpoint.stage === "method-complete") {
-    const outcome = checkpoint.methodOutcome;
-    const unsignedResult: Omit<VerifyResult, "signature"> = {
-      resultVersion: "1",
-      scheme,
-      identifier,
-      recipeVersion: req.recipe.recipeVersion,
-      method: selectedMethod.kind,
-      decision: outcome.decision,
-      reason: reasonFor(outcome.decision),
-      attestation: outcome.attestation,
-      ...(outcome.data ? { data: outcome.data } : {}),
-      fetchedAt: outcome.fetchedAt,
-      verifiedAt: outcome.verifiedAt,
-    };
-    const unsignedResultHash = contentHash(
-      unsignedResult as unknown as Record<string, unknown>,
-    );
-    const result = snapshot(
-      await runVetStep(
-        deps.operationStore,
-        context,
-        "verify-result",
-        exactArtifactHash(unsignedResult),
-        () => signComponentArtifact(
-          snapshot(unsignedResult, "unsigned VerifyResult"),
-          "dacs-verifyresult:v1:",
-          deps.componentSigner,
-        ),
-      ),
-      "signed VerifyResult",
-    ) as VerifyResult;
-    if (!isVerifyResult(result)) {
-      throw new DacsError("VerifyResult signer produced a non-current artifact");
-    }
-    if (
-      contentHash(result as unknown as Record<string, unknown>) !==
-      unsignedResultHash
-    ) {
-      throw new DacsError("VerifyResult signer changed the signed result scope");
-    }
-    const next: VetOperationCheckpoint = {
-      ...intent,
-      stage: "result-submitting",
-      resultAddress,
-      result,
-      resultArtifactHash: exactArtifactHash(result),
-    };
-    checkpoint = (
-      await transitionVetCheckpoint(
-        deps.operationStore,
-        context,
-        checkpoint,
-        next,
-      )
-    ).checkpoint;
-  }
-
-  if (checkpoint.stage === "result-submitting") {
-    const submittingResult = checkpoint;
-    const resultAnchorValue = await runVetStep(
-      deps.operationStore,
-      context,
-      "verify-result-anchor",
-      exactArtifactHash({
-        logicalAddress: submittingResult.resultAddress,
-        artifactHash: submittingResult.resultArtifactHash,
-      }),
-      () => reconcileOrPersistFinalizedJson(
-        submittingResult.resultAddress,
-        submittingResult.result as unknown as Record<string, unknown>,
-        deps,
-        isVerifyResult,
-      ),
-    );
-    if (!isFinalizedVetAnchor(resultAnchorValue)) {
-      throw new DacsError("VerifyResult anchor step returned corrupt state");
-    }
-    const resultAnchor = await authenticateFinalizedJson(
-      submittingResult.resultAddress,
-      submittingResult.result as unknown as Record<string, unknown>,
-      resultAnchorValue,
-      deps,
-      isVerifyResult,
-    );
-    const next: VetOperationCheckpoint = {
-      ...checkpoint,
-      stage: "result-finalized",
-      resultAnchor,
-    };
-    checkpoint = (
-      await transitionVetCheckpoint(
-        deps.operationStore,
-        context,
-        checkpoint,
-        next,
-      )
-    ).checkpoint;
-  }
-
-  if (
-    checkpoint.stage === "intent" ||
-    checkpoint.stage === "method-complete" ||
-    checkpoint.stage === "result-submitting"
-  ) {
-    throw new DacsError("Vet operation could not advance beyond result submission");
-  }
-  const authenticatedResultAnchor = await authenticateFinalizedJson(
-    checkpoint.resultAddress,
-    checkpoint.result as unknown as Record<string, unknown>,
-    checkpoint.resultAnchor,
+  const durableResult = await produceDurableVetResult(
+    req,
     deps,
-    isVerifyResult,
+    selectedRequirement,
+    selectedMethod,
+    context,
   );
+  let checkpoint: VetOperationCheckpoint = durableResult.checkpoint;
+  const { authenticatedResultAnchor } = durableResult;
 
   if (checkpoint.stage === "result-finalized") {
     const finalizedResult = checkpoint;
@@ -2146,5 +2565,841 @@ export async function vetCore(
     record: checkpoint.record,
     recordRef: authenticatedRecordAnchor.ref,
     anchorReceipt: authenticatedRecordAnchor.receipt,
+  });
+}
+
+interface PartyVetFinalizedAttempt {
+  attemptId: string;
+  resultAddress: string;
+  result: VerifyResult;
+  resultArtifactHash: string;
+  resultAnchor: FinalizedVetAnchor;
+}
+
+export type PartyVetOperationCheckpoint =
+  | {
+      operationVersion: "party-vet-1";
+      operationKey: string;
+      operationHash: string;
+      stage: "planned";
+      plan: PartyVetPlan;
+    }
+  | {
+      operationVersion: "party-vet-1";
+      operationKey: string;
+      operationHash: string;
+      stage: "composite-submitting";
+      plan: PartyVetPlan;
+      executedAttempts: PartyVetFinalizedAttempt[];
+      recordAddress: string;
+      record: CompositeVerificationRecord;
+      recordArtifactHash: string;
+    }
+  | {
+      operationVersion: "party-vet-1";
+      operationKey: string;
+      operationHash: string;
+      stage: "complete";
+      plan: PartyVetPlan;
+      executedAttempts: PartyVetFinalizedAttempt[];
+      recordAddress: string;
+      record: CompositeVerificationRecord;
+      recordArtifactHash: string;
+      recordAnchor: FinalizedVetAnchor;
+    };
+
+async function authenticatePartyComponent<TKey>(
+  artifact: Readonly<Record<string, unknown>>,
+  separator: "dacs-verifyresult:v1:" | "dacs-composite:v1:",
+  deps: CapturedPartyVetDeps<TKey>,
+  expectedSigner?: Readonly<Pick<ComponentSignature, "algorithm" | "signer">>,
+): Promise<void> {
+  let verdict: Awaited<ReturnType<typeof verifyComponentSignature<TKey>>>;
+  try {
+    verdict = await verifyComponentSignature(
+      deepFreezeSnapshot(snapshot(artifact, "party Vet signed component")),
+      separator,
+      {
+        isSignerAuthorized: async (candidate, signature) => {
+          if (
+            expectedSigner &&
+            (signature.algorithm !== expectedSigner.algorithm ||
+              signature.signer !== expectedSigner.signer)
+          ) {
+            return false;
+          }
+          return (
+            (await deps.componentVerifier.isSignerAuthorized(
+              candidate,
+              signature,
+            )) === true
+          );
+        },
+        resolvePublicKey: deps.componentVerifier.resolvePublicKey,
+        verify: deps.componentVerifier.verify,
+      },
+    );
+  } catch {
+    throw new DacsError("party Vet component signature verification errored");
+  }
+  if (verdict.status !== "valid") {
+    throw new DacsError(
+      `party Vet component signature is not authenticated (${verdict.status})`,
+    );
+  }
+}
+
+function assertPartyResultTime(
+  result: Readonly<VerifyResult>,
+  now: number,
+  label: string,
+): void {
+  if (
+    result.fetchedAt > result.verifiedAt ||
+    result.fetchedAt > now ||
+    result.verifiedAt > now ||
+    (result.validUntil !== undefined && result.validUntil < result.verifiedAt)
+  ) {
+    throw new DacsError(`${label} contains future or inconsistent timestamps`);
+  }
+}
+
+async function authenticateCarriedResult<TKey>(
+  bundle: Readonly<IdentityBundle>,
+  claimSubject: string,
+  deps: CapturedPartyVetDeps<TKey>,
+  now: number,
+): Promise<"freshness" | "dealSpecific"> {
+  const matches = bundle.claims.filter((claim) => claim.ref === claimSubject);
+  if (matches.length !== 1) {
+    throw new DacsError(
+      `party Vet claim ${claimSubject} has ambiguous bundle provenance`,
+    );
+  }
+  const claim = matches[0]!;
+  if (!claim.verifiedBy) {
+    if (claim.issuedAt !== undefined) {
+      throw new DacsError(
+        `party Vet claim ${claimSubject} has unauthenticated issuedAt`,
+      );
+    }
+    return "dealSpecific";
+  }
+  let raw: Record<string, unknown> | null;
+  try {
+    raw = await deps.vet.readAnchoredJson(
+      deepFreezeSnapshot(snapshot(claim.verifiedBy, "carried VerifyResult ref")),
+    );
+  } catch {
+    throw new DacsError(
+      `party Vet carried VerifyResult for ${claimSubject} is unresolved`,
+    );
+  }
+  if (
+    raw === null ||
+    nodeTypes.isProxy(raw) ||
+    !isExactJsonRecord(raw) ||
+    !isVerifyResult(raw)
+  ) {
+    throw new DacsError(
+      `party Vet carried VerifyResult for ${claimSubject} is malformed`,
+    );
+  }
+  const result = deepFreezeSnapshot(
+    snapshot(raw, `party Vet carried VerifyResult ${claimSubject}`),
+  ) as VerifyResult;
+  const { scheme, identifier } = claimParts(claimSubject);
+  if (
+    contentHash(result as unknown as Record<string, unknown>) !==
+      claim.verifiedBy.contentHash ||
+    result.recipeVersion !== claim.verifiedBy.recipeVersion ||
+    result.scheme !== scheme ||
+    result.identifier !== identifier
+  ) {
+    throw new DacsError(
+      `party Vet carried VerifyResult for ${claimSubject} is mismatched`,
+    );
+  }
+  await authenticatePartyComponent(
+    result as unknown as Record<string, unknown>,
+    "dacs-verifyresult:v1:",
+    deps,
+  );
+  assertPartyResultTime(result, now, `party Vet carried VerifyResult ${claimSubject}`);
+  if (
+    (claim.issuedAt !== undefined &&
+      (claim.issuedAt > now || claim.issuedAt > result.verifiedAt)) ||
+    (claim.expiresAt !== undefined &&
+      ((claim.issuedAt !== undefined && claim.expiresAt < claim.issuedAt) ||
+        (result.validUntil !== undefined &&
+          claim.expiresAt > result.validUntil)))
+  ) {
+    throw new DacsError(
+      `party Vet claim ${claimSubject} has future or inconsistent issuedAt/expiresAt`,
+    );
+  }
+  return "freshness";
+}
+
+function finalizedAttemptFor(
+  plan: Readonly<PartyVetPlan>,
+  attempt: Readonly<PartyVetRequirementAttempt>,
+  checkpoint: FinalizedVetResultCheckpoint,
+  authenticatedResultAnchor: FinalizedVetAnchor,
+): PartyVetFinalizedAttempt {
+  if (
+    checkpoint.resultAddress !== attempt.resultAddress ||
+    checkpoint.resultArtifactHash !== exactArtifactHash(checkpoint.result)
+  ) {
+    throw new DacsError("party Vet finalized attempt is mismatched");
+  }
+  const outcome: PartyVetAttemptOutcome = {
+    attemptId: attempt.attemptId,
+    result: checkpoint.result,
+  };
+  // Reuse the pure path-provenance guard for this exact execution prefix.
+  const priorIds = plan.attempts
+    .slice(0, attempt.index)
+    .map((candidate) => candidate.attemptId);
+  if (priorIds.includes(outcome.attemptId)) {
+    throw new DacsError("party Vet attempt identity is duplicated");
+  }
+  return deepFreezeSnapshot({
+    attemptId: attempt.attemptId,
+    resultAddress: checkpoint.resultAddress,
+    result: checkpoint.result,
+    resultArtifactHash: checkpoint.resultArtifactHash,
+    resultAnchor: authenticatedResultAnchor,
+  });
+}
+
+function partyAttemptRefs(
+  attempts: readonly PartyVetFinalizedAttempt[],
+  plan: Readonly<PartyVetPlan>,
+): { freshness: VerifyResultRef[]; dealSpecific: VerifyResultRef[] } {
+  const freshness: VerifyResultRef[] = [];
+  const dealSpecific: VerifyResultRef[] = [];
+  const addresses = new Set<string>();
+  const refs = new Set<string>();
+  for (const finalized of attempts) {
+    const attempt = plan.attempts.find(
+      (candidate) => candidate.attemptId === finalized.attemptId,
+    );
+    if (!attempt) {
+      throw new DacsError("party Vet result has no requirement-path provenance");
+    }
+    if (addresses.has(finalized.resultAddress)) {
+      throw new DacsError("party Vet repeats a finalized result address");
+    }
+    addresses.add(finalized.resultAddress);
+    const ref = verifyResultRefFromAnchor(
+      finalized.result,
+      finalized.resultAnchor.ref,
+    );
+    const refIdentity = canonicalize(ref);
+    if (refs.has(refIdentity)) {
+      throw new DacsError("party Vet repeats a VerifyResult reference");
+    }
+    refs.add(refIdentity);
+    (attempt.classification === "freshness" ? freshness : dealSpecific).push(ref);
+  }
+  return { freshness, dealSpecific };
+}
+
+function completePartyState(
+  plan: PartyVetPlan,
+  finalized: readonly PartyVetFinalizedAttempt[],
+): Extract<ReturnType<typeof advancePartyVetPlan>, { status: "complete" }> {
+  const outcomes = finalized.map((attempt) => ({
+    attemptId: attempt.attemptId,
+    result: attempt.result,
+  }));
+  const state = advancePartyVetPlan(plan, outcomes);
+  if (state.status !== "complete") {
+    throw new DacsError("party Vet composite checkpoint has an incomplete result set");
+  }
+  return state;
+}
+
+function assertPartyRecordBindings(
+  record: Readonly<CompositeVerificationRecord>,
+  finalized: readonly PartyVetFinalizedAttempt[],
+  plan: PartyVetPlan,
+): void {
+  const state = completePartyState(plan, finalized);
+  const refs = partyAttemptRefs(finalized, plan);
+  const latestResultTime = finalized.reduce(
+    (latest, attempt) => Math.max(latest, attempt.result.verifiedAt),
+    0,
+  );
+  const expectedUnsigned: Omit<CompositeVerificationRecord, "signature"> = {
+    recordVersion: "1",
+    jobId: plan.jobId,
+    evaluatedParty: plan.evaluatedParty,
+    bundleHash: plan.bundleHash,
+    requirementHash: plan.requirementHash,
+    freshness: refs.freshness,
+    supplementary: plan.supplementary,
+    dealSpecific: refs.dealSpecific,
+    overallDecision: state.overallDecision,
+    ...(plan.warnings !== undefined ? { warnings: plan.warnings } : {}),
+    generatedAt: record.generatedAt,
+  };
+  const { signature: _signature, ...actualUnsigned } = record;
+  if (
+    record.signature.algorithm !== plan.verifier.algorithm ||
+    record.signature.signer !== plan.verifier.signer ||
+    record.generatedAt < latestResultTime ||
+    !canonicalEqual(actualUnsigned, expectedUnsigned)
+  ) {
+    throw new DacsError("party Vet composite record is mismatched");
+  }
+}
+
+function capturePartyFinalizedAttempts(
+  value: unknown,
+  plan: PartyVetPlan,
+): PartyVetFinalizedAttempt[] {
+  const values = denseOwnArrayValues(value, "party Vet finalized attempts");
+  const captured = values.map((raw, index): PartyVetFinalizedAttempt => {
+    if (!isExactJsonRecord(raw) || !hasExactKeys(raw, [
+      "attemptId",
+      "resultAddress",
+      "result",
+      "resultArtifactHash",
+      "resultAnchor",
+    ])) {
+      throw new DacsError(`party Vet finalized attempt ${index} is malformed`);
+    }
+    const attempt = plan.attempts.find(
+      (candidate) => candidate.attemptId === raw.attemptId,
+    );
+    if (
+      !attempt ||
+      raw.resultAddress !== attempt.resultAddress ||
+      !isVerifyResult(raw.result) ||
+      raw.resultArtifactHash !== exactArtifactHash(raw.result) ||
+      !isFinalizedVetAnchor(raw.resultAnchor)
+    ) {
+      throw new DacsError(`party Vet finalized attempt ${index} is mismatched`);
+    }
+    const result = raw.result;
+    const { scheme, identifier } = claimParts(attempt.claimSubject);
+    if (
+      result.scheme !== scheme ||
+      result.identifier !== identifier ||
+      result.recipeVersion !== attempt.recipeVersion ||
+      result.method !== attempt.method.kind ||
+      result.signature.algorithm !== plan.verifier.algorithm ||
+      result.signature.signer !== plan.verifier.signer
+    ) {
+      throw new DacsError(`party Vet finalized attempt ${index} bindings differ`);
+    }
+    return deepFreezeSnapshot(
+      snapshot(raw, `party Vet finalized attempt ${index}`),
+    ) as unknown as PartyVetFinalizedAttempt;
+  });
+  completePartyState(plan, captured);
+  return captured;
+}
+
+function capturePartyCheckpoint(
+  value: unknown,
+  plan: PartyVetPlan,
+): PartyVetOperationCheckpoint {
+  if (!isExactJsonRecord(value)) {
+    throw new DacsError("party Vet checkpoint is not exact JSON data");
+  }
+  const checkpoint = snapshot(value, "party Vet checkpoint");
+  if (
+    !isRecord(checkpoint) ||
+    checkpoint.operationVersion !== "party-vet-1" ||
+    checkpoint.operationKey !== plan.recordAddress ||
+    checkpoint.operationHash !== plan.planHash ||
+    !canonicalEqual(checkpoint.plan, plan) ||
+    typeof checkpoint.stage !== "string"
+  ) {
+    throw new DacsError("party Vet checkpoint is corrupt or mismatched");
+  }
+  const common = [
+    "operationVersion",
+    "operationKey",
+    "operationHash",
+    "stage",
+    "plan",
+  ];
+  if (checkpoint.stage === "planned") {
+    if (!hasExactKeys(checkpoint, common)) {
+      throw new DacsError("party Vet planned checkpoint contains extra fields");
+    }
+    return checkpoint as unknown as PartyVetOperationCheckpoint;
+  }
+  const executedAttempts = capturePartyFinalizedAttempts(
+    checkpoint.executedAttempts,
+    plan,
+  );
+  if (
+    checkpoint.recordAddress !== plan.recordAddress ||
+    !isCompositeVerificationRecord(checkpoint.record) ||
+    checkpoint.recordArtifactHash !== exactArtifactHash(checkpoint.record)
+  ) {
+    throw new DacsError("party Vet composite checkpoint is corrupt");
+  }
+  assertPartyRecordBindings(checkpoint.record, executedAttempts, plan);
+  const compositeKeys = [
+    ...common,
+    "executedAttempts",
+    "recordAddress",
+    "record",
+    "recordArtifactHash",
+  ];
+  if (checkpoint.stage === "composite-submitting") {
+    if (!hasExactKeys(checkpoint, compositeKeys)) {
+      throw new DacsError("party Vet composite checkpoint contains extra fields");
+    }
+    return checkpoint as unknown as PartyVetOperationCheckpoint;
+  }
+  if (
+    checkpoint.stage !== "complete" ||
+    !isFinalizedVetAnchor(checkpoint.recordAnchor) ||
+    !hasExactKeys(checkpoint, [...compositeKeys, "recordAnchor"])
+  ) {
+    throw new DacsError("party Vet complete checkpoint is partial or corrupt");
+  }
+  return checkpoint as unknown as PartyVetOperationCheckpoint;
+}
+
+async function loadPartyCheckpoint(
+  store: VetOperationStore,
+  plan: PartyVetPlan,
+): Promise<PartyVetOperationCheckpoint | null> {
+  let loaded: unknown;
+  try {
+    loaded = await store.load(plan.recordAddress);
+  } catch {
+    throw new DacsError("party Vet plan lookup is indeterminate");
+  }
+  return loaded === null ? null : capturePartyCheckpoint(loaded, plan);
+}
+
+type PartyVetCompareAndSet = (input: {
+  operationKey: string;
+  expected: Readonly<PartyVetOperationCheckpoint> | null;
+  next: Readonly<PartyVetOperationCheckpoint>;
+}) => Promise<boolean>;
+
+async function transitionPartyCheckpoint(
+  store: VetOperationStore,
+  plan: PartyVetPlan,
+  expected: PartyVetOperationCheckpoint | null,
+  next: PartyVetOperationCheckpoint,
+): Promise<PartyVetOperationCheckpoint> {
+  let changed: boolean | undefined;
+  try {
+    const compareAndSet = store.compareAndSet as unknown as PartyVetCompareAndSet;
+    const response = await compareAndSet(
+      deepFreezeSnapshot({
+        operationKey: plan.recordAddress,
+        expected: expected === null
+          ? null
+          : snapshot(expected, "expected party Vet checkpoint"),
+        next: snapshot(next, "next party Vet checkpoint"),
+      }),
+    );
+    if (response !== true && response !== false) {
+      throw new DacsError("party Vet plan CAS returned a non-boolean verdict");
+    }
+    changed = response;
+  } catch (error) {
+    if (error instanceof DacsError) throw error;
+  }
+  const loaded = await loadPartyCheckpoint(store, plan);
+  if (loaded === null || !canonicalEqual(loaded, next)) {
+    if (changed === false) {
+      throw new DacsError("party Vet plan was claimed by a conflicting writer");
+    }
+    throw new DacsError("party Vet plan CAS did not durably store exact bytes");
+  }
+  return loaded;
+}
+
+async function authenticatePartyAttempt<TKey>(
+  finalized: PartyVetFinalizedAttempt,
+  attempt: PartyVetRequirementAttempt,
+  deps: CapturedPartyVetDeps<TKey>,
+): Promise<PartyVetFinalizedAttempt> {
+  await authenticatePartyComponent(
+    finalized.result as unknown as Record<string, unknown>,
+    "dacs-verifyresult:v1:",
+    deps,
+    deps.vet.componentSigner,
+  );
+  const now = readClock(deps.vet.nowMs, "party Vet result acceptance");
+  assertPartyResultTime(finalized.result, now, "party Vet VerifyResult");
+  const anchor = await authenticateFinalizedJson(
+    attempt.resultAddress,
+    finalized.result as unknown as Record<string, unknown>,
+    finalized.resultAnchor,
+    deps.vet,
+    isVerifyResult,
+  );
+  return deepFreezeSnapshot({ ...finalized, resultAnchor: anchor });
+}
+
+/**
+ * Public VPC-2 producer: one exact bundle, one evaluated party, all required
+ * claim attempts, and exactly one finalized party-level CVR.
+ */
+export async function partyVetCore<TKey>(
+  requestSource: PartyVetRequest,
+  dependencySource: PartyVetDeps<TKey>,
+): Promise<VetProduction> {
+  const request = capturePartyVetRequest(requestSource);
+  const deps = capturePartyVetDeps(dependencySource);
+  if (
+    !isIdentityBundle(request.identityBundle) ||
+    !isCompositeBundleRequirement(request.requirement)
+  ) {
+    throw new DacsError(
+      "party Vet requires a current IdentityBundle and BundleRequirement",
+    );
+  }
+  const claimRefs = request.identityBundle.claims.map((claim) => claim.ref);
+  if (new Set(claimRefs).size !== claimRefs.length) {
+    throw new DacsError("party Vet IdentityBundle repeats a claim reference");
+  }
+  const bundleHash = identityBundleHash(request.identityBundle);
+  let presentationValid = false;
+  try {
+    presentationValid = (
+      await deps.verifyIdentityPresentation(
+        deepFreezeSnapshot({
+          bundle: snapshot(request.identityBundle, "party Vet presentation bundle"),
+          signedBytes: signedBytes(
+            "dacs-bundle-presentation:v1:",
+            bundleHash,
+          ),
+        }),
+      )
+    ) === true;
+  } catch {
+    presentationValid = false;
+  }
+  if (!presentationValid) {
+    throw new DacsError("party Vet IdentityBundle presentation is not authenticated");
+  }
+
+  const classificationCache = new Map<
+    string,
+    "freshness" | "dealSpecific"
+  >();
+  const preparedAttempts: PartyVetAttemptInput[] = [];
+  for (const attempt of request.attempts) {
+    let classification = classificationCache.get(attempt.claimSubject);
+    if (!classification) {
+      classification = await authenticateCarriedResult(
+        request.identityBundle,
+        attempt.claimSubject,
+        deps,
+        readClock(deps.vet.nowMs, "party Vet bundle acceptance"),
+      );
+      classificationCache.set(attempt.claimSubject, classification);
+    }
+    preparedAttempts.push({
+      requirementPath: attempt.requirementPath,
+      claimSubject: attempt.claimSubject,
+      classification,
+      recipe: attempt.recipe,
+      methodInput: attempt.methodInput,
+    });
+  }
+  const plan = createPartyVetPlan({
+    jobId: request.jobId,
+    evaluatedParty: request.evaluatedParty,
+    identityBundle: request.identityBundle,
+    requirement: request.requirement,
+    verifier: {
+      algorithm: deps.vet.componentSigner.algorithm,
+      signer: deps.vet.componentSigner.signer,
+    },
+    attempts: preparedAttempts,
+    ...(request.supplementary !== undefined
+      ? { supplementary: request.supplementary }
+      : {}),
+    ...(request.warnings !== undefined ? { warnings: request.warnings } : {}),
+  });
+  for (const attempt of plan.attempts) {
+    if (
+      attempt.recipe.availability !== "mocked" &&
+      attempt.recipe.availability !== "failed" &&
+      attempt.method.kind !== "self-signed" &&
+      attempt.method.kind !== "consensus-backed-proxy"
+    ) {
+      throw new DacsError(
+        `unsupported current verification method: ${attempt.method.kind}`,
+      );
+    }
+    if (
+      attempt.method.kind === "consensus-backed-proxy" &&
+      attempt.requirement.parameters !== undefined &&
+      Object.prototype.hasOwnProperty.call(
+        attempt.requirement.parameters,
+        "identifier",
+      )
+    ) {
+      throw new DacsError(
+        "ClaimRequirement.parameters.identifier is reserved for the canonical subject",
+      );
+    }
+    if (
+      attempt.requirement.parameters !== undefined &&
+      !deps.vet.matchRequirementParameters &&
+      attempt.recipe.availability !== "mocked" &&
+      attempt.recipe.availability !== "failed"
+    ) {
+      throw new DacsError(
+        "parameterized ClaimRequirement requires matchRequirementParameters",
+      );
+    }
+  }
+
+  const planned: PartyVetOperationCheckpoint = {
+    operationVersion: "party-vet-1",
+    operationKey: plan.recordAddress,
+    operationHash: plan.planHash,
+    stage: "planned",
+    plan,
+  };
+  let partyCheckpoint = await loadPartyCheckpoint(deps.vet.operationStore, plan);
+  if (partyCheckpoint === null) {
+    partyCheckpoint = await transitionPartyCheckpoint(
+      deps.vet.operationStore,
+      plan,
+      null,
+      planned,
+    );
+  }
+
+  const finalizedAttempts: PartyVetFinalizedAttempt[] = [];
+  let execution = advancePartyVetPlan(plan, []);
+  while (execution.status === "pending") {
+    const attempt = execution.nextAttempt;
+    const vetRequest = captureVetRequest({
+      jobId: plan.jobId,
+      subject: attempt.claimSubject,
+      bundleHash: plan.bundleHash,
+      requirement: plan.requirement,
+      recipe: attempt.recipe,
+      classification: attempt.classification,
+      ...(attempt.methodInput.kind === "self-signed"
+        ? {
+            selfSigned: {
+              assertion: attempt.methodInput.assertion,
+              signature: attempt.methodInput.signature,
+            },
+          }
+        : {}),
+    });
+    const { scheme, identifier } = claimParts(attempt.claimSubject);
+    const context: VetCheckpointContext = {
+      operationKey: attempt.operationKey,
+      operationHash: attempt.attemptId,
+      resultAddress: attempt.resultAddress,
+      recordAddress: plan.recordAddress,
+      scheme,
+      identifier,
+      method: attempt.method.kind,
+      recipeVersion: attempt.recipeVersion,
+      req: vetRequest,
+      signer: deps.vet.componentSigner,
+    };
+    const durable = await produceDurableVetResult(
+      vetRequest,
+      deps.vet,
+      attempt.requirement,
+      attempt.method,
+      context,
+      (artifact, separator) => authenticatePartyComponent(
+        artifact,
+        separator,
+        deps,
+        plan.verifier,
+      ),
+    );
+    const finalized = await authenticatePartyAttempt(
+      finalizedAttemptFor(
+        plan,
+        attempt,
+        durable.checkpoint,
+        durable.authenticatedResultAnchor,
+      ),
+      attempt,
+      deps,
+    );
+    finalizedAttempts.push(finalized);
+    execution = advancePartyVetPlan(
+      plan,
+      finalizedAttempts.map((entry) => ({
+        attemptId: entry.attemptId,
+        result: entry.result,
+      })),
+    );
+  }
+
+  if (partyCheckpoint.stage === "planned") {
+    const state = completePartyState(plan, finalizedAttempts);
+    const refs = partyAttemptRefs(finalizedAttempts, plan);
+    const latestResultTime = finalizedAttempts.reduce(
+      (latest, attempt) => Math.max(latest, attempt.result.verifiedAt),
+      0,
+    );
+    const compositeInputHash = exactArtifactHash({
+      planHash: plan.planHash,
+      executedAttempts: finalizedAttempts.map((attempt) => ({
+        attemptId: attempt.attemptId,
+        resultAddress: attempt.resultAddress,
+        resultArtifactHash: attempt.resultArtifactHash,
+        resultRef: verifyResultRefFromAnchor(
+          attempt.result,
+          attempt.resultAnchor.ref,
+        ),
+      })),
+    });
+    const record = snapshot(
+      await runVetStep(
+        deps.vet.operationStore,
+        { operationKey: plan.recordAddress, operationHash: plan.planHash },
+        "composite",
+        compositeInputHash,
+        async () => {
+          const unsignedRecord: Omit<CompositeVerificationRecord, "signature"> = {
+            recordVersion: "1",
+            jobId: plan.jobId,
+            evaluatedParty: plan.evaluatedParty,
+            bundleHash: plan.bundleHash,
+            requirementHash: plan.requirementHash,
+            freshness: refs.freshness,
+            supplementary: plan.supplementary,
+            dealSpecific: refs.dealSpecific,
+            overallDecision: state.overallDecision,
+            ...(plan.warnings !== undefined ? { warnings: plan.warnings } : {}),
+            generatedAt: readClock(
+              deps.vet.nowMs,
+              "party Vet composite generatedAt",
+              latestResultTime,
+            ),
+          };
+          return signComponentArtifact(
+            deepFreezeSnapshot(
+              snapshot(unsignedRecord, "unsigned party Vet composite"),
+            ),
+            "dacs-composite:v1:",
+            deps.vet.componentSigner,
+          );
+        },
+      ),
+      "signed party Vet composite",
+    ) as CompositeVerificationRecord;
+    if (!isCompositeVerificationRecord(record)) {
+      throw new DacsError("party Vet composite signer produced a malformed record");
+    }
+    assertPartyRecordBindings(record, finalizedAttempts, plan);
+    await authenticatePartyComponent(
+      record as unknown as Record<string, unknown>,
+      "dacs-composite:v1:",
+      deps,
+      plan.verifier,
+    );
+    const next: PartyVetOperationCheckpoint = {
+      ...planned,
+      stage: "composite-submitting",
+      executedAttempts: finalizedAttempts,
+      recordAddress: plan.recordAddress,
+      record,
+      recordArtifactHash: exactArtifactHash(record),
+    };
+    partyCheckpoint = await transitionPartyCheckpoint(
+      deps.vet.operationStore,
+      plan,
+      partyCheckpoint,
+      next,
+    );
+  }
+
+  if (partyCheckpoint.stage === "composite-submitting") {
+    const submitting = partyCheckpoint;
+    await authenticatePartyComponent(
+      submitting.record as unknown as Record<string, unknown>,
+      "dacs-composite:v1:",
+      deps,
+      plan.verifier,
+    );
+    const anchorValue = await runVetStep(
+      deps.vet.operationStore,
+      { operationKey: plan.recordAddress, operationHash: plan.planHash },
+      "composite-anchor",
+      exactArtifactHash({
+        logicalAddress: plan.recordAddress,
+        artifactHash: submitting.recordArtifactHash,
+      }),
+      () => reconcileOrPersistFinalizedJson(
+        plan.recordAddress,
+        submitting.record as unknown as Record<string, unknown>,
+        deps.vet,
+        isCompositeVerificationRecord,
+      ),
+    );
+    if (!isFinalizedVetAnchor(anchorValue)) {
+      throw new DacsError("party Vet composite anchor returned corrupt state");
+    }
+    const recordAnchor = await authenticateFinalizedJson(
+      plan.recordAddress,
+      submitting.record as unknown as Record<string, unknown>,
+      anchorValue,
+      deps.vet,
+      isCompositeVerificationRecord,
+    );
+    const next: PartyVetOperationCheckpoint = {
+      ...submitting,
+      stage: "complete",
+      recordAnchor,
+    };
+    partyCheckpoint = await transitionPartyCheckpoint(
+      deps.vet.operationStore,
+      plan,
+      partyCheckpoint,
+      next,
+    );
+  }
+
+  if (partyCheckpoint.stage !== "complete") {
+    throw new DacsError("party Vet operation could not reach complete state");
+  }
+  assertPartyRecordBindings(
+    partyCheckpoint.record,
+    partyCheckpoint.executedAttempts,
+    plan,
+  );
+  await authenticatePartyComponent(
+    partyCheckpoint.record as unknown as Record<string, unknown>,
+    "dacs-composite:v1:",
+    deps,
+    plan.verifier,
+  );
+  const acceptedAt = readClock(deps.vet.nowMs, "party Vet composite acceptance");
+  if (partyCheckpoint.record.generatedAt > acceptedAt) {
+    throw new DacsError("party Vet composite record is future-dated");
+  }
+  const recordAnchor = await authenticateFinalizedJson(
+    plan.recordAddress,
+    partyCheckpoint.record as unknown as Record<string, unknown>,
+    partyCheckpoint.recordAnchor,
+    deps.vet,
+    isCompositeVerificationRecord,
+  );
+  return structuredClone({
+    record: partyCheckpoint.record,
+    recordRef: recordAnchor.ref,
+    anchorReceipt: recordAnchor.receipt,
   });
 }
