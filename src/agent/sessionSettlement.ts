@@ -21,6 +21,7 @@ import {
   verifySettlementEvidence,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
+import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
 
 /** Four-valued trust-boundary decision used by settlement providers. */
 export type SessionSettlementDisposition =
@@ -42,7 +43,12 @@ export interface SessionSettlementIdentityBinding {
 export type SessionSettlementRevalidation =
   | {
       disposition: "pass";
+      outcome: "success";
       binding: SessionSettlementIdentityBinding;
+    }
+  | {
+      disposition: "pass";
+      outcome: "failure";
     }
   | {
       disposition: "fail" | "error" | "indeterminate";
@@ -53,15 +59,21 @@ export type SessionSettlementRevalidation =
 export interface SessionSettlementIdentityClaimInput {
   binding: SessionSettlementIdentityBinding;
   ownerHash: string;
+  /** DACS-4 SB-2 deterministic winner input. */
+  observedAt: number;
+  /** Hash of the exact signed-scope SettlementEvidence candidate. */
+  evidenceHash: string;
 }
 
 /** Exact result of atomically binding or recovering one settlement identity. */
 export type SessionSettlementIdentityClaim =
   | {
       disposition: "pass";
-      ownership: "bound" | "existing";
+      ownership: "bound" | "existing" | "replaced";
       binding: SessionSettlementIdentityBinding;
       ownerHash: string;
+      observedAt: number;
+      evidenceHash: string;
     }
   | {
       disposition: "fail" | "error" | "indeterminate";
@@ -181,10 +193,12 @@ export interface SessionSettlementVerificationProvider {
   }) => Promise<SessionSettlementRevalidation> | SessionSettlementRevalidation;
   /**
    * Atomically bind an SB-1 settlement id to its complete stable owner. A
-   * durable implementation returns `existing` only for the exact prior input;
-   * reuse by another job, rail, phase, or owner hash is a definite failure.
+   * durable implementation applies SB-2's earlier-observedAt, then lower-
+   * evidenceHash winner rule across different job/phase bindings. It returns
+   * `existing` only for the exact prior owner and `replaced` only when this
+   * candidate deterministically displaces a later/higher-hash owner.
    */
-  claimSettlementIdentity: (
+  claimSettlementIdentity?: (
     input: Readonly<SessionSettlementIdentityClaimInput>,
   ) => Promise<SessionSettlementIdentityClaim> | SessionSettlementIdentityClaim;
   /** Required key/signature implementation for the normative evidence verifier. */
@@ -192,10 +206,9 @@ export interface SessionSettlementVerificationProvider {
 }
 
 /** Owned verification result; hashes fit the primitive-only durable checkpoint. */
-export interface VerifiedSessionSettlement {
+interface VerifiedSessionSettlementBase {
   state: "verified";
   mode: "initial" | "recovery";
-  outcome: "success" | "failure";
   contextHash: string;
   evidenceHash: string;
   nativeProofHash: string;
@@ -203,10 +216,21 @@ export interface VerifiedSessionSettlement {
   identityHash: string;
   /** Binds this exact initial/recovery observation and its claim disposition. */
   observationHash: string;
-  settlementBinding: SessionSettlementIdentityBinding;
-  settlementOwnership: "bound" | "existing";
   settlement: FinalizedSessionSettlement;
 }
+
+export type VerifiedSessionSettlement = VerifiedSessionSettlementBase & (
+  | {
+      outcome: "success";
+      settlementBinding: SessionSettlementIdentityBinding;
+      settlementOwnership: "bound" | "existing" | "replaced";
+    }
+  | {
+      outcome: "failure";
+      settlementBinding?: never;
+      settlementOwnership?: never;
+    }
+);
 
 export type SessionSettlementVerification =
   | { disposition: "verified"; value: VerifiedSessionSettlement }
@@ -246,19 +270,6 @@ const isUint = (value: unknown): value is number =>
   !Object.is(value, -0);
 const hasOwn = (value: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
-
-function isCanonicalSettlementId(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  if (/^demos:[0-9a-f]{64}$/.test(value)) return true;
-  const match = /^evm:([1-9][0-9]*):([0-9a-f]{64}):(0|[1-9][0-9]*)$/.exec(
-    value,
-  );
-  if (!match) return false;
-  const chainId = Number(match[1]);
-  const logIndex = Number(match[3]);
-  return Number.isSafeInteger(chainId) && chainId > 0 &&
-    Number.isSafeInteger(logIndex) && logIndex >= 0;
-}
 
 function exactKeys(
   value: Record<string, unknown>,
@@ -407,7 +418,7 @@ function isIdentityBinding(
     "phaseIndex",
     "settlementId",
   ]) && isNonEmpty(value.jobId) && isNonEmpty(value.railId) &&
-    isUint(value.phaseIndex) && isCanonicalSettlementId(value.settlementId);
+    isUint(value.phaseIndex) && isCanonicalSettlementIdentity(value.settlementId);
 }
 
 function bindingMatchesContext(
@@ -544,10 +555,18 @@ function captureRevalidation(
   }
   if (
     snapshot.disposition === "pass" &&
-    exactKeys(snapshot, ["disposition", "binding"]) &&
+    snapshot.outcome === "success" &&
+    exactKeys(snapshot, ["disposition", "outcome", "binding"]) &&
     isIdentityBinding(snapshot.binding)
   ) {
     return snapshot as unknown as SessionSettlementRevalidation;
+  }
+  if (
+    snapshot.disposition === "pass" &&
+    snapshot.outcome === "failure" &&
+    exactKeys(snapshot, ["disposition", "outcome"])
+  ) {
+    return snapshot as SessionSettlementRevalidation;
   }
   if (
     ["fail", "error", "indeterminate"].includes(snapshot.disposition) &&
@@ -573,10 +592,17 @@ function captureIdentityClaim(
       "ownership",
       "binding",
       "ownerHash",
+      "observedAt",
+      "evidenceHash",
     ]) &&
-    (snapshot.ownership === "bound" || snapshot.ownership === "existing") &&
+    (snapshot.ownership === "bound" || snapshot.ownership === "existing" ||
+      snapshot.ownership === "replaced") &&
     isIdentityBinding(snapshot.binding) &&
-    isHash(snapshot.ownerHash)
+    isHash(snapshot.ownerHash) &&
+    typeof snapshot.observedAt === "number" &&
+    Number.isFinite(snapshot.observedAt) &&
+    !Object.is(snapshot.observedAt, -0) &&
+    isHash(snapshot.evidenceHash)
   ) {
     return snapshot as unknown as SessionSettlementIdentityClaim;
   }
@@ -619,7 +645,6 @@ SessionSettlementVerificationProvider | null {
       "verifyEvidenceAnchor",
       "resolveNativeProof",
       "revalidateSettlement",
-      "claimSettlementIdentity",
       "evidence",
     ];
     if (!required.every((key) => {
@@ -635,7 +660,8 @@ SessionSettlementVerificationProvider | null {
       typeof descriptors.verifyEvidenceAnchor?.value !== "function" ||
       typeof descriptors.resolveNativeProof?.value !== "function" ||
       typeof descriptors.revalidateSettlement?.value !== "function" ||
-      typeof descriptors.claimSettlementIdentity?.value !== "function" ||
+      (descriptors.claimSettlementIdentity !== undefined &&
+        typeof descriptors.claimSettlementIdentity.value !== "function") ||
       typeof evidenceDescriptors.resolvePublicKey?.value !== "function" ||
       typeof evidenceDescriptors.verify?.value !== "function"
     ) return null;
@@ -643,8 +669,9 @@ SessionSettlementVerificationProvider | null {
     const verifyEvidenceAnchor = descriptors.verifyEvidenceAnchor.value as Function;
     const resolveNativeProof = descriptors.resolveNativeProof.value as Function;
     const revalidateSettlement = descriptors.revalidateSettlement.value as Function;
-    const claimSettlementIdentity =
-      descriptors.claimSettlementIdentity.value as Function;
+    const claimSettlementIdentity = descriptors.claimSettlementIdentity?.value as
+      | Function
+      | undefined;
     const resolvePublicKey = evidenceDescriptors.resolvePublicKey.value as Function;
     const verify = evidenceDescriptors.verify.value as Function;
     return Object.freeze({
@@ -666,13 +693,17 @@ SessionSettlementVerificationProvider | null {
         INERT_PROVIDER_RECEIVER,
         [input],
       ),
-      claimSettlementIdentity: (input: Readonly<
-        SessionSettlementIdentityClaimInput
-      >) => Reflect.apply(
-        claimSettlementIdentity,
-        INERT_PROVIDER_RECEIVER,
-        [input],
-      ),
+      ...(claimSettlementIdentity
+        ? {
+            claimSettlementIdentity: (input: Readonly<
+              SessionSettlementIdentityClaimInput
+            >) => Reflect.apply(
+              claimSettlementIdentity,
+              INERT_PROVIDER_RECEIVER,
+              [input],
+            ),
+          }
+        : {}),
       evidence: Object.freeze({
         resolvePublicKey: (signer: string) =>
           Reflect.apply(resolvePublicKey, INERT_PROVIDER_RECEIVER, [signer]),
@@ -696,24 +727,39 @@ function captureProofLookup(
   } catch {
     return null;
   }
-  if (Object.values(descriptors).some((descriptor) => descriptor.get || descriptor.set)) {
+  if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+      Object.values(descriptors).some((descriptor) =>
+        descriptor.get || descriptor.set || descriptor.enumerable !== true ||
+        !("value" in descriptor) || descriptor.value === undefined)) {
     return null;
   }
-  if (value.disposition === "absent" && exactKeys(value, ["disposition"])) {
+  const keys = Object.keys(descriptors);
+  const hasKeys = (expected: readonly string[]) =>
+    keys.length === expected.length && expected.every((key) => keys.includes(key));
+  const disposition = descriptors.disposition?.value;
+  if (disposition === "absent" && hasKeys(["disposition"])) {
     return { disposition: "absent" };
   }
-  if (value.disposition === "indeterminate" &&
-      exactKeys(value, ["disposition", "reason"]) && isNonEmpty(value.reason)) {
-    return { disposition: "indeterminate", reason: value.reason };
+  if (disposition === "indeterminate" &&
+      hasKeys(["disposition", "reason"]) &&
+      isNonEmpty(descriptors.reason?.value)) {
+    return { disposition: "indeterminate", reason: descriptors.reason!.value };
   }
-  if (value.disposition !== "present") return null;
-  if (expectedEncoding === "bytes" && exactKeys(value, ["disposition", "bytes"]) &&
-      value.bytes instanceof Uint8Array) {
-    return { disposition: "present", bytes: new Uint8Array(value.bytes) };
+  if (disposition !== "present") return null;
+  if (expectedEncoding === "bytes" && hasKeys(["disposition", "bytes"]) &&
+      descriptors.bytes?.value instanceof Uint8Array) {
+    try {
+      return {
+        disposition: "present",
+        bytes: new Uint8Array(descriptors.bytes.value),
+      };
+    } catch {
+      return null;
+    }
   }
-  if (expectedEncoding === "jcs" && exactKeys(value, ["disposition", "artifact"]) &&
-      isRecord(value.artifact)) {
-    const artifact = ownedJson(value.artifact);
+  if (expectedEncoding === "jcs" && hasKeys(["disposition", "artifact"]) &&
+      isRecord(descriptors.artifact?.value)) {
+    const artifact = ownedJson(descriptors.artifact!.value);
     return artifact ? { disposition: "present", artifact } : null;
   }
   return null;
@@ -865,10 +911,14 @@ export async function verifyFinalizedSessionSettlement(
   if (!nativeDisposition) return rejected("error", "native settlement verdict is malformed");
   const nativeFailure = mapTrustDisposition(nativeDisposition, "native settlement");
   if (nativeFailure) return nativeFailure;
-  if (
-    nativeDisposition.disposition !== "pass" ||
-    !bindingMatchesContext(nativeDisposition.binding, context)
-  ) {
+  if (nativeDisposition.disposition !== "pass") {
+    return rejected("error", "native settlement pass verdict is unavailable");
+  }
+  if (nativeDisposition.outcome !== settlement.outcome) {
+    return rejected("rejected", "native settlement outcome does not match the evidence");
+  }
+  if (nativeDisposition.outcome === "success" &&
+      !bindingMatchesContext(nativeDisposition.binding, context)) {
     return rejected(
       "rejected",
       "native settlement binding does not match the authenticated session",
@@ -897,37 +947,61 @@ export async function verifyFinalizedSessionSettlement(
       evidenceRef: settlement.evidenceRef,
       anchorPublication: anchorPublicationIdentity(settlement.anchorReceipt),
       nativeProofRef: settlement.nativeProofRef,
-      settlementBinding: nativeDisposition.binding,
+      ...(nativeDisposition.outcome === "success"
+        ? { settlementBinding: nativeDisposition.binding }
+        : {}),
     }));
   } catch {
     return rejected("error", "settlement identity cannot be canonicalized safely");
   }
 
-  const claimInput = ownedJson<SessionSettlementIdentityClaimInput>({
-    binding: nativeDisposition.binding,
-    ownerHash: identityHash,
-  });
-  if (!claimInput) {
-    return rejected("error", "settlement identity claim cannot be snapshotted safely");
-  }
-  let claim: SessionSettlementIdentityClaim | null;
-  try {
-    claim = captureIdentityClaim(await provider.claimSettlementIdentity(claimInput));
-  } catch {
-    return rejected("indeterminate", "settlement identity claim threw");
-  }
-  if (!claim) return rejected("error", "settlement identity claim verdict is malformed");
-  const claimFailure = mapTrustDisposition(claim, "settlement identity claim");
-  if (claimFailure) return claimFailure;
-  if (
-    claim.disposition !== "pass" ||
-    claim.ownerHash !== identityHash ||
-    !sameBinding(claim.binding, nativeDisposition.binding)
-  ) {
-    return rejected(
-      "error",
-      "settlement identity claim returned rebound ownership",
+  let claim: Extract<SessionSettlementIdentityClaim, { disposition: "pass" }> |
+    undefined;
+  if (nativeDisposition.outcome === "success") {
+    if (!provider.claimSettlementIdentity) {
+      return rejected(
+        "error",
+        "successful settlement verification requires an atomic identity claim",
+      );
+    }
+    const claimInput = ownedJson<SessionSettlementIdentityClaimInput>({
+      binding: nativeDisposition.binding,
+      ownerHash: identityHash,
+      observedAt: settlement.evidence.observedAt,
+      evidenceHash,
+    });
+    if (!claimInput) {
+      return rejected("error", "settlement identity claim cannot be snapshotted safely");
+    }
+    let capturedClaim: SessionSettlementIdentityClaim | null;
+    try {
+      capturedClaim = captureIdentityClaim(
+        await provider.claimSettlementIdentity(claimInput),
+      );
+    } catch {
+      return rejected("indeterminate", "settlement identity claim threw");
+    }
+    if (!capturedClaim) {
+      return rejected("error", "settlement identity claim verdict is malformed");
+    }
+    const claimFailure = mapTrustDisposition(
+      capturedClaim,
+      "settlement identity claim",
     );
+    if (claimFailure) return claimFailure;
+    if (
+      capturedClaim.disposition !== "pass" ||
+      capturedClaim.ownerHash !== identityHash ||
+      capturedClaim.observedAt !== settlement.evidence.observedAt ||
+      capturedClaim.evidenceHash !== evidenceHash ||
+      !sameBinding(capturedClaim.binding, nativeDisposition.binding)
+    ) {
+      return rejected(
+        "error",
+        "settlement identity claim returned rebound ownership",
+      );
+    }
+    claim = capturedClaim;
   }
 
   let observationHash: string;
@@ -938,24 +1012,31 @@ export async function verifyFinalizedSessionSettlement(
       anchorReceipt: settlement.anchorReceipt,
       nativeProofRef: settlement.nativeProofRef,
       nativeProofHash,
-      settlementOwnership: claim.ownership,
+      ...(claim ? { settlementOwnership: claim.ownership } : {}),
     }));
   } catch {
     return rejected("error", "settlement observation cannot be canonicalized safely");
   }
-  const value = ownedJson<VerifiedSessionSettlement>({
+  const common = {
     state: "verified",
     mode,
-    outcome: settlement.outcome,
     contextHash,
     evidenceHash,
     nativeProofHash,
     identityHash,
     observationHash,
-    settlementBinding: nativeDisposition.binding,
-    settlementOwnership: claim.ownership,
     settlement,
-  });
+  } as const;
+  const value = ownedJson<VerifiedSessionSettlement>(
+    nativeDisposition.outcome === "success" && claim
+      ? {
+          ...common,
+          outcome: "success",
+          settlementBinding: nativeDisposition.binding,
+          settlementOwnership: claim.ownership,
+        }
+      : { ...common, outcome: "failure" },
+  );
   if (!value) return rejected("error", "verified settlement snapshot failed");
   return { disposition: "verified", value };
 }
