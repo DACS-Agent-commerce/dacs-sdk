@@ -1,4 +1,13 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -999,6 +1008,183 @@ describe("filesystem x402 buyer settlement recovery", () => {
     await expect(store.load(intent.settlementKey)).resolves.toMatchObject({
       status: "held",
       intent: { bindingHash: intent.bindingHash },
+    });
+  });
+
+  test("serializes competing stale-lock reclaimers into one paid authority", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    const stores = await Promise.all(Array.from({ length: 8 }, () =>
+      createFsX402BuyerSettlementStore({
+        dir,
+        lockStaleMs: 1,
+        lockTimeoutMs: 5_000,
+        lockPollMs: 1,
+      })));
+    const staleLock = join(
+      dir,
+      "locks",
+      `${sha256Hex(intent.settlementKey)}.lock`,
+    );
+    await mkdir(staleLock, { mode: 0o700 });
+    await writeFile(join(staleLock, "owner.json"), "not-json", { mode: 0o600 });
+    const old = new Date(Date.now() - 10_000);
+    await utimes(staleLock, old, old);
+
+    let submits = 0;
+    const paidTransport = transport(async (_intent, fence) => {
+      await fence.assertCurrent();
+      submits += 1;
+      return { disposition: "indeterminate", reason: "response-lost" };
+    });
+    const results = await Promise.all(stores.map((store, index) =>
+      advanceX402BuyerSettlement({
+        intent,
+        owner: `process-${index}`,
+        store,
+        authorizationProvider: provider([]),
+        transport: paidTransport,
+        now: () => 1_000,
+        leaseDurationMs: 10_000,
+      })));
+
+    expect(submits).toBe(1);
+    expect(results.filter((result) => result.status === "waiting")).toHaveLength(7);
+    expect(results.filter((result) => result.status === "indeterminate")).toHaveLength(1);
+    expect((await readdir(join(dir, "locks"))).filter((name) =>
+      name.includes(".reclaim") || name.endsWith(".stale") || name.endsWith(".released")
+    )).toEqual([]);
+  });
+
+  test("rejects accessor options and symlinked store paths without invoking traps", async () => {
+    let reads = 0;
+    const accessor = {} as { dir: string };
+    Object.defineProperty(accessor, "dir", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return "/tmp/never-created";
+      },
+    });
+    await expect(createFsX402BuyerSettlementStore(accessor)).rejects.toThrow(/data property/);
+    expect(reads).toBe(0);
+    const proxied = new Proxy({ dir: "/tmp/never-created" }, {
+      get() {
+        reads += 1;
+        throw new Error("must not run");
+      },
+    });
+    await expect(createFsX402BuyerSettlementStore(proxied)).rejects.toThrow(/plain object/);
+    expect(reads).toBe(0);
+
+    const target = await tempStoreDir();
+    const linked = join(tmpdir(), `dacs-x402-buyer-link-${Date.now()}-${Math.random()}`);
+    dirs.push(linked);
+    await symlink(target, linked);
+    await expect(createFsX402BuyerSettlementStore({ dir: linked })).rejects.toThrow(/safe directory/);
+
+    for (const child of ["records", "locks", "markers"]) {
+      const unsafeChildren = await tempStoreDir();
+      const outside = await tempStoreDir();
+      await symlink(outside, join(unsafeChildren, child));
+      await expect(createFsX402BuyerSettlementStore({ dir: unsafeChildren }))
+        .rejects.toThrow(/safe directory/);
+    }
+  });
+
+  test("preserves a live lock even after its stale-age threshold", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    const store = await createFsX402BuyerSettlementStore({
+      dir,
+      lockStaleMs: 1,
+      lockTimeoutMs: 25,
+      lockPollMs: 1,
+    });
+    const path = join(dir, "locks", `${sha256Hex(intent.settlementKey)}.lock`);
+    const owner = { pid: process.pid, token: "live-successor" };
+    await mkdir(path, { mode: 0o700 });
+    await writeFile(join(path, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+    const old = new Date(Date.now() - 10_000);
+    await utimes(path, old, old);
+
+    await expect(store.claim({
+      intent,
+      owner: "contender",
+      now: 1_000,
+      leaseDurationMs: 100,
+    })).rejects.toThrow(/timed out/);
+    await expect(readFile(join(path, "owner.json"), "utf8"))
+      .resolves.toBe(JSON.stringify(owner));
+  });
+
+  test("does not import a foreign record through a symlink", async () => {
+    const foreignDir = await tempStoreDir();
+    const localDir = await tempStoreDir();
+    const intent = makeIntent();
+    const foreign = await createFsX402BuyerSettlementStore({ dir: foreignDir });
+    await foreign.claim({ intent, owner: "foreign", now: 1_000, leaseDurationMs: 100 });
+    const local = await createFsX402BuyerSettlementStore({ dir: localDir });
+    const fileName = `${sha256Hex(intent.settlementKey)}.json`;
+    await symlink(
+      join(foreignDir, "records", fileName),
+      join(localDir, "records", fileName),
+    );
+    await expect(local.load(intent.settlementKey)).resolves.toMatchObject({
+      status: "corrupt",
+      reason: expect.stringMatching(/unsafe/),
+    });
+  });
+
+  test("fails closed after initialized state is deleted or respelled", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    const store = await createFsX402BuyerSettlementStore({ dir });
+    await store.claim({ intent, owner: "worker", now: 1_000, leaseDurationMs: 100 });
+    const path = join(dir, "records", `${sha256Hex(intent.settlementKey)}.json`);
+    const canonical = await readFile(path, "utf8");
+    await writeFile(path, canonical.replace("{", "{\"storeVersion\":1,"), "utf8");
+    await expect(store.load(intent.settlementKey)).resolves.toMatchObject({
+      status: "corrupt",
+      reason: expect.stringMatching(/canonical/),
+    });
+
+    await rm(path);
+    await expect(store.load(intent.settlementKey)).resolves.toMatchObject({
+      status: "corrupt",
+      reason: expect.stringMatching(/missing/),
+    });
+    await expect(store.claim({
+      intent,
+      owner: "replacement",
+      now: 2_000,
+      leaseDurationMs: 100,
+    })).resolves.toMatchObject({ status: "corrupt" });
+  });
+
+  test("releases its filesystem lock and a cold store retains the prior lease", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    const first = await createFsX402BuyerSettlementStore({ dir });
+    await expect(first.claim({
+      intent,
+      owner: "first",
+      now: 1_000,
+      leaseDurationMs: 1_000,
+    })).resolves.toMatchObject({ status: "acquired" });
+    expect((await readdir(join(dir, "locks"))).filter((name) =>
+      name.endsWith(".lock") || name.endsWith(".released")
+    )).toEqual([]);
+
+    const restarted = await createFsX402BuyerSettlementStore({ dir });
+    await expect(restarted.claim({
+      intent,
+      owner: "second",
+      now: 1_001,
+      leaseDurationMs: 1_000,
+    })).resolves.toMatchObject({
+      status: "waiting",
+      lease: { owner: "first", generation: 1 },
     });
   });
 

@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import {
+  chmod,
+  link,
+  lstat,
   mkdir,
   open,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
   unlink,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
@@ -30,6 +36,7 @@ const FILE_MODE = 0o600;
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_LOCK_STALE_MS = 30_000;
 const DEFAULT_LOCK_POLL_MS = 5;
+const INITIALIZATION_VERSION = 1 as const;
 
 export interface FsX402BuyerSettlementStoreOptions {
   dir: string;
@@ -56,6 +63,47 @@ type StoreRead =
 interface LockOwner {
   pid: number;
   token: string;
+}
+
+function plainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function captureOptions(value: unknown): FsX402BuyerSettlementStoreOptions {
+  if (!plainRecord(value)) {
+    throw new DacsError("x402 buyer filesystem store options must be a plain object");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const allowed = new Set(["dir", "lockTimeoutMs", "lockStaleMs", "lockPollMs"]);
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string" || !allowed.has(key)) {
+      throw new DacsError("x402 buyer filesystem store option is unsupported");
+    }
+    const descriptor = descriptors[key];
+    if (!descriptor || !descriptor.enumerable || !("value" in descriptor) ||
+        descriptor.value === undefined) {
+      throw new DacsError("x402 buyer filesystem store option must be an enumerable data property");
+    }
+  }
+  const dir = descriptors.dir?.value;
+  if (typeof dir !== "string" || dir.length === 0 || dir.trim() !== dir) {
+    throw new DacsError("x402 buyer store directory must be a non-empty string");
+  }
+  return {
+    dir,
+    ...(descriptors.lockTimeoutMs === undefined
+      ? {}
+      : { lockTimeoutMs: descriptors.lockTimeoutMs.value as number }),
+    ...(descriptors.lockStaleMs === undefined
+      ? {}
+      : { lockStaleMs: descriptors.lockStaleMs.value as number }),
+    ...(descriptors.lockPollMs === undefined
+      ? {}
+      : { lockPollMs: descriptors.lockPollMs.value as number }),
+  };
 }
 
 const finitePositive = (value: unknown, fallback: number, label: string): number => {
@@ -117,30 +165,60 @@ function terminalWrite(
 export async function createFsX402BuyerSettlementStore(
   options: FsX402BuyerSettlementStoreOptions,
 ): Promise<X402BuyerSettlementStore> {
-  const root = nonEmpty(options?.dir, "x402 buyer store directory");
+  const capturedOptions = captureOptions(options);
+  const root = capturedOptions.dir;
   const lockTimeoutMs = finitePositive(
-    options?.lockTimeoutMs,
+    capturedOptions.lockTimeoutMs,
     DEFAULT_LOCK_TIMEOUT_MS,
     "x402 buyer lockTimeoutMs",
   );
   const lockStaleMs = finitePositive(
-    options?.lockStaleMs,
+    capturedOptions.lockStaleMs,
     DEFAULT_LOCK_STALE_MS,
     "x402 buyer lockStaleMs",
   );
   const lockPollMs = finitePositive(
-    options?.lockPollMs,
+    capturedOptions.lockPollMs,
     DEFAULT_LOCK_POLL_MS,
     "x402 buyer lockPollMs",
   );
   const recordsDir = join(root, "records");
   const locksDir = join(root, "locks");
-  await mkdir(recordsDir, { recursive: true, mode: DIR_MODE });
-  await mkdir(locksDir, { recursive: true, mode: DIR_MODE });
+  const markersDir = join(root, "markers");
+  const reclaimGatePath = join(locksDir, ".reclaim");
+  const reclaimQuarantinePrefix = ".reclaim.";
+
+  let rootMetadata;
+  try {
+    rootMetadata = await lstat(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await mkdir(root, { recursive: true, mode: DIR_MODE });
+    rootMetadata = await lstat(root);
+  }
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+    throw new DacsError("x402 buyer store path is not a safe directory");
+  }
+  await chmod(root, DIR_MODE);
+
+  async function prepareOwnedDirectory(path: string): Promise<void> {
+    await mkdir(path, { recursive: true, mode: DIR_MODE });
+    const metadata = await lstat(path);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new DacsError("x402 buyer store path is not a safe directory");
+    }
+    await chmod(path, DIR_MODE);
+  }
+
+  await prepareOwnedDirectory(recordsDir);
+  await prepareOwnedDirectory(locksDir);
+  await prepareOwnedDirectory(markersDir);
 
   const safe = (settlementKey: string): string => sha256Hex(settlementKey);
   const recordPath = (settlementKey: string): string =>
     join(recordsDir, `${safe(settlementKey)}.json`);
+  const markerPath = (settlementKey: string): string =>
+    join(markersDir, `${safe(settlementKey)}.initialized`);
   const lockPath = (settlementKey: string): string =>
     join(locksDir, `${safe(settlementKey)}.lock`);
 
@@ -170,6 +248,68 @@ export async function createFsX402BuyerSettlementStore(
     }
   }
 
+  const initializationText = (settlementKey: string): string => JSON.stringify({
+    markerVersion: INITIALIZATION_VERSION,
+    settlementKeyHash: safe(settlementKey),
+  });
+
+  async function readInitializationMarker(
+    settlementKey: string,
+  ): Promise<"absent" | "present"> {
+    const path = markerPath(settlementKey);
+    let handle;
+    let text: string;
+    try {
+      handle = await open(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      const metadata = await handle.stat();
+      if (!metadata.isFile()) {
+        throw new DacsError("x402 buyer initialization marker is corrupt");
+      }
+      text = await handle.readFile("utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+        throw new DacsError("x402 buyer initialization marker path is unsafe");
+      }
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+    if (text !== initializationText(settlementKey)) {
+      throw new DacsError("x402 buyer initialization marker is corrupt");
+    }
+    return "present";
+  }
+
+  async function ensureInitializationMarker(settlementKey: string): Promise<void> {
+    if (await readInitializationMarker(settlementKey) === "present") return;
+    const path = markerPath(settlementKey);
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      const handle = await open(temporary, "wx", FILE_MODE);
+      try {
+        await handle.writeFile(initializationText(settlementKey), "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      try {
+        await link(temporary, path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (await readInitializationMarker(settlementKey) !== "present") {
+          throw new DacsError("x402 buyer initialization marker is corrupt");
+        }
+      }
+    } finally {
+      await unlink(temporary).catch(() => {});
+    }
+    await syncDirectory(markersDir);
+  }
+
   async function readOwner(path: string): Promise<LockOwner | null> {
     try {
       const parsed = JSON.parse(await readFile(join(path, "owner.json"), "utf8")) as unknown;
@@ -194,24 +334,202 @@ export async function createFsX402BuyerSettlementStore(
     }
   }
 
+  function sameOwner(left: LockOwner | null, right: LockOwner | null): boolean {
+    return left === null
+      ? right === null
+      : right !== null && left.pid === right.pid && left.token === right.token;
+  }
+
+  async function readFileOwner(path: string): Promise<LockOwner | null> {
+    try {
+      const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+      if (typeof parsed === "object" && parsed !== null &&
+          "pid" in parsed && Number.isSafeInteger(parsed.pid) &&
+          (parsed.pid as number) > 0 && "token" in parsed &&
+          typeof parsed.token === "string" && parsed.token.length > 0) {
+        return { pid: parsed.pid as number, token: parsed.token };
+      }
+    } catch {
+      // Missing or malformed recovery gates remain authoritative until stale.
+    }
+    return null;
+  }
+
+  async function publishCompleteOwner(path: string, owner: LockOwner): Promise<void> {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      const handle = await open(temporary, "wx", FILE_MODE);
+      try {
+        await handle.writeFile(JSON.stringify(owner), "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      // A hard link publishes complete bytes without an empty-file window.
+      await link(temporary, path);
+      await syncDirectory(locksDir);
+    } finally {
+      await unlink(temporary).catch(() => {});
+    }
+  }
+
+  const reclaimQuarantinePath = (): string =>
+    join(locksDir, `${reclaimQuarantinePrefix}${randomUUID()}.quarantine`);
+
+  async function activeReclaimQuarantines(): Promise<string[]> {
+    const names = (await readdir(locksDir)).filter((name) =>
+      name.startsWith(reclaimQuarantinePrefix) && name.endsWith(".quarantine"));
+    const live: string[] = [];
+    for (const name of names) {
+      const path = join(locksDir, name);
+      try {
+        const metadata = await stat(path);
+        const owner = await readFileOwner(path);
+        if (Date.now() - metadata.mtimeMs <= lockStaleMs ||
+            (owner !== null && processAlive(owner.pid))) {
+          live.push(path);
+          continue;
+        }
+        await unlink(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return live;
+  }
+
+  async function quarantineStaleReclaimGate(): Promise<void> {
+    let observed;
+    try {
+      observed = await stat(reclaimGatePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
+    const observedOwner = await readFileOwner(reclaimGatePath);
+    if (observedOwner !== null && processAlive(observedOwner.pid)) return;
+
+    const quarantine = reclaimQuarantinePath();
+    try {
+      await rename(reclaimGatePath, quarantine);
+      await syncDirectory(locksDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    let moved;
+    try {
+      moved = await stat(quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const movedOwner = await readFileOwner(quarantine);
+    if (moved.dev === observed.dev && moved.ino === observed.ino &&
+        sameOwner(movedOwner, observedOwner) &&
+        Date.now() - moved.mtimeMs > lockStaleMs &&
+        (movedOwner === null || !processAlive(movedOwner.pid))) {
+      await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
+    // A moved replacement remains quarantined and blocks later reclaimers.
+  }
+
+  async function releaseReclaimGate(owner: LockOwner): Promise<void> {
+    const observed = await readFileOwner(reclaimGatePath);
+    if (observed?.pid === owner.pid && observed.token === owner.token) {
+      const quarantine = reclaimQuarantinePath();
+      try {
+        await rename(reclaimGatePath, quarantine);
+        const moved = await readFileOwner(quarantine);
+        if (moved?.pid === owner.pid && moved.token === owner.token) {
+          await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") throw error;
+          });
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    for (const name of (await readdir(locksDir)).filter((item) =>
+      item.startsWith(reclaimQuarantinePrefix) && item.endsWith(".quarantine"))) {
+      const path = join(locksDir, name);
+      const quarantined = await readFileOwner(path);
+      if (quarantined?.pid === owner.pid && quarantined.token === owner.token) {
+        await unlink(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      }
+    }
+    await syncDirectory(locksDir);
+  }
+
+  async function acquireReclaimGate(owner: LockOwner): Promise<boolean> {
+    if ((await activeReclaimQuarantines()).length > 0) return false;
+    try {
+      await publishCompleteOwner(reclaimGatePath, owner);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await quarantineStaleReclaimGate();
+      return false;
+    }
+    if ((await activeReclaimQuarantines()).length > 0) {
+      await releaseReclaimGate(owner);
+      return false;
+    }
+    return true;
+  }
+
   async function maybeReclaimStale(path: string): Promise<boolean> {
     try {
       const metadata = await stat(path);
       if (Date.now() - metadata.mtimeMs <= lockStaleMs) return false;
       const owner = await readOwner(path);
       if (owner && processAlive(owner.pid)) return false;
-      const quarantine = `${path}.${randomUUID()}.stale`;
-      try {
-        await rename(path, quarantine);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-        return false;
-      }
-      await rm(quarantine, { recursive: true, force: true });
-      return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
       throw error;
+    }
+
+    const gateOwner: LockOwner = { pid: process.pid, token: randomUUID() };
+    if (!await acquireReclaimGate(gateOwner)) return false;
+    try {
+      let observed;
+      try {
+        observed = await stat(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw error;
+      }
+      if (Date.now() - observed.mtimeMs <= lockStaleMs) return false;
+      const observedOwner = await readOwner(path);
+      if (observedOwner !== null && processAlive(observedOwner.pid)) return false;
+
+      const quarantine = `${path}.${randomUUID()}.stale`;
+      try {
+        await rename(path, quarantine);
+        await syncDirectory(locksDir);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw error;
+      }
+      const moved = await stat(quarantine);
+      const movedOwner = await readOwner(quarantine);
+      if (moved.dev !== observed.dev || moved.ino !== observed.ino ||
+          !sameOwner(movedOwner, observedOwner) ||
+          Date.now() - moved.mtimeMs <= lockStaleMs ||
+          (movedOwner !== null && processAlive(movedOwner.pid))) {
+        throw new DacsError("x402 buyer lock changed during stale recovery");
+      }
+      await rm(quarantine, { recursive: true, force: true });
+      await syncDirectory(locksDir);
+      return true;
+    } finally {
+      await releaseReclaimGate(gateOwner);
     }
   }
 
@@ -238,7 +556,9 @@ export async function createFsX402BuyerSettlementStore(
         } finally {
           await handle.close();
         }
+        await syncDirectory(candidate);
         await rename(candidate, path);
+        await syncDirectory(locksDir);
         break;
       } catch (error) {
         await rm(candidate, { recursive: true, force: true }).catch(() => {});
@@ -256,27 +576,56 @@ export async function createFsX402BuyerSettlementStore(
     try {
       return await operation();
     } finally {
-      // Delete only the lock we still own. A stale reclaimer may have moved it.
+      // Move only the lock we still own off the publication path before delete.
       const observed = await readOwner(path);
       if (observed?.pid === owner.pid && observed.token === owner.token) {
-        await rm(path, { recursive: true, force: true });
+        const released = `${path}.${owner.token}.released`;
+        try {
+          await rename(path, released);
+          await syncDirectory(locksDir);
+          await rm(released, { recursive: true, force: true });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
       }
     }
   }
 
   async function readRecord(settlementKey: string): Promise<StoreRead> {
+    const initialization = await readInitializationMarker(settlementKey);
     let text: string;
+    let handle;
     try {
-      text = await readFile(recordPath(settlementKey), "utf8");
+      handle = await open(
+        recordPath(settlementKey),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      const metadata = await handle.stat();
+      if (!metadata.isFile()) {
+        return { status: "corrupt", reason: "record path is not a file" };
+      }
+      text = await handle.readFile("utf8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "absent" };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return initialization === "present"
+          ? { status: "corrupt", reason: "initialized record is missing" }
+          : { status: "absent" };
+      }
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+        return { status: "corrupt", reason: "record path is unsafe" };
+      }
       throw error;
+    } finally {
+      await handle?.close();
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text) as unknown;
     } catch {
       return { status: "corrupt", reason: "record is not valid JSON" };
+    }
+    if (JSON.stringify(parsed) !== text) {
+      return { status: "corrupt", reason: "record is not canonical store JSON" };
     }
     if (typeof parsed !== "object" || parsed === null ||
         !("storeVersion" in parsed) || typeof parsed.storeVersion !== "number") {
@@ -290,6 +639,9 @@ export async function createFsX402BuyerSettlementStore(
       if (record.intent.settlementKey !== settlementKey) {
         return { status: "corrupt", reason: "record path and settlement key disagree" };
       }
+      if (initialization === "absent") {
+        await ensureInitializationMarker(settlementKey);
+      }
       return { status: "ok", record };
     } catch (error) {
       return {
@@ -302,6 +654,7 @@ export async function createFsX402BuyerSettlementStore(
   async function writeRecord(record: Readonly<X402BuyerStoredRecord>): Promise<void> {
     const checked = x402BuyerSettlementStoreInternals.captureStoredRecord(record);
     await atomicWrite(recordPath(checked.intent.settlementKey), checked);
+    await ensureInitializationMarker(checked.intent.settlementKey);
   }
 
   const unavailableClaim = (
