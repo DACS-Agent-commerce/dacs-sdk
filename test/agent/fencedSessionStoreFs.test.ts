@@ -386,6 +386,22 @@ describe("generation-fenced filesystem FencedSessionStoreV2 v2", () => {
       now: 1,
     });
     if (!authority.ok) throw new Error(`terminal authority failed: ${authority.reason}`);
+    expect(await store.transition({
+      jobId: "terminal-fs",
+      expectedRevision: authority.record.revision,
+      leaseToken: lease.lease,
+      receipt: { kind: "bundle", ref: "post-entry-premature-bundle" },
+      now: 2,
+    })).toMatchObject({
+      ok: false,
+      reason: "phase-regression",
+      record: { phase: "terminal:seller:authority", receipts: [] },
+    });
+    const coldAfterRejectedReceipt = await createFsFencedSessionStore({ dir });
+    expect(await coldAfterRejectedReceipt.load("terminal-fs")).toMatchObject({
+      status: "ok",
+      record: { phase: "terminal:seller:authority", receipts: [] },
+    });
     const pending = await store.transition({
       jobId: "terminal-fs",
       expectedRevision: authority.record.revision,
@@ -433,6 +449,50 @@ describe("generation-fenced filesystem FencedSessionStoreV2 v2", () => {
       ttlMs: 100,
       now: 5,
     })).toMatchObject({ ok: false, reason: "terminal-state" });
+  });
+
+  test("cold load rejects a nonfinal terminal record with a bundle receipt", async () => {
+    await store.create({ jobId: "terminal-fs-poisoned-receipt", phase: "seller:failed", now: 0 });
+    const lease = await store.acquireLease({
+      jobId: "terminal-fs-poisoned-receipt",
+      owner: "terminal-worker",
+      ttlMs: 100,
+      now: 0,
+    });
+    if (!lease.ok) throw new Error("terminal FS lease missing");
+    const authority = await store.claimCheckpoint({
+      jobId: "terminal-fs-poisoned-receipt",
+      key: "terminal:seller:authority",
+      phase: "terminal:seller:authority",
+      leaseToken: lease.lease,
+      now: 1,
+    });
+    if (!authority.ok) throw new Error(`terminal authority failed: ${authority.reason}`);
+
+    const path = join(
+      dir,
+      "sessions",
+      `${encodeURIComponent("terminal-fs-poisoned-receipt")}.json`,
+    );
+    const persisted = JSON.parse(await readFile(path, "utf8")) as { receipts: unknown[] };
+    persisted.receipts.push({
+      recordedAt: 2,
+      kind: "bundle",
+      ref: "persisted-premature-bundle",
+    });
+    await writeFile(path, JSON.stringify(persisted));
+
+    const reopened = await createFsFencedSessionStore({ dir });
+    expect(await reopened.load("terminal-fs-poisoned-receipt")).toEqual({
+      status: "corrupt",
+      reason: "a terminal bundle receipt cannot precede the atomic final seal",
+    });
+    expect(await reopened.transition({
+      jobId: "terminal-fs-poisoned-receipt",
+      expectedRevision: authority.record.revision,
+      leaseToken: lease.lease,
+      now: 3,
+    })).toEqual({ ok: false, reason: "corrupt" });
   });
 
   test("filesystem bundle entry rejects direct creation and skipped first phase", async () => {
