@@ -696,6 +696,15 @@ function assertAuthoritySemantics(authority: Readonly<TerminalBundleAuthority>):
     ) {
       throw new DacsError("failed-substrate authority requires substrate-class terminal evidence");
     }
+    if (
+      authority.terminalClass === "failure" &&
+      (authority.terminalPhase.errorClass === "substrate" ||
+        authority.terminalPhase.errorClass === "settlement-atomicity")
+    ) {
+      throw new DacsError(
+        "substrate and settlement-atomicity terminal evidence must be published as blameless failed-substrate",
+      );
+    }
   }
 
   const hasCommittedAgreement = authority.phaseSummary.some(
