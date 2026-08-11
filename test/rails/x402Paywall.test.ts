@@ -6,12 +6,19 @@ import {
   x402Eip3009Nonce,
   x402PaywallCore,
   x402PaywallFulfilmentKey,
+  x402PaywallSettlementKey,
+  type X402PaywallConfig,
+  type X402PaywallCoreDeps,
   type X402PaywallHttpAdapter,
+  type X402PaywallHttpContext,
   type X402PaywallPaymentPayload,
   type X402PaywallPaymentRequirements,
   type X402PaywallProcessResult,
   type X402PaywallServerLike,
+  type X402PaywallSettlementIntent,
+  type X402PaywallSettlementOutcome,
   type X402PaywallSettlementResult,
+  type X402PaywallSettlementStore,
 } from "../../src/index.js";
 
 const NETWORK = "eip155:84532" as const;
@@ -82,6 +89,12 @@ function responseHeader(receipt: Record<string, unknown>): string {
   return Buffer.from(JSON.stringify(receipt), "utf8").toString("base64");
 }
 
+function paidRequest(payload: X402PaywallPaymentPayload): X402PaywallHttpAdapter {
+  return request({
+    "PAYMENT-SIGNATURE": Buffer.from(JSON.stringify(payload), "utf8").toString("base64"),
+  });
+}
+
 function successfulSettlement(
   requirements: X402PaywallPaymentRequirements,
   overrides: Partial<X402PaywallSettlementResult & { success: true }> = {},
@@ -122,7 +135,115 @@ function mockServer(options: {
   };
 }
 
+function settlementStore(): X402PaywallSettlementStore & {
+  retained: Map<string, {
+    intent: X402PaywallSettlementIntent;
+    outcome?: X402PaywallSettlementOutcome;
+  }>;
+} {
+  const retained = new Map<string, {
+    intent: X402PaywallSettlementIntent;
+    outcome?: X402PaywallSettlementOutcome;
+  }>();
+  return {
+    retained,
+    async load(settlementKey) {
+      const existing = retained.get(settlementKey);
+      if (!existing) return { status: "absent" };
+      if (existing.outcome) {
+        return {
+          status: existing.outcome.status,
+          intent: structuredClone(existing.intent),
+          outcome: structuredClone(existing.outcome),
+        };
+      }
+      return { status: "held", intent: structuredClone(existing.intent) };
+    },
+    async claim(input) {
+      const intent = structuredClone(input);
+      const existing = retained.get(intent.settlementKey);
+      if (!existing) {
+        retained.set(intent.settlementKey, { intent });
+        return { status: "claimed", intent };
+      }
+      if (existing.intent.bindingHash !== intent.bindingHash) return { status: "conflict" };
+      if (existing.outcome) {
+        return {
+          status: existing.outcome.status,
+          intent: structuredClone(existing.intent),
+          outcome: structuredClone(existing.outcome),
+        };
+      }
+      return { status: "held", intent: structuredClone(existing.intent) };
+    },
+    async recordOutcome(input) {
+      const existing = retained.get(input.settlementKey);
+      if (!existing || existing.intent.bindingHash !== input.bindingHash) {
+        return { status: "conflict" };
+      }
+      const outcome = structuredClone(input.outcome);
+      if (existing.outcome && canonicalize(existing.outcome) !== canonicalize(outcome)) {
+        return { status: "conflict" };
+      }
+      existing.outcome ??= outcome;
+      return {
+        status: existing.outcome.status,
+        intent: structuredClone(existing.intent),
+        outcome: structuredClone(existing.outcome),
+      };
+    },
+  };
+}
+
+function coreDeps<T = unknown>(
+  server: X402PaywallServerLike,
+  overrides: Partial<X402PaywallCoreDeps<{ permitId: string }, T>> = {},
+): X402PaywallCoreDeps<{ permitId: string }, T> {
+  return {
+    server,
+    expected,
+    settlementStore: settlementStore(),
+    reconcileSettlement: async () => ({ status: "pending", reason: "still-pending" }),
+    authorizePayment: async () => ({
+      disposition: "authorized",
+      authorization: { permitId: "permit-1" },
+    }),
+    fulfil: async () => ({ disposition: "fulfilled" }),
+    ...overrides,
+  };
+}
+
 describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
+  it("fails closed instead of throwing on malformed input or provider results", async () => {
+    const challengeServer = mockServer({
+      process: {
+        type: "payment-error",
+        response: { status: 402, headers: { "PAYMENT-REQUIRED": "challenge" } },
+      },
+    });
+    await expect(x402PaywallCore(
+      undefined as unknown as Parameters<typeof x402PaywallCore>[0],
+      coreDeps(challengeServer),
+    )).resolves.toMatchObject({
+      disposition: "rejected",
+      reason: "invalid-http-adapter",
+    });
+
+    const throwingResult = Object.defineProperty({}, "type", {
+      get() {
+        throw new Error("provider-owned getter failed");
+      },
+    }) as X402PaywallProcessResult;
+    const providerServer = mockServer({ process: throwingResult });
+    await expect(x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
+      coreDeps(providerServer),
+    )).resolves.toMatchObject({
+      disposition: "indeterminate",
+      reason: "invalid-payment-protocol-response",
+    });
+  });
+
   it("returns the 402 challenge without invoking fulfilment or settlement", async () => {
     const server = mockServer({
       process: {
@@ -134,7 +255,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      { server, expected, fulfil },
+      coreDeps(server, { fulfil }),
     );
 
     expect(result.disposition).toBe("payment-required");
@@ -147,7 +268,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     const fulfil = vi.fn();
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      { server, expected, fulfil },
+      coreDeps(server, { fulfil }),
     );
     expect(result).toMatchObject({
       disposition: "rejected",
@@ -172,8 +293,8 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     const fulfil = vi.fn();
 
     const result = await x402PaywallCore(
-      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      { server, expected, fulfil },
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, { fulfil }),
     );
 
     expect(result).toMatchObject({
@@ -189,9 +310,10 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     expect(server.processSettlement).not.toHaveBeenCalled();
   });
 
-  it("cancels verification and does not settle when fulfilment throws", async () => {
+  it("never invokes fulfilment when the post-settlement payment gate rejects", async () => {
     const { payload, requirements } = await paymentFixture();
     const cancel = vi.fn(async () => undefined);
+    const settlement = successfulSettlement(requirements);
     const server = mockServer({
       process: {
         type: "payment-verified",
@@ -199,26 +321,46 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
         paymentRequirements: requirements,
         cancellationDispatcher: { cancel },
       },
+      settlement,
     });
-    const fulfil = vi.fn(async () => {
-      throw new Error("application failure");
-    });
+    const fulfil = vi.fn(async () => ({ disposition: "fulfilled" as const }));
 
     const result = await x402PaywallCore(
-      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      { server, expected, fulfil },
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, {
+        authorizePayment: async () => ({
+          disposition: "rejected",
+          reason: "agreement-not-finalized",
+        }),
+        fulfil,
+      }),
     );
 
     expect(result).toMatchObject({
-      disposition: "fulfilment-failed",
-      response: { status: 500, body: { error: "fulfilment-failed" } },
+      disposition: "authorization-rejected",
+      settled: true,
+      reason: "agreement-not-finalized",
+      response: { status: 403 },
     });
-    expect(cancel).toHaveBeenCalledWith(expect.objectContaining({ reason: "handler_threw" }));
-    expect(server.processSettlement).not.toHaveBeenCalled();
+    expect(server.processSettlement).toHaveBeenCalledTimes(1);
+    expect(fulfil).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
   });
 
-  it("withholds the prepared deliverable when settlement fails", async () => {
+  it("requires authoritative reconciliation before treating settlement as failed", async () => {
     const { payload, requirements } = await paymentFixture();
+    const failedSettlement: X402PaywallSettlementResult & { success: false } = {
+      success: false,
+      transaction: "",
+      network: NETWORK,
+      errorReason: "insufficient_funds",
+      headers: {},
+      response: {
+        status: 402,
+        headers: { "content-type": "application/json" },
+        body: { error: "settlement-failed" },
+      },
+    };
     const server = mockServer({
       process: {
         type: "payment-verified",
@@ -226,27 +368,20 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
         paymentRequirements: requirements,
         cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
       },
-      settlement: {
-        success: false,
-        transaction: "",
-        network: NETWORK,
-        errorReason: "insufficient_funds",
-        headers: {},
-        response: {
-          status: 402,
-          headers: { "content-type": "application/json" },
-          body: { error: "settlement-failed" },
-        },
-      },
+      settlement: failedSettlement,
     });
+    const fulfil = vi.fn(async () => ({ disposition: "fulfilled" as const }));
 
     const result = await x402PaywallCore(
-      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      {
-        server,
-        expected,
-        fulfil: async () => ({ body: { secret: "deliverable" } }),
-      },
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, {
+        reconcileSettlement: async () => ({
+          status: "failed",
+          reason: "insufficient_funds",
+          settlement: failedSettlement,
+        }),
+        fulfil,
+      }),
     );
 
     expect(result).toMatchObject({
@@ -254,10 +389,10 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
       settled: false,
       response: { status: 402, body: { error: "settlement-failed" } },
     });
-    expect(result.response.body).not.toEqual({ secret: "deliverable" });
+    expect(fulfil).not.toHaveBeenCalled();
   });
 
-  it("runs verify → fulfil → settle and emits an exact seller payment claim", async () => {
+  it("runs verify → settle → authorize → fulfil and emits an exact payment claim", async () => {
     const { payload, requirements } = await paymentFixture();
     const order: string[] = [];
     const settlement = successfulSettlement(requirements);
@@ -278,17 +413,25 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     });
 
     const result = await x402PaywallCore(
-      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      {
-        server,
-        expected,
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, {
+        authorizePayment: async () => {
+          order.push("authorize");
+          return {
+            disposition: "authorized",
+            authorization: { permitId: "permit-1" },
+          };
+        },
         fulfil: async (context) => {
           order.push("fulfil");
           expect(context.idempotencyKey).toBe(x402PaywallFulfilmentKey({
             jobId: JOB_ID,
             phaseIndex: PHASE_INDEX,
           }));
+          expect(context.authorization).toEqual({ permitId: "permit-1" });
+          expect(Object.isFrozen(context.authorization)).toBe(true);
           return {
+            disposition: "fulfilled",
             status: 201,
             headers: {
               "x-delivery": "ready",
@@ -297,10 +440,10 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
             body: { deliverable: "released-only-after-settlement" },
           };
         },
-      },
+      }),
     );
 
-    expect(order).toEqual(["verify", "fulfil", "settle"]);
+    expect(order).toEqual(["verify", "settle", "authorize", "fulfil"]);
     expect(result).toMatchObject({
       disposition: "settled",
       settled: true,
@@ -317,7 +460,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
         chainId: 84532,
       },
     });
-    if (!result.settled) throw new Error("expected settled result");
+    if (result.disposition !== "settled") throw new Error("expected settled result");
     expect(result.response.headers["PAYMENT-RESPONSE"]).toBe(
       settlement.headers["PAYMENT-RESPONSE"],
     );
@@ -334,6 +477,139 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     );
   });
 
+  it("isolates and freezes every security-bearing callback boundary", async () => {
+    const { payload, requirements } = await paymentFixture();
+    const settlement = successfulSettlement(requirements);
+    const mutableExpected = structuredClone(expected);
+    const backing = settlementStore();
+    const store: X402PaywallSettlementStore = {
+      load: (key) => backing.load(key),
+      claim: async (intent) => {
+        expect(Object.isFrozen(intent)).toBe(true);
+        expect(Object.isFrozen(intent.paymentPayload.payload)).toBe(true);
+        return backing.claim(intent);
+      },
+      recordOutcome: async (input) => {
+        expect(Object.isFrozen(input.outcome)).toBe(true);
+        return backing.recordOutcome(input);
+      },
+    };
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+      settlement,
+    });
+    server.processSettlement.mockImplementation(async (
+      settlementPayload: X402PaywallPaymentPayload,
+      settlementRequirements: X402PaywallPaymentRequirements,
+    ) => {
+      expect(Object.isFrozen(settlementPayload)).toBe(true);
+      expect(Object.isFrozen(settlementPayload.payload)).toBe(true);
+      expect(Object.isFrozen(settlementRequirements)).toBe(true);
+      expect(() => {
+        settlementPayload.x402Version = 1;
+      }).toThrow();
+      mutableExpected.amount = "1";
+      return settlement;
+    });
+    const body = { delivery: { token: "original" } };
+    let authorizationSettlement: unknown;
+
+    const result = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, {
+        expected: mutableExpected,
+        settlementStore: store,
+        authorizePayment: async (context) => {
+          expect(Object.isFrozen(context)).toBe(true);
+          expect(Object.isFrozen(context.paymentClaim)).toBe(true);
+          expect(Object.isFrozen(context.settlement)).toBe(true);
+          authorizationSettlement = context.settlement;
+          return {
+            disposition: "authorized",
+            authorization: { permitId: "permit-1", nested: { retained: true } },
+          };
+        },
+        fulfil: async (context) => {
+          expect(Object.isFrozen(context)).toBe(true);
+          expect(Object.isFrozen(context.authorization)).toBe(true);
+          expect(Object.isFrozen((context.authorization as unknown as {
+            nested: { retained: boolean };
+          }).nested)).toBe(true);
+          expect(Object.isFrozen(context.paymentPayload.payload)).toBe(true);
+          expect(Object.isFrozen(context.paymentClaim)).toBe(true);
+          expect(context.settlement).not.toBe(authorizationSettlement);
+          return { disposition: "fulfilled", body };
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      disposition: "settled",
+      response: { body: { delivery: { token: "original" } } },
+    });
+    body.delivery.token = "caller-mutated-after-return";
+    expect(result.response.body).toEqual({ delivery: { token: "original" } });
+  });
+
+  it("requires the exact retained PAYMENT-SIGNATURE before bypassing provider verification", async () => {
+    const { payload, requirements } = await paymentFixture();
+    const settlement = successfulSettlement(requirements);
+    const verified: X402PaywallProcessResult = {
+      type: "payment-verified",
+      paymentPayload: payload,
+      paymentRequirements: requirements,
+      cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+    };
+    const process = vi.fn()
+      .mockResolvedValueOnce(verified)
+      .mockResolvedValue({
+        type: "payment-error",
+        response: { status: 402, headers: { "PAYMENT-REQUIRED": "retry-challenge" } },
+      });
+    const server = mockServer({ process, settlement });
+    const authorizePayment = vi.fn(async () => ({
+      disposition: "indeterminate" as const,
+      reason: "authorization-write-pending",
+    }));
+    const fulfil = vi.fn();
+    const deps = coreDeps(server, {
+      settlementStore: settlementStore(),
+      authorizePayment,
+      fulfil,
+    });
+
+    const first = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    expect(first).toMatchObject({
+      disposition: "authorization-indeterminate",
+      settled: true,
+    });
+
+    // Same parsed JSON, different bearer bytes. It must go back through the
+    // provider and must not resume the retained, already-settled authorization.
+    const differentlyEncoded = request({
+      "PAYMENT-SIGNATURE": Buffer.from(
+        JSON.stringify(payload, null, 2),
+        "utf8",
+      ).toString("base64"),
+    });
+    const retried = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: differentlyEncoded },
+      deps,
+    );
+    expect(retried).toMatchObject({ disposition: "payment-required", settled: false });
+    expect(server.processHTTPRequest).toHaveBeenCalledTimes(2);
+    expect(server.processSettlement).toHaveBeenCalledTimes(1);
+    expect(authorizePayment).toHaveBeenCalledTimes(1);
+    expect(fulfil).not.toHaveBeenCalled();
+  });
+
   it("does not release work when a successful settlement lacks a verifiable receipt", async () => {
     const { payload, requirements } = await paymentFixture();
     const settlement = successfulSettlement(requirements, {
@@ -348,18 +624,350 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
       },
       settlement,
     });
+    const authorizePayment = vi.fn();
+    const fulfil = vi.fn();
     const result = await x402PaywallCore(
-      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      { server, expected, fulfil: async () => ({ body: "secret" }) },
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, { authorizePayment, fulfil }),
     );
     expect(result).toMatchObject({
-      disposition: "indeterminate",
-      settled: false,
+      disposition: "settlement-evidence-indeterminate",
+      settled: true,
       reason: "settled-receipt-is-not-dacs-verifiable",
       response: { status: 503 },
       settlement: { success: true, transaction: TX_HASH },
     });
     expect(result.response.body).not.toBe("secret");
+    expect(authorizePayment).not.toHaveBeenCalled();
+    expect(fulfil).not.toHaveBeenCalled();
+  });
+
+  it("rejects case-aliased settlement headers instead of verifying one and releasing another", async () => {
+    const { payload, requirements } = await paymentFixture();
+    const settlement = successfulSettlement(requirements);
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+      settlement: {
+        ...settlement,
+        headers: {
+          "PAYMENT-RESPONSE": settlement.headers["PAYMENT-RESPONSE"]!,
+          "payment-response": responseHeader({
+            success: true,
+            transaction: `0x${"cd".repeat(32)}`,
+            network: NETWORK,
+            payer: PAYER,
+          }),
+        },
+      },
+    });
+    const authorizePayment = vi.fn();
+    const fulfil = vi.fn();
+
+    const result = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, { authorizePayment, fulfil }),
+    );
+    expect(result).toMatchObject({
+      disposition: "settlement-evidence-indeterminate",
+      settled: true,
+      reason: "invalid-settlement-protocol-response",
+    });
+    expect(authorizePayment).not.toHaveBeenCalled();
+    expect(fulfil).not.toHaveBeenCalled();
+  });
+
+  it("snapshots one GET URL and rejects POST before the protocol server", async () => {
+    const urls = [
+      `https://seller.example/deliver/${JOB_ID}`,
+      "https://attacker.example/swapped",
+    ];
+    const adapter = request();
+    const getUrl = vi.fn(() => urls.shift() ?? "https://attacker.example/exhausted");
+    const server = mockServer({
+      process: { type: "payment-error", response: { status: 402, headers: {} } },
+    });
+    server.processHTTPRequest.mockImplementation(async (context: X402PaywallHttpContext) => {
+      expect(context.adapter.getUrl()).toBe(`https://seller.example/deliver/${JOB_ID}`);
+      expect(context.adapter.getUrl()).toBe(`https://seller.example/deliver/${JOB_ID}`);
+      return { type: "payment-error", response: { status: 402, headers: {} } };
+    });
+
+    await x402PaywallCore(
+      {
+        jobId: JOB_ID,
+        phaseIndex: PHASE_INDEX,
+        request: { ...adapter, getUrl },
+      },
+      coreDeps(server),
+    );
+    expect(getUrl).toHaveBeenCalledTimes(1);
+
+    const postServer = mockServer({ process: { type: "no-payment-required" } });
+    const post = await x402PaywallCore(
+      {
+        jobId: JOB_ID,
+        phaseIndex: PHASE_INDEX,
+        request: { ...request(), getMethod: () => "POST" },
+      },
+      coreDeps(postServer),
+    );
+    expect(post).toMatchObject({
+      disposition: "rejected",
+      reason: "pay-x402-requires-get",
+      response: { status: 405, headers: { allow: "GET" } },
+    });
+    expect(postServer.processHTTPRequest).not.toHaveBeenCalled();
+
+    const mismatchedServer = mockServer({ process: { type: "no-payment-required" } });
+    const mismatched = await x402PaywallCore(
+      {
+        jobId: JOB_ID,
+        phaseIndex: PHASE_INDEX,
+        request: {
+          ...request(),
+          getUrl: () => "https://seller.example/different-resource",
+        },
+      },
+      coreDeps(mismatchedServer),
+    );
+    expect(mismatched).toMatchObject({
+      disposition: "rejected",
+      reason: "invalid-http-resource",
+    });
+    expect(mismatchedServer.processHTTPRequest).not.toHaveBeenCalled();
+  });
+
+  it("recovers an ambiguous settlement after restart without settling or fulfilling twice", async () => {
+    const { payload, requirements } = await paymentFixture();
+    const settlement = successfulSettlement(requirements);
+    const store = settlementStore();
+    const settle = vi.fn(async () => {
+      throw new Error("facilitator response lost after submission");
+    });
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+      settlement: settle,
+    });
+    const reconcileSettlement = vi.fn()
+      .mockResolvedValueOnce({ status: "pending", reason: "chain-index-lag" })
+      .mockResolvedValueOnce({ status: "settled", settlement });
+    const authorizePayment = vi.fn(async () => ({
+      disposition: "authorized" as const,
+      authorization: { permitId: "permit-1" },
+    }));
+    const fulfil = vi.fn(async () => ({
+      disposition: "fulfilled" as const,
+      body: { delivered: true },
+    }));
+    const deps = coreDeps(server, {
+      settlementStore: store,
+      reconcileSettlement,
+      authorizePayment,
+      fulfil,
+    });
+
+    const first = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    expect(first).toMatchObject({ disposition: "indeterminate", settled: "unknown" });
+    expect(fulfil).not.toHaveBeenCalled();
+
+    const resumed = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    expect(resumed).toMatchObject({ disposition: "settled", settled: true });
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(server.processHTTPRequest).toHaveBeenCalledTimes(1);
+    expect(reconcileSettlement).toHaveBeenCalledTimes(2);
+    expect(authorizePayment).toHaveBeenCalledTimes(1);
+    expect(fulfil).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a concurrent retry submit while the original claimant is in flight", async () => {
+    const { payload, requirements } = await paymentFixture();
+    const settlement = successfulSettlement(requirements);
+    let markStarted!: () => void;
+    let finishSettlement!: (result: X402PaywallSettlementResult) => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const pendingSettlement = new Promise<X402PaywallSettlementResult>((resolve) => {
+      finishSettlement = resolve;
+    });
+    const settle = vi.fn(async () => {
+      markStarted();
+      return pendingSettlement;
+    });
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+      settlement: settle,
+    });
+    const reconcileSettlement = vi.fn(async () => ({
+      status: "pending" as const,
+      reason: "original-claimant-still-live",
+    }));
+    const fulfil = vi.fn(async () => ({ disposition: "fulfilled" as const }));
+    const deps = coreDeps(server, {
+      settlementStore: settlementStore(),
+      reconcileSettlement,
+      fulfil,
+    });
+
+    const firstPromise = x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    await started;
+    const concurrent = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    expect(concurrent).toMatchObject({
+      disposition: "indeterminate",
+      settled: "unknown",
+      reason: "original-claimant-still-live",
+    });
+    expect(server.processHTTPRequest).toHaveBeenCalledTimes(1);
+    expect(server.processSettlement).toHaveBeenCalledTimes(1);
+    expect(reconcileSettlement).toHaveBeenCalledTimes(1);
+    expect(fulfil).not.toHaveBeenCalled();
+
+    finishSettlement(settlement);
+    await expect(firstPromise).resolves.toMatchObject({
+      disposition: "settled",
+      settled: true,
+    });
+    expect(server.processSettlement).toHaveBeenCalledTimes(1);
+    expect(fulfil).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed through claim response loss and reconciles before any submit", async () => {
+    const { payload, requirements } = await paymentFixture();
+    const backing = settlementStore();
+    let loseClaimResponse = true;
+    const claim = vi.fn(async (intent: Readonly<X402PaywallSettlementIntent>) => {
+      const result = await backing.claim(intent);
+      if (loseClaimResponse) {
+        loseClaimResponse = false;
+        throw new Error("intent committed before response loss");
+      }
+      return result;
+    });
+    const store: X402PaywallSettlementStore = {
+      load: (key) => backing.load(key),
+      claim,
+      recordOutcome: (input) => backing.recordOutcome(input),
+    };
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+      settlement: successfulSettlement(requirements),
+    });
+    const reconcileSettlement = vi.fn(async () => ({
+      status: "failed" as const,
+      reason: "authoritative-no-transfer",
+    }));
+    const fulfil = vi.fn();
+    const deps = coreDeps(server, {
+      settlementStore: store,
+      reconcileSettlement,
+      fulfil,
+    });
+
+    const first = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    expect(first).toMatchObject({ disposition: "indeterminate", settled: "unknown" });
+    const resumed = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    expect(resumed).toMatchObject({
+      disposition: "settlement-failed",
+      settled: false,
+      reason: "authoritative-no-transfer",
+    });
+    expect(server.processHTTPRequest).toHaveBeenCalledTimes(1);
+    expect(server.processSettlement).not.toHaveBeenCalled();
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(reconcileSettlement).toHaveBeenCalledTimes(1);
+    expect(fulfil).not.toHaveBeenCalled();
+  });
+
+  it("replays a committed settlement after outcome-store response loss", async () => {
+    const { payload, requirements } = await paymentFixture();
+    const settlement = successfulSettlement(requirements);
+    const backing = settlementStore();
+    let loseResponse = true;
+    const claim = vi.fn((intent: Readonly<X402PaywallSettlementIntent>) =>
+      backing.claim(intent));
+    const store: X402PaywallSettlementStore = {
+      load: (key) => backing.load(key),
+      claim,
+      async recordOutcome(input) {
+        const result = await backing.recordOutcome(input);
+        if (loseResponse) {
+          loseResponse = false;
+          throw new Error("durable commit acknowledged late");
+        }
+        return result;
+      },
+    };
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+      settlement,
+    });
+    const fulfil = vi.fn(async () => ({ disposition: "fulfilled" as const }));
+    const deps = coreDeps(server, { settlementStore: store, fulfil });
+
+    const first = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    expect(first).toMatchObject({ disposition: "indeterminate", settled: "unknown" });
+    expect(first.response.headers["PAYMENT-RESPONSE"]).toBe(
+      settlement.headers["PAYMENT-RESPONSE"],
+    );
+    const resumed = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      deps,
+    );
+    expect(resumed).toMatchObject({ disposition: "settled", settled: true });
+    expect(server.processSettlement).toHaveBeenCalledTimes(1);
+    expect(server.processHTTPRequest).toHaveBeenCalledTimes(1);
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(fulfil).toHaveBeenCalledTimes(1);
+    expect(backing.retained.get(x402PaywallSettlementKey({
+      jobId: JOB_ID,
+      phaseIndex: PHASE_INDEX,
+    }))?.outcome?.status).toBe("settled");
   });
 });
 
@@ -379,6 +987,15 @@ describe("createX402Paywall", () => {
       signers: {},
     })),
   };
+  const factoryHandlers = <T,>(fulfil: X402PaywallCoreDeps<{ permitId: string }, T>["fulfil"]) => ({
+    settlementStore: settlementStore(),
+    reconcileSettlement: async () => ({ status: "pending" as const, reason: "pending" }),
+    authorizePayment: async () => ({
+      disposition: "authorized" as const,
+      authorization: { permitId: "permit-1" },
+    }),
+    fulfil,
+  });
 
   it("rejects non-CAIP networks and missing EIP-712 domains before loading peers", async () => {
     await expect(createX402Paywall({
@@ -389,7 +1006,7 @@ describe("createX402Paywall", () => {
       asset: ASSET,
       eip712: { name: "USDC", version: "2" },
       facilitator,
-    }, async () => ({}))).rejects.toThrow("CAIP-2");
+    }, factoryHandlers(async () => ({ disposition: "fulfilled" })))).rejects.toThrow("CAIP-2");
 
     await expect(createX402Paywall({
       route: "GET /delivery",
@@ -399,11 +1016,43 @@ describe("createX402Paywall", () => {
       asset: ASSET,
       eip712: { name: "", version: "" },
       facilitator,
-    }, async () => ({}))).rejects.toThrow("EIP-712");
+    }, factoryHandlers(async () => ({ disposition: "fulfilled" })))).rejects.toThrow("EIP-712");
+  });
+
+  it("snapshots factory configuration before optional-peer initialization", async () => {
+    const config = {
+      route: `GET /deliver/${JOB_ID}`,
+      network: NETWORK,
+      payTo: PAY_TO,
+      amount: AMOUNT,
+      asset: ASSET,
+      eip712: { name: "USDC", version: "2" },
+      facilitator,
+      mimeType: "application/json",
+    } satisfies X402PaywallConfig;
+    const creating = createX402Paywall(
+      config,
+      factoryHandlers(async () => ({ disposition: "fulfilled" })),
+    );
+    config.route = "GET /mutated-after-call";
+    config.payTo = `0x${"99".repeat(20)}`;
+    config.eip712.name = "MUTATED";
+
+    const paywall = await creating;
+    expect(paywall.terms).toEqual(expected);
+    const unpaid = await paywall.handle({
+      jobId: JOB_ID,
+      phaseIndex: PHASE_INDEX,
+      request: request(),
+    });
+    expect(unpaid).toMatchObject({ disposition: "payment-required", settled: false });
   });
 
   it("runs the public factory through an actual x402 402 → paid response", async () => {
-    const fulfil = vi.fn(async () => ({ body: { delivered: true } }));
+    const fulfil = vi.fn(async () => ({
+      disposition: "fulfilled" as const,
+      body: { delivered: true },
+    }));
     const paywall = await createX402Paywall({
       route: `GET /deliver/${JOB_ID}`,
       network: NETWORK,
@@ -413,7 +1062,7 @@ describe("createX402Paywall", () => {
       eip712: { name: "USDC", version: "2" },
       facilitator,
       mimeType: "application/json",
-    }, fulfil);
+    }, factoryHandlers(fulfil));
 
     expect(paywall.terms).toEqual(expected);
     expect(typeof paywall.handle).toBe("function");
