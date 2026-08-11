@@ -30,7 +30,6 @@ import {
   type FinalizedSessionSettlement,
   type SessionSettlementContext,
   type SessionSettlementIdentityBinding,
-  type SessionSettlementIdentityClaimInput,
   type SessionSettlementVerificationProvider,
 } from "../../src/agent/sessionSettlement.js";
 
@@ -217,14 +216,6 @@ function provider(
     verifyEvidenceAnchor: () => ({ disposition: "pass" }),
     resolveNativeProof: () => ({ disposition: "present", artifact: proof }),
     revalidateSettlement: (input) => nativePass(input, String(proof.settlementId)),
-    claimSettlementIdentity: (input) => ({
-      disposition: "pass",
-      ownership: "bound",
-      binding: structuredClone(input.binding),
-      ownerHash: input.ownerHash,
-      observedAt: input.observedAt,
-      evidenceHash: input.evidenceHash,
-    }),
     evidence: {
       resolvePublicKey: async (signer) =>
         signer === ORCHESTRATOR ? new Uint8Array(PUBLIC_KEY) : null,
@@ -233,58 +224,6 @@ function provider(
     },
     ...overrides,
   };
-}
-
-function atomicProvider(proof: Record<string, unknown>): {
-  value: SessionSettlementVerificationProvider;
-  claims: Map<string, SessionSettlementIdentityClaimInput>;
-} {
-  const claims = new Map<string, SessionSettlementIdentityClaimInput>();
-  const value = provider(proof, {
-    claimSettlementIdentity: (input) => {
-      const existing = claims.get(input.binding.settlementId);
-      if (!existing) {
-        claims.set(input.binding.settlementId, structuredClone(input));
-        return {
-          disposition: "pass" as const,
-          ownership: "bound" as const,
-          binding: structuredClone(input.binding),
-          ownerHash: input.ownerHash,
-          observedAt: input.observedAt,
-          evidenceHash: input.evidenceHash,
-        };
-      }
-      if (canonicalize(existing) === canonicalize(input)) {
-        return {
-          disposition: "pass" as const,
-          ownership: "existing" as const,
-          binding: structuredClone(existing.binding),
-          ownerHash: existing.ownerHash,
-          observedAt: existing.observedAt,
-          evidenceHash: existing.evidenceHash,
-        };
-      }
-      const candidateWins = input.observedAt < existing.observedAt ||
-        (input.observedAt === existing.observedAt &&
-          input.evidenceHash.localeCompare(existing.evidenceHash) < 0);
-      if (candidateWins) {
-        claims.set(input.binding.settlementId, structuredClone(input));
-        return {
-          disposition: "pass" as const,
-          ownership: "replaced" as const,
-          binding: structuredClone(input.binding),
-          ownerHash: input.ownerHash,
-          observedAt: input.observedAt,
-          evidenceHash: input.evidenceHash,
-        };
-      }
-      return {
-        disposition: "fail" as const,
-        reason: "settlement identity already belongs to the SB-2 winner",
-      };
-    },
-  });
-  return { value, claims };
 }
 
 describe("verifyFinalizedSessionSettlement", () => {
@@ -310,7 +249,6 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(result.value.identityHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.value.observationHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.value.settlementBinding).toEqual(settlementBinding(context()));
-    expect(result.value.settlementOwnership).toBe("bound");
     expect(revalidate).toHaveBeenCalledOnce();
     expect(Object.isFrozen(result.value)).toBe(true);
     expect(Object.isFrozen(result.value.settlement.evidence)).toBe(true);
@@ -383,24 +321,16 @@ describe("verifyFinalizedSessionSettlement", () => {
     const revalidate = vi.fn((_input: Parameters<
       SessionSettlementVerificationProvider["revalidateSettlement"]
     >[0]) => ({ disposition: "pass" as const, outcome: "failure" as const }));
-    const claimSettlementIdentity = vi.fn(
-      (input: SessionSettlementIdentityClaimInput) => ({
-        disposition: "pass" as const,
-        ownership: "bound" as const,
-        ...structuredClone(input),
-      }),
-    );
     const result = await verifyFinalizedSessionSettlement(
       context(),
       settlement,
-      provider(proof, { revalidateSettlement: revalidate, claimSettlementIdentity }),
+      provider(proof, { revalidateSettlement: revalidate }),
     );
     expect(result.disposition).toBe("verified");
     if (result.disposition === "verified") {
       expect(result.value.outcome).toBe("failure");
     }
     expect(revalidate).toHaveBeenCalledOnce();
-    expect(claimSettlementIdentity).not.toHaveBeenCalled();
 
     const tampered = structuredClone(settlement);
     tampered.evidence.reason = "different failure";
@@ -488,14 +418,14 @@ describe("verifyFinalizedSessionSettlement", () => {
     const incomplete = provider(proof) as Partial<
       SessionSettlementVerificationProvider
     >;
-    delete incomplete.claimSettlementIdentity;
+    delete incomplete.resolveNativeProof;
     expect(await verifyFinalizedSessionSettlement(
       context(),
       settlement,
       incomplete as SessionSettlementVerificationProvider,
     )).toEqual({
       disposition: "error",
-      reason: "successful settlement verification requires an atomic identity claim",
+      reason: "settlement verification provider is incomplete or unsafe",
     });
   });
 
@@ -589,14 +519,6 @@ describe("verifyFinalizedSessionSettlement", () => {
       { ...settlementBinding(context()), phaseIndex: 4 },
     ];
     for (const binding of variants) {
-      const claim = vi.fn(() => ({
-        disposition: "pass" as const,
-        ownership: "bound" as const,
-        binding,
-        ownerHash: "1".repeat(64),
-        observedAt: settlement.evidence.observedAt,
-        evidenceHash: settlement.evidenceRef.contentHash,
-      }));
       const result = await verifyFinalizedSessionSettlement(
         context(),
         settlement,
@@ -606,14 +528,12 @@ describe("verifyFinalizedSessionSettlement", () => {
             outcome: "success",
             binding,
           }),
-          claimSettlementIdentity: claim,
         }),
       );
       expect(result).toEqual({
         disposition: "rejected",
         reason: "native settlement binding does not match the authenticated session",
       });
-      expect(claim).not.toHaveBeenCalled();
     }
   });
 
@@ -647,46 +567,22 @@ describe("verifyFinalizedSessionSettlement", () => {
     });
   });
 
-  it("atomically prevents one native settlement identity from owning two phases", async () => {
+  it("rejects a settlement evidence anchor for a different payment phase before native observation", async () => {
     const { settlement, proof } = fixture();
-    const repeated = fixture({ phaseIndex: 4 });
-    const atomic = atomicProvider(proof);
-    const first = await verifyFinalizedSessionSettlement(
-      context(),
-      settlement,
-      atomic.value,
-    );
-    expect(first.disposition).toBe("verified");
-
-    const repeatedPhase = context();
-    repeatedPhase.paymentPhaseIndex = 4;
-    const replay = await verifyFinalizedSessionSettlement(
-      repeatedPhase,
-      repeated.settlement,
-      atomic.value,
-    );
-    expect(replay).toEqual({
-      disposition: "rejected",
-      reason:
-        "settlement identity claim: settlement identity already belongs to the SB-2 winner",
-    });
-    expect(atomic.claims).toHaveLength(1);
-  });
-
-  it("rejects a settlement evidence anchor for a different payment phase before SB-2", async () => {
-    const { settlement, proof } = fixture();
-    const claim = vi.fn();
+    const revalidateSettlement = vi.fn((input: Parameters<
+      SessionSettlementVerificationProvider["revalidateSettlement"]
+    >[0]) => nativePass(input));
     const mismatched = context();
     mismatched.paymentPhaseIndex = 4;
     expect(await verifyFinalizedSessionSettlement(
       mismatched,
       settlement,
-      provider(proof, { claimSettlementIdentity: claim }),
+      provider(proof, { revalidateSettlement }),
     )).toEqual({
       disposition: "rejected",
       reason: "settlement evidence anchor does not bind the authenticated payment phase",
     });
-    expect(claim).not.toHaveBeenCalled();
+    expect(revalidateSettlement).not.toHaveBeenCalled();
   });
 
   it("accepts the exact CF-4 rail segment on an ST-8 resolved payment address", async () => {
@@ -701,140 +597,33 @@ describe("verifyFinalizedSessionSettlement", () => {
     )).disposition).toBe("verified");
   });
 
-  it("applies the normative earlier-observedAt SB-2 winner under arrival reversal", async () => {
-    const late = fixture({ observedAt: 1_777_000_000_200, phaseIndex: 4 });
-    const early = fixture({ observedAt: 1_777_000_000_100 });
-    const atomic = atomicProvider(late.proof);
-    const lateContext = context();
-    lateContext.paymentPhaseIndex = 4;
+  it("authenticates point observations without minting SB-2 count authority", async () => {
+    const first = fixture();
+    const second = fixture({ jobId: "job-settlement-2", phaseIndex: 4 });
+    const secondContext = context();
+    secondContext.jobId = "job-settlement-2";
+    secondContext.paymentPhaseIndex = 4;
 
-    const arrivedFirst = await verifyFinalizedSessionSettlement(
-      lateContext,
-      late.settlement,
-      atomic.value,
-    );
-    expect(arrivedFirst.disposition).toBe("verified");
-
-    const deterministicWinner = await verifyFinalizedSessionSettlement(
+    const firstResult = await verifyFinalizedSessionSettlement(
       context(),
-      early.settlement,
-      atomic.value,
+      first.settlement,
+      provider(first.proof),
     );
-    expect(deterministicWinner.disposition).toBe("verified");
-    if (deterministicWinner.disposition !== "verified") return;
-    expect(deterministicWinner.value.settlementOwnership).toBe("replaced");
-    expect(atomic.claims.get(SETTLEMENT_ID)?.binding.phaseIndex).toBe(3);
-
-    expect(await verifyFinalizedSessionSettlement(
-      lateContext,
-      late.settlement,
-      atomic.value,
-      "recovery",
-    )).toEqual({
-      disposition: "rejected",
-      reason:
-        "settlement identity claim: settlement identity already belongs to the SB-2 winner",
-    });
-  });
-
-  it("uses lower evidence hash as the deterministic SB-2 timestamp tie-break", async () => {
-    const candidateA = fixture({
-      observedAt: 1_777_000_000_100,
-      paymentReceiptHash: "d".repeat(64),
-    });
-    const candidateB = fixture({
-      observedAt: 1_777_000_000_100,
-      paymentReceiptHash: "f".repeat(64),
-    });
-    const [lower, higher] = [candidateA, candidateB].sort((left, right) =>
-      left.settlement.evidenceRef.contentHash.localeCompare(
-        right.settlement.evidenceRef.contentHash,
-      ),
+    const secondResult = await verifyFinalizedSessionSettlement(
+      secondContext,
+      second.settlement,
+      provider(second.proof),
     );
-    const atomic = atomicProvider(higher!.proof);
-
-    expect((await verifyFinalizedSessionSettlement(
-      context(),
-      higher!.settlement,
-      atomic.value,
-    )).disposition).toBe("verified");
-    const winner = await verifyFinalizedSessionSettlement(
-      context(),
-      lower!.settlement,
-      atomic.value,
-    );
-    expect(winner.disposition).toBe("verified");
-    if (winner.disposition !== "verified") return;
-    expect(winner.value.settlementOwnership).toBe("replaced");
-    expect(atomic.claims.get(SETTLEMENT_ID)?.evidenceHash).toBe(
-      lower!.settlement.evidenceRef.contentHash,
-    );
-  });
-
-  it("rejects a claim provider that rebounds an otherwise valid owner", async () => {
-    const { settlement, proof } = fixture();
-    const reboundBinding = await verifyFinalizedSessionSettlement(
-      context(),
-      settlement,
-      provider(proof, {
-        claimSettlementIdentity: (input) => ({
-          disposition: "pass",
-          ownership: "existing",
-          binding: { ...input.binding, phaseIndex: input.binding.phaseIndex + 1 },
-          ownerHash: input.ownerHash,
-          observedAt: input.observedAt,
-          evidenceHash: input.evidenceHash,
-        }),
-      }),
-    );
-    expect(reboundBinding).toEqual({
-      disposition: "error",
-      reason: "settlement identity claim returned rebound ownership",
-    });
-
-    const reboundOwner = await verifyFinalizedSessionSettlement(
-      context(),
-      settlement,
-      provider(proof, {
-        claimSettlementIdentity: (input) => ({
-          disposition: "pass",
-          ownership: "existing",
-          binding: structuredClone(input.binding),
-          ownerHash: "0".repeat(64),
-          observedAt: input.observedAt,
-          evidenceHash: input.evidenceHash,
-        }),
-      }),
-    );
-    expect(reboundOwner).toEqual({
-      disposition: "error",
-      reason: "settlement identity claim returned rebound ownership",
-    });
-
-    for (const rebound of ["observedAt", "evidenceHash"] as const) {
-      const result = await verifyFinalizedSessionSettlement(
-        context(),
-        settlement,
-        provider(proof, {
-          claimSettlementIdentity: (input) => ({
-            disposition: "pass",
-            ownership: "existing",
-            binding: structuredClone(input.binding),
-            ownerHash: input.ownerHash,
-            observedAt: rebound === "observedAt"
-              ? input.observedAt + 1
-              : input.observedAt,
-            evidenceHash: rebound === "evidenceHash"
-              ? "0".repeat(64)
-              : input.evidenceHash,
-          }),
-        }),
-      );
-      expect(result).toEqual({
-        disposition: "error",
-        reason: "settlement identity claim returned rebound ownership",
-      });
+    expect(firstResult.disposition).toBe("verified");
+    expect(secondResult.disposition).toBe("verified");
+    if (firstResult.disposition !== "verified" || secondResult.disposition !== "verified") {
+      return;
     }
+    expect(firstResult.value.settlementBinding?.settlementId).toBe(SETTLEMENT_ID);
+    expect(secondResult.value.settlementBinding?.settlementId).toBe(SETTLEMENT_ID);
+    expect(firstResult.value.identityHash).not.toBe(secondResult.value.identityHash);
+    expect(firstResult.value).not.toHaveProperty("settlementOwnership");
+    expect(secondResult.value).not.toHaveProperty("settlementOwnership");
   });
 
   it("reads native proof lookup data descriptors without Proxy get replacement", async () => {
@@ -932,11 +721,10 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("keeps stable identity across refreshed recovery observations", async () => {
     const { settlement, proof } = fixture();
-    const atomic = atomicProvider(proof);
     const initial = await verifyFinalizedSessionSettlement(
       context(),
       settlement,
-      atomic.value,
+      provider(proof),
     );
     expect(initial.disposition).toBe("verified");
     if (initial.disposition !== "verified") return;
@@ -955,19 +743,18 @@ describe("verifyFinalizedSessionSettlement", () => {
     const recovery = await verifyFinalizedSessionSettlement(
       context(),
       refreshed,
-      atomic.value,
+      provider(proof),
       "recovery",
     );
     expect(recovery.disposition).toBe("verified");
     if (recovery.disposition !== "verified") return;
-    expect(recovery.value.settlementOwnership).toBe("existing");
     expect(recovery.value.identityHash).toBe(initial.value.identityHash);
     expect(recovery.value.observationHash).not.toBe(
       initial.value.observationHash,
     );
   });
 
-  it("maps evidence dependency and identity-store throws into four-valued results", async () => {
+  it("maps evidence dependency throws into four-valued results", async () => {
     const { settlement, proof } = fixture();
     const keyFailure = await verifyFinalizedSessionSettlement(
       context(),
@@ -1003,34 +790,6 @@ describe("verifyFinalizedSessionSettlement", () => {
       reason: "normative settlement evidence verification threw",
     });
 
-    const claimFailure = await verifyFinalizedSessionSettlement(
-      context(),
-      settlement,
-      provider(proof, {
-        claimSettlementIdentity: () => {
-          throw new Error("store unavailable");
-        },
-      }),
-    );
-    expect(claimFailure).toEqual({
-      disposition: "indeterminate",
-      reason: "settlement identity claim threw",
-    });
-
-    const claimIndeterminate = await verifyFinalizedSessionSettlement(
-      context(),
-      settlement,
-      provider(proof, {
-        claimSettlementIdentity: () => ({
-          disposition: "indeterminate",
-          reason: "store quorum unavailable",
-        }),
-      }),
-    );
-    expect(claimIndeterminate).toEqual({
-      disposition: "indeterminate",
-      reason: "settlement identity claim: store quorum unavailable",
-    });
   });
 
   it("returns an error instead of throwing on non-canonical hash input", async () => {
