@@ -390,6 +390,13 @@ function refreshCommitment(ctx: Context): void {
   ctx.committed.commitment.agreementHash = agreementHash;
 }
 
+function rebindJob(ctx: Context, jobId: string): void {
+  ctx.input.jobId = jobId;
+  ctx.agreement.jobId = jobId;
+  ctx.committed.commitment.jobId = jobId;
+  refreshCommitment(ctx);
+}
+
 function rebindDemosSellerClaim(
   ctx: Context,
   primaryClaim: string,
@@ -1348,12 +1355,13 @@ describe("verifySellerPaymentIntake", () => {
         phaseIndex: vector.record.phaseIndex!,
         observedAt: 1,
       }));
-      const expectedStatus = vector.effect === "count"
-        ? "claimed"
-        : vector.effect === "already-counted"
-          ? "already-claimed"
-          : "conflict";
-      expect(result.status, vector.name).toBe(expectedStatus);
+      if (vector.effect === "already-counted") {
+        expect(["already-claimed", "already-consumed"], vector.name)
+          .toContain(result.status);
+      } else {
+        const expectedStatus = vector.effect === "count" ? "claimed" : "conflict";
+        expect(result.status, vector.name).toBe(expectedStatus);
+      }
     }
   });
 
@@ -1557,6 +1565,20 @@ describe("verifySellerPaymentIntake", () => {
       existing: { jobId: "job-late-earlier", observedAt: 100 },
       consumed: { jobId: "job-first", observedAt: 200 },
     });
+    expect(lateEarlier).not.toHaveProperty("permitId");
+
+    const lowerOther = await store.claim(receiptClaim({
+      settlementId,
+      jobId: "job-lower-other",
+      observedAt: 300,
+    }));
+    expect(lowerOther).toMatchObject({
+      status: "conflict",
+      reason: "lower-priority",
+      existing: { jobId: "job-late-earlier" },
+      consumed: { jobId: "job-first" },
+    });
+    expect(lowerOther).not.toHaveProperty("permitId");
 
     const replayOld = await store.claim(receiptClaim({
       settlementId,
@@ -1564,14 +1586,176 @@ describe("verifySellerPaymentIntake", () => {
       observedAt: 200,
     }));
     expect(replayOld).toMatchObject({
-      status: "conflict",
-      reason: "lower-priority",
-      existing: { jobId: "job-late-earlier" },
-      consumed: { jobId: "job-first" },
+      status: "already-consumed",
+      permitId: first.permitId,
+      claim: { jobId: "job-first", observedAt: 200 },
     });
     expect(await store.consumePermit(first.permitId)).toMatchObject({
       status: "already-consumed",
       claim: { jobId: "job-first" },
+    });
+  });
+
+  it("recovers only the exact consumed claim after SB-2 winner discovery", async () => {
+    const store = createInMemorySellerReceiptStore();
+    const original = makeContext("pay-dem", store);
+    const originalResult = await verifySellerPaymentIntake(original.input, original.deps);
+    expect(originalResult).toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+      jobId: JOB_ID,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+    });
+    if (!originalResult.permitId) throw new Error("fixture");
+    const originalPermitId = originalResult.permitId;
+    const consumed = await store.consumePermit(originalPermitId);
+    expect(consumed.status).toBe("consumed");
+    if (consumed.status === "invalid") throw new Error("fixture");
+    const originalAuthorization = consumed.claim.authorization;
+
+    const earlierWinner = makeContext("pay-dem", store);
+    rebindJob(earlierWinner, "01J8ME0SXKQ4T9V2RC5HJ6WX7E");
+    if (earlierWinner.demosObservation.status !== "included") throw new Error("fixture");
+    earlierWinner.demosObservation.includedAt = 4_000;
+    const winnerConflict = await verifySellerPaymentIntake(
+      earlierWinner.input,
+      earlierWinner.deps,
+    );
+    expect(winnerConflict).toMatchObject({
+      disposition: "indeterminate",
+      fulfilment: "none",
+      reason: "settlement-winner-conflict-after-consumption",
+      consumedAuthorization: originalAuthorization,
+    });
+    expect(winnerConflict.consumedAuthorization).toEqual(originalAuthorization);
+    expect(winnerConflict).not.toHaveProperty("permitId");
+
+    const lowerOther = makeContext("pay-dem", store);
+    rebindJob(lowerOther, "01J8ME0SXKQ4T9V2RC5HJ6WX7F");
+    if (lowerOther.demosObservation.status !== "included") throw new Error("fixture");
+    lowerOther.demosObservation.includedAt = 6_000;
+    const lowerConflict = await verifySellerPaymentIntake(lowerOther.input, lowerOther.deps);
+    expect(lowerConflict).toMatchObject({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "settlement-identity-replay",
+      consumedAuthorization: originalAuthorization,
+    });
+    expect(lowerConflict.consumedAuthorization).toEqual(originalAuthorization);
+    expect(lowerConflict).not.toHaveProperty("permitId");
+
+    const substitutedRetry = makeContext("pay-dem", store);
+    if (substitutedRetry.demosObservation.status !== "included") {
+      throw new Error("fixture");
+    }
+    substitutedRetry.demosObservation.includedAt = 5_500;
+    substitutedRetry.demosObservation.blockNumber = 89;
+    const substituted = await verifySellerPaymentIntake(
+      substitutedRetry.input,
+      substitutedRetry.deps,
+    );
+    expect(substituted).toMatchObject({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "settlement-identity-replay",
+      consumedAuthorization: originalAuthorization,
+    });
+    expect(substituted.consumedAuthorization).toEqual(originalAuthorization);
+    expect(substituted).not.toHaveProperty("permitId");
+
+    const retry = makeContext("pay-dem", store);
+    if (retry.demosObservation.status !== "included") throw new Error("fixture");
+    retry.demosObservation.includedAt = 5_500;
+    const recovered = await verifySellerPaymentIntake(retry.input, retry.deps);
+    expect(recovered).toMatchObject({
+      disposition: "verified",
+      fulfilment: "already-claimed",
+      reason: "payment-already-consumed",
+      ...originalAuthorization,
+      permitId: originalPermitId,
+    });
+    expect(recovered).not.toHaveProperty("consumedAuthorization");
+  });
+
+  it("discloses consumed scope conflicts without leaking their recovery permit", async () => {
+    const store = createInMemorySellerReceiptStore();
+    const original = makeContext("pay-dem", store);
+    const originalResult = await verifySellerPaymentIntake(original.input, original.deps);
+    if (!originalResult.permitId) throw new Error("fixture");
+    const consumed = await store.consumePermit(originalResult.permitId);
+    expect(consumed.status).toBe("consumed");
+    if (consumed.status === "invalid") throw new Error("fixture");
+
+    const conflicting = makeContext("pay-dem", store);
+    conflicting.listing.offering.title = "Different authenticated listing scope";
+    repinListing(conflicting);
+    const result = await verifySellerPaymentIntake(conflicting.input, conflicting.deps);
+    expect(result).toMatchObject({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "settlement-authorization-scope-conflict",
+      consumedAuthorization: {
+        jobId: JOB_ID,
+        phaseIndex: PAYMENT_PHASE_INDEX,
+        agreementHash: originalResult.agreementHash,
+        listingRef: originalResult.listingRef,
+        settlementId: originalResult.settlementId,
+        evidenceHash: originalResult.evidenceHash,
+      },
+    });
+    expect(result.consumedAuthorization).toEqual(consumed.claim.authorization);
+    expect(result).not.toHaveProperty("permitId");
+    expect(result.consumedAuthorization?.agreementHash)
+      .not.toBe(conflicting.committed.agreementHash);
+  });
+
+  it("rejects an injected consumed recovery capability for another session", async () => {
+    const backing = createInMemorySellerReceiptStore();
+    const original = makeContext("pay-dem", backing);
+    const claimed = await verifySellerPaymentIntake(original.input, original.deps);
+    if (!claimed.permitId) throw new Error("fixture");
+    const consumed = await backing.consumePermit(claimed.permitId);
+    if (consumed.status === "invalid") throw new Error("fixture");
+
+    const foreign = makeContext("pay-dem");
+    rebindJob(foreign, "01J8ME0SXKQ4T9V2RC5HJ6WX7E");
+    foreign.deps.receiptStore = {
+      async claim() {
+        return {
+          status: "already-consumed",
+          permitId: claimed.permitId!,
+          claim: consumed.claim,
+        };
+      },
+      consumePermit: (permitId) => backing.consumePermit(permitId),
+    };
+
+    const result = await verifySellerPaymentIntake(foreign.input, foreign.deps);
+    expect(result).toEqual({
+      disposition: "indeterminate",
+      fulfilment: "none",
+      reason: "receipt-store-invalid-result",
+    });
+  });
+
+  it("recovers the exact consumed x402 claim after a later finality observation", async () => {
+    const store = createInMemorySellerReceiptStore();
+    const original = makeContext("pay-x402", store);
+    const claimed = await verifySellerPaymentIntake(original.input, original.deps);
+    if (!claimed.permitId) throw new Error("fixture");
+    const consumed = await store.consumePermit(claimed.permitId);
+    if (consumed.status === "invalid") throw new Error("fixture");
+
+    const retry = makeContext("pay-x402", store);
+    if (retry.x402Observation.status !== "finalized") throw new Error("fixture");
+    retry.x402Observation.finalityObservedAt = 6_000;
+    const recovered = await verifySellerPaymentIntake(retry.input, retry.deps);
+    expect(recovered).toMatchObject({
+      disposition: "verified",
+      fulfilment: "already-claimed",
+      reason: "payment-already-consumed",
+      ...consumed.claim.authorization,
+      permitId: claimed.permitId,
     });
   });
 
