@@ -32,4 +32,10 @@ describe("isCanonicalSettlementIdentity", () => {
   ])("rejects non-canonical SB-1 identity %s", (value) => {
     expect(isCanonicalSettlementIdentity(value)).toBe(false);
   });
+
+  it("rejects an oversized Solana pseudo-signature before Base58 BigInt decoding", () => {
+    expect(
+      isCanonicalSettlementIdentity(`solana:mainnet:${"z".repeat(100_000)}:0`),
+    ).toBe(false);
+  });
 });
