@@ -19,6 +19,7 @@ import {
   getSellerBundleFinalizationStatus,
   createX402Paywall,
   x402PaywallCore,
+  x402PaywallSettlementKey,
   runSessionCore,
   sellerFulfilmentId,
   type SellerFulfilmentDeps,
@@ -47,10 +48,12 @@ import {
   sellerFulfilmentId as sellerSurfaceFulfilmentId,
   createX402Paywall as sellerCreateX402Paywall,
   x402PaywallCore as sellerX402PaywallCore,
+  x402PaywallSettlementKey as sellerX402PaywallSettlementKey,
 } from "../../src/seller/index.js";
 import {
   createX402Paywall as railsCreateX402Paywall,
   x402PaywallCore as railsX402PaywallCore,
+  x402PaywallSettlementKey as railsX402PaywallSettlementKey,
 } from "../../src/rails/index.js";
 
 describe("public core surface (#14)", () => {
@@ -152,6 +155,8 @@ describe("public core surface (#14)", () => {
     expect(railsCreateX402Paywall).toBe(createX402Paywall);
     expect(sellerX402PaywallCore).toBe(x402PaywallCore);
     expect(railsX402PaywallCore).toBe(x402PaywallCore);
+    expect(sellerX402PaywallSettlementKey).toBe(x402PaywallSettlementKey);
+    expect(railsX402PaywallSettlementKey).toBe(x402PaywallSettlementKey);
   });
 
   // NOTE (#48): `sessionAnchorName` is intentionally NOT part of the public
