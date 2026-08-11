@@ -437,6 +437,16 @@ export async function runSessionCore(
         };
 
   if (readableListing.compatibility === "normative") {
+    if (
+      readableListing.listing.signature.signer !==
+      readableListing.listing.seller.identity.presentedBy
+    ) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} is not payee-bound: the Listing signer must equal ` +
+          `seller.identity.presentedBy until the complete DACS-1 §6.3.2 ` +
+          `presentation is verified`,
+      );
+    }
     const now = deps.nowMs();
     const validity = readableListing.listing.validity;
     if (now < validity.notBefore || (validity.notAfter !== undefined && now > validity.notAfter)) {
@@ -482,6 +492,23 @@ export async function runSessionCore(
   if (!listingView.supportedPaymentRails.includes(terms.price.rail)) {
     throw new Error(`rail ${terms.price.rail} not offered by the listing`);
   }
+  const paymentEvidencePhase =
+    readableListing.compatibility === "normative"
+      ? (() => {
+          const matching = readableListing.listing.pipeline.filter(
+            (phase) =>
+              phase.kind.startsWith("pay-") &&
+              phase.parameters?.rail === terms.price.rail,
+          );
+          if (matching.length !== 1) {
+            throw new CounterpartyError(
+              `rail ${terms.price.rail} must select exactly one normative payment ` +
+                `phase; found ${matching.length}`,
+            );
+          }
+          return matching[0]!.kind;
+        })()
+      : terms.price.rail;
   if (!listingView.supportedDelivery.includes(terms.deliveryPhase)) {
     throw new Error(`delivery ${terms.deliveryPhase} not offered by the listing`);
   }
@@ -818,8 +845,11 @@ export async function runSessionCore(
       const e = v as unknown as SettlementEvidence;
       if (e.jobId !== jobId)
         return { ok: false, reason: `jobId ${e.jobId} ≠ ${jobId}` };
-      if (e.phase !== terms.price.rail)
-        return { ok: false, reason: `rail ${e.phase} ≠ ${terms.price.rail}` };
+      if (e.phase !== paymentEvidencePhase)
+        return {
+          ok: false,
+          reason: `payment phase ${e.phase} ≠ ${paymentEvidencePhase}`,
+        };
       if (!e.paymentAmount)
         return { ok: false, reason: "settlement evidence has no payment amount" };
       if (e.paymentAmount.amount !== terms.price.amount)
@@ -900,7 +930,10 @@ export async function runSessionCore(
       const evidenceBase = {
         evidenceVersion: "1" as const,
         jobId,
-        phase: terms.price.rail,
+        // DACS-4 §9.7 carries the PhaseStep kind here. `terms.price.rail` is
+        // the independently selected PaymentRailRef.railId and remains the
+        // value passed to the rail adapter above.
+        phase: paymentEvidencePhase,
         phaseIndex: 0,
         paymentTxRefs: [
           {

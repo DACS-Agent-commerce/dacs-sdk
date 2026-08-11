@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { verifyReadableListingArtifact } from "../../src/agent/discover.js";
+import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { Listing, ListingDraft } from "../../src/artifacts/types.js";
 import {
   isLegacyMvpListing,
@@ -14,7 +16,14 @@ import {
   readListingArtifact,
 } from "../../src/artifacts/validators.js";
 import { contentHash, stripSignature } from "../../src/canonical/index.js";
-import { ed25519Verify, publicKeyFromRaw } from "../../src/crypto/index.js";
+import {
+  ed25519Sign,
+  ed25519Verify,
+  privateKeyFromSeed,
+  publicKeyFromRaw,
+  publicKeyFromSeed,
+  rawPublicKey,
+} from "../../src/crypto/index.js";
 
 const VECTOR_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -65,6 +74,53 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     );
     expect(verified).toMatchObject({ compatibility: "normative" });
     expect(signer).toBe(listing.seller.identity.presentedBy);
+  });
+
+  it("does not let one carried claim authenticate a different unproven payee", async () => {
+    const signerSeed = Uint8Array.from(Buffer.alloc(32, 41));
+    const payeeSeed = Uint8Array.from(Buffer.alloc(32, 42));
+    const signerKey = rawPublicKey(publicKeyFromSeed(signerSeed));
+    const signer = `did:demos:agent:${Buffer.from(signerKey).toString("hex")}`;
+    const payee = `did:demos:agent:${Buffer.from(
+      rawPublicKey(publicKeyFromSeed(payeeSeed)),
+    ).toString("hex")}`;
+    const draft = stripSignature(
+      fixture() as unknown as Record<string, unknown>,
+    ) as unknown as ListingDraft;
+    draft.seller.identity = {
+      bundleVersion: "1",
+      presentedBy: payee,
+      presentedAt: draft.seller.identity.presentedAt,
+      claims: [{ ref: signer }, { ref: payee }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [
+          { ref: signer, signature: "signer-presentation" },
+          { ref: payee, signature: "payee-presentation" },
+        ],
+      },
+    };
+    const signed = await signComponentArtifact(
+      draft,
+      ARTIFACT_SEPARATORS.Listing,
+      {
+        algorithm: "ed25519",
+        signer,
+        sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(signerSeed)),
+      },
+    );
+
+    expect(isListing(signed)).toBe(true); // Normative signer-membership shape.
+    await expect(
+      verifyReadableListingArtifact(
+        signed as unknown as Record<string, unknown>,
+        {
+          verify,
+          nowMs: () => 1_790_000_000_000,
+          resolvePublicKey: (claim) => (claim === signer ? signerKey : null),
+        },
+      ),
+    ).resolves.toBeNull();
   });
 
   it("preserves an inert unknown field in the signed scope", async () => {
