@@ -2,16 +2,14 @@ import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
-import {
-  assertNoDuplicateJsonKeys,
-  captureX402SettlementHeader,
-} from "./x402SettlementReceipt.js";
+import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
 
 /** Durable wire/schema version for the normative buyer x402 boundary. */
 export const X402_BUYER_SETTLEMENT_STORE_VERSION = 1 as const;
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const RECEIPT_TX_RE = /^0x[0-9a-fA-F]{64}$/;
 const CANONICAL_EVENT_TX_RE = /^[0-9a-f]{64}$/;
 const NONCE_RE = /^0x[0-9a-f]{64}$/;
 const UNSIGNED_RE = /^(0|[1-9][0-9]*)$/;
@@ -19,6 +17,7 @@ const SIGNATURE_RE = /^0x(?:[0-9a-fA-F]{2})+$/;
 const PRINTABLE_ASCII_RE = /^[\x20-\x7e]+$/;
 const MAX_HEADER_CHARACTERS = 1_048_576;
 const DEFAULT_LEASE_MS = 30_000;
+const JSON_WHITESPACE_RE = /[\u0009\u000a\u000d\u0020]/;
 
 export type X402BuyerJson =
   | null
@@ -611,6 +610,91 @@ function captureRequirements(
   });
 }
 
+/** JSON.parse drops all but the last duplicate member; reject that ambiguity. */
+function hasDuplicateJsonObjectNames(source: string): boolean {
+  let offset = 0;
+
+  const skipWhitespace = (): void => {
+    while (offset < source.length && JSON_WHITESPACE_RE.test(source[offset]!)) {
+      offset += 1;
+    }
+  };
+
+  const scanString = (): string => {
+    const start = offset;
+    offset += 1;
+    while (offset < source.length) {
+      const character = source[offset++]!;
+      if (character === '"') return source.slice(start, offset);
+      if (character === "\\") {
+        const escape = source[offset++]!;
+        if (escape === "u") offset += 4;
+      }
+    }
+    throw new DacsError("x402 buyer JSON string is unterminated");
+  };
+
+  const scanValue = (depth: number): boolean => {
+    if (depth > 64) throw new DacsError("x402 buyer JSON exceeds the supported depth");
+    skipWhitespace();
+    const character = source[offset];
+    if (character === "{") {
+      offset += 1;
+      skipWhitespace();
+      const names = new Set<string>();
+      if (source[offset] === "}") {
+        offset += 1;
+        return false;
+      }
+      for (;;) {
+        skipWhitespace();
+        const rawName = scanString();
+        const name = JSON.parse(rawName) as string;
+        if (names.has(name)) return true;
+        names.add(name);
+        skipWhitespace();
+        offset += 1;
+        if (scanValue(depth + 1)) return true;
+        skipWhitespace();
+        if (source[offset] === "}") {
+          offset += 1;
+          return false;
+        }
+        offset += 1;
+      }
+    }
+    if (character === "[") {
+      offset += 1;
+      skipWhitespace();
+      if (source[offset] === "]") {
+        offset += 1;
+        return false;
+      }
+      for (;;) {
+        if (scanValue(depth + 1)) return true;
+        skipWhitespace();
+        if (source[offset] === "]") {
+          offset += 1;
+          return false;
+        }
+        offset += 1;
+      }
+    }
+    if (character === '"') {
+      scanString();
+      return false;
+    }
+    while (offset < source.length &&
+        !JSON_WHITESPACE_RE.test(source[offset]!) &&
+        !",]}".includes(source[offset]!)) {
+      offset += 1;
+    }
+    return false;
+  };
+
+  return scanValue(0);
+}
+
 function decodeCanonicalBase64Json(value: unknown, label: string): Record<string, X402BuyerJson> {
   if (typeof value !== "string" || value.length === 0 ||
       value.length > MAX_HEADER_CHARACTERS ||
@@ -633,12 +717,64 @@ function decodeCanonicalBase64Json(value: unknown, label: string): Record<string
   }
   let parsed: unknown;
   try {
-    assertNoDuplicateJsonKeys(json);
     parsed = JSON.parse(json) as unknown;
+    if (hasDuplicateJsonObjectNames(json)) {
+      throw new DacsError(`${label} contains duplicate JSON members`);
+    }
   } catch {
     throw new DacsError(`${label} must contain valid JSON`);
   }
   return snapshotRecord(parsed, label);
+}
+
+interface CapturedBuyerSettlementReceipt {
+  paymentReceiptHash: string;
+  transaction: string;
+  chainId: number;
+  protocolVersion: "2";
+  payer: string;
+  amount?: string;
+}
+
+/** Adapt PR122's normative receipt foundation to the buyer recovery boundary. */
+function captureBuyerSettlementReceipt(
+  encodedHeader: unknown,
+): Readonly<CapturedBuyerSettlementReceipt> {
+  if (typeof encodedHeader !== "string" || encodedHeader.length === 0 ||
+      encodedHeader.length > MAX_HEADER_CHARACTERS) {
+    throw new DacsError("x402 buyer settlement header is invalid");
+  }
+  const commitment = deriveX402ReceiptCommitment({
+    protocolVersion: "2",
+    responseHeader: { name: "PAYMENT-RESPONSE", value: encodedHeader },
+  });
+  if (commitment.disposition !== "pass" || !commitment.receipt ||
+      !commitment.computedPaymentReceiptHash) {
+    throw new DacsError(`x402 buyer settlement header is invalid: ${commitment.reason}`);
+  }
+  const transaction = commitment.receipt.transaction;
+  if (typeof transaction !== "string" || !RECEIPT_TX_RE.test(transaction)) {
+    throw new DacsError("x402 buyer settlement receipt transaction is malformed");
+  }
+  const receiptNetwork = network(
+    commitment.receipt.network,
+    "x402 buyer settlement receipt network",
+  );
+  const payer = address(commitment.receipt.payer, "x402 buyer settlement receipt payer");
+  const receiptAmount = commitment.receipt.amount === undefined
+    ? undefined
+    : amount(commitment.receipt.amount, "x402 buyer settlement receipt amount");
+  return deepFreeze({
+    paymentReceiptHash: hashString(
+      commitment.computedPaymentReceiptHash,
+      "x402 buyer settlement receipt hash",
+    ),
+    transaction,
+    chainId: Number(receiptNetwork.slice("eip155:".length)),
+    protocolVersion: "2",
+    payer,
+    ...(receiptAmount === undefined ? {} : { amount: receiptAmount }),
+  });
 }
 
 function captureSignedPayload(
@@ -860,12 +996,7 @@ function captureDisclosure(value: unknown): Readonly<X402BuyerSettlementDisclosu
     throw new DacsError("x402 buyer disclosure must use v2 PAYMENT-RESPONSE");
   }
   // Full receipt parsing is repeated after the authenticated signed event is known.
-  captureX402SettlementHeader({
-    protocolVersion: "2",
-    headerName: "PAYMENT-RESPONSE",
-    encodedHeader: record.encodedSettlementHeader as string,
-    httpResource: record.httpResource as string,
-  });
+  captureBuyerSettlementReceipt(record.encodedSettlementHeader);
   return deepFreeze({
     protocolVersion: "2",
     headerName: "PAYMENT-RESPONSE",
@@ -953,12 +1084,7 @@ function captureSettlement(
       `eip155:${signedEvent.chainId}` !== intent.network) {
     throw new DacsError("x402 buyer captured settlement does not match the retained intent");
   }
-  const receipt = captureX402SettlementHeader({
-    protocolVersion: disclosure.protocolVersion,
-    headerName: disclosure.headerName,
-    encodedHeader: disclosure.encodedSettlementHeader,
-    httpResource: disclosure.httpResource,
-  });
+  const receipt = captureBuyerSettlementReceipt(disclosure.encodedSettlementHeader);
   if (receipt.paymentReceiptHash !== signedEvent.paymentReceiptHash ||
       receipt.transaction.slice(2).toLowerCase() !== signedEvent.settlementTxHash ||
       receipt.chainId !== signedEvent.chainId || receipt.protocolVersion !== signedEvent.protocolVersion) {
