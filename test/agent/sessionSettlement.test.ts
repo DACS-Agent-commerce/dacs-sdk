@@ -24,6 +24,7 @@ import {
   verifyFinalizedSessionSettlement,
   type FinalizedSessionSettlement,
   type SessionSettlementContext,
+  type SessionSettlementIdentityBinding,
   type SessionSettlementVerificationProvider,
 } from "../../src/agent/sessionSettlement.js";
 
@@ -31,6 +32,7 @@ const ORCHESTRATOR = "did:demos:orchestrator";
 const SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const PRIVATE_KEY = privateKeyFromSeed(SEED);
 const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
+const SETTLEMENT_ID = `evm:8453:${"e".repeat(64)}:0`;
 
 function context(finalityBlocks = 12): SessionSettlementContext {
   return {
@@ -38,7 +40,7 @@ function context(finalityBlocks = 12): SessionSettlementContext {
     jobId: "job-settlement-1",
     agreementRef: {
       anchor: { kind: "storage-program", locator: "agreement:job-settlement-1" },
-      contentHash: "a".repeat(64),
+      contentHash: "b".repeat(64),
     },
     agreementHash: "b".repeat(64),
     paymentPhaseIndex: 3,
@@ -62,6 +64,30 @@ function context(finalityBlocks = 12): SessionSettlementContext {
       network: "eip155:8453",
       finality: { model: "block-depth", finalityBlocks },
     },
+  };
+}
+
+function settlementBinding(
+  value: SessionSettlementContext,
+  settlementId = SETTLEMENT_ID,
+): SessionSettlementIdentityBinding {
+  return {
+    jobId: value.jobId,
+    railId: value.rail.railId,
+    phaseIndex: value.paymentPhaseIndex,
+    settlementId,
+  };
+}
+
+function nativePass(input: {
+  context: Readonly<SessionSettlementContext>;
+}, settlementId = SETTLEMENT_ID) {
+  return {
+    disposition: "pass" as const,
+    binding: settlementBinding(
+      input.context as SessionSettlementContext,
+      settlementId,
+    ),
   };
 }
 
@@ -142,7 +168,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
   };
   const proof = {
     proofVersion: "fixture-1",
-    settlementId: `evm:8453:${"e".repeat(64)}:0`,
+    settlementId: SETTLEMENT_ID,
     payer: "0x1111111111111111111111111111111111111111",
     payee: "0x2222222222222222222222222222222222222222",
     amount: "5",
@@ -172,7 +198,13 @@ function provider(
     authenticateContext: () => ({ disposition: "pass" }),
     verifyEvidenceAnchor: () => ({ disposition: "pass" }),
     resolveNativeProof: () => ({ disposition: "present", artifact: proof }),
-    revalidateSettlement: () => ({ disposition: "pass" }),
+    revalidateSettlement: (input) => nativePass(input, String(proof.settlementId)),
+    claimSettlementIdentity: (input) => ({
+      disposition: "pass",
+      ownership: "bound",
+      binding: structuredClone(input.binding),
+      ownerHash: input.ownerHash,
+    }),
     evidence: {
       resolvePublicKey: async (signer) =>
         signer === ORCHESTRATOR ? new Uint8Array(PUBLIC_KEY) : null,
@@ -183,12 +215,57 @@ function provider(
   };
 }
 
+function atomicProvider(proof: Record<string, unknown>): {
+  value: SessionSettlementVerificationProvider;
+  claims: Map<string, {
+    binding: SessionSettlementIdentityBinding;
+    ownerHash: string;
+  }>;
+} {
+  const claims = new Map<string, {
+    binding: SessionSettlementIdentityBinding;
+    ownerHash: string;
+  }>();
+  const value = provider(proof, {
+    claimSettlementIdentity: (input) => {
+      const existing = claims.get(input.binding.settlementId);
+      if (!existing) {
+        claims.set(input.binding.settlementId, structuredClone(input));
+        return {
+          disposition: "pass" as const,
+          ownership: "bound" as const,
+          binding: structuredClone(input.binding),
+          ownerHash: input.ownerHash,
+        };
+      }
+      if (
+        canonicalize(existing.binding) !== canonicalize(input.binding) ||
+        existing.ownerHash !== input.ownerHash
+      ) {
+        return {
+          disposition: "fail" as const,
+          reason: "settlement identity already belongs to another session",
+        };
+      }
+      return {
+        disposition: "pass" as const,
+        ownership: "existing" as const,
+        binding: structuredClone(existing.binding),
+        ownerHash: existing.ownerHash,
+      };
+    },
+  });
+  return { value, claims };
+}
+
 describe("verifyFinalizedSessionSettlement", () => {
   it("authenticates exact evidence, anchor, proof, and live finality", async () => {
     const { settlement, proof } = fixture();
     expect(isSettlementEvidence(settlement.evidence)).toBe(true);
     expect(isAnchorReceipt(settlement.anchorReceipt)).toBe(true);
-    const revalidate = vi.fn(() => ({ disposition: "pass" as const }));
+    const revalidate = vi.fn((input: Parameters<
+      SessionSettlementVerificationProvider["revalidateSettlement"]
+    >[0]) => nativePass(input));
     const result = await verifyFinalizedSessionSettlement(
       context(),
       settlement,
@@ -201,7 +278,10 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(result.value.mode).toBe("initial");
     expect(result.value.evidenceHash).toBe(settlement.evidenceRef.contentHash);
     expect(result.value.nativeProofHash).toBe(settlement.nativeProofRef.contentHash);
-    expect(result.value.resultHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.value.identityHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.value.observationHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.value.settlementBinding).toEqual(settlementBinding(context()));
+    expect(result.value.settlementOwnership).toBe("bound");
     expect(revalidate).toHaveBeenCalledOnce();
     expect(Object.isFrozen(result.value)).toBe(true);
     expect(Object.isFrozen(result.value.settlement.evidence)).toBe(true);
@@ -209,10 +289,12 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("re-runs native observation in recovery mode", async () => {
     const { settlement, proof } = fixture();
-    const revalidate = vi.fn((input: { mode: string }) =>
+    const revalidate = vi.fn((input: Parameters<
+      SessionSettlementVerificationProvider["revalidateSettlement"]
+    >[0]) =>
       input.mode === "recovery"
         ? { disposition: "indeterminate" as const, reason: "head unavailable" }
-        : { disposition: "pass" as const },
+        : nativePass(input),
     );
     const result = await verifyFinalizedSessionSettlement(
       context(),
@@ -229,7 +311,9 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("rejects a descriptor-pinned depth downgrade before native callbacks", async () => {
     const { settlement, proof } = fixture({ finalityBlocks: 1 });
-    const revalidate = vi.fn(() => ({ disposition: "pass" as const }));
+    const revalidate = vi.fn((input: Parameters<
+      SessionSettlementVerificationProvider["revalidateSettlement"]
+    >[0]) => nativePass(input));
     const result = await verifyFinalizedSessionSettlement(
       context(12),
       settlement,
@@ -267,7 +351,9 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("requires exact signed/context-bound failure evidence too", async () => {
     const { settlement, proof } = fixture({ outcome: "failure" });
-    const revalidate = vi.fn(() => ({ disposition: "pass" as const }));
+    const revalidate = vi.fn((input: Parameters<
+      SessionSettlementVerificationProvider["revalidateSettlement"]
+    >[0]) => nativePass(input));
     const result = await verifyFinalizedSessionSettlement(
       context(),
       settlement,
@@ -330,6 +416,19 @@ describe("verifyFinalizedSessionSettlement", () => {
         authenticateContext: () => ({ disposition: "pass", reason: "smuggled" }) as never,
       }),
     )).disposition).toBe("error");
+
+    const incomplete = provider(proof) as Partial<
+      SessionSettlementVerificationProvider
+    >;
+    delete incomplete.claimSettlementIdentity;
+    expect(await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      incomplete as SessionSettlementVerificationProvider,
+    )).toEqual({
+      disposition: "error",
+      reason: "settlement verification provider is incomplete or unsafe",
+    });
   });
 
   it("captures provider methods before the first await", async () => {
@@ -364,5 +463,365 @@ describe("verifyFinalizedSessionSettlement", () => {
         reason: `native settlement: ${reason}`,
       });
     }
+  });
+
+  it("rejects a split agreement reference/hash before invoking trust providers", async () => {
+    const { settlement, proof } = fixture();
+    const split = context();
+    split.agreementRef.contentHash = "a".repeat(64);
+    const authenticateContext = vi.fn(() => ({ disposition: "pass" as const }));
+
+    const result = await verifyFinalizedSessionSettlement(
+      split,
+      settlement,
+      provider(proof, { authenticateContext }),
+    );
+
+    expect(result).toEqual({
+      disposition: "error",
+      reason: "settlement context is not exact canonical data",
+    });
+    expect(authenticateContext).not.toHaveBeenCalled();
+  });
+
+  it("binds the evidence reference signer and receipt logical address locally", async () => {
+    const { settlement, proof } = fixture();
+    const wrongAddress = structuredClone(settlement);
+    wrongAddress.anchorReceipt.logicalAddress = "evidence:other-job:3";
+    const addressAnchorVerifier = vi.fn(() => ({ disposition: "pass" as const }));
+    expect(await verifyFinalizedSessionSettlement(
+      context(),
+      wrongAddress,
+      provider(proof, { verifyEvidenceAnchor: addressAnchorVerifier }),
+    )).toEqual({
+      disposition: "rejected",
+      reason: "settlement evidence lacks an exact finalized orchestrator receipt",
+    });
+    expect(addressAnchorVerifier).not.toHaveBeenCalled();
+
+    const wrongSigner = structuredClone(settlement);
+    wrongSigner.evidenceRef.signer = "did:demos:outsider";
+    const signerAnchorVerifier = vi.fn(() => ({ disposition: "pass" as const }));
+    expect(await verifyFinalizedSessionSettlement(
+      context(),
+      wrongSigner,
+      provider(proof, { verifyEvidenceAnchor: signerAnchorVerifier }),
+    )).toEqual({
+      disposition: "rejected",
+      reason: "settlement evidence lacks an exact finalized orchestrator receipt",
+    });
+    expect(signerAnchorVerifier).not.toHaveBeenCalled();
+  });
+
+  it("requires an exact authenticated native job, rail, and phase binding", async () => {
+    const { settlement, proof } = fixture();
+    const variants: Array<SessionSettlementIdentityBinding> = [
+      { ...settlementBinding(context()), jobId: "other-job" },
+      { ...settlementBinding(context()), railId: "other-rail" },
+      { ...settlementBinding(context()), phaseIndex: 4 },
+    ];
+    for (const binding of variants) {
+      const claim = vi.fn(() => ({
+        disposition: "pass" as const,
+        ownership: "bound" as const,
+        binding,
+        ownerHash: "1".repeat(64),
+      }));
+      const result = await verifyFinalizedSessionSettlement(
+        context(),
+        settlement,
+        provider(proof, {
+          revalidateSettlement: () => ({ disposition: "pass", binding }),
+          claimSettlementIdentity: claim,
+        }),
+      );
+      expect(result).toEqual({
+        disposition: "rejected",
+        reason: "native settlement binding does not match the authenticated session",
+      });
+      expect(claim).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    "demos:ABCDEF",
+    `demos:${"A".repeat(64)}`,
+    `evm:0:${"e".repeat(64)}:0`,
+    `evm:08453:${"e".repeat(64)}:0`,
+    `evm:8453:0x${"e".repeat(64)}:0`,
+    `evm:8453:${"e".repeat(64)}:01`,
+    `evm:9007199254740992:${"e".repeat(64)}:0`,
+  ])("rejects non-canonical settlement identity %s", async (settlementId) => {
+    const { settlement, proof } = fixture();
+    const result = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        revalidateSettlement: (input) => ({
+          disposition: "pass",
+          binding: settlementBinding(
+            input.context as SessionSettlementContext,
+            settlementId,
+          ),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      disposition: "error",
+      reason: "native settlement verdict is malformed",
+    });
+  });
+
+  it("atomically prevents one native settlement identity from owning two phases", async () => {
+    const { settlement, proof } = fixture();
+    const atomic = atomicProvider(proof);
+    const first = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      atomic.value,
+    );
+    expect(first.disposition).toBe("verified");
+
+    const repeatedPhase = context();
+    repeatedPhase.paymentPhaseIndex = 4;
+    const replay = await verifyFinalizedSessionSettlement(
+      repeatedPhase,
+      settlement,
+      atomic.value,
+    );
+    expect(replay).toEqual({
+      disposition: "rejected",
+      reason:
+        "settlement identity claim: settlement identity already belongs to another session",
+    });
+    expect(atomic.claims).toHaveLength(1);
+  });
+
+  it("rejects a claim provider that rebounds an otherwise valid owner", async () => {
+    const { settlement, proof } = fixture();
+    const reboundBinding = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        claimSettlementIdentity: (input) => ({
+          disposition: "pass",
+          ownership: "existing",
+          binding: { ...input.binding, phaseIndex: input.binding.phaseIndex + 1 },
+          ownerHash: input.ownerHash,
+        }),
+      }),
+    );
+    expect(reboundBinding).toEqual({
+      disposition: "error",
+      reason: "settlement identity claim returned rebound ownership",
+    });
+
+    const reboundOwner = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        claimSettlementIdentity: (input) => ({
+          disposition: "pass",
+          ownership: "existing",
+          binding: structuredClone(input.binding),
+          ownerHash: "0".repeat(64),
+        }),
+      }),
+    );
+    expect(reboundOwner).toEqual({
+      disposition: "error",
+      reason: "settlement identity claim returned rebound ownership",
+    });
+  });
+
+  it("uses inspected descriptor values and never a Proxy get replacement", async () => {
+    const { settlement, proof } = fixture();
+    const inspected = provider(proof);
+    const poisonedEvidence = {
+      resolvePublicKey: async () => null,
+      verify: () => false,
+    };
+    const proxied = new Proxy(inspected, {
+      get: (target, property, receiver) => {
+        if (property === "authenticateContext") {
+          return () => ({ disposition: "fail", reason: "Proxy get was used" });
+        }
+        if (property === "evidence") return poisonedEvidence;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    const result = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      proxied,
+    );
+    expect(result.disposition).toBe("verified");
+  });
+
+  it("invokes captured provider callbacks with an inert frozen receiver", async () => {
+    const { settlement, proof } = fixture();
+    const capturedReceivers: unknown[] = [];
+    const value = provider(proof);
+    value.authenticateContext = function (this: unknown) {
+      capturedReceivers.push(this);
+      return { disposition: "pass" };
+    };
+
+    const result = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      value,
+    );
+    expect(result.disposition).toBe("verified");
+    expect(capturedReceivers).toHaveLength(1);
+    expect(capturedReceivers[0]).not.toBe(value);
+    expect(Object.isFrozen(capturedReceivers[0])).toBe(true);
+  });
+
+  it("detects a native verifier mutating its byte proof input", async () => {
+    const { settlement, proof } = fixture();
+    const bytes = Uint8Array.from([0, 1, 2, 3, 4, 5]);
+    settlement.nativeProofRef = {
+      ...settlement.nativeProofRef,
+      contentHash: sha256Hex(bytes),
+      encoding: "bytes",
+    };
+    const result = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        resolveNativeProof: () => ({ disposition: "present", bytes }),
+        revalidateSettlement: (input) => {
+          if (input.nativeProof instanceof Uint8Array) {
+            input.nativeProof[0] = 9;
+          }
+          return nativePass(input);
+        },
+      }),
+    );
+    expect(result).toEqual({
+      disposition: "error",
+      reason: "native settlement verifier mutated its proof input",
+    });
+    expect(bytes).toEqual(Uint8Array.from([0, 1, 2, 3, 4, 5]));
+  });
+
+  it("keeps stable identity across refreshed recovery observations", async () => {
+    const { settlement, proof } = fixture();
+    const atomic = atomicProvider(proof);
+    const initial = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      atomic.value,
+    );
+    expect(initial.disposition).toBe("verified");
+    if (initial.disposition !== "verified") return;
+
+    const refreshed = structuredClone(settlement);
+    refreshed.anchorReceipt.observedAt += 10_000;
+    refreshed.anchorReceipt.blockRef = {
+      id: "block-anchor-refreshed",
+      height: "88",
+      timestamp: refreshed.anchorReceipt.observedAt,
+    };
+    refreshed.anchorReceipt.evidence = {
+      kind: "validator-set",
+      value: "quorum-proof-refreshed",
+    };
+    const recovery = await verifyFinalizedSessionSettlement(
+      context(),
+      refreshed,
+      atomic.value,
+      "recovery",
+    );
+    expect(recovery.disposition).toBe("verified");
+    if (recovery.disposition !== "verified") return;
+    expect(recovery.value.settlementOwnership).toBe("existing");
+    expect(recovery.value.identityHash).toBe(initial.value.identityHash);
+    expect(recovery.value.observationHash).not.toBe(
+      initial.value.observationHash,
+    );
+  });
+
+  it("maps evidence dependency and identity-store throws into four-valued results", async () => {
+    const { settlement, proof } = fixture();
+    const keyFailure = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        evidence: {
+          resolvePublicKey: async () => {
+            throw new Error("key service unavailable");
+          },
+          verify: () => true,
+        },
+      }),
+    );
+    expect(keyFailure).toEqual({
+      disposition: "indeterminate",
+      reason: "normative settlement evidence verification threw",
+    });
+
+    const verifyFailure = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        evidence: {
+          resolvePublicKey: async () => new Uint8Array(PUBLIC_KEY),
+          verify: () => {
+            throw new Error("crypto backend unavailable");
+          },
+        },
+      }),
+    );
+    expect(verifyFailure).toEqual({
+      disposition: "indeterminate",
+      reason: "normative settlement evidence verification threw",
+    });
+
+    const claimFailure = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        claimSettlementIdentity: () => {
+          throw new Error("store unavailable");
+        },
+      }),
+    );
+    expect(claimFailure).toEqual({
+      disposition: "indeterminate",
+      reason: "settlement identity claim threw",
+    });
+
+    const claimIndeterminate = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        claimSettlementIdentity: () => ({
+          disposition: "indeterminate",
+          reason: "store quorum unavailable",
+        }),
+      }),
+    );
+    expect(claimIndeterminate).toEqual({
+      disposition: "indeterminate",
+      reason: "settlement identity claim: store quorum unavailable",
+    });
+  });
+
+  it("returns an error instead of throwing on non-canonical hash input", async () => {
+    const { settlement, proof } = fixture();
+    const unsafe = context();
+    unsafe.payer.primaryClaim = "\ud800";
+
+    await expect(verifyFinalizedSessionSettlement(
+      unsafe,
+      settlement,
+      provider(proof),
+    )).resolves.toEqual({
+      disposition: "error",
+      reason: "settlement identity cannot be canonicalized safely",
+    });
   });
 });

@@ -30,6 +30,44 @@ export type SessionSettlementDisposition =
       reason: string;
     };
 
+/** Authenticated SB-1 binding recovered from the native settlement. */
+export interface SessionSettlementIdentityBinding {
+  jobId: string;
+  railId: string;
+  phaseIndex: number;
+  settlementId: string;
+}
+
+/** Native verification must return facts, never only a boolean assertion. */
+export type SessionSettlementRevalidation =
+  | {
+      disposition: "pass";
+      binding: SessionSettlementIdentityBinding;
+    }
+  | {
+      disposition: "fail" | "error" | "indeterminate";
+      reason: string;
+    };
+
+/** Stable ownership offered to the atomic SB-2 identity store. */
+export interface SessionSettlementIdentityClaimInput {
+  binding: SessionSettlementIdentityBinding;
+  ownerHash: string;
+}
+
+/** Exact result of atomically binding or recovering one settlement identity. */
+export type SessionSettlementIdentityClaim =
+  | {
+      disposition: "pass";
+      ownership: "bound" | "existing";
+      binding: SessionSettlementIdentityBinding;
+      ownerHash: string;
+    }
+  | {
+      disposition: "fail" | "error" | "indeterminate";
+      reason: string;
+    };
+
 /** Exact finality policy retained from the authenticated rail descriptor. */
 export type SessionSettlementFinalityPolicy =
   | { model: "block-depth"; finalityBlocks: number }
@@ -108,6 +146,10 @@ export type SessionSettlementNativeProofLookup =
   | { disposition: "indeterminate"; reason: string };
 
 export interface SessionSettlementVerificationProvider {
+  /**
+   * Callbacks are captured from own data descriptors and invoked with a frozen,
+   * inert receiver. Implementations that need instance state must pre-bind it.
+   */
   /** Authenticate the agreement, parties, phase, and exact steward registry pin. */
   authenticateContext: (
     context: Readonly<SessionSettlementContext>,
@@ -136,7 +178,15 @@ export interface SessionSettlementVerificationProvider {
     evidence: Readonly<SettlementEvidence>;
     nativeProofRef: Readonly<SessionSettlementNativeProofRef>;
     nativeProof: Readonly<Record<string, unknown>> | Uint8Array;
-  }) => Promise<SessionSettlementDisposition> | SessionSettlementDisposition;
+  }) => Promise<SessionSettlementRevalidation> | SessionSettlementRevalidation;
+  /**
+   * Atomically bind an SB-1 settlement id to its complete stable owner. A
+   * durable implementation returns `existing` only for the exact prior input;
+   * reuse by another job, rail, phase, or owner hash is a definite failure.
+   */
+  claimSettlementIdentity: (
+    input: Readonly<SessionSettlementIdentityClaimInput>,
+  ) => Promise<SessionSettlementIdentityClaim> | SessionSettlementIdentityClaim;
   /** Required key/signature implementation for the normative evidence verifier. */
   evidence: Required<Pick<EvidenceDeps, "resolvePublicKey" | "verify">>;
 }
@@ -149,7 +199,12 @@ export interface VerifiedSessionSettlement {
   contextHash: string;
   evidenceHash: string;
   nativeProofHash: string;
-  resultHash: string;
+  /** Stable across refreshed proof observations of the same publication. */
+  identityHash: string;
+  /** Binds this exact initial/recovery observation and its claim disposition. */
+  observationHash: string;
+  settlementBinding: SessionSettlementIdentityBinding;
+  settlementOwnership: "bound" | "existing";
   settlement: FinalizedSessionSettlement;
 }
 
@@ -191,6 +246,19 @@ const isUint = (value: unknown): value is number =>
   !Object.is(value, -0);
 const hasOwn = (value: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
+
+function isCanonicalSettlementId(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (/^demos:[0-9a-f]{64}$/.test(value)) return true;
+  const match = /^evm:([1-9][0-9]*):([0-9a-f]{64}):(0|[1-9][0-9]*)$/.exec(
+    value,
+  );
+  if (!match) return false;
+  const chainId = Number(match[1]);
+  const logIndex = Number(match[3]);
+  return Number.isSafeInteger(chainId) && chainId > 0 &&
+    Number.isSafeInteger(logIndex) && logIndex >= 0;
+}
 
 function exactKeys(
   value: Record<string, unknown>,
@@ -323,10 +391,56 @@ function isContext(value: unknown): value is SessionSettlementContext {
     "rail",
   ]) && value.contextVersion === "1" && isNonEmpty(value.jobId) &&
     isAttestationRef(value.agreementRef) && isHash(value.agreementHash) &&
+    value.agreementRef.contentHash === value.agreementHash &&
     isUint(value.paymentPhaseIndex) && isNonEmpty(value.orchestrator) &&
     isPartyBinding(value.payer, "payingKey") &&
     isPartyBinding(value.payee, "receivingKey") &&
     isPaymentAmount(value.paymentAmount) && isRailPin(value.rail);
+}
+
+function isIdentityBinding(
+  value: unknown,
+): value is SessionSettlementIdentityBinding {
+  return isRecord(value) && exactKeys(value, [
+    "jobId",
+    "railId",
+    "phaseIndex",
+    "settlementId",
+  ]) && isNonEmpty(value.jobId) && isNonEmpty(value.railId) &&
+    isUint(value.phaseIndex) && isCanonicalSettlementId(value.settlementId);
+}
+
+function bindingMatchesContext(
+  binding: SessionSettlementIdentityBinding,
+  context: SessionSettlementContext,
+): boolean {
+  return binding.jobId === context.jobId &&
+    binding.railId === context.rail.railId &&
+    binding.phaseIndex === context.paymentPhaseIndex;
+}
+
+function anchorPublicationIdentity(
+  receipt: AnchorReceipt,
+): Record<string, unknown> {
+  return {
+    receiptVersion: receipt.receiptVersion,
+    substrate: receipt.substrate,
+    logicalAddress: receipt.logicalAddress,
+    nativeAddress: receipt.nativeAddress,
+    contentHash: receipt.contentHash,
+    transactionRef: receipt.transactionRef,
+    writer: receipt.writer,
+    ...(receipt.nonce === undefined ? {} : { nonce: receipt.nonce }),
+  };
+}
+
+function sameBinding(
+  left: SessionSettlementIdentityBinding,
+  right: SessionSettlementIdentityBinding,
+): boolean {
+  return left.jobId === right.jobId && left.railId === right.railId &&
+    left.phaseIndex === right.phaseIndex &&
+    left.settlementId === right.settlementId;
 }
 
 function isProofRef(value: unknown): value is SessionSettlementNativeProofRef {
@@ -395,6 +509,9 @@ function contextMatchesEvidence(
     return "settlement evidence reference/receipt hash mismatch";
   }
   if (settlement.anchorReceipt.writer !== context.orchestrator ||
+      settlement.anchorReceipt.logicalAddress !== settlement.evidenceRef.anchor.locator ||
+      (settlement.evidenceRef.signer !== undefined &&
+        settlement.evidenceRef.signer !== evidence.signature.signer) ||
       settlement.anchorReceipt.state !== "finalized" ||
       settlement.anchorReceipt.observationDisposition !== "established") {
     return "settlement evidence lacks an exact finalized orchestrator receipt";
@@ -418,6 +535,61 @@ function captureDisposition(value: unknown): SessionSettlementDisposition | null
   return null;
 }
 
+function captureRevalidation(
+  value: unknown,
+): SessionSettlementRevalidation | null {
+  const snapshot = ownedJson(value);
+  if (!snapshot || !isRecord(snapshot) || !isNonEmpty(snapshot.disposition)) {
+    return null;
+  }
+  if (
+    snapshot.disposition === "pass" &&
+    exactKeys(snapshot, ["disposition", "binding"]) &&
+    isIdentityBinding(snapshot.binding)
+  ) {
+    return snapshot as unknown as SessionSettlementRevalidation;
+  }
+  if (
+    ["fail", "error", "indeterminate"].includes(snapshot.disposition) &&
+    exactKeys(snapshot, ["disposition", "reason"]) &&
+    isNonEmpty(snapshot.reason)
+  ) {
+    return snapshot as SessionSettlementRevalidation;
+  }
+  return null;
+}
+
+function captureIdentityClaim(
+  value: unknown,
+): SessionSettlementIdentityClaim | null {
+  const snapshot = ownedJson(value);
+  if (!snapshot || !isRecord(snapshot) || !isNonEmpty(snapshot.disposition)) {
+    return null;
+  }
+  if (
+    snapshot.disposition === "pass" &&
+    exactKeys(snapshot, [
+      "disposition",
+      "ownership",
+      "binding",
+      "ownerHash",
+    ]) &&
+    (snapshot.ownership === "bound" || snapshot.ownership === "existing") &&
+    isIdentityBinding(snapshot.binding) &&
+    isHash(snapshot.ownerHash)
+  ) {
+    return snapshot as unknown as SessionSettlementIdentityClaim;
+  }
+  if (
+    ["fail", "error", "indeterminate"].includes(snapshot.disposition) &&
+    exactKeys(snapshot, ["disposition", "reason"]) &&
+    isNonEmpty(snapshot.reason)
+  ) {
+    return snapshot as SessionSettlementIdentityClaim;
+  }
+  return null;
+}
+
 function rejected(
   disposition: Exclude<SessionSettlementVerification["disposition"], "verified">,
   reason: string,
@@ -436,6 +608,8 @@ function mapTrustDisposition(
   );
 }
 
+const INERT_PROVIDER_RECEIVER = Object.freeze(Object.create(null)) as object;
+
 function captureProvider(source: SessionSettlementVerificationProvider):
 SessionSettlementVerificationProvider | null {
   try {
@@ -445,6 +619,7 @@ SessionSettlementVerificationProvider | null {
       "verifyEvidenceAnchor",
       "resolveNativeProof",
       "revalidateSettlement",
+      "claimSettlementIdentity",
       "evidence",
     ];
     if (!required.every((key) => {
@@ -452,24 +627,57 @@ SessionSettlementVerificationProvider | null {
       return !!descriptor && !descriptor.get && !descriptor.set &&
         typeof descriptor.value !== "undefined";
     })) return null;
-    const evidence = source.evidence;
+    const evidence = descriptors.evidence!.value as unknown;
+    if (!isRecord(evidence)) return null;
     const evidenceDescriptors = Object.getOwnPropertyDescriptors(evidence);
     if (
       typeof descriptors.authenticateContext?.value !== "function" ||
       typeof descriptors.verifyEvidenceAnchor?.value !== "function" ||
       typeof descriptors.resolveNativeProof?.value !== "function" ||
       typeof descriptors.revalidateSettlement?.value !== "function" ||
+      typeof descriptors.claimSettlementIdentity?.value !== "function" ||
       typeof evidenceDescriptors.resolvePublicKey?.value !== "function" ||
       typeof evidenceDescriptors.verify?.value !== "function"
     ) return null;
+    const authenticateContext = descriptors.authenticateContext.value as Function;
+    const verifyEvidenceAnchor = descriptors.verifyEvidenceAnchor.value as Function;
+    const resolveNativeProof = descriptors.resolveNativeProof.value as Function;
+    const revalidateSettlement = descriptors.revalidateSettlement.value as Function;
+    const claimSettlementIdentity =
+      descriptors.claimSettlementIdentity.value as Function;
+    const resolvePublicKey = evidenceDescriptors.resolvePublicKey.value as Function;
+    const verify = evidenceDescriptors.verify.value as Function;
     return Object.freeze({
-      authenticateContext: source.authenticateContext.bind(source),
-      verifyEvidenceAnchor: source.verifyEvidenceAnchor.bind(source),
-      resolveNativeProof: source.resolveNativeProof.bind(source),
-      revalidateSettlement: source.revalidateSettlement.bind(source),
+      authenticateContext: (context: Readonly<SessionSettlementContext>) =>
+        Reflect.apply(authenticateContext, INERT_PROVIDER_RECEIVER, [context]),
+      verifyEvidenceAnchor: (input: Parameters<
+        SessionSettlementVerificationProvider["verifyEvidenceAnchor"]
+      >[0]) => Reflect.apply(
+        verifyEvidenceAnchor,
+        INERT_PROVIDER_RECEIVER,
+        [input],
+      ),
+      resolveNativeProof: (proofRef: Readonly<SessionSettlementNativeProofRef>) =>
+        Reflect.apply(resolveNativeProof, INERT_PROVIDER_RECEIVER, [proofRef]),
+      revalidateSettlement: (input: Parameters<
+        SessionSettlementVerificationProvider["revalidateSettlement"]
+      >[0]) => Reflect.apply(
+        revalidateSettlement,
+        INERT_PROVIDER_RECEIVER,
+        [input],
+      ),
+      claimSettlementIdentity: (input: Readonly<
+        SessionSettlementIdentityClaimInput
+      >) => Reflect.apply(
+        claimSettlementIdentity,
+        INERT_PROVIDER_RECEIVER,
+        [input],
+      ),
       evidence: Object.freeze({
-        resolvePublicKey: evidence.resolvePublicKey.bind(evidence),
-        verify: evidence.verify.bind(evidence),
+        resolvePublicKey: (signer: string) =>
+          Reflect.apply(resolvePublicKey, INERT_PROVIDER_RECEIVER, [signer]),
+        verify: (...args: Parameters<NonNullable<EvidenceDeps["verify"]>>) =>
+          Reflect.apply(verify, INERT_PROVIDER_RECEIVER, args),
       }),
     });
   } catch {
@@ -522,6 +730,9 @@ export async function verifyFinalizedSessionSettlement(
   providerInput: SessionSettlementVerificationProvider,
   mode: "initial" | "recovery" = "initial",
 ): Promise<SessionSettlementVerification> {
+  if (mode !== "initial" && mode !== "recovery") {
+    return rejected("error", "settlement verification mode is invalid");
+  }
   const context = ownedJson(contextInput);
   const settlement = ownedJson(settlementInput);
   const provider = captureProvider(providerInput);
@@ -545,31 +756,44 @@ export async function verifyFinalizedSessionSettlement(
   const contextFailure = mapTrustDisposition(contextDisposition, "settlement context");
   if (contextFailure) return contextFailure;
 
-  const mismatch = contextMatchesEvidence(context, settlement);
+  let mismatch: string | null;
+  try {
+    mismatch = contextMatchesEvidence(context, settlement);
+  } catch {
+    return rejected("error", "settlement evidence cannot be canonicalized safely");
+  }
   if (mismatch) return rejected("rejected", mismatch);
 
-  const evidenceVerification = await verifySettlementEvidence(
-    settlement.evidence,
-    {
-      orchestrator: context.orchestrator,
-      agreement: {
-        amount: context.paymentAmount.amount,
-        currency: context.paymentAmount.currency,
+  let evidenceVerification: Awaited<ReturnType<typeof verifySettlementEvidence>>;
+  try {
+    evidenceVerification = await verifySettlementEvidence(
+      settlement.evidence,
+      {
+        orchestrator: context.orchestrator,
+        agreement: {
+          amount: context.paymentAmount.amount,
+          currency: context.paymentAmount.currency,
+        },
+        rail: {
+          railId: context.rail.railId,
+          railType: context.rail.railType,
+          asset: context.rail.asset,
+          network: context.rail.network,
+          handler: context.rail.handler,
+        },
+        attestationRef: settlement.evidenceRef,
+        result: settlement.outcome === "success"
+          ? { ok: true }
+          : { ok: false, errorClass: settlement.evidence.reason },
       },
-      rail: {
-        railId: context.rail.railId,
-        railType: context.rail.railType,
-        asset: context.rail.asset,
-        network: context.rail.network,
-        handler: context.rail.handler,
-      },
-      attestationRef: settlement.evidenceRef,
-      result: settlement.outcome === "success"
-        ? { ok: true }
-        : { ok: false, errorClass: settlement.evidence.reason },
-    },
-    provider.evidence,
-  );
+      provider.evidence,
+    );
+  } catch {
+    return rejected(
+      "indeterminate",
+      "normative settlement evidence verification threw",
+    );
+  }
   if (evidenceVerification.decision !== "pass") {
     return rejected(
       evidenceVerification.decision === "fail"
@@ -611,21 +835,29 @@ export async function verifyFinalizedSessionSettlement(
     return rejected("indeterminate", `native settlement proof: ${lookup.reason}`);
   }
   const nativeProof = lookup.bytes ?? lookup.artifact;
-  const nativeProofHash = lookup.bytes
-    ? sha256Hex(lookup.bytes)
-    : sha256Hex(canonicalize(lookup.artifact));
+  let nativeProofHash: string;
+  try {
+    nativeProofHash = lookup.bytes
+      ? sha256Hex(lookup.bytes)
+      : sha256Hex(canonicalize(lookup.artifact));
+  } catch {
+    return rejected("error", "native settlement proof cannot be canonicalized safely");
+  }
   if (nativeProofHash !== settlement.nativeProofRef.contentHash) {
     return rejected("rejected", "native settlement proof content hash mismatch");
   }
 
-  let nativeDisposition: SessionSettlementDisposition | null;
+  const nativeProofForVerification = lookup.bytes
+    ? new Uint8Array(lookup.bytes)
+    : nativeProof;
+  let nativeDisposition: SessionSettlementRevalidation | null;
   try {
-    nativeDisposition = captureDisposition(await provider.revalidateSettlement({
+    nativeDisposition = captureRevalidation(await provider.revalidateSettlement({
       mode,
       context,
       evidence: settlement.evidence,
       nativeProofRef: settlement.nativeProofRef,
-      nativeProof,
+      nativeProof: nativeProofForVerification,
     }));
   } catch {
     return rejected("indeterminate", "native settlement revalidation threw");
@@ -633,18 +865,84 @@ export async function verifyFinalizedSessionSettlement(
   if (!nativeDisposition) return rejected("error", "native settlement verdict is malformed");
   const nativeFailure = mapTrustDisposition(nativeDisposition, "native settlement");
   if (nativeFailure) return nativeFailure;
+  if (
+    nativeDisposition.disposition !== "pass" ||
+    !bindingMatchesContext(nativeDisposition.binding, context)
+  ) {
+    return rejected(
+      "rejected",
+      "native settlement binding does not match the authenticated session",
+    );
+  }
+  if (
+    lookup.bytes &&
+    sha256Hex(nativeProofForVerification as Uint8Array) !== nativeProofHash
+  ) {
+    return rejected("error", "native settlement verifier mutated its proof input");
+  }
 
-  const contextHash = sha256Hex(canonicalize(context));
-  const evidenceHash = contentHash(settlement.evidence as unknown as Record<string, unknown>);
-  const resultHash = sha256Hex(canonicalize({
-    settlementVersion: settlement.settlementVersion,
-    outcome: settlement.outcome,
-    contextHash,
-    evidenceHash,
-    evidenceRef: settlement.evidenceRef,
-    anchorReceipt: settlement.anchorReceipt,
-    nativeProofRef: settlement.nativeProofRef,
-  }));
+  let contextHash: string;
+  let evidenceHash: string;
+  let identityHash: string;
+  try {
+    contextHash = sha256Hex(canonicalize(context));
+    evidenceHash = contentHash(
+      settlement.evidence as unknown as Record<string, unknown>,
+    );
+    identityHash = sha256Hex(canonicalize({
+      settlementVersion: settlement.settlementVersion,
+      outcome: settlement.outcome,
+      contextHash,
+      evidenceHash,
+      evidenceRef: settlement.evidenceRef,
+      anchorPublication: anchorPublicationIdentity(settlement.anchorReceipt),
+      nativeProofRef: settlement.nativeProofRef,
+      settlementBinding: nativeDisposition.binding,
+    }));
+  } catch {
+    return rejected("error", "settlement identity cannot be canonicalized safely");
+  }
+
+  const claimInput = ownedJson<SessionSettlementIdentityClaimInput>({
+    binding: nativeDisposition.binding,
+    ownerHash: identityHash,
+  });
+  if (!claimInput) {
+    return rejected("error", "settlement identity claim cannot be snapshotted safely");
+  }
+  let claim: SessionSettlementIdentityClaim | null;
+  try {
+    claim = captureIdentityClaim(await provider.claimSettlementIdentity(claimInput));
+  } catch {
+    return rejected("indeterminate", "settlement identity claim threw");
+  }
+  if (!claim) return rejected("error", "settlement identity claim verdict is malformed");
+  const claimFailure = mapTrustDisposition(claim, "settlement identity claim");
+  if (claimFailure) return claimFailure;
+  if (
+    claim.disposition !== "pass" ||
+    claim.ownerHash !== identityHash ||
+    !sameBinding(claim.binding, nativeDisposition.binding)
+  ) {
+    return rejected(
+      "error",
+      "settlement identity claim returned rebound ownership",
+    );
+  }
+
+  let observationHash: string;
+  try {
+    observationHash = sha256Hex(canonicalize({
+      identityHash,
+      mode,
+      anchorReceipt: settlement.anchorReceipt,
+      nativeProofRef: settlement.nativeProofRef,
+      nativeProofHash,
+      settlementOwnership: claim.ownership,
+    }));
+  } catch {
+    return rejected("error", "settlement observation cannot be canonicalized safely");
+  }
   const value = ownedJson<VerifiedSessionSettlement>({
     state: "verified",
     mode,
@@ -652,7 +950,10 @@ export async function verifyFinalizedSessionSettlement(
     contextHash,
     evidenceHash,
     nativeProofHash,
-    resultHash,
+    identityHash,
+    observationHash,
+    settlementBinding: nativeDisposition.binding,
+    settlementOwnership: claim.ownership,
     settlement,
   });
   if (!value) return rejected("error", "verified settlement snapshot failed");
