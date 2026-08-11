@@ -51,7 +51,11 @@ export interface EvidenceRailContext {
   railType?: string;
   /** The rail's settlement asset id/symbol the amount MUST resolve to (PC-5). */
   asset?: string;
-  /** CAIP-2-ish network prefix the txRefs MUST live on (e.g. "polygon-amoy"). */
+  /**
+   * Canonical pinned settlement network: `eip155:<chainId>`,
+   * `solana:<mainnet|devnet|testnet>`, or `demos`. When supplied, explicit
+   * ChainTxRef network fields MUST match it.
+   */
   network?: string;
   /**
    * The phase handler the rail declares it settles through. MUST be coherent
@@ -145,6 +149,31 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const is64Hex = (v: unknown): v is string => isStr(v) && /^[0-9a-f]{64}$/.test(v);
+
+type PinnedEvidenceNetwork =
+  | { kind: "evm"; chainId: number }
+  | { kind: "solana"; cluster: "mainnet" | "devnet" | "testnet" }
+  | { kind: "demos" };
+
+function parsePinnedEvidenceNetwork(
+  value: string,
+): PinnedEvidenceNetwork | null {
+  if (value === "demos") return { kind: "demos" };
+  const evm = /^eip155:([1-9][0-9]*)$/.exec(value);
+  if (evm) {
+    const chainId = Number(evm[1]);
+    return Number.isSafeInteger(chainId) && chainId > 0
+      ? { kind: "evm", chainId }
+      : null;
+  }
+  const solana = /^solana:(mainnet|devnet|testnet)$/.exec(value);
+  return solana
+    ? {
+        kind: "solana",
+        cluster: solana[1] as "mainnet" | "devnet" | "testnet",
+      }
+    : null;
+}
 
 /** Canonical CD-1 decimal? (canonicalising it is a no-op.) */
 function isCanonicalDecimal(v: unknown): boolean {
@@ -365,12 +394,60 @@ export async function verifySettlementEvidence(
       x402: new Set(["x402"]),
       "demos-native": new Set(["demos"]),
     };
+    const pinnedNetwork = ctx.rail.network === undefined
+      ? undefined
+      : parsePinnedEvidenceNetwork(ctx.rail.network);
+    if (ctx.rail.network !== undefined && !pinnedNetwork) {
+      fail(
+        `rail network "${ctx.rail.network}" is not a canonical pinned ` +
+          `eip155, solana, or demos network`,
+      );
+    }
     for (const t of txRefs) {
       if (!isObj(t)) continue;
       const allowed = ctx.rail.railType ? allowedKinds[ctx.rail.railType] : undefined;
       if (allowed && (!isStr(t["kind"]) || !allowed.has(t["kind"]))) {
         fail(
           `paymentTxRef.kind "${String(t["kind"])}" is incoherent with rail type "${ctx.rail.railType}"`,
+        );
+      }
+      if (pinnedNetwork && t["kind"] === "evm") {
+        if (
+          pinnedNetwork.kind !== "evm" ||
+          t["chainId"] !== pinnedNetwork.chainId
+        ) {
+          fail(
+            `paymentTxRef EVM chainId "${String(t["chainId"])}" does not ` +
+              `match pinned rail network "${ctx.rail.network}"`,
+          );
+        }
+      } else if (pinnedNetwork && t["kind"] === "solana") {
+        if (
+          pinnedNetwork.kind !== "solana" ||
+          t["cluster"] !== pinnedNetwork.cluster
+        ) {
+          fail(
+            `paymentTxRef Solana cluster "${String(t["cluster"])}" does not ` +
+              `match pinned rail network "${ctx.rail.network}"`,
+          );
+        }
+      } else if (pinnedNetwork && t["kind"] === "demos") {
+        if (pinnedNetwork.kind !== "demos") {
+          fail(
+            `paymentTxRef Demos network does not match pinned rail network ` +
+              `"${ctx.rail.network}"`,
+          );
+        }
+      } else if (
+        pinnedNetwork &&
+        t["kind"] === "x402" &&
+        t["chainId"] !== undefined &&
+        (pinnedNetwork.kind !== "evm" ||
+          t["chainId"] !== pinnedNetwork.chainId)
+      ) {
+        fail(
+          `paymentTxRef x402 chainId "${String(t["chainId"])}" does not ` +
+            `match pinned rail network "${ctx.rail.network}"`,
         );
       }
     }

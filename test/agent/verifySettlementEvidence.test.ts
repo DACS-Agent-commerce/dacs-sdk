@@ -204,7 +204,21 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
   });
   test("railNetworkMismatch → fail", async () => {
     const ev = payment();
-    expect((await verify(ev, { rail: { railType: "solana-spl" } })).decision).toBe("fail");
+    expect((await verify(ev, {
+      rail: { railType: "evm-erc20", network: "eip155:1" },
+    })).decision).toBe("fail");
+  });
+  test("railNetworkMatch → pass", async () => {
+    const ev = payment();
+    expect((await verify(ev, {
+      rail: { railType: "evm-erc20", network: "eip155:80002" },
+    })).decision).toBe("pass");
+  });
+  test("non-canonical pinned rail network → fail closed", async () => {
+    const ev = payment();
+    expect((await verify(ev, {
+      rail: { railType: "evm-erc20", network: "polygon-amoy" },
+    })).decision).toBe("fail");
   });
 
   test("wrongAttestationKind → fail", async () => {
