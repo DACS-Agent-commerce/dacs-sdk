@@ -230,6 +230,47 @@ function assertExpectedRequirements(
   return requirements;
 }
 
+function captureChallengeClientConfig(
+  value: unknown,
+): Readonly<{
+  evmPrivateKey: `0x${string}`;
+  authority: Readonly<X402BuyerPreparationAuthority>;
+  expectedRequirements: Readonly<X402BuyerPaymentRequirements>;
+}> {
+  const keys = ["evmPrivateKey", "authority", "expectedRequirements"] as const;
+  if (!isRecord(value) || nodeTypes.isProxy(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype ||
+      Object.getOwnPropertySymbols(value).length !== 0) {
+    throw new TypeError("DACS x402 buyer config must be a plain data record");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Object.keys(descriptors).length !== keys.length ||
+      keys.some((key) => {
+        const descriptor = descriptors[key];
+        return !descriptor || !descriptor.enumerable || !("value" in descriptor) ||
+          descriptor.value === undefined;
+      })) {
+    throw new TypeError("DACS x402 buyer config must contain only own data properties");
+  }
+  const evmPrivateKey = descriptors.evmPrivateKey!.value;
+  if (typeof evmPrivateKey !== "string" || !PRIVATE_KEY_RE.test(evmPrivateKey)) {
+    throw new TypeError("DACS x402 buyer requires a 32-byte EVM private key");
+  }
+  const authority = captureX402BuyerPreparationAuthority(
+    descriptors.authority!.value,
+  );
+  if (!authority) throw new TypeError("DACS x402 buyer authority is invalid");
+  const expectedRequirements = assertExpectedRequirements(
+    descriptors.expectedRequirements!.value,
+    authority,
+  );
+  return Object.freeze({
+    evmPrivateKey: evmPrivateKey as `0x${string}`,
+    authority,
+    expectedRequirements,
+  });
+}
+
 function dacsNonce(jobId: string, phaseIndex: number): `0x${string}` {
   return `0x${sha256Hex(
     `dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
@@ -244,13 +285,10 @@ function dacsNonce(jobId: string, phaseIndex: number): `0x${string}` {
 export async function createDacsX402BuyerEvmChallengeClient(
   config: Readonly<DacsX402BuyerEvmChallengeClientConfig>,
 ): Promise<Readonly<DacsX402BuyerEvmChallengeClient>> {
-  if (!config || typeof config.evmPrivateKey !== "string" ||
-      !PRIVATE_KEY_RE.test(config.evmPrivateKey)) {
-    throw new TypeError("DACS x402 buyer requires a 32-byte EVM private key");
-  }
-  const authority = captureX402BuyerPreparationAuthority(config.authority);
-  if (!authority) throw new TypeError("DACS x402 buyer authority is invalid");
-  const expected = assertExpectedRequirements(config.expectedRequirements, authority);
+  const captured = captureChallengeClientConfig(config);
+  const evmPrivateKey = captured.evmPrivateKey;
+  const authority = captured.authority;
+  const expected = captured.expectedRequirements;
 
   const core = await import("@x402/core/client").catch((cause: unknown) => {
     throw new CounterpartyError(
@@ -277,9 +315,7 @@ export async function createDacsX402BuyerEvmChallengeClient(
     );
   });
 
-  const account = accounts.privateKeyToAccount(
-    config.evmPrivateKey as `0x${string}`,
-  );
+  const account = accounts.privateKeyToAccount(evmPrivateKey);
   if (account.address.toLowerCase() !== authority.payer.toLowerCase()) {
     throw new TypeError("DACS x402 buyer key does not control the authenticated payer");
   }

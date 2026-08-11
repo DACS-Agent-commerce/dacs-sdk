@@ -20,6 +20,8 @@ import { x402Eip3009Nonce } from "../../src/seller/paymentIntake.js";
 
 const PRIVATE_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784e7bf4f2ff80";
+const OTHER_PRIVATE_KEY =
+  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const ACCOUNT = privateKeyToAccount(PRIVATE_KEY);
 const JOB_ID = "job-real-x402-dacs-nonce";
 const PHASE_INDEX = 4;
@@ -263,10 +265,59 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
 
   test("refuses a key that does not control the authenticated payer", async () => {
     await expect(createDacsX402BuyerEvmChallengeClient({
-      evmPrivateKey:
-        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      evmPrivateKey: OTHER_PRIVATE_KEY,
       authority: authority(),
       expectedRequirements: requirements(),
     })).rejects.toThrow(/does not control/);
+  });
+
+  test("snapshots the private key before optional-peer initialization", async () => {
+    const config = {
+      evmPrivateKey: PRIVATE_KEY,
+      authority: authority(),
+      expectedRequirements: requirements(),
+    };
+    const creating = createDacsX402BuyerEvmChallengeClient(config);
+    config.evmPrivateKey = OTHER_PRIVATE_KEY;
+
+    await expect(creating).resolves.toMatchObject({ address: ACCOUNT.address });
+  });
+
+  test("rejects accessor and proxy configs without invoking user code", async () => {
+    let accessorReads = 0;
+    const accessorConfig = {
+      get evmPrivateKey() {
+        accessorReads += 1;
+        return PRIVATE_KEY;
+      },
+      authority: authority(),
+      expectedRequirements: requirements(),
+    };
+    await expect(createDacsX402BuyerEvmChallengeClient(accessorConfig))
+      .rejects.toThrow(/own data properties/);
+    expect(accessorReads).toBe(0);
+
+    let proxyTraps = 0;
+    const proxyConfig = new Proxy({
+      evmPrivateKey: PRIVATE_KEY,
+      authority: authority(),
+      expectedRequirements: requirements(),
+    }, {
+      get(target, key, receiver) {
+        proxyTraps += 1;
+        return Reflect.get(target, key, receiver);
+      },
+      getPrototypeOf(target) {
+        proxyTraps += 1;
+        return Reflect.getPrototypeOf(target);
+      },
+      ownKeys(target) {
+        proxyTraps += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    await expect(createDacsX402BuyerEvmChallengeClient(proxyConfig))
+      .rejects.toThrow(/plain data record/);
+    expect(proxyTraps).toBe(0);
   });
 });
