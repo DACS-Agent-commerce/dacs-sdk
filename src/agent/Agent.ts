@@ -31,10 +31,11 @@ import {
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
-import type {
-  ListingRailAuthorityInput,
-  ListingValidationResult,
-  PayloadVerificationCapabilityResolver,
+import {
+  validateListingArtifact,
+  type ListingValidationDeps,
+  type ListingRailAuthorityInput,
+  type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
 import { publishListingCore } from "./publishListingCore.js";
 import {
@@ -98,6 +99,78 @@ function stableAgentMethod<T>(
   return Function.prototype.bind.call(candidate, source) as T;
 }
 
+/** Own the low-level reader policy once; the SDK retains the algorithm. */
+function captureAgentListingValidationDeps(
+  value: unknown,
+  label: string,
+): ListingValidationDeps | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) {
+    throw new DacsError(`${label} must be stable data`);
+  }
+  const deps = value as ListingValidationDeps;
+  const revocationValue = stableAgentData(
+    deps,
+    "revocation",
+    `${label}.revocation`,
+  );
+  if (
+    revocationValue === null ||
+    typeof revocationValue !== "object" ||
+    nodeTypes.isProxy(revocationValue)
+  ) {
+    throw new DacsError(`${label}.revocation must be stable data`);
+  }
+  const revocation = revocationValue as ListingValidationDeps["revocation"];
+  return Object.freeze({
+    nowMs: stableAgentMethod<ListingValidationDeps["nowMs"]>(
+      deps,
+      "nowMs",
+      `${label}.nowMs`,
+    ),
+    verifyListingSignature: stableAgentMethod<
+      ListingValidationDeps["verifyListingSignature"]
+    >(deps, "verifyListingSignature", `${label}.verifyListingSignature`),
+    revocation: Object.freeze({
+      surfaces: snapshotCanonicalJson(
+        stableAgentData(revocation, "surfaces", `${label}.revocation.surfaces`),
+        `${label}.revocation.surfaces`,
+      ) as ListingValidationDeps["revocation"]["surfaces"],
+      readMarker: stableAgentMethod<
+        ListingValidationDeps["revocation"]["readMarker"]
+      >(revocation, "readMarker", `${label}.revocation.readMarker`),
+      verifyMarkerSignature: stableAgentMethod<
+        ListingValidationDeps["revocation"]["verifyMarkerSignature"]
+      >(
+        revocation,
+        "verifyMarkerSignature",
+        `${label}.revocation.verifyMarkerSignature`,
+      ),
+    }),
+    verifyIdentityPresentation: stableAgentMethod<
+      ListingValidationDeps["verifyIdentityPresentation"]
+    >(
+      deps,
+      "verifyIdentityPresentation",
+      `${label}.verifyIdentityPresentation`,
+    ),
+    loadRailResolution: stableAgentMethod<
+      ListingValidationDeps["loadRailResolution"]
+    >(deps, "loadRailResolution", `${label}.loadRailResolution`, true),
+    resolvePayloadVerificationCapability: stableAgentMethod<
+      ListingValidationDeps["resolvePayloadVerificationCapability"]
+    >(
+      deps,
+      "resolvePayloadVerificationCapability",
+      `${label}.resolvePayloadVerificationCapability`,
+      true,
+    ),
+    verifySellerControl: stableAgentMethod<
+      ListingValidationDeps["verifySellerControl"]
+    >(deps, "verifySellerControl", `${label}.verifySellerControl`),
+  });
+}
+
 /**
  * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
  * model a CCI *is* the ed25519 public-key hex, so a DID embedding that hex
@@ -151,12 +224,11 @@ export interface RunSessionOptions {
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
-   * Full DACS-1 §6.3.4 reader validation. Required at runtime for normative
-   * Listings; only a `verified` disposition may start a new session (LR-3).
+   * Low-level DACS-1 reader dependencies. The SDK always executes the
+   * normative `validateListingArtifact` algorithm; callers cannot substitute a
+   * fabricated `verified` result. Overrides the agent-wide dependencies.
    */
-  validateListing?: (
-    raw: Record<string, unknown>,
-  ) => Promise<ListingValidationResult> | ListingValidationResult;
+  listingValidationDeps?: ListingValidationDeps;
 }
 
 export interface AgentConfig {
@@ -173,12 +245,11 @@ export interface AgentConfig {
   /** DACS-4 DPA-1 local producer support for attested-payload Listings. */
   resolvePayloadVerificationCapability?: PayloadVerificationCapabilityResolver;
   /**
-   * DACS-1 §6.3.4 full reader validation shared by normative discovery and,
-   * unless overridden per call, new-session admission.
+   * Low-level DACS-1 reader dependencies shared by normative discovery and,
+   * unless overridden per call, new-session admission. The SDK owns the
+   * ordered validation algorithm and accepts only its exact result.
    */
-  validateListing?: (
-    raw: Record<string, unknown>,
-  ) => Promise<ListingValidationResult> | ListingValidationResult;
+  listingValidationDeps?: ListingValidationDeps;
 }
 
 export interface PublishResult {
@@ -274,13 +345,13 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
     "AgentConfig.loadListingRailResolution",
     true,
   );
-  const configuredValidateListing = stableAgentMethod<
-    AgentConfig["validateListing"]
-  >(
-    config,
-    "validateListing",
-    "AgentConfig.validateListing",
-    true,
+  const configuredListingValidationDeps = captureAgentListingValidationDeps(
+    stableAgentData(
+      config,
+      "listingValidationDeps",
+      "AgentConfig.listingValidationDeps",
+    ),
+    "AgentConfig.listingValidationDeps",
   );
   const resolvePayloadVerificationCapability = stableAgentMethod<
     AgentConfig["resolvePayloadVerificationCapability"]
@@ -308,6 +379,10 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
   }
   const sign: Signer = (bytes) => adapter.sign(bytes);
+  const listingValidator = (deps: ListingValidationDeps | undefined) =>
+    deps
+      ? (raw: Record<string, unknown>) => validateListingArtifact(raw, deps)
+      : undefined;
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
@@ -411,7 +486,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
         verify: ed25519RawVerify,
         resolvePublicKey: (claim) => publicKeyFromDid(claim),
-        validateListing: configuredValidateListing,
+        validateListing: listingValidator(configuredListingValidationDeps),
       });
     },
 
@@ -448,13 +523,13 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
         "Agent.runSession resumeSettlement",
         true,
       );
-      const validateListing = stableAgentMethod<
-        RunSessionOptions["validateListing"]
-      >(
-        opts,
-        "validateListing",
-        "Agent.runSession validateListing",
-        true,
+      const sessionListingValidationDeps = captureAgentListingValidationDeps(
+        stableAgentData(
+          opts,
+          "listingValidationDeps",
+          "Agent.runSession listingValidationDeps",
+        ),
+        "Agent.runSession listingValidationDeps",
       );
       const sessionStore = stableAgentData(
         opts,
@@ -726,7 +801,9 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           resumeSettlement,
           vet,
           newJobId: () => generateCanonicalJobId(),
-          validateListing: validateListing ?? configuredValidateListing,
+          validateListing: listingValidator(
+            sessionListingValidationDeps ?? configuredListingValidationDeps,
+          ),
           now: () => new Date().toISOString(),
           nowMs: () => Date.now(),
           sessionStore,
