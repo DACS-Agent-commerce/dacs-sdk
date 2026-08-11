@@ -1,6 +1,7 @@
 import {
   canonicalize,
   contentHash,
+  sha256Hex,
 } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
@@ -271,7 +272,8 @@ export function deriveFixedPriceAgreement(
   const terms = {
     deliverable: {
       deliverableType: deliverable.kind,
-      hash: contentHash(deliverable as unknown as Record<string, unknown>),
+      // DACS-4 §9.3 hashes the complete, anchored DeliverableSpec JCS bytes.
+      hash: sha256Hex(canonicalize(deliverable)),
       ...(deliverable.kind === "storage-program" && deliverable.schemaUrl !== undefined
         ? { schemaUrl: deliverable.schemaUrl }
         : {}),

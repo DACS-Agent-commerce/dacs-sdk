@@ -11,7 +11,7 @@ proof verifier authenticates a complete finalized receipt.
 | New writes emit `FinalityCommitmentRecord`; historical `CommitmentRecord` has an explicit read-only validator | DACS-3 §8.6 procedure step 4; CA-9; §8.11 |
 | Record signature uses `dacs-finality-commitment:v1:` and the authenticated orchestrator claim | DACS-3 §8.6 step 5; CA-6; CORE §B.7 SIG-2/SIG-6 |
 | Both agreement-party signatures verify before SR-2 resolution or submission | DACS-3 §8.5.1; §8.6 steps 1–2; CA-7 |
-| Agreement discriminator, Listing pin, fixed price, rail, deliverable, party, pattern, and payout coverage gate before submission | DACS-3 §8.5.2 checks 1–4, 7, and 9; §8.6 step 3; CA-5 |
+| Agreement discriminator, Listing pin, fixed price, rail, full-JCS `DeliverableSpec` hash, positional buyer/seller parties, pattern, and payout coverage gate before submission; unknown pricing records `unrecognized-pricing-kind` | DACS-3 §8.5.2 checks 1–4, 7, and 9; MTR-5; §8.6 step 3; DACS-4 §9.3; CA-5 |
 | Logical address is exactly `dacs3:commit:{jobId}` | DACS-3 §8.6 step 5; CORE §B.1 CF-4 |
 | An existing record must bind the same immutable session content and is never replaced by another commitment type/content | DACS-3 §8.6 CA-3 |
 | Only an established `finalized` receipt with exact logical/native/content bindings and authenticated binding-owned proof passes | CORE §5.1 SR2-4–SR2-7; DACS-3 §8.6 step 6 |

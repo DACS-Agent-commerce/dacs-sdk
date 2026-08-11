@@ -1,4 +1,4 @@
-import { canonicalize, contentHash } from "../canonical/index.js";
+import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import {
@@ -125,7 +125,9 @@ function expectedDeliverable(listing: Listing): Record<string, unknown> {
   const deliverable = listing.offering.deliverable;
   return {
     deliverableType: deliverable.kind,
-    hash: contentHash(deliverable as unknown as Record<string, unknown>),
+    // DACS-4 §9.3 hashes the complete, anchored DeliverableSpec JCS bytes. This
+    // is deliberately not the artifact signed-scope helper.
+    hash: sha256Hex(canonicalize(deliverable)),
     ...(deliverable.kind === "storage-program" &&
     deliverable.schemaUrl !== undefined
       ? { schemaUrl: deliverable.schemaUrl }
@@ -188,6 +190,16 @@ function selectFixedPriceArtifact(
   const verified = input.verifiedListing;
   if (verified.disposition !== "verified") {
     throw new DacsError("commitment requires an explicitly verified Listing disposition");
+  }
+  const candidate = verified.listing as unknown;
+  if (isRecord(candidate) && isRecord(candidate.pricing)) {
+    const kind = candidate.pricing.kind;
+    if (
+      typeof kind === "string" &&
+      !["fixed", "negotiable", "auction", "metered"].includes(kind)
+    ) {
+      throw new DacsError(`unrecognized-pricing-kind: ${kind}`);
+    }
   }
   if (!isListing(verified.listing) || !isAgreementArtifact(agreement)) {
     throw new DacsError("commitment input has a non-normative Listing or agreement shape");
@@ -350,7 +362,7 @@ function recordMatchesBinding(
     record.agreementHash === binding.agreementHash &&
     listingPinEquals(record.listingRef, binding.pin) &&
     record.parties.length === binding.parties.length &&
-    binding.parties.every((party) => record.parties.includes(party)) &&
+    binding.parties.every((party, index) => record.parties[index] === party) &&
     record.pattern === "fixed-price" &&
     record.signature.signer === input.orchestrator
   );

@@ -5,11 +5,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import {
+  canonicalize,
   commitFixedPriceAgreement,
   contentHash,
   deriveFixedPriceAgreement,
   ed25519Sign,
   ed25519Verify,
+  FINALITY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
   isAnchorReceipt,
   isAgreementCommitmentRecord,
@@ -20,6 +22,7 @@ import {
   rawPublicKey,
   signComponentArtifact,
   signFixedPriceAgreement,
+  sha256Hex,
   type AgreementArtifact,
   type AnchoredFinalityCommitment,
   type AnchorReceipt,
@@ -290,6 +293,9 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
     expect(result.committedAt).toBe(COMMITTED_AT);
     expect(result.resumed).toBe(false);
     expect(result.logicalAddress).toBe(`dacs3:commit:${JOB_ID}`);
+    expect(fixture.agreement.terms.deliverable.hash).toBe(
+      sha256Hex(canonicalize(fixture.listing.offering.deliverable)),
+    );
   });
 
   test("commits the payee-bound artifact only with exact pay-phase coverage", async () => {
@@ -357,6 +363,56 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
     expect(resumed.resumed).toBe(true);
     expect(signerCalls).toBe(0);
     expect(submits).toBe(0);
+  });
+
+  test("rejects a validly signed resumed record with buyer and seller positions swapped", async () => {
+    const fixture = await agreementFixture();
+    const first = await commitFixedPriceAgreement(
+      commitmentInput(fixture),
+      provider(),
+      verifySignature,
+    );
+    const { signature: _signature, ...unsigned } = first.record;
+    const swapped = await signComponentArtifact(
+      { ...unsigned, parties: [SELLER, BUYER] },
+      FINALITY_COMMITMENT_SEPARATOR,
+      {
+        algorithm: "ed25519",
+        signer: ORCHESTRATOR,
+        sign: (bytes) =>
+          ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
+      },
+    );
+
+    await expect(
+      commitFixedPriceAgreement(
+        commitmentInput(fixture),
+        provider({ present: anchored(swapped) }),
+        verifySignature,
+      ),
+    ).rejects.toThrow(/binds different session content/);
+  });
+
+  test("records the MTR-5 reason for an unrecognized pricing kind", async () => {
+    const fixture = await agreementFixture();
+    const unknownPricing = structuredClone(
+      fixture.verifiedListing.listing,
+    ) as unknown as { pricing: { kind: string } };
+    unknownPricing.pricing = { kind: "future-pricing" };
+
+    await expect(
+      commitFixedPriceAgreement(
+        {
+          ...commitmentInput(fixture),
+          verifiedListing: {
+            ...fixture.verifiedListing,
+            listing: unknownPricing as unknown as Listing,
+          },
+        },
+        provider(),
+        verifySignature,
+      ),
+    ).rejects.toThrow(/^unrecognized-pricing-kind: future-pricing$/);
   });
 
   test("treats unresolved absence and ambiguous submission as fail-closed", async () => {
