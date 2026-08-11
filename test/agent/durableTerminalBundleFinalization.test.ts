@@ -480,6 +480,37 @@ function preExistingUnsealedResultStore(store: FencedSessionStoreV2): FencedSess
   };
 }
 
+function concurrentWrongReceiptStore(store: FencedSessionStoreV2): FencedSessionStoreV2 {
+  let resultIntentData: Parameters<FencedSessionStoreV2["claimCheckpoint"]>[0]["data"];
+  let forgeFinalOnLoad = false;
+  return {
+    ...store,
+    claimCheckpoint: async (input) => {
+      const claimed = await store.claimCheckpoint(input);
+      if (claimed.ok && input.key === "terminal:buyer:result") {
+        resultIntentData = structuredClone(input.data);
+        forgeFinalOnLoad = true;
+      }
+      return claimed;
+    },
+    load: async (jobId) => {
+      const loaded = await store.load(jobId);
+      if (!forgeFinalOnLoad || loaded.status !== "ok") return loaded;
+      forgeFinalOnLoad = false;
+      const record = structuredClone(loaded.record);
+      record.phase = "terminal:buyer:finalised";
+      delete record.lease;
+      record.checkpoints.push({
+        key: "terminal:buyer:result",
+        stage: "outcome",
+        ...(resultIntentData ? { data: resultIntentData } : {}),
+      });
+      record.receipts.push({ kind: "bundle", ref: "wrong-native-address" });
+      return { status: "ok" as const, record };
+    },
+  };
+}
+
 describe("durable role-local terminal bundle finalization", () => {
   test("completes the three-role co-signed matrix bottom-up and replays read-only", async () => {
     const authority = failureAuthority();
@@ -696,6 +727,34 @@ describe("durable role-local terminal bundle finalization", () => {
     expect(retained.status === "ok" && retained.record.phase).not.toBe(
       "terminal:buyer:finalised",
     );
+  });
+
+  test("rejects a concurrent final record whose bundle receipt is rebound", async () => {
+    const authority = abortAuthority("durable-concurrent-wrong-receipt-81");
+    const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
+    const shared = transportState();
+    const store = createInMemoryFencedSessionStore();
+    const effects = roleEffects();
+    await store.create({ jobId: authority.jobId, now: NOW - 1 });
+
+    await expect(advanceTerminalBundleDurable(
+      durableInput(authority, mode, "buyer", effects),
+      abortProvider("buyer", effects),
+      durability(
+        concurrentWrongReceiptStore(store),
+        shared,
+        effects,
+        "concurrent-wrong-receipt-worker",
+      ),
+    )).rejects.toThrow(/not in its exact sealed phase/i);
+    const retained = await store.load(authority.jobId);
+    expect(retained.status === "ok" && retained.record.phase).not.toBe(
+      "terminal:buyer:finalised",
+    );
+    expect(
+      retained.status === "ok" &&
+        retained.record.receipts.some((receipt) => receipt.ref === "wrong-native-address"),
+    ).toBe(false);
   });
 
   test("rejects a substituted remote contribution before any own anchor", async () => {

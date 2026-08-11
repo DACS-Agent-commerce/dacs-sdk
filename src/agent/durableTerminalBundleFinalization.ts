@@ -2145,6 +2145,33 @@ class DurableTerminalBundleCoordinator {
     return result as unknown as DurableFinalizedTerminalBundle;
   }
 
+  #assertExactResultSeal(
+    record: SessionRecord,
+    result: Readonly<DurableFinalizedTerminalBundle>,
+  ): void {
+    const violation = sessionRecordShapeViolation(record);
+    if (violation) {
+      throw new DacsError(`durable terminal result record is corrupt: ${violation}`);
+    }
+    const key = this.#key(terminalBundleFinalizationCheckpointName.result);
+    const terminal = latestCheckpoint(record.checkpoints, key);
+    const receipts = record.receipts.filter(
+      (receipt) => sessionReceiptKey(receipt) === "bundle",
+    );
+    if (
+      record.phase !== this.#phase("finalised") ||
+      record.lease !== undefined ||
+      terminal?.stage !== "outcome" ||
+      !dataMatches(terminal.data, this.#resultData(result)) ||
+      receipts.length !== 1 ||
+      receipts[0]!.ref !== result.publication.nativeAddress
+    ) {
+      throw new DacsError(
+        "durable terminal result is not in its exact sealed phase",
+      );
+    }
+  }
+
   async #finish(result: Readonly<DurableFinalizedTerminalBundle>): Promise<void> {
     const data = this.#resultData(result);
     const key = this.#key(terminalBundleFinalizationCheckpointName.result);
@@ -2154,26 +2181,7 @@ class DurableTerminalBundleCoordinator {
       "bundle-binding-publication-pending",
     );
     if (claimed.state === "outcome") {
-      if (!dataMatches(claimed.data, data)) {
-        throw new DacsError("durable terminal result outcome is rebound");
-      }
-      const violation = sessionRecordShapeViolation(claimed.record);
-      if (violation) {
-        throw new DacsError(`durable terminal result record is corrupt: ${violation}`);
-      }
-      const receipts = claimed.record.receipts.filter(
-        (receipt) => sessionReceiptKey(receipt) === "bundle",
-      );
-      if (
-        claimed.record.phase !== this.#phase("finalised") ||
-        claimed.record.lease !== undefined ||
-        receipts.length !== 1 ||
-        receipts[0]!.ref !== result.publication.nativeAddress
-      ) {
-        throw new DacsError(
-          "durable terminal result outcome is not in its exact sealed phase",
-        );
-      }
+      this.#assertExactResultSeal(claimed.record, result);
       return;
     }
     if (!this.#lease) throw new SubstrateError("terminal bundle lease is unavailable");
@@ -2181,10 +2189,7 @@ class DurableTerminalBundleCoordinator {
       await this.#renew();
       const record = await this.#load();
       if (record.phase === this.#phase("finalised")) {
-        const terminal = latestCheckpoint(record.checkpoints, key);
-        if (terminal?.stage !== "outcome" || !dataMatches(terminal.data, data)) {
-          throw new DacsError("terminal phase lacks its exact durable result outcome");
-        }
+        this.#assertExactResultSeal(record, result);
         return;
       }
       const prior = latestCheckpoint(record.checkpoints, key);
@@ -2205,6 +2210,7 @@ class DurableTerminalBundleCoordinator {
         now: this.#now(),
       });
       if (transitioned.ok) {
+        this.#assertExactResultSeal(transitioned.record, result);
         this.#lease = undefined;
         return;
       }
@@ -2433,10 +2439,7 @@ class DurableTerminalBundleCoordinator {
     if (!exact(persisted, expected)) {
       throw new DacsError("terminal result differs from authenticated replay");
     }
-    const receipts = record.receipts.filter((receipt) => sessionReceiptKey(receipt) === "bundle");
-    if (receipts.length !== 1 || receipts[0]!.ref !== expected.publication.nativeAddress) {
-      throw new DacsError("terminal result lacks its exact immutable bundle receipt");
-    }
+    this.#assertExactResultSeal(record, expected);
     return expected;
   }
 
