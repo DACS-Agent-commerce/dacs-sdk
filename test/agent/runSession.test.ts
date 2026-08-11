@@ -150,6 +150,47 @@ describe("runSession orchestration (T4)", () => {
     expect(evidence?.phase).toBe("pay-x402");
   });
 
+  test("admits PIPE-5 repetitions of the same payment phase kind", async () => {
+    const normative = normativeListing();
+    normative.pipeline.splice(3, 0, {
+      kind: "pay-x402",
+      parameters: { rail: "x402:default" },
+    });
+    let settles = 0;
+    let evidence: Record<string, unknown> | undefined;
+
+    const result = await runSessionCore(
+      "stor-repeated-payment-phase",
+      {
+        ...TERMS,
+        price: { ...TERMS.price, rail: "x402:default" },
+      },
+      makeDeps({
+        readListing: async () => normative,
+        settle: async () => {
+          settles += 1;
+          return {
+            ok: true,
+            txHash: "0xabc",
+            chainId: "eip155:8453",
+            payer: "0xbob",
+            payee: "0xalice",
+          };
+        },
+        anchor: async (name, value) => {
+          if (name.includes("evidence")) {
+            evidence = value as Record<string, unknown>;
+          }
+          return `stor-${name}`;
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("completed");
+    expect(settles).toBe(1);
+    expect(evidence?.phase).toBe("pay-x402");
+  });
+
   test("refuses to pay presentedBy when a different carried claim signed", async () => {
     const normative = normativeListing();
     normative.seller.identity.claims.push({ ref: "did:demos:agent:signer" });

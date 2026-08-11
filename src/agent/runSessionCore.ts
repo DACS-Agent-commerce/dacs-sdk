@@ -500,13 +500,19 @@ export async function runSessionCore(
               phase.kind.startsWith("pay-") &&
               phase.parameters?.rail === terms.price.rail,
           );
-          if (matching.length !== 1) {
+          const matchingKinds = [
+            ...new Set(matching.map((phase) => phase.kind)),
+          ];
+          if (matchingKinds.length !== 1) {
             throw new CounterpartyError(
               `rail ${terms.price.rail} must select exactly one normative payment ` +
-                `phase; found ${matching.length}`,
+                `phase kind; found ${matchingKinds.length}`,
             );
           }
-          return matching[0]!.kind;
+          // DACS-4 PIPE-5 permits repeated invocations of the same phase kind.
+          // SettlementEvidence carries the phase kind, not an invocation id,
+          // so identical repetitions remain unambiguous here.
+          return matchingKinds[0]!;
         })()
       : terms.price.rail;
   if (!listingView.supportedDelivery.includes(terms.deliveryPhase)) {
