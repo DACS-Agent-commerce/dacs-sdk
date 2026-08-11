@@ -582,16 +582,16 @@ describe("runSession orchestration (T4)", () => {
     expect(effects).toBe(0);
   });
 
-  test("refuses unsupported PIPE-5 repetition before settlement or anchoring", async () => {
+  test("admits PIPE-5 repetitions of the same payment phase kind", async () => {
     const normative = normativeListing();
     normative.pipeline.splice(3, 0, {
       kind: "pay-x402",
       parameters: { rail: "x402:default" },
     });
     let settles = 0;
-    let anchors = 0;
+    let evidence: Record<string, unknown> | undefined;
 
-    const attempt = runSessionCore(
+    const result = await runSessionCore(
       "stor-repeated-payment-phase",
       {
         ...TERMS,
@@ -601,61 +601,26 @@ describe("runSession orchestration (T4)", () => {
         readListing: async () => normative,
         settle: async () => {
           settles += 1;
-          throw new Error("must not settle");
+          return {
+            ok: true,
+            txHash: "0xabc",
+            chainId: "eip155:8453",
+            payer: "0xbob",
+            payee: "0xalice",
+          };
         },
-        anchor: async () => {
-          anchors += 1;
-          throw new Error("must not anchor");
-        },
-      }),
-    );
-
-    await expect(attempt).rejects.toBeInstanceOf(UnsupportedCapabilityError);
-    await expect(attempt).rejects.toMatchObject({
-      name: "UnsupportedCapabilityError",
-      category: "permanent",
-      message: expect.stringMatching(
-        /PIPE-5 repetition is valid.*single-settle orchestrator supports one/i,
-      ),
-    });
-
-    expect(settles).toBe(0);
-    expect(anchors).toBe(0);
-  });
-
-  test("refuses payment phases on different rails before selecting only one", async () => {
-    const normative = normativeListing();
-    normative.acceptedRails!.push({ railId: "evm:secondary" });
-    normative.pipeline.splice(3, 0, {
-      kind: "pay-x402",
-      parameters: { rail: "evm:secondary" },
-    });
-    let settles = 0;
-    let anchors = 0;
-
-    const attempt = runSessionCore(
-      "stor-multi-rail-payment-phases",
-      {
-        ...TERMS,
-        price: { ...TERMS.price, rail: "x402:default" },
-      },
-      makeDeps({
-        readListing: async () => normative,
-        settle: async () => {
-          settles += 1;
-          throw new Error("must not settle");
-        },
-        anchor: async () => {
-          anchors += 1;
-          throw new Error("must not anchor");
+        anchor: async (name, value) => {
+          if (name.includes("evidence")) {
+            evidence = value as Record<string, unknown>;
+          }
+          return `stor-${name}`;
         },
       }),
     );
 
-    await expect(attempt).rejects.toBeInstanceOf(UnsupportedCapabilityError);
-    await expect(attempt).rejects.toThrow(/2 pay-\* invocations.*single-settle/i);
-    expect(settles).toBe(0);
-    expect(anchors).toBe(0);
+    expect(result.outcome).toBe("completed");
+    expect(settles).toBe(1);
+    expect(evidence?.phase).toBe("pay-x402");
   });
 
   test("refuses to pay presentedBy when a different carried claim signed", async () => {

@@ -2450,13 +2450,6 @@ export async function runSessionCore(
           const paymentPhases = readableListing.listing.pipeline.filter(
             (phase) => phase.kind.startsWith("pay-"),
           );
-          if (paymentPhases.length > 1) {
-            throw new UnsupportedCapabilityError(
-              `runSessionCore cannot execute ${paymentPhases.length} pay-* invocations ` +
-                `across the normative pipeline: DACS-4 PIPE-5 repetition is valid, ` +
-                `but this single-settle orchestrator supports one invocation`,
-            );
-          }
           const matching = paymentPhases.filter(
             (phase) => phase.parameters?.rail === terms.price.rail,
           );
@@ -2465,7 +2458,19 @@ export async function runSessionCore(
               `rail ${terms.price.rail} has no matching normative payment phase`,
             );
           }
-          return matching[0]!.kind;
+          const matchingKinds = [
+            ...new Set(matching.map((phase) => phase.kind)),
+          ];
+          if (matchingKinds.length !== 1) {
+            throw new CounterpartyError(
+              `rail ${terms.price.rail} must select exactly one normative payment ` +
+                `phase kind; found ${matchingKinds.length}`,
+            );
+          }
+          // DACS-4 PIPE-5 permits repeated invocations of the same phase kind.
+          // SettlementEvidence carries the phase kind, not an invocation id,
+          // so identical repetitions remain unambiguous here.
+          return matchingKinds[0]!;
         })()
       : terms.price.rail;
   if (!listingView.supportedDelivery.includes(terms.deliveryPhase)) {
