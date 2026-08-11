@@ -395,7 +395,6 @@ function isRailPin(value: unknown): value is SessionSettlementRailPin {
   ]) &&
     isNfcNonEmpty(value.railId) && value.railId.length <= 64 &&
     /^[\x21-\x7e]+$/.test(value.railId) &&
-    value.railId === value.railId.toLowerCase() &&
     isUint(value.railVersion) && value.railVersion > 0 &&
     isUint(value.railRegistryVersion) &&
     value.railRegistryVersion > 0 && isHash(value.descriptorHash) &&
@@ -976,16 +975,6 @@ export async function verifyFinalizedSessionSettlement(
       return rejected(
         "rejected",
         "native settlement observation predates the decisive finality event",
-      );
-    }
-    if (
-      context.rail.handler === "pay-x402" &&
-      nativeDisposition.nativeObservation.sessionBinding.disposition !==
-        "established"
-    ) {
-      return rejected(
-        "rejected",
-        "x402 settlement lacks an established authenticated session binding",
       );
     }
   }

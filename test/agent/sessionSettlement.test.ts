@@ -626,18 +626,16 @@ describe("verifyFinalizedSessionSettlement", () => {
     )).disposition).toBe("verified");
   });
 
-  it("rejects a noncanonical uppercase rail id instead of silently rewriting signed context", async () => {
-    const { settlement, proof } = fixture({ railId: "evm-erc20:8453:USDC" });
-    const invalid = context();
-    invalid.rail.railId = "evm-erc20:8453:USDC";
+  it("preserves the exact case-sensitive rail id carried by signed registry data", async () => {
+    const railId = "evm-erc20:8453:USDC";
+    const { settlement, proof } = fixture({ railId });
+    const exact = context();
+    exact.rail.railId = railId;
     expect(await verifyFinalizedSessionSettlement(
-      invalid,
+      exact,
       settlement,
       provider(proof),
-    )).toEqual({
-      disposition: "error",
-      reason: "settlement context is not exact canonical data",
-    });
+    )).toMatchObject({ disposition: "verified" });
   });
 
   it("authenticates point observations without minting SB-2 count authority", async () => {
@@ -829,7 +827,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(recovery.value.observationHash).not.toBe(initial.value.observationHash);
   });
 
-  it("requires exact native finality and an established x402 session binding", async () => {
+  it("requires exact native finality while retaining an unestablished x402 binding", async () => {
     const { settlement, proof } = fixture();
     const missingBinding = await verifyFinalizedSessionSettlement(
       context(),
@@ -844,9 +842,14 @@ describe("verifyFinalizedSessionSettlement", () => {
         }),
       }),
     );
-    expect(missingBinding).toEqual({
-      disposition: "rejected",
-      reason: "x402 settlement lacks an established authenticated session binding",
+    expect(missingBinding).toMatchObject({
+      disposition: "verified",
+      value: {
+        outcome: "success",
+        nativeObservation: {
+          sessionBinding: { disposition: "not-applicable" },
+        },
+      },
     });
 
     const wrongFinality = await verifyFinalizedSessionSettlement(
