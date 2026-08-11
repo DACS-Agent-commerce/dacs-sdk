@@ -947,9 +947,6 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     // The pinned oracle still rejects fractional JSON numbers even though
     // RFC 8785 and CORE B.2 admit finite values within the magnitude bound.
     "canon-noninteger-throws",
-    // Standard#327: PR #310 rewrote this fixture's refs but its manifest hash
-    // was not regenerated. The SDK computes the §10.4.1 bytes directly.
-    "verify-consume-one-sided",
   ]);
 
   it("preserves fractional canonicalization independently of the stale oracle", () => {

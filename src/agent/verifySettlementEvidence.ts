@@ -153,6 +153,31 @@ const isStr = (v: unknown): v is string => typeof v === "string";
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const is64Hex = (v: unknown): v is string => isStr(v) && /^[0-9a-f]{64}$/.test(v);
 
+type PinnedEvidenceNetwork =
+  | { kind: "evm"; chainId: number }
+  | { kind: "solana"; cluster: "mainnet" | "devnet" | "testnet" }
+  | { kind: "demos" };
+
+function parsePinnedEvidenceNetwork(
+  value: string,
+): PinnedEvidenceNetwork | null {
+  if (value === "demos") return { kind: "demos" };
+  const evm = /^eip155:([1-9][0-9]*)$/.exec(value);
+  if (evm) {
+    const chainId = Number(evm[1]);
+    return Number.isSafeInteger(chainId) && chainId > 0
+      ? { kind: "evm", chainId }
+      : null;
+  }
+  const solana = /^solana:(mainnet|devnet|testnet)$/.exec(value);
+  return solana
+    ? {
+        kind: "solana",
+        cluster: solana[1] as "mainnet" | "devnet" | "testnet",
+      }
+    : null;
+}
+
 /** Canonical CD-1 decimal? (canonicalising it is a no-op.) */
 function isCanonicalDecimal(v: unknown): boolean {
   if (!isStr(v)) return false;
@@ -298,6 +323,35 @@ export async function verifySettlementEvidence(
   if (txRefs && txRefs.some((ref) => !isChainTxRef(ref))) {
     fail("paymentTxRefs MUST contain exact DACS-4 §9.3 ChainTxRef variants");
   }
+  if (txRefs) {
+    for (const ref of txRefs) {
+      if (!isObj(ref)) continue;
+      const kind = ref["kind"];
+      if (kind === "evm-event") {
+        if (phase !== "pay-evm-erc20") {
+          fail('evm-event is valid only for pay-evm-erc20 evidence');
+        }
+        if (outcome === "success" && finality?.["model"] !== "block-depth") {
+          fail('evm-event success evidence MUST use block-depth finality');
+        }
+      } else if (kind === "solana-instruction") {
+        if (phase !== "pay-solana-spl") {
+          fail('solana-instruction is valid only for pay-solana-spl evidence');
+        }
+        if (outcome === "success" &&
+            finality?.["model"] !== "commitment-level") {
+          fail('solana-instruction success evidence MUST use commitment-level finality');
+        }
+      } else if (kind === "x402-event") {
+        if (phase !== "pay-x402") {
+          fail('x402-event is valid only for pay-x402 evidence');
+        }
+        if (outcome === "success" && finality?.["model"] !== "block-depth") {
+          fail('x402-event success evidence MUST use block-depth finality');
+        }
+      }
+    }
+  }
   if (amount) {
     if (!isCanonicalDecimal(amount["amount"])) fail("paymentAmount.amount MUST be a canonical CD-1 decimal");
     else if (!decimalIsPositive(amount["amount"] as string)) fail("paymentAmount.amount MUST be strictly > 0");
@@ -402,18 +456,15 @@ export async function verifySettlementEvidence(
       `rail handler "${ctx.rail.handler}" is incoherent with rail type "${ctx.rail.railType}"`,
     );
   }
-  // NOTE (SB scope): this verifier checks each txRef's structural coherence with
-  // the pinned rail (below). It does NOT implement DACS-4 §9.5.8 session-binding
-  // (SB-1 settlement-tx-id keying, SB-2 cross-session uniqueness, SB-3 handler
-  // binding) — that layer is a consumer/aggregation concern (verifyBundle +
-  // reputation reconciliation), normative only from spec v0.2, and the vendored
-  // spec here is v0.1. Tracked as a distinct workstream in issue #33; a record
-  // that passes here can still be a coincidental-citation or cross-session
-  // double-count until SB lands. Do not read a `pass` as SB-clean.
+  // This layer validates the signed ChainTxRef and its pinned-rail tuple. The
+  // independently authenticated ledger-event selection, complete PC-2 address
+  // binding and SB-2 cross-session uniqueness check live in
+  // resolveSettlementEventIdentity: shape-valid legacy refs are intentionally
+  // still readable here, but they cannot mint an event identity by themselves.
   if (txRefs && ctx.rail) {
     const allowedKinds: Record<string, ReadonlySet<string>> = {
-      "evm-erc20": new Set(["evm"]),
-      "solana-spl": new Set(["solana"]),
+      "evm-erc20": new Set(["evm", "evm-event"]),
+      "solana-spl": new Set(["solana", "solana-instruction"]),
       "cross-chain-htlc": new Set([
         "htlc-lock",
         "htlc-reveal",
@@ -422,15 +473,69 @@ export async function verifySettlementEvidence(
       ]),
       "cross-chain-liquidity-tank": new Set(["liquidity-tank"]),
       ap2: new Set(["ap2"]),
-      x402: new Set(["x402"]),
+      x402: new Set(["x402", "x402-event"]),
       "demos-native": new Set(["demos"]),
     };
+    const pinnedNetwork = ctx.rail.network === undefined
+      ? undefined
+      : parsePinnedEvidenceNetwork(ctx.rail.network);
+    if (ctx.rail.network !== undefined && !pinnedNetwork) {
+      fail(
+        `rail network "${ctx.rail.network}" is not a canonical pinned ` +
+          `eip155, solana, or demos network`,
+      );
+    }
     for (const t of txRefs) {
       if (!isObj(t)) continue;
       const allowed = ctx.rail.railType ? allowedKinds[ctx.rail.railType] : undefined;
       if (allowed && (!isStr(t["kind"]) || !allowed.has(t["kind"]))) {
         fail(
           `paymentTxRef.kind "${String(t["kind"])}" is incoherent with rail type "${ctx.rail.railType}"`,
+        );
+      }
+      if (
+        pinnedNetwork &&
+        (t["kind"] === "evm" || t["kind"] === "evm-event")
+      ) {
+        if (
+          pinnedNetwork.kind !== "evm" ||
+          t["chainId"] !== pinnedNetwork.chainId
+        ) {
+          fail(
+            `paymentTxRef EVM chainId "${String(t["chainId"])}" does not ` +
+              `match pinned rail network "${ctx.rail.network}"`,
+          );
+        }
+      } else if (
+        pinnedNetwork &&
+        (t["kind"] === "solana" || t["kind"] === "solana-instruction")
+      ) {
+        if (
+          pinnedNetwork.kind !== "solana" ||
+          t["cluster"] !== pinnedNetwork.cluster
+        ) {
+          fail(
+            `paymentTxRef Solana cluster "${String(t["cluster"])}" does not ` +
+              `match pinned rail network "${ctx.rail.network}"`,
+          );
+        }
+      } else if (pinnedNetwork && t["kind"] === "demos") {
+        if (pinnedNetwork.kind !== "demos") {
+          fail(
+            `paymentTxRef Demos network does not match pinned rail network ` +
+              `"${ctx.rail.network}"`,
+          );
+        }
+      } else if (
+        pinnedNetwork &&
+        (t["kind"] === "x402" || t["kind"] === "x402-event") &&
+        t["chainId"] !== undefined &&
+        (pinnedNetwork.kind !== "evm" ||
+          t["chainId"] !== pinnedNetwork.chainId)
+      ) {
+        fail(
+          `paymentTxRef x402 chainId "${String(t["chainId"])}" does not ` +
+            `match pinned rail network "${ctx.rail.network}"`,
         );
       }
     }

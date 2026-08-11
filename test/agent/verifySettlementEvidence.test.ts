@@ -113,6 +113,35 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     delete ev.paymentAmount;
     expect((await verify(ev)).decision).toBe("fail");
   });
+  test("accepts a current signed EVM event arm for the matching phase", async () => {
+    const ev = payment();
+    ev.paymentTxRefs = [{
+      kind: "evm-event",
+      chainId: 80002,
+      txHash: "a".repeat(64),
+      logIndex: 7,
+    }];
+    expect((await verify(ev)).decision).toBe("pass");
+  });
+  test("rejects current event arms under the wrong phase or finality model", async () => {
+    const ev = payment();
+    ev.paymentTxRefs = [{
+      kind: "x402-event",
+      httpResource: "https://seller.example/resource",
+      paymentReceiptHash: "b".repeat(64),
+      settlementTxHash: "a".repeat(64),
+      chainId: 80002,
+      logIndex: 7,
+      protocolVersion: "2",
+    }];
+    expect((await verify(ev)).decision).toBe("fail");
+    ev.phase = "pay-x402";
+    ev.settlementFinality = {
+      model: "provider-receipt",
+      finalityObservedAt: ev.observedAt,
+    };
+    expect((await verify(ev)).decision).toBe("fail");
+  });
   test("nonCanonicalAmount → fail", async () => {
     const ev = payment();
     ev.paymentAmount.amount = "5.00"; // canonical is "5"

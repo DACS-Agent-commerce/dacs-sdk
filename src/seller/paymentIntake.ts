@@ -62,8 +62,8 @@ export interface SellerDemosTxRef {
   blockNumber?: number;
 }
 
-/** DACS-4 §9.7 exact pay-x402 `ChainTxRef`. */
-export interface SellerX402TxRef {
+/** Frozen pre-v0.6 pay-x402 `ChainTxRef`, accepted for durable replay only. */
+export interface SellerLegacyX402TxRef {
   kind: "x402";
   httpResource: string;
   paymentReceiptHash: string;
@@ -71,6 +71,19 @@ export interface SellerX402TxRef {
   chainId?: number;
   protocolVersion: string;
 }
+
+/** DACS-4 v0.6 current signed event-level pay-x402 `ChainTxRef`. */
+export interface SellerX402EventTxRef {
+  kind: "x402-event";
+  httpResource: string;
+  paymentReceiptHash: string;
+  settlementTxHash: string;
+  chainId: number;
+  logIndex: number;
+  protocolVersion: string;
+}
+
+export type SellerX402TxRef = SellerLegacyX402TxRef | SellerX402EventTxRef;
 
 export type SellerPaymentTxRef = SellerDemosTxRef | SellerX402TxRef;
 
@@ -1099,25 +1112,37 @@ function isValidPaymentEvidenceInput(value: unknown): value is SellerPaymentEvid
       value.settlementFinality.model !== "bft-final" ||
       !isSafeUint(value.settlementFinality.finalityObservedAt)
     ) return false;
-  } else if (
-    !hasOnlyKeys(txRef, [
+  } else {
+    const commonShape = hasOnlyKeys(txRef, [
       "kind",
       "httpResource",
       "paymentReceiptHash",
       "settlementTxHash",
       "chainId",
+      "logIndex",
       "protocolVersion",
-    ]) ||
-    txRef.kind !== "x402" ||
-    typeof txRef.httpResource !== "string" ||
-    txRef.httpResource.length === 0 ||
-    !HASH_RE.test(String(txRef.paymentReceiptHash)) ||
-    typeof txRef.settlementTxHash !== "string" ||
-    canonicalTxHash(txRef.settlementTxHash) === null ||
-    !isSafeUint(txRef.chainId) || txRef.chainId === 0 ||
-    typeof txRef.protocolVersion !== "string" ||
-    txRef.protocolVersion.length === 0 ||
-    !hasOnlyKeys(value.settlementFinality, [
+    ]);
+    const current = txRef.kind === "x402-event" &&
+      hasExactKeys(txRef, [
+        "kind", "httpResource", "paymentReceiptHash", "settlementTxHash",
+        "chainId", "logIndex", "protocolVersion",
+      ]) &&
+      typeof txRef.settlementTxHash === "string" &&
+      /^[0-9a-f]{64}$/.test(txRef.settlementTxHash) &&
+      isSafeUint(txRef.logIndex);
+    const legacy = txRef.kind === "x402" &&
+      !Object.prototype.hasOwnProperty.call(txRef, "logIndex") &&
+      typeof txRef.settlementTxHash === "string" &&
+      canonicalTxHash(txRef.settlementTxHash) !== null;
+    if (
+      !commonShape || (!current && !legacy) ||
+      typeof txRef.httpResource !== "string" ||
+      txRef.httpResource.length === 0 ||
+      !HASH_RE.test(String(txRef.paymentReceiptHash)) ||
+      !isSafeUint(txRef.chainId) || txRef.chainId === 0 ||
+      typeof txRef.protocolVersion !== "string" ||
+      txRef.protocolVersion.length === 0 ||
+      !hasOnlyKeys(value.settlementFinality, [
       "model",
       "finalityBlocks",
       "finalityObservedAt",
@@ -1125,8 +1150,9 @@ function isValidPaymentEvidenceInput(value: unknown): value is SellerPaymentEvid
     value.settlementFinality.model !== "block-depth" ||
     !isSafeUint(value.settlementFinality.finalityBlocks) ||
     value.settlementFinality.finalityBlocks === 0 ||
-    !isSafeUint(value.settlementFinality.finalityObservedAt)
-  ) return false;
+      !isSafeUint(value.settlementFinality.finalityObservedAt)
+    ) return false;
+  }
   return value.settlementFinality.finalityObservedAt === value.observedAt;
 }
 
@@ -1562,9 +1588,12 @@ export function isValidSellerReceiptClaim(value: unknown): value is SellerReceip
         typeof identity.txHash !== "string" || canonicalTxHash(identity.txHash) === null ||
         !isSafeUint(identity.logIndex) || !isSafeUint(identity.includedAt) ||
         identity.includedAt < authorization.commitment.finalizedAt ||
-        identity.includedAt > evidenceInput.observedAt || txRef.kind !== "x402" ||
+        identity.includedAt > evidenceInput.observedAt ||
+        (txRef.kind !== "x402" && txRef.kind !== "x402-event") ||
         txRef.chainId !== identity.chainId ||
-        canonicalTxHash(txRef.settlementTxHash!) !== canonicalTxHash(identity.txHash) ||
+        typeof txRef.settlementTxHash !== "string" ||
+        canonicalTxHash(txRef.settlementTxHash) !== canonicalTxHash(identity.txHash) ||
+        (txRef.kind === "x402-event" && txRef.logIndex !== identity.logIndex) ||
         canonicalSellerSettlementId({
           kind: "evm",
           chainId: identity.chainId,
@@ -2813,11 +2842,12 @@ export async function verifySellerPaymentIntake(
     phase: "pay-x402",
     outcome: "success",
     paymentTxRefs: [{
-      kind: "x402",
+      kind: "x402-event",
       httpResource: request.receipt.httpResource,
       paymentReceiptHash: request.receipt.paymentReceiptHash,
-      settlementTxHash: request.receipt.settlementTxHash,
-      chainId: request.receipt.chainId,
+      settlementTxHash: canonicalTxHash(observed.txHash)!,
+      chainId: observed.chainId,
+      logIndex: observed.logIndex,
       protocolVersion: request.receipt.protocolVersion,
     }],
     paymentAmount: { ...agreement.terms.price },

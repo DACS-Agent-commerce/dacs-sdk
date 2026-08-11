@@ -492,11 +492,12 @@ function receiptClaim(overrides: Partial<{
         phase: "pay-x402",
         outcome: "success",
         paymentTxRefs: [{
-          kind: "x402",
+          kind: "x402-event",
           httpResource: "https://seller.example/pay/store-test",
           paymentReceiptHash: "dd".repeat(32),
           settlementTxHash: txHash,
           chainId: chainId!,
+          logIndex: logIndex!,
           protocolVersion: "2",
         }],
         paymentAmount: { amount: "1", currency: "USDC" },
@@ -950,11 +951,12 @@ describe("verifySellerPaymentIntake", () => {
     });
     expect(result.evidenceInput).not.toHaveProperty("phaseIndex");
     expect(result.evidenceInput?.paymentTxRefs[0]).toEqual({
-      kind: "x402",
+      kind: "x402-event",
       httpResource: "https://seller.example/pay/order",
       paymentReceiptHash: (ctx.input.receipt as { paymentReceiptHash: string }).paymentReceiptHash,
-      settlementTxHash: EVM_TX,
+      settlementTxHash: EVM_TX.slice(2),
       chainId: 84532,
+      logIndex: 2,
       protocolVersion: "2",
     });
     expect(result.evidenceInput).not.toHaveProperty("responseHeader");

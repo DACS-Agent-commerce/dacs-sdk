@@ -599,9 +599,21 @@ export interface ListingRef {
 export type ChainTxRef =
   | { kind: "evm"; chainId: number; txHash: string }
   | {
+      kind: "evm-event";
+      chainId: number;
+      txHash: string;
+      logIndex: number;
+    }
+  | {
       kind: "solana";
       cluster: "mainnet" | "devnet" | "testnet";
       signature: string;
+    }
+  | {
+      kind: "solana-instruction";
+      cluster: "mainnet" | "devnet" | "testnet";
+      signature: string;
+      instructionIndex: number;
     }
   | { kind: "demos"; txHash: string; blockNumber?: number }
   | { kind: "storage-program"; address: string; writeTxHash: string }
@@ -618,6 +630,15 @@ export type ChainTxRef =
       paymentReceiptHash: string;
       settlementTxHash?: string;
       chainId?: number;
+      protocolVersion: string;
+    }
+  | {
+      kind: "x402-event";
+      httpResource: string;
+      paymentReceiptHash: string;
+      settlementTxHash: string;
+      chainId: number;
+      logIndex: number;
       protocolVersion: string;
     }
   | {

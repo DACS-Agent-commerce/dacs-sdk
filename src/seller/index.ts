@@ -64,6 +64,8 @@ export {
   type SellerFulfilmentPermit,
   type SellerSessionBindingGuarantee,
   type SellerDemosTxRef,
+  type SellerLegacyX402TxRef,
+  type SellerX402EventTxRef,
   type SellerX402TxRef,
   type SellerPaymentTxRef,
   type SellerPaymentFinality,

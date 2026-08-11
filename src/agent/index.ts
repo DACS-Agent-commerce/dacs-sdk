@@ -315,7 +315,17 @@ export {
   type TerminalBundleVerification,
   type VerifyFinalizedTerminalBundleInput,
 } from "./durableTerminalBundleFinalization.js";
-export { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
+export {
+  isCanonicalSettlementIdentity,
+  isCanonicalSolanaSignature,
+  resolveSettlementEventIdentity,
+  type AuthenticatedSettlementLedgerEvent,
+  type VerifiedX402ReceiptBinding,
+  type SettlementEventIdentityContext,
+  type SettlementEventIdentityDecision,
+  type SettlementEventIdentityDeps,
+  type SettlementEventIdentityResolution,
+} from "./settlementIdentity.js";
 export {
   verifyFinalizedSessionSettlement,
   type SessionSettlementDisposition,
