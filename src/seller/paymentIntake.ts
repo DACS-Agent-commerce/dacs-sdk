@@ -266,7 +266,13 @@ export interface SellerReceiptClaim {
 
 export type SellerReceiptClaimResult =
   | {
-      status: "claimed" | "already-claimed";
+      /**
+       * `already-consumed` is returned only for the exact consumed claim (or
+       * its permitted monotonic observation replay). Its permit is a recovery
+       * capability for the store-retained work, never authority for a later
+       * canonical winner or another conflicting request.
+       */
+      status: "claimed" | "already-claimed" | "already-consumed";
       permitId: string;
       /** Authoritative store-retained winner for this permit. */
       claim: SellerReceiptClaim;
@@ -402,6 +408,9 @@ export interface SellerPaymentIntakeResult {
   disposition: SellerPaymentIntakeDisposition;
   fulfilment: SellerFulfilmentPermit;
   reason: string;
+  /** Exact store-retained scope on claim and consumed-recovery outcomes. */
+  jobId?: string;
+  phaseIndex?: number;
   agreementHash?: string;
   listingRef?: ListingRef;
   railId?: string;
@@ -411,6 +420,11 @@ export interface SellerPaymentIntakeResult {
   payoutBindingTier?: 1 | 2 | 3;
   sessionBinding?: SellerSessionBindingGuarantee;
   payloadVerificationProducerAdmission?: SellerPayloadVerificationProducerAdmission;
+  /**
+   * Audit-only disclosure that another exact authorization was already
+   * consumed. This is not fulfilment authority without its bound `permitId`.
+   */
+  consumedAuthorization?: SellerPaymentAuthorization;
   /** Opaque store capability required by the seller fulfilment boundary. */
   permitId?: string;
 }
@@ -699,6 +713,36 @@ function sameProducerAdmission(
     left.admittedAt === right.admittedAt;
 }
 
+function sameClaimAuthorizationScope(
+  left: SellerReceiptClaim,
+  right: SellerReceiptClaim,
+): boolean {
+  if (left.settlementId !== right.settlementId ||
+      left.jobId !== right.jobId || left.phaseIndex !== right.phaseIndex) return false;
+  const replayInvariant = (
+    authorization: SellerPaymentAuthorization,
+  ): Record<string, unknown> => {
+    const invariant: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(authorization)) {
+      // `isCanonicalReplayWinner` validates the excluded observation fields,
+      // including event-identity equivalence in the fulfilment stack where a
+      // later observation may carry a later authenticated inclusion time.
+      if (key !== "evidenceHash" && key !== "evidenceInput" &&
+          key !== "payoutBindingTier" && key !== "sessionBinding" &&
+          key !== "settlementIdentity") {
+        invariant[key] = value;
+      }
+    }
+    return invariant;
+  };
+  try {
+    return canonicalize(replayInvariant(left.authorization)) ===
+      canonicalize(replayInvariant(right.authorization));
+  } catch {
+    return false;
+  }
+}
+
 function isCommittedAgreementResolutionValue(
   value: unknown,
 ): value is CommittedAgreementResolution {
@@ -906,7 +950,8 @@ function isSellerReceiptClaimResultValue(
   value: unknown,
 ): value is SellerReceiptClaimResult {
   if (!isRecord(value) || typeof value.status !== "string") return false;
-  if (value.status === "claimed" || value.status === "already-claimed") {
+  if (value.status === "claimed" || value.status === "already-claimed" ||
+      value.status === "already-consumed") {
     return hasExactKeys(value, ["status", "permitId", "claim"]) &&
       typeof value.permitId === "string" && value.permitId.length > 0 &&
       isValidSellerReceiptClaim(value.claim);
@@ -1306,6 +1351,15 @@ export function createInMemorySellerReceiptStore(
           existing.selected.authorization.payloadVerificationProducerAdmission,
           candidate.authorization.payloadVerificationProducerAdmission,
         );
+      if (existing.consumed &&
+          sameClaimAuthorizationScope(existing.consumed.claim, candidate) &&
+          isCanonicalReplayWinner(existing.consumed.claim, candidate)) {
+        return {
+          status: "already-consumed",
+          permitId: existing.consumed.permitId,
+          claim: cloneClaim(existing.consumed.claim),
+        };
+      }
       if (sameSelectedSession && !sameAuthorizationScope) {
         return {
           status: "conflict",
@@ -1343,9 +1397,10 @@ export function createInMemorySellerReceiptStore(
             };
           }
           return {
-            status: "already-claimed",
-            permitId: existing.consumed.permitId,
-            claim: cloneClaim(existing.consumed.claim),
+            status: "conflict",
+            reason: "lower-priority",
+            existing: cloneClaim(existing.selected),
+            consumed: cloneClaim(existing.consumed.claim),
           };
         }
         if (!existing.pendingPermitId) {
@@ -1505,46 +1560,42 @@ async function settleReplay(
         claim.consumed.settlementId !== candidate.settlementId) ||
       (claim.reason === "winner-already-consumed" && claim.consumed === undefined)
     ) return indeterminate("receipt-store-invalid-result");
-    if (claim.reason === "authorization-scope-conflict") {
-      return reject("settlement-authorization-scope-conflict");
+    const reason = claim.reason === "authorization-scope-conflict"
+      ? "settlement-authorization-scope-conflict"
+      : claim.reason === "winner-already-consumed"
+        ? "settlement-winner-conflict-after-consumption"
+        : "settlement-identity-replay";
+    const disposition = claim.reason === "winner-already-consumed"
+      ? "indeterminate" as const
+      : "rejected" as const;
+    if (claim.consumed !== undefined) {
+      return {
+        disposition,
+        fulfilment: "none",
+        reason,
+        consumedAuthorization: claim.consumed.authorization,
+      };
     }
-    return claim.reason === "winner-already-consumed"
-      ? indeterminate("settlement-winner-conflict-after-consumption")
-      : reject("settlement-identity-replay");
+    return disposition === "indeterminate" ? indeterminate(reason) : reject(reason);
   }
   if (
     typeof claim.permitId !== "string" ||
     claim.permitId.length === 0 ||
     !isValidSellerReceiptClaim(claim.claim) ||
-    claim.claim.settlementId !== candidate.settlementId ||
-    claim.claim.jobId !== candidate.jobId ||
-    claim.claim.phaseIndex !== candidate.phaseIndex ||
-    claim.claim.authorization.agreementHash !== candidate.authorization.agreementHash ||
-    !sameListingRef(
-      claim.claim.authorization.listingRef,
-      candidate.authorization.listingRef,
-    ) ||
-    claim.claim.authorization.railId !== candidate.authorization.railId ||
-    Object.prototype.hasOwnProperty.call(
-      claim.claim.authorization,
-      "payloadVerificationProducerAdmission",
-    ) !== Object.prototype.hasOwnProperty.call(
-      candidate.authorization,
-      "payloadVerificationProducerAdmission",
-    ) ||
-    !sameProducerAdmission(
-      claim.claim.authorization.payloadVerificationProducerAdmission,
-      candidate.authorization.payloadVerificationProducerAdmission,
-    ) ||
+    !sameClaimAuthorizationScope(claim.claim, candidate) ||
     (claim.status === "claimed" &&
       canonicalize(claim.claim) !== canonicalize(candidate)) ||
-    (claim.status === "already-claimed" &&
+    ((claim.status === "already-claimed" || claim.status === "already-consumed") &&
       !isCanonicalReplayWinner(claim.claim, candidate))
   ) return indeterminate("receipt-store-invalid-result");
   return {
     disposition: "verified",
     fulfilment: claim.status === "claimed" ? "claim" : "already-claimed",
-    reason: claim.status === "claimed" ? "payment-verified" : "payment-already-claimed",
+    reason: claim.status === "claimed"
+      ? "payment-verified"
+      : claim.status === "already-consumed"
+        ? "payment-already-consumed"
+        : "payment-already-claimed",
     ...claim.claim.authorization,
     permitId: claim.permitId,
   };
