@@ -60,6 +60,7 @@ interface StoredStep {
 interface HarnessState {
   checkpoints: Map<string, unknown>;
   steps: Map<string, StoredStep>;
+  authorizedExecutions: Map<string, number>;
   inflight: Map<string, Promise<unknown>>;
   artifacts: Map<string, StoredArtifact>;
   decisions: Map<string, "pass" | "fail" | "indeterminate" | "error">;
@@ -78,18 +79,22 @@ interface HarnessState {
     step: string;
     inputHash: string;
   }) => Promise<void> | void;
+  loseAuthorizedResponseAt?: string;
+  lostAuthorizedResponses: Set<string>;
 }
 
 function state(): HarnessState {
   return {
     checkpoints: new Map(),
     steps: new Map(),
+    authorizedExecutions: new Map(),
     inflight: new Map(),
     artifacts: new Map(),
     decisions: new Map(),
     effects: { methods: 0, signs: 0, anchors: 0 },
     effectStore: createInMemoryFencedSessionStore(),
     now: NOW,
+    lostAuthorizedResponses: new Set(),
   };
 }
 
@@ -354,7 +359,9 @@ function deps(
           return { status: "complete" as const, value: structuredClone(replay.value) };
         }
         let pending = harness.inflight.get(key);
+        let created = false;
         if (!pending) {
+          created = true;
           pending = (async () => {
             await harness.beforeAuthorizedEffect?.({
               operationKey,
@@ -370,6 +377,10 @@ function deps(
               };
             }
             try {
+              harness.authorizedExecutions.set(
+                key,
+                (harness.authorizedExecutions.get(key) ?? 0) + 1,
+              );
               const value = structuredClone(await execute());
               harness.steps.set(key, {
                 operationHash,
@@ -402,6 +413,14 @@ function deps(
             status: "authorization-rejected" as const,
             reason: outcome.reason,
           };
+        }
+        if (
+          created &&
+          harness.loseAuthorizedResponseAt === step &&
+          !harness.lostAuthorizedResponses.has(key)
+        ) {
+          harness.lostAuthorizedResponses.add(key);
+          throw new Error(`simulated authorized ${step} response loss`);
         }
         return { status: "complete" as const, value: structuredClone(outcome.value) };
       },
@@ -929,4 +948,41 @@ describe("partyVetCore durable party-level producer", () => {
     expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
     expect(harness.effectLease?.generation).toBe(3);
   });
+
+  test.each([
+    ["method", "live"],
+    ["method-evidence", "mocked"],
+    ["verify-result", "live"],
+    ["verify-result-anchor", "live"],
+    ["composite", "live"],
+    ["composite-anchor", "live"],
+  ] as const)(
+    "recovers exact bytes after a journaled %s response is lost",
+    async (step, availability) => {
+      const harness = state();
+      const request = await singleClaimRequest(
+        `job-party-response-loss-${step}`,
+        availability,
+      );
+      await activateEffectLease(harness, request.jobId);
+      harness.loseAuthorizedResponseAt = step;
+
+      await expect(partyVetCore(request, deps(harness))).rejects.toThrow(
+        new RegExp(`party Vet ${step} authorized run failed`),
+      );
+      const production = await partyVetCore(request, deps(harness));
+      const replay = await partyVetCore(request, deps(harness));
+      expect(canonicalize(replay)).toBe(canonicalize(production));
+
+      const matchingExecutions = [...harness.authorizedExecutions.entries()]
+        .filter(([key]) => key.endsWith(`\u0000${step}`));
+      expect(matchingExecutions).toHaveLength(1);
+      expect(matchingExecutions[0]![1]).toBe(1);
+      expect(harness.effects).toEqual(
+        availability === "mocked"
+          ? { methods: 0, signs: 2, anchors: 3 }
+          : { methods: 1, signs: 2, anchors: 2 },
+      );
+    },
+  );
 });
