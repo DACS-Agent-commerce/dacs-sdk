@@ -1090,6 +1090,13 @@ function sellerDeliveryPhaseProgress(
   };
 }
 
+/** Seller terminal outcomes that remain open only for exact terminal FAB publication. */
+export function sessionPhaseIsSellerFailureOrigin(phase: string): boolean {
+  const progress = sellerDeliveryPhaseProgress(phase);
+  return phase === "seller:failed" ||
+    (progress?.terminal === true && progress.outcome !== "completed");
+}
+
 export function sessionPhaseMutationFailure(
   record: SessionRecord,
   nextPhase: string | undefined,
@@ -1154,9 +1161,7 @@ export function sessionPhaseMutationFailure(
       current === null &&
       !record.phase.startsWith("seller:") &&
       !record.phase.startsWith("buyer:");
-    const failedSellerOrigin =
-      record.phase === "seller:failed" ||
-      (current?.terminal === true && current.outcome !== "completed");
+    const failedSellerOrigin = sessionPhaseIsSellerFailureOrigin(record.phase);
     const validOrigin = ordinaryOrigin ||
       (failedSellerOrigin && nextTerminalBundle.role === "seller");
     return nextTerminalBundle.rank === 0 &&
@@ -1167,7 +1172,7 @@ export function sessionPhaseMutationFailure(
       : "phase-regression";
   }
 
-  if (record.phase === "seller:failed") {
+  if (sessionPhaseIsSellerFailureOrigin(record.phase)) {
     return "phase-regression";
   }
 
@@ -1277,7 +1282,7 @@ export function sessionLeaseScopeFailure(
   record: SessionRecord,
   sellerPhaseIndex: number | undefined,
 ): "phase-regression" | null {
-  if (record.phase === "seller:failed") {
+  if (sessionPhaseIsSellerFailureOrigin(record.phase)) {
     return sellerPhaseIndex === undefined ? null : "phase-regression";
   }
   if (terminalBundlePhaseProgress(record.phase) !== null) {
@@ -1304,7 +1309,7 @@ export function sessionLeaseScopeFailure(
 export function sessionAuthorizationPhaseFailure(
   record: SessionRecord,
 ): "phase-regression" | null {
-  if (record.phase === "seller:failed") {
+  if (sessionPhaseIsSellerFailureOrigin(record.phase)) {
     return "phase-regression";
   }
   if (terminalBundlePhaseProgress(record.phase) !== null) {
@@ -1459,11 +1464,13 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
         return { ok: false, reason: phaseProblem, record: clone(current) };
       }
       if (
-        current.phase === "seller:failed" &&
+        sessionPhaseIsSellerFailureOrigin(current.phase) &&
         !releasesOnly &&
         (input.phase !== terminalBundleStorePhase("seller", "authority") ||
           input.receipt !== undefined ||
-          input.checkpoint?.key !== "terminal:seller:authority")
+          input.checkpoint?.key !== "terminal:seller:authority" ||
+          input.checkpoint.stage !== "intent" ||
+          input.lease === null)
       ) {
         return { ok: false, reason: "phase-regression", record: clone(current) };
       }
@@ -1530,7 +1537,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
         return { ok: false, reason: phaseProblem, record: clone(current) };
       }
       if (
-        current.phase === "seller:failed" &&
+        sessionPhaseIsSellerFailureOrigin(current.phase) &&
         (input.phase !== terminalBundleStorePhase("seller", "authority") ||
           input.key !== "terminal:seller:authority")
       ) {
@@ -1758,7 +1765,8 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       if (
         kind === "agreement" &&
         current &&
-        (current.phase === "seller:failed" || sessionPhaseIsTerminal(current.phase))
+        (sessionPhaseIsSellerFailureOrigin(current.phase) ||
+          sessionPhaseIsTerminal(current.phase))
       ) {
         return current.agreementHash === hash
           ? { ok: true, boundTo: jobId }

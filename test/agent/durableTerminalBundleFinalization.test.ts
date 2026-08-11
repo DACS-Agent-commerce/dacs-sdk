@@ -32,6 +32,7 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../../src/crypto/index.js";
+import { DacsError } from "../../src/errors.js";
 
 const NOW = 1_786_300_000_000;
 const ROLES = ["buyer", "seller", "orchestrator"] as const;
@@ -662,6 +663,39 @@ describe("durable role-local terminal bundle finalization", () => {
     )).toBe(true);
   });
 
+  test("cold restart accepts the identical signer role set in a different caller order", async () => {
+    const authority = failureAuthority("durable-reordered-keys-81");
+    const mode = { kind: "co-signed" } as const;
+    const shared = transportState();
+    const store = createInMemoryFencedSessionStore();
+    const effects = roleEffects();
+    await store.create({ jobId: authority.jobId, now: NOW - 1 });
+
+    const first = await advanceTerminalBundleDurable(
+      durableInput(authority, mode, "buyer", effects),
+      provider("buyer", effects),
+      durability(store, shared, effects, "ordered-key-worker"),
+    );
+    expect(first).toMatchObject({
+      disposition: "waiting",
+      stage: "contribution-publication",
+    });
+
+    const reordered = durableInput(authority, mode, "buyer", effects);
+    const second = await advanceTerminalBundleDurable(
+      { ...reordered, signerKeys: [...reordered.signerKeys].reverse() },
+      provider("buyer", effects),
+      durability(store, shared, effects, "reordered-key-worker"),
+    );
+    expect(second).toMatchObject({
+      disposition: "waiting",
+      stage: "contribution-publication",
+    });
+    expect(effects.signerCalls).toBe(3);
+    expect(shared.proposalPublishes).toBe(1);
+    expect(shared.contributionPublishes.buyer).toBe(1);
+  });
+
   test("strict single-signed abort publishes only the locally owned copy", async () => {
     const authority = abortAuthority("durable-abort-81");
     const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
@@ -832,7 +866,7 @@ describe("durable role-local terminal bundle finalization", () => {
         transport: {
           ...proposalDurability.transport,
           resolveProposal: async () => {
-            throw new Error("proposal resolver offline");
+            throw new DacsError("proposal resolver offline");
           },
         },
       },
@@ -918,8 +952,8 @@ describe("durable role-local terminal bundle finalization", () => {
       durableInput(anchorAuthority, mode, "buyer", anchorEffects),
       {
         ...anchorProvider,
-        resolveOwnBundle: async () => {
-          throw new Error("anchor resolver offline");
+        verifyOwnBundlePublication: async () => {
+          throw new DacsError("anchor verifier offline");
         },
       },
       durability(
@@ -945,7 +979,7 @@ describe("durable role-local terminal bundle finalization", () => {
       {
         ...bindingProvider,
         resolveOwnBundleBinding: async () => {
-          throw new Error("binding resolver offline");
+          throw new DacsError("binding resolver offline");
         },
       },
       durability(
@@ -987,7 +1021,7 @@ describe("durable role-local terminal bundle finalization", () => {
       {
         ...recoveryProvider,
         resolveOwnBundle: async () => {
-          throw new Error("recovery anchor resolver offline");
+          throw new DacsError("recovery anchor resolver offline");
         },
       },
       recoveryStore,

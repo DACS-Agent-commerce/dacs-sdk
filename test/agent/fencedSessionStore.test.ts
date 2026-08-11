@@ -618,6 +618,63 @@ describe("generation-fenced FencedSessionStoreV2 v2", () => {
       kind: "agreement",
     })).toEqual({ ok: false, boundTo: "failed-prebound" });
 
+    for (const [outcome, hashCharacter] of [
+      ["failed", "6"],
+      ["rejected", "7"],
+    ] as const) {
+      const jobId = `indexed-${outcome}-terminal`;
+      await s.create({
+        jobId,
+        phase: `seller:delivery-${outcome}:2`,
+        now: 0,
+      });
+      expect(await s.bindHash({
+        hash: hashCharacter.repeat(64),
+        jobId,
+        kind: "agreement",
+      })).toEqual({ ok: false, boundTo: jobId });
+      const unbound = await s.load(jobId);
+      expect(unbound.status === "ok" && unbound.record.agreementHash).toBeUndefined();
+      const indexedLease = await s.acquireLease({
+        jobId,
+        owner: `${outcome}-terminal-worker`,
+        ttlMs: 100,
+        now: 0,
+      });
+      if (!indexedLease.ok) throw new Error(`${outcome} terminal lease missing`);
+      expect(await s.transition({
+        jobId,
+        expectedRevision: indexedLease.record.revision,
+        leaseToken: indexedLease.lease,
+        receipt: { kind: "bundle", ref: `${outcome}-premature-bundle` },
+        now: 1,
+      })).toMatchObject({ ok: false, reason: "phase-regression" });
+      expect(await s.transition({
+        jobId,
+        expectedRevision: indexedLease.record.revision,
+        leaseToken: indexedLease.lease,
+        phase: "terminal:seller:authority",
+        checkpoint: { key: `${outcome}-unrelated`, stage: "intent" },
+        now: 1,
+      })).toMatchObject({ ok: false, reason: "phase-regression" });
+      expect(await s.transition({
+        jobId,
+        expectedRevision: indexedLease.record.revision,
+        leaseToken: indexedLease.lease,
+        phase: "terminal:seller:authority",
+        checkpoint: { key: "terminal:seller:authority", stage: "intent" },
+        receipt: { kind: "bundle", ref: `${outcome}-premature-bundle` },
+        now: 1,
+      })).toMatchObject({ ok: false, reason: "phase-regression" });
+      expect(await s.claimCheckpoint({
+        jobId,
+        key: "terminal:seller:authority",
+        phase: "terminal:seller:authority",
+        leaseToken: indexedLease.lease,
+        now: 1,
+      })).toMatchObject({ ok: true });
+    }
+
     await s.create({ jobId: "failed-terminal", phase: "seller:failed", now: 0 });
     expect(await s.acquireLease({
       jobId: "failed-terminal",

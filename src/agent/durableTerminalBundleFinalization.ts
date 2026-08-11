@@ -674,12 +674,12 @@ function captureInput(value: DurableTerminalBundleInput): CapturedTerminalInput 
   if (!requiredLocal || requiredLocal.primaryClaim !== primaryClaim) {
     throw new DacsError("durable terminal signer does not own one exact required role");
   }
-  const signerKeys = captureSignerKeys(dataProperty(map, "signerKeys", subject));
-  const wire = signerKeysWire(signerKeys);
+  const suppliedSignerKeys = captureSignerKeys(dataProperty(map, "signerKeys", subject));
+  const suppliedWire = signerKeysWire(suppliedSignerKeys);
   if (
-    signerKeys.length !== plan.requiredSigners.length ||
+    suppliedSignerKeys.length !== plan.requiredSigners.length ||
     plan.requiredSigners.some(
-      (required) => !wire.some(
+      (required) => !suppliedWire.some(
         (candidate) =>
           candidate.role === required.role && candidate.primaryClaim === required.primaryClaim,
       ),
@@ -687,6 +687,12 @@ function captureInput(value: DurableTerminalBundleInput): CapturedTerminalInput 
   ) {
     throw new DacsError("durable terminal signer key set is incomplete or substituted");
   }
+  const signerKeys = Object.freeze(plan.requiredSigners.map((required) => {
+    const key = suppliedSignerKeys.find((candidate) => candidate.role === required.role);
+    if (!key) throw new DacsError(`durable terminal ${required.role} signer key is missing`);
+    return key;
+  }));
+  const wire = signerKeysWire(signerKeys);
   return Object.freeze({
     plan,
     local: Object.freeze({ role, primaryClaim, signer }),
@@ -801,7 +807,7 @@ function indeterminateCallbackFailure(
   stage: TerminalBundleFinalizationStage,
   subject: string,
 ): never {
-  if (error instanceof DacsError || error instanceof ProgressSignal) throw error;
+  if (error instanceof ProgressSignal) throw error;
   throw new ProgressSignal(
     "indeterminate",
     stage,
