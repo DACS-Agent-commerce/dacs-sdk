@@ -5,12 +5,21 @@ import {
   type SessionDeps,
   type SessionTerms,
 } from "../../src/agent/runSessionCore.js";
-import type { Listing } from "../../src/artifacts/types.js";
+import type {
+  CompositeVerificationRecord,
+  Listing,
+  VerificationDecision,
+} from "../../src/artifacts/types.js";
 import {
   canonicalize,
   contentHash,
+  encodeAddressSegment,
   sha256Hex,
 } from "../../src/canonical/index.js";
+import type {
+  FinalizedVetAnchor,
+  VetProduction,
+} from "../../src/agent/vetCore.js";
 
 const LISTING = {
   agentId: "did:demos:agent:alice",
@@ -29,6 +38,71 @@ const TERMS: SessionTerms = {
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
+
+function currentVet(
+  evaluatedParty: string,
+  jobId: string,
+  overallDecision: VerificationDecision,
+): CompositeVerificationRecord {
+  return {
+    recordVersion: "1",
+    jobId,
+    evaluatedParty,
+    bundleHash: "a".repeat(64),
+    requirementHash: "b".repeat(64),
+    freshness: [],
+    supplementary: [],
+    dealSpecific: [],
+    overallDecision,
+    generatedAt: 1780000000000,
+    signature: {
+      algorithm: "ed25519",
+      signer: "did:demos:verifier:carol",
+      value: "AA",
+    },
+  };
+}
+
+function currentVetProduction(
+  evaluatedParty: string,
+  jobId: string,
+  overallDecision: VerificationDecision,
+  store?: Map<string, Record<string, unknown>>,
+): VetProduction {
+  const record = currentVet(evaluatedParty, jobId, overallDecision);
+  const logicalAddress =
+    `dacs2:composite:${encodeAddressSegment(jobId)}:` +
+    encodeAddressSegment(evaluatedParty);
+  const nativeAddress = `stor-${logicalAddress}`;
+  const hash = contentHash(record as unknown as Record<string, unknown>);
+  store?.set(nativeAddress, structuredClone(record) as unknown as Record<string, unknown>);
+  return {
+    record,
+    recordRef: {
+      anchor: { kind: "storage-program", locator: nativeAddress },
+      contentHash: hash,
+    },
+    anchorReceipt: {
+      receiptVersion: "1",
+      substrate: "test",
+      finalityProfile: "instant",
+      logicalAddress,
+      nativeAddress,
+      contentHash: hash,
+      transactionRef: { kind: "test", value: `tx:${jobId}` },
+      writer: "test-writer",
+      state: "finalized",
+      observationDisposition: "established",
+      observedAt: 1780000000000,
+      blockRef: { id: `block:${jobId}` },
+      evidence: { kind: "test-proof", value: "authenticated" },
+    },
+  };
+}
+
+const authenticateClaimedVetFinality: NonNullable<
+  SessionDeps["authenticateVetFinality"]
+> = async ({ claimed }) => claimed ? structuredClone(claimed) : null;
 
 function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
   return {
@@ -683,6 +757,28 @@ describe("runSession orchestration (T4)", () => {
     ).rejects.toThrow(/listing/);
   });
 
+  test("rejects a non-wire listing before snapshot normalisation can reach payment", async () => {
+    let settleCalls = 0;
+    const inheritedListing = Object.assign(
+      Object.create({ inherited: true }) as Record<string, unknown>,
+      LISTING,
+    );
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          readListing: async () => inheritedListing,
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/listing/);
+    expect(settleCalls).toBe(0);
+  });
+
   test("vet pass: anchors the CVR, includes it in the bundle, then settles", async () => {
     const store = new Map<string, Record<string, unknown>>();
     let settleCalls = 0;
@@ -701,19 +797,24 @@ describe("runSession orchestration (T4)", () => {
         settleCalls += 1;
         return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
       },
-      vet: async (subject) => ({
-        subject,
-        recipeId: "self-signed",
-        recipeVersion: "0.1",
-        results: [{ claimRef: subject, method: "self-signed", status: "pass" }],
-        decision: "pass",
-        verifiedAt: "2026-01-01T00:00:00Z",
+      vet: async ({ evaluatedParty, jobId }) =>
+        currentVetProduction(evaluatedParty, jobId, "pass", store),
+      verifyVetRecord: async (record) => ({
+        status: "valid",
+        record: record as CompositeVerificationRecord,
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
       }),
+      authenticateVetFinality: authenticateClaimedVetFinality,
     });
 
     const res = await runSessionCore("stor-listing", TERMS, deps, "job-VET");
     expect(res.outcome).toBe("completed");
-    expect(res.vetRef).toBe("stor-dacs2:verifyrecord:job-VET");
+    expect(res.vetRef).toBe(
+      "stor-dacs2:composite:job-VET:did%3Ademos%3Aagent%3Aalice",
+    );
     expect(settleCalls).toBe(1);
     // Spec bundle: vet record + settlement evidence are content-addressed refs,
     // a buyer party, and a signature.
@@ -726,28 +827,461 @@ describe("runSession orchestration (T4)", () => {
     expect(bundle.signatures[0].party).toBe("did:demos:agent:bob");
   });
 
+  test("rejects a non-wire Vet production before snapshot normalisation", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    const deps = makeDeps({
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      vet: async ({ evaluatedParty, jobId }) =>
+        Object.assign(
+          Object.create({ inherited: true }),
+          currentVetProduction(evaluatedParty, jobId, "pass", store),
+        ) as VetProduction,
+      verifyVetRecord: async (record) => ({
+        status: "valid",
+        record: record as CompositeVerificationRecord,
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
+      }),
+      authenticateVetFinality: authenticateClaimedVetFinality,
+      settle: async () => {
+        settleCalls += 1;
+        throw new Error("must not settle");
+      },
+    });
+
+    await expect(
+      runSessionCore("stor-listing", TERMS, deps, "job-VET-NON-WIRE"),
+    ).rejects.toThrow(/Vet production is not an exact JSON wire record/);
+    expect(settleCalls).toBe(0);
+  });
+
   test("vet fail: aborts before settlement (never pays a failed seller)", async () => {
+    const store = new Map<string, Record<string, unknown>>();
     let settleCalls = 0;
     const deps = makeDeps({
       anchor: async (name) => `stor-${name}`,
-      resolveAnchor: async () => ({ status: "absent" as const }),
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
       settle: async () => {
         settleCalls += 1;
         return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
       },
-      vet: async (subject) => ({
-        subject,
-        recipeId: "domain-acme",
-        recipeVersion: "0.1",
-        results: [{ claimRef: subject, method: "consensus-backed-proxy", status: "fail" }],
-        decision: "fail",
-        verifiedAt: "2026-01-01T00:00:00Z",
+      vet: async ({ evaluatedParty, jobId }) =>
+        currentVetProduction(evaluatedParty, jobId, "fail", store),
+      verifyVetRecord: async (record) => ({
+        status: "valid",
+        record: record as CompositeVerificationRecord,
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
       }),
+      authenticateVetFinality: authenticateClaimedVetFinality,
     });
 
     await expect(runSessionCore("stor-listing", TERMS, deps, "job-VETFAIL")).rejects.toThrow(
       /did not pass verification/,
     );
+    expect(settleCalls).toBe(0);
+  });
+
+  test("resume accepts a strict CVR signed by the verifier rather than the buyer", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let vetCalls = 0;
+    let settleCalls = 0;
+    const authenticatedFinality = new Map<string, FinalizedVetAnchor>();
+    let finalityCalls = 0;
+    const deps = makeDeps({
+      anchor: async (name, value) => {
+        const ref = `stor-${name}`;
+        store.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      vet: async ({ evaluatedParty, jobId }) => {
+        vetCalls += 1;
+        const production = currentVetProduction(
+          evaluatedParty,
+          jobId,
+          "pass",
+          store,
+        );
+        authenticatedFinality.set(production.anchorReceipt.logicalAddress, {
+          ref: structuredClone(production.recordRef),
+          receipt: structuredClone(production.anchorReceipt),
+        });
+        return production;
+      },
+      verifyVetRecord: async (record) => ({
+        status: "valid",
+        record: record as CompositeVerificationRecord,
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
+      }),
+      authenticateVetFinality: async ({ logicalAddress, claimed }) => {
+        finalityCalls += 1;
+        const established = authenticatedFinality.get(logicalAddress);
+        expect(established).toBeDefined();
+        if (claimed) expect(claimed).toEqual(established);
+        return established ? structuredClone(established) : null;
+      },
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+      },
+    });
+
+    await runSessionCore("stor-listing", TERMS, deps, "job-VET-RESUME");
+    await runSessionCore("stor-listing", TERMS, deps, "job-VET-RESUME");
+
+    expect(vetCalls).toBe(1);
+    expect(finalityCalls).toBe(2);
+    expect(settleCalls).toBe(1);
+  });
+
+  test("legacy shape-only vet input is refused before settlement/finalisation", async () => {
+    let settleCalls = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          vet: async ({ evaluatedParty }) =>
+            ({
+              subject: evaluatedParty,
+              recipeId: "legacy-self-signed",
+              recipeVersion: "0.1",
+              results: [
+                {
+                  claimRef: evaluatedParty,
+                  method: "self-signed",
+                  status: "pass",
+                },
+              ],
+              decision: "pass",
+              verifiedAt: "2026-01-01T00:00:00Z",
+            }) as unknown as VetProduction,
+          verifyVetRecord: async (record) => ({
+            status: "valid",
+            record: record as CompositeVerificationRecord,
+            freshness: [],
+            dealSpecific: [],
+            freshnessRecipes: [],
+            dealSpecificRecipes: [],
+          }),
+          authenticateVetFinality: authenticateClaimedVetFinality,
+          settle: async () => {
+            settleCalls += 1;
+            return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+          },
+        }),
+        "job-LEGACY-VET",
+      ),
+    ).rejects.toThrow(/exact finalized record\/ref\/receipt binding/);
+    expect(settleCalls).toBe(0);
+  });
+
+  test("authorizes only the exact durable Vet readback, never a mutable producer return", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    const deps = makeDeps({
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      vet: async ({ evaluatedParty, jobId }) => {
+        const production = currentVetProduction(
+          evaluatedParty,
+          jobId,
+          "pass",
+          store,
+        );
+        const durable = structuredClone(production.record);
+        durable.overallDecision = "fail";
+        store.set(production.recordRef.anchor.locator, durable as unknown as Record<string, unknown>);
+        return production;
+      },
+      verifyVetRecord: async (record) => ({
+        status: "valid",
+        record: record as CompositeVerificationRecord,
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
+      }),
+      authenticateVetFinality: authenticateClaimedVetFinality,
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+      },
+    });
+    await expect(
+      runSessionCore("stor-listing", TERMS, deps, "job-VET-MUTATION"),
+    ).rejects.toThrow(/durable Vet readback differs/);
+    expect(settleCalls).toBe(0);
+  });
+
+  test("a strict-verifier callback cannot mutate a signed fail into payment authorization", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    const deps = makeDeps({
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      vet: ({ evaluatedParty, jobId }) =>
+        Promise.resolve(
+          currentVetProduction(evaluatedParty, jobId, "fail", store),
+        ),
+      verifyVetRecord: async (record) => {
+        try {
+          (record as CompositeVerificationRecord).overallDecision = "pass";
+        } catch {
+          // The callback receives a private frozen snapshot.
+        }
+        return {
+          status: "valid" as const,
+          record: structuredClone(record) as CompositeVerificationRecord,
+          freshness: [],
+          dealSpecific: [],
+          freshnessRecipes: [],
+          dealSpecificRecipes: [],
+        };
+      },
+      authenticateVetFinality: authenticateClaimedVetFinality,
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+      },
+    });
+    await expect(
+      runSessionCore("stor-listing", TERMS, deps, "job-VET-CALLBACK-MUTATION"),
+    ).rejects.toThrow(/did not pass verification/);
+    expect(settleCalls).toBe(0);
+  });
+
+  test("a strict verifier cannot mutate resolver-owned bytes after verifying a private fail snapshot", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    const resumedProduction = currentVetProduction(
+      LISTING.agentId,
+      "job-VET-OUTER-MUTATION",
+      "fail",
+      store,
+    );
+    const logicalAddress =
+      "dacs2:composite:job-VET-OUTER-MUTATION:" +
+      encodeAddressSegment(LISTING.agentId);
+    const durableRecord = store.get(`stor-${logicalAddress}`)!;
+    let settleCalls = 0;
+    const deps = makeDeps({
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      vet: async () => {
+        throw new Error("resume must not re-run Vet");
+      },
+      verifyVetRecord: async (record) => {
+        // This is the old TOCTOU: mutate the resolver's outer object while the
+        // callback returns a valid verdict for its distinct private snapshot.
+        durableRecord.overallDecision = "pass";
+        return {
+          status: "valid" as const,
+          record: structuredClone(record) as CompositeVerificationRecord,
+          freshness: [],
+          dealSpecific: [],
+          freshnessRecipes: [],
+          dealSpecificRecipes: [],
+        };
+      },
+      authenticateVetFinality: async () => ({
+        ref: structuredClone(resumedProduction.recordRef),
+        receipt: structuredClone(resumedProduction.anchorReceipt),
+      }),
+      settle: async () => {
+        settleCalls += 1;
+        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+      },
+    });
+
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        deps,
+        "job-VET-OUTER-MUTATION",
+      ),
+    ).rejects.toThrow(/did not pass verification \(decision=fail\)/);
+    expect(durableRecord.overallDecision).toBe("pass");
+    expect(settleCalls).toBe(0);
+  });
+
+  test("a current Vet producer without recursive verification cannot authorize payment", async () => {
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          vet: async ({ evaluatedParty, jobId }) =>
+            currentVetProduction(evaluatedParty, jobId, "pass"),
+        }),
+        "job-NO-VET-CLOSURE",
+      ),
+    ).rejects.toThrow(/requires verifyVetRecord/);
+  });
+
+  test("a current Vet producer without caller-held finality authentication cannot authorize payment", async () => {
+    let settleCalls = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          vet: async ({ evaluatedParty, jobId }) =>
+            currentVetProduction(evaluatedParty, jobId, "pass"),
+          verifyVetRecord: async (record) => ({
+            status: "valid",
+            record: record as CompositeVerificationRecord,
+            freshness: [],
+            dealSpecific: [],
+            freshnessRecipes: [],
+            dealSpecificRecipes: [],
+          }),
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+        "job-NO-VET-FINALITY",
+      ),
+    ).rejects.toThrow(/requires authenticateVetFinality/);
+    expect(settleCalls).toBe(0);
+  });
+
+  test("a fabricated shape-valid producer receipt is rejected against independently authenticated finality", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    let settleCalls = 0;
+    const deps = makeDeps({
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      vet: async ({ evaluatedParty, jobId }) => {
+        const production = currentVetProduction(
+          evaluatedParty,
+          jobId,
+          "pass",
+          store,
+        );
+        production.anchorReceipt.evidence.value = "fabricated-shape-only-proof";
+        return production;
+      },
+      verifyVetRecord: async (record) => ({
+        status: "valid",
+        record: record as CompositeVerificationRecord,
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
+      }),
+      authenticateVetFinality: async ({ claimed }) => {
+        if (!claimed) return null;
+        const independentlyAuthenticated = structuredClone(claimed);
+        independentlyAuthenticated.receipt.evidence.value = "authenticated";
+        return independentlyAuthenticated;
+      },
+      settle: async () => {
+        settleCalls += 1;
+        throw new Error("must not settle");
+      },
+    });
+
+    await expect(
+      runSessionCore("stor-listing", TERMS, deps, "job-FAKE-VET-RECEIPT"),
+    ).rejects.toThrow(/differs from the independently authenticated receipt/);
+    expect(settleCalls).toBe(0);
+  });
+
+  test("resume refuses a present passing CVR when finalized receipt recovery cannot authenticate it", async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    currentVetProduction(
+      LISTING.agentId,
+      "job-VET-RESUME-NO-RECEIPT",
+      "pass",
+      store,
+    );
+    let settleCalls = 0;
+    const deps = makeDeps({
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      vet: async () => {
+        throw new Error("resume must not re-run Vet");
+      },
+      verifyVetRecord: async (record) => ({
+        status: "valid",
+        record: record as CompositeVerificationRecord,
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
+      }),
+      authenticateVetFinality: async ({ claimed }) => {
+        expect(claimed).toBeUndefined();
+        return null;
+      },
+      settle: async () => {
+        settleCalls += 1;
+        throw new Error("must not settle");
+      },
+    });
+
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        deps,
+        "job-VET-RESUME-NO-RECEIPT",
+      ),
+    ).rejects.toThrow(/was not independently authenticated/);
     expect(settleCalls).toBe(0);
   });
 
@@ -866,6 +1400,133 @@ describe("runSession orchestration (T4)", () => {
       /failed signature verification/,
     );
     expect(settleCalls).toBe(0);
+  });
+
+  test("listing verification requires exact boolean true", async () => {
+    let settleCalls = 0;
+    const deps = makeDeps({
+      trustListing: undefined,
+      verifyListing: (() => 1) as unknown as NonNullable<
+        SessionDeps["verifyListing"]
+      >,
+      settle: async () => {
+        settleCalls += 1;
+        throw new Error("must not settle");
+      },
+    });
+    await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
+      /failed signature verification/,
+    );
+    expect(settleCalls).toBe(0);
+  });
+
+  test("snapshots terms before any await so a hostile listing reader cannot redirect payment", async () => {
+    const mutableTerms = structuredClone(TERMS);
+    let settledRequest: Parameters<SessionDeps["settle"]>[0] | undefined;
+    const deps = makeDeps({
+      readListing: async () => {
+        mutableTerms.price.amount = "999999999";
+        mutableTerms.price.rail = "pay-attacker";
+        mutableTerms.deliveryPhase = "deliver-attacker";
+        return LISTING;
+      },
+      settle: async (request) => {
+        settledRequest = structuredClone(request);
+        return {
+          ok: true,
+          txHash: "0xterms",
+          chainId: "test",
+          payer: "buyer",
+          payee: request.payee,
+        };
+      },
+    });
+
+    await expect(
+      runSessionCore("stor-listing", mutableTerms, deps, "job-TERMS-SNAPSHOT"),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(settledRequest).toMatchObject({
+      rail: TERMS.price.rail,
+      amount: TERMS.price.amount,
+      asset: TERMS.price.asset,
+      payee: LISTING.agentId,
+    });
+  });
+
+  test("snapshots and freezes the resolved listing before verifier awaits", async () => {
+    const mutableListing = structuredClone(LISTING);
+    let settledPayee = "";
+    const deps = makeDeps({
+      trustListing: undefined,
+      readListing: async () => mutableListing,
+      verifyListing: async (raw) => {
+        expect(Object.isFrozen(raw)).toBe(true);
+        expect(Object.isFrozen(raw.supportedPaymentRails)).toBe(true);
+        mutableListing.agentId = "did:demos:agent:attacker";
+        mutableListing.supportedPaymentRails.splice(
+          0,
+          mutableListing.supportedPaymentRails.length,
+          "pay-attacker",
+        );
+        expect(Reflect.set(raw, "agentId", "did:demos:agent:attacker")).toBe(
+          false,
+        );
+        return true;
+      },
+      settle: async (request) => {
+        settledPayee = request.payee;
+        return {
+          ok: true,
+          txHash: "0xlisting",
+          chainId: "test",
+          payer: "buyer",
+          payee: request.payee,
+        };
+      },
+    });
+
+    await expect(
+      runSessionCore("stor-listing", TERMS, deps, "job-LISTING-SNAPSHOT"),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(settledPayee).toBe(LISTING.agentId);
+  });
+
+  test("captures dependency callables/config before await and preserves adapter this binding", async () => {
+    let originalSettleCalls = 0;
+    let swappedSettleCalls = 0;
+    const deps = makeDeps();
+    deps.settle = async function (request) {
+      originalSettleCalls += 1;
+      expect(this).toBe(deps);
+      expect(this.buyerId).toBe("did:demos:agent:attacker");
+      return {
+        ok: true,
+        txHash: "0xdeps",
+        chainId: "test",
+        payer: "buyer",
+        payee: request.payee,
+      };
+    };
+    deps.readListing = async function () {
+      expect(this).toBe(deps);
+      deps.buyerId = "did:demos:agent:attacker";
+      deps.settle = async () => {
+        swappedSettleCalls += 1;
+        throw new Error("swapped settle must not run");
+      };
+      deps.nowMs = () => 1;
+      return LISTING;
+    };
+
+    const result = await runSessionCore(
+      "stor-listing",
+      TERMS,
+      deps,
+      "job-DEPS-SNAPSHOT",
+    );
+    expect(result.outcome).toBe("completed");
+    expect(originalSettleCalls).toBe(1);
+    expect(swappedSettleCalls).toBe(0);
   });
 
   test("the verifier receives the raw artifact and the ADVERTISED seller claim", async () => {

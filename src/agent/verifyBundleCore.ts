@@ -6,6 +6,7 @@ import type {
   AttestationRef,
   BundleParty,
   ListingPin,
+  CompositeVerificationRecord,
 } from "../artifacts/types.js";
 import {
   type LegacyMvpAnyAttestationBundle,
@@ -22,10 +23,12 @@ import {
   isCompositeVerificationRecord,
   isLegacyMvpListing,
   isListingDraft,
+  isExactJsonRecord,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
 import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
+import type { StrictCompositeVerification } from "./compositeVerification.js";
 
 /**
  * Attestation-bundle verification (DACS-5). Two independent checks must BOTH
@@ -65,7 +68,9 @@ export type RefVerdict =
   | "hash-mismatch"
   | "unresolved"
   /** Hash-matched, but the artifact failed its own DACS-4/§9.7 semantic verification. */
-  | "invalid-evidence";
+  | "invalid-evidence"
+  /** Hash-matched, but its DACS-2 recursive closure did not verify. */
+  | "invalid-vet-record";
 
 export interface RefCheck {
   kind: string;
@@ -125,6 +130,8 @@ export interface VerifyBundleDeps {
     kind: string,
     jobId: string,
     parties: readonly BundleParty[],
+    /** Exact historical ref; current legacy-MVP writers put native ids here. */
+    ref?: Readonly<LegacyMvpAttestationRef>,
   ) => Promise<Record<string, unknown> | null>;
   /** Resolve a signer DID/claim to its ed25519 public key (null if unknown). */
   resolvePublicKey: (did: string) => Promise<Uint8Array | null>;
@@ -141,6 +148,163 @@ export interface VerifyBundleDeps {
   verifyEvidence?: (
     evidence: Record<string, unknown>,
   ) => Promise<{ decision: "pass" | "fail" | "error" | "indeterminate" }>;
+  /**
+   * Required whenever `vetRecords` is non-empty. This must run the strict
+   * DACS-2 verifier with the session's exact bundle/requirement expectations.
+   */
+  verifyCompositeRecord?: (
+    record: Readonly<CompositeVerificationRecord>,
+    bundle: Readonly<ReadableAttestationBundle>,
+  ) => Promise<StrictCompositeVerification>;
+}
+
+function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value as object)) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) return value;
+  seen.add(value as object);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreezeSnapshot(child, seen);
+  }
+  return Object.freeze(value);
+}
+
+function snapshotRecord(
+  value: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (value === null) return null;
+  // Check resolver-owned bytes before cloning. structuredClone invokes getters
+  // and erases custom prototypes, which must not launder a non-wire artifact
+  // into a valid-looking signed record.
+  if (!isExactJsonRecord(value)) return null;
+  try {
+    const captured = deepFreezeSnapshot(structuredClone(value));
+    return isExactJsonRecord(captured) ? captured : null;
+  } catch {
+    return null;
+  }
+}
+
+function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
+  try {
+    const readArtifactSource = deps.readArtifact.bind(deps);
+    const resolveAttestationSource = deps.resolveAttestationRef?.bind(deps);
+    const resolveListingSource = deps.resolveListingRef?.bind(deps);
+    const resolveLegacySource = deps.resolveRef?.bind(deps);
+    const resolveKeySource = deps.resolvePublicKey.bind(deps);
+    const verifySource = deps.verify.bind(deps);
+    const verifyEvidenceSource = deps.verifyEvidence?.bind(deps);
+    const verifyCompositeSource = deps.verifyCompositeRecord?.bind(deps);
+    return Object.freeze({
+      readArtifact: async (ref: string) =>
+        snapshotRecord(await readArtifactSource(ref)),
+      ...(resolveAttestationSource
+        ? {
+            resolveAttestationRef: async (
+              ref: Readonly<AttestationRef>,
+              jobId: string,
+              parties: readonly BundleParty[],
+            ) =>
+              snapshotRecord(
+                await resolveAttestationSource(
+                  deepFreezeSnapshot(structuredClone(ref)),
+                  jobId,
+                  deepFreezeSnapshot(structuredClone(parties)),
+                ),
+              ),
+          }
+        : {}),
+      ...(resolveListingSource
+        ? {
+            resolveListingRef: async (
+              listingRef: Readonly<ListingPin>,
+              parties: readonly BundleParty[],
+            ) =>
+              snapshotRecord(
+                await resolveListingSource(
+                  deepFreezeSnapshot(structuredClone(listingRef)),
+                  deepFreezeSnapshot(structuredClone(parties)),
+                ),
+              ),
+          }
+        : {}),
+      ...(resolveLegacySource
+        ? {
+            resolveRef: async (
+              kind: string,
+              jobId: string,
+              parties: readonly BundleParty[],
+              ref?: Readonly<LegacyMvpAttestationRef>,
+            ) =>
+              snapshotRecord(
+                await resolveLegacySource(
+                  kind,
+                  jobId,
+                  deepFreezeSnapshot(structuredClone(parties)),
+                  ref === undefined
+                    ? undefined
+                    : deepFreezeSnapshot(structuredClone(ref)),
+                ),
+              ),
+          }
+        : {}),
+      resolvePublicKey: async (did: string) => {
+        const key = await resolveKeySource(did);
+        return key === null ? null : Uint8Array.from(key);
+      },
+      verify: async (
+        bytes: Uint8Array,
+        signature: Uint8Array,
+        publicKey: Uint8Array,
+      ) =>
+        (await verifySource(
+          Uint8Array.from(bytes),
+          Uint8Array.from(signature),
+          Uint8Array.from(publicKey),
+        )) === true,
+      ...(verifyEvidenceSource
+        ? {
+            verifyEvidence: async (evidence: Record<string, unknown>) => {
+              const raw = await verifyEvidenceSource(
+                deepFreezeSnapshot(structuredClone(evidence)),
+              );
+              const captured = snapshotRecord(
+                raw as unknown as Record<string, unknown>,
+              );
+              if (!captured) {
+                throw new TypeError("evidence verifier returned a non-wire verdict");
+              }
+              return captured as {
+                decision: "pass" | "fail" | "error" | "indeterminate";
+              };
+            },
+          }
+        : {}),
+      ...(verifyCompositeSource
+        ? {
+            verifyCompositeRecord: async (
+              record: Readonly<CompositeVerificationRecord>,
+              bundle: Readonly<ReadableAttestationBundle>,
+            ) => {
+              const raw = await verifyCompositeSource(
+                deepFreezeSnapshot(structuredClone(record)),
+                deepFreezeSnapshot(structuredClone(bundle)),
+              );
+              const captured = snapshotRecord(
+                raw as unknown as Record<string, unknown>,
+              );
+              if (!captured) {
+                throw new TypeError("composite verifier returned a non-wire verdict");
+              }
+              return captured as StrictCompositeVerification;
+            },
+          }
+        : {}),
+    });
+  } catch {
+    return null;
+  }
 }
 
 /** Hash-check one resolved artifact against the ref that points at it. */
@@ -225,9 +389,24 @@ function requiredSignatureClaims(
 
 export async function verifyBundleCore(
   bundleRef: string,
-  deps: VerifyBundleDeps,
+  dependencySource: VerifyBundleDeps,
 ): Promise<BundleVerification> {
-  const raw = await deps.readArtifact(bundleRef);
+  const deps = captureBundleDeps(dependencySource);
+  if (!deps) {
+    return {
+      ok: false,
+      reason: "bundle verification dependencies are unavailable",
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+    };
+  }
+  let raw: Record<string, unknown> | null;
+  try {
+    raw = await deps.readArtifact(bundleRef);
+  } catch {
+    raw = null;
+  }
   if (raw && isFaultBundle(raw) && !faultedPartyIsPermitted(raw)) {
     return {
       ok: false,
@@ -257,7 +436,7 @@ export async function verifyBundleCore(
       fullyVerified: false,
       signatures: [],
       refs: [],
-      bundle,
+      bundle: structuredClone(bundle),
     };
   }
   // Signed scope = canonical form omitting signatures + anchoredByRole (§10.4.1).
@@ -315,7 +494,7 @@ export async function verifyBundleCore(
     if (!deps.resolveRef) return { supported: false, value: null };
     return {
       supported: true,
-      value: await deps.resolveRef(ref.kind, bundle.jobId, bundle.parties),
+      value: await deps.resolveRef(ref.kind, bundle.jobId, bundle.parties, ref),
     };
   };
   const checkReadableRef = async (
@@ -378,15 +557,50 @@ export async function verifyBundleCore(
     refs.push(evidence.check);
   }
   for (const vr of bundle.vetRecords) {
-    refs.push(
-      (
-        await checkReadableRef(
-          "dacs-2-verifyresult",
-          vr,
-          isCompositeVerificationRecord,
-        )
-      ).check,
+    const composite = await checkReadableRef(
+      "dacs-2-composite",
+      vr,
+      isCompositeVerificationRecord,
     );
+    if (composite.check.verdict === "ok" && composite.value) {
+      if (!deps.verifyCompositeRecord) {
+        composite.check.verdict = "invalid-vet-record";
+      } else {
+        try {
+          const candidate =
+            composite.value as unknown as CompositeVerificationRecord;
+          const boundParty = bundle.parties.find(
+            (party) =>
+              party.primaryClaim === candidate.evaluatedParty &&
+              party.bundleHash === candidate.bundleHash,
+          );
+          if (candidate.jobId !== bundle.jobId || !boundParty) {
+            composite.check.verdict = "invalid-vet-record";
+          } else {
+            const verification = await deps.verifyCompositeRecord(
+              candidate,
+              bundle,
+            );
+            if (
+              verification.status !== "valid" ||
+            (bundle.outcome === "completed" &&
+              verification.record.overallDecision !== "pass") ||
+            contentHash(
+              verification.record as unknown as Record<string, unknown>,
+            ) !== contentHash(candidate as unknown as Record<string, unknown>) ||
+            verification.record.signature.algorithm !== candidate.signature.algorithm ||
+            verification.record.signature.signer !== candidate.signature.signer ||
+            verification.record.signature.value !== candidate.signature.value
+            ) {
+              composite.check.verdict = "invalid-vet-record";
+            }
+          }
+        } catch {
+          composite.check.verdict = "invalid-vet-record";
+        }
+      }
+    }
+    refs.push(composite.check);
   }
   for (const amendment of bundle.amendments ?? []) {
     refs.push(
@@ -487,7 +701,7 @@ export async function verifyBundleCore(
                 ? `referenced artifact ${badRef.kind}/${badRef.id} ${badRef.verdict}`
                 : undefined,
     fullyVerified,
-    bundle,
+    bundle: structuredClone(bundle),
     signatures,
     refs,
   };

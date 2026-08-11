@@ -3,6 +3,14 @@ import type {
   OwnedAnchorScan,
 } from "./anchorResolution.js";
 
+/** Configuration for the optional Demos-backed adapter. */
+export interface DemosAdapterConfig {
+  /** Demos node RPC URL (e.g. https://node2.demos.sh). */
+  rpc: string;
+  /** Wallet secret — mnemonic or private key. Optional for read-only use. */
+  secret?: string;
+}
+
 /**
  * SubstrateAdapter — the single seam between dacs-sdk and the underlying
  * substrate. DACS is substrate-agnostic by design; the SDK speaks only to this

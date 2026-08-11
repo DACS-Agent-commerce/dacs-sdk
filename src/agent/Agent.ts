@@ -17,12 +17,14 @@ import {
   logicalToStorageProgramName,
 } from "../canonical/index.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
-import type { DemosAdapter } from "../substrate/index.js";
+import type { SubstrateAdapter } from "../substrate/SubstrateAdapter.js";
 import {
   runSessionCore,
   sessionAnchorName,
+  type SessionDeps,
   type SessionResult,
   type SessionTerms,
+  type SessionVetRequest,
   type SettleRequest,
   type SettleResult,
 } from "./runSessionCore.js";
@@ -32,6 +34,8 @@ import {
   type ListingRailAuthorityInput,
   type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
+import type { StrictCompositeVerification } from "./compositeVerification.js";
+import type { VetProduction } from "./vetCore.js";
 import { publishListingCore } from "./publishListingCore.js";
 import {
   discoverListings,
@@ -49,6 +53,7 @@ import {
   verifyBundleCore,
   type SignatureCheck,
   type BundleVerification,
+  type VerifyBundleDeps,
 } from "./verifyBundleCore.js";
 
 export type { SignatureCheck, BundleVerification, Reputation, CciRecord };
@@ -76,10 +81,23 @@ export interface RunSessionOptions {
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
    * Optional Vet step: verify the seller before paying (e.g. resolveRecipe +
-   * vetCore). Returns a CompositeVerificationRecord; the session aborts before
+   * vetCore). Returns a finalized VetProduction; the session aborts before
    * settlement unless the decision is `pass`. Omit to skip vetting.
    */
-  vet?: (subject: string) => Promise<CompositeVerificationRecord>;
+  vet?: (request: SessionVetRequest) => Promise<VetProduction>;
+  /** Required with `vet`; normally calls verifyCompositeVerificationRecord. */
+  verifyVetRecord?: (
+    record: Readonly<CompositeVerificationRecord>,
+    request: Readonly<SessionVetRequest>,
+  ) => Promise<StrictCompositeVerification>;
+  /**
+   * Required with `vet`. Independently resolves and cryptographically
+   * authenticates the exact finalized VPC-3 record/ref/receipt binding on both
+   * first production and resume; a shape-valid receipt is not sufficient.
+   */
+  authenticateVetFinality?: NonNullable<
+    SessionDeps["authenticateVetFinality"]
+  >;
   /**
    * Resume an interrupted session: pass the prior run's jobId to re-drive it
    * idempotently (reuse anchored artifacts, never re-pay). Omit for a new session.
@@ -112,6 +130,16 @@ export interface AgentConfig {
    * ordered validation algorithm and accepts only its exact result.
    */
   listingValidationDeps?: ListingValidationDeps;
+  /**
+   * Strict DACS-2 closure verifier used by {@link Agent.verifyBundle} and
+   * {@link Agent.getReputation}. It is required for any bundle whose
+   * `vetRecords` is non-empty; omitting it deliberately makes those bundles
+   * fail closed. Build expectations from independently trusted listing,
+   * identity-bundle, and recipe-registry inputs rather than from the record.
+   */
+  verifyCompositeRecord?: NonNullable<
+    VerifyBundleDeps["verifyCompositeRecord"]
+  >;
 }
 
 export interface PublishResult {
@@ -127,12 +155,24 @@ export interface PublishResult {
 }
 
 /**
+ * Public shape of the adapter returned by {@link createAgent}. `raw` remains an
+ * intentionally untyped escape hatch so importing the pure package surface
+ * does not make the optional demosdk peer a declaration-time dependency.
+ */
+export interface DemosBackedAdapter extends SubstrateAdapter {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly raw: any;
+}
+
+/**
  * The DACS agent surface (T4). The small set of calls a dApp dev uses; the
  * adapter, artifact model, and signing are wired underneath.
  */
-export interface Agent {
+export interface Agent<
+  TAdapter extends SubstrateAdapter = DemosBackedAdapter,
+> {
   /** Escape hatch to the underlying substrate adapter. */
-  readonly adapter: DemosAdapter;
+  readonly adapter: TAdapter;
   /**
    * Anyone: resolve a subject's full cross-context identity (DACS-1) — its
    * primary claim plus the linked Web2 handles and cross-chain wallets bound to
@@ -149,7 +189,11 @@ export interface Agent {
   findByClaim(claimRef: string): Promise<string[]>;
   /** Seller: sign + anchor a fixed-price listing. */
   publishListing(listing: ListingDraft): Promise<PublishResult>;
-  /** Anyone: dereference + structurally verify an anchored attestation bundle. */
+  /**
+   * Anyone: verify an anchored bundle's signatures, referenced artifacts, and
+   * strict DACS-2 vet closure. Bundles with vet records fail closed unless
+   * `AgentConfig.verifyCompositeRecord` was configured.
+   */
   verifyBundle(ref: string): Promise<BundleVerification>;
   /**
    * Buyer: resolve + structurally validate anchored listings at the given refs.
@@ -164,7 +208,8 @@ export interface Agent {
   /**
    * Anyone: derive reputation for a primary claim from its bundles. The bundle
    * refs are caller-supplied (enumerating a claim's bundles is an indexer
-   * concern, not the substrate's); non-bundle refs are skipped.
+   * concern, not the substrate's); non-bundle refs and bundles that fail strict
+   * verification (including unverified vet closure) are skipped.
    */
   getReputation(primaryClaim: string, bundleRefs: string[]): Promise<Reputation>;
 }
@@ -173,7 +218,9 @@ export interface Agent {
  * Create a connected agent. Connects the substrate adapter with the wallet and
  * wires artifact signing to it.
  */
-export async function createAgent(config: AgentConfig): Promise<Agent> {
+export async function createAgent(
+  config: AgentConfig,
+): Promise<Agent<DemosBackedAdapter>> {
   // Lazy-load the adapter so importing the package barrel doesn't eagerly pull
   // @kynesyslabs/demosdk, whose ESM packaging breaks plain-Node-ESM imports of
   // the pure/verify surface. demosdk loads only when an agent is actually built.
@@ -198,12 +245,18 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
  * live, environment-skipped test, which let the missing `verifyListing` wiring
  * ship. Not exported from the package barrel; internal test seam.
  */
-export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
+export function buildAgent<TAdapter extends SubstrateAdapter>(
+  adapter: TAdapter,
+  config: AgentConfig,
+): Agent<TAdapter> {
   const sign: Signer = (bytes) => adapter.sign(bytes);
   const listingValidator = (deps: ListingValidationDeps | undefined) =>
     deps
       ? (raw: Record<string, unknown>) => validateListingArtifact(raw, deps)
       : undefined;
+  // Capture policy at construction time. Callers cannot swap the verifier on
+  // a live Agent between verifyBundle() and getReputation().
+  const verifyCompositeRecord = config.verifyCompositeRecord;
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
@@ -233,7 +286,10 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       },
       // Explicit pre-#308 compatibility for legacy SDK bundles whose refs were
       // keyed only by an SDK artifact kind and the enclosing job id.
-      resolveRef: async (kind, jobId, parties) => {
+      resolveRef: async (kind, jobId, parties, legacyRef) => {
+        if (kind === "dacs-2-composite" && legacyRef) {
+          return adapter.readAnchor(legacyRef.id);
+        }
         const name =
           kind === "dacs-3-agreement"
             ? sessionAnchorName.agreement(jobId)
@@ -254,6 +310,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       },
       resolvePublicKey: async (did) => publicKeyFromDid(did),
       verify: ed25519RawVerify,
+      ...(verifyCompositeRecord ? { verifyCompositeRecord } : {}),
     });
 
   return {
@@ -365,6 +422,8 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           ),
           settle: opts.settle,
           vet: opts.vet,
+          verifyVetRecord: opts.verifyVetRecord,
+          authenticateVetFinality: opts.authenticateVetFinality,
           newJobId: () => randomUUID(),
           now: () => new Date().toISOString(),
           nowMs: () => Date.now(),

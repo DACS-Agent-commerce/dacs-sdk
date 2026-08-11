@@ -6,6 +6,7 @@ import {
   type VerifyBundleDeps,
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -212,6 +213,7 @@ function depsFor(
     resolveRef?: VerifyBundleDeps["resolveRef"];
     listing?: Record<string, unknown> | null;
     verifyEvidence?: VerifyBundleDeps["verifyEvidence"];
+    verifyCompositeRecord?: VerifyBundleDeps["verifyCompositeRecord"];
   } = {},
 ): VerifyBundleDeps {
   const listing = opts.listing === undefined ? fx.listing : opts.listing;
@@ -231,6 +233,9 @@ function depsFor(
     resolvePublicKey: async (did) => (opts.resolve ?? resolveFromDid)(did),
     verify,
     ...(opts.verifyEvidence ? { verifyEvidence: opts.verifyEvidence } : {}),
+    ...(opts.verifyCompositeRecord
+      ? { verifyCompositeRecord: opts.verifyCompositeRecord }
+      : {}),
   };
 }
 
@@ -246,6 +251,299 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     ]);
     expect(res.refs.every((r) => r.verdict === "ok")).toBe(true);
     expect(res.bundle?.outcome).toBe("completed");
+  });
+
+  test("snapshots the signed bundle before any asynchronous callback", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    fx.bundle.vetRecords = [
+      {
+        anchor: { kind: "storage-program", locator: "missing-vet" },
+        contentHash: h("f"),
+      },
+    ];
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const mutableBundle = fx.bundle;
+    const result = await verifyBundleCore("ref", {
+      ...depsFor(fx, {
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
+            ? fx.agreement
+            : ref.anchor.locator === "settlement-j1"
+              ? fx.evidence
+              : null,
+      }),
+      readArtifact: async (ref) =>
+        ref === LISTING_ADDR ? fx.listing : mutableBundle,
+      resolvePublicKey: async (did) => {
+        (mutableBundle.vetRecords as unknown[]).length = 0;
+        await Promise.resolve();
+        return resolveFromDid(did);
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(
+      result.refs.find((entry) => entry.kind === "dacs-2-composite"),
+    ).toMatchObject({ id: "missing-vet", verdict: "missing" });
+  });
+
+  test("rejects callback-owned non-wire artifacts before snapshot normalisation", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const inheritedBundle = Object.assign(
+      Object.create({ inherited: true }) as Record<string, unknown>,
+      fx.bundle,
+    );
+    const result = await verifyBundleCore("ref", {
+      ...depsFor(fx),
+      readArtifact: async (ref) =>
+        ref === LISTING_ADDR ? fx.listing : inheritedBundle,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/not an attestation bundle/i);
+  });
+
+  test("a current vet ref requires strict closure and binds its exact returned record", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const composite: CompositeVerificationRecord = {
+      recordVersion: "1",
+      jobId: "j1",
+      evaluatedParty: sellerDid,
+      bundleHash: h("d"),
+      requirementHash: h("f"),
+      freshness: [],
+      supplementary: [],
+      dealSpecific: [],
+      overallDecision: "pass",
+      generatedAt: 1780000000000,
+      signature: {
+        algorithm: "ed25519",
+        signer: buyerDid,
+        value: "AA",
+      },
+    };
+    fx.bundle.vetRecords = [
+      {
+        anchor: { kind: "storage-program", locator: "vet-j1" },
+        contentHash: contentHash(composite as unknown as Record<string, unknown>),
+      },
+    ];
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const resolveAttestationRef: VerifyBundleDeps["resolveAttestationRef"] =
+      async (ref) =>
+        ref.anchor.locator === "vet-j1"
+          ? (composite as unknown as Record<string, unknown>)
+          : ref.anchor.locator === "agreement-j1"
+            ? fx.agreement
+            : ref.anchor.locator === "settlement-j1"
+              ? fx.evidence
+              : null;
+
+    const withoutClosure = await verifyBundleCore(
+      "ref",
+      depsFor(fx, { resolveAttestationRef }),
+    );
+    expect(
+      withoutClosure.refs.find((entry) => entry.kind === "dacs-2-composite"),
+    ).toMatchObject({ verdict: "invalid-vet-record" });
+
+    const withClosure = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef,
+        verifyCompositeRecord: async (record) => ({
+          status: "valid",
+          record,
+          freshness: [],
+          dealSpecific: [],
+          freshnessRecipes: [],
+          dealSpecificRecipes: [],
+        }),
+      }),
+    );
+    expect(withClosure.ok).toBe(true);
+
+    const nonWireClosure = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef,
+        verifyCompositeRecord: async (record) =>
+          Object.assign(Object.create({ inherited: true }), {
+            status: "valid",
+            record,
+            freshness: [],
+            dealSpecific: [],
+            freshnessRecipes: [],
+            dealSpecificRecipes: [],
+          }) as never,
+      }),
+    );
+    expect(
+      nonWireClosure.refs.find(
+        (entry) => entry.kind === "dacs-2-composite",
+      ),
+    ).toMatchObject({ verdict: "invalid-vet-record" });
+
+    for (const replay of [
+      { jobId: "other-job" },
+      { evaluatedParty: buyerDid },
+      { bundleHash: h("c") },
+    ]) {
+      const replayed = { ...composite, ...replay };
+      const vetRecords = fx.bundle.vetRecords as Array<{ contentHash: string }>;
+      vetRecords[0]!.contentHash = contentHash(
+        replayed as unknown as Record<string, unknown>,
+      );
+      await resignFixture(fx, [
+        { party: buyerDid, sign: signBuyer },
+        { party: sellerDid, sign: signSeller },
+      ]);
+      const replayResult = await verifyBundleCore(
+        "ref",
+        depsFor(fx, {
+          resolveAttestationRef: async (ref) =>
+            ref.anchor.locator === "vet-j1"
+              ? (replayed as unknown as Record<string, unknown>)
+              : ref.anchor.locator === "agreement-j1"
+                ? fx.agreement
+                : ref.anchor.locator === "settlement-j1"
+                  ? fx.evidence
+                  : null,
+          verifyCompositeRecord: async (record) => ({
+            status: "valid",
+            record,
+            freshness: [],
+            dealSpecific: [],
+            freshnessRecipes: [],
+            dealSpecificRecipes: [],
+          }),
+        }),
+      );
+      expect(
+        replayResult.refs.find(
+          (entry) => entry.kind === "dacs-2-composite",
+        ),
+      ).toMatchObject({ verdict: "invalid-vet-record" });
+    }
+
+    const restoredVetRefs = fx.bundle.vetRecords as Array<{ contentHash: string }>;
+    restoredVetRefs[0]!.contentHash = contentHash(
+      composite as unknown as Record<string, unknown>,
+    );
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+
+    const substituted = {
+      ...composite,
+      generatedAt: composite.generatedAt + 1,
+    };
+    const wrongClosure = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef,
+        verifyCompositeRecord: async () => ({
+          status: "valid",
+          record: substituted,
+          freshness: [],
+          dealSpecific: [],
+          freshnessRecipes: [],
+          dealSpecificRecipes: [],
+        }),
+      }),
+    );
+    expect(
+      wrongClosure.refs.find((entry) => entry.kind === "dacs-2-composite"),
+    ).toMatchObject({ verdict: "invalid-vet-record" });
+
+    composite.overallDecision = "fail";
+    const vetRecords = fx.bundle.vetRecords as Array<{ contentHash: string }>;
+    vetRecords[0]!.contentHash = contentHash(
+      composite as unknown as Record<string, unknown>,
+    );
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const completedWithFailedVet = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef,
+        verifyCompositeRecord: async (record) => ({
+          status: "valid",
+          record,
+          freshness: [],
+          dealSpecific: [],
+          freshnessRecipes: [],
+          dealSpecificRecipes: [],
+        }),
+      }),
+    );
+    expect(
+      completedWithFailedVet.refs.find(
+        (entry) => entry.kind === "dacs-2-composite",
+      ),
+    ).toMatchObject({ verdict: "invalid-vet-record" });
+    expect(completedWithFailedVet.ok).toBe(false);
+  });
+
+  test("an explicitly readable legacy vet record cannot satisfy finalisation", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const legacy = {
+      subject: sellerDid,
+      recipeId: "legacy",
+      recipeVersion: "0.1",
+      results: [
+        { claimRef: sellerDid, method: "self-signed", status: "pass" },
+      ],
+      decision: "pass",
+      verifiedAt: "2026-01-01T00:00:00Z",
+    };
+    fx.bundle.vetRecords = [
+      {
+        anchor: { kind: "storage-program", locator: "legacy-vet-j1" },
+        contentHash: contentHash(legacy),
+      },
+    ];
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    let closureCalls = 0;
+    const result = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "legacy-vet-j1"
+            ? legacy
+            : ref.anchor.locator === "agreement-j1"
+              ? fx.agreement
+              : ref.anchor.locator === "settlement-j1"
+                ? fx.evidence
+                : null,
+        verifyCompositeRecord: async (record) => {
+          closureCalls += 1;
+          return {
+            status: "valid",
+            record,
+            freshness: [],
+            dealSpecific: [],
+            freshnessRecipes: [],
+            dealSpecificRecipes: [],
+          };
+        },
+      }),
+    );
+    expect(
+      result.refs.find((entry) => entry.kind === "dacs-2-composite"),
+    ).toMatchObject({ verdict: "invalid-shape" });
+    expect(closureCalls).toBe(0);
+    expect(result.ok).toBe(false);
   });
 
   test("v0.3 FaultAttestationBundle verifies under its distinct domain", async () => {
