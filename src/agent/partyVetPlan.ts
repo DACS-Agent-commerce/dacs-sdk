@@ -73,6 +73,24 @@ export interface PartyVetAttemptInput {
   recipePin: DurableSessionRecipePin;
 }
 
+export interface PartyVetPinScopeAttemptInput {
+  requirementPath: PartyVetRequirementPath;
+  claimSubject: string;
+  classification: "freshness" | "dealSpecific";
+  methodInput: PartyVetMethodInput;
+}
+
+export interface PartyVetPinScopeInput {
+  jobId: string;
+  evaluatedParty: string;
+  identityBundle: IdentityBundle;
+  requirement: CompositeBundleRequirement;
+  verifier: Pick<ComponentSignature, "algorithm" | "signer">;
+  attempts: PartyVetPinScopeAttemptInput[];
+  supplementary?: SupplementarySignal[];
+  warnings?: VerificationWarning[];
+}
+
 export interface PartyVetPlanInput {
   jobId: string;
   evaluatedParty: string;
@@ -119,6 +137,8 @@ export interface PartyVetRequirementAttempt {
 export interface PartyVetPlan {
   planVersion: "1";
   planHash: string;
+  /** Pre-pin scope hash consumed by #143; deliberately excludes recipe pins. */
+  pinScopeHash: string;
   jobId: string;
   evaluatedParty: string;
   identityBundle: IdentityBundle;
@@ -438,6 +458,15 @@ function expectedAttemptPaths(
     disposition: "attempt" | "presence-pass" | "absent";
   }>;
 } {
+  const carriedFor = (scheme: string): boolean => {
+    const count = claims.get(scheme)?.length ?? 0;
+    if (count > 1) {
+      throw new DacsError(
+        `party Vet has ambiguous same-scheme provenance for ${scheme}`,
+      );
+    }
+    return count === 1;
+  };
   const paths: PartyVetRequirementPath[] = [];
   const requirementPaths: Array<{
     requirementPath: PartyVetRequirementPath;
@@ -446,7 +475,7 @@ function expectedAttemptPaths(
   }> = [];
   for (let index = 0; index < requirement.required.length; index += 1) {
     const claim = requirement.required[index]!;
-    const carried = (claims.get(claim.scheme)?.length ?? 0) > 0;
+    const carried = carriedFor(claim.scheme);
     const requirementPath = { kind: "required" as const, index };
     if (!claim.verificationRequired) {
       if (claim.parameters !== undefined) {
@@ -473,7 +502,7 @@ function expectedAttemptPaths(
     const group = requirement.oneOf![groupIndex]!;
     for (let alternativeIndex = 0; alternativeIndex < group.length; alternativeIndex += 1) {
       const claim = group[alternativeIndex]!;
-      const carried = (claims.get(claim.scheme)?.length ?? 0) > 0;
+      const carried = carriedFor(claim.scheme);
       const requirementPath = {
         kind: "oneOf" as const,
         groupIndex,
@@ -581,6 +610,186 @@ function captureAttemptInput(
     methodInput: captureMethodInput(value.methodInput, index),
     recipePin,
   };
+}
+
+function capturePinScopeAttempt(
+  value: unknown,
+  index: number,
+): PartyVetPinScopeAttemptInput {
+  if (!exactDataKeys(value, [
+    "requirementPath",
+    "claimSubject",
+    "classification",
+    "methodInput",
+  ])) {
+    throw new DacsError(
+      `party Vet pin-scope attempt ${index} must be an exact data record`,
+    );
+  }
+  if (value.classification !== "freshness" && value.classification !== "dealSpecific") {
+    throw new DacsError(
+      `party Vet pin-scope attempt ${index} classification is invalid`,
+    );
+  }
+  const claimSubject = nonEmptyNfc(
+    value.claimSubject,
+    `party Vet pin-scope attempt ${index} claimSubject`,
+  );
+  claimParts(claimSubject, `party Vet pin-scope attempt ${index} claimSubject`);
+  return deepFreeze({
+    requirementPath: capturePath(value.requirementPath),
+    claimSubject,
+    classification: value.classification,
+    methodInput: captureMethodInput(value.methodInput, index),
+  });
+}
+
+/**
+ * Exact pre-pin party-plan scope used by #143 to bind every durable path pin
+ * without creating a circular dependency on the pins contained by the final
+ * plan. Recipe family/version/ref fields are deliberately absent.
+ */
+export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
+  if (!exactDataKeys(
+    source,
+    [
+      "jobId",
+      "evaluatedParty",
+      "identityBundle",
+      "requirement",
+      "verifier",
+      "attempts",
+    ],
+    ["supplementary", "warnings"],
+  )) {
+    throw new DacsError("party Vet pin scope must be an exact data record");
+  }
+  const jobId = nonEmptyNfc(source.jobId, "party Vet pin-scope jobId");
+  const evaluatedParty = nonEmptyNfc(
+    source.evaluatedParty,
+    "party Vet pin-scope evaluatedParty",
+  );
+  claimParts(evaluatedParty, "party Vet pin-scope evaluatedParty");
+  if (
+    !exactDataKeys(source.verifier, ["algorithm", "signer"]) ||
+    (source.verifier.algorithm !== "ed25519" &&
+      source.verifier.algorithm !== "ecdsa-secp256k1" &&
+      source.verifier.algorithm !== "sr1-aggregate")
+  ) {
+    throw new DacsError("party Vet pin-scope verifier identity is malformed");
+  }
+  const verifier = snapshot(source.verifier, "party Vet pin-scope verifier");
+  claimParts(
+    nonEmptyNfc(verifier.signer, "party Vet pin-scope verifier signer"),
+    "party Vet pin-scope verifier signer",
+  );
+  const identityBundle = snapshot(
+    source.identityBundle,
+    "party Vet pin-scope IdentityBundle",
+  );
+  if (
+    !isIdentityBundle(identityBundle) ||
+    identityBundle.presentedBy !== evaluatedParty
+  ) {
+    throw new DacsError(
+      "party Vet pin scope requires the evaluated party's exact IdentityBundle",
+    );
+  }
+  const requirement = snapshot(
+    source.requirement,
+    "party Vet pin-scope BundleRequirement",
+  );
+  if (!isCompositeBundleRequirement(requirement)) {
+    throw new DacsError("party Vet pin scope requires an exact BundleRequirement");
+  }
+  const supplementary = snapshot(
+    source.supplementary ?? [],
+    "party Vet pin-scope supplementary signals",
+  );
+  if (!Array.isArray(supplementary) || !supplementary.every(isSupplementarySignal)) {
+    throw new DacsError("party Vet pin-scope supplementary signals are malformed");
+  }
+  const warnings = source.warnings === undefined
+    ? undefined
+    : snapshot(source.warnings, "party Vet pin-scope warnings");
+  if (
+    warnings !== undefined &&
+    (!Array.isArray(warnings) || !warnings.every(isVerificationWarning))
+  ) {
+    throw new DacsError("party Vet pin-scope warnings are malformed");
+  }
+  if (!Array.isArray(source.attempts)) {
+    throw new DacsError("party Vet pin-scope attempts must be an array");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(source.attempts) as
+    Record<string, PropertyDescriptor>;
+  const keys = Object.keys(descriptors).filter((key) => key !== "length");
+  const length = descriptors.length?.value;
+  if (
+    Object.getPrototypeOf(source.attempts) !== Array.prototype ||
+    !Number.isSafeInteger(length) ||
+    (length as number) < 0 ||
+    keys.length !== length ||
+    keys.some((key, index) => key !== String(index)) ||
+    keys.some((key) => {
+      const descriptor = descriptors[key]!;
+      return descriptor.enumerable !== true || !("value" in descriptor);
+    })
+  ) {
+    throw new DacsError("party Vet pin-scope attempts must be a dense intrinsic array");
+  }
+  const attempts = keys.map((key, index) =>
+    capturePinScopeAttempt(descriptors[key]!.value, index));
+  const expected = expectedAttemptPaths(
+    requirement,
+    carriedClaimsByScheme(identityBundle),
+  );
+  const expectedKeys = expected.paths.map(pathKey);
+  const actualKeys = attempts.map((attempt) => pathKey(attempt.requirementPath));
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key, index) => key !== expectedKeys[index])
+  ) {
+    throw new DacsError(
+      "party Vet pin-scope attempts must cover every verifiable path in deterministic order",
+    );
+  }
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index]!;
+    const claimRequirement = requirementAt(requirement, attempt.requirementPath);
+    const { scheme } = claimParts(
+      attempt.claimSubject,
+      `party Vet pin-scope attempt ${index} claimSubject`,
+    );
+    if (
+      !claimRequirement ||
+      !claimRequirement.verificationRequired ||
+      claimRequirement.scheme !== scheme ||
+      !identityBundle.claims.some((claim) => claim.ref === attempt.claimSubject)
+    ) {
+      throw new DacsError(
+        `party Vet pin-scope attempt ${index} does not bind its exact claim path`,
+      );
+    }
+  }
+  const payload = {
+    scopeVersion: "1",
+    jobId,
+    evaluatedParty,
+    bundleHash: identityBundleHash(identityBundle),
+    requirementHash: sha256Hex(canonicalize(requirement)),
+    verifier,
+    requirementPaths: expected.requirementPaths,
+    attempts: attempts.map((attempt) => ({
+      requirementPath: attempt.requirementPath,
+      claimSubject: attempt.claimSubject,
+      classification: attempt.classification,
+      methodInputHash: sha256Hex(canonicalize(attempt.methodInput)),
+    })),
+    supplementary,
+    ...(warnings !== undefined ? { warnings } : {}),
+  };
+  return sha256Hex(canonicalize(payload));
 }
 
 /**
@@ -881,6 +1090,21 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
 
   const planPayload = deepFreeze({
     planVersion: "1" as const,
+    pinScopeHash: partyVetPinScopeHash({
+      jobId,
+      evaluatedParty,
+      identityBundle,
+      requirement,
+      verifier,
+      attempts: captured.map((attempt) => ({
+        requirementPath: attempt.requirementPath,
+        claimSubject: attempt.claimSubject,
+        classification: attempt.classification,
+        methodInput: attempt.methodInput,
+      })),
+      supplementary,
+      ...(warnings !== undefined ? { warnings } : {}),
+    }),
     jobId,
     evaluatedParty,
     identityBundle,

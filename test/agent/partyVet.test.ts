@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   canonicalize,
   contentHash,
+  createInMemoryFencedSessionStore,
   ed25519Sign,
   ed25519Verify,
   identityBundleHash,
@@ -21,6 +22,8 @@ import {
   type CompositeBundleRequirement,
   type FinalizedVetAnchor,
   type FinalizedVetAnchorReceipt,
+  type FencedSessionStoreV2,
+  type FencedSessionLeaseTokenV2,
   type IdentityBundle,
   type PartyVetDeps,
   type PartyVetRequest,
@@ -65,6 +68,16 @@ interface HarnessState {
     signs: number;
     anchors: number;
   };
+  effectStore: FencedSessionStoreV2;
+  effectLease?: FencedSessionLeaseTokenV2;
+  effectJobId?: string;
+  now: number;
+  beforeAuthorizedEffect?: (input: {
+    operationKey: string;
+    operationHash: string;
+    step: string;
+    inputHash: string;
+  }) => Promise<void> | void;
 }
 
 function state(): HarnessState {
@@ -75,6 +88,56 @@ function state(): HarnessState {
     artifacts: new Map(),
     decisions: new Map(),
     effects: { methods: 0, signs: 0, anchors: 0 },
+    effectStore: createInMemoryFencedSessionStore(),
+    now: NOW,
+  };
+}
+
+async function activateEffectLease(
+  harness: HarnessState,
+  jobId: string,
+  owner = "party-vet-worker-1",
+  ttlMs = 10_000,
+): Promise<void> {
+  if (harness.effectJobId === undefined) {
+    await harness.effectStore.create({ jobId, now: harness.now - 1 });
+    harness.effectJobId = jobId;
+  } else if (harness.effectJobId !== jobId) {
+    throw new Error("one party Vet harness cannot span effect-session job ids");
+  }
+  if (harness.effectLease !== undefined) return;
+  const lease = await harness.effectStore.acquireLease({
+    jobId,
+    owner,
+    ttlMs,
+    now: harness.now - 1,
+  });
+  if (!lease.ok) throw new Error(`effect lease failed: ${lease.reason}`);
+  harness.effectLease = {
+    owner: lease.lease.owner,
+    generation: lease.lease.generation,
+  };
+}
+
+async function takeOverEffectLease(
+  harness: HarnessState,
+  owner: string,
+  ttlMs = 10_000,
+): Promise<void> {
+  if (!harness.effectJobId || !harness.effectLease) {
+    throw new Error("effect lease must be active before takeover");
+  }
+  harness.now += ttlMs + 1;
+  const lease = await harness.effectStore.acquireLease({
+    jobId: harness.effectJobId,
+    owner,
+    ttlMs,
+    now: harness.now,
+  });
+  if (!lease.ok) throw new Error(`effect takeover failed: ${lease.reason}`);
+  harness.effectLease = {
+    owner: lease.lease.owner,
+    generation: lease.lease.generation,
   };
 }
 
@@ -114,6 +177,9 @@ function deps(
   harness: HarnessState,
   options: { presentationValid?: boolean; randomSignatures?: boolean } = {},
 ): PartyVetDeps<Uint8Array> {
+  if (!harness.effectLease) {
+    throw new Error("party Vet harness effect lease was not activated");
+  }
   return {
     proxyFetch: async ({ url }) => {
       harness.effects.methods += 1;
@@ -137,11 +203,11 @@ function deps(
           contentHash: sha256Hex(body),
           signer: "substrate-validator-set:demos-testnet:1",
         },
-        fetchedAt: NOW,
+        fetchedAt: harness.now,
         complete: true,
       };
     },
-    nowMs: () => NOW,
+    nowMs: () => harness.now,
     componentSigner: {
       algorithm: "ed25519",
       signer: VERIFIER,
@@ -267,6 +333,78 @@ function deps(
         }
         return structuredClone(await pending);
       },
+      runOnceAuthorized: async ({
+        operationKey,
+        operationHash,
+        step,
+        inputHash,
+        authorize,
+        execute,
+      }) => {
+        const key = `${operationKey}\u0000${step}`;
+        const replay = harness.steps.get(key);
+        if (replay) {
+          if (
+            replay.operationHash !== operationHash ||
+            replay.inputHash !== inputHash
+          ) {
+            throw new Error(`runOnceAuthorized ${step} input mismatch`);
+          }
+          if (replay.state === "failed") throw new Error(replay.error);
+          return { status: "complete" as const, value: structuredClone(replay.value) };
+        }
+        let pending = harness.inflight.get(key);
+        if (!pending) {
+          pending = (async () => {
+            await harness.beforeAuthorizedEffect?.({
+              operationKey,
+              operationHash,
+              step,
+              inputHash,
+            });
+            const authorization = await authorize();
+            if (authorization.status === "rejected") {
+              return {
+                authorizationRejected: true as const,
+                reason: authorization.reason,
+              };
+            }
+            try {
+              const value = structuredClone(await execute());
+              harness.steps.set(key, {
+                operationHash,
+                inputHash,
+                state: "complete",
+                value,
+              });
+              return { authorizationRejected: false as const, value };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              harness.steps.set(key, {
+                operationHash,
+                inputHash,
+                state: "failed",
+                error: message,
+              });
+              throw error;
+            } finally {
+              harness.inflight.delete(key);
+            }
+          })();
+          harness.inflight.set(key, pending);
+        }
+        const outcome = await pending as
+          | { authorizationRejected: true; reason: "fenced" | "expired" | "indeterminate" }
+          | { authorizationRejected: false; value: unknown };
+        if (outcome.authorizationRejected) {
+          harness.inflight.delete(key);
+          return {
+            status: "authorization-rejected" as const,
+            reason: outcome.reason,
+          };
+        }
+        return { status: "complete" as const, value: structuredClone(outcome.value) };
+      },
     },
     verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) => {
       if (options.presentationValid === false) return false;
@@ -294,6 +432,10 @@ function deps(
           Uint8Array.from(Buffer.from(signature.value, "base64url")),
           publicKeyFromRaw(publicKey),
         ),
+    },
+    sessionEffectAuthority: {
+      store: harness.effectStore,
+      leaseToken: harness.effectLease,
     },
     matchRequirementParameters: () => true,
   };
@@ -418,6 +560,31 @@ async function pinnedRequestAttempts(
     attempt(spec.requirementPath, spec.claimSubject, pins[index]!));
 }
 
+async function singleClaimRequest(
+  jobId: string,
+  availability: RecipeDescriptor["availability"] = "live",
+): Promise<PartyVetRequest> {
+  const subject = "alpha:alice";
+  const requirement: CompositeBundleRequirement = {
+    requirementVersion: "1",
+    required: [
+      { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+    ],
+  };
+  const signedRecipe = await recipe("alpha", availability);
+  return {
+    jobId,
+    evaluatedParty: subject,
+    identityBundle: await bundle(subject, [subject]),
+    requirement,
+    attempts: await pinnedRequestAttempts(jobId, subject, requirement, [{
+      requirementPath: { kind: "required", index: 0 },
+      claimSubject: subject,
+      recipe: signedRecipe,
+    }]),
+  };
+}
+
 describe("partyVetCore durable party-level producer", () => {
   test("produces one two-result CVR for required=[alpha,beta]", async () => {
     const harness = state();
@@ -454,6 +621,7 @@ describe("partyVetCore durable party-level producer", () => {
         },
       ]),
     };
+    await activateEffectLease(harness, jobId);
 
     const production = await partyVetCore(request, deps(harness));
     expect(isCompositeVerificationRecord(production.record)).toBe(true);
@@ -502,6 +670,7 @@ describe("partyVetCore durable party-level producer", () => {
       groupIndex: 0,
       alternativeIndex: index,
     }));
+    await activateEffectLease(harness, jobId);
     const production = await partyVetCore(
       {
         jobId,
@@ -565,6 +734,7 @@ describe("partyVetCore durable party-level producer", () => {
       { kind: "oneOf", groupIndex: 1, alternativeIndex: 1 },
     ];
     const jobId = "job-party-precedence";
+    await activateEffectLease(harness, jobId);
     const production = await partyVetCore(
       {
         jobId,
@@ -610,6 +780,7 @@ describe("partyVetCore durable party-level producer", () => {
         recipe: alphaRecipe,
       }]),
     };
+    await activateEffectLease(harness, jobId);
     const [left, right] = await Promise.all([
       partyVetCore(request, deps(harness)),
       partyVetCore(request, deps(harness)),
@@ -638,5 +809,124 @@ describe("partyVetCore durable party-level producer", () => {
     expect(bobProduction.recordRef.anchor.locator).not.toBe(
       left.recordRef.anchor.locator,
     );
+  });
+
+  test.each(["mocked", "failed"] as const)(
+    "%s availability produces an authenticated aggregate error without a proxy call",
+    async (availability) => {
+      const harness = state();
+      const request = await singleClaimRequest(
+        `job-party-availability-${availability}`,
+        availability,
+      );
+      await activateEffectLease(harness, request.jobId);
+      const production = await partyVetCore(request, deps(harness));
+      expect(production.record.overallDecision).toBe("error");
+      expect(production.record.dealSpecific).toHaveLength(1);
+      expect(harness.effects).toEqual({ methods: 0, signs: 2, anchors: 3 });
+      const resultArtifacts = [...harness.artifacts.values()]
+        .filter((entry) => isVerifyResult(entry.artifact));
+      expect(resultArtifacts).toHaveLength(1);
+      expect(resultArtifacts[0]!.artifact).toMatchObject({
+        decision: "error",
+        data: {
+          recipeAvailability: { availability },
+        },
+      });
+    },
+  );
+
+  test.each(["operator_gated", "closed_data", "bilateral"] as const)(
+    "%s availability executes the authenticated method",
+    async (availability) => {
+      const harness = state();
+      const request = await singleClaimRequest(
+        `job-party-availability-${availability}`,
+        availability,
+      );
+      await activateEffectLease(harness, request.jobId);
+      const production = await partyVetCore(request, deps(harness));
+      expect(production.record.overallDecision).toBe("pass");
+      expect(harness.effects.methods).toBe(1);
+    },
+  );
+
+  test("rejects disabled recipes before any party Vet effect", async () => {
+    await expect(singleClaimRequest(
+      "job-party-availability-disabled",
+      "disabled",
+    )).rejects.toThrow(/disabled|provenance bindings/);
+  });
+
+  test("rejects an unauthenticated presentation before method, sign, anchor or checkpoint", async () => {
+    const harness = state();
+    const request = await singleClaimRequest("job-party-bad-presentation");
+    await activateEffectLease(harness, request.jobId);
+    await expect(partyVetCore(
+      request,
+      deps(harness, { presentationValid: false }),
+    )).rejects.toThrow(/presentation is not authenticated/);
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+    expect(harness.checkpoints.size).toBe(0);
+  });
+
+  test("rejects a signer returning random bytes before result anchoring", async () => {
+    const harness = state();
+    const request = await singleClaimRequest("job-party-random-signature");
+    await activateEffectLease(harness, request.jobId);
+    await expect(partyVetCore(
+      request,
+      deps(harness, { randomSignatures: true }),
+    )).rejects.toThrow(/component signature is not authenticated/);
+    expect(harness.effects.methods).toBe(1);
+    expect(harness.effects.signs).toBe(1);
+    expect(harness.effects.anchors).toBe(0);
+  });
+
+  test("rejects a complete party checkpoint whose finalized attempt checkpoint is missing", async () => {
+    const harness = state();
+    const request = await singleClaimRequest("job-party-partial-complete");
+    await activateEffectLease(harness, request.jobId);
+    const production = await partyVetCore(request, deps(harness));
+    const before = structuredClone(harness.effects);
+    const partyAddress = partyVetCompositeAddress(
+      request.jobId,
+      request.evaluatedParty,
+    );
+    const attemptKey = [...harness.checkpoints.keys()]
+      .find((key) => key !== partyAddress);
+    if (!attemptKey) throw new Error("expected an attempt checkpoint");
+    harness.checkpoints.delete(attemptKey);
+
+    await expect(partyVetCore(request, deps(harness))).rejects.toThrow(
+      /missing an exact finalized attempt checkpoint/,
+    );
+    expect(harness.effects).toEqual(before);
+    expect(isCompositeVerificationRecord(production.record)).toBe(true);
+  });
+
+  test("fences stale generation 2 before effects and lets generation 3 take over", async () => {
+    const harness = state();
+    const request = await singleClaimRequest("job-party-generation-takeover");
+    await activateEffectLease(harness, request.jobId, "worker-generation-1");
+    await takeOverEffectLease(harness, "worker-generation-2");
+    const staleGenerationTwoDeps = deps(harness);
+    harness.beforeAuthorizedEffect = async ({ step }) => {
+      if (step !== "method") return;
+      harness.beforeAuthorizedEffect = undefined;
+      await takeOverEffectLease(harness, "worker-generation-3");
+    };
+
+    await expect(partyVetCore(request, staleGenerationTwoDeps)).rejects.toThrow(
+      /method effect authorization was fenced/,
+    );
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+    expect(harness.steps.size).toBe(0);
+    expect(harness.checkpoints.size).toBe(2);
+
+    const production = await partyVetCore(request, deps(harness));
+    expect(production.record.overallDecision).toBe("pass");
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+    expect(harness.effectLease?.generation).toBe(3);
   });
 });

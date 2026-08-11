@@ -505,4 +505,60 @@ describe("party-scoped multi-claim Vet planning", () => {
       ],
     })).toThrow(/does not bind this party and requirement path/);
   });
+
+  test("rejects ambiguous same-scheme claim provenance", async () => {
+    const jobId = "job-144-ambiguous-scheme";
+    const alpha = claim("alpha", "alice");
+    const alias = claim("alpha", "alice-alias");
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
+    };
+    const attempts = await pinnedAttempts(jobId, alpha, requirement, [{
+      requirementPath: { kind: "required", index: 0 },
+      claimSubject: alpha,
+    }]);
+    expect(() => createPartyVetPlan({
+      jobId,
+      evaluatedParty: alpha,
+      identityBundle: bundle(alpha, [alpha, alias]),
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts,
+    })).toThrow(/ambiguous same-scheme provenance/);
+  });
+
+  test("preserves an own __proto__ field in the exact captured bundle hash", async () => {
+    const jobId = "job-144-own-proto";
+    const alpha = claim("alpha", "alice");
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
+    };
+    const identity = bundle(alpha, [alpha]);
+    Object.defineProperty(identity, "__proto__", {
+      value: { extensionVersion: "1", marker: "exact-wire-member" },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    const attempts = await pinnedAttempts(jobId, alpha, requirement, [{
+      requirementPath: { kind: "required", index: 0 },
+      claimSubject: alpha,
+    }]);
+    const plan = createPartyVetPlan({
+      jobId,
+      evaluatedParty: alpha,
+      identityBundle: identity,
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts,
+    });
+    expect(Object.prototype.hasOwnProperty.call(plan.identityBundle, "__proto__"))
+      .toBe(true);
+    expect(plan.bundleHash).toBe(identityBundleHash(identity));
+    const withoutOwnProto = structuredClone(identity) as IdentityBundle;
+    delete (withoutOwnProto as unknown as Record<string, unknown>).__proto__;
+    expect(plan.bundleHash).not.toBe(identityBundleHash(withoutOwnProto));
+  });
 });

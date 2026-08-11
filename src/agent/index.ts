@@ -103,6 +103,9 @@ export {
   type PartyVetAttemptRequest,
   type PartyVetDeps,
   type PartyVetOperationCheckpoint,
+  type PartyVetOperationStore,
+  type PartyVetEffectAuthorizationVerdict,
+  type PartyVetAuthorizedRunResult,
   type VetProxyResult,
   type VetProduction,
   type VetMethodOutcome,
@@ -116,9 +119,12 @@ export {
 } from "./vetCore.js";
 export {
   partyVetCompositeAddress,
+  partyVetPinScopeHash,
   type PartyVetRequirementPath,
   type PartyVetMethodInput,
   type PartyVetRecipePinBinding,
+  type PartyVetPinScopeAttemptInput,
+  type PartyVetPinScopeInput,
 } from "./partyVetPlan.js";
 export {
   aggregateCompositeVerification,
