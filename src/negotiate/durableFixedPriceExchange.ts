@@ -337,7 +337,12 @@ function snapshotDataValue(
       if (descriptor.value === undefined) {
         throw new TypeError(`${subject}.${key} cannot be undefined`);
       }
-      out[key] = snapshotDataValue(descriptor.value, `${subject}.${key}`, ancestors);
+      Object.defineProperty(out, key, {
+        value: snapshotDataValue(descriptor.value, `${subject}.${key}`, ancestors),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return out;
   } finally {
@@ -635,7 +640,12 @@ function captureAnchor(value: unknown): FixedPriceAgreementAnchorProvider {
       ),
     verifyAnchorReceipt: async (input) => {
       const result = await verifyAnchorReceipt(clone(input));
-      if (!["valid", "invalid", "indeterminate", "error"].includes(String(result))) {
+      if (
+        result !== "valid" &&
+        result !== "invalid" &&
+        result !== "indeterminate" &&
+        result !== "error"
+      ) {
         throw new TypeError("anchor receipt verifier returned an invalid disposition");
       }
       return result;
@@ -709,7 +719,12 @@ function captureDurability(value: unknown): DurableFixedPriceAgreementDurability
         ...clone(input),
         signedBytes: Uint8Array.from(input.signedBytes),
       });
-      if (!["valid", "invalid", "indeterminate", "error"].includes(String(output))) {
+      if (
+        output !== "valid" &&
+        output !== "invalid" &&
+        output !== "indeterminate" &&
+        output !== "error"
+      ) {
         throw new TypeError("agreement contribution verifier returned an invalid disposition");
       }
       return output;
@@ -794,8 +809,13 @@ function captureSignatureResolution(value: unknown): FixedPriceAgreementSignatur
       ),
     };
   }
-  if (!["absent", "rejected", "indeterminate"].includes(String(disposition)) ||
-      map.value || !map.reason) {
+  if (
+    (disposition !== "absent" &&
+      disposition !== "rejected" &&
+      disposition !== "indeterminate") ||
+    map.value ||
+    !map.reason
+  ) {
     throw new TypeError("buyer signature reconciliation is malformed");
   }
   const reason = dataProperty<unknown>(map, "reason", "buyer signature reconciliation");

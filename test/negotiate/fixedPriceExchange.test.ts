@@ -253,6 +253,21 @@ describe("role-owned fixed-price agreement exchange", () => {
     input.jobId = "mutated-after-plan";
     expect(plan.draft.jobId).toBe("job-independent-agreement");
 
+    const sig5Input = draft();
+    const additionalTerms = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(additionalTerms, "__proto__", {
+      value: { retained: "exactly" },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    sig5Input.terms.additionalTerms = additionalTerms;
+    const sig5Plan = createFixedPriceAgreementSigningPlan(sig5Input);
+    expect(Object.hasOwn(sig5Plan.draft.terms.additionalTerms!, "__proto__")).toBe(true);
+    expect(sig5Plan.draft.terms.additionalTerms?.["__proto__"]).toEqual({
+      retained: "exactly",
+    });
+
     const accessor = draft() as unknown as Record<string, unknown>;
     Object.defineProperty(accessor, "jobId", {
       enumerable: true,
