@@ -209,6 +209,48 @@ function transport(state: SharedTransportState): TerminalBundleTransport {
   };
 }
 
+function concurrentProposalHarness(state: SharedTransportState): {
+  transport: TerminalBundleTransport;
+  proposalKeys: Set<string>;
+  publishAttempts: () => number;
+} {
+  const base = transport(state);
+  const proposalKeys = new Set<string>();
+  let initialAbsentReads = 0;
+  let attempts = 0;
+  let release!: () => void;
+  const allReadAbsent = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    proposalKeys,
+    publishAttempts: () => attempts,
+    transport: {
+      ...base,
+      resolveProposal: async () => {
+        if (state.proposal) {
+          return { disposition: "present", value: structuredClone(state.proposal) };
+        }
+        initialAbsentReads += 1;
+        if (initialAbsentReads === ROLES.length) release();
+        await allReadAbsent;
+        return {
+          disposition: "authoritatively-absent",
+          reason: "concurrent proposal snapshot was absent",
+        };
+      },
+      publishProposal: ({ plan }, fence) => {
+        attempts += 1;
+        if (!proposalKeys.has(fence.idempotencyKey)) {
+          proposalKeys.add(fence.idempotencyKey);
+          state.proposalPublishes += 1;
+          state.proposal = structuredClone(plan);
+        }
+      },
+    },
+  };
+}
+
 interface RoleEffects {
   publication?: TerminalBundleAnchorPublication;
   binding?: Parameters<DurableTerminalBundleProvider["publishOwnBundleBinding"]>[0];
@@ -549,6 +591,46 @@ describe("durable role-local terminal bundle finalization", () => {
     }
   }, 30_000);
 
+  test("deduplicates concurrent three-role proposal publication with one shared key", async () => {
+    const authority = failureAuthority("durable-concurrent-proposal-81");
+    const mode = { kind: "co-signed" } as const;
+    const shared = transportState();
+    const proposal = concurrentProposalHarness(shared);
+    const roles = Object.fromEntries(
+      await Promise.all(ROLES.map(async (role) => {
+        const store = createInMemoryFencedSessionStore();
+        const effects = roleEffects();
+        await store.create({
+          jobId: authority.jobId,
+          phase: role === "seller" ? "seller:failed" : "created",
+          now: NOW - 1,
+        });
+        return [role, { store, effects }] as const;
+      })),
+    ) as Record<BundlePartyRole, { store: FencedSessionStoreV2; effects: RoleEffects }>;
+
+    const outcomes = await Promise.all(ROLES.map((role) => {
+      const base = durability(
+        roles[role].store,
+        shared,
+        roles[role].effects,
+        `${role}-concurrent-worker`,
+      );
+      return advanceTerminalBundleDurable(
+        durableInput(authority, mode, role, roles[role].effects),
+        provider(role, roles[role].effects),
+        { ...base, transport: proposal.transport },
+      );
+    }));
+
+    expect(proposal.publishAttempts()).toBe(3);
+    expect(proposal.proposalKeys.size).toBe(1);
+    expect(shared.proposalPublishes).toBe(1);
+    expect(outcomes.every(
+      (outcome) => outcome.disposition === "finalised" || outcome.disposition === "waiting",
+    )).toBe(true);
+  });
+
   test("strict single-signed abort publishes only the locally owned copy", async () => {
     const authority = abortAuthority("durable-abort-81");
     const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
@@ -668,6 +750,193 @@ describe("durable role-local terminal bundle finalization", () => {
     );
     expect(second).toMatchObject({ disposition: "indeterminate", stage: "bundle-anchor" });
     expect(effects.anchorSubmits).toBe(1);
+  });
+
+  test("maps resolver promise rejections to indeterminate at the exact active stage", async () => {
+    const proposalAuthority = abortAuthority("durable-rejected-proposal-81");
+    const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
+    const proposalStore = createInMemoryFencedSessionStore();
+    const proposalState = transportState();
+    const proposalEffects = roleEffects();
+    await proposalStore.create({ jobId: proposalAuthority.jobId, now: NOW - 1 });
+    const proposalDurability = durability(
+      proposalStore,
+      proposalState,
+      proposalEffects,
+      "proposal-rejection-worker",
+    );
+    const proposalResult = await advanceTerminalBundleDurable(
+      durableInput(proposalAuthority, mode, "buyer", proposalEffects),
+      abortProvider("buyer", proposalEffects),
+      {
+        ...proposalDurability,
+        transport: {
+          ...proposalDurability.transport,
+          resolveProposal: async () => {
+            throw new Error("proposal resolver offline");
+          },
+        },
+      },
+    );
+    expect(proposalResult).toMatchObject({
+      disposition: "indeterminate",
+      stage: "proposal-publication",
+    });
+    expect(proposalEffects.signerCalls).toBe(0);
+
+    const signatureAuthority = abortAuthority("durable-rejected-signature-81");
+    const signatureStore = createInMemoryFencedSessionStore();
+    const signatureState = transportState();
+    const signatureEffects = roleEffects();
+    await signatureStore.create({ jobId: signatureAuthority.jobId, now: NOW - 1 });
+    const signatureDurability = durability(
+      signatureStore,
+      signatureState,
+      signatureEffects,
+      "signature-rejection-worker",
+    );
+    const signatureResult = await advanceTerminalBundleDurable(
+      durableInput(signatureAuthority, mode, "buyer", signatureEffects),
+      abortProvider("buyer", signatureEffects),
+      {
+        ...signatureDurability,
+        reconcileSignature: async () => {
+          throw new Error("signature resolver offline");
+        },
+      },
+    );
+    expect(signatureResult).toMatchObject({
+      disposition: "indeterminate",
+      stage: "contribution-signing",
+    });
+    expect(signatureEffects.signerCalls).toBe(0);
+
+    const contributionAuthority = failureAuthority("durable-rejected-contribution-81");
+    const contributionMode = { kind: "co-signed" } as const;
+    const contributionStore = createInMemoryFencedSessionStore();
+    const contributionState = transportState();
+    const contributionEffects = roleEffects();
+    await contributionStore.create({ jobId: contributionAuthority.jobId, now: NOW - 1 });
+    const contributionDurability = durability(
+      contributionStore,
+      contributionState,
+      contributionEffects,
+      "contribution-rejection-worker",
+    );
+    const contributionResult = await advanceTerminalBundleDurable(
+      durableInput(
+        contributionAuthority,
+        contributionMode,
+        "buyer",
+        contributionEffects,
+      ),
+      provider("buyer", contributionEffects),
+      {
+        ...contributionDurability,
+        transport: {
+          ...contributionDurability.transport,
+          resolveContribution: async (input) => {
+            if (input.signerRole === "seller") {
+              throw new Error("contribution resolver offline");
+            }
+            return contributionDurability.transport.resolveContribution(input);
+          },
+        },
+      },
+    );
+    expect(contributionResult).toMatchObject({
+      disposition: "indeterminate",
+      stage: "contribution-publication",
+    });
+
+    const anchorAuthority = abortAuthority("durable-rejected-anchor-81");
+    const anchorStore = createInMemoryFencedSessionStore();
+    const anchorState = transportState();
+    const anchorEffects = roleEffects();
+    await anchorStore.create({ jobId: anchorAuthority.jobId, now: NOW - 1 });
+    const anchorProvider = abortProvider("buyer", anchorEffects);
+    const anchorResult = await advanceTerminalBundleDurable(
+      durableInput(anchorAuthority, mode, "buyer", anchorEffects),
+      {
+        ...anchorProvider,
+        resolveOwnBundle: async () => {
+          throw new Error("anchor resolver offline");
+        },
+      },
+      durability(
+        anchorStore,
+        anchorState,
+        anchorEffects,
+        "anchor-rejection-worker",
+      ),
+    );
+    expect(anchorResult).toMatchObject({
+      disposition: "indeterminate",
+      stage: "bundle-anchor",
+    });
+
+    const bindingAuthority = abortAuthority("durable-rejected-binding-81");
+    const bindingStore = createInMemoryFencedSessionStore();
+    const bindingState = transportState();
+    const bindingEffects = roleEffects();
+    await bindingStore.create({ jobId: bindingAuthority.jobId, now: NOW - 1 });
+    const bindingProvider = abortProvider("buyer", bindingEffects);
+    const bindingResult = await advanceTerminalBundleDurable(
+      durableInput(bindingAuthority, mode, "buyer", bindingEffects),
+      {
+        ...bindingProvider,
+        resolveOwnBundleBinding: async () => {
+          throw new Error("binding resolver offline");
+        },
+      },
+      durability(
+        bindingStore,
+        bindingState,
+        bindingEffects,
+        "binding-rejection-worker",
+      ),
+    );
+    expect(bindingResult).toMatchObject({
+      disposition: "indeterminate",
+      stage: "bundle-binding",
+    });
+
+    const recoveryAuthority = abortAuthority("durable-rejected-recovery-81");
+    const recoveryStore = createInMemoryFencedSessionStore();
+    const recoveryState = transportState();
+    const recoveryEffects = roleEffects();
+    await recoveryStore.create({ jobId: recoveryAuthority.jobId, now: NOW - 1 });
+    const finalized = await advanceTerminalBundleDurable(
+      durableInput(recoveryAuthority, mode, "buyer", recoveryEffects),
+      abortProvider("buyer", recoveryEffects),
+      durability(
+        recoveryStore,
+        recoveryState,
+        recoveryEffects,
+        "recovery-fixture-worker",
+      ),
+    );
+    expect(finalized).toMatchObject({ disposition: "finalised" });
+    const recoveryProvider = abortProvider("buyer", recoveryEffects);
+    const recoveryResult = await verifyFinalizedTerminalBundleReadOnly(
+      {
+        authority: recoveryAuthority,
+        signingMode: mode,
+        local: { role: "buyer", primaryClaim: CLAIMS.buyer },
+        signerKeys: signerKeys(createTerminalBundlePlan(recoveryAuthority, mode)),
+      },
+      {
+        ...recoveryProvider,
+        resolveOwnBundle: async () => {
+          throw new Error("recovery anchor resolver offline");
+        },
+      },
+      recoveryStore,
+    );
+    expect(recoveryResult).toMatchObject({
+      disposition: "indeterminate",
+      stage: "terminal-recovery",
+    });
   });
 
   test.each([
