@@ -1,6 +1,7 @@
 import {
   canonicalize,
   contentHash,
+  encodeAddressSegment,
   sha256Hex,
 } from "../canonical/index.js";
 import type {
@@ -519,8 +520,15 @@ function contextMatchesEvidence(
       settlement.anchorReceipt.contentHash !== evidenceHash) {
     return "settlement evidence reference/receipt hash mismatch";
   }
+  const paymentAddress =
+    `dacs4:payment:${context.jobId}:${encodeAddressSegment(context.rail.railId)}:` +
+    `${context.paymentPhaseIndex}`;
+  const evidenceAddress = settlement.evidenceRef.anchor.locator;
+  if (evidenceAddress !== paymentAddress && evidenceAddress !== `${paymentAddress}:resolved`) {
+    return "settlement evidence anchor does not bind the authenticated payment phase";
+  }
   if (settlement.anchorReceipt.writer !== context.orchestrator ||
-      settlement.anchorReceipt.logicalAddress !== settlement.evidenceRef.anchor.locator ||
+      settlement.anchorReceipt.logicalAddress !== evidenceAddress ||
       (settlement.evidenceRef.signer !== undefined &&
         settlement.evidenceRef.signer !== evidence.signature.signer) ||
       settlement.anchorReceipt.state !== "finalized" ||

@@ -10,7 +10,12 @@ import {
   isAnchorReceipt,
   isSettlementEvidence,
 } from "../../src/artifacts/validators.js";
-import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  encodeAddressSegment,
+  sha256Hex,
+} from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -100,6 +105,9 @@ function signedEvidence(input: {
   jobId?: string;
   observedAt?: number;
   paymentReceiptHash?: string;
+  phaseIndex?: number;
+  railId?: string;
+  resolved?: boolean;
 } = {}): SettlementEvidence {
   const outcome = input.outcome ?? "success";
   const base = {
@@ -148,7 +156,13 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
   const evidence = signedEvidence(options);
   const evidenceHash = contentHash(evidence as unknown as Record<string, unknown>);
   const evidenceRef: AttestationRef = {
-    anchor: { kind: "storage-program", locator: "evidence:job-settlement-1:3" },
+    anchor: {
+      kind: "storage-program",
+      locator:
+        `dacs4:payment:${options.jobId ?? "job-settlement-1"}:` +
+        `${encodeAddressSegment(options.railId ?? "rail-x402-base")}:` +
+        `${options.phaseIndex ?? 3}${options.resolved ? ":resolved" : ""}`,
+    },
     contentHash: evidenceHash,
   };
   const anchorReceipt: AnchorReceipt = {
@@ -635,6 +649,7 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("atomically prevents one native settlement identity from owning two phases", async () => {
     const { settlement, proof } = fixture();
+    const repeated = fixture({ phaseIndex: 4 });
     const atomic = atomicProvider(proof);
     const first = await verifyFinalizedSessionSettlement(
       context(),
@@ -647,7 +662,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     repeatedPhase.paymentPhaseIndex = 4;
     const replay = await verifyFinalizedSessionSettlement(
       repeatedPhase,
-      settlement,
+      repeated.settlement,
       atomic.value,
     );
     expect(replay).toEqual({
@@ -658,8 +673,36 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(atomic.claims).toHaveLength(1);
   });
 
+  it("rejects a settlement evidence anchor for a different payment phase before SB-2", async () => {
+    const { settlement, proof } = fixture();
+    const claim = vi.fn();
+    const mismatched = context();
+    mismatched.paymentPhaseIndex = 4;
+    expect(await verifyFinalizedSessionSettlement(
+      mismatched,
+      settlement,
+      provider(proof, { claimSettlementIdentity: claim }),
+    )).toEqual({
+      disposition: "rejected",
+      reason: "settlement evidence anchor does not bind the authenticated payment phase",
+    });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it("accepts the exact CF-4 rail segment on an ST-8 resolved payment address", async () => {
+    const railId = "evm-erc20:8453:USDC";
+    const { settlement, proof } = fixture({ railId, resolved: true });
+    const exactContext = context();
+    exactContext.rail.railId = railId;
+    expect((await verifyFinalizedSessionSettlement(
+      exactContext,
+      settlement,
+      provider(proof),
+    )).disposition).toBe("verified");
+  });
+
   it("applies the normative earlier-observedAt SB-2 winner under arrival reversal", async () => {
-    const late = fixture({ observedAt: 1_777_000_000_200 });
+    const late = fixture({ observedAt: 1_777_000_000_200, phaseIndex: 4 });
     const early = fixture({ observedAt: 1_777_000_000_100 });
     const atomic = atomicProvider(late.proof);
     const lateContext = context();
