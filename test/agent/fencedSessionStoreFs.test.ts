@@ -237,6 +237,121 @@ describe("generation-fenced filesystem FencedSessionStoreV2 v2", () => {
     })).toMatchObject({ ok: false, reason: "terminal-state" });
   });
 
+  test("persists and atomically seals the role-local terminal FAB lifecycle", async () => {
+    await store.create({ jobId: "terminal-fs", phase: "seller:failed", now: 0 });
+    expect(await store.acquireLease({
+      jobId: "terminal-fs",
+      owner: "scoped-terminal-worker",
+      ttlMs: 100,
+      sellerPhaseIndex: 1,
+      now: 0,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    const lease = await store.acquireLease({
+      jobId: "terminal-fs",
+      owner: "terminal-worker",
+      ttlMs: 100,
+      now: 0,
+    });
+    if (!lease.ok) throw new Error("terminal FS lease missing");
+    expect(await store.claimCheckpoint({
+      jobId: "terminal-fs",
+      key: "terminal:buyer:authority",
+      phase: "terminal:buyer:authority",
+      leaseToken: lease.lease,
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await store.claimCheckpoint({
+      jobId: "terminal-fs",
+      key: "unrelated-intent",
+      leaseToken: lease.lease,
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await store.transition({
+      jobId: "terminal-fs",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      checkpoint: { key: "unrelated-intent", stage: "intent" },
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await store.transition({
+      jobId: "terminal-fs",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:authority",
+      checkpoint: { key: "unrelated-intent", stage: "intent" },
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await store.transition({
+      jobId: "terminal-fs",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      receipt: { kind: "bundle", ref: "premature-bundle" },
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await store.bindSessionAuthorization({
+      jobId: "terminal-fs",
+      binding: authorizationBinding("a".repeat(64), "e"),
+      leaseToken: lease.lease,
+      now: 1,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    const authority = await store.claimCheckpoint({
+      jobId: "terminal-fs",
+      key: "terminal:seller:authority",
+      data: { planHash: "1".repeat(64) },
+      phase: "terminal:seller:authority",
+      leaseToken: lease.lease,
+      now: 1,
+    });
+    if (!authority.ok) throw new Error(`terminal authority failed: ${authority.reason}`);
+    const pending = await store.transition({
+      jobId: "terminal-fs",
+      expectedRevision: authority.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:bundle-binding-publication-pending",
+      now: 2,
+    });
+    if (!pending.ok) throw new Error(`terminal binding phase failed: ${pending.reason}`);
+    expect(await store.transition({
+      jobId: "terminal-fs",
+      expectedRevision: pending.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:finalised",
+      lease: null,
+      now: 3,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    const intent = await store.claimCheckpoint({
+      jobId: "terminal-fs",
+      key: "terminal:seller:result",
+      data: { resultHash: "2".repeat(64) },
+      leaseToken: lease.lease,
+      now: 3,
+    });
+    if (!intent.ok) throw new Error(`terminal result intent failed: ${intent.reason}`);
+    const finalised = await store.transition({
+      jobId: "terminal-fs",
+      expectedRevision: intent.record.revision,
+      leaseToken: lease.lease,
+      phase: "terminal:seller:finalised",
+      checkpoint: {
+        key: "terminal:seller:result",
+        stage: "outcome",
+        data: { resultHash: "2".repeat(64) },
+      },
+      receipt: { kind: "bundle", ref: "native-terminal-fs" },
+      lease: null,
+      now: 4,
+    });
+    expect(finalised.ok && finalised.record.phase).toBe("terminal:seller:finalised");
+
+    const reopened = await createFsFencedSessionStore({ dir });
+    expect(await reopened.acquireLease({
+      jobId: "terminal-fs",
+      owner: "late-worker",
+      ttlMs: 100,
+      now: 5,
+    })).toMatchObject({ ok: false, reason: "terminal-state" });
+  });
+
   test("filesystem bundle entry rejects direct creation and skipped first phase", async () => {
     await expect(store.create({
       jobId: "created-in-bundle",

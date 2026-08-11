@@ -177,7 +177,9 @@ export {
   assertSessionPaymentAuthorizationShape as assertFencedSessionPaymentAuthorizationShape,
   assertSessionReceiptShape as assertFencedSessionReceiptShape,
   createInMemoryFencedSessionStore,
+  sessionPhaseIsTerminal,
   sessionReceiptKey as fencedSessionReceiptKey,
+  terminalBundleStorePhase,
   type FencedSessionStoreV2,
   type SessionRecord as FencedSessionRecordV2,
   type SessionReceipt as FencedSessionReceiptV2,
@@ -195,6 +197,8 @@ export {
   type SessionAuthorizationBindingResult as FencedSessionAuthorizationBindingResultV2,
   type TransitionInput as FencedTransitionInputV2,
   type TransitionResult as FencedTransitionResultV2,
+  type TerminalBundleStoreRole,
+  type TerminalBundleStoreStage,
 } from "./fencedSessionStore.js";
 export {
   createFsFencedSessionStore,
@@ -240,6 +244,31 @@ export {
   type TerminalPhaseAuthority,
   type VerifiedTerminalBundleParty,
 } from "./terminalBundleFinalization.js";
+export {
+  advanceTerminalBundleDurable,
+  getTerminalBundleFinalizationStatus,
+  terminalBundleFinalizationCheckpointKey,
+  terminalBundleFinalizationCheckpointName,
+  verifyFinalizedTerminalBundleReadOnly,
+  type DurableFinalizedTerminalBundle,
+  type DurableTerminalBundleInput,
+  type DurableTerminalBundleProgress,
+  type DurableTerminalBundleProvider,
+  type TerminalBundleAnchorPublication,
+  type TerminalBundleCheckpointState,
+  type TerminalBundleEffectFence,
+  type TerminalBundleFencedSigner,
+  type TerminalBundleFinalizationDurability,
+  type TerminalBundleFinalizationReadProvider,
+  type TerminalBundleFinalizationStage,
+  type TerminalBundleFinalizationStatusLoad,
+  type TerminalBundleResolution,
+  type TerminalBundleSignaturePurpose,
+  type TerminalBundleTransport,
+  type TerminalBundleTransportIdentity,
+  type TerminalBundleVerification,
+  type VerifyFinalizedTerminalBundleInput,
+} from "./durableTerminalBundleFinalization.js";
 export { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
 export {
   verifyFinalizedSessionSettlement,

@@ -32,6 +32,10 @@ import {
   createTerminalBundleSignatureMatrix,
   terminalBundleAuthorityHash,
   terminalBundleSignedBytes,
+  advanceTerminalBundleDurable,
+  getTerminalBundleFinalizationStatus,
+  terminalBundleFinalizationCheckpointKey,
+  verifyFinalizedTerminalBundleReadOnly,
   isCanonicalSettlementIdentity,
   createX402Paywall,
   x402PaywallCore,
@@ -58,6 +62,9 @@ import {
   type TerminalBundleAuthorityInput,
   type TerminalBundlePlan,
   type TerminalBundleSigningMode,
+  type DurableTerminalBundleInput,
+  type TerminalBundleFinalizationDurability,
+  type TerminalBundleResolution,
 } from "../../src/index.js";
 import {
   createCompletedCounterpartyBundleCounterSignature as agentCreateCompletedCounterpartyBundleCounterSignature,
@@ -69,6 +76,9 @@ import {
   createTerminalBundleSignatureMatrix as agentCreateTerminalBundleSignatureMatrix,
   terminalBundleAuthorityHash as agentTerminalBundleAuthorityHash,
   terminalBundleSignedBytes as agentTerminalBundleSignedBytes,
+  advanceTerminalBundleDurable as agentAdvanceTerminalBundleDurable,
+  getTerminalBundleFinalizationStatus as agentGetTerminalBundleFinalizationStatus,
+  verifyFinalizedTerminalBundleReadOnly as agentVerifyFinalizedTerminalBundleReadOnly,
 } from "../../src/agent/index.js";
 import {
   FENCED_SESSION_STORE_VERSION as sellerFencedSessionStoreVersion,
@@ -242,6 +252,30 @@ describe("public core surface (#14)", () => {
     expect(input.jobId).toBe("job-81");
     expect(plan.planVersion).toBe("1");
     expect(mode.kind).toBe("co-signed");
+  });
+
+  it("#81: durable role-local terminal publication is public", () => {
+    expect(agentAdvanceTerminalBundleDurable).toBe(advanceTerminalBundleDurable);
+    expect(agentGetTerminalBundleFinalizationStatus).toBe(
+      getTerminalBundleFinalizationStatus,
+    );
+    expect(agentVerifyFinalizedTerminalBundleReadOnly).toBe(
+      verifyFinalizedTerminalBundleReadOnly,
+    );
+    expect(terminalBundleFinalizationCheckpointKey("seller", "result")).toBe(
+      "terminal:seller:result",
+    );
+    const input: Partial<DurableTerminalBundleInput> = {};
+    const durability: Partial<TerminalBundleFinalizationDurability> = {
+      workerId: "terminal-worker",
+    };
+    const absent: TerminalBundleResolution<never> = {
+      disposition: "authoritatively-absent",
+      reason: "authenticated absence",
+    };
+    expect(input.authority).toBeUndefined();
+    expect(durability.workerId).toBe("terminal-worker");
+    expect(absent.disposition).toBe("authoritatively-absent");
   });
 
   it("#55: durable seller recovery and status are public on both entrypoints", () => {
