@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import {
   canonicalize,
   contentHash,
@@ -170,6 +172,8 @@ const authenticatedSnapshots = new WeakSet<object>();
 const latestSelections = new WeakSet<object>();
 const historicalResolutions = new WeakSet<object>();
 
+const INERT_PROVIDER_RECEIVER = Object.freeze(Object.create(null)) as object;
+
 const METHODS: ReadonlySet<string> = new Set([
   "verifiable-credential",
   "tlsnotary",
@@ -204,7 +208,7 @@ function exactOwnDataKeys(
   value: unknown,
   required: readonly string[],
 ): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || nodeTypes.isProxy(value)) return false;
   try {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) return false;
@@ -316,33 +320,57 @@ function captureProvider(source: RecipeRegistrySelectionProvider): CapturedProvi
     );
   }
   const descriptors = Object.getOwnPropertyDescriptors(source);
-  const resolveCurrentIndex = descriptors.resolveCurrentIndex!.value;
-  const authenticateCurrentIndex = descriptors.authenticateCurrentIndex!.value;
-  const readAnchoredJson = descriptors.readAnchoredJson!.value;
-  const verify = descriptors.verify!.value;
-  const stewardWriter = descriptors.stewardWriter!.value;
-  const stewardSigner = descriptors.stewardSigner!.value;
-  const stewardPublicKey = descriptors.stewardPublicKey!.value;
+  const resolveCurrentIndex = descriptors.resolveCurrentIndex!.value as unknown;
+  const authenticateCurrentIndex = descriptors.authenticateCurrentIndex!.value as unknown;
+  const readAnchoredJson = descriptors.readAnchoredJson!.value as unknown;
+  const verify = descriptors.verify!.value as unknown;
+  const stewardWriter = descriptors.stewardWriter!.value as unknown;
+  const stewardSigner = descriptors.stewardSigner!.value as unknown;
+  const stewardPublicKey = descriptors.stewardPublicKey!.value as unknown;
   if (
     typeof resolveCurrentIndex !== "function" ||
+    nodeTypes.isProxy(resolveCurrentIndex) ||
     typeof authenticateCurrentIndex !== "function" ||
+    nodeTypes.isProxy(authenticateCurrentIndex) ||
     typeof readAnchoredJson !== "function" ||
+    nodeTypes.isProxy(readAnchoredJson) ||
     typeof verify !== "function" ||
+    nodeTypes.isProxy(verify) ||
     !isCanonicalClaimReference(stewardWriter) ||
     !isCanonicalClaimReference(stewardSigner) ||
     !(stewardPublicKey instanceof Uint8Array) ||
-    stewardPublicKey.length !== 32
+    nodeTypes.isProxy(stewardPublicKey) ||
+    Object.getPrototypeOf(stewardPublicKey) !== Uint8Array.prototype ||
+    Object.getPrototypeOf(stewardPublicKey.buffer) !== ArrayBuffer.prototype ||
+    stewardPublicKey.byteOffset !== 0 ||
+    stewardPublicKey.byteLength !== 32 ||
+    stewardPublicKey.byteLength !== stewardPublicKey.buffer.byteLength ||
+    Reflect.ownKeys(stewardPublicKey).some(
+      (key, index) => key !== String(index),
+    )
   ) {
     throw new DacsError("recipe registry provider trust material is malformed");
   }
+  const capturedResolve = resolveCurrentIndex as RecipeRegistrySelectionProvider["resolveCurrentIndex"];
+  const capturedAuthenticate = authenticateCurrentIndex as RecipeRegistrySelectionProvider["authenticateCurrentIndex"];
+  const capturedRead = readAnchoredJson as RecipeRegistrySelectionProvider["readAnchoredJson"];
+  const capturedVerify = verify as RecipeRegistrySelectionProvider["verify"];
   return {
-    resolveCurrentIndex: resolveCurrentIndex.bind(source),
-    authenticateCurrentIndex: authenticateCurrentIndex.bind(source),
-    readAnchoredJson: readAnchoredJson.bind(source),
+    resolveCurrentIndex: (logicalAddress) =>
+      Reflect.apply(capturedResolve, INERT_PROVIDER_RECEIVER, [logicalAddress]),
+    authenticateCurrentIndex: (input) =>
+      Reflect.apply(capturedAuthenticate, INERT_PROVIDER_RECEIVER, [input]),
+    readAnchoredJson: (ref) =>
+      Reflect.apply(capturedRead, INERT_PROVIDER_RECEIVER, [ref]),
     stewardWriter,
     stewardSigner,
     stewardPublicKey: Uint8Array.from(stewardPublicKey),
-    verify: verify.bind(source),
+    verify: (bytes, signature, publicKey) =>
+      Reflect.apply(capturedVerify, INERT_PROVIDER_RECEIVER, [
+        bytes,
+        signature,
+        publicKey,
+      ]),
   };
 }
 
@@ -440,6 +468,32 @@ function assertFamilyGraph(
       );
     }
     byVersion.set(key, entry as AuthenticatedRecipeRegistryEntry);
+  }
+
+  // RA-3 allocates versions in one sequence per scheme, including across
+  // families. `governance.acceptedAt` is inside the steward-signed recipe and
+  // is the pinned schema's only authenticated publication-order signal. Equal
+  // millisecond timestamps are possible, but a higher version accepted before
+  // a lower version is a provable rollback and is therefore rejected.
+  const schemeEntries = new Map<string, AuthenticatedRecipeRegistryEntry[]>();
+  for (const entry of entries) {
+    const values = schemeEntries.get(entry.recipe.scheme) ?? [];
+    values.push(entry as AuthenticatedRecipeRegistryEntry);
+    schemeEntries.set(entry.recipe.scheme, values);
+  }
+  for (const [scheme, values] of schemeEntries) {
+    values.sort((left, right) =>
+      left.recipe.recipeVersion - right.recipe.recipeVersion);
+    for (let index = 1; index < values.length; index += 1) {
+      const prior = values[index - 1]!.recipe;
+      const current = values[index]!.recipe;
+      if (current.governance.acceptedAt < prior.governance.acceptedAt) {
+        throw new DacsError(
+          `recipe scheme ${scheme} reverses signed acceptedAt ordering between ` +
+            `v${prior.recipeVersion} and v${current.recipeVersion}`,
+        );
+      }
+    }
   }
 
   const families = new Map<string, AuthenticatedRecipeRegistryEntry[]>();
@@ -751,6 +805,9 @@ export function selectLatestRecipeAtSessionStart(
     );
   }
   const selected = candidates[0]!;
+  if (selected.recipe.availability === "disabled") {
+    throw new DacsError("disabled recipe cannot start a new session");
+  }
   if (selector.required && selected.recipe.governance.deprecated === true) {
     throw new DacsError("deprecated recipe cannot start required-claim verification");
   }

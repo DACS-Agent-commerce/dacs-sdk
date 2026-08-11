@@ -33,7 +33,11 @@ import {
 
 const STEWARD_SEED = Uint8Array.from(Buffer.alloc(32, 42));
 const IMPOSTOR_SEED = Uint8Array.from(Buffer.alloc(32, 99));
-const stewardPublicKey = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
+// The provider boundary accepts one owned canonical key, not Node's Buffer
+// view into a larger exported-key backing allocation.
+const stewardPublicKey = Uint8Array.from(
+  rawPublicKey(publicKeyFromSeed(STEWARD_SEED)),
+);
 const stewardSigner =
   `did:demos:recipe-steward:${Buffer.from(stewardPublicKey).toString("hex")}`;
 const stewardWriter = stewardSigner;
@@ -417,6 +421,27 @@ describe("authenticated latest-at-session recipe selection", () => {
     await expect(
       authenticateRecipeRegistrySnapshot(overlap.provider),
     ).rejects.toThrow(/overlap on method tlsnotary/);
+
+    const reversedAcceptedAt = await registryFixture([
+      recipe(1, {
+        governance: {
+          proposedBy: stewardSigner,
+          acceptedAt: 1_780_000_000_010,
+          anchoring: "single-signer",
+        },
+      }),
+      recipe(2, {
+        governance: {
+          proposedBy: stewardSigner,
+          acceptedAt: 1_780_000_000_009,
+          anchoring: "single-signer",
+          supersedes: 1,
+        },
+      }),
+    ]);
+    await expect(
+      authenticateRecipeRegistrySnapshot(reversedAcceptedAt.provider),
+    ).rejects.toThrow(/reverses signed acceptedAt ordering.*v1.*v2/);
   });
 
   test("rejects deprecated heads for required claims but preserves auditable optional selection", async () => {
@@ -446,6 +471,41 @@ describe("authenticated latest-at-session recipe selection", () => {
         required: false,
       }).recipe.governance.deprecated,
     ).toBe(true);
+  });
+
+  test("rejects disabled latest heads and preserves every other availability value", async () => {
+    const disabled = await registryFixture([
+      recipe(1, { availability: "disabled" }),
+    ]);
+    const disabledSnapshot = await authenticateRecipeRegistrySnapshot(
+      disabled.provider,
+    );
+    for (const required of [true, false]) {
+      expect(() =>
+        selectLatestRecipeAtSessionStart(disabledSnapshot, {
+          scheme: "key",
+          method: "self-signed",
+          required,
+        }),
+      ).toThrow(/disabled recipe cannot start a new session/);
+    }
+
+    for (const availability of [
+      "operator_gated",
+      "closed_data",
+      "bilateral",
+      "mocked",
+      "failed",
+    ] as const) {
+      const fixture = await registryFixture([recipe(1, { availability })]);
+      const snapshot = await authenticateRecipeRegistrySnapshot(fixture.provider);
+      const selected = selectLatestRecipeAtSessionStart(snapshot, {
+        scheme: "key",
+        method: "self-signed",
+        required: true,
+      });
+      expect(selected.recipe.availability).toBe(availability);
+    }
   });
 
   test("authenticates every indexed recipe, including entries unrelated to selection", async () => {
@@ -649,6 +709,61 @@ describe("authenticated latest-at-session recipe selection", () => {
       selectLatestRecipeAtSessionStart(snapshot, hostileSelector as never),
     ).toThrow(/selector must be exact/);
     expect(selectorReads).toBe(0);
+  });
+
+  test("captures callbacks with an inert receiver and rejects proxy capabilities or key views", async () => {
+    const inert = await registryFixture([recipe(1)]);
+    let observedReceiver: unknown;
+    let release!: () => void;
+    inert.provider.resolveCurrentIndex = function (this: unknown) {
+      observedReceiver = this;
+      return new Promise<CurrentRecipeRegistryIndex>((resolve) => {
+        release = () => resolve(structuredClone(inert.current));
+      });
+    };
+    const pending = authenticateRecipeRegistrySnapshot(inert.provider);
+    // `authenticateRecipeRegistrySnapshot` captured every capability before its
+    // first await. Later mutation of the provider object cannot redirect it.
+    inert.provider.readAnchoredJson = async () => null;
+    inert.provider.verify = () => false;
+    release();
+    await expect(pending).resolves.toMatchObject({ registryVersion: 7 });
+    expect(observedReceiver).not.toBe(inert.provider);
+    expect(Object.getPrototypeOf(observedReceiver)).toBe(null);
+    expect(Object.isFrozen(observedReceiver)).toBe(true);
+
+    const proxiedCallback = await registryFixture([recipe(1)]);
+    proxiedCallback.provider.verify = new Proxy(
+      proxiedCallback.provider.verify,
+      {},
+    );
+    await expect(
+      authenticateRecipeRegistrySnapshot(proxiedCallback.provider),
+    ).rejects.toThrow(/trust material is malformed/);
+
+    const proxiedProvider = await registryFixture([recipe(1)]);
+    await expect(
+      authenticateRecipeRegistrySnapshot(
+        new Proxy(proxiedProvider.provider, {}),
+      ),
+    ).rejects.toThrow(/exact own data callbacks/);
+
+    const keyView = await registryFixture([recipe(1)]);
+    const backing = new Uint8Array(64);
+    backing.set(stewardPublicKey, 16);
+    keyView.provider.stewardPublicKey = backing.subarray(16, 48);
+    await expect(
+      authenticateRecipeRegistrySnapshot(keyView.provider),
+    ).rejects.toThrow(/trust material is malformed/);
+
+    const proxiedKey = await registryFixture([recipe(1)]);
+    proxiedKey.provider.stewardPublicKey = new Proxy(
+      proxiedKey.provider.stewardPublicKey,
+      {},
+    );
+    await expect(
+      authenticateRecipeRegistrySnapshot(proxiedKey.provider),
+    ).rejects.toThrow(/trust material is malformed/);
   });
 
   test("rejects fabricated snapshots instead of trusting structural equality", async () => {
