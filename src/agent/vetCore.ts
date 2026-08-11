@@ -58,6 +58,10 @@ import {
   type PartyVetRequirementAttempt,
   type PartyVetRequirementPath,
 } from "./partyVetPlan.js";
+import {
+  isDurableSessionRecipePin,
+  type DurableSessionRecipePin,
+} from "./durableRecipePin.js";
 
 /** SIG-4 domain for the method-native self-signed assertion evidence. */
 export const SELF_SIGNED_ASSERTION_SEPARATOR =
@@ -947,8 +951,8 @@ export interface VetRequest {
 export interface PartyVetAttemptRequest {
   requirementPath: PartyVetRequirementPath;
   claimSubject: string;
-  /** Exact authenticated recipe; unpinned requirements remain closed until #143. */
-  recipe: AuthenticatedRecipeDescriptor;
+  /** Exact generation-fenced recipe pin produced by #143. */
+  recipePin: DurableSessionRecipePin;
   methodInput: PartyVetMethodInput;
 }
 
@@ -1120,14 +1124,14 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
   ).map((raw, index): PartyVetAttemptRequest => {
     const attempt = exactOwnDataDescriptors(
       raw,
-      ["requirementPath", "claimSubject", "recipe", "methodInput"],
+      ["requirementPath", "claimSubject", "recipePin", "methodInput"],
       [],
       `party Vet attempt ${index}`,
     );
-    const recipe = attempt.recipe!.value;
-    if (!isAuthenticatedRecipeDescriptor(recipe)) {
+    const recipePin = attempt.recipePin!.value;
+    if (!isDurableSessionRecipePin(recipePin)) {
       throw new DacsError(
-        `party Vet attempt ${index} requires an authenticated recipe`,
+        `party Vet attempt ${index} requires a runtime-authenticated durable recipe pin`,
       );
     }
     return deepFreezeSnapshot({
@@ -1136,7 +1140,7 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
         `party Vet attempt ${index} requirement path`,
       ),
       claimSubject: attempt.claimSubject!.value,
-      recipe,
+      recipePin,
       methodInput: snapshot(
         attempt.methodInput!.value,
         `party Vet attempt ${index} method input`,
@@ -3109,7 +3113,7 @@ export async function partyVetCore<TKey>(
       requirementPath: attempt.requirementPath,
       claimSubject: attempt.claimSubject,
       classification,
-      recipe: attempt.recipe,
+      recipePin: attempt.recipePin,
       methodInput: attempt.methodInput,
     });
   }
@@ -3184,7 +3188,7 @@ export async function partyVetCore<TKey>(
   let execution = advancePartyVetPlan(plan, []);
   while (execution.status === "pending") {
     const attempt = execution.nextAttempt;
-    const vetRequest = captureVetRequest({
+    const vetRequest = deepFreezeSnapshot({
       jobId: plan.jobId,
       subject: attempt.claimSubject,
       bundleHash: plan.bundleHash,
@@ -3199,7 +3203,7 @@ export async function partyVetCore<TKey>(
             },
           }
         : {}),
-    });
+    }) as unknown as VetRequest;
     const { scheme, identifier } = claimParts(attempt.claimSubject);
     const context: VetCheckpointContext = {
       operationKey: attempt.operationKey,
@@ -3213,6 +3217,18 @@ export async function partyVetCore<TKey>(
       req: vetRequest,
       signer: deps.vet.componentSigner,
     };
+    const existingAttemptCheckpoint = partyCheckpoint.stage === "planned"
+      ? null
+      : await loadVetCheckpoint(deps.vet.operationStore, context);
+    if (
+      partyCheckpoint.stage !== "planned" &&
+      (existingAttemptCheckpoint === null ||
+        existingAttemptCheckpoint.stage !== "result-finalized")
+    ) {
+      throw new DacsError(
+        "party Vet advanced checkpoint is missing an exact finalized attempt checkpoint",
+      );
+    }
     const durable = await produceDurableVetResult(
       vetRequest,
       deps.vet,
@@ -3226,6 +3242,11 @@ export async function partyVetCore<TKey>(
         plan.verifier,
       ),
     );
+    if (durable.checkpoint.stage !== "result-finalized") {
+      throw new DacsError(
+        "party Vet attempt checkpoint contains an unexpected composite stage",
+      );
+    }
     const finalized = await authenticatePartyAttempt(
       finalizedAttemptFor(
         plan,
@@ -3243,6 +3264,18 @@ export async function partyVetCore<TKey>(
         attemptId: entry.attemptId,
         result: entry.result,
       })),
+    );
+  }
+
+  if (
+    partyCheckpoint.stage !== "planned" &&
+    !canonicalEqual(
+      finalizedAttempts,
+      partyCheckpoint.executedAttempts,
+    )
+  ) {
+    throw new DacsError(
+      "party Vet advanced checkpoint does not match its finalized attempt checkpoints",
     );
   }
 

@@ -8,7 +8,6 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
-  resolveRecipe,
   signComponentArtifact,
   type CompositeBundleRequirement,
   type IdentityBundle,
@@ -25,6 +24,7 @@ import {
   type PartyVetPlan,
   type PartyVetRequirementAttempt,
 } from "../../src/agent/partyVetPlan.js";
+import { createPartyVetPins } from "./partyVetPins.js";
 
 const STEWARD_SEED = new Uint8Array(32).fill(81);
 const VERIFIER_SEED = new Uint8Array(32).fill(82);
@@ -74,55 +74,70 @@ async function signedRecipe(scheme: string, recipeVersion = 1) {
   });
 }
 
-async function authenticatedRecipes(
-  schemes: readonly string[],
-): Promise<Map<string, Awaited<ReturnType<typeof resolveRecipe>>>> {
-  const entries = await Promise.all(schemes.map((scheme) => signedRecipe(scheme)));
-  const deps = {
-    readRegistry: async () => ({
-      registryId: "dacs-recipes",
-      version: "snapshot-7",
-      entries,
-    }),
-    stewardPublicKey: STEWARD_KEY,
-    stewardSigner: STEWARD,
-    verify: (
-      bytes: Uint8Array,
-      signature: Uint8Array,
-      publicKey: Uint8Array,
-    ) => ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
-  };
-  const resolved = new Map<string, Awaited<ReturnType<typeof resolveRecipe>>>();
-  for (const scheme of schemes) {
-    resolved.set(
-      scheme,
-      await resolveRecipe(
-        "dacs:registry:recipes:snapshot-7",
-        { scheme, method: "self-signed", recipeVersion: 1 },
-        deps,
-      ),
-    );
-  }
-  return resolved;
-}
-
 function attempt(
   requirementPath: PartyVetAttemptInput["requirementPath"],
   claimSubject: string,
-  recipe: Awaited<ReturnType<typeof resolveRecipe>>,
+  recipePin: PartyVetAttemptInput["recipePin"],
   classification: PartyVetAttemptInput["classification"] = "dealSpecific",
 ): PartyVetAttemptInput {
   return {
     requirementPath,
     claimSubject,
     classification,
-    recipe,
+    recipePin,
     methodInput: {
       kind: "self-signed",
       assertion: claimSubject,
       signature: "a".repeat(128),
     },
   };
+}
+
+interface AttemptSpec {
+  requirementPath: PartyVetAttemptInput["requirementPath"];
+  claimSubject: string;
+  classification?: PartyVetAttemptInput["classification"];
+}
+
+function requirementAtPath(
+  requirement: CompositeBundleRequirement,
+  path: PartyVetAttemptInput["requirementPath"],
+) {
+  return path.kind === "required"
+    ? requirement.required[path.index]!
+    : requirement.oneOf![path.groupIndex]![path.alternativeIndex]!;
+}
+
+async function pinnedAttempts(
+  jobId: string,
+  evaluatedParty: string,
+  requirement: CompositeBundleRequirement,
+  specs: readonly AttemptSpec[],
+): Promise<PartyVetAttemptInput[]> {
+  const schemes = [...new Set(
+    specs.map((spec) => requirementAtPath(requirement, spec.requirementPath).scheme),
+  )];
+  const recipes = await Promise.all(schemes.map((scheme) => signedRecipe(scheme)));
+  const pins = await createPartyVetPins({
+    jobId,
+    evaluatedParty,
+    recipes,
+    attempts: specs.map((spec) => ({
+      requirementPath: spec.requirementPath,
+      requirement: requirementAtPath(requirement, spec.requirementPath),
+    })),
+    stewardSigner: STEWARD,
+    stewardPublicKey: STEWARD_KEY,
+    verify: (bytes, signature, publicKey) =>
+      ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+    now: NOW,
+  });
+  return specs.map((spec, index) => attempt(
+    spec.requirementPath,
+    spec.claimSubject,
+    pins[index]!,
+    spec.classification,
+  ));
 }
 
 async function resultOutcome(
@@ -167,7 +182,7 @@ async function resultOutcome(
 async function requiredPlan(): Promise<PartyVetPlan> {
   const alpha = claim("alpha", "alice");
   const beta = claim("beta", "alice");
-  const recipes = await authenticatedRecipes(["alpha", "beta"]);
+  const jobId = "job-144-required";
   const requirement: CompositeBundleRequirement = {
     requirementVersion: "1",
     required: [
@@ -176,15 +191,19 @@ async function requiredPlan(): Promise<PartyVetPlan> {
     ],
   };
   return createPartyVetPlan({
-    jobId: "job-144-required",
+    jobId,
     evaluatedParty: alpha,
     identityBundle: bundle(alpha, [alpha, beta]),
     requirement,
     verifier: { algorithm: "ed25519", signer: VERIFIER },
-    attempts: [
-      attempt({ kind: "required", index: 0 }, alpha, recipes.get("alpha")!, "freshness"),
-      attempt({ kind: "required", index: 1 }, beta, recipes.get("beta")!),
-    ],
+    attempts: await pinnedAttempts(jobId, alpha, requirement, [
+      {
+        requirementPath: { kind: "required", index: 0 },
+        claimSubject: alpha,
+        classification: "freshness",
+      },
+      { requirementPath: { kind: "required", index: 1 }, claimSubject: beta },
+    ]),
   });
 }
 
@@ -222,32 +241,39 @@ describe("party-scoped multi-claim Vet planning", () => {
   test("records oneOf failures, tries the next alternative, and stops after pass", async () => {
     const alpha = claim("alpha", "alice");
     const beta = claim("beta", "alice");
-    const recipes = await authenticatedRecipes(["alpha", "beta"]);
+    const jobId = "job-144-oneof";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [],
+      oneOf: [[
+        { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+        { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
+      ]],
+    };
     const plan = createPartyVetPlan({
-      jobId: "job-144-oneof",
+      jobId,
       evaluatedParty: alpha,
       identityBundle: bundle(alpha, [alpha, beta]),
-      requirement: {
-        requirementVersion: "1",
-        required: [],
-        oneOf: [[
-          { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
-          { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
-        ]],
-      },
+      requirement,
       verifier: { algorithm: "ed25519" as const, signer: VERIFIER },
-      attempts: [
-        attempt(
-          { kind: "oneOf", groupIndex: 0, alternativeIndex: 0 },
-          alpha,
-          recipes.get("alpha")!,
-        ),
-        attempt(
-          { kind: "oneOf", groupIndex: 0, alternativeIndex: 1 },
-          beta,
-          recipes.get("beta")!,
-        ),
-      ],
+      attempts: await pinnedAttempts(jobId, alpha, requirement, [
+        {
+          requirementPath: {
+            kind: "oneOf",
+            groupIndex: 0,
+            alternativeIndex: 0,
+          },
+          claimSubject: alpha,
+        },
+        {
+          requirementPath: {
+            kind: "oneOf",
+            groupIndex: 0,
+            alternativeIndex: 1,
+          },
+          claimSubject: beta,
+        },
+      ]),
     });
 
     const firstFail = await resultOutcome(plan.attempts[0]!, "fail");
@@ -276,55 +302,46 @@ describe("party-scoped multi-claim Vet planning", () => {
   test("applies oneOf-local error precedence and global required-fail precedence", async () => {
     const refs = ["alpha", "beta", "gamma", "delta", "epsilon"]
       .map((scheme) => claim(scheme, "alice"));
-    const recipes = await authenticatedRecipes([
-      "alpha",
-      "beta",
-      "gamma",
-      "delta",
-      "epsilon",
-    ]);
+    const jobId = "job-144-precedence";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
+      oneOf: [
+        [
+          { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
+          { scheme: "gamma", verificationRequired: true, recipeVersion: 1 },
+        ],
+        [
+          { scheme: "delta", verificationRequired: true, recipeVersion: 1 },
+          { scheme: "epsilon", verificationRequired: true, recipeVersion: 1 },
+        ],
+      ],
+    };
     const plan = createPartyVetPlan({
-      jobId: "job-144-precedence",
+      jobId,
       evaluatedParty: refs[0]!,
       identityBundle: bundle(refs[0]!, refs),
-      requirement: {
-        requirementVersion: "1",
-        required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
-        oneOf: [
-          [
-            { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
-            { scheme: "gamma", verificationRequired: true, recipeVersion: 1 },
-          ],
-          [
-            { scheme: "delta", verificationRequired: true, recipeVersion: 1 },
-            { scheme: "epsilon", verificationRequired: true, recipeVersion: 1 },
-          ],
-        ],
-      },
+      requirement,
       verifier: { algorithm: "ed25519" as const, signer: VERIFIER },
-      attempts: [
-        attempt({ kind: "required", index: 0 }, refs[0]!, recipes.get("alpha")!),
-        attempt(
-          { kind: "oneOf", groupIndex: 0, alternativeIndex: 0 },
-          refs[1]!,
-          recipes.get("beta")!,
-        ),
-        attempt(
-          { kind: "oneOf", groupIndex: 0, alternativeIndex: 1 },
-          refs[2]!,
-          recipes.get("gamma")!,
-        ),
-        attempt(
-          { kind: "oneOf", groupIndex: 1, alternativeIndex: 0 },
-          refs[3]!,
-          recipes.get("delta")!,
-        ),
-        attempt(
-          { kind: "oneOf", groupIndex: 1, alternativeIndex: 1 },
-          refs[4]!,
-          recipes.get("epsilon")!,
-        ),
-      ],
+      attempts: await pinnedAttempts(jobId, refs[0]!, requirement, [
+        { requirementPath: { kind: "required", index: 0 }, claimSubject: refs[0]! },
+        {
+          requirementPath: { kind: "oneOf", groupIndex: 0, alternativeIndex: 0 },
+          claimSubject: refs[1]!,
+        },
+        {
+          requirementPath: { kind: "oneOf", groupIndex: 0, alternativeIndex: 1 },
+          claimSubject: refs[2]!,
+        },
+        {
+          requirementPath: { kind: "oneOf", groupIndex: 1, alternativeIndex: 0 },
+          claimSubject: refs[3]!,
+        },
+        {
+          requirementPath: { kind: "oneOf", groupIndex: 1, alternativeIndex: 1 },
+          claimSubject: refs[4]!,
+        },
+      ]),
     });
     const decisions: VerifyResult["decision"][] = [
       "fail",
@@ -346,25 +363,26 @@ describe("party-scoped multi-claim Vet planning", () => {
 
   test("rejects duplicate result addresses and out-of-order outcomes", async () => {
     const alpha = claim("alpha", "alice");
-    const recipes = await authenticatedRecipes(["alpha"]);
+    const jobId = "job-144-duplicate";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
+      oneOf: [[{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }]],
+    };
+    const duplicateAttempts = await pinnedAttempts(jobId, alpha, requirement, [
+      { requirementPath: { kind: "required", index: 0 }, claimSubject: alpha },
+      {
+        requirementPath: { kind: "oneOf", groupIndex: 0, alternativeIndex: 0 },
+        claimSubject: alpha,
+      },
+    ]);
     expect(() => createPartyVetPlan({
-      jobId: "job-144-duplicate",
+      jobId,
       evaluatedParty: alpha,
       identityBundle: bundle(alpha, [alpha]),
-      requirement: {
-        requirementVersion: "1",
-        required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
-        oneOf: [[{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }]],
-      },
+      requirement,
       verifier: { algorithm: "ed25519", signer: VERIFIER },
-      attempts: [
-        attempt({ kind: "required", index: 0 }, alpha, recipes.get("alpha")!),
-        attempt(
-          { kind: "oneOf", groupIndex: 0, alternativeIndex: 0 },
-          alpha,
-          recipes.get("alpha")!,
-        ),
-      ],
+      attempts: duplicateAttempts,
     })).toThrow(/duplicate result address/);
 
     const plan = await requiredPlan();
@@ -375,7 +393,7 @@ describe("party-scoped multi-claim Vet planning", () => {
   });
 
   test("binds the exact evaluated party and isolates caller-owned input", async () => {
-    const recipes = await authenticatedRecipes(["alpha"]);
+    const jobId = "job-144-parties";
     const requirement: CompositeBundleRequirement = {
       requirementVersion: "1",
       required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
@@ -383,24 +401,26 @@ describe("party-scoped multi-claim Vet planning", () => {
     const alice = claim("alpha", "alice");
     const bob = claim("alpha", "bob");
     const aliceBundle = bundle(alice, [alice]);
+    const aliceAttempts = await pinnedAttempts(jobId, alice, requirement, [
+      { requirementPath: { kind: "required", index: 0 }, claimSubject: alice },
+    ]);
     const aliceInput = {
-      jobId: "job-144-parties",
+      jobId,
       evaluatedParty: alice,
       identityBundle: aliceBundle,
       requirement,
       verifier: { algorithm: "ed25519" as const, signer: VERIFIER },
-      attempts: [
-        attempt({ kind: "required", index: 0 }, alice, recipes.get("alpha")!),
-      ],
+      attempts: aliceAttempts,
     };
     const alicePlan = createPartyVetPlan(aliceInput);
+    const bobAttempts = await pinnedAttempts(jobId, bob, requirement, [
+      { requirementPath: { kind: "required", index: 0 }, claimSubject: bob },
+    ]);
     const bobPlan = createPartyVetPlan({
       ...aliceInput,
       evaluatedParty: bob,
       identityBundle: bundle(bob, [bob]),
-      attempts: [
-        attempt({ kind: "required", index: 0 }, bob, recipes.get("alpha")!),
-      ],
+      attempts: bobAttempts,
     });
     expect(alicePlan.recordAddress).toBe(
       partyVetCompositeAddress("job-144-parties", alice),
@@ -428,22 +448,32 @@ describe("party-scoped multi-claim Vet planning", () => {
   test("rejects hostile attempt accessors and recipe/path substitutions", async () => {
     const alpha = claim("alpha", "alice");
     const beta = claim("beta", "alice");
-    const recipes = await authenticatedRecipes(["alpha", "beta"]);
+    const alphaRequirement = {
+      scheme: "alpha",
+      verificationRequired: true,
+      recipeVersion: 1,
+    } as const;
     const base = {
       jobId: "job-144-hostile",
       evaluatedParty: alpha,
       identityBundle: bundle(alpha, [alpha, beta]),
       requirement: {
         requirementVersion: "1" as const,
-        required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
+        required: [alphaRequirement],
       },
       verifier: { algorithm: "ed25519" as const, signer: VERIFIER },
     };
+    const [alphaAttempt] = await pinnedAttempts(
+      base.jobId,
+      alpha,
+      base.requirement,
+      [{ requirementPath: { kind: "required", index: 0 }, claimSubject: alpha }],
+    );
     const hostile: Record<string, unknown> = {
       requirementPath: { kind: "required", index: 0 },
       claimSubject: alpha,
       classification: "dealSpecific",
-      recipe: recipes.get("alpha")!,
+      recipePin: alphaAttempt!.recipePin,
     };
     Object.defineProperty(hostile, "methodInput", {
       enumerable: true,
@@ -454,15 +484,25 @@ describe("party-scoped multi-claim Vet planning", () => {
       attempts: [hostile as unknown as PartyVetAttemptInput],
     })).toThrow(/exact data record/);
 
+    const betaRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "beta", verificationRequired: true, recipeVersion: 1 }],
+    };
+    const [betaAttempt] = await pinnedAttempts(
+      base.jobId,
+      alpha,
+      betaRequirement,
+      [{ requirementPath: { kind: "required", index: 0 }, claimSubject: beta }],
+    );
     expect(() => createPartyVetPlan({
       ...base,
       attempts: [
         attempt(
           { kind: "required", index: 0 },
           alpha,
-          recipes.get("beta")!,
+          betaAttempt!.recipePin,
         ),
       ],
-    })).toThrow(/schemes differ/);
+    })).toThrow(/does not bind this party and requirement path/);
   });
 });
