@@ -26,6 +26,14 @@ on a private service, deployment, transport, repository, or URL.
 | Two-sided final bundles | DACS-5 §10.4, especially §10.4.1 signatures, §10.4.2 BB-1..BB-8, and §10.4.3 production/consumption rules; DACS-5 §10.3.1 ST-11 | Produce role-specific, canonically equal buyer and seller copies, collect required signatures, verify finalized referenced artifacts, publish signed bindings where native addresses cannot be recomputed, and remain `audit-pending` until both copies are final and resolvable. | Low-level two-sided/FaultAttestationBundle support exists; `runSessionCore` emits a legacy buyer-only bundle that strict verification rejects. | #81, with #15 for delivery references and #54 for public binding/index resolution. |
 | Replay, retry, and recovery | CORE §B.8 (SN-1..SN-4); DACS-4 §9.5.1 PC-7, §9.5.6 AP2-5/AP2-6, §9.5.7 X402 retry rules, §9.5.8 SB-1..SB-3; DACS-5 §10.3.1 ST-1, ST-7..ST-11; DACS-5 §10.11 | Persist exact session/listing/agreement/payment/delivery identities; enforce single-use session and settlement identifiers; reconcile ambiguous external effects before retry; never repeat payment or fulfilment after restart; resume only the recorded forward state; keep finalization pending until all required evidence is finalized and resolvable. | `SessionStore` primitives and buyer-side integration exist, but `createAgent().runSession()` does not expose durable-store wiring and there is no seller lifecycle. | #55 (seller recovery), #33 (settlement uniqueness), #81 (bundle finalization), #92 (atomic rollback/idempotency). |
 
+DPA-1 applicability is intentionally keyed to the signed pipeline containing
+`deliver-attested-payload`, exactly as DACS-4 §9.6.3 states. An
+`attested-payload` DeliverableSpec paired with another delivery phase is not a
+DPA-1 pass: the selected delivery handler must apply its own §9.6 type check.
+The explicit `LegacyMvpListing` branch has no normative signed DeliverableSpec
+or verification method and therefore never claims a DPA-1 disposition; it is a
+compatibility path, not a normative supplier Listing producer or verifier.
+
 ## Tracker disposition
 
 Existing trackers already cover the following delivery slices:

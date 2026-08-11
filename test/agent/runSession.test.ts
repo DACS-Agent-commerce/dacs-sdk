@@ -307,7 +307,7 @@ describe("runSession orchestration (T4)", () => {
     expect(res.listingPin).toEqual({
       listingId: "market-data-vendor",
       version: 7,
-      contentHash: contentHash(normative),
+      contentHash: contentHash(normative as unknown as Record<string, unknown>),
     });
     expect(selectedRail).toBe("x402:default");
     expect(evidence?.phase).toBe("pay-x402");
