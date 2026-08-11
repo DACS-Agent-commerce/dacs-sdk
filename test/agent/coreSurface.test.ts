@@ -21,6 +21,8 @@ import {
   verifyFinalizedSessionSettlement,
   createCompletedBuyerBundleCounterSignature,
   finalizeCompletedBuyerBundleCore,
+  createCompletedCounterpartyBundleCounterSignature,
+  finalizeCompletedCounterpartyBundleCore,
   advanceCompletedBuyerBundleDurable,
   getBuyerBundleFinalizationStatus,
   isCanonicalSettlementIdentity,
@@ -40,9 +42,17 @@ import {
   type SellerPaymentPhaseIndexResolution,
   type BuyerBundleFinalizationDurability,
   type DurableBuyerBundleFinalizationInput,
+  type AuthenticatedBundleRolePublication,
+  type CounterpartyBundleRole,
+  type CounterpartyBundleFinalizationProvider,
+  type DurableFinalizedBuyerBundle,
   type SessionSettlementContext,
   type SessionDeps,
 } from "../../src/index.js";
+import {
+  createCompletedCounterpartyBundleCounterSignature as agentCreateCompletedCounterpartyBundleCounterSignature,
+  finalizeCompletedCounterpartyBundleCore as agentFinalizeCompletedCounterpartyBundleCore,
+} from "../../src/agent/index.js";
 import {
   FENCED_SESSION_STORE_VERSION as sellerFencedSessionStoreVersion,
   createInMemoryFencedSessionStore as sellerCreateInMemoryFencedSessionStore,
@@ -165,6 +175,33 @@ describe("public core surface (#14)", () => {
     expect(input.buyer).toBeUndefined();
     expect(durability.workerId).toBe("buyer-worker");
     expect(context.jobId).toBe("job-81");
+  });
+
+  it("#81: role-owned finalization and durable publication metadata are public", () => {
+    expect(typeof createCompletedCounterpartyBundleCounterSignature).toBe("function");
+    expect(typeof finalizeCompletedCounterpartyBundleCore).toBe("function");
+    expect(agentCreateCompletedCounterpartyBundleCounterSignature).toBe(
+      createCompletedCounterpartyBundleCounterSignature,
+    );
+    expect(agentFinalizeCompletedCounterpartyBundleCore).toBe(
+      finalizeCompletedCounterpartyBundleCore,
+    );
+
+    const role: CounterpartyBundleRole = "orchestrator";
+    const provider: Partial<CounterpartyBundleFinalizationProvider> = {
+      mapping: "pure",
+    };
+    const publication: Partial<AuthenticatedBundleRolePublication> = {
+      role: "seller",
+      logicalAddress: "dacs5:bundle:job-81:seller",
+    };
+    const durable: Partial<DurableFinalizedBuyerBundle> = {
+      state: "finalised",
+    };
+    expect(role).toBe("orchestrator");
+    expect(provider.mapping).toBe("pure");
+    expect(publication.role).toBe("seller");
+    expect(durable.state).toBe("finalised");
   });
 
   it("#55: durable seller recovery and status are public on both entrypoints", () => {

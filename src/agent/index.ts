@@ -241,6 +241,18 @@ export {
   type FinalizedBuyerBundle,
 } from "./buyerBundleFinalization.js";
 export {
+  createCompletedCounterpartyBundleCounterSignature,
+  finalizeCompletedCounterpartyBundleCore,
+  type AnchoredCounterpartyBundle,
+  type CounterpartyBundleFinalizationProvider,
+  type CounterpartyBundleLookup,
+  type CounterpartyBundleRole,
+  type CounterpartySigningSessionParty,
+  type CreateCompletedCounterpartyBundleCounterSignatureInput,
+  type FinalizeCompletedCounterpartyBundleInput,
+  type FinalizedCounterpartyBundle,
+} from "./counterpartyBundleFinalization.js";
+export {
   advanceCompletedBuyerBundleDurable,
   getBuyerBundleFinalizationStatus,
   buyerBundleFinalizationCheckpointKey,
@@ -249,6 +261,8 @@ export {
   type BuyerBundleFencedSigner,
   type DurableBuyerBundleFinalizationInput,
   type DurableBuyerBundleFinalizationProvider,
+  type AuthenticatedBundleRolePublication,
+  type DurableFinalizedBuyerBundle,
   type BuyerBundleTransportIdentity,
   type BuyerBundleTransportResolution,
   type BuyerCounterSignaturePublication,
