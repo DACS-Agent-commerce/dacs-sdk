@@ -727,6 +727,53 @@ describe("durable seller fixed-price agreement proposal responder", () => {
     expect(h.state.calls.signature).toBe(1);
   });
 
+  test("a second cryptographically accepted buyer contribution cannot replace retained authority", async () => {
+    const h = await harness();
+    expect((await respondToFixedPriceAgreementProposalDurable(
+      h.request.input,
+      h.durability,
+    )).disposition).toBe("complete");
+    const alternateBuyer = await createFixedPriceAgreementSignatureContribution(
+      h.request.plan,
+      "buyer",
+      {
+        party: BUYER,
+        algorithm: "ed25519",
+        sign: () => Buffer.alloc(64, 8).toString("base64url"),
+      },
+    );
+    const material = {
+      proposalVersion: "1" as const,
+      plan: h.request.plan,
+      buyerContribution: alternateBuyer,
+    };
+    const proposal: FixedPriceAgreementProposal = {
+      ...material,
+      proposalHash: sha256Hex(canonicalize(material)),
+    };
+    const replacement: DurableSellerFixedPriceAgreementInput = {
+      ...h.request.input,
+      proposal,
+      transportIdentity: {
+        ...h.request.input.transportIdentity,
+        proposalHash: proposal.proposalHash,
+      },
+    };
+    const originalVerify = h.durability.verifyContribution;
+    const result = await respondToFixedPriceAgreementProposalDurable(
+      replacement,
+      {
+        ...h.durability,
+        verifyContribution: (input) => input.role === "buyer"
+          ? "valid"
+          : originalVerify(input),
+      },
+    );
+    expect(result).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expect(h.state.calls.signature).toBe(1);
+    expect(h.state.calls.publication).toBe(1);
+  });
+
   test("published substituted contribution and invalid buyer signature fail closed", async () => {
     const substituted = await harness();
     const other = await requestForDraft(

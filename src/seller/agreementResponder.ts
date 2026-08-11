@@ -1714,6 +1714,9 @@ export async function respondToFixedPriceAgreementProposalDurable(
     if (error instanceof SubstrateError) {
       return { disposition: "indeterminate", stage: "lease", reason: error.message };
     }
+    if (error instanceof DacsError) {
+      return { disposition: "rejected", stage: "proposal", reason: error.message };
+    }
     throw error;
   }
 }
