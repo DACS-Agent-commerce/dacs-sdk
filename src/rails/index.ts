@@ -46,6 +46,11 @@ export {
   type X402PaywallSettlementStore,
 } from "./x402Paywall.js";
 export {
+  X402_PAYWALL_SETTLEMENT_STORE_VERSION,
+  createFsX402PaywallSettlementStore,
+  type FsX402PaywallSettlementStoreOptions,
+} from "./x402PaywallSettlementFs.js";
+export {
   createX402SellerSpine,
   type X402SellerCommittedSessionResolution,
   type X402SellerCommittedSessionScope,
