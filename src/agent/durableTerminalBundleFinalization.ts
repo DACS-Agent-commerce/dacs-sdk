@@ -796,6 +796,19 @@ function retainedProgressSignal(error: unknown): ProgressSignal | undefined {
   return undefined;
 }
 
+function indeterminateCallbackFailure(
+  error: unknown,
+  stage: TerminalBundleFinalizationStage,
+  subject: string,
+): never {
+  if (error instanceof DacsError || error instanceof ProgressSignal) throw error;
+  throw new ProgressSignal(
+    "indeterminate",
+    stage,
+    error instanceof Error ? `${subject} failed: ${error.message}` : `${subject} failed`,
+  );
+}
+
 class DurableTerminalBundleCoordinator {
   readonly #input: CapturedTerminalInput;
   readonly #provider: DurableTerminalBundleProvider;
@@ -1075,6 +1088,13 @@ class DurableTerminalBundleCoordinator {
     }))}`;
   }
 
+  #sharedIdempotencyKey(kind: string, effect: Record<string, unknown>): string {
+    return `terminal:${kind}:${sha256Hex(canonicalize({
+      ...this.#identity(),
+      ...effect,
+    }))}`;
+  }
+
   #authorityData(): Record<string, CheckpointValue> {
     const encoded = encodeCanonical(this.#input.plan, "terminal bundle plan");
     return {
@@ -1097,7 +1117,7 @@ class DurableTerminalBundleCoordinator {
   }
 
   #proposalIntent(): Record<string, CheckpointValue> {
-    const idempotencyKey = this.#idempotencyKey("proposal", {
+    const idempotencyKey = this.#sharedIdempotencyKey("proposal", {
       planHash: this.#input.plan.planHash,
     });
     return {
@@ -1122,10 +1142,14 @@ class DurableTerminalBundleCoordinator {
   }
 
   async #resolveProposal(): Promise<TerminalBundleResolution<unknown>> {
-    return captureResolution(
-      await this.#durability.transport.resolveProposal(immutable(this.#identity())),
-      "terminal proposal resolution",
-    );
+    try {
+      return captureResolution(
+        await this.#durability.transport.resolveProposal(immutable(this.#identity())),
+        "terminal proposal resolution",
+      );
+    } catch (error) {
+      indeterminateCallbackFailure(error, "proposal-publication", "terminal proposal resolution");
+    }
   }
 
   #assertProposal(value: unknown): void {
@@ -1241,20 +1265,25 @@ class DurableTerminalBundleCoordinator {
     bytes: Uint8Array,
     fence: Readonly<TerminalBundleEffectFence>,
   ): Promise<TerminalBundleResolution<Uint8Array | string>> {
-    return captureResolution(
-      await this.#durability.reconcileSignature(
-        {
-          purpose,
-          role: this.#role(),
-          copyRole,
-          signer: this.#input.local.primaryClaim,
-          messageHash: sha256Hex(bytes),
-          signedBytes: Uint8Array.from(bytes),
-        },
-        fence,
-      ),
-      "terminal signature reconciliation",
-    );
+    const stage = purpose === "bundle-copy" ? "contribution-signing" : "bundle-binding";
+    try {
+      return captureResolution(
+        await this.#durability.reconcileSignature(
+          {
+            purpose,
+            role: this.#role(),
+            copyRole,
+            signer: this.#input.local.primaryClaim,
+            messageHash: sha256Hex(bytes),
+            signedBytes: Uint8Array.from(bytes),
+          },
+          fence,
+        ),
+        "terminal signature reconciliation",
+      );
+    } catch (error) {
+      indeterminateCallbackFailure(error, stage, "terminal signature reconciliation");
+    }
   }
 
   async #sign(
@@ -1392,13 +1421,18 @@ class DurableTerminalBundleCoordinator {
   async #resolveContribution(
     signerRole: BundlePartyRole,
   ): Promise<TerminalBundleResolution<unknown>> {
-    return captureResolution(
-      await this.#durability.transport.resolveContribution({
-        identity: immutable(this.#identity()),
-        signerRole,
-      }),
-      `terminal ${signerRole} contribution resolution`,
-    );
+    const subject = `terminal ${signerRole} contribution resolution`;
+    try {
+      return captureResolution(
+        await this.#durability.transport.resolveContribution({
+          identity: immutable(this.#identity()),
+          signerRole,
+        }),
+        subject,
+      );
+    } catch (error) {
+      indeterminateCallbackFailure(error, "contribution-publication", subject);
+    }
   }
 
   async #publishLocalContribution(
@@ -1617,6 +1651,7 @@ class DurableTerminalBundleCoordinator {
     value: unknown,
     expectedBundle: Readonly<FaultAttestationBundle>,
     logicalAddress: string,
+    stage: "bundle-anchor" | "terminal-recovery" = "bundle-anchor",
   ): Promise<Readonly<TerminalBundleAnchorPublication>> {
     const publication = snapshotData(value, "own terminal bundle publication") as unknown;
     if (
@@ -1654,17 +1689,26 @@ class DurableTerminalBundleCoordinator {
     const retained = immutable(
       publication as unknown as TerminalBundleAnchorPublication,
     );
-    const verification = captureVerification(
-      await this.#provider.verifyOwnBundlePublication(retained),
-      "own terminal bundle publication verification",
-    );
+    let verification: TerminalBundleVerification;
+    try {
+      verification = captureVerification(
+        await this.#provider.verifyOwnBundlePublication(retained),
+        "own terminal bundle publication verification",
+      );
+    } catch (error) {
+      indeterminateCallbackFailure(
+        error,
+        stage,
+        "own terminal bundle publication verification",
+      );
+    }
     if (verification.disposition === "invalid") {
       throw new DacsError(
         `own terminal bundle publication is unauthenticated: ${verification.reason}`,
       );
     }
     if (verification.disposition === "indeterminate") {
-      throw new ProgressSignal("indeterminate", "bundle-anchor", verification.reason);
+      throw new ProgressSignal("indeterminate", stage, verification.reason);
     }
     return retained;
   }
@@ -1672,22 +1716,33 @@ class DurableTerminalBundleCoordinator {
   async #resolveAnchor(
     bundle: Readonly<FaultAttestationBundle>,
     logicalAddress: string,
+    stage: "bundle-anchor" | "terminal-recovery" = "bundle-anchor",
   ): Promise<
     | { disposition: "present"; value: Readonly<TerminalBundleAnchorPublication> }
     | Exclude<TerminalBundleResolution<unknown>, { disposition: "present" }>
   > {
-    const resolution = captureResolution(
-      await this.#provider.resolveOwnBundle({
-        role: this.#role(),
-        logicalAddress,
-        bundleContentHash: attestationBundleHash(bundle),
-      }),
-      "own terminal bundle resolution",
-    );
+    let resolution: TerminalBundleResolution<unknown>;
+    try {
+      resolution = captureResolution(
+        await this.#provider.resolveOwnBundle({
+          role: this.#role(),
+          logicalAddress,
+          bundleContentHash: attestationBundleHash(bundle),
+        }),
+        "own terminal bundle resolution",
+      );
+    } catch (error) {
+      indeterminateCallbackFailure(error, stage, "own terminal bundle resolution");
+    }
     return resolution.disposition === "present"
       ? {
           disposition: "present",
-          value: await this.#authenticateAnchor(resolution.value, bundle, logicalAddress),
+          value: await this.#authenticateAnchor(
+            resolution.value,
+            bundle,
+            logicalAddress,
+            stage,
+          ),
         }
       : resolution;
   }
@@ -1747,8 +1802,9 @@ class DurableTerminalBundleCoordinator {
         this.#decodeAnchor(claimed.data),
         bundle,
         logicalAddress,
+        "terminal-recovery",
       );
-      const replay = await this.#resolveAnchor(bundle, logicalAddress);
+      const replay = await this.#resolveAnchor(bundle, logicalAddress, "terminal-recovery");
       if (replay.disposition !== "present") {
         this.#signalResolution(replay, "terminal-recovery", "indeterminate");
       }
@@ -1845,6 +1901,7 @@ class DurableTerminalBundleCoordinator {
   async #authenticateBinding(
     value: unknown,
     expected: Readonly<BundleBinding>,
+    stage: "bundle-binding" | "terminal-recovery" = "bundle-binding",
   ): Promise<Readonly<BundleBinding>> {
     const binding = snapshotData(value, "own terminal BundleBinding") as unknown;
     if (!isBundleBinding(binding) || !exact(binding, expected)) {
@@ -1862,37 +1919,52 @@ class DurableTerminalBundleCoordinator {
       "terminal BundleBinding signature",
     );
     const retained = immutable(binding);
-    const verification = captureVerification(
-      await this.#provider.verifyOwnBundleBinding(retained),
-      "own terminal BundleBinding verification",
-    );
+    let verification: TerminalBundleVerification;
+    try {
+      verification = captureVerification(
+        await this.#provider.verifyOwnBundleBinding(retained),
+        "own terminal BundleBinding verification",
+      );
+    } catch (error) {
+      indeterminateCallbackFailure(
+        error,
+        stage,
+        "own terminal BundleBinding verification",
+      );
+    }
     if (verification.disposition === "invalid") {
       throw new DacsError(`own terminal BundleBinding is unauthenticated: ${verification.reason}`);
     }
     if (verification.disposition === "indeterminate") {
-      throw new ProgressSignal("indeterminate", "bundle-binding", verification.reason);
+      throw new ProgressSignal("indeterminate", stage, verification.reason);
     }
     return retained;
   }
 
   async #resolveBinding(
     expected: Readonly<BundleBinding>,
+    stage: "bundle-binding" | "terminal-recovery" = "bundle-binding",
   ): Promise<
     | { disposition: "present"; value: Readonly<BundleBinding> }
     | Exclude<TerminalBundleResolution<unknown>, { disposition: "present" }>
   > {
-    const resolution = captureResolution(
-      await this.#provider.resolveOwnBundleBinding({
-        role: this.#role(),
-        logicalAddress: expected.logicalAddress,
-        signer: this.#input.local.primaryClaim,
-      }),
-      "own terminal BundleBinding resolution",
-    );
+    let resolution: TerminalBundleResolution<unknown>;
+    try {
+      resolution = captureResolution(
+        await this.#provider.resolveOwnBundleBinding({
+          role: this.#role(),
+          logicalAddress: expected.logicalAddress,
+          signer: this.#input.local.primaryClaim,
+        }),
+        "own terminal BundleBinding resolution",
+      );
+    } catch (error) {
+      indeterminateCallbackFailure(error, stage, "own terminal BundleBinding resolution");
+    }
     return resolution.disposition === "present"
       ? {
           disposition: "present",
-          value: await this.#authenticateBinding(resolution.value, expected),
+          value: await this.#authenticateBinding(resolution.value, expected, stage),
         }
       : resolution;
   }
@@ -1948,8 +2020,12 @@ class DurableTerminalBundleCoordinator {
       if (!dataMatches(claimed.data, outcome)) {
         throw new DacsError("own terminal BundleBinding publication outcome is rebound");
       }
-      const persisted = await this.#authenticateBinding(this.#decodeBinding(claimed.data), binding);
-      const replay = await this.#resolveBinding(binding);
+      const persisted = await this.#authenticateBinding(
+        this.#decodeBinding(claimed.data),
+        binding,
+        "terminal-recovery",
+      );
+      const replay = await this.#resolveBinding(binding, "terminal-recovery");
       if (replay.disposition !== "present") {
         this.#signalResolution(replay, "terminal-recovery", "indeterminate");
       }
@@ -2271,8 +2347,13 @@ class DurableTerminalBundleCoordinator {
       this.#decodeAnchor(anchorCheckpoint.data),
       bundle,
       bundleAddress(this.#jobId(), this.#role()),
+      "terminal-recovery",
     );
-    const anchorReplay = await this.#resolveAnchor(bundle, persistedPublication.logicalAddress);
+    const anchorReplay = await this.#resolveAnchor(
+      bundle,
+      persistedPublication.logicalAddress,
+      "terminal-recovery",
+    );
     if (anchorReplay.disposition !== "present") {
       this.#signalResolution(anchorReplay, "terminal-recovery", "indeterminate");
     }
@@ -2321,8 +2402,12 @@ class DurableTerminalBundleCoordinator {
           ),
         },
       },
+      "terminal-recovery",
     );
-    const bindingReplay = await this.#resolveBinding(authenticatedBinding);
+    const bindingReplay = await this.#resolveBinding(
+      authenticatedBinding,
+      "terminal-recovery",
+    );
     if (bindingReplay.disposition !== "present") {
       this.#signalResolution(bindingReplay, "terminal-recovery", "indeterminate");
     }
