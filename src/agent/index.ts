@@ -214,6 +214,33 @@ export {
   type TwoSidedSession,
   type TwoSidedBundles,
 } from "./twoSidedBundle.js";
+export {
+  assembleTerminalBundleForOwnRole,
+  createTerminalBundleAuthority,
+  createTerminalBundlePlan,
+  createTerminalBundleSignatureContribution,
+  createTerminalBundleSignatureMatrix,
+  terminalBundleAuthorityHash,
+  terminalBundleSignedBytes,
+  type TerminalAbortEligibility,
+  type TerminalBundleAuthority,
+  type TerminalBundleAuthorityInput,
+  type TerminalBundleClass,
+  type TerminalBundleContributionSignature,
+  type TerminalBundleMatrixCopy,
+  type TerminalBundleOwnRole,
+  type TerminalBundlePlan,
+  type TerminalBundleRequiredSigner,
+  type TerminalBundleRolePlan,
+  type TerminalBundleSignatureContribution,
+  type TerminalBundleSignatureMatrix,
+  type TerminalBundleSignatureValue,
+  type TerminalBundleSignerPublicKey,
+  type TerminalBundleSigningMode,
+  type TerminalIrreversibleEffectObservation,
+  type TerminalPhaseAuthority,
+  type VerifiedTerminalBundleParty,
+} from "./terminalBundleFinalization.js";
 export { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
 export {
   verifyFinalizedSessionSettlement,
