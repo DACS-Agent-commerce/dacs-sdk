@@ -45,6 +45,9 @@ import {
 export type SellerBundleFinalizationRole = "buyer" | "seller" | "orchestrator";
 export type SellerBundleSignaturePurpose = "bundle" | "bundle-binding";
 
+const MAX_CAS_ATTEMPTS = 16;
+const MAX_LEASE_RELEASE_ATTEMPTS = 8;
+
 /** Monotonic authority supplied to every irreversible bundle-finalization adapter. */
 export interface SellerBundleEffectFence extends SessionLeaseToken {
   /** Stable for the same logical effect across retries and lease generations. */
@@ -811,7 +814,7 @@ class DurableBundleCoordinator {
     requestedPhase?: string,
   ): Promise<void> {
     if (!this.#leaseToken) throw new DacsError("terminal seller bundle state is immutable");
-    for (let attempt = 0; attempt < 16; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
       await this.#renew();
       const record = await this.#loadRecord();
       const prior = latestCheckpoint(record.checkpoints, key);
@@ -1422,7 +1425,7 @@ class DurableBundleCoordinator {
       throw new DacsError("durable terminal seller bundle intent is rebound");
     }
 
-    for (let attempt = 0; attempt < 16; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
       await this.#renew();
       const record = await this.#loadRecord();
       const prior = latestCheckpoint(
@@ -1467,7 +1470,7 @@ class DurableBundleCoordinator {
     const token = this.#leaseToken;
     if (!token) return;
     try {
-      for (let attempt = 0; attempt < 8; attempt += 1) {
+      for (let attempt = 0; attempt < MAX_LEASE_RELEASE_ATTEMPTS; attempt += 1) {
         const record = await this.#loadRecord();
         if (
           record.phase === "seller:finalised" ||
