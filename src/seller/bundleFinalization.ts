@@ -448,6 +448,18 @@ export interface CompletedSellerBundleCounterSignatureRequest {
   requiredCounterSigners: string[];
 }
 
+/**
+ * Data-only facts used by a counterparty to authenticate a completed-bundle
+ * signing request. In particular, this boundary accepts neither the seller's
+ * signer nor already-produced counter-signatures.
+ */
+export type VerifyCompletedSellerBundleCounterSignatureRequestInput = Omit<
+  FinalizeCompletedSellerBundleInput,
+  "seller" | "counterSignatures" | "bindingSigner"
+> & {
+  seller: Omit<SigningSessionParty, "signer">;
+};
+
 export interface FinalizedSellerBundle {
   state: "finalised";
   logicalAddress: string;
@@ -617,6 +629,107 @@ function hasExactPropertySet(
     properties.size === expected.length &&
     expected.every((key) => properties.has(key))
   );
+}
+
+/**
+ * Reject accessors, exotic prototypes, sparse arrays, shared byte buffers,
+ * cycles, and other live values before snapshotting transported review data.
+ */
+function isCanonicalOwnedData(
+  value: unknown,
+  ancestors = new Set<object>(),
+): boolean {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) && !Object.is(value, -0);
+  }
+  if (typeof value !== "object") return false;
+
+  const object = value as object;
+  if (ancestors.has(object)) return false;
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(object);
+
+  try {
+    if (value instanceof Uint8Array) {
+      if (
+        Object.getPrototypeOf(value) !== Uint8Array.prototype ||
+        Object.getPrototypeOf(value.buffer) !== ArrayBuffer.prototype ||
+        value.byteOffset !== 0 ||
+        value.byteLength !== value.buffer.byteLength
+      ) {
+        return false;
+      }
+      const keys = Reflect.ownKeys(value);
+      if (
+        keys.length !== value.byteLength ||
+        keys.some((key, index) => key !== String(index))
+      ) {
+        return false;
+      }
+      return keys.every((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return (
+          descriptor !== undefined &&
+          descriptor.enumerable === true &&
+          "value" in descriptor &&
+          typeof descriptor.value === "number"
+        );
+      });
+    }
+
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+      const keys = Reflect.ownKeys(value);
+      if (
+        keys.length !== value.length + 1 ||
+        keys[value.length] !== "length"
+      ) {
+        return false;
+      }
+      for (let index = 0; index < value.length; index += 1) {
+        if (keys[index] !== String(index)) return false;
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (
+          descriptor === undefined ||
+          descriptor.enumerable !== true ||
+          !("value" in descriptor) ||
+          !isCanonicalOwnedData(descriptor.value, nextAncestors)
+        ) {
+          return false;
+        }
+      }
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      return (
+        lengthDescriptor !== undefined &&
+        lengthDescriptor.enumerable === false &&
+        "value" in lengthDescriptor &&
+        lengthDescriptor.value === value.length
+      );
+    }
+
+    if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) return false;
+    return keys.every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return (
+        descriptor !== undefined &&
+        descriptor.enumerable === true &&
+        "value" in descriptor &&
+        descriptor.value !== undefined &&
+        isCanonicalOwnedData(descriptor.value, nextAncestors)
+      );
+    });
+  } catch {
+    return false;
+  }
 }
 
 function isListingRef(value: unknown): value is ListingRef {
@@ -2995,6 +3108,145 @@ export function prepareCompletedSellerBundleCounterSignatureRequest(
       session.buyer.primaryClaim,
       ...(session.orchestrator ? [session.orchestrator.primaryClaim] : []),
     ],
+  };
+}
+
+/**
+ * Authenticate a seller-produced review request from current, independently
+ * verified session facts. The verifier has no signing or publication path and
+ * returns a fresh canonical copy rather than any caller-owned object.
+ */
+export async function verifyCompletedSellerBundleCounterSignatureRequest(
+  input: VerifyCompletedSellerBundleCounterSignatureRequestInput,
+  suppliedRequest: unknown,
+  provider: SellerBundleFinalizationReadProvider,
+): Promise<CompletedSellerBundleCounterSignatureRequest> {
+  const retainedProvider = retainSellerBundleProvider(provider, true);
+  const inputProperties = ownEnumerableDataProperties(input);
+  if (
+    !inputProperties ||
+    !hasExactPropertySet(inputProperties, [
+      "agreement",
+      "agreementRef",
+      "fulfilment",
+      "session",
+      "sessionArtifacts",
+      "finalisedAt",
+      "seller",
+      "dependencies",
+    ]) ||
+    !isCanonicalOwnedData(input)
+  ) {
+    throw new DacsError(
+      "counter-signature verification input must contain canonical data only",
+    );
+  }
+  const sellerProperties = ownEnumerableDataProperties(
+    inputProperties.get("seller"),
+  );
+  if (
+    !sellerProperties ||
+    !hasExactPropertySet(sellerProperties, ["primaryClaim", "bundleHash"])
+  ) {
+    throw new DacsError(
+      "counter-signature verification input cannot carry a live seller signer",
+    );
+  }
+
+  const requestProperties = ownEnumerableDataProperties(suppliedRequest);
+  if (
+    !requestProperties ||
+    !hasExactPropertySet(requestProperties, [
+      "bundleContentHash",
+      "signedScope",
+      "signedBytes",
+      "requiredCounterSigners",
+    ]) ||
+    !isCanonicalOwnedData(suppliedRequest)
+  ) {
+    throw new DacsError(
+      "counter-signature request has a non-canonical data-only shape",
+    );
+  }
+
+  const capturedInput = snapshot(
+    input,
+    "counter-signature verification input",
+  );
+  const capturedRequest = snapshot(
+    suppliedRequest,
+    "counter-signature request",
+  ) as Record<string, unknown>;
+  if (
+    !isHash(capturedRequest.bundleContentHash) ||
+    !isRecord(capturedRequest.signedScope) ||
+    !(capturedRequest.signedBytes instanceof Uint8Array) ||
+    !Array.isArray(capturedRequest.requiredCounterSigners) ||
+    capturedRequest.requiredCounterSigners.some(
+      (signer) => typeof signer !== "string" || signer.length === 0,
+    ) ||
+    new Set(capturedRequest.requiredCounterSigners).size !==
+      capturedRequest.requiredCounterSigners.length
+  ) {
+    throw new DacsError("counter-signature request fields are malformed");
+  }
+
+  const session = prepareSession({
+    ...capturedInput,
+    seller: {
+      primaryClaim: capturedInput.seller.primaryClaim,
+      bundleHash: capturedInput.seller.bundleHash,
+      signer: () => {
+        throw new DacsError(
+          "counter-signature request verification cannot sign a bundle",
+        );
+      },
+    },
+  });
+  const signedScope = expectedBundleScope(session);
+  assertNormativeExpectedScope(signedScope);
+  const payload = bundlePayload(signedScope);
+  const requiredCounterSigners = [
+    session.buyer.primaryClaim,
+    ...(session.orchestrator ? [session.orchestrator.primaryClaim] : []),
+  ];
+  if (
+    !requiredCounterSigners.includes(session.buyer.primaryClaim) ||
+    !(capturedRequest.requiredCounterSigners as unknown[]).includes(
+      session.buyer.primaryClaim,
+    )
+  ) {
+    throw new DacsError(
+      "counter-signature request does not require the authenticated buyer signer",
+    );
+  }
+
+  const suppliedBytes = capturedRequest.signedBytes as Uint8Array;
+  if (
+    capturedRequest.bundleContentHash !== payload.bundleContentHash ||
+    !exact(capturedRequest.signedScope, signedScope) ||
+    suppliedBytes.byteLength !== payload.signedBytes.byteLength ||
+    suppliedBytes.some((byte, index) => byte !== payload.signedBytes[index]) ||
+    !exact(
+      capturedRequest.requiredCounterSigners,
+      requiredCounterSigners,
+    )
+  ) {
+    throw new DacsError(
+      "counter-signature request does not exactly match the current completed session",
+    );
+  }
+
+  await verifyDependencies(
+    session,
+    capturedInput.dependencies,
+    retainedProvider,
+  );
+  return {
+    bundleContentHash: payload.bundleContentHash,
+    signedScope: snapshot(signedScope, "verified counter-signature scope"),
+    signedBytes: new Uint8Array(payload.signedBytes),
+    requiredCounterSigners: [...requiredCounterSigners],
   };
 }
 

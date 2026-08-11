@@ -181,6 +181,7 @@ export {
 export {
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  verifyCompletedSellerBundleCounterSignatureRequest,
   verifyFinalizedSellerBundleReadOnly,
   type SellerBundleVerificationDisposition,
   type SellerBundleDependencyKind,
@@ -205,6 +206,7 @@ export {
   type FinalizeCompletedSellerBundleInput,
   type VerifyFinalizedSellerBundleInput,
   type CompletedSellerBundleCounterSignatureRequest,
+  type VerifyCompletedSellerBundleCounterSignatureRequestInput,
   type FinalizedSellerBundle,
 } from "./bundleFinalization.js";
 export {

@@ -44,13 +44,16 @@ import type { RecipeDescriptor } from "../../src/registry/types.js";
 import {
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  verifyCompletedSellerBundleCounterSignatureRequest,
   verifyFinalizedSellerBundleReadOnly,
   type AnchoredSellerBundle,
+  type CompletedSellerBundleCounterSignatureRequest,
   type FinalizeCompletedSellerBundleInput,
   type FinalizedSellerBundle,
   type SellerBundleDependencySource,
   type SellerBundleFinalizationProvider,
   type SellerBundleFinalizationReadProvider,
+  type VerifyCompletedSellerBundleCounterSignatureRequestInput,
   type VerifyFinalizedSellerBundleInput,
 } from "../../src/seller/bundleFinalization.js";
 import { isBundleBinding } from "../../src/artifacts/validators.js";
@@ -1245,6 +1248,24 @@ function mutateResolvedArtifact(
   });
 }
 
+function counterSignatureVerificationInput(
+  f: ReturnType<typeof fixture>,
+): VerifyCompletedSellerBundleCounterSignatureRequestInput {
+  const {
+    seller,
+    counterSignatures: _counterSignatures,
+    bindingSigner: _bindingSigner,
+    ...data
+  } = f.input;
+  return {
+    ...data,
+    seller: {
+      primaryClaim: seller.primaryClaim,
+      bundleHash: seller.bundleHash,
+    },
+  };
+}
+
 describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
   test("exports one transport-neutral signed scope and ingests only buyer-produced signatures", () => {
     const f = fixture();
@@ -1258,6 +1279,236 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
       ARTIFACT_SEPARATORS.FaultAttestationBundle,
     );
     expect("buyer" in f.input).toBe(false);
+  });
+
+  test("independently authenticates the current counter-sign request without any signing capability", async () => {
+    const f = fixture();
+    const request = prepareCompletedSellerBundleCounterSignatureRequest(f.input);
+    const verified = await verifyCompletedSellerBundleCounterSignatureRequest(
+      counterSignatureVerificationInput(f),
+      request,
+      f.provider,
+    );
+
+    expect(verified).toEqual(request);
+    expect(verified).not.toBe(request);
+    expect(verified.signedScope).not.toBe(request.signedScope);
+    expect(verified.signedBytes).not.toBe(request.signedBytes);
+    expect(verified.requiredCounterSigners).not.toBe(
+      request.requiredCounterSigners,
+    );
+    expect(f.sellerSign).not.toHaveBeenCalled();
+    expect(f.bindingSign).not.toHaveBeenCalled();
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+    expect(f.provider.publishBundleBinding).not.toHaveBeenCalled();
+  });
+
+  test.each<[
+    string,
+    (request: CompletedSellerBundleCounterSignatureRequest) => void,
+  ]>([
+    ["bundle hash", (request) => {
+      request.bundleContentHash = "0".repeat(64);
+    }],
+    ["signed scope", (request) => {
+      request.signedScope.jobId = "substituted-job";
+    }],
+    ["signed bytes", (request) => {
+      const last = request.signedBytes.length - 1;
+      request.signedBytes[last] = request.signedBytes[last]! ^ 1;
+    }],
+    ["required signer", (request) => {
+      request.requiredCounterSigners = [OUTSIDER];
+    }],
+  ])("rejects a substituted counter-sign request %s", async (_name, mutate) => {
+    const f = fixture();
+    const request = structuredClone(
+      prepareCompletedSellerBundleCounterSignatureRequest(f.input),
+    );
+    mutate(request);
+
+    await expect(
+      verifyCompletedSellerBundleCounterSignatureRequest(
+        counterSignatureVerificationInput(f),
+        request,
+        f.provider,
+      ),
+    ).rejects.toThrow(/authenticated buyer signer|does not exactly match/);
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("requires the complete current dependency closure before approving review bytes", async () => {
+    const f = fixture();
+    const request = prepareCompletedSellerBundleCounterSignatureRequest(f.input);
+    const input = counterSignatureVerificationInput(f);
+    input.dependencies = input.dependencies.filter(
+      (dependency) => dependency.source.kind !== "listing",
+    );
+
+    await expect(
+      verifyCompletedSellerBundleCounterSignatureRequest(
+        input,
+        request,
+        f.provider,
+      ),
+    ).rejects.toThrow(/is missing|exactly one supplied dependency|exactly cover/);
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects stale Listing content and unauthenticated Listing/session identities", async () => {
+    const staleListing = fixture();
+    const staleListingRequest =
+      prepareCompletedSellerBundleCounterSignatureRequest(staleListing.input);
+    const listingDependency = staleListing.input.dependencies.find(
+      (dependency) => dependency.source.kind === "listing",
+    )!;
+    mutateResolvedArtifact(
+      staleListing,
+      listingDependency.anchorReceipt.contentHash,
+      (listing) => ({
+        ...listing,
+        listingVersion: Number(listing.listingVersion) + 1,
+      }),
+    );
+    await expect(
+      verifyCompletedSellerBundleCounterSignatureRequest(
+        counterSignatureVerificationInput(staleListing),
+        staleListingRequest,
+        staleListing.provider,
+      ),
+    ).rejects.toThrow(/different canonical content hash|canonical negotiation\/session/);
+
+    const staleIdentity = fixture();
+    const staleIdentityRequest =
+      prepareCompletedSellerBundleCounterSignatureRequest(staleIdentity.input);
+    staleIdentity.provider.verifyListingPublisherIdentityLinkage = vi.fn(
+      () => "invalid" as const,
+    );
+    await expect(
+      verifyCompletedSellerBundleCounterSignatureRequest(
+        counterSignatureVerificationInput(staleIdentity),
+        staleIdentityRequest,
+        staleIdentity.provider,
+      ),
+    ).rejects.toThrow(/IdentityBundle claim and key linkage is invalid/);
+  });
+
+  test("rejects accessors, exotic scope objects, aliased byte views, and live seller capabilities", async () => {
+    const accessorFixture = fixture();
+    const ordinaryRequest =
+      prepareCompletedSellerBundleCounterSignatureRequest(accessorFixture.input);
+    let getterInvoked = false;
+    const accessorRequest = {
+      bundleContentHash: ordinaryRequest.bundleContentHash,
+      signedBytes: ordinaryRequest.signedBytes,
+      requiredCounterSigners: ordinaryRequest.requiredCounterSigners,
+    } as Record<string, unknown>;
+    Object.defineProperty(accessorRequest, "signedScope", {
+      enumerable: true,
+      get: () => {
+        getterInvoked = true;
+        return ordinaryRequest.signedScope;
+      },
+    });
+    await expect(
+      verifyCompletedSellerBundleCounterSignatureRequest(
+        counterSignatureVerificationInput(accessorFixture),
+        accessorRequest,
+        accessorFixture.provider,
+      ),
+    ).rejects.toThrow(/non-canonical data-only shape/);
+    expect(getterInvoked).toBe(false);
+
+    const exoticFixture = fixture();
+    const exoticRequest = structuredClone(
+      prepareCompletedSellerBundleCounterSignatureRequest(exoticFixture.input),
+    );
+    Object.setPrototypeOf(exoticRequest.signedScope, { live: true });
+    await expect(
+      verifyCompletedSellerBundleCounterSignatureRequest(
+        counterSignatureVerificationInput(exoticFixture),
+        exoticRequest,
+        exoticFixture.provider,
+      ),
+    ).rejects.toThrow(/non-canonical data-only shape/);
+
+    const aliasedFixture = fixture();
+    const aliasedRequest = structuredClone(
+      prepareCompletedSellerBundleCounterSignatureRequest(aliasedFixture.input),
+    );
+    const backing = new Uint8Array(aliasedRequest.signedBytes.length + 2);
+    backing.set(aliasedRequest.signedBytes, 1);
+    aliasedRequest.signedBytes = backing.subarray(1, -1);
+    await expect(
+      verifyCompletedSellerBundleCounterSignatureRequest(
+        counterSignatureVerificationInput(aliasedFixture),
+        aliasedRequest,
+        aliasedFixture.provider,
+      ),
+    ).rejects.toThrow(/non-canonical data-only shape/);
+
+    const liveSellerFixture = fixture();
+    const liveSellerRequest =
+      prepareCompletedSellerBundleCounterSignatureRequest(liveSellerFixture.input);
+    const liveInput = counterSignatureVerificationInput(liveSellerFixture) as
+      VerifyCompletedSellerBundleCounterSignatureRequestInput & {
+        seller: { signer?: () => never };
+      };
+    liveInput.seller.signer = () => {
+      throw new Error("must not be callable");
+    };
+    await expect(
+      verifyCompletedSellerBundleCounterSignatureRequest(
+        liveInput,
+        liveSellerRequest,
+        liveSellerFixture.provider,
+      ),
+    ).rejects.toThrow(/canonical data only|live seller signer/);
+  });
+
+  test("captures provider, session, dependencies, and request once and returns an isolated copy", async () => {
+    const f = fixture();
+    const input = counterSignatureVerificationInput(f);
+    const request = prepareCompletedSellerBundleCounterSignatureRequest(f.input);
+    const expected = structuredClone(request);
+    const ordinaryResolve = f.provider.resolveDependency.bind(f.provider);
+    let releaseFirstResolution!: () => void;
+    const firstResolutionGate = new Promise<void>((resolve) => {
+      releaseFirstResolution = resolve;
+    });
+    let first = true;
+    f.provider.resolveDependency = vi.fn(async (dependency, requirement) => {
+      if (first) {
+        first = false;
+        await firstResolutionGate;
+      }
+      return ordinaryResolve(dependency, requirement);
+    });
+
+    const pending = verifyCompletedSellerBundleCounterSignatureRequest(
+      input,
+      request,
+      f.provider,
+    );
+    request.signedScope.jobId = "mutated-after-capture";
+    request.requiredCounterSigners[0] = OUTSIDER;
+    request.signedBytes.fill(0);
+    input.session.jobId = "mutated-after-capture";
+    input.dependencies.length = 0;
+    f.provider.resolveDependency = vi.fn(() => ({
+      disposition: "absent" as const,
+    }));
+    releaseFirstResolution();
+
+    const verified = await pending;
+    expect(verified).toEqual(expected);
+    verified.signedScope.jobId = "mutated-return";
+    verified.requiredCounterSigners[0] = OUTSIDER;
+    verified.signedBytes.fill(0);
+    expect(expected.signedScope.jobId).toBe("seller-finalization-17");
+    expect(expected.requiredCounterSigners).toEqual([BUYER]);
+    expect(expected.signedBytes.some((byte) => byte !== 0)).toBe(true);
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });
 
   test("does not invent a third bundle party when the seller is also the orchestrator", async () => {
