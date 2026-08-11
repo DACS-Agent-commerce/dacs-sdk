@@ -281,7 +281,8 @@ export async function dacsX402AuthorizationNonce(input: {
     typeof input.jobId !== "string" ||
     input.jobId.length === 0 ||
     !Number.isSafeInteger(input.phaseIndex) ||
-    input.phaseIndex < 0
+    input.phaseIndex < 0 ||
+    Object.is(input.phaseIndex, -0)
   ) {
     throw new Error("x402 DACS binding requires jobId and a non-negative phaseIndex");
   }

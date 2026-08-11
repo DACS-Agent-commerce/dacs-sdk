@@ -34,6 +34,8 @@ export {
   type X402PaywallResult,
   type X402PaywallAuthorizationContext,
   type X402PaywallPaymentAuthorization,
+  type X402PaywallPreSettlementAuthorization,
+  type X402PaywallPreSettlementContext,
   type X402PaywallServerLike,
   type X402PaywallSettlementClaim,
   type X402PaywallSettlementIntent,
@@ -43,6 +45,16 @@ export {
   type X402PaywallSettlementResult,
   type X402PaywallSettlementStore,
 } from "./x402Paywall.js";
+export {
+  createX402SellerSpine,
+  type X402SellerCommittedSessionResolution,
+  type X402SellerCommittedSessionScope,
+  type X402SellerPaymentPermitAuthorization,
+  type X402SellerRenderedResponse,
+  type X402SellerResponseContext,
+  type X402SellerSpine,
+  type X402SellerSpineOptions,
+} from "../seller/x402Spine.js";
 export {
   createEvmErc20Rail,
   evmErc20Settle,
