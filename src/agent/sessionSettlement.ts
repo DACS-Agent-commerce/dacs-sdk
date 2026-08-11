@@ -40,12 +40,45 @@ export interface SessionSettlementIdentityBinding {
   settlementId: string;
 }
 
+/** Authenticated session-binding fact retained from the native verifier. */
+export type SessionSettlementNativeSessionBinding =
+  | {
+      disposition: "established";
+      /** Rail-native binding scheme, for example `eip3009` or `permit2`. */
+      kind: string;
+      /** Hash of the exact authenticated authorization/witness facts. */
+      bindingHash: string;
+    }
+  | { disposition: "not-applicable" }
+  | {
+      disposition: "absent" | "indeterminate";
+      reason: string;
+    };
+
+/**
+ * Exact owned facts produced by one live native revalidation.
+ *
+ * `details` is rail-private operational data rather than a DACS wire artifact.
+ * The SDK snapshots and hashes the complete record so a refreshed chain head,
+ * finality fact, or authorization verdict cannot disappear at the adapter
+ * boundary while leaving the same observation identity.
+ */
+export interface SessionSettlementNativeObservation {
+  observationVersion: "1";
+  kind: string;
+  observedAt: number;
+  finality: SettlementFinality;
+  sessionBinding: SessionSettlementNativeSessionBinding;
+  details: Record<string, unknown>;
+}
+
 /** Native verification must return facts, never only a boolean assertion. */
 export type SessionSettlementRevalidation =
   | {
       disposition: "pass";
       outcome: "success";
       binding: SessionSettlementIdentityBinding;
+      nativeObservation: SessionSettlementNativeObservation;
     }
   | {
       disposition: "pass";
@@ -76,6 +109,8 @@ export type SessionSettlementFinalityPolicy =
  */
 export interface SessionSettlementRailPin {
   railId: string;
+  /** Exact descriptor revision retained from the authenticated registry entry. */
+  railVersion: number;
   railRegistryVersion: number;
   descriptorHash: string;
   railType: string;
@@ -198,6 +233,8 @@ export type AuthenticatedSessionSettlementObservation =
   | {
       outcome: "success";
       settlementBinding: SessionSettlementIdentityBinding;
+      nativeObservationHash: string;
+      nativeObservation: SessionSettlementNativeObservation;
     }
   | {
       outcome: "failure";
@@ -238,6 +275,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const isNonEmpty = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.trim() === value;
+const isNfcNonEmpty = (value: unknown): value is string =>
+  isNonEmpty(value) && value.normalize("NFC") === value &&
+  !/[\u0000-\u001f\u007f]/.test(value);
 const isHash = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 const isUint = (value: unknown): value is number =>
@@ -344,6 +384,7 @@ function isFinalityPolicy(value: unknown): value is SessionSettlementFinalityPol
 function isRailPin(value: unknown): value is SessionSettlementRailPin {
   return isRecord(value) && exactKeys(value, [
     "railId",
+    "railVersion",
     "railRegistryVersion",
     "descriptorHash",
     "railType",
@@ -352,11 +393,68 @@ function isRailPin(value: unknown): value is SessionSettlementRailPin {
     "network",
     "finality",
   ]) &&
-    isNonEmpty(value.railId) && isUint(value.railRegistryVersion) &&
+    isNfcNonEmpty(value.railId) && value.railId.length <= 64 &&
+    /^[\x21-\x7e]+$/.test(value.railId) &&
+    value.railId === value.railId.toLowerCase() &&
+    isUint(value.railVersion) && value.railVersion > 0 &&
+    isUint(value.railRegistryVersion) &&
     value.railRegistryVersion > 0 && isHash(value.descriptorHash) &&
     isNonEmpty(value.railType) && PAYMENT_PHASES.has(value.handler as PaymentPhaseType) &&
     isNonEmpty(value.asset) && isNonEmpty(value.network) &&
     isFinalityPolicy(value.finality);
+}
+
+function isSettlementFinalityValue(value: unknown): value is SettlementFinality {
+  if (!isRecord(value) || !isNfcNonEmpty(value.model) ||
+      !FINALITY_MODELS.has(value.model as SettlementFinalityModel) ||
+      !isUint(value.finalityObservedAt)) return false;
+  if (value.model === "block-depth") {
+    return exactKeys(value, ["model", "finalityObservedAt"], ["finalityBlocks"]) &&
+      (value.finalityBlocks === undefined ||
+        (isUint(value.finalityBlocks) && value.finalityBlocks > 0));
+  }
+  if (value.model === "commitment-level") {
+    return exactKeys(
+      value,
+      ["model", "finalityObservedAt"],
+      ["finalityCommitmentLevel"],
+    ) &&
+      (value.finalityCommitmentLevel === undefined ||
+        ["processed", "confirmed", "finalized"].includes(
+          String(value.finalityCommitmentLevel),
+        ));
+  }
+  return exactKeys(value, ["model", "finalityObservedAt"]);
+}
+
+function isNativeSessionBinding(
+  value: unknown,
+): value is SessionSettlementNativeSessionBinding {
+  if (!isRecord(value) || !isNfcNonEmpty(value.disposition)) return false;
+  if (value.disposition === "established") {
+    return exactKeys(value, ["disposition", "kind", "bindingHash"]) &&
+      isNfcNonEmpty(value.kind) && isHash(value.bindingHash);
+  }
+  if (value.disposition === "not-applicable") {
+    return exactKeys(value, ["disposition"]);
+  }
+  return (value.disposition === "absent" || value.disposition === "indeterminate") &&
+    exactKeys(value, ["disposition", "reason"]) && isNfcNonEmpty(value.reason);
+}
+
+function isNativeObservation(
+  value: unknown,
+): value is SessionSettlementNativeObservation {
+  return isRecord(value) && exactKeys(value, [
+    "observationVersion",
+    "kind",
+    "observedAt",
+    "finality",
+    "sessionBinding",
+    "details",
+  ]) && value.observationVersion === "1" && isNfcNonEmpty(value.kind) &&
+    isUint(value.observedAt) && isSettlementFinalityValue(value.finality) &&
+    isNativeSessionBinding(value.sessionBinding) && isRecord(value.details);
 }
 
 function isPartyBinding(value: unknown, key: "payingKey" | "receivingKey"): boolean {
@@ -530,8 +628,14 @@ function captureRevalidation(
   if (
     snapshot.disposition === "pass" &&
     snapshot.outcome === "success" &&
-    exactKeys(snapshot, ["disposition", "outcome", "binding"]) &&
-    isIdentityBinding(snapshot.binding)
+    exactKeys(snapshot, [
+      "disposition",
+      "outcome",
+      "binding",
+      "nativeObservation",
+    ]) &&
+    isIdentityBinding(snapshot.binding) &&
+    isNativeObservation(snapshot.nativeObservation)
   ) {
     return snapshot as unknown as SessionSettlementRevalidation;
   }
@@ -844,6 +948,47 @@ export async function verifyFinalizedSessionSettlement(
       "native settlement binding does not match the authenticated session",
     );
   }
+  if (nativeDisposition.outcome === "success") {
+    if (
+      settlement.evidence.outcome !== "success" ||
+      settlement.evidence.settlementFinality === undefined
+    ) {
+      return rejected("error", "successful native settlement lacks signed finality");
+    }
+    const signedFinality = settlement.evidence.settlementFinality;
+    let sameFinality = false;
+    try {
+      sameFinality = canonicalize(nativeDisposition.nativeObservation.finality) ===
+        canonicalize(signedFinality);
+    } catch {
+      return rejected("error", "native settlement finality cannot be canonicalized safely");
+    }
+    if (!sameFinality) {
+      return rejected(
+        "rejected",
+        "native settlement observation finality differs from the signed evidence",
+      );
+    }
+    if (
+      nativeDisposition.nativeObservation.observedAt <
+        signedFinality.finalityObservedAt
+    ) {
+      return rejected(
+        "rejected",
+        "native settlement observation predates the decisive finality event",
+      );
+    }
+    if (
+      context.rail.handler === "pay-x402" &&
+      nativeDisposition.nativeObservation.sessionBinding.disposition !==
+        "established"
+    ) {
+      return rejected(
+        "rejected",
+        "x402 settlement lacks an established authenticated session binding",
+      );
+    }
+  }
   if (
     lookup.bytes &&
     sha256Hex(nativeProofForVerification as Uint8Array) !== nativeProofHash
@@ -876,13 +1021,20 @@ export async function verifyFinalizedSessionSettlement(
   }
 
   let observationHash: string;
+  let nativeObservationHash: string | undefined;
   try {
+    nativeObservationHash = nativeDisposition.outcome === "success"
+      ? sha256Hex(canonicalize(nativeDisposition.nativeObservation))
+      : undefined;
     observationHash = sha256Hex(canonicalize({
       identityHash,
       mode,
       anchorReceipt: settlement.anchorReceipt,
       nativeProofRef: settlement.nativeProofRef,
       nativeProofHash,
+      ...(nativeObservationHash === undefined
+        ? {}
+        : { nativeObservationHash }),
     }));
   } catch {
     return rejected("error", "settlement observation cannot be canonicalized safely");
@@ -903,6 +1055,8 @@ export async function verifyFinalizedSessionSettlement(
           ...common,
           outcome: "success",
           settlementBinding: nativeDisposition.binding,
+          nativeObservationHash: nativeObservationHash!,
+          nativeObservation: nativeDisposition.nativeObservation,
         }
       : { ...common, outcome: "failure" },
   );

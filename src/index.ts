@@ -491,6 +491,8 @@ export {
   verifyFinalizedSessionSettlement,
   type SessionSettlementDisposition,
   type SessionSettlementIdentityBinding,
+  type SessionSettlementNativeSessionBinding,
+  type SessionSettlementNativeObservation,
   type SessionSettlementRevalidation,
   type SessionSettlementFinalityPolicy,
   type SessionSettlementRailPin,

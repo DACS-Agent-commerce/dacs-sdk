@@ -61,6 +61,7 @@ function context(finalityBlocks = 12): SessionSettlementContext {
     paymentAmount: { amount: "5", currency: "USDC" },
     rail: {
       railId: "rail-x402-base",
+      railVersion: 3,
       railRegistryVersion: 7,
       descriptorHash: "c".repeat(64),
       railType: "x402",
@@ -86,7 +87,11 @@ function settlementBinding(
 
 function nativePass(input: {
   context: Readonly<SessionSettlementContext>;
-}, settlementId = SETTLEMENT_ID) {
+}, settlementId = SETTLEMENT_ID, head = 101) {
+  const finality = input.context.rail.finality;
+  if (finality.model !== "block-depth") {
+    throw new Error("fixture expects block-depth finality");
+  }
   return {
     disposition: "pass" as const,
     outcome: "success" as const,
@@ -94,6 +99,26 @@ function nativePass(input: {
       input.context as SessionSettlementContext,
       settlementId,
     ),
+    nativeObservation: {
+      observationVersion: "1" as const,
+      kind: "evm-transfer",
+      observedAt: 1_777_000_000_001,
+      finality: {
+        model: "block-depth" as const,
+        finalityBlocks: finality.finalityBlocks,
+        finalityObservedAt: 1_777_000_000_000,
+      },
+      sessionBinding: {
+        disposition: "established" as const,
+        kind: "eip3009",
+        bindingHash: "4".repeat(64),
+      },
+      details: {
+        chainId: 8453,
+        observedHeadBlockNumber: head,
+        observedHeadBlockHash: `0x${head.toString(16).padStart(64, "0")}`,
+      },
+    },
   };
 }
 
@@ -243,9 +268,15 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(result.disposition).toBe("verified");
     if (result.disposition !== "verified") return;
     expect(result.value.outcome).toBe("success");
+    if (result.value.outcome !== "success") return;
     expect(result.value.mode).toBe("initial");
     expect(result.value.evidenceHash).toBe(settlement.evidenceRef.contentHash);
     expect(result.value.nativeProofHash).toBe(settlement.nativeProofRef.contentHash);
+    expect(result.value.nativeObservationHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.value.nativeObservation.details).toMatchObject({
+      chainId: 8453,
+      observedHeadBlockNumber: 101,
+    });
     expect(result.value.identityHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.value.observationHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.value.settlementBinding).toEqual(settlementBinding(context()));
@@ -523,9 +554,8 @@ describe("verifyFinalizedSessionSettlement", () => {
         context(),
         settlement,
         provider(proof, {
-          revalidateSettlement: () => ({
-            disposition: "pass",
-            outcome: "success",
+          revalidateSettlement: (input) => ({
+            ...nativePass(input),
             binding,
           }),
         }),
@@ -552,8 +582,7 @@ describe("verifyFinalizedSessionSettlement", () => {
       settlement,
       provider(proof, {
         revalidateSettlement: (input) => ({
-          disposition: "pass",
-          outcome: "success",
+          ...nativePass(input),
           binding: settlementBinding(
             input.context as SessionSettlementContext,
             settlementId,
@@ -586,7 +615,7 @@ describe("verifyFinalizedSessionSettlement", () => {
   });
 
   it("accepts the exact CF-4 rail segment on an ST-8 resolved payment address", async () => {
-    const railId = "evm-erc20:8453:USDC";
+    const railId = "evm-erc20:8453:usdc";
     const { settlement, proof } = fixture({ railId, resolved: true });
     const exactContext = context();
     exactContext.rail.railId = railId;
@@ -595,6 +624,20 @@ describe("verifyFinalizedSessionSettlement", () => {
       settlement,
       provider(proof),
     )).disposition).toBe("verified");
+  });
+
+  it("rejects a noncanonical uppercase rail id instead of silently rewriting signed context", async () => {
+    const { settlement, proof } = fixture({ railId: "evm-erc20:8453:USDC" });
+    const invalid = context();
+    invalid.rail.railId = "evm-erc20:8453:USDC";
+    expect(await verifyFinalizedSessionSettlement(
+      invalid,
+      settlement,
+      provider(proof),
+    )).toEqual({
+      disposition: "error",
+      reason: "settlement context is not exact canonical data",
+    });
   });
 
   it("authenticates point observations without minting SB-2 count authority", async () => {
@@ -752,6 +795,80 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(recovery.value.observationHash).not.toBe(
       initial.value.observationHash,
     );
+  });
+
+  it("binds refreshed native chain facts into the observation hash", async () => {
+    const { settlement, proof } = fixture();
+    const initial = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        revalidateSettlement: (input) => nativePass(input, SETTLEMENT_ID, 101),
+      }),
+    );
+    const recovery = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        revalidateSettlement: (input) => nativePass(input, SETTLEMENT_ID, 109),
+      }),
+      "recovery",
+    );
+    expect(initial.disposition).toBe("verified");
+    expect(recovery.disposition).toBe("verified");
+    if (initial.disposition !== "verified" || recovery.disposition !== "verified") {
+      return;
+    }
+    if (initial.value.outcome !== "success" || recovery.value.outcome !== "success") {
+      return;
+    }
+    expect(recovery.value.identityHash).toBe(initial.value.identityHash);
+    expect(recovery.value.nativeObservationHash).not.toBe(
+      initial.value.nativeObservationHash,
+    );
+    expect(recovery.value.observationHash).not.toBe(initial.value.observationHash);
+  });
+
+  it("requires exact native finality and an established x402 session binding", async () => {
+    const { settlement, proof } = fixture();
+    const missingBinding = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        revalidateSettlement: (input) => ({
+          ...nativePass(input),
+          nativeObservation: {
+            ...nativePass(input).nativeObservation,
+            sessionBinding: { disposition: "not-applicable" as const },
+          },
+        }),
+      }),
+    );
+    expect(missingBinding).toEqual({
+      disposition: "rejected",
+      reason: "x402 settlement lacks an established authenticated session binding",
+    });
+
+    const wrongFinality = await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        revalidateSettlement: (input) => ({
+          ...nativePass(input),
+          nativeObservation: {
+            ...nativePass(input).nativeObservation,
+            finality: {
+              ...nativePass(input).nativeObservation.finality,
+              finalityObservedAt: 1_777_000_000_001,
+            },
+          },
+        }),
+      }),
+    );
+    expect(wrongFinality).toEqual({
+      disposition: "rejected",
+      reason: "native settlement observation finality differs from the signed evidence",
+    });
   });
 
   it("maps evidence dependency throws into four-valued results", async () => {

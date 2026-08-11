@@ -239,6 +239,7 @@ function settlementContext(): SessionSettlementContext {
     paymentAmount: { amount: "5", currency: "USDC" },
     rail: {
       railId: "rail-x402-base",
+      railVersion: 3,
       railRegistryVersion: 7,
       descriptorHash: "c".repeat(64),
       railType: "x402",
@@ -524,6 +525,25 @@ beforeEach(() => {
       contextHash: "5".repeat(64),
       evidenceHash: "6".repeat(64),
       nativeProofHash: "7".repeat(64),
+      nativeObservationHash: mode === "recovery"
+        ? "b".repeat(64)
+        : "4".repeat(64),
+      nativeObservation: {
+        observationVersion: "1" as const,
+        kind: "evm-transfer",
+        observedAt: NOW,
+        finality: {
+          model: "block-depth" as const,
+          finalityBlocks: 12,
+          finalityObservedAt: NOW,
+        },
+        sessionBinding: {
+          disposition: "established" as const,
+          kind: "eip3009",
+          bindingHash: "3".repeat(64),
+        },
+        details: { observedHeadBlockNumber: mode === "recovery" ? 109 : 101 },
+      },
       identityHash: "8".repeat(64),
       observationHash: mode === "recovery" ? "a".repeat(64) : "9".repeat(64),
       settlementBinding: {
@@ -566,6 +586,16 @@ describe("durable buyer bundle finalization", () => {
       if (loaded.status !== "ok") return;
       expect(loaded.record.phase).toBe("buyer:finalised");
       expect(loaded.record.lease).toBeUndefined();
+      const settlementCheckpoint = [...loaded.record.checkpoints].reverse().find(
+        ({ key }) => key === buyerBundleFinalizationCheckpointKey.settlement,
+      );
+      expect(settlementCheckpoint).toMatchObject({
+        stage: "outcome",
+        data: {
+          settlementObservationHash: "9".repeat(64),
+          settlementNativeObservationHash: "4".repeat(64),
+        },
+      });
       for (const checkpoint of loaded.record.checkpoints) {
         for (const value of Object.values(checkpoint.data ?? {})) {
           expect(["string", "number", "boolean"]).toContain(typeof value);
