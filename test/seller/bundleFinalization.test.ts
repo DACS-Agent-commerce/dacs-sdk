@@ -45,10 +45,14 @@ import type { RecipeDescriptor } from "../../src/registry/types.js";
 import {
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  verifyFinalizedSellerBundleReadOnly,
   type AnchoredSellerBundle,
   type FinalizeCompletedSellerBundleInput,
+  type FinalizedSellerBundle,
   type SellerBundleDependencySource,
   type SellerBundleFinalizationProvider,
+  type SellerBundleFinalizationReadProvider,
+  type VerifyFinalizedSellerBundleInput,
 } from "../../src/seller/bundleFinalization.js";
 import { isBundleBinding } from "../../src/artifacts/validators.js";
 
@@ -2241,6 +2245,539 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     expect(f.bindingSign).not.toHaveBeenCalled();
     expect(f.provider.publishBundleBinding).not.toHaveBeenCalled();
   });
+});
+
+function terminalVerificationInput(
+  f: ReturnType<typeof fixture>,
+): VerifyFinalizedSellerBundleInput {
+  const { seller, bindingSigner: _bindingSigner, ...data } = f.input;
+  return {
+    ...structuredClone(data),
+    seller: {
+      primaryClaim: seller.primaryClaim,
+      bundleHash: seller.bundleHash,
+    },
+  };
+}
+
+function terminalReadProvider(
+  f: ReturnType<typeof fixture>,
+): SellerBundleFinalizationReadProvider {
+  const {
+    submitSellerBundle: _submitSellerBundle,
+    publishBundleBinding: _publishBundleBinding,
+    ...provider
+  } = f.provider;
+  return provider;
+}
+
+async function finalizedForReadVerification(
+  mapping: "pure" | "write-input",
+): Promise<{
+  fixture: ReturnType<typeof fixture>;
+  input: VerifyFinalizedSellerBundleInput;
+  provider: SellerBundleFinalizationReadProvider;
+  result: FinalizedSellerBundle;
+}> {
+  const f = fixture(mapping);
+  const result = await finalizeCompletedSellerBundleCore(f.input, f.provider);
+  return {
+    fixture: f,
+    input: terminalVerificationInput(f),
+    provider: terminalReadProvider(f),
+    result,
+  };
+}
+
+function attackerReencode(result: FinalizedSellerBundle): FinalizedSellerBundle {
+  return JSON.parse(canonicalize(result)) as FinalizedSellerBundle;
+}
+
+function providerWriteCounts(f: ReturnType<typeof fixture>): {
+  submit: number;
+  publish: number;
+} {
+  return {
+    submit: vi.mocked(f.provider.submitSellerBundle).mock.calls.length,
+    publish: f.provider.publishBundleBinding
+      ? vi.mocked(f.provider.publishBundleBinding).mock.calls.length
+      : 0,
+  };
+}
+
+describe("read-only authentication of retained finalized seller bundles", () => {
+  test.each(["pure", "write-input"] as const)(
+    "accepts a real cryptographically verified %s finalization",
+    async (mapping) => {
+      const retained = await finalizedForReadVerification(mapping);
+      const writesBefore = providerWriteCounts(retained.fixture);
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          attackerReencode(retained.result),
+          retained.provider,
+        ),
+      ).resolves.toEqual(retained.result);
+      expect(providerWriteCounts(retained.fixture)).toEqual(writesBefore);
+    },
+  );
+
+  test("captures caller data and binds a prototype-based read provider before the first await", async () => {
+    const retained = await finalizedForReadVerification("pure");
+    const expected = structuredClone(retained.result);
+    let enterResolution!: () => void;
+    const resolutionEntered = new Promise<void>((resolve) => {
+      enterResolution = resolve;
+    });
+    let releaseResolution!: () => void;
+    const resolutionGate = new Promise<void>((resolve) => {
+      releaseResolution = resolve;
+    });
+
+    class PrototypeReadProvider {
+      readonly #base: SellerBundleFinalizationReadProvider;
+      readonly mapping: SellerBundleFinalizationReadProvider["mapping"];
+      readonly bundleCopyVerifier: SellerBundleFinalizationReadProvider["bundleCopyVerifier"];
+      readonly compositeVerificationDeps:
+        SellerBundleFinalizationReadProvider["compositeVerificationDeps"];
+      #paused = false;
+
+      constructor(base: SellerBundleFinalizationReadProvider) {
+        this.#base = base;
+        this.mapping = base.mapping;
+        this.bundleCopyVerifier = base.bundleCopyVerifier;
+        this.compositeVerificationDeps = base.compositeVerificationDeps;
+      }
+
+      async resolveDependency(
+        ...args: Parameters<SellerBundleFinalizationReadProvider["resolveDependency"]>
+      ) {
+        if (!this.#paused) {
+          this.#paused = true;
+          enterResolution();
+          await resolutionGate;
+        }
+        return await this.#base.resolveDependency(...args);
+      }
+
+      verifyDependencyReceipt(
+        ...args: Parameters<SellerBundleFinalizationReadProvider["verifyDependencyReceipt"]>
+      ) {
+        return this.#base.verifyDependencyReceipt(...args);
+      }
+
+      verifyDependencyBinding(
+        ...args: Parameters<SellerBundleFinalizationReadProvider["verifyDependencyBinding"]>
+      ) {
+        return this.#base.verifyDependencyBinding(...args);
+      }
+
+      verifyListingPublisherIdentityLinkage(
+        ...args: Parameters<
+          SellerBundleFinalizationReadProvider["verifyListingPublisherIdentityLinkage"]
+        >
+      ) {
+        return this.#base.verifyListingPublisherIdentityLinkage(...args);
+      }
+
+      verifyVetRequirementProvenance(
+        ...args: Parameters<
+          SellerBundleFinalizationReadProvider["verifyVetRequirementProvenance"]
+        >
+      ) {
+        return this.#base.verifyVetRequirementProvenance(...args);
+      }
+
+      resolvePaymentPhaseIndex(
+        ...args: Parameters<
+          NonNullable<SellerBundleFinalizationReadProvider["resolvePaymentPhaseIndex"]>
+        >
+      ) {
+        return this.#base.resolvePaymentPhaseIndex!(...args);
+      }
+
+      resolveSellerBundle(
+        ...args: Parameters<SellerBundleFinalizationReadProvider["resolveSellerBundle"]>
+      ) {
+        return this.#base.resolveSellerBundle(...args);
+      }
+
+      verifyBundleAnchorReceipt(
+        ...args: Parameters<
+          SellerBundleFinalizationReadProvider["verifyBundleAnchorReceipt"]
+        >
+      ) {
+        return this.#base.verifyBundleAnchorReceipt(...args);
+      }
+    }
+
+    const classProvider = new PrototypeReadProvider(retained.provider);
+    const verification = verifyFinalizedSellerBundleReadOnly(
+      retained.input,
+      retained.result,
+      classProvider,
+    );
+    await resolutionEntered;
+
+    retained.input.agreement.jobId = "caller-mutated-job";
+    retained.input.seller.primaryClaim = OUTSIDER;
+    retained.result.sellerBundle.anchoredByRole = "buyer";
+    Object.defineProperty(classProvider, "mapping", { value: "write-input" });
+    Object.defineProperty(classProvider, "resolveSellerBundle", {
+      value: () => {
+        throw new Error("mutated provider method must not be observed");
+      },
+    });
+    Object.defineProperty(classProvider, "verifyBundleAnchorReceipt", {
+      value: () => "invalid",
+    });
+    releaseResolution();
+
+    await expect(verification).resolves.toEqual(expected);
+  });
+
+  test("captures nested verifier accessors once and bypasses an overridden bind", async () => {
+    const retained = await finalizedForReadVerification("pure");
+    const reads = new Map<string, number>();
+    const accessorMethods = <T extends object>(
+      subject: string,
+      base: T,
+      names: readonly string[],
+    ): T => {
+      const captured = Object.create(null) as T;
+      for (const name of names) {
+        const original = Reflect.get(base, name);
+        if (typeof original !== "function") {
+          throw new Error(`${subject}.${name} fixture method is unavailable`);
+        }
+        const callback = function (this: unknown, ...args: unknown[]): unknown {
+          if (this !== captured) {
+            throw new Error(`${subject}.${name} lost its nested provider receiver`);
+          }
+          return Reflect.apply(original, base, args);
+        };
+        Object.defineProperty(callback, "bind", {
+          value: () => {
+            throw new Error(`${subject}.${name} used the callback's overridable bind`);
+          },
+        });
+        Object.defineProperty(captured, name, {
+          enumerable: true,
+          get: () => {
+            const key = `${subject}.${name}`;
+            reads.set(key, (reads.get(key) ?? 0) + 1);
+            return callback;
+          },
+        });
+      }
+      return captured;
+    };
+
+    const provider: SellerBundleFinalizationReadProvider = {
+      ...retained.provider,
+      bundleCopyVerifier: accessorMethods(
+        "bundleCopyVerifier",
+        retained.provider.bundleCopyVerifier,
+        ["resolvePublicKey", "verify"],
+      ),
+      compositeVerificationDeps: accessorMethods(
+        "compositeVerificationDeps",
+        retained.provider.compositeVerificationDeps,
+        [
+          "resolveRecipe",
+          "isRecipeSignerAuthorized",
+          "isVerifyResultSignerAuthorized",
+          "resolvePublicKey",
+          "verify",
+          "verifyAuthorityAttestation",
+          "verifyRequirementParameters",
+        ],
+      ),
+    };
+
+    await expect(
+      verifyFinalizedSellerBundleReadOnly(
+        retained.input,
+        retained.result,
+        provider,
+      ),
+    ).resolves.toEqual(retained.result);
+    expect(reads.size).toBe(9);
+    expect([...reads.values()]).toEqual(new Array(9).fill(1));
+  });
+
+  const roleAndSignatureForgeries: Array<{
+    name: string;
+    mapping: "pure" | "write-input";
+    mutate: (result: FinalizedSellerBundle) => void;
+    expectedError: RegExp;
+  }> = [
+    {
+      name: "swapped seller and buyer role copies",
+      mapping: "pure",
+      mutate: (result) => {
+        const seller = result.sellerBundle;
+        result.sellerBundle = result.buyerBundle;
+        result.buyerBundle = seller;
+      },
+      expectedError: /seller|role copy|anchored/i,
+    },
+    {
+      name: "seller signature substitution in every role copy",
+      mapping: "pure",
+      mutate: (result) => {
+        for (const bundle of [result.sellerBundle, result.buyerBundle]) {
+          const signature = bundle.signatures.find((candidate) => candidate.party === SELLER);
+          if (!signature) throw new Error("seller signature fixture missing");
+          signature.value = Buffer.alloc(64, 41).toString("base64url");
+        }
+      },
+      expectedError: /signature/i,
+    },
+    {
+      name: "buyer signature substitution in every role copy",
+      mapping: "pure",
+      mutate: (result) => {
+        for (const bundle of [result.sellerBundle, result.buyerBundle]) {
+          const signature = bundle.signatures.find((candidate) => candidate.party === BUYER);
+          if (!signature) throw new Error("buyer signature fixture missing");
+          signature.value = Buffer.alloc(64, 42).toString("base64url");
+        }
+      },
+      expectedError: /signature/i,
+    },
+    {
+      name: "an extra unreviewed signer in every role copy",
+      mapping: "pure",
+      mutate: (result) => {
+        for (const bundle of [result.sellerBundle, result.buyerBundle]) {
+          bundle.signatures.push({
+            algorithm: "ed25519",
+            party: OUTSIDER,
+            value: Buffer.alloc(64, 43).toString("base64url"),
+          });
+        }
+      },
+      expectedError: /signature/i,
+    },
+    {
+      name: "a forged BundleBinding algorithm",
+      mapping: "write-input",
+      mutate: (result) => {
+        if (!result.binding) throw new Error("binding fixture missing");
+        result.binding.signature.algorithm = "ecdsa-secp256k1";
+      },
+      expectedError: /BundleBinding|signature|algorithm/i,
+    },
+    {
+      name: "a rebound BundleBinding signer",
+      mapping: "write-input",
+      mutate: (result) => {
+        if (!result.binding) throw new Error("binding fixture missing");
+        result.binding.signer = OUTSIDER;
+        result.binding.signature.signer = OUTSIDER;
+      },
+      expectedError: /BundleBinding|signer|content/i,
+    },
+    {
+      name: "a forged BundleBinding signature",
+      mapping: "write-input",
+      mutate: (result) => {
+        if (!result.binding) throw new Error("binding fixture missing");
+        result.binding.signature.value = Buffer.alloc(64, 44).toString("base64url");
+      },
+      expectedError: /BundleBinding|signature/i,
+    },
+  ];
+
+  for (const forgery of roleAndSignatureForgeries) {
+    test(`rejects a re-encoded terminal result with ${forgery.name}`, async () => {
+      const retained = await finalizedForReadVerification(forgery.mapping);
+      const writesBefore = providerWriteCounts(retained.fixture);
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          retained.result,
+          retained.provider,
+        ),
+      ).resolves.toEqual(retained.result);
+      const forged = attackerReencode(retained.result);
+      forgery.mutate(forged);
+      const reencoded = attackerReencode(forged);
+
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          reencoded,
+          retained.provider,
+        ),
+      ).rejects.toThrow(forgery.expectedError);
+      expect(providerWriteCounts(retained.fixture)).toEqual(writesBefore);
+    });
+  }
+
+  test("rejects a forged finalized anchor proof", async () => {
+    const retained = await finalizedForReadVerification("pure");
+    await expect(
+      verifyFinalizedSellerBundleReadOnly(
+        retained.input,
+        retained.result,
+        retained.provider,
+      ),
+    ).resolves.toEqual(retained.result);
+    const authenticReceipt = canonicalize(retained.result.anchorReceipt);
+    const provider: SellerBundleFinalizationReadProvider = {
+      ...retained.provider,
+      verifyBundleAnchorReceipt: vi.fn((anchored) =>
+        canonicalize(anchored.anchorReceipt) === authenticReceipt
+          ? "valid" as const
+          : "invalid" as const,
+      ),
+    };
+    const forged = attackerReencode(retained.result);
+    if (!forged.anchorReceipt.evidence) throw new Error("anchor proof fixture missing");
+    forged.anchorReceipt.evidence.value = "forged-finality-proof";
+
+    await expect(
+      verifyFinalizedSellerBundleReadOnly(
+        retained.input,
+        attackerReencode(forged),
+        provider,
+      ),
+    ).rejects.toThrow(/anchor receipt|verification/i);
+  });
+
+  test("rejects BundleBinding presence that contradicts the mapping", async () => {
+    const pure = await finalizedForReadVerification("pure");
+    const write = await finalizedForReadVerification("write-input");
+    await expect(
+      verifyFinalizedSellerBundleReadOnly(pure.input, pure.result, pure.provider),
+    ).resolves.toEqual(pure.result);
+    await expect(
+      verifyFinalizedSellerBundleReadOnly(write.input, write.result, write.provider),
+    ).resolves.toEqual(write.result);
+    if (!write.result.binding) throw new Error("write-input binding fixture missing");
+    const inventedBinding = attackerReencode(pure.result);
+    inventedBinding.binding = structuredClone(write.result.binding);
+    await expect(
+      verifyFinalizedSellerBundleReadOnly(
+        pure.input,
+        attackerReencode(inventedBinding),
+        pure.provider,
+      ),
+    ).rejects.toThrow(/inapplicable BundleBinding/);
+
+    const missingBinding = attackerReencode(write.result);
+    delete missingBinding.binding;
+    await expect(
+      verifyFinalizedSellerBundleReadOnly(
+        write.input,
+        attackerReencode(missingBinding),
+        write.provider,
+      ),
+    ).rejects.toThrow(/lacks.*BundleBinding/);
+  });
+
+  test.each(["logical", "native"] as const)(
+    "rejects a retained %s address mismatch",
+    async (kind) => {
+      const retained = await finalizedForReadVerification("pure");
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          retained.result,
+          retained.provider,
+        ),
+      ).resolves.toEqual(retained.result);
+      const mismatched = attackerReencode(retained.result);
+      if (kind === "logical") {
+        mismatched.logicalAddress = bundleAddress("another-job", "seller");
+      } else {
+        mismatched.nativeAddress = "stor-forged-native-address";
+        mismatched.anchorReceipt.nativeAddress = mismatched.nativeAddress;
+      }
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          attackerReencode(mismatched),
+          retained.provider,
+        ),
+      ).rejects.toThrow(/scope|anchor|readback|address|differs/i);
+    },
+  );
+
+  test.each(["mismatch", "absence", "indeterminate"] as const)(
+    "rejects seller-bundle readback %s",
+    async (disposition) => {
+      const retained = await finalizedForReadVerification("pure");
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          retained.result,
+          retained.provider,
+        ),
+      ).resolves.toEqual(retained.result);
+      const resolveSellerBundle: SellerBundleFinalizationReadProvider["resolveSellerBundle"] =
+        disposition === "absence"
+          ? () => ({ disposition: "absent" })
+          : disposition === "indeterminate"
+            ? () => ({ disposition: "indeterminate", reason: "directory unavailable" })
+            : () => {
+                const anchored = structuredClone(retained.fixture.state.anchored!);
+                anchored.nativeAddress = "stor-mismatched-readback";
+                anchored.anchorReceipt.nativeAddress = anchored.nativeAddress;
+                return { disposition: "present", anchored };
+              };
+      const provider: SellerBundleFinalizationReadProvider = {
+        ...retained.provider,
+        resolveSellerBundle,
+      };
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          retained.result,
+          provider,
+        ),
+      ).rejects.toThrow(/absent|indeterminate|differs|readback|anchor/i);
+    },
+  );
+
+  test.each(["mismatch", "absence", "indeterminate"] as const)(
+    "rejects BundleBinding readback %s",
+    async (disposition) => {
+      const retained = await finalizedForReadVerification("write-input");
+      if (!retained.result.binding) throw new Error("write-input binding fixture missing");
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          retained.result,
+          retained.provider,
+        ),
+      ).resolves.toEqual(retained.result);
+      const resolveBundleBinding: NonNullable<
+        SellerBundleFinalizationReadProvider["resolveBundleBinding"]
+      > = disposition === "absence"
+        ? () => ({ disposition: "absent" })
+        : disposition === "indeterminate"
+          ? () => ({ disposition: "indeterminate", reason: "catalog unavailable" })
+          : () => {
+              const binding = structuredClone(retained.result.binding!);
+              binding.nativeAddress = "stor-mismatched-binding";
+              return { disposition: "present", binding };
+            };
+      const provider: SellerBundleFinalizationReadProvider = {
+        ...retained.provider,
+        resolveBundleBinding,
+      };
+      await expect(
+        verifyFinalizedSellerBundleReadOnly(
+          retained.input,
+          retained.result,
+          provider,
+        ),
+      ).rejects.toThrow(/BundleBinding|readable|exact|binding/i);
+    },
+  );
 });
 
 describe("DACS-5 §10.4.2 BundleBinding Standard vectors", () => {

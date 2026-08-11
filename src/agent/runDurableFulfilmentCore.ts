@@ -167,6 +167,29 @@ export type SellerFulfilmentStatusLoad =
       updatedAt: number;
     };
 
+/** Read-only cryptographic dependencies for authenticating a persisted terminal result. */
+export interface VerifyDurableSellerTerminalResultInput {
+  record: unknown;
+  suppliedResult: Extract<SellerFulfilmentResult, { decision: "completed" }>;
+  verifyEvidenceSignature: SellerFulfilmentDeps["verifyEvidenceSignature"];
+  verifyAnchorReceipt: SellerFulfilmentDeps["verifyAnchorReceipt"];
+}
+
+/** Cryptographic verification seam held by a durable bundle coordinator. */
+export type DurableSellerTerminalVerification = Pick<
+  VerifyDurableSellerTerminalResultInput,
+  "verifyEvidenceSignature" | "verifyAnchorReceipt"
+>;
+
+/** Exact authority and hashes recovered from a fully authenticated durable completion. */
+export interface VerifiedDurableSellerTerminalResult {
+  result: Extract<SellerFulfilmentResult, { decision: "completed" }>;
+  binding: SessionPaymentAuthorizationBinding;
+  handoff: SellerFulfilmentHandoff;
+  resultHash: string;
+  finalReceiptHash: string;
+}
+
 interface ConsumedAuthority {
   claim: SellerReceiptClaim;
   handoff: SellerFulfilmentHandoff;
@@ -727,6 +750,81 @@ function deriveConsumedAuthority(
   };
 }
 
+function deriveCompletedAuthorityFromRecord(
+  record: SessionRecord,
+  suppliedResult: Extract<SellerFulfilmentResult, { decision: "completed" }>,
+): ConsumedAuthority {
+  if (!isRecord(suppliedResult) || suppliedResult.decision !== "completed" ||
+      !isRecord(suppliedResult.consumedPaymentAuthorization) ||
+      !isRecord(suppliedResult.bundleContribution) ||
+      !isRecord(suppliedResult.bundleContribution.phaseSummary)) {
+    throw new Error("supplied durable completion is malformed");
+  }
+  const authorization = clone(suppliedResult.consumedPaymentAuthorization);
+  const claim: SellerReceiptClaim = {
+    settlementId: authorization.settlementId,
+    jobId: authorization.jobId,
+    phaseIndex: authorization.phaseIndex,
+    observedAt: authorization.evidenceInput?.observedAt,
+    evidenceHash: authorization.evidenceHash,
+    authorization,
+  };
+  if (!isValidSellerReceiptClaim(claim)) {
+    throw new Error("supplied durable completion lacks a valid consumed authorization");
+  }
+  const deliveryPhaseIndex = suppliedResult.bundleContribution.phaseSummary.index;
+  if (!isSafeUint(deliveryPhaseIndex)) {
+    throw new Error("supplied durable completion has an invalid delivery phase index");
+  }
+  const authorizationHash = sha256Hex(canonicalize(authorization));
+  const expectedFulfilmentId = sellerFulfilmentId({
+    jobId: authorization.jobId,
+    paymentPhaseIndex: authorization.phaseIndex,
+    deliveryPhaseIndex,
+    settlementId: authorization.settlementId,
+    agreementHash: authorization.agreementHash,
+    paymentEvidenceHash: authorization.evidenceHash,
+  });
+  if (suppliedResult.fulfilmentId !== expectedFulfilmentId ||
+      record.jobId !== authorization.jobId ||
+      record.agreementHash !== authorization.agreementHash) {
+    throw new Error("supplied durable completion contradicts the persisted session identity");
+  }
+  const matchingBindings = record.paymentAuthorizations.filter((binding) =>
+    binding.authorizationHash === authorizationHash &&
+    binding.fulfilmentId === expectedFulfilmentId &&
+    binding.agreementHash === authorization.agreementHash &&
+    binding.paymentEvidenceHash === authorization.evidenceHash &&
+    binding.settlementId === authorization.settlementId &&
+    binding.paymentPhaseIndex === authorization.phaseIndex &&
+    binding.deliveryPhaseIndex === deliveryPhaseIndex
+  );
+  if (matchingBindings.length !== 1) {
+    throw new Error("durable session lacks the exact completed payment authorization binding");
+  }
+  const binding = matchingBindings[0]!;
+  const handoffCheckpoint = latestCheckpoint(
+    record,
+    sellerFulfilmentCheckpointKey.handoff(deliveryPhaseIndex),
+  );
+  const handoffData = handoffCheckpoint?.data;
+  if (handoffCheckpoint?.stage !== "outcome" || !handoffData ||
+      !hasExactKeys(handoffData, ["fulfilmentId", "handoffBindingHash", "handoff"]) ||
+      handoffData.fulfilmentId !== binding.fulfilmentId ||
+      handoffData.handoffBindingHash !== binding.handoffBindingHash ||
+      typeof handoffData.handoff !== "string" ||
+      durableHash(handoffData.handoff) !== binding.handoffBindingHash) {
+    throw new Error("durable completion lacks its exact consumed handoff outcome");
+  }
+  const handoff = decodeDurable<unknown>(handoffData.handoff);
+  const authority = deriveConsumedAuthority(claim, handoff);
+  if (!exact(authority.binding, binding) ||
+      authority.handoffEncoded !== handoffData.handoff) {
+    throw new Error("durable consumed handoff contradicts its payment authorization binding");
+  }
+  return authority;
+}
+
 function assertRequestBindsConsumedAuthority(
   request: SellerFulfilmentRequest,
   authority: ConsumedAuthority,
@@ -1072,6 +1170,12 @@ function terminalPhaseStillRepresented(
     : phase("delivery-failed", phaseIndex);
   if (persistedPhase === exactPhase) return true;
   if (persistedPhase === "seller:finalised") return true;
+  if (result.decision === "completed" && [
+    "seller:bundle-signing",
+    "seller:bundle-anchor-pending",
+    "seller:bundle-binding-signing",
+    "seller:bundle-binding-publication-pending",
+  ].includes(persistedPhase)) return true;
   // Failed phases cannot advance in FencedSessionStoreV2. A successful earlier
   // delivery, however, remains an immutable replayable result while the same
   // job progresses through a strictly later delivery or global finalisation.
@@ -1177,6 +1281,64 @@ class DurableCoordinator {
   #terminalReplay?: TerminalFulfilmentResult;
   #initializePromise?: Promise<void>;
   #lastApplicationNow?: number;
+
+  static async verifyCompletedRecord(
+    record: SessionRecord,
+    suppliedResult: Extract<SellerFulfilmentResult, { decision: "completed" }>,
+    authority: ConsumedAuthority,
+    verification: DurableSellerTerminalVerification,
+  ): Promise<VerifiedDurableSellerTerminalResult> {
+    const request: SellerFulfilmentRequest = {
+      agreementRef: authority.handoff.agreementRef,
+      agreementHash: authority.handoff.agreementHash,
+      commitmentRef: authority.handoff.commitmentRef,
+      deliveryPhaseIndex: authority.binding.deliveryPhaseIndex,
+      paymentPermitId: "durable-terminal-record-verification",
+      ...(authority.claim.authorization.payloadVerificationProducerAdmission
+        ? {
+            payloadVerificationProducerAdmission: clone(
+              authority.claim.authorization.payloadVerificationProducerAdmission,
+            ),
+          }
+        : {}),
+    };
+    // The terminal decoder is side-effect free and reads only #authority. The
+    // authenticator additionally reads these two captured cryptographic seams.
+    // Empty capabilities make any future accidental effect/store access fail
+    // closed instead of granting the read-only verifier new authority.
+    const dependencies = Object.freeze({
+      verifyEvidenceSignature: verification.verifyEvidenceSignature,
+      verifyAnchorReceipt: verification.verifyAnchorReceipt,
+    }) as unknown as DurableSellerFulfilmentDeps;
+    const coordinator = new DurableCoordinator(
+      request,
+      dependencies,
+      Object.freeze({}) as unknown as SellerFulfilmentDurability,
+    );
+    coordinator.#authority = clone(authority);
+    const decoded = coordinator.#decodeTerminal(record);
+    if (!decoded || decoded.decision !== "completed" ||
+        !exact(decoded, suppliedResult)) {
+      throw new Error("supplied completion is not the exact durable terminal result");
+    }
+    await coordinator.#authenticateTerminalResult(decoded);
+    const resultCheckpoint = latestCheckpoint(
+      record,
+      sellerFulfilmentCheckpointKey.result(authority.binding.deliveryPhaseIndex),
+    );
+    const resultHash = resultCheckpoint?.data?.resultHash;
+    const finalReceiptHash = resultCheckpoint?.data?.finalReceiptHash;
+    if (typeof resultHash !== "string" || typeof finalReceiptHash !== "string") {
+      throw new Error("durable terminal result hashes disappeared after verification");
+    }
+    return {
+      result: clone(decoded),
+      binding: clone(authority.binding),
+      handoff: clone(authority.handoff),
+      resultHash,
+      finalReceiptHash,
+    };
+  }
 
   constructor(
     request: SellerFulfilmentRequest,
@@ -4318,6 +4480,71 @@ class DurableCoordinator {
       if (released.reason !== "revision-mismatch") return;
     }
   }
+}
+
+/**
+ * Authenticate an already-completed fulfilment directly from its durable v2
+ * record. This is deliberately read-only: callers supply only the two
+ * cryptographic verification seams, and no store or effect capability.
+ */
+export async function verifyDurableSellerTerminalResult(
+  input: VerifyDurableSellerTerminalResultInput,
+): Promise<VerifiedDurableSellerTerminalResult> {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "record",
+    "suppliedResult",
+    "verifyEvidenceSignature",
+    "verifyAnchorReceipt",
+  ])) {
+    throw new TypeError("durable terminal verification input is malformed");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const expectedFields = [
+    "record",
+    "suppliedResult",
+    "verifyEvidenceSignature",
+    "verifyAnchorReceipt",
+  ] as const;
+  if (expectedFields.some((field) => {
+    const descriptor = descriptors[field];
+    return !descriptor || !("value" in descriptor);
+  })) {
+    throw new TypeError("durable terminal verification input requires data properties");
+  }
+  const recordInput = descriptors.record!.value as unknown;
+  const suppliedResultInput = descriptors.suppliedResult!.value as unknown;
+  const verifyEvidenceSignatureSource = descriptors.verifyEvidenceSignature!.value as unknown;
+  const verifyAnchorReceiptSource = descriptors.verifyAnchorReceipt!.value as unknown;
+  if (typeof verifyEvidenceSignatureSource !== "function" ||
+      typeof verifyAnchorReceiptSource !== "function") {
+    throw new TypeError("durable terminal verification callbacks must be callable");
+  }
+  const violation = sessionRecordShapeViolation(recordInput);
+  if (violation) throw new Error(`durable session is corrupt: ${violation}`);
+
+  // Snapshot every caller-controlled value and executable authority before the
+  // first await. Revalidate the clone so hostile clone hooks cannot weaken the
+  // record shape accepted by the terminal decoder.
+  const record = clone(recordInput) as SessionRecord;
+  const suppliedResult = clone(suppliedResultInput) as Extract<
+    SellerFulfilmentResult,
+    { decision: "completed" }
+  >;
+  const snapshotViolation = sessionRecordShapeViolation(record);
+  if (snapshotViolation) {
+    throw new Error(`durable session snapshot is corrupt: ${snapshotViolation}`);
+  }
+  const verifyEvidenceSignature = bindCaptured(verifyEvidenceSignatureSource, input) as
+    SellerFulfilmentDeps["verifyEvidenceSignature"];
+  const verifyAnchorReceipt = bindCaptured(verifyAnchorReceiptSource, input) as
+    SellerFulfilmentDeps["verifyAnchorReceipt"];
+  const authority = deriveCompletedAuthorityFromRecord(record, suppliedResult);
+  return DurableCoordinator.verifyCompletedRecord(
+    record,
+    suppliedResult,
+    authority,
+    { verifyEvidenceSignature, verifyAnchorReceipt },
+  );
 }
 
 function durableIndeterminate(

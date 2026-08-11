@@ -33,6 +33,7 @@ import {
   getSellerFulfilmentStatus,
   runDurableFulfilmentCore,
   sellerFulfilmentCheckpointKey,
+  verifyDurableSellerTerminalResult,
   type DurableSellerFulfilmentDeps,
   type SellerEffectFence,
   type SellerFinalSessionReceiptResult,
@@ -1445,6 +1446,122 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       }]);
     }
   });
+
+  test("authenticates an actual durable completion through every bundle phase", async () => {
+    const h = durableHarness();
+    const completed = await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+    if (completed.decision !== "completed") throw new Error("expected completion");
+    const loaded = await h.store.load(h.fixture.authorization.jobId);
+    if (loaded.status !== "ok") throw new Error("session missing");
+    const resultCheckpoint = loaded.record.checkpoints.find(
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(1) &&
+        checkpoint.stage === "outcome",
+    );
+    const verifyEvidenceSignature = vi.fn(h.deps.verifyEvidenceSignature);
+    const verifyAnchorReceipt = vi.fn(h.deps.verifyAnchorReceipt);
+    const phases = [
+      "seller:bundle-signing",
+      "seller:bundle-anchor-pending",
+      "seller:bundle-binding-signing",
+      "seller:bundle-binding-publication-pending",
+      "seller:finalised",
+    ] as const;
+
+    let lastVerified: Awaited<ReturnType<typeof verifyDurableSellerTerminalResult>> | undefined;
+    for (const phase of phases) {
+      const record = structuredClone(loaded.record);
+      record.phase = phase;
+      lastVerified = await verifyDurableSellerTerminalResult({
+        record,
+        suppliedResult: completed,
+        verifyEvidenceSignature,
+        verifyAnchorReceipt,
+      });
+      expect(lastVerified.result).toEqual(completed);
+      expect(lastVerified.binding).toEqual(loaded.record.paymentAuthorizations[0]);
+      expect(lastVerified.resultHash).toBe(resultCheckpoint?.data?.resultHash);
+      expect(lastVerified.finalReceiptHash).toBe(resultCheckpoint?.data?.finalReceiptHash);
+    }
+
+    expect(verifyEvidenceSignature).toHaveBeenCalledTimes(phases.length);
+    expect(verifyAnchorReceipt).toHaveBeenCalledTimes(phases.length);
+    if (!lastVerified) throw new Error("terminal verification missing");
+    lastVerified.result.evidence.signature.value = "mutated";
+    lastVerified.binding.authorizationHash = "0".repeat(64);
+    lastVerified.handoff.jobId = "mutated";
+    expect(completed.evidence.signature.value).not.toBe("mutated");
+    expect(loaded.record.paymentAuthorizations[0]?.authorizationHash).not.toBe(
+      "0".repeat(64),
+    );
+    expect(loaded.record.jobId).toBe(h.fixture.authorization.jobId);
+  });
+
+  test("rejects every retained terminal tamper case through the read-only verifier", async () => {
+    const h = durableHarness();
+    const completed = await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+    if (completed.decision !== "completed") throw new Error("expected completion");
+    const loaded = await h.store.load(h.fixture.authorization.jobId);
+    if (loaded.status !== "ok") throw new Error("session missing");
+    for (const tamperCase of terminalTamperCases) {
+      const record = structuredClone(loaded.record);
+      tamperCase.tamper(record);
+      await expect(verifyDurableSellerTerminalResult({
+        record,
+        suppliedResult: completed,
+        verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+        verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+      }), tamperCase.label).rejects.toThrow();
+    }
+
+    const reboundResult = structuredClone(completed);
+    reboundResult.bundleContribution.phaseSummary.attestationRef.anchor.locator =
+      "dacs4:test-delivery-evidence:rebound-result";
+    await expect(verifyDurableSellerTerminalResult({
+      record: loaded.record,
+      suppliedResult: reboundResult,
+      verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+    })).rejects.toThrow("supplied completion is not the exact durable terminal result");
+  });
+
+  test.each(["signature", "anchor-receipt"] as const)(
+    "read-only terminal verification rejects an unauthenticated %s",
+    async (target) => {
+      const h = durableHarness();
+      const completed = await runDurableFulfilmentCore(
+        h.fixture.request,
+        h.deps,
+        h.durability,
+      );
+      if (completed.decision !== "completed") throw new Error("expected completion");
+      const loaded = await h.store.load(h.fixture.authorization.jobId);
+      if (loaded.status !== "ok") throw new Error("session missing");
+      const rejected = vi.fn(async () => ({
+        disposition: "invalid" as const,
+        reason: `${target} is not authentic`,
+      }));
+
+      await expect(verifyDurableSellerTerminalResult({
+        record: loaded.record,
+        suppliedResult: completed,
+        verifyEvidenceSignature: target === "signature"
+          ? rejected
+          : h.deps.verifyEvidenceSignature,
+        verifyAnchorReceipt: target === "anchor-receipt"
+          ? rejected
+          : h.deps.verifyAnchorReceipt,
+      })).rejects.toThrow(/not authenticated/);
+      expect(rejected).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test("terminal replay is exact, clone-isolated, and invokes no effect twice", async () => {
     const h = durableHarness();
