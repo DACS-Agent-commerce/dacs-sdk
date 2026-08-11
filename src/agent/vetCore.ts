@@ -62,6 +62,13 @@ import {
   isDurableSessionRecipePin,
   type DurableSessionRecipePin,
 } from "./durableRecipePin.js";
+import {
+  FENCED_SESSION_STORE_VERSION,
+  sessionRecordShapeViolation,
+  type CheckpointClaimResult,
+  type FencedSessionStoreV2,
+  type SessionLeaseToken,
+} from "./fencedSessionStore.js";
 
 /** SIG-4 domain for the method-native self-signed assertion evidence. */
 export const SELF_SIGNED_ASSERTION_SEPARATOR =
@@ -283,7 +290,7 @@ function captureVetDeps(source: VetDeps): VetDeps {
     const storeDescriptors = exactOwnDataDescriptors(
       operationStoreSource,
       ["load", "compareAndSet", "runOnce"],
-      [],
+      ["runOnceAuthorized"],
       "Vet operation store",
     );
     const rawLoad = exactCallback<VetOperationStore["load"]>(
@@ -875,6 +882,36 @@ export interface VetOperationStore {
   }) => Promise<unknown>;
 }
 
+export type PartyVetEffectAuthorizationVerdict =
+  | { status: "authorized" }
+  | {
+      status: "rejected";
+      reason: "fenced" | "expired" | "indeterminate";
+    };
+
+export type PartyVetAuthorizedRunResult =
+  | { status: "complete"; value: unknown }
+  | {
+      status: "authorization-rejected";
+      reason: "fenced" | "expired" | "indeterminate";
+    };
+
+/**
+ * Party-Vet effect journal. Authorization runs after the step is serialized
+ * but before `execute`; a rejection is returned without journaling a success
+ * or terminal failure, so a newer lease generation can recover the same step.
+ */
+export interface PartyVetOperationStore extends VetOperationStore {
+  runOnceAuthorized: (input: {
+    operationKey: string;
+    operationHash: string;
+    step: Parameters<VetOperationStore["runOnce"]>[0]["step"];
+    inputHash: string;
+    authorize: () => Promise<PartyVetEffectAuthorizationVerdict>;
+    execute: () => Promise<unknown>;
+  }) => Promise<PartyVetAuthorizedRunResult>;
+}
+
 export interface VetDeps {
   proxyFetch: (req: {
     url: string;
@@ -968,6 +1005,7 @@ export interface PartyVetRequest {
 
 /** Additional trust capabilities required by the public party-scoped producer. */
 export interface PartyVetDeps<TKey> extends VetDeps {
+  operationStore: PartyVetOperationStore;
   /** Authenticate BP-4 over the exact captured bundle hash. */
   verifyIdentityPresentation: (input: {
     bundle: Readonly<IdentityBundle>;
@@ -975,6 +1013,14 @@ export interface PartyVetDeps<TKey> extends VetDeps {
   }) => Promise<boolean> | boolean;
   /** Role policy, key resolution and cryptographic verifier for signed components. */
   componentVerifier: VerifyComponentSignatureDeps<TKey>;
+  /**
+   * Current generation-fenced session authority. Durable recipe pins carry
+   * immutable selection evidence only and never authorize fresh effects.
+   */
+  sessionEffectAuthority: {
+    store: FencedSessionStoreV2;
+    leaseToken: SessionLeaseToken;
+  };
 }
 
 const VET_REQUEST_KEYS = new Set([
@@ -1180,8 +1226,13 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
 
 interface CapturedPartyVetDeps<TKey> {
   vet: VetDeps;
+  runOnceAuthorized: PartyVetOperationStore["runOnceAuthorized"];
   verifyIdentityPresentation: PartyVetDeps<TKey>["verifyIdentityPresentation"];
   componentVerifier: VerifyComponentSignatureDeps<TKey>;
+  sessionEffectAuthority: {
+    claimCheckpoint: FencedSessionStoreV2["claimCheckpoint"];
+    leaseToken: Readonly<SessionLeaseToken>;
+  };
 }
 
 function capturePartyVetDeps<TKey>(
@@ -1204,7 +1255,12 @@ function capturePartyVetDeps<TKey>(
     ] as const;
     const descriptors = exactOwnDataDescriptors(
       source,
-      [...baseKeys, "verifyIdentityPresentation", "componentVerifier"],
+      [
+        ...baseKeys,
+        "verifyIdentityPresentation",
+        "componentVerifier",
+        "sessionEffectAuthority",
+      ],
       optionalBaseKeys,
       "party Vet dependencies",
     );
@@ -1220,6 +1276,18 @@ function capturePartyVetDeps<TKey>(
       });
     }
     const vet = captureVetDeps(baseSource as unknown as VetDeps);
+    const partyStoreDescriptors = exactOwnDataDescriptors(
+      descriptors.operationStore!.value,
+      ["load", "compareAndSet", "runOnce", "runOnceAuthorized"],
+      [],
+      "party Vet operation store",
+    );
+    const rawRunOnceAuthorized = exactCallback<
+      PartyVetOperationStore["runOnceAuthorized"]
+    >(
+      partyStoreDescriptors.runOnceAuthorized!.value,
+      "party Vet operation store runOnceAuthorized",
+    );
     const rawVerifyIdentityPresentation = exactCallback<
       PartyVetDeps<TKey>["verifyIdentityPresentation"]
     >(
@@ -1251,8 +1319,58 @@ function capturePartyVetDeps<TKey>(
       componentDescriptors.verify!.value,
       "party Vet component signature verifier",
     );
+    const authorityDescriptors = exactOwnDataDescriptors(
+      descriptors.sessionEffectAuthority!.value,
+      ["store", "leaseToken"],
+      [],
+      "party Vet session effect authority",
+    );
+    const store = authorityDescriptors.store!.value;
+    if (!isRecord(store) || nodeTypes.isProxy(store)) {
+      throw new DacsError("party Vet session effect store is malformed");
+    }
+    const storeDescriptors = Object.getOwnPropertyDescriptors(store);
+    const apiVersion = storeDescriptors.apiVersion;
+    const claimCheckpoint = storeDescriptors.claimCheckpoint;
+    if (
+      !apiVersion ||
+      apiVersion.enumerable !== true ||
+      !("value" in apiVersion) ||
+      apiVersion.value !== FENCED_SESSION_STORE_VERSION ||
+      !claimCheckpoint ||
+      claimCheckpoint.enumerable !== true ||
+      !("value" in claimCheckpoint)
+    ) {
+      throw new DacsError("party Vet requires FencedSessionStoreV2 effect authority");
+    }
+    const rawClaimCheckpoint = exactCallback<FencedSessionStoreV2["claimCheckpoint"]>(
+      claimCheckpoint.value,
+      "party Vet session claimCheckpoint",
+    );
+    const leaseDescriptors = exactOwnDataDescriptors(
+      authorityDescriptors.leaseToken!.value,
+      ["owner", "generation"],
+      [],
+      "party Vet current lease token",
+    );
+    const owner = leaseDescriptors.owner!.value;
+    const generation = leaseDescriptors.generation!.value;
+    if (
+      typeof owner !== "string" ||
+      owner.length === 0 ||
+      owner.trim() !== owner ||
+      !Number.isSafeInteger(generation) ||
+      (generation as number) <= 0
+    ) {
+      throw new DacsError("party Vet current lease token is malformed");
+    }
     return {
       vet,
+      runOnceAuthorized: (input) => Reflect.apply(
+        rawRunOnceAuthorized,
+        INERT_VET_RECEIVER,
+        [input],
+      ),
       verifyIdentityPresentation: (input) => Reflect.apply(
         rawVerifyIdentityPresentation,
         INERT_VET_RECEIVER,
@@ -1288,12 +1406,234 @@ function capturePartyVetDeps<TKey>(
           [input],
         ),
       }),
+      sessionEffectAuthority: Object.freeze({
+        claimCheckpoint: (input: Parameters<
+          FencedSessionStoreV2["claimCheckpoint"]
+        >[0]) => Reflect.apply(
+          rawClaimCheckpoint,
+          INERT_VET_RECEIVER,
+          [input],
+        ),
+        leaseToken: Object.freeze({
+          owner,
+          generation: generation as number,
+        }),
+      }),
     };
   } catch {
     throw new DacsError(
       "party Vet dependencies must expose stable trusted capabilities",
     );
   }
+}
+
+type PartyVetEffectStep =
+  | "party-plan"
+  | Parameters<VetOperationStore["runOnce"]>[0]["step"];
+
+function capturePartyEffectClaim(value: unknown): CheckpointClaimResult {
+  const captured = snapshot(value, "party Vet session effect claim");
+  if (!isRecord(captured)) {
+    throw new DacsError("party Vet session effect claim is malformed");
+  }
+  if (captured.ok === true) {
+    if (!hasExactKeys(captured, ["ok", "record"])) {
+      throw new DacsError("party Vet successful effect claim is malformed");
+    }
+  } else if (
+    captured.ok !== false ||
+    !hasExactKeys(captured, [
+      "ok",
+      "reason",
+      ...(captured.record === undefined ? [] : ["record"]),
+    ]) ||
+    typeof captured.reason !== "string"
+  ) {
+    throw new DacsError("party Vet failed effect claim is malformed");
+  }
+  if (captured.record !== undefined) {
+    const violation = sessionRecordShapeViolation(captured.record);
+    if (violation) {
+      throw new DacsError(
+        `party Vet effect claim returned a corrupt session: ${violation}`,
+      );
+    }
+  }
+  return captured as unknown as CheckpointClaimResult;
+}
+
+async function claimPartyVetEffectAuthority<TKey>(
+  deps: CapturedPartyVetDeps<TKey>,
+  plan: Readonly<PartyVetPlan>,
+  operationHash: string,
+  step: PartyVetEffectStep,
+  inputHash: string,
+): Promise<PartyVetEffectAuthorizationVerdict> {
+  if (!/^[0-9a-f]{64}$/.test(operationHash) || !/^[0-9a-f]{64}$/.test(inputHash)) {
+    return { status: "rejected", reason: "indeterminate" };
+  }
+  const leaseToken = deps.sessionEffectAuthority.leaseToken;
+  let now: number;
+  try {
+    now = readClock(deps.vet.nowMs, `party Vet ${step} lease fence`);
+  } catch {
+    return { status: "rejected", reason: "indeterminate" };
+  }
+  const claimIdentity = {
+    authorityVersion: "1",
+    planHash: plan.planHash,
+    operationHash,
+    step,
+    inputHash,
+    leaseOwner: leaseToken.owner,
+    leaseGeneration: leaseToken.generation,
+  };
+  const claimHash = exactArtifactHash(claimIdentity);
+  const key = `dacs2:party-vet-effect:${claimHash}`;
+  const data = {
+    planHash: plan.planHash,
+    operationHash,
+    step,
+    inputHash,
+    leaseOwner: leaseToken.owner,
+    leaseGeneration: leaseToken.generation,
+  };
+  let raw: unknown;
+  try {
+    raw = await deps.sessionEffectAuthority.claimCheckpoint({
+      jobId: plan.jobId,
+      key,
+      data,
+      leaseToken,
+      now,
+    });
+  } catch {
+    return { status: "rejected", reason: "indeterminate" };
+  }
+  let result: CheckpointClaimResult;
+  try {
+    result = capturePartyEffectClaim(raw);
+  } catch {
+    return { status: "rejected", reason: "indeterminate" };
+  }
+  if (!result.ok && result.reason !== "held") {
+    return {
+      status: "rejected",
+      reason: result.reason === "lease-expired"
+        ? "expired"
+        : result.reason === "lease-fenced" || result.reason === "lease-held"
+          ? "fenced"
+          : "indeterminate",
+    };
+  }
+  if (!result.record) {
+    return { status: "rejected", reason: "indeterminate" };
+  }
+  const record = result.record;
+  if (record.jobId !== plan.jobId || !record.lease) {
+    return { status: "rejected", reason: "indeterminate" };
+  }
+  if (
+    record.lease.owner !== leaseToken.owner ||
+    record.lease.generation !== leaseToken.generation
+  ) {
+    return { status: "rejected", reason: "fenced" };
+  }
+  if (record.lease.expiresAt <= now) {
+    return { status: "rejected", reason: "expired" };
+  }
+  const matches = record.checkpoints.filter((checkpoint) => checkpoint.key === key);
+  if (
+    matches.length !== 1 ||
+    matches[0]!.stage !== "intent" ||
+    !canonicalEqual(matches[0]!.data, data)
+  ) {
+    return { status: "rejected", reason: "indeterminate" };
+  }
+  return { status: "authorized" };
+}
+
+function capturePartyAuthorizedRunResult(
+  value: unknown,
+): PartyVetAuthorizedRunResult {
+  if (!isRecord(value) || nodeTypes.isProxy(value)) {
+    throw new DacsError("party Vet authorized run returned a malformed result");
+  }
+  if (value.status === "complete") {
+    if (!hasExactKeys(value, ["status", "value"])) {
+      throw new DacsError("party Vet authorized run completion is malformed");
+    }
+    return {
+      status: "complete",
+      value: snapshot(value.value, "party Vet authorized run value"),
+    };
+  }
+  if (
+    value.status !== "authorization-rejected" ||
+    !hasExactKeys(value, ["status", "reason"]) ||
+    (value.reason !== "fenced" &&
+      value.reason !== "expired" &&
+      value.reason !== "indeterminate")
+  ) {
+    throw new DacsError("party Vet authorized run rejection is malformed");
+  }
+  return { status: "authorization-rejected", reason: value.reason };
+}
+
+function effectFencedPartyVetDeps<TKey>(
+  deps: CapturedPartyVetDeps<TKey>,
+  plan: Readonly<PartyVetPlan>,
+): VetDeps {
+  const vet = deps.vet;
+  const operationStore: VetOperationStore = Object.freeze({
+    load: vet.operationStore.load,
+    compareAndSet: vet.operationStore.compareAndSet,
+    runOnce: async (input: Parameters<VetOperationStore["runOnce"]>[0]) => {
+      let raw: unknown;
+      try {
+        raw = await deps.runOnceAuthorized({
+          operationKey: input.operationKey,
+          operationHash: input.operationHash,
+          step: input.step,
+          inputHash: input.inputHash,
+          authorize: () => claimPartyVetEffectAuthority(
+            deps,
+            plan,
+            input.operationHash,
+            input.step,
+            input.inputHash,
+          ),
+          execute: input.execute,
+        });
+      } catch (error) {
+        if (error instanceof DacsError) throw error;
+        throw new DacsError(`party Vet ${input.step} authorized run failed`, {
+          cause: error,
+        });
+      }
+      const result = capturePartyAuthorizedRunResult(raw);
+      if (result.status === "authorization-rejected") {
+        throw new DacsError(
+          `party Vet ${input.step} effect authorization was ${result.reason}`,
+        );
+      }
+      return result.value;
+    },
+  });
+  return Object.freeze({
+    proxyFetch: vet.proxyFetch,
+    nowMs: vet.nowMs,
+    componentSigner: vet.componentSigner,
+    anchorFinalizedArtifact: vet.anchorFinalizedArtifact,
+    verifyFinalizedAnchor: vet.verifyFinalizedAnchor,
+    readAnchoredJson: vet.readAnchoredJson,
+    resolveFinalizedArtifact: vet.resolveFinalizedArtifact,
+    operationStore,
+    ...(vet.matchRequirementParameters
+      ? { matchRequirementParameters: vet.matchRequirementParameters }
+      : {}),
+    ...(vet.parserEngine ? { parserEngine: vet.parserEngine } : {}),
+  });
 }
 
 async function selfSignedAttestation(
@@ -3169,6 +3509,26 @@ export async function partyVetCore<TKey>(
     }
   }
 
+  const planAuthorization = await claimPartyVetEffectAuthority(
+    deps,
+    plan,
+    plan.planHash,
+    "party-plan",
+    exactArtifactHash({
+      recordAddress: plan.recordAddress,
+      planHash: plan.planHash,
+    }),
+  );
+  if (planAuthorization.status === "rejected") {
+    throw new DacsError(
+      `party Vet party-plan effect authorization was ${planAuthorization.reason}`,
+    );
+  }
+  const compositeEffectDeps = effectFencedPartyVetDeps(
+    deps,
+    plan,
+  );
+
   const planned: PartyVetOperationCheckpoint = {
     operationVersion: "party-vet-1",
     operationKey: plan.recordAddress,
@@ -3219,6 +3579,10 @@ export async function partyVetCore<TKey>(
       req: vetRequest,
       signer: deps.vet.componentSigner,
     };
+    const attemptEffectDeps = effectFencedPartyVetDeps(
+      deps,
+      plan,
+    );
     const existingAttemptCheckpoint = partyCheckpoint.stage === "planned"
       ? null
       : await loadVetCheckpoint(deps.vet.operationStore, context);
@@ -3233,7 +3597,7 @@ export async function partyVetCore<TKey>(
     }
     const durable = await produceDurableVetResult(
       vetRequest,
-      deps.vet,
+      attemptEffectDeps,
       attempt.requirement,
       attempt.method,
       context,
@@ -3302,7 +3666,7 @@ export async function partyVetCore<TKey>(
     });
     const record = snapshot(
       await runVetStep(
-        deps.vet.operationStore,
+        compositeEffectDeps.operationStore,
         { operationKey: plan.recordAddress, operationHash: plan.planHash },
         "composite",
         compositeInputHash,
@@ -3319,7 +3683,7 @@ export async function partyVetCore<TKey>(
             overallDecision: state.overallDecision,
             ...(plan.warnings !== undefined ? { warnings: plan.warnings } : {}),
             generatedAt: readClock(
-              deps.vet.nowMs,
+            deps.vet.nowMs,
               "party Vet composite generatedAt",
               latestResultTime,
             ),
@@ -3329,7 +3693,7 @@ export async function partyVetCore<TKey>(
               snapshot(unsignedRecord, "unsigned party Vet composite"),
             ),
             "dacs-composite:v1:",
-            deps.vet.componentSigner,
+            compositeEffectDeps.componentSigner,
           );
         },
       ),
@@ -3370,7 +3734,7 @@ export async function partyVetCore<TKey>(
       plan.verifier,
     );
     const anchorValue = await runVetStep(
-      deps.vet.operationStore,
+      compositeEffectDeps.operationStore,
       { operationKey: plan.recordAddress, operationHash: plan.planHash },
       "composite-anchor",
       exactArtifactHash({
@@ -3380,7 +3744,7 @@ export async function partyVetCore<TKey>(
       () => reconcileOrPersistFinalizedJson(
         plan.recordAddress,
         submitting.record as unknown as Record<string, unknown>,
-        deps.vet,
+        compositeEffectDeps,
         isCompositeVerificationRecord,
       ),
     );
