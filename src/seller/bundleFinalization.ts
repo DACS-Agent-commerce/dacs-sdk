@@ -51,10 +51,20 @@ import {
   verifyBundleCopy,
   type BundleCopyDeps,
 } from "../agent/bundleCopyValidity.js";
-import type {
-  SellerFulfilmentAgreement,
-  SellerFulfilmentResult,
+import {
+  sellerFulfilmentId,
+  type SellerFulfilmentAgreement,
+  type SellerFulfilmentResult,
 } from "../agent/runFulfilmentCore.js";
+/*
+ * Payment authorization is an operational handoff, not a bundle artifact.
+ * Its store-backed shape is nevertheless revalidated at this boundary before
+ * any of its fields can select a signed dependency.
+ */
+import {
+  isValidSellerReceiptClaim,
+  type SellerPaymentAuthorization,
+} from "./paymentIntake.js";
 
 /** DACS-5 ST-11 proof-verification result. Unknown values never pass. */
 export type SellerBundleVerificationDisposition =
@@ -419,6 +429,10 @@ interface PreparedSession {
   agreement: SellerFulfilmentAgreement;
   agreementRef: AttestationRef;
   agreementCommitment: AttestationRef;
+  consumedPaymentAuthorization: SellerPaymentAuthorization;
+  fulfilmentEvidenceRef: AttestationRef;
+  fulfilmentEvidenceAnchorReceipt: AnchorReceipt;
+  fulfilmentEvidence: Record<string, unknown>;
   phaseSummary: PhaseSummaryEntry[];
   sessionPartyVets: Array<{
     primaryClaim: string;
@@ -468,6 +482,22 @@ function validUint(value: unknown): value is number {
 
 function refsContain(refs: readonly AttestationRef[], candidate: AttestationRef): boolean {
   return refs.some((ref) => exact(ref, candidate));
+}
+
+function sameAnchorPublicationIdentity(
+  left: AnchorReceipt,
+  right: AnchorReceipt,
+): boolean {
+  return (
+    left.receiptVersion === right.receiptVersion &&
+    left.substrate === right.substrate &&
+    left.logicalAddress === right.logicalAddress &&
+    left.nativeAddress === right.nativeAddress &&
+    left.contentHash === right.contentHash &&
+    exact(left.transactionRef, right.transactionRef) &&
+    left.writer === right.writer &&
+    left.nonce === right.nonce
+  );
 }
 
 function validateRefs(name: string, refs: readonly AttestationRef[]): void {
@@ -622,6 +652,89 @@ function deriveNegotiationBinding(
   };
 }
 
+function assertConsumedPaymentAuthorizationBinding(
+  authorization: SellerPaymentAuthorization,
+  agreement: SellerFulfilmentAgreement,
+  agreementRef: AttestationRef,
+  session: AuditPendingSellerSessionRecord,
+  sessionArtifacts: CompletedSellerSessionArtifacts,
+): void {
+  if (!isRecord(authorization)) {
+    throw new DacsError(
+      "completed bundle finalization requires the exact valid consumed payment authorization",
+    );
+  }
+  const claim = {
+    settlementId: authorization.settlementId,
+    jobId: authorization.jobId,
+    phaseIndex: authorization.phaseIndex,
+    observedAt: authorization.evidenceInput?.observedAt,
+    evidenceHash: authorization.evidenceHash,
+    authorization,
+  };
+  if (!isValidSellerReceiptClaim(claim)) {
+    throw new DacsError(
+      "completed bundle finalization requires the exact valid consumed payment authorization",
+    );
+  }
+
+  const paymentStep = session.pipeline[authorization.phaseIndex];
+  const paymentEntry = session.phaseResults[authorization.phaseIndex];
+  const paymentParameters = paymentStep &&
+    isRecord((paymentStep as { parameters?: unknown }).parameters)
+    ? (paymentStep as { parameters: Record<string, unknown> }).parameters
+    : undefined;
+  const producerAdmission = authorization.payloadVerificationProducerAdmission;
+  if (
+    authorization.jobId !== session.jobId ||
+    authorization.jobId !== agreement.jobId ||
+    authorization.agreementHash !== agreement.contentHash ||
+    authorization.agreementHash !== agreementRef.contentHash ||
+    !exact(authorization.listingRef, session.listingRef) ||
+    !exact(authorization.listingRef, agreement.listingPin) ||
+    authorization.railRegistryVersion !== session.railRegistryVersion ||
+    authorization.commitment.ref !== agreement.commitment.ref ||
+    authorization.commitment.contentHash !==
+      agreement.commitment.recordContentHash ||
+    authorization.commitment.contentHash !==
+      sessionArtifacts.agreementCommitment.contentHash ||
+    authorization.commitment.finalizedAt !== agreement.commitment.finalizedAt ||
+    !paymentStep ||
+    !paymentStep.kind.startsWith("pay-") ||
+    authorization.evidenceInput.phase !== paymentStep.kind ||
+    paymentParameters?.rail !== authorization.railId ||
+    !paymentEntry ||
+    paymentEntry.index !== authorization.phaseIndex ||
+    paymentEntry.result.ok !== true ||
+    !Array.isArray(paymentEntry.result.txRefs) ||
+    !exact(
+      paymentEntry.result.txRefs,
+      authorization.evidenceInput.paymentTxRefs,
+    ) ||
+    (producerAdmission !== undefined &&
+      !exact(producerAdmission.listingRef, authorization.listingRef))
+  ) {
+    throw new DacsError(
+      "consumed payment authorization does not bind the exact agreement, commitment, Listing, registry, and payment phase",
+    );
+  }
+}
+
+function paymentAuthorizationEvidenceInput(
+  evidence: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    evidenceVersion: evidence.evidenceVersion,
+    jobId: evidence.jobId,
+    phase: evidence.phase,
+    outcome: evidence.outcome,
+    paymentTxRefs: evidence.paymentTxRefs,
+    paymentAmount: evidence.paymentAmount,
+    settlementFinality: evidence.settlementFinality,
+    observedAt: evidence.observedAt,
+  };
+}
+
 function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSession {
   const agreement = snapshot(input.agreement, "seller agreement");
   const fulfilment = snapshot(input.fulfilment, "seller fulfilment");
@@ -634,10 +747,13 @@ function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSess
   const counterSignatures = input.counterSignatures
     ? snapshot(input.counterSignatures, "detached counter-signatures")
     : undefined;
+  const consumedPaymentAuthorization = snapshot(
+    fulfilment.consumedPaymentAuthorization,
+    "consumed payment authorization",
+  );
 
   if (
     agreement.artifactKind !== "payee-bound" ||
-    agreement.signaturesVerified !== true ||
     agreement.commitment.status !== "finalized" ||
     !isHash(agreement.contentHash) ||
     !isHash(agreement.commitment.recordContentHash) ||
@@ -971,6 +1087,13 @@ function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSess
   }
 
   const negotiation = deriveNegotiationBinding(session, agreementRef);
+  assertConsumedPaymentAuthorizationBinding(
+    consumedPaymentAuthorization,
+    agreement,
+    agreementRef,
+    session,
+    sessionArtifacts,
+  );
   const contribution = fulfilment.bundleContribution.phaseSummary;
   const derivedDelivery = phaseSummary[contribution.index];
   if (
@@ -981,7 +1104,28 @@ function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSess
     fulfilment.evidence.jobId !== agreement.jobId ||
     fulfilment.evidence.outcome !== "success" ||
     !isAttestationRef(fulfilment.evidenceRef) ||
+    fulfilment.evidenceRef.anchor.kind !== "storage-program" ||
     fulfilment.evidenceRef.contentHash !== fulfilment.evidenceHash ||
+    !isAnchorReceipt(fulfilment.evidenceAnchorReceipt) ||
+    !["included", "finalized"].includes(
+      fulfilment.evidenceAnchorReceipt.state,
+    ) ||
+    fulfilment.evidenceAnchorReceipt.observationDisposition !== "established" ||
+    fulfilment.evidenceAnchorReceipt.contentHash !== fulfilment.evidenceHash ||
+    fulfilment.evidenceAnchorReceipt.logicalAddress !==
+      fulfilment.evidenceRef.anchor.locator ||
+    !validUint(contribution.index) ||
+    consumedPaymentAuthorization.phaseIndex >= contribution.index ||
+    fulfilment.fulfilmentId !== sellerFulfilmentId({
+      jobId: consumedPaymentAuthorization.jobId,
+      paymentPhaseIndex: consumedPaymentAuthorization.phaseIndex,
+      deliveryPhaseIndex: contribution.index,
+      settlementId: consumedPaymentAuthorization.settlementId,
+      agreementHash: consumedPaymentAuthorization.agreementHash,
+      paymentEvidenceHash: consumedPaymentAuthorization.evidenceHash,
+    }) ||
+    !isAttestationRef(contribution.attestationRef) ||
+    !exact(contribution.attestationRef, fulfilment.evidenceRef) ||
     !exact(fulfilment.bundleContribution.settlementEvidence, fulfilment.evidenceRef) ||
     !derivedDelivery ||
     derivedDelivery.index !== contribution.index ||
@@ -1006,6 +1150,19 @@ function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSess
     agreementCommitment: snapshot(
       sessionArtifacts.agreementCommitment,
       "agreement commitment reference",
+    ),
+    consumedPaymentAuthorization,
+    fulfilmentEvidenceRef: snapshot(
+      fulfilment.evidenceRef,
+      "seller fulfilment evidence reference",
+    ),
+    fulfilmentEvidenceAnchorReceipt: snapshot(
+      fulfilment.evidenceAnchorReceipt,
+      "seller fulfilment evidence anchor receipt",
+    ),
+    fulfilmentEvidence: snapshot(
+      fulfilment.evidence as unknown as Record<string, unknown>,
+      "seller fulfilment evidence artifact",
     ),
     phaseSummary,
     sessionPartyVets,
@@ -1586,6 +1743,40 @@ async function auditResolvedDependencyGraph(
   ) {
     throw new DacsError("resolved listing does not bind the canonical negotiation/session");
   }
+  const producerAdmission =
+    session.consumedPaymentAuthorization.payloadVerificationProducerAdmission;
+  if (listing.offering.deliverable.kind !== "attested-payload") {
+    if (producerAdmission !== undefined) {
+      throw new DacsError(
+        "non-attested delivery cannot carry DPA-1 producer admission authority",
+      );
+    }
+  } else {
+    const verificationMethod = listing.offering.deliverable.verificationMethod;
+    if (
+      !producerAdmission ||
+      !verificationMethod ||
+      !exact(producerAdmission.listingRef, session.listingRef) ||
+      producerAdmission.verificationMethodKind !== verificationMethod.kind ||
+      producerAdmission.verificationMethodHash !==
+        sha256Hex(
+          canonicalize(
+            verificationMethod as unknown as Record<string, unknown>,
+          ),
+        ) ||
+      producerAdmission.deliverableSpecHash !==
+        sha256Hex(
+          canonicalize(
+            listing.offering.deliverable as unknown as Record<string, unknown>,
+          ),
+        ) ||
+      producerAdmission.admittedAt > session.agreement.commitment.finalizedAt
+    ) {
+      throw new DacsError(
+        "attested delivery requires the exact store-retained pre-commit DPA-1 producer admission",
+      );
+    }
+  }
   await verifiedDisposition("Listing/session IdentityBundle claim and key linkage", () =>
     provider.verifyListingPublisherIdentityLinkage({
       listingIdentity: snapshot(
@@ -1892,6 +2083,19 @@ async function auditResolvedDependencyGraph(
     }
   }
 
+  const fulfilledEvidence = resolved.get(
+    dependencySourceId(refSource(session.fulfilmentEvidenceRef)),
+  );
+  if (
+    !fulfilledEvidence ||
+    fulfilledEvidence.encoding === "bytes" ||
+    !exact(fulfilledEvidence.artifact, session.fulfilmentEvidence)
+  ) {
+    throw new DacsError(
+      "resolved fulfilment evidence differs from the exact durable handoff artifact",
+    );
+  }
+
   const settlementByRef = new Map<string, Record<string, unknown>>();
   const paymentBindingByRef = new Map<string, AuthenticatedPaymentBinding>();
   const unmatchedSettlementPhases = new Set(
@@ -1974,6 +2178,37 @@ async function auditResolvedDependencyGraph(
   }
   if (unmatchedSettlementPhases.size > 0) {
     throw new DacsError("SettlementEvidence inventory does not cover every executed settle phase");
+  }
+
+  const authorizationMatches = session.settlementEvidence.flatMap((ref) => {
+    const id = dependencySourceId(refSource(ref));
+    const evidence = settlementByRef.get(id);
+    const binding = paymentBindingByRef.get(id);
+    return evidence &&
+      binding &&
+      isSettlementEvidence(evidence) &&
+      evidence.phase.startsWith("pay-") &&
+      evidence.outcome === "success" &&
+      ref.contentHash === session.consumedPaymentAuthorization.evidenceHash &&
+      exact(
+        paymentAuthorizationEvidenceInput(evidence),
+        session.consumedPaymentAuthorization.evidenceInput,
+      )
+      ? [{ evidence, binding }]
+      : [];
+  });
+  if (
+    authorizationMatches.length !== 1 ||
+    authorizationMatches[0]!.binding.jobId !==
+      session.consumedPaymentAuthorization.jobId ||
+    authorizationMatches[0]!.binding.railId !==
+      session.consumedPaymentAuthorization.railId ||
+    authorizationMatches[0]!.binding.phaseIndex !==
+      session.consumedPaymentAuthorization.phaseIndex
+  ) {
+    throw new DacsError(
+      "consumed payment authorization does not bind exactly one authenticated SettlementEvidence payment phase",
+    );
   }
 
   for (const ref of session.settlementEvidence) {
@@ -2270,6 +2505,21 @@ async function verifyDependencies(
       throw new DacsError("bundle dependencies contain a duplicate source");
     }
     byId.set(id, candidate);
+  }
+
+  const fulfilmentEvidenceDependency = byId.get(
+    dependencySourceId(refSource(session.fulfilmentEvidenceRef)),
+  );
+  if (
+    !fulfilmentEvidenceDependency ||
+    !sameAnchorPublicationIdentity(
+      fulfilmentEvidenceDependency.anchorReceipt,
+      session.fulfilmentEvidenceAnchorReceipt,
+    )
+  ) {
+    throw new DacsError(
+      "seller fulfilment handoff receipt does not match the exact bundle dependency",
+    );
   }
 
   const suppliedSourceForRef = (
