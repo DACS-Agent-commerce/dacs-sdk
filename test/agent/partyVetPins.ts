@@ -5,6 +5,7 @@ import type {
 } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";
 import {
+  pinSessionRecipeRegistrySnapshot,
   pinSessionRecipeSelection,
   type DurableRecipeRequirementPath,
   type DurableSessionRecipePin,
@@ -13,13 +14,11 @@ import {
   createInMemoryFencedSessionStore,
 } from "../../src/agent/fencedSessionStore.js";
 import type {
+  CompositeBundleRequirement,
   CompositeClaimRequirement,
 } from "../../src/agent/compositeVerification.js";
 import {
   RECIPE_REGISTRY_INDEX_ADDRESS,
-  authenticateRecipeRegistrySnapshot,
-  resolveHistoricalRecipeFromSnapshot,
-  selectLatestRecipeAtSessionStart,
   type CurrentRecipeRegistryIndex,
   type RecipeRegistryIndexDocument,
   type RecipeRegistryRecipeRef,
@@ -37,6 +36,9 @@ export interface PartyVetPinSpec {
 export interface PartyVetPinFixtureInput {
   jobId: string;
   evaluatedParty: string;
+  sessionStartHash: string;
+  partyPlanHash: string;
+  bundleRequirement: CompositeBundleRequirement;
   recipes: readonly SignedRecipe[];
   attempts: readonly PartyVetPinSpec[];
   stewardSigner: string;
@@ -49,6 +51,15 @@ export interface PartyVetPinFixtureInput {
   now: number;
 }
 
+export type PartyVetPinRegistryFixtureInput = Pick<
+  PartyVetPinFixtureInput,
+  | "recipes"
+  | "stewardSigner"
+  | "stewardPublicKey"
+  | "verify"
+  | "now"
+>;
+
 function recipeRef(
   locator: string,
   artifact: Record<string, unknown>,
@@ -59,10 +70,10 @@ function recipeRef(
   };
 }
 
-/** Build genuine #143 runtime pins for party-Vet unit tests. */
-export async function createPartyVetPins(
-  input: PartyVetPinFixtureInput,
-): Promise<DurableSessionRecipePin[]> {
+/** Build the authenticated registry provider independently of pin storage. */
+export function createPartyVetPinRegistryProvider(
+  input: PartyVetPinRegistryFixtureInput,
+): RecipeRegistrySelectionProvider {
   const documents = new Map<string, Record<string, unknown>>();
   const refs = input.recipes.map((recipe) => {
     const artifact = recipe as unknown as Record<string, unknown>;
@@ -103,7 +114,7 @@ export async function createPartyVetPins(
     indexRef,
     receipt,
   };
-  const provider: RecipeRegistrySelectionProvider = {
+  return {
     resolveCurrentIndex: async () => structuredClone(current),
     authenticateCurrentIndex: () => "valid",
     readAnchoredJson: async (ref) => {
@@ -115,8 +126,13 @@ export async function createPartyVetPins(
     stewardPublicKey: Uint8Array.from(input.stewardPublicKey),
     verify: input.verify,
   };
-  const snapshot = await authenticateRecipeRegistrySnapshot(provider);
+}
 
+/** Build genuine #143 runtime pins for party-Vet unit tests. */
+export async function createPartyVetPins(
+  input: PartyVetPinFixtureInput,
+): Promise<DurableSessionRecipePin[]> {
+  const provider = createPartyVetPinRegistryProvider(input);
   const store = createInMemoryFencedSessionStore();
   await store.create({ jobId: input.jobId, now: 0 });
   const lease = await store.acquireLease({
@@ -126,6 +142,14 @@ export async function createPartyVetPins(
     now: 0,
   });
   if (!lease.ok) throw new Error(`party Vet pin fixture lease failed: ${lease.reason}`);
+  const sessionSnapshot = await pinSessionRecipeRegistrySnapshot({
+    store,
+    jobId: input.jobId,
+    sessionStartHash: input.sessionStartHash,
+    provider,
+    leaseToken: lease.lease,
+    now: 1,
+  });
 
   const pins: DurableSessionRecipePin[] = [];
   for (const attempt of input.attempts) {
@@ -137,26 +161,17 @@ export async function createPartyVetPins(
     if (method === undefined) {
       throw new Error(`party Vet pin fixture has no recipe for ${attempt.requirement.scheme}`);
     }
-    const selection = attempt.requirement.recipeVersion === undefined
-      ? selectLatestRecipeAtSessionStart(snapshot, {
-          scheme: attempt.requirement.scheme,
-          method,
-          required: true,
-        })
-      : resolveHistoricalRecipeFromSnapshot(snapshot, {
-          scheme: attempt.requirement.scheme,
-          method,
-          recipeVersion: attempt.requirement.recipeVersion,
-        });
     pins.push(await pinSessionRecipeSelection({
       store,
+      sessionSnapshot,
       jobId: input.jobId,
       evaluatedParty: input.evaluatedParty,
       requirementPath: attempt.requirementPath,
-      requirement: attempt.requirement,
-      selection,
+      bundleRequirement: input.bundleRequirement,
+      partyPlanHash: input.partyPlanHash,
+      requestedMethod: method,
       leaseToken: lease.lease,
-      now: 1,
+      now: 2,
     }));
   }
   return pins;

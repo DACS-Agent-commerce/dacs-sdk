@@ -11,6 +11,7 @@ import {
   isVerifyResult,
   partyVetCompositeAddress,
   partyVetCore,
+  partyVetPinScopeHash,
   privateKeyFromSeed,
   publicKeyFromRaw,
   publicKeyFromSeed,
@@ -18,6 +19,7 @@ import {
   sha256Hex,
   signComponentArtifact,
   signedBytes,
+  verifyCompositeVerificationRecord,
   type AttestationRef,
   type CompositeBundleRequirement,
   type FinalizedVetAnchor,
@@ -25,6 +27,7 @@ import {
   type FencedSessionStoreV2,
   type FencedSessionLeaseTokenV2,
   type IdentityBundle,
+  type ExpectedVerifyResult,
   type PartyVetDeps,
   type PartyVetRequest,
   type RecipeDescriptor,
@@ -554,16 +557,34 @@ function requirementAtPath(
 async function pinnedRequestAttempts(
   jobId: string,
   evaluatedParty: string,
+  identityBundle: IdentityBundle,
   requirement: CompositeBundleRequirement,
   specs: readonly {
     requirementPath: PartyVetRequest["attempts"][number]["requirementPath"];
     claimSubject: string;
     recipe: Awaited<ReturnType<typeof recipe>>;
+    classification?: "freshness" | "dealSpecific";
   }[],
 ): Promise<PartyVetRequest["attempts"]> {
+  const partyPlanHash = partyVetPinScopeHash({
+    jobId,
+    evaluatedParty,
+    identityBundle,
+    requirement,
+    verifier: { algorithm: "ed25519", signer: VERIFIER },
+    attempts: specs.map((spec) => ({
+      requirementPath: spec.requirementPath,
+      claimSubject: spec.claimSubject,
+      classification: spec.classification ?? "dealSpecific",
+      methodInput: { kind: "consensus-backed-proxy" as const },
+    })),
+  });
   const pins = await createPartyVetPins({
     jobId,
     evaluatedParty,
+    sessionStartHash: partyPlanHash,
+    partyPlanHash,
+    bundleRequirement: requirement,
     recipes: specs.map((spec) => spec.recipe),
     attempts: specs.map((spec) => ({
       requirementPath: spec.requirementPath,
@@ -579,6 +600,78 @@ async function pinnedRequestAttempts(
     attempt(spec.requirementPath, spec.claimSubject, pins[index]!));
 }
 
+async function storeCarriedResult(
+  harness: HarnessState,
+  subject: string,
+  options: {
+    fetchedAt?: number;
+    verifiedAt?: number;
+    validUntil?: number;
+    decision?: VerifyResult["decision"];
+    signingSeed?: Uint8Array;
+    corruptReadback?: boolean;
+  } = {},
+): Promise<NonNullable<IdentityBundle["claims"][number]["verifiedBy"]>> {
+  const separator = subject.indexOf(":");
+  const scheme = subject.slice(0, separator);
+  const identifier = subject.slice(separator + 1);
+  const result = await signComponentArtifact(
+    {
+      resultVersion: "1" as const,
+      scheme,
+      identifier,
+      recipeVersion: 1,
+      method: "consensus-backed-proxy" as const,
+      decision: options.decision ?? "pass",
+      reason: "authenticated carried verification",
+      attestation: {
+        anchor: {
+          kind: "https" as const,
+          locator: `https://authority.example/carried/${scheme}`,
+        },
+        contentHash: sha256Hex(`carried:${subject}`),
+        signer: "substrate-validator-set:demos-testnet:1",
+      },
+      fetchedAt: options.fetchedAt ?? NOW - 2_000,
+      verifiedAt: options.verifiedAt ?? NOW - 1_000,
+      ...(options.validUntil !== undefined
+        ? { validUntil: options.validUntil }
+        : {}),
+    },
+    "dacs-verifyresult:v1:",
+    {
+      algorithm: "ed25519",
+      signer: VERIFIER,
+      sign: (bytes) => ed25519Sign(
+        bytes,
+        privateKeyFromSeed(options.signingSeed ?? VERIFIER_SEED),
+      ),
+    },
+  );
+  const hash = contentHash(result as unknown as Record<string, unknown>);
+  const logicalAddress = `dacs2:carried:${subject}`;
+  const nativeAddress = `memory:${logicalAddress}:${hash}`;
+  const ref: AttestationRef = {
+    anchor: { kind: "storage-program", locator: nativeAddress },
+    contentHash: hash,
+  };
+  const artifact = structuredClone(result) as unknown as Record<string, unknown>;
+  if (options.corruptReadback) {
+    artifact.reason = "different bytes returned from the anchored address";
+  }
+  harness.artifacts.set(logicalAddress, {
+    logicalAddress,
+    artifact,
+    ref,
+    receipt: receiptFor(logicalAddress, nativeAddress, hash),
+  });
+  return {
+    anchor: structuredClone(ref.anchor),
+    contentHash: hash,
+    recipeVersion: 1,
+  };
+}
+
 async function singleClaimRequest(
   jobId: string,
   availability: RecipeDescriptor["availability"] = "live",
@@ -591,12 +684,13 @@ async function singleClaimRequest(
     ],
   };
   const signedRecipe = await recipe("alpha", availability);
+  const identityBundle = await bundle(subject, [subject]);
   return {
     jobId,
     evaluatedParty: subject,
-    identityBundle: await bundle(subject, [subject]),
+    identityBundle,
     requirement,
-    attempts: await pinnedRequestAttempts(jobId, subject, requirement, [{
+    attempts: await pinnedRequestAttempts(jobId, subject, identityBundle, requirement, [{
       requirementPath: { kind: "required", index: 0 },
       claimSubject: subject,
       recipe: signedRecipe,
@@ -627,7 +721,7 @@ describe("partyVetCore durable party-level producer", () => {
       evaluatedParty: alpha,
       identityBundle: identity,
       requirement,
-      attempts: await pinnedRequestAttempts(jobId, alpha, requirement, [
+      attempts: await pinnedRequestAttempts(jobId, alpha, identity, requirement, [
         {
           requirementPath: { kind: "required", index: 0 },
           claimSubject: alpha,
@@ -662,6 +756,84 @@ describe("partyVetCore durable party-level producer", () => {
     expect(harness.effects).toEqual({ methods: 2, signs: 3, anchors: 3 });
     expect(harness.checkpoints.size).toBe(3);
 
+    const expectedDealSpecific: ExpectedVerifyResult[] = [
+      {
+        ref: production.record.dealSpecific[0]!,
+        scheme: "alpha",
+        identifier: "alice",
+        method: "consensus-backed-proxy",
+        requirement: requirement.required[0]!,
+      },
+      {
+        ref: production.record.dealSpecific[1]!,
+        scheme: "beta",
+        identifier: "alice",
+        method: "consensus-backed-proxy",
+        requirement: requirement.required[1]!,
+      },
+    ];
+    const strict = await verifyCompositeVerificationRecord(
+      production.record,
+      {
+        jobId,
+        evaluatedParty: alpha,
+        bundleHash: identityBundleHash(identity),
+        requirement,
+        verifier: VERIFIER,
+        freshness: [],
+        dealSpecific: expectedDealSpecific,
+      },
+      {
+        nowMs: () => harness.now,
+        resolve: async (ref) => {
+          const stored = [...harness.artifacts.values()].find(
+            (entry) => entry.ref.anchor.locator === ref.anchor.locator,
+          );
+          if (stored) {
+            return {
+              encoding: "canonical-json" as const,
+              value: structuredClone(stored.artifact),
+            };
+          }
+          if (ref.anchor.locator.startsWith(
+            "https://authority.example/evidence/",
+          )) {
+            return {
+              encoding: "bytes" as const,
+              value: Uint8Array.from(Buffer.from(JSON.stringify({ ok: true }))),
+            };
+          }
+          return null;
+        },
+        resolveRecipe: async ({ scheme }) =>
+          scheme === "alpha"
+            ? alphaRecipe
+            : scheme === "beta"
+              ? betaRecipe
+              : null,
+        isRecipeSignerAuthorized: (_recipe, signature) =>
+          signature.signer === STEWARD,
+        isVerifyResultSignerAuthorized: (_result, signature) =>
+          signature.signer === VERIFIER,
+        resolvePublicKey: (signature) => {
+          if (signature.signer === VERIFIER) return VERIFIER_KEY;
+          if (signature.signer === STEWARD) return STEWARD_KEY;
+          return null;
+        },
+        verify: ({ signedBytes: bytes, signature, publicKey }) =>
+          ed25519Verify(
+            bytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(publicKey),
+          ),
+        verifyAuthorityAttestation: () => "valid",
+      },
+    );
+    expect(strict).toMatchObject({
+      status: "valid",
+      record: { overallDecision: "pass" },
+    });
+
     const replay = await partyVetCore(request, deps(harness));
     expect(canonicalize(replay)).toBe(canonicalize(production));
     expect(harness.effects).toEqual({ methods: 2, signs: 3, anchors: 3 });
@@ -689,16 +861,18 @@ describe("partyVetCore durable party-level producer", () => {
       groupIndex: 0,
       alternativeIndex: index,
     }));
+    const identity = await bundle(refs[0]!, refs);
     await activateEffectLease(harness, jobId);
     const production = await partyVetCore(
       {
         jobId,
         evaluatedParty: refs[0]!,
-        identityBundle: await bundle(refs[0]!, refs),
+        identityBundle: identity,
         requirement,
         attempts: await pinnedRequestAttempts(
           jobId,
           refs[0]!,
+          identity,
           requirement,
           refs.map((ref, index) => ({
             requirementPath: paths[index]!,
@@ -753,16 +927,18 @@ describe("partyVetCore durable party-level producer", () => {
       { kind: "oneOf", groupIndex: 1, alternativeIndex: 1 },
     ];
     const jobId = "job-party-precedence";
+    const identity = await bundle(refs[0]!, refs);
     await activateEffectLease(harness, jobId);
     const production = await partyVetCore(
       {
         jobId,
         evaluatedParty: refs[0]!,
-        identityBundle: await bundle(refs[0]!, refs),
+        identityBundle: identity,
         requirement,
         attempts: await pinnedRequestAttempts(
           jobId,
           refs[0]!,
+          identity,
           requirement,
           refs.map((ref, index) => ({
             requirementPath: paths[index]!,
@@ -788,12 +964,13 @@ describe("partyVetCore durable party-level producer", () => {
         { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
       ],
     };
+    const identity = await bundle(subject, [subject]);
     const request: PartyVetRequest = {
       jobId,
       evaluatedParty: subject,
-      identityBundle: await bundle(subject, [subject]),
+      identityBundle: identity,
       requirement,
-      attempts: await pinnedRequestAttempts(jobId, subject, requirement, [{
+      attempts: await pinnedRequestAttempts(jobId, subject, identity, requirement, [{
         requirementPath: { kind: "required", index: 0 },
         claimSubject: subject,
         recipe: alphaRecipe,
@@ -811,7 +988,8 @@ describe("partyVetCore durable party-level producer", () => {
     expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
 
     const bob = "alpha:bob";
-    const bobAttempts = await pinnedRequestAttempts(jobId, bob, requirement, [{
+    const bobIdentity = await bundle(bob, [bob]);
+    const bobAttempts = await pinnedRequestAttempts(jobId, bob, bobIdentity, requirement, [{
       requirementPath: { kind: "required", index: 0 },
       claimSubject: bob,
       recipe: alphaRecipe,
@@ -820,7 +998,7 @@ describe("partyVetCore durable party-level producer", () => {
       {
         ...request,
         evaluatedParty: bob,
-        identityBundle: await bundle(bob, [bob]),
+        identityBundle: bobIdentity,
         attempts: bobAttempts,
       },
       deps(harness),
@@ -877,6 +1055,29 @@ describe("partyVetCore durable party-level producer", () => {
     )).rejects.toThrow(/disabled|provenance bindings/);
   });
 
+  test("rejects a presence-only requirement instead of signing a CVR that strict aggregation would fail", async () => {
+    const harness = state();
+    const subject = "alpha:alice";
+    const jobId = "job-party-presence-only";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "alpha", verificationRequired: false }],
+    };
+    await activateEffectLease(harness, jobId);
+    await expect(partyVetCore(
+      {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: await bundle(subject, [subject]),
+        requirement,
+        attempts: [],
+      },
+      deps(harness),
+    )).rejects.toThrow(/strict CVR.*presence-only required claim/);
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+    expect(harness.checkpoints.size).toBe(0);
+  });
+
   test("rejects an unauthenticated presentation before method, sign, anchor or checkpoint", async () => {
     const harness = state();
     const request = await singleClaimRequest("job-party-bad-presentation");
@@ -888,6 +1089,279 @@ describe("partyVetCore durable party-level producer", () => {
     expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
     expect(harness.checkpoints.size).toBe(0);
   });
+
+  test("ignores self-reported issuedAt without verifiedBy and performs deal-specific verification", async () => {
+    const harness = state();
+    const subject = "alpha:alice";
+    const jobId = "job-party-self-reported-issued-at";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+      ],
+    };
+    const identity = await bundle(subject, [subject], [{
+      ref: subject,
+      issuedAt: NOW + 10_000,
+      expiresAt: NOW + 20_000,
+    }]);
+    const request: PartyVetRequest = {
+      jobId,
+      evaluatedParty: subject,
+      identityBundle: identity,
+      requirement,
+      attempts: await pinnedRequestAttempts(
+        jobId,
+        subject,
+        identity,
+        requirement,
+        [{
+          requirementPath: { kind: "required", index: 0 },
+          claimSubject: subject,
+          recipe: await recipe("alpha"),
+          classification: "dealSpecific",
+        }],
+      ),
+    };
+    await activateEffectLease(harness, jobId);
+
+    const production = await partyVetCore(request, deps(harness));
+    expect(production.record.freshness).toEqual([]);
+    expect(production.record.dealSpecific).toHaveLength(1);
+    expect(production.record.overallDecision).toBe("pass");
+  });
+
+  test("authenticates a carried VerifyResult before classifying the new result as freshness", async () => {
+    const harness = state();
+    const subject = "alpha:alice";
+    const jobId = "job-party-carried-result";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+      ],
+    };
+    const verifiedBy = await storeCarriedResult(harness, subject, {
+      validUntil: NOW + 10_000,
+    });
+    const identity = await bundle(subject, [subject], [{
+      ref: subject,
+      verifiedBy,
+      issuedAt: NOW - 2_000,
+      expiresAt: NOW + 5_000,
+    }]);
+    const request: PartyVetRequest = {
+      jobId,
+      evaluatedParty: subject,
+      identityBundle: identity,
+      requirement,
+      attempts: await pinnedRequestAttempts(
+        jobId,
+        subject,
+        identity,
+        requirement,
+        [{
+          requirementPath: { kind: "required", index: 0 },
+          claimSubject: subject,
+          recipe: await recipe("alpha"),
+          classification: "freshness",
+        }],
+      ),
+    };
+    await activateEffectLease(harness, jobId);
+
+    const production = await partyVetCore(request, deps(harness));
+    expect(production.record.freshness).toHaveLength(1);
+    expect(production.record.dealSpecific).toEqual([]);
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+  });
+
+  test.each([
+    {
+      label: "expired authority and presenter windows",
+      carried: {
+        fetchedAt: NOW - 3_000,
+        verifiedAt: NOW - 2_000,
+        validUntil: NOW - 1,
+      },
+      claimTimes: {
+        // Presenter extensions are ignored/clamped; they never widen authority.
+        issuedAt: NOW + 10_000,
+        expiresAt: NOW + 20_000,
+      },
+    },
+    {
+      label: "an expired recipe-default window with no validUntil",
+      carried: {
+        fetchedAt: NOW - 3_700_100,
+        verifiedAt: NOW - 3_700_000,
+      },
+      claimTimes: {},
+    },
+  ] as const)(
+    "authenticates and refreshes $label instead of reusing stale evidence",
+    async ({ label, carried, claimTimes }) => {
+      const harness = state();
+      const subject = "alpha:alice";
+      const jobId = `job-party-refresh-${sha256Hex(label)}`;
+      const requirement: CompositeBundleRequirement = {
+        requirementVersion: "1",
+        required: [{
+          scheme: "alpha",
+          verificationRequired: true,
+          recipeVersion: 1,
+          maxAge: 60,
+        }],
+      };
+      const verifiedBy = await storeCarriedResult(harness, subject, carried);
+      const identity = await bundle(subject, [subject], [{
+        ref: subject,
+        verifiedBy,
+        ...claimTimes,
+      }]);
+      const request: PartyVetRequest = {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: identity,
+        requirement,
+        attempts: await pinnedRequestAttempts(
+          jobId,
+          subject,
+          identity,
+          requirement,
+          [{
+            requirementPath: { kind: "required", index: 0 },
+            claimSubject: subject,
+            recipe: await recipe("alpha"),
+            classification: "freshness",
+          }],
+        ),
+      };
+      await activateEffectLease(harness, jobId);
+
+      const production = await partyVetCore(request, deps(harness));
+      expect(production.record.freshness).toHaveLength(1);
+      expect(production.record.freshness[0]!.anchor.locator).not.toBe(
+        verifiedBy.anchor.locator,
+      );
+      expect(production.record.freshness[0]!.contentHash).not.toBe(
+        verifiedBy.contentHash,
+      );
+      expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+    },
+  );
+
+  test("does not grant freshness provenance to a carried non-pass result", async () => {
+    const harness = state();
+    const subject = "alpha:alice";
+    const jobId = "job-party-carried-prior-fail";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+      ],
+    };
+    const verifiedBy = await storeCarriedResult(harness, subject, {
+      decision: "fail",
+    });
+    const identity = await bundle(subject, [subject], [{ ref: subject, verifiedBy }]);
+    const request: PartyVetRequest = {
+      jobId,
+      evaluatedParty: subject,
+      identityBundle: identity,
+      requirement,
+      attempts: await pinnedRequestAttempts(
+        jobId,
+        subject,
+        identity,
+        requirement,
+        [{
+          requirementPath: { kind: "required", index: 0 },
+          claimSubject: subject,
+          recipe: await recipe("alpha"),
+          classification: "dealSpecific",
+        }],
+      ),
+    };
+    await activateEffectLease(harness, jobId);
+
+    const production = await partyVetCore(request, deps(harness));
+    expect(production.record.freshness).toEqual([]);
+    expect(production.record.dealSpecific).toHaveLength(1);
+    expect(production.record.overallDecision).toBe("pass");
+  });
+
+  test.each([
+    {
+      label: "a cryptographically invalid component signature",
+      carried: { signingSeed: new Uint8Array(32).fill(99) },
+      claimExpiresAt: undefined,
+      expected: /component signature is not authenticated/,
+    },
+    {
+      label: "future authenticated timestamps",
+      carried: { verifiedAt: NOW + 1 },
+      claimExpiresAt: undefined,
+      expected: /future or inconsistent timestamps/,
+    },
+    {
+      label: "anchored readback bytes that do not match the bound hash",
+      carried: { corruptReadback: true },
+      claimExpiresAt: undefined,
+      expected: /carried VerifyResult.*mismatched/,
+    },
+    {
+      label: "an expired presenter clamp",
+      carried: {},
+      claimExpiresAt: NOW - 1,
+      expected: /expired presenter clamp/,
+    },
+  ] as const)(
+    "rejects carried evidence with $label before any party Vet effect",
+    async ({ label, carried, claimExpiresAt, expected }) => {
+      const harness = state();
+      const subject = "alpha:alice";
+      const jobId = `job-party-bad-carried-${sha256Hex(label)}`;
+      const requirement: CompositeBundleRequirement = {
+        requirementVersion: "1",
+        required: [
+          { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+        ],
+      };
+      const verifiedBy = await storeCarriedResult(harness, subject, carried);
+      const identity = await bundle(subject, [subject], [{
+        ref: subject,
+        verifiedBy,
+        issuedAt: NOW - 2_000,
+        ...(claimExpiresAt !== undefined
+          ? { expiresAt: claimExpiresAt }
+          : {}),
+      }]);
+      const request: PartyVetRequest = {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: identity,
+        requirement,
+        attempts: await pinnedRequestAttempts(
+          jobId,
+          subject,
+          identity,
+          requirement,
+          [{
+            requirementPath: { kind: "required", index: 0 },
+            claimSubject: subject,
+            recipe: await recipe("alpha"),
+            classification: "freshness",
+          }],
+        ),
+      };
+      await activateEffectLease(harness, jobId);
+
+      await expect(partyVetCore(request, deps(harness))).rejects.toThrow(expected);
+      expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+      expect(harness.checkpoints.size).toBe(0);
+    },
+  );
 
   test("rejects a signer returning random bytes before result anchoring", async () => {
     const harness = state();

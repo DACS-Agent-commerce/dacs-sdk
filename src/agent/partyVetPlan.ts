@@ -106,7 +106,7 @@ export interface PartyVetPlanInput {
 export interface PartyVetPlannedRequirement {
   requirementPath: PartyVetRequirementPath;
   requirement: CompositeClaimRequirement;
-  disposition: "attempt" | "presence-pass" | "absent";
+  disposition: "attempt" | "absent";
   attemptId?: string;
 }
 
@@ -139,6 +139,8 @@ export interface PartyVetPlan {
   planHash: string;
   /** Pre-pin scope hash consumed by #143; deliberately excludes recipe pins. */
   pinScopeHash: string;
+  /** Exact job-wide registry snapshot shared by every attempt pin. */
+  sessionRecipeRegistrySnapshotHash?: string;
   jobId: string;
   evaluatedParty: string;
   identityBundle: IdentityBundle;
@@ -455,7 +457,7 @@ function expectedAttemptPaths(
   requirementPaths: Array<{
     requirementPath: PartyVetRequirementPath;
     requirement: CompositeClaimRequirement;
-    disposition: "attempt" | "presence-pass" | "absent";
+    disposition: "attempt" | "absent";
   }>;
 } {
   const carriedFor = (scheme: string): boolean => {
@@ -471,24 +473,16 @@ function expectedAttemptPaths(
   const requirementPaths: Array<{
     requirementPath: PartyVetRequirementPath;
     requirement: CompositeClaimRequirement;
-    disposition: "attempt" | "presence-pass" | "absent";
+    disposition: "attempt" | "absent";
   }> = [];
   for (let index = 0; index < requirement.required.length; index += 1) {
     const claim = requirement.required[index]!;
     const carried = carriedFor(claim.scheme);
     const requirementPath = { kind: "required" as const, index };
     if (!claim.verificationRequired) {
-      if (claim.parameters !== undefined) {
-        throw new DacsError(
-          "presence-only parameter matching requires a scheme authenticator before party Vet planning",
-        );
-      }
-      requirementPaths.push({
-        requirementPath,
-        requirement: claim,
-        disposition: carried ? "presence-pass" : "absent",
-      });
-      continue;
+      throw new DacsError(
+        "party Vet cannot emit a strict CVR for a presence-only required claim",
+      );
     }
     requirementPaths.push({
       requirementPath,
@@ -509,17 +503,9 @@ function expectedAttemptPaths(
         alternativeIndex,
       };
       if (!claim.verificationRequired) {
-        if (claim.parameters !== undefined) {
-          throw new DacsError(
-            "presence-only parameter matching requires a scheme authenticator before party Vet planning",
-          );
-        }
-        requirementPaths.push({
-          requirementPath,
-          requirement: claim,
-          disposition: carried ? "presence-pass" : "absent",
-        });
-        continue;
+        throw new DacsError(
+          "party Vet cannot emit a strict CVR for a presence-only oneOf claim",
+        );
       }
       requirementPaths.push({
         requirementPath,
@@ -901,8 +887,24 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
   const bundleHash = identityBundleHash(identityBundle);
   const requirementHash = sha256Hex(canonicalize(requirement));
   const recordAddress = partyVetCompositeAddress(jobId, evaluatedParty);
+  const pinScopeHash = partyVetPinScopeHash({
+    jobId,
+    evaluatedParty,
+    identityBundle,
+    requirement,
+    verifier,
+    attempts: captured.map((attempt) => ({
+      requirementPath: attempt.requirementPath,
+      claimSubject: attempt.claimSubject,
+      classification: attempt.classification,
+      methodInput: attempt.methodInput,
+    })),
+    supplementary,
+    ...(warnings !== undefined ? { warnings } : {}),
+  });
   const plannedAttempts: PartyVetRequirementAttempt[] = [];
   const resultAddresses = new Set<string>();
+  let sessionRecipeRegistrySnapshotHash: string | undefined;
   for (let index = 0; index < captured.length; index += 1) {
     const attempt = captured[index]!;
     const claimRequirement = requirementAt(requirement, attempt.requirementPath);
@@ -914,6 +916,9 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     if (
       recipePin.jobId !== jobId ||
       recipePin.evaluatedParty !== evaluatedParty ||
+      !canonicalEqual(recipePin.bundleRequirement, requirement) ||
+      recipePin.bundleRequirementHash !== requirementHash ||
+      recipePin.partyPlanHash !== pinScopeHash ||
       !canonicalEqual(recipePin.requirementPath, attempt.requirementPath) ||
       !canonicalEqual(recipePin.requirement, claimRequirement) ||
       recipePin.requirementHash !== sha256Hex(canonicalize(claimRequirement))
@@ -922,6 +927,15 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
         `party Vet attempt ${index} durable recipe pin does not bind this party and requirement path`,
       );
     }
+    if (
+      sessionRecipeRegistrySnapshotHash !== undefined &&
+      sessionRecipeRegistrySnapshotHash !== recipePin.sessionSnapshotHash
+    ) {
+      throw new DacsError(
+        "party Vet attempt pins do not share one job-wide registry snapshot",
+      );
+    }
+    sessionRecipeRegistrySnapshotHash = recipePin.sessionSnapshotHash;
     const { scheme } = claimParts(
       attempt.claimSubject,
       `party Vet attempt ${index} claimSubject`,
@@ -1090,21 +1104,10 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
 
   const planPayload = deepFreeze({
     planVersion: "1" as const,
-    pinScopeHash: partyVetPinScopeHash({
-      jobId,
-      evaluatedParty,
-      identityBundle,
-      requirement,
-      verifier,
-      attempts: captured.map((attempt) => ({
-        requirementPath: attempt.requirementPath,
-        claimSubject: attempt.claimSubject,
-        classification: attempt.classification,
-        methodInput: attempt.methodInput,
-      })),
-      supplementary,
-      ...(warnings !== undefined ? { warnings } : {}),
-    }),
+    pinScopeHash,
+    ...(sessionRecipeRegistrySnapshotHash !== undefined
+      ? { sessionRecipeRegistrySnapshotHash }
+      : {}),
     jobId,
     evaluatedParty,
     identityBundle,
@@ -1196,7 +1199,6 @@ function nextAttempt(
         entry.requirementPath.groupIndex === groupIndex,
     );
     for (const entry of groupPaths) {
-      if (entry.disposition === "presence-pass") break;
       if (entry.disposition === "absent") continue;
       const attempt = plan.attempts.find(
         (candidate) => candidate.attemptId === entry.attemptId,
@@ -1234,10 +1236,6 @@ function skippedAttemptIds(
         }
         continue;
       }
-      if (entry.disposition === "presence-pass") {
-        satisfied = true;
-        continue;
-      }
       if (entry.attemptId !== undefined) {
         const attempt = plan.attempts.find(
           (candidate) => candidate.attemptId === entry.attemptId,
@@ -1270,11 +1268,9 @@ function aggregateComplete(
     const attempt = entry.attemptId === undefined
       ? undefined
       : plan.attempts.find((candidate) => candidate.attemptId === entry.attemptId);
-    const decision = entry.disposition === "presence-pass"
-      ? "pass"
-      : attempt
-        ? effectiveAttemptDecision(attempt, completed.get(attempt.attemptId))
-        : "fail";
+    const decision = attempt
+      ? effectiveAttemptDecision(attempt, completed.get(attempt.attemptId))
+      : "fail";
     if (decision === "pass") continue;
     if (decision === "fail" || decision === undefined) {
       failures.push(pathKey(entry.requirementPath));
@@ -1293,7 +1289,6 @@ function aggregateComplete(
           entry.requirementPath.groupIndex === groupIndex,
       )
       .map((entry): VerificationDecision => {
-        if (entry.disposition === "presence-pass") return "pass";
         if (entry.attemptId === undefined) return "fail";
         const attempt = plan.attempts.find(
           (candidate) => candidate.attemptId === entry.attemptId,
