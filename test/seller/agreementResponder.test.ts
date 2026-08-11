@@ -893,8 +893,12 @@ describe("durable seller fixed-price agreement proposal responder", () => {
   test("callback arguments are isolated snapshots and cannot rewrite durable authority", async () => {
     const h = await harness();
     const originalResolver = h.durability.resolveAuthenticatedAgreementContext;
+    let observedCandidate = false;
     h.durability.resolveAuthenticatedAgreementContext = async (query) => {
+      observedCandidate = canonicalize(query.candidateDraft) ===
+        canonicalize(h.request.input.proposal.plan.draft);
       (query as { jobId: string }).jobId = "mutated-query";
+      query.candidateDraft.terms.price.amount = "999";
       return originalResolver(query);
     };
     const originalPublish = h.durability.transport.publishSellerContribution;
@@ -913,5 +917,7 @@ describe("durable seller fixed-price agreement proposal responder", () => {
     expect(result.result.transportIdentity.buyer).toBe(BUYER);
     expect(result.result.sellerContribution.party).toBe(SELLER);
     expect(h.request.input.transportIdentity.buyer).toBe(BUYER);
+    expect(h.request.input.proposal.plan.draft.terms.price.amount).toBe("2");
+    expect(observedCandidate).toBe(true);
   });
 });
