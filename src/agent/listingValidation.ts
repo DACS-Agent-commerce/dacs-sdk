@@ -343,6 +343,11 @@ function handlerCheck(
 ): ListingRailResolutionResult | null {
   for (const phase of payPhases) {
     const matching = definitions.filter((definition) => definition.railId === phase.rail);
+    if (matching.length === 0) {
+      // LRR-5: a required definition that cannot be resolved is indeterminate,
+      // never a vacuous handler pass. LR-3 still blocks session admission.
+      return railResult("indeterminate", "rail-definition-unavailable");
+    }
     if (
       matching.some(
         (definition) =>

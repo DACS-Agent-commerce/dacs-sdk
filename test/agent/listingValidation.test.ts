@@ -62,6 +62,27 @@ describe("DACS-1 §6.3.4 LRR-1..LRR-6", () => {
     });
   }
 
+  it("does not treat an empty pay-rail definition match as a handler pass", () => {
+    expect(
+      resolveListingRails({
+        trustPhase: "PA-2",
+        payPhases: [{ kind: "pay-x402", rail: "x402:default" }],
+        acceptedRails: [{ railId: "x402:default" }],
+        registry: {
+          state: "verified-finalized",
+          entries: [
+            { railId: "x402:default", latestVersion: 1, versions: [1] },
+          ],
+          definitions: [],
+        },
+      }),
+    ).toEqual({
+      disposition: "indeterminate",
+      reason: "rail-definition-unavailable",
+      authorityBasis: "pa2",
+    });
+  });
+
 });
 
 describe("DACS-1 §6.3.4 RB-1..RB-6", () => {
