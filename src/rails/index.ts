@@ -134,12 +134,18 @@ export {
   prepareX402BuyerSettlement,
   createX402BuyerPaidRequestTransport,
   type X402BuyerChallengeClient,
+  type X402BuyerPreparationAuthority,
   type PrepareX402BuyerSettlementInput,
   type PrepareX402BuyerSettlementDeps,
   type X402BuyerSettlementPreparation,
   type X402BuyerPaidRequestTransportOptions,
   type X402BuyerHeaderInit,
 } from "./x402BuyerTransport.js";
+export {
+  createDacsX402BuyerEvmChallengeClient,
+  type DacsX402BuyerEvmChallengeClient,
+  type DacsX402BuyerEvmChallengeClientConfig,
+} from "./x402BuyerDacsEvm.js";
 export {
   createIdempotencyStore,
   createInMemorySettlementLog,

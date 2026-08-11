@@ -15,7 +15,7 @@ const MAX_CHALLENGE_CHARACTERS = 1_048_576;
 const PAYMENT_SIGNATURE = "PAYMENT-SIGNATURE";
 const PAYMENT_RESPONSE = "PAYMENT-RESPONSE";
 
-type PreparedAuthority = Omit<
+export type X402BuyerPreparationAuthority = Omit<
   X402BuyerSettlementIntentDraft,
   | "chosenRequirements"
   | "signedPaymentPayload"
@@ -25,6 +25,10 @@ type PreparedAuthority = Omit<
 
 /** Structural subset shared by `x402Client` and `x402HTTPClient`. */
 export interface X402BuyerChallengeClient {
+  /** Optional local authority filter applied before any signing operation. */
+  isPaymentRequirementsAuthorized?(
+    requirements: Readonly<X402BuyerPaymentRequirements>,
+  ): boolean;
   getPaymentRequiredResponse(
     getHeader: (name: string) => string | null | undefined,
     body?: unknown,
@@ -35,7 +39,7 @@ export interface X402BuyerChallengeClient {
 
 export interface PrepareX402BuyerSettlementInput {
   /** Complete authenticated DACS authority, excluding challenge-derived fields. */
-  authority: Readonly<PreparedAuthority>;
+  authority: Readonly<X402BuyerPreparationAuthority>;
   /** Optional non-authority request headers for the unpaid GET. */
   challengeHeaders?: X402BuyerHeaderInit;
 }
@@ -81,7 +85,9 @@ function hasOnlyUnicodeScalars(value: string): boolean {
   return true;
 }
 
-function captureAuthority(value: unknown): Readonly<PreparedAuthority> | null {
+export function captureX402BuyerPreparationAuthority(
+  value: unknown,
+): Readonly<X402BuyerPreparationAuthority> | null {
   const keys = [
     "jobId",
     "phaseIndex",
@@ -137,7 +143,7 @@ function captureAuthority(value: unknown): Readonly<PreparedAuthority> | null {
   } catch {
     return null;
   }
-  return Object.freeze(data as unknown as PreparedAuthority);
+  return Object.freeze(data as unknown as X402BuyerPreparationAuthority);
 }
 
 function sameAddress(left: unknown, right: string): boolean {
@@ -159,7 +165,8 @@ function asRequirements(value: unknown): X402BuyerPaymentRequirements | null {
 
 function chosenRequirements(
   paymentRequired: unknown,
-  authority: Readonly<PreparedAuthority>,
+  authority: Readonly<X402BuyerPreparationAuthority>,
+  client: Readonly<X402BuyerChallengeClient>,
 ): {
   paymentRequired: Record<string, unknown>;
   requirements: X402BuyerPaymentRequirements;
@@ -184,6 +191,12 @@ function chosenRequirements(
         requirements.extra.name.length === 0 ||
         typeof requirements.extra.version !== "string" ||
         requirements.extra.version.length === 0) continue;
+    try {
+      if (client.isPaymentRequirementsAuthorized &&
+          client.isPaymentRequirementsAuthorized(requirements) !== true) continue;
+    } catch {
+      continue;
+    }
     const scoped = structuredClone(snapshot);
     scoped.accepts = [structuredClone(requirements)];
     return { paymentRequired: scoped, requirements };
@@ -233,7 +246,7 @@ export async function prepareX402BuyerSettlement(
   input: Readonly<PrepareX402BuyerSettlementInput>,
   deps: Readonly<PrepareX402BuyerSettlementDeps>,
 ): Promise<X402BuyerSettlementPreparation> {
-  const authority = captureAuthority(input?.authority);
+  const authority = captureX402BuyerPreparationAuthority(input?.authority);
   if (!authority) {
     return { disposition: "rejected", reason: "x402-settlement-authority-invalid" };
   }
@@ -245,6 +258,8 @@ export async function prepareX402BuyerSettlement(
   }
   const fetchImpl = deps?.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function" || !deps?.client ||
+      (deps.client.isPaymentRequirementsAuthorized !== undefined &&
+        typeof deps.client.isPaymentRequirementsAuthorized !== "function") ||
       typeof deps.client.getPaymentRequiredResponse !== "function" ||
       typeof deps.client.createPaymentPayload !== "function" ||
       typeof deps.client.encodePaymentSignatureHeader !== "function") {
@@ -275,7 +290,7 @@ export async function prepareX402BuyerSettlement(
   } catch {
     return { disposition: "rejected", reason: "x402-payment-required-response-invalid" };
   }
-  const selected = chosenRequirements(paymentRequired, authority);
+  const selected = chosenRequirements(paymentRequired, authority, deps.client);
   if (!selected) {
     return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
   }
