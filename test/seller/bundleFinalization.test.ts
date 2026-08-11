@@ -31,10 +31,12 @@ import {
 import {
   attestationBundleHash,
 } from "../../src/agent/twoSidedBundle.js";
-import type {
-  SellerFulfilmentAgreement,
-  SellerFulfilmentResult,
+import {
+  sellerFulfilmentId,
+  type SellerFulfilmentAgreement,
+  type SellerFulfilmentResult,
 } from "../../src/agent/runFulfilmentCore.js";
+import type { SellerPaymentEvidenceInput } from "../../src/seller/paymentIntake.js";
 import {
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
@@ -436,7 +438,7 @@ function fixture(
   const interimPaymentRef = interimPaymentArtifact
     ? ref("payment-interim", interimPaymentArtifact)
     : undefined;
-  const paymentArtifact = {
+  const paymentEvidenceInput = {
     evidenceVersion: "1" as const,
     jobId: "seller-finalization-17",
     phase: "pay-x402" as const,
@@ -458,6 +460,9 @@ function fixture(
       finalityObservedAt: NOW - 4_000,
     },
     observedAt: NOW - 4_000,
+  } satisfies SellerPaymentEvidenceInput;
+  const paymentArtifact = {
+    ...paymentEvidenceInput,
     ...(interimPaymentRef ? { supersedesEvidenceRef: interimPaymentRef } : {}),
     signature: {
       algorithm: "ed25519" as const,
@@ -466,11 +471,19 @@ function fixture(
     },
   };
   const paymentRef = ref("payment", paymentArtifact);
-  const repeatedPaymentArtifact = repeatedPayment
-    ? {
-        ...paymentArtifact,
+  const repeatedPaymentEvidenceInput = repeatedPayment
+    ? ({
+        ...paymentEvidenceInput,
+        settlementFinality: {
+          ...paymentEvidenceInput.settlementFinality,
+          finalityObservedAt: NOW - 3_500,
+        },
         observedAt: NOW - 3_500,
-        supersedesEvidenceRef: undefined,
+      } satisfies SellerPaymentEvidenceInput)
+    : undefined;
+  const repeatedPaymentArtifact = repeatedPaymentEvidenceInput
+    ? {
+        ...repeatedPaymentEvidenceInput,
         signature: {
           algorithm: "ed25519" as const,
           signer: SELLER,
@@ -478,7 +491,6 @@ function fixture(
         },
       }
     : undefined;
-  if (repeatedPaymentArtifact) delete repeatedPaymentArtifact.supersedesEvidenceRef;
   const repeatedPaymentRef = repeatedPaymentArtifact
     ? ref("payment-repeat", repeatedPaymentArtifact)
     : undefined;
@@ -583,10 +595,62 @@ function fixture(
     : undefined;
   const fulfilment: Extract<SellerFulfilmentResult, { decision: "completed" }> = {
     decision: "completed",
-    fulfilmentId: "fulfilment-17",
-    evidence: deliveryEvidence,
+    fulfilmentId: sellerFulfilmentId({
+      jobId: "seller-finalization-17",
+      paymentPhaseIndex: 2,
+      deliveryPhaseIndex: deliveryIndex,
+      settlementId: `evm:8453:${"2".repeat(64)}:0`,
+      agreementHash: agreementRef.contentHash,
+      paymentEvidenceHash: sha256Hex(canonicalize(paymentEvidenceInput)),
+    }),
+    evidence: structuredClone(deliveryEvidence),
     evidenceHash: deliveryHash,
     evidenceRef: deliveryRef,
+    evidenceAnchorReceipt: receipt(deliveryHash, deliveryRef.anchor.locator),
+    consumedPaymentAuthorization: {
+      jobId: "seller-finalization-17",
+      phaseIndex: 2,
+      agreementHash: agreementRef.contentHash,
+      listingRef: listingPin,
+      railId: "x402:default",
+      railRegistryVersion: 7,
+      commitment: {
+        ref: "commitment:seller-finalization-17",
+        contentHash: commitmentRef.contentHash,
+        finalizedAt: NOW - 11_000,
+      },
+      settlementIdentity: {
+        kind: "evm",
+        chainId: 8453,
+        txHash: `0x${"2".repeat(64)}`,
+        logIndex: 0,
+        includedAt: NOW - 4_500,
+      },
+      settlementId: `evm:8453:${"2".repeat(64)}:0`,
+      evidenceHash: sha256Hex(canonicalize(paymentEvidenceInput)),
+      evidenceInput: structuredClone(paymentEvidenceInput),
+      payoutBindingTier: 1,
+      sessionBinding: "established",
+      ...(attested
+        ? {
+            payloadVerificationProducerAdmission: {
+              operation: "produce" as const,
+              disposition: "supported" as const,
+              listingRef: listingPin,
+              verificationMethodKind: verificationMethod!.kind,
+              verificationMethodHash: sha256Hex(
+                canonicalize(
+                  verificationMethod as unknown as Record<string, unknown>,
+                ),
+              ),
+              deliverableSpecHash: sha256Hex(
+                canonicalize(deliverable as unknown as Record<string, unknown>),
+              ),
+              admittedAt: NOW - 13_000,
+            },
+          }
+        : {}),
+    },
     bundleContribution: {
       phaseSummary: {
         index: deliveryIndex,
@@ -611,13 +675,12 @@ function fixture(
         canonicalize(deliverable as unknown as Record<string, unknown>),
       ),
     },
-    signaturesVerified: true,
     commitment: {
       status: "finalized",
       ref: "commitment:seller-finalization-17",
       agreementHash: agreementRef.contentHash,
       recordContentHash: commitmentRef.contentHash,
-      finalizedAt: NOW - 1_000,
+      finalizedAt: NOW - 11_000,
     },
   };
 
@@ -706,7 +769,12 @@ function fixture(
           index: 2,
           step: pipeline[2]!,
           invokedAt: NOW - 5_000,
-          result: { ok: true, attestationRef: paymentRef, contextDelta: {} },
+          result: {
+            ok: true,
+            txRefs: structuredClone(paymentEvidenceInput.paymentTxRefs),
+            attestationRef: paymentRef,
+            contextDelta: {},
+          },
           contextDelta: {},
         },
         {
@@ -717,6 +785,9 @@ function fixture(
                 invokedAt: NOW - 3_500,
                 result: {
                   ok: true,
+                  txRefs: structuredClone(
+                    repeatedPaymentEvidenceInput!.paymentTxRefs,
+                  ),
                   attestationRef: repeatedPaymentRef,
                   contextDelta: {},
                 },
@@ -906,6 +977,13 @@ function fixture(
       deliveryEvidence.deliverableAnchor.locator,
     ),
   ];
+  const commitmentDependency = input.dependencies.find(
+    (candidate) =>
+      candidate.source.kind === "attestation-ref" &&
+      candidate.source.ref.contentHash === commitmentRef.contentHash,
+  )!;
+  commitmentDependency.anchorReceipt.blockRef!.timestamp =
+    agreement.commitment.finalizedAt;
   const request = prepareCompletedSellerBundleCounterSignatureRequest(input);
   input.counterSignatures = [
     {
@@ -1001,7 +1079,29 @@ function fixture(
     sellerIdentityHash,
     sellerSessionBundleHash,
     listingPublisher,
+    paymentEvidenceInput,
+    repeatedPaymentEvidenceInput,
+    paymentRef,
+    repeatedPaymentRef,
   };
+}
+
+function bindConsumedAuthorizationToRepeatedPayment(
+  f: ReturnType<typeof fixture>,
+): void {
+  const evidenceInput = structuredClone(f.repeatedPaymentEvidenceInput!);
+  const authorization = f.input.fulfilment.consumedPaymentAuthorization;
+  authorization.phaseIndex = 3;
+  authorization.evidenceInput = evidenceInput;
+  authorization.evidenceHash = f.repeatedPaymentRef!.contentHash;
+  f.input.fulfilment.fulfilmentId = sellerFulfilmentId({
+    jobId: authorization.jobId,
+    paymentPhaseIndex: authorization.phaseIndex,
+    deliveryPhaseIndex: f.input.fulfilment.bundleContribution.phaseSummary.index,
+    settlementId: authorization.settlementId,
+    agreementHash: authorization.agreementHash,
+    paymentEvidenceHash: authorization.evidenceHash,
+  });
 }
 
 describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
@@ -1064,6 +1164,59 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     expect(f.provider.publishBundleBinding).not.toHaveBeenCalled();
     expect(f.buyerSign).toHaveBeenCalled();
     expect(f.sellerSign).toHaveBeenCalled();
+  });
+
+  test("advances an included fulfilment handoff receipt to the same finalized publication", async () => {
+    const f = fixture();
+    f.input.fulfilment.evidenceAnchorReceipt = {
+      ...f.input.fulfilment.evidenceAnchorReceipt,
+      state: "included",
+      observedAt: NOW - 1_750,
+      evidence: {
+        kind: "test-inclusion",
+        value: "proof-included-before-finality",
+      },
+      blockRef: {
+        id: "block-included-before-finality",
+        timestamp: NOW - 1_750,
+      },
+    };
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).resolves.toMatchObject({
+      state: "finalised",
+    });
+  });
+
+  test("rejects a handoff receipt that has not reached authenticated inclusion", async () => {
+    const f = fixture();
+    f.input.fulfilment.evidenceAnchorReceipt.state = "accepted";
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /seller fulfilment is not the exact delivery PhaseEntry/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a terminal contribution that points away from its exact evidence", async () => {
+    const f = fixture();
+    f.input.fulfilment.bundleContribution.phaseSummary.attestationRef =
+      structuredClone(f.paymentRef);
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /seller fulfilment is not the exact delivery PhaseEntry/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a handoff evidence signature that differs from the resolved artifact", async () => {
+    const f = fixture();
+    f.input.fulfilment.evidence.signature.value =
+      Buffer.alloc(64, 98).toString("base64url");
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /resolved fulfilment evidence differs from the exact durable handoff artifact/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });
 
   test("accepts a nonce-distinct post-Vet publisher bundle only through authenticated claim/key linkage", async () => {
@@ -1198,16 +1351,119 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });
 
-  test("accepts an ST-8 resolved payment only when interim and final authenticate the same repeated-phase tuple", async () => {
+  test("rejects a consumed payment authorization rebound to another agreement", async () => {
+    const f = fixture();
+    f.input.fulfilment.consumedPaymentAuthorization.agreementHash = "f".repeat(64);
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /consumed payment authorization does not bind the exact agreement/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a missing consumed payment authorization", async () => {
+    const f = fixture();
+    delete (
+      f.input.fulfilment as unknown as {
+        consumedPaymentAuthorization?: unknown;
+      }
+    ).consumedPaymentAuthorization;
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /exact valid consumed payment authorization/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a fulfilment envelope with a non-derived identifier", async () => {
+    const f = fixture();
+    f.input.fulfilment.fulfilmentId = "f".repeat(64);
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /seller fulfilment is not the exact delivery PhaseEntry/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("requires the consumed payment phase to retain its exact rail txRefs", async () => {
+    const f = fixture();
+    delete f.input.session.phaseResults[2]!.result.txRefs;
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /consumed payment authorization does not bind the exact agreement/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a validly shaped consumed authorization without exact signed payment evidence", async () => {
+    const f = fixture();
+    f.input.fulfilment.consumedPaymentAuthorization.evidenceInput.paymentAmount.amount = "3";
+    f.input.fulfilment.consumedPaymentAuthorization.evidenceHash = sha256Hex(
+      canonicalize(
+        f.input.fulfilment.consumedPaymentAuthorization.evidenceInput,
+      ),
+    );
+    const authorization = f.input.fulfilment.consumedPaymentAuthorization;
+    f.input.fulfilment.fulfilmentId = sellerFulfilmentId({
+      jobId: authorization.jobId,
+      paymentPhaseIndex: authorization.phaseIndex,
+      deliveryPhaseIndex: f.input.fulfilment.bundleContribution.phaseSummary.index,
+      settlementId: authorization.settlementId,
+      agreementHash: authorization.agreementHash,
+      paymentEvidenceHash: authorization.evidenceHash,
+    });
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /does not bind exactly one authenticated SettlementEvidence payment phase/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects x402 supersession outside the exact consumed-authorization scope", async () => {
     const f = fixture("pure", "storage", false, false, false, {
       resolvedPayment: true,
       repeatedPayment: true,
     });
 
-    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).resolves.toMatchObject({
-      state: "finalised",
-    });
-    expect(f.provider.resolvePaymentPhaseIndex).toHaveBeenCalledTimes(3);
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /does not bind exactly one authenticated SettlementEvidence payment phase/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("requires attested delivery to retain the exact pre-commit DPA-1 admission", async () => {
+    const missing = fixture("pure", "attested");
+    delete missing.input.fulfilment.consumedPaymentAuthorization
+      .payloadVerificationProducerAdmission;
+    await expect(
+      finalizeCompletedSellerBundleCore(missing.input, missing.provider),
+    ).rejects.toThrow(/exact store-retained pre-commit DPA-1 producer admission/);
+
+    const rebound = fixture("pure", "attested");
+    rebound.input.fulfilment.consumedPaymentAuthorization
+      .payloadVerificationProducerAdmission!.verificationMethodHash = "f".repeat(64);
+    await expect(
+      finalizeCompletedSellerBundleCore(rebound.input, rebound.provider),
+    ).rejects.toThrow(/exact store-retained pre-commit DPA-1 producer admission/);
+  });
+
+  test("forbids DPA-1 producer authority on a non-attested delivery", async () => {
+    const f = fixture();
+    f.input.fulfilment.consumedPaymentAuthorization
+      .payloadVerificationProducerAdmission = {
+        operation: "produce",
+        disposition: "supported",
+        listingRef: structuredClone(f.input.session.listingRef),
+        verificationMethodKind: "self-signed",
+        verificationMethodHash: "d".repeat(64),
+        deliverableSpecHash: "e".repeat(64),
+        admittedAt: NOW - 13_000,
+      };
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /non-attested delivery cannot carry DPA-1 producer admission authority/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });
 
   test("rejects ST-8 supersession authenticated to another same-kind repeated payment index", async () => {
@@ -1215,6 +1471,7 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
       resolvedPayment: true,
       repeatedPayment: true,
     });
+    bindConsumedAuthorizationToRepeatedPayment(f);
     const ordinary = f.provider.resolvePaymentPhaseIndex!;
     f.provider.resolvePaymentPhaseIndex = vi.fn(async (input) => {
       const resolved = await ordinary(input);
@@ -1463,7 +1720,12 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     const result = await finalizeCompletedSellerBundleCore(f.input, f.provider);
     expect(result.sellerBundle.phaseSummary.slice(1, 4)).toEqual([
       { index: 1, kind: "commit-payee-bound-agreement", outcome: "ok" },
-      { index: 2, kind: "pay-x402", outcome: "ok" },
+      {
+        index: 2,
+        kind: "pay-x402",
+        outcome: "ok",
+        txRefs: f.paymentEvidenceInput.paymentTxRefs,
+      },
       { index: 3, kind: "deliver-storage-program", outcome: "ok" },
     ]);
     expect(result.sellerBundle.settlementEvidence).toEqual(
@@ -1594,6 +1856,25 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     f.input.dependencies.pop();
     await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
       /missing from the recursive ST-11 closure/,
+    );
+    expect(f.sellerSign).not.toHaveBeenCalled();
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a dependency receipt that differs from the durable fulfilment handoff", async () => {
+    const f = fixture();
+    const deliveryDependency = f.input.dependencies.find(
+      (dependency) =>
+        dependency.source.kind === "attestation-ref" &&
+        dependency.source.ref.contentHash === f.input.fulfilment.evidenceHash,
+    )!;
+    deliveryDependency.anchorReceipt.transactionRef = {
+      kind: "test",
+      value: "tx-different-finalized-write",
+    };
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /fulfilment handoff receipt does not match/,
     );
     expect(f.sellerSign).not.toHaveBeenCalled();
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
