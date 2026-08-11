@@ -35,6 +35,27 @@ export {
   type FixedPriceAgreementContributionVerifier,
 } from "./fixedPriceExchange.js";
 export {
+  advanceFixedPriceAgreementDurable,
+  fixedPriceAgreementLogicalAddress,
+  durableFixedPriceAgreementCheckpointKey,
+  type FixedPriceAgreementEffectFence,
+  type DurableFixedPriceAgreementSigner,
+  type DurableFixedPriceAgreementInput,
+  type FixedPriceAgreementTransportIdentity,
+  type FixedPriceAgreementProposal,
+  type FixedPriceAgreementResolution,
+  type FixedPriceAgreementEffectSubmission,
+  type FixedPriceAgreementSignatureReconciliation,
+  type FixedPriceAgreementTransport,
+  type AnchoredFixedPriceAgreementReadback,
+  type FixedPriceAgreementAnchorVerificationDisposition,
+  type FixedPriceAgreementAnchorProvider,
+  type DurableFixedPriceAgreementDurability,
+  type DurableAnchoredFixedPriceAgreement,
+  type DurableFixedPriceAgreementStage,
+  type DurableFixedPriceAgreementProgress,
+} from "./durableFixedPriceExchange.js";
+export {
   computeBidHash,
   generateSalt,
   saltHasEnoughEntropy,
