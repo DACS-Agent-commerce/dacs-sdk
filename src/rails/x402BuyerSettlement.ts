@@ -2,7 +2,10 @@ import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
-import { captureX402SettlementHeader } from "./x402SettlementReceipt.js";
+import {
+  assertNoDuplicateJsonKeys,
+  captureX402SettlementHeader,
+} from "./x402SettlementReceipt.js";
 
 /** Durable wire/schema version for the normative buyer x402 boundary. */
 export const X402_BUYER_SETTLEMENT_STORE_VERSION = 1 as const;
@@ -243,11 +246,20 @@ export type X402BuyerAuthorizationReconciliation =
     }
   | { disposition: "indeterminate"; reason: string };
 
+/** Independent pre-effect authentication of the complete retained intent. */
+export type X402BuyerIntentAuthorization =
+  | { disposition: "authorized"; bindingHash: string }
+  | { disposition: "rejected" | "indeterminate"; reason: string };
+
 /**
  * Chain reads and their authentication are deliberately separate. A raw RPC
  * shape or a transport response never authorizes replay or success.
  */
 export interface X402BuyerAuthorizationProvider<TObservation = unknown> {
+  authorizeIntent(
+    intent: Readonly<X402BuyerSettlementIntent>,
+    fence: Readonly<X402BuyerEffectFence>,
+  ): Promise<X402BuyerIntentAuthorization>;
   lookup(
     intent: Readonly<X402BuyerSettlementIntent>,
     candidate: Readonly<X402BuyerSettlementDisclosure> | undefined,
@@ -594,6 +606,7 @@ function decodeCanonicalBase64Json(value: unknown, label: string): Record<string
   }
   let parsed: unknown;
   try {
+    assertNoDuplicateJsonKeys(json);
     parsed = JSON.parse(json) as unknown;
   } catch {
     throw new DacsError(`${label} must contain valid JSON`);
@@ -864,6 +877,24 @@ function captureSignedEvent(value: unknown): Readonly<X402BuyerSignedEventRefere
   });
 }
 
+/**
+ * Stable retained authentication envelope. The provider returns this only
+ * after verifying the signed evidence/ledger observation; it prevents a
+ * caller from changing an authenticated event coordinate after that check.
+ */
+export function x402BuyerSettlementAuthenticationHash(input: {
+  intent: Readonly<X402BuyerSettlementIntent>;
+  signedEvent: Readonly<X402BuyerSignedEventReference>;
+}): string {
+  const intent = captureIntent(input?.intent);
+  const signedEvent = captureSignedEvent(input?.signedEvent);
+  return sha256Hex(canonicalize({
+    authenticationVersion: "1",
+    bindingHash: intent.bindingHash,
+    signedEvent,
+  }));
+}
+
 function captureSettlement(
   value: unknown,
   intent: Readonly<X402BuyerSettlementIntent>,
@@ -909,6 +940,16 @@ function captureSettlement(
   if (receipt.amount !== undefined && receipt.amount !== intent.amount) {
     throw new DacsError("x402 buyer receipt amount does not match the retained intent");
   }
+  const authenticationHash = hashString(
+    record.authenticationHash,
+    "x402 buyer capture authenticationHash",
+  );
+  if (authenticationHash !== x402BuyerSettlementAuthenticationHash({
+    intent,
+    signedEvent,
+  })) {
+    throw new DacsError("x402 buyer authentication hash does not bind the signed event");
+  }
   return deepFreeze({
     captureVersion: "1",
     protocolVersion: "2",
@@ -916,10 +957,7 @@ function captureSettlement(
     encodedSettlementHeader: disclosure.encodedSettlementHeader,
     httpResource: disclosure.httpResource,
     signedEvent,
-    authenticationHash: hashString(
-      record.authenticationHash,
-      "x402 buyer capture authenticationHash",
-    ),
+    authenticationHash,
   });
 }
 
@@ -1199,20 +1237,177 @@ function progressFromOutcome(
     : { status: "failed", outcome };
 }
 
+function captureStoreTerminal(
+  value: unknown,
+  expectedIntent: Readonly<X402BuyerSettlementIntent>,
+  label: string,
+): {
+  status: "captured" | "failed";
+  intent: Readonly<X402BuyerSettlementIntent>;
+  outcome: Readonly<X402BuyerSettlementOutcome>;
+} {
+  const record = exactRecord(value, label, ["status", "intent", "outcome"]);
+  if (record.status !== "captured" && record.status !== "failed") {
+    throw new DacsError(`${label}.status is not terminal`);
+  }
+  const intent = captureIntent(record.intent);
+  if (intent.bindingHash !== expectedIntent.bindingHash ||
+      intent.settlementKey !== expectedIntent.settlementKey) {
+    throw new DacsError(`${label} returned a different intent`);
+  }
+  const outcome = captureOutcome(record.outcome, intent);
+  if (outcome.status !== record.status) {
+    throw new DacsError(`${label} status and outcome disagree`);
+  }
+  return { status: record.status, intent, outcome };
+}
+
+function captureStoreClaim(
+  value: unknown,
+  expectedIntent: Readonly<X402BuyerSettlementIntent>,
+): X402BuyerSettlementClaim {
+  if (!isRecord(value)) throw new DacsError("x402 buyer store claim is malformed");
+  if (value.status === "captured" || value.status === "failed") {
+    return captureStoreTerminal(value, expectedIntent, "x402 buyer store claim");
+  }
+  if (value.status === "acquired" || value.status === "waiting") {
+    const record = exactRecord(value, "x402 buyer store claim", [
+      "status",
+      "intent",
+      "lease",
+    ]);
+    const intent = captureIntent(record.intent);
+    if (intent.bindingHash !== expectedIntent.bindingHash ||
+        intent.settlementKey !== expectedIntent.settlementKey) {
+      throw new DacsError("x402 buyer store claim returned a different intent");
+    }
+    return { status: value.status, intent, lease: captureLease(record.lease) };
+  }
+  if (value.status === "conflict") {
+    exactRecord(value, "x402 buyer store claim", ["status"]);
+    return { status: "conflict" };
+  }
+  if (value.status === "unsupported") {
+    const record = exactRecord(value, "x402 buyer store claim", ["status", "version"]);
+    return {
+      status: "unsupported",
+      version: uint(record.version, "x402 buyer unsupported store version"),
+    };
+  }
+  if (value.status === "corrupt") {
+    const record = exactRecord(value, "x402 buyer store claim", ["status", "reason"]);
+    return { status: "corrupt", reason: nfcString(record.reason, "x402 buyer corruption reason") };
+  }
+  throw new DacsError("x402 buyer store claim status is invalid");
+}
+
+function captureOutcomeWrite(
+  value: unknown,
+  expectedIntent: Readonly<X402BuyerSettlementIntent>,
+): X402BuyerOutcomeWrite {
+  if (!isRecord(value)) throw new DacsError("x402 buyer outcome write is malformed");
+  if (value.status === "recorded" || value.status === "existing") {
+    const record = exactRecord(value, "x402 buyer outcome write", [
+      "status",
+      "intent",
+      "outcome",
+    ]);
+    const intent = captureIntent(record.intent);
+    if (intent.bindingHash !== expectedIntent.bindingHash ||
+        intent.settlementKey !== expectedIntent.settlementKey) {
+      throw new DacsError("x402 buyer outcome write returned a different intent");
+    }
+    return {
+      status: value.status,
+      intent,
+      outcome: captureOutcome(record.outcome, intent),
+    };
+  }
+  if (value.status === "stale" || value.status === "conflict") {
+    exactRecord(value, "x402 buyer outcome write", ["status"]);
+    return { status: value.status };
+  }
+  if (value.status === "unsupported") {
+    const record = exactRecord(value, "x402 buyer outcome write", ["status", "version"]);
+    return { status: "unsupported", version: uint(record.version, "x402 buyer store version") };
+  }
+  if (value.status === "corrupt") {
+    const record = exactRecord(value, "x402 buyer outcome write", ["status", "reason"]);
+    return { status: "corrupt", reason: nfcString(record.reason, "x402 buyer corruption reason") };
+  }
+  throw new DacsError("x402 buyer outcome write status is invalid");
+}
+
+function captureRecoveryGrant(
+  value: unknown,
+  expectedIntent: Readonly<X402BuyerSettlementIntent>,
+): X402BuyerRecoveryGrant {
+  if (!isRecord(value)) throw new DacsError("x402 buyer recovery grant is malformed");
+  if (value.status === "captured" || value.status === "failed") {
+    return captureStoreTerminal(
+      value,
+      expectedIntent,
+      "x402 buyer recovery grant",
+    ) as X402BuyerRecoveryGrant;
+  }
+  if (value.status === "granted") {
+    const record = exactRecord(value, "x402 buyer recovery grant", [
+      "status",
+      "intent",
+      "lease",
+    ]);
+    const intent = captureIntent(record.intent);
+    if (intent.bindingHash !== expectedIntent.bindingHash ||
+        intent.settlementKey !== expectedIntent.settlementKey) {
+      throw new DacsError("x402 buyer recovery grant returned a different intent");
+    }
+    const lease = captureLease(record.lease);
+    if (lease.stage !== "replay") {
+      throw new DacsError("x402 buyer recovery grant did not issue a replay lease");
+    }
+    return { status: "granted", intent, lease };
+  }
+  if (value.status === "stale" || value.status === "conflict") {
+    exactRecord(value, "x402 buyer recovery grant", ["status"]);
+    return { status: value.status };
+  }
+  if (value.status === "unsupported") {
+    const record = exactRecord(value, "x402 buyer recovery grant", ["status", "version"]);
+    return { status: "unsupported", version: uint(record.version, "x402 buyer store version") };
+  }
+  if (value.status === "corrupt") {
+    const record = exactRecord(value, "x402 buyer recovery grant", ["status", "reason"]);
+    return { status: "corrupt", reason: nfcString(record.reason, "x402 buyer corruption reason") };
+  }
+  throw new DacsError("x402 buyer recovery grant status is invalid");
+}
+
 function validateLeaseDuration(value: number | undefined): number {
   return uint(value ?? DEFAULT_LEASE_MS, "x402 buyer leaseDurationMs", true);
 }
 
 function captureLookup<T>(value: unknown): X402BuyerAuthorizationLookup<T> {
-  if (!isRecord(value)) return { disposition: "unavailable", reason: "authorization-lookup-invalid" };
-  if (value.disposition === "unavailable") {
-    return {
-      disposition: "unavailable",
-      reason: validReason(value.reason, "authorization-lookup-unavailable"),
-    };
-  }
-  if (value.disposition === "observed" && hasOwn(value, "observation")) {
-    return { disposition: "observed", observation: value.observation as T };
+  try {
+    if (!isRecord(value)) throw new DacsError("lookup must be a record");
+    if (value.disposition === "unavailable") {
+      const record = exactRecord(value, "x402 buyer authorization lookup", [
+        "disposition",
+        "reason",
+      ]);
+      return {
+        disposition: "unavailable",
+        reason: nfcString(record.reason, "x402 buyer authorization lookup reason"),
+      };
+    }
+    if (value.disposition === "observed") {
+      const record = exactRecord(value, "x402 buyer authorization lookup", [
+        "disposition",
+        "observation",
+      ]);
+      return { disposition: "observed", observation: record.observation as T };
+    }
+  } catch {
+    // Invalid provider output cannot establish authoritative absence.
   }
   return { disposition: "unavailable", reason: "authorization-lookup-invalid" };
 }
@@ -1221,49 +1416,67 @@ function captureReconciliation(
   value: unknown,
   intent: Readonly<X402BuyerSettlementIntent>,
 ): X402BuyerAuthorizationReconciliation {
-  if (!isRecord(value)) return { disposition: "indeterminate", reason: "authorization-reconciliation-invalid" };
-  if (value.disposition === "settled-same") {
-    try {
+  try {
+    if (!isRecord(value)) throw new DacsError("reconciliation must be a record");
+    if (value.disposition === "settled-same") {
+      const record = exactRecord(value, "x402 buyer settled-same reconciliation", [
+        "disposition",
+        "settlement",
+      ]);
       return {
         disposition: "settled-same",
-        settlement: captureSettlement(value.settlement, intent),
+        settlement: captureSettlement(record.settlement, intent),
       };
-    } catch {
-      return { disposition: "indeterminate", reason: "settled-same-capture-invalid" };
     }
-  }
-  if (value.disposition === "unused") {
-    try {
+    if (value.disposition === "unused") {
+      const record = exactRecord(value, "x402 buyer unused reconciliation", [
+        "disposition",
+        "reason",
+        "authenticationHash",
+      ]);
       return {
         disposition: "unused",
-        reason: nfcString(value.reason, "x402 buyer unused reason"),
+        reason: nfcString(record.reason, "x402 buyer unused reason"),
         authenticationHash: hashString(
-          value.authenticationHash,
+          record.authenticationHash,
           "x402 buyer unused authenticationHash",
         ),
       };
-    } catch {
-      return { disposition: "indeterminate", reason: "authorization-reconciliation-invalid" };
     }
-  }
-  if (value.disposition === "used-different" || value.disposition === "cancelled") {
-    try {
+    if (value.disposition === "used-different" || value.disposition === "cancelled") {
+      const record = exactRecord(value, "x402 buyer terminal reconciliation", [
+        "disposition",
+        "reason",
+        "authenticationHash",
+      ]);
       return {
         disposition: value.disposition,
-        reason: nfcString(value.reason, "x402 buyer terminal reconciliation reason"),
+        reason: nfcString(record.reason, "x402 buyer terminal reconciliation reason"),
         authenticationHash: hashString(
-          value.authenticationHash,
+          record.authenticationHash,
           "x402 buyer terminal reconciliation authenticationHash",
         ),
       };
-    } catch {
-      return { disposition: "indeterminate", reason: "authorization-reconciliation-invalid" };
     }
+    if (value.disposition === "indeterminate") {
+      const record = exactRecord(value, "x402 buyer indeterminate reconciliation", [
+        "disposition",
+        "reason",
+      ]);
+      return {
+        disposition: "indeterminate",
+        reason: nfcString(record.reason, "x402 buyer indeterminate reason"),
+      };
+    }
+  } catch (error) {
+    return {
+      disposition: "indeterminate",
+      reason: isRecord(value) && value.disposition === "settled-same"
+        ? "settled-same-capture-invalid"
+        : "authorization-reconciliation-invalid",
+    };
   }
-  return {
-    disposition: "indeterminate",
-    reason: validReason(value.reason, "authorization-reconciliation-indeterminate"),
-  };
+  return { disposition: "indeterminate", reason: "authorization-reconciliation-invalid" };
 }
 
 /**
@@ -1278,22 +1491,29 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
   const owner = asciiString(input?.owner, "x402 buyer owner");
   const now = typeof input?.now === "function" ? input.now : Date.now;
   const leaseDurationMs = validateLeaseDuration(input?.leaseDurationMs);
-  if (!input?.store || typeof input.store.claim !== "function" ||
+  if (!input?.store || typeof input.store.load !== "function" ||
+      typeof input.store.claim !== "function" ||
       typeof input.store.isCurrent !== "function" ||
       typeof input.store.grantRecovery !== "function" ||
       typeof input.store.recordOutcome !== "function" ||
       !input.authorizationProvider || typeof input.authorizationProvider.lookup !== "function" ||
+      typeof input.authorizationProvider.authorizeIntent !== "function" ||
       typeof input.authorizationProvider.authenticate !== "function" ||
       !input.transport || typeof input.transport.submitRetained !== "function") {
     throw new DacsError("x402 buyer durable coordinator dependencies are incomplete");
   }
 
-  const claim = await input.store.claim({
-    intent,
-    owner,
-    now: now(),
-    leaseDurationMs,
-  });
+  let claim: X402BuyerSettlementClaim;
+  try {
+    claim = captureStoreClaim(await input.store.claim({
+      intent,
+      owner,
+      now: now(),
+      leaseDurationMs,
+    }), intent);
+  } catch {
+    return { status: "indeterminate", reason: "settlement-store-unavailable" };
+  }
   if (claim.status === "captured" || claim.status === "failed") {
     return progressFromOutcome(claim.outcome);
   }
@@ -1301,13 +1521,7 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     return { status: "waiting", reason: "settlement-generation-held" };
   }
   if (claim.status === "conflict") {
-    return { status: "failed", outcome: deepFreeze({
-      outcomeVersion: "1",
-      status: "failed",
-      failure: "used-different",
-      reason: "settlement-intent-conflict",
-      authenticationHash: "0".repeat(64),
-    }) };
+    return { status: "indeterminate", reason: "settlement-intent-conflict" };
   }
   if (claim.status === "unsupported" || claim.status === "corrupt") {
     return {
@@ -1351,13 +1565,31 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     } catch {
       return { status: "indeterminate", reason: "settlement-generation-stale" };
     }
-    const result = await input.store.recordOutcome({
-      settlementKey: intent.settlementKey,
-      bindingHash: intent.bindingHash,
-      lease: fence,
-      outcome,
-      now: now(),
-    });
+    let result: X402BuyerOutcomeWrite;
+    try {
+      result = captureOutcomeWrite(await input.store.recordOutcome({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        lease: fence,
+        outcome,
+        now: now(),
+      }), intent);
+    } catch {
+      // The write may have committed before its acknowledgement was lost.
+      try {
+        const loaded = await input.store.load(intent.settlementKey);
+        if (loaded.status === "captured" || loaded.status === "failed") {
+          return progressFromOutcome(captureStoreTerminal(
+            loaded,
+            intent,
+            "x402 buyer store load",
+          ).outcome);
+        }
+      } catch {
+        // Preserve ambiguity; never infer absence from a failed store read.
+      }
+      return { status: "indeterminate", reason: "settlement-outcome-write-indeterminate" };
+    }
     if (result.status === "recorded" || result.status === "existing") {
       return progressFromOutcome(result.outcome);
     }
@@ -1411,9 +1643,64 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     let candidate: Readonly<X402BuyerSettlementDisclosure> | undefined;
     try {
       await fence.assertCurrent();
+      const intentAuthorization = await input.authorizationProvider.authorizeIntent(intent, fence);
+      await fence.assertCurrent();
+      if (!isRecord(intentAuthorization)) {
+        return { status: "indeterminate", reason: "intent-authorization-invalid" };
+      }
+      if (intentAuthorization.disposition === "rejected" ||
+          intentAuthorization.disposition === "indeterminate") {
+        let checked: Record<string, unknown>;
+        try {
+          checked = exactRecord(intentAuthorization, "x402 buyer intent authorization", [
+            "disposition",
+            "reason",
+          ]);
+        } catch {
+          return { status: "indeterminate", reason: "intent-authorization-invalid" };
+        }
+        return {
+          status: "indeterminate",
+          reason: `intent-authorization-${intentAuthorization.disposition}:${validReason(
+            checked.reason,
+            "unspecified",
+          )}`,
+        };
+      }
+      if (intentAuthorization.disposition !== "authorized") {
+        return { status: "indeterminate", reason: "intent-authorization-invalid" };
+      }
+      let authorized: Record<string, unknown>;
+      try {
+        authorized = exactRecord(intentAuthorization, "x402 buyer intent authorization", [
+          "disposition",
+          "bindingHash",
+        ]);
+      } catch {
+        return { status: "indeterminate", reason: "intent-authorization-invalid" };
+      }
+      if (authorized.bindingHash !== intent.bindingHash) {
+        return { status: "indeterminate", reason: "intent-authorization-binding-mismatch" };
+      }
+      await fence.assertCurrent();
       const raw = await input.transport.submitRetained(intent, fence);
       await fence.assertCurrent();
-      if (!isRecord(raw) || (raw.disposition !== "response" && raw.disposition !== "indeterminate")) {
+      if (!isRecord(raw)) {
+        return { status: "indeterminate", reason: "paid-request-result-invalid" };
+      }
+      if (raw.disposition === "indeterminate") {
+        try {
+          exactRecord(raw, "x402 buyer paid request result", ["disposition", "reason"]);
+        } catch {
+          return { status: "indeterminate", reason: "paid-request-result-invalid" };
+        }
+      } else if (raw.disposition === "response") {
+        try {
+          exactRecord(raw, "x402 buyer paid request result", ["disposition"], ["disclosure"]);
+        } catch {
+          return { status: "indeterminate", reason: "paid-request-result-invalid" };
+        }
+      } else {
         return { status: "indeterminate", reason: "paid-request-result-invalid" };
       }
       if (raw.disposition === "response" && raw.disclosure !== undefined) {
@@ -1483,14 +1770,19 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     return { status: "indeterminate", reason: recovered.reason };
   }
 
-  const granted = await input.store.grantRecovery({
-    settlementKey: intent.settlementKey,
-    bindingHash: intent.bindingHash,
-    lease: fence,
-    owner,
-    now: now(),
-    leaseDurationMs,
-  });
+  let granted: X402BuyerRecoveryGrant;
+  try {
+    granted = captureRecoveryGrant(await input.store.grantRecovery({
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      lease: fence,
+      owner,
+      now: now(),
+      leaseDurationMs,
+    }), intent);
+  } catch {
+    return { status: "indeterminate", reason: "recovery-grant-indeterminate" };
+  }
   if (granted.status === "captured" || granted.status === "failed") {
     return progressFromOutcome(granted.outcome);
   }
