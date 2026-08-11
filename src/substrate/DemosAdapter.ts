@@ -28,6 +28,7 @@ import type {
   AnchorReceipt,
   AnchorWaitOptions,
   AnchorWriteOnceOptions,
+  DemosAdapterConfig,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
@@ -155,13 +156,6 @@ function isDefinitiveBroadcastRejection(value: unknown): boolean {
     result >= 400 &&
     result < 500
   );
-}
-
-export interface DemosAdapterConfig {
-  /** Demos node RPC URL (e.g. https://node2.demos.sh). */
-  rpc: string;
-  /** Wallet secret — mnemonic or private key. Optional for read-only use. */
-  secret?: string;
 }
 
 /**

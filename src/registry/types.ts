@@ -9,14 +9,18 @@
  */
 
 import type { ParserSpec } from "../agent/parserSpec.js";
-import type { ComponentSignature } from "../artifacts/types.js";
+import type {
+  ComponentSignature,
+  VerificationMethodKind,
+} from "../artifacts/types.js";
 
 /**
  * §9.4.4 / §7.4.5 availability values — the CLOSED spec set (issue #5: the
  * previous `live|deprecated|planned` trio was an SDK invention; `mocked` in
- * particular must be expressible so RAV-3 can treat it as `error`). Resolution
- * gates on exactly `"live"` (registry/resolve.ts), so every other value stays
- * fail-closed by construction.
+ * particular must be expressible so RAV-3 can treat it as `error`). Rail
+ * execution gates on exactly `"live"`; recipe resolution deliberately preserves
+ * the authenticated value so RAV-2 can disclose it and RAV-3 can recompute an
+ * effective `error` for mocked/disabled/failed evidence.
  */
 export type Availability =
   | "live"
@@ -37,27 +41,80 @@ export interface RailDescriptor {
   params: Record<string, unknown>;
 }
 
-/** A verification-recipe descriptor (steward-signed under `dacs-recipe:v1:`). */
+/** DACS-2 §7.4.1 closed verification-method configuration union. */
+export type VerificationMethod =
+  | {
+      kind: "verifiable-credential";
+      issuerAllowList?: string[];
+      schemaUrl?: string;
+    }
+  | { kind: "tlsnotary"; endpoint: string; sessionTemplate?: string }
+  | { kind: "zktls"; provider: string; programId: string }
+  | {
+      kind: "consensus-backed-proxy";
+      endpoint: {
+        method: "GET" | "POST";
+        urlTemplate: string;
+        headers?: Record<string, string>;
+        body?: string;
+      };
+    }
+  | {
+      kind: "oauth-attested";
+      provider: string;
+      scopes: string[];
+      maxTokenAgeSec: number;
+    }
+  | {
+      kind: "evm-rpc";
+      chainId: number;
+      contract: string;
+      method: string;
+      args?: unknown[];
+    }
+  | {
+      kind: "domain-tls-control";
+      challengeType: "http-01" | "dns-01" | "tls-alpn-01";
+    }
+  | { kind: "self-signed" }
+  | { kind: "demos-gcr-domain" };
+
+export interface RecipeGovernance {
+  proposedBy: string;
+  acceptedAt: number;
+  supersedes?: number;
+  anchoring: "in-code" | "single-signer" | "multisig";
+  emergency?: {
+    isEmergency: true;
+    failureObservation: string;
+  };
+  deprecated?: boolean;
+  deprecationReason?: string;
+}
+
+/** A normative DACS-2 §7.4.1 recipe (signature added by Registry<T>). */
 export interface RecipeDescriptor {
-  id: string;
-  /** Verification method the recipe drives (self-signed, consensus-backed-proxy, …). */
-  method: string;
-  availability: Availability;
-  params: Record<string, unknown>;
-  /**
-   * DACS-2 §7.4.1 ParserSpec — the signed rules a `consensus-backed-proxy`
-   * applies to the attested body (PSP-1..5), so the content verdict is
-   * deterministic from the recipe rather than a caller callback.
-   */
-  parserRules?: ParserSpec;
-  /** PSP-2: a match means "listed" — invert the outcome (e.g. ofac-clear). */
+  recipeVersion: number;
+  scheme: string;
+  defaultMethod: VerificationMethod;
+  alternatives?: VerificationMethod[];
+  defaultMaxAgeSec: number;
+  parserRules: ParserSpec;
   negativeMatch?: boolean;
-  /**
-   * PSP-5: this negative-match recipe decides on ABSENCE from a full-list
-   * download, so a `pass` requires a provably-complete response (else
-   * `indeterminate`). Only meaningful with `negativeMatch: true`.
-   */
-  requiresListCompleteness?: boolean;
+  retryClass: "transient" | "permanent";
+  retryOnIndeterminate?: boolean;
+  retryBudget?: number;
+  backoff?: { strategy: "exponential" | "fixed"; baseMs?: number };
+  availability: Availability;
+  governance: RecipeGovernance;
+}
+
+/** Exact recipe family/version selector used during authenticated resolution. */
+export interface RecipeSelector {
+  scheme: string;
+  method: VerificationMethodKind;
+  /** Exact version pinned by the session-start registry selection. */
+  recipeVersion: number;
 }
 
 /** An anchored registry document: a versioned list of steward-signed entries. */

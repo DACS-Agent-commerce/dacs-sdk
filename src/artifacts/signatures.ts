@@ -4,7 +4,6 @@ import { contentHash } from "../canonical/index.js";
 import {
   isSafeJsonString,
   snapshotCanonicalJson,
-  snapshotCanonicalJsonObject,
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import {
@@ -60,7 +59,7 @@ export function isComponentSignature(
   try {
     return (
       signatureShapeReason(
-        snapshotCanonicalJson(value, "component signature"),
+        snapshotCanonicalJsonRead(value, "component signature"),
       ) === null
     );
   } catch {
@@ -206,10 +205,7 @@ function asRecord(value: object): Record<string, unknown> {
 
 /** Take an exact JSON ownership boundary before any user-supplied callback. */
 function snapshotArtifact<T extends object>(artifact: T): T {
-  return snapshotCanonicalJsonObject(
-    artifact as Record<string, unknown>,
-    "component signature artifact",
-  ) as T;
+  return snapshotReadArtifact(artifact);
 }
 
 /** Own an artifact received from storage, where immutable descriptors are valid. */

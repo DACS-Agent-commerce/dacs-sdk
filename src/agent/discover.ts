@@ -150,7 +150,7 @@ function snapshotListingArtifact(
   raw: Record<string, unknown>,
 ): Record<string, unknown> | null {
   try {
-    const snapshot = snapshotCanonicalJson(raw, "Listing artifact") as unknown;
+    const snapshot = snapshotCanonicalJsonRead(raw, "Listing artifact") as unknown;
     return snapshot !== null &&
       typeof snapshot === "object" &&
       !Array.isArray(snapshot)

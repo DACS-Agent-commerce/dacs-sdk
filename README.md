@@ -48,9 +48,23 @@ import {
   x402Settle,
   resolveRecipe,
   vetCore,
+  verifyCompositeVerificationRecord,
 } from "@kynesyslabs/dacs";
 
-const agent = await createAgent({ demosRpc, wallet, identity: { agentId } });
+const agent = await createAgent({
+  demosRpc,
+  wallet,
+  identity: { agentId },
+  // Required to accept bundles with normative `vetRecords`. Derive this
+  // closure from trusted listing/identity/registry state, never from `record`.
+  // Without this callback verifyBundle/getReputation deliberately fail closed.
+  verifyCompositeRecord: (record, bundle) =>
+    verifyCompositeVerificationRecord(
+      record,
+      expectedVetClosureForBundle(bundle),
+      vetVerificationDeps,
+    ),
+});
 
 // seller — sign + anchor a normative DACS-1 §6.3.4 ListingDraft. `spec`
 // carries seller.identity/displayName/publicEndpoint, offering, buyerRequirement,
@@ -68,21 +82,60 @@ const session = await agent.runSession(listingRef, {
   // Same-namespace rails may omit this option; PB-1 payout negotiation uses a
   // PayeeBoundAgreementDocument instead.
   expectedSettlementPayee: recipientEvm,
-  // optional Vet step: resolve a steward recipe + verify the seller before paying
-  vet: (subject) =>
-    resolveRecipe(recipeRegistryRef, "self-signed", {
-      readRegistry,
-      stewardPublicKey,
-      stewardSigner,
-      verify,
-    })
-      .then((recipe) => vetCore({ subject, recipe }, { proxyFetch, now })),
+  // Optional Vet step. The producer emits signed §7.5/§7.7 artifacts and the
+  // money path independently verifies their complete, caller-expected closure.
+  vet: ({ jobId, evaluatedParty }) =>
+    resolveRecipe(
+      recipeRegistryRef,
+      { scheme: "key", method: "self-signed", recipeVersion: 1 },
+      { readRegistry, stewardPublicKey, stewardSigner, verify },
+    )
+      .then((recipe) => vetCore(
+        {
+          jobId,
+          subject: evaluatedParty,
+          bundleHash: sellerBundleHash,
+          requirement: sellerRequirement,
+          recipe,
+          selfSigned: sellerKeyPossessionProof,
+        },
+        {
+          proxyFetch,
+          nowMs: () => Date.now(),
+          componentSigner: buyerVerifierSigner,
+          // This seam is idempotent by logical address + content hash and
+          // reconciles response loss until a CORE §5.1 finalized receipt.
+          anchorFinalizedArtifact,
+          verifyFinalizedAnchor,
+          readAnchoredJson,
+          // Both capabilities are durable. `runOnce` must fence concurrent
+          // callers and replay the exact stored result or terminal failure;
+          // the lookup reconciles an anchor response lost after finality.
+          operationStore,
+          resolveFinalizedArtifact,
+        },
+      )),
+  // `expectedVetClosure` must be built from the verified identity bundle,
+  // listing requirement and selected recipes—not copied from `record`.
+  verifyVetRecord: (record, request) =>
+    verifyCompositeVerificationRecord(
+      record,
+      expectedVetClosure(request),
+      vetVerificationDeps,
+    ),
+  // Required with `vet`: resolve and cryptographically authenticate the exact
+  // finalized SR-2 ref/receipt from caller-held substrate trust. On resume,
+  // `claimed` is absent, so this closure must recover finality by the supplied
+  // logical/native address and content hash; shape-only receipts fail closed.
+  authenticateVetFinality: (request) =>
+    resolveAuthenticatedVetFinality(request),
   // `asset` is the on-chain token id (ERC-20 contract) the 402 must advertise —
   // the §4.1 guard compares against it, not the Price.asset symbol.
   settle: x402Settle(rail, { url, network, recipientEvm, asset }),
 });
 
-// anyone — verify the bundle's structure + every artifact signature
+// anyone — verify the bundle's structure, signatures, referenced artifacts,
+// and (through the configured callback above) every normative vet closure
 const verdict = await agent.verifyBundle(session.bundleRef);
 const rep = await agent.getReputation(primaryClaim, bundleRefs);
 ```

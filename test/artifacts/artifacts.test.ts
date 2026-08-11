@@ -67,16 +67,15 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     }>;
   };
 
-  // CompositeVerificationRecord remains reduced. The pinned happy-path
-  // Agreement signatures predate SIG-6 and use padded standard Base64; current
-  // agreement fidelity is covered by the dedicated DACS-3 tests.
+  // The pinned happy-path Agreement signatures predate SIG-6 and use padded
+  // standard Base64; current agreement fidelity is covered by the dedicated
+  // DACS-3 tests.
   // The happy-path Listing fixture itself predates the Standard's SIG-6
   // unpadded-Base64URL rule and still carries padded standard Base64, so it is
   // not accepted as a current normative Listing. Listing fidelity is exercised
   // against the dedicated signed SIG-5 vector in listing.test.ts instead.
   const PINNED_VECTOR_DIVERGENCES = new Set([
     "Listing",
-    "CompositeVerificationRecord",
     "AgreementDocument",
   ]);
 
@@ -99,12 +98,22 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         // The v0.3 vector's in-body SettlementEvidence/AttestationBundle omit
         // fields the SDK still carries (e.g. SB-1 recovers phaseIndex from the
         // anchor address, not the body), so validate the rich reference fixtures.
-        const fixture =
+        let fixture =
           kind === "SettlementEvidence"
             ? JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence
             : kind === "AttestationBundle"
               ? currentPhaseBundleFixture()
               : a.artifact;
+        // This vendored vector predates SIG-6 and carries padded standard
+        // Base64. Shape validation uses the same raw signature bytes in the
+        // current canonical unpadded Base64URL spelling.
+        if (kind === "CompositeVerificationRecord") {
+          fixture = structuredClone(fixture);
+          fixture.signature.value = Buffer.from(
+            fixture.signature.value,
+            "base64",
+          ).toString("base64url");
+        }
         expect(validator(fixture)).toBe(true);
       },
     );

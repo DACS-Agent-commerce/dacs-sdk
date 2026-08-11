@@ -14,6 +14,7 @@ import {
   resolveRail,
   resolveRecipe,
   settleFromRail,
+  type RecipeDescriptor,
   type RegistryResolveDeps,
 } from "../../src/registry/index.js";
 
@@ -74,6 +75,55 @@ function depsFor(doc: Record<string, unknown> | null): RegistryResolveDeps {
   };
 }
 
+function normativeRecipe(
+  over: Partial<RecipeDescriptor> = {},
+): RecipeDescriptor {
+  return {
+    recipeVersion: 1,
+    scheme: "key",
+    defaultMethod: { kind: "self-signed" },
+    defaultMaxAgeSec: 3_600,
+    parserRules: { format: "raw", matcher: "present" },
+    retryClass: "permanent",
+    availability: "live",
+    governance: {
+      proposedBy: stewardSigner,
+      acceptedAt: 1_780_000_000_000,
+      anchoring: "single-signer",
+    },
+    ...over,
+  };
+}
+
+async function signedRecipe(
+  descriptor: object,
+  seed = STEWARD_SEED,
+) {
+  return signComponentArtifact(descriptor, "dacs-recipe:v1:", {
+    algorithm: "ed25519",
+    signer: stewardSigner,
+    sign: signerFor(seed),
+  });
+}
+
+async function expectRecipeEntryRejected(
+  entry: object,
+  method: Parameters<typeof resolveRecipe>[1]["method"] = "self-signed",
+) {
+  const doc = {
+    registryId: "dacs2:registry:v0.1",
+    version: "0.1",
+    entries: [entry],
+  } as Record<string, unknown>;
+  await expect(
+    resolveRecipe(
+      "anchor",
+      { scheme: "key", method, recipeVersion: 1 },
+      depsFor(doc),
+    ),
+  ).rejects.toThrow();
+}
+
 describe("registry resolution (T12/T13)", () => {
   test("resolves a live, steward-signed rail by id", async () => {
     const desc = await resolveRail("anchor", "x402:default", depsFor(await railRegistry()));
@@ -114,23 +164,502 @@ describe("registry resolution (T12/T13)", () => {
     );
   });
 
-  test("resolveRecipe verifies under the recipe separator", async () => {
-    const recipe = await signComponentArtifact(
-      { id: "self-signed", method: "self-signed", availability: "live", params: {} },
-      "dacs-recipe:v1:",
-      {
-        algorithm: "ed25519",
-        signer: stewardSigner,
-        sign: signerFor(STEWARD_SEED),
-      },
-    );
+  test("resolveRecipe verifies and pins the exact normative family", async () => {
+    const recipe = await signedRecipe(normativeRecipe());
     const doc = {
       registryId: "dacs2:registry:v0.1",
       version: "0.1",
       entries: [recipe],
     } as Record<string, unknown>;
-    const desc = await resolveRecipe("anchor", "self-signed", depsFor(doc));
-    expect(desc).toMatchObject({ id: "self-signed", method: "self-signed" });
+    const desc = await resolveRecipe(
+      "anchor",
+      { scheme: "key", method: "self-signed", recipeVersion: 1 },
+      depsFor(doc),
+    );
+    expect(desc).toMatchObject({
+      scheme: "key",
+      recipeVersion: 1,
+      defaultMethod: { kind: "self-signed" },
+      availability: "live",
+    });
+    expect(Object.isFrozen(desc)).toBe(true);
+  });
+
+  test("resolveRecipe requires the session-start version pin", async () => {
+    const v1 = await signedRecipe(normativeRecipe());
+    const v2 = await signedRecipe(normativeRecipe({
+      recipeVersion: 2,
+      governance: {
+        proposedBy: stewardSigner,
+        acceptedAt: 1_780_000_001_000,
+        anchoring: "single-signer",
+        supersedes: 1,
+      },
+    }));
+    const doc = {
+      registryId: "dacs2:registry:v0.1",
+      version: "0.1",
+      entries: [v1, v2],
+    } as Record<string, unknown>;
+
+    await expect(
+      resolveRecipe(
+        "anchor",
+        { scheme: "key", method: "self-signed" } as never,
+        depsFor(doc),
+      ),
+    ).rejects.toThrow(/exact canonical scheme, method and version/);
+    const pinned = await resolveRecipe(
+      "anchor",
+      { scheme: "key", method: "self-signed", recipeVersion: 1 },
+      depsFor(doc),
+    );
+    expect(pinned.recipeVersion).toBe(1);
+  });
+
+  test("resolveRecipe accepts every exact VerificationMethod variant", async () => {
+    const methods: RecipeDescriptor["defaultMethod"][] = [
+      {
+        kind: "verifiable-credential",
+        issuerAllowList: ["did:demos:issuer"],
+        schemaUrl: "https://schemas.example/credential",
+      },
+      {
+        kind: "tlsnotary",
+        endpoint: "https://authority.example/status",
+        sessionTemplate: "authority-v1",
+      },
+      { kind: "zktls", provider: "reclaim", programId: "program-1" },
+      {
+        kind: "consensus-backed-proxy",
+        endpoint: {
+          method: "POST",
+          urlTemplate: "https://authority.example/{identifier}",
+          headers: { accept: "application/json" },
+          body: "{\"id\":\"{identifier}\"}",
+        },
+      },
+      {
+        kind: "oauth-attested",
+        provider: "stripe",
+        scopes: ["read_profile"],
+        maxTokenAgeSec: 300,
+      },
+      {
+        kind: "evm-rpc",
+        chainId: 1,
+        contract: "0x1111111111111111111111111111111111111111",
+        method: "ownerOf",
+        args: [1, { blockTag: "latest", proof: [true, null] }],
+      },
+      { kind: "domain-tls-control", challengeType: "dns-01" },
+      { kind: "self-signed" },
+      { kind: "demos-gcr-domain" },
+    ];
+
+    for (const defaultMethod of methods) {
+      const recipe = await signedRecipe(normativeRecipe({ defaultMethod }));
+      const resolved = await resolveRecipe(
+        "anchor",
+        {
+          scheme: "key",
+          method: defaultMethod.kind,
+          recipeVersion: 1,
+        },
+        depsFor({ entries: [recipe] }),
+      );
+      expect(resolved.defaultMethod).toEqual(defaultMethod);
+    }
+  });
+
+  test("resolveRecipe accepts exact ParserSpec variants and non-live recipes for RAV audit", async () => {
+    const parserRules: RecipeDescriptor["parserRules"][] = [
+      {
+        format: "json",
+        successJsonPath: "$.data[0]",
+        indeterminateOn: [{ jsonPath: "$.pending" }],
+        dataMap: { name: "$.data[0].name" },
+      },
+      {
+        format: "html",
+        successSelector: ".active",
+        indeterminateOn: [{ selector: ".pending" }],
+        dataMap: { name: "h1" },
+      },
+      {
+        format: "xml",
+        successXPath: "/record/active",
+        indeterminateOn: [{ xPath: "/record/pending" }],
+        dataMap: { name: "/record/name" },
+      },
+      {
+        format: "raw",
+        matcher: "active",
+        indeterminateOn: [{ matcher: "pending" }],
+      },
+    ];
+
+    for (const parser of parserRules) {
+      const recipe = await signedRecipe(
+        normativeRecipe({ parserRules: parser, availability: "mocked" }),
+      );
+      const resolved = await resolveRecipe(
+        "anchor",
+        { scheme: "key", method: "self-signed", recipeVersion: 1 },
+        depsFor({ entries: [recipe] }),
+      );
+      expect(resolved.parserRules).toEqual(parser);
+      expect(resolved.availability).toBe("mocked");
+    }
+  });
+
+  test("resolveRecipe rejects the auditor's combined validly-signed malformed recipe", async () => {
+    const recipe = await signedRecipe({
+      ...normativeRecipe(),
+      defaultMethod: { kind: "self-signed", unexpected: "signed-extra" },
+      parserRules: {
+        format: "raw",
+        matcher: "present",
+        dataMap: { illegal: "$.x" },
+        indeterminateOn: [null],
+      },
+      governance: {
+        proposedBy: stewardSigner,
+        acceptedAt: 1_780_000_000_000,
+        anchoring: "single-signer",
+        emergency: "malformed",
+      },
+    });
+
+    await expectRecipeEntryRejected(recipe);
+  });
+
+  test("resolveRecipe rejects signed extras on every VerificationMethod variant", async () => {
+    const methods: Array<
+      [Parameters<typeof resolveRecipe>[1]["method"], Record<string, unknown>]
+    > = [
+      ["verifiable-credential", { kind: "verifiable-credential", unexpected: true }],
+      ["tlsnotary", { kind: "tlsnotary", endpoint: "https://example", unexpected: true }],
+      ["zktls", { kind: "zktls", provider: "reclaim", programId: "p", unexpected: true }],
+      [
+        "consensus-backed-proxy",
+        {
+          kind: "consensus-backed-proxy",
+          endpoint: { method: "GET", urlTemplate: "https://example" },
+          unexpected: true,
+        },
+      ],
+      [
+        "oauth-attested",
+        {
+          kind: "oauth-attested",
+          provider: "p",
+          scopes: [],
+          maxTokenAgeSec: 1,
+          unexpected: true,
+        },
+      ],
+      [
+        "evm-rpc",
+        {
+          kind: "evm-rpc",
+          chainId: 1,
+          contract: "0x1",
+          method: "ownerOf",
+          unexpected: true,
+        },
+      ],
+      [
+        "domain-tls-control",
+        {
+          kind: "domain-tls-control",
+          challengeType: "http-01",
+          unexpected: true,
+        },
+      ],
+      ["self-signed", { kind: "self-signed", unexpected: true }],
+      ["demos-gcr-domain", { kind: "demos-gcr-domain", unexpected: true }],
+    ];
+
+    for (const [method, defaultMethod] of methods) {
+      const recipe = await signedRecipe({
+        ...normativeRecipe(),
+        defaultMethod,
+      });
+      await expectRecipeEntryRejected(recipe, method);
+    }
+  });
+
+  test("resolveRecipe rejects wrong signed field types on every configured method", async () => {
+    const methods: Array<
+      [Parameters<typeof resolveRecipe>[1]["method"], Record<string, unknown>]
+    > = [
+      [
+        "verifiable-credential",
+        { kind: "verifiable-credential", issuerAllowList: [42] },
+      ],
+      ["tlsnotary", { kind: "tlsnotary", endpoint: 42 }],
+      ["zktls", { kind: "zktls", provider: "reclaim", programId: 42 }],
+      [
+        "consensus-backed-proxy",
+        {
+          kind: "consensus-backed-proxy",
+          endpoint: { method: "PUT", urlTemplate: "https://example" },
+        },
+      ],
+      [
+        "oauth-attested",
+        {
+          kind: "oauth-attested",
+          provider: "p",
+          scopes: [42],
+          maxTokenAgeSec: 1,
+        },
+      ],
+      [
+        "evm-rpc",
+        {
+          kind: "evm-rpc",
+          chainId: 1,
+          contract: 42,
+          method: "ownerOf",
+        },
+      ],
+      [
+        "domain-tls-control",
+        { kind: "domain-tls-control", challengeType: "email-01" },
+      ],
+    ];
+
+    for (const [method, defaultMethod] of methods) {
+      const recipe = await signedRecipe({
+        ...normativeRecipe(),
+        defaultMethod,
+      });
+      await expectRecipeEntryRejected(recipe, method);
+    }
+  });
+
+  test("resolveRecipe rejects malformed signed parser, retry and governance fields", async () => {
+    const malformed: object[] = [
+      { ...normativeRecipe(), unexpected: "signed-extra" },
+      { ...normativeRecipe(), parserRules: { format: "raw", matcher: "ok", dataMap: {} } },
+      {
+        ...normativeRecipe(),
+        parserRules: {
+          format: "json",
+          successJsonPath: "$.ok",
+          indeterminateOn: [{ selector: ".wrong-kind" }],
+        },
+      },
+      {
+        ...normativeRecipe(),
+        parserRules: {
+          format: "html",
+          successSelector: ".ok",
+          indeterminateOn: [{ selector: ".pending", extra: true }],
+        },
+      },
+      {
+        ...normativeRecipe(),
+        backoff: { strategy: "fixed", baseMs: 1, extra: true },
+      },
+      {
+        ...normativeRecipe(),
+        defaultMethod: {
+          kind: "consensus-backed-proxy",
+          endpoint: {
+            method: "GET",
+            urlTemplate: "https://example",
+            extra: true,
+          },
+        },
+      },
+      { ...normativeRecipe(), retryBudget: -1 },
+      { ...normativeRecipe(), scheme: "Key" },
+      {
+        ...normativeRecipe(),
+        governance: {
+          proposedBy: "not-a-claim-reference",
+          acceptedAt: 1_780_000_000_000,
+          anchoring: "single-signer",
+        },
+      },
+      {
+        ...normativeRecipe(),
+        governance: {
+          proposedBy: stewardSigner,
+          acceptedAt: 1_780_000_000_000,
+          anchoring: "single-signer",
+          emergency: { isEmergency: false, failureObservation: "https://example" },
+        },
+      },
+      {
+        ...normativeRecipe(),
+        governance: {
+          proposedBy: stewardSigner,
+          acceptedAt: 1_780_000_000_000,
+          anchoring: "single-signer",
+          extra: true,
+        },
+      },
+      {
+        ...normativeRecipe(),
+        governance: {
+          proposedBy: stewardSigner,
+          acceptedAt: 1_780_000_000_000,
+          anchoring: "single-signer",
+          deprecated: true,
+        },
+      },
+      {
+        ...normativeRecipe(),
+        governance: {
+          proposedBy: stewardSigner,
+          acceptedAt: 1_780_000_000_000,
+          anchoring: "single-signer",
+          deprecated: true,
+          deprecationReason: "",
+        },
+      },
+      {
+        ...normativeRecipe(),
+        governance: {
+          proposedBy: stewardSigner,
+          acceptedAt: 1_780_000_000_000,
+          anchoring: "single-signer",
+          supersedes: 1,
+        },
+      },
+      {
+        ...normativeRecipe(),
+        alternatives: [{ kind: "self-signed" }],
+      },
+    ];
+
+    for (const descriptor of malformed) {
+      await expectRecipeEntryRejected(await signedRecipe(descriptor));
+    }
+  });
+
+  test("resolveRecipe rejects wire-shape smuggling before snapshot normalisation", async () => {
+    const mutations: Array<(entry: Record<string | symbol, unknown>) => void> = [
+      (entry) => Object.setPrototypeOf(entry, { inherited: "poison" }),
+      (entry) =>
+        Object.defineProperty(entry, "scheme", {
+          configurable: true,
+          enumerable: true,
+          get: () => "key",
+        }),
+      (entry) => {
+        entry[Symbol("hidden")] = "poison";
+      },
+      (entry) =>
+        Object.defineProperty(entry, "hidden", {
+          configurable: true,
+          enumerable: false,
+          value: "poison",
+        }),
+      (entry) => {
+        entry.alternatives = undefined;
+      },
+      (entry) => {
+        entry.alternatives = new Array(1);
+      },
+      (entry) => {
+        const method = entry.defaultMethod as Record<string, unknown>;
+        Object.setPrototypeOf(method, { inherited: "poison" });
+      },
+      (entry) => {
+        const signature = entry.signature as Record<string, unknown>;
+        signature.unexpected = "signed-extra";
+      },
+    ];
+
+    for (const mutate of mutations) {
+      const recipe = (await signedRecipe(normativeRecipe())) as Record<
+        string | symbol,
+        unknown
+      >;
+      mutate(recipe);
+      await expectRecipeEntryRejected(recipe);
+    }
+  });
+
+  test("resolveRecipe rejects a hostile selector without invoking accessors", async () => {
+    const recipe = await signedRecipe(normativeRecipe());
+    const doc = {
+      registryId: "dacs2:registry:v0.1",
+      version: "0.1",
+      entries: [recipe],
+    } as Record<string, unknown>;
+    let methodReads = 0;
+    const selector: Record<string, unknown> = {
+      scheme: "key",
+      recipeVersion: 1,
+    };
+    Object.defineProperty(selector, "method", {
+      enumerable: true,
+      get: () => {
+        methodReads += 1;
+        return "self-signed";
+      },
+    });
+
+    await expect(
+      resolveRecipe(
+        "anchor",
+        selector as never,
+        depsFor(doc),
+      ),
+    ).rejects.toThrow(/selector must be an exact canonical/);
+    expect(methodReads).toBe(0);
+    await expect(
+      resolveRecipe(
+        "anchor",
+        {
+          scheme: "key",
+          method: "self-signed",
+          recipeVersion: 1,
+          trusted: true,
+        } as never,
+        depsFor(doc),
+      ),
+    ).rejects.toThrow(/selector must be an exact canonical/);
+  });
+
+  test("resolveRecipe rejects a selector pinned to another version", async () => {
+    const recipe = await signedRecipe(normativeRecipe());
+    const doc = {
+      registryId: "dacs2:registry:v0.1",
+      version: "0.1",
+      entries: [recipe],
+    } as Record<string, unknown>;
+
+    await expect(
+      resolveRecipe(
+        "anchor",
+        { scheme: "key", method: "self-signed", recipeVersion: 2 },
+        depsFor(doc),
+      ),
+    ).rejects.toThrow(/resolved 0 exact entries; unambiguous family required/);
+  });
+
+  test("resolveRecipe rejects an entry not authenticated by the steward", async () => {
+    const forged = await signedRecipe(normativeRecipe(), IMPOSTOR_SEED);
+    const doc = {
+      registryId: "dacs2:registry:v0.1",
+      version: "0.1",
+      entries: [forged],
+    } as Record<string, unknown>;
+
+    await expect(
+      resolveRecipe(
+        "anchor",
+        { scheme: "key", method: "self-signed", recipeVersion: 1 },
+        depsFor(doc),
+      ),
+    ).rejects.toThrow(/signature is not valid under the steward key/);
   });
 
   test("legacy registry signatures require an explicit policy and are normalised", async () => {

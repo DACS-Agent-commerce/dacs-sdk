@@ -343,58 +343,118 @@ export interface ListingPin {
  */
 export type VerificationDecision = "pass" | "fail" | "indeterminate" | "error";
 
-/**
- * An honestly-typed claim proof reference. `kind` says whether `value` is a
- * digest (`hash`) or a raw reference such as a `/.well-known` URL or signature
- * (`raw`), so a consumer never has to guess whether the field is a hash. Used
- * for evidence that is NOT a DAHR attestation (see {@link VerifyResultEntry}).
- */
-export interface ClaimProofRef {
-  kind: "hash" | "raw";
-  value: string;
+/** DACS-2 §7.3 closed verification-method registry for current artifacts. */
+export type VerificationMethodKind =
+  | "verifiable-credential"
+  | "tlsnotary"
+  | "zktls"
+  | "consensus-backed-proxy"
+  | "oauth-attested"
+  | "evm-rpc"
+  | "domain-tls-control"
+  | "self-signed"
+  | "demos-gcr-domain";
+
+/** DACS-2 §7.5 signature over the current VerifyResult signed scope. */
+export type VerifyResultSignature = ComponentSignature;
+
+/** DACS-2 §7.5 current, signed per-method authority result. */
+export interface VerifyResult {
+  resultVersion: "1";
+  scheme: string;
+  identifier: string;
+  recipeVersion: number;
+  method: VerificationMethodKind;
+  decision: VerificationDecision;
+  reason: string;
+  attestation: AttestationRef;
+  data?: Record<string, unknown>;
+  fetchedAt: number;
+  verifiedAt: number;
+  validUntil?: number;
+  signature: VerifyResultSignature;
 }
 
-/** DACS-2 — one method result inside a composite verification record. */
-export interface VerifyResultEntry {
+/** DACS-2 §7.7 advisory signal. It never participates in aggregation. */
+export interface SupplementarySignal {
+  source:
+    | "dacs-5"
+    | "cci-nomis"
+    | "cci-ethos"
+    | "cci-humanpassport"
+    | "external"
+    | string;
+  signalType: string;
+  value: number | string;
+  observedAt: number;
+  /** Required when source is `external`. */
+  attestation?: AttestationRef;
+}
+
+/** DACS-2 §7.7 v0.1 warning registry; WN-6 permits additional advisory codes. */
+export type VerificationWarningCode =
+  | "AUTHORITY_UNAVAILABLE"
+  | "AUTHORITY_RATE_LIMITED"
+  | "DNS_RESOLUTION_FAILED"
+  | "TLS_HANDSHAKE_FAILED"
+  | "RESPONSE_MALFORMED"
+  | "RETRY_EXHAUSTED"
+  | (string & {});
+
+/** DACS-2 §7.7 advisory warning. It never participates in aggregation. */
+export interface VerificationWarning {
+  claimRef: ClaimRef;
+  code: VerificationWarningCode;
+  retryable: boolean;
+  suggestedRetryAfterMs?: number;
+}
+
+/** DACS-2 §7.7 current composite verification record. */
+export interface CompositeVerificationRecord {
+  recordVersion: "1";
+  jobId: string;
+  evaluatedParty: ClaimRef;
+  bundleHash: string;
+  requirementHash: string;
+  freshness: VerifyResultRef[];
+  supplementary: SupplementarySignal[];
+  dealSpecific: VerifyResultRef[];
+  overallDecision: VerificationDecision;
+  warnings?: VerificationWarning[];
+  generatedAt: number;
+  signature: ComponentSignature;
+}
+
+/**
+ * Obsolete pre-§7.7 SDK result entry. This exists only behind the explicit
+ * legacy read boundary; current producers and strict verifiers never emit or
+ * accept it as a current VerifyResult.
+ */
+export interface LegacyVerifyResultEntry {
   claimRef: ClaimRef;
   method: string;
   status: VerificationDecision;
   authority?: string;
-  /**
-   * DAHR attestation of the proxied response body (the consensus-backed evidence
-   * this result rests on) — STRICTLY a hash. Populated only by methods that run a
-   * DAHR proxy fetch (consensus-backed-proxy, ofac-screen). A method with no proxy
-   * fetch (e.g. cci-claim) MUST NOT populate it — its evidence goes in `proof`.
-   */
   responseHash?: string;
-  /**
-   * The claim's attested proof, when the method rests on one that is NOT a DAHR
-   * attestation (e.g. a cci-claim's stored `/.well-known` URL, proof hash, or
-   * signature). Honestly typed as {@link ClaimProofRef} so consumers know whether
-   * the value is a digest or a raw reference — the #31 fix for the raw-proof-in-a-
-   * hash-named-field bug.
-   */
-  proof?: ClaimProofRef;
-  /**
-   * PSP-3 parsed data map: the fields a §7.4.1 ParserSpec `dataMap` extracted from
-   * the attested body (audit-only — it never changes the decision). Recorded so the
-   * verification is reproducible from the signed recipe + attested body.
-   */
+  proof?: { kind: "hash" | "raw"; value: string };
   data?: Record<string, unknown>;
 }
 
-/** DACS-2 — aggregated verification outcome for a subject. */
-export interface CompositeVerificationRecord {
+/** Obsolete pre-DACS-2 §7.7 SDK record, retained for explicit historical reads. */
+export interface LegacyCompositeVerificationRecord {
   subject: string;
   recipeId: string;
   recipeVersion: string;
-  results: VerifyResultEntry[];
-  /** Composite decision (DACS-2 §7.7); the session proceeds only on `pass`. */
+  results: LegacyVerifyResultEntry[];
   decision: VerificationDecision;
   verifiedAt: string;
-  /** Normative detached signature when the record is published standalone. */
   signature?: ComponentSignature;
 }
+
+/** Explicit current-versus-legacy read result. */
+export type ReadableCompositeVerificationRecord =
+  | { compatibility: "current"; record: CompositeVerificationRecord }
+  | { compatibility: "legacy"; record: LegacyCompositeVerificationRecord };
 
 /** DACS-3 §8.5 party bound into an AgreementArtifact. */
 export interface AgreementParty {

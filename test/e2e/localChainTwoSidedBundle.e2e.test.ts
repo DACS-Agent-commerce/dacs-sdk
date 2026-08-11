@@ -10,6 +10,10 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Signer } from "../../src/agent/signedArtifact.js";
 import { verifyBundleCore, type VerifyBundleDeps } from "../../src/agent/verifyBundleCore.js";
 import { attestationBundleHash, buildTwoSidedBundle } from "../../src/agent/twoSidedBundle.js";
+import {
+  verifyCompositeVerificationRecord,
+  type CompositeBundleRequirement,
+} from "../../src/agent/compositeVerification.js";
 import type {
   AttestationRef,
   CompositeVerificationRecord,
@@ -19,7 +23,13 @@ import type {
 } from "../../src/artifacts/types.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
-import { contentHash, sha256Hex, stripSignature } from "../../src/canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  encodeAddressSegment,
+  sha256Hex,
+  stripSignature,
+} from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -375,13 +385,24 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
         );
         const listingRef = await sub.anchor(`dacs1:listing:${sellerDid}:local-chain-x402`, listingSigned);
 
-        const sellerVet: CompositeVerificationRecord = {
-          subject: sellerDid,
-          recipeId: "local-self-signed",
-          recipeVersion: "0.1",
-          results: [{ claimRef: sellerDid, method: "self-signed", status: "pass" }],
-          decision: "pass",
-          verifiedAt: "2026-07-13T00:00:00Z",
+        const emptyRequirement: CompositeBundleRequirement = {
+          requirementVersion: "1",
+          required: [],
+        };
+        const requirementHash = sha256Hex(canonicalize(emptyRequirement));
+        const sellerIdentityHash = identityBundleHash(sellerIdentity);
+        const buyerIdentityHash = identityBundleHash(buyerIdentity);
+        const sellerVet: Omit<CompositeVerificationRecord, "signature"> = {
+          recordVersion: "1",
+          jobId: JOB_ID,
+          evaluatedParty: sellerDid,
+          bundleHash: sellerIdentityHash,
+          requirementHash,
+          freshness: [],
+          supplementary: [],
+          dealSpecific: [],
+          overallDecision: "pass",
+          generatedAt: observedAt,
         };
         const sellerVetSigned = await signComponentArtifact(
           sellerVet,
@@ -392,11 +413,14 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             sign: (bytes) => signBuyer(bytes),
           },
         );
-        const sellerVetRef = await sub.anchor(`dacs2:verifyrecord:${JOB_ID}:seller`, sellerVetSigned);
-        const buyerVet: CompositeVerificationRecord = {
+        const sellerVetRef = await sub.anchor(
+          `dacs2:composite:${encodeAddressSegment(JOB_ID)}:${encodeAddressSegment(sellerDid)}`,
+          sellerVetSigned,
+        );
+        const buyerVet: Omit<CompositeVerificationRecord, "signature"> = {
           ...sellerVet,
-          subject: buyerDid,
-          results: [{ claimRef: buyerDid, method: "self-signed", status: "pass" }],
+          evaluatedParty: buyerDid,
+          bundleHash: buyerIdentityHash,
         };
         const buyerVetSigned = await signComponentArtifact(
           buyerVet,
@@ -407,7 +431,10 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             sign: (bytes) => signBuyer(bytes),
           },
         );
-        const buyerVetRef = await sub.anchor(`dacs2:verifyrecord:${JOB_ID}:buyer`, buyerVetSigned);
+        const buyerVetRef = await sub.anchor(
+          `dacs2:composite:${encodeAddressSegment(JOB_ID)}:${encodeAddressSegment(buyerDid)}`,
+          buyerVetSigned,
+        );
         const sellerVetAttRef = refTo(
           "dacs-2-verifyresult",
           `seller-vet-${JOB_ID}`,
@@ -601,6 +628,45 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
               : null,
           resolvePublicKey: async (did) => resolveFromDid(did),
           verify: (bytes, sig, pub) => ed25519Verify(bytes, sig, publicKeyFromRaw(pub)),
+          verifyCompositeRecord: (composite) => {
+            if (
+              composite.evaluatedParty !== buyerDid &&
+              composite.evaluatedParty !== sellerDid
+            ) {
+              throw new Error("unexpected evaluated party");
+            }
+            return verifyCompositeVerificationRecord(
+              composite,
+              {
+                jobId: JOB_ID,
+                evaluatedParty: composite.evaluatedParty,
+                bundleHash:
+                  composite.evaluatedParty === buyerDid
+                    ? buyerIdentityHash
+                    : sellerIdentityHash,
+                requirement: emptyRequirement,
+                verifier: buyerDid,
+                freshness: [],
+                dealSpecific: [],
+              },
+              {
+                nowMs: () => observedAt,
+                resolve: async () => null,
+                resolveRecipe: async () => null,
+                isRecipeSignerAuthorized: () => false,
+                isVerifyResultSignerAuthorized: () => false,
+                resolvePublicKey: async (signature): Promise<Uint8Array | null> =>
+                  resolveFromDid(signature.signer),
+                verify: ({ signedBytes: bytes, signature, publicKey }) =>
+                  ed25519Verify(
+                    bytes,
+                    Uint8Array.from(Buffer.from(signature.value, "base64url")),
+                    publicKeyFromRaw(publicKey),
+                  ),
+                verifyAuthorityAttestation: () => "unresolved",
+              },
+            );
+          },
         };
 
         const buyerVerdict = await verifyBundleCore(buyerBundleRef, deps);
