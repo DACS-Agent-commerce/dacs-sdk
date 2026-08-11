@@ -191,6 +191,35 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isPositiveSafeInt = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
+/**
+ * Inspect a callback-owned JSON tree without invoking accessors or proxy traps.
+ * `isExactJsonRecord` supplies the JSON/wire checks; this companion closes the
+ * gap where a nested Proxy could otherwise mutate an already-validated sibling
+ * between semantic validation and `structuredClone`.
+ */
+function isRecursivelyProxyFree(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): boolean {
+  if (value === null || typeof value !== "object") return true;
+  if (nodeTypes.isProxy(value) || seen.has(value)) return false;
+  seen.add(value);
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (key === "length" && Array.isArray(value)) continue;
+      if (!("value" in descriptor) || !isRecursivelyProxyFree(descriptor.value, seen)) {
+        return false;
+      }
+    }
+    return Object.getOwnPropertySymbols(value).length === 0;
+  } catch {
+    return false;
+  } finally {
+    seen.delete(value);
+  }
+}
+
 function isCanonicalClaimReference(value: unknown): value is string {
   if (
     typeof value !== "string" ||
@@ -286,6 +315,7 @@ function isIndexDocument(value: unknown): value is RecipeRegistryIndexDocument {
 
 function isCurrentIndex(value: unknown): value is CurrentRecipeRegistryIndex {
   return (
+    isRecursivelyProxyFree(value) &&
     isExactJsonRecord(value) &&
     exactOwnDataKeys(value, ["registryVersion", "indexRef", "receipt"]) &&
     isPositiveSafeInt(value.registryVersion) &&
@@ -418,7 +448,7 @@ async function readExactJson(
   // Inspect the callback-owned value before cloning. This prevents an accessor,
   // proxy-normalised prototype, symbol, sparse array, or undefined overlay from
   // becoming trusted merely because structuredClone produces plain JSON.
-  if (!isExactJsonRecord(raw)) {
+  if (!isRecursivelyProxyFree(raw) || !isExactJsonRecord(raw)) {
     throw new DacsError(`${label} readback is not exact JSON`);
   }
   return immutableSnapshot(raw, `${label} readback`);
@@ -569,6 +599,13 @@ function assertFamilyGraph(
     }
   }
   return heads;
+}
+
+/** @internal Validate the complete signed family/version graph after durable recovery. */
+export function validateRecipeRegistryEntryGraph(
+  entries: ReadonlyArray<Readonly<AuthenticatedRecipeRegistryEntry>>,
+): void {
+  assertFamilyGraph(entries);
 }
 
 function registryProvenance(
@@ -763,6 +800,72 @@ function requireSnapshot(
   return snapshot;
 }
 
+/** @internal Shared by the durable session-snapshot producer. */
+export function selectLatestRecipeRegistryEntry(
+  entries: ReadonlyArray<Readonly<AuthenticatedRecipeRegistryEntry>>,
+  selector: Readonly<LatestRecipeSelector>,
+): Readonly<AuthenticatedRecipeRegistryEntry> {
+  const capturedSelector = captureLatestSelector(selector as LatestRecipeSelector);
+  const heads = assertFamilyGraph(entries);
+  const candidates = [...heads.values()].filter(
+    (entry) =>
+      entry.recipe.scheme === capturedSelector.scheme &&
+      methodKinds(entry.recipe).includes(capturedSelector.method),
+  );
+  if (candidates.length === 0) {
+    const historicalOwners = new Set(
+      entries
+        .filter(
+          (entry) =>
+            entry.recipe.scheme === capturedSelector.scheme &&
+            methodKinds(entry.recipe).includes(capturedSelector.method),
+        )
+        .map((entry) => familyKey(entry.recipe)),
+    );
+    if (historicalOwners.size > 0) {
+      throw new DacsError(
+        `requested method ${capturedSelector.method} was removed from its latest family head; refusing historical fallback`,
+      );
+    }
+    throw new DacsError(
+      `no current recipe family for (${capturedSelector.scheme}, ${capturedSelector.method})`,
+    );
+  }
+  if (candidates.length !== 1) {
+    throw new DacsError(
+      `current recipe family for (${capturedSelector.scheme}, ${capturedSelector.method}) is ambiguous`,
+    );
+  }
+  const selected = candidates[0]!;
+  if (selected.recipe.availability === "disabled") {
+    throw new DacsError("disabled recipe cannot start a new session");
+  }
+  if (capturedSelector.required && selected.recipe.governance.deprecated === true) {
+    throw new DacsError("deprecated recipe cannot start required-claim verification");
+  }
+  return selected;
+}
+
+/** @internal Shared by the durable session-snapshot producer. */
+export function resolveHistoricalRecipeRegistryEntry(
+  entries: ReadonlyArray<Readonly<AuthenticatedRecipeRegistryEntry>>,
+  selector: Readonly<RecipeSelector>,
+): Readonly<AuthenticatedRecipeRegistryEntry> {
+  const capturedSelector = captureHistoricalSelector(selector);
+  const matches = entries.filter(
+    (entry) =>
+      entry.recipe.scheme === capturedSelector.scheme &&
+      entry.recipe.recipeVersion === capturedSelector.recipeVersion &&
+      methodKinds(entry.recipe).includes(capturedSelector.method),
+  );
+  if (matches.length !== 1) {
+    throw new DacsError(
+      `historical recipe (${capturedSelector.scheme}, ${capturedSelector.method}, v${capturedSelector.recipeVersion}) resolved ${matches.length} entries`,
+    );
+  }
+  return matches[0]!;
+}
+
 /**
  * Select the family from authenticated current family heads, then use that
  * family's newest revision, then require the requested method on that exact
@@ -774,43 +877,7 @@ export function selectLatestRecipeAtSessionStart(
 ): LatestRecipeSelection {
   const snapshot = requireSnapshot(snapshotSource);
   const selector = captureLatestSelector(selectorSource);
-  const heads = assertFamilyGraph(snapshot.entries);
-  const candidates = [...heads.values()].filter(
-    (entry) =>
-      entry.recipe.scheme === selector.scheme &&
-      methodKinds(entry.recipe).includes(selector.method),
-  );
-  if (candidates.length === 0) {
-    const historicalOwners = new Set(
-      snapshot.entries
-        .filter(
-          (entry) =>
-            entry.recipe.scheme === selector.scheme &&
-            methodKinds(entry.recipe).includes(selector.method),
-        )
-        .map((entry) => familyKey(entry.recipe)),
-    );
-    if (historicalOwners.size > 0) {
-      throw new DacsError(
-        `requested method ${selector.method} was removed from its latest family head; refusing historical fallback`,
-      );
-    }
-    throw new DacsError(
-      `no current recipe family for (${selector.scheme}, ${selector.method})`,
-    );
-  }
-  if (candidates.length !== 1) {
-    throw new DacsError(
-      `current recipe family for (${selector.scheme}, ${selector.method}) is ambiguous`,
-    );
-  }
-  const selected = candidates[0]!;
-  if (selected.recipe.availability === "disabled") {
-    throw new DacsError("disabled recipe cannot start a new session");
-  }
-  if (selector.required && selected.recipe.governance.deprecated === true) {
-    throw new DacsError("deprecated recipe cannot start required-claim verification");
-  }
+  const selected = selectLatestRecipeRegistryEntry(snapshot.entries, selector);
   const selection = deepFreeze({
     selectionKind: "latest-at-session-start",
     family: {
@@ -839,18 +906,7 @@ export function resolveHistoricalRecipeFromSnapshot(
 ): HistoricalRecipeResolution {
   const snapshot = requireSnapshot(snapshotSource);
   const selector = captureHistoricalSelector(selectorSource);
-  const matches = snapshot.entries.filter(
-    (entry) =>
-      entry.recipe.scheme === selector.scheme &&
-      entry.recipe.recipeVersion === selector.recipeVersion &&
-      methodKinds(entry.recipe).includes(selector.method),
-  );
-  if (matches.length !== 1) {
-    throw new DacsError(
-      `historical recipe (${selector.scheme}, ${selector.method}, v${selector.recipeVersion}) resolved ${matches.length} entries`,
-    );
-  }
-  const selected = matches[0]!;
+  const selected = resolveHistoricalRecipeRegistryEntry(snapshot.entries, selector);
   const resolution = deepFreeze({
     selectionKind: "explicit-historical",
     family: {

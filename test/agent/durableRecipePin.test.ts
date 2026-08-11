@@ -5,10 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
-import type {
-  AnchorReceipt,
-  ComponentSignature,
-} from "../../src/artifacts/types.js";
+import type { AnchorReceipt, ComponentSignature } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -19,26 +16,28 @@ import {
   rawPublicKey,
 } from "../../src/crypto/index.js";
 import {
+  SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY,
   isDurableSessionRecipePin,
+  isDurableSessionRecipeRegistrySnapshot,
+  pinSessionRecipeRegistrySnapshot,
   pinSessionRecipeSelection,
   recoverSessionRecipePin,
+  recoverSessionRecipeRegistrySnapshot,
 } from "../../src/agent/durableRecipePin.js";
 import {
   createInMemoryFencedSessionStore,
   type FencedSessionStoreV2,
 } from "../../src/agent/fencedSessionStore.js";
 import { createFsFencedSessionStore } from "../../src/agent/fencedSessionStoreFs.js";
-import type { CompositeClaimRequirement } from "../../src/agent/compositeVerification.js";
+import type {
+  CompositeBundleRequirement,
+  CompositeClaimRequirement,
+} from "../../src/agent/compositeVerification.js";
 import {
   RECIPE_REGISTRY_INDEX_ADDRESS,
   authenticateRecipeRegistrySnapshot,
-  isHistoricalRecipeResolution,
-  isLatestRecipeSelection,
-  resolveHistoricalRecipeFromSnapshot,
   selectLatestRecipeAtSessionStart,
   type CurrentRecipeRegistryIndex,
-  type HistoricalRecipeResolution,
-  type LatestRecipeSelection,
   type RecipeRegistryIndexDocument,
   type RecipeRegistryRecipeRef,
   type RecipeRegistrySelectionProvider,
@@ -46,12 +45,13 @@ import {
 import type { RecipeDescriptor } from "../../src/registry/types.js";
 
 const STEWARD_SEED = new Uint8Array(32).fill(73);
-const STEWARD_KEY = Uint8Array.from(
-  rawPublicKey(publicKeyFromSeed(STEWARD_SEED)),
-);
+const STEWARD_KEY = Uint8Array.from(rawPublicKey(publicKeyFromSeed(STEWARD_SEED)));
 const STEWARD = `key:${Buffer.from(STEWARD_KEY).toString("hex")}`;
 const PARTY = `key:${"a1".repeat(32)}`;
+const SECOND_PARTY = `key:${"b2".repeat(32)}`;
 const NOW = 1_786_400_000_000;
+const SESSION_START_HASH = "1".repeat(64);
+const PARTY_PLAN_HASH = "2".repeat(64);
 
 type SignedRecipe = RecipeDescriptor & { signature: ComponentSignature };
 
@@ -113,23 +113,12 @@ function receiptFor(ref: RecipeRegistryRecipeRef): AnchorReceipt {
   };
 }
 
-async function registry(
-  recipes: RecipeDescriptor[],
-  registryVersion: number,
-): Promise<{
-  snapshot: Awaited<ReturnType<typeof authenticateRecipeRegistrySnapshot>>;
-  latest: (method?: "self-signed" | "tlsnotary") => LatestRecipeSelection;
-  historical: (
-    version: number,
-    method?: "self-signed" | "tlsnotary",
-  ) => HistoricalRecipeResolution;
-}> {
+async function registry(recipes: RecipeDescriptor[], registryVersion: number) {
   const signed = await Promise.all(recipes.map(signedRecipe));
   const documents = new Map<string, Record<string, unknown>>();
   const refs = signed.map((entry) => {
-    const locator = `recipe:${entry.recipeVersion}:${contentHash(
-      entry as unknown as Record<string, unknown>,
-    )}`;
+    const hash = contentHash(entry as unknown as Record<string, unknown>);
+    const locator = `recipe:${entry.scheme}:${entry.recipeVersion}:${hash}`;
     documents.set(locator, entry as unknown as Record<string, unknown>);
     return refFor(locator, entry as unknown as Record<string, unknown>);
   });
@@ -157,21 +146,9 @@ async function registry(
     verify: (bytes, signature, publicKey) =>
       ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
   };
-  const snapshot = await authenticateRecipeRegistrySnapshot(provider);
   return {
-    snapshot,
-    latest: (method = "self-signed") =>
-      selectLatestRecipeAtSessionStart(snapshot, {
-        scheme: "key",
-        method,
-        required: true,
-      }),
-    historical: (version, method = "self-signed") =>
-      resolveHistoricalRecipeFromSnapshot(snapshot, {
-        scheme: "key",
-        method,
-        recipeVersion: version,
-      }),
+    provider,
+    snapshot: await authenticateRecipeRegistrySnapshot(provider),
   };
 }
 
@@ -187,52 +164,66 @@ async function sessionLease(
   return result.lease;
 }
 
-function requirement(
+function claimRequirement(
+  scheme = "key",
   patch: Partial<CompositeClaimRequirement> = {},
 ): CompositeClaimRequirement {
   return {
-    scheme: "key",
+    scheme,
     verificationRequired: true,
     parameters: { verificationMethod: "self-signed" },
     ...patch,
   };
 }
 
-function pinInput(
-  store: FencedSessionStoreV2,
-  jobId: string,
-  selection: LatestRecipeSelection | HistoricalRecipeResolution,
-  leaseToken: Awaited<ReturnType<typeof sessionLease>>,
-  claimRequirement = requirement(),
-  now = 1,
-) {
+function bundleRequirement(
+  required: CompositeClaimRequirement[] = [claimRequirement()],
+  oneOf?: CompositeClaimRequirement[][],
+): CompositeBundleRequirement {
   return {
-    store,
-    jobId,
-    evaluatedParty: PARTY,
-    requirementPath: { kind: "required" as const, index: 0 },
-    requirement: claimRequirement,
-    selection,
-    leaseToken,
-    now,
+    requirementVersion: "1",
+    required,
+    ...(oneOf === undefined ? {} : { oneOf }),
   };
 }
 
-function recoveryInput(
+async function pinRegistry(
   store: FencedSessionStoreV2,
   jobId: string,
+  provider: RecipeRegistrySelectionProvider,
   leaseToken: Awaited<ReturnType<typeof sessionLease>>,
-  claimRequirement = requirement(),
   now = 1,
+) {
+  return pinSessionRecipeRegistrySnapshot({
+    store,
+    jobId,
+    sessionStartHash: SESSION_START_HASH,
+    provider,
+    leaseToken,
+    now,
+  });
+}
+
+function pinInput(
+  store: FencedSessionStoreV2,
+  jobId: string,
+  sessionSnapshot: Awaited<ReturnType<typeof pinRegistry>>,
+  leaseToken: Awaited<ReturnType<typeof sessionLease>>,
+  fullRequirement = bundleRequirement(),
+  patch: Partial<Parameters<typeof pinSessionRecipeSelection>[0]> = {},
 ) {
   return {
     store,
+    sessionSnapshot,
     jobId,
     evaluatedParty: PARTY,
     requirementPath: { kind: "required" as const, index: 0 },
-    requirement: claimRequirement,
+    bundleRequirement: fullRequirement,
+    partyPlanHash: PARTY_PLAN_HASH,
+    requestedMethod: "self-signed" as const,
     leaseToken,
-    now,
+    now: 2,
+    ...patch,
   };
 }
 
@@ -240,412 +231,347 @@ const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   while (temporaryDirectories.length > 0) {
-    const directory = temporaryDirectories.pop()!;
-    await rm(directory, { recursive: true, force: true });
+    await rm(temporaryDirectories.pop()!, { recursive: true, force: true });
   }
 });
 
-describe("generation-fenced durable recipe pins", () => {
-  test("persists complete canonical provenance before returning an immutable runtime pin", async () => {
+describe("job-scoped generation-fenced recipe registry pins", () => {
+  test("persists one complete authenticated snapshot and derives immutable requirement pins", async () => {
     const store = createInMemoryFencedSessionStore();
-    const jobId = "pin-memory-complete";
+    const jobId = "recipe-snapshot-complete";
     await store.create({ jobId, now: 0 });
     const lease = await sessionLease(store, jobId, "worker-a", 0);
     const current = await registry([recipe(1), recipe(2)], 7);
 
+    const sessionSnapshot = await pinRegistry(store, jobId, current.provider, lease);
     const pin = await pinSessionRecipeSelection(
-      pinInput(store, jobId, current.latest(), lease),
+      pinInput(store, jobId, sessionSnapshot, lease),
     );
 
-    expect(isDurableSessionRecipePin(pin)).toBe(true);
-    expect(pin).toMatchObject({
-      pinVersion: "1",
+    expect(isDurableSessionRecipeRegistrySnapshot(sessionSnapshot)).toBe(true);
+    expect(sessionSnapshot).toMatchObject({
+      snapshotVersion: "1",
       jobId,
-      evaluatedParty: PARTY,
-      selectionKind: "latest-at-session-start",
-      registryVersion: 7,
-      family: { scheme: "key", defaultMethod: "self-signed" },
-      method: "self-signed",
-      recipeVersion: 2,
+      registry: { registryVersion: 7 },
+      checkpointKey: SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY,
       pinnedBy: { owner: "worker-a", generation: 1 },
     });
-    expect(pin.indexRef).toEqual(pin.provenance.registry.indexRef);
-    expect(pin.recipeRef).toEqual(pin.provenance.recipeRef);
-    expect(pin.recipeContentHash).toBe(
-      contentHash(pin.provenance.recipe as unknown as Record<string, unknown>),
-    );
-    expect(Object.isFrozen(pin)).toBe(true);
-    expect(Object.isFrozen(pin.provenance.registry.index)).toBe(true);
-    expect(isDurableSessionRecipePin(structuredClone(pin))).toBe(false);
+    expect(sessionSnapshot.entries).toHaveLength(2);
+    expect(isDurableSessionRecipeRegistrySnapshot(structuredClone(sessionSnapshot))).toBe(false);
+    expect(isDurableSessionRecipePin(pin)).toBe(true);
+    expect(pin).toMatchObject({
+      jobId,
+      registryVersion: 7,
+      recipeVersion: 2,
+      selectionKind: "latest-at-session-start",
+      sessionSnapshotHash: sessionSnapshot.snapshotHash,
+      evaluatedPartyIdentity: { scheme: "key", identifier: "a1".repeat(32) },
+    });
+    expect(Object.isFrozen(pin.provenance.recipe)).toBe(true);
 
     const loaded = await store.load(jobId);
-    expect(loaded.status).toBe("ok");
     if (loaded.status !== "ok") throw new Error("session missing");
-    expect(loaded.record.checkpoints).toHaveLength(1);
-    expect(loaded.record.checkpoints[0]).toMatchObject({
-      key: pin.checkpointKey,
-      stage: "intent",
-      data: { pinHash: pin.pinHash },
-    });
+    expect(loaded.record.checkpoints[0]?.key).toBe(
+      SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY,
+    );
+    expect(loaded.record.checkpoints).toHaveLength(2);
   });
 
-  test("restart keeps the original unpinned family version but rejects requirement or family conflicts", async () => {
-    const store = createInMemoryFencedSessionStore();
-    const jobId = "pin-memory-restart";
-    await store.create({ jobId, now: 0 });
-    const firstLease = await sessionLease(store, jobId, "worker-a", 0, 10);
-    const v1 = await registry([recipe(1)], 1);
-    const first = await pinSessionRecipeSelection(
-      pinInput(store, jobId, v1.latest(), firstLease, requirement(), 1),
-    );
-    const firstLoad = await store.load(jobId);
-    if (firstLoad.status !== "ok") throw new Error("session missing");
-    const released = await store.transition({
-      jobId,
-      expectedRevision: firstLoad.record.revision,
-      leaseToken: firstLease,
-      lease: null,
-      now: 2,
+  test("does not accept a cached latest-selection or authenticated snapshot as a session pin", async () => {
+    const old = await registry([recipe(1)], 1);
+    const cached = selectLatestRecipeAtSessionStart(old.snapshot, {
+      scheme: "key",
+      method: "self-signed",
+      required: true,
     });
-    if (!released.ok) throw new Error(`release failed: ${released.reason}`);
-    const secondLease = await sessionLease(store, jobId, "worker-b", 3);
-    const v2 = await registry([recipe(1), recipe(2)], 2);
-    const recovered = await pinSessionRecipeSelection(
-      pinInput(store, jobId, v2.latest(), secondLease, requirement(), 4),
-    );
-    expect(recovered.pinHash).toBe(first.pinHash);
-    expect(recovered.recipeVersion).toBe(1);
-    expect(recovered.registryVersion).toBe(1);
-    expect(recovered.pinnedBy.generation).toBe(1);
-
-    await expect(pinSessionRecipeSelection(
-      pinInput(
-        store,
-        jobId,
-        v2.latest(),
-        secondLease,
-        requirement({ maxAge: 30 }),
-        5,
-      ),
-    )).rejects.toThrow(/conflicts with the stored requirement/);
-
-    const changedFamily = await registry([
-      recipe(3, {
-        defaultMethod: { kind: "tlsnotary", endpoint: "https://notary.example" },
-        alternatives: [{ kind: "self-signed" }],
-        governance: {
-          proposedBy: STEWARD,
-          acceptedAt: NOW + 3,
-          anchoring: "single-signer",
-        },
-      }),
-    ], 3);
-    await expect(pinSessionRecipeSelection(
-      pinInput(store, jobId, changedFamily.latest(), secondLease, requirement(), 6),
-    )).rejects.toThrow(/conflicts with the stored requirement or recipe family/);
-
-    const omittedHistory = await registry([
-      recipe(2, {
-        governance: {
-          proposedBy: STEWARD,
-          acceptedAt: NOW + 2,
-          anchoring: "single-signer",
-        },
-      }),
-    ], 4);
-    await expect(pinSessionRecipeSelection(
-      pinInput(store, jobId, omittedHistory.latest(), secondLease, requirement(), 7),
-    )).rejects.toThrow(/advanced registry omits.*stored recipe reference/);
-  });
-
-  test("requires runtime latest provenance for unpinned requirements and exact method/version pins", async () => {
-    const store = createInMemoryFencedSessionStore();
-    const jobId = "pin-provenance";
-    await store.create({ jobId, now: 0 });
-    const lease = await sessionLease(store, jobId, "worker", 0);
-    const current = await registry([recipe(1), recipe(2)], 2);
-
-    await expect(pinSessionRecipeSelection(
-      pinInput(store, jobId, current.historical(1), lease),
-    )).rejects.toThrow(/unpinned ClaimRequirement requires latest-at-session/);
-
-    const historical = await pinSessionRecipeSelection(
-      pinInput(
-        store,
-        jobId,
-        current.historical(1),
-        lease,
-        requirement({ recipeVersion: 1 }),
-      ),
-    );
-    expect(historical.selectionKind).toBe("explicit-historical");
-    expect(historical.recipeVersion).toBe(1);
-
-    const fabricated = structuredClone(current.latest()) as LatestRecipeSelection;
-    await expect(pinSessionRecipeSelection({
-      ...pinInput(store, "different-job", fabricated, lease),
-      jobId,
-      requirementPath: { kind: "required", index: 1 },
-    })).rejects.toThrow(/runtime-authenticated recipe selection provenance/);
-
-    await expect(pinSessionRecipeSelection({
-      ...pinInput(store, jobId, current.latest(), lease),
-      requirementPath: { kind: "required", index: 2 },
-      requirement: requirement({
-        parameters: { verificationMethod: "tlsnotary" },
-      }),
-    })).rejects.toThrow(/violates verificationMethod provenance/);
-  });
-
-  test("an exact version pin recovers when its once-latest recipe becomes historical", async () => {
-    const store = createInMemoryFencedSessionStore();
-    const jobId = "pin-latest-to-historical";
-    await store.create({ jobId, now: 0 });
-    const firstLease = await sessionLease(store, jobId, "worker-a", 0);
-    const initial = await registry([recipe(1)], 1);
-    const pinnedRequirement = requirement({ recipeVersion: 1 });
-    const first = await pinSessionRecipeSelection(
-      pinInput(
-        store,
-        jobId,
-        initial.latest(),
-        firstLease,
-        pinnedRequirement,
-        1,
-      ),
-    );
-    const loaded = await store.load(jobId);
-    if (loaded.status !== "ok") throw new Error("session missing");
-    const released = await store.transition({
-      jobId,
-      expectedRevision: loaded.record.revision,
-      leaseToken: firstLease,
-      lease: null,
-      now: 2,
-    });
-    if (!released.ok) throw new Error(`release failed: ${released.reason}`);
-    const secondLease = await sessionLease(store, jobId, "worker-b", 3);
     const advanced = await registry([recipe(1), recipe(2)], 2);
-    const recovered = await pinSessionRecipeSelection(
-      pinInput(
-        store,
-        jobId,
-        advanced.historical(1),
-        secondLease,
-        pinnedRequirement,
-        4,
-      ),
-    );
-    expect(recovered.pinHash).toBe(first.pinHash);
-    expect(recovered.selectionKind).toBe("latest-at-session-start");
-    expect(recovered.recipeVersion).toBe(1);
-  });
-
-  test("concurrent callers converge on the one checkpoint winner", async () => {
     const store = createInMemoryFencedSessionStore();
-    const jobId = "pin-concurrent";
+    const jobId = "recipe-no-selection-bypass";
     await store.create({ jobId, now: 0 });
     const lease = await sessionLease(store, jobId, "worker", 0);
-    const older = await registry([recipe(1)], 1);
-    const newer = await registry([recipe(1), recipe(2)], 2);
+    const sessionSnapshot = await pinRegistry(store, jobId, advanced.provider, lease);
+    expect(sessionSnapshot.registry.registryVersion).toBe(2);
+
+    await expect(pinSessionRecipeSelection({
+      ...pinInput(store, jobId, sessionSnapshot, lease),
+      selection: cached,
+    } as never)).rejects.toThrow(/input must be an exact data record/);
+    await expect(pinSessionRecipeSelection({
+      ...pinInput(store, jobId, sessionSnapshot, lease),
+      sessionSnapshot: old.snapshot,
+    } as never)).rejects.toThrow(/scope is malformed/);
+  });
+
+  test("concurrent v1/v2 starters converge on one job snapshot shared by all paths and parties", async () => {
+    const keyV1 = recipe(1);
+    const domainV1 = recipe(1, {
+      scheme: "domain",
+      governance: {
+        proposedBy: STEWARD,
+        acceptedAt: NOW + 1,
+        anchoring: "single-signer",
+      },
+    });
+    const keyV2 = recipe(2);
+    const v1 = await registry([keyV1, domainV1], 1);
+    const v2 = await registry([keyV1, domainV1, keyV2], 2);
+    const store = createInMemoryFencedSessionStore();
+    const jobId = "recipe-concurrent-global";
+    await store.create({ jobId, now: 0 });
+    const lease = await sessionLease(store, jobId, "worker", 0);
 
     const [left, right] = await Promise.all([
-      pinSessionRecipeSelection(
-        pinInput(store, jobId, older.latest(), lease, requirement(), 1),
-      ),
-      pinSessionRecipeSelection(
-        pinInput(store, jobId, newer.latest(), lease, requirement(), 1),
-      ),
+      pinRegistry(store, jobId, v1.provider, lease),
+      pinRegistry(store, jobId, v2.provider, lease),
     ]);
-    expect(left.pinHash).toBe(right.pinHash);
-    expect(left.recipeVersion).toBe(right.recipeVersion);
-    const loaded = await store.load(jobId);
-    if (loaded.status !== "ok") throw new Error("session missing");
-    expect(loaded.record.checkpoints).toHaveLength(1);
-  });
+    expect(left.snapshotHash).toBe(right.snapshotHash);
+    expect(left.registry.registryVersion).toBe(right.registry.registryVersion);
 
-  test("expired and superseded lease generations cannot establish or recover a pin", async () => {
-    const store = createInMemoryFencedSessionStore();
-    const jobId = "pin-stale-lease";
-    await store.create({ jobId, now: 0 });
-    const first = await sessionLease(store, jobId, "worker-a", 0, 5);
-    const current = await registry([recipe(1)], 1);
-
-    await expect(pinSessionRecipeSelection(
-      pinInput(store, jobId, current.latest(), first, requirement(), 5),
-    )).rejects.toThrow(/lease-expired/);
-    const second = await sessionLease(store, jobId, "worker-b", 6, 100);
-    await expect(pinSessionRecipeSelection(
-      pinInput(store, jobId, current.latest(), first, requirement(), 7),
-    )).rejects.toThrow(/lease-fenced/);
-    const pin = await pinSessionRecipeSelection(
-      pinInput(store, jobId, current.latest(), second, requirement(), 7),
+    const full = bundleRequirement([claimRequirement(), claimRequirement("domain")]);
+    const [first, duplicate] = await Promise.all([
+      pinSessionRecipeSelection(pinInput(store, jobId, left, lease, full)),
+      pinSessionRecipeSelection(pinInput(store, jobId, right, lease, full)),
+    ]);
+    expect(duplicate.pinHash).toBe(first.pinHash);
+    const second = await pinSessionRecipeSelection(
+      pinInput(store, jobId, right, lease, full, {
+        requirementPath: { kind: "required", index: 1 },
+      }),
     );
-    expect(pin.pinnedBy.generation).toBe(2);
-    await expect(recoverSessionRecipePin({
-      ...recoveryInput(store, jobId, first, requirement(), 8),
-      snapshot: current.snapshot,
-    })).rejects.toThrow(/lease-fenced/);
-    await expect(recoverSessionRecipePin({
-      ...recoveryInput(store, jobId, second, requirement(), 106),
-      snapshot: current.snapshot,
-    })).rejects.toThrow(/lease-expired/);
+    const otherParty = await pinSessionRecipeSelection(
+      pinInput(store, jobId, right, lease, full, { evaluatedParty: SECOND_PARTY }),
+    );
+    expect(new Set([
+      first.sessionSnapshotHash,
+      second.sessionSnapshotHash,
+      otherParty.sessionSnapshotHash,
+    ])).toEqual(new Set([left.snapshotHash]));
+    expect(first.registryVersion).toBe(left.registry.registryVersion);
+    expect(second.registryVersion).toBe(left.registry.registryVersion);
   });
 
-  test("filesystem cold restart recovers the old pin across registry and lease generations", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "dacs-recipe-pin-"));
+  test("cold restart after only the global checkpoint keeps v1 after v2 removes its method", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "dacs-recipe-snapshot-"));
     temporaryDirectories.push(directory);
-    const jobId = "pin-fs-restart";
+    const jobId = "recipe-snapshot-crash-before-path";
     const firstStore = await createFsFencedSessionStore({ dir: directory });
     await firstStore.create({ jobId, now: 0 });
     const firstLease = await sessionLease(firstStore, jobId, "worker-a", 0, 10);
-    const v1 = await registry([recipe(1)], 1);
-    const first = await pinSessionRecipeSelection(
-      pinInput(firstStore, jobId, v1.latest(), firstLease, requirement(), 1),
-    );
+    const tlsRequirement = bundleRequirement([
+      claimRequirement("key", {
+        parameters: { verificationMethod: "tlsnotary" },
+      }),
+    ]);
+    const v1 = await registry([
+      recipe(1, { alternatives: [{ kind: "tlsnotary", endpoint: "https://v1" }] }),
+    ], 1);
+    const original = await pinRegistry(firstStore, jobId, v1.provider, firstLease, 1);
 
     const restarted = await createFsFencedSessionStore({ dir: directory });
-    const v2 = await registry([recipe(1), recipe(2)], 2);
-    const sameGeneration = await recoverSessionRecipePin({
-      ...recoveryInput(restarted, jobId, firstLease, requirement(), 2),
-      snapshot: v2.snapshot,
-    });
-    expect(sameGeneration.pinHash).toBe(first.pinHash);
     const nextLease = await sessionLease(restarted, jobId, "worker-b", 11, 100);
-    const nextGeneration = await recoverSessionRecipePin({
-      ...recoveryInput(restarted, jobId, nextLease, requirement(), 12),
-      snapshot: v2.snapshot,
-    });
-    expect(nextGeneration.pinHash).toBe(first.pinHash);
-    expect(nextGeneration.recipeVersion).toBe(1);
-    expect(Object.isFrozen(nextGeneration.provenance.recipe)).toBe(true);
-    expect(isDurableSessionRecipePin(structuredClone(nextGeneration))).toBe(false);
-    expect(isLatestRecipeSelection(
-      nextGeneration.provenance as LatestRecipeSelection,
-    )).toBe(false);
-    expect(isHistoricalRecipeResolution(
-      nextGeneration.provenance as HistoricalRecipeResolution,
-    )).toBe(false);
-  });
-
-  test("cold recovery keeps the stored method when a newer family head removes it", async () => {
-    const store = createInMemoryFencedSessionStore();
-    const jobId = "pin-removed-method";
-    await store.create({ jobId, now: 0 });
-    const firstLease = await sessionLease(store, jobId, "worker-a", 0, 10);
-    const tlsRequirement = requirement({
-      parameters: { verificationMethod: "tlsnotary" },
-    });
-    const initial = await registry([
-      recipe(1, {
-        alternatives: [
-          { kind: "tlsnotary", endpoint: "https://notary.example" },
-        ],
-      }),
-    ], 1);
-    const first = await pinSessionRecipeSelection(
-      pinInput(
-        store,
-        jobId,
-        initial.latest("tlsnotary"),
-        firstLease,
-        tlsRequirement,
-        1,
-      ),
-    );
-    const loaded = await store.load(jobId);
-    if (loaded.status !== "ok") throw new Error("session missing");
-    const released = await store.transition({
-      jobId,
-      expectedRevision: loaded.record.revision,
-      leaseToken: firstLease,
-      lease: null,
-      now: 2,
-    });
-    if (!released.ok) throw new Error(`release failed: ${released.reason}`);
-    const secondLease = await sessionLease(store, jobId, "worker-b", 3, 100);
-    const advanced = await registry([
-      recipe(1, {
-        alternatives: [
-          { kind: "tlsnotary", endpoint: "https://notary.example" },
-        ],
-      }),
+    const v2 = await registry([
+      recipe(1, { alternatives: [{ kind: "tlsnotary", endpoint: "https://v1" }] }),
       recipe(2),
     ], 2);
-
-    expect(() => advanced.latest("tlsnotary")).toThrow(/removed.*historical fallback/);
-    const recovered = await recoverSessionRecipePin({
-      ...recoveryInput(store, jobId, secondLease, tlsRequirement, 4),
-      snapshot: advanced.snapshot,
+    const recovered = await recoverSessionRecipeRegistrySnapshot({
+      store: restarted,
+      jobId,
+      sessionStartHash: SESSION_START_HASH,
+      leaseToken: nextLease,
+      currentSnapshot: v2.snapshot,
+      now: 12,
     });
-    expect(recovered.pinHash).toBe(first.pinHash);
-    expect(recovered.method).toBe("tlsnotary");
-    expect(recovered.recipeVersion).toBe(1);
-    expect(recovered.registryVersion).toBe(1);
+    expect(recovered.snapshotHash).toBe(original.snapshotHash);
+    const pin = await pinSessionRecipeSelection(
+      pinInput(restarted, jobId, recovered, nextLease, tlsRequirement, {
+        requestedMethod: "tlsnotary",
+        now: 13,
+      }),
+    );
+    expect(pin.recipeVersion).toBe(1);
+    expect(pin.method).toBe("tlsnotary");
+    expect(pin.registryVersion).toBe(1);
   });
 
-  test("rejects malformed store callbacks, promises, records, and changed checkpoint bytes", async () => {
-    const current = await registry([recipe(1)], 1);
-
-    const callbackStore = createInMemoryFencedSessionStore();
-    await callbackStore.create({ jobId: "pin-bad-callback", now: 0 });
-    const callbackLease = await sessionLease(
-      callbackStore,
-      "pin-bad-callback",
-      "worker",
-      0,
+  test("derives explicit historical pins from the same job snapshot", async () => {
+    const store = createInMemoryFencedSessionStore();
+    const jobId = "recipe-explicit-historical";
+    await store.create({ jobId, now: 0 });
+    const lease = await sessionLease(store, jobId, "worker", 0);
+    const current = await registry([recipe(1), recipe(2)], 2);
+    const sessionSnapshot = await pinRegistry(store, jobId, current.provider, lease);
+    const exact = bundleRequirement([claimRequirement("key", { recipeVersion: 1 })]);
+    const pin = await pinSessionRecipeSelection(
+      pinInput(store, jobId, sessionSnapshot, lease, exact),
     );
+    expect(pin.selectionKind).toBe("explicit-historical");
+    expect(pin.recipeVersion).toBe(1);
+  });
+
+  test("uses strict CF-2 bytes and CF-3 identity for fencing while binding the full plan", async () => {
+    const store = createInMemoryFencedSessionStore();
+    const jobId = "recipe-canonical-party";
+    await store.create({ jobId, now: 0 });
+    const lease = await sessionLease(store, jobId, "worker", 0);
+    const current = await registry([recipe(1)], 1);
+    const sessionSnapshot = await pinRegistry(store, jobId, current.provider, lease);
+    const full = bundleRequirement();
+    const first = await pinSessionRecipeSelection(
+      pinInput(store, jobId, sessionSnapshot, lease, full),
+    );
+    const sameIdentity = await pinSessionRecipeSelection(
+      pinInput(store, jobId, sessionSnapshot, lease, full, {
+        evaluatedParty: `${PARTY}?a=1`,
+      }),
+    );
+    expect(sameIdentity.pinHash).toBe(first.pinHash);
+
+    for (const evaluatedParty of [
+      "key:",
+      `${PARTY}?b=2&a=1`,
+      `${PARTY}?a=%2f`,
+    ]) {
+      await expect(pinSessionRecipeSelection(
+        pinInput(store, jobId, sessionSnapshot, lease, full, { evaluatedParty }),
+      )).rejects.toThrow(/scope is malformed/);
+    }
+    await expect(pinSessionRecipeSelection(
+      pinInput(store, jobId, sessionSnapshot, lease, full, {
+        partyPlanHash: "3".repeat(64),
+      }),
+    )).rejects.toThrow(/conflicts with the stored requirement/);
+    await expect(pinSessionRecipeSelection(
+      pinInput(store, jobId, sessionSnapshot, lease, full, {
+        requirementPath: { kind: "required", index: 1 },
+      }),
+    )).rejects.toThrow(/does not locate a verifiable requirement/);
+    await expect(pinSessionRecipeSelection(
+      pinInput(store, jobId, sessionSnapshot, lease, bundleRequirement([
+        claimRequirement("key", { maxAge: 30 }),
+      ])),
+    )).rejects.toThrow(/conflicts with the stored requirement/);
+  });
+
+  test("requires an exact prefix for every prior index entry, not only the selected recipe", async () => {
+    const keyV1 = recipe(1);
+    const domainV1 = recipe(1, {
+      scheme: "domain",
+      governance: {
+        proposedBy: STEWARD,
+        acceptedAt: NOW + 1,
+        anchoring: "single-signer",
+      },
+    });
+    const keyV2 = recipe(2);
+    const old = await registry([keyV1, domainV1], 1);
+    const valid = await registry([keyV1, domainV1, keyV2], 2);
+    const omittedUnrelated = await registry([keyV1, keyV2], 2);
+    const reordered = await registry([domainV1, keyV1, keyV2], 2);
+    const sameVersionConflict = await registry([keyV1], 1);
+    const store = createInMemoryFencedSessionStore();
+    const jobId = "recipe-append-only-full-index";
+    await store.create({ jobId, now: 0 });
+    const lease = await sessionLease(store, jobId, "worker", 0);
+    const durable = await pinRegistry(store, jobId, old.provider, lease);
+
+    await expect(recoverSessionRecipeRegistrySnapshot({
+      store,
+      jobId,
+      sessionStartHash: SESSION_START_HASH,
+      leaseToken: lease,
+      currentSnapshot: valid.snapshot,
+      now: 2,
+    })).resolves.toMatchObject({ snapshotHash: durable.snapshotHash });
+    for (const currentSnapshot of [
+      omittedUnrelated.snapshot,
+      reordered.snapshot,
+      sameVersionConflict.snapshot,
+    ]) {
+      await expect(recoverSessionRecipeRegistrySnapshot({
+        store,
+        jobId,
+        sessionStartHash: SESSION_START_HASH,
+        leaseToken: lease,
+        currentSnapshot,
+        now: 3,
+      })).rejects.toThrow(/append-only|conflicting index bytes/);
+    }
+  });
+
+  test("stale generations cannot establish or recover snapshots or path pins", async () => {
+    const store = createInMemoryFencedSessionStore();
+    const jobId = "recipe-generation-fence";
+    await store.create({ jobId, now: 0 });
+    const first = await sessionLease(store, jobId, "worker-a", 0, 5);
+    const current = await registry([recipe(1)], 1);
+    await expect(pinRegistry(store, jobId, current.provider, first, 5)).rejects.toThrow(
+      /lease-expired/,
+    );
+    const second = await sessionLease(store, jobId, "worker-b", 6, 10);
+    const sessionSnapshot = await pinRegistry(store, jobId, current.provider, second, 7);
+    const pin = await pinSessionRecipeSelection(
+      pinInput(store, jobId, sessionSnapshot, second, bundleRequirement(), { now: 8 }),
+    );
+    expect(isDurableSessionRecipePin(pin)).toBe(true);
+    const third = await sessionLease(store, jobId, "worker-c", 17, 100);
+    expect(isDurableSessionRecipePin(pin)).toBe(true);
+    await expect(recoverSessionRecipePin({
+      ...pinInput(store, jobId, sessionSnapshot, second, bundleRequirement(), { now: 18 }),
+    })).rejects.toThrow(/lease-fenced/);
+    const recoveredSnapshot = await recoverSessionRecipeRegistrySnapshot({
+      store,
+      jobId,
+      sessionStartHash: SESSION_START_HASH,
+      leaseToken: third,
+      now: 18,
+    });
+    await expect(recoverSessionRecipePin({
+      ...pinInput(store, jobId, recoveredSnapshot, third, bundleRequirement(), { now: 19 }),
+    })).resolves.toMatchObject({ pinHash: pin.pinHash, pinnedBy: { generation: 2 } });
+  });
+
+  test("rejects proxied store callbacks and store-corrupted snapshot bytes", async () => {
+    const current = await registry([recipe(1)], 1);
+    const callbackStore = createInMemoryFencedSessionStore();
+    const callbackJob = "recipe-proxied-store-callback";
+    await callbackStore.create({ jobId: callbackJob, now: 0 });
+    const callbackLease = await sessionLease(callbackStore, callbackJob, "worker", 0);
     const proxiedCallbackStore = {
       ...callbackStore,
       claimCheckpoint: new Proxy(callbackStore.claimCheckpoint, {}),
     };
-    await expect(pinSessionRecipeSelection(
-      pinInput(
-        proxiedCallbackStore,
-        "pin-bad-callback",
-        current.latest(),
-        callbackLease,
-      ),
+    await expect(pinRegistry(
+      proxiedCallbackStore,
+      callbackJob,
+      current.provider,
+      callbackLease,
     )).rejects.toThrow(/requires FencedSessionStoreV2/);
 
-    const malformedStore = {
-      ...createInMemoryFencedSessionStore(),
-      claimCheckpoint: async () => ({ ok: true, record: {} }) as never,
-    };
-    await expect(pinSessionRecipeSelection(
-      pinInput(
-        malformedStore,
-        "pin-malformed",
-        current.latest(),
-        { owner: "worker", generation: 1, expiresAt: 100 },
-      ),
-    )).rejects.toThrow(/corrupt record/);
-
     const changedStore = createInMemoryFencedSessionStore();
-    const changedJob = "pin-changed";
+    const changedJob = "recipe-corrupt-snapshot-result";
     await changedStore.create({ jobId: changedJob, now: 0 });
     const changedLease = await sessionLease(changedStore, changedJob, "worker", 0);
     const corruptingStore = {
       ...changedStore,
-      claimCheckpoint: async (input: Parameters<FencedSessionStoreV2["claimCheckpoint"]>[0]) => {
+      claimCheckpoint: async (
+        input: Parameters<FencedSessionStoreV2["claimCheckpoint"]>[0],
+      ) => {
         const result = await changedStore.claimCheckpoint(input);
         if (result.record) {
-          const checkpoint = result.record.checkpoints.at(-1);
-          if (checkpoint?.data) checkpoint.data.pinHash = "0".repeat(64);
+          const checkpoint = result.record.checkpoints.find(
+            (candidate) =>
+              candidate.key === SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY,
+          );
+          if (checkpoint?.data) checkpoint.data.snapshotHash = "0".repeat(64);
         }
         return result;
       },
     };
-    await expect(pinSessionRecipeSelection(
-      pinInput(corruptingStore, changedJob, current.latest(), changedLease),
-    )).rejects.toThrow(/checkpoint is missing or corrupt/);
-
-    const malformedLoadStore = {
-      ...changedStore,
-      load: async () => ({ status: "ok", record: {} }) as never,
-    };
-    await expect(recoverSessionRecipePin(
-      recoveryInput(malformedLoadStore, changedJob, changedLease),
-    )).rejects.toThrow(/loaded a corrupt record/);
+    await expect(pinRegistry(
+      corruptingStore,
+      changedJob,
+      current.provider,
+      changedLease,
+    )).rejects.toThrow(/snapshot is missing or corrupt/);
   });
 });

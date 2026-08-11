@@ -668,10 +668,34 @@ describe("authenticated latest-at-session recipe selection", () => {
     proxiedIndex.documents.set(proxiedIndex.indexRef.anchor.locator, proxy);
     await expect(
       authenticateRecipeRegistrySnapshot(proxiedIndex.provider),
-    ).rejects.toThrow(/snapshot-safe/);
+    ).rejects.toThrow(/not exact JSON/);
     // Promise resolution may probe `then` on a returned proxy, but the proxy is
     // never normalised into or accepted as authenticated JSON.
     expect(proxyReads).toBeGreaterThanOrEqual(1);
+
+    const proxiedReceipt = await registryFixture([recipe(1)]);
+    let receiptProxyReads = 0;
+    const receipt = new Proxy(
+      structuredClone(proxiedReceipt.current.receipt) as unknown as Record<
+        string,
+        unknown
+      >,
+      {
+        get(target, property, receiver) {
+          receiptProxyReads += 1;
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    proxiedReceipt.provider.resolveCurrentIndex = async () => ({
+      ...structuredClone(proxiedReceipt.current),
+      receipt: receipt as unknown as AnchorReceipt,
+    });
+    await expect(
+      authenticateRecipeRegistrySnapshot(proxiedReceipt.provider),
+    ).rejects.toThrow(/current-index binding is malformed/);
+    // Descriptor-first traversal detects a nested Proxy without invoking it.
+    expect(receiptProxyReads).toBe(0);
 
     const mutation = await registryFixture([recipe(1)]);
     let mutationWasBlocked = false;

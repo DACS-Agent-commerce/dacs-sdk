@@ -17,21 +17,24 @@ import {
 import { DacsError } from "../errors.js";
 import {
   RECIPE_REGISTRY_INDEX_ADDRESS,
+  authenticateRecipeRegistrySnapshot,
   isAuthenticatedRecipeRegistrySnapshot,
-  isHistoricalRecipeResolution,
-  isLatestRecipeSelection,
+  resolveHistoricalRecipeRegistryEntry,
+  selectLatestRecipeRegistryEntry,
+  validateRecipeRegistryEntryGraph,
+  type AuthenticatedRecipeRegistryEntry,
   type AuthenticatedRecipeRegistrySnapshot,
-  type HistoricalRecipeResolution,
-  type LatestRecipeSelection,
   type RecipeFamilyIdentity,
   type RecipeRegistryIndexDocument,
   type RecipeRegistryProvenance,
   type RecipeRegistryRecipeRef,
+  type RecipeRegistrySelectionProvider,
 } from "../registry/recipeSelection.js";
 import { isRecipeDescriptor } from "../registry/resolve.js";
 import type { RecipeDescriptor } from "../registry/types.js";
 import {
   isCompositeBundleRequirement,
+  type CompositeBundleRequirement,
   type CompositeClaimRequirement,
 } from "./compositeVerification.js";
 import {
@@ -50,6 +53,25 @@ export type DurableRecipeRequirementPath =
   | { kind: "oneOf"; groupIndex: number; alternativeIndex: number };
 
 type SignedRecipe = RecipeDescriptor & { signature: ComponentSignature };
+
+/** One immutable registry snapshot is shared by every party and requirement. */
+export const SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY =
+  "dacs2:recipe-registry-snapshot:v1" as const;
+
+export interface DurableRecipePartyIdentity {
+  scheme: string;
+  identifier: string;
+}
+
+interface DurableRecipeRegistrySnapshotPayload {
+  snapshotVersion: "1";
+  jobId: string;
+  sessionStartHash: string;
+  registry: RecipeRegistryProvenance;
+  entries: AuthenticatedRecipeRegistryEntry[];
+  pinnedBy: SessionLeaseToken;
+  pinnedAt: number;
+}
 
 export type DurableRecipeSelectionProvenance =
   | {
@@ -76,6 +98,10 @@ interface DurableRecipePinPayload {
   pinVersion: "1";
   jobId: string;
   evaluatedParty: string;
+  evaluatedPartyIdentity: DurableRecipePartyIdentity;
+  bundleRequirement: CompositeBundleRequirement;
+  bundleRequirementHash: string;
+  partyPlanHash: string;
   requirementPath: DurableRecipeRequirementPath;
   requirement: CompositeClaimRequirement;
   requirementHash: string;
@@ -90,6 +116,7 @@ interface DurableRecipePinPayload {
   recipeContentHash: string;
   provenance: DurableRecipeSelectionProvenance;
   provenanceHash: string;
+  sessionSnapshotHash: string;
   pinnedBy: SessionLeaseToken;
   pinnedAt: number;
 }
@@ -103,11 +130,21 @@ type DeepReadonly<T> = T extends (...args: never[]) => unknown
       : T;
 
 declare const durableSessionRecipePinBrand: unique symbol;
+declare const durableSessionRecipeRegistrySnapshotBrand: unique symbol;
+
+export type DurableSessionRecipeRegistrySnapshot =
+  DeepReadonly<DurableRecipeRegistrySnapshotPayload> & {
+    readonly checkpointKey: typeof SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY;
+    readonly snapshotHash: string;
+    readonly [durableSessionRecipeRegistrySnapshotBrand]: true;
+  };
 
 /**
  * Immutable recipe pin recovered from one generation-fenced session
  * checkpoint. It is deliberately distinct from a live registry selection: a
  * caller cannot cast parsed disk bytes into either runtime provenance class.
+ * This brand proves immutable provenance only; effects still require a fresh
+ * successful claim under the current live lease generation.
  */
 export type DurableSessionRecipePin = DeepReadonly<DurableRecipePinPayload> & {
   readonly checkpointKey: string;
@@ -117,13 +154,19 @@ export type DurableSessionRecipePin = DeepReadonly<DurableRecipePinPayload> & {
 
 export interface PinSessionRecipeInput {
   store: FencedSessionStoreV2;
+  sessionSnapshot: DurableSessionRecipeRegistrySnapshot;
   jobId: string;
   evaluatedParty: string;
   requirementPath: DurableRecipeRequirementPath;
-  /** Exact requirement whose recipe selection must remain stable. */
-  requirement: CompositeClaimRequirement;
-  /** Runtime-authenticated current or explicit historical selection. */
-  selection: LatestRecipeSelection | HistoricalRecipeResolution;
+  /** Full requirement proves that `requirementPath` is real and in range. */
+  bundleRequirement: CompositeBundleRequirement;
+  /**
+   * Hash of the deterministic, recipe-independent pre-pin party-plan scope
+   * that owns this path. It MUST NOT include the pin produced by this call.
+   */
+  partyPlanHash: string;
+  /** Exact method selected by listing/evidence provenance for this attempt. */
+  requestedMethod: VerificationMethodKind;
   /** Exact live generation authorised to establish or recover this pin. */
   leaseToken: SessionLeaseToken;
   now?: number;
@@ -131,21 +174,39 @@ export interface PinSessionRecipeInput {
 
 export interface RecoverSessionRecipePinInput {
   store: FencedSessionStoreV2;
+  sessionSnapshot: DurableSessionRecipeRegistrySnapshot;
   jobId: string;
   evaluatedParty: string;
   requirementPath: DurableRecipeRequirementPath;
-  requirement: CompositeClaimRequirement;
+  bundleRequirement: CompositeBundleRequirement;
+  partyPlanHash: string;
+  requestedMethod: VerificationMethodKind;
   leaseToken: SessionLeaseToken;
-  /**
-   * Optional authenticated current view used to prove append-only retention.
-   * Recovery does not reselect its head, so a removed method cannot replace or
-   * strand the stored in-flight pin.
-   */
-  snapshot?: AuthenticatedRecipeRegistrySnapshot;
+  now?: number;
+}
+
+export interface PinSessionRecipeRegistrySnapshotInput {
+  store: FencedSessionStoreV2;
+  jobId: string;
+  /** Hash of the durable session-start/listing plan this registry pin belongs to. */
+  sessionStartHash: string;
+  provider: RecipeRegistrySelectionProvider;
+  leaseToken: SessionLeaseToken;
+  now?: number;
+}
+
+export interface RecoverSessionRecipeRegistrySnapshotInput {
+  store: FencedSessionStoreV2;
+  jobId: string;
+  sessionStartHash: string;
+  leaseToken: SessionLeaseToken;
+  /** Optional current authenticated view used only for append-only auditing. */
+  currentSnapshot?: AuthenticatedRecipeRegistrySnapshot;
   now?: number;
 }
 
 const durablePins = new WeakSet<object>();
+const durableRegistrySnapshots = new WeakSet<object>();
 const INERT_STORE_RECEIVER = Object.freeze(Object.create(null)) as object;
 const HASH = /^[0-9a-f]{64}$/;
 const METHODS: ReadonlySet<string> = new Set([
@@ -341,6 +402,23 @@ function captureRequirement(value: unknown): CompositeClaimRequirement {
   return deepFreeze(requirement);
 }
 
+function captureBundleRequirement(value: unknown): CompositeBundleRequirement {
+  const captured = captureJson(value, "durable recipe BundleRequirement");
+  if (!isRecord(captured) || !isCompositeBundleRequirement(captured)) {
+    throw new DacsError("durable recipe BundleRequirement is not exact");
+  }
+  return deepFreeze(captured as unknown as CompositeBundleRequirement);
+}
+
+function requirementAt(
+  requirement: Readonly<CompositeBundleRequirement>,
+  path: Readonly<DurableRecipeRequirementPath>,
+): CompositeClaimRequirement | null {
+  return path.kind === "required"
+    ? requirement.required[path.index] ?? null
+    : requirement.oneOf?.[path.groupIndex]?.[path.alternativeIndex] ?? null;
+}
+
 function captureLeaseToken(value: unknown): SessionLeaseToken {
   if (!exactKeys(value, ["owner", "generation"], ["expiresAt", "sellerPhaseIndex"])) {
     throw new DacsError("durable recipe pin lease token is malformed");
@@ -358,17 +436,79 @@ function captureLeaseToken(value: unknown): SessionLeaseToken {
   return deepFreeze({ owner: value.owner, generation: value.generation });
 }
 
-function canonicalClaimReference(value: unknown): value is string {
+function compareCodePoints(left: string, right: string): number {
+  const leftPoints = Array.from(left, (value) => value.codePointAt(0)!);
+  const rightPoints = Array.from(right, (value) => value.codePointAt(0)!);
+  const length = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftPoints[index] !== rightPoints[index]) {
+      return leftPoints[index]! - rightPoints[index]!;
+    }
+  }
+  return leftPoints.length - rightPoints.length;
+}
+
+function isCanonicalParameterSegment(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (character === "%") {
+      if (!/^[0-9A-F]{2}$/.test(value.slice(index + 1, index + 3))) return false;
+      index += 2;
+      continue;
+    }
+    if (character === ":" || character === "?" || character === "&" || character === "=") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function canonicalClaimReferenceParts(
+  value: unknown,
+): { reference: string; identity: DurableRecipePartyIdentity } | null {
   if (
     typeof value !== "string" ||
     value.length === 0 ||
     value.normalize("NFC") !== value ||
     /[\s\u0000-\u001f\u007f]/.test(value)
   ) {
-    return false;
+    return null;
   }
   const colon = value.indexOf(":");
-  return colon > 0 && /^[a-z][a-z0-9-]*$/.test(value.slice(0, colon));
+  if (colon <= 0 || !/^[a-z][a-z0-9-]*$/.test(value.slice(0, colon))) return null;
+  const scheme = value.slice(0, colon);
+  const remainder = value.slice(colon + 1);
+  const question = remainder.indexOf("?");
+  const identifier = question < 0 ? remainder : remainder.slice(0, question);
+  if (!identifier || identifier.normalize("NFC") !== identifier) return null;
+  if (question >= 0) {
+    const query = remainder.slice(question + 1);
+    if (!query) return null;
+    const keys: string[] = [];
+    for (const parameter of query.split("&")) {
+      const equals = parameter.indexOf("=");
+      if (equals <= 0 || equals !== parameter.lastIndexOf("=")) return null;
+      const key = parameter.slice(0, equals);
+      const entry = parameter.slice(equals + 1);
+      if (
+        !isCanonicalParameterSegment(key) ||
+        !isCanonicalParameterSegment(entry) ||
+        keys.includes(key)
+      ) {
+        return null;
+      }
+      keys.push(key);
+    }
+    if (keys.some((key, index) =>
+      index > 0 && compareCodePoints(keys[index - 1]!, key) >= 0)) {
+      return null;
+    }
+  }
+  return deepFreeze({ reference: value, identity: { scheme, identifier } });
+}
+
+function canonicalClaimReference(value: unknown): value is string {
+  return canonicalClaimReferenceParts(value) !== null;
 }
 
 interface CapturedStore {
@@ -581,6 +721,102 @@ function captureRegistryProvenance(value: unknown): RecipeRegistryProvenance {
   return captured as unknown as RecipeRegistryProvenance;
 }
 
+function captureRegistryEntries(
+  value: unknown,
+  index: Readonly<RecipeRegistryIndexDocument>,
+): AuthenticatedRecipeRegistryEntry[] {
+  const captured = captureJson(value, "durable recipe registry entries");
+  if (!Array.isArray(captured) || captured.length !== index.entries.length) {
+    throw new DacsError("durable recipe registry entries are incomplete");
+  }
+  const entries: AuthenticatedRecipeRegistryEntry[] = captured.map((entry, position) => {
+    if (!exactKeys(entry, ["ref", "recipe"])) {
+      throw new DacsError(`durable recipe registry entry ${position} is malformed`);
+    }
+    const ref = captureRecipeRef(entry.ref, `durable recipe registry entry ${position} ref`);
+    const recipeValue = captureJson(
+      entry.recipe,
+      `durable recipe registry entry ${position} recipe`,
+    );
+    if (!isRecord(recipeValue) || !isRecipeDescriptor(recipeValue)) {
+      throw new DacsError(`durable recipe registry entry ${position} recipe is malformed`);
+    }
+    const recipe = recipeValue as unknown as SignedRecipe;
+    if (
+      !canonicalEqual(ref, index.entries[position]) ||
+      contentHash(recipe as unknown as Record<string, unknown>) !== ref.contentHash
+    ) {
+      throw new DacsError(`durable recipe registry entry ${position} bindings are invalid`);
+    }
+    return deepFreeze({ ref, recipe });
+  });
+  validateRecipeRegistryEntryGraph(entries);
+  return deepFreeze(entries);
+}
+
+const SNAPSHOT_PAYLOAD_KEYS = [
+  "snapshotVersion",
+  "jobId",
+  "sessionStartHash",
+  "registry",
+  "entries",
+  "pinnedBy",
+  "pinnedAt",
+] as const;
+
+function captureRegistrySnapshotPayload(
+  value: unknown,
+): DurableRecipeRegistrySnapshotPayload {
+  const captured = captureJson(value, "durable session recipe registry snapshot");
+  if (
+    !exactKeys(captured, SNAPSHOT_PAYLOAD_KEYS) ||
+    captured.snapshotVersion !== "1" ||
+    !isNonEmptyTrimmed(captured.jobId) ||
+    typeof captured.sessionStartHash !== "string" ||
+    !HASH.test(captured.sessionStartHash) ||
+    !isNonNegativeSafeInteger(captured.pinnedAt)
+  ) {
+    throw new DacsError("durable session recipe registry snapshot is malformed");
+  }
+  const registry = captureRegistryProvenance(captured.registry);
+  const entries = captureRegistryEntries(captured.entries, registry.index);
+  const pinnedBy = captureLeaseToken(captured.pinnedBy);
+  return deepFreeze({
+    ...(captured as unknown as DurableRecipeRegistrySnapshotPayload),
+    registry,
+    entries,
+    pinnedBy,
+  });
+}
+
+function registryProvenanceFromSnapshot(
+  snapshot: Readonly<AuthenticatedRecipeRegistrySnapshot>,
+): RecipeRegistryProvenance {
+  return captureRegistryProvenance({
+    logicalAddress: snapshot.logicalAddress,
+    registryVersion: snapshot.registryVersion,
+    index: snapshot.index,
+    indexRef: snapshot.indexRef,
+    indexContentHash: snapshot.indexContentHash,
+    writer: snapshot.writer,
+    receipt: snapshot.receipt,
+  });
+}
+
+function assertExactAppendOnlyPrefix(
+  older: { readonly entries: readonly Readonly<RecipeRegistryRecipeRef>[] },
+  newer: { readonly entries: readonly Readonly<RecipeRegistryRecipeRef>[] },
+): void {
+  if (
+    newer.entries.length < older.entries.length ||
+    older.entries.some((entry, index) => !canonicalEqual(entry, newer.entries[index]))
+  ) {
+    throw new DacsError(
+      "authenticated registry snapshot is not an exact append-only extension",
+    );
+  }
+}
+
 function captureFamily(value: unknown): RecipeFamilyIdentity {
   const captured = captureJson(value, "durable recipe family");
   if (
@@ -667,6 +903,10 @@ const PIN_KEYS = [
   "pinVersion",
   "jobId",
   "evaluatedParty",
+  "evaluatedPartyIdentity",
+  "bundleRequirement",
+  "bundleRequirementHash",
+  "partyPlanHash",
   "requirementPath",
   "requirement",
   "requirementHash",
@@ -681,6 +921,7 @@ const PIN_KEYS = [
   "recipeContentHash",
   "provenance",
   "provenanceHash",
+  "sessionSnapshotHash",
   "pinnedBy",
   "pinnedAt",
 ] as const;
@@ -691,7 +932,11 @@ function capturePinPayload(value: unknown): DurableRecipePinPayload {
     !exactKeys(captured, PIN_KEYS) ||
     captured.pinVersion !== "1" ||
     !isNonEmptyTrimmed(captured.jobId) ||
-    !canonicalClaimReference(captured.evaluatedParty) ||
+    canonicalClaimReferenceParts(captured.evaluatedParty) === null ||
+    typeof captured.bundleRequirementHash !== "string" ||
+    !HASH.test(captured.bundleRequirementHash) ||
+    typeof captured.partyPlanHash !== "string" ||
+    !HASH.test(captured.partyPlanHash) ||
     typeof captured.requirementHash !== "string" ||
     !HASH.test(captured.requirementHash) ||
     (captured.selectionKind !== "latest-at-session-start" &&
@@ -706,21 +951,41 @@ function capturePinPayload(value: unknown): DurableRecipePinPayload {
     !HASH.test(captured.recipeContentHash) ||
     typeof captured.provenanceHash !== "string" ||
     !HASH.test(captured.provenanceHash) ||
+    typeof captured.sessionSnapshotHash !== "string" ||
+    !HASH.test(captured.sessionSnapshotHash) ||
     !isNonNegativeSafeInteger(captured.pinnedAt)
   ) {
     throw new DacsError("durable recipe pin payload is malformed");
   }
+  const evaluatedParty = canonicalClaimReferenceParts(captured.evaluatedParty)!;
+  const evaluatedPartyIdentity = captureJson(
+    captured.evaluatedPartyIdentity,
+    "durable recipe evaluated-party identity",
+  );
+  if (
+    !exactKeys(evaluatedPartyIdentity, ["scheme", "identifier"]) ||
+    evaluatedPartyIdentity.scheme !== evaluatedParty.identity.scheme ||
+    evaluatedPartyIdentity.identifier !== evaluatedParty.identity.identifier
+  ) {
+    throw new DacsError("durable recipe evaluated-party identity is malformed");
+  }
+  const bundleRequirement = captureBundleRequirement(captured.bundleRequirement);
   const requirementPath = capturePath(captured.requirementPath);
   const requirement = captureRequirement(captured.requirement);
+  const locatedRequirement = requirementAt(bundleRequirement, requirementPath);
   const family = captureFamily(captured.family);
   const indexRef = captureRecipeRef(captured.indexRef, "durable pin index ref");
   const recipeRef = captureRecipeRef(captured.recipeRef, "durable pin recipe ref");
   const provenance = captureProvenance(captured.provenance);
   const pinnedBy = captureLeaseToken(captured.pinnedBy);
   const expectedRequirementHash = sha256Hex(canonicalize(requirement));
+  const expectedBundleRequirementHash = sha256Hex(canonicalize(bundleRequirement));
   const expectedProvenanceHash = sha256Hex(canonicalize(provenance));
   if (
     captured.requirementHash !== expectedRequirementHash ||
+    captured.bundleRequirementHash !== expectedBundleRequirementHash ||
+    locatedRequirement === null ||
+    !canonicalEqual(locatedRequirement, requirement) ||
     captured.provenanceHash !== expectedProvenanceHash ||
     captured.selectionKind !== provenance.selectionKind ||
     captured.registryVersion !== provenance.registry.registryVersion ||
@@ -747,6 +1012,8 @@ function capturePinPayload(value: unknown): DurableRecipePinPayload {
   }
   return deepFreeze({
     ...(captured as unknown as DurableRecipePinPayload),
+    evaluatedPartyIdentity: evaluatedParty.identity,
+    bundleRequirement,
     requirementPath,
     requirement,
     family,
@@ -759,34 +1026,97 @@ function capturePinPayload(value: unknown): DurableRecipePinPayload {
 
 function targetCheckpointKey(
   jobId: string,
-  evaluatedParty: string,
+  evaluatedPartyIdentity: DurableRecipePartyIdentity,
   requirementPath: DurableRecipeRequirementPath,
 ): string {
   const targetHash = sha256Hex(canonicalize({
-    targetVersion: "1",
+    targetVersion: "2",
     jobId,
-    evaluatedParty,
+    evaluatedPartyIdentity,
     requirementPath,
   }));
   return `dacs2:recipe-pin:${targetHash}`;
 }
 
+function selectionProvenanceFromDurableSnapshot(
+  snapshot: Readonly<DurableSessionRecipeRegistrySnapshot>,
+  requirement: Readonly<CompositeClaimRequirement>,
+  requestedMethod: VerificationMethodKind,
+): DurableRecipeSelectionProvenance {
+  const entries = snapshot.entries as ReadonlyArray<Readonly<AuthenticatedRecipeRegistryEntry>>;
+  const selected = requirement.recipeVersion === undefined
+    ? selectLatestRecipeRegistryEntry(entries, {
+        scheme: requirement.scheme,
+        method: requestedMethod,
+        required: true,
+      })
+    : resolveHistoricalRecipeRegistryEntry(entries, {
+        scheme: requirement.scheme,
+        method: requestedMethod,
+        recipeVersion: requirement.recipeVersion,
+      });
+  if (
+    selected.recipe.availability === "disabled" ||
+    selected.recipe.governance.deprecated === true
+  ) {
+    throw new DacsError(
+      "disabled or deprecated recipe cannot begin required-claim verification",
+    );
+  }
+  const shared = {
+    family: {
+      scheme: selected.recipe.scheme,
+      defaultMethod: selected.recipe.defaultMethod.kind,
+    },
+    requestedMethod,
+    registry: snapshot.registry,
+    recipeRef: selected.ref,
+    recipeContentHash: selected.ref.contentHash,
+    recipe: selected.recipe,
+  };
+  return captureProvenance(
+    requirement.recipeVersion === undefined
+      ? {
+          selectionKind: "latest-at-session-start",
+          required: true,
+          ...shared,
+        }
+      : {
+          selectionKind: "explicit-historical",
+          ...shared,
+        },
+  );
+}
+
 function buildPayload(
   input: {
+    sessionSnapshot: DurableSessionRecipeRegistrySnapshot;
     jobId: string;
     evaluatedParty: string;
+    evaluatedPartyIdentity: DurableRecipePartyIdentity;
+    bundleRequirement: CompositeBundleRequirement;
+    partyPlanHash: string;
     requirementPath: DurableRecipeRequirementPath;
     requirement: CompositeClaimRequirement;
-    selection: LatestRecipeSelection | HistoricalRecipeResolution;
+    requestedMethod: VerificationMethodKind;
     leaseToken: SessionLeaseToken;
     now: number;
   },
 ): DurableRecipePinPayload {
-  const provenance = captureProvenance(input.selection);
+  const provenance = selectionProvenanceFromDurableSnapshot(
+    input.sessionSnapshot,
+    input.requirement,
+    input.requestedMethod,
+  );
+  const bundleRequirementHash = sha256Hex(canonicalize(input.bundleRequirement));
   return capturePinPayload({
     pinVersion: "1",
     jobId: input.jobId,
     evaluatedParty: input.evaluatedParty,
+    evaluatedPartyIdentity: input.evaluatedPartyIdentity,
+    bundleRequirement: input.bundleRequirement,
+    bundleRequirementHash,
+    partyPlanHash: input.partyPlanHash,
     requirementPath: input.requirementPath,
     requirement: input.requirement,
     requirementHash: sha256Hex(canonicalize(input.requirement)),
@@ -801,6 +1131,7 @@ function buildPayload(
     recipeContentHash: provenance.recipeContentHash,
     provenance,
     provenanceHash: sha256Hex(canonicalize(provenance)),
+    sessionSnapshotHash: input.sessionSnapshot.snapshotHash,
     pinnedBy: input.leaseToken,
     pinnedAt: input.now,
   });
@@ -825,6 +1156,106 @@ function pinCheckpointData(
     throw new DacsError("durable recipe pin checkpoint is missing or corrupt");
   }
   return { pin: checkpoint.data.pin, pinHash: checkpoint.data.pinHash };
+}
+
+function registrySnapshotCheckpointData(
+  record: Readonly<SessionRecord>,
+): { snapshot: string; snapshotHash: string } {
+  const checkpoint = record.checkpoints.find(
+    (candidate) =>
+      candidate.key === SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY &&
+      candidate.stage === "intent",
+  );
+  if (
+    !checkpoint ||
+    !checkpoint.data ||
+    !exactKeys(checkpoint.data, ["snapshot", "snapshotHash"]) ||
+    typeof checkpoint.data.snapshot !== "string" ||
+    typeof checkpoint.data.snapshotHash !== "string" ||
+    !HASH.test(checkpoint.data.snapshotHash) ||
+    sha256Hex(checkpoint.data.snapshot) !== checkpoint.data.snapshotHash
+  ) {
+    throw new DacsError("durable session recipe registry snapshot is missing or corrupt");
+  }
+  return {
+    snapshot: checkpoint.data.snapshot,
+    snapshotHash: checkpoint.data.snapshotHash,
+  };
+}
+
+function registrySnapshotFromRecord(
+  record: Readonly<SessionRecord>,
+): DurableSessionRecipeRegistrySnapshot {
+  const checkpointData = registrySnapshotCheckpointData(record);
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(checkpointData.snapshot);
+  } catch (error) {
+    throw new DacsError("durable session recipe registry snapshot is not JSON", {
+      cause: error,
+    });
+  }
+  if (canonicalize(decoded) !== checkpointData.snapshot) {
+    throw new DacsError("durable session recipe registry snapshot is not canonical JSON");
+  }
+  const payload = captureRegistrySnapshotPayload(decoded);
+  const snapshot = deepFreeze({
+    ...payload,
+    checkpointKey: SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY,
+    snapshotHash: checkpointData.snapshotHash,
+  }) as unknown as DurableSessionRecipeRegistrySnapshot;
+  durableRegistrySnapshots.add(snapshot);
+  return snapshot;
+}
+
+function assertStoredRegistrySnapshotScope(
+  snapshot: Readonly<DurableSessionRecipeRegistrySnapshot>,
+  input: { jobId: string; sessionStartHash: string },
+): void {
+  if (
+    snapshot.jobId !== input.jobId ||
+    snapshot.sessionStartHash !== input.sessionStartHash
+  ) {
+    throw new DacsError(
+      "durable session recipe registry snapshot conflicts with session start",
+    );
+  }
+}
+
+function assertAuthenticatedSnapshotExtendsDurable(
+  stored: Readonly<DurableSessionRecipeRegistrySnapshot>,
+  current: AuthenticatedRecipeRegistrySnapshot,
+): void {
+  if (!isAuthenticatedRecipeRegistrySnapshot(current)) {
+    throw new DacsError("current recipe registry snapshot is not runtime-authenticated");
+  }
+  if (current.registryVersion < stored.registry.registryVersion) {
+    throw new DacsError("durable recipe registry recovery refuses a version rollback");
+  }
+  if (
+    current.registryVersion === stored.registry.registryVersion &&
+    current.indexContentHash !== stored.registry.indexContentHash
+  ) {
+    throw new DacsError("one recipe registry version has conflicting index bytes");
+  }
+  assertExactAppendOnlyPrefix(stored.registry.index, current.index);
+}
+
+function assertConcurrentSnapshotCompatibility(
+  stored: Readonly<DurableSessionRecipeRegistrySnapshot>,
+  candidate: Readonly<DurableRecipeRegistrySnapshotPayload>,
+): void {
+  if (candidate.registry.registryVersion === stored.registry.registryVersion) {
+    if (candidate.registry.indexContentHash !== stored.registry.indexContentHash) {
+      throw new DacsError("concurrent recipe registry snapshots equivocate at one version");
+    }
+    return;
+  }
+  if (candidate.registry.registryVersion > stored.registry.registryVersion) {
+    assertExactAppendOnlyPrefix(stored.registry.index, candidate.registry.index);
+  } else {
+    assertExactAppendOnlyPrefix(candidate.registry.index, stored.registry.index);
+  }
 }
 
 function pinFromRecord(
@@ -855,47 +1286,24 @@ function assertStoredRequest(
   stored: Readonly<DurableSessionRecipePin>,
   input: {
     jobId: string;
-    evaluatedParty: string;
+    evaluatedPartyIdentity: DurableRecipePartyIdentity;
+    bundleRequirement: CompositeBundleRequirement;
+    partyPlanHash: string;
     requirementPath: DurableRecipeRequirementPath;
-    requirement: CompositeClaimRequirement;
+    requestedMethod: VerificationMethodKind;
+    sessionSnapshotHash: string;
   },
 ): void {
   if (
     stored.jobId !== input.jobId ||
-    stored.evaluatedParty !== input.evaluatedParty ||
+    !canonicalEqual(stored.evaluatedPartyIdentity, input.evaluatedPartyIdentity) ||
+    !canonicalEqual(stored.bundleRequirement, input.bundleRequirement) ||
+    stored.partyPlanHash !== input.partyPlanHash ||
     !canonicalEqual(stored.requirementPath, input.requirementPath) ||
-    !canonicalEqual(stored.requirement, input.requirement)
+    stored.method !== input.requestedMethod ||
+    stored.sessionSnapshotHash !== input.sessionSnapshotHash
   ) {
     throw new DacsError("durable recipe recovery conflicts with the stored requirement path");
-  }
-}
-
-function assertSnapshotRetainsPin(
-  stored: Readonly<DurableSessionRecipePin>,
-  snapshot: AuthenticatedRecipeRegistrySnapshot,
-): void {
-  if (!isAuthenticatedRecipeRegistrySnapshot(snapshot)) {
-    throw new DacsError("durable recipe recovery snapshot is not runtime-authenticated");
-  }
-  if (snapshot.registryVersion < stored.registryVersion) {
-    throw new DacsError("durable recipe recovery refuses a registry-version rollback");
-  }
-  if (
-    snapshot.registryVersion === stored.registryVersion &&
-    snapshot.indexContentHash !== stored.indexContentHash
-  ) {
-    throw new DacsError("durable recipe recovery found conflicting bytes at one registry version");
-  }
-  const retained = snapshot.entries.find(
-    (entry) => canonicalEqual(entry.ref, stored.recipeRef),
-  );
-  if (
-    !retained ||
-    retained.recipe.scheme !== stored.provenance.recipe.scheme ||
-    retained.recipe.recipeVersion !== stored.recipeVersion ||
-    !canonicalEqual(retained.recipe, stored.provenance.recipe)
-  ) {
-    throw new DacsError("authenticated registry snapshot omits or changes the stored recipe pin");
   }
 }
 
@@ -905,39 +1313,21 @@ function assertRequestCompatibility(
 ): void {
   if (
     stored.jobId !== candidate.jobId ||
-    stored.evaluatedParty !== candidate.evaluatedParty ||
+    !canonicalEqual(stored.evaluatedPartyIdentity, candidate.evaluatedPartyIdentity) ||
+    !canonicalEqual(stored.bundleRequirement, candidate.bundleRequirement) ||
+    stored.bundleRequirementHash !== candidate.bundleRequirementHash ||
+    stored.partyPlanHash !== candidate.partyPlanHash ||
     !canonicalEqual(stored.requirementPath, candidate.requirementPath) ||
     !canonicalEqual(stored.requirement, candidate.requirement) ||
     !canonicalEqual(stored.family, candidate.family) ||
     stored.method !== candidate.method ||
-    (stored.requirement.recipeVersion === undefined &&
-      stored.selectionKind !== candidate.selectionKind)
+    stored.selectionKind !== candidate.selectionKind ||
+    stored.sessionSnapshotHash !== candidate.sessionSnapshotHash ||
+    !canonicalEqual(stored.provenance, candidate.provenance)
   ) {
     throw new DacsError(
       "durable recipe pin conflicts with the stored requirement or recipe family",
     );
-  }
-  if (
-    stored.requirement.recipeVersion !== undefined &&
-    stored.recipeVersion !== candidate.recipeVersion
-  ) {
-    throw new DacsError("durable historical recipe pin conflicts with the requested version");
-  }
-  if (candidate.registryVersion < stored.registryVersion) {
-    throw new DacsError("durable recipe pin recovery refuses a registry-version rollback");
-  }
-  if (
-    candidate.registryVersion === stored.registryVersion &&
-    candidate.indexContentHash !== stored.indexContentHash
-  ) {
-    throw new DacsError("durable recipe pin recovery found conflicting bytes at one registry version");
-  }
-  if (
-    candidate.registryVersion > stored.registryVersion &&
-    !candidate.provenance.registry.index.entries.some((ref) =>
-      canonicalEqual(ref, stored.recipeRef))
-  ) {
-    throw new DacsError("advanced registry omits the session's stored recipe reference");
   }
 }
 
@@ -954,130 +1344,306 @@ function assertLiveLeaseRecord(
     record.lease.generation !== leaseToken.generation ||
     record.lease.expiresAt <= now
   ) {
-    throw new DacsError("durable recipe pin store did not authenticate the live lease generation");
+    throw new DacsError(
+      "durable recipe checkpoint is lease-fenced or its lease has expired",
+    );
   }
 }
 
-/** Runtime provenance guard; cloned or caller-cast values are never accepted. */
+/** Runtime provenance guard only; this never grants current effect authority. */
 export function isDurableSessionRecipePin(
   value: unknown,
 ): value is DurableSessionRecipePin {
   return isRecord(value) && durablePins.has(value);
 }
 
-/**
- * Atomically establish or recover one session recipe pin before Vet effects.
- *
- * The first live lease persists the complete canonical payload in the
- * checkpoint intent itself. A concurrent/restarted worker must present its own
- * live generation, then recovers that immutable payload. For an unpinned
- * requirement a newer current selection is intentionally ignored on recovery;
- * the stored session-start version remains authoritative.
- */
-export async function pinSessionRecipeSelection(
-  source: PinSessionRecipeInput,
-): Promise<DurableSessionRecipePin> {
-  if (
-    !exactKeys(source, [
-      "store",
-      "jobId",
-      "evaluatedParty",
-      "requirementPath",
-      "requirement",
-      "selection",
-      "leaseToken",
-    ], ["now"])
-  ) {
-    throw new DacsError("durable recipe pin input must be an exact data record");
+/** Runtime provenance guard; this proves immutable data, never current effect authority. */
+export function isDurableSessionRecipeRegistrySnapshot(
+  value: unknown,
+): value is DurableSessionRecipeRegistrySnapshot {
+  return isRecord(value) && durableRegistrySnapshots.has(value);
+}
+
+function snapshotPayloadFromAuthenticated(
+  snapshot: AuthenticatedRecipeRegistrySnapshot,
+  input: {
+    jobId: string;
+    sessionStartHash: string;
+    leaseToken: SessionLeaseToken;
+    now: number;
+  },
+): DurableRecipeRegistrySnapshotPayload {
+  return captureRegistrySnapshotPayload({
+    snapshotVersion: "1",
+    jobId: input.jobId,
+    sessionStartHash: input.sessionStartHash,
+    registry: registryProvenanceFromSnapshot(snapshot),
+    entries: snapshot.entries,
+    pinnedBy: input.leaseToken,
+    pinnedAt: input.now,
+  });
+}
+
+/** Authenticate currentness inside the operation and atomically establish one job-wide snapshot. */
+export async function pinSessionRecipeRegistrySnapshot(
+  source: PinSessionRecipeRegistrySnapshotInput,
+): Promise<DurableSessionRecipeRegistrySnapshot> {
+  if (!exactKeys(source, [
+    "store", "jobId", "sessionStartHash", "provider", "leaseToken",
+  ], ["now"])) {
+    throw new DacsError("session recipe registry snapshot input must be exact");
   }
   const descriptors = Object.getOwnPropertyDescriptors(source);
   const store = captureStore(descriptors.store!.value);
   const jobId = descriptors.jobId!.value as unknown;
-  const evaluatedParty = descriptors.evaluatedParty!.value as unknown;
-  const selection = descriptors.selection!.value as unknown;
+  const sessionStartHash = descriptors.sessionStartHash!.value as unknown;
+  const provider = descriptors.provider!.value as RecipeRegistrySelectionProvider;
+  const leaseToken = captureLeaseToken(descriptors.leaseToken!.value);
   const nowValue = descriptors.now?.value as unknown;
-  if (!isNonEmptyTrimmed(jobId) || !canonicalClaimReference(evaluatedParty)) {
-    throw new DacsError("durable recipe pin job or evaluated party is malformed");
+  if (
+    !isNonEmptyTrimmed(jobId) ||
+    typeof sessionStartHash !== "string" ||
+    !HASH.test(sessionStartHash) ||
+    (nowValue !== undefined && !isNonNegativeSafeInteger(nowValue))
+  ) {
+    throw new DacsError("session recipe registry snapshot scope is malformed");
   }
-  if (nowValue !== undefined && !isNonNegativeSafeInteger(nowValue)) {
-    throw new DacsError("durable recipe pin now must be a non-negative safe integer");
-  }
+  const authenticated = await authenticateRecipeRegistrySnapshot(provider);
   const now = nowValue ?? Date.now();
   if (!isNonNegativeSafeInteger(now)) {
-    throw new DacsError("durable recipe pin clock is outside the safe range");
+    throw new DacsError("session recipe registry snapshot clock is outside the safe range");
   }
-  const requirementPath = capturePath(descriptors.requirementPath!.value);
-  const requirement = captureRequirement(descriptors.requirement!.value);
-  const leaseToken = captureLeaseToken(descriptors.leaseToken!.value);
-  if (!isLatestRecipeSelection(selection) && !isHistoricalRecipeResolution(selection)) {
-    throw new DacsError(
-      "durable recipe pin requires runtime-authenticated recipe selection provenance",
-    );
-  }
-  if (
-    requirement.recipeVersion === undefined &&
-    !isLatestRecipeSelection(selection)
-  ) {
-    throw new DacsError(
-      "an unpinned ClaimRequirement requires latest-at-session selection provenance",
-    );
-  }
-  if (
-    isLatestRecipeSelection(selection) &&
-    selection.required !== requirement.verificationRequired
-  ) {
-    throw new DacsError("latest recipe selection requiredness conflicts with the requirement");
-  }
-  if (
-    selection.recipe.scheme !== requirement.scheme ||
-    (requirement.recipeVersion !== undefined &&
-      selection.recipe.recipeVersion !== requirement.recipeVersion)
-  ) {
-    throw new DacsError("recipe selection does not satisfy the exact requirement pin");
-  }
-  const requiredMethod = requirement.parameters?.verificationMethod;
-  if (
-    requiredMethod !== undefined &&
-    (typeof requiredMethod !== "string" || requiredMethod !== selection.requestedMethod)
-  ) {
-    throw new DacsError("recipe selection violates verificationMethod provenance");
-  }
-
-  const payload = buildPayload({
+  const payload = snapshotPayloadFromAuthenticated(authenticated, {
     jobId,
-    evaluatedParty,
-    requirementPath,
-    requirement,
-    selection,
+    sessionStartHash,
     leaseToken,
     now,
   });
-  const checkpointKey = targetCheckpointKey(jobId, evaluatedParty, requirementPath);
-  const pinJson = canonicalize(payload);
-  const pinHash = sha256Hex(pinJson);
-  let rawResult: unknown;
+  const snapshotJson = canonicalize(payload);
+  const snapshotHash = sha256Hex(snapshotJson);
+  let rawClaim: unknown;
   try {
-    rawResult = await store.claimCheckpoint({
+    rawClaim = await store.claimCheckpoint({
       jobId,
-      key: checkpointKey,
-      data: { pin: pinJson, pinHash },
+      key: SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY,
+      data: { snapshot: snapshotJson, snapshotHash },
       leaseToken,
       now,
     });
   } catch (error) {
     if (error instanceof DacsError) throw error;
-    throw new DacsError("durable recipe pin checkpoint claim failed", {
-      cause: error,
-    });
+    throw new DacsError("session recipe registry snapshot claim failed", { cause: error });
   }
+  const claim = captureClaimResult(rawClaim);
+  if (!claim.ok && claim.reason !== "held" && claim.reason !== "completed") {
+    throw new DacsError(`session recipe registry snapshot rejected: ${claim.reason}`);
+  }
+  if (!claim.record) {
+    throw new DacsError("session recipe registry snapshot store returned no record");
+  }
+  assertLiveLeaseRecord(claim.record, jobId, leaseToken, now);
+  const stored = registrySnapshotFromRecord(claim.record);
+  assertStoredRegistrySnapshotScope(stored, { jobId, sessionStartHash });
+  if (claim.ok) {
+    if (stored.snapshotHash !== snapshotHash) {
+      throw new DacsError("store changed the newly claimed registry snapshot");
+    }
+  } else {
+    assertConcurrentSnapshotCompatibility(stored, payload);
+  }
+  return stored;
+}
+
+/** Recover the exact job-wide snapshot; an optional current view is audit-only. */
+export async function recoverSessionRecipeRegistrySnapshot(
+  source: RecoverSessionRecipeRegistrySnapshotInput,
+): Promise<DurableSessionRecipeRegistrySnapshot> {
+  if (!exactKeys(source, [
+    "store", "jobId", "sessionStartHash", "leaseToken",
+  ], ["currentSnapshot", "now"])) {
+    throw new DacsError("session recipe registry recovery input must be exact");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(source);
+  const store = captureStore(descriptors.store!.value);
+  const jobId = descriptors.jobId!.value as unknown;
+  const sessionStartHash = descriptors.sessionStartHash!.value as unknown;
+  const leaseToken = captureLeaseToken(descriptors.leaseToken!.value);
+  const currentSnapshot = descriptors.currentSnapshot?.value as unknown;
+  const nowValue = descriptors.now?.value as unknown;
+  if (
+    !isNonEmptyTrimmed(jobId) ||
+    typeof sessionStartHash !== "string" ||
+    !HASH.test(sessionStartHash) ||
+    (nowValue !== undefined && !isNonNegativeSafeInteger(nowValue)) ||
+    (currentSnapshot !== undefined &&
+      !isAuthenticatedRecipeRegistrySnapshot(currentSnapshot))
+  ) {
+    throw new DacsError("session recipe registry recovery scope is malformed");
+  }
+  const now = nowValue ?? Date.now();
+  let rawLoad: unknown;
+  try {
+    rawLoad = await store.load(jobId);
+  } catch (error) {
+    if (error instanceof DacsError) throw error;
+    throw new DacsError("session recipe registry snapshot load failed", { cause: error });
+  }
+  const loaded = captureLoadResult(rawLoad);
+  if (loaded.status !== "ok") {
+    throw new DacsError(`session recipe registry snapshot cannot be recovered: ${loaded.status}`);
+  }
+  const stored = registrySnapshotFromRecord(loaded.record);
+  assertStoredRegistrySnapshotScope(stored, { jobId, sessionStartHash });
+  if (currentSnapshot !== undefined) {
+    assertAuthenticatedSnapshotExtendsDurable(
+      stored,
+      currentSnapshot as AuthenticatedRecipeRegistrySnapshot,
+    );
+  }
+  const checkpointData = registrySnapshotCheckpointData(loaded.record);
+  const rawClaim = await store.claimCheckpoint({
+    jobId,
+    key: SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY,
+    data: checkpointData,
+    leaseToken,
+    now,
+  });
+  const claim = captureClaimResult(rawClaim);
+  if (claim.ok || (claim.reason !== "held" && claim.reason !== "completed")) {
+    throw new DacsError(
+      `session recipe registry recovery rejected: ${claim.ok ? "checkpoint unexpectedly re-created" : claim.reason}`,
+    );
+  }
+  if (!claim.record) throw new DacsError("session recipe registry recovery returned no record");
+  assertLiveLeaseRecord(claim.record, jobId, leaseToken, now);
+  const recovered = registrySnapshotFromRecord(claim.record);
+  if (recovered.snapshotHash !== stored.snapshotHash) {
+    throw new DacsError("session recipe registry snapshot changed during recovery");
+  }
+  return recovered;
+}
+
+interface CapturedPinOperation {
+  store: CapturedStore;
+  sessionSnapshot: DurableSessionRecipeRegistrySnapshot;
+  jobId: string;
+  evaluatedParty: string;
+  evaluatedPartyIdentity: DurableRecipePartyIdentity;
+  bundleRequirement: CompositeBundleRequirement;
+  partyPlanHash: string;
+  requirementPath: DurableRecipeRequirementPath;
+  requirement: CompositeClaimRequirement;
+  requestedMethod: VerificationMethodKind;
+  leaseToken: SessionLeaseToken;
+  now: number;
+}
+
+function capturePinOperation(source: unknown, label: string): CapturedPinOperation {
+  if (!exactKeys(source, [
+    "store", "sessionSnapshot", "jobId", "evaluatedParty", "requirementPath",
+    "bundleRequirement", "partyPlanHash", "requestedMethod", "leaseToken",
+  ], ["now"])) {
+    throw new DacsError(`${label} input must be an exact data record`);
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(source);
+  const store = captureStore(descriptors.store!.value);
+  const sessionSnapshot = descriptors.sessionSnapshot!.value as unknown;
+  const jobId = descriptors.jobId!.value as unknown;
+  const party = canonicalClaimReferenceParts(descriptors.evaluatedParty!.value);
+  const bundleRequirement = captureBundleRequirement(descriptors.bundleRequirement!.value);
+  const partyPlanHash = descriptors.partyPlanHash!.value as unknown;
+  const requestedMethod = descriptors.requestedMethod!.value as unknown;
+  const requirementPath = capturePath(descriptors.requirementPath!.value);
+  const leaseToken = captureLeaseToken(descriptors.leaseToken!.value);
+  const nowValue = descriptors.now?.value as unknown;
+  if (
+    !isDurableSessionRecipeRegistrySnapshot(sessionSnapshot) ||
+    !isNonEmptyTrimmed(jobId) ||
+    !party ||
+    typeof partyPlanHash !== "string" ||
+    !HASH.test(partyPlanHash) ||
+    typeof requestedMethod !== "string" ||
+    !METHODS.has(requestedMethod) ||
+    (nowValue !== undefined && !isNonNegativeSafeInteger(nowValue))
+  ) {
+    throw new DacsError(`${label} scope is malformed`);
+  }
+  if (sessionSnapshot.jobId !== jobId) {
+    throw new DacsError(`${label} snapshot belongs to another job`);
+  }
+  const requirement = requirementAt(bundleRequirement, requirementPath);
+  if (!requirement || !requirement.verificationRequired) {
+    throw new DacsError(`${label} path does not locate a verifiable requirement`);
+  }
+  const requiredMethod = requirement.parameters?.verificationMethod;
+  if (requiredMethod !== undefined && requiredMethod !== requestedMethod) {
+    throw new DacsError(`${label} violates verificationMethod provenance`);
+  }
+  const now = nowValue ?? Date.now();
+  if (!isNonNegativeSafeInteger(now)) {
+    throw new DacsError(`${label} clock is outside the safe range`);
+  }
+  return {
+    store,
+    sessionSnapshot,
+    jobId,
+    evaluatedParty: party.reference,
+    evaluatedPartyIdentity: party.identity,
+    bundleRequirement,
+    partyPlanHash,
+    requirementPath,
+    requirement,
+    requestedMethod: requestedMethod as VerificationMethodKind,
+    leaseToken,
+    now,
+  };
+}
+
+async function loadBoundSessionSnapshot(input: CapturedPinOperation): Promise<SessionRecord> {
+  const raw = await input.store.load(input.jobId);
+  const loaded = captureLoadResult(raw);
+  if (loaded.status !== "ok") {
+    throw new DacsError(`durable recipe pin cannot load its session snapshot: ${loaded.status}`);
+  }
+  const stored = registrySnapshotFromRecord(loaded.record);
+  if (stored.snapshotHash !== input.sessionSnapshot.snapshotHash) {
+    throw new DacsError("durable recipe pin supplied a snapshot from another store/session");
+  }
+  assertLiveLeaseRecord(loaded.record, input.jobId, input.leaseToken, input.now);
+  return loaded.record;
+}
+
+/** Derive and persist one requirement pin exclusively from the job-wide snapshot. */
+export async function pinSessionRecipeSelection(
+  source: PinSessionRecipeInput,
+): Promise<DurableSessionRecipePin> {
+  const input = capturePinOperation(source, "durable recipe pin");
+  await loadBoundSessionSnapshot(input);
+  const payload = buildPayload(input);
+  const checkpointKey = targetCheckpointKey(
+    input.jobId,
+    input.evaluatedPartyIdentity,
+    input.requirementPath,
+  );
+  const pinJson = canonicalize(payload);
+  const pinHash = sha256Hex(pinJson);
+  const rawResult = await input.store.claimCheckpoint({
+    jobId: input.jobId,
+    key: checkpointKey,
+    data: { pin: pinJson, pinHash },
+    leaseToken: input.leaseToken,
+    now: input.now,
+  });
   const result = captureClaimResult(rawResult);
   if (!result.ok && result.reason !== "held" && result.reason !== "completed") {
     throw new DacsError(`durable recipe pin checkpoint rejected: ${result.reason}`);
   }
-  if (!result.record) {
-    throw new DacsError("durable recipe pin store did not return the exact session record");
+  if (!result.record) throw new DacsError("durable recipe pin store returned no record");
+  assertLiveLeaseRecord(result.record, input.jobId, input.leaseToken, input.now);
+  const recordSnapshot = registrySnapshotFromRecord(result.record);
+  if (recordSnapshot.snapshotHash !== input.sessionSnapshot.snapshotHash) {
+    throw new DacsError("durable recipe session snapshot changed during pinning");
   }
-  assertLiveLeaseRecord(result.record, jobId, leaseToken, now);
   const stored = pinFromRecord(result.record, checkpointKey);
   if (result.ok && stored.pinHash !== pinHash) {
     throw new DacsError("durable recipe pin store changed the newly claimed payload");
@@ -1086,109 +1652,48 @@ export async function pinSessionRecipeSelection(
   return stored;
 }
 
-/**
- * Recover an already-persisted pin without reselecting a current family head.
- * This is the cold-restart path when the latest head advanced or removed the
- * method used by the in-flight session. A supplied authenticated snapshot is
- * checked only for append-only retention of the exact stored recipe.
- */
+/** Recover one requirement pin; no current registry head is selected or consulted. */
 export async function recoverSessionRecipePin(
   source: RecoverSessionRecipePinInput,
 ): Promise<DurableSessionRecipePin> {
-  if (
-    !exactKeys(source, [
-      "store",
-      "jobId",
-      "evaluatedParty",
-      "requirementPath",
-      "requirement",
-      "leaseToken",
-    ], ["snapshot", "now"])
-  ) {
-    throw new DacsError("durable recipe recovery input must be an exact data record");
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(source);
-  const store = captureStore(descriptors.store!.value);
-  const jobId = descriptors.jobId!.value as unknown;
-  const evaluatedParty = descriptors.evaluatedParty!.value as unknown;
-  const nowValue = descriptors.now?.value as unknown;
-  const snapshot = descriptors.snapshot?.value as unknown;
-  if (!isNonEmptyTrimmed(jobId) || !canonicalClaimReference(evaluatedParty)) {
-    throw new DacsError("durable recipe recovery job or evaluated party is malformed");
-  }
-  if (nowValue !== undefined && !isNonNegativeSafeInteger(nowValue)) {
-    throw new DacsError("durable recipe recovery now must be a non-negative safe integer");
-  }
-  if (
-    snapshot !== undefined &&
-    !isAuthenticatedRecipeRegistrySnapshot(snapshot)
-  ) {
-    throw new DacsError("durable recipe recovery snapshot is not runtime-authenticated");
-  }
-  const now = nowValue ?? Date.now();
-  if (!isNonNegativeSafeInteger(now)) {
-    throw new DacsError("durable recipe recovery clock is outside the safe range");
-  }
-  const requirementPath = capturePath(descriptors.requirementPath!.value);
-  const requirement = captureRequirement(descriptors.requirement!.value);
-  const leaseToken = captureLeaseToken(descriptors.leaseToken!.value);
-  const checkpointKey = targetCheckpointKey(jobId, evaluatedParty, requirementPath);
-
-  let rawLoad: unknown;
-  try {
-    rawLoad = await store.load(jobId);
-  } catch (error) {
-    if (error instanceof DacsError) throw error;
-    throw new DacsError("durable recipe pin load failed", { cause: error });
-  }
-  const loaded = captureLoadResult(rawLoad);
-  if (loaded.status !== "ok") {
-    throw new DacsError(`durable recipe pin cannot be recovered: ${loaded.status}`);
-  }
-  const stored = pinFromRecord(loaded.record, checkpointKey);
-  assertStoredRequest(stored, {
-    jobId,
-    evaluatedParty,
-    requirementPath,
-    requirement,
+  const input = capturePinOperation(source, "durable recipe recovery");
+  const loadedRecord = await loadBoundSessionSnapshot(input);
+  const checkpointKey = targetCheckpointKey(
+    input.jobId,
+    input.evaluatedPartyIdentity,
+    input.requirementPath,
+  );
+  const stored = pinFromRecord(loadedRecord, checkpointKey);
+  const request = {
+    jobId: input.jobId,
+    evaluatedPartyIdentity: input.evaluatedPartyIdentity,
+    bundleRequirement: input.bundleRequirement,
+    partyPlanHash: input.partyPlanHash,
+    requirementPath: input.requirementPath,
+    requestedMethod: input.requestedMethod,
+    sessionSnapshotHash: input.sessionSnapshot.snapshotHash,
+  };
+  assertStoredRequest(stored, request);
+  const checkpointData = pinCheckpointData(loadedRecord, checkpointKey);
+  const rawClaim = await input.store.claimCheckpoint({
+    jobId: input.jobId,
+    key: checkpointKey,
+    data: checkpointData,
+    leaseToken: input.leaseToken,
+    now: input.now,
   });
-  if (snapshot !== undefined) assertSnapshotRetainsPin(stored, snapshot);
-  const checkpointData = pinCheckpointData(loaded.record, checkpointKey);
-
-  let rawClaim: unknown;
-  try {
-    rawClaim = await store.claimCheckpoint({
-      jobId,
-      key: checkpointKey,
-      data: checkpointData,
-      leaseToken,
-      now,
-    });
-  } catch (error) {
-    if (error instanceof DacsError) throw error;
-    throw new DacsError("durable recipe recovery fence check failed", {
-      cause: error,
-    });
-  }
   const claim = captureClaimResult(rawClaim);
   if (claim.ok || (claim.reason !== "held" && claim.reason !== "completed")) {
-    const reason = claim.ok ? "checkpoint unexpectedly re-created" : claim.reason;
-    throw new DacsError(`durable recipe recovery rejected: ${reason}`);
+    throw new DacsError(
+      `durable recipe recovery rejected: ${claim.ok ? "checkpoint unexpectedly re-created" : claim.reason}`,
+    );
   }
-  if (!claim.record) {
-    throw new DacsError("durable recipe recovery did not return its session record");
-  }
-  assertLiveLeaseRecord(claim.record, jobId, leaseToken, now);
+  if (!claim.record) throw new DacsError("durable recipe recovery returned no record");
+  assertLiveLeaseRecord(claim.record, input.jobId, input.leaseToken, input.now);
   const recovered = pinFromRecord(claim.record, checkpointKey);
   if (recovered.pinHash !== stored.pinHash) {
     throw new DacsError("durable recipe pin changed during recovery");
   }
-  assertStoredRequest(recovered, {
-    jobId,
-    evaluatedParty,
-    requirementPath,
-    requirement,
-  });
-  if (snapshot !== undefined) assertSnapshotRetainsPin(recovered, snapshot);
+  assertStoredRequest(recovered, request);
   return recovered;
 }
