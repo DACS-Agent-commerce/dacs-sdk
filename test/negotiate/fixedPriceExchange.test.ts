@@ -245,6 +245,23 @@ describe("role-owned fixed-price agreement exchange", () => {
         () => "indeterminate",
       ),
     ).rejects.toThrow(/indeterminate/i);
+
+    let verifierCoercions = 0;
+    const invalidDisposition = Object.create(null) as Record<PropertyKey, unknown>;
+    Object.defineProperty(invalidDisposition, Symbol.toPrimitive, {
+      value: () => {
+        verifierCoercions += 1;
+        return "valid";
+      },
+    });
+    await expect(
+      finalizeFixedPriceAgreementContributions(
+        plan,
+        [buyer, seller],
+        () => invalidDisposition as never,
+      ),
+    ).rejects.toThrow(/\(error\)/i);
+    expect(verifierCoercions).toBe(0);
   });
 
   test("captures draft bytes and rejects accessors, proxies, symbols, and sparse arrays", async () => {
@@ -279,6 +296,28 @@ describe("role-owned fixed-price agreement exchange", () => {
     expect(() =>
       createFixedPriceAgreementSigningPlan(new Proxy(draft(), {}) as never),
     ).toThrow(/proxies/i);
+
+    let algorithmCoercions = 0;
+    const invalidAlgorithm = Object.create(null) as Record<PropertyKey, unknown>;
+    Object.defineProperty(invalidAlgorithm, Symbol.toPrimitive, {
+      value: () => {
+        algorithmCoercions += 1;
+        return "ed25519";
+      },
+    });
+    await expect(
+      createFixedPriceAgreementSignatureContribution(plan, "buyer", {
+        ...signer("buyer"),
+        algorithm: invalidAlgorithm as never,
+      }),
+    ).rejects.toThrow(/algorithm is malformed/i);
+    expect(algorithmCoercions).toBe(0);
+    await expect(
+      createFixedPriceAgreementSignatureContribution(plan, "buyer", {
+        ...signer("buyer"),
+        sign: new Proxy(signer("buyer").sign, {}),
+      }),
+    ).rejects.toThrow(/algorithm is malformed/i);
 
     const symbolDraft = draft() as unknown as Record<PropertyKey, unknown>;
     symbolDraft[Symbol("hidden")] = "value";

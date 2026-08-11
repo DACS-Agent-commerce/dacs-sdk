@@ -345,7 +345,8 @@ function captureContribution(
     !isRecord(captured.signature) ||
     !exactKeys(captured.signature, ["party", "algorithm", "value"]) ||
     captured.signature.party !== captured.party ||
-    !ALGORITHMS.has(String(captured.signature.algorithm)) ||
+    typeof captured.signature.algorithm !== "string" ||
+    !ALGORITHMS.has(captured.signature.algorithm) ||
     !isCanonicalBase64Url(captured.signature.value) ||
     !isHash(captured.contributionHash)
   ) {
@@ -387,7 +388,13 @@ function captureSigner(value: AgreementSigner): AgreementSigner {
   const party = descriptors.party!.value as unknown;
   const algorithm = descriptors.algorithm!.value as unknown;
   const sign = descriptors.sign!.value as unknown;
-  if (!isCanonicalString(party) || !ALGORITHMS.has(String(algorithm)) || typeof sign !== "function") {
+  if (
+    !isCanonicalString(party) ||
+    typeof algorithm !== "string" ||
+    !ALGORITHMS.has(algorithm) ||
+    typeof sign !== "function" ||
+    nodeTypes.isProxy(sign)
+  ) {
     throw new DacsError("agreement signer identity or algorithm is malformed");
   }
   return Object.freeze({
@@ -448,6 +455,9 @@ export async function createFixedPriceAgreementSignatureContribution(
   signerValue: AgreementSigner,
 ): Promise<Readonly<FixedPriceAgreementSignatureContribution>> {
   const plan = capturePlan(planValue);
+  if (role !== "buyer" && role !== "seller") {
+    throw new DacsError("agreement contribution role must be buyer or seller");
+  }
   const signer = captureSigner(signerValue);
   const expected = plan.requiredSigners.find((entry) => entry.role === role);
   if (!expected || signer.party !== expected.party) {
@@ -527,7 +537,7 @@ export async function finalizeFixedPriceAgreementContributions(
     }
     let disposition: FixedPriceAgreementContributionVerificationDisposition;
     try {
-      disposition = await Reflect.apply(verify, Object.freeze({}), [
+      const candidate = await Reflect.apply(verify, Object.freeze({}), [
         Object.freeze({
           role: expected.role,
           party: expected.party,
@@ -536,6 +546,12 @@ export async function finalizeFixedPriceAgreementContributions(
           signedBytes: fixedPriceAgreementSignedBytes(plan),
         }),
       ]);
+      disposition = candidate === "valid" ||
+          candidate === "invalid" ||
+          candidate === "indeterminate" ||
+          candidate === "error"
+        ? candidate
+        : "error";
     } catch {
       disposition = "error";
     }
