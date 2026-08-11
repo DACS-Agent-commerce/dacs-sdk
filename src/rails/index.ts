@@ -90,6 +90,7 @@ export {
   type X402BuyerSettlementLoad,
   type X402BuyerSettlementClaim,
   type X402BuyerRecoveryGrant,
+  type X402BuyerDisclosureWrite,
   type X402BuyerOutcomeWrite,
   type X402BuyerSettlementStore,
   type X402BuyerEffectFence,

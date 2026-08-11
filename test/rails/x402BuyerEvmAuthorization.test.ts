@@ -368,6 +368,54 @@ describe("x402 buyer EVM authorization provider", () => {
     expect(result.status).toBe("captured");
   });
 
+  test("retains a response across delayed finality without disclosure recovery or resubmission", async () => {
+    const intent = makeIntent();
+    const store = createInMemoryX402BuyerSettlementStore();
+    let now = 1_000;
+    let submits = 0;
+    const first = await advanceX402BuyerSettlement({
+      intent,
+      owner: "worker-a",
+      store,
+      authorizationProvider: provider(reader({ headBlock: 102 })),
+      transport: {
+        async submitRetained(_received, effectFence) {
+          submits += 1;
+          await effectFence.assertCurrent();
+          return { disposition: "response", disclosure: disclosure() };
+        },
+      },
+      now: () => now,
+      leaseDurationMs: 10,
+    });
+    expect(first).toEqual({
+      status: "indeterminate",
+      reason: "eip3009-settlement-not-finalized",
+    });
+    await expect(store.load(intent.settlementKey)).resolves.toMatchObject({
+      status: "held",
+      pendingDisclosure: disclosure(),
+    });
+
+    now = 1_011;
+    const recovered = await advanceX402BuyerSettlement({
+      intent,
+      owner: "worker-b",
+      store,
+      authorizationProvider: provider(reader({ headBlock: 110 })),
+      transport: {
+        async submitRetained() {
+          submits += 1;
+          throw new Error("must not resubmit while adopting retained disclosure");
+        },
+      },
+      now: () => now,
+      leaseDurationMs: 10,
+    });
+    expect(recovered.status).toBe("captured");
+    expect(submits).toBe(1);
+  });
+
   test.each([
     ["chain", reader({ chainId: 1 })],
     ["event nonce", reader({ used: [log({ topics: [
@@ -473,10 +521,7 @@ describe("x402 buyer EVM authorization provider", () => {
     expect(unsafe.result?.disposition).toBe("indeterminate");
   });
 
-  test.each([
-    ["not-yet-valid", 0, "eip3009-authorization-not-yet-valid"],
-    ["expired", 4_102_444_800, "eip3009-authorization-expired"],
-  ])("does not replay an authenticated-unused authorization that is %s", async (_label, headTimestamp, reason) => {
+  test("does not replay an authenticated-unused authorization that is not yet valid", async () => {
     const confirmUnused = vi.fn(async ({ intent }: { intent: X402BuyerSettlementIntent }) => ({
       disposition: "safe",
       bindingHash: intent.bindingHash,
@@ -485,13 +530,71 @@ describe("x402 buyer EVM authorization provider", () => {
       used: [],
       authorizationUsed: false,
       receipt: null,
-      headTimestamp,
+      headTimestamp: 0,
     });
     const { result } = await reconcile(provider(noUse, {
       confirmUnused: confirmUnused as X402BuyerEvmAuthorizationProviderOptions["confirmUnused"],
     }), null);
-    expect(result).toEqual({ disposition: "indeterminate", reason });
+    expect(result).toEqual({
+      disposition: "indeterminate",
+      reason: "eip3009-authorization-not-yet-valid",
+    });
     expect(confirmUnused).not.toHaveBeenCalled();
+  });
+
+  test("authenticates finalized unused expiry as terminal without replay authority", async () => {
+    const confirmUnused = vi.fn(async ({ intent }: { intent: X402BuyerSettlementIntent }) => ({
+      disposition: "safe",
+      bindingHash: intent.bindingHash,
+    }));
+    const noUse = reader({
+      used: [],
+      authorizationUsed: false,
+      receipt: null,
+      headTimestamp: 4_102_444_800,
+    });
+    const { result } = await reconcile(provider(noUse, {
+      confirmUnused: confirmUnused as X402BuyerEvmAuthorizationProviderOptions["confirmUnused"],
+    }), null);
+    expect(result).toMatchObject({
+      disposition: "expired-unused",
+      reason: "eip3009-authorization-expired-unused",
+      authenticationHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(confirmUnused).not.toHaveBeenCalled();
+  });
+
+  test("terminates an expired-unused intent before the paid request can run", async () => {
+    const intent = makeIntent();
+    let submits = 0;
+    const noUse = reader({
+      used: [],
+      authorizationUsed: false,
+      receipt: null,
+      headTimestamp: 4_102_444_800,
+    });
+    const result = await advanceX402BuyerSettlement({
+      intent,
+      owner: "worker",
+      store: createInMemoryX402BuyerSettlementStore(),
+      authorizationProvider: provider(noUse),
+      transport: {
+        async submitRetained() {
+          submits += 1;
+          return { disposition: "indeterminate", reason: "must-not-submit" };
+        },
+      },
+      now: () => 1_000,
+    });
+    expect(result).toMatchObject({
+      status: "failed",
+      outcome: {
+        status: "failed",
+        failure: "expired-unused",
+        authenticationHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    });
+    expect(submits).toBe(0);
   });
 
   test("does not infer unused while a success candidate may still settle", async () => {

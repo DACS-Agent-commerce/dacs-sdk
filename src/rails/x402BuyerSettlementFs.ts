@@ -16,12 +16,13 @@ import {
 import { join } from "node:path";
 import { types as nodeTypes } from "node:util";
 
-import { sha256Hex } from "../canonical/index.js";
+import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import {
   X402_BUYER_SETTLEMENT_STORE_VERSION,
   x402BuyerSettlementStoreInternals,
   type X402BuyerLeaseToken,
+  type X402BuyerDisclosureWrite,
   type X402BuyerOutcomeWrite,
   type X402BuyerRecoveryGrant,
   type X402BuyerSettlementClaim,
@@ -666,6 +667,9 @@ export async function createFsX402BuyerSettlementStore(
   const unavailableWrite = (
     read: Exclude<StoreRead, StoreReadAbsent | StoreReadOk>,
   ): X402BuyerOutcomeWrite => read;
+  const unavailableDisclosure = (
+    read: Exclude<StoreRead, StoreReadAbsent | StoreReadOk>,
+  ): X402BuyerDisclosureWrite => read;
 
   return {
     async load(settlementKey) {
@@ -678,6 +682,9 @@ export async function createFsX402BuyerSettlementStore(
         status: "held",
         intent: clone(read.record.intent),
         lease: clone(read.record.lease),
+        ...(read.record.pendingDisclosure === undefined
+          ? {}
+          : { pendingDisclosure: clone(read.record.pendingDisclosure) }),
       };
     },
     async claim(input) {
@@ -719,6 +726,9 @@ export async function createFsX402BuyerSettlementStore(
             status: "waiting",
             intent: clone(current.intent),
             lease: clone(current.lease),
+            ...(current.pendingDisclosure === undefined
+              ? {}
+              : { pendingDisclosure: clone(current.pendingDisclosure) }),
           };
         }
         const generation = current.generation + 1;
@@ -742,6 +752,9 @@ export async function createFsX402BuyerSettlementStore(
           status: "acquired",
           intent: clone(current.intent),
           lease: clone(lease),
+          ...(current.pendingDisclosure === undefined
+            ? {}
+            : { pendingDisclosure: clone(current.pendingDisclosure) }),
         };
       });
     },
@@ -793,6 +806,52 @@ export async function createFsX402BuyerSettlementStore(
           status: "granted",
           intent: clone(current.intent),
           lease: clone(lease),
+          ...(current.pendingDisclosure === undefined
+            ? {}
+            : { pendingDisclosure: clone(current.pendingDisclosure) }),
+        };
+      });
+    },
+    async recordDisclosure(input) {
+      return withLock(input.settlementKey, async () => {
+        const read = await readRecord(input.settlementKey);
+        if (read.status === "absent") return { status: "stale" };
+        if (read.status === "unsupported" || read.status === "corrupt") {
+          return unavailableDisclosure(read);
+        }
+        const current = read.record;
+        if (current.intent.bindingHash !== input.bindingHash) return { status: "conflict" };
+        const terminal = terminalClaim(current);
+        if (terminal) return terminal as X402BuyerDisclosureWrite;
+        if (current.lease.owner !== input.lease.owner ||
+            current.lease.generation !== input.lease.generation ||
+            current.lease.expiresAt <= input.now) {
+          return { status: "stale" };
+        }
+        const disclosure = x402BuyerSettlementStoreInternals.captureDisclosure(
+          input.disclosure,
+        );
+        if (disclosure.httpResource !== current.intent.httpResource) {
+          return { status: "conflict" };
+        }
+        if (current.pendingDisclosure) {
+          return canonicalize(current.pendingDisclosure) === canonicalize(disclosure)
+            ? {
+                status: "existing",
+                intent: clone(current.intent),
+                disclosure: clone(current.pendingDisclosure),
+              }
+            : { status: "conflict" };
+        }
+        await writeRecord({
+          ...clone(current),
+          pendingDisclosure: clone(disclosure),
+          updatedAt: input.now,
+        });
+        return {
+          status: "recorded",
+          intent: clone(current.intent),
+          disclosure: clone(disclosure),
         };
       });
     },
@@ -816,6 +875,17 @@ export async function createFsX402BuyerSettlementStore(
           input.outcome,
           current.intent,
         );
+        if (current.pendingDisclosure && outcome.status === "captured") {
+          const terminalDisclosure = {
+            protocolVersion: outcome.settlement.protocolVersion,
+            headerName: outcome.settlement.headerName,
+            encodedSettlementHeader: outcome.settlement.encodedSettlementHeader,
+            httpResource: outcome.settlement.httpResource,
+          };
+          if (canonicalize(current.pendingDisclosure) !== canonicalize(terminalDisclosure)) {
+            return { status: "conflict" };
+          }
+        }
         await writeRecord({
           ...clone(current),
           outcome: clone(outcome),

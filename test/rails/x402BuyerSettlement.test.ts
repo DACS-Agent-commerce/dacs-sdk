@@ -426,7 +426,41 @@ describe("advanceX402BuyerSettlement", () => {
       now: () => 1_000,
     });
     expect(result).toEqual({ status: "indeterminate", reason: "ledger-unavailable" });
-    expect(await store.load(intent.settlementKey)).toMatchObject({ status: "held" });
+    expect(await store.load(intent.settlementKey)).toMatchObject({
+      status: "held",
+      pendingDisclosure: disclosure(),
+    });
+  });
+
+  test("adopts a committed disclosure after its write acknowledgement is lost", async () => {
+    const intent = makeIntent();
+    const baseStore = createInMemoryX402BuyerSettlementStore();
+    const store = {
+      ...baseStore,
+      async recordDisclosure(input: Parameters<typeof baseStore.recordDisclosure>[0]) {
+        await baseStore.recordDisclosure(input);
+        throw new Error("disclosure commit acknowledgement lost");
+      },
+    };
+    let submits = 0;
+    const result = await advanceX402BuyerSettlement({
+      intent,
+      owner: "worker-a",
+      store,
+      authorizationProvider: provider([{
+        disposition: "settled-same",
+        settlement: capturedSettlement(intent),
+      }]),
+      transport: transport(async (_received, fence) => {
+        submits += 1;
+        await fence.assertCurrent();
+        return { disposition: "response", disclosure: disclosure() };
+      }),
+      now: () => 1_000,
+    });
+    expect(result.status).toBe("captured");
+    expect(submits).toBe(1);
+    expect(await baseStore.load(intent.settlementKey)).toMatchObject({ status: "captured" });
   });
 
   test("the exact retained binding must be independently authorized before submission", async () => {
@@ -830,6 +864,13 @@ describe("advanceX402BuyerSettlement", () => {
       now: 1_011,
       leaseDurationMs: 10,
     })).toEqual({ status: "stale" });
+    expect(await store.recordDisclosure({
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      lease: firstLease,
+      disclosure: disclosure(),
+      now: 1_011,
+    })).toEqual({ status: "stale" });
     expect(await store.recordOutcome({
       settlementKey: intent.settlementKey,
       bindingHash: intent.bindingHash,
@@ -879,6 +920,45 @@ describe("advanceX402BuyerSettlement", () => {
       },
       now: 1_002,
     })).toMatchObject({ status: "existing", outcome: { status: "captured" } });
+  });
+
+  test("pending disclosures are exact, no-overwrite, and bind the terminal receipt", async () => {
+    const intent = makeIntent();
+    const store = createInMemoryX402BuyerSettlementStore();
+    const claim = await store.claim({
+      intent,
+      owner: "worker",
+      now: 1_000,
+      leaseDurationMs: 100,
+    });
+    if (claim.status !== "acquired") throw new Error("claim failed");
+    const original = disclosure();
+    const differentResponse = receiptResponse({ transaction: `0x${"bb".repeat(32)}` });
+    const different = disclosure({ encodedSettlementHeader: encode(differentResponse) });
+    const write = {
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      lease: claim.lease,
+      now: 1_001,
+    };
+    await expect(store.recordDisclosure({ ...write, disclosure: original }))
+      .resolves.toMatchObject({ status: "recorded", disclosure: original });
+    await expect(store.recordDisclosure({ ...write, disclosure: original }))
+      .resolves.toMatchObject({ status: "existing", disclosure: original });
+    await expect(store.recordDisclosure({ ...write, disclosure: different }))
+      .resolves.toEqual({ status: "conflict" });
+    await expect(store.recordOutcome({
+      ...write,
+      outcome: {
+        outcomeVersion: "1",
+        status: "captured",
+        settlement: capturedSettlement(intent, { response: differentResponse }),
+      },
+    })).resolves.toEqual({ status: "conflict" });
+    await expect(store.load(intent.settlementKey)).resolves.toMatchObject({
+      status: "held",
+      pendingDisclosure: original,
+    });
   });
 });
 
@@ -930,6 +1010,136 @@ describe("filesystem x402 buyer settlement recovery", () => {
     expect(recovered.status).toBe("captured");
     expect(submits).toBe(1);
     expect(await restarted.load(intent.settlementKey)).toMatchObject({ status: "captured" });
+  });
+
+  test("cold restart carries a pre-finality PAYMENT-RESPONSE without facilitator recovery", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    let now = 1_000;
+    let submits = 0;
+    const firstStore = await createFsX402BuyerSettlementStore({ dir });
+    const delayedProvider: X402BuyerAuthorizationProvider<{ observed: true }> = {
+      async authorizeIntent(received, fence) {
+        await fence.assertCurrent();
+        return { disposition: "authorized", bindingHash: received.bindingHash };
+      },
+      async lookup(_received, candidate, fence) {
+        await fence.assertCurrent();
+        expect(candidate).toEqual(disclosure());
+        return { disposition: "observed", observation: { observed: true } };
+      },
+      async authenticate(_received, _lookup, candidate, fence) {
+        await fence.assertCurrent();
+        expect(candidate).toEqual(disclosure());
+        return { disposition: "indeterminate", reason: "settlement-not-finalized" };
+      },
+    };
+    const first = await advanceX402BuyerSettlement({
+      intent,
+      owner: "process-a",
+      store: firstStore,
+      authorizationProvider: delayedProvider,
+      transport: transport(async (_received, fence) => {
+        submits += 1;
+        await fence.assertCurrent();
+        return { disposition: "response", disclosure: disclosure() };
+      }),
+      now: () => now,
+      leaseDurationMs: 100,
+    });
+    expect(first).toEqual({ status: "indeterminate", reason: "settlement-not-finalized" });
+    await expect(firstStore.load(intent.settlementKey)).resolves.toMatchObject({
+      status: "held",
+      pendingDisclosure: disclosure(),
+    });
+
+    now = 1_101;
+    const restarted = await createFsX402BuyerSettlementStore({ dir });
+    const recoveredProvider: X402BuyerAuthorizationProvider<{ observed: true }> = {
+      async authorizeIntent() {
+        throw new Error("recovery must not enter a fresh paid request");
+      },
+      async lookup(_received, candidate, fence) {
+        await fence.assertCurrent();
+        expect(candidate).toEqual(disclosure());
+        return { disposition: "observed", observation: { observed: true } };
+      },
+      async authenticate(received, _lookup, candidate, fence) {
+        await fence.assertCurrent();
+        expect(candidate).toEqual(disclosure());
+        return {
+          disposition: "settled-same",
+          settlement: capturedSettlement(received),
+        };
+      },
+    };
+    const recovered = await advanceX402BuyerSettlement({
+      intent,
+      owner: "process-b",
+      store: restarted,
+      authorizationProvider: recoveredProvider,
+      transport: transport(async () => {
+        submits += 1;
+        throw new Error("must not resubmit while adopting the retained response");
+      }),
+      now: () => now,
+      leaseDurationMs: 100,
+    });
+    expect(recovered.status).toBe("captured");
+    expect(submits).toBe(1);
+  });
+
+  test("cold restart terminates an authenticated expired-unused authorization", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    let now = 1_000;
+    let submits = 0;
+    const firstStore = await createFsX402BuyerSettlementStore({ dir });
+    const first = await advanceX402BuyerSettlement({
+      intent,
+      owner: "process-a",
+      store: firstStore,
+      authorizationProvider: provider([{
+        disposition: "indeterminate",
+        reason: "authorization-still-live",
+      }]),
+      transport: transport(async (_received, fence) => {
+        submits += 1;
+        await fence.assertCurrent();
+        return { disposition: "indeterminate", reason: "response-lost" };
+      }),
+      now: () => now,
+      leaseDurationMs: 100,
+    });
+    expect(first.status).toBe("indeterminate");
+
+    now = 1_101;
+    const restarted = await createFsX402BuyerSettlementStore({ dir });
+    const recovered = await advanceX402BuyerSettlement({
+      intent,
+      owner: "process-b",
+      store: restarted,
+      authorizationProvider: provider([{
+        disposition: "expired-unused",
+        reason: "eip3009-authorization-expired-unused",
+        authenticationHash: HASH_A,
+      }]),
+      transport: transport(async () => {
+        submits += 1;
+        throw new Error("expired authorization must not replay");
+      }),
+      now: () => now,
+      leaseDurationMs: 100,
+    });
+    expect(recovered).toMatchObject({
+      status: "failed",
+      outcome: {
+        status: "failed",
+        failure: "expired-unused",
+        authenticationHash: HASH_A,
+      },
+    });
+    expect(submits).toBe(1);
   });
 
   test("two independent stores converge on one paid request", async () => {

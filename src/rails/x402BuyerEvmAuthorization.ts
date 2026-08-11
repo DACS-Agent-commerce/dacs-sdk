@@ -635,7 +635,7 @@ function matchingTransfers(
 
 function terminalAuthenticationHash(input: {
   intent: Readonly<X402BuyerSettlementIntent>;
-  disposition: "used-different" | "cancelled" | "unused";
+  disposition: "used-different" | "cancelled" | "expired-unused" | "unused";
   head: Readonly<X402BuyerEvmFinalityHead>;
   state: Readonly<X402BuyerEvmAuthorizationState>;
   event?: Readonly<X402BuyerEvmLog>;
@@ -699,6 +699,7 @@ export function createX402BuyerEvmAuthorizationProvider(
   const authenticateIntent = async (
     intent: Readonly<X402BuyerSettlementIntent>,
     fence: Readonly<X402BuyerEffectFence>,
+    requireLiveWindow: boolean,
   ): Promise<X402BuyerIntentAuthorization> => {
     const authorization = extractAuthorization(intent);
     if (!authorization || Number(intent.network.slice("eip155:".length)) !== chainId) {
@@ -717,6 +718,21 @@ export function createX402BuyerEvmAuthorizationProvider(
         intent.bindingHash,
       );
       await fence.assertCurrent();
+      if (authorityVerdict.disposition !== "authorized" || !requireLiveWindow) {
+        return authorityVerdict;
+      }
+      const head = captureHead(await options.client.getFinalityHead());
+      await fence.assertCurrent();
+      if (!head || head.chainId !== chainId) {
+        return { disposition: "indeterminate", reason: "evm-finality-head-invalid" };
+      }
+      const timestamp = BigInt(head.timestamp);
+      if (timestamp >= BigInt(authorization.validBefore)) {
+        return { disposition: "expired", reason: "eip3009-authorization-expired" };
+      }
+      if (timestamp <= BigInt(authorization.validAfter)) {
+        return { disposition: "indeterminate", reason: "eip3009-authorization-not-yet-valid" };
+      }
       return authorityVerdict;
     } catch {
       return { disposition: "indeterminate", reason: "intent-authorization-unavailable" };
@@ -724,7 +740,7 @@ export function createX402BuyerEvmAuthorizationProvider(
   };
 
   const provider: X402BuyerAuthorizationProvider<X402BuyerEvmAuthorizationObservation> = {
-    authorizeIntent: authenticateIntent,
+    authorizeIntent: (intent, fence) => authenticateIntent(intent, fence, true),
 
     async lookup(intent, candidate, fence): Promise<X402BuyerAuthorizationLookup<X402BuyerEvmAuthorizationObservation>> {
       if (Number(intent.network.slice("eip155:".length)) !== chainId) {
@@ -856,7 +872,7 @@ export function createX402BuyerEvmAuthorizationProvider(
       }
       const authorization = extractAuthorization(intent);
       if (!authorization) return { disposition: "indeterminate", reason: "eip3009-intent-invalid" };
-      const authority = await authenticateIntent(intent, fence);
+      const authority = await authenticateIntent(intent, fence, false);
       if (authority.disposition !== "authorized") {
         return {
           disposition: "indeterminate",
@@ -979,15 +995,21 @@ export function createX402BuyerEvmAuthorizationProvider(
       if (state.used) {
         return { disposition: "indeterminate", reason: "eip3009-used-event-lookup-incomplete" };
       }
+      const finalityTimestamp = BigInt(head.timestamp);
+      if (finalityTimestamp >= BigInt(authorization.validBefore)) {
+        return {
+          disposition: "expired-unused",
+          reason: "eip3009-authorization-expired-unused",
+          authenticationHash: terminalAuthenticationHash({
+            intent, disposition: "expired-unused", head, state,
+          }),
+        };
+      }
       if (observation.candidate) {
         return { disposition: "indeterminate", reason: "payment-response-not-finalized" };
       }
-      const finalityTimestamp = BigInt(head.timestamp);
       if (finalityTimestamp <= BigInt(authorization.validAfter)) {
         return { disposition: "indeterminate", reason: "eip3009-authorization-not-yet-valid" };
-      }
-      if (finalityTimestamp >= BigInt(authorization.validBefore)) {
-        return { disposition: "indeterminate", reason: "eip3009-authorization-expired" };
       }
       if (!options.confirmUnused) {
         return { disposition: "indeterminate", reason: "eip3009-replay-safety-unproven" };

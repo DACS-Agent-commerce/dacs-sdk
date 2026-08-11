@@ -99,7 +99,10 @@ export interface X402BuyerCapturedSettlement {
   authenticationHash: string;
 }
 
-export type X402BuyerTerminalFailureKind = "used-different" | "cancelled";
+export type X402BuyerTerminalFailureKind =
+  | "used-different"
+  | "cancelled"
+  | "expired-unused";
 
 export type X402BuyerSettlementOutcome =
   | {
@@ -131,6 +134,7 @@ export type X402BuyerSettlementLoad =
       status: "held";
       intent: Readonly<X402BuyerSettlementIntent>;
       lease: Readonly<X402BuyerSettlementLease>;
+      pendingDisclosure?: Readonly<X402BuyerSettlementDisclosure>;
     }
   | {
       status: "captured" | "failed";
@@ -145,11 +149,13 @@ export type X402BuyerSettlementClaim =
       status: "acquired";
       intent: Readonly<X402BuyerSettlementIntent>;
       lease: Readonly<X402BuyerSettlementLease>;
+      pendingDisclosure?: Readonly<X402BuyerSettlementDisclosure>;
     }
   | {
       status: "waiting";
       intent: Readonly<X402BuyerSettlementIntent>;
       lease: Readonly<X402BuyerSettlementLease>;
+      pendingDisclosure?: Readonly<X402BuyerSettlementDisclosure>;
     }
   | {
       status: "captured" | "failed";
@@ -165,6 +171,7 @@ export type X402BuyerRecoveryGrant =
       status: "granted";
       intent: Readonly<X402BuyerSettlementIntent>;
       lease: Readonly<X402BuyerSettlementLease>;
+      pendingDisclosure?: Readonly<X402BuyerSettlementDisclosure>;
     }
   | { status: "stale" | "conflict" }
   | {
@@ -178,6 +185,21 @@ export type X402BuyerRecoveryGrant =
 export type X402BuyerOutcomeWrite =
   | {
       status: "recorded" | "existing";
+      intent: Readonly<X402BuyerSettlementIntent>;
+      outcome: Readonly<X402BuyerSettlementOutcome>;
+    }
+  | { status: "stale" | "conflict" }
+  | { status: "unsupported"; version: number }
+  | { status: "corrupt"; reason: string };
+
+export type X402BuyerDisclosureWrite =
+  | {
+      status: "recorded" | "existing";
+      intent: Readonly<X402BuyerSettlementIntent>;
+      disclosure: Readonly<X402BuyerSettlementDisclosure>;
+    }
+  | {
+      status: "captured" | "failed";
       intent: Readonly<X402BuyerSettlementIntent>;
       outcome: Readonly<X402BuyerSettlementOutcome>;
     }
@@ -211,6 +233,13 @@ export interface X402BuyerSettlementStore {
     now: number;
     leaseDurationMs: number;
   }): Promise<X402BuyerRecoveryGrant>;
+  recordDisclosure(input: {
+    settlementKey: string;
+    bindingHash: string;
+    lease: Readonly<X402BuyerLeaseToken>;
+    disclosure: Readonly<X402BuyerSettlementDisclosure>;
+    now: number;
+  }): Promise<X402BuyerDisclosureWrite>;
   recordOutcome(input: {
     settlementKey: string;
     bindingHash: string;
@@ -240,7 +269,7 @@ export type X402BuyerAuthorizationReconciliation =
     }
   | { disposition: "unused"; reason: string; authenticationHash: string }
   | {
-      disposition: "used-different" | "cancelled";
+      disposition: "used-different" | "cancelled" | "expired-unused";
       reason: string;
       authenticationHash: string;
     }
@@ -249,6 +278,7 @@ export type X402BuyerAuthorizationReconciliation =
 /** Independent pre-effect authentication of the complete retained intent. */
 export type X402BuyerIntentAuthorization =
   | { disposition: "authorized"; bindingHash: string }
+  | { disposition: "expired"; reason: string }
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
 /**
@@ -328,6 +358,7 @@ interface StoredRecord {
   intent: X402BuyerSettlementIntent;
   generation: number;
   lease: X402BuyerSettlementLease;
+  pendingDisclosure?: X402BuyerSettlementDisclosure;
   outcome?: X402BuyerSettlementOutcome;
   createdAt: number;
   updatedAt: number;
@@ -1117,6 +1148,17 @@ function captureSettlement(
   });
 }
 
+function disclosureFromSettlement(
+  settlement: Readonly<X402BuyerCapturedSettlement>,
+): Readonly<X402BuyerSettlementDisclosure> {
+  return deepFreeze({
+    protocolVersion: settlement.protocolVersion,
+    headerName: settlement.headerName,
+    encodedSettlementHeader: settlement.encodedSettlementHeader,
+    httpResource: settlement.httpResource,
+  });
+}
+
 function captureOutcome(
   value: unknown,
   intent: Readonly<X402BuyerSettlementIntent>,
@@ -1143,7 +1185,8 @@ function captureOutcome(
       "reason",
       "authenticationHash",
     ]);
-    if (value.failure !== "used-different" && value.failure !== "cancelled") {
+    if (value.failure !== "used-different" && value.failure !== "cancelled" &&
+        value.failure !== "expired-unused") {
       throw new DacsError("x402 buyer failure is not terminal-authenticated");
     }
     return deepFreeze({
@@ -1186,7 +1229,7 @@ function captureStoredRecord(value: unknown): Readonly<StoredRecord> {
     "lease",
     "createdAt",
     "updatedAt",
-  ], ["outcome"]);
+  ], ["pendingDisclosure", "outcome"]);
   if (record.storeVersion !== X402_BUYER_SETTLEMENT_STORE_VERSION) {
     throw new DacsError("unsupported x402 buyer storeVersion");
   }
@@ -1199,11 +1242,24 @@ function captureStoredRecord(value: unknown): Readonly<StoredRecord> {
   const outcome = record.outcome === undefined
     ? undefined
     : captureOutcome(record.outcome, intent);
+  const pendingDisclosure = record.pendingDisclosure === undefined
+    ? undefined
+    : captureDisclosure(record.pendingDisclosure);
+  if (pendingDisclosure && pendingDisclosure.httpResource !== intent.httpResource) {
+    throw new DacsError("x402 buyer pending disclosure does not match the retained intent");
+  }
+  if (pendingDisclosure && outcome?.status === "captured" &&
+      canonicalize(pendingDisclosure) !== canonicalize(disclosureFromSettlement(
+        outcome.settlement,
+      ))) {
+    throw new DacsError("x402 buyer terminal settlement conflicts with its pending disclosure");
+  }
   return deepFreeze({
     storeVersion: X402_BUYER_SETTLEMENT_STORE_VERSION,
     intent,
     generation,
     lease,
+    ...(pendingDisclosure === undefined ? {} : { pendingDisclosure }),
     ...(outcome === undefined ? {} : { outcome }),
     createdAt: finiteTime(record.createdAt, "x402 buyer record createdAt"),
     updatedAt: finiteTime(record.updatedAt, "x402 buyer record updatedAt"),
@@ -1253,6 +1309,9 @@ export function createInMemoryX402BuyerSettlementStore(
         status: "held",
         intent: deepFreeze(clone(record.intent)),
         lease: deepFreeze(clone(record.lease)),
+        ...(record.pendingDisclosure === undefined
+          ? {}
+          : { pendingDisclosure: deepFreeze(clone(record.pendingDisclosure)) }),
       };
     },
     async claim(input) {
@@ -1295,6 +1354,9 @@ export function createInMemoryX402BuyerSettlementStore(
           status: "waiting",
           intent: deepFreeze(clone(current.intent)),
           lease: deepFreeze(clone(current.lease)),
+          ...(current.pendingDisclosure === undefined
+            ? {}
+            : { pendingDisclosure: deepFreeze(clone(current.pendingDisclosure)) }),
         };
       }
       const generation = current.generation + 1;
@@ -1312,6 +1374,9 @@ export function createInMemoryX402BuyerSettlementStore(
         status: "acquired",
         intent: deepFreeze(clone(current.intent)),
         lease: deepFreeze(clone(lease)),
+        ...(current.pendingDisclosure === undefined
+          ? {}
+          : { pendingDisclosure: deepFreeze(clone(current.pendingDisclosure)) }),
       };
     },
     async isCurrent(input) {
@@ -1347,6 +1412,41 @@ export function createInMemoryX402BuyerSettlementStore(
         status: "granted",
         intent: deepFreeze(clone(current.intent)),
         lease: deepFreeze(clone(lease)),
+        ...(current.pendingDisclosure === undefined
+          ? {}
+          : { pendingDisclosure: deepFreeze(clone(current.pendingDisclosure)) }),
+      };
+    },
+    async recordDisclosure(input) {
+      const current = read(input.settlementKey);
+      if (!current) return { status: "stale" };
+      if (current.intent.bindingHash !== input.bindingHash) return { status: "conflict" };
+      const terminal = terminalClaim(current);
+      if (terminal) return terminal as X402BuyerDisclosureWrite;
+      if (current.lease.owner !== input.lease.owner ||
+          current.lease.generation !== input.lease.generation ||
+          current.lease.expiresAt <= input.now) {
+        return { status: "stale" };
+      }
+      const disclosure = captureDisclosure(input.disclosure);
+      if (disclosure.httpResource !== current.intent.httpResource) {
+        return { status: "conflict" };
+      }
+      if (current.pendingDisclosure) {
+        return canonicalize(current.pendingDisclosure) === canonicalize(disclosure)
+          ? {
+              status: "existing",
+              intent: deepFreeze(clone(current.intent)),
+              disclosure: deepFreeze(clone(current.pendingDisclosure)),
+            }
+          : { status: "conflict" };
+      }
+      current.pendingDisclosure = clone(disclosure);
+      current.updatedAt = input.now;
+      return {
+        status: "recorded",
+        intent: deepFreeze(clone(current.intent)),
+        disclosure: deepFreeze(clone(disclosure)),
       };
     },
     async recordOutcome(input) {
@@ -1366,6 +1466,12 @@ export function createInMemoryX402BuyerSettlementStore(
         return { status: "stale" };
       }
       const outcome = captureOutcome(input.outcome, current.intent);
+      if (current.pendingDisclosure && outcome.status === "captured" &&
+          canonicalize(current.pendingDisclosure) !== canonicalize(
+            disclosureFromSettlement(outcome.settlement),
+          )) {
+        return { status: "conflict" };
+      }
       current.outcome = clone(outcome);
       current.updatedAt = input.now;
       return {
@@ -1431,13 +1537,24 @@ function captureStoreClaim(
       "status",
       "intent",
       "lease",
-    ]);
+    ], ["pendingDisclosure"]);
     const intent = captureIntent(record.intent);
     if (intent.bindingHash !== expectedIntent.bindingHash ||
         intent.settlementKey !== expectedIntent.settlementKey) {
       throw new DacsError("x402 buyer store claim returned a different intent");
     }
-    return { status: value.status, intent, lease: captureLease(record.lease) };
+    const pendingDisclosure = record.pendingDisclosure === undefined
+      ? undefined
+      : captureDisclosure(record.pendingDisclosure);
+    if (pendingDisclosure && pendingDisclosure.httpResource !== intent.httpResource) {
+      throw new DacsError("x402 buyer store claim returned a mismatched disclosure");
+    }
+    return {
+      status: value.status,
+      intent,
+      lease: captureLease(record.lease),
+      ...(pendingDisclosure === undefined ? {} : { pendingDisclosure }),
+    };
   }
   if (value.status === "conflict") {
     exactRecord(value, "x402 buyer store claim", ["status"]);
@@ -1455,6 +1572,35 @@ function captureStoreClaim(
     return { status: "corrupt", reason: nfcString(record.reason, "x402 buyer corruption reason") };
   }
   throw new DacsError("x402 buyer store claim status is invalid");
+}
+
+function captureStoreHeld(
+  value: unknown,
+  expectedIntent: Readonly<X402BuyerSettlementIntent>,
+): Extract<X402BuyerSettlementLoad, { status: "held" }> {
+  const record = exactRecord(value, "x402 buyer store load", [
+    "status",
+    "intent",
+    "lease",
+  ], ["pendingDisclosure"]);
+  if (record.status !== "held") throw new DacsError("x402 buyer store load is not held");
+  const intent = captureIntent(record.intent);
+  if (intent.bindingHash !== expectedIntent.bindingHash ||
+      intent.settlementKey !== expectedIntent.settlementKey) {
+    throw new DacsError("x402 buyer store load returned a different intent");
+  }
+  const pendingDisclosure = record.pendingDisclosure === undefined
+    ? undefined
+    : captureDisclosure(record.pendingDisclosure);
+  if (pendingDisclosure && pendingDisclosure.httpResource !== intent.httpResource) {
+    throw new DacsError("x402 buyer store load returned a mismatched disclosure");
+  }
+  return {
+    status: "held",
+    intent,
+    lease: captureLease(record.lease),
+    ...(pendingDisclosure === undefined ? {} : { pendingDisclosure }),
+  };
 }
 
 function captureOutcomeWrite(
@@ -1494,6 +1640,50 @@ function captureOutcomeWrite(
   throw new DacsError("x402 buyer outcome write status is invalid");
 }
 
+function captureDisclosureWrite(
+  value: unknown,
+  expectedIntent: Readonly<X402BuyerSettlementIntent>,
+): X402BuyerDisclosureWrite {
+  if (!isRecord(value)) throw new DacsError("x402 buyer disclosure write is malformed");
+  if (value.status === "captured" || value.status === "failed") {
+    return captureStoreTerminal(
+      value,
+      expectedIntent,
+      "x402 buyer disclosure write",
+    ) as X402BuyerDisclosureWrite;
+  }
+  if (value.status === "recorded" || value.status === "existing") {
+    const record = exactRecord(value, "x402 buyer disclosure write", [
+      "status",
+      "intent",
+      "disclosure",
+    ]);
+    const intent = captureIntent(record.intent);
+    if (intent.bindingHash !== expectedIntent.bindingHash ||
+        intent.settlementKey !== expectedIntent.settlementKey) {
+      throw new DacsError("x402 buyer disclosure write returned a different intent");
+    }
+    const disclosure = captureDisclosure(record.disclosure);
+    if (disclosure.httpResource !== intent.httpResource) {
+      throw new DacsError("x402 buyer disclosure write returned a mismatched disclosure");
+    }
+    return { status: value.status, intent, disclosure };
+  }
+  if (value.status === "stale" || value.status === "conflict") {
+    exactRecord(value, "x402 buyer disclosure write", ["status"]);
+    return { status: value.status };
+  }
+  if (value.status === "unsupported") {
+    const record = exactRecord(value, "x402 buyer disclosure write", ["status", "version"]);
+    return { status: "unsupported", version: uint(record.version, "x402 buyer store version") };
+  }
+  if (value.status === "corrupt") {
+    const record = exactRecord(value, "x402 buyer disclosure write", ["status", "reason"]);
+    return { status: "corrupt", reason: nfcString(record.reason, "x402 buyer corruption reason") };
+  }
+  throw new DacsError("x402 buyer disclosure write status is invalid");
+}
+
 function captureRecoveryGrant(
   value: unknown,
   expectedIntent: Readonly<X402BuyerSettlementIntent>,
@@ -1511,7 +1701,7 @@ function captureRecoveryGrant(
       "status",
       "intent",
       "lease",
-    ]);
+    ], ["pendingDisclosure"]);
     const intent = captureIntent(record.intent);
     if (intent.bindingHash !== expectedIntent.bindingHash ||
         intent.settlementKey !== expectedIntent.settlementKey) {
@@ -1521,7 +1711,18 @@ function captureRecoveryGrant(
     if (lease.stage !== "replay") {
       throw new DacsError("x402 buyer recovery grant did not issue a replay lease");
     }
-    return { status: "granted", intent, lease };
+    const pendingDisclosure = record.pendingDisclosure === undefined
+      ? undefined
+      : captureDisclosure(record.pendingDisclosure);
+    if (pendingDisclosure && pendingDisclosure.httpResource !== intent.httpResource) {
+      throw new DacsError("x402 buyer recovery grant returned a mismatched disclosure");
+    }
+    return {
+      status: "granted",
+      intent,
+      lease,
+      ...(pendingDisclosure === undefined ? {} : { pendingDisclosure }),
+    };
   }
   if (value.status === "stale" || value.status === "conflict") {
     exactRecord(value, "x402 buyer recovery grant", ["status"]);
@@ -1599,7 +1800,8 @@ function captureReconciliation(
         ),
       };
     }
-    if (value.disposition === "used-different" || value.disposition === "cancelled") {
+    if (value.disposition === "used-different" || value.disposition === "cancelled" ||
+        value.disposition === "expired-unused") {
       const record = exactRecord(value, "x402 buyer terminal reconciliation", [
         "disposition",
         "reason",
@@ -1651,6 +1853,7 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
       typeof input.store.claim !== "function" ||
       typeof input.store.isCurrent !== "function" ||
       typeof input.store.grantRecovery !== "function" ||
+      typeof input.store.recordDisclosure !== "function" ||
       typeof input.store.recordOutcome !== "function" ||
       !input.authorizationProvider || typeof input.authorizationProvider.lookup !== "function" ||
       typeof input.authorizationProvider.authorizeIntent !== "function" ||
@@ -1692,6 +1895,7 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
   }
 
   let lease = claim.lease;
+  let pendingDisclosure = claim.pendingDisclosure;
   const makeFence = (): Readonly<X402BuyerEffectFence> => {
     const token = { owner: lease.owner, generation: lease.generation };
     const fence: X402BuyerEffectFence = {
@@ -1716,6 +1920,12 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     outcome: Readonly<X402BuyerSettlementOutcome>,
     fence: Readonly<X402BuyerEffectFence>,
   ): Promise<X402BuyerSettlementProgress> => {
+    if (pendingDisclosure && outcome.status === "captured" &&
+        canonicalize(pendingDisclosure) !== canonicalize(
+          disclosureFromSettlement(outcome.settlement),
+        )) {
+      return { status: "indeterminate", reason: "settlement-disclosure-conflict" };
+    }
     try {
       await fence.assertCurrent();
     } catch {
@@ -1768,6 +1978,78 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     };
   };
 
+  const persistDisclosure = async (
+    disclosure: Readonly<X402BuyerSettlementDisclosure>,
+    fence: Readonly<X402BuyerEffectFence>,
+  ): Promise<
+    | { status: "ready"; disclosure: Readonly<X402BuyerSettlementDisclosure> }
+    | X402BuyerSettlementProgress
+  > => {
+    try {
+      await fence.assertCurrent();
+    } catch {
+      return { status: "indeterminate", reason: "settlement-generation-stale" };
+    }
+    let result: X402BuyerDisclosureWrite;
+    try {
+      result = captureDisclosureWrite(await input.store.recordDisclosure({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        lease: fence,
+        disclosure,
+        now: now(),
+      }), intent);
+    } catch {
+      // The candidate write may have committed before its acknowledgement was lost.
+      try {
+        const loaded = await input.store.load(intent.settlementKey);
+        if (loaded.status === "captured" || loaded.status === "failed") {
+          return progressFromOutcome(captureStoreTerminal(
+            loaded,
+            intent,
+            "x402 buyer store load",
+          ).outcome);
+        }
+        if (loaded.status === "held") {
+          const held = captureStoreHeld(loaded, intent);
+          if (held.pendingDisclosure &&
+              canonicalize(held.pendingDisclosure) === canonicalize(disclosure)) {
+            return { status: "ready", disclosure: held.pendingDisclosure };
+          }
+        }
+      } catch {
+        // A failed read cannot establish whether the candidate write committed.
+      }
+      return { status: "indeterminate", reason: "settlement-disclosure-write-indeterminate" };
+    }
+    if (result.status === "recorded" || result.status === "existing") {
+      if (canonicalize(result.disclosure) !== canonicalize(disclosure)) {
+        return { status: "indeterminate", reason: "settlement-disclosure-conflict" };
+      }
+      return { status: "ready", disclosure: result.disclosure };
+    }
+    if (result.status === "captured" || result.status === "failed") {
+      return progressFromOutcome(result.outcome);
+    }
+    if (result.status === "corrupt") {
+      return {
+        status: "indeterminate",
+        reason: `settlement-store-corrupt:${result.reason}`,
+      };
+    }
+    if (result.status === "unsupported") {
+      return {
+        status: "indeterminate",
+        reason: `settlement-store-version-${result.version}-unsupported`,
+      };
+    }
+    return {
+      status: "indeterminate",
+      reason: result.status === "stale" ? "settlement-generation-stale" :
+        "settlement-disclosure-conflict",
+    };
+  };
+
   const reconcile = async (
     fence: Readonly<X402BuyerEffectFence>,
     candidate?: Readonly<X402BuyerSettlementDisclosure>,
@@ -1803,6 +2085,41 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
       await fence.assertCurrent();
       if (!isRecord(intentAuthorization)) {
         return { status: "indeterminate", reason: "intent-authorization-invalid" };
+      }
+      if (intentAuthorization.disposition === "expired") {
+        let checked: Record<string, unknown>;
+        try {
+          checked = exactRecord(intentAuthorization, "x402 buyer intent authorization", [
+            "disposition",
+            "reason",
+          ]);
+        } catch {
+          return { status: "indeterminate", reason: "intent-authorization-invalid" };
+        }
+        const observed = await reconcile(fence, pendingDisclosure);
+        if (observed.disposition === "settled-same") {
+          return persist({
+            outcomeVersion: "1",
+            status: "captured",
+            settlement: observed.settlement,
+          }, fence);
+        }
+        if (observed.disposition === "used-different" || observed.disposition === "cancelled" ||
+            observed.disposition === "expired-unused") {
+          return persist({
+            outcomeVersion: "1",
+            status: "failed",
+            failure: observed.disposition,
+            reason: observed.reason,
+            authenticationHash: observed.authenticationHash,
+          }, fence);
+        }
+        return {
+          status: "indeterminate",
+          reason: observed.disposition === "indeterminate"
+            ? observed.reason
+            : `intent-authorization-expired:${validReason(checked.reason, "unspecified")}`,
+        };
       }
       if (intentAuthorization.disposition === "rejected" ||
           intentAuthorization.disposition === "indeterminate") {
@@ -1873,6 +2190,12 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     } catch {
       return { status: "indeterminate", reason: "paid-request-response-indeterminate" };
     }
+    if (candidate) {
+      const retained = await persistDisclosure(candidate, fence);
+      if (retained.status !== "ready") return retained;
+      candidate = retained.disclosure;
+      pendingDisclosure = candidate;
+    }
     const observed = await reconcile(fence, candidate);
     if (observed.disposition === "settled-same") {
       return persist({
@@ -1881,7 +2204,8 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
         settlement: observed.settlement,
       }, fence);
     }
-    if (observed.disposition === "used-different" || observed.disposition === "cancelled") {
+    if (observed.disposition === "used-different" || observed.disposition === "cancelled" ||
+        observed.disposition === "expired-unused") {
       return persist({
         outcomeVersion: "1",
         status: "failed",
@@ -1905,7 +2229,7 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     return submitThenReconcile(fence);
   }
 
-  const recovered = await reconcile(fence);
+  const recovered = await reconcile(fence, pendingDisclosure);
   if (recovered.disposition === "settled-same") {
     return persist({
       outcomeVersion: "1",
@@ -1913,7 +2237,8 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
       settlement: recovered.settlement,
     }, fence);
   }
-  if (recovered.disposition === "used-different" || recovered.disposition === "cancelled") {
+  if (recovered.disposition === "used-different" || recovered.disposition === "cancelled" ||
+      recovered.disposition === "expired-unused") {
     return persist({
       outcomeVersion: "1",
       status: "failed",
@@ -1924,6 +2249,9 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
   }
   if (recovered.disposition === "indeterminate") {
     return { status: "indeterminate", reason: recovered.reason };
+  }
+  if (pendingDisclosure) {
+    return { status: "indeterminate", reason: "pending-payment-response-not-finalized" };
   }
 
   let granted: X402BuyerRecoveryGrant;
@@ -1962,6 +2290,10 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     };
   }
   lease = granted.lease;
+  pendingDisclosure = granted.pendingDisclosure;
+  if (pendingDisclosure) {
+    return { status: "indeterminate", reason: "pending-payment-response-not-finalized" };
+  }
   fence = makeFence();
   return submitThenReconcile(fence);
 }
@@ -1969,6 +2301,7 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
 /** Internal strict record helpers shared by the filesystem implementation. */
 export const x402BuyerSettlementStoreInternals = Object.freeze({
   captureIntent,
+  captureDisclosure,
   captureOutcome,
   captureStoredRecord,
   captureLease,
