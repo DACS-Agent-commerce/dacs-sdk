@@ -22,6 +22,7 @@ import {
   sessionLeaseScopeFailure,
   sessionPhaseMutationFailure,
   sessionPhaseIsTerminal,
+  sessionPhaseIsSellerFailureOrigin,
   terminalBundleSealMutationFailure,
   sessionReceiptKey,
   sessionRecordShapeViolation,
@@ -999,11 +1000,13 @@ export async function createFsFencedSessionStore(
           : sessionPhaseMutationFailure(record, input.phase);
         if (phaseProblem) return { ok: false, reason: phaseProblem, record };
         if (
-          record.phase === "seller:failed" &&
+          sessionPhaseIsSellerFailureOrigin(record.phase) &&
           !releasesOnly &&
           (input.phase !== "terminal:seller:authority" ||
             input.receipt !== undefined ||
-            input.checkpoint?.key !== "terminal:seller:authority")
+            input.checkpoint?.key !== "terminal:seller:authority" ||
+            input.checkpoint.stage !== "intent" ||
+            input.lease === null)
         ) {
           return { ok: false, reason: "phase-regression", record };
         }
@@ -1071,7 +1074,7 @@ export async function createFsFencedSessionStore(
         const phaseProblem = sessionPhaseMutationFailure(record, input.phase);
         if (phaseProblem) return { ok: false, reason: phaseProblem, record };
         if (
-          record.phase === "seller:failed" &&
+          sessionPhaseIsSellerFailureOrigin(record.phase) &&
           (input.phase !== "terminal:seller:authority" ||
             input.key !== "terminal:seller:authority")
         ) {
@@ -1295,7 +1298,7 @@ export async function createFsFencedSessionStore(
         if (
           kind === "agreement" &&
           loaded.status === "ok" &&
-          (loaded.record.phase === "seller:failed" ||
+          (sessionPhaseIsSellerFailureOrigin(loaded.record.phase) ||
             sessionPhaseIsTerminal(loaded.record.phase))
         ) {
           return loaded.record.agreementHash === hash
