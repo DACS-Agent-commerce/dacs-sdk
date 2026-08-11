@@ -14,3 +14,4 @@ export {
   type CciPqcClaim,
   type ParsedClaimRef,
 } from "./cci.js";
+export { identityBundleHash } from "./bundle.js";

@@ -10,6 +10,7 @@ import {
   deriveFixedPriceAgreement,
   ed25519Sign,
   ed25519Verify,
+  identityBundleHash,
   isAgreementDocument,
   isPayeeBoundAgreementDocument,
   privateKeyFromSeed,
@@ -164,21 +165,21 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       ["buyer", BUYER],
       ["seller", SELLER],
     ]);
+    expect(draft.parties.map((party) => party.bundleHash)).toEqual([
+      identityBundleHash(input().buyer.identityBundle),
+      identityBundleHash(input().seller.identityBundle),
+    ]);
     expect("signatures" in draft).toBe(false);
   });
 
-  test("uses bandCenter and fails closed on auction or metered pricing", () => {
-    const negotiable = listing();
-    negotiable.pricing = {
-      kind: "negotiable",
-      bandCenter: { amount: "2.5", currency: "USDC" },
-      minPct: 10,
-      maxPct: 20,
-    };
-    expect(deriveFixedPriceAgreement(input(negotiable)).terms.price.amount).toBe(
-      "2.5",
-    );
+  test("fails closed on pricing that requires negotiation, auction, or metering", () => {
     for (const pricing of [
+      {
+        kind: "negotiable",
+        bandCenter: { amount: "2.5", currency: "USDC" },
+        minPct: 10,
+        maxPct: 20,
+      } as const,
       { kind: "auction", selectionRule: "lowest-price" } as const,
       {
         kind: "metered",
@@ -192,6 +193,23 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
         /invalid wire shape|unsupported/,
       );
     }
+  });
+
+  test("uses the normative IdentityBundle hash and excludes only presentation", () => {
+    const original = input();
+    const first = deriveFixedPriceAgreement(original);
+    const changedPresentation = structuredClone(original);
+    changedPresentation.buyer.identityBundle.presentation = {
+      kind: "per-claim",
+      signatures: [{ ref: BUYER, signature: "rotated-presentation" }],
+    };
+    const second = deriveFixedPriceAgreement(changedPresentation);
+    expect(second.parties[0]!.bundleHash).toBe(first.parties[0]!.bundleHash);
+
+    const changedClaim = structuredClone(original);
+    changedClaim.buyer.identityBundle.claims[0]!.metadata = { revision: 2 };
+    const third = deriveFixedPriceAgreement(changedClaim);
+    expect(third.parties[0]!.bundleHash).not.toBe(first.parties[0]!.bundleHash);
   });
 
   test("rejects stale pins, expired Listings, rail mutation, and seller substitution", () => {

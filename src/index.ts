@@ -107,6 +107,7 @@ export {
   parseClaimRef,
   cciClaimRefs,
   cciHasClaim,
+  identityBundleHash,
   type CciRecord,
   type CciClaim,
   type CciClaimKind,
