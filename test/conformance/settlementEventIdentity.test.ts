@@ -62,6 +62,26 @@ describe.skipIf(!haveVector)(
         rawKey: Uint8Array,
       ) => ed25519Verify(bytes, signature, publicKeyFromRaw(rawKey)),
     };
+    const contextFor = (
+      vector: SettlementEventVector,
+    ): SettlementEventIdentityContext => ({
+      anchorAddress: vector.anchorAddress,
+      phaseIndex: vector.phaseIndex,
+      railId: vector.verificationContext.railId,
+      asset: vector.verificationContext.asset,
+      payer: vector.verificationContext.payer,
+      payee: vector.verificationContext.payee,
+      amount: vector.verificationContext.amount,
+      ...(vector.ledgerEvents === undefined
+        ? {}
+        : { ledgerEvents: vector.ledgerEvents }),
+      ...(vector.verificationContext.x402Receipt === undefined
+        ? {}
+        : { x402Receipt: vector.verificationContext.x402Receipt }),
+      ...(vector.priorClaims === undefined
+        ? {}
+        : { priorClaims: vector.priorClaims }),
+    });
 
     it("pins the complete upstream case set and hash", () => {
       expect(document.vectors).toHaveLength(document.count);
@@ -73,27 +93,9 @@ describe.skipIf(!haveVector)(
 
     it("replays every current and legacy event-identity decision", async () => {
       for (const vector of document.vectors) {
-        const context: SettlementEventIdentityContext = {
-          anchorAddress: vector.anchorAddress,
-          phaseIndex: vector.phaseIndex,
-          railId: vector.verificationContext.railId,
-          asset: vector.verificationContext.asset,
-          payer: vector.verificationContext.payer,
-          payee: vector.verificationContext.payee,
-          amount: vector.verificationContext.amount,
-          ...(vector.ledgerEvents === undefined
-            ? {}
-            : { ledgerEvents: vector.ledgerEvents }),
-          ...(vector.verificationContext.x402Receipt === undefined
-            ? {}
-            : { x402Receipt: vector.verificationContext.x402Receipt }),
-          ...(vector.priorClaims === undefined
-            ? {}
-            : { priorClaims: vector.priorClaims }),
-        };
         const result = await resolveSettlementEventIdentity(
           vector.settlementEvidence,
-          context,
+          contextFor(vector),
           deps,
         );
         expect(result.decision, `${vector.name}: ${JSON.stringify(result)}`)
@@ -104,6 +106,66 @@ describe.skipIf(!haveVector)(
           });
         }
       }
+    });
+
+    it("fails closed without invoking evidence or context accessors", async () => {
+      const vector = document.vectors.find(({ expected }) => expected === "pass")!;
+      const evidence = Object.defineProperties(
+        {},
+        Object.getOwnPropertyDescriptors(vector.settlementEvidence as object),
+      );
+      Object.defineProperty(evidence, "outcome", {
+        enumerable: true,
+        get: () => {
+          throw new Error("evidence accessor must remain inert");
+        },
+      });
+      await expect(resolveSettlementEventIdentity(
+        evidence,
+        contextFor(vector),
+        deps,
+      )).resolves.toMatchObject({ decision: "error" });
+
+      const poisonedContext = new Proxy(contextFor(vector), {
+        get: () => {
+          throw new Error("context proxy must remain inert");
+        },
+      });
+      await expect(resolveSettlementEventIdentity(
+        vector.settlementEvidence,
+        poisonedContext,
+        deps,
+      )).resolves.toMatchObject({ decision: "error" });
+    });
+
+    it("refuses inherited or accessor-backed SB-2 claims", async () => {
+      const vector = document.vectors.find(({ expected, expectedSettlementTxId }) =>
+        expected === "pass" && expectedSettlementTxId !== undefined)!;
+      const settlementId = vector.expectedSettlementTxId!;
+      const inheritedClaims = Object.create({
+        [settlementId]: { jobId: "other-job", phaseIndex: 99 },
+      }) as Record<string, { jobId: string; phaseIndex: number }>;
+      await expect(resolveSettlementEventIdentity(
+        vector.settlementEvidence,
+        { ...contextFor(vector), priorClaims: inheritedClaims },
+        deps,
+      )).resolves.toMatchObject({ decision: "error" });
+
+      const accessorClaims = Object.create(null) as Record<
+        string,
+        { jobId: string; phaseIndex: number }
+      >;
+      Object.defineProperty(accessorClaims, settlementId, {
+        enumerable: true,
+        get: () => {
+          throw new Error("SB-2 accessor must remain inert");
+        },
+      });
+      await expect(resolveSettlementEventIdentity(
+        vector.settlementEvidence,
+        { ...contextFor(vector), priorClaims: accessorClaims },
+        deps,
+      )).resolves.toMatchObject({ decision: "error" });
     });
   },
 );

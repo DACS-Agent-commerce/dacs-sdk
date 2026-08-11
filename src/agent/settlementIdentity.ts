@@ -3,7 +3,9 @@ import { types as nodeTypes } from "node:util";
 import { isComponentSignature } from "../artifacts/signatures.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { ChainTxRef } from "../artifacts/types.js";
+import { isSettlementEvidence } from "../artifacts/validators.js";
 import {
+  canonicalizeDecimal,
   contentHash,
   decodeAddressSegment,
   encodeAddressSegment,
@@ -202,6 +204,184 @@ const exactKeys = (
     typeof key === "string" && (required.includes(key) || optional.includes(key))) &&
     required.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 };
+
+function snapshotExactJson(
+  value: unknown,
+  label: string,
+  seen = new WeakSet<object>(),
+  depth = 0,
+): unknown {
+  if (depth > 64) throw new TypeError(`${label} exceeds the supported JSON depth`);
+  if (value === null || typeof value !== "object") {
+    if (
+      value === undefined || typeof value === "function" ||
+      typeof value === "symbol" || typeof value === "bigint" ||
+      (typeof value === "number" &&
+        (!Number.isFinite(value) || Object.is(value, -0)))
+    ) {
+      throw new TypeError(`${label} must contain exact JSON data`);
+    }
+    return value;
+  }
+  if (nodeTypes.isProxy(value)) throw new TypeError(`${label} cannot contain proxies`);
+  if (seen.has(value)) throw new TypeError(`${label} must be acyclic`);
+  seen.add(value);
+
+  let descriptors: PropertyDescriptorMap;
+  let prototype: object | null;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(value);
+    prototype = Object.getPrototypeOf(value);
+  } catch {
+    throw new TypeError(`${label} could not be captured`);
+  }
+  if (Object.getOwnPropertySymbols(value).length !== 0) {
+    throw new TypeError(`${label} cannot contain symbol fields`);
+  }
+
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) {
+      throw new TypeError(`${label} arrays must use the intrinsic prototype`);
+    }
+    const keys = Object.keys(descriptors).filter((key) => key !== "length");
+    const length = descriptors.length?.value;
+    if (
+      !Number.isSafeInteger(length) || (length as number) < 0 ||
+      keys.length !== length || keys.some((key, index) => key !== String(index))
+    ) {
+      throw new TypeError(`${label} arrays must be dense`);
+    }
+    const copy = keys.map((key) => {
+      const descriptor = descriptors[key]!;
+      if (descriptor.enumerable !== true || !("value" in descriptor)) {
+        throw new TypeError(`${label} cannot contain accessors`);
+      }
+      return snapshotExactJson(descriptor.value, label, seen, depth + 1);
+    });
+    seen.delete(value);
+    return copy;
+  }
+
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${label} must contain only plain records`);
+  }
+  const copy = Object.create(null) as Record<string, unknown>;
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (
+      descriptor.enumerable !== true || !("value" in descriptor) ||
+      descriptor.value === undefined
+    ) {
+      throw new TypeError(`${label} cannot contain accessors, hidden or undefined fields`);
+    }
+    Object.defineProperty(copy, key, {
+      value: snapshotExactJson(descriptor.value, label, seen, depth + 1),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  seen.delete(value);
+  return copy;
+}
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+
+function isAuthenticatedLedgerEvent(
+  value: unknown,
+): value is AuthenticatedSettlementLedgerEvent {
+  if (!isRecord(value)) return false;
+  const common = ["standard", "asset", "payer", "payee", "amount"] as const;
+  if (!common.every((key) => isNonEmptyString(value[key]))) return false;
+  if (value.ledger === "evm") {
+    return exactKeys(value, [
+      "ledger", "chainId", "txHash", "logIndex", ...common,
+    ]) && isPositiveSafeInt(value.chainId) && isSafeUint(value.logIndex) &&
+      canonicalEvmHash(value.txHash) !== null;
+  }
+  if (value.ledger === "solana") {
+    return exactKeys(value, [
+      "ledger", "cluster", "signature", "instructionIndex", ...common,
+    ]) &&
+      (value.cluster === "mainnet" || value.cluster === "devnet" ||
+        value.cluster === "testnet") &&
+      typeof value.signature === "string" &&
+      isCanonicalSolanaSignature(value.signature) &&
+      isSafeUint(value.instructionIndex);
+  }
+  return false;
+}
+
+function isSettlementIdentityContext(
+  value: unknown,
+): value is SettlementEventIdentityContext {
+  if (!isRecord(value) || !exactKeys(value, [
+    "anchorAddress", "phaseIndex", "railId", "asset", "payer", "payee",
+    "amount",
+  ], ["ledgerEvents", "x402Receipt", "priorClaims"])) return false;
+  if (
+    !isNonEmptyString(value.anchorAddress) || !isSafeUint(value.phaseIndex) ||
+    !isNonEmptyString(value.railId) || !isNonEmptyString(value.asset) ||
+    !isNonEmptyString(value.payer) || !isNonEmptyString(value.payee) ||
+    !isRecord(value.amount) || !exactKeys(value.amount, ["amount", "currency"]) ||
+    !isNonEmptyString(value.amount.amount) ||
+    !isNonEmptyString(value.amount.currency)
+  ) return false;
+  try {
+    if (canonicalizeDecimal(value.amount.amount) !== value.amount.amount ||
+        value.amount.amount === "0") return false;
+  } catch {
+    return false;
+  }
+  if (
+    value.ledgerEvents !== undefined && value.ledgerEvents !== null &&
+    (!Array.isArray(value.ledgerEvents) ||
+      !value.ledgerEvents.every(isAuthenticatedLedgerEvent))
+  ) return false;
+  if (value.x402Receipt !== undefined) {
+    if (!isRecord(value.x402Receipt) || !exactKeys(value.x402Receipt, [
+      "verified", "paymentReceiptHash", "settlementTxHash", "chainId",
+    ]) || value.x402Receipt.verified !== true ||
+      typeof value.x402Receipt.paymentReceiptHash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(value.x402Receipt.paymentReceiptHash) ||
+      canonicalEvmHash(value.x402Receipt.settlementTxHash) === null ||
+      !isPositiveSafeInt(value.x402Receipt.chainId)) return false;
+  }
+  if (value.priorClaims !== undefined) {
+    if (!isRecord(value.priorClaims)) return false;
+    for (const [settlementId, claim] of Object.entries(value.priorClaims)) {
+      if (!isCanonicalSettlementIdentity(settlementId) || !isRecord(claim) ||
+          !exactKeys(claim, ["jobId", "phaseIndex"]) ||
+          !isNonEmptyString(claim.jobId) || !isSafeUint(claim.phaseIndex)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function captureSettlementIdentityDeps(
+  value: unknown,
+): SettlementEventIdentityDeps | null {
+  if (!isRecord(value) ||
+      (Object.getPrototypeOf(value) !== Object.prototype &&
+        Object.getPrototypeOf(value) !== null) ||
+      !exactKeys(value, ["resolvePublicKey", "verify"])) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const resolvePublicKey = descriptors.resolvePublicKey;
+  const verify = descriptors.verify;
+  if (
+    resolvePublicKey?.enumerable !== true || !("value" in resolvePublicKey) ||
+    verify?.enumerable !== true || !("value" in verify) ||
+    typeof resolvePublicKey.value !== "function" ||
+    typeof verify.value !== "function" ||
+    nodeTypes.isProxy(resolvePublicKey.value) || nodeTypes.isProxy(verify.value)
+  ) return null;
+  return Object.freeze({
+    resolvePublicKey: resolvePublicKey.value as SettlementEventIdentityDeps["resolvePublicKey"],
+    verify: verify.value as Verifier,
+  });
+}
 
 function canonicalEvmHash(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -413,6 +593,43 @@ async function authenticateEvidence(
  */
 export async function resolveSettlementEventIdentity(
   evidenceValue: unknown,
+  context: Readonly<SettlementEventIdentityContext>,
+  deps: SettlementEventIdentityDeps,
+): Promise<SettlementEventIdentityResolution> {
+  try {
+    const evidence = snapshotExactJson(
+      evidenceValue,
+      "settlement evidence",
+    );
+    if (!isRecord(evidence) || !isSettlementEvidence(evidence)) {
+      return { decision: "error", reason: "settlement evidence is malformed" };
+    }
+    const capturedContext = snapshotExactJson(
+      context,
+      "settlement identity context",
+    );
+    if (!isSettlementIdentityContext(capturedContext)) {
+      return { decision: "error", reason: "settlement identity context is malformed" };
+    }
+    const capturedDeps = captureSettlementIdentityDeps(deps);
+    if (capturedDeps === null) {
+      return { decision: "error", reason: "settlement identity dependencies are malformed" };
+    }
+    return await resolveCapturedSettlementEventIdentity(
+      evidence,
+      capturedContext,
+      capturedDeps,
+    );
+  } catch {
+    return {
+      decision: "error",
+      reason: "settlement identity inputs could not be safely captured",
+    };
+  }
+}
+
+async function resolveCapturedSettlementEventIdentity(
+  evidenceValue: Record<string, unknown>,
   context: Readonly<SettlementEventIdentityContext>,
   deps: SettlementEventIdentityDeps,
 ): Promise<SettlementEventIdentityResolution> {

@@ -2842,6 +2842,8 @@ export async function verifySellerPaymentIntake(
     phase: "pay-x402",
     outcome: "success",
     paymentTxRefs: [{
+      // The event coordinate comes only from the finalized, shape-validated
+      // ledger observation above; receipt/request fields cannot supply it.
       kind: "x402-event",
       httpResource: request.receipt.httpResource,
       paymentReceiptHash: request.receipt.paymentReceiptHash,
