@@ -630,7 +630,6 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
-      listingValidationDeps: listingValidationDeps(),
     });
     let finalityCalls = 0;
     let settleCalls = 0;
@@ -639,6 +638,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       agent.runSession(ref, {
         terms: TERMS,
         jobId: "public-vet-finality",
+        listingValidationDeps: listingValidationDeps(),
         vet: async ({ jobId, evaluatedParty }): Promise<VetProduction> => {
           const record: CompositeVerificationRecord = {
             recordVersion: "1",
