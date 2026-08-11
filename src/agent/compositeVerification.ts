@@ -394,7 +394,10 @@ export function isCompositeBundleRequirement(
     (value.oneOf === undefined ||
       isExactWireArray(
         value.oneOf,
-        (group) => isExactWireArray(group, isClaimRequirement),
+        (group) =>
+          Array.isArray(group) &&
+          group.length > 0 &&
+          isExactWireArray(group, isClaimRequirement),
       )) &&
     (value.preferredPresentation === undefined ||
       (typeof value.preferredPresentation === "string" &&

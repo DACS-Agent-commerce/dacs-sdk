@@ -3038,12 +3038,12 @@ async function authenticateCarriedResult<TKey>(
     );
   }
   const claim = matches[0]!;
+  if (claim.expiresAt !== undefined && claim.expiresAt < now) {
+    throw new DacsError(
+      `party Vet claim ${claimSubject} has an expired presenter clamp`,
+    );
+  }
   if (!claim.verifiedBy) {
-    if (claim.issuedAt !== undefined) {
-      throw new DacsError(
-        `party Vet claim ${claimSubject} has unauthenticated issuedAt`,
-      );
-    }
     return "dealSpecific";
   }
   let raw: Record<string, unknown> | null;
@@ -3087,19 +3087,7 @@ async function authenticateCarriedResult<TKey>(
     deps,
   );
   assertPartyResultTime(result, now, `party Vet carried VerifyResult ${claimSubject}`);
-  if (
-    (claim.issuedAt !== undefined &&
-      (claim.issuedAt > now || claim.issuedAt > result.verifiedAt)) ||
-    (claim.expiresAt !== undefined &&
-      ((claim.issuedAt !== undefined && claim.expiresAt < claim.issuedAt) ||
-        (result.validUntil !== undefined &&
-          claim.expiresAt > result.validUntil)))
-  ) {
-    throw new DacsError(
-      `party Vet claim ${claimSubject} has future or inconsistent issuedAt/expiresAt`,
-    );
-  }
-  return "freshness";
+  return result.decision === "pass" ? "freshness" : "dealSpecific";
 }
 
 function finalizedAttemptFor(

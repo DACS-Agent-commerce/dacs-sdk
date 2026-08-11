@@ -4,6 +4,7 @@ import {
   ed25519Sign,
   ed25519Verify,
   identityBundleHash,
+  isCompositeBundleRequirement,
   privateKeyFromSeed,
   publicKeyFromRaw,
   publicKeyFromSeed,
@@ -19,6 +20,7 @@ import {
   createPartyVetPlan,
   isPartyVetPlan,
   partyVetCompositeAddress,
+  partyVetPinScopeHash,
   type PartyVetAttemptInput,
   type PartyVetAttemptOutcome,
   type PartyVetPlan,
@@ -113,14 +115,38 @@ async function pinnedAttempts(
   evaluatedParty: string,
   requirement: CompositeBundleRequirement,
   specs: readonly AttemptSpec[],
+  identityBundle: IdentityBundle = bundle(
+    evaluatedParty,
+    [...new Set(specs.map((spec) => spec.claimSubject))],
+  ),
 ): Promise<PartyVetAttemptInput[]> {
   const schemes = [...new Set(
     specs.map((spec) => requirementAtPath(requirement, spec.requirementPath).scheme),
   )];
   const recipes = await Promise.all(schemes.map((scheme) => signedRecipe(scheme)));
+  const pinScopeHash = partyVetPinScopeHash({
+    jobId,
+    evaluatedParty,
+    identityBundle,
+    requirement,
+    verifier: { algorithm: "ed25519", signer: VERIFIER },
+    attempts: specs.map((spec) => ({
+      requirementPath: spec.requirementPath,
+      claimSubject: spec.claimSubject,
+      classification: spec.classification ?? "dealSpecific",
+      methodInput: {
+        kind: "self-signed" as const,
+        assertion: spec.claimSubject,
+        signature: "a".repeat(128),
+      },
+    })),
+  });
   const pins = await createPartyVetPins({
     jobId,
     evaluatedParty,
+    sessionStartHash: pinScopeHash,
+    partyPlanHash: pinScopeHash,
+    bundleRequirement: requirement,
     recipes,
     attempts: specs.map((spec) => ({
       requirementPath: spec.requirementPath,
@@ -208,11 +234,28 @@ async function requiredPlan(): Promise<PartyVetPlan> {
 }
 
 describe("party-scoped multi-claim Vet planning", () => {
+  test("rejects empty oneOf groups at the normative requirement boundary", () => {
+    expect(isCompositeBundleRequirement({
+      requirementVersion: "1",
+      required: [],
+      oneOf: [[]],
+    })).toBe(false);
+  });
+
   test("freezes one exact party plan and executes all required claims in order", async () => {
     const plan = await requiredPlan();
     expect(isPartyVetPlan(plan)).toBe(true);
     expect(plan.bundleHash).toBe(identityBundleHash(plan.identityBundle));
     expect(plan.attempts).toHaveLength(2);
+    expect(plan.sessionRecipeRegistrySnapshotHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(plan.attempts.every(
+      (entry) => entry.recipePin.partyPlanHash === plan.pinScopeHash,
+    )).toBe(true);
+    expect(plan.attempts.every(
+      (entry) =>
+        entry.recipePin.sessionSnapshotHash ===
+        plan.sessionRecipeRegistrySnapshotHash,
+    )).toBe(true);
     expect(new Set(plan.attempts.map((entry) => entry.resultAddress)).size).toBe(2);
     expect(Object.isFrozen(plan)).toBe(true);
     expect(Object.isFrozen(plan.identityBundle.claims)).toBe(true);
@@ -493,6 +536,7 @@ describe("party-scoped multi-claim Vet planning", () => {
       alpha,
       betaRequirement,
       [{ requirementPath: { kind: "required", index: 0 }, claimSubject: beta }],
+      bundle(alpha, [alpha, beta]),
     );
     expect(() => createPartyVetPlan({
       ...base,
@@ -504,6 +548,112 @@ describe("party-scoped multi-claim Vet planning", () => {
         ),
       ],
     })).toThrow(/does not bind this party and requirement path/);
+  });
+
+  test("rejects pins bound to different exact party-plan bytes", async () => {
+    const jobId = "job-144-pin-scope-substitution";
+    const alpha = claim("alpha", "alice");
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+      ],
+    };
+    const pinnedIdentity = bundle(alpha, [alpha]);
+    const attempts = await pinnedAttempts(
+      jobId,
+      alpha,
+      requirement,
+      [{ requirementPath: { kind: "required", index: 0 }, claimSubject: alpha }],
+      pinnedIdentity,
+    );
+    const substitutedIdentity = {
+      ...pinnedIdentity,
+      sessionNonce: "different-exact-bundle",
+    };
+
+    expect(() => createPartyVetPlan({
+      jobId,
+      evaluatedParty: alpha,
+      identityBundle: substitutedIdentity,
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts,
+    })).toThrow(/durable recipe pin does not bind this party and requirement path/);
+  });
+
+  test("rejects attempt pins taken from different job-wide registry snapshots", async () => {
+    const jobId = "job-144-mixed-registry-snapshots";
+    const alpha = claim("alpha", "alice");
+    const beta = claim("beta", "alice");
+    const identityBundle = bundle(alpha, [alpha, beta]);
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+        { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
+      ],
+    };
+    const specs: readonly AttemptSpec[] = [
+      { requirementPath: { kind: "required", index: 0 }, claimSubject: alpha },
+      { requirementPath: { kind: "required", index: 1 }, claimSubject: beta },
+    ];
+    const recipes = await Promise.all([
+      signedRecipe("alpha"),
+      signedRecipe("beta"),
+    ]);
+    const partyPlanHash = partyVetPinScopeHash({
+      jobId,
+      evaluatedParty: alpha,
+      identityBundle,
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: specs.map((spec) => ({
+        requirementPath: spec.requirementPath,
+        claimSubject: spec.claimSubject,
+        classification: "dealSpecific" as const,
+        methodInput: {
+          kind: "self-signed" as const,
+          assertion: spec.claimSubject,
+          signature: "a".repeat(128),
+        },
+      })),
+    });
+    const pinInput = {
+      jobId,
+      evaluatedParty: alpha,
+      partyPlanHash,
+      bundleRequirement: requirement,
+      recipes,
+      attempts: specs.map((spec) => ({
+        requirementPath: spec.requirementPath,
+        requirement: requirementAtPath(requirement, spec.requirementPath),
+      })),
+      stewardSigner: STEWARD,
+      stewardPublicKey: STEWARD_KEY,
+      verify: (bytes: Uint8Array, signature: Uint8Array, publicKey: Uint8Array) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+      now: NOW,
+    };
+    const [leftPins, rightPins] = await Promise.all([
+      createPartyVetPins({ ...pinInput, sessionStartHash: "a".repeat(64) }),
+      createPartyVetPins({ ...pinInput, sessionStartHash: "b".repeat(64) }),
+    ]);
+    expect(leftPins[0]!.sessionSnapshotHash).not.toBe(
+      rightPins[1]!.sessionSnapshotHash,
+    );
+
+    expect(() => createPartyVetPlan({
+      jobId,
+      evaluatedParty: alpha,
+      identityBundle,
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: [
+        attempt(specs[0]!.requirementPath, alpha, leftPins[0]!),
+        attempt(specs[1]!.requirementPath, beta, rightPins[1]!),
+      ],
+    })).toThrow(/do not share one job-wide registry snapshot/);
   });
 
   test("rejects ambiguous same-scheme claim provenance", async () => {
@@ -542,10 +692,16 @@ describe("party-scoped multi-claim Vet planning", () => {
       configurable: true,
       writable: true,
     });
-    const attempts = await pinnedAttempts(jobId, alpha, requirement, [{
-      requirementPath: { kind: "required", index: 0 },
-      claimSubject: alpha,
-    }]);
+    const attempts = await pinnedAttempts(
+      jobId,
+      alpha,
+      requirement,
+      [{
+        requirementPath: { kind: "required", index: 0 },
+        claimSubject: alpha,
+      }],
+      identity,
+    );
     const plan = createPartyVetPlan({
       jobId,
       evaluatedParty: alpha,
