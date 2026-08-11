@@ -33,6 +33,19 @@ export {
   type UnsignedAgreementArtifact,
   type AgreementSigner,
 } from "./negotiate/fixedPrice.js";
+export {
+  createFixedPriceAgreementSigningPlan,
+  fixedPriceAgreementSignedBytes,
+  createFixedPriceAgreementSignatureContribution,
+  finalizeFixedPriceAgreementContributions,
+  type FixedPriceAgreementSigningRole,
+  type FixedPriceAgreementRequiredSigner,
+  type FixedPriceAgreementSigningPlan,
+  type FixedPriceAgreementSignatureContribution,
+  type FixedPriceAgreementContributionVerificationDisposition,
+  type FixedPriceAgreementContributionVerificationInput,
+  type FixedPriceAgreementContributionVerifier,
+} from "./negotiate/fixedPriceExchange.js";
 
 export {
   DacsError,
