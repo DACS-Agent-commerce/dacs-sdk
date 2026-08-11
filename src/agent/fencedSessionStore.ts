@@ -1,4 +1,5 @@
 import { DacsError } from "../errors.js";
+import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
 
 /**
  * Explicit generation-fenced session state schema. Version 2 adds fencing generations, immutable
@@ -116,17 +117,6 @@ function explicitUndefinedKey(
   return keys.find((key) => hasOwn(value, key) && value[key] === undefined);
 }
 
-function isCanonicalSettlementId(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  if (/^demos:[0-9a-f]{64}$/.test(value)) return true;
-  const match = /^evm:([1-9][0-9]*):([0-9a-f]{64}):(0|[1-9][0-9]*)$/.exec(value);
-  if (!match) return false;
-  const chainId = Number(match[1]);
-  const logIndex = Number(match[3]);
-  return Number.isSafeInteger(chainId) && chainId > 0 &&
-    Number.isSafeInteger(logIndex) && logIndex >= 0;
-}
-
 function unexpectedKey(
   value: Record<string, unknown>,
   allowed: readonly string[],
@@ -216,8 +206,8 @@ function paymentBindingShapeViolation(value: unknown): string | null {
       return `paymentAuthorization.${field} must be an exact lower-case sha256 hash`;
     }
   }
-  if (!isCanonicalSettlementId(value.settlementId)) {
-    return "paymentAuthorization.settlementId must be a canonical lower-case settlement identity";
+  if (!isCanonicalSettlementIdentity(value.settlementId)) {
+    return "paymentAuthorization.settlementId must be a canonical SB-1 settlement identity";
   }
   if (!isNonNegativeInteger(value.paymentPhaseIndex)) {
     return "paymentAuthorization.paymentPhaseIndex must be a non-negative safe integer";

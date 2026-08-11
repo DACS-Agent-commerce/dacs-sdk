@@ -65,6 +65,24 @@ describe("generation-fenced FencedSessionStoreV2 v2", () => {
     expect(fresh().apiVersion).toBe(FENCED_SESSION_STORE_VERSION);
   });
 
+  test("accepts exact Solana SB-1 instruction identities and rejects aliases", () => {
+    const canonical = {
+      ...paymentBinding(),
+      settlementId: `solana:devnet:${"1".repeat(64)}:7`,
+    };
+    expect(() => assertSessionPaymentAuthorizationShape(canonical)).not.toThrow();
+    for (const settlementId of [
+      `solana:localnet:${"1".repeat(64)}:7`,
+      `solana:devnet:${"1".repeat(63)}:7`,
+      `solana:devnet:${"1".repeat(64)}:07`,
+    ]) {
+      expect(() => assertSessionPaymentAuthorizationShape({
+        ...canonical,
+        settlementId,
+      })).toThrow(/canonical SB-1 settlement identity/);
+    }
+  });
+
   test("create + load; load distinguishes missing", async () => {
     const s = fresh();
     const rec = await s.create({ jobId: "j1", agreementHash: "0xagr", now: 100 });
