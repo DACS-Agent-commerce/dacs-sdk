@@ -1,15 +1,23 @@
+import { types as nodeTypes } from "node:util";
+
 import type {
+  ComponentSignature,
   IdentityBundle,
+  SupplementarySignal,
   VerificationDecision,
   VerificationMethodKind,
+  VerificationWarning,
   VerifyResult,
 } from "../artifacts/types.js";
 import {
   isIdentityBundle,
+  isSupplementarySignal,
+  isVerificationWarning,
   isVerifyResult,
 } from "../artifacts/validators.js";
 import {
   canonicalize,
+  contentHash,
   encodeAddressSegment,
   sha256Hex,
 } from "../canonical/index.js";
@@ -31,17 +39,41 @@ export type PartyVetRequirementPath =
   | { kind: "required"; index: number }
   | { kind: "oneOf"; groupIndex: number; alternativeIndex: number };
 
+export type PartyVetMethodInput =
+  | {
+      kind: "self-signed";
+      assertion: string;
+      signature: string;
+    }
+  | { kind: "consensus-backed-proxy" }
+  | {
+      kind: Exclude<
+        VerificationMethodKind,
+        "self-signed" | "consensus-backed-proxy"
+      >;
+      input: Record<string, unknown>;
+    };
+
+/**
+ * Explicit #143 integration seam. Until the authenticated latest-at-session
+ * selection brand lands, party Vet accepts only a version pinned by the exact
+ * ClaimRequirement and never trusts a caller-authored registry version string.
+ */
+export interface PartyVetExplicitRecipeProvenance {
+  selectionKind: "explicit-requirement-version";
+  requirementRecipeVersion: number;
+  latestSelection: null;
+}
+
 export interface PartyVetAttemptInput {
   requirementPath: PartyVetRequirementPath;
   /** Exact claim carried by the evaluated party's IdentityBundle. */
   claimSubject: string;
   classification: "freshness" | "dealSpecific";
   /** Exact method selected from the authenticated recipe family. */
-  method: VerificationMethodKind;
-  /** Steward-authenticated, session-pinned recipe. */
+  methodInput: PartyVetMethodInput;
+  /** Steward-authenticated exact-version recipe. */
   recipe: AuthenticatedRecipeDescriptor;
-  /** Method-owned JSON input whose exact bytes are part of the plan identity. */
-  methodInput?: Record<string, unknown>;
 }
 
 export interface PartyVetPlanInput {
@@ -50,10 +82,17 @@ export interface PartyVetPlanInput {
   /** Exact, already presentation-verified bundle evaluated by this plan. */
   identityBundle: IdentityBundle;
   requirement: CompositeBundleRequirement;
-  verifier: string;
-  /** Authenticated registry snapshot version selected at session start. */
-  registryVersion: string;
+  verifier: Pick<ComponentSignature, "algorithm" | "signer">;
   attempts: PartyVetAttemptInput[];
+  supplementary?: SupplementarySignal[];
+  warnings?: VerificationWarning[];
+}
+
+export interface PartyVetPlannedRequirement {
+  requirementPath: PartyVetRequirementPath;
+  requirement: CompositeClaimRequirement;
+  disposition: "attempt" | "presence-pass" | "absent";
+  attemptId?: string;
 }
 
 export interface PartyVetRequirementAttempt {
@@ -66,8 +105,17 @@ export interface PartyVetRequirementAttempt {
   claimSubject: string;
   classification: "freshness" | "dealSpecific";
   method: VerificationMethod;
+  methodInput: PartyVetMethodInput;
+  methodInputHash: string;
   recipe: AuthenticatedRecipeDescriptor;
-  methodInput?: Record<string, unknown>;
+  recipeFamily: {
+    scheme: string;
+    defaultMethod: VerificationMethodKind;
+  };
+  recipeVersion: number;
+  recipeContentHash: string;
+  recipeArtifactHash: string;
+  registryProvenance: PartyVetExplicitRecipeProvenance;
 }
 
 export interface PartyVetPlan {
@@ -79,12 +127,12 @@ export interface PartyVetPlan {
   bundleHash: string;
   requirement: CompositeBundleRequirement;
   requirementHash: string;
-  verifier: string;
-  registryVersion: string;
+  verifier: Pick<ComponentSignature, "algorithm" | "signer">;
   recordAddress: string;
+  requirementPaths: PartyVetPlannedRequirement[];
   attempts: PartyVetRequirementAttempt[];
-  /** oneOf groups already satisfied by a carried, non-verification claim. */
-  presenceSatisfiedOneOfGroups: number[];
+  supplementary: SupplementarySignal[];
+  warnings?: VerificationWarning[];
 }
 
 export interface PartyVetAttemptOutcome {
@@ -123,7 +171,7 @@ function exactDataKeys(
   required: readonly string[],
   optional: readonly string[] = [],
 ): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || nodeTypes.isProxy(value)) return false;
   try {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) return false;
@@ -166,6 +214,7 @@ function snapshotData(
     return value;
   }
   if (seen.has(value)) throw new DacsError(`${label} must be acyclic`);
+  if (nodeTypes.isProxy(value)) throw new DacsError(`${label} cannot contain proxies`);
   seen.add(value);
   let descriptors: PropertyDescriptorMap;
   let prototype: object | null;
@@ -374,56 +423,111 @@ function expectedAttemptPaths(
   claims: ReadonlyMap<string, readonly string[]>,
 ): {
   paths: PartyVetRequirementPath[];
-  presenceSatisfiedOneOfGroups: number[];
+  requirementPaths: Array<{
+    requirementPath: PartyVetRequirementPath;
+    requirement: CompositeClaimRequirement;
+    disposition: "attempt" | "presence-pass" | "absent";
+  }>;
 } {
   const paths: PartyVetRequirementPath[] = [];
+  const requirementPaths: Array<{
+    requirementPath: PartyVetRequirementPath;
+    requirement: CompositeClaimRequirement;
+    disposition: "attempt" | "presence-pass" | "absent";
+  }> = [];
   for (let index = 0; index < requirement.required.length; index += 1) {
     const claim = requirement.required[index]!;
-    if ((claims.get(claim.scheme)?.length ?? 0) === 0) {
-      throw new DacsError(`IdentityBundle is missing required scheme ${claim.scheme}`);
-    }
+    const carried = (claims.get(claim.scheme)?.length ?? 0) > 0;
+    const requirementPath = { kind: "required" as const, index };
     if (!claim.verificationRequired) {
       if (claim.parameters !== undefined) {
         throw new DacsError(
           "presence-only parameter matching requires a scheme authenticator before party Vet planning",
         );
       }
+      requirementPaths.push({
+        requirementPath,
+        requirement: claim,
+        disposition: carried ? "presence-pass" : "absent",
+      });
       continue;
     }
-    paths.push({ kind: "required", index });
+    requirementPaths.push({
+      requirementPath,
+      requirement: claim,
+      disposition: carried ? "attempt" : "absent",
+    });
+    if (carried) paths.push(requirementPath);
   }
 
-  const presenceSatisfiedOneOfGroups: number[] = [];
   for (let groupIndex = 0; groupIndex < (requirement.oneOf?.length ?? 0); groupIndex += 1) {
     const group = requirement.oneOf![groupIndex]!;
-    const presenceSatisfied = group.some((claim) => {
-      if (claim.verificationRequired || claim.parameters !== undefined) return false;
-      return (claims.get(claim.scheme)?.length ?? 0) > 0;
-    });
-    if (presenceSatisfied) {
-      presenceSatisfiedOneOfGroups.push(groupIndex);
-      continue;
-    }
-    let candidates = 0;
     for (let alternativeIndex = 0; alternativeIndex < group.length; alternativeIndex += 1) {
       const claim = group[alternativeIndex]!;
+      const carried = (claims.get(claim.scheme)?.length ?? 0) > 0;
+      const requirementPath = {
+        kind: "oneOf" as const,
+        groupIndex,
+        alternativeIndex,
+      };
       if (!claim.verificationRequired) {
         if (claim.parameters !== undefined) {
           throw new DacsError(
             "presence-only parameter matching requires a scheme authenticator before party Vet planning",
           );
         }
+        requirementPaths.push({
+          requirementPath,
+          requirement: claim,
+          disposition: carried ? "presence-pass" : "absent",
+        });
         continue;
       }
-      if ((claims.get(claim.scheme)?.length ?? 0) === 0) continue;
-      candidates += 1;
-      paths.push({ kind: "oneOf", groupIndex, alternativeIndex });
-    }
-    if (candidates === 0) {
-      throw new DacsError(`IdentityBundle cannot satisfy oneOf group ${groupIndex}`);
+      requirementPaths.push({
+        requirementPath,
+        requirement: claim,
+        disposition: carried ? "attempt" : "absent",
+      });
+      if (carried) paths.push(requirementPath);
     }
   }
-  return { paths, presenceSatisfiedOneOfGroups };
+  return { paths, requirementPaths };
+}
+
+function captureMethodInput(
+  value: unknown,
+  index: number,
+): PartyVetMethodInput {
+  if (!isRecord(value)) {
+    throw new DacsError(`party Vet attempt ${index} methodInput must be exact`);
+  }
+  const captured = snapshot(value, `party Vet attempt ${index} methodInput`);
+  if (!isRecord(captured) || typeof captured.kind !== "string") {
+    throw new DacsError(`party Vet attempt ${index} methodInput is malformed`);
+  }
+  if (captured.kind === "self-signed") {
+    if (
+      !exactDataKeys(captured, ["kind", "assertion", "signature"]) ||
+      typeof captured.assertion !== "string" ||
+      typeof captured.signature !== "string"
+    ) {
+      throw new DacsError(`party Vet attempt ${index} self-signed input is malformed`);
+    }
+    return captured as unknown as PartyVetMethodInput;
+  }
+  if (captured.kind === "consensus-backed-proxy") {
+    if (!exactDataKeys(captured, ["kind"])) {
+      throw new DacsError(`party Vet attempt ${index} proxy input is malformed`);
+    }
+    return captured as unknown as PartyVetMethodInput;
+  }
+  if (
+    !exactDataKeys(captured, ["kind", "input"]) ||
+    !isRecord(captured.input)
+  ) {
+    throw new DacsError(`party Vet attempt ${index} methodInput is malformed`);
+  }
+  return captured as unknown as PartyVetMethodInput;
 }
 
 function captureAttemptInput(
@@ -433,15 +537,19 @@ function captureAttemptInput(
   requirementPath: PartyVetRequirementPath;
   claimSubject: string;
   classification: "freshness" | "dealSpecific";
-  method: VerificationMethodKind;
+  methodInput: PartyVetMethodInput;
   recipe: AuthenticatedRecipeDescriptor;
-  methodInput?: Record<string, unknown>;
 } {
   if (
     !exactDataKeys(
       value,
-      ["requirementPath", "claimSubject", "classification", "method", "recipe"],
-      ["methodInput"],
+      [
+        "requirementPath",
+        "claimSubject",
+        "classification",
+        "methodInput",
+        "recipe",
+      ],
     )
   ) {
     throw new DacsError(`party Vet attempt ${index} must be an exact data record`);
@@ -453,26 +561,14 @@ function captureAttemptInput(
   if (value.classification !== "freshness" && value.classification !== "dealSpecific") {
     throw new DacsError(`party Vet attempt ${index} classification is invalid`);
   }
-  if (typeof value.method !== "string") {
-    throw new DacsError(`party Vet attempt ${index} method is invalid`);
-  }
   const claimSubject = nonEmptyNfc(value.claimSubject, `party Vet attempt ${index} claimSubject`);
   claimParts(claimSubject, `party Vet attempt ${index} claimSubject`);
-  let methodInput: Record<string, unknown> | undefined;
-  if (value.methodInput !== undefined) {
-    const captured = snapshot(value.methodInput, `party Vet attempt ${index} methodInput`);
-    if (!isRecord(captured)) {
-      throw new DacsError(`party Vet attempt ${index} methodInput must be a JSON record`);
-    }
-    methodInput = captured;
-  }
   return {
     requirementPath: capturePath(value.requirementPath),
     claimSubject,
     classification: value.classification,
-    method: value.method as VerificationMethodKind,
+    methodInput: captureMethodInput(value.methodInput, index),
     recipe,
-    ...(methodInput ? { methodInput } : {}),
   };
 }
 
@@ -491,9 +587,9 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
         "identityBundle",
         "requirement",
         "verifier",
-        "registryVersion",
         "attempts",
       ],
+      ["supplementary", "warnings"],
     )
   ) {
     throw new DacsError("party Vet plan input must be an exact data record");
@@ -504,12 +600,17 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     "party Vet evaluatedParty",
   );
   claimParts(evaluatedParty, "party Vet evaluatedParty");
-  const verifier = nonEmptyNfc(source.verifier, "party Vet verifier");
-  claimParts(verifier, "party Vet verifier");
-  const registryVersion = nonEmptyNfc(
-    source.registryVersion,
-    "party Vet registryVersion",
-  );
+  if (
+    !exactDataKeys(source.verifier, ["algorithm", "signer"]) ||
+    (source.verifier.algorithm !== "ed25519" &&
+      source.verifier.algorithm !== "ecdsa-secp256k1" &&
+      source.verifier.algorithm !== "sr1-aggregate")
+  ) {
+    throw new DacsError("party Vet verifier identity is malformed");
+  }
+  const verifier = snapshot(source.verifier, "party Vet verifier");
+  nonEmptyNfc(verifier.signer, "party Vet verifier signer");
+  claimParts(verifier.signer, "party Vet verifier signer");
 
   const identityBundle = snapshot(source.identityBundle, "party Vet IdentityBundle");
   if (!isIdentityBundle(identityBundle)) {
@@ -521,6 +622,25 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
   const requirement = snapshot(source.requirement, "party Vet BundleRequirement");
   if (!isCompositeBundleRequirement(requirement)) {
     throw new DacsError("party Vet requires an exact current BundleRequirement");
+  }
+  const supplementary = snapshot(
+    source.supplementary ?? [],
+    "party Vet supplementary signals",
+  );
+  if (
+    !Array.isArray(supplementary) ||
+    !supplementary.every(isSupplementarySignal)
+  ) {
+    throw new DacsError("party Vet supplementary signals are malformed");
+  }
+  const warnings = source.warnings === undefined
+    ? undefined
+    : snapshot(source.warnings, "party Vet warnings");
+  if (
+    warnings !== undefined &&
+    (!Array.isArray(warnings) || !warnings.every(isVerificationWarning))
+  ) {
+    throw new DacsError("party Vet warnings are malformed");
   }
   if (!Array.isArray(source.attempts)) {
     throw new DacsError("party Vet attempts must be an array");
@@ -584,22 +704,42 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       );
     }
     if (
-      claimRequirement.recipeVersion !== undefined &&
+      claimRequirement.recipeVersion === undefined
+    ) {
+      throw new DacsError(
+        `party Vet attempt ${index} requires #143 latest-at-session provenance for an unpinned recipe`,
+      );
+    }
+    if (
       claimRequirement.recipeVersion !== attempt.recipe.recipeVersion
     ) {
       throw new DacsError(
         `party Vet attempt ${index} violates the requirement recipe pin`,
       );
     }
-    if (
-      attempt.recipe.availability !== "live" ||
-      attempt.recipe.governance.deprecated === true
-    ) {
+    if (attempt.recipe.governance.deprecated === true) {
       throw new DacsError(
-        `party Vet attempt ${index} cannot start a non-live or deprecated recipe`,
+        `party Vet attempt ${index} cannot start a deprecated required recipe`,
       );
     }
-    const method = exactMethod(attempt.recipe, attempt.method);
+    if (attempt.recipe.availability === "disabled") {
+      throw new DacsError(
+        `party Vet attempt ${index} cannot start a disabled recipe`,
+      );
+    }
+    const requiredMethod = claimRequirement.parameters?.verificationMethod;
+    if (requiredMethod !== undefined && typeof requiredMethod !== "string") {
+      throw new DacsError(
+        `party Vet attempt ${index} verificationMethod must be a string`,
+      );
+    }
+    const selectedKind = requiredMethod ?? attempt.recipe.defaultMethod.kind;
+    if (attempt.methodInput.kind !== selectedKind) {
+      throw new DacsError(
+        `party Vet attempt ${index} method input violates the exact requirement method`,
+      );
+    }
+    const method = exactMethod(attempt.recipe, selectedKind as VerificationMethodKind);
     const address = resultAddress(
       jobId,
       attempt.claimSubject,
@@ -611,6 +751,16 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       );
     }
     resultAddresses.add(address);
+    const recipeContentHash = contentHash(
+      attempt.recipe as unknown as Record<string, unknown>,
+    );
+    const recipeArtifactHash = sha256Hex(canonicalize(attempt.recipe));
+    const methodInputHash = sha256Hex(canonicalize(attempt.methodInput));
+    const registryProvenance: PartyVetExplicitRecipeProvenance = deepFreeze({
+      selectionKind: "explicit-requirement-version",
+      requirementRecipeVersion: claimRequirement.recipeVersion,
+      latestSelection: null,
+    });
     const attemptIdentity = {
       attemptVersion: "1",
       index,
@@ -618,15 +768,23 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       evaluatedParty,
       bundleHash,
       requirementHash,
-      registryVersion,
       verifier,
       requirementPath: attempt.requirementPath,
       requirement: claimRequirement,
       claimSubject: attempt.claimSubject,
       classification: attempt.classification,
+      recipeFamily: {
+        scheme: attempt.recipe.scheme,
+        defaultMethod: attempt.recipe.defaultMethod.kind,
+      },
+      recipeVersion: attempt.recipe.recipeVersion,
+      recipeContentHash,
+      recipeArtifactHash,
+      registryProvenance,
       method,
+      methodInputHash,
       recipe: attempt.recipe,
-      ...(attempt.methodInput ? { methodInput: attempt.methodInput } : {}),
+      methodInput: attempt.methodInput,
       resultAddress: address,
     };
     const attemptId = sha256Hex(canonicalize(attemptIdentity));
@@ -640,10 +798,42 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       claimSubject: attempt.claimSubject,
       classification: attempt.classification,
       method,
+      methodInput: attempt.methodInput,
+      methodInputHash,
       recipe: attempt.recipe,
-      ...(attempt.methodInput ? { methodInput: attempt.methodInput } : {}),
+      recipeFamily: deepFreeze({
+        scheme: attempt.recipe.scheme,
+        defaultMethod: attempt.recipe.defaultMethod.kind,
+      }),
+      recipeVersion: attempt.recipe.recipeVersion,
+      recipeContentHash,
+      recipeArtifactHash,
+      registryProvenance,
     }));
   }
+
+  const attemptsByPath = new Map(
+    plannedAttempts.map((attempt) => [pathKey(attempt.requirementPath), attempt]),
+  );
+  const requirementPaths: PartyVetPlannedRequirement[] =
+    expected.requirementPaths.map((entry) => {
+      const planned = attemptsByPath.get(pathKey(entry.requirementPath));
+      if ((entry.disposition === "attempt") !== (planned !== undefined)) {
+        throw new DacsError("party Vet requirement-path provenance is incomplete");
+      }
+      return deepFreeze({
+        requirementPath: snapshot(
+          entry.requirementPath,
+          "party Vet requirement path",
+        ),
+        requirement: snapshot(
+          entry.requirement,
+          "party Vet path requirement",
+        ),
+        disposition: entry.disposition,
+        ...(planned ? { attemptId: planned.attemptId } : {}),
+      });
+    });
 
   const planPayload = deepFreeze({
     planVersion: "1" as const,
@@ -654,10 +844,11 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     requirement,
     requirementHash,
     verifier,
-    registryVersion,
     recordAddress,
+    requirementPaths,
     attempts: plannedAttempts,
-    presenceSatisfiedOneOfGroups: [...expected.presenceSatisfiedOneOfGroups],
+    supplementary,
+    ...(warnings !== undefined ? { warnings } : {}),
   });
   const plan = deepFreeze({
     ...planPayload,
@@ -693,7 +884,8 @@ function validateOutcome(
     result.identifier !== identifier ||
     result.recipeVersion !== attempt.recipe.recipeVersion ||
     result.method !== attempt.method.kind ||
-    result.signature.signer !== plan.verifier ||
+    result.signature.algorithm !== plan.verifier.algorithm ||
+    result.signature.signer !== plan.verifier.signer ||
     result.verifiedAt < result.fetchedAt ||
     (result.validUntil !== undefined && result.validUntil < result.verifiedAt)
   ) {
@@ -703,6 +895,18 @@ function validateOutcome(
     attemptId: attempt.attemptId,
     result,
   });
+}
+
+function effectiveAttemptDecision(
+  attempt: Readonly<PartyVetRequirementAttempt>,
+  outcome: Readonly<PartyVetAttemptOutcome> | undefined,
+): VerificationDecision | undefined {
+  if (!outcome) return undefined;
+  return attempt.recipe.availability === "mocked" ||
+    attempt.recipe.availability === "failed" ||
+    attempt.recipe.availability === "disabled"
+    ? "error"
+    : outcome.result.decision;
 }
 
 function nextAttempt(
@@ -718,20 +922,24 @@ function nextAttempt(
     if (attempt && !completed.has(attempt.attemptId)) return attempt;
   }
   for (let groupIndex = 0; groupIndex < (plan.requirement.oneOf?.length ?? 0); groupIndex += 1) {
-    if (plan.presenceSatisfiedOneOfGroups.includes(groupIndex)) continue;
-    const groupAttempts = plan.attempts.filter(
-      (candidate) =>
-        candidate.requirementPath.kind === "oneOf" &&
-        candidate.requirementPath.groupIndex === groupIndex,
+    const groupPaths = plan.requirementPaths.filter(
+      (entry) =>
+        entry.requirementPath.kind === "oneOf" &&
+        entry.requirementPath.groupIndex === groupIndex,
     );
-    const completedGroup = groupAttempts
-      .map((attempt) => completed.get(attempt.attemptId))
-      .filter((outcome): outcome is Readonly<PartyVetAttemptOutcome> => outcome !== undefined);
-    if (completedGroup.some((outcome) => outcome.result.decision === "pass")) {
-      continue;
+    for (const entry of groupPaths) {
+      if (entry.disposition === "presence-pass") break;
+      if (entry.disposition === "absent") continue;
+      const attempt = plan.attempts.find(
+        (candidate) => candidate.attemptId === entry.attemptId,
+      );
+      if (!attempt) {
+        throw new DacsError("party Vet plan lost requirement-path provenance");
+      }
+      const outcome = completed.get(attempt.attemptId);
+      if (!outcome) return attempt;
+      if (effectiveAttemptDecision(attempt, outcome) === "pass") break;
     }
-    const pending = groupAttempts.find((attempt) => !completed.has(attempt.attemptId));
-    if (pending) return pending;
   }
   return null;
 }
@@ -742,20 +950,40 @@ function skippedAttemptIds(
 ): string[] {
   const skipped: string[] = [];
   for (let groupIndex = 0; groupIndex < (plan.requirement.oneOf?.length ?? 0); groupIndex += 1) {
-    const groupAttempts = plan.attempts.filter(
-      (candidate) =>
-        candidate.requirementPath.kind === "oneOf" &&
-        candidate.requirementPath.groupIndex === groupIndex,
+    const groupPaths = plan.requirementPaths.filter(
+      (entry) =>
+        entry.requirementPath.kind === "oneOf" &&
+        entry.requirementPath.groupIndex === groupIndex,
     );
-    const firstPassingIndex = groupAttempts.findIndex((attempt) =>
-      completed.get(attempt.attemptId)?.result.decision === "pass");
-    if (firstPassingIndex >= 0) {
-      skipped.push(
-        ...groupAttempts
-          .slice(firstPassingIndex + 1)
-          .filter((attempt) => !completed.has(attempt.attemptId))
-          .map((attempt) => attempt.attemptId),
-      );
+    let satisfied = false;
+    for (const entry of groupPaths) {
+      if (satisfied && entry.attemptId !== undefined) {
+        const attempt = plan.attempts.find(
+          (candidate) => candidate.attemptId === entry.attemptId,
+        );
+        if (attempt && !completed.has(attempt.attemptId)) {
+          skipped.push(attempt.attemptId);
+        }
+        continue;
+      }
+      if (entry.disposition === "presence-pass") {
+        satisfied = true;
+        continue;
+      }
+      if (entry.attemptId !== undefined) {
+        const attempt = plan.attempts.find(
+          (candidate) => candidate.attemptId === entry.attemptId,
+        );
+        if (
+          attempt &&
+          effectiveAttemptDecision(
+            attempt,
+            completed.get(attempt.attemptId),
+          ) === "pass"
+        ) {
+          satisfied = true;
+        }
+      }
     }
   }
   return skipped;
@@ -769,28 +997,46 @@ function aggregateComplete(
   const errors: string[] = [];
   const indeterminates: string[] = [];
 
-  for (const attempt of plan.attempts) {
-    if (attempt.requirementPath.kind !== "required") continue;
-    const decision = completed.get(attempt.attemptId)?.result.decision;
+  for (const entry of plan.requirementPaths) {
+    if (entry.requirementPath.kind !== "required") continue;
+    const attempt = entry.attemptId === undefined
+      ? undefined
+      : plan.attempts.find((candidate) => candidate.attemptId === entry.attemptId);
+    const decision = entry.disposition === "presence-pass"
+      ? "pass"
+      : attempt
+        ? effectiveAttemptDecision(attempt, completed.get(attempt.attemptId))
+        : "fail";
     if (decision === "pass") continue;
     if (decision === "fail" || decision === undefined) {
-      failures.push(pathKey(attempt.requirementPath));
+      failures.push(pathKey(entry.requirementPath));
     } else if (decision === "error") {
-      errors.push(pathKey(attempt.requirementPath));
+      errors.push(pathKey(entry.requirementPath));
     } else {
-      indeterminates.push(pathKey(attempt.requirementPath));
+      indeterminates.push(pathKey(entry.requirementPath));
     }
   }
 
   for (let groupIndex = 0; groupIndex < (plan.requirement.oneOf?.length ?? 0); groupIndex += 1) {
-    if (plan.presenceSatisfiedOneOfGroups.includes(groupIndex)) continue;
-    const decisions = plan.attempts
+    const decisions = plan.requirementPaths
       .filter(
-        (attempt) =>
-          attempt.requirementPath.kind === "oneOf" &&
-          attempt.requirementPath.groupIndex === groupIndex,
+        (entry) =>
+          entry.requirementPath.kind === "oneOf" &&
+          entry.requirementPath.groupIndex === groupIndex,
       )
-      .map((attempt) => completed.get(attempt.attemptId)?.result.decision)
+      .map((entry): VerificationDecision => {
+        if (entry.disposition === "presence-pass") return "pass";
+        if (entry.attemptId === undefined) return "fail";
+        const attempt = plan.attempts.find(
+          (candidate) => candidate.attemptId === entry.attemptId,
+        );
+        return attempt
+          ? effectiveAttemptDecision(
+              attempt,
+              completed.get(attempt.attemptId),
+            ) ?? "fail"
+          : "fail";
+      })
       .filter((decision): decision is VerificationDecision => decision !== undefined);
     if (decisions.includes("pass")) continue;
     if (decisions.includes("error")) {

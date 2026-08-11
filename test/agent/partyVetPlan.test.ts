@@ -116,9 +116,12 @@ function attempt(
     requirementPath,
     claimSubject,
     classification,
-    method: "self-signed",
     recipe,
-    methodInput: { assertionDomain: `test:${claimSubject}` },
+    methodInput: {
+      kind: "self-signed",
+      assertion: claimSubject,
+      signature: "a".repeat(128),
+    },
   };
 }
 
@@ -168,7 +171,7 @@ async function requiredPlan(): Promise<PartyVetPlan> {
   const requirement: CompositeBundleRequirement = {
     requirementVersion: "1",
     required: [
-      { scheme: "alpha", verificationRequired: true },
+      { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
       { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
     ],
   };
@@ -177,8 +180,7 @@ async function requiredPlan(): Promise<PartyVetPlan> {
     evaluatedParty: alpha,
     identityBundle: bundle(alpha, [alpha, beta]),
     requirement,
-    verifier: VERIFIER,
-    registryVersion: "snapshot-7",
+    verifier: { algorithm: "ed25519", signer: VERIFIER },
     attempts: [
       attempt({ kind: "required", index: 0 }, alpha, recipes.get("alpha")!, "freshness"),
       attempt({ kind: "required", index: 1 }, beta, recipes.get("beta")!),
@@ -229,12 +231,11 @@ describe("party-scoped multi-claim Vet planning", () => {
         requirementVersion: "1",
         required: [],
         oneOf: [[
-          { scheme: "alpha", verificationRequired: true },
-          { scheme: "beta", verificationRequired: true },
+          { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+          { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
         ]],
       },
-      verifier: VERIFIER,
-      registryVersion: "snapshot-7",
+      verifier: { algorithm: "ed25519" as const, signer: VERIFIER },
       attempts: [
         attempt(
           { kind: "oneOf", groupIndex: 0, alternativeIndex: 0 },
@@ -288,20 +289,19 @@ describe("party-scoped multi-claim Vet planning", () => {
       identityBundle: bundle(refs[0]!, refs),
       requirement: {
         requirementVersion: "1",
-        required: [{ scheme: "alpha", verificationRequired: true }],
+        required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
         oneOf: [
           [
-            { scheme: "beta", verificationRequired: true },
-            { scheme: "gamma", verificationRequired: true },
+            { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
+            { scheme: "gamma", verificationRequired: true, recipeVersion: 1 },
           ],
           [
-            { scheme: "delta", verificationRequired: true },
-            { scheme: "epsilon", verificationRequired: true },
+            { scheme: "delta", verificationRequired: true, recipeVersion: 1 },
+            { scheme: "epsilon", verificationRequired: true, recipeVersion: 1 },
           ],
         ],
       },
-      verifier: VERIFIER,
-      registryVersion: "snapshot-7",
+      verifier: { algorithm: "ed25519" as const, signer: VERIFIER },
       attempts: [
         attempt({ kind: "required", index: 0 }, refs[0]!, recipes.get("alpha")!),
         attempt(
@@ -353,11 +353,10 @@ describe("party-scoped multi-claim Vet planning", () => {
       identityBundle: bundle(alpha, [alpha]),
       requirement: {
         requirementVersion: "1",
-        required: [{ scheme: "alpha", verificationRequired: true }],
-        oneOf: [[{ scheme: "alpha", verificationRequired: true }]],
+        required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
+        oneOf: [[{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }]],
       },
-      verifier: VERIFIER,
-      registryVersion: "snapshot-7",
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
       attempts: [
         attempt({ kind: "required", index: 0 }, alpha, recipes.get("alpha")!),
         attempt(
@@ -379,7 +378,7 @@ describe("party-scoped multi-claim Vet planning", () => {
     const recipes = await authenticatedRecipes(["alpha"]);
     const requirement: CompositeBundleRequirement = {
       requirementVersion: "1",
-      required: [{ scheme: "alpha", verificationRequired: true }],
+      required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
     };
     const alice = claim("alpha", "alice");
     const bob = claim("alpha", "bob");
@@ -389,8 +388,7 @@ describe("party-scoped multi-claim Vet planning", () => {
       evaluatedParty: alice,
       identityBundle: aliceBundle,
       requirement,
-      verifier: VERIFIER,
-      registryVersion: "snapshot-7",
+      verifier: { algorithm: "ed25519" as const, signer: VERIFIER },
       attempts: [
         attempt({ kind: "required", index: 0 }, alice, recipes.get("alpha")!),
       ],
@@ -414,11 +412,16 @@ describe("party-scoped multi-claim Vet planning", () => {
 
     aliceBundle.claims[0]!.ref = claim("alpha", "mallory");
     requirement.required[0]!.scheme = "mallory";
-    aliceInput.attempts[0]!.methodInput!.assertionDomain = "mutated";
+    if (aliceInput.attempts[0]!.methodInput.kind !== "self-signed") {
+      throw new Error("expected self-signed method input");
+    }
+    aliceInput.attempts[0]!.methodInput.assertion = "mutated";
     expect(alicePlan.identityBundle.claims[0]!.ref).toBe(alice);
     expect(alicePlan.requirement.required[0]!.scheme).toBe("alpha");
     expect(alicePlan.attempts[0]!.methodInput).toEqual({
-      assertionDomain: `test:${alice}`,
+      kind: "self-signed",
+      assertion: alice,
+      signature: "a".repeat(128),
     });
   });
 
@@ -432,16 +435,14 @@ describe("party-scoped multi-claim Vet planning", () => {
       identityBundle: bundle(alpha, [alpha, beta]),
       requirement: {
         requirementVersion: "1" as const,
-        required: [{ scheme: "alpha", verificationRequired: true }],
+        required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
       },
-      verifier: VERIFIER,
-      registryVersion: "snapshot-7",
+      verifier: { algorithm: "ed25519" as const, signer: VERIFIER },
     };
     const hostile: Record<string, unknown> = {
       requirementPath: { kind: "required", index: 0 },
       claimSubject: alpha,
       classification: "dealSpecific",
-      method: "self-signed",
       recipe: recipes.get("alpha")!,
     };
     Object.defineProperty(hostile, "methodInput", {
