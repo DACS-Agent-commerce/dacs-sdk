@@ -24,9 +24,9 @@ import {
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/index.js";
 import {
-  isAuthenticatedRecipeDescriptor,
-  type AuthenticatedRecipeDescriptor,
-} from "../registry/resolve.js";
+  isDurableSessionRecipePin,
+  type DurableSessionRecipePin,
+} from "./durableRecipePin.js";
 import type { VerificationMethod } from "../registry/types.js";
 import {
   isCompositeBundleRequirement,
@@ -54,16 +54,13 @@ export type PartyVetMethodInput =
       input: Record<string, unknown>;
     };
 
-/**
- * Explicit #143 integration seam. Until the authenticated latest-at-session
- * selection brand lands, party Vet accepts only a version pinned by the exact
- * ClaimRequirement and never trusts a caller-authored registry version string.
- */
-export interface PartyVetExplicitRecipeProvenance {
-  selectionKind: "explicit-requirement-version";
-  requirementRecipeVersion: number;
-  latestSelection: null;
-}
+type PartyVetSignedRecipe = DurableSessionRecipePin["provenance"]["recipe"];
+
+/** Exact serializable evidence copied from #143's runtime-authenticated pin. */
+export type PartyVetRecipePinBinding = Pick<
+  DurableSessionRecipePin,
+  Extract<keyof DurableSessionRecipePin, string>
+>;
 
 export interface PartyVetAttemptInput {
   requirementPath: PartyVetRequirementPath;
@@ -72,8 +69,8 @@ export interface PartyVetAttemptInput {
   classification: "freshness" | "dealSpecific";
   /** Exact method selected from the authenticated recipe family. */
   methodInput: PartyVetMethodInput;
-  /** Steward-authenticated exact-version recipe. */
-  recipe: AuthenticatedRecipeDescriptor;
+  /** Generation-fenced #143 pin established before any Vet effect. */
+  recipePin: DurableSessionRecipePin;
 }
 
 export interface PartyVetPlanInput {
@@ -107,7 +104,8 @@ export interface PartyVetRequirementAttempt {
   method: VerificationMethod;
   methodInput: PartyVetMethodInput;
   methodInputHash: string;
-  recipe: AuthenticatedRecipeDescriptor;
+  recipe: PartyVetSignedRecipe;
+  recipePin: PartyVetRecipePinBinding;
   recipeFamily: {
     scheme: string;
     defaultMethod: VerificationMethodKind;
@@ -115,7 +113,7 @@ export interface PartyVetRequirementAttempt {
   recipeVersion: number;
   recipeContentHash: string;
   recipeArtifactHash: string;
-  registryProvenance: PartyVetExplicitRecipeProvenance;
+  registryProvenance: DurableSessionRecipePin["provenance"];
 }
 
 export interface PartyVetPlan {
@@ -287,6 +285,14 @@ function snapshot<T>(value: T, label: string): T {
   return deepFreeze(snapshotData(value, label) as T);
 }
 
+function canonicalEqual(left: unknown, right: unknown): boolean {
+  try {
+    return canonicalize(left) === canonicalize(right);
+  } catch {
+    return false;
+  }
+}
+
 function claimParts(claim: string, label: string): {
   scheme: string;
   identifier: string;
@@ -369,7 +375,7 @@ function capturePath(value: unknown): PartyVetRequirementPath {
 }
 
 function exactMethod(
-  recipe: Readonly<AuthenticatedRecipeDescriptor>,
+  recipe: Readonly<PartyVetSignedRecipe>,
   kind: VerificationMethodKind,
 ): VerificationMethod {
   const matches = [recipe.defaultMethod, ...(recipe.alternatives ?? [])]
@@ -379,7 +385,10 @@ function exactMethod(
       `authenticated recipe does not unambiguously authorize method ${kind}`,
     );
   }
-  return snapshot(matches[0]!, "party Vet verification method");
+  return snapshot(
+    matches[0]!,
+    "party Vet verification method",
+  ) as unknown as VerificationMethod;
 }
 
 function resultAddress(
@@ -538,7 +547,7 @@ function captureAttemptInput(
   claimSubject: string;
   classification: "freshness" | "dealSpecific";
   methodInput: PartyVetMethodInput;
-  recipe: AuthenticatedRecipeDescriptor;
+  recipePin: DurableSessionRecipePin;
 } {
   if (
     !exactDataKeys(
@@ -548,15 +557,17 @@ function captureAttemptInput(
         "claimSubject",
         "classification",
         "methodInput",
-        "recipe",
+        "recipePin",
       ],
     )
   ) {
     throw new DacsError(`party Vet attempt ${index} must be an exact data record`);
   }
-  const recipe = value.recipe;
-  if (!isAuthenticatedRecipeDescriptor(recipe)) {
-    throw new DacsError(`party Vet attempt ${index} recipe is not authenticated`);
+  const recipePin = value.recipePin;
+  if (!isDurableSessionRecipePin(recipePin)) {
+    throw new DacsError(
+      `party Vet attempt ${index} requires a runtime-authenticated durable recipe pin`,
+    );
   }
   if (value.classification !== "freshness" && value.classification !== "dealSpecific") {
     throw new DacsError(`party Vet attempt ${index} classification is invalid`);
@@ -568,7 +579,7 @@ function captureAttemptInput(
     claimSubject,
     classification: value.classification,
     methodInput: captureMethodInput(value.methodInput, index),
-    recipe,
+    recipePin,
   };
 }
 
@@ -689,11 +700,28 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     if (!claimRequirement || !claimRequirement.verificationRequired) {
       throw new DacsError(`party Vet attempt ${index} requirement path is invalid`);
     }
+    const recipePin = attempt.recipePin;
+    const recipe = recipePin.provenance.recipe;
+    if (
+      recipePin.jobId !== jobId ||
+      recipePin.evaluatedParty !== evaluatedParty ||
+      !canonicalEqual(recipePin.requirementPath, attempt.requirementPath) ||
+      !canonicalEqual(recipePin.requirement, claimRequirement) ||
+      recipePin.requirementHash !== sha256Hex(canonicalize(claimRequirement))
+    ) {
+      throw new DacsError(
+        `party Vet attempt ${index} durable recipe pin does not bind this party and requirement path`,
+      );
+    }
     const { scheme } = claimParts(
       attempt.claimSubject,
       `party Vet attempt ${index} claimSubject`,
     );
-    if (scheme !== claimRequirement.scheme || attempt.recipe.scheme !== scheme) {
+    if (
+      scheme !== claimRequirement.scheme ||
+      recipe.scheme !== scheme ||
+      recipePin.family.scheme !== scheme
+    ) {
       throw new DacsError(
         `party Vet attempt ${index} claim, requirement and recipe schemes differ`,
       );
@@ -704,25 +732,23 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       );
     }
     if (
-      claimRequirement.recipeVersion === undefined
+      (claimRequirement.recipeVersion === undefined &&
+        recipePin.selectionKind !== "latest-at-session-start") ||
+      (claimRequirement.recipeVersion !== undefined &&
+        (recipePin.selectionKind !== "explicit-historical" ||
+          claimRequirement.recipeVersion !== recipe.recipeVersion)) ||
+      recipePin.recipeVersion !== recipe.recipeVersion
     ) {
       throw new DacsError(
-        `party Vet attempt ${index} requires #143 latest-at-session provenance for an unpinned recipe`,
+        `party Vet attempt ${index} violates the durable recipe selection`,
       );
     }
-    if (
-      claimRequirement.recipeVersion !== attempt.recipe.recipeVersion
-    ) {
-      throw new DacsError(
-        `party Vet attempt ${index} violates the requirement recipe pin`,
-      );
-    }
-    if (attempt.recipe.governance.deprecated === true) {
+    if (recipe.governance.deprecated === true) {
       throw new DacsError(
         `party Vet attempt ${index} cannot start a deprecated required recipe`,
       );
     }
-    if (attempt.recipe.availability === "disabled") {
+    if (recipe.availability === "disabled") {
       throw new DacsError(
         `party Vet attempt ${index} cannot start a disabled recipe`,
       );
@@ -733,17 +759,22 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
         `party Vet attempt ${index} verificationMethod must be a string`,
       );
     }
-    const selectedKind = requiredMethod ?? attempt.recipe.defaultMethod.kind;
+    const selectedKind = recipePin.method;
+    if (requiredMethod !== undefined && selectedKind !== requiredMethod) {
+      throw new DacsError(
+        `party Vet attempt ${index} durable pin violates the exact requirement method`,
+      );
+    }
     if (attempt.methodInput.kind !== selectedKind) {
       throw new DacsError(
         `party Vet attempt ${index} method input violates the exact requirement method`,
       );
     }
-    const method = exactMethod(attempt.recipe, selectedKind as VerificationMethodKind);
+    const method = exactMethod(recipe, selectedKind as VerificationMethodKind);
     const address = resultAddress(
       jobId,
       attempt.claimSubject,
-      attempt.recipe.recipeVersion,
+      recipe.recipeVersion,
     );
     if (resultAddresses.has(address)) {
       throw new DacsError(
@@ -752,15 +783,26 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     }
     resultAddresses.add(address);
     const recipeContentHash = contentHash(
-      attempt.recipe as unknown as Record<string, unknown>,
+      recipe as unknown as Record<string, unknown>,
     );
-    const recipeArtifactHash = sha256Hex(canonicalize(attempt.recipe));
+    const recipeArtifactHash = sha256Hex(canonicalize(recipe));
+    if (
+      recipeContentHash !== recipePin.recipeContentHash ||
+      !canonicalEqual(recipe, recipePin.provenance.recipe)
+    ) {
+      throw new DacsError(
+        `party Vet attempt ${index} durable recipe pin has conflicting recipe bytes`,
+      );
+    }
     const methodInputHash = sha256Hex(canonicalize(attempt.methodInput));
-    const registryProvenance: PartyVetExplicitRecipeProvenance = deepFreeze({
-      selectionKind: "explicit-requirement-version",
-      requirementRecipeVersion: claimRequirement.recipeVersion,
-      latestSelection: null,
-    });
+    const recipePinBinding = snapshot(
+      recipePin,
+      `party Vet attempt ${index} durable recipe pin`,
+    ) as PartyVetRecipePinBinding;
+    const registryProvenance = snapshot(
+      recipePin.provenance,
+      `party Vet attempt ${index} registry provenance`,
+    );
     const attemptIdentity = {
       attemptVersion: "1",
       index,
@@ -774,16 +816,17 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       claimSubject: attempt.claimSubject,
       classification: attempt.classification,
       recipeFamily: {
-        scheme: attempt.recipe.scheme,
-        defaultMethod: attempt.recipe.defaultMethod.kind,
+        scheme: recipe.scheme,
+        defaultMethod: recipe.defaultMethod.kind,
       },
-      recipeVersion: attempt.recipe.recipeVersion,
+      recipeVersion: recipe.recipeVersion,
       recipeContentHash,
       recipeArtifactHash,
+      recipePin: recipePinBinding,
       registryProvenance,
       method,
       methodInputHash,
-      recipe: attempt.recipe,
+      recipe,
       methodInput: attempt.methodInput,
       resultAddress: address,
     };
@@ -800,12 +843,13 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       method,
       methodInput: attempt.methodInput,
       methodInputHash,
-      recipe: attempt.recipe,
+      recipe,
+      recipePin: recipePinBinding,
       recipeFamily: deepFreeze({
-        scheme: attempt.recipe.scheme,
-        defaultMethod: attempt.recipe.defaultMethod.kind,
+        scheme: recipe.scheme,
+        defaultMethod: recipe.defaultMethod.kind,
       }),
-      recipeVersion: attempt.recipe.recipeVersion,
+      recipeVersion: recipe.recipeVersion,
       recipeContentHash,
       recipeArtifactHash,
       registryProvenance,

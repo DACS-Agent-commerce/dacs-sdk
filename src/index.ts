@@ -342,6 +342,7 @@ export {
   partyVetCompositeAddress,
   type PartyVetRequirementPath,
   type PartyVetMethodInput,
+  type PartyVetRecipePinBinding,
   aggregateCompositeVerification,
   isCompositeBundleRequirement,
   verifyCompositeVerificationRecord,

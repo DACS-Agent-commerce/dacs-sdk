@@ -118,6 +118,7 @@ export {
   partyVetCompositeAddress,
   type PartyVetRequirementPath,
   type PartyVetMethodInput,
+  type PartyVetRecipePinBinding,
 } from "./partyVetPlan.js";
 export {
   aggregateCompositeVerification,

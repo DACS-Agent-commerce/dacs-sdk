@@ -14,7 +14,6 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
-  resolveRecipe,
   sha256Hex,
   signComponentArtifact,
   signedBytes,
@@ -28,6 +27,7 @@ import {
   type RecipeDescriptor,
   type VerifyResult,
 } from "../../src/index.js";
+import { createPartyVetPins } from "./partyVetPins.js";
 
 const VERIFIER_SEED = new Uint8Array(32).fill(91);
 const VERIFIER_KEY = rawPublicKey(publicKeyFromSeed(VERIFIER_SEED));
@@ -336,21 +336,7 @@ async function recipe(
       sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(STEWARD_SEED)),
     },
   );
-  return resolveRecipe(
-    "memory:party-recipes",
-    { scheme, method: "consensus-backed-proxy", recipeVersion: 1 },
-    {
-      readRegistry: async () => ({
-        registryId: "dacs2:registry:v1",
-        version: "1",
-        entries: [signed],
-      }),
-      stewardPublicKey: STEWARD_KEY,
-      stewardSigner: STEWARD,
-      verify: (bytes, signature, publicKey) =>
-        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
-    },
-  );
+  return signed;
 }
 
 async function bundle(
@@ -385,14 +371,51 @@ async function bundle(
 function attempt(
   requirementPath: PartyVetRequest["attempts"][number]["requirementPath"],
   claimSubject: string,
-  authenticatedRecipe: Awaited<ReturnType<typeof recipe>>,
+  recipePin: PartyVetRequest["attempts"][number]["recipePin"],
 ): PartyVetRequest["attempts"][number] {
   return {
     requirementPath,
     claimSubject,
-    recipe: authenticatedRecipe,
+    recipePin,
     methodInput: { kind: "consensus-backed-proxy" },
   };
+}
+
+function requirementAtPath(
+  requirement: CompositeBundleRequirement,
+  path: PartyVetRequest["attempts"][number]["requirementPath"],
+) {
+  return path.kind === "required"
+    ? requirement.required[path.index]!
+    : requirement.oneOf![path.groupIndex]![path.alternativeIndex]!;
+}
+
+async function pinnedRequestAttempts(
+  jobId: string,
+  evaluatedParty: string,
+  requirement: CompositeBundleRequirement,
+  specs: readonly {
+    requirementPath: PartyVetRequest["attempts"][number]["requirementPath"];
+    claimSubject: string;
+    recipe: Awaited<ReturnType<typeof recipe>>;
+  }[],
+): Promise<PartyVetRequest["attempts"]> {
+  const pins = await createPartyVetPins({
+    jobId,
+    evaluatedParty,
+    recipes: specs.map((spec) => spec.recipe),
+    attempts: specs.map((spec) => ({
+      requirementPath: spec.requirementPath,
+      requirement: requirementAtPath(requirement, spec.requirementPath),
+    })),
+    stewardSigner: STEWARD,
+    stewardPublicKey: STEWARD_KEY,
+    verify: (bytes, signature, publicKey) =>
+      ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+    now: NOW,
+  });
+  return specs.map((spec, index) =>
+    attempt(spec.requirementPath, spec.claimSubject, pins[index]!));
 }
 
 describe("partyVetCore durable party-level producer", () => {
@@ -412,15 +435,24 @@ describe("partyVetCore durable party-level producer", () => {
         { scheme: "beta", verificationRequired: true, recipeVersion: 1 },
       ],
     };
+    const jobId = "job-party-required";
     const request: PartyVetRequest = {
-      jobId: "job-party-required",
+      jobId,
       evaluatedParty: alpha,
       identityBundle: identity,
       requirement,
-      attempts: [
-        attempt({ kind: "required", index: 0 }, alpha, alphaRecipe),
-        attempt({ kind: "required", index: 1 }, beta, betaRecipe),
-      ],
+      attempts: await pinnedRequestAttempts(jobId, alpha, requirement, [
+        {
+          requirementPath: { kind: "required", index: 0 },
+          claimSubject: alpha,
+          recipe: alphaRecipe,
+        },
+        {
+          requirementPath: { kind: "required", index: 1 },
+          claimSubject: beta,
+          recipe: betaRecipe,
+        },
+      ]),
     };
 
     const production = await partyVetCore(request, deps(harness));
@@ -464,17 +496,28 @@ describe("partyVetCore durable party-level producer", () => {
         { scheme: "gamma", verificationRequired: true, recipeVersion: 1 },
       ]],
     };
+    const jobId = "job-party-oneof";
+    const paths = refs.map((_, index) => ({
+      kind: "oneOf" as const,
+      groupIndex: 0,
+      alternativeIndex: index,
+    }));
     const production = await partyVetCore(
       {
-        jobId: "job-party-oneof",
+        jobId,
         evaluatedParty: refs[0]!,
         identityBundle: await bundle(refs[0]!, refs),
         requirement,
-        attempts: refs.map((ref, index) => attempt(
-          { kind: "oneOf", groupIndex: 0, alternativeIndex: index },
-          ref,
-          recipes[index]!,
-        )),
+        attempts: await pinnedRequestAttempts(
+          jobId,
+          refs[0]!,
+          requirement,
+          refs.map((ref, index) => ({
+            requirementPath: paths[index]!,
+            claimSubject: ref,
+            recipe: recipes[index]!,
+          })),
+        ),
       },
       deps(harness),
     );
@@ -521,13 +564,23 @@ describe("partyVetCore durable party-level producer", () => {
       { kind: "oneOf", groupIndex: 1, alternativeIndex: 0 },
       { kind: "oneOf", groupIndex: 1, alternativeIndex: 1 },
     ];
+    const jobId = "job-party-precedence";
     const production = await partyVetCore(
       {
-        jobId: "job-party-precedence",
+        jobId,
         evaluatedParty: refs[0]!,
         identityBundle: await bundle(refs[0]!, refs),
         requirement,
-        attempts: refs.map((ref, index) => attempt(paths[index]!, ref, recipes[index]!)),
+        attempts: await pinnedRequestAttempts(
+          jobId,
+          refs[0]!,
+          requirement,
+          refs.map((ref, index) => ({
+            requirementPath: paths[index]!,
+            claimSubject: ref,
+            recipe: recipes[index]!,
+          })),
+        ),
       },
       deps(harness),
     );
@@ -539,17 +592,23 @@ describe("partyVetCore durable party-level producer", () => {
     const harness = state();
     const alphaRecipe = await recipe("alpha");
     const subject = "alpha:alice";
+    const jobId = "job-party-concurrent";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
+      ],
+    };
     const request: PartyVetRequest = {
-      jobId: "job-party-concurrent",
+      jobId,
       evaluatedParty: subject,
       identityBundle: await bundle(subject, [subject]),
-      requirement: {
-        requirementVersion: "1",
-        required: [
-          { scheme: "alpha", verificationRequired: true, recipeVersion: 1 },
-        ],
-      },
-      attempts: [attempt({ kind: "required", index: 0 }, subject, alphaRecipe)],
+      requirement,
+      attempts: await pinnedRequestAttempts(jobId, subject, requirement, [{
+        requirementPath: { kind: "required", index: 0 },
+        claimSubject: subject,
+        recipe: alphaRecipe,
+      }]),
     };
     const [left, right] = await Promise.all([
       partyVetCore(request, deps(harness)),
@@ -562,12 +621,17 @@ describe("partyVetCore durable party-level producer", () => {
     expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
 
     const bob = "alpha:bob";
+    const bobAttempts = await pinnedRequestAttempts(jobId, bob, requirement, [{
+      requirementPath: { kind: "required", index: 0 },
+      claimSubject: bob,
+      recipe: alphaRecipe,
+    }]);
     const bobProduction = await partyVetCore(
       {
         ...request,
         evaluatedParty: bob,
         identityBundle: await bundle(bob, [bob]),
-        attempts: [attempt({ kind: "required", index: 0 }, bob, alphaRecipe)],
+        attempts: bobAttempts,
       },
       deps(harness),
     );
