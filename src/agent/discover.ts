@@ -87,6 +87,18 @@ export async function verifyReadableListingArtifact(
     ) {
       return null;
     }
+    // DACS-1 permits a Listing signer to be any claim carried by the seller's
+    // IdentityBundle. Until this SDK verifies the complete §6.3.2 presentation,
+    // however, claim membership alone cannot prove control of `presentedBy`.
+    // The current producer profile signs with `presentedBy`, so readers enforce
+    // that same fail-closed profile before exposing a Listing that can steer the
+    // downstream payee. `isListing` remains the normative structural predicate.
+    if (
+      readable.listing.signature.signer !==
+      readable.listing.seller.identity.presentedBy
+    ) {
+      return null;
+    }
   }
   if (!deps.verify) return readable;
 

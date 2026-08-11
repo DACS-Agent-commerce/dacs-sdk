@@ -25,6 +25,57 @@ const TERMS: SessionTerms = {
   deliveryFormat: "application/json",
 };
 
+const normativeListing = () => ({
+  dacsVersion: "1" as const,
+  listingVersion: 7,
+  listingId: "market-data-vendor",
+  seller: {
+    identity: {
+      bundleVersion: "1" as const,
+      presentedBy: "did:demos:agent:alice",
+      presentedAt: 1_770_000_000_000,
+      claims: [{ ref: "did:demos:agent:alice" }],
+      presentation: {
+        kind: "per-claim" as const,
+        signatures: [
+          { ref: "did:demos:agent:alice", signature: "presentation" },
+        ],
+      },
+    },
+    displayName: "Alice",
+    publicEndpoint: "https://alice.example/dacs",
+  },
+  offering: {
+    title: "Market Data",
+    description: "Pinned listing",
+    category: "data.finance",
+    tags: ["market"],
+    deliverable: {
+      kind: "attested-payload" as const,
+      payloadFormat: "application/json",
+    },
+  },
+  buyerRequirement: { requirementVersion: "1" as const, required: [] },
+  pipeline: [
+    { kind: "negotiate-fixed-price" as const },
+    { kind: "commit-agreement" as const },
+    { kind: "pay-x402" as const, parameters: { rail: "x402:default" } },
+    { kind: "deliver-attested-payload" as const },
+  ],
+  pricing: {
+    kind: "fixed" as const,
+    price: { amount: "1", currency: "USDC" },
+  },
+  acceptedRails: [{ railId: "x402:default" }],
+  terms: { deadlineSecAfterCommit: 3_600 },
+  validity: { notBefore: 1_770_000_000_000 },
+  signature: {
+    algorithm: "ed25519" as const,
+    signer: "did:demos:agent:alice",
+    value: "AQ",
+  },
+});
+
 function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
   return {
     buyerId: "did:demos:agent:bob",
@@ -61,69 +112,67 @@ describe("runSession orchestration (T4)", () => {
   });
 
   test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {
-    const normative = {
-      dacsVersion: "1",
-      listingVersion: 7,
-      listingId: "market-data-vendor",
-      seller: {
-        identity: {
-          bundleVersion: "1",
-          presentedBy: "did:demos:agent:alice",
-          presentedAt: 1_770_000_000_000,
-          claims: [{ ref: "did:demos:agent:alice" }],
-          presentation: {
-            kind: "per-claim",
-            signatures: [
-              { ref: "did:demos:agent:alice", signature: "presentation" },
-            ],
-          },
-        },
-        displayName: "Alice",
-        publicEndpoint: "https://alice.example/dacs",
-      },
-      offering: {
-        title: "Market Data",
-        description: "Pinned listing",
-        category: "data.finance",
-        tags: ["market"],
-        deliverable: {
-          kind: "attested-payload",
-          payloadFormat: "application/json",
-        },
-      },
-      buyerRequirement: { requirementVersion: "1", required: [] },
-      pipeline: [
-        { kind: "negotiate-fixed-price" },
-        { kind: "commit-agreement" },
-        { kind: "pay-x402", parameters: { rail: "x402:default" } },
-        { kind: "deliver-attested-payload" },
-      ],
-      pricing: {
-        kind: "fixed",
-        price: { amount: "1", currency: "USDC" },
-      },
-      acceptedRails: [{ railId: "x402:default" }],
-      terms: { deadlineSecAfterCommit: 3_600 },
-      validity: { notBefore: 1_770_000_000_000 },
-      signature: {
-        algorithm: "ed25519",
-        signer: "did:demos:agent:alice",
-        value: "AQ",
-      },
-    };
+    const normative = normativeListing();
+    let evidence: Record<string, unknown> | undefined;
+    let selectedRail: string | undefined;
     const res = await runSessionCore(
       "stor-normative-v7",
       {
         ...TERMS,
         price: { ...TERMS.price, rail: "x402:default" },
       },
-      makeDeps({ readListing: async () => normative }),
+      makeDeps({
+        readListing: async () => normative,
+        settle: async (request) => {
+          selectedRail = request.rail;
+          return {
+            ok: true,
+            txHash: "0xabc",
+            chainId: "eip155:8453",
+            payer: "0xbob",
+            payee: "0xalice",
+          };
+        },
+        anchor: async (name, value) => {
+          if (name.includes("evidence")) {
+            evidence = value as Record<string, unknown>;
+          }
+          return `stor-${name}`;
+        },
+      }),
     );
     expect(res.listingPin).toEqual({
       listingId: "market-data-vendor",
       version: 7,
       contentHash: contentHash(normative),
     });
+    expect(selectedRail).toBe("x402:default");
+    expect(evidence?.phase).toBe("pay-x402");
+  });
+
+  test("refuses to pay presentedBy when a different carried claim signed", async () => {
+    const normative = normativeListing();
+    normative.seller.identity.claims.push({ ref: "did:demos:agent:signer" });
+    normative.signature.signer = "did:demos:agent:signer";
+    let settles = 0;
+
+    await expect(
+      runSessionCore(
+        "stor-unbound-payee",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => normative,
+          settle: async () => {
+            settles += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/not payee-bound|signer must equal/i);
+    expect(settles).toBe(0);
   });
 
   test("rail-reported finality flows onto the evidence (bft-final / demos / block), F7/#22", async () => {
