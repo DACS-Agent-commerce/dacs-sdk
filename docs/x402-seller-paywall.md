@@ -28,7 +28,10 @@ authorization. The x402 server is not given a prepared deliverable body. The
 `idempotencyKey` received by the final callback is transport-only; #120 derives
 its canonical fulfilment identity from the exact authorization retained behind
 the consumed #119 permit, and applications must not substitute the x402 key for
-that identity.
+that identity. The callback must nevertheless be idempotent for the supplied
+stable key because a payer can retry after settlement while durable delivery
+reconciliation remains pending; the recommended #120/#121 composition already
+provides that guarantee.
 
 `settlementStore.claim()` is a write-ahead, atomic put-if-absent operation by
 `settlementKey`. A durable implementation retains the complete intent (including

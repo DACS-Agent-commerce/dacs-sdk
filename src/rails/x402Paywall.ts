@@ -306,7 +306,11 @@ export interface X402PaywallCoreDeps<TAuthorization = unknown, T = unknown> {
   authorizePayment(
     context: Readonly<X402PaywallAuthorizationContext>,
   ): Promise<X402PaywallPaymentAuthorization<TAuthorization>>;
-  /** Call #120/#121 here using the authorization retained by #119's store. */
+  /**
+   * Call #120/#121 here using the authorization retained by #119's store.
+   * Implementations MUST be idempotent for the supplied stable key: a client
+   * may retry after settlement while delivery reconciliation is still pending.
+   */
   fulfil(
     context: Readonly<X402PaywallFulfilmentContext<TAuthorization>>,
   ): Promise<X402PaywallFulfilment<T>>;
