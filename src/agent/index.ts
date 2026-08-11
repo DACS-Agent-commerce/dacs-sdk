@@ -206,6 +206,16 @@ export {
   type FsFencedSessionStoreOptions,
 } from "./fencedSessionStoreFs.js";
 export {
+  pinSessionRecipeSelection,
+  recoverSessionRecipePin,
+  isDurableSessionRecipePin,
+  type DurableRecipeRequirementPath,
+  type DurableRecipeSelectionProvenance,
+  type DurableSessionRecipePin,
+  type PinSessionRecipeInput,
+  type RecoverSessionRecipePinInput,
+} from "./durableRecipePin.js";
+export {
   buildTwoSidedBundle,
   bundleSignedScope,
   attestationBundleHash,
