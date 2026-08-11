@@ -211,7 +211,12 @@ function snapshotData(
     if (descriptor.enumerable !== true || !("value" in descriptor)) {
       throw new DacsError(`${label} cannot contain accessors or hidden fields`);
     }
-    result[key] = snapshotData(descriptor.value, label, seen);
+    Object.defineProperty(result, key, {
+      value: snapshotData(descriptor.value, label, seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   seen.delete(value);
   return result;

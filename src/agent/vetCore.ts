@@ -134,7 +134,12 @@ function snapshotValue(
     ) {
       throw new DacsError(`${label} cannot contain accessors or hidden fields`);
     }
-    copy[key] = snapshotValue(descriptor.value, label, seen);
+    Object.defineProperty(copy, key, {
+      value: snapshotValue(descriptor.value, label, seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   seen.delete(value);
   return copy;
@@ -793,9 +798,17 @@ function captureVetRequest(source: VetRequest): VetRequest {
     );
   }
 
-  const captured: Record<string, unknown> = {};
+  const captured: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >;
   for (const [key, descriptor] of Object.entries(descriptors)) {
-    captured[key] = descriptor.value;
+    Object.defineProperty(captured, key, {
+      value: descriptor.value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return deepFreezeSnapshot(
     snapshot(captured, "Vet request"),
@@ -1482,6 +1495,277 @@ async function reconcileOrPersistFinalizedJson(
   }
 }
 
+type FinalizedVetResultCheckpoint = Extract<
+  VetOperationCheckpoint,
+  { stage: "result-finalized" | "composite-submitting" | "complete" }
+>;
+
+async function executeVetMethod(
+  req: VetRequest,
+  deps: VetDeps,
+  selectedRequirement: CompositeClaimRequirement,
+  selectedMethod: VerificationMethod,
+  context: VetCheckpointContext,
+): Promise<VetMethodOutcome> {
+  const operationHash = context.operationHash;
+  const outcomeValue = await runVetStep(
+    deps.operationStore,
+    context,
+    "method",
+    operationHash,
+    async () => {
+      const methodStartedAt = readClock(deps.nowMs, "Vet method start");
+      let outcome: {
+        decision: VerificationDecision;
+        attestation: AttestationRef;
+        fetchedAt: number;
+        data?: Record<string, unknown>;
+      };
+      switch (selectedMethod.kind) {
+        case "self-signed": {
+          const selfSigned = await selfSignedAttestation(req, deps, {
+            operationKey: context.operationKey,
+            operationHash,
+            store: deps.operationStore,
+          });
+          outcome = { ...selfSigned, fetchedAt: methodStartedAt };
+          break;
+        }
+        case "consensus-backed-proxy":
+          outcome = await proxyAttestation(
+            req,
+            deps,
+            selectedMethod,
+            selectedRequirement,
+          );
+          break;
+        default:
+          throw new DacsError(
+            `unsupported current verification method: ${selectedMethod.kind}`,
+          );
+      }
+      if (outcome.fetchedAt < methodStartedAt) {
+        throw new DacsError(
+          "authority fetchedAt predates this verification attempt",
+        );
+      }
+      if (selectedRequirement.parameters !== undefined) {
+        try {
+          const matched = await deps.matchRequirementParameters!(
+            deepFreezeSnapshot({
+              requirement: snapshot(
+                selectedRequirement,
+                "parameter requirement",
+              ),
+              subject: req.subject,
+              recipe: snapshot(req.recipe, "parameter recipe"),
+              method: snapshot(selectedMethod, "parameter method"),
+              decision: outcome.decision,
+              attestation: snapshot(
+                outcome.attestation,
+                "parameter attestation",
+              ),
+              ...(outcome.data
+                ? { data: snapshot(outcome.data, "parameter extracted data") }
+                : {}),
+            }),
+          );
+          if (matched !== true) outcome.decision = "fail";
+        } catch {
+          outcome.decision = "error";
+        }
+      }
+      return {
+        ...outcome,
+        verifiedAt: readClock(
+          deps.nowMs,
+          "VerifyResult verifiedAt",
+          outcome.fetchedAt,
+        ),
+      } satisfies VetMethodOutcome;
+    },
+  );
+  return captureMethodOutcome(outcomeValue);
+}
+
+/**
+ * Shared durable claim boundary. It owns method execution, result signing,
+ * finalized anchoring and exact readback, but deliberately does not create a
+ * composite record. The legacy producer and the party producer therefore use
+ * the same crash-safe result semantics.
+ */
+async function produceDurableVetResult(
+  req: VetRequest,
+  deps: VetDeps,
+  selectedRequirement: CompositeClaimRequirement,
+  selectedMethod: VerificationMethod,
+  context: VetCheckpointContext,
+): Promise<{
+  checkpoint: FinalizedVetResultCheckpoint;
+  authenticatedResultAnchor: FinalizedVetAnchor;
+}> {
+  const intent: VetOperationCheckpoint = {
+    operationVersion: "1",
+    operationKey: context.operationKey,
+    operationHash: context.operationHash,
+    stage: "intent",
+  };
+  let checkpoint = await loadVetCheckpoint(deps.operationStore, context);
+  if (checkpoint === null) {
+    checkpoint = (
+      await transitionVetCheckpoint(
+        deps.operationStore,
+        context,
+        null,
+        intent,
+      )
+    ).checkpoint;
+  }
+  if (checkpoint === null) {
+    throw new DacsError("Vet operation intent could not be established");
+  }
+
+  if (checkpoint.stage === "intent") {
+    const methodOutcome = await executeVetMethod(
+      req,
+      deps,
+      selectedRequirement,
+      selectedMethod,
+      context,
+    );
+    const next: VetOperationCheckpoint = {
+      ...intent,
+      stage: "method-complete",
+      methodOutcome,
+      methodOutcomeHash: exactArtifactHash(methodOutcome),
+    };
+    checkpoint = (
+      await transitionVetCheckpoint(
+        deps.operationStore,
+        context,
+        checkpoint,
+        next,
+      )
+    ).checkpoint;
+  }
+
+  if (checkpoint.stage === "method-complete") {
+    const outcome = checkpoint.methodOutcome;
+    const unsignedResult: Omit<VerifyResult, "signature"> = {
+      resultVersion: "1",
+      scheme: context.scheme,
+      identifier: context.identifier,
+      recipeVersion: req.recipe.recipeVersion,
+      method: selectedMethod.kind,
+      decision: outcome.decision,
+      reason: reasonFor(outcome.decision),
+      attestation: outcome.attestation,
+      ...(outcome.data ? { data: outcome.data } : {}),
+      fetchedAt: outcome.fetchedAt,
+      verifiedAt: outcome.verifiedAt,
+    };
+    const unsignedResultHash = contentHash(
+      unsignedResult as unknown as Record<string, unknown>,
+    );
+    const result = snapshot(
+      await runVetStep(
+        deps.operationStore,
+        context,
+        "verify-result",
+        exactArtifactHash(unsignedResult),
+        () => signComponentArtifact(
+          deepFreezeSnapshot(snapshot(unsignedResult, "unsigned VerifyResult")),
+          "dacs-verifyresult:v1:",
+          deps.componentSigner,
+        ),
+      ),
+      "signed VerifyResult",
+    ) as VerifyResult;
+    if (!isVerifyResult(result)) {
+      throw new DacsError("VerifyResult signer produced a non-current artifact");
+    }
+    if (
+      contentHash(result as unknown as Record<string, unknown>) !==
+      unsignedResultHash
+    ) {
+      throw new DacsError("VerifyResult signer changed the signed result scope");
+    }
+    const next: VetOperationCheckpoint = {
+      ...intent,
+      stage: "result-submitting",
+      resultAddress: context.resultAddress,
+      result,
+      resultArtifactHash: exactArtifactHash(result),
+    };
+    checkpoint = (
+      await transitionVetCheckpoint(
+        deps.operationStore,
+        context,
+        checkpoint,
+        next,
+      )
+    ).checkpoint;
+  }
+
+  if (checkpoint.stage === "result-submitting") {
+    const submittingResult = checkpoint;
+    const resultAnchorValue = await runVetStep(
+      deps.operationStore,
+      context,
+      "verify-result-anchor",
+      exactArtifactHash({
+        logicalAddress: submittingResult.resultAddress,
+        artifactHash: submittingResult.resultArtifactHash,
+      }),
+      () => reconcileOrPersistFinalizedJson(
+        submittingResult.resultAddress,
+        submittingResult.result as unknown as Record<string, unknown>,
+        deps,
+        isVerifyResult,
+      ),
+    );
+    if (!isFinalizedVetAnchor(resultAnchorValue)) {
+      throw new DacsError("VerifyResult anchor step returned corrupt state");
+    }
+    const resultAnchor = await authenticateFinalizedJson(
+      submittingResult.resultAddress,
+      submittingResult.result as unknown as Record<string, unknown>,
+      resultAnchorValue,
+      deps,
+      isVerifyResult,
+    );
+    const next: VetOperationCheckpoint = {
+      ...checkpoint,
+      stage: "result-finalized",
+      resultAnchor,
+    };
+    checkpoint = (
+      await transitionVetCheckpoint(
+        deps.operationStore,
+        context,
+        checkpoint,
+        next,
+      )
+    ).checkpoint;
+  }
+
+  if (
+    checkpoint.stage === "intent" ||
+    checkpoint.stage === "method-complete" ||
+    checkpoint.stage === "result-submitting"
+  ) {
+    throw new DacsError("Vet operation could not advance beyond result submission");
+  }
+  const authenticatedResultAnchor = await authenticateFinalizedJson(
+    checkpoint.resultAddress,
+    checkpoint.result as unknown as Record<string, unknown>,
+    checkpoint.resultAnchor,
+    deps,
+    isVerifyResult,
+  );
+  return { checkpoint, authenticatedResultAnchor };
+}
+
 /**
  * Run one current DACS-2 method, sign and anchor its VerifyResult, aggregate the
  * exact §7.7 record, and sign that record. No legacy entry/record is emitted and
@@ -1577,236 +1861,15 @@ export async function vetCore(
     req,
     signer: deps.componentSigner,
   };
-  const intent: VetOperationCheckpoint = {
-    operationVersion: "1",
-    operationKey: recordAddress,
-    operationHash,
-    stage: "intent",
-  };
-  let checkpoint = await loadVetCheckpoint(deps.operationStore, context);
-  if (checkpoint === null) {
-    checkpoint = (
-      await transitionVetCheckpoint(
-        deps.operationStore,
-        context,
-        null,
-        intent,
-      )
-    ).checkpoint;
-  }
-  if (checkpoint === null) {
-    throw new DacsError("Vet operation intent could not be established");
-  }
-
-  if (checkpoint.stage === "intent") {
-    const outcomeValue = await runVetStep(
-      deps.operationStore,
-      context,
-      "method",
-      operationHash,
-      async () => {
-        const methodStartedAt = readClock(deps.nowMs, "Vet method start");
-        let outcome: {
-          decision: VerificationDecision;
-          attestation: AttestationRef;
-          fetchedAt: number;
-          data?: Record<string, unknown>;
-        };
-        switch (selectedMethod.kind) {
-          case "self-signed": {
-            const selfSigned = await selfSignedAttestation(req, deps, {
-              operationKey: context.operationKey,
-              operationHash,
-              store: deps.operationStore,
-            });
-            outcome = { ...selfSigned, fetchedAt: methodStartedAt };
-            break;
-          }
-          case "consensus-backed-proxy":
-            outcome = await proxyAttestation(
-              req,
-              deps,
-              selectedMethod,
-              selectedRequirement,
-            );
-            break;
-          default:
-            throw new DacsError(
-              `unsupported current verification method: ${selectedMethod.kind}`,
-            );
-        }
-        if (outcome.fetchedAt < methodStartedAt) {
-          throw new DacsError(
-            "authority fetchedAt predates this verification attempt",
-          );
-        }
-        if (selectedRequirement.parameters !== undefined) {
-          try {
-            const matched = await deps.matchRequirementParameters!(
-              deepFreezeSnapshot({
-                requirement: snapshot(
-                  selectedRequirement,
-                  "parameter requirement",
-                ),
-                subject: req.subject,
-                recipe: snapshot(req.recipe, "parameter recipe"),
-                method: snapshot(selectedMethod, "parameter method"),
-                decision: outcome.decision,
-                attestation: snapshot(
-                  outcome.attestation,
-                  "parameter attestation",
-                ),
-                ...(outcome.data
-                  ? { data: snapshot(outcome.data, "parameter extracted data") }
-                  : {}),
-              }),
-            );
-            if (matched !== true) outcome.decision = "fail";
-          } catch {
-            outcome.decision = "error";
-          }
-        }
-        return {
-          ...outcome,
-          verifiedAt: readClock(
-            deps.nowMs,
-            "VerifyResult verifiedAt",
-            outcome.fetchedAt,
-          ),
-        } satisfies VetMethodOutcome;
-      },
-    );
-    const methodOutcome = captureMethodOutcome(outcomeValue);
-    const next: VetOperationCheckpoint = {
-      ...intent,
-      stage: "method-complete",
-      methodOutcome,
-      methodOutcomeHash: exactArtifactHash(methodOutcome),
-    };
-    checkpoint = (
-      await transitionVetCheckpoint(
-        deps.operationStore,
-        context,
-        checkpoint,
-        next,
-      )
-    ).checkpoint;
-  }
-
-  if (checkpoint.stage === "method-complete") {
-    const outcome = checkpoint.methodOutcome;
-    const unsignedResult: Omit<VerifyResult, "signature"> = {
-      resultVersion: "1",
-      scheme,
-      identifier,
-      recipeVersion: req.recipe.recipeVersion,
-      method: selectedMethod.kind,
-      decision: outcome.decision,
-      reason: reasonFor(outcome.decision),
-      attestation: outcome.attestation,
-      ...(outcome.data ? { data: outcome.data } : {}),
-      fetchedAt: outcome.fetchedAt,
-      verifiedAt: outcome.verifiedAt,
-    };
-    const unsignedResultHash = contentHash(
-      unsignedResult as unknown as Record<string, unknown>,
-    );
-    const result = snapshot(
-      await runVetStep(
-        deps.operationStore,
-        context,
-        "verify-result",
-        exactArtifactHash(unsignedResult),
-        () => signComponentArtifact(
-          deepFreezeSnapshot(snapshot(unsignedResult, "unsigned VerifyResult")),
-          "dacs-verifyresult:v1:",
-          deps.componentSigner,
-        ),
-      ),
-      "signed VerifyResult",
-    ) as VerifyResult;
-    if (!isVerifyResult(result)) {
-      throw new DacsError("VerifyResult signer produced a non-current artifact");
-    }
-    if (
-      contentHash(result as unknown as Record<string, unknown>) !==
-      unsignedResultHash
-    ) {
-      throw new DacsError("VerifyResult signer changed the signed result scope");
-    }
-    const next: VetOperationCheckpoint = {
-      ...intent,
-      stage: "result-submitting",
-      resultAddress,
-      result,
-      resultArtifactHash: exactArtifactHash(result),
-    };
-    checkpoint = (
-      await transitionVetCheckpoint(
-        deps.operationStore,
-        context,
-        checkpoint,
-        next,
-      )
-    ).checkpoint;
-  }
-
-  if (checkpoint.stage === "result-submitting") {
-    const submittingResult = checkpoint;
-    const resultAnchorValue = await runVetStep(
-      deps.operationStore,
-      context,
-      "verify-result-anchor",
-      exactArtifactHash({
-        logicalAddress: submittingResult.resultAddress,
-        artifactHash: submittingResult.resultArtifactHash,
-      }),
-      () => reconcileOrPersistFinalizedJson(
-        submittingResult.resultAddress,
-        submittingResult.result as unknown as Record<string, unknown>,
-        deps,
-        isVerifyResult,
-      ),
-    );
-    if (!isFinalizedVetAnchor(resultAnchorValue)) {
-      throw new DacsError("VerifyResult anchor step returned corrupt state");
-    }
-    const resultAnchor = await authenticateFinalizedJson(
-      submittingResult.resultAddress,
-      submittingResult.result as unknown as Record<string, unknown>,
-      resultAnchorValue,
-      deps,
-      isVerifyResult,
-    );
-    const next: VetOperationCheckpoint = {
-      ...checkpoint,
-      stage: "result-finalized",
-      resultAnchor,
-    };
-    checkpoint = (
-      await transitionVetCheckpoint(
-        deps.operationStore,
-        context,
-        checkpoint,
-        next,
-      )
-    ).checkpoint;
-  }
-
-  if (
-    checkpoint.stage === "intent" ||
-    checkpoint.stage === "method-complete" ||
-    checkpoint.stage === "result-submitting"
-  ) {
-    throw new DacsError("Vet operation could not advance beyond result submission");
-  }
-  const authenticatedResultAnchor = await authenticateFinalizedJson(
-    checkpoint.resultAddress,
-    checkpoint.result as unknown as Record<string, unknown>,
-    checkpoint.resultAnchor,
+  const durableResult = await produceDurableVetResult(
+    req,
     deps,
-    isVerifyResult,
+    selectedRequirement,
+    selectedMethod,
+    context,
   );
+  let checkpoint: VetOperationCheckpoint = durableResult.checkpoint;
+  const { authenticatedResultAnchor } = durableResult;
 
   if (checkpoint.stage === "result-finalized") {
     const finalizedResult = checkpoint;
