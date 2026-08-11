@@ -2334,71 +2334,88 @@ async function executeVetMethod(
   context: VetCheckpointContext,
 ): Promise<VetMethodOutcome> {
   const operationHash = context.operationHash;
+  const methodStartedAt = readClock(deps.nowMs, "Vet method start");
+  let preparedAvailability: {
+    decision: "error";
+    attestation: AttestationRef;
+    fetchedAt: number;
+    data: Record<string, unknown>;
+  } | undefined;
+  let preparedSelfSigned: {
+    decision: VerificationDecision;
+    attestation: AttestationRef;
+  } | undefined;
+  if (
+    req.recipe.availability === "mocked" ||
+    req.recipe.availability === "failed"
+  ) {
+    const evidence = deepFreezeSnapshot({
+      availabilityEvidenceVersion: "1",
+      jobId: req.jobId,
+      subject: req.subject,
+      scheme: req.recipe.scheme,
+      recipeVersion: req.recipe.recipeVersion,
+      method: selectedMethod.kind,
+      availability: req.recipe.availability,
+      recipeContentHash: contentHash(
+        req.recipe as unknown as Record<string, unknown>,
+      ),
+    });
+    const logicalAddress = `${context.operationKey}:recipe-availability`;
+    const evidenceValue = await runVetStep(
+      deps.operationStore,
+      context,
+      "method-evidence",
+      exactArtifactHash({ logicalAddress, evidence }),
+      () => reconcileOrPersistFinalizedJson(
+        logicalAddress,
+        evidence,
+        deps,
+        (value) => isExactJsonRecord(value) && canonicalEqual(value, evidence),
+      ),
+    );
+    if (!isFinalizedVetAnchor(evidenceValue)) {
+      throw new DacsError("recipe availability evidence returned a corrupt anchor");
+    }
+    const anchored = await authenticateFinalizedJson(
+      logicalAddress,
+      evidence,
+      evidenceValue,
+      deps,
+      (value) => isExactJsonRecord(value) && canonicalEqual(value, evidence),
+    );
+    preparedAvailability = {
+      decision: "error",
+      attestation: anchored.ref,
+      fetchedAt: methodStartedAt,
+      data: {
+        recipeAvailability: {
+          availability: req.recipe.availability,
+          recipeContentHash: evidence.recipeContentHash,
+        },
+      },
+    };
+  } else if (selectedMethod.kind === "self-signed") {
+    preparedSelfSigned = await selfSignedAttestation(req, deps, {
+      operationKey: context.operationKey,
+      operationHash,
+      store: deps.operationStore,
+    });
+  }
   const outcomeValue = await runVetStep(
     deps.operationStore,
     context,
     "method",
     operationHash,
     async () => {
-      const methodStartedAt = readClock(deps.nowMs, "Vet method start");
-      if (
-        req.recipe.availability === "mocked" ||
-        req.recipe.availability === "failed"
-      ) {
-        const evidence = deepFreezeSnapshot({
-          availabilityEvidenceVersion: "1",
-          jobId: req.jobId,
-          subject: req.subject,
-          scheme: req.recipe.scheme,
-          recipeVersion: req.recipe.recipeVersion,
-          method: selectedMethod.kind,
-          availability: req.recipe.availability,
-          recipeContentHash: contentHash(
-            req.recipe as unknown as Record<string, unknown>,
-          ),
-        });
-        const logicalAddress = `${context.operationKey}:recipe-availability`;
-        const evidenceValue = await runVetStep(
-          deps.operationStore,
-          context,
-          "method-evidence",
-          exactArtifactHash({ logicalAddress, evidence }),
-          () => reconcileOrPersistFinalizedJson(
-            logicalAddress,
-            evidence,
-            deps,
-            (value) =>
-              isExactJsonRecord(value) && canonicalEqual(value, evidence),
-          ),
-        );
-        if (!isFinalizedVetAnchor(evidenceValue)) {
-          throw new DacsError(
-            "recipe availability evidence returned a corrupt anchor",
-          );
-        }
-        const anchored = await authenticateFinalizedJson(
-          logicalAddress,
-          evidence,
-          evidenceValue,
-          deps,
-          (value) =>
-            isExactJsonRecord(value) && canonicalEqual(value, evidence),
-        );
+      if (preparedAvailability) {
         return {
-          decision: "error",
-          attestation: anchored.ref,
-          fetchedAt: methodStartedAt,
+          ...preparedAvailability,
           verifiedAt: readClock(
             deps.nowMs,
             "VerifyResult verifiedAt",
             methodStartedAt,
           ),
-          data: {
-            recipeAvailability: {
-              availability: req.recipe.availability,
-              recipeContentHash: evidence.recipeContentHash,
-            },
-          },
         } satisfies VetMethodOutcome;
       }
       let outcome: {
@@ -2409,12 +2426,10 @@ async function executeVetMethod(
       };
       switch (selectedMethod.kind) {
         case "self-signed": {
-          const selfSigned = await selfSignedAttestation(req, deps, {
-            operationKey: context.operationKey,
-            operationHash,
-            store: deps.operationStore,
-          });
-          outcome = { ...selfSigned, fetchedAt: methodStartedAt };
+          if (!preparedSelfSigned) {
+            throw new DacsError("self-signed evidence was not durably prepared");
+          }
+          outcome = { ...preparedSelfSigned, fetchedAt: methodStartedAt };
           break;
         }
         case "consensus-backed-proxy":
