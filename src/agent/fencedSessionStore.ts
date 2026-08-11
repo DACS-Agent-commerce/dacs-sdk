@@ -303,10 +303,15 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
   }
   if (!isNonEmptyString(value.phase)) return "phase missing or invalid";
   if (value.phase.startsWith("seller:") &&
-      !sellerTerminal(value.phase) &&
+      !sessionTerminal(value.phase) &&
       sellerDeliveryPhaseProgress(value.phase) === null &&
       sellerBundlePhaseRank(value.phase) === null) {
     return "phase uses a malformed or unrecognized reserved seller lifecycle value";
+  }
+  if (value.phase.startsWith("buyer:") &&
+      !sessionTerminal(value.phase) &&
+      buyerBundlePhaseRank(value.phase) === null) {
+    return "phase uses a malformed or unrecognized reserved buyer lifecycle value";
   }
   if (!isNonNegativeInteger(value.revision)) {
     return "revision must be a non-negative safe integer";
@@ -349,8 +354,8 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
     ) {
       return "lease.sellerPhaseIndex must be a non-negative safe integer";
     }
-    if (sellerTerminal(value.phase)) {
-      return "a globally terminal seller session cannot retain a lease";
+    if (sessionTerminal(value.phase)) {
+      return "a globally terminal session cannot retain a lease";
     }
     const progress = sellerDeliveryPhaseProgress(value.phase);
     if (
@@ -358,6 +363,12 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
       value.lease.sellerPhaseIndex !== undefined
     ) {
       return "a seller bundle phase requires an unscoped lease";
+    }
+    if (
+      buyerBundlePhaseRank(value.phase) !== null &&
+      value.lease.sellerPhaseIndex !== undefined
+    ) {
+      return "a buyer bundle phase requires an unscoped lease";
     }
     if (
       progress &&
@@ -697,6 +708,15 @@ export function snapshotFencedCreateInput(value: unknown): CreateInput {
       "create.phase cannot enter seller bundle finalization without a completed delivery",
     );
   }
+  if (
+    input.phase !== undefined &&
+    (buyerBundlePhaseRank(input.phase) !== null ||
+      input.phase === "buyer:finalised")
+  ) {
+    throw new DacsError(
+      "create.phase cannot enter buyer bundle finalization without a fenced session",
+    );
+  }
   assertOptionalNow(input.now, "create.now");
   return structuredClone(input) as unknown as CreateInput;
 }
@@ -899,11 +919,12 @@ export function compareFencedSessionRecords(
 }
 
 const clone = <T>(value: T): T => structuredClone(value);
-const sellerTerminal = (phase: string): boolean =>
+const sessionTerminal = (phase: string): boolean =>
   phase === "seller:completed" ||
   phase === "seller:failed" ||
   phase === "seller:rejected" ||
-  phase === "seller:finalised";
+  phase === "seller:finalised" ||
+  phase === "buyer:finalised";
 
 /** Monotonic, unscoped recovery lifecycle for seller bundle finalization. */
 function sellerBundlePhaseRank(phase: string): number | null {
@@ -916,6 +937,28 @@ function sellerBundlePhaseRank(phase: string): number | null {
       return 2;
     case "seller:bundle-binding-publication-pending":
       return 3;
+    default:
+      return null;
+  }
+}
+
+/** Monotonic, unscoped recovery lifecycle for buyer bundle finalization. */
+function buyerBundlePhaseRank(phase: string): number | null {
+  switch (phase) {
+    case "buyer:bundle-review":
+      return 0;
+    case "buyer:counter-signing":
+      return 1;
+    case "buyer:counter-signature-publication-pending":
+      return 2;
+    case "buyer:awaiting-seller-finalisation":
+      return 3;
+    case "buyer:bundle-anchor-pending":
+      return 4;
+    case "buyer:bundle-binding-signing":
+      return 5;
+    case "buyer:bundle-binding-publication-pending":
+      return 6;
     default:
       return null;
   }
@@ -971,17 +1014,48 @@ export function sessionPhaseMutationFailure(
   nextPhase: string | undefined,
 ): "phase-regression" | null {
   if (nextPhase?.startsWith("seller:") &&
-      !sellerTerminal(nextPhase) &&
+      !sessionTerminal(nextPhase) &&
       sellerDeliveryPhaseProgress(nextPhase) === null &&
       sellerBundlePhaseRank(nextPhase) === null) {
+    return "phase-regression";
+  }
+  if (nextPhase?.startsWith("buyer:") &&
+      !sessionTerminal(nextPhase) &&
+      buyerBundlePhaseRank(nextPhase) === null) {
     return "phase-regression";
   }
   const currentBundleRank = sellerBundlePhaseRank(record.phase);
   const nextBundleRank = nextPhase === undefined
     ? null
     : sellerBundlePhaseRank(nextPhase);
+  const currentBuyerRank = buyerBundlePhaseRank(record.phase);
+  const nextBuyerRank = nextPhase === undefined
+    ? null
+    : buyerBundlePhaseRank(nextPhase);
   const current = sellerDeliveryPhaseProgress(record.phase);
   const scope = record.lease?.sellerPhaseIndex;
+
+  if (record.phase === "buyer:finalised") return "phase-regression";
+
+  // Buyer bundle work is an independent-agent lifecycle. Every irreversible
+  // step is unscoped, forward-only, and sealed by buyer:finalised.
+  if (currentBuyerRank !== null) {
+    if (scope !== undefined) return "phase-regression";
+    if (nextPhase === undefined) return null;
+    if (nextPhase === "buyer:finalised") return null;
+    return nextBuyerRank !== null && nextBuyerRank >= currentBuyerRank
+      ? null
+      : "phase-regression";
+  }
+
+  if (nextPhase === "buyer:finalised") return "phase-regression";
+
+  if (nextBuyerRank !== null) {
+    return currentBundleRank === null && current === null &&
+      scope === undefined && nextBuyerRank === 0 && record.lease !== undefined
+      ? null
+      : "phase-regression";
+  }
 
   if (nextPhase === "seller:finalised") {
     // Preserve the v2 store's pre-existing global-finalisation transition for
@@ -1045,6 +1119,9 @@ export function sessionLeaseScopeFailure(
   record: SessionRecord,
   sellerPhaseIndex: number | undefined,
 ): "phase-regression" | null {
+  if (buyerBundlePhaseRank(record.phase) !== null) {
+    return sellerPhaseIndex === undefined ? null : "phase-regression";
+  }
   if (sellerBundlePhaseRank(record.phase) !== null) {
     return sellerPhaseIndex === undefined ? null : "phase-regression";
   }
@@ -1063,6 +1140,9 @@ export function sessionLeaseScopeFailure(
 export function sessionAuthorizationPhaseFailure(
   record: SessionRecord,
 ): "phase-regression" | null {
+  if (buyerBundlePhaseRank(record.phase) !== null) {
+    return "phase-regression";
+  }
   if (sellerBundlePhaseRank(record.phase) !== null) {
     return "phase-regression";
   }
@@ -1189,7 +1269,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       if (current.revision !== input.expectedRevision) {
         return { ok: false, reason: "revision-mismatch", record: clone(current) };
       }
-      if (sellerTerminal(current.phase)) {
+      if (sessionTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       const now = input.now ?? Date.now();
@@ -1244,7 +1324,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       const input = snapshotFencedCheckpointClaimInput(rawInput);
       const current = sessions.get(input.jobId);
       if (!current) return { ok: false, reason: "not-found" };
-      if (sellerTerminal(current.phase)) {
+      if (sessionTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       const now = input.now ?? Date.now();
@@ -1297,7 +1377,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       }
       const current = sessions.get(jobId);
       if (!current) return { ok: false, reason: "not-found" };
-      if (sellerTerminal(current.phase)) {
+      if (sessionTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       if (current.lease && current.lease.expiresAt > now) {
@@ -1332,7 +1412,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       validTtl(ttlMs);
       const current = sessions.get(jobId);
       if (!current) return { ok: false, reason: "not-found" };
-      if (sellerTerminal(current.phase)) {
+      if (sessionTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       const problem = leaseFailure(current, leaseToken, now);
@@ -1396,7 +1476,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
         });
         return { ok: true, record: clone(current) };
       }
-      if (sellerTerminal(current.phase)) {
+      if (sessionTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       if (!current.lease) {
@@ -1482,7 +1562,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
     async bindHash(rawInput) {
       const { hash, jobId, kind } = snapshotFencedBindHashInput(rawInput);
       const current = sessions.get(jobId);
-      if (kind === "agreement" && current && sellerTerminal(current.phase)) {
+      if (kind === "agreement" && current && sessionTerminal(current.phase)) {
         return current.agreementHash === hash
           ? { ok: true, boundTo: jobId }
           : { ok: false, boundTo: jobId };
