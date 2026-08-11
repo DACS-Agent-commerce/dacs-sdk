@@ -129,6 +129,15 @@ export {
   type SellerFulfilmentVetRequirementInvocation,
 } from "./fulfilmentAuditSource.js";
 export {
+  publishSellerSessionSettlement,
+  sellerSessionSettlementPublicationEffectId,
+  type SellerSessionSettlementPublicationRequest,
+  type SellerSessionSettlementAnchorResult,
+  type SellerSessionSettlementEvidenceResolution,
+  type SellerSessionSettlementPublicationDeps,
+  type SellerSessionSettlementPublicationResult,
+} from "./sessionSettlementPublication.js";
+export {
   runFulfilmentCore,
   sellerFulfilmentId,
   type SellerAttestationRef,
