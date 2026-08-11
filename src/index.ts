@@ -608,6 +608,7 @@ export {
   type SellerBundleBindingLookup,
   type SellerBundleBindingPublication,
   type SellerPaymentPhaseIndexResolution,
+  type SellerCompositeVerificationDeps,
   type SellerBundleFinalizationProvider,
   type FinalizeCompletedSellerBundleInput,
   type CompletedSellerBundleCounterSignatureRequest,

@@ -6,6 +6,7 @@ import type {
   BundleSignature,
   ChainTxRef,
   ComponentSignature,
+  CompositeVerificationRecord,
   FaultAttestationBundle,
   IdentityBundle,
   ListingRef,
@@ -21,16 +22,19 @@ import {
   isBundleRequirement,
   isBundleBinding,
   isChainTxRef,
+  isCompositeVerificationRecord,
   isComponentSignature,
   isDeliverableSpec,
   isFaultAttestationBundle,
   isListing,
   isPhaseStep,
   isSettlementEvidence,
+  isVerifyResult,
   isCanonicalBase64Url,
   signComponentArtifact,
   type BuildComponentSignatureOptions,
 } from "../artifacts/index.js";
+import { isExactJsonRecord } from "../artifacts/validators.js";
 import {
   bundleAddress,
   canonicalize,
@@ -51,6 +55,14 @@ import {
   verifyBundleCopy,
   type BundleCopyDeps,
 } from "../agent/bundleCopyValidity.js";
+import {
+  verifyCompositeVerificationRecord,
+  type CompositeVerificationExpectations,
+  type ExpectedVerifyResult,
+  type ResolvedVerificationContent,
+  type StrictCompositeVerification,
+  type VerifyCompositeVerificationDeps,
+} from "../agent/compositeVerification.js";
 import {
   sellerFulfilmentId,
   type SellerFulfilmentAgreement,
@@ -176,7 +188,31 @@ export interface CompletedSellerVetRequirementInvocation {
   evaluatedParty: string;
   requirement: BundleRequirement;
   verifier: string;
+  /** Independently retained VPC-2 classification and exact result bindings. */
+  freshness: ExpectedVerifyResult[];
+  /** Independently retained VPC-2 classification and exact result bindings. */
+  dealSpecific: ExpectedVerifyResult[];
 }
+
+/**
+ * Cryptographic dependencies used by the SDK's local strict DACS-2 verifier.
+ * Resolution of artifacts and the acceptance clock are deliberately supplied
+ * by finalization from the already audited closure and frozen session time.
+ */
+export type SellerCompositeVerificationDeps = Omit<
+  VerifyCompositeVerificationDeps<Uint8Array>,
+  "nowMs" | "resolve" | "resolveRecipe"
+> & {
+  /** Resolve from the exact registry version retained by the completed session. */
+  resolveRecipe: (
+    selector: Parameters<
+      VerifyCompositeVerificationDeps<Uint8Array>["resolveRecipe"]
+    >[0],
+    recipeRegistryVersion: number,
+  ) => ReturnType<
+    VerifyCompositeVerificationDeps<Uint8Array>["resolveRecipe"]
+  >;
+};
 
 export type SellerBundleDependencySource =
   | { kind: "listing"; listingRef: ListingRef }
@@ -258,6 +294,11 @@ export interface SellerBundleFinalizationProvider {
   mapping: "pure" | "write-input";
   /** Local cryptographic verifier used by the SDK's required-signer gate. */
   bundleCopyVerifier: BundleCopyDeps;
+  /**
+   * Recipe, signer, key, and method-native authority dependencies for the
+   * SDK's strict CompositeVerificationRecord closure verifier.
+   */
+  compositeVerificationDeps: SellerCompositeVerificationDeps;
   resolveDependency: (
     dependency: Readonly<FinalizedSellerBundleDependency>,
     requirement: Readonly<SellerBundleDependencyRequirement>,
@@ -304,7 +345,7 @@ export interface SellerBundleFinalizationProvider {
    */
   verifyVetRequirementProvenance: (input: {
     invocation: Readonly<CompletedSellerVetRequirementInvocation>;
-    compositeRecord: Readonly<Record<string, unknown>>;
+    compositeRecord: Readonly<CompositeVerificationRecord>;
     listingOwned: boolean;
   }) =>
     | Promise<SellerBundleVerificationDisposition>
@@ -524,6 +565,44 @@ function snapshot<T>(value: T, subject: string): T {
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const allowed = new Set(keys);
   return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function ownEnumerableDataProperties(
+  value: unknown,
+): ReadonlyMap<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key !== "string")) return null;
+    const properties = new Map<string, unknown>();
+    for (const key of ownKeys as string[]) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        descriptor.enumerable !== true ||
+        !("value" in descriptor) ||
+        descriptor.value === undefined
+      ) {
+        return null;
+      }
+      properties.set(key, descriptor.value);
+    }
+    return properties;
+  } catch {
+    return null;
+  }
+}
+
+function hasExactPropertySet(
+  properties: ReadonlyMap<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  return (
+    properties.size === expected.length &&
+    expected.every((key) => properties.has(key))
+  );
 }
 
 function isListingRef(value: unknown): value is ListingRef {
@@ -924,6 +1003,8 @@ function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSess
         "evaluatedParty",
         "requirement",
         "verifier",
+        "freshness",
+        "dealSpecific",
       ]) ||
       !isAttestationRef(invocation.vetRecordRef) ||
       typeof invocation.evaluatedParty !== "string" ||
@@ -931,6 +1012,8 @@ function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSess
       !isBundleRequirement(invocation.requirement) ||
       typeof invocation.verifier !== "string" ||
       invocation.verifier.length === 0 ||
+      !Array.isArray(invocation.freshness) ||
+      !Array.isArray(invocation.dealSpecific) ||
       !refsContain(vetRecords, invocation.vetRecordRef) ||
       retainedVetHashes.has(invocation.vetRecordRef.contentHash)
     ) {
@@ -1370,96 +1453,6 @@ function isPayloadAttestationRecord(value: unknown): value is Record<string, unk
   );
 }
 
-function isVerifyResultRecord(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  return (
-    value.resultVersion === "1" &&
-    typeof value.scheme === "string" &&
-    value.scheme.length > 0 &&
-    typeof value.identifier === "string" &&
-    value.identifier.length > 0 &&
-    Number.isSafeInteger(value.recipeVersion) &&
-    (value.recipeVersion as number) > 0 &&
-    typeof value.method === "string" &&
-    value.method.length > 0 &&
-    ["pass", "fail", "indeterminate", "error"].includes(String(value.decision)) &&
-    typeof value.reason === "string" &&
-    value.reason.length > 0 &&
-    isAttestationRef(value.attestation) &&
-    (value.data === undefined || isRecord(value.data)) &&
-    validUint(value.fetchedAt) &&
-    validUint(value.verifiedAt) &&
-    (value.validUntil === undefined || validUint(value.validUntil)) &&
-    isComponentSignature(value.signature)
-  );
-}
-
-function isVerifyResultRef(value: unknown): value is Record<string, unknown> {
-  return (
-    isRecord(value) &&
-    hasOnlyKeys(value, ["anchor", "contentHash", "recipeVersion"]) &&
-    isAttestationRef({ anchor: value.anchor, contentHash: value.contentHash }) &&
-    Number.isSafeInteger(value.recipeVersion) &&
-    (value.recipeVersion as number) > 0
-  );
-}
-
-/** Current DACS-2 §7.7 wire shape; the repository-wide legacy guard is not used. */
-function isNormativeCompositeVerificationRecord(
-  value: unknown,
-): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  const verifyRefs = (candidate: unknown): boolean =>
-    Array.isArray(candidate) && candidate.every(isVerifyResultRef);
-  const supplementary =
-    Array.isArray(value.supplementary) &&
-    value.supplementary.every(
-      (signal) =>
-        isRecord(signal) &&
-        typeof signal.source === "string" &&
-        signal.source.length > 0 &&
-        typeof signal.signalType === "string" &&
-        signal.signalType.length > 0 &&
-        ((typeof signal.value === "number" && Number.isFinite(signal.value)) ||
-          typeof signal.value === "string") &&
-        validUint(signal.observedAt) &&
-        (signal.attestation === undefined || isAttestationRef(signal.attestation)) &&
-        (signal.source !== "external" || isAttestationRef(signal.attestation)),
-    );
-  const warnings =
-    value.warnings === undefined ||
-    (Array.isArray(value.warnings) &&
-      value.warnings.every(
-        (warning) =>
-          isRecord(warning) &&
-          typeof warning.claimRef === "string" &&
-          warning.claimRef.length > 0 &&
-          typeof warning.code === "string" &&
-          warning.code.length > 0 &&
-          typeof warning.retryable === "boolean" &&
-          (warning.suggestedRetryAfterMs === undefined ||
-            validUint(warning.suggestedRetryAfterMs)),
-      ));
-  return (
-    value.recordVersion === "1" &&
-    typeof value.jobId === "string" &&
-    value.jobId.length > 0 &&
-    typeof value.evaluatedParty === "string" &&
-    value.evaluatedParty.length > 0 &&
-    isHash(value.bundleHash) &&
-    isHash(value.requirementHash) &&
-    verifyRefs(value.freshness) &&
-    supplementary &&
-    verifyRefs(value.dealSpecific) &&
-    ["pass", "fail", "indeterminate", "error"].includes(
-      String(value.overallDecision),
-    ) &&
-    warnings &&
-    validUint(value.generatedAt) &&
-    isComponentSignature(value.signature)
-  );
-}
-
 function identityBundleHash(value: unknown): string {
   if (!isRecord(value) || !("presentation" in value)) {
     throw new DacsError("Listing seller IdentityBundle is malformed");
@@ -1554,6 +1547,36 @@ type ResolvedDependencyContent =
   | { encoding: "artifact" | "jcs"; artifact: Record<string, unknown> }
   | { encoding: "bytes"; bytes: Uint8Array };
 
+function resolvedCompositeVerificationContent(
+  reference: Readonly<{
+    anchor: AttestationRef["anchor"];
+    contentHash: string;
+    signer?: string;
+  }>,
+  requirements: ReadonlyMap<string, SellerBundleDependencyRequirement>,
+  resolved: ReadonlyMap<string, ResolvedDependencyContent>,
+): ResolvedVerificationContent | null {
+  const ref: AttestationRef = {
+    anchor: snapshot(reference.anchor, "composite verification anchor"),
+    contentHash: reference.contentHash,
+    ...(reference.signer !== undefined ? { signer: reference.signer } : {}),
+  };
+  const matches = [...requirements.values()].filter((requirement) =>
+    requirement.refs.some((candidate) => exact(candidate, ref)),
+  );
+  // One physical ref with conflicting wire encodings is ambiguous and must not
+  // be normalized into whichever representation happens to be encountered.
+  if (matches.length !== 1) return null;
+  const content = resolved.get(matches[0]!.id);
+  if (!content) return null;
+  return content.encoding === "bytes"
+    ? { encoding: "bytes", value: Uint8Array.from(content.bytes) }
+    : {
+        encoding: "canonical-json",
+        value: snapshot(content.artifact, "composite verification dependency"),
+      };
+}
+
 function resolvedArtifact(
   source: SellerBundleDependencySource,
   resolved: ReadonlyMap<string, ResolvedDependencyContent>,
@@ -1582,50 +1605,6 @@ function roleParty(
   if (role === "buyer") return session.buyer;
   if (role === "seller") return session.seller;
   return session.orchestrator;
-}
-
-type VetDecision = "pass" | "fail" | "indeterminate" | "error";
-
-/** Exact DACS-2 §7.7.1 aggregation over the resolved current VerifyResults. */
-function aggregateVetDecision(
-  requirement: BundleRequirement,
-  results: readonly Record<string, unknown>[],
-): VetDecision {
-  const decisionsFor = (scheme: string): VetDecision[] =>
-    results
-      .filter((result) => result.scheme === scheme)
-      .map((result) => result.decision as VetDecision);
-  let hasFailure = false;
-  let hasError = false;
-  let hasIndeterminate = false;
-  for (const claim of requirement.required) {
-    const decisions = decisionsFor(claim.scheme);
-    if (decisions.includes("pass")) continue;
-    if (decisions.length === 0 || decisions.includes("fail")) {
-      hasFailure = true;
-    } else if (decisions.includes("error")) {
-      hasError = true;
-    } else {
-      hasIndeterminate = true;
-    }
-  }
-  for (const group of requirement.oneOf ?? []) {
-    const decisions = group.flatMap((claim) => decisionsFor(claim.scheme));
-    if (decisions.includes("pass")) continue;
-    // Within an OR group, a retryable error outranks an indeterminate, and a
-    // hard failure is conclusive only when no member could still pass.
-    if (decisions.includes("error")) {
-      hasError = true;
-    } else if (decisions.includes("indeterminate")) {
-      hasIndeterminate = true;
-    } else {
-      hasFailure = true;
-    }
-  }
-  if (hasFailure) return "fail";
-  if (hasError) return "error";
-  if (hasIndeterminate) return "indeterminate";
-  return "pass";
 }
 
 type AuthenticatedPaymentBinding = Extract<
@@ -1812,7 +1791,7 @@ async function auditResolvedDependencyGraph(
     const separator = claim.ref.indexOf(":");
     if (
       separator <= 0 ||
-      !isVerifyResultRecord(result) ||
+      !isVerifyResult(result) ||
       result.scheme !== claim.ref.slice(0, separator) ||
       result.identifier !== claim.ref.slice(separator + 1) ||
       result.recipeVersion !== claim.verifiedBy.recipeVersion
@@ -1996,13 +1975,6 @@ async function auditResolvedDependencyGraph(
         ? agreementParty.role === "seller" || agreementParty.role === "bidder-non-winning"
         : agreementParty.role === "buyer" || agreementParty.role === "bidder-non-winning"
       : false;
-    const requirementHash = invocation
-      ? sha256Hex(
-          canonicalize(
-            invocation.requirement as unknown as Record<string, unknown>,
-          ),
-        )
-      : "";
     if (
       expected.length === 0 ||
       expected.some(
@@ -2011,15 +1983,12 @@ async function auditResolvedDependencyGraph(
           party.bundleHash !== expected[0]!.bundleHash,
       ) ||
       !invocation ||
-      !isNormativeCompositeVerificationRecord(record) ||
+      !isCompositeVerificationRecord(record) ||
       record.jobId !== session.jobId ||
       record.evaluatedParty !== expected[0]!.primaryClaim ||
       invocation.evaluatedParty !== record.evaluatedParty ||
       record.bundleHash !== expected[0]!.bundleHash ||
-      record.requirementHash !== requirementHash ||
-      (record.signature as ComponentSignature).signer !== invocation.verifier ||
-      (record.signature as ComponentSignature).signer !== phaseOrchestrator ||
-      (record.generatedAt as number) > session.finalisedAt ||
+      invocation.verifier !== phaseOrchestrator ||
       (listingOwned && !exact(invocation.requirement, listing.buyerRequirement))
     ) {
       throw new DacsError("completed session carries an invalid Vet record/requirement invocation");
@@ -2031,54 +2000,62 @@ async function auditResolvedDependencyGraph(
         listingOwned,
       }),
     );
-    const resolvedVetResults: Record<string, unknown>[] = [];
-    const seenResultHashes = new Set<string>();
-    for (const resultRef of [
-      ...(record.freshness as Record<string, unknown>[]),
-      ...(record.dealSpecific as Record<string, unknown>[]),
-    ]) {
-      const attestationRef: AttestationRef = {
-        anchor: resultRef.anchor as AttestationRef["anchor"],
-        contentHash: resultRef.contentHash as string,
-      };
-      const result = resolvedArtifact(
-        refSource(attestationRef),
-        resolved,
-        "CompositeVerificationRecord VerifyResult",
-      );
-      const resultHash = resultRef.contentHash as string;
-      const proofRequirement = [...requirements.values()].find(
-        (candidate) =>
-          candidate.kinds.includes("verification-attestation") &&
-          isVerifyResultRecord(result) &&
-          candidate.refs.some((candidateRef) =>
-            exact(candidateRef, result.attestation),
-          ),
-      );
-      if (
-        !isVerifyResultRecord(result) ||
-        seenResultHashes.has(resultHash) ||
-        result.recipeVersion !== resultRef.recipeVersion ||
-        !proofRequirement ||
-        !resolved.has(proofRequirement.id)
-      ) {
-        throw new DacsError(
-          "CompositeVerificationRecord does not close its VerifyResult authority chain",
-        );
-      }
-      seenResultHashes.add(resultHash);
-      resolvedVetResults.push(result);
-    }
-    const recomputedDecision = aggregateVetDecision(
-      invocation.requirement,
-      resolvedVetResults,
-    );
+    const resultRefs = [...record.freshness, ...record.dealSpecific];
     if (
-      record.overallDecision !== recomputedDecision ||
-      recomputedDecision !== "pass"
+      new Set(resultRefs.map((resultRef) => resultRef.contentHash)).size !==
+      resultRefs.length
     ) {
+      throw new DacsError("CompositeVerificationRecord repeats a VerifyResult reference");
+    }
+    const expectations: CompositeVerificationExpectations = {
+      jobId: session.jobId,
+      evaluatedParty: invocation.evaluatedParty,
+      bundleHash: expected[0]!.bundleHash,
+      requirement: invocation.requirement,
+      verifier: invocation.verifier,
+      freshness: invocation.freshness,
+      dealSpecific: invocation.dealSpecific,
+    };
+    let verification: StrictCompositeVerification;
+    try {
+      verification = await verifyCompositeVerificationRecord(
+        record,
+        expectations,
+        {
+          ...provider.compositeVerificationDeps,
+          nowMs: () => session.finalisedAt,
+          resolve: async (reference) =>
+            resolvedCompositeVerificationContent(
+              reference,
+              requirements,
+              resolved,
+            ),
+          resolveRecipe: (selector) =>
+            provider.compositeVerificationDeps.resolveRecipe(
+              selector,
+              session.recipeRegistryVersion,
+            ),
+        },
+      );
+    } catch (error) {
+      throw new SubstrateError(
+        "CompositeVerificationRecord strict verification errored",
+        { cause: error },
+      );
+    }
+    if (verification.status === "unresolved") {
+      throw new SubstrateError(
+        `CompositeVerificationRecord strict verification is unresolved (${verification.code})`,
+      );
+    }
+    if (verification.status === "invalid") {
       throw new DacsError(
-        "CompositeVerificationRecord overallDecision does not match DACS-2 aggregation",
+        `CompositeVerificationRecord strict verification failed (${verification.code})`,
+      );
+    }
+    if (verification.record.overallDecision !== "pass") {
+      throw new DacsError(
+        "CompositeVerificationRecord does not establish a pass decision",
       );
     }
   }
@@ -2599,32 +2576,66 @@ async function verifyDependencies(
       ),
     );
 
-    let lookup: SellerBundleDependencyLookup;
+    let rawLookup: unknown;
     try {
-      lookup = snapshot(
-        await provider.resolveDependency(
-          snapshot(dependency, "dependency resolution input"),
-          snapshot(requirement, "dependency resolution requirement"),
-        ),
-        "dependency resolution result",
+      rawLookup = await provider.resolveDependency(
+        snapshot(dependency, "dependency resolution input"),
+        snapshot(requirement, "dependency resolution requirement"),
       );
     } catch (error) {
       throw new SubstrateError(`dependency ${id} resolution errored`, { cause: error });
     }
-    if (!isRecord(lookup) || !["present", "absent", "indeterminate"].includes(String(lookup.disposition))) {
+    const lookupProperties = ownEnumerableDataProperties(rawLookup);
+    const disposition = lookupProperties?.get("disposition");
+    if (
+      !lookupProperties ||
+      typeof disposition !== "string" ||
+      !["present", "absent", "indeterminate"].includes(disposition)
+    ) {
       throw new SubstrateError(`dependency ${id} resolution returned an invalid disposition`);
     }
-    if (lookup.disposition === "indeterminate") {
-      throw new SubstrateError(`dependency ${id} resolution is indeterminate: ${lookup.reason}`);
+    if (disposition === "indeterminate") {
+      const reason = lookupProperties.get("reason");
+      if (
+        !hasExactPropertySet(lookupProperties, ["disposition", "reason"]) ||
+        typeof reason !== "string" ||
+        reason.length === 0
+      ) {
+        throw new SubstrateError(
+          `dependency ${id} resolution returned an invalid indeterminate disposition`,
+        );
+      }
+      throw new SubstrateError(
+        `dependency ${id} resolution is indeterminate: ${reason}`,
+      );
     }
-    if (lookup.disposition === "absent") {
+    if (disposition === "absent") {
+      if (!hasExactPropertySet(lookupProperties, ["disposition"])) {
+        throw new SubstrateError(
+          `dependency ${id} resolution returned an invalid absent disposition`,
+        );
+      }
       throw new DacsError(`dependency ${id} is authoritatively absent despite its finalized receipt`);
     }
+    const hasArtifact = lookupProperties.has("artifact");
+    const hasBytes = lookupProperties.has("bytes");
+    if (
+      hasArtifact === hasBytes ||
+      !hasExactPropertySet(lookupProperties, [
+        "disposition",
+        hasArtifact ? "artifact" : "bytes",
+      ])
+    ) {
+      throw new SubstrateError(
+        `dependency ${id} resolution returned an invalid present disposition`,
+      );
+    }
     if (requirement.encoding === "bytes") {
-      if (!(lookup.bytes instanceof Uint8Array) || lookup.artifact !== undefined) {
+      const rawBytes = lookupProperties.get("bytes");
+      if (!hasBytes || !(rawBytes instanceof Uint8Array)) {
         throw new DacsError(`dependency ${id} did not resolve to exact bytes`);
       }
-      const bytes = new Uint8Array(lookup.bytes);
+      const bytes = new Uint8Array(rawBytes);
       if (sha256Hex(bytes) !== requirement.contentHash) {
         throw new DacsError(`dependency ${id} resolved with a different raw-byte hash`);
       }
@@ -2637,10 +2648,17 @@ async function verifyDependencies(
         }),
       );
     } else {
-      if (!isRecord(lookup.artifact) || lookup.bytes !== undefined) {
+      const rawArtifact = lookupProperties.get("artifact");
+      if (!hasArtifact || !isExactJsonRecord(rawArtifact)) {
         throw new DacsError(`dependency ${id} resolved to a non-artifact value`);
       }
-      const artifact = snapshot(lookup.artifact, "resolved dependency artifact");
+      const artifact = snapshot(
+        rawArtifact,
+        "resolved dependency artifact",
+      );
+      if (!isExactJsonRecord(artifact)) {
+        throw new DacsError(`dependency ${id} is not an exact JSON wire artifact`);
+      }
       let resolvedHash: string;
       try {
         resolvedHash = requirement.encoding === "jcs"
@@ -2688,21 +2706,21 @@ async function verifyDependencies(
       }
       if (
         requirement.kinds.includes("vet-record") &&
-        isNormativeCompositeVerificationRecord(artifact)
+        isCompositeVerificationRecord(artifact)
       ) {
         for (const resultRef of [
-          ...(artifact.freshness as Record<string, unknown>[]),
-          ...(artifact.dealSpecific as Record<string, unknown>[]),
+          ...artifact.freshness,
+          ...artifact.dealSpecific,
         ]) {
           addRequirement(
             "verify-result",
             refSource({
-              anchor: resultRef.anchor as AttestationRef["anchor"],
-              contentHash: resultRef.contentHash as string,
+              anchor: resultRef.anchor,
+              contentHash: resultRef.contentHash,
             }),
           );
         }
-        for (const signal of artifact.supplementary as Record<string, unknown>[]) {
+        for (const signal of artifact.supplementary) {
           if (isAttestationRef(signal.attestation)) {
             addRequirement(
               "verification-attestation",
@@ -2714,7 +2732,7 @@ async function verifyDependencies(
           }
         }
       }
-      if (requirement.kinds.includes("verify-result") && isVerifyResultRecord(artifact)) {
+      if (requirement.kinds.includes("verify-result") && isVerifyResult(artifact)) {
         addRequirement(
           "verification-attestation",
           suppliedSourceForRef(
@@ -3418,6 +3436,20 @@ export async function finalizeCompletedSellerBundleCore(
   ) {
     throw new DacsError("local bundle signature verifier is unavailable");
   }
+  const compositeVerificationDeps = provider.compositeVerificationDeps;
+  if (
+    !isRecord(compositeVerificationDeps) ||
+    typeof compositeVerificationDeps.resolveRecipe !== "function" ||
+    typeof compositeVerificationDeps.isRecipeSignerAuthorized !== "function" ||
+    typeof compositeVerificationDeps.isVerifyResultSignerAuthorized !== "function" ||
+    typeof compositeVerificationDeps.resolvePublicKey !== "function" ||
+    typeof compositeVerificationDeps.verify !== "function" ||
+    typeof compositeVerificationDeps.verifyAuthorityAttestation !== "function" ||
+    (compositeVerificationDeps.verifyRequirementParameters !== undefined &&
+      typeof compositeVerificationDeps.verifyRequirementParameters !== "function")
+  ) {
+    throw new DacsError("strict CompositeVerificationRecord verifier is unavailable");
+  }
   if (typeof provider.verifyListingPublisherIdentityLinkage !== "function") {
     throw new DacsError("Listing/session IdentityBundle linkage verifier is unavailable");
   }
@@ -3430,6 +3462,35 @@ export async function finalizeCompletedSellerBundleCore(
     bundleCopyVerifier: {
       resolvePublicKey: provider.bundleCopyVerifier.resolvePublicKey,
       verify: provider.bundleCopyVerifier.verify,
+    },
+    compositeVerificationDeps: {
+      resolveRecipe: compositeVerificationDeps.resolveRecipe.bind(
+        compositeVerificationDeps,
+      ),
+      isRecipeSignerAuthorized:
+        compositeVerificationDeps.isRecipeSignerAuthorized.bind(
+          compositeVerificationDeps,
+        ),
+      isVerifyResultSignerAuthorized:
+        compositeVerificationDeps.isVerifyResultSignerAuthorized.bind(
+          compositeVerificationDeps,
+        ),
+      resolvePublicKey: compositeVerificationDeps.resolvePublicKey.bind(
+        compositeVerificationDeps,
+      ),
+      verify: compositeVerificationDeps.verify.bind(compositeVerificationDeps),
+      verifyAuthorityAttestation:
+        compositeVerificationDeps.verifyAuthorityAttestation.bind(
+          compositeVerificationDeps,
+        ),
+      ...(compositeVerificationDeps.verifyRequirementParameters
+        ? {
+            verifyRequirementParameters:
+              compositeVerificationDeps.verifyRequirementParameters.bind(
+                compositeVerificationDeps,
+              ),
+          }
+        : {}),
     },
   };
   const session = prepareSession(input);
