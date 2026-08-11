@@ -9,7 +9,7 @@ repository call.
 | SDK rule | Normative source |
 | --- | --- |
 | Exact `AgreementDocument`, `PayeeBoundAgreementDocument`, party, terms, fee, payout, and signature types | DACS-3 §8.5–§8.5.3 |
-| Fixed price copied exactly; negotiable fixed-price path uses `bandCenter`; auction/metered fail closed until their handlers are selected | DACS-3 §8.4.1; §8.5.2 checks 1–2; MTR-5 |
+| Fixed pricing is copied exactly; negotiable, auction, and metered variants fail closed until a handler accepts and validates the required terms instead of inventing a price | DACS-3 §8.4.1; §8.5.2 checks 1–2; MTR-1..MTR-5; CORE §11.1.2 |
 | Exactly one fixed-price phase followed immediately by one supported agreement commitment phase | DACS-3 §8.8 PS-1–PS-3 |
 | Agreement pins the immutable `(listingId, version, contentHash)` tuple | DACS-1 §6.3.4 LR-1; DACS-3 §8.5.2 check 4 |
 | Buyer/seller claims, post-Vet bundle hashes, and exact Vet references are signed agreement inputs | DACS-3 §8.4.1; §8.5 `AgreementParty` |
