@@ -20,6 +20,7 @@ import {
   type X402PaywallSettlementResult,
   type X402PaywallSettlementStore,
 } from "../../src/index.js";
+import { dacsX402AuthorizationNonce } from "../../src/rails/x402.js";
 
 const NETWORK = "eip155:84532" as const;
 const PAYER = `0x${"11".repeat(20)}`;
@@ -29,6 +30,13 @@ const TX_HASH = `0x${"ab".repeat(32)}`;
 const JOB_ID = "seller-paywall-job";
 const PHASE_INDEX = 2;
 const AMOUNT = "250000";
+
+it("keeps buyer and seller SB-3 nonce derivation byte-identical", async () => {
+  expect(await dacsX402AuthorizationNonce({
+    jobId: JOB_ID,
+    phaseIndex: PHASE_INDEX,
+  })).toBe(x402Eip3009Nonce(JOB_ID, PHASE_INDEX));
+});
 
 const expected = {
   network: NETWORK,
