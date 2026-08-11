@@ -38,9 +38,14 @@ const DEFAULT_LOCK_POLL_MS = 5;
 const PERMIT_RE = /^seller-payment:[A-Za-z0-9_-]{43}$/;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const STATE_FILE = "seller-receipts.json";
+const INITIALIZATION_FILE = "seller-receipts.initialized";
 const LOCK_DIR = "seller-receipts.lock";
 const RECLAIM_GATE = "seller-receipts.reclaim";
 const RECLAIM_QUARANTINE_PREFIX = `${RECLAIM_GATE}.`;
+const INITIALIZATION_TEXT = JSON.stringify({
+  markerVersion: 1,
+  stateFile: STATE_FILE,
+});
 
 /** On-disk schema version for {@link createFsSellerReceiptStore}. */
 export const SELLER_RECEIPT_STORE_VERSION = 1 as const;
@@ -317,6 +322,7 @@ export async function createFsSellerReceiptStore(
   );
   const root = capturedOptions.dir;
   const statePath = join(root, STATE_FILE);
+  const initializationPath = join(root, INITIALIZATION_FILE);
   const lockPath = join(root, LOCK_DIR);
   const reclaimGatePath = join(root, RECLAIM_GATE);
 
@@ -342,6 +348,68 @@ export async function createFsSellerReceiptStore(
     }
   }
 
+  async function readInitializationMarker(): Promise<"absent" | "present"> {
+    let text: string;
+    let handle;
+    try {
+      handle = await open(
+        initializationPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      const metadata = await handle.stat();
+      if (!metadata.isFile()) {
+        throw new DacsError("filesystem seller receipt store initialization marker is corrupt");
+      }
+      text = await handle.readFile("utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+        throw new DacsError(
+          "filesystem seller receipt store initialization marker path is unsafe",
+        );
+      }
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+    if (text !== INITIALIZATION_TEXT) {
+      throw new DacsError("filesystem seller receipt store initialization marker is corrupt");
+    }
+    return "present";
+  }
+
+  /** Publish only after a state file has itself been renamed and directory-fsynced. */
+  async function ensureInitializationMarker(): Promise<void> {
+    if (await readInitializationMarker() === "present") return;
+    const temporary = join(root, `.${INITIALIZATION_FILE}.${randomUUID()}.tmp`);
+    try {
+      const handle = await open(temporary, "wx", FILE_MODE);
+      try {
+        await handle.writeFile(INITIALIZATION_TEXT, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      try {
+        // A hard link is a no-overwrite publication point. An unexpected file
+        // at the marker path is validated rather than silently replaced.
+        await link(temporary, initializationPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (await readInitializationMarker() !== "present") {
+          throw new DacsError(
+            "filesystem seller receipt store initialization marker is corrupt",
+          );
+        }
+      }
+    } finally {
+      await unlink(temporary).catch(() => {});
+    }
+    // This path began with no marker. Fsync even after a validated EEXIST race
+    // so a concurrent no-overwrite publication is durable before we return.
+    await syncRoot();
+  }
+
   async function atomicWriteState(state: FsSellerReceiptState): Promise<void> {
     captureState(state);
     const text = JSON.stringify(state);
@@ -357,12 +425,17 @@ export async function createFsSellerReceiptStore(
       await rename(temporary, statePath);
       await chmod(statePath, FILE_MODE);
       await syncRoot();
+      // State durability is the precondition for publishing the marker. A
+      // crash between these operations leaves a migratable pre-marker state;
+      // the inverse order could falsely bless a missing state as initialized.
+      await ensureInitializationMarker();
     } finally {
       await unlink(temporary).catch(() => {});
     }
   }
 
   async function readState(): Promise<FsSellerReceiptState> {
+    const initialization = await readInitializationMarker();
     let text: string;
     let handle;
     try {
@@ -374,7 +447,10 @@ export async function createFsSellerReceiptStore(
       if (!metadata.isFile()) corruptState();
       text = await handle.readFile("utf8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyState();
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        if (initialization === "present") corruptState();
+        return emptyState();
+      }
       if ((error as NodeJS.ErrnoException).code === "ELOOP") {
         throw new DacsError("filesystem seller receipt store state path is unsafe");
       }
@@ -392,7 +468,11 @@ export async function createFsSellerReceiptStore(
     // members or alternate whitespace did not come from its atomic writer and
     // must not be allowed to erase a retained permit after JSON.parse collapse.
     if (JSON.stringify(parsed) !== text) corruptState();
-    return captureState(parsed);
+    const state = captureState(parsed);
+    // A valid pre-marker file is either a legacy store or the safe crash point
+    // after state publication. Establish the marker only after full validation.
+    if (initialization === "absent") await ensureInitializationMarker();
+    return state;
   }
 
   async function readOwner(path: string): Promise<LockOwner | null> {

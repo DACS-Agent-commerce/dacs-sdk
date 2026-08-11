@@ -8,6 +8,7 @@ import {
   rm,
   stat,
   symlink,
+  unlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -37,6 +38,11 @@ import {
 } from "../../src/seller/receiptStoreFs.js";
 
 const STATE_FILE = "seller-receipts.json";
+const INITIALIZATION_FILE = "seller-receipts.initialized";
+const INITIALIZATION_TEXT = JSON.stringify({
+  markerVersion: 1,
+  stateFile: STATE_FILE,
+});
 const LOCK_DIR = "seller-receipts.lock";
 const SETTLEMENT = `demos:${"ef".repeat(32)}`;
 const dirs: string[] = [];
@@ -303,6 +309,82 @@ describe("filesystem seller receipt store", () => {
     });
   });
 
+  test("fails closed after initialized state is deleted instead of issuing a new permit", async () => {
+    const dir = await tempStoreDir();
+    const claim = receiptClaim();
+    const firstStore = await createFsSellerReceiptStore({ dir });
+    const first = await firstStore.claim(claim);
+    if (first.status !== "claimed") throw new Error("fixture");
+    expect(await readFile(join(dir, INITIALIZATION_FILE), "utf8"))
+      .toBe(INITIALIZATION_TEXT);
+
+    await unlink(join(dir, STATE_FILE));
+    const restarted = await createFsSellerReceiptStore({ dir });
+    await expect(restarted.inspectPermit(first.permitId)).rejects.toThrow(
+      "filesystem seller receipt store state is corrupt",
+    );
+    await expect(restarted.claim(claim)).rejects.toThrow(
+      "filesystem seller receipt store state is corrupt",
+    );
+    await expect(access(join(dir, STATE_FILE))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(dir, INITIALIZATION_FILE), "utf8"))
+      .toBe(INITIALIZATION_TEXT);
+  });
+
+  test("migrates a valid legacy or post-state crash file before returning authority", async () => {
+    const dir = await tempStoreDir();
+    const claim = receiptClaim();
+    const firstStore = await createFsSellerReceiptStore({ dir });
+    const first = await firstStore.claim(claim);
+    if (first.status !== "claimed") throw new Error("fixture");
+
+    // Version 1 state predates the marker. This is also the only safe crash
+    // point during first initialization: durable state exists, marker does not.
+    await unlink(join(dir, INITIALIZATION_FILE));
+    const restarted = await createFsSellerReceiptStore({ dir });
+    await expect(restarted.inspectPermit(first.permitId)).resolves.toEqual({
+      status: "available",
+      claim,
+    });
+    expect(await readFile(join(dir, INITIALIZATION_FILE), "utf8"))
+      .toBe(INITIALIZATION_TEXT);
+    expect((await stat(join(dir, INITIALIZATION_FILE))).mode & 0o777).toBe(0o600);
+  });
+
+  test("rejects marker-only, symlinked, corrupt, and non-file initialization state", async () => {
+    const freshDir = await tempStoreDir();
+    const freshStore = await createFsSellerReceiptStore({ dir: freshDir });
+    await expect(freshStore.inspectPermit("never-issued")).resolves.toEqual({ status: "invalid" });
+    expect(await readdir(freshDir)).toEqual([]);
+
+    const sourceDir = await tempStoreDir();
+    const sourceStore = await createFsSellerReceiptStore({ dir: sourceDir });
+    const sourceClaim = await sourceStore.claim(receiptClaim());
+    if (sourceClaim.status !== "claimed") throw new Error("fixture");
+    const markerText = await readFile(join(sourceDir, INITIALIZATION_FILE), "utf8");
+
+    const markerOnlyDir = await tempStoreDir();
+    await writeFile(join(markerOnlyDir, INITIALIZATION_FILE), markerText, { mode: 0o600 });
+    const markerOnlyStore = await createFsSellerReceiptStore({ dir: markerOnlyDir });
+    await expect(markerOnlyStore.claim(receiptClaim())).rejects.toThrow(/state is corrupt/);
+    await expect(access(join(markerOnlyDir, STATE_FILE))).rejects.toMatchObject({ code: "ENOENT" });
+
+    const symlinkDir = await tempStoreDir();
+    const symlinkStore = await createFsSellerReceiptStore({ dir: symlinkDir });
+    await symlink(join(sourceDir, INITIALIZATION_FILE), join(symlinkDir, INITIALIZATION_FILE));
+    await expect(symlinkStore.inspectPermit(sourceClaim.permitId)).rejects.toThrow(/unsafe/);
+
+    const corruptDir = await tempStoreDir();
+    const corruptStore = await createFsSellerReceiptStore({ dir: corruptDir });
+    await writeFile(join(corruptDir, INITIALIZATION_FILE), "{not-marker", { mode: 0o600 });
+    await expect(corruptStore.claim(receiptClaim())).rejects.toThrow(/marker is corrupt/);
+
+    const nonFileDir = await tempStoreDir();
+    const nonFileStore = await createFsSellerReceiptStore({ dir: nonFileDir });
+    await mkdir(join(nonFileDir, INITIALIZATION_FILE), { mode: 0o700 });
+    await expect(nonFileStore.claim(receiptClaim())).rejects.toThrow(/marker is corrupt/);
+  });
+
   test("serializes concurrent stores and atomically selects the SB-2 winner", async () => {
     const dir = await tempStoreDir();
     const stores = await Promise.all([
@@ -535,7 +617,7 @@ describe("filesystem seller receipt store", () => {
         ? [result.permitId]
         : []);
     expect(new Set(permits).size).toBe(1);
-    expect((await readdir(dir)).sort()).toEqual([STATE_FILE]);
+    expect((await readdir(dir)).sort()).toEqual([INITIALIZATION_FILE, STATE_FILE]);
   });
 
   test("fails closed on malformed and unsupported state without overwriting it", async () => {
@@ -608,6 +690,7 @@ describe("filesystem seller receipt store", () => {
     expect(claimed.status).toBe("claimed");
     expect((await stat(dir)).mode & 0o777).toBe(0o700);
     expect((await stat(join(dir, STATE_FILE))).mode & 0o777).toBe(0o600);
+    expect((await stat(join(dir, INITIALIZATION_FILE))).mode & 0o777).toBe(0o600);
     expect(log).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
@@ -637,6 +720,6 @@ describe("filesystem seller receipt store", () => {
     };
     expect(Object.keys(state.records)).toHaveLength(2);
     expect(Object.keys(state.records).every((key) => /^[0-9a-f]{64}$/.test(key))).toBe(true);
-    expect((await readdir(dir)).sort()).toEqual([STATE_FILE]);
+    expect((await readdir(dir)).sort()).toEqual([INITIALIZATION_FILE, STATE_FILE]);
   });
 });
