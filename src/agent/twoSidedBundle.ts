@@ -359,7 +359,7 @@ export async function buildTwoSidedBundle(
     recipeRegistryVersion: session.recipeRegistryVersion,
     railRegistryVersion: session.railRegistryVersion,
     finalisedAt: session.finalisedAt,
-  }) as FaultAttestationBundle;
+  }) as unknown as FaultAttestationBundle;
 
   const signers: SigningSessionParty[] = [
     ...(buyerSigner ? [buyerSigner] : []),
@@ -378,14 +378,18 @@ export async function buildTwoSidedBundle(
 
   const copy = async (role: BundleAnchorRole): Promise<FaultAttestationBundle> => {
     const body = bodyFor(role);
-    const candidate = { ...body, anchoredByRole: role };
-    if (!isFaultAttestationBundle(candidate)) {
-      throw new DacsError("session facts do not form a valid FaultAttestationBundle");
-    }
+    // This is an in-memory signing draft, not a protocol artifact: §10.4.1
+    // requires signatures on the published FaultAttestationBundle. Hash the
+    // exact unsigned scope, attach signatures, then validate the final record.
+    const candidate = { ...body, anchoredByRole: role } as FaultAttestationBundle;
     const hash = attestationBundleHash(candidate);
     const signatures: BundleSignature[] = [];
     for (const signer of signers) signatures.push(await signOver(signer, hash));
-    return { ...candidate, signatures };
+    const signed = { ...candidate, signatures };
+    if (!isFaultAttestationBundle(signed)) {
+      throw new DacsError("session facts do not form a valid FaultAttestationBundle");
+    }
+    return signed;
   };
 
   const out: TwoSidedBundles = {};

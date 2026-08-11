@@ -11,6 +11,7 @@ import {
   publicKeyFromRaw,
   type DomainSeparator,
 } from "../crypto/index.js";
+import { isAnyAttestationBundle } from "../artifacts/validators.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
 import type { DemosAdapter } from "../substrate/index.js";
 import {
@@ -163,6 +164,15 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
+      // DACS-2 §7.5.2: normative refs carry their own anchor coordinates.
+      // This adapter owns storage-program reads; other registered anchor kinds
+      // need a transport-specific resolver supplied to verifyBundleCore.
+      resolveAttestationRef: async (artifactRef) =>
+        artifactRef.anchor.kind === "storage-program"
+          ? adapter.readAnchor(artifactRef.anchor.locator)
+          : null,
+      // Explicit pre-#308 compatibility for legacy SDK bundles whose refs were
+      // keyed only by an SDK artifact kind and the enclosing job id.
       resolveRef: async (kind, jobId, parties) => {
         const name =
           kind === "dacs-3-agreement"
@@ -219,9 +229,10 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
       // Bundle signature verification (§7.7) PLUS dereferencing each referenced
-      // artifact and hash-checking it. Session artifacts are resolved BY NAME
-      // (kind, jobId → name → address): the physical address folds in the writer's
-      // create-time nonce, so it can't be recomputed (#70).
+      // artifact and hash-checking it. Normative DACS-2 §7.5.2 refs resolve the
+      // signed storage-program locator directly. Pre-#308 MVP refs alone use
+      // owner-bound name resolution (kind, jobId → name → address), because
+      // their physical address folds in the writer's create-time nonce (#70).
       return verifyBundleAtRef(ref);
     },
 
@@ -297,7 +308,12 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       const bundles: AnyAttestationBundle[] = [];
       for (const ref of bundleRefs) {
         const verdict = await verifyBundleAtRef(ref);
-        if (verdict.ok && verdict.fullyVerified && verdict.bundle) {
+        if (
+          verdict.ok &&
+          verdict.fullyVerified &&
+          verdict.bundle &&
+          isAnyAttestationBundle(verdict.bundle)
+        ) {
           bundles.push(verdict.bundle);
         }
       }

@@ -56,10 +56,10 @@ describe("signing (§B.7)", () => {
     expect(verifyArtifact("dacs-bundle:v1:", GOLDEN.doc, sig, pub)).toBe(false);
   });
 
-  it("sig-registry-closed-24: the registry is the full closed §B.7 set of 24 (#86)", () => {
-    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(24);
-    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(24);
-    // Exact §B.7 membership — the six added in #86 (18 -> 24).
+  it("sig-registry-closed-25: the registry is the full closed §B.7 set of 25", () => {
+    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(25);
+    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(25);
+    // Exact §B.7 membership added since the original 18-entry registry.
     for (const sep of [
       "dacs-finality-commitment:v1:",
       "dacs-bundle-binding:v1:",
@@ -67,6 +67,7 @@ describe("signing (§B.7)", () => {
       "dacs-session-binding:v1:",
       "dacs-auto-accept-commitment:v1:",
       "dacs-auto-accept-instance:v1:",
+      "dacs-payload-attestation:v1:",
     ] as const) {
       expect(isRegisteredSeparator(sep)).toBe(true);
     }

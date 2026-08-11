@@ -28,6 +28,19 @@ const EV_FIXTURE = join(CONF, "fixtures/settlement-evidence-payment-success.json
 const BUNDLE_FIXTURE = join(CONF, "fixtures/attestation-bundle-0004.json");
 const have = existsSync(VECTOR);
 
+/**
+ * The current legacy AttestationBundle fixture deliberately retains historical
+ * phase labels (`vet-counterparty`, `settle-testnet`). New v0.3 production uses
+ * the closed DACS-1 §6.3 PhaseType set, so reference-shape tests keep the exact
+ * refs/txRefs while spelling the equivalent current phases.
+ */
+const currentPhaseBundleFixture = () => {
+  const bundle = JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+  bundle.phaseSummary[0].kind = "vet-credentials";
+  bundle.phaseSummary[1].kind = "pay-dem";
+  return bundle;
+};
+
 const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
   Listing: isListing,
   CompositeVerificationRecord: isCompositeVerificationRecord,
@@ -56,9 +69,10 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
   // (seller.identity, evaluatedParty/requirementHash/dealSpecific, parties[]…).
   // These are KNOWN, ACTIONABLE conformance gaps — NOT skipped: each runs as an
   // `it.fails` asserting the reduced validator does NOT yet accept the normative
-  // shape. When the #5 artifact-fidelity rewrite brings the validators up, these
-  // flip RED (a passing body under `it.fails` fails), forcing their removal — so
-  // the gap can't silently rot green. (Vector-replay coverage is tracked in #6.)
+  // shape. The Listing stack (#110/#116) and agreement/component migrations
+  // (#98/#101) own those producers. As each lands, the corresponding body passes
+  // and `it.fails` flips RED, forcing removal so the gap cannot silently rot
+  // green. (Broader vector-replay coverage is tracked in #6.)
   const REDUCED_SHAPE_KINDS = new Set([
     "Listing",
     "CompositeVerificationRecord",
@@ -82,7 +96,7 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
           kind === "SettlementEvidence"
             ? JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence
             : kind === "AttestationBundle"
-              ? JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"))
+              ? currentPhaseBundleFixture()
               : a.artifact;
         expect(validator(fixture)).toBe(true);
       },
@@ -124,6 +138,14 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     // Finality is success-only.
     expect(
       isSettlementEvidence({ ...valid, outcome: "failure", settlementFinality: undefined }),
+    ).toBe(false);
+    expect(
+      isSettlementEvidence({
+        ...valid,
+        outcome: "failure",
+        reason: "rail rejected",
+        settlementFinality: undefined,
+      }),
     ).toBe(true);
     expect(isSettlementEvidence({ ...valid, outcome: "failure" })).toBe(false);
     expect(isSettlementEvidence({ ...valid, settlementFinality: undefined })).toBe(false);
@@ -142,7 +164,22 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
 });
 
 describe.skipIf(!have)("isAttestationBundle: phaseSummary[].attestationRef is OPTIONAL (#12 / §10.4.3)", () => {
-  const bundle = () => JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+  const bundle = currentPhaseBundleFixture;
+
+  it("retains explicit read compatibility for historical phase labels", () => {
+    const historical = JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+    expect(historical.phaseSummary.map((phase: { kind: string }) => phase.kind)).toEqual([
+      "vet-counterparty",
+      "settle-testnet",
+    ]);
+    expect(isAttestationBundle(historical)).toBe(true);
+    expect(isFaultAttestationBundle({
+      ...historical,
+      bundleVersion: undefined,
+      faultBundleVersion: "1",
+      faultedParty: "none",
+    })).toBe(false);
+  });
 
   it("accepts a bundle whose phaseSummary entry omits attestationRef", () => {
     const b = bundle();
@@ -160,7 +197,7 @@ describe.skipIf(!have)("isAttestationBundle: phaseSummary[].attestationRef is OP
 
 describe.skipIf(!have)("FaultAttestationBundle discriminator", () => {
   const faultBundle = () => {
-    const bundle = JSON.parse(readFileSync(BUNDLE_FIXTURE, "utf8"));
+    const bundle = currentPhaseBundleFixture();
     delete bundle.bundleVersion;
     bundle.faultBundleVersion = "1";
     bundle.faultedParty = bundle.outcome === "completed" ? "none" : "seller";
@@ -329,12 +366,23 @@ describe("version literal pinning (#5)", () => {
       evidenceVersion: "2",
       jobId: "j",
       phase: "pay-x402",
-      phaseIndex: 0,
       outcome: "success",
-      paymentTxRefs: [],
+      paymentTxRefs: [
+        {
+          kind: "x402",
+          httpResource: "https://seller.example/pay",
+          paymentReceiptHash: "a".repeat(64),
+          protocolVersion: "1",
+        },
+      ],
       paymentAmount: { amount: "1", currency: "USDC" },
       settlementFinality: { model: "provider-receipt", finalityObservedAt: 1 },
       observedAt: 1,
+      signature: {
+        algorithm: "ed25519",
+        signer: "did:demos:orchestrator",
+        value: "sig",
+      },
     };
     expect(isSettlementEvidence(base)).toBe(false);
     expect(isSettlementEvidence({ ...base, evidenceVersion: "1" })).toBe(true);

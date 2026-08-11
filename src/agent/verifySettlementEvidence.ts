@@ -2,6 +2,12 @@ import { contentHash, stripSignature } from "../canonical/index.js";
 import { canonicalizeDecimal } from "../canonical/decimal.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import type { AttestationRef } from "../artifacts/types.js";
+import {
+  isAttestationRef,
+  isChainTxRef,
+  isSettlementEvidence,
+} from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
 
 /**
@@ -41,7 +47,7 @@ export interface EvidenceAgreementContext {
 /** The pinned rail, for the phase/rail-coherence checks (§9.4/§9.5). */
 export interface EvidenceRailContext {
   railId?: string;
-  /** evm-erc20 | solana-spl | cross-chain-htlc | cross-chain-liquidity-tank | ap2 | x402 */
+  /** evm-erc20 | solana-spl | cross-chain-htlc | cross-chain-liquidity-tank | ap2 | x402 | demos-native */
   railType?: string;
   /** The rail's settlement asset id/symbol the amount MUST resolve to (PC-5). */
   asset?: string;
@@ -63,12 +69,8 @@ export interface EvidenceContext {
   orchestrator?: string;
   agreement?: EvidenceAgreementContext;
   rail?: EvidenceRailContext;
-  /**
-   * The attestation ref the record is anchored under (from the phase result).
-   * When present, its `kind` MUST be "dacs-4-evidence" and its `contentHash`
-   * MUST equal the record's signed-scope hash.
-   */
-  attestationRef?: { kind?: string; contentHash?: string };
+  /** The DACS-2 §7.5.2 ref under which this evidence is anchored. */
+  attestationRef?: Readonly<AttestationRef>;
   /**
    * The phase-handler result envelope, when the caller has it. `ok`/`errorClass`
    * MUST be coherent: `ok: true` carries no `errorClass`; `ok: false` MUST carry
@@ -101,6 +103,7 @@ const PAYMENT_PHASES = new Set([
   "pay-cross-chain-liquidity-tank",
   "pay-ap2",
   "pay-x402",
+  "pay-dem",
 ]);
 const DELIVERY_PHASES = new Set([
   "deliver-storage-program",
@@ -116,6 +119,7 @@ const PHASE_RAIL_TYPE: Record<string, string> = {
   "pay-cross-chain-liquidity-tank": "cross-chain-liquidity-tank",
   "pay-ap2": "ap2",
   "pay-x402": "x402",
+  "pay-dem": "demos-native",
 };
 
 /**
@@ -200,6 +204,9 @@ export async function verifySettlementEvidence(
   if (!isPayment && !isDelivery) fail(`unknown phase "${String(phase)}"`);
   if (outcome !== "success" && outcome !== "failure") fail(`outcome MUST be "success"|"failure"`);
   if (!isNum(ev["observedAt"])) fail("observedAt MUST be a unix-ms number");
+  if (!isSettlementEvidence(record)) {
+    fail("evidence does not match an exact DACS-4 §9.7 SettlementEvidence variant");
+  }
 
   // A failure-outcome record MUST carry a reason.
   if (outcome === "failure" && (!isStr(ev["reason"]) || ev["reason"] === "")) {
@@ -227,6 +234,9 @@ export async function verifySettlementEvidence(
     if (!txRefs || txRefs.length === 0) fail("success payment evidence MUST carry paymentTxRefs");
     if (!amount) fail("success payment evidence MUST carry paymentAmount (AMEND-3 basis)");
     if (!finality) fail("success payment evidence MUST carry settlementFinality (PC-6)");
+  }
+  if (txRefs && txRefs.some((ref) => !isChainTxRef(ref))) {
+    fail("paymentTxRefs MUST contain exact DACS-4 §9.3 ChainTxRef variants");
   }
   if (amount) {
     if (!isCanonicalDecimal(amount["amount"])) fail("paymentAmount.amount MUST be a canonical CD-1 decimal");
@@ -341,13 +351,27 @@ export async function verifySettlementEvidence(
   // that passes here can still be a coincidental-citation or cross-session
   // double-count until SB lands. Do not read a `pass` as SB-clean.
   if (txRefs && ctx.rail) {
+    const allowedKinds: Record<string, ReadonlySet<string>> = {
+      "evm-erc20": new Set(["evm"]),
+      "solana-spl": new Set(["solana"]),
+      "cross-chain-htlc": new Set([
+        "htlc-lock",
+        "htlc-reveal",
+        "htlc-claim",
+        "htlc-refund",
+      ]),
+      "cross-chain-liquidity-tank": new Set(["liquidity-tank"]),
+      ap2: new Set(["ap2"]),
+      x402: new Set(["x402"]),
+      "demos-native": new Set(["demos"]),
+    };
     for (const t of txRefs) {
       if (!isObj(t)) continue;
-      if (ctx.rail.railId && isStr(t["rail"]) && t["rail"] !== ctx.rail.railId) {
-        fail(`paymentTxRef.rail "${String(t["rail"])}" does not match pinned rail "${ctx.rail.railId}"`);
-      }
-      if (ctx.rail.network && isStr(t["txHash"]) && !t["txHash"].startsWith(ctx.rail.network)) {
-        fail(`paymentTxRef txHash "${String(t["txHash"])}" is not on rail network "${ctx.rail.network}"`);
+      const allowed = ctx.rail.railType ? allowedKinds[ctx.rail.railType] : undefined;
+      if (allowed && (!isStr(t["kind"]) || !allowed.has(t["kind"]))) {
+        fail(
+          `paymentTxRef.kind "${String(t["kind"])}" is incoherent with rail type "${ctx.rail.railType}"`,
+        );
       }
     }
   }
@@ -369,10 +393,10 @@ export async function verifySettlementEvidence(
   // ── Attestation ref (§7.5.2 content addressing) ─────────────────────────
   const scopeHash = contentHash(ev);
   if (ctx.attestationRef) {
-    if (ctx.attestationRef.kind !== "dacs-4-evidence") {
-      fail(`attestationRef.kind MUST be "dacs-4-evidence", got "${String(ctx.attestationRef.kind)}"`);
+    if (!isAttestationRef(ctx.attestationRef)) {
+      fail("attestationRef MUST use the exact DACS-2 §7.5.2 anchor shape");
     }
-    if (ctx.attestationRef.contentHash && ctx.attestationRef.contentHash !== scopeHash) {
+    if (ctx.attestationRef.contentHash !== scopeHash) {
       fail("attestationRef.contentHash does not match the evidence's signed-scope hash");
     }
   }

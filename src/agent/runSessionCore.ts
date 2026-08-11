@@ -5,28 +5,33 @@ import { CounterpartyError, DacsError, SubstrateError } from "../errors.js";
 import type { SessionLoad, SessionReceipt, SessionStore } from "./sessionStore.js";
 import type {
   AgreementDocument,
-  AttestationBundle,
-  AttestationRef,
   CompositeVerificationRecord,
-  PhaseSummaryEntry,
   Price,
-  SettlementEvidence,
+  SettlementFinality,
   SettlementFinalityModel,
 } from "../artifacts/types.js";
 import {
+  type LegacyMvpAttestationBundle as AttestationBundle,
+  type LegacyMvpAttestationRef as AttestationRef,
+  type LegacyMvpPhaseSummaryEntry as PhaseSummaryEntry,
+  type LegacyMvpSettlementEvidence as SettlementEvidence,
+  isLegacyMvpAttestationBundle as isAttestationBundle,
+  isLegacyMvpSettlementEvidence as isSettlementEvidence,
+} from "../artifacts/legacyMvp.js";
+import {
   isAgreementDocument,
-  isAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
-  isSettlementEvidence,
 } from "../artifacts/validators.js";
 
 /**
- * Pure orchestration for the MVP buyer session (T4 runSession): negotiate
+ * Pure orchestration for the legacy MVP buyer session (T4 runSession): negotiate
  * (fixed-price) → settle → verify, producing + anchoring the AgreementDocument,
- * SettlementEvidence, and AttestationBundle. Identify is implicit (the buyer's
- * id) and vet is a seam. Settlement execution is injected (`settle`) so the rail
- * integration is pluggable and this is testable.
+ * legacy SettlementEvidence and one-sided AttestationBundle records. These
+ * pre-#308 shapes are isolated in `artifacts/legacyMvp`; issue #81 owns migration
+ * of this producer to normative DACS-4/DACS-5 records. Identify is implicit (the
+ * buyer's id) and vet is a seam. Settlement execution is injected (`settle`) so
+ * the rail integration is pluggable and this is testable.
  *
  * Idempotent / crash-safe (T9): every phase anchors at a deterministic address
  * keyed by jobId, so the anchored artifacts ARE the session state. On resume
@@ -772,12 +777,13 @@ export async function runSessionCore(
         await completeSettlement(settlement, settledOk ? "settled" : "failed");
       }
       const observedAt = deps.nowMs();
-      // DACS-4 SettlementEvidence (spec shape). The rail's reported chain id +
+      // Legacy MVP settlement evidence. The rail's reported chain id +
       // tx hash become a payment txRef. Finality defaults to the rail's receipt
       // (§9.7 `provider-receipt`, finalityBlocks 0) but a rail that knows its own
       // model — e.g. §9.5.9 pay-dem's `bft-final` + block height — reports it via
       // `pay.finality` / `pay.blockNumber` / `pay.txRefKind`, so the evidence
-      // asserts the finality model that actually settled, not a hardcoded one (F7/#22).
+      // asserts the finality model that actually settled, not a hardcoded one
+      // (F7/#22). Issue #81 removes phaseIndex and emits exact ChainTxRef variants.
       const evidenceBase = {
         evidenceVersion: "1" as const,
         jobId,
@@ -806,14 +812,18 @@ export async function runSessionCore(
             "settlement rail reported block-depth finality without finalityBlocks",
           );
         }
-        const settlementFinality =
-          model === "block-depth"
-            ? {
-                model,
-                finalityBlocks: settlement.finalityBlocks!,
-                finalityObservedAt: observedAt,
-              }
-            : { model, finalityObservedAt: observedAt };
+        let settlementFinality: SettlementFinality;
+        if (model === "block-depth") {
+          settlementFinality = {
+            model,
+            finalityBlocks: settlement.finalityBlocks!,
+            finalityObservedAt: observedAt,
+          };
+        } else if (model === "commitment-level") {
+          settlementFinality = { model, finalityObservedAt: observedAt };
+        } else {
+          settlementFinality = { model, finalityObservedAt: observedAt };
+        }
         evidence = { ...evidenceBase, outcome: "success", settlementFinality };
       }
       return deps.sign(evidence, ARTIFACT_SEPARATORS.SettlementEvidence);

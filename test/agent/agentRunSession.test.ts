@@ -3,11 +3,13 @@ import { describe, expect, test } from "vitest";
 import { buildAgent } from "../../src/agent/Agent.js";
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { contentHash, stripSignature } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 
@@ -137,5 +139,85 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     await expect(agent.getReputation(buyerDid, ["stor:forged-bundle"]))
       .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
+  });
+
+  test("getReputation resolves normative storage-program AttestationRefs by locator", async () => {
+    const { adapter, store } = memAdapter();
+    const listingRef = await anchorListing(store);
+    const listing = store.get(listingRef)!;
+
+    const buyerSeed = Uint8Array.from(Buffer.alloc(32, 7));
+    const buyerPriv = privateKeyFromSeed(buyerSeed);
+    const buyerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(buyerSeed))).toString("hex");
+    const normativeBuyerDid = `did:demos:agent:${buyerHex}`;
+    const agreement = await buildSignedArtifact(
+      {
+        jobId: "normative-ref-job",
+        pattern: "fixed-price",
+        buyer: normativeBuyerDid,
+        seller: sellerDid,
+        listingRef,
+        price: TERMS.price,
+        delivery: { phase: TERMS.deliveryPhase, format: TERMS.deliveryFormat },
+        expiresAt: "2026-08-10T12:00:00.000Z",
+      },
+      ARTIFACT_SEPARATORS.AgreementDocument,
+      (bytes) => ed25519Sign(bytes, buyerPriv),
+    );
+    store.set("stor:agreement", agreement as Record<string, unknown>);
+
+    const unsigned = {
+      faultBundleVersion: "1" as const,
+      faultedParty: "none" as const,
+      jobId: "normative-ref-job",
+      outcome: "completed" as const,
+      anchoredByRole: "buyer" as const,
+      listingRef: {
+        listingId: "svc",
+        version: 1,
+        contentHash: contentHash(stripSignature(listing)),
+      },
+      agreementRef: {
+        anchor: { kind: "storage-program" as const, locator: "stor:agreement" },
+        contentHash: contentHash(stripSignature(agreement)),
+      },
+      parties: [
+        { role: "buyer", bundleHash: "a".repeat(64), primaryClaim: normativeBuyerDid },
+        { role: "seller", bundleHash: "b".repeat(64), primaryClaim: sellerDid },
+      ],
+      phaseSummary: [],
+      vetRecords: [],
+      settlementEvidence: [],
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+      finalisedAt: 1786363200000,
+    };
+    const signedScope: Record<string, unknown> = { ...unsigned };
+    delete signedScope.anchoredByRole;
+    const hash = contentHash(signedScope);
+    const payload = signedBytes(ARTIFACT_SEPARATORS.FaultAttestationBundle, hash);
+    store.set("stor:bundle", {
+      ...unsigned,
+      signatures: [
+        {
+          party: normativeBuyerDid,
+          algorithm: "ed25519",
+          value: Buffer.from(ed25519Sign(payload, buyerPriv)).toString("base64url"),
+        },
+        {
+          party: sellerDid,
+          algorithm: "ed25519",
+          value: Buffer.from(ed25519Sign(payload, sellerPriv)).toString("base64url"),
+        },
+      ],
+    });
+
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: normativeBuyerDid },
+    });
+    await expect(agent.getReputation(normativeBuyerDid, ["stor:bundle"]))
+      .resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
   });
 });

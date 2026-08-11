@@ -89,6 +89,23 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
+### Normative artifact references
+
+Public `AttestationRef` values use the DACS-2 §7.5.2
+`{ anchor: { kind, locator }, contentHash, signer? }` shape. `ChainTxRef`
+(`TxRef`) is the DACS-4 §9.3 discriminated union, and `SettlementEvidence`
+contains no signed `phaseIndex` (SB-1 derives it from the evidence anchor).
+`verifyBundleCore` resolves normative references through
+`resolveAttestationRef(ref, jobId, parties)` so the signed locator is never
+discarded.
+
+Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
+`{ rail, txHash, kind }` transaction refs are exposed only through the
+explicitly named `LegacyMvp*` read/resume compatibility types and validators.
+Normative producers, including `buildTwoSidedBundle`, reject those legacy
+shapes. The existing buyer-only `runSessionCore` producer remains explicitly
+quarantined on `LegacyMvp*` until its v0.3 migration in #81.
+
 ## Doctor
 
 The package ships a read-only preflight command:

@@ -8,26 +8,37 @@ function bundle(over: Partial<AttestationBundle>): AttestationBundle {
     bundleVersion: "1",
     jobId: "j",
     outcome: "completed",
-    listingRef: { listingId: "svc", version: 1, contentHash: "h" },
-    agreementRef: { kind: "dacs-3-agreement", id: "a", contentHash: "h" },
-    parties: [{ role: "seller", bundleHash: "h", primaryClaim: "did:alice" }],
+    anchoredByRole: "seller",
+    listingRef: { listingId: "svc", version: 1, contentHash: "a".repeat(64) },
+    agreementRef: {
+      anchor: { kind: "storage-program", locator: "a" },
+      contentHash: "b".repeat(64),
+    },
+    parties: [
+      { role: "seller", bundleHash: "c".repeat(64), primaryClaim: "did:alice" },
+    ],
     phaseSummary: [],
     vetRecords: [],
     settlementEvidence: [],
     recipeRegistryVersion: 1,
     railRegistryVersion: 1,
     finalisedAt: 1780000000000,
+    signatures: [{ party: "did:alice", algorithm: "ed25519", value: "sig" }],
     ...over,
   };
 }
 
-const party = (claim: string) => ({ role: "seller", bundleHash: "h", primaryClaim: claim });
+const party = (claim: string) => ({
+  role: "seller",
+  bundleHash: "d".repeat(64),
+  primaryClaim: claim,
+});
 
 describe("computeReputation", () => {
   test("counts bundles the subject is a party to, and completed ones", () => {
     const r = computeReputation("did:alice", [
       bundle({ jobId: "j1", parties: [party("did:alice")], outcome: "completed" }),
-      bundle({ jobId: "j2", parties: [party("did:alice")], outcome: "failed" }),
+      bundle({ jobId: "j2", parties: [party("did:alice")], outcome: "failed-perm" }),
       bundle({ jobId: "j3", parties: [party("did:bob")], outcome: "completed" }), // not a party
     ]);
     expect(r).toEqual({
