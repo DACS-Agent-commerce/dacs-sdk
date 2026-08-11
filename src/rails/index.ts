@@ -103,6 +103,16 @@ export {
   type FsX402BuyerSettlementStoreOptions,
 } from "./x402BuyerSettlementFs.js";
 export {
+  prepareX402BuyerSettlement,
+  createX402BuyerPaidRequestTransport,
+  type X402BuyerChallengeClient,
+  type PrepareX402BuyerSettlementInput,
+  type PrepareX402BuyerSettlementDeps,
+  type X402BuyerSettlementPreparation,
+  type X402BuyerPaidRequestTransportOptions,
+  type X402BuyerHeaderInit,
+} from "./x402BuyerTransport.js";
+export {
   createIdempotencyStore,
   createInMemorySettlementLog,
   settlementKey,
