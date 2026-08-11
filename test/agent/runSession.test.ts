@@ -437,7 +437,7 @@ describe("runSession orchestration (T4)", () => {
   });
 
   test("admits PIPE-5 repetitions of the same payment phase kind", async () => {
-    const normative = normativeListing();
+    const normative = normativeDpaListing();
     normative.pipeline.splice(3, 0, {
       kind: "pay-x402",
       parameters: { rail: "x402:default" },
@@ -453,6 +453,7 @@ describe("runSession orchestration (T4)", () => {
       },
       makeDeps({
         readListing: async () => normative,
+        validateListing: () => verifiedAdmissionFor(normative),
         settle: async () => {
           settles += 1;
           return {
