@@ -32,6 +32,7 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAYEE = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX = `0x${"aa".repeat(32)}`;
+const EVENT_TX = TX.slice(2);
 const RESOURCE = "https://seller.example/deliver/job-x402";
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -143,7 +144,7 @@ function signedEvent(
     httpResource: RESOURCE,
     paymentReceiptHash: sha256Hex(canonicalize(response)),
     protocolVersion: "2",
-    settlementTxHash: TX,
+    settlementTxHash: EVENT_TX,
     chainId: 84532,
     logIndex: 7,
     ...overrides,
@@ -162,7 +163,7 @@ function capturedSettlement(
   const event = options.event ?? {
     ...signedEvent(),
     paymentReceiptHash: sha256Hex(canonicalize(response)),
-    settlementTxHash: String(response.transaction),
+    settlementTxHash: String(response.transaction).slice(2).toLowerCase(),
   };
   return {
     captureVersion: "1",
@@ -233,6 +234,26 @@ describe("durable buyer x402 intent", () => {
     expect(() => assertX402BuyerSettlementIntent(intent)).not.toThrow();
   });
 
+  test("retains the exact Unicode spelling of the signed EIP-712 payload", () => {
+    const draft = intentDraft();
+    const decomposedDomain = "Cafe\u0301 Coin";
+    (draft.chosenRequirements.extra as Record<string, unknown>).name = decomposedDomain;
+    const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+    ((payload.accepted as Record<string, unknown>).extra as Record<string, unknown>).name =
+      decomposedDomain;
+    draft.signedPaymentPayload = payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+    draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+
+    const intent = createX402BuyerSettlementIntent(draft);
+    const retainedAccepted = intent.signedPaymentPayload.accepted as Record<string, unknown>;
+    expect((retainedAccepted.extra as Record<string, unknown>).name).toBe(decomposedDomain);
+    expect((retainedAccepted.extra as Record<string, unknown>).name).not.toBe(
+      decomposedDomain.normalize("NFC"),
+    );
+    expect(intent.paymentHeader.value).toBe(encode(payload));
+    expect(() => assertX402BuyerSettlementIntent(intent)).not.toThrow();
+  });
+
   test("retains exact job identity while NFC-normalizing only the SB-3 nonce preimage", () => {
     const decomposedJob = "job-cafe\u0301";
     const draft = intentDraft();
@@ -254,6 +275,23 @@ describe("durable buyer x402 intent", () => {
       jobId: decomposedJob.normalize("NFC"),
       phaseIndex: PHASE_INDEX,
     }));
+  });
+
+  test("rejects non-scalar job IDs before deriving an exact settlement key", () => {
+    const invalidJobIds = ["job-\ud800", "job-\ud801", "job-\udc00"];
+    const replacementKey = x402BuyerSettlementKey({
+      railId: RAIL_ID,
+      jobId: "job-\ufffd",
+      phaseIndex: PHASE_INDEX,
+    });
+    expect(replacementKey).toMatch(/^dacs:x402-buyer:[0-9a-f]{64}$/);
+    for (const jobId of invalidJobIds) {
+      expect(() => x402BuyerSettlementKey({
+        railId: RAIL_ID,
+        jobId,
+        phaseIndex: PHASE_INDEX,
+      })).toThrow(/Unicode scalar values/);
+    }
   });
 
   test("rejects every authority-bearing intent substitution", () => {
@@ -685,10 +723,11 @@ describe("advanceX402BuyerSettlement", () => {
         event: signedEvent({ paymentReceiptHash: "0".repeat(64) }),
       })],
       ["transaction", (intent) => capturedSettlement(intent, {
-        event: signedEvent({ settlementTxHash: `0x${"bb".repeat(32)}` }),
+        event: signedEvent({ settlementTxHash: "bb".repeat(32) }),
       })],
       ["transaction spelling", (intent) => capturedSettlement(intent, {
-        event: signedEvent({ settlementTxHash: TX.toUpperCase().replace("0X", "0x") }),
+        event: signedEvent({ settlementTxHash: EVENT_TX.toUpperCase() }),
+        authenticationEvent: signedEvent(),
       })],
       ["resource", (intent) => ({
         ...capturedSettlement(intent),
@@ -927,6 +966,40 @@ describe("filesystem x402 buyer settlement recovery", () => {
     releaseResolve();
     expect((await left).status).toBe("captured");
     expect(submits).toBe(1);
+  });
+
+  test("reclaims a fully published dead-owner lock without losing the claim", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    const store = await createFsX402BuyerSettlementStore({
+      dir,
+      lockStaleMs: 1,
+      lockTimeoutMs: 2_000,
+    });
+    const fs = await import("node:fs/promises");
+    const path = join(
+      dir,
+      "locks",
+      `${sha256Hex(intent.settlementKey)}.lock`,
+    );
+    await fs.mkdir(path);
+    await fs.writeFile(join(path, "owner.json"), JSON.stringify({
+      pid: 2_147_483_647,
+      token: "dead-owner",
+    }));
+    const old = new Date(Date.now() - 1_000);
+    await fs.utimes(path, old, old);
+
+    await expect(store.claim({
+      intent,
+      owner: "replacement",
+      now: 1_000,
+      leaseDurationMs: 100,
+    })).resolves.toMatchObject({ status: "acquired", lease: { generation: 1 } });
+    await expect(store.load(intent.settlementKey)).resolves.toMatchObject({
+      status: "held",
+      intent: { bindingHash: intent.bindingHash },
+    });
   });
 
   test("persists a complete strict record and rejects unsupported/corrupt files", async () => {

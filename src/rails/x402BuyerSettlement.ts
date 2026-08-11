@@ -12,7 +12,7 @@ export const X402_BUYER_SETTLEMENT_STORE_VERSION = 1 as const;
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
-const TX_RE = /^0x[0-9a-fA-F]{64}$/;
+const CANONICAL_EVENT_TX_RE = /^[0-9a-f]{64}$/;
 const NONCE_RE = /^0x[0-9a-f]{64}$/;
 const UNSIGNED_RE = /^(0|[1-9][0-9]*)$/;
 const SIGNATURE_RE = /^0x(?:[0-9a-fA-F]{2})+$/;
@@ -82,6 +82,7 @@ export interface X402BuyerSignedEventReference {
   httpResource: string;
   paymentReceiptHash: string;
   protocolVersion: "2";
+  /** Canonical 32-byte lower-case transaction hex, without a `0x` prefix. */
   settlementTxHash: string;
   chainId: number;
   logIndex: number;
@@ -380,7 +381,10 @@ function snapshotJson(
 ): X402BuyerJson {
   if (depth > 64) throw new DacsError(`${label} exceeds the supported JSON depth`);
   if (value === null || typeof value === "boolean" || typeof value === "string") {
-    return typeof value === "string" ? value.normalize("NFC") : value;
+    // This snapshot is also the retained x402/EIP-712 wire payload. Preserve
+    // its exact Unicode spelling; canonicalize() applies CF-1 only when a DACS
+    // hash/comparison is actually computed.
+    return value;
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER ||
@@ -432,7 +436,7 @@ function snapshotJson(
       const key = rawKey.normalize("NFC");
       if (normalized.has(key)) throw new DacsError(`${label} has an NFC key collision`);
       normalized.add(key);
-      result[key] = snapshotJson(descriptor.value, label, ancestors, depth + 1);
+      result[rawKey] = snapshotJson(descriptor.value, label, ancestors, depth + 1);
     }
     return result;
   } finally {
@@ -472,6 +476,18 @@ function exactSessionString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0 ||
       /[\u0000-\u001f\u007f]/.test(value)) {
     throw new DacsError(`${label} must be a non-empty string without controls`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new DacsError(`${label} must contain only Unicode scalar values`);
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new DacsError(`${label} must contain only Unicode scalar values`);
+    }
   }
   return value;
 }
@@ -871,8 +887,11 @@ function captureSignedEvent(value: unknown): Readonly<X402BuyerSignedEventRefere
   if (record.kind !== "x402-event" || record.protocolVersion !== "2") {
     throw new DacsError("x402 buyer settlement requires a current signed x402-event");
   }
-  if (typeof record.settlementTxHash !== "string" || !TX_RE.test(record.settlementTxHash)) {
-    throw new DacsError("x402 buyer signed event transaction hash is malformed");
+  if (typeof record.settlementTxHash !== "string" ||
+      !CANONICAL_EVENT_TX_RE.test(record.settlementTxHash)) {
+    throw new DacsError(
+      "x402 buyer signed event transaction hash must be canonical lower-case hex without 0x",
+    );
   }
   return deepFreeze({
     kind: "x402-event",
@@ -941,7 +960,7 @@ function captureSettlement(
     httpResource: disclosure.httpResource,
   });
   if (receipt.paymentReceiptHash !== signedEvent.paymentReceiptHash ||
-      receipt.transaction !== signedEvent.settlementTxHash ||
+      receipt.transaction.slice(2).toLowerCase() !== signedEvent.settlementTxHash ||
       receipt.chainId !== signedEvent.chainId || receipt.protocolVersion !== signedEvent.protocolVersion) {
     throw new DacsError("x402 buyer complete receipt does not match the signed x402-event");
   }

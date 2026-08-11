@@ -224,21 +224,26 @@ export async function createFsX402BuyerSettlementStore(
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
     const deadline = Date.now() + lockTimeoutMs;
     while (true) {
-      let directoryCreated = false;
+      // Prepare the owner record under an unpublished, unique directory, then
+      // publish the complete lock with one rename. Publishing an empty lock
+      // directory first leaves a stale-reclaim race: a paused creator can later
+      // resume inside a successor's path and delete/fence that successor.
+      const candidate = `${path}.${randomUUID()}.candidate`;
       try {
-        await mkdir(path, { mode: DIR_MODE });
-        directoryCreated = true;
-        const handle = await open(join(path, "owner.json"), "wx", FILE_MODE);
+        await mkdir(candidate, { mode: DIR_MODE });
+        const handle = await open(join(candidate, "owner.json"), "wx", FILE_MODE);
         try {
           await handle.writeFile(JSON.stringify(owner), "utf8");
           await handle.sync();
         } finally {
           await handle.close();
         }
+        await rename(candidate, path);
         break;
       } catch (error) {
-        if (directoryCreated || (error as NodeJS.ErrnoException).code !== "EEXIST") {
-          if (directoryCreated) await rm(path, { recursive: true, force: true });
+        await rm(candidate, { recursive: true, force: true }).catch(() => {});
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST" && code !== "ENOTEMPTY") {
           throw error;
         }
         await maybeReclaimStale(path);
