@@ -31,6 +31,7 @@ import {
   type SellerBundleBindingLookup,
   type SellerBundleBindingPublication,
   type SellerBundleFinalizationReadProvider,
+  type SellerCompositeVerificationDeps,
   type SellerBundleLookup,
   type SellerBundleVerificationDisposition,
   type VerifyCompletedSellerBundleCounterSignatureRequestInput,
@@ -50,6 +51,12 @@ export type BuyerBundleLookup = SellerBundleLookup;
  */
 export interface BuyerBundleFinalizationProvider
   extends SellerBundleFinalizationReadProvider {
+  /**
+   * Provider and nested-verifier callbacks are captured from owned data
+   * properties before the first await and invoked with a frozen inert receiver.
+   * Stateful adapters should therefore close over their state rather than use
+   * getters, prototype methods, or mutable `this` binding.
+   */
   resolveBuyerBundle: (
     logicalAddress: string,
   ) => Promise<BuyerBundleLookup> | BuyerBundleLookup;
@@ -81,7 +88,14 @@ export interface FinalizeCompletedBuyerBundleInput {
   buyer: SigningSessionParty;
 }
 
-/** Immutable, idempotent buyer-role terminal publication. */
+/**
+ * Immutable buyer-role terminal publication returned by the pure core.
+ *
+ * The core performs read-before-write reconciliation, but deliberately owns no
+ * durable lease or generation fence. Callers that may overlap, restart, or
+ * retry after a process failure MUST serialize it behind a fenced durable
+ * wrapper whose provider effects are idempotent for the retained invocation.
+ */
 export interface FinalizedBuyerBundle {
   readonly state: "finalised";
   readonly logicalAddress: string;
@@ -99,22 +113,8 @@ interface CapturedBuyer {
   signer: SigningSessionParty["signer"];
 }
 
-interface RetainedBuyerProvider {
-  mapping: "pure" | "write-input";
-  bundleCopyVerifier: BundleCopyDeps;
-  resolveBuyerBundle: BuyerBundleFinalizationProvider["resolveBuyerBundle"];
-  submitBuyerBundle: BuyerBundleFinalizationProvider["submitBuyerBundle"];
-  verifyBundleAnchorReceipt: SellerBundleFinalizationReadProvider["verifyBundleAnchorReceipt"];
-  resolveBundleBinding?: NonNullable<
-    SellerBundleFinalizationReadProvider["resolveBundleBinding"]
-  >;
-  publishBundleBinding?: NonNullable<
-    BuyerBundleFinalizationProvider["publishBundleBinding"]
-  >;
-  verifyBundleBinding?: NonNullable<
-    SellerBundleFinalizationReadProvider["verifyBundleBinding"]
-  >;
-}
+type RetainedSellerReadProvider = Readonly<SellerBundleFinalizationReadProvider>;
+type RetainedBuyerProvider = Readonly<BuyerBundleFinalizationProvider>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -203,74 +203,248 @@ function captureBuyer(value: SigningSessionParty): CapturedBuyer {
   return { primaryClaim, bundleHash, signer };
 }
 
-function retainProvider(provider: BuyerBundleFinalizationProvider): RetainedBuyerProvider {
-  const mapping = provider.mapping;
-  const verifierOwner = provider.bundleCopyVerifier;
-  const resolvePublicKey = verifierOwner?.resolvePublicKey;
-  const verify = verifierOwner?.verify;
-  const resolveBuyerBundle = provider.resolveBuyerBundle;
-  const submitBuyerBundle = provider.submitBuyerBundle;
-  const verifyBundleAnchorReceipt = provider.verifyBundleAnchorReceipt;
-  const resolveBundleBinding = provider.resolveBundleBinding;
-  const publishBundleBinding = provider.publishBundleBinding;
-  const verifyBundleBinding = provider.verifyBundleBinding;
+const INERT_PROVIDER_RECEIVER = Object.freeze(
+  Object.create(null) as Record<string, never>,
+);
 
+type DescriptorMap = Record<PropertyKey, PropertyDescriptor>;
+
+function captureDescriptors(value: unknown, subject: string): DescriptorMap {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new DacsError(`${subject} must be an object of data properties`);
+  }
+  try {
+    return Object.getOwnPropertyDescriptors(value) as DescriptorMap;
+  } catch (error) {
+    throw new DacsError(`${subject} cannot be inspected safely`, { cause: error });
+  }
+}
+
+function requiredDataProperty<T>(
+  descriptors: DescriptorMap,
+  name: string,
+  subject: string,
+): T {
+  const descriptor = descriptors[name];
+  if (!descriptor || !("value" in descriptor)) {
+    throw new DacsError(`${subject}.${name} must be one owned data property`);
+  }
+  return descriptor.value as T;
+}
+
+function optionalDataProperty<T>(
+  descriptors: DescriptorMap,
+  name: string,
+  subject: string,
+): T | undefined {
+  const descriptor = descriptors[name];
+  if (!descriptor) return undefined;
+  if (!("value" in descriptor)) {
+    throw new DacsError(`${subject}.${name} must be one owned data property`);
+  }
+  return descriptor.value as T;
+}
+
+function inertCallback<T>(value: unknown, subject: string): T {
+  if (typeof value !== "function") {
+    throw new DacsError(`${subject} must be callable`);
+  }
+  return ((...args: unknown[]) =>
+    Reflect.apply(value, INERT_PROVIDER_RECEIVER, args)) as T;
+}
+
+function requiredCallback<T>(
+  descriptors: DescriptorMap,
+  name: string,
+  subject: string,
+): T {
+  return inertCallback<T>(
+    requiredDataProperty(descriptors, name, subject),
+    `${subject}.${name}`,
+  );
+}
+
+function optionalCallback<T>(
+  descriptors: DescriptorMap,
+  name: string,
+  subject: string,
+): T | undefined {
+  const value = optionalDataProperty<unknown>(descriptors, name, subject);
+  return value === undefined
+    ? undefined
+    : inertCallback<T>(value, `${subject}.${name}`);
+}
+
+function retainBundleCopyVerifier(value: unknown): BundleCopyDeps {
+  const descriptors = captureDescriptors(value, "buyer bundle copy verifier");
+  return Object.freeze({
+    resolvePublicKey: requiredCallback<BundleCopyDeps["resolvePublicKey"]>(
+      descriptors,
+      "resolvePublicKey",
+      "buyer bundle copy verifier",
+    ),
+    verify: requiredCallback<BundleCopyDeps["verify"]>(
+      descriptors,
+      "verify",
+      "buyer bundle copy verifier",
+    ),
+  });
+}
+
+function retainCompositeVerificationDeps(
+  value: unknown,
+): SellerCompositeVerificationDeps {
+  const descriptors = captureDescriptors(
+    value,
+    "buyer composite verification dependencies",
+  );
+  const verifyRequirementParameters = optionalCallback<
+    NonNullable<SellerCompositeVerificationDeps["verifyRequirementParameters"]>
+  >(
+    descriptors,
+    "verifyRequirementParameters",
+    "buyer composite verification dependencies",
+  );
+  return Object.freeze({
+    resolveRecipe: requiredCallback<SellerCompositeVerificationDeps["resolveRecipe"]>(
+      descriptors,
+      "resolveRecipe",
+      "buyer composite verification dependencies",
+    ),
+    isRecipeSignerAuthorized: requiredCallback<
+      SellerCompositeVerificationDeps["isRecipeSignerAuthorized"]
+    >(
+      descriptors,
+      "isRecipeSignerAuthorized",
+      "buyer composite verification dependencies",
+    ),
+    isVerifyResultSignerAuthorized: requiredCallback<
+      SellerCompositeVerificationDeps["isVerifyResultSignerAuthorized"]
+    >(
+      descriptors,
+      "isVerifyResultSignerAuthorized",
+      "buyer composite verification dependencies",
+    ),
+    resolvePublicKey: requiredCallback<
+      SellerCompositeVerificationDeps["resolvePublicKey"]
+    >(
+      descriptors,
+      "resolvePublicKey",
+      "buyer composite verification dependencies",
+    ),
+    verify: requiredCallback<SellerCompositeVerificationDeps["verify"]>(
+      descriptors,
+      "verify",
+      "buyer composite verification dependencies",
+    ),
+    verifyAuthorityAttestation: requiredCallback<
+      SellerCompositeVerificationDeps["verifyAuthorityAttestation"]
+    >(
+      descriptors,
+      "verifyAuthorityAttestation",
+      "buyer composite verification dependencies",
+    ),
+    ...(verifyRequirementParameters ? { verifyRequirementParameters } : {}),
+  });
+}
+
+function retainedSellerReadProviderFrom(
+  descriptors: DescriptorMap,
+): RetainedSellerReadProvider {
+  const subject = "buyer seller-verification provider";
+  const mapping = requiredDataProperty<unknown>(descriptors, "mapping", subject);
   if (mapping !== "pure" && mapping !== "write-input") {
     throw new DacsError("unsupported buyer bundle address mapping policy");
   }
+  const resolveBundleBinding = optionalCallback<
+    NonNullable<SellerBundleFinalizationReadProvider["resolveBundleBinding"]>
+  >(descriptors, "resolveBundleBinding", subject);
+  const verifyBundleBinding = optionalCallback<
+    NonNullable<SellerBundleFinalizationReadProvider["verifyBundleBinding"]>
+  >(descriptors, "verifyBundleBinding", subject);
   if (
-    typeof resolvePublicKey !== "function" ||
-    typeof verify !== "function" ||
-    typeof resolveBuyerBundle !== "function" ||
-    typeof submitBuyerBundle !== "function" ||
-    typeof verifyBundleAnchorReceipt !== "function"
+    mapping === "write-input" &&
+    (resolveBundleBinding === undefined || verifyBundleBinding === undefined)
   ) {
-    throw new DacsError("buyer bundle provider is incomplete or non-callable");
+    throw new DacsError("write-input buyer bundle mapping lacks its BB-1 read seams");
   }
-  if (
-    [resolveBundleBinding, publishBundleBinding, verifyBundleBinding].some(
-      (candidate) => candidate !== undefined && typeof candidate !== "function",
-    ) ||
-    (mapping === "write-input" &&
-      (typeof resolveBundleBinding !== "function" ||
-        typeof publishBundleBinding !== "function" ||
-        typeof verifyBundleBinding !== "function"))
-  ) {
-    throw new DacsError("write-input buyer bundle mapping lacks its BB-1 seams");
-  }
+  const verifyPayloadMethodProof = optionalCallback<
+    NonNullable<SellerBundleFinalizationReadProvider["verifyPayloadMethodProof"]>
+  >(descriptors, "verifyPayloadMethodProof", subject);
+  const verifyPayloadMethodTransaction = optionalCallback<
+    NonNullable<
+      SellerBundleFinalizationReadProvider["verifyPayloadMethodTransaction"]
+    >
+  >(descriptors, "verifyPayloadMethodTransaction", subject);
+  const resolvePaymentPhaseIndex = optionalCallback<
+    NonNullable<SellerBundleFinalizationReadProvider["resolvePaymentPhaseIndex"]>
+  >(descriptors, "resolvePaymentPhaseIndex", subject);
 
-  return {
+  return Object.freeze({
     mapping,
-    bundleCopyVerifier: {
-      resolvePublicKey: (claim) => resolvePublicKey.call(verifierOwner, claim),
-      verify: (bytes, signature, publicKey) =>
-        verify.call(verifierOwner, bytes, signature, publicKey),
-    },
-    resolveBuyerBundle: (logicalAddress) =>
-      resolveBuyerBundle.call(provider, logicalAddress),
-    submitBuyerBundle: (logicalAddress, bundle) =>
-      submitBuyerBundle.call(provider, logicalAddress, bundle),
-    verifyBundleAnchorReceipt: (anchored) =>
-      verifyBundleAnchorReceipt.call(provider, anchored),
-    ...(resolveBundleBinding
-      ? {
-          resolveBundleBinding: (logicalAddress: string, signer: string) =>
-            resolveBundleBinding.call(provider, logicalAddress, signer),
-        }
-      : {}),
-    ...(publishBundleBinding
-      ? {
-          publishBundleBinding: (binding: Readonly<BundleBinding>) =>
-            publishBundleBinding.call(provider, binding),
-        }
-      : {}),
-    ...(verifyBundleBinding
-      ? {
-          verifyBundleBinding: (binding: Readonly<BundleBinding>) =>
-            verifyBundleBinding.call(provider, binding),
-        }
-      : {}),
-  };
+    bundleCopyVerifier: retainBundleCopyVerifier(
+      requiredDataProperty(descriptors, "bundleCopyVerifier", subject),
+    ),
+    compositeVerificationDeps: retainCompositeVerificationDeps(
+      requiredDataProperty(descriptors, "compositeVerificationDeps", subject),
+    ),
+    resolveDependency: requiredCallback<
+      SellerBundleFinalizationReadProvider["resolveDependency"]
+    >(descriptors, "resolveDependency", subject),
+    verifyDependencyReceipt: requiredCallback<
+      SellerBundleFinalizationReadProvider["verifyDependencyReceipt"]
+    >(descriptors, "verifyDependencyReceipt", subject),
+    verifyDependencyBinding: requiredCallback<
+      SellerBundleFinalizationReadProvider["verifyDependencyBinding"]
+    >(descriptors, "verifyDependencyBinding", subject),
+    verifyListingPublisherIdentityLinkage: requiredCallback<
+      SellerBundleFinalizationReadProvider["verifyListingPublisherIdentityLinkage"]
+    >(descriptors, "verifyListingPublisherIdentityLinkage", subject),
+    verifyVetRequirementProvenance: requiredCallback<
+      SellerBundleFinalizationReadProvider["verifyVetRequirementProvenance"]
+    >(descriptors, "verifyVetRequirementProvenance", subject),
+    ...(verifyPayloadMethodProof ? { verifyPayloadMethodProof } : {}),
+    ...(verifyPayloadMethodTransaction ? { verifyPayloadMethodTransaction } : {}),
+    ...(resolvePaymentPhaseIndex ? { resolvePaymentPhaseIndex } : {}),
+    resolveSellerBundle: requiredCallback<
+      SellerBundleFinalizationReadProvider["resolveSellerBundle"]
+    >(descriptors, "resolveSellerBundle", subject),
+    verifyBundleAnchorReceipt: requiredCallback<
+      SellerBundleFinalizationReadProvider["verifyBundleAnchorReceipt"]
+    >(descriptors, "verifyBundleAnchorReceipt", subject),
+    ...(resolveBundleBinding ? { resolveBundleBinding } : {}),
+    ...(verifyBundleBinding ? { verifyBundleBinding } : {}),
+  });
+}
+
+function retainSellerReadProvider(
+  provider: SellerBundleFinalizationReadProvider,
+): RetainedSellerReadProvider {
+  return retainedSellerReadProviderFrom(
+    captureDescriptors(provider, "buyer seller-verification provider"),
+  );
+}
+
+function retainProvider(provider: BuyerBundleFinalizationProvider): RetainedBuyerProvider {
+  const subject = "buyer bundle provider";
+  const descriptors = captureDescriptors(provider, subject);
+  const retainedRead = retainedSellerReadProviderFrom(descriptors);
+  const publishBundleBinding = optionalCallback<
+    NonNullable<BuyerBundleFinalizationProvider["publishBundleBinding"]>
+  >(descriptors, "publishBundleBinding", subject);
+  if (retainedRead.mapping === "write-input" && !publishBundleBinding) {
+    throw new DacsError("write-input buyer bundle mapping lacks its BB-1 write seam");
+  }
+  return Object.freeze({
+    ...retainedRead,
+    resolveBuyerBundle: requiredCallback<
+      BuyerBundleFinalizationProvider["resolveBuyerBundle"]
+    >(descriptors, "resolveBuyerBundle", subject),
+    submitBuyerBundle: requiredCallback<
+      BuyerBundleFinalizationProvider["submitBuyerBundle"]
+    >(descriptors, "submitBuyerBundle", subject),
+    ...(publishBundleBinding ? { publishBundleBinding } : {}),
+  });
 }
 
 async function signBuyerBytes(
@@ -384,17 +558,8 @@ export async function createCompletedBuyerBundleCounterSignature(
   provider: SellerBundleFinalizationReadProvider,
 ): Promise<BundleSignature> {
   const buyer = captureBuyer(input.buyer);
-  const verifierOwner = provider.bundleCopyVerifier;
-  const resolvePublicKey = verifierOwner?.resolvePublicKey;
-  const verify = verifierOwner?.verify;
-  if (typeof resolvePublicKey !== "function" || typeof verify !== "function") {
-    throw new DacsError("local buyer bundle signature verifier is unavailable");
-  }
-  const localVerifier: BundleCopyDeps = {
-    resolvePublicKey: (claim) => resolvePublicKey.call(verifierOwner, claim),
-    verify: (bytes, signature, publicKey) =>
-      verify.call(verifierOwner, bytes, signature, publicKey),
-  };
+  const retainedProvider = retainSellerReadProvider(provider);
+  const localVerifier = retainedProvider.bundleCopyVerifier;
   const verificationInput = snapshot(
     input.sellerVerificationInput,
     "buyer counter-signature verification input",
@@ -402,7 +567,7 @@ export async function createCompletedBuyerBundleCounterSignature(
   const request = await verifyCompletedSellerBundleCounterSignatureRequest(
     verificationInput,
     snapshot(suppliedRequest, "supplied seller counter-signature request"),
-    provider,
+    retainedProvider,
   );
   const authenticatedRequest = snapshot(
     request,
@@ -884,8 +1049,10 @@ function validateBuyerIdentityAndSignature(
 /**
  * Publish the exact authenticated buyer role copy. Completion is withheld until
  * the finalized readback (and, for write-input mappings, buyer-signed BB-1
- * binding) is independently verified. Repeated calls return the same frozen
- * result and never overwrite an existing different publication.
+ * binding) is independently verified. Existing different publications are
+ * never overwritten. This is the pure effect core, not a durability boundary:
+ * overlapping calls and crash recovery require a serialized, generation-fenced
+ * wrapper around the provider's write seams.
  */
 export async function finalizeCompletedBuyerBundleCore(
   input: FinalizeCompletedBuyerBundleInput,
@@ -909,7 +1076,7 @@ export async function finalizeCompletedBuyerBundleCore(
   const sellerFinalization = await verifyFinalizedSellerBundleReadOnly(
     verificationInput,
     suppliedSellerFinalization,
-    provider,
+    retainedProvider,
   );
   const authenticated = snapshot(
     sellerFinalization,

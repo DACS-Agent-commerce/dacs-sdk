@@ -277,6 +277,25 @@ function fixture(mapping: "pure" | "write-input" = "pure") {
           ed25519Verify(message, signature, publicKeyFromRaw(key)),
       ),
     },
+    compositeVerificationDeps: {
+      resolveRecipe: vi.fn(async () => null),
+      isRecipeSignerAuthorized: vi.fn(async () => false),
+      isVerifyResultSignerAuthorized: vi.fn(async () => false),
+      resolvePublicKey: vi.fn(async () => null),
+      verify: vi.fn(async () => false),
+      verifyAuthorityAttestation: vi.fn(async () => ({
+        disposition: "indeterminate",
+        reason: "unused buyer fixture seam",
+      })),
+    },
+    resolveDependency: vi.fn(() => ({ disposition: "absent" as const })),
+    verifyDependencyReceipt: vi.fn(() => "indeterminate" as const),
+    verifyDependencyBinding: vi.fn(() => "indeterminate" as const),
+    verifyListingPublisherIdentityLinkage: vi.fn(
+      () => "indeterminate" as const,
+    ),
+    verifyVetRequirementProvenance: vi.fn(() => "indeterminate" as const),
+    resolveSellerBundle: vi.fn(() => ({ disposition: "absent" as const })),
     resolveBuyerBundle,
     submitBuyerBundle,
     verifyBundleAnchorReceipt: vi.fn(() => "valid" as const),
@@ -389,6 +408,70 @@ describe("DACS-5 buyer completed-bundle counter-signing", () => {
     await expect(
       createCompletedBuyerBundleCounterSignature(f.counterInput, f.request, f.provider),
     ).rejects.toThrow("failed local verification");
+  });
+
+  test("captures one descriptor-only provider surface and invokes it with an inert receiver", async () => {
+    const f = fixture();
+    let mappingDescriptorReads = 0;
+    let callbackReceiver: unknown;
+    const originalResolvePublicKey = f.provider.bundleCopyVerifier.resolvePublicKey;
+    f.provider.bundleCopyVerifier.resolvePublicKey = vi.fn(function (
+      this: unknown,
+      claim: string,
+    ) {
+      callbackReceiver = this;
+      return originalResolvePublicKey(claim);
+    });
+    const liveProvider = new Proxy(f.provider, {
+      get(_target, property) {
+        throw new Error(`live provider read after capture: ${String(property)}`);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === "mapping") mappingDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    let authenticatedProvider: unknown;
+    sellerMocks.verifyRequest.mockImplementationOnce(
+      async (_input, supplied, retainedProvider) => {
+        authenticatedProvider = retainedProvider;
+        f.provider.mapping = "write-input";
+        return structuredClone(supplied);
+      },
+    );
+
+    await expect(
+      createCompletedBuyerBundleCounterSignature(
+        f.counterInput,
+        f.request,
+        liveProvider,
+      ),
+    ).resolves.toEqual(f.buyerSignature);
+    expect(mappingDescriptorReads).toBe(1);
+    expect(authenticatedProvider === liveProvider).toBe(false);
+    expect(Object.isFrozen(authenticatedProvider)).toBe(true);
+    expect(callbackReceiver).not.toBe(f.provider.bundleCopyVerifier);
+    expect(Object.isFrozen(callbackReceiver)).toBe(true);
+    expect(Object.getPrototypeOf(callbackReceiver)).toBeNull();
+  });
+
+  test("rejects provider accessors before authenticating or signing", async () => {
+    const f = fixture();
+    Object.defineProperty(f.provider, "mapping", {
+      enumerable: true,
+      configurable: true,
+      get: () => "pure",
+    });
+
+    await expect(
+      createCompletedBuyerBundleCounterSignature(
+        f.counterInput,
+        f.request,
+        f.provider,
+      ),
+    ).rejects.toThrow("mapping must be one owned data property");
+    expect(sellerMocks.verifyRequest).not.toHaveBeenCalled();
+    expect(f.buyerSigner).not.toHaveBeenCalled();
   });
 });
 
@@ -582,5 +665,111 @@ describe("DACS-5 buyer role finalization", () => {
         "did:demos:mutated";
     }).toThrow(TypeError);
     expect(first.buyerBundle.parties[0]!.primaryClaim).toBe(BUYER);
+  });
+
+  test("uses the same frozen provider snapshot for seller verification and buyer publication", async () => {
+    const f = fixture();
+    let mappingDescriptorReads = 0;
+    const liveProvider = new Proxy(f.provider, {
+      get(_target, property) {
+        throw new Error(`live provider read after capture: ${String(property)}`);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === "mapping") mappingDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    let authenticatedProvider: unknown;
+    sellerMocks.verifyFinalization.mockImplementationOnce(
+      async (_input, supplied, retainedProvider) => {
+        authenticatedProvider = retainedProvider;
+        f.provider.mapping = "write-input";
+        return structuredClone(supplied);
+      },
+    );
+
+    const result = await finalizeCompletedBuyerBundleCore(
+      f.finalizeInput,
+      liveProvider,
+    );
+    expect(mappingDescriptorReads).toBe(1);
+    expect(authenticatedProvider === liveProvider).toBe(false);
+    expect(Object.isFrozen(authenticatedProvider)).toBe(true);
+    expect((authenticatedProvider as { mapping: string }).mapping).toBe("pure");
+    expect(result.binding).toBeUndefined();
+    expect(f.submitBuyerBundle).toHaveBeenCalledOnce();
+    expect(f.publishBundleBinding).not.toHaveBeenCalled();
+  });
+});
+
+describe("actual seller-to-buyer verification boundary", () => {
+  test("passes one retained provider to both real seller verifiers and rejects substituted transport data", async () => {
+    vi.doUnmock("../../src/seller/bundleFinalization.js");
+    vi.resetModules();
+    const actualBuyer = await import(
+      "../../src/agent/buyerBundleFinalization.js"
+    );
+
+    const counter = fixture();
+    let counterMappingDescriptors = 0;
+    const counterProvider = new Proxy(counter.provider, {
+      get(_target, property) {
+        throw new Error(`live counter provider read: ${String(property)}`);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === "mapping") counterMappingDescriptors += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    const substitutedRequest = {
+      ...counter.request,
+      bundleContentHash: "f".repeat(64),
+    };
+    const counterError = await actualBuyer
+      .createCompletedBuyerBundleCounterSignature(
+        counter.counterInput,
+        substitutedRequest,
+        counterProvider,
+      )
+      .catch((error: unknown) => error);
+    expect(counterError).toMatchObject({ name: "DacsError", category: "permanent" });
+    expect((counterError as Error).message).toContain(
+      "counter-signature verification input must contain canonical data only",
+    );
+    expect((counterError as Error).message).not.toContain("live counter provider read");
+    expect(counterMappingDescriptors).toBe(1);
+    expect(counter.buyerSigner).not.toHaveBeenCalled();
+
+    const finalization = fixture();
+    let finalizationMappingDescriptors = 0;
+    const finalizationProvider = new Proxy(finalization.provider, {
+      get(_target, property) {
+        throw new Error(`live finalization provider read: ${String(property)}`);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === "mapping") finalizationMappingDescriptors += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    const substitutedFinalization = structuredClone(finalization.sellerFinalization);
+    substitutedFinalization.buyerBundle.parties[0] = {
+      ...substitutedFinalization.buyerBundle.parties[0]!,
+      primaryClaim: "did:demos:substituted-buyer",
+    };
+    const finalizationError = await actualBuyer
+      .finalizeCompletedBuyerBundleCore(
+        {
+          ...finalization.finalizeInput,
+          sellerFinalization: substitutedFinalization,
+        },
+        finalizationProvider,
+      )
+      .catch((error: unknown) => error);
+    expect(finalizationError).toBeInstanceOf(Error);
+    expect((finalizationError as Error).message).not.toContain(
+      "live finalization provider read",
+    );
+    expect(finalizationMappingDescriptors).toBe(1);
+    expect(finalization.submitBuyerBundle).not.toHaveBeenCalled();
   });
 });
