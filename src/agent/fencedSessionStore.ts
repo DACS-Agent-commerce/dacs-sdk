@@ -470,6 +470,7 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
   }
   if (!Array.isArray(value.receipts)) return "receipts missing or invalid";
   const receiptRefs = new Map<string, string>();
+  let hasBundleReceipt = false;
   for (let index = 0; index < value.receipts.length; index++) {
     const receipt = value.receipts[index];
     const violation = receiptShapeViolation(receipt);
@@ -483,6 +484,7 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
         : `receipts[${index}]: immutable receipt ${key} conflicts`;
     }
     receiptRefs.set(key, typed.ref);
+    if (typed.kind === "bundle") hasBundleReceipt = true;
   }
   const terminalProgress = terminalBundlePhaseProgress(value.phase);
   if (terminalProgress) {
@@ -495,8 +497,13 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
       if (!receiptRefs.has("bundle")) {
         return "a final terminal bundle phase requires its immutable bundle receipt";
       }
-    } else if (resultStage === "outcome") {
-      return "a terminal bundle result outcome cannot precede the atomic final seal";
+    } else {
+      if (hasBundleReceipt) {
+        return "a terminal bundle receipt cannot precede the atomic final seal";
+      }
+      if (resultStage === "outcome") {
+        return "a terminal bundle result outcome cannot precede the atomic final seal";
+      }
     }
   }
   return null;
@@ -1259,9 +1266,14 @@ export function terminalBundleSealMutationFailure(
   record: SessionRecord,
   input: Pick<TransitionInput, "phase" | "checkpoint" | "receipt" | "lease">,
 ): "phase-regression" | null {
-  const next = input.phase === undefined ? null : terminalBundlePhaseProgress(input.phase);
-  if (next?.final !== true) return null;
   const current = terminalBundlePhaseProgress(record.phase);
+  const next = input.phase === undefined
+    ? current
+    : terminalBundlePhaseProgress(input.phase);
+  if (next !== null && !next.final && input.receipt?.kind === "bundle") {
+    return "phase-regression";
+  }
+  if (next?.final !== true) return null;
   const resultKey = `terminal:${next.role}:result`;
   const prior = [...record.checkpoints]
     .reverse()

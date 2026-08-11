@@ -745,6 +745,17 @@ describe("generation-fenced FencedSessionStoreV2 v2", () => {
       jobId: "failed-terminal",
       expectedRevision: authority.record.revision,
       leaseToken: lease.lease,
+      receipt: { kind: "bundle", ref: "post-entry-premature-bundle" },
+      now: 2,
+    })).toMatchObject({
+      ok: false,
+      reason: "phase-regression",
+      record: { phase: "terminal:seller:authority", receipts: [] },
+    });
+    expect(await s.transition({
+      jobId: "failed-terminal",
+      expectedRevision: authority.record.revision,
+      leaseToken: lease.lease,
       phase: "terminal:buyer:proposal-publication-pending",
       now: 2,
     })).toMatchObject({ ok: false, reason: "phase-regression" });
