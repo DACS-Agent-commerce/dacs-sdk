@@ -206,12 +206,20 @@ export {
   type FsFencedSessionStoreOptions,
 } from "./fencedSessionStoreFs.js";
 export {
+  SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY,
+  pinSessionRecipeRegistrySnapshot,
+  recoverSessionRecipeRegistrySnapshot,
   pinSessionRecipeSelection,
   recoverSessionRecipePin,
+  isDurableSessionRecipeRegistrySnapshot,
   isDurableSessionRecipePin,
+  type DurableRecipePartyIdentity,
   type DurableRecipeRequirementPath,
   type DurableRecipeSelectionProvenance,
+  type DurableSessionRecipeRegistrySnapshot,
   type DurableSessionRecipePin,
+  type PinSessionRecipeRegistrySnapshotInput,
+  type RecoverSessionRecipeRegistrySnapshotInput,
   type PinSessionRecipeInput,
   type RecoverSessionRecipePinInput,
 } from "./durableRecipePin.js";
