@@ -193,7 +193,12 @@ export interface SessionSettlementVerificationProvider {
   /**
    * Re-observe native settlement truth under the authenticated context. This
    * runs on both initial admission and recovery; a cached finality verdict is
-   * never sufficient after a possible reorg or provider ambiguity.
+   * never sufficient after a possible reorg or provider ambiguity. Adapters
+   * handling legacy transaction-level refs MUST use
+   * `resolveSettlementEventIdentity` (or an equivalent authenticated ledger
+   * projection) so an ambiguous transaction never becomes a successful
+   * binding. Current event/instruction refs are also checked locally against
+   * the returned `settlementId` before this verifier grants authority.
    */
   revalidateSettlement: (input: {
     mode: "initial" | "recovery";
@@ -501,6 +506,51 @@ function bindingMatchesContext(
   return binding.jobId === context.jobId &&
     binding.railId === context.rail.railId &&
     binding.phaseIndex === context.paymentPhaseIndex;
+}
+
+/**
+ * Project identities whose decisive coordinate is fully signed in the
+ * evidence. `undefined` means the rail still requires provider-owned legacy
+ * projection; `null` means a signed coordinate cannot form one canonical
+ * identity and therefore cannot be authorized.
+ */
+function signedSettlementIdentity(
+  evidence: SettlementEvidence,
+): string | null | undefined {
+  if (
+    evidence.outcome !== "success" ||
+    !Array.isArray(evidence.paymentTxRefs)
+  ) return undefined;
+  const txRefs = evidence.paymentTxRefs;
+  const projections = txRefs.flatMap((ref): string[] => {
+    if (ref.kind === "evm-event") {
+      return [`evm:${ref.chainId}:${ref.txHash}:${ref.logIndex}`];
+    }
+    if (ref.kind === "x402-event") {
+      return [
+        `evm:${ref.chainId}:${ref.settlementTxHash}:${ref.logIndex}`,
+      ];
+    }
+    if (ref.kind === "solana-instruction") {
+      return [
+        `solana:${ref.cluster}:${ref.signature}:${ref.instructionIndex}`,
+      ];
+    }
+    if (ref.kind === "demos") {
+      const txHash = /^0x/i.test(ref.txHash)
+        ? ref.txHash.slice(2).toLowerCase()
+        : ref.txHash.toLowerCase();
+      return [`demos:${txHash}`];
+    }
+    return [];
+  });
+  if (projections.length === 0) return undefined;
+  if (projections.length !== 1 || txRefs.length !== 1) {
+    return null;
+  }
+  return isCanonicalSettlementIdentity(projections[0])
+    ? projections[0]!
+    : null;
 }
 
 function anchorPublicationIdentity(
@@ -948,6 +998,22 @@ export async function verifyFinalizedSessionSettlement(
     );
   }
   if (nativeDisposition.outcome === "success") {
+    const signedIdentity = signedSettlementIdentity(settlement.evidence);
+    if (signedIdentity === null) {
+      return rejected(
+        "rejected",
+        "signed settlement coordinate does not project one canonical identity",
+      );
+    }
+    if (
+      signedIdentity !== undefined &&
+      nativeDisposition.binding.settlementId !== signedIdentity
+    ) {
+      return rejected(
+        "rejected",
+        "native settlement identity differs from the signed settlement coordinate",
+      );
+    }
     if (
       settlement.evidence.outcome !== "success" ||
       settlement.evidence.settlementFinality === undefined

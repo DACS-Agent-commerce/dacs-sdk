@@ -167,5 +167,8 @@ describe("verifyX402ReceiptClaim — DACS-4 §9.5.7", () => {
     expect(result.computedPaymentReceiptHash).toBe(
       passing.want.paymentReceiptHash ?? passing.evidence?.paymentReceiptHash,
     );
+    expect(result).not.toHaveProperty("logIndex");
+    expect(result).not.toHaveProperty("txRef");
+    expect(result).not.toHaveProperty("settlementId");
   });
 });

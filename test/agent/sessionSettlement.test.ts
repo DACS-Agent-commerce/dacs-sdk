@@ -4,7 +4,10 @@ import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type {
   AnchorReceipt,
   AttestationRef,
+  ChainTxRef,
+  PaymentPhaseType,
   SettlementEvidence,
+  SettlementFinality,
 } from "../../src/artifacts/types.js";
 import {
   isAnchorReceipt,
@@ -132,6 +135,7 @@ function signedEvidence(input: {
   phaseIndex?: number;
   railId?: string;
   resolved?: boolean;
+  currentX402Event?: boolean;
 } = {}): SettlementEvidence {
   const outcome = input.outcome ?? "success";
   const base = {
@@ -139,16 +143,24 @@ function signedEvidence(input: {
     jobId: input.jobId ?? "job-settlement-1",
     phase: "pay-x402" as const,
     outcome,
-    paymentTxRefs: [
-      {
-        kind: "x402" as const,
-        httpResource: "https://seller.example/deliverable",
-        paymentReceiptHash: input.paymentReceiptHash ?? "d".repeat(64),
-        settlementTxHash: `0x${"e".repeat(64)}`,
-        chainId: 8453,
-        protocolVersion: "2",
-      },
-    ],
+    paymentTxRefs: input.currentX402Event
+      ? [{
+          kind: "x402-event" as const,
+          httpResource: "https://seller.example/deliverable",
+          paymentReceiptHash: input.paymentReceiptHash ?? "d".repeat(64),
+          settlementTxHash: "e".repeat(64),
+          chainId: 8453,
+          logIndex: 0,
+          protocolVersion: "2" as const,
+        }]
+      : [{
+          kind: "x402" as const,
+          httpResource: "https://seller.example/deliverable",
+          paymentReceiptHash: input.paymentReceiptHash ?? "d".repeat(64),
+          settlementTxHash: `0x${"e".repeat(64)}`,
+          chainId: 8453,
+          protocolVersion: "2",
+        }],
     paymentAmount: { amount: input.amount ?? "5", currency: "USDC" },
     observedAt: input.observedAt ?? 1_777_000_000_000,
     ...(outcome === "success"
@@ -230,6 +242,70 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     },
   };
   return { settlement, proof };
+}
+
+function replacePaymentEvidence(input: {
+  settlement: FinalizedSessionSettlement;
+  proof: Record<string, unknown>;
+  phase: PaymentPhaseType;
+  txRef: ChainTxRef;
+  amount: { amount: string; currency: string };
+  finality: SettlementFinality;
+  settlementId: string;
+}): void {
+  const unsigned = {
+    evidenceVersion: "1" as const,
+    jobId: "job-settlement-1",
+    phase: input.phase,
+    outcome: "success" as const,
+    paymentTxRefs: [input.txRef],
+    paymentAmount: input.amount,
+    settlementFinality: input.finality,
+    observedAt: input.finality.finalityObservedAt,
+  };
+  const hash = contentHash(unsigned as unknown as Record<string, unknown>);
+  const signature = ed25519Sign(
+    signedBytes(ARTIFACT_SEPARATORS.SettlementEvidence, hash),
+    PRIVATE_KEY,
+  );
+  input.settlement.evidence = {
+    ...unsigned,
+    signature: {
+      algorithm: "ed25519",
+      signer: ORCHESTRATOR,
+      value: Buffer.from(signature).toString("base64url"),
+    },
+  } as SettlementEvidence;
+  input.settlement.evidenceRef.contentHash = hash;
+  input.settlement.anchorReceipt.contentHash = hash;
+  input.proof.settlementId = input.settlementId;
+  input.settlement.nativeProofRef.contentHash = sha256Hex(canonicalize(input.proof));
+}
+
+function nativePassForEvidence(input: {
+  context: Readonly<SessionSettlementContext>;
+  evidence: Readonly<SettlementEvidence>;
+}, settlementId: string) {
+  if (input.evidence.outcome !== "success" ||
+      input.evidence.settlementFinality === undefined) {
+    throw new Error("fixture expects successful payment evidence");
+  }
+  return {
+    disposition: "pass" as const,
+    outcome: "success" as const,
+    binding: settlementBinding(
+      input.context as SessionSettlementContext,
+      settlementId,
+    ),
+    nativeObservation: {
+      observationVersion: "1" as const,
+      kind: "authenticated-ledger-event",
+      observedAt: input.evidence.settlementFinality.finalityObservedAt + 1,
+      finality: structuredClone(input.evidence.settlementFinality),
+      sessionBinding: { disposition: "not-applicable" as const },
+      details: { settlementId },
+    },
+  };
 }
 
 function provider(
@@ -563,6 +639,160 @@ describe("verifyFinalizedSessionSettlement", () => {
       expect(result).toEqual({
         disposition: "rejected",
         reason: "native settlement binding does not match the authenticated session",
+      });
+    }
+  });
+
+  it("binds the provider settlement identity to the exact signed x402 event coordinate", async () => {
+    const { settlement, proof } = fixture({ currentX402Event: true });
+    await expect(verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof),
+    )).resolves.toMatchObject({ disposition: "verified" });
+
+    const mismatched = `evm:8453:${"e".repeat(64)}:1`;
+    await expect(verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, {
+        revalidateSettlement: (input) => nativePass(input, mismatched),
+      }),
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reason: "native settlement identity differs from the signed settlement coordinate",
+    });
+  });
+
+  it("binds every other signed native event coordinate to the provider settlement identity", async () => {
+    const solanaSignature = "1".repeat(64);
+    const cases: Array<{
+      name: string;
+      phase: PaymentPhaseType;
+      txRef: ChainTxRef;
+      expectedId: string;
+      mismatchedId: string;
+      rail: SessionSettlementContext["rail"];
+      amount: { amount: string; currency: string };
+      finality: SettlementFinality;
+    }> = [
+      {
+        name: "evm-event",
+        phase: "pay-evm-erc20",
+        txRef: {
+          kind: "evm-event",
+          chainId: 8453,
+          txHash: "e".repeat(64),
+          logIndex: 0,
+        },
+        expectedId: `evm:8453:${"e".repeat(64)}:0`,
+        mismatchedId: `evm:8453:${"e".repeat(64)}:1`,
+        rail: {
+          ...context().rail,
+          railType: "evm-erc20",
+          handler: "pay-evm-erc20",
+        },
+        amount: { amount: "5", currency: "USDC" },
+        finality: {
+          model: "block-depth",
+          finalityBlocks: 12,
+          finalityObservedAt: 1_777_000_000_000,
+        },
+      },
+      {
+        name: "solana-instruction",
+        phase: "pay-solana-spl",
+        txRef: {
+          kind: "solana-instruction",
+          cluster: "devnet",
+          signature: solanaSignature,
+          instructionIndex: 2,
+        },
+        expectedId: `solana:devnet:${solanaSignature}:2`,
+        mismatchedId: `solana:devnet:${solanaSignature}:3`,
+        rail: {
+          ...context().rail,
+          railType: "solana-spl",
+          handler: "pay-solana-spl",
+          network: "solana:devnet",
+          finality: {
+            model: "commitment-level",
+            finalityCommitmentLevel: "finalized",
+          },
+        },
+        amount: { amount: "5", currency: "USDC" },
+        finality: {
+          model: "commitment-level",
+          finalityCommitmentLevel: "finalized",
+          finalityObservedAt: 1_777_000_000_000,
+        },
+      },
+      {
+        name: "demos",
+        phase: "pay-dem",
+        txRef: {
+          kind: "demos",
+          txHash: `0x${"e".repeat(64)}`,
+          blockNumber: 77,
+        },
+        expectedId: `demos:${"e".repeat(64)}`,
+        mismatchedId: `demos:${"f".repeat(64)}`,
+        rail: {
+          ...context().rail,
+          railType: "demos-native",
+          handler: "pay-dem",
+          asset: "DEM",
+          network: "demos",
+          finality: { model: "bft-final" },
+        },
+        amount: { amount: "5", currency: "DEM" },
+        finality: {
+          model: "bft-final",
+          finalityObservedAt: 1_777_000_000_000,
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const exactContext = context();
+      exactContext.rail = testCase.rail;
+      exactContext.paymentAmount = testCase.amount;
+      const exact = fixture();
+      replacePaymentEvidence({
+        ...exact,
+        phase: testCase.phase,
+        txRef: testCase.txRef,
+        amount: testCase.amount,
+        finality: testCase.finality,
+        settlementId: testCase.expectedId,
+      });
+      const exactProvider = provider(exact.proof, {
+        revalidateSettlement: (nativeInput) =>
+          nativePassForEvidence(nativeInput, testCase.expectedId),
+      });
+      expect(
+        await verifyFinalizedSessionSettlement(
+          exactContext,
+          exact.settlement,
+          exactProvider,
+        ),
+        testCase.name,
+      ).toMatchObject({ disposition: "verified" });
+
+      const mismatchedProvider = provider(exact.proof, {
+        revalidateSettlement: (nativeInput) =>
+          nativePassForEvidence(nativeInput, testCase.mismatchedId),
+      });
+      expect(
+        await verifyFinalizedSessionSettlement(
+          exactContext,
+          exact.settlement,
+          mismatchedProvider,
+        ),
+        testCase.name,
+      ).toEqual({
+        disposition: "rejected",
+        reason: "native settlement identity differs from the signed settlement coordinate",
       });
     }
   });
