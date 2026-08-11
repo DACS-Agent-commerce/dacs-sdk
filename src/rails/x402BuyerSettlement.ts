@@ -209,7 +209,10 @@ export type X402BuyerDisclosureWrite =
 
 /**
  * Atomic storage contract. Implementations must serialize every mutation by
- * settlement key and must never overwrite an intent or terminal outcome.
+ * settlement key and must never overwrite an intent, pending disclosure, or
+ * terminal outcome. A disclosure produced by an already-started paid request
+ * may be attached after lease expiry only while its exact generation remains
+ * installed; a superseded generation must be rejected.
  */
 export interface X402BuyerSettlementStore {
   load(settlementKey: string): Promise<X402BuyerSettlementLoad>;
@@ -1424,8 +1427,7 @@ export function createInMemoryX402BuyerSettlementStore(
       const terminal = terminalClaim(current);
       if (terminal) return terminal as X402BuyerDisclosureWrite;
       if (current.lease.owner !== input.lease.owner ||
-          current.lease.generation !== input.lease.generation ||
-          current.lease.expiresAt <= input.now) {
+          current.lease.generation !== input.lease.generation) {
         return { status: "stale" };
       }
       const disclosure = captureDisclosure(input.disclosure);
@@ -1985,11 +1987,6 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
     | { status: "ready"; disclosure: Readonly<X402BuyerSettlementDisclosure> }
     | X402BuyerSettlementProgress
   > => {
-    try {
-      await fence.assertCurrent();
-    } catch {
-      return { status: "indeterminate", reason: "settlement-generation-stale" };
-    }
     let result: X402BuyerDisclosureWrite;
     try {
       result = captureDisclosureWrite(await input.store.recordDisclosure({
@@ -2157,7 +2154,6 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
       }
       await fence.assertCurrent();
       const raw = await input.transport.submitRetained(intent, fence);
-      await fence.assertCurrent();
       if (!isRecord(raw)) {
         return { status: "indeterminate", reason: "paid-request-result-invalid" };
       }

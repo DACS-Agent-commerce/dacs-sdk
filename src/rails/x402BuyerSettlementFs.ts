@@ -824,8 +824,7 @@ export async function createFsX402BuyerSettlementStore(
         const terminal = terminalClaim(current);
         if (terminal) return terminal as X402BuyerDisclosureWrite;
         if (current.lease.owner !== input.lease.owner ||
-            current.lease.generation !== input.lease.generation ||
-            current.lease.expiresAt <= input.now) {
+            current.lease.generation !== input.lease.generation) {
           return { status: "stale" };
         }
         const disclosure = x402BuyerSettlementStoreInternals.captureDisclosure(

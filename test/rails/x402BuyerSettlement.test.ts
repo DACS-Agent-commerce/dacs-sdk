@@ -463,6 +463,36 @@ describe("advanceX402BuyerSettlement", () => {
     expect(await baseStore.load(intent.settlementKey)).toMatchObject({ status: "captured" });
   });
 
+  test("retains a paid response that returns after lease expiry when its generation is unchanged", async () => {
+    const intent = makeIntent();
+    const store = createInMemoryX402BuyerSettlementStore();
+    let now = 1_000;
+    const result = await advanceX402BuyerSettlement({
+      intent,
+      owner: "worker-a",
+      store,
+      authorizationProvider: provider([{
+        disposition: "indeterminate",
+        reason: "settlement-not-finalized",
+      }]),
+      transport: transport(async (_received, fence) => {
+        await fence.assertCurrent();
+        now = 1_011;
+        return { disposition: "response", disclosure: disclosure() };
+      }),
+      now: () => now,
+      leaseDurationMs: 10,
+    });
+    expect(result).toEqual({
+      status: "indeterminate",
+      reason: "authorization-reconciliation-unavailable",
+    });
+    await expect(store.load(intent.settlementKey)).resolves.toMatchObject({
+      status: "held",
+      pendingDisclosure: disclosure(),
+    });
+  });
+
   test("the exact retained binding must be independently authorized before submission", async () => {
     const intent = makeIntent();
     const store = createInMemoryX402BuyerSettlementStore();
