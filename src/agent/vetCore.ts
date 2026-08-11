@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { canonicalize, contentHash, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
 import type {
   AttestationRef,
@@ -75,6 +77,9 @@ function snapshotValue(
   if (seen.has(value)) {
     throw new DacsError(`${label} must be acyclic`);
   }
+  if (nodeTypes.isProxy(value)) {
+    throw new DacsError(`${label} cannot contain proxies`);
+  }
   seen.add(value);
   if (
     value instanceof Uint8Array &&
@@ -149,49 +154,247 @@ function snapshot<T>(value: T, label: string): T {
   return snapshotValue(value, label, new WeakSet()) as T;
 }
 
+const INERT_VET_RECEIVER = Object.freeze(Object.create(null)) as object;
+
+function exactOwnDataDescriptors(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[],
+  label: string,
+): PropertyDescriptorMap {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    nodeTypes.isProxy(value)
+  ) {
+    throw new DacsError(`${label} must be an exact plain data record`);
+  }
+  let prototype: object | null;
+  let keys: (string | symbol)[];
+  let descriptors: PropertyDescriptorMap;
+  try {
+    prototype = Object.getPrototypeOf(value);
+    keys = Reflect.ownKeys(value);
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    throw new DacsError(`${label} could not be captured`);
+  }
+  const allowed = new Set([...required, ...optional]);
+  if (
+    (prototype !== Object.prototype && prototype !== null) ||
+    keys.some((key) => typeof key !== "string") ||
+    !required.every((key) => keys.includes(key)) ||
+    !keys.every((key) => typeof key === "string" && allowed.has(key))
+  ) {
+    throw new DacsError(`${label} must be an exact plain data record`);
+  }
+  for (const key of keys as string[]) {
+    const descriptor = descriptors[key];
+    if (
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !("value" in descriptor) ||
+      descriptor.value === undefined
+    ) {
+      throw new DacsError(`${label} must contain only defined own data fields`);
+    }
+  }
+  return descriptors;
+}
+
+function exactCallback<T extends (...args: never[]) => unknown>(
+  value: unknown,
+  label: string,
+): T {
+  if (typeof value !== "function" || nodeTypes.isProxy(value)) {
+    throw new DacsError(`${label} must be a non-proxy callback`);
+  }
+  return value as T;
+}
+
 function captureVetDeps(source: VetDeps): VetDeps {
   try {
-    const proxyFetch = source.proxyFetch.bind(source);
-    const nowMs = source.nowMs.bind(source);
-    const anchorFinalizedArtifact = source.anchorFinalizedArtifact.bind(source);
-    const verifyFinalizedAnchor = source.verifyFinalizedAnchor.bind(source);
-    const readAnchoredJson = source.readAnchoredJson.bind(source);
-    const resolveFinalizedArtifact =
-      source.resolveFinalizedArtifact.bind(source);
-    const operationStoreSource = source.operationStore;
+    const descriptors = exactOwnDataDescriptors(
+      source,
+      [
+        "proxyFetch",
+        "nowMs",
+        "componentSigner",
+        "anchorFinalizedArtifact",
+        "verifyFinalizedAnchor",
+        "readAnchoredJson",
+        "resolveFinalizedArtifact",
+        "operationStore",
+      ],
+      ["matchRequirementParameters", "parserEngine"],
+      "Vet dependencies",
+    );
+    const rawProxyFetch = exactCallback<VetDeps["proxyFetch"]>(
+      descriptors.proxyFetch!.value,
+      "Vet proxyFetch",
+    );
+    const rawNowMs = exactCallback<VetDeps["nowMs"]>(
+      descriptors.nowMs!.value,
+      "Vet nowMs",
+    );
+    const rawAnchorFinalizedArtifact = exactCallback<
+      VetDeps["anchorFinalizedArtifact"]
+    >(
+      descriptors.anchorFinalizedArtifact!.value,
+      "Vet anchorFinalizedArtifact",
+    );
+    const rawVerifyFinalizedAnchor = exactCallback<
+      VetDeps["verifyFinalizedAnchor"]
+    >(
+      descriptors.verifyFinalizedAnchor!.value,
+      "Vet verifyFinalizedAnchor",
+    );
+    const rawReadAnchoredJson = exactCallback<VetDeps["readAnchoredJson"]>(
+      descriptors.readAnchoredJson!.value,
+      "Vet readAnchoredJson",
+    );
+    const rawResolveFinalizedArtifact = exactCallback<
+      VetDeps["resolveFinalizedArtifact"]
+    >(
+      descriptors.resolveFinalizedArtifact!.value,
+      "Vet resolveFinalizedArtifact",
+    );
+    const operationStoreSource = descriptors.operationStore!.value;
+    const storeDescriptors = exactOwnDataDescriptors(
+      operationStoreSource,
+      ["load", "compareAndSet", "runOnce"],
+      [],
+      "Vet operation store",
+    );
+    const rawLoad = exactCallback<VetOperationStore["load"]>(
+      storeDescriptors.load!.value,
+      "Vet operation store load",
+    );
+    const rawCompareAndSet = exactCallback<VetOperationStore["compareAndSet"]>(
+      storeDescriptors.compareAndSet!.value,
+      "Vet operation store compareAndSet",
+    );
+    const rawRunOnce = exactCallback<VetOperationStore["runOnce"]>(
+      storeDescriptors.runOnce!.value,
+      "Vet operation store runOnce",
+    );
     const operationStore = Object.freeze({
-      load: operationStoreSource.load.bind(operationStoreSource),
-      compareAndSet:
-        operationStoreSource.compareAndSet.bind(operationStoreSource),
-      runOnce: operationStoreSource.runOnce.bind(operationStoreSource),
+      load: (operationKey: string) =>
+        Reflect.apply(rawLoad, INERT_VET_RECEIVER, [operationKey]),
+      compareAndSet: (input: Parameters<VetOperationStore["compareAndSet"]>[0]) =>
+        Reflect.apply(rawCompareAndSet, INERT_VET_RECEIVER, [input]),
+      runOnce: (input: Parameters<VetOperationStore["runOnce"]>[0]) =>
+        Reflect.apply(rawRunOnce, INERT_VET_RECEIVER, [input]),
     });
-    const matchRequirementParameters =
-      source.matchRequirementParameters?.bind(source);
-    const signerSource = source.componentSigner;
+    const matchRequirementParameters = descriptors.matchRequirementParameters
+      ? exactCallback<NonNullable<VetDeps["matchRequirementParameters"]>>(
+          descriptors.matchRequirementParameters.value,
+          "Vet matchRequirementParameters",
+        )
+      : undefined;
+    const signerSource = descriptors.componentSigner!.value;
+    const signerDescriptors = exactOwnDataDescriptors(
+      signerSource,
+      ["algorithm", "signer", "sign"],
+      [],
+      "Vet component signer",
+    );
+    const algorithm = signerDescriptors.algorithm!.value;
+    const signer = signerDescriptors.signer!.value;
+    const rawSign = exactCallback<BuildComponentSignatureOptions["sign"]>(
+      signerDescriptors.sign!.value,
+      "Vet component signer sign",
+    );
+    if (
+      algorithm !== "ed25519" &&
+      algorithm !== "ecdsa-secp256k1" &&
+      algorithm !== "sr1-aggregate"
+    ) {
+      throw new DacsError("Vet component signer algorithm is unsupported");
+    }
+    if (
+      typeof signer !== "string" ||
+      signer.length === 0 ||
+      signer.trim() !== signer ||
+      signer.normalize("NFC") !== signer
+    ) {
+      throw new DacsError("Vet component signer identity is not canonical");
+    }
+    claimParts(signer);
     const componentSigner: BuildComponentSignatureOptions = Object.freeze({
-      algorithm: signerSource.algorithm,
-      signer: signerSource.signer,
-      sign: signerSource.sign.bind(signerSource),
+      algorithm,
+      signer,
+      sign: (
+        bytes: Parameters<BuildComponentSignatureOptions["sign"]>[0],
+        context: Parameters<BuildComponentSignatureOptions["sign"]>[1],
+      ) =>
+        Reflect.apply(rawSign, INERT_VET_RECEIVER, [bytes, context]),
     });
-    const parserSource = source.parserEngine;
+    const parserSource = descriptors.parserEngine?.value;
     const parserEngine = parserSource
-      ? Object.freeze({
-          evalPredicate: parserSource.evalPredicate.bind(parserSource),
-          ...(parserSource.extract
-            ? { extract: parserSource.extract.bind(parserSource) }
-            : {}),
-        })
+      ? (() => {
+          const parserDescriptors = exactOwnDataDescriptors(
+            parserSource,
+            ["evalPredicate"],
+            ["extract"],
+            "Vet parser engine",
+          );
+          const rawEvalPredicate = exactCallback<ParserEngine["evalPredicate"]>(
+            parserDescriptors.evalPredicate!.value,
+            "Vet parser evalPredicate",
+          );
+          const rawExtract = parserDescriptors.extract
+            ? exactCallback<NonNullable<ParserEngine["extract"]>>(
+                parserDescriptors.extract.value,
+                "Vet parser extract",
+              )
+            : undefined;
+          return Object.freeze({
+            evalPredicate: (...args: Parameters<ParserEngine["evalPredicate"]>) =>
+              Reflect.apply(rawEvalPredicate, INERT_VET_RECEIVER, args),
+            ...(rawExtract
+              ? {
+                  extract: (...args: Parameters<NonNullable<ParserEngine["extract"]>>) =>
+                    Reflect.apply(rawExtract, INERT_VET_RECEIVER, args),
+                }
+              : {}),
+          });
+        })()
       : undefined;
     return Object.freeze({
-      proxyFetch,
-      nowMs,
+      proxyFetch: (request: Parameters<VetDeps["proxyFetch"]>[0]) =>
+        Reflect.apply(rawProxyFetch, INERT_VET_RECEIVER, [request]),
+      nowMs: () => Reflect.apply(rawNowMs, INERT_VET_RECEIVER, []),
       componentSigner,
-      anchorFinalizedArtifact,
-      verifyFinalizedAnchor,
-      readAnchoredJson,
-      resolveFinalizedArtifact,
+      anchorFinalizedArtifact: (
+        input: Parameters<VetDeps["anchorFinalizedArtifact"]>[0],
+      ) =>
+        Reflect.apply(rawAnchorFinalizedArtifact, INERT_VET_RECEIVER, [input]),
+      verifyFinalizedAnchor: (
+        input: Parameters<VetDeps["verifyFinalizedAnchor"]>[0],
+      ) =>
+        Reflect.apply(rawVerifyFinalizedAnchor, INERT_VET_RECEIVER, [input]),
+      readAnchoredJson: (ref: Parameters<VetDeps["readAnchoredJson"]>[0]) =>
+        Reflect.apply(rawReadAnchoredJson, INERT_VET_RECEIVER, [ref]),
+      resolveFinalizedArtifact: (
+        input: Parameters<VetDeps["resolveFinalizedArtifact"]>[0],
+      ) =>
+        Reflect.apply(rawResolveFinalizedArtifact, INERT_VET_RECEIVER, [input]),
       operationStore,
-      ...(matchRequirementParameters ? { matchRequirementParameters } : {}),
+      ...(matchRequirementParameters
+        ? {
+            matchRequirementParameters: (
+              input: Parameters<
+                NonNullable<VetDeps["matchRequirementParameters"]>
+              >[0],
+            ) => Reflect.apply(
+              matchRequirementParameters,
+              INERT_VET_RECEIVER,
+              [input],
+            ),
+          }
+        : {}),
       ...(parserEngine ? { parserEngine } : {}),
     });
   } catch {
@@ -754,7 +957,7 @@ const REQUIRED_VET_REQUEST_KEYS = [
  * recipe bytes for the clone.
  */
 function captureVetRequest(source: VetRequest): VetRequest {
-  if (!isRecord(source)) {
+  if (!isRecord(source) || nodeTypes.isProxy(source)) {
     throw new DacsError("Vet request must be a plain record");
   }
   let descriptors: PropertyDescriptorMap;

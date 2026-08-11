@@ -469,6 +469,232 @@ describe("vetCore current DACS-2 producer", () => {
     });
   });
 
+  test("preserves the legacy single-claim bytes and durable effect namespace", async () => {
+    const store: FinalizedStore = new Map();
+    const jobId = "job-vet-refactor-equivalence";
+    const subject = "domain:alice.example";
+    const exactRequirement = requirement("domain");
+    const request: VetRequest = {
+      jobId,
+      subject,
+      bundleHash: BUNDLE_HASH,
+      requirement: exactRequirement,
+      recipe: await authenticatedRecipe(),
+    };
+
+    const first = await vetCore(request, baseDeps(store));
+    const resultAddress = `${`dacs2:${jobId}`}:domain:alice.example:v1`;
+    const recordAddress = compositeVerificationAddress(jobId, subject);
+    const expectedResult = await signComponentArtifact(
+      {
+        resultVersion: "1" as const,
+        scheme: "domain",
+        identifier: "alice.example",
+        recipeVersion: 1,
+        method: "consensus-backed-proxy" as const,
+        decision: "pass" as const,
+        reason: "authority confirmed claim",
+        attestation: {
+          anchor: {
+            kind: "https" as const,
+            locator: "https://authority.example/evidence/1",
+          },
+          contentHash: sha256Hex(JSON.stringify({ ok: true })),
+          signer: "substrate-validator-set:demos-testnet:1",
+        },
+        fetchedAt: NOW,
+        verifiedAt: NOW,
+      },
+      "dacs-verifyresult:v1:",
+      {
+        algorithm: "ed25519",
+        signer: VERIFIER,
+        sign: (bytes) =>
+          ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+      },
+    );
+    const expectedRecord = await signComponentArtifact(
+      {
+        recordVersion: "1" as const,
+        jobId,
+        evaluatedParty: subject,
+        bundleHash: BUNDLE_HASH,
+        requirementHash: sha256Hex(canonicalize(exactRequirement)),
+        freshness: [],
+        supplementary: [],
+        dealSpecific: [
+          {
+            anchor: {
+              kind: "storage-program" as const,
+              locator: `memory:${resultAddress}`,
+            },
+            contentHash: contentHash(
+              expectedResult as unknown as Record<string, unknown>,
+            ),
+            recipeVersion: 1,
+          },
+        ],
+        overallDecision: "pass" as const,
+        generatedAt: NOW,
+      },
+      "dacs-composite:v1:",
+      {
+        algorithm: "ed25519",
+        signer: VERIFIER,
+        sign: (bytes) =>
+          ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+      },
+    );
+
+    expect(canonicalize(storedVerifyResult(store))).toBe(
+      canonicalize(expectedResult),
+    );
+    expect(canonicalize(first.record)).toBe(canonicalize(expectedRecord));
+    expect([...operationStoreFor(store).keys()]).toEqual([recordAddress]);
+    expect([...operationStepsFor(store).keys()].sort()).toEqual(
+      [
+        "method",
+        "verify-result",
+        "verify-result-anchor",
+        "composite",
+        "composite-anchor",
+      ].map((step) => `${recordAddress}\u0000${step}`).sort(),
+    );
+    expect([...store.values()].map((entry) => entry.logicalAddress).sort()).toEqual(
+      [resultAddress, recordAddress].sort(),
+    );
+
+    const replay = await vetCore(request, baseDeps(store));
+    expect(canonicalize(replay)).toBe(canonicalize(first));
+    expect(store.size).toBe(2);
+    expect(operationStepsFor(store).size).toBe(5);
+  });
+
+  test("captures dependency authority from exact data descriptors without getters", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    let getterReads = 0;
+    Object.defineProperty(deps, "proxyFetch", {
+      enumerable: true,
+      get: () => {
+        getterReads += 1;
+        return baseDeps(store).proxyFetch;
+      },
+    });
+
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-dependency-getter",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/stable callable capabilities/);
+    expect(getterReads).toBe(0);
+    expect(store.size).toBe(0);
+  });
+
+  test("rejects proxy callbacks and proxy request records before reflection", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    let proxyApplied = false;
+    deps.proxyFetch = new Proxy(deps.proxyFetch, {
+      apply: () => {
+        proxyApplied = true;
+        throw new Error("must not run");
+      },
+    });
+    const request: VetRequest = {
+      jobId: "job-vet-proxy-callback",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
+    await expect(vetCore(request, deps)).rejects.toThrow(
+      /stable callable capabilities/,
+    );
+    expect(proxyApplied).toBe(false);
+
+    let reflected = false;
+    const requestProxy = new Proxy(request, {
+      ownKeys: () => {
+        reflected = true;
+        return [];
+      },
+    });
+    await expect(
+      vetCore(requestProxy, baseDeps(new Map())),
+    ).rejects.toThrow(/Vet request must be a plain record/);
+    expect(reflected).toBe(false);
+  });
+
+  test("freezes callback identity before the first await", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const originalLoad = deps.operationStore.load;
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    deps.operationStore.load = async (operationKey) => {
+      await loadGate;
+      return originalLoad(operationKey);
+    };
+    const request: VetRequest = {
+      jobId: "job-vet-dependency-mutation",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
+    let replacementCalls = 0;
+    const running = vetCore(request, deps);
+    deps.proxyFetch = async () => {
+      replacementCalls += 1;
+      throw new Error("mutated proxy callback");
+    };
+    deps.componentSigner.sign = () => {
+      replacementCalls += 1;
+      return new Uint8Array(64);
+    };
+    deps.operationStore.runOnce = async () => {
+      replacementCalls += 1;
+      throw new Error("mutated runOnce callback");
+    };
+    releaseLoad();
+
+    await expect(running).resolves.toMatchObject({
+      record: { overallDecision: "pass" },
+    });
+    expect(replacementCalls).toBe(0);
+  });
+
+  test("invokes dependency callbacks with an inert receiver", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    deps.nowMs = function (this: Record<string, unknown>) {
+      return this.componentSigner === undefined ? -1 : NOW;
+    };
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-inert-receiver",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/non-negative safe integer/);
+    expect(store.size).toBe(0);
+  });
+
   test("requires recipe provenance created by authenticated resolution", async () => {
     const plainSignedRecipe = await signComponentArtifact(
       recipe(),
