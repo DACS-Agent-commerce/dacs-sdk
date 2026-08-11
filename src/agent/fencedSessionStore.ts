@@ -304,7 +304,8 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
   if (!isNonEmptyString(value.phase)) return "phase missing or invalid";
   if (value.phase.startsWith("seller:") &&
       !sellerTerminal(value.phase) &&
-      sellerDeliveryPhaseProgress(value.phase) === null) {
+      sellerDeliveryPhaseProgress(value.phase) === null &&
+      sellerBundlePhaseRank(value.phase) === null) {
     return "phase uses a malformed or unrecognized reserved seller lifecycle value";
   }
   if (!isNonNegativeInteger(value.revision)) {
@@ -352,6 +353,12 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
       return "a globally terminal seller session cannot retain a lease";
     }
     const progress = sellerDeliveryPhaseProgress(value.phase);
+    if (
+      sellerBundlePhaseRank(value.phase) !== null &&
+      value.lease.sellerPhaseIndex !== undefined
+    ) {
+      return "a seller bundle phase requires an unscoped lease";
+    }
     if (
       progress &&
       !progress.terminal &&
@@ -682,6 +689,14 @@ export function snapshotFencedCreateInput(value: unknown): CreateInput {
   if (input.phase !== undefined && !isNonEmptyString(input.phase)) {
     throw new DacsError("create.phase must be a non-empty trimmed string");
   }
+  if (
+    input.phase !== undefined &&
+    sellerBundlePhaseRank(input.phase) !== null
+  ) {
+    throw new DacsError(
+      "create.phase cannot enter seller bundle finalization without a completed delivery",
+    );
+  }
   assertOptionalNow(input.now, "create.now");
   return structuredClone(input) as unknown as CreateInput;
 }
@@ -890,6 +905,22 @@ const sellerTerminal = (phase: string): boolean =>
   phase === "seller:rejected" ||
   phase === "seller:finalised";
 
+/** Monotonic, unscoped recovery lifecycle for seller bundle finalization. */
+function sellerBundlePhaseRank(phase: string): number | null {
+  switch (phase) {
+    case "seller:bundle-signing":
+      return 0;
+    case "seller:bundle-anchor-pending":
+      return 1;
+    case "seller:bundle-binding-signing":
+      return 2;
+    case "seller:bundle-binding-publication-pending":
+      return 3;
+    default:
+      return null;
+  }
+}
+
 interface SellerDeliveryPhaseProgress {
   index: number;
   rank: number;
@@ -941,19 +972,50 @@ export function sessionPhaseMutationFailure(
 ): "phase-regression" | null {
   if (nextPhase?.startsWith("seller:") &&
       !sellerTerminal(nextPhase) &&
-      sellerDeliveryPhaseProgress(nextPhase) === null) {
+      sellerDeliveryPhaseProgress(nextPhase) === null &&
+      sellerBundlePhaseRank(nextPhase) === null) {
     return "phase-regression";
   }
+  const currentBundleRank = sellerBundlePhaseRank(record.phase);
+  const nextBundleRank = nextPhase === undefined
+    ? null
+    : sellerBundlePhaseRank(nextPhase);
+  const current = sellerDeliveryPhaseProgress(record.phase);
+  const scope = record.lease?.sellerPhaseIndex;
+
   if (nextPhase === "seller:finalised") {
-    return record.lease?.sellerPhaseIndex === undefined
+    // Preserve the v2 store's pre-existing global-finalisation transition for
+    // non-bundle consumers. The durable bundle coordinator independently
+    // requires and atomically writes its exact result checkpoint + receipt.
+    return scope === undefined ? null : "phase-regression";
+  }
+
+  // Once bundle finalization starts it seals seller delivery progression. WAL
+  // outcomes may preserve the current phase, while explicit phase changes are
+  // forward-only within the bundle lifecycle.
+  if (currentBundleRank !== null) {
+    if (scope !== undefined) return "phase-regression";
+    if (nextPhase === undefined) return null;
+    return nextBundleRank !== null && nextBundleRank >= currentBundleRank
       ? null
       : "phase-regression";
   }
-  const current = sellerDeliveryPhaseProgress(record.phase);
+
+  // The first bundle state is reachable only from a successful completed
+  // delivery while holding a live general (unscoped) lease.
+  if (nextBundleRank !== null) {
+    return current?.terminal === true &&
+      current.outcome === "completed" &&
+      nextBundleRank === 0 &&
+      record.lease !== undefined &&
+      scope === undefined
+      ? null
+      : "phase-regression";
+  }
+
   const next = nextPhase === undefined
     ? null
     : sellerDeliveryPhaseProgress(nextPhase);
-  const scope = record.lease?.sellerPhaseIndex;
 
   if (scope !== undefined && nextPhase !== undefined && next?.index !== scope) {
     return "phase-regression";
@@ -983,6 +1045,9 @@ export function sessionLeaseScopeFailure(
   record: SessionRecord,
   sellerPhaseIndex: number | undefined,
 ): "phase-regression" | null {
+  if (sellerBundlePhaseRank(record.phase) !== null) {
+    return sellerPhaseIndex === undefined ? null : "phase-regression";
+  }
   const current = sellerDeliveryPhaseProgress(record.phase);
   if (!current) return null;
   if (current.terminal) {
@@ -998,6 +1063,9 @@ export function sessionLeaseScopeFailure(
 export function sessionAuthorizationPhaseFailure(
   record: SessionRecord,
 ): "phase-regression" | null {
+  if (sellerBundlePhaseRank(record.phase) !== null) {
+    return "phase-regression";
+  }
   if (!sellerDeliveryPhaseProgress(record.phase)) return null;
   const scope = record.lease?.sellerPhaseIndex;
   return scope === undefined

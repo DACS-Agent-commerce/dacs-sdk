@@ -32,6 +32,39 @@ function authorizationBinding(
   };
 }
 
+async function completeDelivery(
+  target: FencedSessionStoreV2,
+  jobId: string,
+): Promise<SessionPaymentAuthorizationBinding> {
+  const binding = authorizationBinding("a".repeat(64), "1");
+  await target.create({ jobId, agreementHash: binding.agreementHash, now: 0 });
+  const lease = await target.acquireLease({
+    jobId,
+    owner: "delivery-worker",
+    ttlMs: 100,
+    sellerPhaseIndex: binding.deliveryPhaseIndex,
+    now: 0,
+  });
+  if (!lease.ok) throw new Error("delivery lease missing");
+  const bound = await target.bindSessionAuthorization({
+    jobId,
+    binding,
+    leaseToken: lease.lease,
+    now: 1,
+  });
+  if (!bound.ok) throw new Error(`authorization binding failed: ${bound.reason}`);
+  const completed = await target.transition({
+    jobId,
+    expectedRevision: bound.record.revision,
+    leaseToken: lease.lease,
+    phase: `seller:delivery-completed:${binding.deliveryPhaseIndex}`,
+    lease: null,
+    now: 2,
+  });
+  if (!completed.ok) throw new Error(`delivery completion failed: ${completed.reason}`);
+  return binding;
+}
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "dacs-sessionstore-"));
   store = await createFsFencedSessionStore({ dir });
@@ -80,6 +113,159 @@ describe("generation-fenced filesystem FencedSessionStoreV2 v2", () => {
       now: 5,
     });
     expect(bad.ok).toBe(false);
+  });
+
+  test("persists the monotonic unscoped bundle lifecycle with memory-store parity", async () => {
+    const binding = await completeDelivery(store, "bundle-job");
+    const lease = await store.acquireLease({
+      jobId: "bundle-job",
+      owner: "bundle-worker-a",
+      ttlMs: 100,
+      now: 3,
+    });
+    if (!lease.ok) throw new Error("bundle lease missing");
+    const signing = await store.claimCheckpoint({
+      jobId: "bundle-job",
+      key: "seller:bundle-signature:seller",
+      data: { messageHash: "2".repeat(64) },
+      phase: "seller:bundle-signing",
+      leaseToken: lease.lease,
+      now: 4,
+    });
+    if (!signing.ok) throw new Error(`bundle signing claim failed: ${signing.reason}`);
+    const outcome = await store.transition({
+      jobId: "bundle-job",
+      expectedRevision: signing.record.revision,
+      leaseToken: lease.lease,
+      checkpoint: {
+        key: "seller:bundle-signature:seller",
+        stage: "outcome",
+        data: { signatureHash: "3".repeat(64) },
+      },
+      now: 5,
+    });
+    expect(outcome.ok && outcome.record.phase).toBe("seller:bundle-signing");
+    if (!outcome.ok) return;
+    const anchor = await store.transition({
+      jobId: "bundle-job",
+      expectedRevision: outcome.record.revision,
+      leaseToken: lease.lease,
+      phase: "seller:bundle-anchor-pending",
+      lease: null,
+      now: 6,
+    });
+    expect(anchor.ok).toBe(true);
+    if (!anchor.ok) return;
+
+    const reopened = await createFsFencedSessionStore({ dir });
+    expect(await reopened.acquireLease({
+      jobId: "bundle-job",
+      owner: "later-delivery",
+      ttlMs: 100,
+      sellerPhaseIndex: binding.deliveryPhaseIndex + 2,
+      now: 7,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    const recoveryLease = await reopened.acquireLease({
+      jobId: "bundle-job",
+      owner: "bundle-worker-b",
+      ttlMs: 100,
+      now: 7,
+    });
+    if (!recoveryLease.ok) throw new Error("bundle recovery lease missing");
+    expect(await reopened.transition({
+      jobId: "bundle-job",
+      expectedRevision: recoveryLease.record.revision,
+      leaseToken: recoveryLease.lease,
+      phase: "seller:bundle-signing",
+      now: 8,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await reopened.transition({
+      jobId: "bundle-job",
+      expectedRevision: recoveryLease.record.revision,
+      leaseToken: recoveryLease.lease,
+      phase: `seller:delivery-pending:${binding.deliveryPhaseIndex + 2}`,
+      now: 8,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await reopened.bindSessionAuthorization({
+      jobId: "bundle-job",
+      binding: authorizationBinding(binding.agreementHash, "f", 2),
+      leaseToken: recoveryLease.lease,
+      now: 8,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+
+    const bindingSigning = await reopened.transition({
+      jobId: "bundle-job",
+      expectedRevision: recoveryLease.record.revision,
+      leaseToken: recoveryLease.lease,
+      phase: "seller:bundle-binding-signing",
+      now: 9,
+    });
+    expect(bindingSigning.ok).toBe(true);
+    if (!bindingSigning.ok) return;
+
+    const publication = await reopened.transition({
+      jobId: "bundle-job",
+      expectedRevision: bindingSigning.record.revision,
+      leaseToken: recoveryLease.lease,
+      phase: "seller:bundle-binding-publication-pending",
+      now: 10,
+    });
+    expect(publication.ok).toBe(true);
+    if (!publication.ok) return;
+    const finalised = await reopened.transition({
+      jobId: "bundle-job",
+      expectedRevision: publication.record.revision,
+      leaseToken: recoveryLease.lease,
+      phase: "seller:finalised",
+      receipt: { kind: "bundle", ref: "bundle-native-address" },
+      lease: null,
+      now: 11,
+    });
+    expect(finalised.ok && finalised.record.phase).toBe("seller:finalised");
+    if (!finalised.ok) return;
+    expect(await reopened.transition({
+      jobId: "bundle-job",
+      expectedRevision: finalised.record.revision,
+      checkpoint: { key: "late", stage: "intent" },
+      now: 12,
+    })).toMatchObject({ ok: false, reason: "terminal-state" });
+    expect(await reopened.acquireLease({
+      jobId: "bundle-job",
+      owner: "late-worker",
+      ttlMs: 100,
+      now: 12,
+    })).toMatchObject({ ok: false, reason: "terminal-state" });
+  });
+
+  test("filesystem bundle entry rejects direct creation and skipped first phase", async () => {
+    await expect(store.create({
+      jobId: "created-in-bundle",
+      phase: "seller:bundle-signing",
+    })).rejects.toThrow(/cannot enter seller bundle finalization/);
+    expect(await store.load("created-in-bundle")).toEqual({ status: "missing" });
+
+    await completeDelivery(store, "skip-entry");
+    const lease = await store.acquireLease({
+      jobId: "skip-entry",
+      owner: "bundle-worker",
+      ttlMs: 100,
+      now: 3,
+    });
+    if (!lease.ok) throw new Error("bundle lease missing");
+    expect(await store.transition({
+      jobId: "skip-entry",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      phase: "seller:bundle-anchor-pending",
+      now: 4,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
+    expect(await store.transition({
+      jobId: "skip-entry",
+      expectedRevision: lease.record.revision,
+      leaseToken: lease.lease,
+      phase: "seller:bundle-signing:1",
+      now: 4,
+    })).toMatchObject({ ok: false, reason: "phase-regression" });
   });
 
   test("DURABLE across a restart: a fresh store instance on the same dir sees the session", async () => {
@@ -401,6 +587,17 @@ describe("generation-fenced filesystem FencedSessionStoreV2 v2", () => {
       { ...valid, receipts: [{ kind: "settlement", ref: 42 }] },
       { ...valid, leaseGeneration: 1, lease: { owner: "worker", generation: 1, expiresAt: "tomorrow" } },
       { ...valid, leaseGeneration: 1, lease: { owner: "worker", generation: 1, expiresAt: 10, token: "unexpected" } },
+      {
+        ...valid,
+        phase: "seller:bundle-signing",
+        leaseGeneration: 1,
+        lease: {
+          owner: "delivery-worker",
+          generation: 1,
+          expiresAt: 10,
+          sellerPhaseIndex: 1,
+        },
+      },
     ]) {
       await writeFile(path, JSON.stringify(malformed));
       expect((await store.load("j1")).status).toBe("corrupt");
