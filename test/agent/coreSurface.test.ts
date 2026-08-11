@@ -14,9 +14,16 @@ import {
   getSellerFulfilmentStatus,
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  verifyCompletedSellerBundleCounterSignatureRequest,
   verifyFinalizedSellerBundleReadOnly,
   finalizeCompletedSellerBundleDurable,
   getSellerBundleFinalizationStatus,
+  verifyFinalizedSessionSettlement,
+  createCompletedBuyerBundleCounterSignature,
+  finalizeCompletedBuyerBundleCore,
+  advanceCompletedBuyerBundleDurable,
+  getBuyerBundleFinalizationStatus,
+  isCanonicalSettlementIdentity,
   createX402Paywall,
   x402PaywallCore,
   x402PaywallSettlementKey,
@@ -31,6 +38,9 @@ import {
   type SessionStore,
   type CompletedSellerSessionArtifacts,
   type SellerPaymentPhaseIndexResolution,
+  type BuyerBundleFinalizationDurability,
+  type DurableBuyerBundleFinalizationInput,
+  type SessionSettlementContext,
   type SessionDeps,
 } from "../../src/index.js";
 import {
@@ -38,6 +48,7 @@ import {
   createInMemoryFencedSessionStore as sellerCreateInMemoryFencedSessionStore,
   finalizeCompletedSellerBundleCore as sellerFinalizeCompletedBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest as sellerPrepareCompletedBundleCounterSignatureRequest,
+  verifyCompletedSellerBundleCounterSignatureRequest as sellerVerifyCompletedBundleCounterSignatureRequest,
   verifyFinalizedSellerBundleReadOnly as sellerVerifyFinalizedBundleReadOnly,
   finalizeCompletedSellerBundleDurable as sellerFinalizeCompletedBundleDurable,
   getSellerBundleFinalizationStatus as sellerGetBundleFinalizationStatus,
@@ -105,10 +116,14 @@ describe("public core surface (#14)", () => {
     expect(typeof runFulfilmentCore).toBe("function");
     expect(typeof finalizeCompletedSellerBundleCore).toBe("function");
     expect(typeof prepareCompletedSellerBundleCounterSignatureRequest).toBe("function");
+    expect(typeof verifyCompletedSellerBundleCounterSignatureRequest).toBe("function");
     expect(typeof verifyFinalizedSellerBundleReadOnly).toBe("function");
     expect(sellerFinalizeCompletedBundleCore).toBe(finalizeCompletedSellerBundleCore);
     expect(sellerPrepareCompletedBundleCounterSignatureRequest).toBe(
       prepareCompletedSellerBundleCounterSignatureRequest,
+    );
+    expect(sellerVerifyCompletedBundleCounterSignatureRequest).toBe(
+      verifyCompletedSellerBundleCounterSignatureRequest,
     );
     expect(sellerVerifyFinalizedBundleReadOnly).toBe(
       verifyFinalizedSellerBundleReadOnly,
@@ -129,6 +144,27 @@ describe("public core surface (#14)", () => {
     };
     expect(artifacts.settlementEvidence).toEqual([]);
     expect(paymentPhase.phaseIndex).toBe(2);
+  });
+
+  it("#81: authenticated buyer finalization is public and composable", () => {
+    expect(typeof verifyFinalizedSessionSettlement).toBe("function");
+    expect(typeof createCompletedBuyerBundleCounterSignature).toBe("function");
+    expect(typeof finalizeCompletedBuyerBundleCore).toBe("function");
+    expect(typeof advanceCompletedBuyerBundleDurable).toBe("function");
+    expect(typeof getBuyerBundleFinalizationStatus).toBe("function");
+    expect(isCanonicalSettlementIdentity(`demos:${"1".repeat(64)}`)).toBe(true);
+
+    const input: Partial<DurableBuyerBundleFinalizationInput> = {};
+    const durability: Partial<BuyerBundleFinalizationDurability> = {
+      workerId: "buyer-worker",
+    };
+    const context: Partial<SessionSettlementContext> = {
+      contextVersion: "1",
+      jobId: "job-81",
+    };
+    expect(input.buyer).toBeUndefined();
+    expect(durability.workerId).toBe("buyer-worker");
+    expect(context.jobId).toBe("job-81");
   });
 
   it("#55: durable seller recovery and status are public on both entrypoints", () => {
