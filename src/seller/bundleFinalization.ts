@@ -45,6 +45,7 @@ import {
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { ed25519Sign, privateKeyFromSeed, signedBytes } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
+import { identityBundleHash } from "../identity/bundle.js";
 import {
   attestationBundleHash,
   bundleSignedScope,
@@ -1451,14 +1452,6 @@ function isPayloadAttestationRecord(value: unknown): value is Record<string, unk
     validUint(value.verifiedAt) &&
     isComponentSignature(value.signature)
   );
-}
-
-function identityBundleHash(value: unknown): string {
-  if (!isRecord(value) || !("presentation" in value)) {
-    throw new DacsError("Listing seller IdentityBundle is malformed");
-  }
-  const { presentation: _presentation, ...signedScope } = value;
-  return sha256Hex(canonicalize(signedScope));
 }
 
 function isCanonicalPositiveDecimal(value: unknown): value is string {

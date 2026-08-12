@@ -31,6 +31,7 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
+import { identityBundleHash } from "../../src/identity/bundle.js";
 import {
   attestationBundleHash,
 } from "../../src/agent/twoSidedBundle.js";
@@ -264,11 +265,7 @@ function fixture(
     },
   };
   const listingHash = contentHash(listingArtifact as unknown as Record<string, unknown>);
-  const {
-    presentation: _sellerPresentation,
-    ...sellerIdentitySignedScope
-  } = listingArtifact.seller.identity;
-  const sellerIdentityHash = sha256Hex(canonicalize(sellerIdentitySignedScope));
+  const sellerIdentityHash = identityBundleHash(listingArtifact.seller.identity);
   // A post-Vet session bundle is distinct from the published Listing bundle
   // (for example because it carries a fresh sessionNonce).
   const sellerSessionBundleHash = "c".repeat(64);
