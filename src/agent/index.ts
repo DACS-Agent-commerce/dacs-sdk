@@ -177,6 +177,7 @@ export {
   type SellerDeliveryPhase,
   type SellerEvidenceAnchorResult,
   type SellerFulfilmentAgreement,
+  type SellerFulfilmentAuditSourceResolver,
   type SellerFulfilmentDeps,
   type SellerFulfilmentListing,
   type SellerFulfilmentRequest,

@@ -11,6 +11,7 @@ export {
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,
   isSellerFulfilmentHandoff,
+  sellerFulfilmentCandidateHash,
   isValidSellerReceiptClaim,
   x402Eip3009Nonce,
   type SellerPaymentIntakeDisposition,
@@ -38,6 +39,9 @@ export {
   type X402TransferObservation,
   type SellerReceiptClaim,
   type SellerFulfilmentHandoff,
+  type SellerFulfilmentHandoffEnvelope,
+  type SellerFulfilmentHandoffV2,
+  type SellerFulfilmentAuditSourceCommitmentV1,
   type SellerReceiptClaimResult,
   type SellerReceiptPermitResult,
   type SellerReceiptInspectionResult,
@@ -51,6 +55,15 @@ export {
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeResult,
 } from "./paymentIntake.js";
+export {
+  isSellerFulfilmentAuditSource,
+  isSellerFulfilmentSessionRecord,
+  sellerFulfilmentAuditSourceHash,
+  type SellerFulfilmentAuditArtifactsV1,
+  type SellerFulfilmentAuditSourceV1,
+  type SellerFulfilmentExpectedVerifyResult,
+  type SellerFulfilmentVetRequirementInvocation,
+} from "./fulfilmentAuditSource.js";
 export {
   runFulfilmentCore,
   sellerFulfilmentId,
@@ -71,6 +84,7 @@ export {
   type SellerDeliverySuccessEvidence,
   type SellerEvidenceAnchorResult,
   type SellerFulfilmentAgreement,
+  type SellerFulfilmentAuditSourceResolver,
   type SellerFulfilmentDeps,
   type SellerFulfilmentListing,
   type SellerFulfilmentRequest,

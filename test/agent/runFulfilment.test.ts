@@ -10,6 +10,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 import {
   runFulfilmentCore,
@@ -25,13 +26,21 @@ import {
   type SignedSellerDeliveryEvidence,
 } from "../../src/agent/runFulfilmentCore.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
-import type {
-  SellerFulfilmentHandoff,
+import {
+  isSellerFulfilmentHandoff,
+  sellerFulfilmentCandidateHash,
+  type SellerFulfilmentHandoff,
+  type SellerFulfilmentHandoffEnvelope,
   SellerFulfilmentReceiptStore,
   SellerPaymentAuthorization,
   SellerPaymentEvidenceInput,
   SellerReceiptClaim,
 } from "../../src/seller/paymentIntake.js";
+import {
+  isSellerFulfilmentAuditSource,
+  sellerFulfilmentAuditSourceHash,
+  type SellerFulfilmentAuditSourceV1,
+} from "../../src/seller/fulfilmentAuditSource.js";
 
 const NOW = 1_780_000_000_000;
 const SELLER = "did:demos:seller";
@@ -48,6 +57,13 @@ const H = {
   paymentTx: "f".repeat(64),
   attestation: "1".repeat(64),
 };
+const BUYER_REQUIREMENT = {
+  requirementVersion: "1" as const,
+  required: [{ scheme: "did", verificationRequired: true }],
+};
+const COMMITMENT_ADDRESS = "dacs3:commit:job-17";
+const AUDIT_SOURCE_COMMITMENT_SEPARATOR =
+  "dacs-x-seller-fulfilment-audit-source:v1:";
 
 function anchorReceipt(
   logicalAddress: string,
@@ -97,15 +113,16 @@ function paymentAuthorization(): SellerPaymentAuthorization {
   };
   return {
     jobId: "job-17",
-    phaseIndex: 0,
+    phaseIndex: 1,
     agreementHash: H.agreement,
     listingRef: { listingId: "listing-17", version: 4, contentHash: H.listing },
     railId: "x402-test",
     railRegistryVersion: 7,
     commitment: {
-      ref: "commitment:job-17",
+      ref: COMMITMENT_ADDRESS,
       contentHash: H.commitment,
       finalizedAt: NOW - 3_000,
+      signer: SELLER,
     },
     settlementIdentity: {
       kind: "evm",
@@ -136,7 +153,7 @@ function receiptClaim(authorization = paymentAuthorization()): SellerReceiptClai
 interface ControlledStore extends SellerFulfilmentReceiptStore {
   consumed: boolean;
   claimValue: SellerReceiptClaim;
-  handoffValue?: SellerFulfilmentHandoff;
+  handoffValue?: SellerFulfilmentHandoffEnvelope;
 }
 
 function controlledStore(
@@ -163,6 +180,9 @@ function controlledStore(
     },
     async consumePermit(permitId, handoff) {
       if (permitId !== "permit-17") return { status: "invalid" };
+      if (!isSellerFulfilmentHandoff(handoff)) {
+        throw new Error("test store received a malformed handoff");
+      }
       if (this.consumed) {
         if (!this.handoffValue) throw new Error("consumed fixture lacks handoff");
         return {
@@ -283,6 +303,36 @@ function handoffArtifactHash(artifact: SellerDeliveredArtifact): string {
   }));
 }
 
+function resignHandoff(
+  handoff: SellerFulfilmentHandoff,
+  signer = SELLER,
+  seed = SELLER_SEED,
+): void {
+  handoff.auditSourceHash = sellerFulfilmentAuditSourceHash(handoff.auditSource);
+  const unsignedCommitment = {
+    commitmentVersion: "1" as const,
+    fulfilmentId: handoff.fulfilmentId,
+    jobId: handoff.jobId,
+    authorizationHash: handoff.authorizationHash,
+    auditSourceHash: handoff.auditSourceHash,
+    candidateHash: sellerFulfilmentCandidateHash(handoff.candidate),
+  };
+  handoff.auditSourceCommitment = {
+    ...unsignedCommitment,
+    signature: {
+      algorithm: "ed25519",
+      signer,
+      value: Buffer.from(ed25519Sign(
+        signedBytes(
+          AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+          contentHash(unsignedCommitment as unknown as Record<string, unknown>),
+        ),
+        privateKeyFromSeed(seed),
+      )).toString("base64url"),
+    },
+  };
+}
+
 interface Fixture {
   authorization: SellerPaymentAuthorization;
   claim: SellerReceiptClaim;
@@ -290,6 +340,7 @@ interface Fixture {
   agreement: SellerFulfilmentAgreement;
   listing: SellerFulfilmentListing;
   session: SellerFulfilmentSessionRecord;
+  auditSource: SellerFulfilmentAuditSourceV1;
   artifact: SellerDeliveredArtifact;
   request: SellerFulfilmentRequest;
   deps: SellerFulfilmentDeps;
@@ -318,10 +369,30 @@ function fixture(
   }
   const claim = receiptClaim(authorization);
   const store = controlledStore(claim, false);
+  const buyerVetRef = {
+    anchor: {
+      kind: "storage-program" as const,
+      locator: "dacs2:composite:job-17:did%3Ademos%3Abuyer",
+    },
+    contentHash: "2".repeat(64),
+  };
+  const sellerVetRef = {
+    anchor: {
+      kind: "storage-program" as const,
+      locator: "dacs2:composite:job-17:did%3Ademos%3Aseller",
+    },
+    contentHash: "3".repeat(64),
+  };
+  const commitmentRef = {
+    anchor: { kind: "storage-program" as const, locator: COMMITMENT_ADDRESS },
+    contentHash: H.commitment,
+  };
   const listing: SellerFulfilmentListing = {
     pin: { ...authorization.listingRef },
     sellerPrimaryClaim: SELLER,
+    buyerRequirement: structuredClone(BUYER_REQUIREMENT),
     pipeline: [
+      { kind: "commit-payee-bound-agreement" },
       { kind: "pay-x402", parameters: { rail: authorization.railId } },
       { kind: phase },
     ],
@@ -336,10 +407,15 @@ function fixture(
     buyer: {
       primaryClaim: BUYER,
       bundleHash: H.buyerBundle,
+      vetRecordRef: structuredClone(buyerVetRef),
       storageAddress: "demos-address-buyer",
       encryptionKey: "demos-encryption-key-buyer",
     },
-    seller: { primaryClaim: SELLER, bundleHash: H.sellerBundle },
+    seller: {
+      primaryClaim: SELLER,
+      bundleHash: H.sellerBundle,
+      vetRecordRef: structuredClone(sellerVetRef),
+    },
     deliverableRef: {
       deliverableType: spec.kind,
       hash: sha256Hex(canonicalize(spec)),
@@ -347,16 +423,17 @@ function fixture(
     },
     commitment: {
       status: "finalized",
-      ref: "commitment:job-17",
+      ref: COMMITMENT_ADDRESS,
       agreementHash: H.agreement,
       recordContentHash: H.commitment,
       finalizedAt: NOW - 3_000,
+      signer: SELLER,
     },
   };
   const paymentRef = {
     anchor: {
       kind: "storage-program" as const,
-      locator: `dacs4:payment:${authorization.jobId}:${authorization.railId}:0`,
+      locator: `dacs4:payment:${authorization.jobId}:${authorization.railId}:1`,
     },
     contentHash: authorization.evidenceHash,
   };
@@ -366,27 +443,113 @@ function fixture(
     state: "settle-pending",
     listingRef: { ...authorization.listingRef },
     parties: [
-      { role: "buyer", bundleHash: H.buyerBundle, primaryClaim: BUYER },
-      { role: "seller", bundleHash: H.sellerBundle, primaryClaim: SELLER },
+      {
+        role: "buyer",
+        bundleHash: H.buyerBundle,
+        primaryClaim: BUYER,
+        vetRecordRef: structuredClone(buyerVetRef),
+      },
+      {
+        role: "seller",
+        bundleHash: H.sellerBundle,
+        primaryClaim: SELLER,
+        vetRecordRef: structuredClone(sellerVetRef),
+      },
       { role: "orchestrator", bundleHash: H.sellerBundle, primaryClaim: SELLER },
     ],
     pipeline: structuredClone(listing.pipeline),
-    phaseResults: [{
-      index: 0,
-      step: structuredClone(listing.pipeline[0]!),
-      invokedAt: NOW - 2_100,
-      result: {
-        ok: true,
-        txRefs: structuredClone(authorization.evidenceInput.paymentTxRefs),
+    phaseResults: [
+      {
+        index: 0,
+        step: structuredClone(listing.pipeline[0]!),
+        invokedAt: NOW - 4_000,
+        result: {
+          ok: true,
+          txRefs: [{
+            kind: "storage-program",
+            address: "stor-commitment-job-17",
+            writeTxHash: "5".repeat(64),
+          }],
+          contextDelta: {},
+          attestationRef: structuredClone(commitmentRef),
+        },
         contextDelta: {},
-        attestationRef: paymentRef,
       },
-      contextDelta: {},
-    }],
+      {
+        index: 1,
+        step: structuredClone(listing.pipeline[1]!),
+        invokedAt: NOW - 2_100,
+        result: {
+          ok: true,
+          txRefs: structuredClone(authorization.evidenceInput.paymentTxRefs),
+          contextDelta: {},
+          attestationRef: paymentRef,
+        },
+        contextDelta: {},
+      },
+    ],
     startedAt: NOW - 10_000,
     lastUpdatedAt: NOW - 2_000,
     recipeRegistryVersion: 3,
     railRegistryVersion: authorization.railRegistryVersion,
+  };
+  const commitmentAnchorReceipt = anchorReceipt(
+    COMMITMENT_ADDRESS,
+    H.commitment,
+    "finalized",
+  );
+  commitmentAnchorReceipt.blockRef!.timestamp = authorization.commitment.finalizedAt;
+  const commitmentContext = {
+    "commit-payee-bound-agreement": {
+      agreementHash: authorization.agreementHash,
+      anchorTxRef: structuredClone(session.phaseResults[0]!.result.txRefs![0]!),
+      anchorReceipt: commitmentAnchorReceipt,
+      committedAt: authorization.commitment.finalizedAt,
+    },
+  };
+  session.phaseResults[0]!.result.contextDelta = structuredClone(commitmentContext);
+  session.phaseResults[0]!.contextDelta = structuredClone(commitmentContext);
+  const auditSource: SellerFulfilmentAuditSourceV1 = {
+    sourceVersion: "1",
+    session: structuredClone(session),
+    artifacts: {
+      agreementCommitment: structuredClone(commitmentRef),
+      vetRecords: [structuredClone(buyerVetRef), structuredClone(sellerVetRef)],
+      vetRequirements: [
+        {
+          vetRecordRef: structuredClone(buyerVetRef),
+          evaluatedParty: BUYER,
+          requirement: structuredClone(BUYER_REQUIREMENT),
+          verifier: SELLER,
+          freshness: [{
+            ref: {
+              anchor: {
+                kind: "storage-program",
+                locator: "dacs2:job-17:did:demos%3Abuyer:v1",
+              },
+              contentHash: "4".repeat(64),
+              recipeVersion: 1,
+            },
+            sourceJobId: "job-17",
+            scheme: "did",
+            identifier: "demos:buyer",
+            method: "self-signed",
+            requirement: structuredClone(BUYER_REQUIREMENT.required[0]!),
+          }],
+          dealSpecific: [],
+        },
+        {
+          vetRecordRef: structuredClone(sellerVetRef),
+          evaluatedParty: SELLER,
+          requirement: { requirementVersion: "1", required: [] },
+          verifier: SELLER,
+          freshness: [],
+          dealSpecific: [],
+        },
+      ],
+      settlementEvidence: [structuredClone(paymentRef)],
+    },
+    provenanceProfile: "dacs-sdk-operational-v1",
   };
   const artifact = defaultArtifact(spec);
   const preparedPayloadRecord = spec.kind === "attested-payload" && artifact.cleartextBytes
@@ -396,40 +559,68 @@ function fixture(
     ? "dacs4:entitlement:job-17:0"
     : "dacs4:deliverable:job-17";
   if (initiallyConsumed) {
+    const fulfilmentId = sellerFulfilmentId({
+      jobId: authorization.jobId,
+      paymentPhaseIndex: authorization.phaseIndex,
+      deliveryPhaseIndex: 2,
+      settlementId: authorization.settlementId,
+      agreementHash: authorization.agreementHash,
+      paymentEvidenceHash: authorization.evidenceHash,
+    });
+    const authorizationHash = sha256Hex(canonicalize(authorization));
+    const auditSourceHash = sellerFulfilmentAuditSourceHash(auditSource);
+    const candidate: SellerFulfilmentHandoff["candidate"] = {
+      status: "prepared",
+      validatedAt: NOW,
+      artifactHash: handoffArtifactHash(artifact),
+      delivery: {
+        artifact: structuredClone(artifact),
+        ...(preparedPayloadRecord
+          ? { payloadAttestationRecord: structuredClone(preparedPayloadRecord) }
+          : {}),
+      },
+    };
+    const unsignedCommitment = {
+      commitmentVersion: "1" as const,
+      fulfilmentId,
+      jobId: authorization.jobId,
+      authorizationHash,
+      auditSourceHash,
+      candidateHash: sellerFulfilmentCandidateHash(candidate),
+    };
     store.consumed = true;
     store.handoffValue = {
-      handoffVersion: "1",
-      fulfilmentId: sellerFulfilmentId({
-        jobId: authorization.jobId,
-        paymentPhaseIndex: authorization.phaseIndex,
-        deliveryPhaseIndex: 1,
-        settlementId: authorization.settlementId,
-        agreementHash: authorization.agreementHash,
-        paymentEvidenceHash: authorization.evidenceHash,
-      }),
+      handoffVersion: "2",
+      fulfilmentId,
       jobId: authorization.jobId,
       agreementRef: agreement.ref,
       agreementHash: authorization.agreementHash,
       commitmentRef: agreement.commitment.ref,
-      authorizationHash: sha256Hex(canonicalize(authorization)),
+      authorizationHash,
       settlementId: authorization.settlementId,
       paymentEvidenceHash: authorization.evidenceHash,
       paymentPhaseIndex: authorization.phaseIndex,
-      deliveryPhaseIndex: 1,
+      deliveryPhaseIndex: 2,
       phase,
       logicalAddress,
       deliverableSpecHash: sha256Hex(canonicalize(spec)),
-      candidate: {
-        status: "prepared",
-        validatedAt: NOW,
-        artifactHash: handoffArtifactHash(artifact),
-        delivery: {
-          artifact: structuredClone(artifact),
-          ...(preparedPayloadRecord
-            ? { payloadAttestationRecord: structuredClone(preparedPayloadRecord) }
-            : {}),
+      auditSource: structuredClone(auditSource),
+      auditSourceHash,
+      auditSourceCommitment: {
+        ...unsignedCommitment,
+        signature: {
+          algorithm: "ed25519",
+          signer: SELLER,
+          value: Buffer.from(ed25519Sign(
+            signedBytes(
+              AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+              contentHash(unsignedCommitment as unknown as Record<string, unknown>),
+            ),
+            privateKeyFromSeed(SELLER_SEED),
+          )).toString("base64url"),
         },
       },
+      candidate,
     };
   }
   const anchoredHash = phase === "deliver-attested-payload"
@@ -443,7 +634,7 @@ function fixture(
     agreementRef: agreement.ref,
     agreementHash: agreement.contentHash,
     commitmentRef: agreement.commitment.ref,
-    deliveryPhaseIndex: 1,
+    deliveryPhaseIndex: 2,
     paymentPermitId: "permit-17",
     ...(authorization.payloadVerificationProducerAdmission
       ? {
@@ -455,9 +646,13 @@ function fixture(
   };
   const deps: SellerFulfilmentDeps = {
     receiptStore: store,
+    auditSourceProfile: "v2",
     resolveAgreement: async () => ({ status: "verified", value: agreement }),
     resolveListing: async () => ({ status: "verified", value: listing }),
-    resolveSessionRecord: async () => ({ status: "verified", value: session }),
+    resolveAuditSource: async () => ({
+      status: "verified",
+      value: { ...structuredClone(auditSource), session: structuredClone(session) },
+    }),
     prepareDelivery: async () => ({
       status: "prepared",
       delivery: {
@@ -513,6 +708,11 @@ function fixture(
       signer: SELLER,
       sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
     },
+    auditSourceCommitmentSigner: {
+      algorithm: "ed25519",
+      signer: SELLER,
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+    },
     verifyEvidenceSignature: async ({ signedBytes, signature, expectedSigner }) => {
       if (signature.algorithm !== "ed25519" || signature.signer !== expectedSigner) {
         return { disposition: "invalid", reason: "unexpected signer or algorithm" };
@@ -521,6 +721,22 @@ function fixture(
       return ed25519Verify(
         signedBytes,
         signatureBytes,
+        publicKeyFromSeed(SELLER_SEED),
+      )
+        ? { disposition: "valid" }
+        : { disposition: "invalid", reason: "signature mismatch" };
+    },
+    verifyAuditSourceCommitmentSignature: async ({
+      signedBytes: commitmentBytes,
+      signature,
+      expectedSigner,
+    }) => {
+      if (signature.algorithm !== "ed25519" || signature.signer !== expectedSigner) {
+        return { disposition: "invalid", reason: "unexpected signer or algorithm" };
+      }
+      return ed25519Verify(
+        commitmentBytes,
+        Uint8Array.from(Buffer.from(signature.value, "base64url")),
         publicKeyFromSeed(SELLER_SEED),
       )
         ? { disposition: "valid" }
@@ -540,7 +756,18 @@ function fixture(
       : { status: "verified", value: structuredClone(anchoredEvidence) },
     nowMs: () => NOW,
   };
-  return { authorization, claim, store, agreement, listing, session, artifact, request, deps };
+  return {
+    authorization,
+    claim,
+    store,
+    agreement,
+    listing,
+    session,
+    auditSource,
+    artifact,
+    request,
+    deps,
+  };
 }
 
 function singularSignatureHash(record: Record<string, unknown>): string {
@@ -634,7 +861,7 @@ describe("runFulfilmentCore", () => {
         signature: { signer: SELLER },
       },
       bundleContribution: {
-        phaseSummary: { index: 1, kind: "deliver-storage-program", outcome: "ok" },
+        phaseSummary: { index: 2, kind: "deliver-storage-program", outcome: "ok" },
       },
     });
     expect(f.store.consumed).toBe(true);
@@ -669,6 +896,673 @@ describe("runFulfilmentCore", () => {
         },
       )).toEqual({ decision: "pass", reasons: [] });
     }
+  });
+
+  test("atomically retains the lossless V2 audit source before delivery and signs its hash", async () => {
+    const f = fixture();
+    let handoffAtSubmit: SellerFulfilmentHandoffEnvelope | undefined;
+    f.deps.submitDelivery = vi.fn(async () => {
+      handoffAtSubmit = structuredClone(f.store.handoffValue);
+      return { status: "accepted" as const, reconciliationId: "delivery:job-17:1" };
+    });
+
+    const result = await runFulfilmentCore(f.request, f.deps);
+    expect(result.decision).toBe("completed");
+    expect(handoffAtSubmit).toMatchObject({
+      handoffVersion: "2",
+      auditSource: {
+        sourceVersion: "1",
+        provenanceProfile: "dacs-sdk-operational-v1",
+        session: { jobId: f.session.jobId, phaseResults: [{ index: 0 }, { index: 1 }] },
+        artifacts: {
+          agreementCommitment: { contentHash: f.authorization.commitment.contentHash },
+          settlementEvidence: [{ contentHash: f.authorization.evidenceHash }],
+        },
+      },
+      auditSourceHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    if (!handoffAtSubmit || handoffAtSubmit.handoffVersion !== "2") {
+      throw new Error("expected V2 handoff");
+    }
+    expect(handoffAtSubmit.auditSourceHash)
+      .toBe(sellerFulfilmentAuditSourceHash(handoffAtSubmit.auditSource));
+    if (result.decision === "completed") {
+      expect(result.evidence.dacsSdkAuditSourceHash).toBe(handoffAtSubmit.auditSourceHash);
+    }
+    f.session.phaseResults[0]!.contextDelta.mutated = true;
+    expect(handoffAtSubmit.auditSource.session.phaseResults[0]!.contextDelta)
+      .not.toHaveProperty("mutated");
+  });
+
+  test("selects the SessionRecord atomically from the audit source for fresh and V2 replay", async () => {
+    const f = fixture();
+    f.deps.resolveAuditSource = vi.fn(f.deps.resolveAuditSource!);
+
+    expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+    expect(f.deps.resolveAuditSource).toHaveBeenCalledOnce();
+
+    f.deps.resolveAuditSource = vi.fn(async () => {
+      throw new Error("retained V2 source must not be re-resolved");
+    });
+    expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+    expect(f.deps.resolveAuditSource).not.toHaveBeenCalled();
+  });
+
+  test("keeps canonical commitment authority and history mandatory on V2 replay", async () => {
+    const refreshAuthorizationHash = (f: Fixture): void => {
+      if (!f.store.handoffValue) throw new Error("expected a retained V2 handoff");
+      f.store.handoffValue.authorizationHash =
+        sha256Hex(canonicalize(f.authorization));
+      resignHandoff(f.store.handoffValue);
+    };
+
+    const noncanonicalAddress = fixture(undefined, true);
+    noncanonicalAddress.authorization.commitment.ref = "dacs3:commit:other-job";
+    noncanonicalAddress.agreement.commitment.ref = "dacs3:commit:other-job";
+    noncanonicalAddress.request.commitmentRef = "dacs3:commit:other-job";
+    noncanonicalAddress.store.handoffValue!.commitmentRef = "dacs3:commit:other-job";
+    refreshAuthorizationHash(noncanonicalAddress);
+    await expect(runFulfilmentCore(
+      noncanonicalAddress.request,
+      noncanonicalAddress.deps,
+    )).resolves.toMatchObject({
+      decision: "indeterminate",
+      code: "consumed-fulfilment-rejected",
+      safeToRetryDelivery: false,
+    });
+
+    const wrongSigner = fixture(undefined, true);
+    wrongSigner.authorization.commitment.signer = ORCHESTRATOR;
+    wrongSigner.agreement.commitment.signer = ORCHESTRATOR;
+    refreshAuthorizationHash(wrongSigner);
+    await expect(runFulfilmentCore(wrongSigner.request, wrongSigner.deps))
+      .resolves.toMatchObject({
+        decision: "indeterminate",
+        code: "consumed-fulfilment-rejected",
+        safeToRetryDelivery: false,
+      });
+
+    const missingCommitOutput = fixture(undefined, true);
+    missingCommitOutput.store.handoffValue!.auditSource.session.phaseResults[0]!.contextDelta = {};
+    missingCommitOutput.store.handoffValue!.auditSource.session.phaseResults[0]!.result.contextDelta = {};
+    resignHandoff(missingCommitOutput.store.handoffValue!);
+    await expect(runFulfilmentCore(
+      missingCommitOutput.request,
+      missingCommitOutput.deps,
+    )).resolves.toMatchObject({
+      decision: "indeterminate",
+      code: "consumed-fulfilment-rejected",
+      safeToRetryDelivery: false,
+    });
+  });
+
+  test("fails closed before permit consumption when the audit source is unavailable or rebound", async () => {
+    const unavailable = fixture();
+    unavailable.deps.resolveAuditSource = undefined as never;
+    unavailable.deps.submitDelivery = vi.fn(unavailable.deps.submitDelivery);
+    expect(await runFulfilmentCore(unavailable.request, unavailable.deps)).toMatchObject({
+      decision: "rejected",
+      code: "fulfilment-dependencies-invalid",
+    });
+    expect(unavailable.store.consumed).toBe(false);
+    expect(unavailable.deps.submitDelivery).not.toHaveBeenCalled();
+
+    const rebound = fixture();
+    const source = structuredClone(rebound.auditSource);
+    source.session.jobId = "job-rebound";
+    rebound.deps.resolveAuditSource = async () => ({ status: "verified", value: source });
+    rebound.deps.submitDelivery = vi.fn(rebound.deps.submitDelivery);
+    expect(await runFulfilmentCore(rebound.request, rebound.deps)).toMatchObject({
+      decision: "rejected",
+      code: "session-record-mismatch",
+    });
+    expect(rebound.store.consumed).toBe(false);
+    expect(rebound.deps.submitDelivery).not.toHaveBeenCalled();
+  });
+
+  test("requires an exact unique SettlementEvidence ref set in the audit source", async () => {
+    const extra = fixture();
+    extra.auditSource.artifacts.settlementEvidence.push({
+      anchor: { kind: "storage-program", locator: "dacs4:payment:job-17:other:0" },
+      contentHash: "6".repeat(64),
+    });
+    expect(await runFulfilmentCore(extra.request, extra.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(extra.store.consumed).toBe(false);
+
+    const duplicateHash = fixture();
+    duplicateHash.auditSource.artifacts.settlementEvidence.push({
+      anchor: { kind: "storage-program", locator: "dacs4:payment:job-17:other:0" },
+      contentHash: duplicateHash.authorization.evidenceHash,
+    });
+    expect(await runFulfilmentCore(duplicateHash.request, duplicateHash.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "audit-source-resolution-invalid",
+    });
+    expect(duplicateHash.store.consumed).toBe(false);
+  });
+
+  test("binds the finalized commitment anchor, executed phase, and authenticated signer", async () => {
+    for (const [mutate, expectedCode] of [
+      [(f: Fixture) => {
+        f.auditSource.artifacts.agreementCommitment.anchor.kind = "https";
+      }, "audit-source-mismatch"],
+      [(f: Fixture) => {
+        f.auditSource.artifacts.agreementCommitment.anchor.locator =
+          "dacs3:commit:other-job";
+      }, "audit-source-mismatch"],
+      [(f: Fixture) => {
+        f.auditSource.artifacts.agreementCommitment.contentHash = "8".repeat(64);
+      }, "audit-source-mismatch"],
+      [(f: Fixture) => {
+        f.session.phaseResults[0]!.result.attestationRef!.contentHash = "8".repeat(64);
+      }, "session-record-mismatch"],
+      [(f: Fixture) => {
+        f.authorization.commitment.signer = ORCHESTRATOR;
+        f.agreement.commitment.signer = ORCHESTRATOR;
+      }, "agreement-commitment-mismatch"],
+    ] as const) {
+      const f = fixture();
+      mutate(f);
+      f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: expectedCode,
+      });
+      expect(f.store.consumed).toBe(false);
+      expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    }
+
+    const authorizedMetadataSigner = fixture();
+    authorizedMetadataSigner.auditSource.artifacts.agreementCommitment.signer = SELLER;
+    authorizedMetadataSigner.session.phaseResults[0]!.result.attestationRef =
+      structuredClone(authorizedMetadataSigner.auditSource.artifacts.agreementCommitment);
+    expect((await runFulfilmentCore(
+      authorizedMetadataSigner.request,
+      authorizedMetadataSigner.deps,
+    )).decision).toBe("completed");
+
+    const metadataOnlySigner = fixture();
+    metadataOnlySigner.auditSource.artifacts.agreementCommitment.signer =
+      "did:example:storage-validator";
+    metadataOnlySigner.session.phaseResults[0]!.result.attestationRef =
+      structuredClone(metadataOnlySigner.auditSource.artifacts.agreementCommitment);
+    expect(await runFulfilmentCore(
+      metadataOnlySigner.request,
+      metadataOnlySigner.deps,
+    )).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(metadataOnlySigner.store.consumed).toBe(false);
+
+    for (const mutate of [
+      (f: Fixture) => {
+        f.session.phaseResults[0]!.contextDelta = {};
+        f.session.phaseResults[0]!.result.contextDelta = {};
+      },
+      (f: Fixture) => {
+        const output = f.session.phaseResults[0]!.contextDelta[
+          "commit-payee-bound-agreement"
+        ] as { agreementHash: string };
+        output.agreementHash = "8".repeat(64);
+        f.session.phaseResults[0]!.result.contextDelta =
+          structuredClone(f.session.phaseResults[0]!.contextDelta);
+      },
+      (f: Fixture) => {
+        const output = f.session.phaseResults[0]!.contextDelta[
+          "commit-payee-bound-agreement"
+        ] as { anchorReceipt: AnchorReceipt };
+        f.session.phaseResults[0]!.result.anchorReceipt = {
+          ...structuredClone(output.anchorReceipt),
+          contentHash: "8".repeat(64),
+        };
+      },
+    ]) {
+      const f = fixture();
+      mutate(f);
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "session-record-mismatch",
+      });
+      expect(f.store.consumed).toBe(false);
+    }
+  });
+
+  test("rejects contradictory commitment/payment timing and non-singular commit tx history", async () => {
+    for (const mutate of [
+      (f: Fixture) => {
+        f.session.phaseResults[0]!.invokedAt = f.authorization.commitment.finalizedAt + 1;
+      },
+      (f: Fixture) => {
+        f.session.phaseResults[1]!.invokedAt = f.authorization.commitment.finalizedAt - 1;
+      },
+      (f: Fixture) => {
+        f.session.phaseResults[1]!.invokedAt = f.session.phaseResults[0]!.invokedAt - 1;
+      },
+      (f: Fixture) => {
+        f.session.phaseResults[0]!.result.txRefs!.push({
+          kind: "storage-program",
+          address: "stor-unrelated",
+          writeTxHash: "6".repeat(64),
+        });
+      },
+    ]) {
+      const f = fixture();
+      mutate(f);
+      await expect(runFulfilmentCore(f.request, f.deps)).resolves.toMatchObject({
+        decision: "rejected",
+        code: "session-record-mismatch",
+      });
+      expect(f.store.consumed).toBe(false);
+    }
+  });
+
+  test("requires the authenticated orchestrator as the Vet verifier authority", async () => {
+    const distinctVetter = fixture();
+    distinctVetter.auditSource.artifacts.vetRequirements[0]!.verifier =
+      "did:example:independent-vetter";
+    expect(await runFulfilmentCore(
+      distinctVetter.request,
+      distinctVetter.deps,
+    )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+
+    const substitutedListingRequirement = fixture();
+    substitutedListingRequirement.auditSource.artifacts.vetRequirements[0]!.requirement = {
+      requirementVersion: "1",
+      required: [],
+    };
+    expect(await runFulfilmentCore(
+      substitutedListingRequirement.request,
+      substitutedListingRequirement.deps,
+    )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+
+    const missingRequiredResult = fixture();
+    missingRequiredResult.auditSource.artifacts.vetRequirements[0]!.freshness = [];
+    expect(await runFulfilmentCore(
+      missingRequiredResult.request,
+      missingRequiredResult.deps,
+    )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+
+    const uncoveredOneOf = fixture();
+    uncoveredOneOf.auditSource.artifacts.vetRequirements[0]!.requirement.oneOf = [[{
+      scheme: "domain",
+      verificationRequired: false,
+    }]];
+    uncoveredOneOf.listing.buyerRequirement = structuredClone(
+      uncoveredOneOf.auditSource.artifacts.vetRequirements[0]!.requirement,
+    );
+    expect(await runFulfilmentCore(
+      uncoveredOneOf.request,
+      uncoveredOneOf.deps,
+    )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+
+    const wrongCompositeAddress = fixture();
+    wrongCompositeAddress.auditSource.artifacts.vetRecords[0]!.anchor.locator =
+      "dacs2:composite:job-17:other";
+    wrongCompositeAddress.auditSource.artifacts.vetRequirements[0]!.vetRecordRef.anchor.locator =
+      "dacs2:composite:job-17:other";
+    wrongCompositeAddress.session.parties[0]!.vetRecordRef!.anchor.locator =
+      "dacs2:composite:job-17:other";
+    wrongCompositeAddress.agreement.buyer.vetRecordRef.anchor.locator =
+      "dacs2:composite:job-17:other";
+    expect(await runFulfilmentCore(
+      wrongCompositeAddress.request,
+      wrongCompositeAddress.deps,
+    )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+
+    const wrongParty = fixture();
+    wrongParty.auditSource.artifacts.vetRequirements[0]!.evaluatedParty =
+      "did:example:substituted-party";
+    expect(await runFulfilmentCore(wrongParty.request, wrongParty.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(wrongParty.store.consumed).toBe(false);
+
+    const setBuyerVetSigner = (f: Fixture, signer: string): void => {
+      f.auditSource.artifacts.vetRecords[0]!.signer = signer;
+      f.auditSource.artifacts.vetRequirements[0]!.vetRecordRef =
+        structuredClone(f.auditSource.artifacts.vetRecords[0]!);
+      const party = f.session.parties.find((entry) => entry.role === "buyer")!;
+      party.vetRecordRef = structuredClone(f.auditSource.artifacts.vetRecords[0]!);
+      f.agreement.buyer.vetRecordRef = structuredClone(
+        f.auditSource.artifacts.vetRecords[0]!,
+      );
+    };
+    const authorizedVetSigner = fixture();
+    setBuyerVetSigner(authorizedVetSigner, SELLER);
+    expect((await runFulfilmentCore(
+      authorizedVetSigner.request,
+      authorizedVetSigner.deps,
+    )).decision).toBe("completed");
+
+    const wrongVetSigner = fixture();
+    setBuyerVetSigner(wrongVetSigner, "did:demos:mallory");
+    expect(await runFulfilmentCore(
+      wrongVetSigner.request,
+      wrongVetSigner.deps,
+    )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+    expect(wrongVetSigner.store.consumed).toBe(false);
+
+    const requirement = {
+      scheme: "did",
+      verificationRequired: true,
+      recipeVersion: 2,
+      parameters: { verificationMethod: "application-data-value" },
+    };
+    const attachExpectedResult = (f: Fixture): void => {
+      const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+      invocation.requirement.required = [structuredClone(requirement)];
+      f.listing.buyerRequirement = structuredClone(invocation.requirement);
+      invocation.freshness = [{
+        ref: {
+          anchor: {
+            kind: "storage-program",
+            locator: "dacs2:job-17:did:demos%3Abuyer:v2",
+          },
+          contentHash: "4".repeat(64),
+          recipeVersion: 2,
+        },
+        sourceJobId: "job-17",
+        scheme: "did",
+        identifier: "demos:buyer",
+        method: "self-signed",
+        requirement: structuredClone(requirement),
+      }];
+    };
+    const validProvenance = fixture();
+    attachExpectedResult(validProvenance);
+    expect((await runFulfilmentCore(
+      validProvenance.request,
+      validProvenance.deps,
+    )).decision).toBe("completed");
+
+    const crossSessionFreshness = fixture();
+    attachExpectedResult(crossSessionFreshness);
+    const reused = crossSessionFreshness.auditSource.artifacts
+      .vetRequirements[0]!.freshness[0]!;
+    reused.sourceJobId = "job-previous";
+    reused.ref.anchor.locator = "dacs2:job-previous:did:demos%3Abuyer:v2";
+    expect((await runFulfilmentCore(
+      crossSessionFreshness.request,
+      crossSessionFreshness.deps,
+    )).decision).toBe("completed");
+
+    const crossSessionDealSpecific = fixture();
+    attachExpectedResult(crossSessionDealSpecific);
+    const dealInvocation = crossSessionDealSpecific.auditSource.artifacts.vetRequirements[0]!;
+    const dealResult = dealInvocation.freshness.shift()!;
+    dealResult.sourceJobId = "job-previous";
+    dealResult.ref.anchor.locator = "dacs2:job-previous:did:demos%3Abuyer:v2";
+    dealInvocation.dealSpecific.push(dealResult);
+    expect(await runFulfilmentCore(
+      crossSessionDealSpecific.request,
+      crossSessionDealSpecific.deps,
+    )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+    expect(crossSessionDealSpecific.store.consumed).toBe(false);
+
+    const mismatchedSourceAddress = fixture();
+    attachExpectedResult(mismatchedSourceAddress);
+    mismatchedSourceAddress.auditSource.artifacts.vetRequirements[0]!
+      .freshness[0]!.sourceJobId = "job-previous";
+    expect(await runFulfilmentCore(
+      mismatchedSourceAddress.request,
+      mismatchedSourceAddress.deps,
+    )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+    expect(mismatchedSourceAddress.store.consumed).toBe(false);
+
+    const malformedSourceJob = fixture();
+    malformedSourceJob.auditSource.artifacts.vetRequirements[0]!
+      .freshness[0]!.sourceJobId = "job:ambiguous";
+    expect(await runFulfilmentCore(
+      malformedSourceJob.request,
+      malformedSourceJob.deps,
+    )).toMatchObject({
+      decision: "indeterminate",
+      code: "audit-source-resolution-invalid",
+    });
+    expect(malformedSourceJob.store.consumed).toBe(false);
+
+    for (const mutate of [
+      (f: Fixture) => {
+        f.auditSource.artifacts.vetRequirements[0]!.freshness[0]!.scheme = "domain";
+      },
+      (f: Fixture) => {
+        f.auditSource.artifacts.vetRequirements[0]!.freshness[0]!.ref.recipeVersion = 3;
+      },
+      (f: Fixture) => {
+        f.auditSource.artifacts.vetRequirements[0]!.freshness[0]!.ref.anchor.locator =
+          "dacs2:job-17:did:other:v2";
+      },
+    ]) {
+      const f = fixture();
+      attachExpectedResult(f);
+      mutate(f);
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+      });
+      expect(f.store.consumed).toBe(false);
+    }
+  });
+
+  test("authenticates one shared Vet record independently of party order", async () => {
+    for (const roles of [
+      ["buyer", "seller", "orchestrator"],
+      ["orchestrator", "seller", "buyer"],
+    ] as const) {
+      const f = fixture();
+      const sellerParty = f.session.parties.find((party) => party.role === "seller")!;
+      const sharedRef = structuredClone(sellerParty.vetRecordRef!);
+      f.agreement.buyer.primaryClaim = SELLER;
+      f.agreement.buyer.bundleHash = H.sellerBundle;
+      f.agreement.buyer.vetRecordRef = structuredClone(sharedRef);
+      const buyerParty = f.session.parties.find((party) => party.role === "buyer")!;
+      buyerParty.primaryClaim = SELLER;
+      buyerParty.bundleHash = H.sellerBundle;
+      buyerParty.vetRecordRef = structuredClone(sharedRef);
+      f.session.parties = roles.map((role) =>
+        f.session.parties.find((party) => party.role === role)!);
+
+      const sharedInvocation = f.auditSource.artifacts.vetRequirements[0]!;
+      sharedInvocation.vetRecordRef = structuredClone(sharedRef);
+      sharedInvocation.evaluatedParty = SELLER;
+      sharedInvocation.freshness[0]!.identifier = "demos:seller";
+      sharedInvocation.freshness[0]!.ref.anchor.locator =
+        "dacs2:job-17:did:demos%3Aseller:v1";
+      f.auditSource.artifacts.vetRecords = [structuredClone(sharedRef)];
+      f.auditSource.artifacts.vetRequirements = [sharedInvocation];
+
+      expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+      expect(f.store.consumed).toBe(true);
+    }
+
+    const conflict = fixture();
+    const sharedRef = structuredClone(
+      conflict.session.parties.find((party) => party.role === "seller")!.vetRecordRef!,
+    );
+    conflict.session.parties.find((party) => party.role === "buyer")!.vetRecordRef =
+      structuredClone(sharedRef);
+    conflict.agreement.buyer.vetRecordRef = structuredClone(sharedRef);
+    conflict.auditSource.artifacts.vetRecords = [structuredClone(sharedRef)];
+    conflict.auditSource.artifacts.vetRequirements[0]!.vetRecordRef =
+      structuredClone(sharedRef);
+    conflict.auditSource.artifacts.vetRequirements = [
+      conflict.auditSource.artifacts.vetRequirements[0]!,
+    ];
+    expect(await runFulfilmentCore(conflict.request, conflict.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(conflict.store.consumed).toBe(false);
+  });
+
+  test("preserves and hash-binds additive requirement fields in the durable audit source", async () => {
+    const f = fixture();
+    const extension = { policy: "issuer-set-v2", threshold: 2 };
+    const originalHash = sellerFulfilmentAuditSourceHash(f.auditSource);
+    (f.listing.buyerRequirement as unknown as Record<string, unknown>)["x-bundle"] = {
+      mode: "strict",
+    };
+    (f.auditSource.artifacts.vetRequirements[0]!.requirement as unknown as
+      Record<string, unknown>)["x-bundle"] = { mode: "strict" };
+    (f.listing.buyerRequirement.required[0] as unknown as Record<string, unknown>)[
+      "x-provenance"
+    ] = structuredClone(extension);
+    (f.auditSource.artifacts.vetRequirements[0]!.requirement.required[0] as unknown as
+      Record<string, unknown>)["x-provenance"] = structuredClone(extension);
+    (f.auditSource.artifacts.vetRequirements[0]!.freshness[0]!.requirement as unknown as
+      Record<string, unknown>)["x-provenance"] = structuredClone(extension);
+    const resultRef = f.auditSource.artifacts.vetRequirements[0]!.freshness[0]!.ref;
+    (resultRef as unknown as Record<string, unknown>)["x-resolution"] = "cached";
+    (resultRef.anchor as unknown as Record<string, unknown>)["x-network"] = "sr2-v2";
+    const resolverOwned = f.auditSource;
+
+    expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+    const handoff = f.store.handoffValue;
+    if (!handoff) throw new Error("expected durable handoff");
+    const retainedRequirement = handoff.auditSource.artifacts
+      .vetRequirements[0]!.freshness[0]!.requirement as unknown as Record<string, unknown>;
+    expect(retainedRequirement["x-provenance"]).toEqual(extension);
+    const retainedInvocation = handoff.auditSource.artifacts.vetRequirements[0]!;
+    expect((retainedInvocation.requirement as unknown as Record<string, unknown>)["x-bundle"])
+      .toEqual({ mode: "strict" });
+    expect((retainedInvocation.freshness[0]!.ref as unknown as Record<string, unknown>)[
+      "x-resolution"
+    ]).toBe("cached");
+    expect((retainedInvocation.freshness[0]!.ref.anchor as unknown as
+      Record<string, unknown>)["x-network"]).toBe("sr2-v2");
+    expect(handoff.auditSourceHash).not.toBe(originalHash);
+    expect(handoff.auditSourceHash).toBe(
+      sellerFulfilmentAuditSourceHash(handoff.auditSource),
+    );
+
+    ((resolverOwned.artifacts.vetRequirements[0]!.requirement as unknown as
+      Record<string, unknown>)["x-bundle"] as { mode: string }).mode = "mutated";
+    expect((retainedInvocation.requirement as unknown as Record<string, unknown>)["x-bundle"])
+      .toEqual({ mode: "strict" });
+
+    (retainedRequirement["x-provenance"] as { threshold: number }).threshold = 3;
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "payment-permit-store-invalid",
+      safeToRetryDelivery: false,
+    });
+  });
+
+  test("rejects post-settlement rating provenance from a pre-delivery source", async () => {
+    const f = fixture();
+    f.auditSource.artifacts.ratingRecords = [{
+      anchor: { kind: "storage-program", locator: "dacs5:rating:job-17" },
+      contentHash: "7".repeat(64),
+    }];
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(f.store.consumed).toBe(false);
+  });
+
+  test("rejects non-exact JSON/JCS audit-source views without invoking accessors", async () => {
+    const malformed: unknown[] = [];
+    const sparse = structuredClone(fixture().auditSource);
+    sparse.session.phaseResults = new Array(1);
+    malformed.push(sparse);
+    const negativeZero = structuredClone(fixture().auditSource);
+    negativeZero.session.startedAt = -0;
+    malformed.push(negativeZero);
+    const nonFinite = structuredClone(fixture().auditSource);
+    nonFinite.session.startedAt = Number.POSITIVE_INFINITY;
+    malformed.push(nonFinite);
+    const symbolKey = structuredClone(fixture().auditSource) as SellerFulfilmentAuditSourceV1 & {
+      [key: symbol]: boolean;
+    };
+    symbolKey[Symbol("hidden")] = true;
+    malformed.push(symbolKey);
+    const cyclic = structuredClone(fixture().auditSource) as SellerFulfilmentAuditSourceV1 & {
+      cycle?: unknown;
+    };
+    cyclic.cycle = cyclic;
+    malformed.push(cyclic);
+    const malformedUnicode = structuredClone(fixture().auditSource);
+    malformedUnicode.artifacts.settlementEvidence[0]!.anchor.locator = "bad\ud800";
+    malformed.push(malformedUnicode);
+    const duplicateVetHash = structuredClone(fixture().auditSource);
+    duplicateVetHash.artifacts.vetRecords[1]!.contentHash =
+      duplicateVetHash.artifacts.vetRecords[0]!.contentHash;
+    duplicateVetHash.artifacts.vetRequirements[1]!.vetRecordRef.contentHash =
+      duplicateVetHash.artifacts.vetRecords[0]!.contentHash;
+    duplicateVetHash.session.parties[1]!.vetRecordRef!.contentHash =
+      duplicateVetHash.artifacts.vetRecords[0]!.contentHash;
+    malformed.push(duplicateVetHash);
+
+    for (const source of malformed) {
+      expect(() => isSellerFulfilmentAuditSource(source)).not.toThrow();
+      expect(isSellerFulfilmentAuditSource(source)).toBe(false);
+    }
+
+    const accessor = structuredClone(fixture().auditSource);
+    let getterCalls = 0;
+    Object.defineProperty(accessor.session, "state", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "settle-pending";
+      },
+    });
+    const f = fixture();
+    f.deps.resolveAuditSource = async () => ({ status: "verified", value: accessor });
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "audit-source-resolution-invalid",
+    });
+    expect(getterCalls).toBe(0);
+    expect(f.store.consumed).toBe(false);
+  });
+
+  test("rejects a coherent pre-evidence source rehash through the signed handoff commitment", async () => {
+    const f = fixture();
+    f.deps.anchorEvidence = vi.fn(async () => ({
+      status: "indeterminate" as const,
+      reason: "evidence writer unavailable after durable permit consumption",
+    }));
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "delivery-evidence-publication-pending",
+      safeToRetryDelivery: false,
+    });
+    const handoff = f.store.handoffValue;
+    if (!handoff || handoff.handoffVersion !== "2") throw new Error("expected V2 handoff");
+    (handoff.auditSource.artifacts.vetRequirements[1]!.requirement as unknown as
+      Record<string, unknown>)["x-audit-note"] = "substituted after consumption";
+    handoff.auditSourceHash = sellerFulfilmentAuditSourceHash(handoff.auditSource);
+    handoff.auditSourceCommitment.auditSourceHash = handoff.auditSourceHash;
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "audit-source-commitment-invalid",
+      reasons: ["signature mismatch"],
+      safeToRetryDelivery: false,
+    });
+    expect(f.deps.anchorEvidence).toHaveBeenCalledOnce();
+  });
+
+  test("rejects a retained V2 audit source whose bytes no longer match its hash", async () => {
+    const f = fixture();
+    expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+    const handoff = f.store.handoffValue;
+    if (!handoff || handoff.handoffVersion !== "2") throw new Error("expected V2 handoff");
+    handoff.auditSource.session.lastUpdatedAt += 1;
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "payment-permit-store-invalid",
+      safeToRetryDelivery: false,
+    });
   });
 
   test("rejects an invalid permit without invoking or reconciling application work", async () => {
@@ -731,6 +1625,7 @@ describe("runFulfilmentCore", () => {
         validatedAt: NOW - 1,
         reason: "exact retained rejection",
       };
+      resignHandoff(f.store.handoffValue!);
       f.deps.reconcileDelivery = async () => terminal;
       f.deps.resolveDelivery = vi.fn(f.deps.resolveDelivery);
       expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
@@ -749,6 +1644,7 @@ describe("runFulfilmentCore", () => {
       validatedAt: NOW - 1,
       reason: "exact retained rejection",
     };
+    resignHandoff(f.store.handoffValue!);
     f.deps.reconcileDelivery = async () => ({
       status: "failed",
       reason: "exact retained rejection",
@@ -769,8 +1665,8 @@ describe("runFulfilmentCore", () => {
     ["agreement", (f: Fixture) => { f.request.agreementHash = "0".repeat(64); }, "payment-authorization-scope-mismatch"],
     ["commitment", (f: Fixture) => { f.request.commitmentRef = "wrong"; }, "agreement-commitment-mismatch"],
     ["Listing", (f: Fixture) => { f.listing.pin.contentHash = "0".repeat(64); }, "listing-resolution-mismatch"],
-    ["rail", (f: Fixture) => { f.session.pipeline[0]!.parameters!.rail = "other"; }, "session-record-mismatch"],
-    ["payment evidence", (f: Fixture) => { f.session.phaseResults[0]!.result.attestationRef!.contentHash = "0".repeat(64); }, "session-record-mismatch"],
+    ["rail", (f: Fixture) => { f.session.pipeline[1]!.parameters!.rail = "other"; }, "session-record-mismatch"],
+    ["payment evidence", (f: Fixture) => { f.session.phaseResults[1]!.result.attestationRef!.contentHash = "0".repeat(64); }, "session-record-mismatch"],
     ["seller", (f: Fixture) => { f.session.parties[1]!.primaryClaim = "did:demos:mallory"; }, "session-record-mismatch"],
   ] as Array<[string, (f: Fixture) => void, string]>) (
     "rejects a wrong %s scope before permit consumption",
@@ -801,11 +1697,35 @@ describe("runFulfilmentCore", () => {
     }
   });
 
-  test("allows PC-7 payment-evidence anchor catch-up without relabelling rail-final payment", async () => {
+  test("retains a PC-7 pointerless payment phase through its authenticated authorization", async () => {
     const f = fixture();
-    delete f.session.phaseResults[0]!.result.attestationRef;
-    delete f.session.phaseResults[0]!.result.anchorReceipt;
+    delete f.session.phaseResults[1]!.result.attestationRef;
+    delete f.session.phaseResults[1]!.result.anchorReceipt;
     expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+    expect(f.store.consumed).toBe(true);
+    const handoff = f.store.handoffValue;
+    if (!handoff || handoff.handoffVersion !== "2") throw new Error("expected V2 handoff");
+    expect(handoff.auditSource.session.phaseResults[1]!.result.attestationRef).toBeUndefined();
+    expect(handoff.auditSource.artifacts.settlementEvidence).toEqual([
+      f.auditSource.artifacts.settlementEvidence[0],
+    ]);
+
+    const signed = fixture();
+    delete signed.session.phaseResults[1]!.result.attestationRef;
+    delete signed.session.phaseResults[1]!.result.anchorReceipt;
+    signed.auditSource.artifacts.settlementEvidence[0]!.signer = SELLER;
+    expect((await runFulfilmentCore(signed.request, signed.deps)).decision).toBe("completed");
+
+    const wrongSigner = fixture();
+    delete wrongSigner.session.phaseResults[1]!.result.attestationRef;
+    delete wrongSigner.session.phaseResults[1]!.result.anchorReceipt;
+    wrongSigner.auditSource.artifacts.settlementEvidence[0]!.signer =
+      "did:demos:mallory";
+    expect(await runFulfilmentCore(wrongSigner.request, wrongSigner.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(wrongSigner.store.consumed).toBe(false);
   });
 
   test("fails closed for repeated delivery phases in the current profile", async () => {
@@ -823,11 +1743,26 @@ describe("runFulfilmentCore", () => {
     const f = fixture();
     f.listing.pipeline = [
       structuredClone(f.listing.pipeline[0]!),
-      structuredClone(f.listing.pipeline[0]!),
       structuredClone(f.listing.pipeline[1]!),
+      structuredClone(f.listing.pipeline[1]!),
+      structuredClone(f.listing.pipeline[2]!),
     ];
     f.session.pipeline = structuredClone(f.listing.pipeline);
-    f.request.deliveryPhaseIndex = 2;
+    f.request.deliveryPhaseIndex = 3;
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "unsupported-payment-profile",
+    });
+    expect(f.store.consumed).toBe(false);
+  });
+
+  test("fails closed for a second payment anywhere after the bound delivery", async () => {
+    const f = fixture();
+    f.listing.pipeline.push({
+      kind: "pay-x402",
+      parameters: { rail: f.authorization.railId },
+    });
+    f.session.pipeline = structuredClone(f.listing.pipeline);
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "rejected",
       code: "unsupported-payment-profile",
@@ -1486,7 +2421,17 @@ describe("runFulfilmentCore", () => {
     const orchestrator = f.session.parties.find((party) => party.role === "orchestrator")!;
     orchestrator.bundleHash = "7".repeat(64);
     orchestrator.primaryClaim = ORCHESTRATOR;
+    f.authorization.commitment.signer = ORCHESTRATOR;
+    f.agreement.commitment.signer = ORCHESTRATOR;
+    for (const invocation of f.auditSource.artifacts.vetRequirements) {
+      invocation.verifier = ORCHESTRATOR;
+    }
     f.deps.evidenceSigner = {
+      algorithm: "ed25519",
+      signer: ORCHESTRATOR,
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+    };
+    f.deps.auditSourceCommitmentSigner = {
       algorithm: "ed25519",
       signer: ORCHESTRATOR,
       sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
@@ -1509,11 +2454,77 @@ describe("runFulfilmentCore", () => {
     const orchestrator = f.session.parties.find((party) => party.role === "orchestrator")!;
     orchestrator.bundleHash = "7".repeat(64);
     orchestrator.primaryClaim = ORCHESTRATOR;
+    f.authorization.commitment.signer = ORCHESTRATOR;
+    f.agreement.commitment.signer = ORCHESTRATOR;
+    for (const invocation of f.auditSource.artifacts.vetRequirements) {
+      invocation.verifier = ORCHESTRATOR;
+    }
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "rejected",
       code: "evidence-signer-mismatch",
     });
     expect(f.store.consumed).toBe(false);
+  });
+
+  test("rejects an audit-source signer that is not the authenticated phase orchestrator", async () => {
+    const f = fixture();
+    f.deps.auditSourceCommitmentSigner = {
+      ...f.deps.auditSourceCommitmentSigner,
+      signer: "did:demos:mallory",
+    };
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-commitment-signer-mismatch",
+    });
+    expect(f.store.consumed).toBe(false);
+  });
+
+  test("contains an unusable audit-source signer result before permit consumption", async () => {
+    const f = fixture();
+    f.deps.auditSourceCommitmentSigner.sign = () => null as never;
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    f.deps.anchorEvidence = vi.fn(f.deps.anchorEvidence);
+
+    await expect(runFulfilmentCore(f.request, f.deps)).resolves.toMatchObject({
+      decision: "indeterminate",
+      code: "audit-source-commitment-indeterminate",
+      safeToRetryDelivery: true,
+    });
+    expect(f.store.consumed).toBe(false);
+    expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    expect(f.deps.anchorEvidence).not.toHaveBeenCalled();
+  });
+
+  test("contains audit-source verifier mutation before and after permit consumption", async () => {
+    const fresh = fixture();
+    fresh.deps.verifyAuditSourceCommitmentSignature = async (input) => {
+      input.signedBytes[0] = input.signedBytes[0]! ^ 0xff;
+      return { disposition: "valid" };
+    };
+    fresh.deps.submitDelivery = vi.fn(fresh.deps.submitDelivery);
+    await expect(runFulfilmentCore(fresh.request, fresh.deps)).resolves.toMatchObject({
+      decision: "indeterminate",
+      code: "audit-source-commitment-indeterminate",
+      safeToRetryDelivery: true,
+    });
+    expect(fresh.store.consumed).toBe(false);
+    expect(fresh.deps.submitDelivery).not.toHaveBeenCalled();
+
+    const replay = fixture(undefined, true);
+    replay.deps.verifyAuditSourceCommitmentSignature = async () => ({
+      disposition: "indeterminate",
+      reason: "commitment key service unavailable",
+    });
+    replay.deps.submitDelivery = vi.fn(replay.deps.submitDelivery);
+    expect(await runFulfilmentCore(replay.request, replay.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "audit-source-commitment-indeterminate",
+      safeToRetryDelivery: false,
+      consumedPaymentAuthorization: {
+        settlementId: replay.authorization.settlementId,
+      },
+    });
+    expect(replay.deps.submitDelivery).not.toHaveBeenCalled();
   });
 
   test("requires an explicit authenticated phase-orchestrator row", async () => {
@@ -1772,6 +2783,7 @@ describe("runFulfilmentCore", () => {
       f.deps.resolveAgreement = async () => ({ status: "rejected", reason: "swapped" });
       f.deps.prepareDelivery = async () => ({ status: "rejected", reason: "swapped" });
       f.deps.submitDelivery = async () => ({ status: "rejected", reason: "swapped" });
+      f.deps.auditSourceCommitmentSigner.sign = () => null as never;
       f.deps.nowMs = () => -1;
       return originalInspect.call(this, permitId);
     };
@@ -1806,6 +2818,7 @@ describe("runFulfilmentCore", () => {
     const rootReads = new Map<PropertyKey, number>();
     const storeReads = new Map<PropertyKey, number>();
     const signerReads = new Map<PropertyKey, number>();
+    const auditSignerReads = new Map<PropertyKey, number>();
     const count = (reads: Map<PropertyKey, number>, key: PropertyKey): void => {
       reads.set(key, (reads.get(key) ?? 0) + 1);
     };
@@ -1818,6 +2831,12 @@ describe("runFulfilmentCore", () => {
     const signerProxy = new Proxy(f.deps.evidenceSigner, {
       get(target, key, receiver) {
         count(signerReads, key);
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const auditSignerProxy = new Proxy(f.deps.auditSourceCommitmentSigner, {
+      get(target, key, receiver) {
+        count(auditSignerReads, key);
         return Reflect.get(target, key, receiver);
       },
     });
@@ -1835,6 +2854,7 @@ describe("runFulfilmentCore", () => {
       ...f.deps,
       receiptStore: storeProxy,
       evidenceSigner: signerProxy,
+      auditSourceCommitmentSigner: auditSignerProxy,
       prepareDelivery: prepareProxy,
     }, {
       get(target, key, receiver) {
@@ -1852,6 +2872,11 @@ describe("runFulfilmentCore", () => {
       ["consumePermit", 1],
     ]));
     expect([...signerReads.entries()]).toEqual(expect.arrayContaining([
+      ["algorithm", 1],
+      ["signer", 1],
+      ["sign", 1],
+    ]));
+    expect([...auditSignerReads.entries()]).toEqual(expect.arrayContaining([
       ["algorithm", 1],
       ["signer", 1],
       ["sign", 1],

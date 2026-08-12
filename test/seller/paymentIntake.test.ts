@@ -8,11 +8,14 @@ import { identityBundleHash } from "../../src/identity/index.js";
 import {
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,
+  sellerFulfilmentCandidateHash,
+  sellerFulfilmentAuditSourceHash,
   verifySellerPaymentIntake,
   x402Eip3009Nonce,
   type CommittedAgreementResolution,
   type DemosTransferObservation,
   type SellerFulfilmentHandoff,
+  type SellerFulfilmentHandoffV2,
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeInput,
   type SellerListingAtCommitResolution,
@@ -277,12 +280,13 @@ function makeContext(
     agreementHash,
     commitment: {
       finality: "finalized",
-      ref: `dacs3:commitment:${JOB_ID}`,
+      ref: `dacs3:commit:${JOB_ID}`,
       contentHash: "cd".repeat(32),
       jobId: JOB_ID,
       agreementHash,
       listingRef,
       committedAt: 1_000,
+      signer: SELLER,
     },
     railRegistryVersion: 7,
   };
@@ -398,6 +402,7 @@ function rebindJob(ctx: Context, jobId: string): void {
   ctx.input.jobId = jobId;
   ctx.agreement.jobId = jobId;
   ctx.committed.commitment.jobId = jobId;
+  ctx.committed.commitment.ref = `dacs3:commit:${jobId}`;
   refreshCommitment(ctx);
 }
 
@@ -523,9 +528,10 @@ function receiptClaim(overrides: Partial<{
     railId: evm ? "x402:default" : "demos-native:DEM",
     railRegistryVersion: 7,
     commitment: {
-      ref: `dacs3:commitment:${jobId}`,
+      ref: `dacs3:commit:${jobId}`,
       contentHash: "cc".repeat(32),
       finalizedAt: 0,
+      signer: SELLER,
     },
     settlementIdentity: evm
       ? {
@@ -551,10 +557,13 @@ function receiptClaim(overrides: Partial<{
   };
 }
 
-function fulfilmentHandoff(
+function fulfilmentHandoffBase(
   claim = receiptClaim(),
   artifactValue = 42,
-): SellerFulfilmentHandoff {
+): Omit<
+  SellerFulfilmentHandoff,
+  "handoffVersion" | "auditSource" | "auditSourceHash" | "auditSourceCommitment"
+> {
   const artifact = {
     kind: "deliver-storage-program",
     cleartextPayload: { value: artifactValue },
@@ -562,7 +571,6 @@ function fulfilmentHandoff(
     access: { model: "public" },
   };
   return {
-    handoffVersion: "1",
     fulfilmentId: `fulfilment:${claim.jobId}:${claim.phaseIndex + 1}`,
     jobId: claim.jobId,
     agreementRef: `agreement:${claim.jobId}`,
@@ -585,6 +593,105 @@ function fulfilmentHandoff(
   };
 }
 
+function fulfilmentHandoff(
+  claim = receiptClaim(),
+  artifactValue = 42,
+): SellerFulfilmentHandoffV2 {
+  const base = fulfilmentHandoffBase(claim, artifactValue);
+  const pipeline = [
+    { kind: "negotiate-fixed-price" as const },
+    { kind: "commit-agreement" as const },
+    {
+      kind: claim.authorization.evidenceInput.phase,
+      parameters: { rail: claim.authorization.railId },
+    },
+    { kind: "deliver-storage-program" as const },
+  ];
+  const paymentRef = {
+    anchor: {
+      kind: "storage-program" as const,
+      locator:
+        `dacs4:payment:${claim.jobId}:${claim.authorization.railId}:${claim.phaseIndex}`,
+    },
+    contentHash: claim.evidenceHash,
+  };
+  const auditSource = {
+    sourceVersion: "1" as const,
+    session: {
+      recordVersion: "1" as const,
+      jobId: claim.jobId,
+      state: "settle-pending",
+      listingRef: structuredClone(claim.authorization.listingRef),
+      parties: [
+        { role: "buyer" as const, bundleHash: "1".repeat(64), primaryClaim: BUYER },
+        { role: "seller" as const, bundleHash: "2".repeat(64), primaryClaim: SELLER },
+        { role: "orchestrator" as const, bundleHash: "2".repeat(64), primaryClaim: SELLER },
+      ],
+      pipeline,
+      phaseResults: [
+        {
+          index: 0,
+          step: pipeline[0]!,
+          invokedAt: Math.max(0, claim.observedAt - 3),
+          result: { ok: true, contextDelta: {} },
+          contextDelta: {},
+        },
+        {
+          index: 1,
+          step: pipeline[1]!,
+          invokedAt: Math.max(0, claim.observedAt - 2),
+          result: { ok: true, contextDelta: {} },
+          contextDelta: {},
+        },
+        {
+          index: claim.phaseIndex,
+          step: pipeline[claim.phaseIndex]!,
+          invokedAt: claim.observedAt,
+          result: {
+            ok: true,
+            txRefs: structuredClone(claim.authorization.evidenceInput.paymentTxRefs),
+            attestationRef: paymentRef,
+            contextDelta: {},
+          },
+          contextDelta: {},
+        },
+      ],
+      startedAt: Math.max(0, claim.observedAt - 4),
+      lastUpdatedAt: claim.observedAt,
+      recipeRegistryVersion: 1,
+      railRegistryVersion: claim.authorization.railRegistryVersion,
+    },
+    artifacts: {
+      agreementCommitment: {
+        anchor: {
+          kind: "storage-program" as const,
+          locator: claim.authorization.commitment.ref,
+        },
+        contentHash: claim.authorization.commitment.contentHash,
+      },
+      vetRecords: [],
+      vetRequirements: [],
+      settlementEvidence: [paymentRef],
+    },
+    provenanceProfile: "dacs-sdk-operational-v1" as const,
+  };
+  return {
+    ...base,
+    handoffVersion: "2",
+    auditSource,
+    auditSourceHash: sellerFulfilmentAuditSourceHash(auditSource),
+    auditSourceCommitment: {
+      commitmentVersion: "1",
+      fulfilmentId: base.fulfilmentId,
+      jobId: base.jobId,
+      authorizationHash: base.authorizationHash,
+      auditSourceHash: sellerFulfilmentAuditSourceHash(auditSource),
+      candidateHash: sellerFulfilmentCandidateHash(base.candidate),
+      signature: { algorithm: "ed25519", signer: SELLER, value: "c2ln" },
+    },
+  };
+}
+
 describe("verifySellerPaymentIntake", () => {
   it("verifies pay-DEM in OS, emits exact normative evidence, and claims once", async () => {
     const store = createInMemorySellerReceiptStore();
@@ -596,6 +703,7 @@ describe("verifySellerPaymentIntake", () => {
       fulfilment: "claim",
       settlementId: `demos:${"ab".repeat(32)}`,
       payoutBindingTier: 1,
+      commitment: { signer: SELLER },
       evidenceInput: {
         evidenceVersion: "1",
         jobId: JOB_ID,
@@ -625,6 +733,16 @@ describe("verifySellerPaymentIntake", () => {
     expect(duplicate).toMatchObject({
       disposition: "verified",
       fulfilment: "already-claimed",
+    });
+  });
+
+  it("requires the authenticated FinalityCommitmentRecord signer", async () => {
+    const ctx = makeContext("pay-dem");
+    delete (ctx.committed.commitment as { signer?: string }).signer;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "agreement-resolution-invalid-result",
     });
   });
 
@@ -1503,6 +1621,24 @@ describe("verifySellerPaymentIntake", () => {
     expect(replay.handoff).not.toEqual(replacement);
   });
 
+  it("rejects the unreleased V1 draft handoff instead of promising unsafe recovery", async () => {
+    const store = createInMemorySellerReceiptStore();
+    const claimed = await store.claim(receiptClaim());
+    if (claimed.status === "conflict") throw new Error("fixture");
+    const unsupported = {
+      ...fulfilmentHandoff(claimed.claim),
+      handoffVersion: "1",
+    };
+    delete (unsupported as { auditSource?: unknown }).auditSource;
+    delete (unsupported as { auditSourceHash?: unknown }).auditSourceHash;
+
+    await expect(store.consumePermit(claimed.permitId, unsupported as never))
+      .rejects.toThrow("seller fulfilment handoff is malformed");
+    await expect(store.inspectPermit(claimed.permitId)).resolves.toMatchObject({
+      status: "available",
+    });
+  });
+
   it("returns the store-retained authorization on a same-phase retry", async () => {
     const store = createInMemorySellerReceiptStore();
     const firstClaim = receiptClaim({ observedAt: 100 });
@@ -1994,6 +2130,17 @@ describe("verifySellerPaymentIntake", () => {
       disposition: "error",
       fulfilment: "none",
       reason: "address-binding-resolution-invalid-result",
+    });
+  });
+
+  it("fails closed on a delimiter-bearing commitment job id", async () => {
+    const ctx = makeContext("pay-x402");
+    ctx.input.jobId = "job:ambiguous";
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toEqual({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "invalid-intake-input",
     });
   });
 

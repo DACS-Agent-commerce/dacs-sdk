@@ -1,7 +1,9 @@
+import { types as nodeTypes } from "node:util";
+
 import type {
   AnchorReceipt,
   AttestationRef,
-  ChainTxRef,
+  BundleRequirement,
   ComponentSignature,
   DeliverableSpec,
   ListingRef,
@@ -12,6 +14,7 @@ import {
   ARTIFACT_SEPARATORS,
   isAnchorReceipt,
   isAttestationRef,
+  isBundleRequirement,
   isChainTxRef,
   isComponentSignature,
   isDeliverableSpec,
@@ -19,22 +22,48 @@ import {
   signComponentArtifact,
   type BuildComponentSignatureOptions,
 } from "../artifacts/index.js";
-import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  encodeAddressSegment,
+  sha256Hex,
+} from "../canonical/index.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
+import { finalityCommitmentAddress } from "../negotiate/commitment.js";
 import {
   isSellerFulfilmentHandoff,
   isValidSellerReceiptClaim,
+  sellerFulfilmentCandidateHash,
   type SellerFulfilmentReceiptStore,
   type SellerFulfilmentHandoff,
+  type SellerFulfilmentHandoffEnvelope,
+  type SellerFulfilmentAuditSourceCommitmentV1,
   type SellerPaymentAuthorization,
   type SellerPayloadVerificationProducerAdmission,
   type SellerReceiptClaim,
 } from "../seller/paymentIntake.js";
+import {
+  isSellerFulfilmentAuditSource,
+  sellerFulfilmentAuditSourceHash,
+  type SellerFulfilmentAuditSourceV1,
+  type SellerFulfilmentSessionRecord,
+  type SellerSessionPhaseEntry,
+  type SellerSessionPhaseHandlerResult,
+} from "../seller/fulfilmentAuditSource.js";
+
+export type {
+  SellerFulfilmentSessionRecord,
+  SellerSessionPhaseEntry,
+  SellerSessionPhaseHandlerResult,
+} from "../seller/fulfilmentAuditSource.js";
 
 const ENTITLEMENT_SEPARATOR =
   "dacs-entitlement:v1:" as const satisfies DomainSeparator;
 const PAYLOAD_ATTESTATION_SEPARATOR =
   "dacs-payload-attestation:v1:" as const satisfies DomainSeparator;
+/** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
+const AUDIT_SOURCE_COMMITMENT_SEPARATOR =
+  "dacs-x-seller-fulfilment-audit-source:v1:" as const;
 
 /** Artifact-local §B.2 scope: these records omit only singular `signature`. */
 function singularSignatureScope(record: Record<string, unknown>): Record<string, unknown> {
@@ -122,10 +151,15 @@ export interface SellerFulfilmentAgreement {
   buyer: {
     primaryClaim: string;
     bundleHash: string;
+    vetRecordRef: AttestationRef;
     storageAddress?: string;
     encryptionKey?: string;
   };
-  seller: { primaryClaim: string; bundleHash: string };
+  seller: {
+    primaryClaim: string;
+    bundleHash: string;
+    vetRecordRef: AttestationRef;
+  };
   deliverableRef: {
     deliverableType: SellerDeliverableSpec["kind"];
     hash: string;
@@ -137,6 +171,7 @@ export interface SellerFulfilmentAgreement {
     agreementHash: string;
     recordContentHash: string;
     finalizedAt: number;
+    signer: string;
   };
 }
 
@@ -144,6 +179,8 @@ export interface SellerFulfilmentAgreement {
 export interface SellerFulfilmentListing {
   pin: ListingRef;
   sellerPrimaryClaim: string;
+  /** Exact signed `Listing.buyerRequirement`. */
+  buyerRequirement: BundleRequirement;
   pipeline: PhaseStep[];
   /** Exact signed `Listing.offering.deliverable`, not a re-derived projection. */
   deliverable: DeliverableSpec;
@@ -242,53 +279,15 @@ export type SellerEvidenceAnchorResult =
   | { status: "rejected"; reason: string }
   | { status: "indeterminate"; reason: string };
 
-/** Exact DACS-5 §10.3 PhaseHandlerResult projection. */
-export interface SellerSessionPhaseHandlerResult {
-  ok: boolean;
-  reason?: string;
-  txRefs?: ChainTxRef[];
-  explorerUrls?: string[];
-  contextDelta?: Record<string, unknown>;
-  attestationRef?: SellerAttestationRef;
-  anchorReceipt?: AnchorReceipt;
-  errorClass?:
-    | "permanent"
-    | "transient"
-    | "counterparty"
-    | "substrate"
-    | "settlement-atomicity";
-}
+/**
+ * V2 resolver for one atomic authenticated SessionRecord plus the complete
+ * pre-delivery artifact/provenance inventory retained with permit consumption.
+ */
+export type SellerFulfilmentAuditSourceResolver = (
+  jobId: string,
+) => Promise<SellerFulfilmentResolution<unknown>>;
 
-export interface SellerSessionPhaseEntry {
-  index: number;
-  step: PhaseStep;
-  invokedAt: number;
-  result: SellerSessionPhaseHandlerResult;
-  contextDelta: Record<string, unknown>;
-}
-
-export interface SellerFulfilmentSessionRecord {
-  recordVersion: "1";
-  jobId: string;
-  state: string;
-  listingRef: ListingRef;
-  parties: Array<{
-    role: "buyer" | "seller" | "orchestrator";
-    bundleHash: string;
-    primaryClaim: string;
-    vetRecordRef?: SellerAttestationRef;
-  }>;
-  pipeline: PhaseStep[];
-  phaseResults: SellerSessionPhaseEntry[];
-  startedAt: number;
-  lastUpdatedAt: number;
-  endedAt?: number;
-  recipeRegistryVersion: number;
-  railRegistryVersion: number;
-  amendments?: SellerAttestationRef[];
-}
-
-export interface SellerFulfilmentDeps {
+interface SellerFulfilmentDepsBase {
   /** Authoritative store created by verifySellerPaymentIntake. */
   receiptStore: SellerFulfilmentReceiptStore;
   /** `verified` means both agreement signatures and finalized commitment were checked. */
@@ -299,14 +298,6 @@ export interface SellerFulfilmentDeps {
   resolveListing: (
     pin: Readonly<ListingRef>,
   ) => Promise<SellerFulfilmentResolution<SellerFulfilmentListing>>;
-  /**
-   * Resolve the authoritative local DACS-5 §10.3 SessionRecord. `verified`
-   * means admission already validated every party's bundleHash ↔ primaryClaim
-   * binding; a caller-supplied structurally valid party row is not authority.
-   */
-  resolveSessionRecord: (
-    jobId: string,
-  ) => Promise<SellerFulfilmentResolution<unknown>>;
   /** Build a candidate without writing, disclosing, or invoking an irreversible effect. */
   prepareDelivery: (input: {
     fulfilmentId: string;
@@ -416,9 +407,18 @@ export interface SellerFulfilmentDeps {
     signature: Readonly<ComponentSignature>;
   }) => Promise<SellerVerificationResult> | SellerVerificationResult;
   evidenceSigner: BuildComponentSignatureOptions;
+  /** Independent orchestrator signer for the pre-consumption durable handoff. */
+  auditSourceCommitmentSigner: BuildComponentSignatureOptions;
   /** Cryptographically verify the exact signed SettlementEvidence before use. */
   verifyEvidenceSignature: (input: {
     evidence: Readonly<SignedSellerDeliveryEvidence>;
+    signedBytes: Uint8Array;
+    signature: Readonly<ComponentSignature>;
+    expectedSigner: string;
+  }) => Promise<SellerVerificationResult> | SellerVerificationResult;
+  /** Verify the SIG-4 audit-source commitment before relying on its hash. */
+  verifyAuditSourceCommitmentSignature: (input: {
+    commitment: Readonly<SellerFulfilmentAuditSourceCommitmentV1>;
     signedBytes: Uint8Array;
     signature: Readonly<ComponentSignature>;
     expectedSigner: string;
@@ -440,6 +440,12 @@ export interface SellerFulfilmentDeps {
   nowMs: () => number;
 }
 
+/** V2-only fulfilment dependencies with one atomic authenticated audit source. */
+export interface SellerFulfilmentDeps extends SellerFulfilmentDepsBase {
+  auditSourceProfile: "v2";
+  resolveAuditSource: SellerFulfilmentAuditSourceResolver;
+}
+
 type SellerFulfilmentDepsCapture =
   | { status: "captured"; deps: SellerFulfilmentDeps }
   | { status: "invalid"; reason: string };
@@ -459,7 +465,8 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const receiptStoreSource = source.receiptStore;
     const resolveAgreementSource = source.resolveAgreement;
     const resolveListingSource = source.resolveListing;
-    const resolveSessionRecordSource = source.resolveSessionRecord;
+    const resolveAuditSourceSource = source.resolveAuditSource;
+    const auditSourceProfile = source.auditSourceProfile;
     const prepareDeliverySource = source.prepareDelivery;
     const submitDeliverySource = source.submitDelivery;
     const reconcileDeliverySource = source.reconcileDelivery;
@@ -474,14 +481,23 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const verifyPayloadMethodProofSource = source.verifyPayloadMethodProof;
     const verifyEntitlementSignatureSource = source.verifyEntitlementSignature;
     const evidenceSignerSource = source.evidenceSigner;
+    const auditSourceCommitmentSignerSource = source.auditSourceCommitmentSigner;
     const verifyEvidenceSignatureSource = source.verifyEvidenceSignature;
+    const verifyAuditSourceCommitmentSignatureSource =
+      source.verifyAuditSourceCommitmentSignature;
     const anchorEvidenceSource = source.anchorEvidence;
     const resolveEvidenceSource = source.resolveEvidence;
     const nowMsSource = source.nowMs;
 
+    if (auditSourceProfile !== "v2") {
+      return { status: "invalid", reason: "fulfilment audit-source profile is unsupported" };
+    }
+
     if (!receiptStoreSource || typeof receiptStoreSource !== "object" ||
-        !evidenceSignerSource || typeof evidenceSignerSource !== "object") {
-      return { status: "invalid", reason: "receipt store or evidence signer is unavailable" };
+        !evidenceSignerSource || typeof evidenceSignerSource !== "object" ||
+        !auditSourceCommitmentSignerSource ||
+        typeof auditSourceCommitmentSignerSource !== "object") {
+      return { status: "invalid", reason: "receipt store or fulfilment signer is unavailable" };
     }
     const claimSource = receiptStoreSource.claim;
     const inspectPermitSource = receiptStoreSource.inspectPermit;
@@ -489,11 +505,13 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const evidenceAlgorithm = evidenceSignerSource.algorithm;
     const evidenceSignerClaim = evidenceSignerSource.signer;
     const evidenceSignSource = evidenceSignerSource.sign;
+    const auditSourceCommitmentAlgorithm = auditSourceCommitmentSignerSource.algorithm;
+    const auditSourceCommitmentSignerClaim = auditSourceCommitmentSignerSource.signer;
+    const auditSourceCommitmentSignSource = auditSourceCommitmentSignerSource.sign;
 
     const required = [
       resolveAgreementSource,
       resolveListingSource,
-      resolveSessionRecordSource,
       prepareDeliverySource,
       submitDeliverySource,
       reconcileDeliverySource,
@@ -506,7 +524,9 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
       inspectPermitSource,
       consumePermitSource,
       evidenceSignSource,
+      auditSourceCommitmentSignSource,
       verifyEvidenceSignatureSource,
+      verifyAuditSourceCommitmentSignatureSource,
     ];
     if (required.some((candidate) => typeof candidate !== "function")) {
       return { status: "invalid", reason: "a required fulfilment dependency is not callable" };
@@ -520,9 +540,16 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
       verifyPayloadAttestationSignatureSource,
       verifyPayloadMethodProofSource,
       verifyEntitlementSignatureSource,
+      resolveAuditSourceSource,
     ];
     if (optionals.some((candidate) => candidate !== undefined && typeof candidate !== "function")) {
       return { status: "invalid", reason: "an optional fulfilment dependency is not callable" };
+    }
+    if (typeof resolveAuditSourceSource !== "function") {
+      return {
+        status: "invalid",
+        reason: "v2 fulfilment dependencies do not satisfy their resolver profile",
+      };
     }
 
     const receiptStore: SellerFulfilmentReceiptStore = Object.freeze({
@@ -535,11 +562,20 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
       signer: evidenceSignerClaim,
       sign: bindCaptured(evidenceSignSource, evidenceSignerSource),
     });
-    const captured: SellerFulfilmentDeps = Object.freeze({
+    const auditSourceCommitmentSigner: BuildComponentSignatureOptions = Object.freeze({
+      algorithm: auditSourceCommitmentAlgorithm,
+      signer: auditSourceCommitmentSignerClaim,
+      sign: bindCaptured(
+        auditSourceCommitmentSignSource,
+        auditSourceCommitmentSignerSource,
+      ),
+    });
+    const captured = Object.freeze({
       receiptStore,
+      auditSourceProfile,
       resolveAgreement: bindCaptured(resolveAgreementSource, source),
       resolveListing: bindCaptured(resolveListingSource, source),
-      resolveSessionRecord: bindCaptured(resolveSessionRecordSource, source),
+      resolveAuditSource: bindCaptured(resolveAuditSourceSource, source),
       prepareDelivery: bindCaptured(prepareDeliverySource, source),
       submitDelivery: bindCaptured(submitDeliverySource, source),
       reconcileDelivery: bindCaptured(reconcileDeliverySource, source),
@@ -576,11 +612,14 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
         ? { verifyEntitlementSignature: bindCaptured(verifyEntitlementSignatureSource, source) }
         : {}),
       evidenceSigner,
+      auditSourceCommitmentSigner,
       verifyEvidenceSignature: bindCaptured(verifyEvidenceSignatureSource, source),
+      verifyAuditSourceCommitmentSignature:
+        bindCaptured(verifyAuditSourceCommitmentSignatureSource, source),
       anchorEvidence: bindCaptured(anchorEvidenceSource, source),
       resolveEvidence: bindCaptured(resolveEvidenceSource, source),
       nowMs: bindCaptured(nowMsSource, source),
-    });
+    }) as SellerFulfilmentDeps;
     return { status: "captured", deps: captured };
   } catch (error) {
     return {
@@ -596,6 +635,11 @@ export type SignedSellerDeliveryEvidence = (
 ) & { signature: ComponentSignature };
 
 interface SellerDeliveryEvidenceBase {
+  /**
+   * Signed operational extension committing the exact pre-delivery audit
+   * source retained with permit consumption. SIG-5 preserves this field.
+   */
+  dacsSdkAuditSourceHash?: string;
   evidenceVersion: "1";
   jobId: string;
   phase: SellerDeliveryPhase;
@@ -737,6 +781,45 @@ function parseResolution(
   return null;
 }
 
+const absent = Symbol("absent-own-data-property");
+
+function parseAuditSourceResolution(
+  value: unknown,
+): SellerFulfilmentResolution<SellerFulfilmentAuditSourceV1> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) return null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key !== "string")) return null;
+    const data = (key: string): unknown | typeof absent => {
+      const descriptor = descriptors[key];
+      return descriptor?.enumerable === true && "value" in descriptor &&
+          descriptor.value !== undefined
+        ? descriptor.value
+        : absent;
+    };
+    const status = data("status");
+    if (status === "verified" && ownKeys.length === 2 &&
+        ownKeys.includes("status") && ownKeys.includes("value")) {
+      const source = data("value");
+      return source !== absent && isSellerFulfilmentAuditSource(source)
+        ? { status: "verified", value: source }
+        : null;
+    }
+    if ((status === "rejected" || status === "indeterminate") &&
+        ownKeys.length === 2 && ownKeys.includes("status") && ownKeys.includes("reason")) {
+      const reason = data("reason");
+      return isNonEmpty(reason) ? { status, reason } : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function isListingRefValue(value: unknown): value is ListingRef {
   return isRecord(value) && hasOnlyKeys(value, ["listingId", "version", "contentHash"]) &&
     isNonEmpty(value.listingId) && isPositiveSafeInt(value.version) && isHash(value.contentHash);
@@ -795,12 +878,17 @@ function isAgreementValue(value: unknown): value is SellerFulfilmentAgreement {
   ]) || value.artifactKind !== "payee-bound" || !isNonEmpty(value.ref) ||
       !isHash(value.contentHash) || !isNonEmpty(value.jobId) ||
       !isListingRefValue(value.listingPin) || !isRecord(value.buyer) ||
-      !hasOnlyKeys(value.buyer, ["primaryClaim", "bundleHash", "storageAddress", "encryptionKey"]) ||
+      !hasOnlyKeys(value.buyer, [
+        "primaryClaim", "bundleHash", "vetRecordRef", "storageAddress", "encryptionKey",
+      ]) ||
       !isNonEmpty(value.buyer.primaryClaim) || !isHash(value.buyer.bundleHash) ||
+      !isAttestationRef(value.buyer.vetRecordRef) ||
       (value.buyer.storageAddress !== undefined && !isNonEmpty(value.buyer.storageAddress)) ||
       (value.buyer.encryptionKey !== undefined && !isNonEmpty(value.buyer.encryptionKey)) ||
-      !isRecord(value.seller) || !hasOnlyKeys(value.seller, ["primaryClaim", "bundleHash"]) ||
+      !isRecord(value.seller) ||
+      !hasOnlyKeys(value.seller, ["primaryClaim", "bundleHash", "vetRecordRef"]) ||
       !isNonEmpty(value.seller.primaryClaim) || !isHash(value.seller.bundleHash) ||
+      !isAttestationRef(value.seller.vetRecordRef) ||
       !isRecord(value.deliverableRef) ||
       !hasOnlyKeys(value.deliverableRef, ["deliverableType", "hash", "schemaUrl"]) ||
       !["storage-program", "entitlement", "attested-payload"].includes(
@@ -808,17 +896,19 @@ function isAgreementValue(value: unknown): value is SellerFulfilmentAgreement {
       ) || !isHash(value.deliverableRef.hash) ||
       (value.deliverableRef.schemaUrl !== undefined && !isNonEmpty(value.deliverableRef.schemaUrl)) ||
       !isRecord(value.commitment) || !hasOnlyKeys(value.commitment, [
-        "status", "ref", "agreementHash", "recordContentHash", "finalizedAt",
+        "status", "ref", "agreementHash", "recordContentHash", "finalizedAt", "signer",
       ]) || value.commitment.status !== "finalized" || !isNonEmpty(value.commitment.ref) ||
       !isHash(value.commitment.agreementHash) || !isHash(value.commitment.recordContentHash) ||
+      !isNonEmpty(value.commitment.signer) ||
       !isSafeUint(value.commitment.finalizedAt)) return false;
   return true;
 }
 
 function isListingValue(value: unknown): value is SellerFulfilmentListing {
   return isRecord(value) && hasOnlyKeys(value, [
-    "pin", "sellerPrimaryClaim", "pipeline", "deliverable",
+    "pin", "sellerPrimaryClaim", "buyerRequirement", "pipeline", "deliverable",
   ]) && isListingRefValue(value.pin) && isNonEmpty(value.sellerPrimaryClaim) &&
+    isBundleRequirement(value.buyerRequirement) &&
     Array.isArray(value.pipeline) && value.pipeline.every(isPhaseStep) &&
     isDeliverableSpec(value.deliverable);
 }
@@ -939,6 +1029,9 @@ function sameFulfilmentHandoff(
     "deliverableSpecHash",
   ] as const;
   if (scalarKeys.some((key) => left[key] !== right[key]) ||
+      left.auditSourceHash !== right.auditSourceHash ||
+      !exact(left.auditSource, right.auditSource) ||
+      !exact(left.auditSourceCommitment, right.auditSourceCommitment) ||
       left.candidate.status !== right.candidate.status ||
       left.candidate.validatedAt !== right.candidate.validatedAt) return false;
   if (left.candidate.status === "preparation-failed" ||
@@ -1169,6 +1262,7 @@ function sessionRecordViolation(
   agreement: SellerFulfilmentAgreement,
   listing: SellerFulfilmentListing,
   deliveryPhaseIndex: number,
+  expectedCommitmentAddress: string,
 ): string | null {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     "recordVersion", "jobId", "state", "listingRef", "parties", "pipeline",
@@ -1206,11 +1300,13 @@ function sessionRecordViolation(
     roles.add(String(rawParty.role));
     if (rawParty.role === "buyer") {
       buyer = rawParty.bundleHash === agreement.buyer.bundleHash &&
-        rawParty.primaryClaim === agreement.buyer.primaryClaim;
+        rawParty.primaryClaim === agreement.buyer.primaryClaim &&
+        exact(rawParty.vetRecordRef, agreement.buyer.vetRecordRef);
     }
     if (rawParty.role === "seller") {
       seller = rawParty.bundleHash === agreement.seller.bundleHash &&
-        rawParty.primaryClaim === agreement.seller.primaryClaim;
+        rawParty.primaryClaim === agreement.seller.primaryClaim &&
+        exact(rawParty.vetRecordRef, agreement.seller.vetRecordRef);
     }
   }
   if (!buyer || !seller) return "SessionRecord parties differ from the committed agreement";
@@ -1219,6 +1315,7 @@ function sessionRecordViolation(
     return "SessionRecord must contain each and only the phases before delivery";
   }
   const indices = new Set<number>();
+  let priorInvokedAt: number | undefined;
   for (let index = 0; index < deliveryPhaseIndex; index++) {
     const entry = value.phaseResults[index];
     if (!isRecord(entry) || !hasOnlyKeys(entry, ["index", "step", "invokedAt", "result", "contextDelta"]) ||
@@ -1229,6 +1326,10 @@ function sessionRecordViolation(
         !isRecord(entry.result) || !isRecord(entry.contextDelta)) {
       return `SessionRecord phaseResults[${index}] is not the exact contiguous pipeline entry`;
     }
+    if (priorInvokedAt !== undefined && (entry.invokedAt as number) < priorInvokedAt) {
+      return "SessionRecord phase invocation times are not monotonic";
+    }
+    priorInvokedAt = entry.invokedAt as number;
     indices.add(index);
     const result = entry.result;
     if (!hasOnlyKeys(result, [
@@ -1246,12 +1347,56 @@ function sessionRecordViolation(
       return `SessionRecord phaseResults[${index}] did not complete successfully`;
     }
   }
+
+  const commitmentEntries = value.phaseResults.filter((entry) =>
+    isRecord(entry) && isRecord(entry.step) &&
+    (entry.step.kind === "commit-agreement" ||
+      entry.step.kind === "commit-payee-bound-agreement"));
+  if (commitmentEntries.length !== 1 ||
+      commitmentEntries[0]!.step.kind !== "commit-payee-bound-agreement" ||
+      commitmentEntries[0]!.index >= authorization.phaseIndex) {
+    return "SessionRecord must contain one prior payee-bound commitment phase";
+  }
+  const commitmentEntry = commitmentEntries[0]!;
+  const commitmentResult = commitmentEntry.result as Record<string, unknown>;
+  const commitmentTxRefs = commitmentResult.txRefs;
+  const commitmentDelta = (commitmentEntry.contextDelta as Record<string, unknown>)[
+    "commit-payee-bound-agreement"
+  ];
+  if ((commitmentEntry.invokedAt as number) > authorization.commitment.finalizedAt ||
+      !Array.isArray(commitmentTxRefs) || commitmentTxRefs.length !== 1 ||
+      !isChainTxRef(commitmentTxRefs[0]) || !isRecord(commitmentDelta) ||
+      !hasOnlyKeys(commitmentDelta, [
+        "agreementHash", "anchorTxRef", "anchorReceipt", "committedAt",
+      ]) || commitmentDelta.agreementHash !== authorization.agreementHash ||
+      !exact(commitmentDelta.anchorTxRef, commitmentTxRefs[0]) ||
+      !isAnchorReceipt(commitmentDelta.anchorReceipt) ||
+      commitmentDelta.anchorReceipt.state !== "finalized" ||
+      commitmentDelta.anchorReceipt.observationDisposition !== "established" ||
+      commitmentDelta.anchorReceipt.logicalAddress !== expectedCommitmentAddress ||
+      commitmentDelta.anchorReceipt.contentHash !== authorization.commitment.contentHash ||
+      commitmentDelta.anchorReceipt.blockRef?.timestamp !==
+        authorization.commitment.finalizedAt ||
+      commitmentDelta.committedAt !== authorization.commitment.finalizedAt ||
+      !exact(commitmentResult.contextDelta, commitmentEntry.contextDelta) ||
+      (commitmentResult.anchorReceipt !== undefined &&
+        !exact(commitmentResult.anchorReceipt, commitmentDelta.anchorReceipt)) ||
+      (commitmentResult.attestationRef !== undefined &&
+        (!isAttestationRef(commitmentResult.attestationRef) ||
+          commitmentResult.attestationRef.anchor.kind !== "storage-program" ||
+          commitmentResult.attestationRef.anchor.locator !== expectedCommitmentAddress ||
+          commitmentResult.attestationRef.contentHash !==
+            authorization.commitment.contentHash))) {
+    return "SessionRecord commitment phase output differs from authenticated finality facts";
+  }
   const paymentEntry = value.phaseResults[authorization.phaseIndex] as Record<string, unknown> | undefined;
   const paymentResult = paymentEntry?.result;
   const paymentStep = listing.pipeline[authorization.phaseIndex];
   const expectedPaymentAddress =
     `dacs4:payment:${authorization.jobId}:${logicalAddressSegment(authorization.railId)}:${authorization.phaseIndex}`;
-  if (!paymentStep || paymentStep.kind !== authorization.evidenceInput.phase ||
+  if (!paymentStep || !paymentEntry ||
+      (paymentEntry.invokedAt as number) < authorization.commitment.finalizedAt ||
+      paymentStep.kind !== authorization.evidenceInput.phase ||
       paymentStep.parameters?.rail !== authorization.railId || !isRecord(paymentResult) ||
       !exact(paymentResult.txRefs, authorization.evidenceInput.paymentTxRefs) ||
       (paymentResult.attestationRef !== undefined &&
@@ -1265,6 +1410,223 @@ function sessionRecordViolation(
           paymentResult.anchorReceipt.contentHash !== authorization.evidenceHash)) ||
       (paymentResult.attestationRef === undefined && paymentResult.anchorReceipt !== undefined)) {
     return "SessionRecord payment phase does not bind the retained payment authorization";
+  }
+  return null;
+}
+
+function auditSourceViolation(
+  source: unknown,
+  session: SellerFulfilmentSessionRecord,
+  authorization: SellerPaymentAuthorization,
+  agreement: SellerFulfilmentAgreement,
+  listing: SellerFulfilmentListing,
+  request: SellerFulfilmentRequest,
+  deliveryPhaseIndex: number,
+  expectedCommitmentAddress: string,
+): string | null {
+  if (!isSellerFulfilmentAuditSource(source)) {
+    return "audit source is not the strict versioned operational provenance shape";
+  }
+  if (!exact(source.session, session) ||
+      source.session.phaseResults.length !== deliveryPhaseIndex) {
+    return "audit source does not contain the exact authenticated pre-delivery SessionRecord";
+  }
+  const orchestrator = session.parties.find((party) => party.role === "orchestrator");
+  if (!orchestrator) {
+    return "audit source has no authenticated phase orchestrator";
+  }
+  const commitmentEntry = session.phaseResults.find((entry) =>
+    entry.step.kind === "commit-payee-bound-agreement")!;
+  const commitmentOutput = commitmentEntry.contextDelta[
+    "commit-payee-bound-agreement"
+  ];
+  const commitmentReceipt = isRecord(commitmentOutput)
+    ? commitmentOutput.anchorReceipt
+    : undefined;
+  if (source.artifacts.agreementCommitment.contentHash !==
+        authorization.commitment.contentHash ||
+      source.artifacts.agreementCommitment.anchor.kind !== "storage-program" ||
+      source.artifacts.agreementCommitment.anchor.locator !== expectedCommitmentAddress ||
+      (source.artifacts.agreementCommitment.signer !== undefined &&
+        source.artifacts.agreementCommitment.signer !== authorization.commitment.signer) ||
+      !isAnchorReceipt(commitmentReceipt) ||
+      commitmentReceipt.logicalAddress !== expectedCommitmentAddress ||
+      request.commitmentRef !== expectedCommitmentAddress ||
+      authorization.commitment.ref !== expectedCommitmentAddress ||
+      authorization.commitment.signer !== orchestrator.primaryClaim) {
+    return "audit source does not bind the exact finalized AgreementCommitment";
+  }
+  const partyVetBindings = session.parties.flatMap((party) =>
+    party.vetRecordRef === undefined
+      ? []
+      : [{ party, key: canonicalize(party.vetRecordRef) }]);
+  const uniquePartyVetBindings = new Map<
+    string,
+    { primaryClaim: string; bundleHash: string; roles: Set<string> }
+  >();
+  for (const binding of partyVetBindings) {
+    const existing = uniquePartyVetBindings.get(binding.key);
+    if (existing &&
+        (existing.primaryClaim !== binding.party.primaryClaim ||
+          existing.bundleHash !== binding.party.bundleHash)) {
+      return "one Vet record cannot represent different authenticated party identities";
+    }
+    if (existing) {
+      existing.roles.add(binding.party.role);
+    } else {
+      uniquePartyVetBindings.set(binding.key, {
+        primaryClaim: binding.party.primaryClaim,
+        bundleHash: binding.party.bundleHash,
+        roles: new Set([binding.party.role]),
+      });
+    }
+  }
+  const sessionVetRefs = [...uniquePartyVetBindings.keys()];
+  const inventoryVetRefs = source.artifacts.vetRecords.map((ref) => canonicalize(ref));
+  if (sessionVetRefs.length !== inventoryVetRefs.length ||
+      !sessionVetRefs.every((ref) => inventoryVetRefs.includes(ref))) {
+    return "audit source vet-record inventory differs from the authenticated party roster";
+  }
+  const buyerParty = session.parties.find((party) => party.role === "buyer");
+  const sellerParty = session.parties.find((party) => party.role === "seller");
+  if (!buyerParty || !sellerParty ||
+      !exact(buyerParty.vetRecordRef, agreement.buyer.vetRecordRef) ||
+      !exact(sellerParty.vetRecordRef, agreement.seller.vetRecordRef)) {
+    return "audit source party Vet references differ from the committed Agreement";
+  }
+  if (source.artifacts.vetRequirements.some((invocation) => {
+    const key = canonicalize(invocation.vetRecordRef);
+    const binding = uniquePartyVetBindings.get(key);
+    const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];
+    const requirementCandidates = [
+      ...invocation.requirement.required,
+      ...(invocation.requirement.oneOf ?? []).flat(),
+    ];
+    const seenResultRefs = new Set<string>();
+    const seenResultHashes = new Set<string>();
+    const listingOwned = binding?.roles.has("buyer") === true;
+    const expectedCompositeAddress =
+      `dacs2:composite:${authorization.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
+    const uncoveredRequired = invocation.requirement.required.some(
+      (required) => !expectedResults.some((result) =>
+        result.scheme === required.scheme && exact(result.requirement, required)),
+    );
+    const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
+      (group) => group.length === 0 || !group.some((alternative) =>
+        expectedResults.some((result) =>
+          result.scheme === alternative.scheme && exact(result.requirement, alternative))),
+    );
+    return !binding || invocation.evaluatedParty !== binding.primaryClaim ||
+      invocation.verifier !== orchestrator.primaryClaim ||
+      invocation.vetRecordRef.anchor.kind !== "storage-program" ||
+      invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
+      (invocation.vetRecordRef.signer !== undefined &&
+        invocation.vetRecordRef.signer !== invocation.verifier) ||
+      (listingOwned && !exact(invocation.requirement, listing.buyerRequirement)) ||
+      invocation.dealSpecific.some((result) => result.sourceJobId !== authorization.jobId) ||
+      uncoveredRequired || uncoveredOneOf ||
+      expectedResults.some((result) => {
+        const refKey = canonicalize(result.ref);
+        const expectedResultAddress =
+          `dacs2:${result.sourceJobId}:${result.scheme}:` +
+          `${encodeAddressSegment(result.identifier)}:v${result.ref.recipeVersion}`;
+        const duplicate = seenResultRefs.has(refKey) ||
+          seenResultHashes.has(result.ref.contentHash);
+        seenResultRefs.add(refKey);
+        seenResultHashes.add(result.ref.contentHash);
+        return duplicate || result.scheme !== result.requirement.scheme ||
+          result.ref.anchor.kind !== "storage-program" ||
+          result.ref.anchor.locator !== expectedResultAddress ||
+          !requirementCandidates.some((candidate) => exact(candidate, result.requirement)) ||
+          (result.requirement.recipeVersion !== undefined &&
+            result.ref.recipeVersion !== result.requirement.recipeVersion);
+      });
+  })) {
+    return "audit source Vet provenance differs from the authenticated party/orchestrator bindings";
+  }
+
+  if (commitmentEntry.result.attestationRef !== undefined &&
+        !exact(
+          commitmentEntry.result.attestationRef,
+          source.artifacts.agreementCommitment,
+        )) {
+    return "audit source does not map one prior payee-bound commitment phase to the finalized commitment";
+  }
+
+  const expectedPaymentAddress =
+    `dacs4:payment:${authorization.jobId}:${logicalAddressSegment(authorization.railId)}:${authorization.phaseIndex}`;
+  const expectedSettlementRefs: AttestationRef[] = [];
+  let pointerlessAuthorizedPayment = false;
+  for (const entry of session.phaseResults) {
+    if (entry.step.kind === "vet-credentials" && entry.result.attestationRef &&
+        !inventoryVetRefs.includes(canonicalize(entry.result.attestationRef))) {
+      return "audit source Vet phase pointer is outside the authenticated party inventory";
+    }
+    if ((entry.step.kind === "commit-agreement" ||
+        entry.step.kind === "commit-payee-bound-agreement") &&
+        entry.result.attestationRef &&
+        !exact(entry.result.attestationRef, source.artifacts.agreementCommitment)) {
+      return "audit source commitment phase pointer differs from the finalized AgreementCommitment";
+    }
+    if (entry.step.kind.startsWith("pay-") ||
+        entry.step.kind.startsWith("deliver-")) {
+      if (entry.result.attestationRef) {
+        expectedSettlementRefs.push(entry.result.attestationRef);
+      } else if (entry.index === authorization.phaseIndex &&
+          entry.step.kind.startsWith("pay-")) {
+        // PC-7 permits the SessionRecord write to lag the independently
+        // authenticated payment evidence. This focused fulfilment profile has
+        // one prior payment, so the retained authorization supplies its exact,
+        // unambiguous ref without rewriting the source SessionRecord.
+        pointerlessAuthorizedPayment = true;
+      } else {
+        return "pointerless pre-delivery settlement phase cannot be assigned unambiguously";
+      }
+    }
+    if (entry.step.kind === "rate") {
+      return "a pre-delivery audit source cannot contain a post-settlement rate phase";
+    }
+  }
+  if (pointerlessAuthorizedPayment) {
+    const candidates = source.artifacts.settlementEvidence.filter((ref) =>
+      ref.anchor.kind === "storage-program" &&
+      ref.anchor.locator === expectedPaymentAddress &&
+      ref.contentHash === authorization.evidenceHash &&
+      (ref.signer === undefined || ref.signer === orchestrator.primaryClaim));
+    if (candidates.length !== 1) {
+      return "pointerless payment evidence is not uniquely retained by authenticated address/hash/signer";
+    }
+    expectedSettlementRefs.push(candidates[0]!);
+  }
+  const expectedSettlementKeys = expectedSettlementRefs.map((ref) => canonicalize(ref));
+  const settlementRefs = source.artifacts.settlementEvidence.map((ref) => canonicalize(ref));
+  if (expectedSettlementKeys.length === 0 ||
+      settlementRefs.length !== expectedSettlementKeys.length ||
+      new Set(expectedSettlementKeys).size !== expectedSettlementKeys.length ||
+      new Set(source.artifacts.settlementEvidence.map((ref) => ref.contentHash)).size !==
+        source.artifacts.settlementEvidence.length ||
+      !expectedSettlementKeys.every((ref) => settlementRefs.includes(ref)) ||
+      !settlementRefs.every((ref) => expectedSettlementKeys.includes(ref))) {
+    return "audit source settlement-evidence inventory differs from the authenticated pre-delivery phases";
+  }
+  const ratingRefs = source.artifacts.ratingRecords ?? [];
+  if (ratingRefs.length !== 0) {
+    return "a pre-delivery audit source cannot retain post-settlement RatingRecords";
+  }
+  const authorizedEvidence = source.artifacts.settlementEvidence.filter(
+    (ref) => ref.contentHash === authorization.evidenceHash,
+  );
+  const paymentEntry = session.phaseResults[authorization.phaseIndex];
+  if (authorizedEvidence.length !== 1 ||
+      authorizedEvidence[0]!.anchor.kind !== "storage-program" ||
+      authorizedEvidence[0]!.anchor.locator !== expectedPaymentAddress ||
+      (authorizedEvidence[0]!.signer !== undefined &&
+        authorizedEvidence[0]!.signer !== orchestrator.primaryClaim) ||
+      (paymentEntry?.result.attestationRef !== undefined &&
+        !exact(paymentEntry.result.attestationRef, authorizedEvidence[0])) ||
+      (paymentEntry?.result.anchorReceipt !== undefined &&
+        paymentEntry.result.anchorReceipt.logicalAddress !== expectedPaymentAddress)) {
+    return "audit source payment evidence does not exactly match the retained authorization";
   }
   return null;
 }
@@ -2089,6 +2451,157 @@ async function verifySignedEvidence(
   };
 }
 
+type UnsignedAuditSourceCommitment = Omit<
+  SellerFulfilmentAuditSourceCommitmentV1,
+  "signature"
+>;
+
+function auditSourceCommitmentHash(
+  commitment: SellerFulfilmentAuditSourceCommitmentV1 | UnsignedAuditSourceCommitment,
+): string {
+  return singularSignatureContentHash(commitment as unknown as Record<string, unknown>);
+}
+
+async function verifyAuditSourceCommitment(
+  commitment: SellerFulfilmentAuditSourceCommitmentV1,
+  expectedSigner: string,
+  deps: SellerFulfilmentDeps,
+): Promise<{ status: "ok" } | { status: "invalid" | "indeterminate"; reason: string }> {
+  if (!isComponentSignature(commitment.signature) ||
+      commitment.signature.signer !== expectedSigner) {
+    return { status: "invalid", reason: "audit-source commitment signer is unauthorized" };
+  }
+  let input: Parameters<
+    SellerFulfilmentDeps["verifyAuditSourceCommitmentSignature"]
+  >[0];
+  let commitmentBefore: string;
+  let signatureBefore: string;
+  let bytesBefore: string;
+  try {
+    input = {
+      commitment: structuredClone(commitment),
+      signedBytes: signedBytes(
+        AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+        auditSourceCommitmentHash(commitment),
+      ),
+      signature: structuredClone(commitment.signature),
+      expectedSigner,
+    };
+    commitmentBefore = canonicalize(input.commitment);
+    signatureBefore = canonicalize(input.signature);
+    bytesBefore = Buffer.from(input.signedBytes).toString("base64url");
+  } catch (error) {
+    return { status: "invalid", reason: `audit-source commitment is malformed: ${String(error)}` };
+  }
+  let rawResult: unknown;
+  try {
+    rawResult = structuredClone(
+      await deps.verifyAuditSourceCommitmentSignature(input),
+    );
+  } catch (error) {
+    return {
+      status: "indeterminate",
+      reason: `audit-source commitment verifier threw: ${String(error)}`,
+    };
+  }
+  try {
+    if (canonicalize(input.commitment) !== commitmentBefore ||
+        canonicalize(input.signature) !== signatureBefore ||
+        Buffer.from(input.signedBytes).toString("base64url") !== bytesBefore ||
+        input.expectedSigner !== expectedSigner) {
+      return {
+        status: "indeterminate",
+        reason: "audit-source commitment verifier mutated its exact inputs",
+      };
+    }
+  } catch {
+    return {
+      status: "indeterminate",
+      reason: "audit-source commitment verifier corrupted its exact inputs",
+    };
+  }
+  if (!validVerification(rawResult)) {
+    return {
+      status: "indeterminate",
+      reason: "audit-source commitment verifier returned a malformed disposition",
+    };
+  }
+  if (rawResult.disposition === "valid") return { status: "ok" };
+  return {
+    status: rawResult.disposition === "invalid" ? "invalid" : "indeterminate",
+    reason: rawResult.reason,
+  };
+}
+
+async function signAuditSourceCommitment(
+  unsigned: UnsignedAuditSourceCommitment,
+  signer: BuildComponentSignatureOptions,
+  expectedSigner: string,
+  deps: SellerFulfilmentDeps,
+): Promise<
+  | { status: "ok"; commitment: SellerFulfilmentAuditSourceCommitmentV1 }
+  | { status: "indeterminate"; reason: string }
+> {
+  if (signer.signer !== expectedSigner) {
+    return { status: "indeterminate", reason: "audit-source commitment signer is unauthorized" };
+  }
+  const context = { algorithm: signer.algorithm, signer: signer.signer };
+  let bytes: Uint8Array;
+  let expectedBytes: Uint8Array;
+  let contextBefore: string;
+  try {
+    bytes = signedBytes(
+      AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+      auditSourceCommitmentHash(unsigned),
+    );
+    expectedBytes = bytes.slice();
+    contextBefore = canonicalize(context);
+  } catch (error) {
+    return {
+      status: "indeterminate",
+      reason: `audit-source commitment signing inputs are malformed: ${String(error)}`,
+    };
+  }
+  let signatureValue: Uint8Array | string;
+  try {
+    signatureValue = await signer.sign(bytes, context);
+  } catch (error) {
+    return { status: "indeterminate", reason: `audit-source commitment signing failed: ${String(error)}` };
+  }
+  let commitment: SellerFulfilmentAuditSourceCommitmentV1;
+  try {
+    if (!Buffer.from(bytes).equals(Buffer.from(expectedBytes)) ||
+        canonicalize(context) !== contextBefore) {
+      return { status: "indeterminate", reason: "audit-source signer mutated its exact inputs" };
+    }
+    commitment = {
+      ...unsigned,
+      signature: {
+        ...context,
+        value: typeof signatureValue === "string"
+          ? signatureValue
+          : Buffer.from(signatureValue).toString("base64url"),
+      },
+    };
+    if (!isComponentSignature(commitment.signature)) {
+      return { status: "indeterminate", reason: "audit-source signer returned a malformed signature" };
+    }
+  } catch (error) {
+    return {
+      status: "indeterminate",
+      reason: `audit-source signer returned an unusable result: ${String(error)}`,
+    };
+  }
+  const verified = await verifyAuditSourceCommitment(
+    commitment,
+    expectedSigner,
+    deps,
+  );
+  return verified.status === "ok"
+    ? { status: "ok", commitment }
+    : { status: "indeterminate", reason: verified.reason };
+}
+
 async function publishEvidence(
   evidence: SellerDeliverySuccessEvidence | SellerDeliveryFailureEvidence,
   fulfilmentId: string,
@@ -2422,10 +2935,19 @@ async function runFulfilmentCoreInner(
     return rejected("invalid-request", "fulfilment request is not an immutable cloneable value");
   }
   let evidenceSigner: BuildComponentSignatureOptions;
+  let auditSourceCommitmentSigner: BuildComponentSignatureOptions;
   try {
     if (!deps.evidenceSigner || !isNonEmpty(deps.evidenceSigner.signer) ||
         typeof deps.evidenceSigner.sign !== "function") {
       return rejected("evidence-signer-invalid", "SettlementEvidence signer capability is malformed");
+    }
+    if (!deps.auditSourceCommitmentSigner ||
+        !isNonEmpty(deps.auditSourceCommitmentSigner.signer) ||
+        typeof deps.auditSourceCommitmentSigner.sign !== "function") {
+      return rejected(
+        "audit-source-commitment-signer-invalid",
+        "audit-source commitment signer capability is malformed",
+      );
     }
     // Functions cannot be structured-cloned; copy the exact authority and
     // function reference before any untrusted async dependency can mutate deps.
@@ -2434,8 +2956,16 @@ async function runFulfilmentCoreInner(
       signer: deps.evidenceSigner.signer,
       sign: deps.evidenceSigner.sign,
     };
+    auditSourceCommitmentSigner = {
+      algorithm: deps.auditSourceCommitmentSigner.algorithm,
+      signer: deps.auditSourceCommitmentSigner.signer,
+      sign: deps.auditSourceCommitmentSigner.sign,
+    };
   } catch {
-    return rejected("evidence-signer-invalid", "SettlementEvidence signer capability is unavailable");
+    return rejected(
+      "fulfilment-signer-invalid",
+      "a fulfilment signer capability is unavailable",
+    );
   }
 
   let inspection: Awaited<ReturnType<SellerFulfilmentReceiptStore["inspectPermit"]>>;
@@ -2468,21 +2998,34 @@ async function runFulfilmentCoreInner(
   if (inspection.status === "invalid") {
     return rejected("payment-permit-invalid", "payment permit is unknown, stale, or superseded");
   }
-  if (!isValidSellerReceiptClaim(inspection.claim) ||
-      (inspection.status === "already-consumed" &&
-        !isSellerFulfilmentHandoff(inspection.handoff))) {
+  if (!isValidSellerReceiptClaim(inspection.claim)) {
     return indeterminate("payment-permit-store-invalid", ["receipt store returned a malformed authorization"], {
       safeToRetryDelivery: false,
     });
   }
   const claim = structuredClone(inspection.claim);
   const authorization = claim.authorization;
-  let retainedHandoff = inspection.status === "already-consumed"
-    ? structuredClone(inspection.handoff)
-    : undefined;
   if (inspection.status === "already-consumed") {
     execution.consumedPaymentAuthorization = structuredClone(authorization);
+    if (!isSellerFulfilmentHandoff(inspection.handoff)) {
+      return indeterminate("payment-permit-store-invalid", [
+        "receipt store returned a malformed consumed handoff",
+      ], { safeToRetryDelivery: false });
+    }
   }
+  let expectedCommitmentAddress: string;
+  try {
+    expectedCommitmentAddress = finalityCommitmentAddress(authorization.jobId);
+  } catch {
+    return rejected(
+      "payment-authorization-scope-mismatch",
+      "permit binds a malformed commitment job identifier",
+    );
+  }
+  let retainedHandoff: SellerFulfilmentHandoffEnvelope | undefined =
+    inspection.status === "already-consumed"
+    ? structuredClone(inspection.handoff) as SellerFulfilmentHandoffEnvelope
+    : undefined;
   const id = sellerFulfilmentId({
     jobId: authorization.jobId,
     paymentPhaseIndex: authorization.phaseIndex,
@@ -2532,10 +3075,12 @@ async function runFulfilmentCoreInner(
       agreement.commitment.status !== "finalized" ||
       agreement.commitment.ref !== request.commitmentRef ||
       agreement.commitment.ref !== authorization.commitment.ref ||
+      agreement.commitment.ref !== expectedCommitmentAddress ||
       agreement.commitment.agreementHash !== request.agreementHash ||
       !isHash(agreement.commitment.recordContentHash) ||
       agreement.commitment.recordContentHash !== authorization.commitment.contentHash ||
       agreement.commitment.finalizedAt !== authorization.commitment.finalizedAt ||
+      agreement.commitment.signer !== authorization.commitment.signer ||
       authorization.evidenceInput.observedAt < agreement.commitment.finalizedAt ||
       !isSafeUint(agreement.commitment.finalizedAt)) {
     return rejected("agreement-commitment-mismatch", "agreement is not the exact finalized payee-bound artifact");
@@ -2585,6 +3130,7 @@ async function runFulfilmentCoreInner(
   const listing = listingValue;
   if (!pinsEqual(listing.pin, agreement.listingPin) ||
       listing.sellerPrimaryClaim !== agreement.seller.primaryClaim ||
+      !isBundleRequirement(listing.buyerRequirement) ||
       !Array.isArray(listing.pipeline) || !listing.pipeline.every(isPhaseStep)) {
     return rejected("listing-resolution-mismatch", "resolved Listing does not match its pin or seller");
   }
@@ -2616,14 +3162,14 @@ async function runFulfilmentCoreInner(
       "this release fails closed unless the pipeline contains exactly one bound delivery phase",
     );
   }
-  const priorPaymentIndices = listing.pipeline
-    .slice(0, request.deliveryPhaseIndex)
+  const paymentIndices = listing.pipeline
     .map((step, index) => step.kind.startsWith("pay-") ? index : -1)
     .filter((index) => index >= 0);
-  if (priorPaymentIndices.length !== 1 || priorPaymentIndices[0] !== authorization.phaseIndex) {
+  if (paymentIndices.length !== 1 || paymentIndices[0] !== authorization.phaseIndex ||
+      authorization.phaseIndex >= request.deliveryPhaseIndex) {
     return rejected(
       "unsupported-payment-profile",
-      "this focused profile requires exactly one prior payment phase bound to the permit",
+      "this focused profile requires exactly one payment phase before delivery, bound to the permit",
     );
   }
   if (authorization.phaseIndex >= request.deliveryPhaseIndex ||
@@ -2677,34 +3223,53 @@ async function runFulfilmentCoreInner(
     }
   }
 
-  let rawSessionResolution: unknown;
-  try {
-    rawSessionResolution = structuredClone(await deps.resolveSessionRecord(authorization.jobId));
-  } catch (error) {
-    rawSessionResolution = { status: "indeterminate", reason: String(error) };
-  }
-  const sessionResolution = parseResolution(rawSessionResolution);
-  if (!sessionResolution) {
-    return indeterminate("session-record-resolution-invalid", [
-      "SessionRecord resolver returned a malformed result",
-    ], {
-      fulfilmentId: id,
-      safeToRetryDelivery: inspection.status === "available",
-    });
-  }
-  if (sessionResolution.status !== "verified") {
-    return sessionResolution.status === "rejected"
-      ? rejected("session-record-rejected", sessionResolution.reason)
-      : indeterminate("session-record-indeterminate", [sessionResolution.reason], {
-          fulfilmentId: id,
-          safeToRetryDelivery: inspection.status === "available",
-        });
-  }
   let sessionValue: unknown;
-  try {
-    sessionValue = structuredClone(sessionResolution.value);
-  } catch {
-    return rejected("session-record-mismatch", "SessionRecord resolver returned a non-cloneable verified view");
+  let auditSource: SellerFulfilmentAuditSourceV1 | undefined;
+  let auditSourceHash: string | undefined;
+  if (inspection.status === "available") {
+    if (deps.auditSourceProfile !== "v2" || !deps.resolveAuditSource) {
+      return indeterminate("audit-source-unavailable", [
+        "fresh permit consumption requires the explicit V2 audit-source profile",
+      ], { fulfilmentId: id, safeToRetryDelivery: true });
+    }
+    let rawAuditSourceResolution: unknown;
+    try {
+      rawAuditSourceResolution = await deps.resolveAuditSource(authorization.jobId);
+    } catch (error) {
+      rawAuditSourceResolution = { status: "indeterminate", reason: String(error) };
+    }
+    const auditSourceResolution = parseAuditSourceResolution(rawAuditSourceResolution);
+    if (!auditSourceResolution) {
+      return indeterminate("audit-source-resolution-invalid", [
+        "audit-source resolver returned a malformed result",
+      ], { fulfilmentId: id, safeToRetryDelivery: true });
+    }
+    if (auditSourceResolution.status !== "verified") {
+      return auditSourceResolution.status === "rejected"
+        ? rejected("audit-source-rejected", auditSourceResolution.reason)
+        : indeterminate("audit-source-indeterminate", [auditSourceResolution.reason], {
+            fulfilmentId: id,
+            safeToRetryDelivery: true,
+          });
+    }
+    try {
+      auditSource = structuredClone(auditSourceResolution.value) as SellerFulfilmentAuditSourceV1;
+    } catch {
+      return rejected("audit-source-mismatch", "audit-source resolver returned a non-cloneable value");
+    }
+    if (!isSellerFulfilmentAuditSource(auditSource)) {
+      return rejected("audit-source-mismatch", "audit-source resolver returned a malformed value");
+    }
+    sessionValue = auditSource.session;
+  } else if (retainedHandoff) {
+    auditSource = structuredClone(retainedHandoff.auditSource);
+    auditSourceHash = retainedHandoff.auditSourceHash;
+    sessionValue = auditSource.session;
+  }
+  if (!auditSource || sessionValue === undefined) {
+    return indeterminate("audit-source-unavailable", [
+      "durable handoff did not retain the mandatory V2 audit source",
+    ], { fulfilmentId: id, safeToRetryDelivery: false });
   }
   const sessionViolation = sessionRecordViolation(
     sessionValue,
@@ -2712,6 +3277,7 @@ async function runFulfilmentCoreInner(
     agreement,
     listing,
     request.deliveryPhaseIndex,
+    expectedCommitmentAddress,
   );
   if (sessionViolation) return rejected("session-record-mismatch", sessionViolation);
   const session = sessionValue as SellerFulfilmentSessionRecord;
@@ -2722,12 +3288,56 @@ async function runFulfilmentCoreInner(
       "authenticated SessionRecord does not name the delivery phase orchestrator",
     );
   }
+  if (authorization.commitment.signer !== sessionOrchestrator.primaryClaim) {
+    return rejected(
+      "agreement-commitment-mismatch",
+      "finality commitment signer is not the authenticated session orchestrator",
+    );
+  }
+  const auditViolation = auditSourceViolation(
+    auditSource,
+    session,
+    authorization,
+    agreement,
+    listing,
+    request,
+    request.deliveryPhaseIndex,
+    expectedCommitmentAddress,
+  );
+  if (auditViolation) return rejected("audit-source-mismatch", auditViolation);
+  const derivedHash = sellerFulfilmentAuditSourceHash(auditSource);
+  if (auditSourceHash !== undefined && auditSourceHash !== derivedHash) {
+    return rejected("audit-source-mismatch", "audit source hash does not bind its exact bytes");
+  }
+  auditSourceHash = derivedHash;
   const requiredEvidenceSigner = sessionOrchestrator.primaryClaim;
   if (evidenceSigner.signer !== requiredEvidenceSigner) {
     return rejected(
       "evidence-signer-mismatch",
       "SettlementEvidence signer is not the authenticated phase orchestrator",
     );
+  }
+  if (auditSourceCommitmentSigner.signer !== requiredEvidenceSigner) {
+    return rejected(
+      "audit-source-commitment-signer-mismatch",
+      "audit-source commitment signer is not the authenticated phase orchestrator",
+    );
+  }
+  if (retainedHandoff) {
+    const commitmentVerification = await verifyAuditSourceCommitment(
+      retainedHandoff.auditSourceCommitment,
+      requiredEvidenceSigner,
+      deps,
+    );
+    if (commitmentVerification.status !== "ok") {
+      return indeterminate(
+        commitmentVerification.status === "invalid"
+          ? "audit-source-commitment-invalid"
+          : "audit-source-commitment-indeterminate",
+        [commitmentVerification.reason],
+        { fulfilmentId: id, safeToRetryDelivery: false },
+      );
+    }
   }
 
   const minimumDeliveryTime = Math.max(
@@ -3026,7 +3636,7 @@ async function runFulfilmentCoreInner(
     }
   }
 
-  let proposedHandoff: SellerFulfilmentHandoff | undefined;
+  let proposedHandoff: SellerFulfilmentHandoffEnvelope | undefined;
   if (inspection.status === "available") {
     if (preparationValidatedAt === undefined) {
       return indeterminate("delivery-preparation-invalid", [
@@ -3057,14 +3667,38 @@ async function runFulfilmentCoreInner(
         "validated delivery candidate was not available for atomic handoff",
       ], { fulfilmentId: id, safeToRetryDelivery: true });
     }
+    if (!auditSource || !auditSourceHash) {
+      return indeterminate("audit-source-unavailable", [
+        "permit consumption cannot commit without the authenticated audit source",
+      ], { fulfilmentId: id, safeToRetryDelivery: true });
+    }
+    const authorizationHash = sha256Hex(canonicalize(authorization));
+    const signedAuditSourceCommitment = await signAuditSourceCommitment(
+      {
+        commitmentVersion: "1",
+        fulfilmentId: id,
+        jobId: authorization.jobId,
+        authorizationHash,
+        auditSourceHash,
+        candidateHash: sellerFulfilmentCandidateHash(candidate),
+      },
+      auditSourceCommitmentSigner,
+      requiredEvidenceSigner,
+      deps,
+    );
+    if (signedAuditSourceCommitment.status !== "ok") {
+      return indeterminate("audit-source-commitment-indeterminate", [
+        signedAuditSourceCommitment.reason,
+      ], { fulfilmentId: id, safeToRetryDelivery: true });
+    }
     proposedHandoff = {
-      handoffVersion: "1",
+      handoffVersion: "2",
       fulfilmentId: id,
       jobId: authorization.jobId,
       agreementRef: request.agreementRef,
       agreementHash: authorization.agreementHash,
       commitmentRef: request.commitmentRef,
-      authorizationHash: sha256Hex(canonicalize(authorization)),
+      authorizationHash,
       settlementId: authorization.settlementId,
       paymentEvidenceHash: authorization.evidenceHash,
       paymentPhaseIndex: authorization.phaseIndex,
@@ -3072,6 +3706,9 @@ async function runFulfilmentCoreInner(
       phase,
       logicalAddress,
       deliverableSpecHash: specHash,
+      auditSource: structuredClone(auditSource),
+      auditSourceHash,
+      auditSourceCommitment: signedAuditSourceCommitment.commitment,
       candidate,
     };
     if (!isSellerFulfilmentHandoff(proposedHandoff)) {
@@ -3574,6 +4211,13 @@ async function runFulfilmentCoreInner(
     });
   }
 
+  if (retainedHandoff) {
+    unsignedEvidence = {
+      ...unsignedEvidence,
+      dacsSdkAuditSourceHash: retainedHandoff.auditSourceHash,
+    };
+  }
+
   const published = await publishEvidence(
     unsignedEvidence,
     id,
@@ -3662,8 +4306,18 @@ export async function runFulfilmentCore(
   }
   const execution: SellerFulfilmentExecutionContext = {};
   const result = await runFulfilmentCoreInner(requestSnapshot, captured.deps, execution);
-  if (result.decision === "rejected") return result;
   const retained = execution.consumedPaymentAuthorization;
+  if (result.decision === "rejected") {
+    if (!retained) return result;
+    return {
+      decision: "indeterminate",
+      code: "consumed-fulfilment-rejected",
+      reasons: [`${result.code}: ${result.reasons.join("; ")}`],
+      safeToRetryDelivery: false,
+      recovery: { action: "reconcile-delivery" },
+      consumedPaymentAuthorization: structuredClone(retained),
+    };
+  }
   if (!retained) {
     if (result.decision === "indeterminate") return result;
     return {

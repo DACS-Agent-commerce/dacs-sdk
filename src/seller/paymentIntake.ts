@@ -5,8 +5,10 @@ import type {
   Listing,
   ListingRef,
   PaymentRailRef,
+  ComponentSignature,
   VerificationMethod,
 } from "../artifacts/types.js";
+import { isComponentSignature } from "../artifacts/signatures.js";
 import {
   assertPositiveAmount,
   baseUnits,
@@ -14,6 +16,7 @@ import {
   contentHash,
   sha256Hex,
 } from "../canonical/index.js";
+import { finalityCommitmentAddress } from "../negotiate/commitment.js";
 import {
   demosAddressFromClaim,
   normalizeDemosNativeAddress,
@@ -34,6 +37,11 @@ import {
   verifyX402ReceiptClaim,
   type X402ResponseHeader,
 } from "./x402Receipt.js";
+import {
+  isSellerFulfilmentAuditSource,
+  sellerFulfilmentAuditSourceHash,
+  type SellerFulfilmentAuditSourceV1,
+} from "./fulfilmentAuditSource.js";
 
 export type SellerPaymentIntakeDisposition =
   | "verified"
@@ -130,6 +138,8 @@ export type CommittedAgreementResolution =
         agreementHash: string;
         listingRef: ListingRef;
         committedAt: number;
+        /** Authenticated FinalityCommitmentRecord ComponentSignature signer. */
+        signer: string;
       };
       /** Verified DACS-5 SessionRecord rail-registry pin. */
       railRegistryVersion: number;
@@ -276,8 +286,7 @@ export interface SellerReceiptClaim {
  * candidate (rather than only its hash) closes the crash window between
  * one-shot permit consumption and the first external delivery effect.
  */
-export interface SellerFulfilmentHandoff {
-  handoffVersion: "1";
+interface SellerFulfilmentHandoffBase {
   fulfilmentId: string;
   jobId: string;
   agreementRef: string;
@@ -310,6 +319,36 @@ export interface SellerFulfilmentHandoff {
         reason: string;
       };
 }
+
+/**
+ * Durable handoff established atomically with permit consumption. The V2
+ * audit source is mandatory: the unreleased V1 draft could not support safe
+ * process recovery or an authenticated audit projection.
+ */
+export interface SellerFulfilmentHandoff extends SellerFulfilmentHandoffBase {
+  handoffVersion: "2";
+  auditSource: SellerFulfilmentAuditSourceV1;
+  auditSourceHash: string;
+  /** Orchestrator-authenticated source hash committed before permit consumption. */
+  auditSourceCommitment: SellerFulfilmentAuditSourceCommitmentV1;
+}
+
+/** SDK-operational SIG-4 commitment; not a normative DACS wire artifact. */
+export interface SellerFulfilmentAuditSourceCommitmentV1 {
+  commitmentVersion: "1";
+  fulfilmentId: string;
+  jobId: string;
+  authorizationHash: string;
+  auditSourceHash: string;
+  candidateHash: string;
+  signature: ComponentSignature;
+}
+
+/** Compatibility name for the only supported durable handoff version. */
+export type SellerFulfilmentHandoffV2 = SellerFulfilmentHandoff;
+
+/** Exact versioned envelope established by the runtime guard. */
+export type SellerFulfilmentHandoffEnvelope = SellerFulfilmentHandoff;
 
 export type SellerReceiptClaimResult =
   | {
@@ -386,6 +425,8 @@ export interface SellerPaymentCommitmentBinding {
   ref: string;
   contentHash: string;
   finalizedAt: number;
+  /** Authenticated FinalityCommitmentRecord ComponentSignature signer. */
+  signer: string;
 }
 
 export type SellerSettlementIdentity =
@@ -597,11 +638,42 @@ function hasExactKeys(
     expected.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
+/** Canonical binding for the candidate bytes retained in a durable handoff. */
+export function sellerFulfilmentCandidateHash(
+  candidate: SellerFulfilmentHandoff["candidate"],
+): string {
+  if (candidate.status === "preparation-failed") {
+    return sha256Hex(canonicalize({
+      status: candidate.status,
+      validatedAt: candidate.validatedAt,
+      reason: candidate.reason,
+    }));
+  }
+  const hasPayloadRecord = Object.prototype.hasOwnProperty.call(
+    candidate.delivery,
+    "payloadAttestationRecord",
+  );
+  return sha256Hex(canonicalize({
+    status: candidate.status,
+    validatedAt: candidate.validatedAt,
+    artifactHash: candidate.artifactHash,
+    hasPayloadAttestationRecord: hasPayloadRecord,
+    ...(hasPayloadRecord
+      ? {
+          payloadAttestationRecordHash: sha256Hex(canonicalize(
+            candidate.delivery.payloadAttestationRecord,
+          )),
+        }
+      : {}),
+  }));
+}
+
 /** Runtime guard for the opaque receipt-store handoff envelope. */
 export function isSellerFulfilmentHandoff(
   value: unknown,
-): value is SellerFulfilmentHandoff {
-  if (!isRecord(value) || !hasExactKeys(value, [
+): value is SellerFulfilmentHandoffEnvelope {
+  if (!isRecord(value) || value.handoffVersion !== "2") return false;
+  const expectedKeys = [
     "handoffVersion",
     "fulfilmentId",
     "jobId",
@@ -617,13 +689,16 @@ export function isSellerFulfilmentHandoff(
     "logicalAddress",
     "deliverableSpecHash",
     "candidate",
-  ])) return false;
+    "auditSource",
+    "auditSourceHash",
+    "auditSourceCommitment",
+  ];
+  if (!hasExactKeys(value, expectedKeys)) return false;
   const nonEmpty = (candidate: unknown): candidate is string =>
     typeof candidate === "string" &&
     candidate.length > 0 &&
     candidate.trim() === candidate;
   if (
-    value.handoffVersion !== "1" ||
     !nonEmpty(value.fulfilmentId) ||
     !nonEmpty(value.jobId) ||
     !nonEmpty(value.agreementRef) ||
@@ -663,6 +738,29 @@ export function isSellerFulfilmentHandoff(
     return false;
   }
   try {
+    if (!isSellerFulfilmentAuditSource(value.auditSource) ||
+        !HASH_RE.test(value.auditSourceHash as string) ||
+        sellerFulfilmentAuditSourceHash(value.auditSource) !== value.auditSourceHash ||
+        !isRecord(value.auditSourceCommitment) ||
+        !hasExactKeys(value.auditSourceCommitment, [
+          "commitmentVersion",
+          "fulfilmentId",
+          "jobId",
+          "authorizationHash",
+          "auditSourceHash",
+          "candidateHash",
+          "signature",
+        ]) || value.auditSourceCommitment.commitmentVersion !== "1" ||
+        value.auditSourceCommitment.fulfilmentId !== value.fulfilmentId ||
+        value.auditSourceCommitment.jobId !== value.jobId ||
+        value.auditSourceCommitment.authorizationHash !== value.authorizationHash ||
+        value.auditSourceCommitment.auditSourceHash !== value.auditSourceHash ||
+        !HASH_RE.test(value.auditSourceCommitment.candidateHash as string) ||
+        value.auditSourceCommitment.candidateHash !==
+          sellerFulfilmentCandidateHash(value.candidate as SellerFulfilmentHandoff["candidate"]) ||
+        !isComponentSignature(value.auditSourceCommitment.signature)) {
+      return false;
+    }
     structuredClone(value);
     return true;
   } catch {
@@ -763,6 +861,7 @@ function snapshotPaymentIntakeInput(value: unknown): SellerPaymentIntakeInput | 
     "receipt",
   ]) ||
       typeof snapshot.jobId !== "string" || snapshot.jobId.length === 0 ||
+      snapshot.jobId.includes(":") ||
       !isSafeUint(snapshot.phaseIndex) ||
       typeof snapshot.railId !== "string" || snapshot.railId.length === 0 ||
       typeof snapshot.payerPayingKey !== "string" || snapshot.payerPayingKey.length === 0 ||
@@ -1026,6 +1125,7 @@ function isCommittedAgreementResolutionValue(
         "agreementHash",
         "listingRef",
         "committedAt",
+        "signer",
       ]) ||
       value.commitment.finality !== "finalized" ||
       typeof value.commitment.ref !== "string" ||
@@ -1038,6 +1138,8 @@ function isCommittedAgreementResolutionValue(
       !HASH_RE.test(value.commitment.agreementHash) ||
       parseListingRef(value.commitment.listingRef) === null ||
       !isSafeUint(value.commitment.committedAt) ||
+      typeof value.commitment.signer !== "string" ||
+      value.commitment.signer.length === 0 ||
       !isSafeUint(value.railRegistryVersion) ||
       value.railRegistryVersion === 0) return false;
   try {
@@ -1301,12 +1403,16 @@ export function isValidSellerReceiptClaim(value: unknown): value is SellerReceip
     !isSafeUint(authorization.railRegistryVersion) ||
     authorization.railRegistryVersion === 0 ||
     !isRecord(authorization.commitment) ||
-    !hasExactKeys(authorization.commitment, ["ref", "contentHash", "finalizedAt"]) ||
+    !hasExactKeys(authorization.commitment, [
+      "ref", "contentHash", "finalizedAt", "signer",
+    ]) ||
     typeof authorization.commitment.ref !== "string" ||
     authorization.commitment.ref.length === 0 ||
     typeof authorization.commitment.contentHash !== "string" ||
     !HASH_RE.test(authorization.commitment.contentHash) ||
     !isSafeUint(authorization.commitment.finalizedAt) ||
+    typeof authorization.commitment.signer !== "string" ||
+    authorization.commitment.signer.length === 0 ||
     !isRecord(authorization.settlementIdentity) ||
     (authorization.payoutBindingTier !== 1 &&
       authorization.payoutBindingTier !== 2 &&
@@ -2050,6 +2156,7 @@ export async function verifySellerPaymentIntake(
     committed.agreementHash !== computedAgreementHash ||
     committed.commitment.finality !== "finalized" ||
     typeof committed.commitment.ref !== "string" || committed.commitment.ref.length === 0 ||
+    committed.commitment.ref !== finalityCommitmentAddress(request.jobId) ||
     !HASH_RE.test(committed.commitment.contentHash) ||
     committed.commitment.jobId !== request.jobId ||
     committed.commitment.agreementHash !== computedAgreementHash ||
@@ -2238,6 +2345,7 @@ export async function verifySellerPaymentIntake(
       ref: committed.commitment.ref,
       contentHash: committed.commitment.contentHash,
       finalizedAt: committed.commitment.committedAt,
+      signer: committed.commitment.signer,
     },
     ...(producerAdmission
       ? { payloadVerificationProducerAdmission: producerAdmission }
