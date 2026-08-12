@@ -1776,7 +1776,6 @@ interface CommerceCounts {
 }
 
 interface CommerceState {
-  loseResponseAcknowledgement: boolean;
   permit?: X402SellerPaymentPermitAuthorization;
   observedTransfer?: Extract<X402TransferObservation, { status: "finalized" }>;
   delivered?: Awaited<ReturnType<DurableSellerFulfilmentDeps["submitDelivery"]>>;
@@ -1791,7 +1790,6 @@ interface CommerceState {
 
 function commerceState(): CommerceState {
   return {
-    loseResponseAcknowledgement: true,
     counts: {
       facilitatorVerify: 0,
       facilitatorSettle: 0,
@@ -2502,10 +2500,6 @@ async function createSellerRuntime(input: {
     renderResponse: async (context) => {
       state.counts.render += 1;
       state.fulfilment = structuredClone(context.fulfilment);
-      if (state.loseResponseAcknowledgement) {
-        state.loseResponseAcknowledgement = false;
-        throw new Error("injected-response-acknowledgement-loss");
-      }
       return {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -2722,7 +2716,11 @@ async function settleAndRecover(input: {
     now: () => buyerNow,
     leaseDurationMs: 1_000,
   });
-  requireCondition(submitted.status === "indeterminate", "buyer-response-loss-not-indeterminate");
+  requireCondition(
+    submitted.status === "indeterminate" &&
+      submitted.reason === "evm-authorization-lookup-unavailable",
+    "buyer-post-response-chain-loss-not-indeterminate",
+  );
   const pending = await buyerStore.load(intent.settlementKey);
   requireCondition(
     pending.status === "held" && pending.pendingDisclosure !== undefined,
@@ -2757,7 +2755,6 @@ async function settleAndRecover(input: {
   state.fulfilment = undefined;
   state.settlementResult = undefined;
   const restartedState = commerceState();
-  restartedState.loseResponseAcknowledgement = false;
   seller = await createSellerRuntime({
     ...input,
     directories: sellerDirectories,
