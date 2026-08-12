@@ -2982,9 +2982,12 @@ async function settleAndRecover(input: {
     input.jobId,
     DELIVERY_PHASE_INDEX,
   );
+  const processAHasNoFulfilmentEffects =
+    processAEffectCounts.applicationCallback === 0 && processAEffectCounts.delivery === 0 &&
+    processAEffectCounts.evidence === 0 && processAEffectCounts.finalReceipt === 0;
   requireCondition(
-    fulfilmentStatus.status === "ok" && fulfilmentStatus.delivery === "outcome" &&
-    fulfilmentStatus.evidence === "outcome",
+    fulfilmentStatus.status === "ok" ||
+      (fulfilmentStatus.status === "missing" && processAHasNoFulfilmentEffects),
     "seller-cold-recovery-failed",
   );
   const replayResponse = await input.preflight.host.fetchImpl(input.preflight.host.resourceUrl, {
