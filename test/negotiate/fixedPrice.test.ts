@@ -35,6 +35,7 @@ const claim = (seed: Uint8Array) =>
   `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
 const BUYER = claim(BUYER_SEED);
 const SELLER = claim(SELLER_SEED);
+const OUTSIDER = claim(Uint8Array.from(Buffer.alloc(32, 33)));
 const HASH = "a".repeat(64);
 
 const PAYEE_BINDING_VECTORS = JSON.parse(
@@ -750,6 +751,105 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       ),
     ).rejects.toThrow(/failed exact DACS-3/);
     expect(invoked).toBe(0);
+  });
+
+  test("readers and producers require distinct parties and the exact signer set", async () => {
+    const signer = (party: string) => ({
+      party,
+      algorithm: "ed25519" as const,
+      sign: () => new Uint8Array(64),
+    });
+    const standard = await signFixedPriceAgreement(
+      deriveFixedPriceAgreement(input()),
+      signer(BUYER),
+      signer(SELLER),
+    );
+    const payeeListing = listing("commit-payee-bound-agreement");
+    const payeeBound = await signFixedPriceAgreement(
+      deriveFixedPriceAgreement({
+        ...input(payeeListing),
+        payoutBindings: [
+          {
+            railId: rail.railId,
+            phaseIndex: 2,
+            payeeAddress: "0xseller",
+          },
+        ],
+      }),
+      signer(BUYER),
+      signer(SELLER),
+    );
+    const schemas: Array<{
+      name: string;
+      artifact: Record<string, unknown>;
+      validate: (value: unknown) => boolean;
+    }> = [
+      {
+        name: "AgreementDocument",
+        artifact: standard as unknown as Record<string, unknown>,
+        validate: isAgreementDocument,
+      },
+      {
+        name: "PayeeBoundAgreementDocument",
+        artifact: payeeBound as unknown as Record<string, unknown>,
+        validate: isPayeeBoundAgreementDocument,
+      },
+    ];
+
+    for (const { name, artifact, validate } of schemas) {
+      const outsiderSigned = structuredClone(artifact);
+      (
+        outsiderSigned.signatures as Array<Record<string, unknown>>
+      )[1]!.party = OUTSIDER;
+      expect(validate(outsiderSigned), `${name}: exact signer set`).toBe(false);
+
+      // Previously this passed: the required-party Set collapsed buyer=X and
+      // seller=X to one member, while an unrelated X+Y signer set still had two.
+      const collidingParties = structuredClone(artifact);
+      const parties = collidingParties.parties as Array<Record<string, unknown>>;
+      parties.find((party) => party.role === "seller")!.primaryClaim = BUYER;
+      (
+        collidingParties.signatures as Array<Record<string, unknown>>
+      )[1]!.party = OUTSIDER;
+      expect(validate(collidingParties), `${name}: colliding role claims`).toBe(
+        false,
+      );
+    }
+
+    const sameIdentityListing = listing();
+    sameIdentityListing.seller.identity = identity(BUYER);
+    sameIdentityListing.signature.signer = BUYER;
+    const sameIdentityInput = input(sameIdentityListing);
+    sameIdentityInput.seller.identityBundle = identity(BUYER);
+    expect(() => deriveFixedPriceAgreement(sameIdentityInput)).toThrow(
+      /buyer and seller primary claims must be distinct/,
+    );
+
+    const collidingDraft = deriveFixedPriceAgreement(input());
+    collidingDraft.parties.find(
+      (party) => party.role === "seller",
+    )!.primaryClaim = BUYER;
+    let callbacks = 0;
+    await expect(
+      signFixedPriceAgreement(
+        collidingDraft,
+        {
+          ...signer(BUYER),
+          sign: () => {
+            callbacks += 1;
+            return new Uint8Array(64);
+          },
+        },
+        {
+          ...signer(BUYER),
+          sign: () => {
+            callbacks += 1;
+            return new Uint8Array(64);
+          },
+        },
+      ),
+    ).rejects.toThrow(/failed exact DACS-3/);
+    expect(callbacks).toBe(0);
   });
 
   test("matches the pinned Standard payee-bound artifact-shape vectors", () => {

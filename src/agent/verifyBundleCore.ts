@@ -1,7 +1,10 @@
 import { types as nodeTypes } from "node:util";
 
 import { contentHash, stripSignature } from "../canonical/index.js";
-import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -123,9 +126,9 @@ export interface VerifyBundleDeps {
   ) => Promise<Record<string, unknown> | null>;
   /**
    * @deprecated Pre-#308 MVP resolver keyed by SDK-only artifact kind. It is
-   * retained solely for explicit legacy reads and the pre-commit listing
-   * fallback; normative AttestationRef resolution uses `resolveAttestationRef`
-   * and MUST follow `ref.anchor` (DACS-2 §7.5.2).
+   * retained solely for explicit legacy reads. Normative AttestationRef
+   * resolution uses `resolveAttestationRef` and normative ListingPin resolution
+   * uses `resolveListingRef`; those paths MUST NOT fall back to this resolver.
    */
   resolveRef?: (
     kind: string,
@@ -316,14 +319,16 @@ function isAnyRecord(v: Record<string, unknown>): boolean {
   return typeof v === "object" && v !== null;
 }
 
-/**
- * Bundle refs hash and validate the unsigned Listing scope. DACS-1 §6.3.4
- * Listings therefore use `isListingDraft` here, while historical SDK bundles
- * remain readable only through the explicit MVP compatibility validator.
- */
-function isReadableListingScope(v: Record<string, unknown>): boolean {
+/** DACS-1 §6.3.4 bundles pin the unsigned normative Listing scope. */
+function isNormativeListingScope(v: Record<string, unknown>): boolean {
   const scope = stripSignature(v);
-  return isListingDraft(scope) || isLegacyMvpListing(scope);
+  return isListingDraft(scope);
+}
+
+/** Historical SDK bundles may read only the isolated MVP Listing scope. */
+function isLegacyMvpListingScope(v: Record<string, unknown>): boolean {
+  const scope = stripSignature(v);
+  return isLegacyMvpListing(scope);
 }
 
 function isAgreementCommitPhase(kind: string): boolean {
@@ -448,10 +453,10 @@ export async function verifyBundleCore(
       refs: [],
     };
   }
-  if (
-    !raw ||
-    (!isAnyAttestationBundle(raw) && !isLegacyMvpAnyAttestationBundle(raw))
-  ) {
+  const isNormativeGraph = raw !== null && isAnyAttestationBundle(raw);
+  const isLegacyMvpGraph =
+    raw !== null && isLegacyMvpAnyAttestationBundle(raw);
+  if (!raw || (!isNormativeGraph && !isLegacyMvpGraph)) {
     return {
       ok: false,
       reason: "not an attestation bundle",
@@ -677,39 +682,45 @@ export async function verifyBundleCore(
     );
   }
 
-  // The listing is not a session AttestationRef. Follow the agreement's signed
-  // listing address, or use the explicit legacy resolver for pre-commit reads.
+  // Listing resolution is graph-discriminated. A current bundle always resolves
+  // its exact signed ListingPin through the normative LR-1 resolver, including a
+  // pre-commit abort with no Agreement. Only an explicit early-MVP bundle may
+  // follow the historical Agreement address / kind+job resolver.
   const listingId = String(bundle.listingRef.listingId);
   const agreementListingPin =
     agreementArtifact && isAgreementArtifact(agreementArtifact)
       ? agreementArtifact.listingRef
       : null;
-  const listingAddr =
+  const legacyListingAddr =
+    !isNormativeGraph &&
     agreementArtifact &&
     typeof (stripSignature(agreementArtifact) as { listingRef?: unknown })
       .listingRef === "string"
       ? (stripSignature(agreementArtifact) as { listingRef: string }).listingRef
       : null;
-  const canResolveListing = Boolean(
-    (agreementListingPin && deps.resolveListingRef) ||
-      listingAddr ||
-      deps.resolveRef,
-  );
+  const listingPinCoherent =
+    !agreementListingPin ||
+    (agreementListingPin.listingId === bundle.listingRef.listingId &&
+      agreementListingPin.version === bundle.listingRef.version &&
+      agreementListingPin.contentHash === bundle.listingRef.contentHash);
+  const canResolveListing = isNormativeGraph
+    ? Boolean(deps.resolveListingRef)
+    : Boolean(legacyListingAddr || deps.resolveRef);
   let listing: Record<string, unknown> | null = null;
-  if (agreementListingPin && deps.resolveListingRef) {
+  if (listingPinCoherent && isNormativeGraph && deps.resolveListingRef) {
     listing = snapshotDependencyRecord(
       await deps.resolveListingRef(
-        structuredClone(agreementListingPin),
+        structuredClone(bundle.listingRef),
         structuredClone(bundle.parties),
       ),
-      `resolved Listing ${agreementListingPin.listingId}`,
+      `resolved Listing ${bundle.listingRef.listingId}`,
     );
-  } else if (listingAddr) {
+  } else if (listingPinCoherent && legacyListingAddr) {
     listing = snapshotDependencyRecord(
-      await deps.readArtifact(listingAddr),
-      `resolved legacy Listing ${listingAddr}`,
+      await deps.readArtifact(legacyListingAddr),
+      `resolved legacy Listing ${legacyListingAddr}`,
     );
-  } else if (deps.resolveRef) {
+  } else if (listingPinCoherent && !isNormativeGraph && deps.resolveRef) {
     listing = snapshotDependencyRecord(
       await deps.resolveRef(
         "dacs-1-listing",
@@ -719,11 +730,6 @@ export async function verifyBundleCore(
       "resolved legacy Listing",
     );
   }
-  const listingPinCoherent =
-    !agreementListingPin ||
-    (agreementListingPin.listingId === bundle.listingRef.listingId &&
-      agreementListingPin.version === bundle.listingRef.version &&
-      agreementListingPin.contentHash === bundle.listingRef.contentHash);
   refs.push(
     !listingPinCoherent
       ? {
@@ -736,7 +742,9 @@ export async function verifyBundleCore(
             "dacs-1-listing",
             listingId,
             bundle.listingRef.contentHash,
-            isReadableListingScope,
+            isNormativeGraph
+              ? isNormativeListingScope
+              : isLegacyMvpListingScope,
             listing,
           )
       : {

@@ -837,11 +837,19 @@ const hasAgreementCommon = (
   const buyer = parties.filter((party) => party.role === "buyer");
   const seller = parties.filter((party) => party.role === "seller");
   if (buyer.length !== 1 || seller.length !== 1) return false;
-  const required = new Set([buyer[0]!.primaryClaim, seller[0]!.primaryClaim]);
-  const signers = new Set(
-    (v.signatures as Array<Record<string, unknown>>).map((signature) => signature.party),
+  const buyerClaim = buyer[0]!.primaryClaim;
+  const sellerClaim = seller[0]!.primaryClaim;
+  if (buyerClaim === sellerClaim) return false;
+  const required = new Set([buyerClaim, sellerClaim]);
+  const signers = new Set<string>(
+    (v.signatures as Array<Record<string, unknown>>).map(
+      (signature) => signature.party as string,
+    ),
   );
-  if (signers.size !== 2 || [...required].some((claim) => !signers.has(claim))) {
+  if (
+    signers.size !== required.size ||
+    [...signers].some((claim) => !required.has(claim))
+  ) {
     return false;
   }
   if (!payeeBound) {
