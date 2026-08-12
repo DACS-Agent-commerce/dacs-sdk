@@ -779,6 +779,7 @@ function assertConsumedPaymentAuthorizationBinding(
     authorization.commitment.contentHash !==
       sessionArtifacts.agreementCommitment.contentHash ||
     authorization.commitment.finalizedAt !== agreement.commitment.finalizedAt ||
+    authorization.commitment.signer !== agreement.commitment.signer ||
     !paymentStep ||
     !paymentStep.kind.startsWith("pay-") ||
     authorization.evidenceInput.phase !== paymentStep.kind ||
@@ -837,6 +838,8 @@ function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSess
     agreement.commitment.status !== "finalized" ||
     !isHash(agreement.contentHash) ||
     !isHash(agreement.commitment.recordContentHash) ||
+    typeof agreement.commitment.signer !== "string" ||
+    agreement.commitment.signer.length === 0 ||
     agreement.commitment.agreementHash !== agreement.contentHash ||
     !isAttestationRef(agreementRef) ||
     agreementRef.contentHash !== agreement.contentHash
@@ -947,8 +950,10 @@ function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSess
   if (
     buyer.primaryClaim !== agreement.buyer.primaryClaim ||
     buyer.bundleHash !== agreement.buyer.bundleHash ||
+    !exact(buyer.vetRecordRef, agreement.buyer.vetRecordRef) ||
     sellerRecord.primaryClaim !== agreement.seller.primaryClaim ||
     sellerRecord.bundleHash !== agreement.seller.bundleHash ||
+    !exact(sellerRecord.vetRecordRef, agreement.seller.vetRecordRef) ||
     input.seller.primaryClaim !== sellerRecord.primaryClaim ||
     input.seller.bundleHash !== sellerRecord.bundleHash ||
     input.seller.signer === undefined
@@ -1916,6 +1921,7 @@ async function auditResolvedDependencyGraph(
     commitment.parties.length !== agreementSigners.length ||
     agreementSigners.some((claim) => !commitment.parties.includes(claim)) ||
     !isComponentSignature(commitment.signature) ||
+    commitment.signature.signer !== session.agreement.commitment.signer ||
     ![
       session.buyer.primaryClaim,
       session.seller.primaryClaim,

@@ -53,6 +53,7 @@ import {
 import { isBundleBinding } from "../../src/artifacts/validators.js";
 
 const NOW = 1_786_000_000_000;
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = "did:demos:buyer";
 const SELLER = "did:demos:seller";
 const OUTSIDER = "did:demos:outsider";
@@ -342,7 +343,7 @@ function fixture(
     signTestComponent(
       {
         recordVersion: "1" as const,
-        jobId: "seller-finalization-17",
+        jobId: JOB_ID,
         evaluatedParty: party,
         bundleHash,
         requirementHash: sha256Hex(
@@ -384,7 +385,7 @@ function fixture(
   };
   const agreementArtifact = {
     payeeBoundAgreementVersion: "1" as const,
-    jobId: "seller-finalization-17",
+    jobId: JOB_ID,
     listingRef: listingPin,
     parties: [
       {
@@ -450,7 +451,7 @@ function fixture(
   const agreementRef = ref("agreement", agreementArtifact);
   const commitmentArtifact = {
     finalityCommitmentVersion: "1" as const,
-    jobId: "seller-finalization-17",
+    jobId: JOB_ID,
     agreementHash: agreementRef.contentHash,
     listingRef: listingPin,
     parties: [BUYER, SELLER, ...(extraAgreementSigner ? [OUTSIDER] : [])],
@@ -466,7 +467,7 @@ function fixture(
   const interimPaymentArtifact = options.resolvedPayment
     ? {
         evidenceVersion: "1" as const,
-        jobId: "seller-finalization-17",
+        jobId: JOB_ID,
         phase: "pay-x402" as const,
         outcome: "failure" as const,
         reason: "recovery-pending",
@@ -493,7 +494,7 @@ function fixture(
     : undefined;
   const paymentEvidenceInput = {
     evidenceVersion: "1" as const,
-    jobId: "seller-finalization-17",
+    jobId: JOB_ID,
     phase: "pay-x402" as const,
     outcome: "success" as const,
     paymentTxRefs: [
@@ -567,7 +568,7 @@ function fixture(
     : "0".repeat(64);
   const payloadAttestation = {
     payloadAttestationVersion: "1" as const,
-    jobId: "seller-finalization-17",
+    jobId: JOB_ID,
     agreementHash: agreementRef.contentHash,
     deliverableSpecHash: sha256Hex(
       canonicalize(deliverable as unknown as Record<string, unknown>),
@@ -593,14 +594,14 @@ function fixture(
   const payloadAttestationRef: AttestationRef = {
     anchor: {
       kind: "storage-program",
-      locator: `dacs4:payload-attestation:seller-finalization-17:${verificationMethodHash}:0`,
+      locator: `dacs4:payload-attestation:${JOB_ID}:${verificationMethodHash}:0`,
     },
     contentHash: contentHash(payloadAttestation),
   };
 
   const deliveryEvidence = {
     evidenceVersion: "1" as const,
-    jobId: "seller-finalization-17",
+    jobId: JOB_ID,
     phase: attested
       ? ("deliver-attested-payload" as const)
       : ("deliver-storage-program" as const),
@@ -609,7 +610,7 @@ function fixture(
     deliverableContentHash: deliveredHash,
     deliverableAnchor: {
       kind: "storage-program",
-      locator: "dacs4:deliverable:seller-finalization-17",
+      locator: `dacs4:deliverable:${JOB_ID}`,
     },
     ...(attested ? { attestationRef: payloadAttestationRef } : {}),
     signature: {
@@ -622,7 +623,7 @@ function fixture(
   const deliveryRef: AttestationRef = {
     anchor: {
       kind: "storage-program",
-      locator: `dacs4:delivery:seller-finalization-17:${deliveryIndex}`,
+      locator: `dacs4:delivery:${JOB_ID}:${deliveryIndex}`,
     },
     contentHash: deliveryHash,
   };
@@ -641,7 +642,7 @@ function fixture(
     ? {
         anchor: {
           kind: "storage-program",
-          locator: `dacs4:delivery:seller-finalization-17:${repeatedDeliveryIndex}`,
+          locator: `dacs4:delivery:${JOB_ID}:${repeatedDeliveryIndex}`,
         },
         contentHash: contentHash(repeatedDeliveryEvidence),
       }
@@ -649,7 +650,7 @@ function fixture(
   const fulfilment: Extract<SellerFulfilmentResult, { decision: "completed" }> = {
     decision: "completed",
     fulfilmentId: sellerFulfilmentId({
-      jobId: "seller-finalization-17",
+      jobId: JOB_ID,
       paymentPhaseIndex: 2,
       deliveryPhaseIndex: deliveryIndex,
       settlementId: `evm:8453:${"2".repeat(64)}:0`,
@@ -661,16 +662,17 @@ function fixture(
     evidenceRef: deliveryRef,
     evidenceAnchorReceipt: receipt(deliveryHash, deliveryRef.anchor.locator),
     consumedPaymentAuthorization: {
-      jobId: "seller-finalization-17",
+      jobId: JOB_ID,
       phaseIndex: 2,
       agreementHash: agreementRef.contentHash,
       listingRef: listingPin,
       railId: "x402:default",
       railRegistryVersion: 7,
       commitment: {
-        ref: "commitment:seller-finalization-17",
+        ref: `commitment:${JOB_ID}`,
         contentHash: commitmentRef.contentHash,
         finalizedAt: NOW - 11_000,
+        signer: SELLER,
       },
       settlementIdentity: {
         kind: "evm",
@@ -716,12 +718,20 @@ function fixture(
   };
   const agreement: SellerFulfilmentAgreement = {
     artifactKind: "payee-bound",
-    ref: "agreement:seller-finalization-17",
+    ref: `agreement:${JOB_ID}`,
     contentHash: agreementRef.contentHash,
-    jobId: "seller-finalization-17",
+    jobId: JOB_ID,
     listingPin,
-    buyer: { primaryClaim: BUYER, bundleHash: "b".repeat(64) },
-    seller: { primaryClaim: SELLER, bundleHash: sellerSessionBundleHash },
+    buyer: {
+      primaryClaim: BUYER,
+      bundleHash: "b".repeat(64),
+      vetRecordRef: buyerVetRef,
+    },
+    seller: {
+      primaryClaim: SELLER,
+      bundleHash: sellerSessionBundleHash,
+      vetRecordRef: sellerVetRef,
+    },
     deliverableRef: {
       deliverableType: deliverable.kind,
       hash: sha256Hex(
@@ -730,10 +740,11 @@ function fixture(
     },
     commitment: {
       status: "finalized",
-      ref: "commitment:seller-finalization-17",
+      ref: `commitment:${JOB_ID}`,
       agreementHash: agreementRef.contentHash,
       recordContentHash: commitmentRef.contentHash,
       finalizedAt: NOW - 11_000,
+      signer: SELLER,
     },
   };
 
@@ -1253,6 +1264,36 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     expect("buyer" in f.input).toBe(false);
   });
 
+  test("rejects an operational agreement whose Vet references differ from the session", () => {
+    const f = fixture();
+    f.input.agreement.buyer.vetRecordRef = structuredClone(
+      f.input.agreement.seller.vetRecordRef,
+    );
+
+    expect(() => prepareCompletedSellerBundleCounterSignatureRequest(f.input)).toThrow(
+      /SessionRecord\/signing parties do not match the verified agreement/,
+    );
+  });
+
+  test("binds the consumed authorization to the authenticated commitment signer", async () => {
+    const f = fixture();
+    f.input.fulfilment.consumedPaymentAuthorization.commitment.signer = OUTSIDER;
+
+    await expect(
+      finalizeCompletedSellerBundleCore(f.input, f.provider),
+    ).rejects.toThrow(/consumed payment authorization does not bind the exact agreement/);
+  });
+
+  test("binds the operational commitment signer to the resolved finality record", async () => {
+    const f = fixture();
+    f.input.agreement.commitment.signer = OUTSIDER;
+    f.input.fulfilment.consumedPaymentAuthorization.commitment.signer = OUTSIDER;
+
+    await expect(
+      finalizeCompletedSellerBundleCore(f.input, f.provider),
+    ).rejects.toThrow(/agreement commitment fails CA-3\/CA-7\/CA-8 session binding/);
+  });
+
   test("does not invent a third bundle party when the seller is also the orchestrator", async () => {
     const f = fixture();
     f.input.session.parties.push({
@@ -1278,7 +1319,7 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
 
     expect(result).toMatchObject({
       state: "finalised",
-      logicalAddress: bundleAddress("seller-finalization-17", "seller"),
+      logicalAddress: bundleAddress(JOB_ID, "seller"),
       nativeAddress: `stor-${"7".repeat(40)}`,
       resumedBundle: false,
       resumedBinding: false,
@@ -1480,7 +1521,7 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     const f = fixture();
     f.provider.resolvePaymentPhaseIndex = vi.fn(() => ({
       disposition: "valid" as const,
-      jobId: "seller-finalization-17",
+      jobId: JOB_ID,
       railId: "x402:default",
       phaseIndex: 3,
       resolved: false,
@@ -2030,9 +2071,9 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
 
     expect(result.binding).toMatchObject({
       bindingVersion: "1",
-      jobId: "seller-finalization-17",
+      jobId: JOB_ID,
       role: "seller",
-      logicalAddress: bundleAddress("seller-finalization-17", "seller"),
+      logicalAddress: bundleAddress(JOB_ID, "seller"),
       nativeAddress: `stor-${"7".repeat(40)}`,
       bundleContentHash: result.bundleContentHash,
       anchorTx: "test:bundle-anchor-tx",
