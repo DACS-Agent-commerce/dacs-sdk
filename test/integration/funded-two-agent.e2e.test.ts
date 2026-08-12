@@ -1781,7 +1781,9 @@ interface CommerceCounts {
 
 interface CommerceState {
   loseResponseAcknowledgement: boolean;
+  facilitatorVerifyOutcome?: "valid" | "invalid" | "threw";
   facilitatorOutcome?: "success" | "failure" | "threw";
+  preSettlementOutcome?: "authorized" | "rejected" | "indeterminate";
   permit?: X402SellerPaymentPermitAuthorization;
   observedTransfer?: Extract<X402TransferObservation, { status: "finalized" }>;
   delivered?: Awaited<ReturnType<DurableSellerFulfilmentDeps["submitDelivery"]>>;
@@ -2592,12 +2594,19 @@ async function createSellerRuntime(input: {
     getSupported: () => preflight.facilitator.getSupported(),
     verify: async (payload: unknown, requirements: unknown) => {
       state.counts.facilitatorVerify += 1;
-      return preflight.facilitator.verify(
-        payload as never,
-        legacyFacilitatorRequirements(
-          requirements as X402BuyerPaymentRequirements,
-        ) as never,
-      );
+      try {
+        const result = await preflight.facilitator.verify(
+          payload as never,
+          legacyFacilitatorRequirements(
+            requirements as X402BuyerPaymentRequirements,
+          ) as never,
+        );
+        state.facilitatorVerifyOutcome = result.isValid ? "valid" : "invalid";
+        return result;
+      } catch (error) {
+        state.facilitatorVerifyOutcome = "threw";
+        throw error;
+      }
     },
     settle: async (payload: unknown, requirements: unknown) => {
       state.counts.facilitatorSettle += 1;
@@ -2643,6 +2652,11 @@ async function createSellerRuntime(input: {
     mimeType: "application/json",
   }, {
     ...spine,
+    authorizeSettlement: async (context) => {
+      const result = await spine.authorizeSettlement(context);
+      state.preSettlementOutcome = result.disposition;
+      return result;
+    },
     authorizePayment: async (context) => {
       const result = await spine.authorizePayment(context);
       if (result.disposition === "authorized") {
@@ -2832,7 +2846,7 @@ async function settleAndRecover(input: {
   const pending = await buyerStore.load(intent.settlementKey);
   if (pending.status !== "held" || pending.pendingDisclosure === undefined) {
     throw new Error(
-      `funded-e2e:buyer-disclosure-missing-after-facilitator-${state.facilitatorOutcome ?? "not-called"}`,
+      `funded-e2e:buyer-disclosure-missing-after-verify-${state.facilitatorVerifyOutcome ?? "not-called"}-presettle-${state.preSettlementOutcome ?? "not-called"}-settle-${state.facilitatorOutcome ?? "not-called"}`,
     );
   }
   requireCondition(
