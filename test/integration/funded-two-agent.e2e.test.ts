@@ -2961,7 +2961,8 @@ async function settleAndRecover(input: {
     // authorization. Each retry takes a fresh generation and performs only
     // authenticated chain reconciliation; it is never allowed to redrive the
     // retained HTTP request.
-    for (let attempt = 1; attempt <= 60; attempt += 1) {
+    let lastReason = "not-observed";
+    for (let attempt = 1; attempt <= 180; attempt += 1) {
       buyerNow += 2_000;
       buyerStore = await createFsX402BuyerSettlementStore({ dir: buyerStoreDir });
       const progress = await advanceX402BuyerSettlement({
@@ -2976,11 +2977,17 @@ async function settleAndRecover(input: {
       requireCondition(buyerTransportSubmissions === 1, "buyer-paid-request-replayed");
       if (progress.status === "captured") return progress;
       requireCondition(progress.status === "indeterminate", `${failureCode}-terminal`);
-      if (attempt < 60) {
+      lastReason = safeDiagnosticCode(progress.reason);
+      if (attempt % 30 === 0) {
+        process.stderr.write(
+          `funded-e2e-step:${failureCode}-attempt-${attempt}-${lastReason}\n`,
+        );
+      }
+      if (attempt < 180) {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
     }
-    throw new Error(`funded-e2e:${failureCode}-timeout`);
+    throw new Error(`funded-e2e:${failureCode}-timeout-${lastReason}`);
   };
   const submitted = await advanceX402BuyerSettlement({
     intent,
