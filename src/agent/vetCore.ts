@@ -1718,7 +1718,7 @@ export async function vetCore(
         "verify-result",
         exactArtifactHash(unsignedResult),
         () => signComponentArtifact(
-          deepFreezeSnapshot(snapshot(unsignedResult, "unsigned VerifyResult")),
+          snapshot(unsignedResult, "unsigned VerifyResult"),
           "dacs-verifyresult:v1:",
           deps.componentSigner,
         ),
@@ -1852,9 +1852,7 @@ export async function vetCore(
             ),
           };
           return signComponentArtifact(
-            deepFreezeSnapshot(
-              snapshot(unsignedRecord, "unsigned composite record"),
-            ),
+            snapshot(unsignedRecord, "unsigned composite record"),
             "dacs-composite:v1:",
             deps.componentSigner,
           );
