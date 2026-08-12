@@ -1,5 +1,13 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import {
+  createServer as createHttpsServer,
+  request as httpsRequest,
+} from "node:https";
+import { createPrivateKey } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +19,7 @@ import {
   getAddress,
   http,
   parseAbi,
+  verifyMessage,
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -27,6 +36,7 @@ import { privateKeyToAccount } from "viem/accounts";
  */
 import {
   ARTIFACT_SEPARATORS,
+  BUNDLE_BINDING_SEPARATOR,
   EIP3009_AUTHORIZATION_USED_TOPIC,
   ERC20_TRANSFER_TOPIC,
   FINALITY_COMMITMENT_SEPARATOR,
@@ -60,6 +70,7 @@ import {
   finalizeCompletedSellerBundleDurable,
   getSellerFulfilmentStatus,
   identityBundleHash,
+  isFaultAttestationBundle,
   prepareCompletedSellerBundleCounterSignatureRequest,
   prepareX402BuyerSettlement,
   publishSellerSessionSettlement,
@@ -84,6 +95,7 @@ import {
   type AnchoredSellerBundle,
   type AttestationRef,
   type BuyerBundleEffectFence,
+  type BundleBinding,
   type BuyerBundleFinalizationDurability,
   type BundleSignature,
   type CommittedAgreementResolution,
@@ -155,11 +167,67 @@ const TOKEN_VERSION = "2";
 const TOKEN_SYMBOL = "USDC";
 const TOKEN_DECIMALS = 6;
 const OS_PER_DEM = 1_000_000_000n;
-// Ten seller writes and five buyer writes at the currently observed 2 DEM
-// storage-program fee, plus one DEM per identity of explicit headroom.
-const SELLER_MINIMUM_OS = 21n * OS_PER_DEM;
-const BUYER_MINIMUM_OS = 11n * OS_PER_DEM;
+// Eleven seller writes and seven buyer writes at the currently observed 2 DEM
+// storage-program fee, plus one DEM per identity of explicit headroom. The
+// extra writes are the role-owned BundleBindings and buyer finalization handoff.
+const SELLER_MINIMUM_OS = 23n * OS_PER_DEM;
+const BUYER_MINIMUM_OS = 15n * OS_PER_DEM;
 const LEASE_DURATION_MS = 120_000;
+
+// Test-only loopback identity. The key material is an intentionally public DER
+// fixture, not a credential. Both exact local routes use TLS because the
+// normative Listing and production x402 paywall require HTTPS. Trust is scoped
+// to the host's exact URL/method pairs by the explicit client below.
+const LOCAL_HTTPS_CERT = `-----BEGIN CERTIFICATE-----
+MIICyTCCAbGgAwIBAgIJAJU/oKkKq187MA0GCSqGSIb3DQEBCwUAMBQxEjAQBgNV
+BAMMCWxvY2FsaG9zdDAeFw0yNjA4MTIwNzM5MDJaFw0zNjA4MDkwNzM5MDJaMBQx
+EjAQBgNVBAMMCWxvY2FsaG9zdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoC
+ggEBAK/uzRX9HAr5tqzKhAYGcoJaDnWh1Q5XTaZOU9AYwkQuqFLiT2J6baPwmpXb
+RsqjGH+3Z8eNkyX9Gf0XlHpu6schzeEKmoaqhUnDTSu1Jy5HVaDjXx9ldJMMX8s/
++RRmqAo14nS0kNoXRXxEqBv+qLQ3pHi0lsMWWWcHPJutitWFdOL1qzopzoyuI1dU
+HfnUdU/Gnb1OZJ71zWxpsr04cTDaj5Utqh3r9IOIR0t7V7dKcj2c1ymJqC2m59LP
+9JYRXG23dfZcNhT+Yk4fdhCVVr6rdHbCyUtNX/pVax4wXiIFgK5ui0v39hR3c7SG
+2sqCF+QYX7ybOt0UNiHYSp8ZRK0CAwEAAaMeMBwwGgYDVR0RBBMwEYIJbG9jYWxo
+b3N0hwR/AAABMA0GCSqGSIb3DQEBCwUAA4IBAQAGlKHj9DK7yesZtmuYjr+PqPWo
+016lXP2OVBOgxSk8LKoxUSAVuRoLYaxx0j2rFT4q67oUw07aBkaBOue0Mo6225ei
+xeDY+YceWaB2pYvQgO1Xq1gcYRw5iqe3YrhXn9j2tBIJK5E3PBMFuLxtzzN8OtOi
+IHHai4Qlvb+r4AzlPqkPFiG9ZCs0uNl5weH1SlV6k6lmfMoJ7kvallb0u/brJVNh
+q3v3a9VWSzAvOPfB9tLqrv0BMyUSb/6UJTqZUBAiJD0DCMXKhg00aniWHuxsbuUW
+24T473rqPEdgP9aRgUfTi5oFLLTVdBMHwy+mGz6Sg6m7siIODueb8kp34ymQ
+-----END CERTIFICATE-----`;
+const LOCAL_HTTPS_KEY_DER_BASE64 = `
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCv7s0V/RwK+bas
+yoQGBnKCWg51odUOV02mTlPQGMJELqhS4k9iem2j8JqV20bKoxh/t2fHjZMl/Rn9
+F5R6burHIc3hCpqGqoVJw00rtScuR1Wg418fZXSTDF/LP/kUZqgKNeJ0tJDaF0V8
+RKgb/qi0N6R4tJbDFllnBzybrYrVhXTi9as6Kc6MriNXVB351HVPxp29TmSe9c1s
+abK9OHEw2o+VLaod6/SDiEdLe1e3SnI9nNcpiagtpufSz/SWEVxtt3X2XDYU/mJO
+H3YQlVa+q3R2wslLTV/6VWseMF4iBYCubotL9/YUd3O0htrKghfkGF+8mzrdFDYh
+2EqfGUStAgMBAAECggEBAKlNWaiuYT0inyta23/c1ncgaMfEi334f63ptHgOS2xH
+pg3U4OX4wOfBk1FgqZg5KUtGWKVNVWx6S3cmKOlFMcOdgTzt8lRjZk7clbfY5TKA
+zSM9iv1wqaUUhF7YWj7KpyzkO99pH/fv6xsyCsCd6QU8gpbx2h80s6YU7bs2XuMn
+qSLDMYiBIoVkIwdexHiJ+bsZZ8e9jZ4QnuyiCTwPr0zhFWmFslKWlPZ/01VQkzXh
+eL47ld7hUVDVDKqQl86YSKQ8SnyEsXaR5ztmVBWXQ/ky6RgW998BA8xoZPMN/1MO
+7wd6YumZsU1iEfp/sYYIWbGd00HL7zvME/7gY1snDOECgYEA1fDRR1d2LujIBbQF
+D7hH1ME9PxBGZMqkANyhfWUCNLmWGJBJyZcQdlp+NZdMhDueLGrfYWf44hBfhLuO
+EZBG66UxWUtcafZgr6JyYhe9FHE48mTD0cE1XTBTtwZszRUqzZcFB0Mt++4ikOdG
+0sFd6txnUuayDKXBBMMposZ8GCUCgYEA0oUgqq3Fd7ZIxsDXE0KAXQH7qRNwVsdI
+2DXgJE3DjQSXEm8w/nAMnV3uZgAKiPJZKJo2+JG7P5B02x5AEiL/Bav2uxo3P/N+
+cGQjk1dXR80C65BvWXR4lWJtisn1N4ZeZBs54kGGkiUua3OaxSVKzdrNmlcITmDH
+sjIyOYkur+kCgYAsPiX5W/P71XXv//9/9bsdG21ACmyUUXfDGd1noijnoG2S3Nv1
+jYEBCMvK52QSgIXAZ8WUTj0g+wPV3jeOGEkiWEIxVi1hWGs8RxrigEhA3v1I21/H
+k+4mPGVDl1eOvc7hP1bx3om27NNHJhz2Xri+ZiAT+9NcXDbjdjy5BdUJ5QKBgQDA
+NQRKUTYFwsxXiyHTV9hTEshu6mybDoCXxzjKbKWqTxKPpi2ZYTxjQau0PT1hI8P7
+qjGeaZAIzR+kH85nwMQOrZ8r3Resr+g1PXitwgTSbX/JC6pehlTCL4fMO/BDrc7o
+n2MODL2NGZ10Rax9azsNEETAMc5HoV0yeVoZ5gJWYQKBgQDJmCJ6ng/wtyOFOotD
+M8bZeaKfFLOtLvyEHY2hlOkcx22BS65Ud7VKaIZuMAYqr6kL2MBhp5/lgp3cC91w
+0mz63DJMLcRjZ8cwpT+2jagM77HKsz0yTjmu1iDI83N9PBKIWi2f3qFBDUjCbwDG
+jI2yFCg3mHHQj4lRcLo7lKxOtA==
+`.replace(/\s/g, "");
+const LOCAL_HTTPS_KEY = createPrivateKey({
+  key: Buffer.from(LOCAL_HTTPS_KEY_DER_BASE64, "base64"),
+  format: "der",
+  type: "pkcs8",
+}).export({ format: "pem", type: "pkcs8" });
 
 const READ_ONLY_ENV = [
   "DEMOS_RPC",
@@ -223,9 +291,14 @@ function verifyEd25519ArtifactSignature(
 }
 
 async function stage<T>(code: string, operation: () => Promise<T>): Promise<T> {
+  requireCondition(/^[a-z0-9-]+$/.test(code), "stage-code-invalid");
+  process.stderr.write(`funded-e2e-stage:${code}:start\n`);
   try {
-    return await operation();
+    const result = await operation();
+    process.stderr.write(`funded-e2e-stage:${code}:passed\n`);
+    return result;
   } catch (error) {
+    process.stderr.write(`funded-e2e-stage:${code}:failed\n`);
     if (
       error instanceof Error &&
       /^funded-e2e:[a-z0-9-]+$/.test(error.message)
@@ -265,7 +338,7 @@ function demosIdentityMatches(address: string, did: string): boolean {
 
 function assertDemosIdentity(adapter: DemosBackedAdapter, did: string): void {
   requireCondition(
-    demosIdentityMatches(adapter.getAddress(), did),
+    did === didForAddress(adapter.getAddress()),
     "demos-wallet-did-mismatch",
   );
 }
@@ -321,8 +394,13 @@ function validateStaticConfiguration(env: LiveEnv): void {
     } catch {
       throw new Error("funded-e2e:url-invalid");
     }
-    requireCondition(parsed.protocol === "https:" || parsed.protocol === "http:", "url-scheme-invalid");
+    requireCondition(parsed.protocol === "https:", "url-scheme-invalid");
     requireCondition(!parsed.username && !parsed.password && !parsed.hash, "url-authority-invalid");
+    requireCondition(
+      parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1" &&
+      parsed.hostname !== "[::1]",
+      "remote-url-loopback-invalid",
+    );
   }
 }
 
@@ -330,6 +408,7 @@ interface LocalPaywallHost {
   readonly resourceUrl: string;
   readonly engagementUrl: string;
   readonly route: string;
+  readonly fetchImpl: typeof fetch;
   install(paywall: X402Paywall<{ delivered: true }>): void;
   installEngagement(
     handler: (proposal: unknown, identity: unknown) => Promise<unknown>,
@@ -375,11 +454,14 @@ async function startLocalPaywallHost(
   const requestCounts = { unpaid: 0, paid: 0, engagement: 0 };
   const routePath = `/issue-114/${sha256Hex(runId).slice(0, 24)}`;
   const engagementPath = `${routePath}/engage`;
-  const server = createServer((req, res) => {
+  const server = createHttpsServer({
+    cert: LOCAL_HTTPS_CERT,
+    key: LOCAL_HTTPS_KEY,
+  }, (req, res) => {
     void (async () => {
       const address = server.address();
       requireCondition(address && typeof address !== "string", "local-server-address-unavailable");
-      const url = new URL(req.url ?? "/", `http://127.0.0.1:${address.port}`);
+      const url = new URL(req.url ?? "/", `https://127.0.0.1:${address.port}`);
       if (url.pathname === engagementPath && req.method === "POST") {
         if (!engagement) {
           res.writeHead(503, { "content-type": "application/json" });
@@ -435,10 +517,82 @@ async function startLocalPaywallHost(
   });
   const address = server.address();
   requireCondition(address && typeof address !== "string", "local-server-address-unavailable");
+  const resourceUrl = `https://127.0.0.1:${address.port}${routePath}`;
+  const engagementUrl = `https://127.0.0.1:${address.port}${engagementPath}`;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    const method = request.method.toUpperCase();
+    const exactRoute = request.url === resourceUrl && method === "GET" ||
+      request.url === engagementUrl && method === "POST";
+    requireCondition(exactRoute, "local-tls-request-out-of-scope");
+    requireCondition(request.redirect === "error", "local-tls-redirect-policy-invalid");
+    const url = new URL(request.url);
+    requireCondition(
+      url.protocol === "https:" && url.hostname === "127.0.0.1" &&
+      !url.username && !url.password && !url.hash,
+      "local-tls-url-invalid",
+    );
+    const body = method === "GET"
+      ? undefined
+      : Buffer.from(await request.arrayBuffer());
+    requireCondition(body === undefined || body.byteLength <= 1_000_000, "local-tls-request-too-large");
+    const headers: Record<string, string> = {};
+    request.headers.forEach((value, name) => {
+      headers[name] = value;
+    });
+    headers.connection = "close";
+    if (body !== undefined) headers["content-length"] = String(body.byteLength);
+    return new Promise<Response>((resolve, reject) => {
+      let settled = false;
+      const finish = (operation: () => void) => {
+        if (settled) return;
+        settled = true;
+        operation();
+      };
+      const client = httpsRequest(url, {
+        method,
+        headers,
+        ca: LOCAL_HTTPS_CERT,
+        rejectUnauthorized: true,
+        agent: false,
+      }, (response) => {
+        const chunks: Buffer[] = [];
+        let length = 0;
+        response.on("data", (chunk: Buffer | Uint8Array | string) => {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          length += bytes.byteLength;
+          if (length > 1_000_000) {
+            response.destroy();
+            finish(() => reject(new Error("funded-e2e:local-tls-response-too-large")));
+            return;
+          }
+          chunks.push(bytes);
+        });
+        response.once("error", (error) => finish(() => reject(error)));
+        response.once("end", () => finish(() => {
+          const responseHeaders = new Headers();
+          for (let index = 0; index < response.rawHeaders.length; index += 2) {
+            responseHeaders.append(
+              response.rawHeaders[index]!,
+              response.rawHeaders[index + 1]!,
+            );
+          }
+          resolve(new Response(Buffer.concat(chunks), {
+            status: response.statusCode ?? 500,
+            statusText: response.statusMessage,
+            headers: responseHeaders,
+          }));
+        }));
+      });
+      client.once("error", (error) => finish(() => reject(error)));
+      client.end(body);
+    });
+  };
   return {
-    resourceUrl: `http://127.0.0.1:${address.port}${routePath}`,
-    engagementUrl: `http://127.0.0.1:${address.port}${engagementPath}`,
+    resourceUrl,
+    engagementUrl,
     route: `GET ${routePath}`,
+    fetchImpl,
     install(value) {
       paywall = value;
     },
@@ -446,7 +600,9 @@ async function startLocalPaywallHost(
       engagement = handler;
     },
     requestCounts,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => server.listening
+      ? new Promise((resolve) => server.close(() => resolve()))
+      : Promise.resolve(),
   };
 }
 
@@ -575,8 +731,20 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
   const host = await startLocalPaywallHost(env.LIVE_E2E_RUN_ID, jobId);
   try {
     const resource = new URL(host.resourceUrl);
+    const engagement = new URL(host.engagementUrl);
     requireCondition(resource.hostname === "127.0.0.1", "resource-not-loopback");
-    requireCondition(resource.protocol === "http:" && !resource.hash, "resource-config-invalid");
+    requireCondition(resource.protocol === "https:" && !resource.hash, "resource-config-invalid");
+    requireCondition(
+      engagement.protocol === "https:" && engagement.hostname === "127.0.0.1" &&
+      !engagement.username && !engagement.password && !engagement.hash,
+      "engagement-config-invalid",
+    );
+    const tlsProbe = await host.fetchImpl(host.resourceUrl, {
+      method: "GET",
+      redirect: "error",
+    });
+    await tlsProbe.arrayBuffer();
+    requireCondition(tlsProbe.status === 503, "local-tls-preflight-failed");
     return {
       env,
       seller,
@@ -600,25 +768,83 @@ async function identity(
   primaryClaim: string,
   signer: DemosBackedAdapter,
   now = Date.now(),
+  evmPrivateKey?: string,
 ): Promise<IdentityBundle> {
+  const evmAccount = evmPrivateKey === undefined
+    ? undefined
+    : privateKeyToAccount(evmPrivateKey as `0x${string}`);
+  const claims = [
+    { ref: primaryClaim },
+    ...(evmAccount === undefined
+      ? []
+      : [{ ref: `cci-xm:evm:base-sepolia:${getAddress(evmAccount.address)}` }]),
+  ];
   const bundle: IdentityBundle = {
     bundleVersion: "1",
     presentedBy: primaryClaim,
     presentedAt: now,
     sessionNonce: sha256Hex(`${primaryClaim}:${now}`),
-    claims: [{ ref: primaryClaim }],
+    claims,
     presentation: {
       kind: "per-claim",
-      signatures: [{ ref: primaryClaim, signature: "pending" }],
+      signatures: claims.map(({ ref }) => ({ ref, signature: "pending" })),
     },
   };
   requireCondition(bundle.presentation.kind === "per-claim", "identity-presentation-shape-invalid");
-  const signature = await signer.sign(signedBytes(
+  const bytes = signedBytes(
     "dacs-bundle-presentation:v1:",
     identityBundleHash(bundle),
-  ));
-  bundle.presentation.signatures[0]!.signature = Buffer.from(signature).toString("base64url");
+  );
+  const primarySignature = await signer.sign(bytes);
+  bundle.presentation.signatures[0]!.signature =
+    Buffer.from(primarySignature).toString("base64url");
+  if (evmAccount !== undefined) {
+    bundle.presentation.signatures[1]!.signature = await evmAccount.signMessage({
+      message: { raw: bytes },
+    });
+  }
   return bundle;
+}
+
+async function verifyFundedIdentityPresentation(input: {
+  bundle: Readonly<IdentityBundle>;
+  expectedPrimaryClaim: string;
+  primaryPublicKey: Uint8Array;
+  evmAddress?: `0x${string}`;
+}): Promise<boolean> {
+  try {
+    const { bundle } = input;
+    if (bundle.presentedBy !== input.expectedPrimaryClaim ||
+        bundle.presentation.kind !== "per-claim" ||
+        bundle.presentation.signatures.length !== bundle.claims.length) return false;
+    const bytes = signedBytes(
+      "dacs-bundle-presentation:v1:",
+      identityBundleHash(bundle),
+    );
+    for (const [index, proof] of bundle.presentation.signatures.entries()) {
+      const claim = bundle.claims[index]?.ref;
+      if (proof.ref !== claim) return false;
+      if (claim === input.expectedPrimaryClaim) {
+        if (!ed25519Verify(
+          bytes,
+          Uint8Array.from(Buffer.from(proof.signature, "base64url")),
+          publicKeyFromRaw(input.primaryPublicKey),
+        )) return false;
+        continue;
+      }
+      const expectedEvmClaim = input.evmAddress === undefined
+        ? undefined
+        : `cci-xm:evm:base-sepolia:${getAddress(input.evmAddress)}`;
+      if (claim !== expectedEvmClaim || !await verifyMessage({
+        address: input.evmAddress!,
+        message: { raw: bytes },
+        signature: proof.signature as `0x${string}`,
+      })) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function rail(resourceUrl: string): PaymentRailRef {
@@ -729,17 +955,42 @@ async function anchorArtifact(input: {
   writer: string;
   logicalAddress: string;
   artifact: Record<string, unknown>;
+  refSigner?: string;
 }): Promise<{ ref: AttestationRef; receipt: AnchorReceipt }> {
-  const hash = contentHash(input.artifact);
+  const hash = isFaultAttestationBundle(input.artifact)
+    ? attestationBundleHash(input.artifact)
+    : contentHash(input.artifact);
   const anchored = await input.adapter.anchorWriteOnce(
     input.logicalAddress,
     structuredClone(input.artifact),
-    { metadata: { logicalAddress: input.logicalAddress, contentHash: hash } },
+    {
+      metadata: {
+        logicalAddress: input.logicalAddress,
+        contentHash: hash,
+        // `contentHash` intentionally excludes signature envelopes. Retain the
+        // exact JCS envelope as immutable metadata too, so write-once replay
+        // cannot accept a different signature over the same signed scope.
+        envelopeHash: sha256Hex(canonicalize(input.artifact)),
+      },
+    },
   );
-  requireCondition(anchored.completion === "read-visible", "anchor-not-read-visible");
   requireCondition(typeof anchored.txRef === "string" && anchored.txRef.length > 0, "anchor-tx-missing");
+  const resolution = await input.adapter.resolveAnchorByName(
+    input.logicalAddress,
+    input.adapter.getAddress(),
+  );
+  requireCondition(
+    resolution.status === "present" && resolution.address === anchored.address,
+    "anchor-owner-bound-resolution-mismatch",
+  );
   const readback = await input.adapter.readAnchor(anchored.address);
-  requireCondition(readback !== null && contentHash(readback) === hash, "anchor-readback-mismatch");
+  const readbackHash = readback !== null && isFaultAttestationBundle(readback)
+    ? attestationBundleHash(readback)
+    : readback === null ? null : contentHash(readback);
+  requireCondition(
+    readbackHash === hash && canonicalize(readback) === canonicalize(input.artifact),
+    "anchor-readback-mismatch",
+  );
   const receipt = portableReceipt({
     logicalAddress: input.logicalAddress,
     nativeAddress: anchored.address,
@@ -751,9 +1002,9 @@ async function anchorArtifact(input: {
   });
   return {
     ref: {
-      anchor: { kind: "storage-program", locator: anchored.address },
+      anchor: { kind: "storage-program", locator: input.logicalAddress },
       contentHash: hash,
-      signer: input.writer,
+      signer: input.refSigner ?? input.writer,
     },
     receipt,
   };
@@ -767,7 +1018,11 @@ async function verifyAnchorReceipt(
   if (receipt.writer !== expectedWriter || receipt.state !== "finalized" ||
       receipt.observationDisposition !== "established") return false;
   const readback = await adapter.readAnchor(receipt.nativeAddress);
-  if (!readback || contentHash(readback) !== receipt.contentHash) return false;
+  if (!readback) return false;
+  const readbackHash = isFaultAttestationBundle(readback)
+    ? attestationBundleHash(readback)
+    : contentHash(readback);
+  if (readbackHash !== receipt.contentHash) return false;
   const resolution = await adapter.resolveAnchorByName(
     receipt.logicalAddress,
     expectedWriter.replace(/^did:demos:agent:/, ""),
@@ -844,7 +1099,20 @@ async function publishAndDiscoverListing(input: {
     "listing-pin-mismatch",
   );
   const anchor = published.publication.anchor;
-  requireCondition(typeof anchor.txRef === "string" && anchor.completion === "read-visible", "listing-anchor-incomplete");
+  requireCondition(typeof anchor.txRef === "string" && anchor.txRef.length > 0, "listing-anchor-tx-missing");
+  const listingResolution = await preflight.buyer.adapter.resolveAnchorByName(
+    published.logicalAddress,
+    preflight.seller.adapter.getAddress(),
+  );
+  const listingReadback = listingResolution.status === "present"
+    ? await preflight.buyer.adapter.readAnchor(listingResolution.address)
+    : null;
+  requireCondition(
+    listingResolution.status === "present" &&
+    listingResolution.address === published.ref && listingReadback !== null &&
+    canonicalize(listingReadback) === canonicalize(listing),
+    "listing-owner-bound-readback-mismatch",
+  );
   return {
     listing,
     listingRef: published.ref,
@@ -867,6 +1135,9 @@ const EXTERNAL_VET_PROVENANCE_SEPARATOR = "DACS-funded-e2e:external-vet-provenan
 
 interface ExternalVetProvenance {
   provenanceVersion: "dacs-sdk-funded-e2e-1";
+  profile: "issue-114-local-operational-v1";
+  normative: false;
+  standardsGap: "DACS-Standard#331";
   jobId: string;
   evaluatedParty: string;
   verifier: string;
@@ -945,8 +1216,8 @@ async function publishVetRecords(input: {
       jobId: input.jobId,
       evaluatedParty: input.preflight.env.SELLER_DID,
       bundle: input.sellerIdentity,
-      verifier: input.preflight.env.BUYER_DID,
-      signer: input.preflight.buyer.adapter,
+      verifier: input.preflight.env.SELLER_DID,
+      signer: input.preflight.seller.adapter,
       generatedAt: input.now,
     }),
   ]);
@@ -960,6 +1231,7 @@ async function publishVetRecords(input: {
     anchorArtifact({
       adapter: input.preflight.buyer.adapter,
       writer: input.preflight.env.BUYER_DID,
+      refSigner: input.preflight.env.SELLER_DID,
       logicalAddress: `dacs2:vet:${input.jobId}:seller`,
       artifact: sellerRecord as unknown as Record<string, unknown>,
     }),
@@ -970,9 +1242,12 @@ async function publishVetRecords(input: {
   // #331 provenance.
   const unsignedProvenance = {
     provenanceVersion: "dacs-sdk-funded-e2e-1" as const,
+    profile: "issue-114-local-operational-v1" as const,
+    normative: false as const,
+    standardsGap: "DACS-Standard#331" as const,
     jobId: input.jobId,
     evaluatedParty: input.preflight.env.SELLER_DID,
-    verifier: input.preflight.env.BUYER_DID,
+    verifier: input.preflight.env.SELLER_DID,
     requirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
     vetRecordHash: sellerAnchor.ref.contentHash,
   };
@@ -1132,12 +1407,19 @@ async function negotiateAgreement(input: {
     transport: {
       publishProposal: async (value, identity) => {
         proposal = structuredClone(value);
-        const transportResponse = await fetch(preflight.host.engagementUrl, {
+        requireCondition(
+          published.listing.seller.publicEndpoint === preflight.host.engagementUrl,
+          "advertised-engagement-endpoint-mismatch",
+        );
+        const transportResponse = await preflight.host.fetchImpl(
+          published.listing.seller.publicEndpoint,
+          {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ proposal: value, identity }),
           redirect: "error",
-        });
+          },
+        );
         requireCondition(transportResponse.status === 200, "seller-engagement-http-failed");
         const response = await transportResponse.json() as Awaited<
           ReturnType<typeof respondToFixedPriceAgreementProposalDurable>
@@ -1391,6 +1673,24 @@ async function observeFundedTransfer(input: {
   return { status: "unavailable", reason: "settlement-finality-timeout" };
 }
 
+function sameFinalizedTransfer(
+  left: Extract<X402TransferObservation, { status: "finalized" }>,
+  right: Extract<X402TransferObservation, { status: "finalized" }>,
+): boolean {
+  const {
+    confirmations: _leftConfirmations,
+    finalityObservedAt: _leftObservedAt,
+    ...leftImmutable
+  } = left;
+  const {
+    confirmations: _rightConfirmations,
+    finalityObservedAt: _rightObservedAt,
+    ...rightImmutable
+  } = right;
+  return left.confirmations >= 1 && right.confirmations >= 1 &&
+    canonicalize(leftImmutable) === canonicalize(rightImmutable);
+}
+
 interface CommerceCounts {
   facilitatorVerify: number;
   facilitatorSettle: number;
@@ -1475,7 +1775,7 @@ async function createSellerRuntime(input: {
   const sellerHash = identityBundleHash(sellerIdentity);
   const commitmentHash = contentHash(commitment.record as unknown as Record<string, unknown>);
   const commitmentRef: AttestationRef = {
-    anchor: { kind: "storage-program", locator: commitment.nativeAddress },
+    anchor: { kind: "storage-program", locator: commitment.logicalAddress },
     contentHash: commitmentHash,
     signer: preflight.env.SELLER_DID,
   };
@@ -1613,23 +1913,31 @@ async function createSellerRuntime(input: {
     resolveIdentityBundle: async (hash) => {
       const bundle = hash === buyerHash ? buyerIdentity : hash === sellerHash ? sellerIdentity : null;
       const key = hash === buyerHash ? buyerPublicKey : hash === sellerHash ? sellerPublicKey : null;
-      if (!bundle || !key || bundle.presentation.kind !== "per-claim" ||
-          bundle.presentation.signatures.length !== 1) {
+      if (!bundle || !key) {
         return { disposition: "rejected", reason: "identity-bundle-mismatch" };
       }
-      const proof = bundle.presentation.signatures[0]!;
-      const valid = proof.ref === bundle.presentedBy && ed25519Verify(
-        signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(bundle)),
-        Uint8Array.from(Buffer.from(proof.signature, "base64url")),
-        publicKeyFromRaw(key),
-      );
+      const isBuyer = hash === buyerHash;
+      const valid = await verifyFundedIdentityPresentation({
+        bundle,
+        expectedPrimaryClaim: isBuyer
+          ? preflight.env.BUYER_DID : preflight.env.SELLER_DID,
+        primaryPublicKey: key,
+        ...(isBuyer ? { evmAddress: preflight.payer } : {}),
+      });
       return valid
         ? { disposition: "verified", bundle: structuredClone(bundle) }
         : { disposition: "rejected", reason: "identity-presentation-invalid" };
     },
     resolvePayerAddress: async ({ payingKey, buyerBundle }) =>
       payingKey === `cci-xm:evm:base-sepolia:${preflight.payer}` &&
-      identityBundleHash(buyerBundle) === buyerHash
+      buyerBundle.claims.some(({ ref }) => ref === payingKey) &&
+      identityBundleHash(buyerBundle) === buyerHash &&
+      await verifyFundedIdentityPresentation({
+        bundle: buyerBundle,
+        expectedPrimaryClaim: preflight.env.BUYER_DID,
+        primaryPublicKey: buyerPublicKey,
+        evmAddress: preflight.payer,
+      })
         ? { disposition: "verified", address: preflight.payer }
         : { disposition: "rejected", reason: "payer-binding-mismatch" },
     resolvePayeeDestination: async ({ payeePrimaryClaim, payeeBundle, payoutAddress }) =>
@@ -1718,19 +2026,6 @@ async function createSellerRuntime(input: {
     if (!artifact) return null;
     return { address: resolved.address, artifact };
   };
-  const recoveredReceipt = (
-    logicalAddress: string,
-    nativeAddress: string,
-    hash: string,
-    observedAt = Date.now(),
-  ) => portableReceipt({
-    logicalAddress,
-    nativeAddress,
-    contentHash: hash,
-    writer: preflight.env.SELLER_DID,
-    transactionRef: `demos-read:${hash}`,
-    observedAt,
-  });
   const sessionRecord = (): SellerFulfilmentSessionRecord => ({
     recordVersion: "1",
     jobId,
@@ -1828,16 +2123,25 @@ async function createSellerRuntime(input: {
           canonicalize(deliveredArtifact.anchoredValue)) {
         return { status: "indeterminate", reason: "delivery-publication-absent" };
       }
-      const hash = contentHash(recovered.artifact);
+      const retainedReceipt = state.deliveryPublication?.receipt;
+      if (!retainedReceipt || retainedReceipt.logicalAddress !== deliveryLogicalAddress ||
+          retainedReceipt.nativeAddress !== recovered.address ||
+          retainedReceipt.contentHash !== contentHash(recovered.artifact) ||
+          !await verifyAnchorReceipt(
+            preflight.buyer.adapter,
+            retainedReceipt,
+            preflight.env.SELLER_DID,
+          )) {
+        return {
+          status: "indeterminate",
+          reason: "exact-delivery-anchor-receipt-unavailable",
+        };
+      }
       return {
         status: "verified",
         value: {
           artifact: structuredClone(deliveredArtifact),
-          anchorReceipt: recoveredReceipt(
-            deliveryLogicalAddress,
-            recovered.address,
-            hash,
-          ),
+          anchorReceipt: structuredClone(retainedReceipt),
         },
       };
     },
@@ -1919,19 +2223,20 @@ async function createSellerRuntime(input: {
       if (!recovered || contentHash(recovered.artifact) !== candidate.evidenceHash) {
         return { status: "absent", reason: "delivery-evidence-absent" };
       }
-      return {
-        status: "anchored",
-        ref: {
-          anchor: { kind: "storage-program", locator: recovered.address },
-          contentHash: candidate.evidenceHash,
-          signer: preflight.env.SELLER_DID,
-        },
-        anchorReceipt: recoveredReceipt(
-          evidenceLogicalAddress,
-          recovered.address,
-          candidate.evidenceHash,
-        ),
-      };
+      const retained = state.evidencePublication;
+      return retained?.status === "anchored" &&
+          retained.ref.contentHash === candidate.evidenceHash &&
+          retained.anchorReceipt.nativeAddress === recovered.address &&
+          await verifyAnchorReceipt(
+            preflight.buyer.adapter,
+            retained.anchorReceipt,
+            preflight.env.SELLER_DID,
+          )
+        ? structuredClone(retained)
+        : {
+            status: "indeterminate",
+            reason: "exact-delivery-evidence-anchor-receipt-unavailable",
+          };
     },
     publishFinalSessionReceipt: async (candidate) => {
       state.counts.finalReceipt += 1;
@@ -1965,18 +2270,12 @@ async function createSellerRuntime(input: {
             canonicalize(candidate.authorizationBinding)) {
         return { status: "absent", reason: "final-receipt-absent" };
       }
-      const hash = contentHash(recovered.artifact);
-      return {
-        status: "recorded",
-        receipt: {
-          ...recovered.artifact,
-          anchorReceipt: recoveredReceipt(
-            finalReceiptLogicalAddress,
-            recovered.address,
-            hash,
-          ),
-        },
-      };
+      return state.finalReceipt?.status === "recorded"
+        ? structuredClone(state.finalReceipt)
+        : {
+            status: "indeterminate",
+            reason: "exact-final-session-receipt-anchor-unavailable",
+          };
     },
   };
   const expected = {
@@ -2053,6 +2352,7 @@ async function createSellerRuntime(input: {
     eip712: { name: TOKEN_NAME, version: TOKEN_VERSION },
     facilitator,
     maxTimeoutSeconds: PAYMENT_TIMEOUT_SECONDS,
+    extra: { assetTransferMethod: "eip3009" },
     description: "DACS issue 114 funded proof",
     mimeType: "application/json",
   }, {
@@ -2129,14 +2429,21 @@ async function settleAndRecover(input: {
     asset: input.preflight.asset,
     payTo: input.preflight.payee,
     maxTimeoutSeconds: PAYMENT_TIMEOUT_SECONDS,
-    extra: { name: TOKEN_NAME, version: TOKEN_VERSION },
+    extra: {
+      name: TOKEN_NAME,
+      version: TOKEN_VERSION,
+      assetTransferMethod: "eip3009",
+    },
   };
   const client = await createDacsX402BuyerEvmChallengeClient({
     evmPrivateKey: input.preflight.env.BUYER_EVM_KEY,
     authority,
     expectedRequirements,
   });
-  const prepared = await prepareX402BuyerSettlement({ authority }, { client });
+  const prepared = await prepareX402BuyerSettlement({ authority }, {
+    client,
+    fetchImpl: input.preflight.host.fetchImpl,
+  });
   requireCondition(prepared.disposition === "prepared", "buyer-preparation-failed");
   const intent = prepared.intent;
   const createAuthorizationProvider = (readClient: X402BuyerEvmReadClient) =>
@@ -2176,9 +2483,46 @@ async function settleAndRecover(input: {
   const disruptedAuthorizationProvider = createAuthorizationProvider(disruptedReader);
   const authorizationProvider = createAuthorizationProvider(input.preflight.evmReader);
   let buyerStore = await createFsX402BuyerSettlementStore({ dir: buyerStoreDir });
-  const productionTransport = createX402BuyerPaidRequestTransport();
+  const productionTransport = createX402BuyerPaidRequestTransport({
+    fetchImpl: input.preflight.host.fetchImpl,
+  });
   let buyerTransportSubmissions = 0;
   let buyerNow = Date.now();
+  const chainOnlyRecoveryTransport = {
+    submitRetained: async () => {
+      buyerTransportSubmissions += 1;
+      throw new Error("duplicate-paid-request");
+    },
+  };
+  const recoverBuyerSettlementFromChain = async (
+    ownerPrefix: string,
+    failureCode: string,
+  ) => {
+    // A paid response can arrive before every configured RPC sees the mined
+    // authorization. Each retry takes a fresh generation and performs only
+    // authenticated chain reconciliation; it is never allowed to redrive the
+    // retained HTTP request.
+    for (let attempt = 1; attempt <= 60; attempt += 1) {
+      buyerNow += 2_000;
+      buyerStore = await createFsX402BuyerSettlementStore({ dir: buyerStoreDir });
+      const progress = await advanceX402BuyerSettlement({
+        intent,
+        owner: `${ownerPrefix}-${attempt}`,
+        store: buyerStore,
+        authorizationProvider,
+        transport: chainOnlyRecoveryTransport,
+        now: () => buyerNow,
+        leaseDurationMs: 1_000,
+      });
+      requireCondition(buyerTransportSubmissions === 1, "buyer-paid-request-replayed");
+      if (progress.status === "captured") return progress;
+      requireCondition(progress.status === "indeterminate", `${failureCode}-terminal`);
+      if (attempt < 60) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    }
+    throw new Error(`funded-e2e:${failureCode}-timeout`);
+  };
   const submitted = await advanceX402BuyerSettlement({
     intent,
     owner: "funded-buyer-process-a",
@@ -2205,28 +2549,18 @@ async function settleAndRecover(input: {
   requireCondition(state.counts.facilitatorSettle === 1, "settlement-effect-count-mismatch");
   requireCondition(state.counts.delivery === 1 && state.counts.evidence === 1, "fulfilment-effect-count-mismatch");
 
-  // Process B has only the filesystem WAL and a fresh production chain reader.
+  // Runtime B has only the filesystem WAL and a fresh production chain reader.
   // It captures the already-mined authorization without another HTTP request.
-  buyerNow += 2_000;
-  buyerStore = await createFsX402BuyerSettlementStore({ dir: buyerStoreDir });
-  const captured = await advanceX402BuyerSettlement({
-    intent,
-    owner: "funded-buyer-process-b",
-    store: buyerStore,
-    authorizationProvider,
-    transport: {
-      submitRetained: async () => {
-        throw new Error("duplicate-paid-request");
-      },
-    },
-    now: () => buyerNow,
-    leaseDurationMs: 1_000,
-  });
-  requireCondition(captured.status === "captured", "buyer-chain-recovery-failed");
+  const captured = await recoverBuyerSettlementFromChain(
+    "funded-buyer-process-b",
+    "buyer-chain-recovery",
+  );
   requireCondition(buyerTransportSubmissions === 1, "buyer-paid-request-replayed");
 
-  // Recreate both seller and buyer durable stacks. Neither restarted process is
-  // permitted to reach a second payment, delivery, or evidence effect.
+  // Recreate both seller and buyer durable stacks. Neither restarted runtime is
+  // permitted to reach a second payment, delivery, or evidence effect. This is
+  // a cold-store recovery proof inside one test invocation, not a same-run-ID
+  // process-crash resurrection harness.
   const processAEffectCounts = structuredClone(state.counts);
   state.permit = undefined;
   state.observedTransfer = undefined;
@@ -2256,7 +2590,7 @@ async function settleAndRecover(input: {
     fulfilmentStatus.evidence === "outcome",
     "seller-cold-recovery-failed",
   );
-  const replayResponse = await fetch(input.preflight.host.resourceUrl, {
+  const replayResponse = await input.preflight.host.fetchImpl(input.preflight.host.resourceUrl, {
     method: "GET",
     headers: { [intent.paymentHeader.name]: intent.paymentHeader.value },
     redirect: "error",
@@ -2282,21 +2616,10 @@ async function settleAndRecover(input: {
   });
   requireCondition(recoveredObservation.status === "finalized", "seller-chain-recovery-failed");
   restartedState.observedTransfer = structuredClone(recoveredObservation);
-  buyerStore = await createFsX402BuyerSettlementStore({ dir: buyerStoreDir });
-  const recovered = await advanceX402BuyerSettlement({
-    intent,
-    owner: "funded-buyer-process-c",
-    store: buyerStore,
-    authorizationProvider,
-    transport: {
-      submitRetained: async () => {
-        throw new Error("duplicate-paid-request");
-      },
-    },
-    now: () => buyerNow + 1,
-    leaseDurationMs: 1_000,
-  });
-  requireCondition(recovered.status === "captured", "buyer-cold-recovery-failed");
+  const recovered = await recoverBuyerSettlementFromChain(
+    "funded-buyer-process-c",
+    "buyer-cold-recovery",
+  );
   requireCondition(buyerTransportSubmissions === 1, "buyer-paid-request-replayed");
   requireCondition(
     processAEffectCounts.applicationCallback === 1 && processAEffectCounts.delivery === 1 &&
@@ -2384,8 +2707,8 @@ async function publishAndVerifySellerSettlement(input: {
         jobId: input.jobId,
         txHash: observation.txHash,
       });
-      return revalidated.status === "finalized" &&
-        canonicalize(revalidated) === canonicalize(observation)
+      return revalidated.status === "finalized" && observation.status === "finalized" &&
+        sameFinalizedTransfer(revalidated, observation)
         ? proofAuthentication
         : { disposition: "indeterminate", reason: "native-proof-revalidation-mismatch" };
     },
@@ -2397,6 +2720,25 @@ async function publishAndVerifySellerSettlement(input: {
         }
       : { disposition: "absent" },
     anchorEvidence: async ({ logicalAddress, evidence, evidenceHash }) => {
+      if (publication || retainedEvidence) {
+        requireCondition(
+          publication !== undefined && retainedEvidence !== undefined &&
+          publication.ref.anchor.locator === logicalAddress &&
+          publication.ref.contentHash === evidenceHash &&
+          canonicalize(retainedEvidence) === canonicalize(evidence) &&
+          await verifyAnchorReceipt(
+            input.preflight.buyer.adapter,
+            publication.receipt,
+            input.preflight.env.SELLER_DID,
+          ),
+          "settlement-evidence-publication-rebound",
+        );
+        return {
+          disposition: "anchored",
+          evidenceRef: structuredClone(publication.ref),
+          anchorReceipt: structuredClone(publication.receipt),
+        };
+      }
       anchorCalls += 1;
       const anchored = await anchorArtifact({
         adapter: input.preflight.seller.adapter,
@@ -2439,7 +2781,12 @@ async function publishAndVerifySellerSettlement(input: {
   const published = await publishSellerSessionSettlement(request, deps);
   requireCondition(published.disposition === "published", "settlement-evidence-publication-failed");
   const replayed = await publishSellerSessionSettlement(request, deps);
-  requireCondition(replayed.disposition === "published" && anchorCalls === 1, "settlement-evidence-replayed");
+  requireCondition(replayed.disposition === "published", "settlement-evidence-replay-failed");
+  requireCondition(anchorCalls === 1, "settlement-evidence-effect-replayed");
+  requireCondition(
+    canonicalize(replayed) === canonicalize(published),
+    "settlement-evidence-replay-mismatch",
+  );
 
   const context: SessionSettlementContext = {
     contextVersion: "1",
@@ -2530,6 +2877,9 @@ async function publishAndVerifySellerSettlement(input: {
       if (fresh.status !== "finalized") {
         return { disposition: "indeterminate", reason: "evm-revalidation-unavailable" };
       }
+      if (observation.status !== "finalized" || !sameFinalizedTransfer(fresh, observation)) {
+        return { disposition: "fail", reason: "evm-revalidation-mismatch" };
+      }
       return {
         disposition: "pass",
         outcome: "success",
@@ -2595,6 +2945,10 @@ async function closeDurableDetachedRoleBundles(input: {
   const verifiedTerminal = await verifyDurableSellerTerminalResult({
     record: terminalRecord.record,
     suppliedResult: suppliedFulfilment,
+    expectedDeliveryWriter: {
+      role: "seller",
+      primaryClaim: input.preflight.env.SELLER_DID,
+    },
     verifyEvidenceSignature: async ({ signedBytes: bytes, signature, expectedSigner }) =>
       expectedSigner === input.preflight.env.SELLER_DID &&
         signature.algorithm === "ed25519" && signature.signer === expectedSigner &&
@@ -2631,8 +2985,16 @@ async function closeDurableDetachedRoleBundles(input: {
   );
   const deliveryEvidence = fulfilment.evidence;
   requireCondition(deliveryEvidence.outcome === "success", "delivery-evidence-not-successful");
-  const deliverable = await input.preflight.buyer.adapter.readAnchor(
+  const deliverableResolution = await input.preflight.buyer.adapter.resolveAnchorByName(
     deliveryEvidence.deliverableAnchor.locator,
+    input.preflight.seller.adapter.getAddress(),
+  );
+  requireCondition(
+    deliverableResolution.status === "present",
+    "delivered-artifact-resolution-failed",
+  );
+  const deliverable = await input.preflight.buyer.adapter.readAnchor(
+    deliverableResolution.address,
   );
   requireCondition(
     deliverable !== null && contentHash(deliverable) === deliveryEvidence.deliverableContentHash,
@@ -2643,7 +3005,7 @@ async function closeDurableDetachedRoleBundles(input: {
     input.commitment.record as unknown as Record<string, unknown>,
   );
   const commitmentRef: AttestationRef = {
-    anchor: { kind: "storage-program", locator: input.commitment.nativeAddress },
+    anchor: { kind: "storage-program", locator: input.commitment.logicalAddress },
     contentHash: commitmentHash,
     signer: input.preflight.env.SELLER_DID,
   };
@@ -2753,7 +3115,7 @@ async function closeDurableDetachedRoleBundles(input: {
         vetRecordRef: input.vet.sellerRef,
         evaluatedParty: input.preflight.env.SELLER_DID,
         requirement: EMPTY_REQUIREMENT,
-        verifier: input.preflight.env.BUYER_DID,
+        verifier: input.preflight.env.SELLER_DID,
         freshness: [],
         dealSpecific: [],
       },
@@ -2803,18 +3165,28 @@ async function closeDurableDetachedRoleBundles(input: {
         return value;
       },
     },
+    bindingSigner: {
+      algorithm: "ed25519",
+      signer: input.preflight.env.SELLER_DID,
+      sign: async (bytes, _context, fence) => {
+        sellerCounters.bindingSign += 1;
+        const value = await input.preflight.seller.adapter.sign(bytes);
+        sellerSignatures.set(fence.idempotencyKey, Uint8Array.from(value));
+        return value;
+      },
+    },
     counterSignatures: [],
     dependencies: [],
   };
 
-  const deliveryReceipt = portableReceipt({
-    logicalAddress: `dacs4:deliverable:${input.jobId}`,
-    nativeAddress: deliveryEvidence.deliverableAnchor.locator,
-    contentHash: deliveryEvidence.deliverableContentHash,
-    writer: input.preflight.env.SELLER_DID,
-    transactionRef: `demos-read:${deliveryEvidence.deliverableContentHash}`,
-    observedAt: deliveryEvidence.observedAt,
-  });
+  const deliveryReceipt = structuredClone(verifiedTerminal.deliveryAnchorReceipt);
+  requireCondition(
+    deliveryReceipt.logicalAddress === deliveryEvidence.deliverableAnchor.locator &&
+    deliveryReceipt.nativeAddress === deliverableResolution.address &&
+    deliveryReceipt.contentHash === deliveryEvidence.deliverableContentHash &&
+    deliveryReceipt.writer === input.preflight.env.SELLER_DID,
+    "authenticated-delivery-receipt-rebound",
+  );
   const dependency = (
     source: FinalizeCompletedSellerBundleInput["dependencies"][number]["source"],
     anchorReceipt: AnchorReceipt,
@@ -2870,10 +3242,29 @@ async function closeDurableDetachedRoleBundles(input: {
 
   let sellerAnchored: AnchoredSellerBundle | undefined;
   let buyerAnchored: AnchoredBuyerBundle | undefined;
-  const sellerCounters = { sign: 0, anchor: 0 };
-  const buyerCounters = { sign: 0, counterPublication: 0, anchor: 0 };
+  const sellerCounters = { sign: 0, bindingSign: 0, anchor: 0, bindingPublication: 0 };
+  const buyerCounters = { sign: 0, counterPublication: 0, anchor: 0, bindingPublication: 0 };
   const sellerSignatures = new Map<string, Uint8Array>();
   const buyerSignatures = new Map<string, string>();
+  const requestLogicalAddress = `dacs-test:bundle-request:${input.jobId}`;
+  const counterSignatureLogicalAddress = `dacs-test:bundle-counter-signature:${input.jobId}`;
+  const sellerFinalizationLogicalAddress = `dacs-test:bundle-finalization:${input.jobId}:seller`;
+  const buyerFinalizationLogicalAddress = `dacs-test:bundle-finalization:${input.jobId}:buyer`;
+  const sellerBindingLogicalAddress = `dacs-test:bundle-binding:${input.jobId}:seller`;
+  const buyerBindingLogicalAddress = `dacs-test:bundle-binding:${input.jobId}:buyer`;
+  const resolveHandoff = async (logicalAddress: string, ownerDid: string) => {
+    const owner = ownerDid.replace(/^did:demos:agent:/, "");
+    const resolved = await input.preflight.buyer.adapter.resolveAnchorByName(logicalAddress, owner);
+    if (resolved.status === "indeterminate") {
+      throw new Error("funded-e2e:demos-handoff-resolution-indeterminate");
+    }
+    if (resolved.status !== "present") return null;
+    const artifact = await input.preflight.buyer.adapter.readAnchor(resolved.address);
+    if (artifact === null) {
+      throw new Error("funded-e2e:demos-handoff-read-indeterminate");
+    }
+    return artifact;
+  };
   const resolveRoleOwnedBundle = async (
     role: "buyer" | "seller",
   ): Promise<AnchoredSellerBundle | null> => {
@@ -2884,26 +3275,63 @@ async function closeDurableDetachedRoleBundles(input: {
       logicalAddress,
       ownerDid.replace(/^did:demos:agent:/, ""),
     );
+    if (resolved.status === "indeterminate") {
+      throw new Error("funded-e2e:role-bundle-resolution-indeterminate");
+    }
     if (resolved.status !== "present") return null;
     const bundle = await input.preflight.buyer.adapter.readAnchor(resolved.address);
-    if (!bundle) return null;
+    if (!bundle) throw new Error("funded-e2e:role-bundle-read-indeterminate");
     const hash = attestationBundleHash(bundle as unknown as FaultAttestationBundle);
     const cached = role === "seller" ? sellerAnchored : buyerAnchored;
-    const receipt = cached?.nativeAddress === resolved.address
-      ? cached.anchorReceipt
-      : portableReceipt({
-          logicalAddress,
-          nativeAddress: resolved.address,
-          contentHash: hash,
-          writer: ownerDid,
-          transactionRef: `demos-read:${hash}`,
-          observedAt: finalisedAt,
-        });
+    if (cached) {
+      if (
+        cached.nativeAddress !== resolved.address ||
+        cached.anchorReceipt.logicalAddress !== logicalAddress ||
+        cached.anchorReceipt.contentHash !== hash
+      ) return null;
+      return {
+        bundle,
+        nativeAddress: resolved.address,
+        anchorReceipt: cached.anchorReceipt,
+        ...(cached.anchorTx ? { anchorTx: cached.anchorTx } : {}),
+      };
+    }
+
+    // A cold runtime must recover the exact original receipt and transaction
+    // pointer from an owner-bound finalization handoff. A successful Demos read
+    // is not itself an anchor receipt and must never be promoted into one.
+    const finalizationLogicalAddress = role === "seller"
+      ? sellerFinalizationLogicalAddress : buyerFinalizationLogicalAddress;
+    const stored = await resolveHandoff(finalizationLogicalAddress, ownerDid);
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return null;
+    const finalization = stored as Record<string, unknown>;
+    const retainedBundle = role === "seller"
+      ? finalization.sellerBundle : finalization.buyerBundle;
+    const receiptCandidate = finalization.anchorReceipt;
+    if (
+      finalization.state !== "finalised" ||
+      finalization.logicalAddress !== logicalAddress ||
+      finalization.nativeAddress !== resolved.address ||
+      finalization.bundleContentHash !== hash ||
+      !retainedBundle || typeof retainedBundle !== "object" || Array.isArray(retainedBundle) ||
+      canonicalize(retainedBundle) !== canonicalize(bundle) ||
+      !receiptCandidate || typeof receiptCandidate !== "object" || Array.isArray(receiptCandidate) ||
+      (finalization.anchorTx !== undefined && typeof finalization.anchorTx !== "string")
+    ) return null;
+    const receipt = receiptCandidate as unknown as AnchorReceipt;
+    if (
+      receipt.logicalAddress !== logicalAddress ||
+      receipt.nativeAddress !== resolved.address ||
+      receipt.contentHash !== hash ||
+      !(await verifyAnchorReceipt(input.preflight.buyer.adapter, receipt, ownerDid))
+    ) return null;
     return {
       bundle,
       nativeAddress: resolved.address,
       anchorReceipt: receipt,
-      ...(cached?.anchorTx ? { anchorTx: cached.anchorTx } : {}),
+      ...(typeof finalization.anchorTx === "string"
+        ? { anchorTx: finalization.anchorTx }
+        : {}),
     };
   };
   const bundleCopyVerifier = {
@@ -2911,8 +3339,119 @@ async function closeDurableDetachedRoleBundles(input: {
     verify: async (bytes: Uint8Array, signature: Uint8Array, key: Uint8Array) =>
       ed25519Verify(bytes, signature, publicKeyFromRaw(key)),
   };
+  const bindingRole = (
+    logicalAddress: string,
+    signer: string,
+  ): "buyer" | "seller" | null =>
+    logicalAddress === bundleAddress(input.jobId, "seller") &&
+        signer === input.preflight.env.SELLER_DID
+      ? "seller"
+      : logicalAddress === bundleAddress(input.jobId, "buyer") &&
+          signer === input.preflight.env.BUYER_DID
+        ? "buyer"
+        : null;
+  const resolveBundleBinding = async (logicalAddress: string, signer: string) => {
+    const role = bindingRole(logicalAddress, signer);
+    if (!role) return { disposition: "absent" as const };
+    const ownerDid = role === "seller"
+      ? input.preflight.env.SELLER_DID : input.preflight.env.BUYER_DID;
+    const bindingAddress = role === "seller"
+      ? sellerBindingLogicalAddress : buyerBindingLogicalAddress;
+    const stored = await resolveHandoff(bindingAddress, ownerDid);
+    return stored === null
+      ? { disposition: "absent" as const }
+      : { disposition: "present" as const, binding: stored };
+  };
+  const verifyBundleBinding = async (binding: Readonly<BundleBinding>) => {
+    const role = bindingRole(binding.logicalAddress, binding.signer);
+    const signatureValue = binding.signature?.value;
+    if (
+      !role || binding.bindingVersion !== "1" || binding.jobId !== input.jobId ||
+      binding.role !== role || binding.signature?.algorithm !== "ed25519" ||
+      binding.signature.signer !== binding.signer || typeof signatureValue !== "string"
+    ) return "invalid" as const;
+    const signature = Buffer.from(signatureValue, "base64url");
+    const key = publicKey(binding.signer);
+    if (
+      signature.byteLength !== 64 || signature.toString("base64url") !== signatureValue || !key ||
+      !ed25519Verify(
+        signedBytes(
+          BUNDLE_BINDING_SEPARATOR,
+          contentHash(binding as unknown as Record<string, unknown>),
+        ),
+        Uint8Array.from(signature),
+        publicKeyFromRaw(key),
+      )
+    ) return "invalid" as const;
+    const anchored = await resolveRoleOwnedBundle(role);
+    return anchored &&
+        anchored.nativeAddress === binding.nativeAddress &&
+        anchored.anchorReceipt.logicalAddress === binding.logicalAddress &&
+        anchored.anchorReceipt.contentHash === binding.bundleContentHash &&
+        attestationBundleHash(anchored.bundle as FaultAttestationBundle) ===
+          binding.bundleContentHash &&
+        (binding.anchorTx === undefined || anchored.anchorTx === binding.anchorTx)
+      ? "valid" as const : "invalid" as const;
+  };
+  const publishRoleBundleBinding = async (
+    role: "buyer" | "seller",
+    binding: Readonly<BundleBinding>,
+  ) => {
+    const expectedSigner = role === "seller"
+      ? input.preflight.env.SELLER_DID : input.preflight.env.BUYER_DID;
+    const expectedLogicalAddress = bundleAddress(input.jobId, role);
+    if (
+      binding.role !== role || binding.signer !== expectedSigner ||
+      binding.logicalAddress !== expectedLogicalAddress ||
+      await verifyBundleBinding(binding) !== "valid"
+    ) return { disposition: "rejected" as const, reason: "bundle-binding-invalid" };
+    const bindingAddress = role === "seller"
+      ? sellerBindingLogicalAddress : buyerBindingLogicalAddress;
+    const adapter = role === "seller"
+      ? input.preflight.seller.adapter : input.preflight.buyer.adapter;
+    if (role === "seller") sellerCounters.bindingPublication += 1;
+    else buyerCounters.bindingPublication += 1;
+    await anchorArtifact({
+      adapter,
+      writer: expectedSigner,
+      logicalAddress: bindingAddress,
+      artifact: binding as unknown as Record<string, unknown>,
+    });
+    const published = await resolveBundleBinding(binding.logicalAddress, binding.signer);
+    return published.disposition === "present" &&
+        canonicalize(published.binding) === canonicalize(binding) &&
+        await verifyBundleBinding(binding) === "valid"
+      ? { disposition: "published" as const }
+      : { disposition: "indeterminate" as const, reason: "bundle-binding-readback-failed" };
+  };
+  const reconcileRoleBindingPublication = async (
+    role: "buyer" | "seller",
+    binding: Readonly<BundleBinding>,
+  ) => {
+    try {
+      const expectedSigner = role === "seller"
+        ? input.preflight.env.SELLER_DID : input.preflight.env.BUYER_DID;
+      if (
+        binding.role !== role || binding.signer !== expectedSigner ||
+        binding.logicalAddress !== bundleAddress(input.jobId, role)
+      ) return { disposition: "rejected" as const, reason: "bundle-binding-rebound" };
+      const published = await resolveBundleBinding(binding.logicalAddress, binding.signer);
+      if (published.disposition === "absent") {
+        return {
+          disposition: "authoritatively-absent" as const,
+          reason: "bundle-binding-absent",
+        };
+      }
+      return canonicalize(published.binding) === canonicalize(binding) &&
+          await verifyBundleBinding(binding) === "valid"
+        ? { disposition: "published" as const }
+        : { disposition: "rejected" as const, reason: "bundle-binding-readback-invalid" };
+    } catch {
+      return { disposition: "indeterminate" as const, reason: "bundle-binding-readback-error" };
+    }
+  };
   const commonReadProvider = {
-    mapping: "pure" as const,
+    mapping: "write-input" as const,
     bundleCopyVerifier,
     compositeVerificationDeps: {
       resolveRecipe: async () => null,
@@ -2920,11 +3459,9 @@ async function closeDurableDetachedRoleBundles(input: {
       isVerifyResultSignerAuthorized: (result: unknown, signature: { signer: string }) => {
         if (!result || typeof result !== "object" || Array.isArray(result)) return false;
         const evaluatedParty = (result as Record<string, unknown>).evaluatedParty;
-        return evaluatedParty === input.preflight.env.BUYER_DID
-          ? signature.signer === input.preflight.env.SELLER_DID
-          : evaluatedParty === input.preflight.env.SELLER_DID
-            ? signature.signer === input.preflight.env.BUYER_DID
-            : false;
+        return (evaluatedParty === input.preflight.env.BUYER_DID ||
+          evaluatedParty === input.preflight.env.SELLER_DID) &&
+          signature.signer === input.preflight.env.SELLER_DID;
       },
       resolvePublicKey: async (signature: { signer: string; algorithm: string }) =>
         signature.algorithm === "ed25519" ? publicKey(signature.signer) : null,
@@ -3034,8 +3571,7 @@ async function closeDurableDetachedRoleBundles(input: {
           requirement.contentHash === input.vet.sellerRef.contentHash) {
         const vetRecord = requirement.contentHash === input.vet.buyerRef.contentHash
           ? input.vet.buyer : input.vet.seller;
-        const verifier = requirement.contentHash === input.vet.buyerRef.contentHash
-          ? input.preflight.env.SELLER_DID : input.preflight.env.BUYER_DID;
+        const verifier = input.preflight.env.SELLER_DID;
         return canonicalize(record) === canonicalize(vetRecord) && verifyEd25519(
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
           vetRecord as unknown as Record<string, unknown>,
@@ -3119,7 +3655,7 @@ async function closeDurableDetachedRoleBundles(input: {
           canonicalize(authorization.evidenceInput.paymentTxRefs) &&
         canonicalize(exactEvidence.paymentAmount) ===
           canonicalize(authorization.evidenceInput.paymentAmount) &&
-        paymentRef.anchor.locator === candidate.anchorReceipt.nativeAddress &&
+        paymentRef.anchor.locator === candidate.anchorReceipt.logicalAddress &&
         candidate.anchorReceipt.contentHash === paymentRef.contentHash &&
         input.sellerSettlement.settlement.nativeProofRef.locator.includes(
           authorization.settlementIdentity.txHash,
@@ -3157,11 +3693,16 @@ async function closeDurableDetachedRoleBundles(input: {
       return valid && attestationBundleHash(anchored.bundle as FaultAttestationBundle) ===
           anchored.anchorReceipt.contentHash ? "valid" as const : "invalid" as const;
     },
-    resolveBundleBinding: () => ({ disposition: "absent" as const }),
+    resolveBundleBinding,
+    verifyBundleBinding,
   };
 
   const sellerProvider = {
     ...commonReadProvider,
+    publishBundleBinding: async (
+      binding: Readonly<BundleBinding>,
+      _fence: Readonly<SellerBundleEffectFence>,
+    ) => publishRoleBundleBinding("seller", binding),
     submitSellerBundle: async (
       logicalAddress: string,
       bundle: Readonly<FaultAttestationBundle>,
@@ -3185,6 +3726,10 @@ async function closeDurableDetachedRoleBundles(input: {
 
   const buyerProvider = {
     ...commonReadProvider,
+    publishBundleBinding: async (
+      binding: Readonly<BundleBinding>,
+      _fence: Readonly<BuyerBundleEffectFence>,
+    ) => publishRoleBundleBinding("buyer", binding),
     resolveBuyerBundle: async (logicalAddress: string) => {
       if (logicalAddress !== bundleAddress(input.jobId, "buyer")) {
         return { disposition: "absent" as const };
@@ -3239,9 +3784,6 @@ async function closeDurableDetachedRoleBundles(input: {
     },
   };
   const request = prepareCompletedSellerBundleCounterSignatureRequest(requestInput);
-  const requestLogicalAddress = `dacs-test:bundle-request:${input.jobId}`;
-  const counterSignatureLogicalAddress = `dacs-test:bundle-counter-signature:${input.jobId}`;
-  const sellerFinalizationLogicalAddress = `dacs-test:bundle-finalization:${input.jobId}:seller`;
   await anchorArtifact({
     adapter: input.preflight.seller.adapter,
     writer: input.preflight.env.SELLER_DID,
@@ -3253,12 +3795,6 @@ async function closeDurableDetachedRoleBundles(input: {
       requiredCounterSigners: request.requiredCounterSigners,
     },
   });
-  const resolveHandoff = async (logicalAddress: string, ownerDid: string) => {
-    const owner = ownerDid.replace(/^did:demos:agent:/, "");
-    const resolved = await input.preflight.buyer.adapter.resolveAnchorByName(logicalAddress, owner);
-    if (resolved.status !== "present") return null;
-    return input.preflight.buyer.adapter.readAnchor(resolved.address);
-  };
   const resolvePublishedRequest = async () => {
     const stored = await resolveHandoff(requestLogicalAddress, input.preflight.env.SELLER_DID);
     if (!stored || typeof stored.signedBytes !== "string") return null;
@@ -3369,10 +3905,8 @@ async function closeDurableDetachedRoleBundles(input: {
         ? { disposition: "present" }
         : { disposition: "authoritatively-absent", reason: "buyer-bundle-absent" };
     },
-    reconcileBindingPublication: () => ({
-      disposition: "authoritatively-absent",
-      reason: "pure-mapping-has-no-binding",
-    }),
+    reconcileBindingPublication: (binding) =>
+      reconcileRoleBindingPublication("buyer", binding),
   });
   const waiting = await advanceCompletedBuyerBundleDurable(
     buyerInput,
@@ -3435,10 +3969,8 @@ async function closeDurableDetachedRoleBundles(input: {
         ? { disposition: "present" }
         : { disposition: "authoritatively-absent", reason: "seller-bundle-absent" };
     },
-    reconcileBindingPublication: () => ({
-      disposition: "authoritatively-absent",
-      reason: "pure-mapping-has-no-binding",
-    }),
+    reconcileBindingPublication: (binding) =>
+      reconcileRoleBindingPublication("seller", binding),
   });
   sellerFinalization = await finalizeCompletedSellerBundleDurable(
     sellerInput,
@@ -3458,6 +3990,12 @@ async function closeDurableDetachedRoleBundles(input: {
     buyerDurability("funded-buyer-bundle-process-b"),
   );
   requireCondition(buyerFinalization.disposition === "finalised", "buyer-bundle-finalization-failed");
+  await anchorArtifact({
+    adapter: input.preflight.buyer.adapter,
+    writer: input.preflight.env.BUYER_DID,
+    logicalAddress: buyerFinalizationLogicalAddress,
+    artifact: buyerFinalization.result as unknown as Record<string, unknown>,
+  });
 
   const expectedSellerFinalization = structuredClone(sellerFinalization);
   const expectedBuyerFinalization = structuredClone(buyerFinalization.result);
@@ -3470,8 +4008,8 @@ async function closeDurableDetachedRoleBundles(input: {
     ...sellerInput,
     counterSignatures: [durableCounter.signature as BundleSignature],
   };
-  // Simulate a genuinely cold process boundary. Only filesystem WALs, Demos
-  // role publications and the explicit Demos handoff artifacts survive.
+  // Simulate a cold runtime boundary. Only filesystem WALs, Demos role
+  // publications and the explicit Demos handoff artifacts survive.
   sellerAnchored = undefined;
   buyerAnchored = undefined;
   counterSignature = undefined;
@@ -3495,9 +4033,10 @@ async function closeDurableDetachedRoleBundles(input: {
   requireCondition(
     buyerReplay.disposition === "finalised" && buyerReplay.recovered &&
     canonicalize(sellerReplay) === canonicalize(expectedSellerFinalization) &&
-    sellerCounters.sign === 1 && sellerCounters.anchor === 1 &&
-    buyerCounters.sign === 1 && buyerCounters.counterPublication === 1 &&
-    buyerCounters.anchor === 1,
+    sellerCounters.sign === 1 && sellerCounters.bindingSign === 1 &&
+    sellerCounters.anchor === 1 && sellerCounters.bindingPublication === 1 &&
+    buyerCounters.sign === 2 && buyerCounters.counterPublication === 1 &&
+    buyerCounters.anchor === 1 && buyerCounters.bindingPublication === 1,
     "bundle-replay-produced-duplicate-effect",
   );
 
@@ -3561,6 +4100,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
       [ARTIFACT_SEPARATORS.SettlementEvidence, "singular"],
       [ARTIFACT_SEPARATORS.CompositeVerificationRecord, "singular"],
       [EXTERNAL_VET_PROVENANCE_SEPARATOR, "singular"],
+      [BUNDLE_BINDING_SEPARATOR, "singular"],
     ] as const;
     for (const [separator, signatureKind] of cases) {
       const unsigned = { fixtureVersion: "1", separator, value: "authenticated" };
@@ -3594,6 +4134,43 @@ describe("issue #114 guarded funded two-agent spine", () => {
         ),
         "dependency-signature-tamper-self-check-failed",
       );
+    }
+  });
+
+  it("uses a certificate-pinned loopback TLS transport for both exact routes", async () => {
+    const host = await startLocalPaywallHost("tls-self-check", "issue-114-tls-self-check");
+    try {
+      host.installEngagement(async (proposal, identity) => ({ proposal, identity }));
+      const engagement = await host.fetchImpl(host.engagementUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: { ok: true }, identity: { ok: true } }),
+        redirect: "error",
+      });
+      const engagementBody = await engagement.json() as {
+        proposal?: { ok?: boolean };
+        identity?: { ok?: boolean };
+      };
+      requireCondition(
+        engagement.status === 200 && engagementBody.proposal?.ok === true &&
+        engagementBody.identity?.ok === true && host.requestCounts.engagement === 1,
+        "local-tls-engagement-self-check-failed",
+      );
+      const resource = await host.fetchImpl(host.resourceUrl, {
+        method: "GET",
+        redirect: "error",
+      });
+      await resource.arrayBuffer();
+      requireCondition(resource.status === 503, "local-tls-resource-self-check-failed");
+      let rejectedOutOfScope = false;
+      try {
+        await host.fetchImpl(host.resourceUrl, { method: "POST", redirect: "error" });
+      } catch {
+        rejectedOutOfScope = true;
+      }
+      requireCondition(rejectedOutOfScope, "local-tls-scope-self-check-failed");
+    } finally {
+      await host.close();
     }
   });
 
@@ -3649,7 +4226,13 @@ describe("issue #114 guarded funded two-agent spine", () => {
         preflight = await stage("read-only-preflight", () =>
           runNoWritePreflight(completeReadOnlyEnv())
         );
-        requireCondition(preflight.host.resourceUrl.startsWith("http://127.0.0.1:"), "host-not-local");
+        const resource = new URL(preflight.host.resourceUrl);
+        const engagement = new URL(preflight.host.engagementUrl);
+        requireCondition(
+          resource.protocol === "https:" && resource.hostname === "127.0.0.1" &&
+          engagement.protocol === "https:" && engagement.hostname === "127.0.0.1",
+          "host-not-local-tls",
+        );
       } finally {
         if (preflight) await preflight.host.close();
       }
@@ -3659,7 +4242,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
   if (missingFunded.length > 0) {
     it.skip(`funded run requires ${missingFunded.join(", ")}`, () => undefined);
   } else {
-    it("completes the real funded spine through restart-safe role-owned bundles", async () => {
+    it("completes the real funded spine through cold-store-recovered role-owned bundles", async () => {
       const env = completeEnv();
       let preflight: Preflight | undefined;
       try {
@@ -3668,7 +4251,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
         const jobId = `issue-114-funded-${env.LIVE_E2E_RUN_ID}`;
         const selectedRail = rail(preflight.host.resourceUrl);
         const [buyerIdentity, sellerIdentity] = await Promise.all([
-          identity(env.BUYER_DID, preflight.buyer.adapter, now),
+          identity(env.BUYER_DID, preflight.buyer.adapter, now, env.BUYER_EVM_KEY),
           identity(env.SELLER_DID, preflight.seller.adapter, now),
         ]);
         const [buyerAgreementDir, sellerAgreementDir] = await Promise.all([

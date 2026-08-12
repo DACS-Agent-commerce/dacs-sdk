@@ -477,6 +477,35 @@ describe("publishSellerSessionSettlement", () => {
     expect(verified.disposition).toBe("verified");
   });
 
+  it("replays a retained publication without invoking the write-once adapter again", async () => {
+    const h = harness();
+    const ordinaryAnchor = h.deps.anchorEvidence;
+    let retained: Awaited<ReturnType<typeof ordinaryAnchor>> | undefined;
+    let nativeCalls = 0;
+    const nativeWriteOnce = () => {
+      nativeCalls += 1;
+      if (nativeCalls !== 1) {
+        throw new Error("exact Demos replay does not expose the original tx ref");
+      }
+      return { address: "storage-program:first", txRef: "demos:first-write" };
+    };
+    h.deps.anchorEvidence = async (input) => {
+      if (retained) return structuredClone(retained);
+      const native = nativeWriteOnce();
+      if (!native.txRef) throw new Error("exact replay has no original tx ref");
+      retained = await ordinaryAnchor(input);
+      return structuredClone(retained);
+    };
+
+    const first = await publishSellerSessionSettlement(request(h), h.deps);
+    const replay = await publishSellerSessionSettlement(request(h), h.deps);
+
+    expect(first.disposition).toBe("published");
+    expect(replay).toEqual(first);
+    expect(nativeCalls).toBe(1);
+    expect(h.sign).toHaveBeenCalledOnce();
+  });
+
   it("requires a consumed permit and rejects permit/authorization substitution", async () => {
     const available = harness();
     available.deps.receiptStore.inspectPermit = async () => ({
