@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import {
   canonicalize,
   contentHash,
@@ -28,6 +30,7 @@ import type {
 import {
   isAgreementArtifact,
   isAttestationRef,
+  isCanonicalJobId,
   isIdentityBundle,
   isListing,
 } from "../artifacts/validators.js";
@@ -230,8 +233,8 @@ export function deriveFixedPriceAgreement(
     throw new DacsError("fixed-price agreement requires a verified Listing disposition");
   }
   if (!isListing(listing)) throw new DacsError("verified Listing has invalid wire shape");
-  if (typeof input.jobId !== "string" || input.jobId.length === 0) {
-    throw new DacsError("jobId must be non-empty");
+  if (!isCanonicalJobId(input.jobId)) {
+    throw new DacsError("jobId must be a canonical uppercase ULID");
   }
   if (
     pin.listingId !== listing.listingId ||
@@ -360,10 +363,28 @@ function captureAgreementSigner(
   signer: AgreementSigner,
   label: "buyer" | "seller",
 ): CapturedAgreementSigner {
-  const party = signer.party;
-  const algorithm = signer.algorithm;
-  const signCandidate = signer.sign;
-  const algorithms: ReadonlySet<string> = new Set(
+  if (
+    signer === null ||
+    typeof signer !== "object" ||
+    nodeTypes.isProxy(signer) ||
+    (Object.getPrototypeOf(signer) !== Object.prototype &&
+      Object.getPrototypeOf(signer) !== null)
+  ) {
+    throw new DacsError(`${label} agreement signer must be a plain data object`);
+  }
+  const ownDataProperty = (key: keyof AgreementSigner): unknown => {
+    const descriptor = Object.getOwnPropertyDescriptor(signer, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      throw new DacsError(
+        `${label} agreement signer.${key} must be an enumerable data property`,
+      );
+    }
+    return descriptor.value;
+  };
+  const party = ownDataProperty("party");
+  const algorithm = ownDataProperty("algorithm");
+  const signCandidate = ownDataProperty("sign");
+  const algorithms: ReadonlySet<unknown> = new Set(
     COMPONENT_SIGNATURE_ALGORITHMS,
   );
   if (typeof party !== "string" || party.length === 0 || party.trim() !== party) {
@@ -372,12 +393,14 @@ function captureAgreementSigner(
   if (!algorithms.has(algorithm)) {
     throw new DacsError(`${label} agreement signer uses an unsupported algorithm`);
   }
-  if (typeof signCandidate !== "function") {
-    throw new DacsError(`${label} agreement signer callback must be a function`);
+  if (typeof signCandidate !== "function" || nodeTypes.isProxy(signCandidate)) {
+    throw new DacsError(
+      `${label} agreement signer callback must be a non-Proxy function`,
+    );
   }
   return {
-    party,
-    algorithm,
+    party: party as string,
+    algorithm: algorithm as ComponentSignatureAlgorithm,
     sign: Function.prototype.bind.call(
       signCandidate,
       signer,

@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
@@ -151,24 +153,66 @@ function bindMethod<T>(candidate: T, owner: object): T {
   return Function.prototype.bind.call(candidate as Function, owner) as T;
 }
 
+function ownDependency(
+  deps: VerifyBundleDeps,
+  key: keyof VerifyBundleDeps,
+  required: boolean,
+): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(deps, key);
+  if (!descriptor) {
+    if (!required) return undefined;
+    throw new DacsError(
+      `verifyBundle ${key} dependency must be an enumerable data property`,
+    );
+  }
+  if (!("value" in descriptor) || !descriptor.enumerable) {
+    throw new DacsError(
+      `verifyBundle ${key} dependency must be an enumerable data property`,
+    );
+  }
+  return descriptor.value;
+}
+
 /** Capture every callback once before the first external await. */
 function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
-  const readArtifact = deps.readArtifact;
-  const resolveAttestationRef = deps.resolveAttestationRef;
-  const resolveListingRef = deps.resolveListingRef;
-  const resolveRef = deps.resolveRef;
-  const resolvePublicKey = deps.resolvePublicKey;
-  const verify = deps.verify;
-  const verifyEvidence = deps.verifyEvidence;
+  if (
+    deps === null ||
+    typeof deps !== "object" ||
+    nodeTypes.isProxy(deps) ||
+    (Object.getPrototypeOf(deps) !== Object.prototype &&
+      Object.getPrototypeOf(deps) !== null)
+  ) {
+    throw new DacsError("verifyBundle dependencies must be a plain data object");
+  }
+  const readArtifact = ownDependency(deps, "readArtifact", true);
+  const resolveAttestationRef = ownDependency(
+    deps,
+    "resolveAttestationRef",
+    false,
+  );
+  const resolveListingRef = ownDependency(deps, "resolveListingRef", false);
+  const resolveRef = ownDependency(deps, "resolveRef", false);
+  const resolvePublicKey = ownDependency(deps, "resolvePublicKey", true);
+  const verify = ownDependency(deps, "verify", true);
+  const verifyEvidence = ownDependency(deps, "verifyEvidence", false);
 
-  if (typeof readArtifact !== "function") {
-    throw new DacsError("verifyBundle readArtifact dependency must be a function");
+  if (typeof readArtifact !== "function" || nodeTypes.isProxy(readArtifact)) {
+    throw new DacsError(
+      "verifyBundle readArtifact dependency must be a non-Proxy function",
+    );
   }
-  if (typeof resolvePublicKey !== "function") {
-    throw new DacsError("verifyBundle resolvePublicKey dependency must be a function");
+  if (
+    typeof resolvePublicKey !== "function" ||
+    nodeTypes.isProxy(resolvePublicKey)
+  ) {
+    throw new DacsError(
+      "verifyBundle resolvePublicKey dependency must be a non-Proxy function",
+    );
   }
-  if (typeof verify !== "function") {
-    throw new DacsError("verifyBundle verify dependency must be a function");
+  if (typeof verify !== "function" || nodeTypes.isProxy(verify)) {
+    throw new DacsError(
+      "verifyBundle verify dependency must be a non-Proxy function",
+    );
   }
   for (const [label, candidate] of [
     ["resolveAttestationRef", resolveAttestationRef],
@@ -176,29 +220,62 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
     ["resolveRef", resolveRef],
     ["verifyEvidence", verifyEvidence],
   ] as const) {
-    if (candidate !== undefined && typeof candidate !== "function") {
-      throw new DacsError(`verifyBundle ${label} dependency must be a function`);
+    if (
+      candidate !== undefined &&
+      (typeof candidate !== "function" || nodeTypes.isProxy(candidate))
+    ) {
+      throw new DacsError(
+        `verifyBundle ${label} dependency must be a non-Proxy function`,
+      );
     }
   }
 
   return {
-    readArtifact: bindMethod(readArtifact, deps),
-    resolvePublicKey: bindMethod(resolvePublicKey, deps),
-    verify: bindMethod(verify, deps),
+    readArtifact: bindMethod(
+      readArtifact as VerifyBundleDeps["readArtifact"],
+      deps,
+    ),
+    resolvePublicKey: bindMethod(
+      resolvePublicKey as VerifyBundleDeps["resolvePublicKey"],
+      deps,
+    ),
+    verify: bindMethod(verify as VerifyBundleDeps["verify"], deps),
     ...(resolveAttestationRef === undefined
       ? {}
       : {
-          resolveAttestationRef: bindMethod(resolveAttestationRef, deps),
+          resolveAttestationRef: bindMethod(
+            resolveAttestationRef as NonNullable<
+              VerifyBundleDeps["resolveAttestationRef"]
+            >,
+            deps,
+          ),
         }),
     ...(resolveListingRef === undefined
       ? {}
-      : { resolveListingRef: bindMethod(resolveListingRef, deps) }),
+      : {
+          resolveListingRef: bindMethod(
+            resolveListingRef as NonNullable<
+              VerifyBundleDeps["resolveListingRef"]
+            >,
+            deps,
+          ),
+        }),
     ...(resolveRef === undefined
       ? {}
-      : { resolveRef: bindMethod(resolveRef, deps) }),
+      : {
+          resolveRef: bindMethod(
+            resolveRef as NonNullable<VerifyBundleDeps["resolveRef"]>,
+            deps,
+          ),
+        }),
     ...(verifyEvidence === undefined
       ? {}
-      : { verifyEvidence: bindMethod(verifyEvidence, deps) }),
+      : {
+          verifyEvidence: bindMethod(
+            verifyEvidence as NonNullable<VerifyBundleDeps["verifyEvidence"]>,
+            deps,
+          ),
+        }),
   };
 }
 

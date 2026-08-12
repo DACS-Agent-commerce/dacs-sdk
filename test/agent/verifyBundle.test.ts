@@ -19,6 +19,8 @@ import {
 
 const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 9));
 const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 10));
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
+const OTHER_JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
 
 function signerFor(seed: Uint8Array): Signer {
   const priv = privateKeyFromSeed(seed);
@@ -58,7 +60,7 @@ function buildArtifacts() {
   };
   const agreement = {
     agreementVersion: "1",
-    jobId: "j1",
+    jobId: JOB_ID,
     listingRef: {
       listingId: listing.serviceId,
       version: 1,
@@ -99,7 +101,7 @@ function buildArtifacts() {
   };
   const evidence = {
     evidenceVersion: "1",
-    jobId: "j1",
+    jobId: JOB_ID,
     phase: "pay-x402",
     outcome: "success",
     paymentTxRefs: [
@@ -139,7 +141,7 @@ async function buildFixture(party: string, sign: Signer): Promise<Fixture> {
   const { listing, agreement, evidence } = buildArtifacts();
   const body: Record<string, unknown> = {
     bundleVersion: "1",
-    jobId: "j1",
+    jobId: JOB_ID,
     outcome: "completed",
     anchoredByRole: "buyer",
     listingRef: {
@@ -351,7 +353,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
         Record<string, unknown>
       >;
       if (variant === "job") {
-        fx.agreement.jobId = "different-job";
+        fx.agreement.jobId = OTHER_JOB_ID;
       } else if (variant === "buyer-claim") {
         const substitute = didFor(Uint8Array.from(Buffer.alloc(32, 11)));
         parties[0]!.primaryClaim = substitute;
@@ -389,7 +391,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
       enumerable: true,
       get: () => {
         reads += 1;
-        return "j1";
+        return JOB_ID;
       },
     });
     const result = await verifyBundleCore(
@@ -463,6 +465,51 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
       true,
     );
     expect(result.refs.every(({ verdict }) => verdict === "ok")).toBe(true);
+  });
+
+  test("rejects accessor and Proxy dependency bags before reading artifacts", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const deps = depsFor(fx);
+    let getterReads = 0;
+    let artifactReads = 0;
+    const originalRead = deps.readArtifact;
+    deps.readArtifact = async (ref) => {
+      artifactReads += 1;
+      return originalRead(ref);
+    };
+    Object.defineProperty(deps, "resolvePublicKey", {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        getterReads += 1;
+        fx.bundle.jobId = OTHER_JOB_ID;
+        return async () => null;
+      },
+    });
+    await expect(verifyBundleCore("ref", deps)).rejects.toThrow(
+      /resolvePublicKey dependency must be an enumerable data property/,
+    );
+    expect(getterReads).toBe(0);
+    expect(artifactReads).toBe(0);
+    expect(fx.bundle.jobId).toBe(JOB_ID);
+
+    const proxyDeps = new Proxy(depsFor(fx), {
+      get() {
+        throw new Error("Proxy trap must not run");
+      },
+    });
+    await expect(verifyBundleCore("ref", proxyDeps)).rejects.toThrow(
+      /plain data object/,
+    );
+
+    const callbackProxyDeps = depsFor(fx);
+    callbackProxyDeps.readArtifact = new Proxy(
+      callbackProxyDeps.readArtifact,
+      {},
+    );
+    await expect(
+      verifyBundleCore("ref", callbackProxyDeps),
+    ).rejects.toThrow(/readArtifact dependency must be a non-Proxy function/);
   });
 
   test.each(["fail", "error", "indeterminate"] as const)(

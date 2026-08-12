@@ -42,6 +42,9 @@ const isOneOf = (set: readonly string[], v: unknown): boolean =>
 const hasOnlyKeys = (v: Record<string, unknown>, allowed: readonly string[]): boolean =>
   Object.keys(v).every((key) => allowed.includes(key));
 const isNonEmptyStr = (v: unknown): v is string => isStr(v) && v.length > 0;
+/** CORE §B.1 canonical logical-address spelling for session identifiers. */
+export const isCanonicalJobId = (v: unknown): v is string =>
+  isStr(v) && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(v);
 const isNonNegativeInt = (v: unknown): v is number =>
   isNum(v) && Number.isInteger(v) && v >= 0;
 const isSha256 = (v: unknown): v is string =>
@@ -796,7 +799,7 @@ const hasAgreementCommon = (
   const terms = v.terms;
   if (
     Object.prototype.hasOwnProperty.call(v, "signature") ||
-    !isNonEmptyStr(v.jobId) ||
+    !isCanonicalJobId(v.jobId) ||
     !isListingPin(v.listingRef) ||
     !Array.isArray(parties) ||
     parties.length < 2 ||
@@ -806,7 +809,8 @@ const hasAgreementCommon = (
     !isPriceTerm(terms.price) ||
     (terms.meteredQuantity !== undefined &&
       (!isObj(terms.meteredQuantity) ||
-        !/^(0|[1-9][0-9]*)$/.test(String(terms.meteredQuantity.quantity)) ||
+        typeof terms.meteredQuantity.quantity !== "string" ||
+        !/^(0|[1-9][0-9]*)$/.test(terms.meteredQuantity.quantity) ||
         !isNonEmptyStr(terms.meteredQuantity.unit))) ||
     (terms.rail !== undefined && !isPaymentRailRef(terms.rail)) ||
     !isSafeUint(terms.deadline) ||

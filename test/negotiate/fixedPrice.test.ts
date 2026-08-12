@@ -28,6 +28,7 @@ import {
 } from "../../src/index.js";
 
 const NOW = 1_780_000_000_000;
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 31));
 const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 32));
 const claim = (seed: Uint8Array) =>
@@ -51,7 +52,12 @@ const PAYEE_BINDING_VECTORS = JSON.parse(
 function vectorAgreement(name: string): unknown {
   const vector = PAYEE_BINDING_VECTORS.vectors.find((entry) => entry.name === name);
   if (!vector) throw new Error(`missing Standard vector: ${name}`);
-  return vector.agreement;
+  // These PB-1 vectors exercise discriminator and payout-binding shape but use
+  // an illustrative pre-CORE-§B.1 job label. Preserve their target mutation
+  // while supplying the canonical session identifier required by this reader.
+  const agreement = structuredClone(vector.agreement) as Record<string, unknown>;
+  agreement.jobId = JOB_ID;
+  return agreement;
 }
 
 function identity(primaryClaim: string): IdentityBundle {
@@ -125,7 +131,7 @@ function listing(
 
 function input(value = listing()) {
   return {
-    jobId: "job-fixed-1",
+    jobId: JOB_ID,
     verifiedListing: {
       disposition: "verified" as const,
       listing: value,
@@ -148,7 +154,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     const draft = deriveFixedPriceAgreement(input(value));
     expect(draft).toMatchObject({
       agreementVersion: "1",
-      jobId: "job-fixed-1",
+      jobId: JOB_ID,
       listingRef: { listingId: "market-data", version: 3 },
       derivedFromPattern: "fixed-price",
       generatedAt: NOW,
@@ -171,6 +177,29 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       identityBundleHash(input().seller.identityBundle),
     ]);
     expect("signatures" in draft).toBe(false);
+  });
+
+  test("requires the one canonical uppercase ULID spelling at derivation and read", async () => {
+    for (const invalid of [
+      JOB_ID.toLowerCase(),
+      `8${JOB_ID.slice(1)}`,
+      `${JOB_ID.slice(0, -1)}I`,
+      JOB_ID.slice(1),
+      `${JOB_ID}0`,
+      "job-fixed-1",
+    ]) {
+      expect(() =>
+        deriveFixedPriceAgreement({ ...input(), jobId: invalid }),
+      ).toThrow(/canonical uppercase ULID/);
+    }
+
+    const signed = await signFixedPriceAgreement(
+      deriveFixedPriceAgreement(input()),
+      { party: BUYER, algorithm: "ed25519", sign: () => new Uint8Array(64) },
+      { party: SELLER, algorithm: "ed25519", sign: () => new Uint8Array(64) },
+    );
+    expect(isAgreementDocument(signed)).toBe(true);
+    expect(isAgreementDocument({ ...signed, jobId: "job-fixed-1" })).toBe(false);
   });
 
   test("fixed-price over negotiable pricing selects exactly the band centre", () => {
@@ -458,6 +487,65 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       ]);
   });
 
+  test("rejects accessor and Proxy signer bags without observing live state", async () => {
+    const draft = deriveFixedPriceAgreement(input());
+    const originalJobId = draft.jobId;
+    let getterReads = 0;
+    let signerCalls = 0;
+    const buyerSigner = {
+      party: BUYER,
+      algorithm: "ed25519" as const,
+      sign: () => {
+        signerCalls += 1;
+        return new Uint8Array(64);
+      },
+    };
+    Object.defineProperty(buyerSigner, "party", {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        getterReads += 1;
+        draft.jobId = "getter-rebound-job";
+        return BUYER;
+      },
+    });
+    await expect(
+      signFixedPriceAgreement(
+        draft,
+        buyerSigner,
+        { party: SELLER, algorithm: "ed25519", sign: () => new Uint8Array(64) },
+      ),
+    ).rejects.toThrow(/party must be an enumerable data property/);
+    expect(getterReads).toBe(0);
+    expect(signerCalls).toBe(0);
+    expect(draft.jobId).toBe(originalJobId);
+
+    const proxyBag = new Proxy(
+      { party: BUYER, algorithm: "ed25519" as const, sign: () => new Uint8Array(64) },
+      {
+        get() {
+          throw new Error("Proxy trap must not run");
+        },
+      },
+    );
+    await expect(
+      signFixedPriceAgreement(
+        draft,
+        proxyBag,
+        { party: SELLER, algorithm: "ed25519", sign: () => new Uint8Array(64) },
+      ),
+    ).rejects.toThrow(/plain data object/);
+
+    const proxiedCallback = new Proxy(() => new Uint8Array(64), {});
+    await expect(
+      signFixedPriceAgreement(
+        draft,
+        { party: BUYER, algorithm: "ed25519", sign: proxiedCallback },
+        { party: SELLER, algorithm: "ed25519", sign: () => new Uint8Array(64) },
+      ),
+    ).rejects.toThrow(/non-Proxy function/);
+  });
+
   test("isolates signer inputs and rejects callback mutation", async () => {
     let sellerInvoked = false;
     await expect(
@@ -597,6 +685,71 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
         },
       }),
     ).toBe(false);
+    expect(
+      isAgreementDocument({
+        ...signed,
+        terms: {
+          ...signed.terms,
+          meteredQuantity: { quantity: "2", unit: "request" },
+        },
+      }),
+    ).toBe(true);
+    let coercions = 0;
+    const coercibleQuantity = {
+      toString() {
+        coercions += 1;
+        return "2";
+      },
+    };
+    expect(
+      isAgreementDocument({
+        ...signed,
+        terms: {
+          ...signed.terms,
+          meteredQuantity: { quantity: 2, unit: "request" },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isAgreementDocument({
+        ...signed,
+        terms: {
+          ...signed.terms,
+          meteredQuantity: { quantity: coercibleQuantity, unit: "request" },
+        },
+      }),
+    ).toBe(false);
+    expect(coercions).toBe(0);
+
+    let invoked = 0;
+    await expect(
+      signFixedPriceAgreement(
+        {
+          ...deriveFixedPriceAgreement(input()),
+          terms: {
+            ...deriveFixedPriceAgreement(input()).terms,
+            meteredQuantity: { quantity: 2, unit: "request" },
+          },
+        } as never,
+        {
+          party: BUYER,
+          algorithm: "ed25519",
+          sign: () => {
+            invoked += 1;
+            return new Uint8Array(64);
+          },
+        },
+        {
+          party: SELLER,
+          algorithm: "ed25519",
+          sign: () => {
+            invoked += 1;
+            return new Uint8Array(64);
+          },
+        },
+      ),
+    ).rejects.toThrow(/failed exact DACS-3/);
+    expect(invoked).toBe(0);
   });
 
   test("matches the pinned Standard payee-bound artifact-shape vectors", () => {

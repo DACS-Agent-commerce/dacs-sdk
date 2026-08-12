@@ -556,7 +556,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const normativeBuyerDid = `did:demos:agent:${buyerHex}`;
     const agreement = {
       agreementVersion: "1",
-      jobId: "normative-ref-job",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
       listingRef: {
         listingId: "svc",
         version: 1,
@@ -608,7 +608,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const unsigned = {
       faultBundleVersion: "1" as const,
       faultedParty: "none" as const,
-      jobId: "normative-ref-job",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
       outcome: "completed" as const,
       anchoredByRole: "buyer" as const,
       listingRef: {
