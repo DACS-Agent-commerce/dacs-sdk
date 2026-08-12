@@ -8,7 +8,7 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so any developer can `npm install` it and build their own DACS buyer/seller agents instead of wiring the protocol by hand.
 
-- **Depends on** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
+- **Optionally integrates with** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
 - **Tested against** the canonical conformance vectors in [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard) — the normative source of truth.
 
 ## Layering
@@ -16,7 +16,7 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 ```
 DACS-Standard        spec + §14 conformance vectors      ← source of truth
       ▲
-dacs-sdk             this library; depends on demosdk; tested against the vectors
+dacs-sdk             this library; optional live adapters; tested against the vectors
       ▲
 agent-commerce-demo  the worked example (consumes dacs-sdk)
 ```
@@ -89,6 +89,23 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
+### Normative artifact references
+
+Public `AttestationRef` values use the DACS-2 §7.5.2
+`{ anchor: { kind, locator }, contentHash, signer? }` shape. `ChainTxRef`
+(`TxRef`) is the DACS-4 §9.3 discriminated union, and `SettlementEvidence`
+contains no signed `phaseIndex` (SB-1 derives it from the evidence anchor).
+`verifyBundleCore` resolves normative references through
+`resolveAttestationRef(ref, jobId, parties)` so the signed locator is never
+discarded.
+
+Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
+`{ rail, txHash, kind }` transaction refs are exposed only through the
+explicitly named `LegacyMvp*` read/resume compatibility types and validators.
+Normative producers, including `buildTwoSidedBundle`, reject those legacy
+shapes. The existing buyer-only `runSessionCore` producer remains explicitly
+quarantined on `LegacyMvp*` until its v0.3 migration in #81.
+
 ## Doctor
 
 The package ships a read-only preflight command:
@@ -135,7 +152,7 @@ used without pulling in `demosdk`:
 
 | Import | Needs `demosdk` | Use for |
 | --- | --- | --- |
-| `@kynesyslabs/dacs` | yes (`createAgent` / `DemosAdapter`) | building live agents |
+| `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
@@ -143,11 +160,10 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
 
-> **Note:** the root export transitively imports `demosdk`, whose build uses
-> directory imports that Node's strict ESM resolver rejects at runtime. Use a
-> bundler (Vite/webpack/tsx) for the root API, or import the substrate-free
-> subpaths above (verifier / rail consumers) to load under raw Node ESM. The
-> fix belongs upstream in `demosdk`.
+The Demos adapter and live rail clients are optional peers: install
+`@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus
+`viem` for the corresponding live rails. Pure artifact, verifier, canonical,
+and injected rail-core consumers do not install those integration trees.
 
 ## License
 

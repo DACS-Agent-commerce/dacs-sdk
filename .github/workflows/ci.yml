@@ -23,7 +23,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Sync DACS-Standard conformance vectors
         run: npm run conformance:sync
@@ -33,6 +33,14 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Package smoke (core install without live peers)
+        run: |
+          mkdir -p package-smoke/app
+          npm pack --pack-destination package-smoke
+          npm install --prefix package-smoke/app --omit=optional --ignore-scripts "$GITHUB_WORKSPACE"/package-smoke/*.tgz
+          node -e "import('./package-smoke/app/node_modules/@kynesyslabs/dacs/dist/index.js').then(m => { if (typeof m.verifyBundleCore !== 'function') process.exit(1) })"
+          npm audit --prefix package-smoke/app --omit=dev --omit=optional
 
       - name: Test (unit + conformance harness)
         run: npm test
@@ -60,8 +68,8 @@ jobs:
               "",
               ...rows,
               "",
-              `Direct dependencies with their OWN advisory: **${ownDirect.length}** ` +
-              `(findings route through @kynesyslabs/demosdk AND viem's subtree — see SECURITY.md for per-advisory reachability).`,
+              `Direct dependencies with their OWN advisory: **${ownDirect.length}**. ` +
+              `Live integration peers are audited by applications that install them; see SECURITY.md.`,
             ].join("\n");
             require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY || "/dev/stdout", out + "\n");
           '

@@ -113,6 +113,26 @@ describe("runSealedEnvelopeCore", () => {
     expect(res.winningBidderClaim).toBe("a");
   });
 
+  test("SE-3: a reveal anchored before the commit deadline is excluded", async () => {
+    const a = bidder("a", "100", DEADLINE - 100, DEADLINE + 1);
+    const early = bidder("b", "10", DEADLINE - 50, DEADLINE - 1);
+    const res = await runSealedEnvelopeCore(
+      input(),
+      deps([a.commit, early.commit], [a.reveal, early.reveal]),
+    );
+    expect(res.winningBidderClaim).toBe("a");
+  });
+
+  test("SE-3: a reveal anchored exactly at the commit deadline is included", async () => {
+    const atDeadline = bidder("a", "10", DEADLINE - 100, DEADLINE);
+    const later = bidder("b", "100", DEADLINE - 50, DEADLINE + 1);
+    const res = await runSealedEnvelopeCore(
+      input(),
+      deps([atDeadline.commit, later.commit], [atDeadline.reveal, later.reveal]),
+    );
+    expect(res.winningBidderClaim).toBe("a");
+  });
+
   test("no winner: all bids wrong currency → failed phase, counterparty fault", async () => {
     const a = bidder("a", "100", DEADLINE - 100, DEADLINE + 1000, "DAI");
     const res = await runSealedEnvelopeCore(input(), deps([a.commit], [a.reveal]));

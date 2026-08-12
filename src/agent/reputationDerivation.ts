@@ -1,4 +1,4 @@
-import { contentHash, stripSignature } from "../canonical/index.js";
+import { bundleAddress, contentHash, stripSignature } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import type { AnyAttestationBundle, AttestationRef } from "../artifacts/types.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
@@ -246,8 +246,10 @@ export function deriveReputation(
 
   const bundleRefs: AttestationRef[] = reconciled
     .map((b) => ({
-      kind: "dacs-5-bundle",
-      id: b.jobId,
+      anchor: {
+        kind: "storage-program" as const,
+        locator: bundleAddress(b.jobId, b.anchoredByRole),
+      },
       contentHash: bundleContentHash(b),
     }))
     .sort((a, b) => (a.contentHash < b.contentHash ? -1 : a.contentHash > b.contentHash ? 1 : 0));

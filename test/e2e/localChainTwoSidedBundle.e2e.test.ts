@@ -15,9 +15,9 @@ import type {
   AttestationRef,
   CompositeVerificationRecord,
   Listing,
-  SettlementEvidence,
 } from "../../src/artifacts/types.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import { contentHash, sha256Hex, stripSignature } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -98,7 +98,11 @@ function memStore() {
 }
 
 function refTo(kind: string, id: string, value: Record<string, unknown>): AttestationRef {
-  return { kind, id, contentHash: contentHash(stripSignature(value)) };
+  void kind;
+  return {
+    anchor: { kind: "storage-program", locator: id },
+    contentHash: contentHash(stripSignature(value)),
+  };
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -365,13 +369,21 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
         );
 
         const observedAt = 1780000000000;
-        const evidence: SettlementEvidence = {
+        const evidence = {
           evidenceVersion: "1",
           jobId: JOB_ID,
           phase: "pay-x402",
-          phaseIndex: 2,
           outcome: "success",
-          paymentTxRefs: [{ rail: NETWORK, txHash: settlement.txHash, kind: "payment" }],
+          paymentTxRefs: [
+            {
+              kind: "x402" as const,
+              httpResource: paywallUrl,
+              paymentReceiptHash: sha256Hex(settlement.txHash),
+              settlementTxHash: settlement.txHash,
+              chainId: CHAIN_ID,
+              protocolVersion: "1",
+            },
+          ],
           paymentAmount: { amount: AMOUNT, currency: "USDC" },
           settlementFinality: {
             // finalityBlocks is block-depth-only (§9.7, enforced since #32) —
@@ -381,10 +393,14 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           },
           observedAt,
         };
-        const evidenceSigned = await buildSignedArtifact(
+        const evidenceSigned = await signComponentArtifact(
           evidence,
           ARTIFACT_SEPARATORS.SettlementEvidence,
-          signBuyer,
+          {
+            algorithm: "ed25519",
+            signer: buyerDid,
+            sign: (bytes) => signBuyer(bytes),
+          },
         );
         const evidenceRef = await sub.anchor(`dacs4:evidence:${JOB_ID}`, evidenceSigned);
 
@@ -404,13 +420,13 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           },
           agreementRef: refTo("dacs-3-agreement", `agreement-${JOB_ID}`, record(agreementSigned)),
           phaseSummary: [
-            { index: 0, kind: "vet-counterparty", outcome: "ok", attestationRef: vetAttRef },
-            { index: 1, kind: "commit", outcome: "ok" },
+            { index: 0, kind: "vet-credentials", outcome: "ok", attestationRef: vetAttRef },
+            { index: 1, kind: "commit-agreement", outcome: "ok" },
             {
               index: 2,
-              kind: "settle",
+              kind: "pay-x402",
               outcome: "ok",
-              txRefs: [{ rail: NETWORK, txHash: settlement.txHash, kind: "settlement" }],
+              txRefs: evidence.paymentTxRefs,
               attestationRef: settlementAttRef,
             },
           ],
@@ -454,10 +470,10 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
 
         const deps: VerifyBundleDeps = {
           readArtifact: sub.read,
-          resolveRef: async (kind) => {
-            if (kind === "dacs-3-agreement") return sub.read(agreementRef);
-            if (kind === "dacs-4-evidence") return sub.read(evidenceRef);
-            if (kind === "dacs-2-verifyresult") return sub.read(vetRef);
+          resolveAttestationRef: async (ref) => {
+            if (ref.anchor.locator === `agreement-${JOB_ID}`) return sub.read(agreementRef);
+            if (ref.anchor.locator === `settlement-${JOB_ID}`) return sub.read(evidenceRef);
+            if (ref.anchor.locator === `vet-${JOB_ID}`) return sub.read(vetRef);
             return null;
           },
           resolvePublicKey: async (did) => resolveFromDid(did),

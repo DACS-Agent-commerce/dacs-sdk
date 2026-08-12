@@ -238,6 +238,14 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   const htlcEvidence = () => {
     const evidence = paymentEvidence();
     evidence.phase = "pay-cross-chain-htlc";
+    evidence.paymentTxRefs = [
+      {
+        kind: "htlc-claim",
+        chainId: 80002,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        claimTxHash: "0xclaim",
+      },
+    ];
     evidence.settlementFinality = {
       model: "htlc-reveal",
       finalityObservedAt: 1,
@@ -492,11 +500,15 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(res.bundle?.outcome).toBe(want.outcome);
       const phase = (res.bundle?.phaseSummary ?? []).find(
         (p) => p.kind === golden.bundle.htlc9.settlementPhase.kind,
-      ) as (Record<string, unknown> & { txRefs?: Array<{ txHash: string; kind: string }> }) | undefined;
+      ) as (Record<string, unknown> & {
+        txRefs?: Array<Record<string, unknown>>;
+      }) | undefined;
       expect(phase?.outcome).toBe(want.phaseOutcome);
       expect(phase?.errorClass).toBe(want.errorClass);
       const reveal = phase?.txRefs?.some(
-        (t) => t.txHash === golden.bundle.htlc9.settlementPhase.revealTxRef,
+        (t) =>
+          t.kind === "htlc-reveal" &&
+          t.revealTxHash === golden.bundle.htlc9.settlementPhase.revealTxRef,
       );
       expect(reveal ?? false).toBe(want.revealRecorded);
     },
@@ -612,7 +624,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         (
           await verifyEvidence(paymentEvidence(), {
             attestationRef: {
-              kind: "dacs-4-evidence",
+              anchor: { kind: "storage-program", locator: "evidence" },
               contentHash: "0".repeat(64),
             },
           })
@@ -675,10 +687,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         (
           await verifyEvidence(paymentEvidence(), {
             attestationRef: {
-              kind: "dacs-5-bundle",
-              contentHash: undefined,
+              anchor: { kind: "unsupported", locator: "bundle" },
+              contentHash: "0".repeat(64),
             },
-          })
+          } as unknown as Parameters<typeof verifySettlementEvidence>[1])
         ).decision,
       ).toBe(want);
     },
@@ -799,6 +811,16 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         model: "liquidity-tank",
         finalityObservedAt: 1,
       };
+      evidence.paymentTxRefs = [
+        {
+          kind: "liquidity-tank",
+          bridgeId: "bridge-1",
+          sourceChainId: 8453,
+          destChainId: 80002,
+          lockTxHash: "0xlock",
+          releaseTxHash: "0xrelease",
+        },
+      ];
       expect(
         (
           await verifyEvidence(evidence, {
@@ -922,8 +944,17 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   // Divergences: assert the vector expectation but expect the test to FAIL
   // against today's SDK (it.fails flips loudly when the divergence is fixed).
   const DIVERGENT = new Set<string>([
-    // (none — #86 reconciled the registry to the closed §B.7 set of 24.)
+    // The pinned oracle still rejects fractional JSON numbers even though
+    // RFC 8785 and CORE B.2 admit finite values within the magnitude bound.
+    "canon-noninteger-throws",
+    // Standard#327: PR #310 rewrote this fixture's refs but its manifest hash
+    // was not regenerated. The SDK computes the §10.4.1 bytes directly.
+    "verify-consume-one-sided",
   ]);
+
+  it("preserves fractional canonicalization independently of the stale oracle", () => {
+    expect(canonicalize(1.5)).toBe("1.5");
+  });
 
   // Why un-runnable cases are todo, per area (with per-case overrides).
   const TODO_AREA_REASON: Record<string, string> = {
@@ -1007,12 +1038,12 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     // this change; deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
     expect(Object.keys(RUNNERS)).toHaveLength(69);
-    expect(manifest.cases).toHaveLength(234);
+    expect(manifest.cases).toHaveLength(236);
   });
 
-  it("#86 closed the separator-registry divergence: the SDK exposes all 24", () => {
+  it("#86 plus payload attestation: the SDK exposes all 25 separators", () => {
     // Was pinned at 18 with sig-registry-closed as an it.fails divergence; #86
     // reconciled the SDK to the closed §B.7 set, so it is now a passing case.
-    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(24);
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(25);
   });
 });

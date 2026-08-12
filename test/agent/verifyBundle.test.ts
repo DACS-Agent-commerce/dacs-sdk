@@ -70,15 +70,28 @@ function buildArtifacts() {
     evidenceVersion: "1",
     jobId: "j1",
     phase: "pay-x402",
-    phaseIndex: 0,
     outcome: "success",
-    paymentTxRefs: [{ rail: "eip155:84532", txHash: "0xabc", kind: "payment" }],
+    paymentTxRefs: [
+      {
+        kind: "x402",
+        httpResource: "https://seller.example/pay",
+        paymentReceiptHash: h("e"),
+        settlementTxHash: "0xabc",
+        chainId: 84532,
+        protocolVersion: "1",
+      },
+    ],
     paymentAmount: { amount: "1000000", currency: "USDC" },
     settlementFinality: {
       model: "provider-receipt",
       finalityObservedAt: 1780000000000,
     },
     observedAt: 1780000000000,
+    signature: {
+      algorithm: "ed25519",
+      signer: buyerDid,
+      value: "signed-evidence",
+    },
   };
   return { listing, agreement, evidence };
 }
@@ -104,8 +117,7 @@ async function buildFixture(party: string, sign: Signer): Promise<Fixture> {
       contentHash: contentHash(listing),
     },
     agreementRef: {
-      kind: "dacs-3-agreement",
-      id: "agreement-j1",
+      anchor: { kind: "storage-program", locator: "agreement-j1" },
       contentHash: contentHash(agreement),
     },
     parties: [
@@ -116,8 +128,7 @@ async function buildFixture(party: string, sign: Signer): Promise<Fixture> {
     vetRecords: [],
     settlementEvidence: [
       {
-        kind: "dacs-4-evidence",
-        id: "settlement-j1",
+        anchor: { kind: "storage-program", locator: "settlement-j1" },
         contentHash: contentHash(evidence),
       },
     ],
@@ -166,6 +177,7 @@ function depsFor(
   fx: Fixture,
   opts: {
     resolve?: (did: string) => Uint8Array | null;
+    resolveAttestationRef?: VerifyBundleDeps["resolveAttestationRef"];
     resolveRef?: VerifyBundleDeps["resolveRef"];
     listing?: Record<string, unknown> | null;
     verifyEvidence?: VerifyBundleDeps["verifyEvidence"];
@@ -175,14 +187,15 @@ function depsFor(
   return {
     readArtifact: async (ref) =>
       ref === LISTING_ADDR ? listing : fx.bundle,
-    resolveRef:
-      opts.resolveRef ??
-      (async (kind) =>
-        kind === "dacs-3-agreement"
+    resolveAttestationRef:
+      opts.resolveAttestationRef ??
+      (async (ref) =>
+        ref.anchor.locator === "agreement-j1"
           ? fx.agreement
-          : kind === "dacs-4-evidence"
+          : ref.anchor.locator === "settlement-j1"
             ? fx.evidence
             : null),
+    ...(opts.resolveRef ? { resolveRef: opts.resolveRef } : {}),
     resolvePublicKey: async (did) => (opts.resolve ?? resolveFromDid)(did),
     verify,
     ...(opts.verifyEvidence ? { verifyEvidence: opts.verifyEvidence } : {}),
@@ -298,20 +311,26 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(ev?.verdict).toBe("hash-mismatch");
   });
 
-  test("optional verifyEvidence: a hash-matched but semantically-invalid evidence => invalid-evidence, not ok", async () => {
-    const fx = await buildFixture(buyerDid, signBuyer);
-    // The evidence hash-matches (bundle signature valid), but the wired §9.7
-    // verifier rejects it — e.g. wrong finality model — so the ref is downgraded.
-    const res = await verifyBundleCore(
-      "ref",
-      depsFor(fx, { verifyEvidence: async () => ({ decision: "fail" }) }),
-    );
-    expect(res.signatures[0]?.verdict).toBe("valid");
-    expect(res.ok).toBe(false);
-    const ev = res.refs.find((r) => r.kind === "dacs-4-evidence");
-    expect(ev?.verdict).toBe("invalid-evidence");
-    expect(res.reason).toMatch(/invalid-evidence/);
-  });
+  test.each(["fail", "error", "indeterminate"] as const)(
+    "optional verifyEvidence: %s fails closed and receives the signed record",
+    async (decision) => {
+      const fx = await buildFixture(buyerDid, signBuyer);
+      const res = await verifyBundleCore(
+        "ref",
+        depsFor(fx, {
+          verifyEvidence: async (evidence) => {
+            expect(evidence.signature).toEqual(fx.evidence.signature);
+            return { decision };
+          },
+        }),
+      );
+      expect(res.signatures[0]?.verdict).toBe("valid");
+      expect(res.ok).toBe(false);
+      const ev = res.refs.find((r) => r.kind === "dacs-4-evidence");
+      expect(ev?.verdict).toBe("invalid-evidence");
+      expect(res.reason).toMatch(/invalid-evidence/);
+    },
+  );
 
   test("optional verifyEvidence: a passing evidence keeps the bundle ok", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
@@ -327,7 +346,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     const res = await verifyBundleCore(
       "ref",
-      depsFor(fx, { resolveRef: async () => null }),
+      depsFor(fx, { resolveAttestationRef: async () => null }),
     );
     expect(res.ok).toBe(false);
     const agr = res.refs.find((r) => r.kind === "dacs-3-agreement");
@@ -433,7 +452,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     await resignFixture(fx, [{ party: buyerDid, sign: signBuyer }]);
     const res = await verifyBundleCore("ref", depsFor(fx));
     expect(res.ok).toBe(false);
-    expect(res.reason).toMatch(/unsupported DACS-5 bundle outcome/i);
+    expect(res.reason).toMatch(/not an attestation bundle/i);
   });
 
   test("pre-commit phase names do not trigger the agreementRef requirement", async () => {
@@ -441,7 +460,9 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     delete fx.bundle.agreementRef;
     fx.bundle.outcome = "aborted-by-other";
     fx.bundle.settlementEvidence = [];
-    fx.bundle.phaseSummary = [{ index: 0, kind: "pre-commit-check", outcome: "ok" }];
+    fx.bundle.phaseSummary = [
+      { index: 0, kind: "vet-credentials", outcome: "ok" },
+    ];
     await resignFixture(fx, [
       { party: buyerDid, sign: signBuyer },
       { party: sellerDid, sign: signSeller },
@@ -462,10 +483,16 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     const amendment = { amendmentVersion: "1", jobId: "j1", reason: "refund" };
     const rating = { ratingVersion: "1", jobId: "j1", value: 5 };
     fx.bundle.amendments = [
-      { kind: "dacs-4-amendment", id: "amendment-j1", contentHash: contentHash(amendment) },
+      {
+        anchor: { kind: "storage-program", locator: "amendment-j1" },
+        contentHash: contentHash(amendment),
+      },
     ];
     fx.bundle.ratingRefs = [
-      { kind: "dacs-5-rating", id: "rating-j1", contentHash: contentHash(rating) },
+      {
+        anchor: { kind: "storage-program", locator: "rating-j1" },
+        contentHash: contentHash(rating),
+      },
     ];
     await resignFixture(fx, [
       { party: buyerDid, sign: signBuyer },
@@ -475,14 +502,14 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     const ok = await verifyBundleCore(
       "ref",
       depsFor(fx, {
-        resolveRef: async (kind) =>
-          kind === "dacs-3-agreement"
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
             ? fx.agreement
-            : kind === "dacs-4-evidence"
+            : ref.anchor.locator === "settlement-j1"
               ? fx.evidence
-              : kind === "dacs-4-amendment"
+              : ref.anchor.locator === "amendment-j1"
                 ? amendment
-                : kind === "dacs-5-rating"
+                : ref.anchor.locator === "rating-j1"
                   ? rating
                   : null,
       }),
@@ -492,14 +519,14 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     const bad = await verifyBundleCore(
       "ref",
       depsFor(fx, {
-        resolveRef: async (kind) =>
-          kind === "dacs-3-agreement"
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
             ? fx.agreement
-            : kind === "dacs-4-evidence"
+            : ref.anchor.locator === "settlement-j1"
               ? fx.evidence
-              : kind === "dacs-4-amendment"
+              : ref.anchor.locator === "amendment-j1"
                 ? { ...amendment, reason: "tampered" }
-                : kind === "dacs-5-rating"
+                : ref.anchor.locator === "rating-j1"
                   ? rating
                   : null,
       }),
@@ -520,17 +547,17 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.reason).toMatch(/not an attestation bundle/);
   });
 
-  test("passes the bundle's parties to resolveRef so resolution can owner-bind to the anchoring party (#70)", async () => {
+  test("passes the exact ref and bundle parties to resolution for owner binding (#70)", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     const seen: Array<readonly unknown[]> = [];
     const res = await verifyBundleCore(
       "ref",
       depsFor(fx, {
-        resolveRef: async (kind, jobId, parties) => {
-          seen.push([kind, jobId, parties]);
-          return kind === "dacs-3-agreement"
+        resolveAttestationRef: async (ref, jobId, parties) => {
+          seen.push([ref, jobId, parties]);
+          return ref.anchor.locator === "agreement-j1"
             ? fx.agreement
-            : kind === "dacs-4-evidence"
+            : ref.anchor.locator === "settlement-j1"
               ? fx.evidence
               : null;
         },

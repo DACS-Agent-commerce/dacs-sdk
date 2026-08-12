@@ -200,22 +200,30 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
   });
   test("txRefsMismatch → fail", async () => {
     const ev = payment();
-    expect((await verify(ev, { rail: { railId: "some-other-rail" } })).decision).toBe("fail");
+    expect((await verify(ev, { rail: { railType: "solana-spl" } })).decision).toBe("fail");
   });
   test("railNetworkMismatch → fail", async () => {
-    const ev = payment(); // txHash starts "polygon-amoy:"
-    expect((await verify(ev, { rail: { network: "ethereum" } })).decision).toBe("fail");
+    const ev = payment();
+    expect((await verify(ev, { rail: { railType: "solana-spl" } })).decision).toBe("fail");
   });
 
   test("wrongAttestationKind → fail", async () => {
     const ev = payment();
-    const ctx: EvidenceContext = { attestationRef: { kind: "wrong", contentHash: undefined } };
+    const ctx = {
+      attestationRef: {
+        anchor: { kind: "wrong", locator: "evidence" },
+        contentHash: "0".repeat(64),
+      },
+    } as unknown as EvidenceContext;
     expect((await verify(ev, ctx)).decision).toBe("fail");
   });
   test("attestationRefHashMismatch → fail", async () => {
     const ev = payment();
     const ctx: EvidenceContext = {
-      attestationRef: { kind: "dacs-4-evidence", contentHash: "0".repeat(64) },
+      attestationRef: {
+        anchor: { kind: "storage-program", locator: "evidence" },
+        contentHash: "0".repeat(64),
+      },
     };
     expect((await verify(ev, ctx)).decision).toBe("fail");
   });
@@ -253,6 +261,14 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
   const htlc = () => {
     const ev = payment();
     ev.phase = "pay-cross-chain-htlc";
+    ev.paymentTxRefs = [
+      {
+        kind: "htlc-claim",
+        chainId: 80002,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        claimTxHash: "0xclaim",
+      },
+    ];
     ev.settlementFinality = { model: "htlc-reveal", finalityObservedAt: 1 };
     return ev;
   };
@@ -307,6 +323,16 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
   test("crossChainAnchorPending → pass (success without a resolved anchor tx)", async () => {
     const ev = payment();
     ev.phase = "pay-cross-chain-liquidity-tank";
+    ev.paymentTxRefs = [
+      {
+        kind: "liquidity-tank",
+        bridgeId: "bridge-1",
+        sourceChainId: 8453,
+        destChainId: 80002,
+        lockTxHash: "0xlock",
+        releaseTxHash: "0xrelease",
+      },
+    ];
     ev.settlementFinality = { model: "liquidity-tank", finalityObservedAt: 1 };
     const ctx: EvidenceContext = { rail: { railType: "cross-chain-liquidity-tank" } };
     expect((await verify(ev, ctx)).decision).toBe("pass");
@@ -314,7 +340,12 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
   test("crossChainIdMatchingKindPass → pass (a valid cross-chain txRef kind)", async () => {
     const ev = htlc();
     ev.paymentTxRefs = [
-      { rail: "polygon-amoy-usdc", txHash: "polygon-amoy:0xclaim", kind: "htlc-claim" },
+      {
+        kind: "htlc-claim",
+        chainId: 80002,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        claimTxHash: "0xclaim",
+      },
     ];
     const ctx: EvidenceContext = {
       rail: { railType: "cross-chain-htlc", sourceFinalitySec: 120, safetyWindowSec: 600 },
@@ -322,7 +353,7 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     };
     expect((await verify(ev, ctx)).decision).toBe("pass");
   });
-  test("deliveryExtraPaymentFieldPass → pass (extra payment field tolerated on delivery)", async () => {
+  test("deliveryExtraPaymentFieldPass → pass (uniform §9.7 optional field)", async () => {
     const ev = delivery();
     ev.paymentAmount = { amount: "5", currency: "USDC" }; // stray, but not finality
     expect((await verify(ev)).decision).toBe("pass");

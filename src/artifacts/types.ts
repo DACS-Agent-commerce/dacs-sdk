@@ -1,19 +1,15 @@
 /**
  * DACS spine artifacts for the MVP fixed-price + x402 path (T3).
- * Field shapes track the reproducibly pinned DACS-Standard §14 oracle selected
- * by scripts/sync-vectors.mjs.
- *
- * The current oracle still identifies itself as dacsVersion 0.1 and retains
- * the legacy AttestationRef / ChainTxRef shapes even though the v0.3 prose has
- * moved on. That upstream oracle/prose divergence is tracked in
- * DACS-Standard#308; these types must not claim v0.3 fidelity until the oracle
- * and normative prose agree.
+ * Field shapes track the reproducibly pinned DACS-Standard `next` §14 oracle
+ * selected by scripts/sync-vectors.mjs. DACS-Standard#308 was resolved by
+ * Standard PR #310: the oracle and normative prose now agree on DACS-2 §7.5.2
+ * AttestationRef and DACS-4 §9.3 ChainTxRef.
  *
  * Each artifact is signed under its domain separator (see ./registry) over the
  * content hash of its signed scope (the object with the signature field omitted).
  */
 
-/** A cross-context identity reference, e.g. "web2:domain:alice.example" or "did:demos:agent:…". */
+/** A cross-context identity reference, e.g. "domain:alice.example" or "did:demos:agent:…". */
 export type ClaimRef = string;
 
 export interface ClaimRequirement {
@@ -164,11 +160,21 @@ export interface AgreementDocument {
   expiresAt: string;
 }
 
-/** A content-addressed reference to another artifact (kind + id + content hash). */
+/** DACS-2 §7.5.2 — the closed set of normative attestation anchor kinds. */
+export type AttestationAnchorKind = "storage-program" | "ipfs" | "https";
+
+/** DACS-2 §7.5.2 — where a referenced attestation is fetched. */
+export interface AttestationAnchor {
+  kind: AttestationAnchorKind;
+  locator: string;
+}
+
+/** DACS-2 §7.5.2 — one content-addressed reference to an anchored artifact. */
 export interface AttestationRef {
-  kind: string;
-  id: string;
+  anchor: AttestationAnchor;
   contentHash: string;
+  /** VC issuer or consensus-backed proxy validator-set ClaimReference. */
+  signer?: ClaimRef;
 }
 
 /** DACS-1 listing reference — carries the listing id, version, and content hash. */
@@ -178,20 +184,74 @@ export interface ListingRef {
   contentHash: string;
 }
 
-/** An on-chain transaction reference. */
-export interface TxRef {
-  rail: string;
-  txHash: string;
-  kind: string;
-  /** Block/ledger height the tx landed at — carried by rails that report it (e.g. §9.5.9 `demos`). */
-  blockNumber?: number;
-}
+/**
+ * DACS-4 §9.3 — the complete v0.x discriminated transaction-reference union.
+ * Variant-specific fields are deliberately not flattened: the discriminator is
+ * what lets verifiers derive the rail's canonical transaction identity (SB-1).
+ */
+export type ChainTxRef =
+  | { kind: "evm"; chainId: number; txHash: string }
+  | {
+      kind: "solana";
+      cluster: "mainnet" | "devnet" | "testnet";
+      signature: string;
+    }
+  | { kind: "demos"; txHash: string; blockNumber?: number }
+  | { kind: "storage-program"; address: string; writeTxHash: string }
+  | {
+      kind: "ap2";
+      mandateId: string;
+      providerRef: string;
+      protocolVersion: string;
+      receiptAttestation?: AttestationRef;
+    }
+  | {
+      kind: "x402";
+      httpResource: string;
+      paymentReceiptHash: string;
+      settlementTxHash?: string;
+      chainId?: number;
+      protocolVersion: string;
+    }
+  | {
+      kind: "htlc-lock";
+      chainId: number;
+      contractAddress: string;
+      lockTxHash: string;
+    }
+  | {
+      kind: "htlc-reveal";
+      chainId: number;
+      contractAddress: string;
+      revealTxHash: string;
+    }
+  | {
+      kind: "htlc-claim";
+      chainId: number;
+      contractAddress: string;
+      claimTxHash: string;
+    }
+  | {
+      kind: "htlc-refund";
+      chainId: number;
+      contractAddress: string;
+      refundTxHash: string;
+    }
+  | {
+      kind: "liquidity-tank";
+      bridgeId: string;
+      sourceChainId: number;
+      destChainId: number;
+      lockTxHash: string;
+      releaseTxHash?: string;
+      recoveryDeadline?: number;
+    };
 
-/** A settled payment amount. */
-export interface PaymentAmount {
-  amount: string;
-  currency: string;
-}
+/** DACS-4 §9.3 names TxRef as an alias of ChainTxRef. */
+export type TxRef = ChainTxRef;
+
+/** DACS-4 §9.7 paymentAmount is the shared PriceTerm shape. */
+export type PaymentAmount = PriceTerm;
 
 /** §9.7 settlement outcome. */
 export type SettlementOutcome = "success" | "failure";
@@ -209,12 +269,18 @@ export type SettlementFinalityModel =
 export type SettlementFinality =
   | {
       model: "block-depth";
-      finalityBlocks: number;
+      finalityBlocks?: number;
       finalityObservedAt: number;
     }
   | {
-      model: Exclude<SettlementFinalityModel, "block-depth">;
+      model: "commitment-level";
+      finalityCommitmentLevel?: "processed" | "confirmed" | "finalized";
+      finalityObservedAt: number;
+    }
+  | {
+      model: Exclude<SettlementFinalityModel, "block-depth" | "commitment-level">;
       finalityBlocks?: never;
+      finalityCommitmentLevel?: never;
       finalityObservedAt: number;
     };
 
@@ -249,30 +315,107 @@ export interface ArtifactSignature {
   value: string;
 }
 
-/** DACS-4 — evidence of a settlement (payment / delivery) phase. */
+/** DACS-4 §9.7 payment phase discriminator. */
+export type PaymentPhaseType =
+  | "pay-evm-erc20"
+  | "pay-solana-spl"
+  | "pay-cross-chain-htlc"
+  | "pay-cross-chain-liquidity-tank"
+  | "pay-ap2"
+  | "pay-x402"
+  | "pay-dem";
+
+/** DACS-4 §9.7 delivery phase discriminator. */
+export type DeliveryPhaseType =
+  | "deliver-storage-program"
+  | "deliver-entitlement"
+  | "deliver-attested-payload";
+
+/** DACS-1 §6.3 PhaseType — the closed v0.x pipeline set. */
+export type PhaseType =
+  | "vet-credentials"
+  | "negotiate-fixed-price"
+  | "negotiate-rfq"
+  | "negotiate-sealed-envelope"
+  | "negotiate-sealed-envelope-procurement"
+  | "commit-agreement"
+  | "commit-payee-bound-agreement"
+  | PaymentPhaseType
+  | DeliveryPhaseType
+  | "rate";
+
+/** Fields shared by every signed DACS-4 §9.7 SettlementEvidence variant. */
 interface SettlementEvidenceBase {
-  /** Pinned literal per DACS-4 §9.7 (verifySettlementEvidence already enforces it). */
   evidenceVersion: "1";
   jobId: string;
-  phase: string;
-  phaseIndex: number;
-  paymentTxRefs: TxRef[];
   observedAt: number;
-  /** Omitted from the signed scope when hashing. */
-  signature?: ArtifactSignature;
+  amendmentRefs?: AttestationRef[];
+  supersedesEvidenceRef?: AttestationRef;
+  /** Omitted from the signed scope when hashing (CORE §B.2). */
+  signature: ComponentSignature;
 }
 
+/** DACS-4 §9.7 — exact payment and delivery evidence variants. */
 export type SettlementEvidence =
   | (SettlementEvidenceBase & {
+      phase: PaymentPhaseType;
       outcome: "success";
+      reason?: never;
+      paymentTxRefs: ChainTxRef[];
       paymentAmount: PaymentAmount;
+      paymentFee?: PaymentAmount;
       settlementFinality: SettlementFinality;
+      deliverableContentHash?: never;
+      deliverableAnchor?: never;
+      attestationRef?: never;
     })
   | (SettlementEvidenceBase & {
+      phase: PaymentPhaseType;
       outcome: "failure";
-      reason?: string;
+      reason: string;
+      paymentTxRefs?: ChainTxRef[];
       paymentAmount?: PaymentAmount;
+      paymentFee?: PaymentAmount;
       settlementFinality?: never;
+      deliverableContentHash?: never;
+      deliverableAnchor?: never;
+      attestationRef?: never;
+    })
+  | (SettlementEvidenceBase & {
+      phase: Exclude<DeliveryPhaseType, "deliver-attested-payload">;
+      outcome: "success";
+      reason?: never;
+      paymentTxRefs?: ChainTxRef[];
+      paymentAmount?: PaymentAmount;
+      paymentFee?: PaymentAmount;
+      settlementFinality?: never;
+      deliverableContentHash: string;
+      deliverableAnchor: { kind: string; locator: string };
+      attestationRef?: AttestationRef;
+    })
+  | (SettlementEvidenceBase & {
+      phase: "deliver-attested-payload";
+      outcome: "success";
+      reason?: never;
+      paymentTxRefs?: ChainTxRef[];
+      paymentAmount?: PaymentAmount;
+      paymentFee?: PaymentAmount;
+      settlementFinality?: never;
+      deliverableContentHash: string;
+      deliverableAnchor: { kind: string; locator: string };
+      attestationRef: AttestationRef;
+    })
+  | (SettlementEvidenceBase & {
+      phase: DeliveryPhaseType;
+      outcome: "failure";
+      reason: string;
+      paymentTxRefs?: ChainTxRef[];
+      paymentAmount?: PaymentAmount;
+      paymentFee?: PaymentAmount;
+      settlementFinality?: never;
+      deliverableContentHash?: string;
+      deliverableAnchor?: { kind: string; locator: string };
+      attestationRef?: AttestationRef;
     });
 
 /** DACS-5 — a rating recorded as a standalone RatingRecord (§10.6). */
@@ -301,7 +444,7 @@ export type BundlePhaseErrorClass =
 /** A phase entry in the bundle's phaseSummary. */
 export interface PhaseSummaryEntry {
   index: number;
-  kind: string;
+  kind: PhaseType;
   outcome: BundlePhaseOutcome;
   errorClass?: BundlePhaseErrorClass;
   txRefs?: TxRef[];
@@ -314,6 +457,16 @@ export interface PhaseSummaryEntry {
   attestationRef?: AttestationRef;
 }
 
+/**
+ * DACS-5 §10.4.1 legacy-read phase entry. Historical AttestationBundle
+ * producers used pre-registry phase labels; consumers retain those strings for
+ * replay, while every FaultAttestationBundle write uses closed `PhaseType`.
+ */
+export interface LegacyBundlePhaseEntry
+  extends Omit<PhaseSummaryEntry, "kind"> {
+  kind: string;
+}
+
 export interface CancellationMarker {
   claimedPolicy: string;
 }
@@ -321,7 +474,7 @@ export interface CancellationMarker {
 /** A per-party bundle signature: `{ party, algorithm, value }`. */
 export interface BundleSignature {
   party: string;
-  algorithm: string;
+  algorithm: ComponentSignatureAlgorithm;
   value: string;
 }
 
@@ -331,9 +484,15 @@ export type FaultedParty = BundlePartyRole | "none";
 /** Fields shared by the legacy and v0.3 DACS-5 bundle types. */
 interface BundleFields {
   jobId: string;
-  outcome: string;
-  /** Per-copy field; omitted from the signed scope (§10.4.1). */
-  anchoredByRole?: BundlePartyRole;
+  outcome:
+    | "completed"
+    | "failed-perm"
+    | "failed-counterparty"
+    | "failed-substrate"
+    | "aborted-by-self"
+    | "aborted-by-other";
+  /** Per-copy field; REQUIRED and omitted from the signed scope (§10.4.1). */
+  anchoredByRole: BundlePartyRole;
   listingRef: ListingRef;
   agreementRef?: AttestationRef;
   cancellation?: CancellationMarker;
@@ -347,16 +506,17 @@ interface BundleFields {
   railRegistryVersion: number;
   finalisedAt: number;
   /** Omitted from the signed scope (§10.4.1). */
-  signatures?: BundleSignature[];
+  signatures: BundleSignature[];
 }
 
-/** DACS-5 legacy session audit unit; retained for consumer compatibility. */
-export interface AttestationBundle extends BundleFields {
+/** DACS-5 legacy session audit unit; retained for read compatibility only. */
+export type AttestationBundle = Omit<BundleFields, "phaseSummary"> & {
   /** Pinned literal per DACS-5 §10.4.1 (legacy two-party bundle line). */
   bundleVersion: "1";
   faultBundleVersion?: never;
   faultedParty?: never;
-}
+  phaseSummary: LegacyBundlePhaseEntry[];
+};
 
 /** DACS-5 v0.3 production type with absolute, hashed fault attribution. */
 export interface FaultAttestationBundle extends BundleFields {

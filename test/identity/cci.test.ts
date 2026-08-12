@@ -7,6 +7,8 @@ import {
   cciHasClaim,
   cciClaimProof,
   cciClaimHasProof,
+  type CciRecord,
+  type CciWeb2Claim,
 } from "../../src/identity/cci.js";
 
 const PRIMARY =
@@ -192,11 +194,12 @@ describe("parseCciRecord — ud + pqc claim families", () => {
     },
   };
 
-  test("a DNS domain identity lands as a web2:domain claim (carrying its proof)", () => {
+  test("a DNS domain identity emits the canonical domain: ref (legacy alias still resolves)", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
     const dom = rec.web2.find((c) => c.platform === "domain");
-    expect(dom?.ref).toBe("web2:domain:alice.example");
+    expect(dom?.ref).toBe("domain:alice.example");
     expect(dom?.proof).toBe("https://alice.example/.well-known/demos-cci.txt");
+    // The legacy web2:domain: form remains a permanent read-path alias.
     expect(cciClaimHasProof(rec, "web2:domain:alice.example")).toBe(true);
   });
 
@@ -271,5 +274,274 @@ describe("parseClaimRef (reverse-lookup decomposition)", () => {
   test("returns null for the primary claim / non-linked refs", () => {
     expect(parseClaimRef(PRIMARY)).toBeNull();
     expect(parseClaimRef("not-a-ref")).toBeNull();
+  });
+});
+
+describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", () => {
+  // A live GCR web2 payload keyed by platform, wrapped in the deployed envelope.
+  const gcr = (web2: Record<string, unknown>) => ({
+    result: 200,
+    response: { xm: {}, ud: [], pqc: {}, web2 },
+  });
+
+  // Hand-built CciRecord holding a single web2 claim — simulates a HISTORICAL
+  // artifact whose stored ref predates canonicalisation. Deliberately NOT built
+  // via parseCciRecord (that would canonicalise the ref away).
+  const recordWithWeb2Ref = (handle: string, ref: string): CciRecord => {
+    const claim: CciWeb2Claim = { kind: "web2", platform: "domain", handle, ref };
+    return {
+      primaryClaim: PRIMARY,
+      web2: [claim],
+      wallets: [],
+      ud: [],
+      pqc: [],
+      claims: [claim],
+      raw: {},
+    };
+  };
+
+  test("T1: domain emits domain:<host>; non-domain platforms keep web2:<platform>:<handle>", () => {
+    const rec = parseCciRecord(
+      PRIMARY,
+      gcr({
+        domain: [{ username: "alice.example" }],
+        twitter: [{ username: "alice" }],
+        github: [{ username: "alice-dev" }],
+      }),
+    );
+    const byPlatform = Object.fromEntries(rec.web2.map((c) => [c.platform, c.ref]));
+    expect(byPlatform["domain"]).toBe("domain:alice.example");
+    expect(byPlatform["twitter"]).toBe("web2:twitter:alice");
+    expect(byPlatform["github"]).toBe("web2:github:alice-dev");
+  });
+
+  test("T2: legacy web2:domain: query resolves against a canonical store", () => {
+    const rec = parseCciRecord(
+      PRIMARY,
+      gcr({
+        domain: [
+          { username: "alice.example", proof: "https://alice.example/.well-known/demos-cci.txt" },
+        ],
+      }),
+    );
+    expect(cciHasClaim(rec, "web2:domain:alice.example")).toBe(true);
+    expect(cciClaimProof(rec, "web2:domain:alice.example")).toBe(
+      "https://alice.example/.well-known/demos-cci.txt",
+    );
+  });
+
+  test("T3: canonical domain: query resolves against a historical web2:domain: record", () => {
+    const rec = recordWithWeb2Ref("alice.example", "web2:domain:alice.example");
+    expect(cciHasClaim(rec, "domain:alice.example")).toBe(true);
+  });
+
+  test("T4: parseClaimRef maps domain: and the web2:domain: alias to the same shape", () => {
+    const shape = { kind: "web2", platform: "domain", handle: "alice.example" };
+    expect(parseClaimRef("domain:alice.example")).toEqual(shape);
+    expect(parseClaimRef("web2:domain:alice.example")).toEqual(shape);
+  });
+
+  test("T5: case-variant domain handles collapse to one canonical claim", () => {
+    const rec = parseCciRecord(
+      PRIMARY,
+      gcr({ domain: [{ username: "Alice.example" }, { username: "alice.example" }] }),
+    );
+    const domains = rec.web2.filter((c) => c.platform === "domain");
+    expect(domains).toHaveLength(1);
+    expect(domains[0]!.ref).toBe("domain:alice.example");
+  });
+
+  test("T6: a unicode domain emits a punycode ref; handle keeps its original encoding", () => {
+    const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "Bücher.example" }] }));
+    const dom = rec.web2.find((c) => c.platform === "domain");
+    expect(dom?.ref).toBe("domain:xn--bcher-kva.example");
+    expect(dom?.handle).toBe("Bücher.example");
+  });
+
+  test("T7: legacy and unicode queries resolve against a punycode store (IDNA fold)", () => {
+    const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "Bücher.example" }] }));
+    expect(cciHasClaim(rec, "web2:domain:Bücher.example")).toBe(true);
+    expect(cciHasClaim(rec, "domain:Bücher.example")).toBe(true);
+  });
+
+  test("T8: unresolvable domain hosts never collide or false-match", () => {
+    const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
+    expect(cciHasClaim(rec, "web2:domain:not a host")).toBe(false);
+
+    // Two DIFFERENT unresolvable refs must not collapse to the same string.
+    const bad = recordWithWeb2Ref("not a host", "web2:domain:not a host");
+    expect(cciHasClaim(bad, "web2:domain:also not a host")).toBe(false);
+  });
+
+  test("T9: a domain entry whose host cannot canonicalise is dropped (no legacy fallback)", () => {
+    const rec = parseCciRecord(
+      PRIMARY,
+      gcr({ domain: [{ username: "not a host" }], twitter: [{ username: "alice" }] }),
+    );
+    expect(rec.web2.some((c) => c.platform === "domain")).toBe(false);
+    expect(rec.claims.some((c) => c.ref.startsWith("domain:"))).toBe(false);
+    expect(rec.claims.some((c) => c.ref.startsWith("web2:domain:"))).toBe(false);
+    // The sibling twitter claim is unaffected.
+    expect(rec.web2.map((c) => c.ref)).toEqual(["web2:twitter:alice"]);
+  });
+
+  test("T10: parseCciRecord never emits a web2:domain: ref (canonical + legacy shapes)", () => {
+    const payloads: unknown[] = [
+      gcr({ domain: [{ username: "Alice.example" }], twitter: [{ username: "a" }] }),
+      gcr({ domain: [{ username: "Bücher.example" }] }),
+      // Legacy flat linkedSocials fallback carrying a domain.
+      { linkedSocials: { domain: "Alice.example", twitter: "alice" } },
+    ];
+    for (const p of payloads) {
+      const rec = parseCciRecord(PRIMARY, p);
+      for (const c of rec.claims) {
+        expect(c.ref.startsWith("web2:domain:")).toBe(false);
+      }
+    }
+  });
+
+  test("T11: wallet and pqc refs still match exactly (no alias folding)", () => {
+    const rec = parseCciRecord(PRIMARY, {
+      result: 200,
+      response: {
+        xm: { evm: { mainnet: [{ address: "0xAbC0000000000000000000000000000000000001" }] } },
+        web2: {},
+        ud: [],
+        pqc: [{ algorithm: "falcon", address: "falconpk1", signature: "s" }],
+      },
+    });
+    // wallet: a different-cased address is a different claim.
+    expect(cciHasClaim(rec, "xm:evm:0xabc0000000000000000000000000000000000001")).toBe(false);
+    expect(cciHasClaim(rec, "xm:evm:0xAbC0000000000000000000000000000000000001")).toBe(true);
+    // pqc: the public key is case-significant.
+    expect(cciHasClaim(rec, "cci-pqc:falcon:FALCONPK1")).toBe(false);
+    expect(cciHasClaim(rec, "cci-pqc:falcon:falconpk1")).toBe(true);
+  });
+});
+
+describe("domain host validation / reject-list (canonicalDomainHost)", () => {
+  const gcr = (web2: Record<string, unknown>) => ({
+    result: 200,
+    response: { xm: {}, ud: [], pqc: {}, web2 },
+  });
+  const domRef = (username: string): string | null => {
+    const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username }] }));
+    const d = rec.web2.find((c) => c.platform === "domain");
+    return d ? d.ref : null;
+  };
+
+  test("R1: path/query/fragment/credential/port inputs emit NO domain claim", () => {
+    for (const bad of [
+      "alice.example/path",
+      "alice.example?q=1",
+      "alice.example#frag",
+      "user:pass@alice.example",
+      "alice.example:8080",
+    ]) {
+      expect(domRef(bad)).toBeNull();
+    }
+  });
+
+  test("R2: those inputs do NOT false-match a record holding 'alice.example'", () => {
+    const recA = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
+    // sanity: the legitimate host does resolve
+    expect(cciHasClaim(recA, "domain:alice.example")).toBe(true);
+    for (const bad of ["alice.example/path", "alice.example?q=1", "alice.example#frag"]) {
+      expect(cciHasClaim(recA, "domain:" + bad)).toBe(false);
+      expect(cciHasClaim(recA, "web2:domain:" + bad)).toBe(false);
+    }
+  });
+
+  test("R3: IPv4 literals rejected in all forms and never match each other", () => {
+    const ipv4 = ["192.0.2.1", "0xc0.0x00.0x02.0x01", "3221225985"];
+    for (const x of ipv4) expect(domRef(x)).toBeNull();
+    // none matches a record built from another IPv4 spelling
+    for (const store of ipv4) {
+      const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username: store }] }));
+      expect(rec.web2.some((c) => c.platform === "domain")).toBe(false);
+      for (const q of ipv4) {
+        expect(cciHasClaim(rec, "domain:" + q)).toBe(false);
+      }
+    }
+  });
+
+  test("R4: IPv6 literals (bracketed and bare) emit no domain claim", () => {
+    expect(domRef("[2001:db8::1]")).toBeNull();
+    expect(domRef("2001:db8::1")).toBeNull();
+  });
+
+  test("R5: legitimate hosts still emit (reject-list did not over-reject)", () => {
+    expect(domRef("alice.example")).toBe("domain:alice.example");
+    expect(domRef("Alice.Example")).toBe("domain:alice.example");
+    expect(domRef("Bücher.example")).toBe("domain:xn--bcher-kva.example");
+  });
+
+  test("R6: parseClaimRef matches the domain scheme case-insensitively", () => {
+    const shape = { kind: "web2", platform: "domain", handle: "alice.example" };
+    expect(parseClaimRef("Domain:alice.example")).toEqual(shape);
+    expect(parseClaimRef("DOMAIN:alice.example")).toEqual(shape);
+    // and the canonical lower-case form still parses (unchanged)
+    expect(parseClaimRef("domain:alice.example")).toEqual(shape);
+  });
+
+  test("R7: trailing-dot forms emit no claim and never false-match the bare host", () => {
+    // ASCII trailing dots, and a terminal ideographic full stop that
+    // domainToASCII MAPS to "." (verified: "alice.example。" -> "alice.example.").
+    for (const bad of ["alice.example.", "alice.example..", "alice.example。"]) {
+      expect(domRef(bad)).toBeNull();
+    }
+    const recA = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
+    for (const bad of ["alice.example.", "alice.example.."]) {
+      expect(cciHasClaim(recA, "domain:" + bad)).toBe(false);
+      expect(cciHasClaim(recA, "web2:domain:" + bad)).toBe(false);
+    }
+    // Universal invariant: no emitted domain ref may end in a dot.
+    const emittedRefs = [
+      "alice.example",
+      "Bücher.example",
+      "a..b",
+      "alice.example.",
+      "alice.example．",
+    ]
+      .map(domRef)
+      .filter((r): r is string => r !== null);
+    for (const r of emittedRefs) expect(r.endsWith(".")).toBe(false);
+  });
+
+  test("R8: percent-encoded forms emit no claim and do not false-match", () => {
+    // "alice%2eexample" decodes to "alice.example" (live bypass); "%2Fpath" is
+    // additionally stripped by domainToASCII (defence-in-depth).
+    for (const bad of ["alice%2eexample", "alice.example%2Fpath"]) {
+      expect(domRef(bad)).toBeNull();
+    }
+    const recA = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
+    for (const bad of ["alice%2eexample", "alice.example%2Fpath"]) {
+      expect(cciHasClaim(recA, "domain:" + bad)).toBe(false);
+      expect(cciHasClaim(recA, "web2:domain:" + bad)).toBe(false);
+    }
+  });
+
+  test("R9: a mixed-case 'Domain'/'DOMAIN' platform key still emits canonical domain:", () => {
+    for (const key of ["Domain", "DOMAIN"]) {
+      const rec = parseCciRecord(PRIMARY, gcr({ [key]: [{ username: "alice.example" }] }));
+      const claim = rec.web2.find((c) => c.ref.startsWith("domain:"));
+      expect(claim?.ref).toBe("domain:alice.example");
+      // No legacy web2:<Key>:… form leaks for a domain-keyed entry.
+      expect(rec.claims.some((c) => c.ref.toLowerCase().startsWith("web2:domain:"))).toBe(false);
+      // The stored platform field keeps the original key casing.
+      expect(claim?.platform).toBe(key);
+    }
+  });
+
+  test("R10: a whitespace-padded query resolves symmetrically (fold trims like emit)", () => {
+    const recA = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
+    expect(cciHasClaim(recA, "domain: alice.example ")).toBe(true);
+    expect(cciHasClaim(recA, "web2:domain: alice.example ")).toBe(true);
+  });
+
+  test("R11: a mapped terminal ideographic dot is rejected at MATCH time, not just emit", () => {
+    const recA = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
+    expect(cciHasClaim(recA, "domain:alice.example。")).toBe(false);
+    expect(cciHasClaim(recA, "web2:domain:alice.example。")).toBe(false);
   });
 });

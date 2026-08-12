@@ -67,18 +67,26 @@ const session = (): TwoSidedSession & {
   outcome: "completed" as BundleOutcome,
   listingRef: { listingId: "lst-isc-1", version: 1, contentHash: "a".repeat(64) },
   agreementRef: {
-    id: "dacs3:commit:isc-session-1",
-    kind: "dacs-3-agreement",
+    anchor: {
+      kind: "storage-program",
+      locator: "dacs3:commit:isc-session-1",
+    },
     contentHash: "b".repeat(64),
   },
   phaseSummary: [
     { index: 0, kind: "vet-credentials", outcome: "ok" },
-    { index: 1, kind: "commit", outcome: "ok" },
-    { index: 2, kind: "settle", outcome: "ok" },
+    { index: 1, kind: "commit-agreement", outcome: "ok" },
+    { index: 2, kind: "pay-x402", outcome: "ok" },
   ],
   vetRecords: [],
   settlementEvidence: [
-    { id: "dacs4:payment:isc-session-1", kind: "dacs-4-evidence", contentHash: "c".repeat(64) },
+    {
+      anchor: {
+        kind: "storage-program",
+        locator: "dacs4:payment:isc-session-1",
+      },
+      contentHash: "c".repeat(64),
+    },
   ],
   recipeRegistryVersion: 1,
   railRegistryVersion: 1,
@@ -165,7 +173,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     expect(attestationBundleHash(golden("seller"))).toBe(GOLDEN_HASH);
   });
 
-  test("ISC-8: v0.3 production migrates legacy shared fields without reusing its discriminator", async () => {
+  test("ISC-8 ANTI: v0.3 production refuses legacy MVP shared-field shapes", async () => {
     const g = golden("buyer");
     const stub = () => new Uint8Array(64);
     const partyOf = (role: "buyer" | "seller") => {
@@ -174,27 +182,22 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     };
 
     expect(g.bundleVersion).toBe("1");
-    const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
-      jobId: g.jobId,
-      outcome: g.outcome as BundleOutcome,
-      listingRef: g.listingRef,
-      agreementRef: g.agreementRef,
-      phaseSummary: g.phaseSummary,
-      vetRecords: g.vetRecords,
-      settlementEvidence: g.settlementEvidence,
-      recipeRegistryVersion: g.recipeRegistryVersion,
-      railRegistryVersion: g.railRegistryVersion,
-      finalisedAt: g.finalisedAt,
-      buyer: partyOf("buyer"),
-      seller: partyOf("seller"),
-    });
-
-    expect(sellerCopy).toBeDefined();
-    expect(buyerCopy).toBeDefined();
-    expect(buyerCopy).toMatchObject({ faultBundleVersion: "1", faultedParty: "none" });
-    expect(buyerCopy).not.toHaveProperty("bundleVersion");
-    expect(attestationBundleHash(buyerCopy!)).not.toBe(GOLDEN_HASH);
-    expect(attestationBundleHash(buyerCopy!)).toBe(attestationBundleHash(sellerCopy!));
+    await expect(
+      buildTwoSidedBundle({
+        jobId: g.jobId,
+        outcome: g.outcome as BundleOutcome,
+        listingRef: g.listingRef,
+        agreementRef: g.agreementRef,
+        phaseSummary: g.phaseSummary,
+        vetRecords: g.vetRecords,
+        settlementEvidence: g.settlementEvidence,
+        recipeRegistryVersion: g.recipeRegistryVersion,
+        railRegistryVersion: g.railRegistryVersion,
+        finalisedAt: g.finalisedAt,
+        buyer: partyOf("buyer"),
+        seller: partyOf("seller"),
+      }),
+    ).rejects.toThrow(/do not form a valid FaultAttestationBundle/i);
   });
 
   // Transcribed from the SPEC, not from the implementation's constant. The previous version of
@@ -253,7 +256,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       ...s,
       outcome: "aborted-by-other",
       faultedParty: "seller",
-      phaseSummary: [{ index: 0, kind: "pre-commit-check", outcome: "ok" }],
+      phaseSummary: [{ index: 0, kind: "vet-credentials", outcome: "ok" }],
       settlementEvidence: [],
     });
     expect(buyerCopy).not.toHaveProperty("agreementRef");
@@ -269,7 +272,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
         outcome: "failed-perm",
         faultedParty: "buyer",
         settlementEvidence: [],
-        phaseSummary: [{ index: 0, kind: "commit", outcome: "ok" }],
+        phaseSummary: [{ index: 0, kind: "commit-agreement", outcome: "ok" }],
       }),
     ).rejects.toThrow(/agreementRef is required once/i);
     await expect(
@@ -278,8 +281,13 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
         outcome: "failed-perm",
         faultedParty: "buyer",
         settlementEvidence: [],
-        phaseSummary: [{ index: 0, kind: "negotiate", outcome: "fail" }],
-        amendments: [{ id: "refund-1", kind: "dacs-4-amendment", contentHash: "f".repeat(64) }],
+        phaseSummary: [{ index: 0, kind: "negotiate-fixed-price", outcome: "fail" }],
+        amendments: [
+          {
+            anchor: { kind: "storage-program", locator: "refund-1" },
+            contentHash: "f".repeat(64),
+          },
+        ],
       }),
     ).rejects.toThrow(/agreementRef is required once/i);
   });
@@ -374,7 +382,12 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       outcome: "failed-counterparty",
       faultedParty: "seller",
       phaseSummary: [
-        { index: 0, kind: "settle", outcome: "fail", errorClass: "counterparty" } as never,
+        {
+          index: 0,
+          kind: "pay-x402",
+          outcome: "fail",
+          errorClass: "counterparty",
+        },
       ],
     });
     expect(buyerCopy?.phaseSummary[0]).toMatchObject({ errorClass: "counterparty" });
@@ -387,7 +400,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
         ...session(),
         phaseSummary: [
           { index: 0, kind: "vet-credentials", outcome: "ok" },
-          { index: 0, kind: "commit", outcome: "ok" },
+          { index: 0, kind: "commit-agreement", outcome: "ok" },
         ],
       }),
     ).rejects.toThrow(/do not form a valid FaultAttestationBundle/i);
@@ -467,8 +480,18 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
   test("ISC-10.2: carries current optional bundle fields in the signed scope", async () => {
     const { buyerCopy, sellerCopy } = await buildTwoSidedBundle({
       ...session(),
-      amendments: [{ id: "refund-1", kind: "dacs-4-amendment", contentHash: "f".repeat(64) }],
-      ratingRefs: [{ id: "rating-1", kind: "dacs-5-rating", contentHash: "1".repeat(64) }],
+      amendments: [
+        {
+          anchor: { kind: "storage-program", locator: "refund-1" },
+          contentHash: "f".repeat(64),
+        },
+      ],
+      ratingRefs: [
+        {
+          anchor: { kind: "storage-program", locator: "rating-1" },
+          contentHash: "1".repeat(64),
+        },
+      ],
     });
     expect(buyerCopy?.amendments).toHaveLength(1);
     expect(buyerCopy?.ratingRefs).toHaveLength(1);
@@ -484,7 +507,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       outcome: "aborted-by-other",
       faultedParty: "seller",
       cancellation: { claimedPolicy: "pre-commit" },
-      phaseSummary: [{ index: 0, kind: "negotiate", outcome: "fail" }],
+      phaseSummary: [{ index: 0, kind: "negotiate-fixed-price", outcome: "fail" }],
       settlementEvidence: [],
     });
     expect(buyerCopy?.cancellation).toEqual({ claimedPolicy: "pre-commit" });

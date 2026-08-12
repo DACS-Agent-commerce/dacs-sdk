@@ -36,12 +36,15 @@ const deps: BundleCopyDeps = {
 
 /** A structurally valid DACS-5 bundle body. */
 function body(over: Record<string, unknown> = {}) {
-  return {
+  const value = {
     bundleVersion: "1",
     jobId: "job-1",
     outcome: "completed",
     listingRef: { listingId: "svc", version: 1, contentHash: sha256Hex("listing") },
-    agreementRef: { kind: "dacs-3-agreement", id: "agreement-job-1", contentHash: sha256Hex("agr") },
+    agreementRef: {
+      anchor: { kind: "storage-program", locator: "agreement-job-1" },
+      contentHash: sha256Hex("agr"),
+    },
     parties: [
       { role: "buyer", bundleHash: sha256Hex(BUYER.did), primaryClaim: BUYER.did },
       { role: "seller", bundleHash: sha256Hex(SELLER.did), primaryClaim: SELLER.did },
@@ -49,20 +52,29 @@ function body(over: Record<string, unknown> = {}) {
     phaseSummary: [
       {
         index: 0,
-        kind: "settle",
+        kind: "pay-x402",
         outcome: "ok",
-        attestationRef: { kind: "dacs-4-evidence", id: "e", contentHash: sha256Hex("e") },
+        attestationRef: {
+          anchor: { kind: "storage-program", locator: "e" },
+          contentHash: sha256Hex("e"),
+        },
       },
     ],
     vetRecords: [],
     settlementEvidence: [
-      { kind: "dacs-4-evidence", id: "e", contentHash: sha256Hex("e") },
+      {
+        anchor: { kind: "storage-program", locator: "e" },
+        contentHash: sha256Hex("e"),
+      },
     ],
     recipeRegistryVersion: 1,
     railRegistryVersion: 1,
     finalisedAt: 1780000000000,
     ...over,
   };
+  return Object.fromEntries(
+    Object.entries(value).filter(([, field]) => field !== undefined),
+  );
 }
 
 /** Sign a bundle body over the §10.4.1 scope (omits signatures + anchoredByRole). */
