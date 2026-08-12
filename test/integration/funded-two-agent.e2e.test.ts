@@ -4209,6 +4209,7 @@ async function closeDurableDetachedRoleBundles(input: {
   } satisfies DurableBuyerBundleFinalizationProvider;
 
   const {
+    verifiedListing: _verifiedListing,
     seller: sellerSigner,
     counterSignatures: _counterSignatures,
     bindingSigner: _bindingSigner,
@@ -4231,6 +4232,11 @@ async function closeDurableDetachedRoleBundles(input: {
       },
     },
   };
+  requireCondition(
+    Object.keys(requestVerificationInput).sort().join(",") ===
+      "agreement,agreementRef,dependencies,finalisedAt,fulfilment,seller,session,sessionArtifacts",
+    "buyer-verification-input-shape-invalid",
+  );
   const request = await diagnosticStep("bundle-request-prepare", () =>
     prepareCompletedSellerBundleCounterSignatureRequest(requestInput)
   );
