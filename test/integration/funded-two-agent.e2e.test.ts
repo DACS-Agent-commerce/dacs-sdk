@@ -1809,6 +1809,21 @@ function legacyFacilitatorRequirements(
   return structuredClone({ ...requirements, extra });
 }
 
+function agreementBindingFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (/input is not exact/.test(message)) return "input-not-exact";
+  if (/non-normative Listing or agreement shape/.test(message)) return "shape-invalid";
+  if (/exact verified Listing pin/.test(message)) return "listing-pin-mismatch";
+  if (/fixed-price agreements/.test(message)) return "pattern-mismatch";
+  if (/price|pricing/.test(message)) return "price-mismatch";
+  if (/deliverable/.test(message)) return "deliverable-mismatch";
+  if (/payee-bound|pay phases|payout/i.test(message)) return "payout-mismatch";
+  if (/parties/.test(message)) return "party-mismatch";
+  if (/authenticated finality time/.test(message)) return "finality-time-invalid";
+  if (/deadline exceeds/.test(message)) return "deadline-invalid";
+  return "unclassified";
+}
+
 function commerceState(): CommerceState {
   return {
     loseResponseAcknowledgement: true,
@@ -2036,8 +2051,8 @@ async function createSellerRuntime(input: {
         },
         committedAt: commitment.committedAt,
       });
-    } catch {
-      return rejectColdAuthority("agreement-binding-invalid");
+    } catch (error) {
+      return rejectColdAuthority(`agreement-binding-${agreementBindingFailure(error)}`);
     }
     const agreementSeparator = "agreementVersion" in agreement.agreement
       ? ARTIFACT_SEPARATORS.AgreementDocument
