@@ -2,22 +2,30 @@ import { types as nodeTypes } from "node:util";
 
 import {
   canonicalize,
-  canonicalizeDecimal,
   contentHash,
   sha256Hex,
 } from "../canonical/index.js";
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
-import { DacsError, SubstrateError } from "../errors.js";
+import {
+  CounterpartyError,
+  DacsError,
+  SubstrateError,
+  TransientError,
+} from "../errors.js";
 import {
   COMPONENT_SIGNATURE_ALGORITHMS,
+  isComponentSignature,
   signComponentArtifact,
   type BuildComponentSignatureOptions,
 } from "../artifacts/signatures.js";
 import type {
   AgreementArtifact,
+  AgreementCommitmentRecord,
   AnchorReceipt,
+  AttestationRef,
   ChainTxRef,
+  CommitmentRecord,
   ComponentSignature,
   FinalityCommitmentRecord,
   Listing,
@@ -25,15 +33,24 @@ import type {
 } from "../artifacts/types.js";
 import {
   isAgreementArtifact,
-  isAnchorReceipt,
+  isAttestationRef,
   isChainTxRef,
+  isCommitmentRecord,
   isFinalityCommitmentRecord,
   isListing,
+  isReadableAnchorReceipt,
+  isReadableFinalityCommitmentRecord,
 } from "../artifacts/validators.js";
-import type { VerifiedListingInput } from "./fixedPrice.js";
+import {
+  deriveMeteredPriceTerm,
+  type VerifiedListingInput,
+} from "./fixedPrice.js";
+import { requireCanonicalJobId } from "./jobId.js";
 
 export const FINALITY_COMMITMENT_SEPARATOR =
   "dacs-finality-commitment:v1:" as const satisfies DomainSeparator;
+export const LEGACY_COMMITMENT_SEPARATOR =
+  "dacs-commitment:v1:" as const satisfies DomainSeparator;
 
 export type CommitmentVerificationDisposition =
   | "valid"
@@ -42,7 +59,7 @@ export type CommitmentVerificationDisposition =
   | "error";
 
 export interface CommitmentSignatureVerificationInput {
-  purpose: "agreement" | "finality-commitment";
+  purpose: "agreement" | "legacy-commitment" | "finality-commitment";
   signedBytes: Uint8Array;
   algorithm: string;
   signer: string;
@@ -55,15 +72,28 @@ export type CommitmentSignatureVerifier = (
   | Promise<CommitmentVerificationDisposition>
   | CommitmentVerificationDisposition;
 
-export interface AnchoredFinalityCommitment {
+interface AnchoredCommitmentBase {
   record: unknown;
   nativeAddress: string;
   anchorTxRef: ChainTxRef;
   anchorReceipt: AnchorReceipt;
 }
 
+export interface AnchoredFinalityCommitment extends AnchoredCommitmentBase {
+  legacySignature?: never;
+}
+
+export interface AnchoredLegacyCommitment extends AnchoredCommitmentBase {
+  /** Historical external/carried DACS-3 v0.1-v0.3 commitment signature. */
+  legacySignature: ComponentSignature;
+}
+
+export type AnchoredAgreementCommitment =
+  | AnchoredFinalityCommitment
+  | AnchoredLegacyCommitment;
+
 export type FinalityCommitmentLookup =
-  | { disposition: "present"; anchored: AnchoredFinalityCommitment }
+  | { disposition: "present"; anchored: AnchoredAgreementCommitment }
   | { disposition: "absent" }
   | { disposition: "indeterminate"; reason: string };
 
@@ -71,37 +101,60 @@ export type FinalityCommitmentLookup =
  * SR-2 boundary. `absent` MUST mean authoritative absence under the binding's
  * declared policy; an ordinary not-found/timeout is `indeterminate` (CORE §5.1).
  */
-export interface FinalityCommitmentProvider {
+export interface FinalityCommitmentReader {
   resolve: (
     logicalAddress: string,
   ) => Promise<FinalityCommitmentLookup> | FinalityCommitmentLookup;
-  submit: (
-    logicalAddress: string,
-    record: FinalityCommitmentRecord,
-  ) => Promise<AnchoredFinalityCommitment>;
   /** Authenticate evidence and every substrate-specific transaction/writer/nonce binding. */
   verifyAnchorReceipt: (
-    anchored: Readonly<AnchoredFinalityCommitment>,
+    anchored: Readonly<AnchoredAgreementCommitment>,
   ) =>
     | Promise<CommitmentVerificationDisposition>
     | CommitmentVerificationDisposition;
 }
 
-export interface CommitFixedPriceAgreementInput {
+export interface FinalityCommitmentProvider extends FinalityCommitmentReader {
+  submit: (
+    logicalAddress: string,
+    record: FinalityCommitmentRecord,
+  ) => Promise<AnchoredFinalityCommitment>;
+}
+
+export interface CommitmentSessionPartyBinding {
+  primaryClaim: string;
+  bundleHash: string;
+  vetRecordRef: AttestationRef;
+}
+
+/** Exact authenticated CORE §B.5 facts owned by the executing session. */
+export interface CommitmentSessionBinding {
+  jobId: string;
+  listingRef: ListingPin;
+  phaseKind: "commit-agreement" | "commit-payee-bound-agreement";
+  orchestrator: string;
+  buyer: CommitmentSessionPartyBinding;
+  seller: CommitmentSessionPartyBinding;
+}
+
+interface CommitmentBindingInput {
   agreement: AgreementArtifact;
   verifiedListing: VerifiedListingInput;
-  /** Authenticated CORE §B.5 session orchestrator primary claim (CA-6). */
-  orchestrator: string;
+  session: CommitmentSessionBinding;
+}
+
+export interface CommitFixedPriceAgreementInput extends CommitmentBindingInput {
   /** Record construction time only; never used as authoritative committedAt (CA-8). */
   createdAt: number;
   commitmentSigner: BuildComponentSignatureOptions;
 }
 
-export interface FinalizedAgreementCommitment {
+export interface ReadLegacyFixedPriceAgreementCommitmentInput
+  extends CommitmentBindingInput {}
+
+interface FinalizedAgreementCommitmentBase {
   logicalAddress: string;
   nativeAddress: string;
   agreementHash: string;
-  record: FinalityCommitmentRecord;
   anchorTxRef: ChainTxRef;
   anchorReceipt: AnchorReceipt;
   /** Derived exclusively from verified `anchorReceipt.blockRef.timestamp`. */
@@ -109,18 +162,45 @@ export interface FinalizedAgreementCommitment {
   resumed: boolean;
 }
 
+export interface FinalizedFinalityAgreementCommitment
+  extends FinalizedAgreementCommitmentBase {
+  recordKind: "finality";
+  record: FinalityCommitmentRecord;
+}
+
+export interface FinalizedLegacyAgreementCommitment
+  extends FinalizedAgreementCommitmentBase {
+  recordKind: "legacy";
+  record: CommitmentRecord;
+  legacySignature: ComponentSignature;
+  resumed: true;
+}
+
+export type FinalizedAgreementCommitment =
+  | FinalizedFinalityAgreementCommitment
+  | FinalizedLegacyAgreementCommitment;
+
 interface CapturedCommitmentInput {
   agreement: AgreementArtifact;
   verifiedListing: VerifiedListingInput;
-  orchestrator: string;
+  session: CommitmentSessionBinding;
   createdAt: number;
   commitmentSigner: BuildComponentSignatureOptions;
 }
 
-interface CapturedCommitmentProvider {
-  resolve: FinalityCommitmentProvider["resolve"];
+interface CapturedCommitmentBindingInput {
+  agreement: AgreementArtifact;
+  verifiedListing: VerifiedListingInput;
+  session: CommitmentSessionBinding;
+}
+
+interface CapturedCommitmentReader {
+  resolve: FinalityCommitmentReader["resolve"];
+  verifyAnchorReceipt: FinalityCommitmentReader["verifyAnchorReceipt"];
+}
+
+interface CapturedCommitmentProvider extends CapturedCommitmentReader {
   submit: FinalityCommitmentProvider["submit"];
-  verifyAnchorReceipt: FinalityCommitmentProvider["verifyAnchorReceipt"];
 }
 
 interface FixedPriceBinding {
@@ -132,13 +212,6 @@ interface FixedPriceBinding {
 
 const isSafeTime = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-
-// CORE §B.1 fixes every logical-address jobId segment to the canonical
-// 26-character Crockford-Base32 ULID form.  In particular, accepting a
-// lowercase or delimiter-free free-form token here would create a second
-// address spelling for the same session in implementations that canonicalise
-// job identifiers before lookup.
-const CANONICAL_JOB_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -222,6 +295,76 @@ function capturedSignerOptions(value: unknown): BuildComponentSignatureOptions {
   };
 }
 
+function assertSessionPartyBinding(
+  value: unknown,
+  label: "buyer" | "seller",
+): asserts value is CommitmentSessionPartyBinding {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["primaryClaim", "bundleHash", "vetRecordRef"]) ||
+    typeof value.primaryClaim !== "string" ||
+    !/^[a-z][a-z0-9-]*:.+$/.test(value.primaryClaim) ||
+    value.primaryClaim.trim() !== value.primaryClaim ||
+    typeof value.bundleHash !== "string" ||
+    !/^(?:sha256:)?[0-9a-f]{64}$/.test(value.bundleHash) ||
+    !isAttestationRef(value.vetRecordRef)
+  ) {
+    throw new DacsError(
+      `authenticated ${label} session binding is not exact and normative`,
+    );
+  }
+}
+
+function assertSessionBinding(
+  value: unknown,
+): asserts value is CommitmentSessionBinding {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "jobId",
+      "listingRef",
+      "phaseKind",
+      "orchestrator",
+      "buyer",
+      "seller",
+    ]) ||
+    typeof value.jobId !== "string" ||
+    value.jobId.length === 0 ||
+    !isRecord(value.listingRef) ||
+    !hasExactKeys(value.listingRef, ["listingId", "version", "contentHash"]) ||
+    typeof value.listingRef.listingId !== "string" ||
+    value.listingRef.listingId.length === 0 ||
+    !Number.isSafeInteger(value.listingRef.version) ||
+    (value.listingRef.version as number) <= 0 ||
+    typeof value.listingRef.contentHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.listingRef.contentHash) ||
+    (value.phaseKind !== "commit-agreement" &&
+      value.phaseKind !== "commit-payee-bound-agreement") ||
+    typeof value.orchestrator !== "string" ||
+    !/^[a-z][a-z0-9-]*:.+$/.test(value.orchestrator) ||
+    value.orchestrator.trim() !== value.orchestrator
+  ) {
+    throw new DacsError("authenticated commitment session binding is not exact");
+  }
+  assertSessionPartyBinding(value.buyer, "buyer");
+  assertSessionPartyBinding(value.seller, "seller");
+}
+
+function captureCommitmentBindingInput(
+  value: CommitmentBindingInput,
+  label: string,
+): CapturedCommitmentBindingInput {
+  const agreement = ownDataProperty(value, "agreement", label);
+  const verifiedListing = ownDataProperty(value, "verifiedListing", label);
+  const session = ownDataProperty(value, "session", label);
+  const captured = snapshotCanonicalJson(
+    { agreement, verifiedListing, session },
+    `${label} artifacts`,
+  ) as CapturedCommitmentBindingInput;
+  assertSessionBinding(captured.session);
+  return captured;
+}
+
 /** Capture all scalar/callback choices before inspecting either signed artifact. */
 function captureCommitmentInput(
   value: CommitFixedPriceAgreementInput,
@@ -229,49 +372,25 @@ function captureCommitmentInput(
   const signerOptions = capturedSignerOptions(
     ownDataProperty(value, "commitmentSigner", "commitment input"),
   );
-  const orchestrator = ownDataProperty(
-    value,
-    "orchestrator",
-    "commitment input",
-  );
   const createdAt = ownDataProperty(value, "createdAt", "commitment input");
-  const agreement = ownDataProperty(value, "agreement", "commitment input");
-  const verifiedListing = ownDataProperty(
-    value,
-    "verifiedListing",
-    "commitment input",
-  );
-  if (
-    typeof orchestrator !== "string" ||
-    orchestrator.length === 0 ||
-    orchestrator.trim() !== orchestrator
-  ) {
-    throw new DacsError("authenticated commitment orchestrator must be non-empty");
-  }
   if (!isSafeTime(createdAt)) {
     throw new DacsError("commitment createdAt must be non-negative unix ms");
   }
-
-  const artifacts = snapshotCanonicalJson(
-    { agreement, verifiedListing },
-    "commitment input artifacts",
-  ) as {
-    agreement: AgreementArtifact;
-    verifiedListing: VerifiedListingInput;
-  };
+  const captured = captureCommitmentBindingInput(value, "commitment input");
   return {
-    agreement: artifacts.agreement,
-    verifiedListing: artifacts.verifiedListing,
-    orchestrator,
+    ...captured,
     createdAt,
     commitmentSigner: signerOptions,
   };
 }
 
-function providerDataMethod<K extends keyof FinalityCommitmentProvider>(
-  provider: FinalityCommitmentProvider,
+function providerDataMethod<
+  TProvider extends FinalityCommitmentReader,
+  K extends keyof TProvider,
+>(
+  provider: TProvider,
   key: K,
-): FinalityCommitmentProvider[K] {
+): TProvider[K] {
   if (
     provider === null ||
     typeof provider !== "object" ||
@@ -300,13 +419,22 @@ function providerDataMethod<K extends keyof FinalityCommitmentProvider>(
       return Function.prototype.bind.call(
         descriptor.value,
         provider,
-      ) as FinalityCommitmentProvider[K];
+      ) as TProvider[K];
     }
     cursor = Object.getPrototypeOf(cursor) as object | null;
   }
   throw new SubstrateError(
     `commitment provider is missing ${String(key)}`,
   );
+}
+
+function captureReader(
+  reader: FinalityCommitmentReader,
+): CapturedCommitmentReader {
+  return Object.freeze({
+    resolve: providerDataMethod(reader, "resolve"),
+    verifyAnchorReceipt: providerDataMethod(reader, "verifyAnchorReceipt"),
+  });
 }
 
 function captureProvider(
@@ -332,9 +460,14 @@ function captureVerifier(
 }
 
 export function finalityCommitmentAddress(jobId: string): string {
-  if (typeof jobId !== "string" || !CANONICAL_JOB_ID.test(jobId)) {
+  return `dacs3:commit:${requireCanonicalJobId(jobId, "commitment jobId")}`;
+}
+
+/** Frozen pre-ULID address grammar, used only by the explicit legacy reader. */
+function legacyCommitmentAddress(jobId: string): string {
+  if (typeof jobId !== "string" || jobId.length === 0 || jobId.includes(":")) {
     throw new DacsError(
-      "commitment jobId must be a canonical uppercase ULID",
+      "legacy commitment jobId must be a non-empty delimiter-free value",
     );
   }
   return `dacs3:commit:${jobId}`;
@@ -414,7 +547,7 @@ function validateRailAndPayoutCoverage(
 }
 
 function selectFixedPriceArtifact(
-  input: CapturedCommitmentInput,
+  input: CapturedCommitmentBindingInput,
 ): { agreement: AgreementArtifact; listing: Listing } {
   const agreement = input.agreement;
   const verified = input.verifiedListing;
@@ -471,34 +604,6 @@ function selectFixedPriceArtifact(
   return { agreement, listing };
 }
 
-function decimalParts(value: string): { whole: string; fraction: string } {
-  const [whole = "0", fraction = ""] = value.split(".");
-  return { whole, fraction };
-}
-
-function compareCanonicalDecimal(left: string, right: string): number {
-  const a = decimalParts(left);
-  const b = decimalParts(right);
-  if (a.whole.length !== b.whole.length) {
-    return a.whole.length < b.whole.length ? -1 : 1;
-  }
-  if (a.whole !== b.whole) return a.whole < b.whole ? -1 : 1;
-  const width = Math.max(a.fraction.length, b.fraction.length);
-  const aFraction = a.fraction.padEnd(width, "0");
-  const bFraction = b.fraction.padEnd(width, "0");
-  return aFraction === bFraction ? 0 : aFraction < bFraction ? -1 : 1;
-}
-
-function multiplyCanonicalDecimal(amount: string, quantity: string): string {
-  const { whole, fraction } = decimalParts(amount);
-  const digits = `${whole}${fraction}`;
-  const product = BigInt(digits) * BigInt(quantity);
-  if (fraction.length === 0) return product.toString();
-  const padded = product.toString().padStart(fraction.length + 1, "0");
-  const split = padded.length - fraction.length;
-  return canonicalizeDecimal(`${padded.slice(0, split)}.${padded.slice(split)}`);
-}
-
 function validatePricingBinding(
   listing: Listing,
   agreement: AgreementArtifact,
@@ -548,59 +653,72 @@ function validatePricingBinding(
       "missing-metered-quantity: metered agreement requires meteredQuantity",
     );
   }
-  if (
-    typeof quantity.quantity !== "string" ||
-    !/^(0|[1-9][0-9]*)$/.test(quantity.quantity)
-  ) {
+  const expected = deriveMeteredPriceTerm(listing.pricing, quantity);
+  if (!exact(agreement.terms.price, expected)) {
     throw new DacsError(
-      "non-canonical-metered-quantity: quantity must be an unsigned canonical integer",
-    );
-  }
-  if (quantity.unit !== listing.pricing.unit) {
-    throw new DacsError(
-      "metered-unit-mismatch: metered quantity unit differs from the Listing",
-    );
-  }
-
-  const product = multiplyCanonicalDecimal(
-    listing.pricing.unitPrice.amount,
-    quantity.quantity,
-  );
-  const minimum = listing.pricing.minTotal?.amount;
-  const expectedAmount =
-    minimum !== undefined && compareCanonicalDecimal(minimum, product) > 0
-      ? minimum
-      : product;
-  if (expectedAmount === "0") {
-    throw new DacsError(
-      "metered total must be positive when no minimum total applies",
-    );
-  }
-  if (agreement.terms.price.amount !== expectedAmount) {
-    throw new DacsError(
-      `metered-total-mismatch: expected ${expectedAmount}`,
+      `metered-total-mismatch: expected ${expected.amount}`,
     );
   }
 }
 
-function fixedPriceBinding(
-  input: CapturedCommitmentInput,
+function validateAuthenticatedSessionBinding(
+  input: CapturedCommitmentBindingInput,
   selected: ReturnType<typeof selectFixedPriceArtifact>,
-): FixedPriceBinding {
+): {
+  pin: ListingPin;
+  buyer: AgreementArtifact["parties"][number];
+  seller: AgreementArtifact["parties"][number];
+} {
   const { agreement, listing } = selected;
   const pin: ListingPin = {
     listingId: listing.listingId,
     version: listing.listingVersion,
     contentHash: contentHash(listing as unknown as Record<string, unknown>),
   };
+  const expectedPhase =
+    "agreementVersion" in agreement
+      ? "commit-agreement"
+      : "commit-payee-bound-agreement";
   if (
+    input.session.jobId !== agreement.jobId ||
+    input.session.phaseKind !== expectedPhase ||
+    !listingPinEquals(input.session.listingRef, pin) ||
     !listingPinEquals(input.verifiedListing.pin, pin) ||
     !listingPinEquals(agreement.listingRef, pin)
   ) {
     throw new DacsError(
-      "agreement commitment does not bind the exact verified Listing pin",
+      "authenticated commitment session does not bind the exact job, phase, and Listing pin",
     );
   }
+
+  const buyer = agreement.parties.find((party) => party.role === "buyer");
+  const seller = agreement.parties.find((party) => party.role === "seller");
+  const partyMatches = (
+    party: AgreementArtifact["parties"][number] | undefined,
+    sessionParty: CommitmentSessionPartyBinding,
+  ): boolean =>
+    party !== undefined &&
+    party.primaryClaim === sessionParty.primaryClaim &&
+    party.bundleHash === sessionParty.bundleHash &&
+    exact(party.vetRecordRef, sessionParty.vetRecordRef);
+  if (
+    !partyMatches(buyer, input.session.buyer) ||
+    !partyMatches(seller, input.session.seller) ||
+    buyer!.primaryClaim === seller!.primaryClaim ||
+    seller!.primaryClaim !== listing.seller.identity.presentedBy
+  ) {
+    throw new DacsError(
+      "authenticated commitment session parties do not match the signed agreement and Listing",
+    );
+  }
+  return { pin, buyer: buyer!, seller: seller! };
+}
+
+function fixedPriceBinding(
+  selected: ReturnType<typeof selectFixedPriceArtifact>,
+  authenticated: ReturnType<typeof validateAuthenticatedSessionBinding>,
+): FixedPriceBinding {
+  const { agreement, listing } = selected;
   if (agreement.derivedFromPattern !== "fixed-price") {
     throw new DacsError(
       "this commitment core supports only fixed-price agreements",
@@ -613,18 +731,6 @@ function fixedPriceBinding(
     );
   }
   validateRailAndPayoutCoverage(listing, agreement);
-
-  const buyer = agreement.parties.find((party) => party.role === "buyer");
-  const seller = agreement.parties.find((party) => party.role === "seller");
-  if (
-    !buyer ||
-    !seller ||
-    seller.primaryClaim !== listing.seller.identity.presentedBy
-  ) {
-    throw new DacsError(
-      "agreement parties do not match the pinned Listing seller",
-    );
-  }
   const deadlineSeconds = listing.terms.deadlineSecAfterCommit;
   if (!Number.isSafeInteger(deadlineSeconds) || (deadlineSeconds ?? 0) <= 0) {
     throw new DacsError(
@@ -635,8 +741,11 @@ function fixedPriceBinding(
     agreementHash: contentHash(
       agreement as unknown as Record<string, unknown>,
     ),
-    pin,
-    parties: [buyer.primaryClaim, seller.primaryClaim],
+    pin: authenticated.pin,
+    parties: [
+      authenticated.buyer.primaryClaim,
+      authenticated.seller.primaryClaim,
+    ],
     deadlineSeconds: deadlineSeconds!,
   };
 }
@@ -719,25 +828,40 @@ async function requireSignature(
     ...expected,
     signedBytes: Uint8Array.from(expected.signedBytes),
   };
-  let disposition: CommitmentVerificationDisposition;
+  let disposition: unknown;
+  let verificationError: unknown;
+  let verificationThrew = false;
   try {
     disposition = await verifier(request);
   } catch (error) {
-    throw new DacsError(
-      `${expected.purpose} signature verification errored`,
-      { cause: error },
-    );
+    verificationThrew = true;
+    verificationError = error;
   }
   if (!verificationRequestUnchanged(request, expected)) {
     throw new DacsError(
       `${expected.purpose} signature verifier mutated its verification input`,
     );
   }
-  if (disposition !== "valid") {
-    throw new DacsError(
-      `${expected.purpose} signature is not verified (${String(disposition)})`,
+  if (verificationThrew) {
+    throw new TransientError(
+      `${expected.purpose} signature verification is uncertain because the verifier threw`,
+      { cause: verificationError },
     );
   }
+  if (disposition === "valid") return;
+  if (disposition === "invalid") {
+    throw new CounterpartyError(
+      `${expected.purpose} signature is not verified (invalid)`,
+    );
+  }
+  if (disposition === "indeterminate" || disposition === "error") {
+    throw new TransientError(
+      `${expected.purpose} signature verification is uncertain (${disposition})`,
+    );
+  }
+  throw new DacsError(
+    `${expected.purpose} signature verifier returned an invalid disposition`,
+  );
 }
 
 async function verifyAgreementSignatures(
@@ -781,8 +905,8 @@ function unsignedFinalityRecord(
 }
 
 function recordMatchesBinding(
-  record: FinalityCommitmentRecord,
-  input: CapturedCommitmentInput,
+  record: AgreementCommitmentRecord,
+  input: CapturedCommitmentBindingInput,
   binding: FixedPriceBinding,
 ): boolean {
   return (
@@ -793,8 +917,7 @@ function recordMatchesBinding(
     binding.parties.every(
       (party, index) => record.parties[index] === party,
     ) &&
-    record.pattern === "fixed-price" &&
-    record.signature.signer === input.orchestrator
+    record.pattern === "fixed-price"
   );
 }
 
@@ -814,10 +937,27 @@ async function verifyCommitmentSignature(
   });
 }
 
+async function verifyLegacyCommitmentSignature(
+  record: CommitmentRecord,
+  signature: ComponentSignature,
+  verifier: CommitmentSignatureVerifier,
+): Promise<void> {
+  await requireSignature(verifier, {
+    purpose: "legacy-commitment",
+    signedBytes: signedBytes(
+      LEGACY_COMMITMENT_SEPARATOR,
+      contentHash(record as unknown as Record<string, unknown>),
+    ),
+    algorithm: signature.algorithm,
+    signer: signature.signer,
+    value: signature.value,
+  });
+}
+
 function snapshotAnchored(
   value: unknown,
   label: string,
-): AnchoredFinalityCommitment {
+): AnchoredAgreementCommitment {
   let captured: unknown;
   try {
     captured = snapshotCanonicalJson(value, label);
@@ -827,22 +967,41 @@ function snapshotAnchored(
       { cause },
     );
   }
+  if (!isRecord(captured)) {
+    throw new SubstrateError(`${label} returned a malformed anchor result`);
+  }
+  const finalityEnvelope = hasExactKeys(captured, [
+    "record",
+    "nativeAddress",
+    "anchorTxRef",
+    "anchorReceipt",
+  ]);
+  const legacyEnvelope = hasExactKeys(captured, [
+    "record",
+    "nativeAddress",
+    "anchorTxRef",
+    "anchorReceipt",
+    "legacySignature",
+  ]);
   if (
-    !isRecord(captured) ||
-    !hasExactKeys(captured, [
-      "record",
-      "nativeAddress",
-      "anchorTxRef",
-      "anchorReceipt",
-    ]) ||
+    (!finalityEnvelope && !legacyEnvelope) ||
     !isRecord(captured.record) ||
     typeof captured.nativeAddress !== "string" ||
+    captured.nativeAddress.length === 0 ||
     !isRecord(captured.anchorTxRef) ||
-    !isRecord(captured.anchorReceipt)
+    !isRecord(captured.anchorReceipt) ||
+    (legacyEnvelope &&
+      (!isComponentSignature(captured.legacySignature) ||
+        !isRecord(captured.legacySignature) ||
+        !hasExactKeys(captured.legacySignature, [
+          "algorithm",
+          "signer",
+          "value",
+        ])))
   ) {
     throw new SubstrateError(`${label} returned a malformed anchor result`);
   }
-  return captured as unknown as AnchoredFinalityCommitment;
+  return captured as unknown as AnchoredAgreementCommitment;
 }
 
 function snapshotLookup(value: unknown): FinalityCommitmentLookup {
@@ -893,13 +1052,13 @@ function snapshotLookup(value: unknown): FinalityCommitmentLookup {
 
 async function finalizedReceiptTime(
   logicalAddress: string,
-  anchored: AnchoredFinalityCommitment,
-  verifyAnchorReceipt: CapturedCommitmentProvider["verifyAnchorReceipt"],
+  anchored: AnchoredAgreementCommitment,
+  verifyAnchorReceipt: CapturedCommitmentReader["verifyAnchorReceipt"],
 ): Promise<number> {
-  const record = anchored.record as FinalityCommitmentRecord;
+  const record = anchored.record as AgreementCommitmentRecord;
   const receipt = anchored.anchorReceipt;
   if (
-    !isAnchorReceipt(receipt) ||
+    !isReadableAnchorReceipt(receipt) ||
     !isChainTxRef(anchored.anchorTxRef) ||
     typeof anchored.nativeAddress !== "string" ||
     anchored.nativeAddress.length === 0 ||
@@ -923,7 +1082,7 @@ async function finalizedReceiptTime(
     "commitment receipt proof input",
   );
   const expectedCallbackCanonical = canonicalize(callbackAnchored);
-  let disposition: CommitmentVerificationDisposition;
+  let disposition: unknown;
   try {
     disposition = await verifyAnchorReceipt(callbackAnchored);
   } catch (error) {
@@ -954,8 +1113,13 @@ async function finalizedReceiptTime(
       `commitment receipt proof is not established (${disposition})`,
     );
   }
-  if (disposition !== "valid") {
+  if (disposition === "invalid") {
     throw new DacsError("commitment receipt proof is invalid");
+  }
+  if (disposition !== "valid") {
+    throw new SubstrateError(
+      "commitment receipt proof verifier returned an invalid disposition",
+    );
   }
   return committedAt;
 }
@@ -978,6 +1142,164 @@ function validateAuthoritativeTime(
   }
 }
 
+async function resolveCommitment(
+  logicalAddress: string,
+  reader: CapturedCommitmentReader,
+): Promise<Exclude<FinalityCommitmentLookup, { disposition: "indeterminate" }>> {
+  let lookup: FinalityCommitmentLookup;
+  try {
+    lookup = snapshotLookup(await reader.resolve(logicalAddress));
+  } catch (error) {
+    if (error instanceof SubstrateError) throw error;
+    throw new SubstrateError(
+      "commitment lookup errored and is indeterminate",
+      { cause: error },
+    );
+  }
+  if (lookup.disposition === "indeterminate") {
+    throw new SubstrateError(
+      `commitment lookup is indeterminate: ${lookup.reason}`,
+    );
+  }
+  return lookup;
+}
+
+async function verifyAnchoredCommitment(
+  logicalAddress: string,
+  anchored: AnchoredAgreementCommitment,
+  input: CapturedCommitmentBindingInput,
+  selected: ReturnType<typeof selectFixedPriceArtifact>,
+  binding: FixedPriceBinding,
+  verifyAnchorReceipt: CapturedCommitmentReader["verifyAnchorReceipt"],
+  verifySignature: CommitmentSignatureVerifier,
+  options: {
+    resumed: boolean;
+    submittedCanonical?: string;
+    freshSignatureAlreadyVerified?: boolean;
+  },
+): Promise<FinalizedAgreementCommitment> {
+  const record = anchored.record;
+  const hasLegacyDiscriminator =
+    isRecord(record) &&
+    Object.prototype.hasOwnProperty.call(record, "dacsVersion");
+  const hasFinalityDiscriminator =
+    isRecord(record) &&
+    Object.prototype.hasOwnProperty.call(record, "finalityCommitmentVersion");
+  if (hasLegacyDiscriminator === hasFinalityDiscriminator) {
+    throw new DacsError(
+      "existing commitment has ambiguous or missing record discriminator (CA-9)",
+    );
+  }
+
+  let recordKind: "legacy" | "finality";
+  let commitmentRecord: AgreementCommitmentRecord;
+  let legacySignature: ComponentSignature | undefined;
+  if (hasLegacyDiscriminator) {
+    if (
+      !isCommitmentRecord(record) ||
+      !("legacySignature" in anchored) ||
+      !isComponentSignature(anchored.legacySignature)
+    ) {
+      throw new DacsError(
+        "existing legacy commitment or its carried signature is malformed (CA-9)",
+      );
+    }
+    recordKind = "legacy";
+    commitmentRecord = record;
+    legacySignature = anchored.legacySignature;
+  } else {
+    if (
+      !isReadableFinalityCommitmentRecord(record) ||
+      "legacySignature" in anchored
+    ) {
+      throw new DacsError(
+        "existing finality commitment is malformed or discriminator-ambiguous (CA-9)",
+      );
+    }
+    recordKind = "finality";
+    commitmentRecord = record;
+  }
+
+  if (!recordMatchesBinding(commitmentRecord, input, binding)) {
+    throw new DacsError(
+      "existing commitment binds different authenticated session content (CA-3/CA-7)",
+    );
+  }
+  if (
+    options.submittedCanonical !== undefined &&
+    (recordKind !== "finality" ||
+      canonicalize(commitmentRecord) !== options.submittedCanonical)
+  ) {
+    throw new DacsError(
+      "fresh commitment anchor does not contain the exact submitted record (CA-3)",
+    );
+  }
+
+  if (recordKind === "finality") {
+    const finalityRecord = commitmentRecord as FinalityCommitmentRecord;
+    if (finalityRecord.signature.signer !== input.session.orchestrator) {
+      throw new DacsError(
+        "finality commitment signer is not the authenticated session orchestrator (CA-6)",
+      );
+    }
+    if (!options.freshSignatureAlreadyVerified) {
+      await verifyCommitmentSignature(finalityRecord, verifySignature);
+    }
+  } else {
+    if (legacySignature!.signer !== input.session.orchestrator) {
+      throw new DacsError(
+        "legacy commitment signer is not the authenticated session orchestrator (CA-6)",
+      );
+    }
+    await verifyLegacyCommitmentSignature(
+      commitmentRecord as CommitmentRecord,
+      legacySignature!,
+      verifySignature,
+    );
+  }
+
+  const committedAt = await finalizedReceiptTime(
+    logicalAddress,
+    anchored,
+    verifyAnchorReceipt,
+  );
+  if (
+    recordKind === "legacy" &&
+    (commitmentRecord as CommitmentRecord).committedAt !== committedAt
+  ) {
+    throw new DacsError(
+      "legacy commitment committedAt does not match authenticated anchor time (CA-8)",
+    );
+  }
+  validateAuthoritativeTime(committedAt, selected, binding);
+
+  const common = {
+    logicalAddress,
+    nativeAddress: anchored.nativeAddress,
+    agreementHash: binding.agreementHash,
+    anchorTxRef: anchored.anchorTxRef,
+    anchorReceipt: anchored.anchorReceipt,
+    committedAt,
+    resumed: options.resumed,
+  };
+  if (recordKind === "legacy") {
+    return snapshotCanonicalJson(
+      {
+        ...common,
+        recordKind,
+        record: commitmentRecord,
+        legacySignature,
+        resumed: true,
+      },
+      "finalized legacy agreement commitment result",
+    ) as FinalizedLegacyAgreementCommitment;
+  }
+  return snapshotCanonicalJson(
+    { ...common, recordKind, record: commitmentRecord },
+    "finalized agreement commitment result",
+  ) as FinalizedFinalityAgreementCommitment;
+}
+
 /**
  * DACS-3 §8.6 + CORE §5.1 fixed-price commitment gate. It is deliberately
  * transport-independent and fails closed before any caller may enter DACS-4.
@@ -993,112 +1315,124 @@ export async function commitFixedPriceAgreement(
   const input = captureCommitmentInput(callerInput);
   const selected = selectFixedPriceArtifact(input);
   const logicalAddress = finalityCommitmentAddress(selected.agreement.jobId);
+  const authenticated = validateAuthenticatedSessionBinding(input, selected);
+  if (input.commitmentSigner.signer !== input.session.orchestrator) {
+    throw new DacsError(
+      "commitment signer is not the authenticated orchestrator (CA-6)",
+    );
+  }
 
   await verifyAgreementSignatures(selected.agreement, verifySignature);
-  const binding = fixedPriceBinding(input, selected);
-
-  let lookup: FinalityCommitmentLookup;
-  try {
-    lookup = snapshotLookup(await provider.resolve(logicalAddress));
-  } catch (error) {
-    if (error instanceof SubstrateError) throw error;
-    throw new SubstrateError(
-      "commitment lookup errored and is indeterminate",
-      { cause: error },
-    );
-  }
-  if (lookup.disposition === "indeterminate") {
-    throw new SubstrateError(
-      `commitment lookup is indeterminate: ${lookup.reason}`,
-    );
-  }
-
-  let anchored: AnchoredFinalityCommitment;
-  let resumed: boolean;
-  let submittedCanonical: string | undefined;
+  const binding = fixedPriceBinding(selected, authenticated);
+  const lookup = await resolveCommitment(logicalAddress, provider);
   if (lookup.disposition === "present") {
     // A retry clock cannot invalidate an immutable commitment that finalized
     // while the Listing was live. Only its receipt timestamp is authoritative.
-    anchored = lookup.anchored;
-    resumed = true;
-  } else {
-    validateProvisionalTime(input, selected, binding);
-    if (input.commitmentSigner.signer !== input.orchestrator) {
-      throw new DacsError(
-        "commitment signer is not the authenticated orchestrator (CA-6)",
-      );
-    }
-    const unsigned = unsignedFinalityRecord(input, binding);
-    const placeholder: ComponentSignature = {
-      algorithm: input.commitmentSigner.algorithm,
-      signer: input.commitmentSigner.signer,
-      value: Buffer.alloc(64).toString("base64url"),
-    };
-    if (!isFinalityCommitmentRecord({ ...unsigned, signature: placeholder })) {
-      throw new DacsError("finality commitment draft is not normative");
-    }
-    const record = await signComponentArtifact(
-      unsigned,
-      FINALITY_COMMITMENT_SEPARATOR,
-      input.commitmentSigner,
+    return verifyAnchoredCommitment(
+      logicalAddress,
+      lookup.anchored,
+      input,
+      selected,
+      binding,
+      provider.verifyAnchorReceipt,
+      verifySignature,
+      { resumed: true },
     );
-    if (!isFinalityCommitmentRecord(record)) {
-      throw new DacsError("signed finality commitment is not normative");
-    }
-    submittedCanonical = canonicalize(record);
-    try {
-      anchored = snapshotAnchored(
-        await provider.submit(
-          logicalAddress,
-          snapshotCanonicalJson(record, "commitment submission record"),
-        ),
-        "commitment submission",
-      );
-    } catch (error) {
-      if (error instanceof SubstrateError) throw error;
-      throw new SubstrateError(
-        "commitment submission outcome is ambiguous; resolve before any retry",
-        { cause: error },
-      );
-    }
-    resumed = false;
   }
 
-  if (
-    !isFinalityCommitmentRecord(anchored.record) ||
-    !recordMatchesBinding(anchored.record, input, binding)
-  ) {
-    throw new DacsError(
-      "existing commitment is legacy, malformed, or binds different session content (CA-3/CA-9)",
+  validateProvisionalTime(input, selected, binding);
+  const unsigned = unsignedFinalityRecord(input, binding);
+  const placeholder: ComponentSignature = {
+    algorithm: input.commitmentSigner.algorithm,
+    signer: input.commitmentSigner.signer,
+    value: Buffer.alloc(64).toString("base64url"),
+  };
+  if (!isFinalityCommitmentRecord({ ...unsigned, signature: placeholder })) {
+    throw new DacsError("finality commitment draft is not normative");
+  }
+  const record = await signComponentArtifact(
+    unsigned,
+    FINALITY_COMMITMENT_SEPARATOR,
+    input.commitmentSigner,
+  );
+  if (!isFinalityCommitmentRecord(record)) {
+    throw new DacsError("signed finality commitment is not normative");
+  }
+
+  // Authenticate the exact locally produced signature before an immutable
+  // submit. Invalid or uncertain verification must have a zero-submit outcome.
+  await verifyCommitmentSignature(record, verifySignature);
+  const submittedCanonical = canonicalize(record);
+  let anchored: AnchoredAgreementCommitment;
+  try {
+    anchored = snapshotAnchored(
+      await provider.submit(
+        logicalAddress,
+        snapshotCanonicalJson(record, "commitment submission record"),
+      ),
+      "commitment submission",
+    );
+  } catch (error) {
+    if (error instanceof SubstrateError) throw error;
+    throw new SubstrateError(
+      "commitment submission outcome is ambiguous; resolve before any retry",
+      { cause: error },
     );
   }
-  if (
-    submittedCanonical !== undefined &&
-    canonicalize(anchored.record) !== submittedCanonical
-  ) {
-    throw new DacsError(
-      "fresh commitment anchor does not contain the exact submitted record (CA-3)",
-    );
-  }
-  await verifyCommitmentSignature(anchored.record, verifySignature);
-  const committedAt = await finalizedReceiptTime(
+  return verifyAnchoredCommitment(
     logicalAddress,
     anchored,
+    input,
+    selected,
+    binding,
     provider.verifyAnchorReceipt,
-  );
-  validateAuthoritativeTime(committedAt, selected, binding);
-
-  return snapshotCanonicalJson(
+    verifySignature,
     {
-      logicalAddress,
-      nativeAddress: anchored.nativeAddress,
-      agreementHash: binding.agreementHash,
-      record: anchored.record,
-      anchorTxRef: anchored.anchorTxRef,
-      anchorReceipt: anchored.anchorReceipt,
-      committedAt,
-      resumed,
+      resumed: false,
+      submittedCanonical,
+      freshSignatureAlreadyVerified: true,
     },
-    "finalized agreement commitment result",
   );
+}
+
+/**
+ * Explicit read-only recovery for pre-ULID DACS-3 v0.1-v0.3 commitments.
+ * This path can never submit or upgrade the immutable historical record.
+ */
+export async function readLegacyFixedPriceAgreementCommitment(
+  callerInput: ReadLegacyFixedPriceAgreementCommitmentInput,
+  callerReader: FinalityCommitmentReader,
+  callerVerifySignature: CommitmentSignatureVerifier,
+): Promise<FinalizedLegacyAgreementCommitment> {
+  const reader = captureReader(callerReader);
+  const verifySignature = captureVerifier(callerVerifySignature);
+  const input = captureCommitmentBindingInput(
+    callerInput,
+    "legacy commitment input",
+  );
+  const selected = selectFixedPriceArtifact(input);
+  const logicalAddress = legacyCommitmentAddress(selected.agreement.jobId);
+  const authenticated = validateAuthenticatedSessionBinding(input, selected);
+  await verifyAgreementSignatures(selected.agreement, verifySignature);
+  const binding = fixedPriceBinding(selected, authenticated);
+  const lookup = await resolveCommitment(logicalAddress, reader);
+  if (lookup.disposition === "absent") {
+    throw new DacsError("legacy commitment is authoritatively absent");
+  }
+  const result = await verifyAnchoredCommitment(
+    logicalAddress,
+    lookup.anchored,
+    input,
+    selected,
+    binding,
+    reader.verifyAnchorReceipt,
+    verifySignature,
+    { resumed: true },
+  );
+  if (result.recordKind !== "legacy") {
+    throw new DacsError(
+      "explicit legacy commitment reader refuses a finality record",
+    );
+  }
+  return result;
 }

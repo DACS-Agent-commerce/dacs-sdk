@@ -12,26 +12,45 @@
 export { VERSION, DACS_SPEC_VERSION } from "./version.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
+  LEGACY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
   commitFixedPriceAgreement,
+  readLegacyFixedPriceAgreementCommitment,
   type CommitmentVerificationDisposition,
   type CommitmentSignatureVerificationInput,
   type CommitmentSignatureVerifier,
   type AnchoredFinalityCommitment,
+  type AnchoredLegacyCommitment,
+  type AnchoredAgreementCommitment,
   type FinalityCommitmentLookup,
+  type FinalityCommitmentReader,
   type FinalityCommitmentProvider,
+  type CommitmentSessionPartyBinding,
+  type CommitmentSessionBinding,
   type CommitFixedPriceAgreementInput,
+  type ReadLegacyFixedPriceAgreementCommitmentInput,
+  type FinalizedFinalityAgreementCommitment,
+  type FinalizedLegacyAgreementCommitment,
   type FinalizedAgreementCommitment,
 } from "./negotiate/commitment.js";
 export {
+  ceilMeteredQuantity,
+  deriveMeteredPriceTerm,
   deriveFixedPriceAgreement,
   signFixedPriceAgreement,
   type VerifiedListingInput,
   type FixedPricePartyInput,
   type FixedPriceAgreementInput,
+  type MeteredQuantityInput,
   type UnsignedAgreementArtifact,
   type AgreementSigner,
 } from "./negotiate/fixedPrice.js";
+export {
+  isCanonicalJobId,
+  requireCanonicalJobId,
+  generateCanonicalJobId,
+  type GenerateCanonicalJobIdOptions,
+} from "./negotiate/jobId.js";
 
 export {
   DacsError,
@@ -494,8 +513,10 @@ export {
   isAgreementArtifact,
   isCommitmentRecord,
   isFinalityCommitmentRecord,
+  isReadableFinalityCommitmentRecord,
   isAgreementCommitmentRecord,
   isAnchorReceipt,
+  isReadableAnchorReceipt,
   isAttestationRef,
   isChainTxRef,
   isSettlementEvidence,

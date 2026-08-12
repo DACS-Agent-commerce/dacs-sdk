@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import {
+  buildComponentSignature,
   canonicalize,
   commitFixedPriceAgreement,
   contentHash,
@@ -12,19 +13,28 @@ import {
   ed25519Sign,
   ed25519Verify,
   FINALITY_COMMITMENT_SEPARATOR,
+  LEGACY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
   isAnchorReceipt,
   isAgreementCommitmentRecord,
   isCommitmentRecord,
   isFinalityCommitmentRecord,
+  isReadableAnchorReceipt,
+  isReadableFinalityCommitmentRecord,
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
+  readLegacyFixedPriceAgreementCommitment,
   signComponentArtifact,
   signFixedPriceAgreement,
   sha256Hex,
+  signedBytes,
   type AgreementArtifact,
+  type AnchoredAgreementCommitment,
   type AnchoredFinalityCommitment,
+  type AnchoredLegacyCommitment,
+  type CommitmentRecord,
+  type ComponentSignature,
   type ProtocolAnchorReceipt,
   type CommitmentSignatureVerifier,
   type FinalityCommitmentProvider,
@@ -288,8 +298,47 @@ function anchored(
   };
 }
 
+function anchoredLegacy(
+  record: CommitmentRecord,
+  legacySignature: ComponentSignature,
+  overrides: Partial<ProtocolAnchorReceipt> = {},
+): AnchoredLegacyCommitment {
+  const nativeAddress = "stor-legacy-commitment";
+  return {
+    record,
+    legacySignature,
+    nativeAddress,
+    anchorTxRef: {
+      kind: "storage-program",
+      address: nativeAddress,
+      writeTxHash: "d".repeat(64),
+    },
+    anchorReceipt: {
+      receiptVersion: "1",
+      substrate: "demos:testnet",
+      finalityProfile: "demos-bft-final",
+      logicalAddress: `dacs3:commit:${record.jobId}`,
+      nativeAddress,
+      contentHash: contentHash(record as unknown as Record<string, unknown>),
+      transactionRef: { kind: "demos", value: "legacy-commitment-write-tx" },
+      writer: "historical-demos-writer",
+      nonce: "9",
+      state: "finalized",
+      observationDisposition: "established",
+      observedAt: record.committedAt + 1_000,
+      blockRef: {
+        id: "legacy-block-90",
+        height: "90",
+        timestamp: record.committedAt,
+      },
+      evidence: { kind: "demos-finality-proof", value: "legacy-proof-90" },
+      ...overrides,
+    },
+  };
+}
+
 function provider(options: {
-  present?: AnchoredFinalityCommitment;
+  present?: AnchoredAgreementCommitment;
   lookup?: "absent" | "indeterminate";
   receiptDisposition?: "valid" | "invalid" | "indeterminate" | "error";
   onSubmit?: (record: FinalityCommitmentRecord) => void;
@@ -314,10 +363,31 @@ function commitmentInput(
   sign = (bytes: Uint8Array) =>
     ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
 ) {
+  const buyer = fixture.agreement.parties.find((party) => party.role === "buyer");
+  const seller = fixture.agreement.parties.find((party) => party.role === "seller");
+  if (!buyer || !seller) throw new Error("fixture agreement parties missing");
   return {
     agreement: fixture.agreement,
     verifiedListing: fixture.verifiedListing,
-    orchestrator: ORCHESTRATOR,
+    session: {
+      jobId: fixture.agreement.jobId,
+      listingRef: { ...fixture.agreement.listingRef },
+      phaseKind:
+        "agreementVersion" in fixture.agreement
+          ? ("commit-agreement" as const)
+          : ("commit-payee-bound-agreement" as const),
+      orchestrator: ORCHESTRATOR,
+      buyer: {
+        primaryClaim: buyer.primaryClaim,
+        bundleHash: buyer.bundleHash,
+        vetRecordRef: structuredClone(buyer.vetRecordRef),
+      },
+      seller: {
+        primaryClaim: seller.primaryClaim,
+        bundleHash: seller.bundleHash,
+        vetRecordRef: structuredClone(seller.vetRecordRef),
+      },
+    },
     createdAt: NOW + 1_000,
     commitmentSigner: {
       algorithm: "ed25519" as const,
@@ -325,6 +395,15 @@ function commitmentInput(
       sign,
     },
   };
+}
+
+function finalityRecord(
+  result: Awaited<ReturnType<typeof commitFixedPriceAgreement>>,
+): FinalityCommitmentRecord {
+  if (result.recordKind !== "finality") {
+    throw new Error("test expected a finality commitment result");
+  }
+  return result.record;
 }
 
 describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
@@ -355,6 +434,142 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
     expect(fixture.agreement.terms.deliverable.hash).toBe(
       sha256Hex(canonicalize(fixture.listing.offering.deliverable)),
     );
+  });
+
+  test("cryptographically verifies a fresh commitment before immutable submit", async () => {
+    const fixture = await agreementFixture();
+    const events: string[] = [];
+    await commitFixedPriceAgreement(
+      commitmentInput(fixture, (bytes) => {
+        events.push("sign");
+        return ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED));
+      }),
+      provider({ onSubmit: () => events.push("submit") }),
+      (request) => {
+        if (request.purpose === "finality-commitment") events.push("verify");
+        return verifySignature(request);
+      },
+    );
+    expect(events).toEqual(["sign", "verify", "submit"]);
+  });
+
+  test("has zero submits for invalid or uncertain fresh signatures", async () => {
+    const fixture = await agreementFixture();
+    const cases: Array<{
+      name: string;
+      disposition: () => unknown;
+      category: "counterparty" | "transient";
+    }> = [
+      { name: "invalid", disposition: () => "invalid", category: "counterparty" },
+      {
+        name: "indeterminate",
+        disposition: () => "indeterminate",
+        category: "transient",
+      },
+      { name: "error", disposition: () => "error", category: "transient" },
+      {
+        name: "throw",
+        disposition: () => {
+          throw new Error("key resolver unavailable");
+        },
+        category: "transient",
+      },
+    ];
+    for (const entry of cases) {
+      let submits = 0;
+      await expect(
+        commitFixedPriceAgreement(
+          commitmentInput(fixture),
+          provider({ onSubmit: () => (submits += 1) }),
+          (request) =>
+            request.purpose === "finality-commitment"
+              ? (entry.disposition() as never)
+              : verifySignature(request),
+        ),
+        entry.name,
+      ).rejects.toMatchObject({ category: entry.category });
+      expect(submits, entry.name).toBe(0);
+    }
+
+    for (const [name, sign] of [
+      [
+        "wrong key",
+        (bytes: Uint8Array) =>
+          ed25519Sign(bytes, privateKeyFromSeed(BUYER_SEED)),
+      ],
+      ["short Ed25519 value", () => new Uint8Array(1)],
+    ] as const) {
+      let submits = 0;
+      await expect(
+        commitFixedPriceAgreement(
+          commitmentInput(fixture, sign),
+          provider({ onSubmit: () => (submits += 1) }),
+          verifySignature,
+        ),
+        name,
+      ).rejects.toBeDefined();
+      expect(submits, name).toBe(0);
+    }
+  });
+
+  test("rejects every unauthenticated session-context mismatch before callbacks", async () => {
+    const fixture = await agreementFixture();
+    type Candidate = ReturnType<typeof commitmentInput>;
+    const mutations: Array<[string, (candidate: Candidate) => void]> = [
+      ["jobId", (candidate) => (candidate.session.jobId = `${JOB_ID.slice(0, -1)}F`)],
+      ["listingId", (candidate) => (candidate.session.listingRef.listingId = "other-listing")],
+      ["listing version", (candidate) => (candidate.session.listingRef.version += 1)],
+      ["listing hash", (candidate) => (candidate.session.listingRef.contentHash = "f".repeat(64))],
+      ["phase", (candidate) => (candidate.session.phaseKind = "commit-payee-bound-agreement")],
+      ["orchestrator", (candidate) => (candidate.session.orchestrator = BUYER)],
+      ["buyer claim", (candidate) => (candidate.session.buyer.primaryClaim = ORCHESTRATOR)],
+      ["buyer bundle", (candidate) => (candidate.session.buyer.bundleHash = "f".repeat(64))],
+      ["buyer vet", (candidate) => (candidate.session.buyer.vetRecordRef.anchor.locator = "other-buyer-vet")],
+      ["seller claim", (candidate) => (candidate.session.seller.primaryClaim = BUYER)],
+      ["seller bundle", (candidate) => (candidate.session.seller.bundleHash = "e".repeat(64))],
+      ["seller vet", (candidate) => (candidate.session.seller.vetRecordRef.anchor.locator = "other-seller-vet")],
+      [
+        "additive session field",
+        (candidate) => {
+          (candidate.session as Candidate["session"] & { untrusted: boolean }).untrusted = true;
+        },
+      ],
+    ];
+
+    for (const [name, mutate] of mutations) {
+      let verifications = 0;
+      let resolves = 0;
+      let signs = 0;
+      let submits = 0;
+      const candidate = commitmentInput(fixture, (bytes) => {
+        signs += 1;
+        return ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED));
+      });
+      mutate(candidate);
+      await expect(
+        commitFixedPriceAgreement(
+          candidate,
+          {
+            ...provider({ onSubmit: () => (submits += 1) }),
+            resolve: async () => {
+              resolves += 1;
+              return { disposition: "absent" } as const;
+            },
+          },
+          (request) => {
+            verifications += 1;
+            return verifySignature(request);
+          },
+        ),
+        name,
+      ).rejects.toThrow(/authenticated|orchestrator/);
+      expect({ verifications, resolves, signs, submits }, name).toEqual({
+        verifications: 0,
+        resolves: 0,
+        signs: 0,
+        submits: 0,
+      });
+    }
   });
 
   test("commits the payee-bound artifact only with exact pay-phase coverage", async () => {
@@ -412,7 +627,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
         return new Uint8Array(64);
       }),
       provider({
-        present: anchored(first.record),
+        present: anchored(finalityRecord(first)),
         onSubmit: () => {
           submits += 1;
         },
@@ -431,7 +646,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       provider(),
       verifySignature,
     );
-    const { signature: _signature, ...unsigned } = first.record;
+    const { signature: _signature, ...unsigned } = finalityRecord(first);
     const swapped = await signComponentArtifact(
       { ...unsigned, parties: [SELLER, BUYER] },
       FINALITY_COMMITMENT_SEPARATOR,
@@ -449,7 +664,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
         provider({ present: anchored(swapped) }),
         verifySignature,
       ),
-    ).rejects.toThrow(/binds different session content/);
+    ).rejects.toThrow(/binds different .*session content/);
   });
 
   test("records the MTR-5 reason for an unrecognized pricing kind", async () => {
@@ -528,8 +743,159 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
         }),
         verifySignature,
       ),
-    ).rejects.toThrow(/legacy, malformed, or binds different/);
+    ).rejects.toThrow(/legacy commitment.*malformed/);
     expect(submits).toBe(0);
+  });
+
+  test("authenticates exact historical legacy records through a read-only path", async () => {
+    const base = await agreementFixture();
+    const { signatures: _signatures, ...legacyDraft } = structuredClone(
+      base.agreement,
+    );
+    legacyDraft.jobId = "legacy-job-2026-07-14";
+    const agreementBytes = signedBytes(
+      "dacs-agreement:v1:",
+      contentHash(legacyDraft as unknown as Record<string, unknown>),
+    );
+    const agreement = {
+      ...legacyDraft,
+      signatures: [
+        {
+          party: BUYER,
+          algorithm: "ed25519" as const,
+          value: Buffer.from(
+            ed25519Sign(agreementBytes, privateKeyFromSeed(BUYER_SEED)),
+          ).toString("base64url"),
+        },
+        {
+          party: SELLER,
+          algorithm: "ed25519" as const,
+          value: Buffer.from(
+            ed25519Sign(agreementBytes, privateKeyFromSeed(SELLER_SEED)),
+          ).toString("base64url"),
+        },
+      ],
+    } as AgreementArtifact;
+    const fixture = { ...base, agreement };
+    const commitInput = commitmentInput(fixture);
+    const {
+      createdAt: _createdAt,
+      commitmentSigner: _commitmentSigner,
+      ...readInput
+    } = commitInput;
+    const record: CommitmentRecord = {
+      dacsVersion: "1",
+      jobId: agreement.jobId,
+      agreementHash: contentHash(
+        agreement as unknown as Record<string, unknown>,
+      ),
+      listingRef: { ...agreement.listingRef },
+      parties: [BUYER, SELLER],
+      pattern: "fixed-price",
+      committedAt: COMMITTED_AT,
+    };
+    const signature = await buildComponentSignature(
+      record,
+      LEGACY_COMMITMENT_SEPARATOR,
+      {
+        algorithm: "ed25519",
+        signer: ORCHESTRATOR,
+        sign: (bytes) =>
+          ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
+      },
+    );
+    let submits = 0;
+    const result = await readLegacyFixedPriceAgreementCommitment(
+      readInput,
+      provider({
+        present: anchoredLegacy(record, signature),
+        onSubmit: () => (submits += 1),
+      }),
+      verifySignature,
+    );
+    expect(result).toMatchObject({
+      recordKind: "legacy",
+      resumed: true,
+      logicalAddress: `dacs3:commit:${record.jobId}`,
+      committedAt: COMMITTED_AT,
+      record,
+      legacySignature: signature,
+    });
+    expect(submits).toBe(0);
+
+    let callbacks = 0;
+    await expect(
+      commitFixedPriceAgreement(
+        commitInput,
+        {
+          ...provider(),
+          resolve: async () => {
+            callbacks += 1;
+            return { disposition: "absent" } as const;
+          },
+        },
+        (request) => {
+          callbacks += 1;
+          return verifySignature(request);
+        },
+      ),
+    ).rejects.toThrow(/canonical uppercase ULID/);
+    expect(callbacks).toBe(0);
+
+    const wrongDomain = await buildComponentSignature(
+      record,
+      FINALITY_COMMITMENT_SEPARATOR,
+      {
+        algorithm: "ed25519",
+        signer: ORCHESTRATOR,
+        sign: (bytes) =>
+          ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
+      },
+    );
+    await expect(
+      readLegacyFixedPriceAgreementCommitment(
+        readInput,
+        provider({ present: anchoredLegacy(record, wrongDomain) }),
+        verifySignature,
+      ),
+    ).rejects.toThrow(/legacy-commitment signature is not verified/);
+
+    await expect(
+      readLegacyFixedPriceAgreementCommitment(
+        readInput,
+        provider({
+          present: anchoredLegacy(record, signature, {
+            blockRef: {
+              id: "legacy-block-91",
+              height: "91",
+              timestamp: COMMITTED_AT + 1,
+            },
+          }),
+        }),
+        verifySignature,
+      ),
+    ).rejects.toThrow(/committedAt does not match authenticated anchor time/);
+
+    const wrongBinding = { ...record, agreementHash: "f".repeat(64) };
+    const wrongBindingSignature = await buildComponentSignature(
+      wrongBinding,
+      LEGACY_COMMITMENT_SEPARATOR,
+      {
+        algorithm: "ed25519",
+        signer: ORCHESTRATOR,
+        sign: (bytes) =>
+          ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
+      },
+    );
+    await expect(
+      readLegacyFixedPriceAgreementCommitment(
+        readInput,
+        provider({
+          present: anchoredLegacy(wrongBinding, wrongBindingSignature),
+        }),
+        verifySignature,
+      ),
+    ).rejects.toThrow(/binds different authenticated session content/);
   });
 
   test("rejects non-final, indeterminate, or mismatched receipt bindings", async () => {
@@ -552,7 +918,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       await expect(
         commitFixedPriceAgreement(
           commitmentInput(fixture),
-          provider({ present: anchored(first.record, receipt) }),
+          provider({ present: anchored(finalityRecord(first), receipt) }),
           verifySignature,
         ),
         JSON.stringify(receipt),
@@ -578,6 +944,103 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
         verifySignature,
       ),
     ).rejects.toThrow(/receipt proof is invalid/);
+  });
+
+  test("reads additive same-major finality and receipt fields without dropping signed bytes", async () => {
+    const fixture = await agreementFixture();
+    const first = await commitFixedPriceAgreement(
+      commitmentInput(fixture),
+      provider(),
+      verifySignature,
+    );
+    const { signature: _signature, ...unsigned } = finalityRecord(first);
+    const additive = await signComponentArtifact(
+      {
+        ...unsigned,
+        minorMetadata: {
+          policy: "v0.5-optional",
+          evidenceHashes: ["a".repeat(64)],
+        },
+      },
+      FINALITY_COMMITMENT_SEPARATOR,
+      {
+        algorithm: "ed25519",
+        signer: ORCHESTRATOR,
+        sign: (bytes) =>
+          ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
+      },
+    );
+    expect(isFinalityCommitmentRecord(additive)).toBe(false);
+    expect(isReadableFinalityCommitmentRecord(additive)).toBe(true);
+
+    const additiveAnchor = anchored(additive);
+    const receiptWithMinorFields = {
+      ...additiveAnchor.anchorReceipt,
+      minorFinalityMetadata: { quorum: "2/3" },
+      transactionRef: {
+        ...additiveAnchor.anchorReceipt.transactionRef,
+        providerRegion: "eu-west",
+      },
+      blockRef: {
+        ...additiveAnchor.anchorReceipt.blockRef!,
+        consensusRound: "19",
+      },
+    };
+    expect(isAnchorReceipt(receiptWithMinorFields)).toBe(false);
+    expect(isReadableAnchorReceipt(receiptWithMinorFields)).toBe(true);
+
+    let proofSawUnknowns = false;
+    const result = await commitFixedPriceAgreement(
+      commitmentInput(fixture),
+      {
+        ...provider({
+          present: {
+            ...additiveAnchor,
+            anchorReceipt: receiptWithMinorFields,
+          },
+        }),
+        verifyAnchorReceipt: async (candidate) => {
+          const receipt = candidate.anchorReceipt as ProtocolAnchorReceipt & {
+            minorFinalityMetadata: { quorum: string };
+            transactionRef: ProtocolAnchorReceipt["transactionRef"] & {
+              providerRegion: string;
+            };
+          };
+          proofSawUnknowns =
+            receipt.minorFinalityMetadata.quorum === "2/3" &&
+            receipt.transactionRef.providerRegion === "eu-west";
+          return "valid" as const;
+        },
+      },
+      verifySignature,
+    );
+    expect(proofSawUnknowns).toBe(true);
+    expect(
+      (result.record as unknown as { minorMetadata: unknown }).minorMetadata,
+    ).toEqual({
+      policy: "v0.5-optional",
+      evidenceHashes: ["a".repeat(64)],
+    });
+    expect(
+      (result.anchorReceipt as ProtocolAnchorReceipt & {
+        minorFinalityMetadata: unknown;
+      }).minorFinalityMetadata,
+    ).toEqual({ quorum: "2/3" });
+
+    for (const ambiguous of [
+      { ...additive, dacsVersion: "1" },
+      { ...additive, signatures: [] },
+      { ...additive, finalityCommitmentVersion: "2" },
+    ]) {
+      expect(isReadableFinalityCommitmentRecord(ambiguous)).toBe(false);
+      await expect(
+        commitFixedPriceAgreement(
+          commitmentInput(fixture),
+          provider({ present: anchored(ambiguous as never) }),
+          verifySignature,
+        ),
+      ).rejects.toThrow(/ambiguous|malformed/);
+    }
   });
 
   test("verifies both agreement parties before resolving or submitting commitment", async () => {
@@ -664,7 +1127,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       commitFixedPriceAgreement(
         commitmentInput(fixture),
         provider({
-          present: anchored(first.record, {
+          present: anchored(finalityRecord(first), {
             blockRef: { id: "late-block", height: "101", timestamp: late },
           }),
         }),
@@ -689,11 +1152,13 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
 
     const resumed = await commitFixedPriceAgreement(
       retryInput,
-      provider({ present: anchored(first.record) }),
+      provider({ present: anchored(finalityRecord(first)) }),
       verifySignature,
     );
     expect(resumed.resumed).toBe(true);
-    expect(resumed.record.createdAt).toBe(first.record.createdAt);
+    expect(finalityRecord(resumed).createdAt).toBe(
+      finalityRecord(first).createdAt,
+    );
 
     await expect(
       commitFixedPriceAgreement(
@@ -781,7 +1246,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
     );
 
     expect(result.agreementHash).toBe(expectedAgreementHash);
-    expect(result.record.signature.signer).toBe(ORCHESTRATOR);
+    expect(finalityRecord(result).signature.signer).toBe(ORCHESTRATOR);
     expect(result.resumed).toBe(false);
   });
 
@@ -865,7 +1330,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       { disposition: "indeterminate", reason: "" },
       {
         disposition: "present",
-        anchored: anchored(first.record),
+        anchored: anchored(finalityRecord(first)),
         extra: true,
       },
     ];
@@ -890,7 +1355,10 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
           ...provider(),
           resolve: async () => ({
             disposition: "present",
-            anchored: { ...anchored(first.record), extra: true } as never,
+            anchored: {
+              ...anchored(finalityRecord(first)),
+              extra: true,
+            } as never,
           }),
         },
         verifySignature,
@@ -1088,7 +1556,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       provider(),
       verifySignature,
     );
-    const { signature: _signature, ...unsigned } = first.record;
+    const { signature: _signature, ...unsigned } = finalityRecord(first);
     const wrongDomain = await signComponentArtifact(
       unsigned,
       "dacs-commitment:v1:",

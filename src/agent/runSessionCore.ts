@@ -226,7 +226,7 @@ export interface SessionDeps {
    * aborts before settlement. Omit to skip vetting.
    */
   vet?: (subject: string) => Promise<CompositeVerificationRecord>;
-  /** Fresh job id (e.g. crypto.randomUUID). */
+  /** Fresh canonical uppercase ULID for a new normative session. */
   newJobId: () => string;
   /** Current ISO-8601 timestamp (used where the spec field is a string). */
   now: () => string;

@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import {
   canonicalize,
+  canonicalizeDecimal,
   contentHash,
   sha256Hex,
 } from "../canonical/index.js";
@@ -26,15 +27,17 @@ import type {
   PayeeBoundAgreementDocument,
   PaymentRailRef,
   PayoutBinding,
+  PriceTerm,
+  PricingSpec,
 } from "../artifacts/types.js";
 import {
   isAgreementArtifact,
   isAttestationRef,
-  isCanonicalJobId,
   isIdentityBundle,
   isListing,
 } from "../artifacts/validators.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { requireCanonicalJobId } from "./jobId.js";
 
 export interface VerifiedListingInput {
   /** Overall DACS-1 §6.3.4 disposition after signature, validity, and revocation. */
@@ -66,8 +69,17 @@ export interface FixedPriceAgreementInput {
   selectedRail?: PaymentRailRef;
   /** Required only for `commit-payee-bound-agreement`. */
   payoutBindings?: PayoutBinding[];
+  /** Required exactly when the pinned Listing uses metered pricing. */
+  meteredQuantity?: MeteredQuantityInput;
   /** Provisional signing-time clock; #99 re-checks deadlines at finalized commit. */
   generatedAt: number;
+}
+
+export interface MeteredQuantityInput {
+  /** Canonical unsigned whole-unit count: `"0"` or `[1-9][0-9]*`. */
+  quantity: string;
+  /** Must exactly equal the pinned metered Listing unit. */
+  unit: string;
 }
 
 export type UnsignedAgreementArtifact =
@@ -91,6 +103,111 @@ interface CapturedAgreementSigner {
 
 const isSafeTime = (value: number): boolean =>
   Number.isSafeInteger(value) && value >= 0;
+
+type MeteredPricing = Extract<PricingSpec, { kind: "metered" }>;
+
+function decimalParts(value: string): { whole: string; fraction: string } {
+  const [whole = "0", fraction = ""] = value.split(".");
+  return { whole, fraction };
+}
+
+function compareCanonicalDecimal(left: string, right: string): number {
+  const a = decimalParts(left);
+  const b = decimalParts(right);
+  if (a.whole.length !== b.whole.length) {
+    return a.whole.length < b.whole.length ? -1 : 1;
+  }
+  if (a.whole !== b.whole) return a.whole < b.whole ? -1 : 1;
+  const width = Math.max(a.fraction.length, b.fraction.length);
+  const aFraction = a.fraction.padEnd(width, "0");
+  const bFraction = b.fraction.padEnd(width, "0");
+  return aFraction === bFraction ? 0 : aFraction < bFraction ? -1 : 1;
+}
+
+function multiplyCanonicalDecimal(amount: string, quantity: string): string {
+  const { whole, fraction } = decimalParts(amount);
+  const digits = `${whole}${fraction}`;
+  const product = BigInt(digits) * BigInt(quantity);
+  if (fraction.length === 0) return product.toString();
+  const padded = product.toString().padStart(fraction.length + 1, "0");
+  const split = padded.length - fraction.length;
+  return canonicalizeDecimal(`${padded.slice(0, split)}.${padded.slice(split)}`);
+}
+
+function requirePositiveCanonicalAmount(value: string, label: string): void {
+  if (canonicalizeDecimal(value) !== value || value === "0") {
+    throw new DacsError(`${label} must be a positive CD-1 canonical decimal`);
+  }
+}
+
+/** MTR-4 whole-unit ceil without floating-point arithmetic. */
+export function ceilMeteredQuantity(rawMeasurement: string): string {
+  const canonical = canonicalizeDecimal(rawMeasurement);
+  const { whole, fraction } = decimalParts(canonical);
+  return fraction.length === 0 ? whole : (BigInt(whole) + 1n).toString();
+}
+
+/** Recompute the signed metered total from exact Listing terms and quantity. */
+export function deriveMeteredPriceTerm(
+  callerPricing: MeteredPricing,
+  callerQuantity: MeteredQuantityInput,
+): PriceTerm {
+  const { pricing, quantity } = snapshotCanonicalJson(
+    { pricing: callerPricing, quantity: callerQuantity },
+    "metered price input",
+  );
+  if (
+    pricing.kind !== "metered" ||
+    typeof pricing.unit !== "string" ||
+    pricing.unit.length === 0
+  ) {
+    throw new DacsError("metered pricing requires a non-empty unit");
+  }
+  requirePositiveCanonicalAmount(pricing.unitPrice.amount, "metered unitPrice");
+  if (
+    typeof pricing.unitPrice.currency !== "string" ||
+    pricing.unitPrice.currency.length === 0
+  ) {
+    throw new DacsError("metered unitPrice currency must be non-empty");
+  }
+  if (
+    typeof quantity.quantity !== "string" ||
+    !/^(0|[1-9][0-9]*)$/.test(quantity.quantity)
+  ) {
+    throw new DacsError(
+      "non-canonical-metered-quantity: quantity must be an unsigned canonical integer",
+    );
+  }
+  if (quantity.unit !== pricing.unit) {
+    throw new DacsError(
+      "metered-unit-mismatch: metered quantity unit differs from the Listing",
+    );
+  }
+  if (pricing.minTotal !== undefined) {
+    requirePositiveCanonicalAmount(pricing.minTotal.amount, "metered minTotal");
+    if (pricing.minTotal.currency !== pricing.unitPrice.currency) {
+      throw new DacsError(
+        "min-total-currency-mismatch: metered minimum uses a different currency",
+      );
+    }
+  }
+
+  const product = multiplyCanonicalDecimal(
+    pricing.unitPrice.amount,
+    quantity.quantity,
+  );
+  const minimum = pricing.minTotal?.amount;
+  const amount =
+    minimum !== undefined && compareCanonicalDecimal(minimum, product) > 0
+      ? minimum
+      : product;
+  if (amount === "0") {
+    throw new DacsError(
+      "metered total must be positive when no minimum total applies",
+    );
+  }
+  return { amount, currency: pricing.unitPrice.currency };
+}
 
 const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
   canonicalize(a) === canonicalize(b);
@@ -233,9 +350,7 @@ export function deriveFixedPriceAgreement(
     throw new DacsError("fixed-price agreement requires a verified Listing disposition");
   }
   if (!isListing(listing)) throw new DacsError("verified Listing has invalid wire shape");
-  if (!isCanonicalJobId(input.jobId)) {
-    throw new DacsError("jobId must be a canonical uppercase ULID");
-  }
+  requireCanonicalJobId(input.jobId);
   if (
     pin.listingId !== listing.listingId ||
     pin.version !== listing.listingVersion ||
@@ -266,20 +381,33 @@ export function deriveFixedPriceAgreement(
   const deadline = input.generatedAt + deadlineSec! * 1_000;
   if (!Number.isSafeInteger(deadline)) throw new DacsError("derived deadline overflows unix ms");
 
-  if (
-    listing.pricing.kind !== "fixed" &&
-    listing.pricing.kind !== "negotiable"
-  ) {
+  // PS-3: fixed-price acceptance over a negotiable Listing selects the exact
+  // band centre. It cannot pick an arbitrary price merely within the band.
+  let price: PriceTerm;
+  let meteredQuantity: MeteredQuantityInput | undefined;
+  if (listing.pricing.kind === "fixed" || listing.pricing.kind === "negotiable") {
+    if (input.meteredQuantity !== undefined) {
+      throw new DacsError(
+        "unexpected-metered-quantity: non-metered agreement must omit meteredQuantity",
+      );
+    }
+    price =
+      listing.pricing.kind === "fixed"
+        ? listing.pricing.price
+        : listing.pricing.bandCenter;
+  } else if (listing.pricing.kind === "metered") {
+    if (input.meteredQuantity === undefined) {
+      throw new DacsError(
+        "missing-metered-quantity: metered agreement requires meteredQuantity",
+      );
+    }
+    meteredQuantity = { ...input.meteredQuantity };
+    price = deriveMeteredPriceTerm(listing.pricing, meteredQuantity);
+  } else {
     throw new DacsError(
       `${listing.pricing.kind} pricing is unsupported by the fixed-price handler`,
     );
   }
-  // PS-3: fixed-price acceptance over a negotiable Listing selects the exact
-  // band centre. It cannot pick an arbitrary price merely within the band.
-  const price =
-    listing.pricing.kind === "fixed"
-      ? listing.pricing.price
-      : listing.pricing.bandCenter;
   const { commitment, paymentIndexes } = requirePipeline(listing);
   const rail = requireRail(listing, input.selectedRail, paymentIndexes);
   const buyer = agreementParty("buyer", input.buyer);
@@ -303,6 +431,9 @@ export function deriveFixedPriceAgreement(
         : {}),
     },
     price: structuredClone(price),
+    ...(meteredQuantity === undefined
+      ? {}
+      : { meteredQuantity: { ...meteredQuantity } }),
     ...(rail === undefined ? {} : { rail }),
     deadline,
   };
@@ -450,6 +581,7 @@ export async function signFixedPriceAgreement(
   const capturedBuyerSigner = captureAgreementSigner(buyerSigner, "buyer");
   const capturedSellerSigner = captureAgreementSigner(sellerSigner, "seller");
   const draft = snapshotCanonicalJson(callerDraft, "unsigned agreement draft");
+  requireCanonicalJobId(draft.jobId, "agreement jobId");
   if (
     Object.prototype.hasOwnProperty.call(draft, "signatures") ||
     Object.prototype.hasOwnProperty.call(draft, "signature")

@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
-
 import type {
   AnyAttestationBundle,
   CompositeVerificationRecord,
@@ -23,6 +21,7 @@ import {
   logicalToStorageProgramName,
 } from "../canonical/index.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
+import { generateCanonicalJobId } from "../negotiate/jobId.js";
 import type { DemosAdapter } from "../substrate/index.js";
 import {
   runSessionCore,
@@ -665,7 +664,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           expectedSettlementPayee: options.expectedSettlementPayee,
           resumeSettlement,
           vet,
-          newJobId: () => randomUUID(),
+          newJobId: () => generateCanonicalJobId(),
           now: () => new Date().toISOString(),
           nowMs: () => Date.now(),
           sessionStore,
