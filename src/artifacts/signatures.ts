@@ -72,6 +72,12 @@ export interface BuildComponentSignatureOptions {
   sign: ComponentSigner;
 }
 
+interface CapturedComponentSignatureOptions {
+  algorithm: ComponentSignatureAlgorithm;
+  signer: string;
+  sign: ComponentSigner;
+}
+
 export type ComponentSignatureStatus =
   | "missing"
   | "malformed"
@@ -224,10 +230,39 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
+function captureComponentSignatureOptions(
+  options: BuildComponentSignatureOptions,
+): CapturedComponentSignatureOptions {
+  // Read each caller-owned option exactly once and preserve method-style
+  // callback binding before inspecting the artifact. Artifact accessors must
+  // not be able to switch the signer configuration selected at API entry.
+  const algorithm = options.algorithm;
+  const signer = options.signer;
+  const signCandidate = options.sign;
+  if (!ALGORITHM_SET.has(algorithm)) {
+    throw new DacsError(`unsupported signature algorithm: ${algorithm}`);
+  }
+  if (!isNonEmptyString(signer)) {
+    throw new DacsError("component signature signer must be a non-empty string");
+  }
+  if (typeof signCandidate !== "function") {
+    throw new DacsError("component signature signer callback must be a function");
+  }
+
+  return {
+    algorithm,
+    signer,
+    sign: Function.prototype.bind.call(
+      signCandidate,
+      options,
+    ) as ComponentSigner,
+  };
+}
+
 async function buildComponentSignatureFromSnapshot(
   artifact: object,
   separator: DomainSeparator,
-  options: BuildComponentSignatureOptions,
+  options: CapturedComponentSignatureOptions,
 ): Promise<ComponentSignature> {
   assertUnsignedComponentArtifact(artifact);
   if (!isRegisteredSeparator(separator)) {
@@ -242,26 +277,13 @@ async function buildComponentSignatureFromSnapshot(
     );
   }
 
-  // Capture every caller-owned option exactly once, before the first await.
-  // A wallet callback (or another task running while it is pending) therefore
-  // cannot switch the advertised algorithm, signer, or implementation after
-  // the payload has been selected.
+  // These values were captured before any caller-owned artifact property was
+  // read. A wallet callback (or another task running while it is pending)
+  // therefore cannot switch the advertised algorithm, signer, or
+  // implementation after the operation begins.
   const algorithm = options.algorithm;
   const signer = options.signer;
-  const signCandidate = options.sign;
-  if (!ALGORITHM_SET.has(algorithm)) {
-    throw new DacsError(`unsupported signature algorithm: ${algorithm}`);
-  }
-  if (!isNonEmptyString(signer)) {
-    throw new DacsError("component signature signer must be a non-empty string");
-  }
-  if (typeof signCandidate !== "function") {
-    throw new DacsError("component signature signer callback must be a function");
-  }
-  const sign = Function.prototype.bind.call(
-    signCandidate,
-    options,
-  ) as ComponentSigner;
+  const sign = options.sign;
 
   const context = { algorithm, signer };
   const expectedBytes = signedBytes(separator, contentHash(asRecord(artifact)));
@@ -296,11 +318,12 @@ export async function buildComponentSignature(
   separator: DomainSeparator,
   options: BuildComponentSignatureOptions,
 ): Promise<ComponentSignature> {
+  const capturedOptions = captureComponentSignatureOptions(options);
   const artifactSnapshot = snapshotArtifact(artifact);
   return buildComponentSignatureFromSnapshot(
     artifactSnapshot,
     separator,
-    options,
+    capturedOptions,
   );
 }
 
@@ -310,11 +333,12 @@ export async function signComponentArtifact<T extends object>(
   separator: DomainSeparator,
   options: BuildComponentSignatureOptions,
 ): Promise<ComponentSignedArtifact<T>> {
+  const capturedOptions = captureComponentSignatureOptions(options);
   const artifactSnapshot = snapshotArtifact(artifact);
   const signature = await buildComponentSignatureFromSnapshot(
     artifactSnapshot,
     separator,
-    options,
+    capturedOptions,
   );
   return { ...artifactSnapshot, signature } as ComponentSignedArtifact<T>;
 }

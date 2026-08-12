@@ -188,6 +188,66 @@ describe("ComponentSignature foundation", () => {
     ).resolves.toMatchObject({ status: "valid" });
   });
 
+  it("captures build options before reading caller-owned artifact properties", async () => {
+    const options: BuildComponentSignatureOptions = {
+      algorithm: "ed25519",
+      signer: seller,
+      sign,
+    };
+    const artifact = {
+      listingVersion: "1",
+      seller,
+      get service() {
+        options.signer = outsider;
+        options.sign = () => "changed-wallet-output";
+        return "market-data";
+      },
+    };
+
+    const signature = await buildComponentSignature(
+      artifact,
+      "dacs-listing:v1:",
+      options,
+    );
+
+    expect(signature.signer).toBe(seller);
+    await expect(
+      verifyComponentSignature(
+        { ...listing, signature },
+        "dacs-listing:v1:",
+        deps(),
+      ),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("captures attach options before reading caller-owned artifact properties", async () => {
+    const options: BuildComponentSignatureOptions = {
+      algorithm: "ed25519",
+      signer: seller,
+      sign,
+    };
+    const artifact = {
+      listingVersion: "1",
+      seller,
+      get service() {
+        options.signer = outsider;
+        options.sign = () => "changed-wallet-output";
+        return "market-data";
+      },
+    };
+
+    const signed = await signComponentArtifact(
+      artifact,
+      "dacs-listing:v1:",
+      options,
+    );
+
+    expect(signed.signature.signer).toBe(seller);
+    await expect(
+      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
   it("preserves method-style this binding for signer and verifier callbacks", async () => {
     const signerOptions: BuildComponentSignatureOptions & {
       expectedSigner: string;
