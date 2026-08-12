@@ -37,6 +37,7 @@ import { privateKeyToAccount } from "viem/accounts";
  */
 import {
   ARTIFACT_SEPARATORS,
+  AnchorWaitError,
   BUNDLE_BINDING_SEPARATOR,
   EIP3009_AUTHORIZATION_USED_TOPIC,
   ERC20_TRANSFER_TOPIC,
@@ -1152,7 +1153,37 @@ async function publishAndDiscoverListing(input: {
     terms: { deadlineSecAfterCommit: 3_600 },
     validity: { notBefore: now - 60_000, notAfter: now + 3_600_000 },
   };
-  const published = await preflight.seller.publishListing(draft);
+  const expectedLogicalAddress = listingAddress(
+    preflight.env.SELLER_DID,
+    draft.listingId,
+    draft.listingVersion,
+  );
+  const expectedStorageName = logicalToStorageProgramName(expectedLogicalAddress);
+  let published: Awaited<ReturnType<typeof preflight.seller.publishListing>> | undefined;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      published = await preflight.seller.publishListing(draft);
+      break;
+    } catch (error) {
+      if (
+        !(error instanceof AnchorWaitError) ||
+        error.receipt.name !== expectedStorageName ||
+        attempt === 3
+      ) throw error;
+      const state = typeof error.receipt.state === "string" &&
+          /^[a-z-]+$/.test(error.receipt.state)
+        ? error.receipt.state : "unknown";
+      process.stderr.write(
+        `funded-e2e-step:listing-write-recovery-${attempt}-${error.code}-${state}\n`,
+      );
+      // The adapter retains the signed transaction hash and reconciles its
+      // nonce before the next call. Re-entering the exact write-once publish
+      // can therefore finish a lost acknowledgement or binding publication,
+      // but can never issue a conflicting update.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  requireCondition(published !== undefined, "listing-publication-missing");
   requireCondition(published.status === "published" || published.status === "already-published", "listing-publication-failed");
   const sellerPublicKey = await preflight.seller.adapter.getPublicKey();
   const validation = listingValidationDeps({
