@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   authenticateReadableListingArtifact,
+  discoverListings,
   verifyReadableListingArtifact,
 } from "../../src/agent/discover.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
@@ -77,6 +78,45 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     );
     expect(verified).toMatchObject({ compatibility: "normative" });
     expect(signer).toBe(listing.seller.identity.presentedBy);
+  });
+
+  it("returns the exact Listing snapshot authenticated before an async verifier mutates the resolver alias", async () => {
+    const listing = fixture();
+    const authenticatedDescription = listing.offering.description;
+    const resolverMutation = "unsigned resolver mutation after verification";
+
+    const found = await discoverListings(
+      ["stor:listing"],
+      async () => listing as unknown as Record<string, unknown>,
+      {
+        verify: async (bytes, signature, key) => {
+          const valid = verify(bytes, signature, key);
+          listing.offering.description = resolverMutation;
+          await Promise.resolve();
+          return valid;
+        },
+        nowMs: () => 1_790_000_000_000,
+        resolvePublicKey: (claim) => {
+          const encoded = VECTOR.publicKeys[claim];
+          return encoded
+            ? Uint8Array.from(Buffer.from(encoded, "base64url"))
+            : null;
+        },
+      },
+    );
+
+    expect(listing.offering.description).toBe(resolverMutation);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.compatibility).toBe("normative");
+    if (found[0]!.compatibility !== "normative") {
+      throw new Error("expected normative Listing");
+    }
+    expect(found[0]!.listing.offering.description).toBe(
+      authenticatedDescription,
+    );
+    expect(
+      contentHash(found[0]!.listing as unknown as Record<string, unknown>),
+    ).toBe(VECTOR.fixtures["listing-with-inert-extension"].artifactHash);
   });
 
   it("separates signature authentication from fresh-admission expiry", async () => {

@@ -158,10 +158,45 @@ function assertContiguousHistory(
   return versions;
 }
 
+/**
+ * Make the exact signed publication graph immutable before it crosses the
+ * asynchronous substrate seam. Listings are JSON artifacts, so every nested
+ * object/array participates in the signature scope and must be frozen.
+ */
+function deepFreezePublication<T extends object>(value: T): Readonly<T> {
+  const seen = new WeakSet<object>();
+  const freeze = (candidate: object): void => {
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    for (const nested of Object.values(candidate)) {
+      if (nested !== null && typeof nested === "object") freeze(nested);
+    }
+    Object.freeze(candidate);
+  };
+  freeze(value);
+  return value;
+}
+
 export async function publishListingCore(
-  listing: ListingDraft,
+  inputListing: ListingDraft,
   deps: PublishListingDeps,
 ): Promise<PublishListingResult> {
+  let listing: ListingDraft;
+  try {
+    // Own every nested field before the history scan or signer can yield. The
+    // signature and immutable publication must describe this one snapshot even
+    // if the caller mutates its retained draft while either dependency awaits.
+    listing = structuredClone(inputListing);
+  } catch (cause) {
+    throw new DacsError("publishListing requires a stable JSON Listing draft", {
+      cause,
+    });
+  }
+  const scanOwnAnchorsByNamePrefix =
+    deps.scanOwnAnchorsByNamePrefix.bind(deps);
+  const anchorWriteOnce = deps.anchorWriteOnce.bind(deps);
+  const sign = deps.sign.bind(deps);
+
   const candidateVersion = (listing as { listingVersion?: unknown })
     .listingVersion;
   if (
@@ -194,7 +229,7 @@ export async function publishListingCore(
   const versions = assertContiguousHistory(
     listing,
     historyPrefix,
-    await deps.scanOwnAnchorsByNamePrefix(historyPrefix),
+    await scanOwnAnchorsByNamePrefix(historyPrefix),
   );
   if (!versions.has(version)) {
     const expected = versions.size + 1;
@@ -211,7 +246,7 @@ export async function publishListingCore(
     {
       algorithm: "ed25519",
       signer: listing.seller.identity.presentedBy,
-      sign: (bytes) => deps.sign(bytes),
+      sign,
     },
   );
   if (!isListing(signed)) {
@@ -219,11 +254,21 @@ export async function publishListingCore(
       "signed Listing failed DACS-1 §6.3.4 structural/signature-envelope validation",
     );
   }
-  const { address: anchored, txRef } = await deps.anchorWriteOnce(storageName, signed);
+  let publication: typeof signed;
+  try {
+    // The signer result is authoritative. Give the adapter an owned, deeply
+    // immutable copy so no await-time mutation can change the bytes written.
+    publication = deepFreezePublication(structuredClone(signed));
+  } catch (cause) {
+    throw new DacsError("signed Listing could not form an immutable publication", {
+      cause,
+    });
+  }
   const listingPin = {
     listingId: listing.listingId,
     version,
-    contentHash: contentHash(signed as unknown as Record<string, unknown>),
+    contentHash: contentHash(publication as unknown as Record<string, unknown>),
   };
+  const { address: anchored, txRef } = await anchorWriteOnce(storageName, publication);
   return { ref: anchored, logicalAddress, storageName, listingPin, txRef };
 }

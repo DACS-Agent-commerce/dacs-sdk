@@ -5,13 +5,23 @@ import {
   type PublishListingDeps,
 } from "../../src/agent/publishListingCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
-import { signComponentArtifact } from "../../src/artifacts/signatures.js";
+import {
+  signComponentArtifact,
+  verifyComponentSignature,
+} from "../../src/artifacts/signatures.js";
 import {
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
 } from "../../src/canonical/index.js";
-import { ed25519Sign, privateKeyFromSeed } from "../../src/crypto/index.js";
+import {
+  ed25519Sign,
+  ed25519Verify,
+  privateKeyFromSeed,
+  publicKeyFromRaw,
+  publicKeyFromSeed,
+  rawPublicKey,
+} from "../../src/crypto/index.js";
 import { DacsError, SubstrateError } from "../../src/errors.js";
 
 const SELLER = "did:demos:agent:seller";
@@ -147,6 +157,86 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
       version: 1,
       contentHash: contentHash(stored),
     });
+  });
+
+  test("publishes the exact input snapshot signed before an async signer mutates the caller draft", async () => {
+    const deps = fakeDeps();
+    const draft = listing({ description: "authenticated publication A" });
+    deps.sign = async (bytes) => {
+      const signature = ed25519Sign(bytes, priv);
+      draft.offering.description = "unsigned publication B";
+      await Promise.resolve();
+      return signature;
+    };
+
+    const result = await publishListingCore(draft, deps);
+    const stored = deps.store.get(result.ref)!;
+    expect(draft.offering.description).toBe("unsigned publication B");
+    expect(
+      (stored.offering as { description: string }).description,
+    ).toBe("authenticated publication A");
+
+    const verdict = await verifyComponentSignature(
+      stored,
+      ARTIFACT_SEPARATORS.Listing,
+      {
+        isSignerAuthorized: (_artifact, signature) =>
+          signature.signer === SELLER,
+        resolvePublicKey: () =>
+          rawPublicKey(
+            publicKeyFromSeed(Uint8Array.from(Buffer.alloc(32, 7))),
+          ),
+        verify: ({ signedBytes, signature, publicKey }) =>
+          ed25519Verify(
+            signedBytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(publicKey),
+          ),
+      },
+    );
+    expect(verdict.status).toBe("valid");
+    expect(result.listingPin.contentHash).toBe(contentHash(stored));
+  });
+
+  test("publishes immutable signed bytes when an async anchor attempts nested mutation", async () => {
+    const deps = fakeDeps();
+    const anchor = deps.anchorWriteOnce;
+    let mutationBlocked = false;
+    deps.anchorWriteOnce = async (name, value) => {
+      try {
+        ((value as Record<string, unknown>).offering as { description: string })
+          .description = "unsigned publication B";
+      } catch {
+        mutationBlocked = true;
+      }
+      await Promise.resolve();
+      return anchor(name, value);
+    };
+
+    const result = await publishListingCore(
+      listing({ description: "authenticated publication A" }),
+      deps,
+    );
+    const stored = deps.store.get(result.ref)!;
+    expect(mutationBlocked).toBe(true);
+    expect((stored.offering as { description: string }).description)
+      .toBe("authenticated publication A");
+    expect(result.listingPin.contentHash).toBe(contentHash(stored));
+    expect(await verifyComponentSignature(
+      stored,
+      ARTIFACT_SEPARATORS.Listing,
+      {
+        isSignerAuthorized: (_artifact, signature) => signature.signer === SELLER,
+        resolvePublicKey: () => rawPublicKey(publicKeyFromSeed(
+          Uint8Array.from(Buffer.alloc(32, 7)),
+        )),
+        verify: ({ signedBytes, signature, publicKey }) => ed25519Verify(
+          signedBytes,
+          Uint8Array.from(Buffer.from(signature.value, "base64url")),
+          publicKeyFromRaw(publicKey),
+        ),
+      },
+    )).toMatchObject({ status: "valid" });
   });
 
   test("§6.3.4: the native program name is colon-free and the logical address is the returned binding (#46)", async () => {

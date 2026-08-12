@@ -521,19 +521,38 @@ describe("runSession orchestration (T4)", () => {
     expect(settleCalls).toBe(1); // settlement NOT executed again
   });
 
-  test("finishes an admitted session after Listing expiry but rejects an arbitrary resume id", async () => {
+  test("proves exact paid state before authenticating an expired Listing", async () => {
     const expiry = 1_780_000_000_100;
     const normative = {
       ...normativeListing(),
       validity: { notBefore: 1_770_000_000_000, notAfter: expiry },
+    };
+    const exactPin = {
+      listingId: normative.listingId,
+      version: normative.listingVersion,
+      contentHash: contentHash(normative),
     };
     const store = new Map<string, Record<string, unknown>>();
     let now = 1_780_000_000_000;
     let failBundleOnce = true;
     let settleCalls = 0;
     let anchorCalls = 0;
+    let observeRecoveryOrder = false;
+    const recoveryOrder: string[] = [];
     const deps = makeDeps({
       readListing: async () => normative,
+      verifyListing: () => {
+        if (observeRecoveryOrder) recoveryOrder.push("listing");
+        return true;
+      },
+      authenticateRecoveredAgreement: () => {
+        if (observeRecoveryOrder) recoveryOrder.push("agreement");
+        return true;
+      },
+      authenticateRecoveredSettlementEvidence: () => {
+        if (observeRecoveryOrder) recoveryOrder.push("evidence");
+        return true;
+      },
       nowMs: () => now,
       anchor: async (name, value) => {
         anchorCalls += 1;
@@ -574,17 +593,21 @@ describe("runSession orchestration (T4)", () => {
     expect(settleCalls).toBe(1);
 
     now = expiry + 1;
+    observeRecoveryOrder = true;
     await expect(
       runSessionCore("stor-expiring-listing", terms, deps, "job-EXPIRES"),
     ).resolves.toMatchObject({ outcome: "completed", jobId: "job-EXPIRES" });
     expect(settleCalls).toBe(1);
+    expect(recoveryOrder).toEqual(["agreement", "evidence", "listing"]);
 
     const callsBeforeRejectedResume = anchorCalls;
+    recoveryOrder.length = 0;
     await expect(
       runSessionCore("stor-expiring-listing", terms, deps, "job-NOT-ADMITTED"),
     ).rejects.toThrow(/outside.*validity window.*no prior Agreement/i);
     expect(settleCalls).toBe(1);
     expect(anchorCalls).toBe(callsBeforeRejectedResume);
+    expect(recoveryOrder).toEqual([]);
 
     let freshIds = 0;
     await expect(
@@ -604,6 +627,7 @@ describe("runSession orchestration (T4)", () => {
       buyer: "did:demos:agent:bob",
       seller: "did:demos:agent:alice",
       listingRef: "stor-expiring-listing",
+      dacsSdkListingPin: exactPin,
       price: terms.price,
       delivery: { phase: terms.deliveryPhase, format: terms.deliveryFormat },
       expiresAt: "2026-01-01T00:00:00Z",
@@ -619,6 +643,298 @@ describe("runSession orchestration (T4)", () => {
     ).rejects.toThrow(/no prior SettlementEvidence/i);
     expect(settleCalls).toBe(1);
     expect(anchorCalls).toBe(callsBeforeRejectedResume);
+  });
+
+  test("retains an immutable recovered-evidence snapshot across async authentication", async () => {
+    const expiry = 1_780_000_000_100;
+    const listing = {
+      ...normativeListing(),
+      validity: { notBefore: 1_770_000_000_000, notAfter: expiry },
+    };
+    const terms = {
+      ...TERMS,
+      price: { ...TERMS.price, rail: "x402:default" },
+    };
+    const store = new Map<string, Record<string, unknown>>();
+    let now = expiry - 1;
+    let failBundleOnce = true;
+    let settleCalls = 0;
+    let listingAuthentications = 0;
+    const jobId = "job-EVIDENCE-SNAPSHOT";
+    const evidenceRef = `stor-dacs4:evidence:${jobId}`;
+    const deps = makeDeps({
+      readListing: async () => listing,
+      nowMs: () => now,
+      verifyListing: () => {
+        listingAuthentications += 1;
+        return true;
+      },
+      authenticateRecoveredAgreement: () => true,
+      authenticateRecoveredSettlementEvidence: async (raw) => {
+        // Model an authenticator that verified the resolver-returned failure,
+        // then yielded while the resolver owner mutated its retained alias.
+        const authenticatedFailure = raw.outcome === "failure";
+        await Promise.resolve();
+        const aliasedEvidence = store.get(evidenceRef)!;
+        aliasedEvidence.outcome = "success";
+        aliasedEvidence.settlementFinality = {
+          model: "provider-receipt",
+          finalityObservedAt: now,
+        };
+        return authenticatedFailure;
+      },
+      anchor: async (name, value) => {
+        if (name === `dacs5:bundle:${jobId}` && failBundleOnce) {
+          failBundleOnce = false;
+          throw new Error("simulated crash before bundle publication");
+        }
+        const ref = `stor-${name}`;
+        store.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      settle: async () => {
+        settleCalls += 1;
+        return {
+          ok: false,
+          txHash: "0xfailed",
+          chainId: "eip155:8453",
+          payer: "0xbob",
+          payee: "0xalice",
+        };
+      },
+    });
+
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+    ).rejects.toThrow(/simulated crash/);
+    expect(settleCalls).toBe(1);
+    expect(store.get(evidenceRef)?.outcome).toBe("failure");
+
+    now = expiry + 1;
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+    ).rejects.toThrow(/not successful/i);
+    expect(settleCalls).toBe(1);
+    // The expired Listing is never authenticated because retained payment
+    // state remains the failure that was actually authenticated.
+    expect(listingAuthentications).toBe(1);
+  });
+
+  test("pins recovery authenticators before a resolver can swap the dependency", async () => {
+    const expiry = 1_780_000_000_100;
+    const listing = {
+      ...normativeListing(),
+      validity: { notBefore: 1_770_000_000_000, notAfter: expiry },
+    };
+    const terms = {
+      ...TERMS,
+      price: { ...TERMS.price, rail: "x402:default" },
+    };
+    const store = new Map<string, Record<string, unknown>>();
+    let now = expiry - 1;
+    let failBundleOnce = true;
+    let swapAuthenticator = false;
+    let settleCalls = 0;
+    const jobId = "job-AUTH-SWAP";
+    const deps = makeDeps({
+      readListing: async () => listing,
+      nowMs: () => now,
+      verifyListing: () => true,
+      authenticateRecoveredAgreement: () => false,
+      authenticateRecoveredSettlementEvidence: () => true,
+      anchor: async (name, value) => {
+        if (name === `dacs5:bundle:${jobId}` && failBundleOnce) {
+          failBundleOnce = false;
+          throw new Error("simulated crash before bundle publication");
+        }
+        const ref = `stor-${name}`;
+        store.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+      resolveAnchor: async (name) => {
+        if (swapAuthenticator && name === `dacs3:agreement:${jobId}`) {
+          deps.authenticateRecoveredAgreement = () => true;
+        }
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      settle: async () => {
+        settleCalls += 1;
+        return {
+          ok: true,
+          txHash: "0xauth-swap",
+          chainId: "eip155:8453",
+          payer: "0xbob",
+          payee: "0xalice",
+        };
+      },
+    });
+
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+    ).rejects.toThrow(/simulated crash/);
+    expect(settleCalls).toBe(1);
+
+    now = expiry + 1;
+    swapAuthenticator = true;
+    deps.authenticateRecoveredAgreement = () => false;
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+    ).rejects.toThrow(/cryptographic Agreement authentication/i);
+    expect(settleCalls).toBe(1);
+    expect(deps.authenticateRecoveredAgreement?.({}, deps.buyerId)).toBe(true);
+  });
+
+  test("authenticates the immutable Listing snapshot read at session entry", async () => {
+    const expiry = 1_780_000_000_100;
+    const listing = {
+      ...normativeListing(),
+      validity: { notBefore: 1_770_000_000_000, notAfter: expiry },
+    };
+    const exactListingHash = contentHash(listing);
+    const terms = {
+      ...TERMS,
+      price: { ...TERMS.price, rail: "x402:default" },
+    };
+    const store = new Map<string, Record<string, unknown>>();
+    const authenticatedHashes: string[] = [];
+    let now = expiry - 1;
+    let failBundleOnce = true;
+    let mutateListing = false;
+    let settleCalls = 0;
+    const jobId = "job-LISTING-SNAPSHOT";
+    const deps = makeDeps({
+      readListing: async () => listing,
+      nowMs: () => now,
+      verifyListing: (raw) => {
+        authenticatedHashes.push(contentHash(raw));
+        return true;
+      },
+      authenticateRecoveredAgreement: () => true,
+      authenticateRecoveredSettlementEvidence: () => true,
+      anchor: async (name, value) => {
+        if (name === `dacs5:bundle:${jobId}` && failBundleOnce) {
+          failBundleOnce = false;
+          throw new Error("simulated crash before bundle publication");
+        }
+        const ref = `stor-${name}`;
+        store.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+      resolveAnchor: async (name) => {
+        if (mutateListing && name === `dacs3:agreement:${jobId}`) {
+          listing.offering.description =
+            "resolver-owned alias mutated after the Listing read";
+        }
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      settle: async () => {
+        settleCalls += 1;
+        return {
+          ok: true,
+          txHash: "0xlisting-snapshot",
+          chainId: "eip155:8453",
+          payer: "0xbob",
+          payee: "0xalice",
+        };
+      },
+    });
+
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+    ).rejects.toThrow(/simulated crash/);
+    expect(settleCalls).toBe(1);
+
+    now = expiry + 1;
+    mutateListing = true;
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+    ).resolves.toMatchObject({ outcome: "completed", jobId });
+    expect(settleCalls).toBe(1);
+    expect(authenticatedHashes).toEqual([exactListingHash, exactListingHash]);
+    expect(contentHash(listing)).not.toBe(exactListingHash);
+  });
+
+  test("signed Agreement pin rejects same-ref substitutions across normative and legacy formats", async () => {
+    const normative = normativeListing();
+    normative.listingId = "svc-1";
+    normative.listingVersion = 1;
+    normative.acceptedRails = [{ railId: "pay-x402" }];
+    normative.pipeline[2] = {
+      kind: "pay-x402",
+      parameters: { rail: "pay-x402" },
+    };
+    const legacy = structuredClone(LISTING);
+
+    for (const direction of [
+      { name: "normative-to-legacy", first: normative, replacement: legacy },
+      { name: "legacy-to-normative", first: legacy, replacement: normative },
+    ]) {
+      let current = structuredClone(direction.first) as Record<string, unknown>;
+      const store = new Map<string, Record<string, unknown>>();
+      let failBundleOnce = true;
+      let settleCalls = 0;
+      const jobId = `job-${direction.name}`;
+      const deps = makeDeps({
+        readListing: async () => current,
+        verifyListing: () => true,
+        authenticateRecoveredAgreement: () => true,
+        anchor: async (name, value) => {
+          if (name === `dacs5:bundle:${jobId}` && failBundleOnce) {
+            failBundleOnce = false;
+            throw new Error("simulated crash before bundle publication");
+          }
+          const ref = `stor-${name}`;
+          store.set(ref, structuredClone(value) as Record<string, unknown>);
+          return ref;
+        },
+        resolveAnchor: async (name) => {
+          const ref = `stor-${name}`;
+          const value = store.get(ref);
+          return value
+            ? { status: "present" as const, ref, value: structuredClone(value) }
+            : { status: "absent" as const };
+        },
+        settle: async () => {
+          settleCalls += 1;
+          return {
+            ok: true,
+            txHash: `0x${direction.name}`,
+            chainId: "eip155:8453",
+            payer: "0xbob",
+            payee: "0xalice",
+          };
+        },
+      });
+
+      await expect(
+        runSessionCore("stor-reusable-listing", TERMS, deps, jobId),
+      ).rejects.toThrow(/simulated crash/);
+      expect(settleCalls).toBe(1);
+
+      current = structuredClone(direction.replacement) as Record<
+        string,
+        unknown
+      >;
+      await expect(
+        runSessionCore("stor-reusable-listing", TERMS, deps, jobId),
+      ).rejects.toThrow(/signed Listing pin/i);
+      expect(settleCalls).toBe(1);
+    }
   });
 
   test("resume aborts when the anchored artifact is for a different deal", async () => {

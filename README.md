@@ -65,7 +65,12 @@ const session = await agent.runSession(listingRef, {
   terms,
   // optional Vet step: resolve a steward recipe + verify the seller before paying
   vet: (subject) =>
-    resolveRecipe(recipeRegistryRef, "self-signed", { readRegistry, stewardPublicKey, verify })
+    resolveRecipe(recipeRegistryRef, "self-signed", {
+      readRegistry,
+      stewardPublicKey,
+      stewardSigner,
+      verify,
+    })
       .then((recipe) => vetCore({ subject, recipe }, { proxyFetch, now })),
   // `asset` is the on-chain token id (ERC-20 contract) the 402 must advertise —
   // the §4.1 guard compares against it, not the Price.asset symbol.

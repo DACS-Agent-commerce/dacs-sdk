@@ -1,4 +1,9 @@
-import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  sha256Hex,
+  stripSignature,
+} from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
@@ -177,9 +182,10 @@ export interface SessionDeps {
   /** Current unix-ms timestamp (used where the spec field is a number). */
   nowMs: () => number;
   /**
-   * Verify the anchored listing before ANY action is taken on it (#41). Receives
-   * the raw stored artifact (signature intact) and the seller claim it advertises;
-   * must return true only if the signature verifies AND binds to that seller.
+   * Verify the anchored listing before any external effect is taken from it
+   * (#41). Receives the raw stored artifact (signature intact) and the seller
+   * claim it advertises; must return true only if the signature verifies AND
+   * binds to that seller.
    *
    * This is enforced INDEPENDENTLY of discovery: a session may be handed a ref
    * that never passed through `discover`, and the listing drives vetting, rail
@@ -192,6 +198,24 @@ export interface SessionDeps {
   verifyListing?: (
     raw: Record<string, unknown>,
     sellerClaim: string,
+  ) => Promise<boolean> | boolean;
+  /**
+   * Authenticate the exact buyer-owned legacy Agreement recovered while
+   * resuming a session. This must verify the signature bytes, not merely the
+   * presence of a signature field or the owner of the anchor.
+   */
+  authenticateRecoveredAgreement?: (
+    raw: Record<string, unknown>,
+    buyerClaim: string,
+  ) => Promise<boolean> | boolean;
+  /**
+   * Authenticate the exact buyer ComponentSignature on recovered
+   * SettlementEvidence. This must verify both signer authorization and the
+   * signature bytes over the complete SIG-5 signed scope.
+   */
+  authenticateRecoveredSettlementEvidence?: (
+    raw: Record<string, unknown>,
+    buyerClaim: string,
   ) => Promise<boolean> | boolean;
   /**
    * Explicit, grep-able opt-out of listing verification, for callers that
@@ -261,6 +285,190 @@ const isSettlementFinalityModel = (
   value === "htlc-reveal" ||
   value === "liquidity-tank" ||
   value === "bft-final";
+
+function isListingPinValue(value: unknown): value is ListingPin {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const pin = value as Record<string, unknown>;
+  const keys = Object.keys(pin);
+  return (
+    keys.length === 3 &&
+    Object.prototype.hasOwnProperty.call(pin, "listingId") &&
+    Object.prototype.hasOwnProperty.call(pin, "version") &&
+    Object.prototype.hasOwnProperty.call(pin, "contentHash") &&
+    typeof pin.listingId === "string" &&
+    pin.listingId.length > 0 &&
+    typeof pin.version === "number" &&
+    Number.isSafeInteger(pin.version) &&
+    pin.version >= 1 &&
+    typeof pin.contentHash === "string" &&
+    /^[0-9a-f]{64}$/.test(pin.contentHash)
+  );
+}
+
+function sameListingPin(left: ListingPin, right: ListingPin): boolean {
+  return (
+    left.listingId === right.listingId &&
+    left.version === right.version &&
+    left.contentHash === right.contentHash
+  );
+}
+
+function describeListingPin(pin: ListingPin): string {
+  return `${pin.listingId}:v${pin.version}:${pin.contentHash}`;
+}
+
+/**
+ * Reject live/proxy/accessor-backed values before cloning them across an async
+ * trust boundary. JSON artifacts may contain only enumerable data properties;
+ * accepting getters would let one read authenticate different bytes from the
+ * value a later read uses.
+ */
+function isDataOnlyJson(
+  value: unknown,
+  ancestors = new Set<object>(),
+): boolean {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER;
+  }
+  if (typeof value !== "object" || ancestors.has(value)) return false;
+
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key === "symbol")) return false;
+
+    ancestors.add(value);
+    if (Array.isArray(value)) {
+      if (prototype !== Array.prototype) return false;
+      const length = value.length;
+      if (!Number.isSafeInteger(length) || length < 0) return false;
+      const stringKeys = keys as string[];
+      if (
+        stringKeys.length !== length + 1 ||
+        !stringKeys.includes("length")
+      ) {
+        return false;
+      }
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (
+          !descriptor ||
+          !("value" in descriptor) ||
+          !descriptor.enumerable ||
+          !isDataOnlyJson(descriptor.value, ancestors)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (
+        !descriptor ||
+        !("value" in descriptor) ||
+        !descriptor.enumerable ||
+        descriptor.value === undefined ||
+        !isDataOnlyJson(descriptor.value, ancestors)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+/** Own one stable canonical JSON value so its producer cannot mutate it later. */
+function snapshotCanonicalJson<T>(value: T, label: string): T {
+  try {
+    if (!isDataOnlyJson(value)) throw new TypeError("not data-only JSON");
+    const canonical = canonicalize(value);
+    const captured = structuredClone(value);
+    if (
+      !isDataOnlyJson(captured) ||
+      canonicalize(captured) !== canonical
+    ) {
+      throw new TypeError("snapshot changed canonical bytes");
+    }
+    return captured;
+  } catch (cause) {
+    throw new DacsError(`${label} is not stable canonical JSON`, { cause });
+  }
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.length === expected.length &&
+    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  );
+}
+
+/** Capture and strictly validate a resolver result before retaining it. */
+function snapshotAnchorLookup(value: unknown, label: string): AnchorLookup {
+  let captured: unknown;
+  try {
+    captured = snapshotCanonicalJson(value, label);
+  } catch (cause) {
+    throw new SubstrateError(`${label} returned an unstable or non-wire result`, {
+      cause,
+    });
+  }
+  if (
+    captured === null ||
+    typeof captured !== "object" ||
+    Array.isArray(captured)
+  ) {
+    throw new SubstrateError(`${label} returned a malformed lookup envelope`);
+  }
+  const record = captured as Record<string, unknown>;
+  if (record.status === "absent" && hasExactKeys(record, ["status"])) {
+    return { status: "absent" };
+  }
+  if (
+    record.status === "indeterminate" &&
+    hasExactKeys(record, ["status", "reason"]) &&
+    typeof record.reason === "string" &&
+    record.reason.length > 0
+  ) {
+    return { status: "indeterminate", reason: record.reason };
+  }
+  if (
+    record.status === "present" &&
+    hasExactKeys(record, ["status", "ref", "value"]) &&
+    typeof record.ref === "string" &&
+    record.ref.length > 0 &&
+    record.value !== null &&
+    typeof record.value === "object" &&
+    !Array.isArray(record.value)
+  ) {
+    return {
+      status: "present",
+      ref: record.ref,
+      value: record.value as Record<string, unknown>,
+    };
+  }
+  throw new SubstrateError(`${label} returned a malformed lookup envelope`);
+}
 
 function durableSettlementOutcome(result: SettleResult): DurableSettlementOutcome {
   const ok = result.ok && result.txHash.trim().length > 0;
@@ -403,15 +611,50 @@ async function recordSessionOutcome(
 
 export async function runSessionCore(
   listingRef: string,
-  terms: SessionTerms,
-  deps: SessionDeps,
+  inputTerms: SessionTerms,
+  inputDeps: SessionDeps,
   resumeJobId?: string,
 ): Promise<SessionResult> {
+  // Capture every caller-controlled callback and scalar before the first await.
+  // A mutable dependency bag must not be able to swap an authenticator while a
+  // resolver is in flight and thereby choose which function approves recovery.
+  const deps: Readonly<SessionDeps> = Object.freeze({
+    buyerId: inputDeps.buyerId,
+    readListing: inputDeps.readListing.bind(inputDeps),
+    sign: inputDeps.sign.bind(inputDeps),
+    signBytes: inputDeps.signBytes.bind(inputDeps),
+    legacyComponentSignatures: inputDeps.legacyComponentSignatures,
+    anchor: inputDeps.anchor.bind(inputDeps),
+    resolveAnchor: inputDeps.resolveAnchor.bind(inputDeps),
+    settle: inputDeps.settle.bind(inputDeps),
+    resumeSettlement: inputDeps.resumeSettlement?.bind(inputDeps),
+    vet: inputDeps.vet?.bind(inputDeps),
+    newJobId: inputDeps.newJobId.bind(inputDeps),
+    now: inputDeps.now.bind(inputDeps),
+    nowMs: inputDeps.nowMs.bind(inputDeps),
+    verifyListing: inputDeps.verifyListing?.bind(inputDeps),
+    authenticateRecoveredAgreement:
+      inputDeps.authenticateRecoveredAgreement?.bind(inputDeps),
+    authenticateRecoveredSettlementEvidence:
+      inputDeps.authenticateRecoveredSettlementEvidence?.bind(inputDeps),
+    trustListing: inputDeps.trustListing,
+    sessionStore: inputDeps.sessionStore,
+  });
+  const terms = snapshotCanonicalJson(inputTerms, "session terms");
+
   const stored = await deps.readListing(listingRef);
   if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
   }
-  const storedRecord = stored as Record<string, unknown>;
+  let storedRecord: Record<string, unknown>;
+  try {
+    storedRecord = snapshotCanonicalJson(
+      stored as Record<string, unknown>,
+      `listing at ${listingRef}`,
+    );
+  } catch (cause) {
+    throw new Error(`listing not found or invalid at ${listingRef}`, { cause });
+  }
   const readableListing = readListingArtifact(storedRecord);
   if (!readableListing) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
@@ -472,20 +715,40 @@ export async function runSessionCore(
     pin: ListingPin;
   } = listing;
 
-  // #41 — verify the listing BEFORE vetting, rail selection or settlement. A
-  // forged/tampered listing steers the recipient and rail, so an unverified one
-  // must never reach the money path. Fails closed; the gate is not defaultable.
+  // #41 — authenticate the listing before any external effect. Fresh admission
+  // preserves the existing early gate. An expired recovery deliberately waits
+  // until the exact signed Agreement and successful SettlementEvidence prove
+  // that this is completion of an already-paid deal; only that path may use an
+  // authentication-only Listing reader that ignores the current wall clock.
   if (!deps.verifyListing && !deps.trustListing) {
     throw new DacsError(
       "runSessionCore requires deps.verifyListing or an explicit deps.trustListing: true opt-out — " +
         "acting on an unverified listing lets a forged listing drive payment (#41)",
     );
   }
-  if (deps.verifyListing) {
+  if (listingExpired && !deps.verifyListing) {
+    throw new DacsError(
+      "runSessionCore requires deps.verifyListing to authenticate the exact Listing " +
+        "after proving an expired-session recovery",
+    );
+  }
+  if (
+    listingExpired &&
+    (!deps.authenticateRecoveredAgreement ||
+      !deps.authenticateRecoveredSettlementEvidence)
+  ) {
+    throw new DacsError(
+      "runSessionCore requires cryptographic Agreement and SettlementEvidence " +
+        "authentication before an expired-session recovery",
+    );
+  }
+
+  const authenticateListing = async (): Promise<void> => {
+    if (!deps.verifyListing) return;
     let verified = false;
     try {
       verified = await deps.verifyListing(
-        stored as Record<string, unknown>,
+        structuredClone(storedRecord),
         listingView.sellerClaim,
       );
     } catch {
@@ -496,6 +759,9 @@ export async function runSessionCore(
         `listing at ${listingRef} failed signature verification for seller ${listingView.sellerClaim} (#41)`,
       );
     }
+  };
+  if (!listingExpired) {
+    await authenticateListing();
   }
 
   if (!listingView.supportedPaymentRails.includes(terms.price.rail)) {
@@ -600,7 +866,17 @@ export async function runSessionCore(
     // Resolve BY NAME (the address can't be recomputed). Fail closed on an
     // indeterminate lookup: proceeding as if absent could re-anchor a duplicate
     // or, for evidence, defeat the no-double-pay guard and settle twice (#70).
-    const found = knownLookup ?? (await deps.resolveAnchor(name));
+    let lookup: AnchorLookup;
+    try {
+      lookup = knownLookup ?? (await deps.resolveAnchor(name));
+    } catch (cause) {
+      throw new SubstrateError(
+        `resume: lookup for "${name}" failed; refusing to proceed rather than ` +
+          `risk a duplicate anchor or double settlement`,
+        { cause },
+      );
+    }
+    const found = snapshotAnchorLookup(lookup, `anchor lookup for "${name}"`);
     if (found.status === "indeterminate") {
       throw new SubstrateError(
         `resume: could not determine whether "${name}" is already anchored (${found.reason}); ` +
@@ -642,6 +918,8 @@ export async function runSessionCore(
     if (!isAgreementDocument(v))
       return { ok: false, reason: "not an agreement" };
     const a = v as unknown as AgreementDocument;
+    if (a.pattern !== "negotiate-fixed-price")
+      return { ok: false, reason: `pattern ${a.pattern} is not fixed-price` };
     if (a.jobId !== jobId)
       return { ok: false, reason: `jobId ${a.jobId} ≠ ${jobId}` };
     if (a.buyer !== deps.buyerId)
@@ -650,6 +928,28 @@ export async function runSessionCore(
       return { ok: false, reason: `seller ${a.seller} ≠ ${listingView.sellerClaim}` };
     if (a.listingRef !== listingRef)
       return { ok: false, reason: `listingRef ${a.listingRef} ≠ ${listingRef}` };
+    const hasPinnedListing = Object.prototype.hasOwnProperty.call(
+      v,
+      "dacsSdkListingPin",
+    );
+    // A pin written by a normative session remains load-bearing even if the
+    // same native address is later replaced by a legacy-shaped Listing. The
+    // reciprocal legacy→normative replacement is rejected because current
+    // normative recovery requires the pin to be present.
+    if (hasPinnedListing || readableListing.compatibility === "normative") {
+      const pinned = v.dacsSdkListingPin;
+      if (!isListingPinValue(pinned)) {
+        return { ok: false, reason: "Agreement has no exact signed Listing pin" };
+      }
+      if (!sameListingPin(pinned, listingView.pin)) {
+        return {
+          ok: false,
+          reason:
+            `signed Listing pin ${describeListingPin(pinned)} ≠ ` +
+            describeListingPin(listingView.pin),
+        };
+      }
+    }
     if (!pricesEqual(a.price, terms.price))
       return { ok: false, reason: "price mismatch" };
     if (
@@ -671,30 +971,113 @@ export async function runSessionCore(
         ok: false,
         reason: `payment phase ${e.phase} ≠ ${paymentEvidencePhase}`,
       };
+    if (e.phaseIndex !== 0)
+      return { ok: false, reason: `phaseIndex ${e.phaseIndex} ≠ 0` };
     if (!e.paymentAmount)
       return { ok: false, reason: "settlement evidence has no payment amount" };
     if (e.paymentAmount.amount !== terms.price.amount)
       return { ok: false, reason: "settled amount mismatch" };
     if (e.paymentAmount.currency !== terms.price.asset)
       return { ok: false, reason: "settled currency mismatch" };
+    if (e.outcome === "success") {
+      if (e.paymentTxRefs.length === 0)
+        return { ok: false, reason: "successful evidence has no transaction ref" };
+      if (
+        e.paymentTxRefs.some(
+          (ref) =>
+            ref.rail.trim().length === 0 ||
+            ref.txHash.trim().length === 0 ||
+            ref.kind.trim().length === 0,
+        )
+      ) {
+        return {
+          ok: false,
+          reason: "successful evidence has an empty transaction-ref component",
+        };
+      }
+      if (!isSettlementFinalityModel(e.settlementFinality.model)) {
+        return { ok: false, reason: "unrecognized settlement finality model" };
+      }
+      if (
+        e.settlementFinality.model === "block-depth" &&
+        e.settlementFinality.finalityBlocks !== undefined &&
+        (!Number.isSafeInteger(e.settlementFinality.finalityBlocks) ||
+          e.settlementFinality.finalityBlocks < 0)
+      ) {
+        return { ok: false, reason: "invalid block-depth finality" };
+      }
+    }
     return { ok: true };
   };
 
-  // Listing expiry closes admission, not audit completion of an already paid
-  // deal. An explicit job id or Agreement alone is not proof of payment: before
-  // any Vet, anchor, or settlement effect, require exact Agreement AND successful
-  // buyer-signed SettlementEvidence in their deterministic, buyer-owned slots.
-  let recoveredAgreement: AnchorLookup | undefined;
-  let recoveredEvidence: AnchorLookup | undefined;
-  if (listingExpired) {
-    const agreementName = sessionAnchorName.agreement(jobId);
-    recoveredAgreement = await deps.resolveAnchor(agreementName);
-    if (recoveredAgreement.status === "indeterminate") {
+  const recoveryLookup = async (
+    name: string,
+    subject: string,
+  ): Promise<Exclude<AnchorLookup, { status: "indeterminate" }>> => {
+    let found: AnchorLookup;
+    try {
+      found = snapshotAnchorLookup(
+        await deps.resolveAnchor(name),
+        `${subject} lookup for "${name}"`,
+      );
+    } catch (cause) {
       throw new SubstrateError(
-        `resume: could not authenticate prior admission at "${agreementName}" ` +
-          `(${recoveredAgreement.reason}); refusing an expired-Listing resume`,
+        `recovery: ${subject} lookup for "${name}" failed; refusing session recovery`,
+        { cause },
       );
     }
+    if (found.status === "indeterminate") {
+      throw new SubstrateError(
+        `recovery: could not authenticate prior ${subject} at "${name}" ` +
+          `(${found.reason}); refusing session recovery`,
+      );
+    }
+    return found;
+  };
+
+  // Listing expiry closes admission, not audit completion of an already-paid
+  // deal. A resume id or Agreement alone is insufficient: before Listing
+  // authentication, Vet, anchoring, or settlement, retain an exact matching
+  // Agreement plus successful buyer-signed SettlementEvidence. Non-expired
+  // resumes also preflight any existing Agreement so its signed Listing pin
+  // cannot be bypassed by replacing a normative Listing with a legacy shape.
+  let recoveredAgreement: AnchorLookup | undefined;
+  let recoveredEvidence: AnchorLookup | undefined;
+  if (!listingExpired && resumeJobId !== undefined) {
+    const agreementName = sessionAnchorName.agreement(jobId);
+    const priorAgreement = await recoveryLookup(agreementName, "admission");
+    if (priorAgreement.status === "present") {
+      const agreementMatch = matchAgreement(stripSignature(priorAgreement.value));
+      if (!agreementMatch.ok) {
+        throw new CounterpartyError(
+          `recovery: prior admission anchored at ${priorAgreement.ref} does not match ` +
+            `the requested deal: ${agreementMatch.reason}`,
+        );
+      }
+      if (deps.authenticateRecoveredAgreement) {
+        let authenticated = false;
+        try {
+          authenticated =
+            (await deps.authenticateRecoveredAgreement(
+              structuredClone(priorAgreement.value),
+              deps.buyerId,
+            )) === true;
+        } catch {
+          authenticated = false;
+        }
+        if (!authenticated) {
+          throw new CounterpartyError(
+            `recovery: prior admission anchored at ${priorAgreement.ref} failed ` +
+              `cryptographic Agreement authentication`,
+          );
+        }
+      }
+      recoveredAgreement = priorAgreement;
+    }
+  }
+  if (listingExpired) {
+    const agreementName = sessionAnchorName.agreement(jobId);
+    recoveredAgreement = await recoveryLookup(agreementName, "admission");
     if (recoveredAgreement.status === "absent") {
       throw new CounterpartyError(
         `listing ${listing.pin.listingId} v${listing.pin.version} is outside its ` +
@@ -704,19 +1087,29 @@ export async function runSessionCore(
     const agreementMatch = matchAgreement(stripSignature(recoveredAgreement.value));
     if (!agreementMatch.ok) {
       throw new CounterpartyError(
-        `resume: prior admission anchored at ${recoveredAgreement.ref} does not match ` +
+        `recovery: prior admission anchored at ${recoveredAgreement.ref} does not match ` +
         `the requested deal: ${agreementMatch.reason}`,
+      );
+    }
+    let agreementAuthenticated = false;
+    try {
+      agreementAuthenticated =
+        (await deps.authenticateRecoveredAgreement!(
+          structuredClone(recoveredAgreement.value),
+          deps.buyerId,
+        )) === true;
+    } catch {
+      agreementAuthenticated = false;
+    }
+    if (!agreementAuthenticated) {
+      throw new CounterpartyError(
+        `recovery: prior admission anchored at ${recoveredAgreement.ref} failed ` +
+          `cryptographic Agreement authentication`,
       );
     }
 
     const evidenceName = sessionAnchorName.evidence(jobId);
-    recoveredEvidence = await deps.resolveAnchor(evidenceName);
-    if (recoveredEvidence.status === "indeterminate") {
-      throw new SubstrateError(
-        `resume: could not authenticate prior payment at "${evidenceName}" ` +
-          `(${recoveredEvidence.reason}); refusing an expired-Listing resume`,
-      );
-    }
+    recoveredEvidence = await recoveryLookup(evidenceName, "payment");
     if (recoveredEvidence.status === "absent") {
       throw new CounterpartyError(
         `listing ${listing.pin.listingId} v${listing.pin.version} is outside its ` +
@@ -729,8 +1122,24 @@ export async function runSessionCore(
     );
     if (!evidenceSignature.ok) {
       throw new CounterpartyError(
-        `resume: prior payment at ${recoveredEvidence.ref} has unacceptable ` +
+        `recovery: prior payment at ${recoveredEvidence.ref} has unacceptable ` +
           `signature: ${evidenceSignature.reason}`,
+      );
+    }
+    let evidenceAuthenticated = false;
+    try {
+      evidenceAuthenticated =
+        (await deps.authenticateRecoveredSettlementEvidence!(
+          structuredClone(recoveredEvidence.value),
+          deps.buyerId,
+        )) === true;
+    } catch {
+      evidenceAuthenticated = false;
+    }
+    if (!evidenceAuthenticated) {
+      throw new CounterpartyError(
+        `recovery: prior payment at ${recoveredEvidence.ref} failed cryptographic ` +
+          `SettlementEvidence authentication`,
       );
     }
     const evidenceMatch = matchSettlementEvidence(
@@ -738,7 +1147,7 @@ export async function runSessionCore(
     );
     if (!evidenceMatch.ok) {
       throw new CounterpartyError(
-        `resume: prior payment at ${recoveredEvidence.ref} does not match the ` +
+        `recovery: prior payment at ${recoveredEvidence.ref} does not match the ` +
           `requested deal: ${evidenceMatch.reason}`,
       );
     }
@@ -747,10 +1156,15 @@ export async function runSessionCore(
       "success"
     ) {
       throw new CounterpartyError(
-        `resume: prior payment at ${recoveredEvidence.ref} was not successful; ` +
-          `refusing an expired-Listing resume`,
+        `recovery: prior payment at ${recoveredEvidence.ref} was not successful; ` +
+          `refusing expired-session recovery`,
       );
     }
+
+    // This is intentionally after the recovered-state proof above. The public
+    // Agent wires an authentication-only Listing verifier here; allowing it on
+    // an arbitrary expired job id would turn a historical read into admission.
+    await authenticateListing();
   }
 
   /** Content-addressed ref to a signed artifact's signed scope. */
@@ -804,13 +1218,19 @@ export async function runSessionCore(
     sessionAnchorName.agreement(jobId),
     matchAgreement,
     () => {
-      const agreement: AgreementDocument = {
+      const agreement: AgreementDocument & {
+        /** SDK operational extension; retained inside the legacy signed scope. */
+        dacsSdkListingPin?: ListingPin;
+      } = {
         jobId,
         pattern: "negotiate-fixed-price",
         buyer: deps.buyerId,
         seller: listingView.sellerClaim,
         listingRef,
-        price: terms.price,
+        ...(readableListing.compatibility === "normative"
+          ? { dacsSdkListingPin: structuredClone(listingView.pin) }
+          : {}),
+        price: structuredClone(terms.price),
         delivery: { phase: terms.deliveryPhase, format: terms.deliveryFormat },
         expiresAt: deps.now(),
       };

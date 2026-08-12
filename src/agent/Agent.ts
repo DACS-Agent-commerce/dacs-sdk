@@ -6,12 +6,15 @@ import type {
   ListingDraft,
   ListingPin,
 } from "../artifacts/types.js";
+import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import { verifyComponentSignature } from "../artifacts/signatures.js";
 import {
   ed25519Verify,
   publicKeyFromRaw,
   type DomainSeparator,
 } from "../crypto/index.js";
 import { isAnyAttestationBundle } from "../artifacts/validators.js";
+import { DacsError } from "../errors.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
 import type { DemosAdapter } from "../substrate/index.js";
 import {
@@ -268,6 +271,33 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           "runSession requires createAgent({ identity: { agentId } })",
         );
       }
+      // Recovery needs the connected wallet's actual signing key, while a fresh
+      // run does not. Resolve and cache it lazily so this hardening introduces
+      // no additional await (and no new pre-snapshot TOCTOU window) on fresh
+      // sessions.
+      let buyerSigningPublicKeyPromise: Promise<Uint8Array> | undefined;
+      const buyerSigningPublicKey = (): Promise<Uint8Array> => {
+        buyerSigningPublicKeyPromise ??= adapter.getPublicKey().then((resolved) => {
+          if (!(resolved instanceof Uint8Array) || resolved.length !== 32) {
+            throw new DacsError(
+              "runSession recovery requires the adapter's exact 32-byte signing public key",
+            );
+          }
+          const key = Uint8Array.from(resolved);
+          const addressKey = publicKeyFromDid(adapter.getAddress());
+          const claimKey = publicKeyFromDid(buyerId);
+          if (
+            (addressKey && !Buffer.from(addressKey).equals(Buffer.from(key))) ||
+            (claimKey && !Buffer.from(claimKey).equals(Buffer.from(key)))
+          ) {
+            throw new DacsError(
+              "runSession recovery buyer identity does not match the connected signing key",
+            );
+          }
+          return key;
+        });
+        return buyerSigningPublicKeyPromise;
+      };
       return runSessionCore(
         listingRef,
         opts.terms,
@@ -305,8 +335,9 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           verifyListing: async (raw, sellerClaim) => {
             // Authenticate the exact Listing independently of its current
             // wall-clock validity. runSessionCore applies that admission policy:
-            // fresh sessions must be in-window, while an expired resume must
-            // prove an exact pre-existing Agreement before any side effect.
+            // fresh sessions must be in-window, while an expired recovery must
+            // first prove an exact signed Agreement and authenticated successful
+            // SettlementEvidence before this callback is reached.
             const verified = await authenticateReadableListingArtifact(raw, {
               verify: ed25519RawVerify,
               resolvePublicKey: (claim) => publicKeyFromDid(claim),
@@ -317,6 +348,50 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
                 ? verified.listing.seller.identity.presentedBy
                 : verified.listing.agentId;
             return advertisedSeller === sellerClaim;
+          },
+          authenticateRecoveredAgreement: async (raw, buyerClaim) => {
+            if (
+              buyerClaim !== buyerId ||
+              Object.prototype.hasOwnProperty.call(raw, "signatures") ||
+              typeof raw.signature !== "string" ||
+              !/^[0-9a-f]{128}$/.test(raw.signature)
+            ) {
+              return false;
+            }
+            const publicKey = await buyerSigningPublicKey();
+            return verifySignedArtifact(
+              raw,
+              ARTIFACT_SEPARATORS.AgreementDocument,
+              publicKey,
+              ed25519RawVerify,
+            );
+          },
+          authenticateRecoveredSettlementEvidence: async (
+            raw,
+            buyerClaim,
+          ) => {
+            if (buyerClaim !== buyerId) return false;
+            const publicKey = await buyerSigningPublicKey();
+            const verdict = await verifyComponentSignature(
+              raw,
+              ARTIFACT_SEPARATORS.SettlementEvidence,
+              {
+                isSignerAuthorized: (_artifact, signature) =>
+                  signature.algorithm === "ed25519" &&
+                  signature.signer === buyerClaim,
+                resolvePublicKey: (signature) =>
+                  signature.signer === buyerClaim ? publicKey : null,
+                verify: ({ signedBytes: bytes, signature, publicKey }) => {
+                  const signatureBytes = Uint8Array.from(
+                    Buffer.from(signature.value, "base64url"),
+                  );
+                  return signatureBytes.length === 64
+                    ? ed25519RawVerify(bytes, signatureBytes, publicKey)
+                    : false;
+                },
+              },
+            );
+            return verdict.status === "valid";
           },
           settle: opts.settle,
           vet: opts.vet,

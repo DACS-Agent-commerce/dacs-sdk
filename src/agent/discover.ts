@@ -56,6 +56,43 @@ export type DiscoveredListing =
   | { ref: string; compatibility: "normative"; listing: Listing }
   | { ref: string; compatibility: "legacy-mvp"; listing: LegacyMvpListing };
 
+type CapturedDiscoverDeps = Readonly<{
+  verify: DiscoverDeps["verify"];
+  resolvePublicKey: DiscoverDeps["resolvePublicKey"];
+  trustListings: DiscoverDeps["trustListings"];
+  nowMs: DiscoverDeps["nowMs"];
+}>;
+
+/** Capture callback identities once so an in-flight read cannot swap its gate. */
+function captureDiscoverDeps(deps: DiscoverDeps): CapturedDiscoverDeps {
+  return Object.freeze({
+    verify: deps.verify,
+    resolvePublicKey: deps.resolvePublicKey,
+    trustListings: deps.trustListings,
+    nowMs: deps.nowMs,
+  });
+}
+
+/**
+ * Own the resolver value before validation or any await. A Listing is an
+ * authenticated JSON artifact; structuredClone both rejects non-cloneable live
+ * values and severs every nested alias retained by the resolver.
+ */
+function snapshotListingArtifact(
+  raw: Record<string, unknown>,
+): Record<string, unknown> | null {
+  try {
+    const snapshot = structuredClone(raw) as unknown;
+    return snapshot !== null &&
+      typeof snapshot === "object" &&
+      !Array.isArray(snapshot)
+      ? (snapshot as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The intrinsic Demos claim→key resolution: a CCI *is* the ed25519 pubkey hex. */
 function intrinsicKey(claim: string): Uint8Array | null {
   const hex = claim.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
@@ -64,15 +101,14 @@ function intrinsicKey(claim: string): Uint8Array | null {
 
 /**
  * Authenticate a structurally valid Listing without applying its admission
- * clock. Session recovery uses this narrower gate because an already-admitted,
- * durably bound session can legitimately finish after the Listing expires.
- * Discovery uses verifyReadableListingArtifact below; runSessionCore applies
- * the same DACS-1 §6.3.4 clock policy while distinguishing fresh admission
- * from recovery.
+ * clock. Recovery uses this narrower gate only after runSessionCore proves an
+ * exact, cryptographically authenticated Agreement and successful payment for
+ * the requested job. Discovery uses verifyReadableListingArtifact below;
+ * runSessionCore retains the DACS-1 §6.3.4 fresh-admission clock policy.
  */
-export async function authenticateReadableListingArtifact(
+async function authenticateListingSnapshot(
   raw: Record<string, unknown>,
-  deps: DiscoverDeps,
+  deps: CapturedDiscoverDeps,
 ): Promise<ReadableListing | null> {
   const readable = readListingArtifact(raw);
   if (!readable) return null;
@@ -145,6 +181,17 @@ export async function authenticateReadableListingArtifact(
   return verdict.status === "valid" ? readable : null;
 }
 
+export async function authenticateReadableListingArtifact(
+  raw: Record<string, unknown>,
+  deps: DiscoverDeps,
+): Promise<ReadableListing | null> {
+  const capturedDeps = captureDiscoverDeps(deps);
+  const snapshot = snapshotListingArtifact(raw);
+  return snapshot
+    ? authenticateListingSnapshot(snapshot, capturedDeps)
+    : null;
+}
+
 /**
  * DACS-1 §6.3.4 discovery/fresh-admission gate with an explicit historical
  * read arm. It applies the reader validity step, then authenticates the exact
@@ -154,15 +201,18 @@ export async function verifyReadableListingArtifact(
   raw: Record<string, unknown>,
   deps: DiscoverDeps,
 ): Promise<ReadableListing | null> {
-  if (!deps.verify && !deps.trustListings) {
+  const capturedDeps = captureDiscoverDeps(deps);
+  if (!capturedDeps.verify && !capturedDeps.trustListings) {
     throw new DacsError(
       "Listing verification requires deps.verify or explicit trustListings: true",
     );
   }
-  const readable = readListingArtifact(raw);
+  const snapshot = snapshotListingArtifact(raw);
+  if (!snapshot) return null;
+  const readable = readListingArtifact(snapshot);
   if (!readable) return null;
   if (readable.compatibility === "normative") {
-    const now = deps.nowMs?.() ?? Date.now();
+    const now = capturedDeps.nowMs?.() ?? Date.now();
     const validity = readable.listing.validity;
     if (
       now < validity.notBefore ||
@@ -171,7 +221,7 @@ export async function verifyReadableListingArtifact(
       return null;
     }
   }
-  return authenticateReadableListingArtifact(raw, deps);
+  return authenticateListingSnapshot(snapshot, capturedDeps);
 }
 
 export async function discoverListings(
@@ -179,7 +229,8 @@ export async function discoverListings(
   readAnchor: (ref: string) => Promise<Record<string, unknown> | null>,
   deps: DiscoverDeps = {},
 ): Promise<DiscoveredListing[]> {
-  if (!deps.verify && !deps.trustListings) {
+  const capturedDeps = captureDiscoverDeps(deps);
+  if (!capturedDeps.verify && !capturedDeps.trustListings) {
     throw new DacsError(
       "discoverListings requires deps.verify or an explicit deps.trustListings: true opt-out — " +
         "returning unverified listings lets a forged listing drive negotiation and payment (#41)",
@@ -189,7 +240,7 @@ export async function discoverListings(
   for (const ref of listingRefs) {
     const raw = await readAnchor(ref);
     if (!raw) continue;
-    const readable = await verifyReadableListingArtifact(raw, deps);
+    const readable = await verifyReadableListingArtifact(raw, capturedDeps);
     if (!readable) continue;
     found.push({ ref, ...readable });
   }

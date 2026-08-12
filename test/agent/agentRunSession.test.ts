@@ -28,7 +28,8 @@ const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 3));
 const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 7));
 const sellerPriv = privateKeyFromSeed(SELLER_SEED);
 const buyerPriv = privateKeyFromSeed(BUYER_SEED);
-const sellerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(SELLER_SEED))).toString("hex");
+const sellerPublicKey = rawPublicKey(publicKeyFromSeed(SELLER_SEED));
+const sellerHex = Buffer.from(sellerPublicKey).toString("hex");
 const sellerDid = `did:demos:agent:${sellerHex}`;
 const buyerPublicKey = rawPublicKey(publicKeyFromSeed(BUYER_SEED));
 const buyerDid = `did:demos:agent:${Buffer.from(buyerPublicKey).toString("hex")}`;
@@ -37,23 +38,28 @@ const buyerDid = `did:demos:agent:${Buffer.from(buyerPublicKey).toString("hex")}
 function memAdapter(options: { failBundleOnce?: boolean } = {}) {
   const store = new Map<string, Record<string, unknown>>();
   let bundleFailed = false;
+  const getPublicKey = vi.fn(async () => Uint8Array.from(buyerPublicKey));
+  const maybeFailBundle = (name: string) => {
+    if (
+      options.failBundleOnce &&
+      !bundleFailed &&
+      name.startsWith("dacs5:bundle:")
+    ) {
+      bundleFailed = true;
+      throw new Error("simulated process failure before bundle anchor");
+    }
+  };
   const adapter = {
     store,
     sign: async (bytes: Uint8Array) => ed25519Sign(bytes, buyerPriv),
     anchor: async (name: string, value: object) => {
-      if (
-        options.failBundleOnce &&
-        !bundleFailed &&
-        name.startsWith("dacs5:bundle:")
-      ) {
-        bundleFailed = true;
-        throw new Error("simulated process failure before bundle anchor");
-      }
+      maybeFailBundle(name);
       const address = `stor:${name}`;
       store.set(address, value as Record<string, unknown>);
       return { address, txRef: `tx:${address}` };
     },
     anchorAndWait: async (name: string, value: object) => {
+      maybeFailBundle(name);
       const address = `stor:${name}`;
       store.set(address, value as Record<string, unknown>);
       return {
@@ -67,6 +73,7 @@ function memAdapter(options: { failBundleOnce?: boolean } = {}) {
     // #70 surface: resume resolution is BY NAME, owner-bound. The mem adapter's
     // addresses are deterministic (`stor:<name>`), so resolution is a lookup.
     getAddress: () => buyerDid,
+    getPublicKey,
     resolveAnchorByName: async (name: string) => {
       const address = `stor:${name}`;
       return store.has(address)
@@ -74,7 +81,7 @@ function memAdapter(options: { failBundleOnce?: boolean } = {}) {
         : { status: "absent" as const };
     },
   } as unknown as SubstrateAdapter;
-  return { adapter, store };
+  return { adapter, store, getPublicKey };
 }
 
 const TERMS = {
@@ -95,6 +102,7 @@ async function anchorListing(
   validity: { notBefore: number; notAfter?: number } = {
     notBefore: 1_700_000_000_000,
   },
+  description = "d",
 ) {
   const signed = await signComponentArtifact(
     {
@@ -117,7 +125,7 @@ async function anchorListing(
       },
       offering: {
         title: "Market Data",
-        description: "d",
+        description,
         category: "data.finance",
         tags: ["market-data"],
         deliverable: {
@@ -206,16 +214,19 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(settled).toBe(false);
   });
 
-  test("public runSession resumes an admitted job after expiry without paying twice", async () => {
+  test("public recovery authenticates exact Listing, Agreement, and evidence without paying twice", async () => {
     vi.useFakeTimers();
     try {
       const admittedAt = 1_800_000_000_000;
       vi.setSystemTime(admittedAt);
-      const { adapter, store } = memAdapter({ failBundleOnce: true });
+      const { adapter, store, getPublicKey } = memAdapter({
+        failBundleOnce: true,
+      });
       const ref = await anchorListing(store, sellerPriv, sellerDid, {
         notBefore: admittedAt - 1_000,
         notAfter: admittedAt + 1_000,
       });
+      const originalListing = structuredClone(store.get(ref)!);
       const agent = buildAgent(adapter as never, {
         demosRpc: "mem",
         wallet: "x",
@@ -237,17 +248,81 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
       ).rejects.toThrow(/simulated process failure/);
       expect(settleCalls).toBe(1);
+      // Fresh execution never acquires a recovery-only key.
+      expect(getPublicKey).not.toHaveBeenCalled();
 
       vi.setSystemTime(admittedAt + 2_000);
+
+      await anchorListing(
+        store,
+        sellerPriv,
+        sellerDid,
+        { notBefore: admittedAt - 1_000, notAfter: admittedAt + 1_000 },
+        "same address, substituted Listing bytes",
+      );
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/signed Listing pin/i);
+      expect(settleCalls).toBe(1);
+      expect(getPublicKey).not.toHaveBeenCalled();
+      store.set(ref, originalListing);
+
+      const agreementAddress = "stor:dacs3:agreement:job-expiry";
+      const evidenceAddress = "stor:dacs4:evidence:job-expiry";
+      const agreement = structuredClone(store.get(agreementAddress)!);
+      const evidence = structuredClone(store.get(evidenceAddress)!);
+      expect(typeof agreement.signature).toBe("string");
+      expect(typeof (evidence.signature as { value?: unknown })?.value).toBe(
+        "string",
+      );
+
+      getPublicKey.mockResolvedValueOnce(Uint8Array.from(sellerPublicKey));
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/cryptographic Agreement authentication/i);
+      expect(settleCalls).toBe(1);
+      expect(getPublicKey).toHaveBeenCalledTimes(1);
+
+      const agreementSignature = agreement.signature as string;
+      store.set(agreementAddress, {
+        ...agreement,
+        signature: `${agreementSignature.startsWith("0") ? "1" : "0"}${agreementSignature.slice(1)}`,
+      });
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/cryptographic Agreement authentication/i);
+      expect(settleCalls).toBe(1);
+      expect(getPublicKey).toHaveBeenCalledTimes(2);
+      store.set(agreementAddress, agreement);
+
+      const evidenceSignature = evidence.signature as { value: string };
+      store.set(evidenceAddress, {
+        ...evidence,
+        signature: {
+          ...(evidence.signature as Record<string, unknown>),
+          value: `${evidenceSignature.value.startsWith("A") ? "B" : "A"}${evidenceSignature.value.slice(1)}`,
+        },
+      });
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/cryptographic SettlementEvidence authentication/i);
+      expect(settleCalls).toBe(1);
+      // One key lookup serves both Agreement and evidence checks in this run.
+      expect(getPublicKey).toHaveBeenCalledTimes(3);
+      store.set(evidenceAddress, evidence);
+
       await expect(
         agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
       ).resolves.toMatchObject({ outcome: "completed", jobId: "job-expiry" });
       expect(settleCalls).toBe(1);
+      expect(getPublicKey).toHaveBeenCalledTimes(4);
 
       await expect(
         agent.runSession(ref, { jobId: "job-arbitrary", terms: TERMS, settle }),
       ).rejects.toThrow(/outside.*validity window.*no prior Agreement/i);
       expect(settleCalls).toBe(1);
+      // Missing recovery state is rejected before key acquisition or Listing auth.
+      expect(getPublicKey).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
     }
