@@ -411,7 +411,8 @@ function captureFulfilmentDeps(
 ): DurableSellerFulfilmentDeps {
   const resolveAgreement = source.resolveAgreement;
   const resolveListing = source.resolveListing;
-  const resolveSessionRecord = source.resolveSessionRecord;
+  const auditSourceProfile = source.auditSourceProfile;
+  const resolveAuditSource = source.resolveAuditSource;
   const prepareDelivery = source.prepareDelivery;
   const submitDelivery = source.submitDelivery;
   const reconcileDelivery = source.reconcileDelivery;
@@ -426,15 +427,19 @@ function captureFulfilmentDeps(
   const verifyPayloadMethodProof = source.verifyPayloadMethodProof;
   const verifyEntitlementSignature = source.verifyEntitlementSignature;
   const evidenceSigner = source.evidenceSigner;
+  const auditSourceCommitmentSigner = source.auditSourceCommitmentSigner;
   const verifyEvidenceSignature = source.verifyEvidenceSignature;
+  const verifyAuditSourceCommitmentSignature =
+    source.verifyAuditSourceCommitmentSignature;
   const anchorEvidence = source.anchorEvidence;
   const resolveEvidence = source.resolveEvidence;
   const nowMs = source.nowMs;
   return Object.freeze({
     receiptStore,
+    auditSourceProfile,
     resolveAgreement: bind(resolveAgreement, source),
     resolveListing: bind(resolveListing, source),
-    resolveSessionRecord: bind(resolveSessionRecord, source),
+    resolveAuditSource: bind(resolveAuditSource, source),
     prepareDelivery: bind(prepareDelivery, source),
     submitDelivery: bind(submitDelivery, source),
     reconcileDelivery: bind(reconcileDelivery, source),
@@ -479,7 +484,16 @@ function captureFulfilmentDeps(
       signer: evidenceSigner.signer,
       sign: bind(evidenceSigner.sign, evidenceSigner),
     }),
+    auditSourceCommitmentSigner: Object.freeze({
+      algorithm: auditSourceCommitmentSigner.algorithm,
+      signer: auditSourceCommitmentSigner.signer,
+      sign: bind(auditSourceCommitmentSigner.sign, auditSourceCommitmentSigner),
+    }),
     verifyEvidenceSignature: bind(verifyEvidenceSignature, source),
+    verifyAuditSourceCommitmentSignature: bind(
+      verifyAuditSourceCommitmentSignature,
+      source,
+    ),
     anchorEvidence: bind(anchorEvidence, source),
     resolveEvidence: bind(resolveEvidence, source),
     nowMs: bind(nowMs, source),

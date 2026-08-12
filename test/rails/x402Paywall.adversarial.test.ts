@@ -1156,7 +1156,6 @@ describe("buyer/seller SB-3 nonce agreement", () => {
   it("keeps the buyer async and seller sync derivations byte-identical for Unicode and phase boundaries", async () => {
     const vectors = [
       { jobId: "plain-job", phaseIndex: 0 },
-      { jobId: "cafe\u0301-job", phaseIndex: 3 },
       { jobId: "caf\u00e9-job", phaseIndex: 3 },
       { jobId: "\ud83e\udd16-\u4f9b\u7d66-\ud83d\ude80", phaseIndex: 42 },
       { jobId: "max-safe-phase", phaseIndex: Number.MAX_SAFE_INTEGER },
@@ -1166,9 +1165,11 @@ describe("buyer/seller SB-3 nonce agreement", () => {
         x402Eip3009Nonce(vector.jobId, vector.phaseIndex),
       );
     }
-    expect(x402Eip3009Nonce("cafe\u0301-job", 3)).toBe(
-      x402Eip3009Nonce("caf\u00e9-job", 3),
-    );
+    await expect(dacsX402AuthorizationNonce({
+      jobId: "cafe\u0301-job",
+      phaseIndex: 3,
+    })).rejects.toThrow("exact NFC jobId");
+    expect(() => x402Eip3009Nonce("cafe\u0301-job", 3)).toThrow("exact NFC");
   });
 
   it("rejects negative zero consistently and keeps the paywall fail-closed", async () => {

@@ -1704,11 +1704,15 @@ export function canonicalSellerSettlementId(input:
 
 /** DACS-4 §9.5.8 byte-exact EIP-3009 SB-3 nonce. */
 export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
-  if (typeof jobId !== "string" || jobId.length === 0) {
-    throw new TypeError("jobId must be a non-empty string");
+  if (
+    typeof jobId !== "string" ||
+    jobId.length === 0 ||
+    jobId.normalize("NFC") !== jobId
+  ) {
+    throw new TypeError("jobId must be a non-empty exact NFC string");
   }
   if (!isSafeUint(phaseIndex)) throw new TypeError("phaseIndex must be a safe unsigned integer");
-  return `0x${sha256Hex(`dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`)}`;
+  return `0x${sha256Hex(`dacs-sb3:v1:${jobId}:${phaseIndex}`)}`;
 }
 
 /**

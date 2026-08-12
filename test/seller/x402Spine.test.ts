@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { AnchorReceipt, IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
+import type {
+  AnchorReceipt,
+  AttestationRef,
+  IdentityBundle,
+  Listing,
+  PaymentRailRef,
+} from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
 import { createInMemoryFencedSessionStore } from "../../src/agent/fencedSessionStore.js";
 import type {
@@ -293,7 +299,10 @@ function makeHarness(): Harness {
         bundleHash: identityBundleHash(buyerBundle),
         primaryClaim: BUYER,
         vetRecordRef: {
-          anchor: { kind: "storage-program", locator: "buyer-vet" },
+          anchor: {
+            kind: "storage-program",
+            locator: `dacs2:composite:${JOB_ID}:did%3Aexample%3Abuyer`,
+          },
           contentHash: "01".repeat(32),
         },
       },
@@ -302,7 +311,10 @@ function makeHarness(): Harness {
         bundleHash: identityBundleHash(sellerBundle),
         primaryClaim: SELLER,
         vetRecordRef: {
-          anchor: { kind: "storage-program", locator: "seller-vet" },
+          anchor: {
+            kind: "storage-program",
+            locator: `dacs2:composite:${JOB_ID}:did%3Aexample%3Aseller`,
+          },
           contentHash: "02".repeat(32),
         },
       },
@@ -324,12 +336,26 @@ function makeHarness(): Harness {
     derivedFromPattern: "fixed-price",
     generatedAt: 500,
     signatures: [
-      { party: BUYER, algorithm: "ed25519", value: "c2ln" },
-      { party: SELLER, algorithm: "ed25519", value: "c2ln" },
+      {
+        party: BUYER,
+        algorithm: "ed25519",
+        value: Buffer.alloc(64, 1).toString("base64url"),
+      },
+      {
+        party: SELLER,
+        algorithm: "ed25519",
+        value: Buffer.alloc(64, 2).toString("base64url"),
+      },
     ],
   };
+  const buyerVetRef = structuredClone(
+    (agreement.parties as Array<{ vetRecordRef: AttestationRef }>)[0]!.vetRecordRef,
+  );
+  const sellerVetRef = structuredClone(
+    (agreement.parties as Array<{ vetRecordRef: AttestationRef }>)[1]!.vetRecordRef,
+  );
   const agreementHash = contentHash(agreement);
-  const commitmentRef = `dacs3:commitment:${JOB_ID}`;
+  const commitmentRef = `dacs3:commit:${JOB_ID}`;
   const commitmentContentHash = "cd".repeat(32);
   const committed: Extract<CommittedAgreementResolution, { disposition: "verified" }> = {
     disposition: "verified",
@@ -343,6 +369,7 @@ function makeHarness(): Harness {
       agreementHash,
       listingRef,
       committedAt: 1_000,
+      signer: SELLER,
     },
     railRegistryVersion: 7,
   };
@@ -424,6 +451,7 @@ function makeHarness(): Harness {
     sellerPrimaryClaim: SELLER,
     pipeline: structuredClone(listing.pipeline),
     deliverable,
+    buyerRequirement: structuredClone(listing.buyerRequirement),
   };
   const fulfilmentAgreement: SellerFulfilmentAgreement = {
     artifactKind: "payee-bound",
@@ -434,9 +462,14 @@ function makeHarness(): Harness {
     buyer: {
       primaryClaim: BUYER,
       bundleHash: identityBundleHash(buyerBundle),
+      vetRecordRef: structuredClone(buyerVetRef),
       storageAddress: "demos-address-buyer",
     },
-    seller: { primaryClaim: SELLER, bundleHash: identityBundleHash(sellerBundle) },
+    seller: {
+      primaryClaim: SELLER,
+      bundleHash: identityBundleHash(sellerBundle),
+      vetRecordRef: structuredClone(sellerVetRef),
+    },
     deliverableRef: {
       deliverableType: deliverable.kind,
       hash: sha256Hex(canonicalize(deliverable)),
@@ -447,6 +480,7 @@ function makeHarness(): Harness {
       agreementHash,
       recordContentHash: commitmentContentHash,
       finalizedAt: 1_000,
+      signer: SELLER,
     },
   };
   const artifact: SellerDeliveredArtifact = {
@@ -471,21 +505,78 @@ function makeHarness(): Harness {
       chainId: 84532,
       protocolVersion: "2",
     }];
-    const ordinaryEntry = (index: number) => ({
-      index,
-      step: structuredClone(listing.pipeline[index]!),
-      invokedAt: 500 + index * 500,
-      result: { ok: true, contextDelta: {} },
-      contextDelta: {},
-    });
+    const paymentEvidenceHash = activeAuthorization?.evidenceHash ?? sha256Hex(
+      canonicalize({
+        evidenceVersion: "1",
+        jobId: JOB_ID,
+        phase: "pay-x402",
+        outcome: "success",
+        paymentTxRefs,
+        paymentAmount: { amount: "2.5", currency: "USDC" },
+        settlementFinality: {
+          model: "block-depth",
+          finalityBlocks: 3,
+          finalityObservedAt:
+            observation.status === "finalized" ? observation.finalityObservedAt : 5_000,
+        },
+        observedAt:
+          observation.status === "finalized" ? observation.finalityObservedAt : 5_000,
+      }),
+    );
+    const agreementAttestationRef: AttestationRef = {
+      anchor: { kind: "storage-program", locator: fulfilmentAgreement.ref },
+      contentHash: agreementHash,
+    };
+    const commitmentAttestationRef: AttestationRef = {
+      anchor: { kind: "storage-program", locator: commitmentRef },
+      contentHash: commitmentContentHash,
+    };
+    const paymentAttestationRef: AttestationRef = {
+      anchor: {
+        kind: "storage-program",
+        locator: `dacs4:payment:${JOB_ID}:x402%3Adefault:${PAYMENT_PHASE_INDEX}`,
+      },
+      contentHash: paymentEvidenceHash,
+    };
+    const negotiationContext = {
+      "negotiate-fixed-price": {
+        agreementHash,
+        agreementRef: agreementAttestationRef,
+      },
+    };
+    const commitmentReceipt = anchorReceipt(commitmentRef, commitmentContentHash);
+    commitmentReceipt.state = "finalized";
+    commitmentReceipt.blockRef!.timestamp = 1_000;
+    const commitmentContext = {
+      "commit-payee-bound-agreement": {
+        agreementHash,
+        anchorTxRef: {
+          kind: "storage-program" as const,
+          address: `native:${commitmentRef}`,
+          writeTxHash: "7".repeat(64),
+        },
+        anchorReceipt: commitmentReceipt,
+        committedAt: 1_000,
+      },
+    };
     return {
       recordVersion: "1",
       jobId: JOB_ID,
       state: "settle-pending",
       listingRef: structuredClone(listingRef),
       parties: [
-        { role: "buyer", bundleHash: identityBundleHash(buyerBundle), primaryClaim: BUYER },
-        { role: "seller", bundleHash: identityBundleHash(sellerBundle), primaryClaim: SELLER },
+        {
+          role: "buyer",
+          bundleHash: identityBundleHash(buyerBundle),
+          primaryClaim: BUYER,
+          vetRecordRef: structuredClone(buyerVetRef),
+        },
+        {
+          role: "seller",
+          bundleHash: identityBundleHash(sellerBundle),
+          primaryClaim: SELLER,
+          vetRecordRef: structuredClone(sellerVetRef),
+        },
         {
           role: "orchestrator",
           bundleHash: identityBundleHash(sellerBundle),
@@ -494,8 +585,30 @@ function makeHarness(): Harness {
       ],
       pipeline: structuredClone(listing.pipeline),
       phaseResults: [
-        ordinaryEntry(0),
-        ordinaryEntry(1),
+        {
+          index: 0,
+          step: structuredClone(listing.pipeline[0]!),
+          invokedAt: 500,
+          result: {
+            ok: true,
+            contextDelta: structuredClone(negotiationContext),
+            attestationRef: agreementAttestationRef,
+          },
+          contextDelta: structuredClone(negotiationContext),
+        },
+        {
+          index: 1,
+          step: structuredClone(listing.pipeline[1]!),
+          invokedAt: 1_000,
+          result: {
+            ok: true,
+            contextDelta: structuredClone(commitmentContext),
+            attestationRef: commitmentAttestationRef,
+            anchorReceipt: commitmentReceipt,
+            txRefs: [structuredClone(commitmentContext["commit-payee-bound-agreement"].anchorTxRef)],
+          },
+          contextDelta: structuredClone(commitmentContext),
+        },
         {
           index: PAYMENT_PHASE_INDEX,
           step: structuredClone(listing.pipeline[PAYMENT_PHASE_INDEX]!),
@@ -504,6 +617,7 @@ function makeHarness(): Harness {
             ok: true,
             txRefs: structuredClone(paymentTxRefs),
             contextDelta: {},
+            attestationRef: paymentAttestationRef,
           },
           contextDelta: {},
         },
@@ -515,10 +629,50 @@ function makeHarness(): Harness {
     };
   }
 
+  function auditSource() {
+    const session = sessionRecord();
+    const paymentRef = session.phaseResults[PAYMENT_PHASE_INDEX]!.result.attestationRef!;
+    return {
+      status: "verified" as const,
+      value: {
+        sourceVersion: "1" as const,
+        session,
+        artifacts: {
+          agreementCommitment: {
+            anchor: { kind: "storage-program" as const, locator: commitmentRef },
+            contentHash: commitmentContentHash,
+          },
+          vetRecords: [structuredClone(buyerVetRef), structuredClone(sellerVetRef)],
+          vetRequirements: [
+            {
+              vetRecordRef: structuredClone(buyerVetRef),
+              evaluatedParty: BUYER,
+              requirement: structuredClone(listing.buyerRequirement),
+              verifier: SELLER,
+              freshness: [],
+              dealSpecific: [],
+            },
+            {
+              vetRecordRef: structuredClone(sellerVetRef),
+              evaluatedParty: SELLER,
+              requirement: { requirementVersion: "1" as const, required: [] },
+              verifier: SELLER,
+              freshness: [],
+              dealSpecific: [],
+            },
+          ],
+          settlementEvidence: [structuredClone(paymentRef)],
+        },
+        provenanceProfile: "dacs-sdk-operational-v1" as const,
+      },
+    };
+  }
+
   const baseFulfilmentDeps = {
+    auditSourceProfile: "v2" as const,
     resolveAgreement: async () => ({ status: "verified" as const, value: fulfilmentAgreement }),
     resolveListing: async () => ({ status: "verified" as const, value: fulfilmentListing }),
-    resolveSessionRecord: async () => ({ status: "verified" as const, value: sessionRecord() }),
+    resolveAuditSource: async () => auditSource(),
     prepareDelivery: async () => ({
       status: "prepared" as const,
       delivery: { artifact: structuredClone(artifact) },
@@ -549,6 +703,11 @@ function makeHarness(): Harness {
       signer: SELLER,
       sign: (bytes: Uint8Array) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
     },
+    auditSourceCommitmentSigner: {
+      algorithm: "ed25519" as const,
+      signer: SELLER,
+      sign: (bytes: Uint8Array) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+    },
     verifyEvidenceSignature: async ({
       signedBytes,
       signature,
@@ -564,6 +723,24 @@ function makeHarness(): Harness {
       )
         ? { disposition: "valid" as const }
         : { disposition: "invalid" as const, reason: "evidence signature mismatch" };
+    },
+    verifyAuditSourceCommitmentSignature: async ({
+      signedBytes,
+      signature,
+      expectedSigner,
+    }: Parameters<
+      DurableSellerFulfilmentDeps["verifyAuditSourceCommitmentSignature"]
+    >[0]) => {
+      if (signature.algorithm !== "ed25519" || signature.signer !== expectedSigner) {
+        return { disposition: "invalid" as const, reason: "unexpected audit signer" };
+      }
+      return ed25519Verify(
+        signedBytes,
+        Uint8Array.from(Buffer.from(signature.value, "base64url")),
+        publicKeyFromSeed(SELLER_SEED),
+      )
+        ? { disposition: "valid" as const }
+        : { disposition: "invalid" as const, reason: "audit signature mismatch" };
     },
     anchorEvidence: async ({ evidence, evidenceHash }: Parameters<
       DurableSellerFulfilmentDeps["anchorEvidence"]
