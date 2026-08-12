@@ -336,6 +336,26 @@ async function stage<T>(code: string, operation: () => Promise<T>): Promise<T> {
   }
 }
 
+async function retryReadOnly<T>(
+  operation: () => Promise<T>,
+  attempts = 3,
+  delayMs = 250,
+): Promise<T> {
+  requireCondition(Number.isInteger(attempts) && attempts > 0, "read-retry-count-invalid");
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs * attempt));
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function temporaryDirectory(label: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), `dacs-funded-${label}-`));
   temporaryDirectories.push(dir);
@@ -2005,15 +2025,27 @@ async function createSellerRuntime(input: {
       state.coldAuthorityOutcome = reason;
       return false;
     };
-    const [listingArtifact, agreementArtifact, commitmentArtifact, listingReceiptValid,
-      agreementReceiptValid, commitmentReceiptValid] = await Promise.all([
-      preflight.buyer.adapter.readAnchor(published.receipt.nativeAddress),
-      preflight.seller.adapter.readAnchor(agreement.anchorReceipt.nativeAddress),
-      preflight.buyer.adapter.readAnchor(commitment.anchorReceipt.nativeAddress),
-      verifyAnchorReceipt(preflight.buyer.adapter, published.receipt, preflight.env.SELLER_DID),
-      verifyAnchorReceipt(preflight.seller.adapter, agreement.anchorReceipt, preflight.env.BUYER_DID),
-      verifyAnchorReceipt(preflight.buyer.adapter, commitment.anchorReceipt, preflight.env.SELLER_DID),
-    ]);
+    // These are immutable, read-only authority lookups. Keep them sequential
+    // because the Demos SDK shares transport state within each adapter, and
+    // retry only thrown transport failures before making a fail-closed choice.
+    const listingArtifact = await retryReadOnly(() =>
+      preflight.buyer.adapter.readAnchor(published.receipt.nativeAddress)
+    );
+    const agreementArtifact = await retryReadOnly(() =>
+      preflight.seller.adapter.readAnchor(agreement.anchorReceipt.nativeAddress)
+    );
+    const commitmentArtifact = await retryReadOnly(() =>
+      preflight.buyer.adapter.readAnchor(commitment.anchorReceipt.nativeAddress)
+    );
+    const listingReceiptValid = await retryReadOnly(() =>
+      verifyAnchorReceipt(preflight.buyer.adapter, published.receipt, preflight.env.SELLER_DID)
+    );
+    const agreementReceiptValid = await retryReadOnly(() =>
+      verifyAnchorReceipt(preflight.seller.adapter, agreement.anchorReceipt, preflight.env.BUYER_DID)
+    );
+    const commitmentReceiptValid = await retryReadOnly(() =>
+      verifyAnchorReceipt(preflight.buyer.adapter, commitment.anchorReceipt, preflight.env.SELLER_DID)
+    );
     if (!listingArtifact) return rejectColdAuthority("listing-artifact-absent");
     if (!agreementArtifact) return rejectColdAuthority("agreement-artifact-absent");
     if (!commitmentArtifact) return rejectColdAuthority("commitment-artifact-absent");
@@ -4390,6 +4422,35 @@ async function closeDurableDetachedRoleBundles(input: {
 }
 
 describe("issue #114 guarded funded two-agent spine", () => {
+  it("retries only thrown failures from immutable authority reads", async () => {
+    let calls = 0;
+    const result = await retryReadOnly(async () => {
+      calls += 1;
+      if (calls < 3) throw new Error("injected-read-transport-failure");
+      return "authenticated-readback";
+    }, 3, 0);
+    requireCondition(
+      result === "authenticated-readback" && calls === 3,
+      "read-retry-did-not-recover",
+    );
+
+    let terminalCalls = 0;
+    let terminalFailure = false;
+    try {
+      await retryReadOnly(async () => {
+        terminalCalls += 1;
+        throw new Error("injected-persistent-read-failure");
+      }, 2, 0);
+    } catch (error) {
+      terminalFailure = error instanceof Error &&
+        error.message === "injected-persistent-read-failure";
+    }
+    requireCondition(
+      terminalFailure && terminalCalls === 2,
+      "read-retry-did-not-fail-closed",
+    );
+  });
+
   it("cryptographically self-checks every funded dependency signature domain", () => {
     const seed = new Uint8Array(32).fill(114);
     const privateKey = privateKeyFromSeed(seed);
