@@ -539,8 +539,63 @@ class DurableBundleCoordinator {
   }
 
   async #verifyFulfilmentSpine(record: SessionRecord) {
+    const deliveryPhaseIndex = this.#input.fulfilment.bundleContribution.phaseSummary.index;
+    const deliveryPhase = `seller:delivery-completed:${deliveryPhaseIndex}`;
+    let projectionRecord = clone(record);
+    if (projectionRecord.phase !== deliveryPhase) {
+      const bundlePhases = new Set([
+        "seller:bundle-signing",
+        "seller:bundle-anchor-pending",
+        "seller:bundle-binding-signing",
+        "seller:bundle-binding-publication-pending",
+        "seller:finalised",
+      ]);
+      if (!bundlePhases.has(projectionRecord.phase)) {
+        throw new DacsError(
+          "seller bundle recovery found an unexpected predecessor phase",
+        );
+      }
+      const bundleKeys = new Set<string>([
+        sellerBundleFinalizationCheckpointKey.input,
+        sellerBundleFinalizationCheckpointKey.signature("buyer"),
+        sellerBundleFinalizationCheckpointKey.signature("seller"),
+        sellerBundleFinalizationCheckpointKey.signature("orchestrator"),
+        sellerBundleFinalizationCheckpointKey.anchor,
+        sellerBundleFinalizationCheckpointKey.bindingSignature,
+        sellerBundleFinalizationCheckpointKey.bindingPublication,
+        sellerBundleFinalizationCheckpointKey.result,
+      ]);
+      const fulfilmentResultKey = `seller:result:${deliveryPhaseIndex}`;
+      const terminalOutcomes = projectionRecord.checkpoints.filter(
+        (checkpoint) =>
+          checkpoint.key === fulfilmentResultKey && checkpoint.stage === "outcome",
+      );
+      const terminalGeneration = terminalOutcomes[0]?.data?.outcomeGeneration;
+      if (terminalOutcomes.length !== 1 ||
+          !Number.isSafeInteger(terminalGeneration) ||
+          (terminalGeneration as number) <= 0) {
+        throw new DacsError(
+          "seller bundle recovery cannot identify the terminal fulfilment generation",
+        );
+      }
+      const bundleReceipts = projectionRecord.receipts.filter(
+        (receipt) => receipt.kind === "bundle",
+      );
+      if (bundleReceipts.length > 1) {
+        throw new DacsError("seller bundle recovery found duplicate bundle receipts");
+      }
+      projectionRecord.checkpoints = projectionRecord.checkpoints.filter(
+        (checkpoint) => !bundleKeys.has(checkpoint.key),
+      );
+      projectionRecord.receipts = projectionRecord.receipts.filter(
+        (receipt) => receipt.kind !== "bundle",
+      );
+      projectionRecord.phase = deliveryPhase;
+      projectionRecord.leaseGeneration = terminalGeneration as number;
+      delete projectionRecord.lease;
+    }
     const projected = await projectDurableSellerAuditPending({
-      record: clone(record),
+      record: projectionRecord,
       verifiedAgreement: clone(this.#input.agreement),
       verifiedListing: clone(this.#input.verifiedListing),
       expectedDeliveryWriter: {
@@ -722,9 +777,20 @@ class DurableBundleCoordinator {
       owner: acquired.lease.owner,
       generation: acquired.lease.generation,
     };
-    const acquiredVerified = await this.#verifyFulfilmentSpine(clone(acquired.record));
-    if (canonicalize(acquiredVerified.binding) !== canonicalize(this.#authority)) {
-      throw new DacsError("durable consumed authorization changed during lease acquisition");
+    const acquiredStable = clone(acquired.record);
+    const beforeAcquire = clone(record);
+    delete acquiredStable.lease;
+    delete beforeAcquire.lease;
+    acquiredStable.revision = beforeAcquire.revision;
+    acquiredStable.leaseGeneration = beforeAcquire.leaseGeneration;
+    acquiredStable.updatedAt = beforeAcquire.updatedAt;
+    if (acquired.lease.owner !== this.#durability.workerId ||
+        acquired.lease.generation !== beforeAcquire.leaseGeneration + 1 ||
+        !exact(acquired.record.lease, acquired.lease) ||
+        !exact(acquiredStable, beforeAcquire)) {
+      throw new DacsError(
+        "durable terminal WAL changed unexpectedly during bundle lease acquisition",
+      );
     }
 
     await this.#ensureOutcome(

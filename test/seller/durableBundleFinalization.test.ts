@@ -139,7 +139,7 @@ function paymentBinding(): SessionPaymentAuthorizationBinding {
     paymentEvidenceHash: "5".repeat(64),
     settlementId: `demos:${"6".repeat(64)}`,
     paymentPhaseIndex: 0,
-    deliveryPhaseIndex: 1,
+    deliveryPhaseIndex: 2,
   };
 }
 
@@ -167,13 +167,37 @@ async function seedCompletedDelivery(
     now: 1,
   });
   if (!bound.ok) throw new Error(`delivery binding failed: ${bound.reason}`);
+  const resultKey = `seller:result:${binding.deliveryPhaseIndex}`;
+  const claimed = await store.claimCheckpoint({
+    jobId: JOB_ID,
+    key: resultKey,
+    data: { intentGeneration: acquired.lease.generation },
+    leaseToken: acquired.lease,
+    now: 2,
+  });
+  if (!claimed.ok) throw new Error(`delivery result claim failed: ${claimed.reason}`);
+  const recorded = await store.transition({
+    jobId: JOB_ID,
+    expectedRevision: claimed.record.revision,
+    leaseToken: acquired.lease,
+    checkpoint: {
+      key: resultKey,
+      stage: "outcome",
+      data: {
+        intentGeneration: acquired.lease.generation,
+        outcomeGeneration: acquired.lease.generation,
+      },
+    },
+    now: 3,
+  });
+  if (!recorded.ok) throw new Error(`delivery result recording failed: ${recorded.reason}`);
   const completed = await store.transition({
     jobId: JOB_ID,
-    expectedRevision: bound.record.revision,
+    expectedRevision: recorded.record.revision,
     leaseToken: acquired.lease,
     phase: `seller:delivery-completed:${binding.deliveryPhaseIndex}`,
     lease: null,
-    now: 2,
+    now: 4,
   });
   if (!completed.ok) throw new Error(`delivery completion failed: ${completed.reason}`);
 }
@@ -764,6 +788,64 @@ describe("durable seller bundle coordinator v2", () => {
       durability(store),
     )).rejects.toThrow("exact authenticated WAL projection");
     expect(finalizeCoreMock).not.toHaveBeenCalled();
+  });
+
+  test("does not mask foreign checkpoints while reconstructing the fulfilment WAL", async () => {
+    const harness = await createHarness("write-input");
+    const base = createInMemoryFencedSessionStore();
+    await seedCompletedDelivery(base, harness.binding);
+    crashFirstEffect(harness, "seller-sign");
+    await expect(finalizeCompletedSellerBundleDurable(
+      harness.input,
+      harness.provider,
+      durability(base),
+    )).rejects.toThrow(/simulated seller-sign crash/);
+
+    clearProviderEffects(harness);
+    const projected = wrapStore(base, {
+      load: async (jobId) => {
+        const loaded = await base.load(jobId);
+        if (loaded.status !== "ok") return loaded;
+        loaded.record.checkpoints.push(
+          {
+            key: "foreign:checkpoint",
+            stage: "intent",
+            data: { marker: "must-remain-visible" },
+          },
+          {
+            key: "foreign:checkpoint",
+            stage: "outcome",
+            data: { marker: "must-remain-visible" },
+          },
+        );
+        return loaded;
+      },
+    });
+    projectAuditMock.mockImplementationOnce(async ({ record }) => {
+      expect((record as SessionRecord).checkpoints.filter(
+        (checkpoint) => checkpoint.key === "foreign:checkpoint",
+      )).toEqual([
+        {
+          key: "foreign:checkpoint",
+          stage: "intent",
+          data: { marker: "must-remain-visible" },
+        },
+        {
+          key: "foreign:checkpoint",
+          stage: "outcome",
+          data: { marker: "must-remain-visible" },
+        },
+      ]);
+      throw new Error("authenticated projection rejected foreign checkpoint");
+    });
+
+    await expect(finalizeCompletedSellerBundleDurable(
+      harness.input,
+      harness.provider,
+      durability(projected),
+    )).rejects.toThrow("authenticated projection rejected foreign checkpoint");
+    expect(harness.sellerSign).not.toHaveBeenCalled();
+    expect(harness.submitBundle).not.toHaveBeenCalled();
   });
 
   test("passes one exact generation fence to every irreversible effect and commits atomically", async () => {
