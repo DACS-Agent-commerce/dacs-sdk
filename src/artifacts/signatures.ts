@@ -1,5 +1,8 @@
 import { contentHash } from "../canonical/index.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  isSafeJsonString,
+  snapshotCanonicalJson,
+} from "../canonical/snapshot.js";
 import {
   type DomainSeparator,
   isCompositeSeparator,
@@ -43,13 +46,16 @@ function isCanonicalBase64Url(value: unknown): value is string {
 export function isComponentSignature(
   value: unknown,
 ): value is ComponentSignature {
-  return (
-    isRecord(value) &&
-    typeof value.algorithm === "string" &&
-    ALGORITHM_SET.has(value.algorithm) &&
-    isNonEmptyString(value.signer) &&
-    isCanonicalBase64Url(value.value)
-  );
+  if (!isRecord(value)) return false;
+  try {
+    return (
+      signatureShapeReason(
+        snapshotCanonicalJson(value, "component signature"),
+      ) === null
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** A standalone artifact carrying one normative ComponentSignature envelope. */
@@ -91,6 +97,7 @@ export type ComponentSignatureMalformedReason =
   | "unsupported-algorithm"
   | "invalid-signer"
   | "invalid-value"
+  | "unexpected-signature-fields"
   | "ambiguous-signature-fields"
   | "unregistered-domain-separator"
   | "composite-domain-separator"
@@ -161,13 +168,24 @@ function signatureShapeReason(
   value: unknown,
 ): ComponentSignatureMalformedReason | null {
   if (!isRecord(value)) return "signature-not-an-object";
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 3 ||
+    !keys.includes("algorithm") ||
+    !keys.includes("signer") ||
+    !keys.includes("value")
+  ) {
+    return "unexpected-signature-fields";
+  }
   if (
     typeof value.algorithm !== "string" ||
     !ALGORITHM_SET.has(value.algorithm)
   ) {
     return "unsupported-algorithm";
   }
-  if (!isNonEmptyString(value.signer)) return "invalid-signer";
+  if (!isNonEmptyString(value.signer) || !isSafeJsonString(value.signer)) {
+    return "invalid-signer";
+  }
   if (!isCanonicalBase64Url(value.value)) return "invalid-value";
   return null;
 }
@@ -178,6 +196,9 @@ function asRecord(value: object): Record<string, unknown> {
 
 /** Take an exact JSON ownership boundary before any user-supplied callback. */
 function snapshotArtifact<T extends object>(artifact: T): T {
+  if (Array.isArray(artifact)) {
+    throw new DacsError("component signature artifact must be a JSON object");
+  }
   return snapshotCanonicalJson(artifact, "component signature artifact");
 }
 
@@ -231,8 +252,10 @@ function captureComponentSignatureOptions(
   if (!ALGORITHM_SET.has(algorithm)) {
     throw new DacsError(`unsupported signature algorithm: ${algorithm}`);
   }
-  if (!isNonEmptyString(signer)) {
-    throw new DacsError("component signature signer must be a non-empty string");
+  if (!isNonEmptyString(signer) || !isSafeJsonString(signer)) {
+    throw new DacsError(
+      "component signature signer must be a non-empty valid JSON string",
+    );
   }
   if (typeof signCandidate !== "function") {
     throw new DacsError("component signature signer callback must be a function");
@@ -240,7 +263,7 @@ function captureComponentSignatureOptions(
 
   return {
     algorithm,
-    signer,
+    signer: signer.normalize("NFC"),
     sign: Function.prototype.bind.call(
       signCandidate,
       options,

@@ -1,3 +1,5 @@
+import { runInNewContext } from "node:vm";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -251,6 +253,36 @@ describe("ComponentSignature foundation", () => {
     expect(wallet).not.toHaveBeenCalled();
   });
 
+  it("expands repeated object identities into independent wire values", async () => {
+    const shared = { regions: ["eu-west"] };
+    const signed = await signComponentArtifact(
+      { ...listing, service: shared, terms: shared },
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+
+    expect(signed.service).toEqual(signed.terms);
+    expect(signed.service).not.toBe(signed.terms);
+    signed.service.regions[0] = "caller-mutated";
+    expect(signed.terms.regions).toEqual(["eu-west"]);
+  });
+
+  it("rejects cycles and exotic property descriptors", async () => {
+    const cyclic: Record<string, unknown> = { ...listing };
+    cyclic["cycle"] = cyclic;
+    const frozen = Object.freeze({ ...listing });
+
+    for (const artifact of [cyclic, frozen]) {
+      await expect(
+        buildComponentSignature(artifact, "dacs-listing:v1:", {
+          algorithm: "ed25519",
+          signer: seller,
+          sign,
+        }),
+      ).rejects.toThrow("not stable canonical JSON");
+    }
+  });
+
   it("preserves the normative CF-1 NFC normalization alias", async () => {
     const nfd = { ...listing, service: "cafe\u0301" };
     const nfc = { ...listing, service: "caf\u00e9" };
@@ -266,6 +298,62 @@ describe("ComponentSignature foundation", () => {
         deps(),
       ),
     ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("normalizes an NFD signer identifier and round-trips it as CF-1 JSON", async () => {
+    const nfdSigner = "did:demos:agent:cafe\u0301";
+    const nfcSigner = "did:demos:agent:caf\u00e9";
+    const signed = await signComponentArtifact(
+      { ...listing, seller: nfdSigner },
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: nfdSigner, sign },
+    );
+
+    expect(signed.seller).toBe(nfcSigner);
+    expect(signed.signature.signer).toBe(nfcSigner);
+    await expect(
+      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("rejects a lone-surrogate signer before invoking its wallet", async () => {
+    const wallet = vi.fn(sign);
+    await expect(
+      buildComponentSignature(listing, "dacs-listing:v1:", {
+        algorithm: "ed25519",
+        signer: "did:demos:agent:\ud800",
+        sign: wallet,
+      }),
+    ).rejects.toThrow("valid JSON string");
+    expect(wallet).not.toHaveBeenCalled();
+  });
+
+  it("accepts data-only JSON objects and arrays from another realm", async () => {
+    const artifact = runInNewContext(
+      'JSON.parse("{\\"listingVersion\\":\\"1\\",\\"seller\\":\\"did:demos:agent:seller\\",\\"regions\\":[\\"eu-west\\"]}")',
+    ) as typeof listing & { regions: string[] };
+    const signed = await signComponentArtifact(
+      artifact,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+
+    expect(signed.regions).toEqual(["eu-west"]);
+    await expect(
+      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("rejects root arrays on both component signing APIs", async () => {
+    const artifact = [listing];
+    const options = { algorithm: "ed25519", signer: seller, sign } as const;
+
+    await expect(
+      buildComponentSignature(artifact, "dacs-listing:v1:", options),
+    ).rejects.toThrow("must be a JSON object");
+    await expect(
+      signComponentArtifact(artifact, "dacs-listing:v1:", options),
+    ).rejects.toThrow("must be a JSON object");
   });
 
   it("rejects proxies without invoking their reflective traps", async () => {
@@ -562,6 +650,34 @@ describe("ComponentSignature foundation", () => {
     ).resolves.toEqual({
       status: "malformed",
       reason: "unsupported-algorithm",
+    });
+  });
+
+  it("rejects mutable fields outside the exact ComponentSignature envelope", async () => {
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const signatureWithExtra = signed.signature as ComponentSignature & {
+      unsignedRole: string;
+    };
+    signatureWithExtra.unsignedRole = "admin";
+
+    expect(isComponentSignature(signatureWithExtra)).toBe(false);
+    await expect(
+      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
+    ).resolves.toEqual({
+      status: "malformed",
+      reason: "unexpected-signature-fields",
+    });
+
+    signatureWithExtra.unsignedRole = "guest";
+    await expect(
+      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
+    ).resolves.toEqual({
+      status: "malformed",
+      reason: "unexpected-signature-fields",
     });
   });
 

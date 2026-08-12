@@ -4,6 +4,45 @@ import { DacsError } from "../errors.js";
 
 import { canonicalize } from "./jcs.js";
 
+const OBJECT_CONSTRUCTOR_SOURCE = Function.prototype.toString.call(Object);
+const ARRAY_CONSTRUCTOR_SOURCE = Function.prototype.toString.call(Array);
+
+/** True when a string is valid JSON text data; CF-1 may still NFC-normalize it. */
+export function isSafeJsonString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasIntrinsicConstructor(
+  prototype: object,
+  expectedSource: string,
+): boolean {
+  const constructor = Object.getOwnPropertyDescriptor(
+    prototype,
+    "constructor",
+  )?.value;
+  if (typeof constructor !== "function" || nodeTypes.isProxy(constructor)) {
+    return false;
+  }
+  const declaredPrototype = Object.getOwnPropertyDescriptor(
+    constructor,
+    "prototype",
+  )?.value;
+  return (
+    declaredPrototype === prototype &&
+    Function.prototype.toString.call(constructor) === expectedSource
+  );
+}
+
 /**
  * Protocol artifacts cross trust boundaries as JSON data, never as live object
  * graphs. Reject every JavaScript view that JSON/JCS would omit or alias before
@@ -14,13 +53,10 @@ function isDataOnlyJson(
   value: unknown,
   ancestors = new Set<object>(),
 ): boolean {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
+  if (value === null || typeof value === "boolean") {
     return true;
   }
+  if (typeof value === "string") return isSafeJsonString(value);
   if (typeof value === "number") {
     return (
       Number.isFinite(value) &&
@@ -44,12 +80,22 @@ function isDataOnlyJson(
 
     ancestors.add(value);
     if (Array.isArray(value)) {
-      if (prototype !== Array.prototype) return false;
-      const length = value.length;
+      if (
+        prototype === null ||
+        !hasIntrinsicConstructor(prototype, ARRAY_CONSTRUCTOR_SOURCE)
+      ) {
+        return false;
+      }
+      const lengthDescriptor = descriptors["length"];
+      if (!lengthDescriptor || !("value" in lengthDescriptor)) return false;
+      const length = lengthDescriptor.value;
       const stringKeys = keys as string[];
       if (
         !Number.isSafeInteger(length) ||
         length < 0 ||
+        lengthDescriptor.writable !== true ||
+        lengthDescriptor.enumerable ||
+        lengthDescriptor.configurable ||
         stringKeys.length !== length + 1 ||
         !stringKeys.includes("length")
       ) {
@@ -60,7 +106,9 @@ function isDataOnlyJson(
         if (
           !descriptor ||
           !("value" in descriptor) ||
+          descriptor.writable !== true ||
           !descriptor.enumerable ||
+          descriptor.configurable !== true ||
           !isDataOnlyJson(descriptor.value, ancestors)
         ) {
           return false;
@@ -69,13 +117,21 @@ function isDataOnlyJson(
       return true;
     }
 
-    if (prototype !== Object.prototype && prototype !== null) return false;
+    if (
+      prototype !== null &&
+      !hasIntrinsicConstructor(prototype, OBJECT_CONSTRUCTOR_SOURCE)
+    ) {
+      return false;
+    }
     for (const key of keys as string[]) {
       const descriptor = descriptors[key];
       if (
+        !isSafeJsonString(key) ||
         !descriptor ||
         !("value" in descriptor) ||
+        descriptor.writable !== true ||
         !descriptor.enumerable ||
+        descriptor.configurable !== true ||
         descriptor.value === undefined ||
         !isDataOnlyJson(descriptor.value, ancestors)
       ) {
@@ -95,7 +151,10 @@ export function snapshotCanonicalJson<T>(value: T, label: string): T {
   try {
     if (!isDataOnlyJson(value)) throw new TypeError("not data-only JSON");
     const canonical = canonicalize(value);
-    const snapshot = structuredClone(value);
+    // Parsing the canonical wire form both owns the result and deliberately
+    // expands repeated in-memory references into independent JSON values.
+    // CF-1 normalization therefore also happens exactly once at this boundary.
+    const snapshot = JSON.parse(canonical) as T;
     if (!isDataOnlyJson(snapshot) || canonicalize(snapshot) !== canonical) {
       throw new TypeError("snapshot changed canonical bytes");
     }
