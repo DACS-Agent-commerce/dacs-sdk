@@ -102,6 +102,13 @@ const TERMS = {
   deliveryFormat: "application/json",
 };
 
+const verifiedListing = (raw: Record<string, unknown>) => ({
+  disposition: "verified" as const,
+  step: 9 as const,
+  reason: "verified",
+  listingContentHash: contentHash(raw),
+});
+
 async function anchorListing(
   store: Map<string, Record<string, unknown>>,
   priv = sellerPriv,
@@ -205,6 +212,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
+      validateListing: verifiedListing,
     });
     const boundRail = makeRail();
     await expect(
@@ -227,6 +235,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
+      validateListing: verifiedListing,
     });
     const omittedRail = makeRail();
     await expect(
@@ -347,6 +356,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
+      validateListing: verifiedListing,
     });
     let settleCalls = 0;
     const settle = async () => {
@@ -432,6 +442,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         demosRpc: "mem",
         wallet: "x",
         identity: { agentId: buyerDid },
+        validateListing: verifiedListing,
       });
       let settleCalls = 0;
       const settle = async () => {

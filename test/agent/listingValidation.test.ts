@@ -83,6 +83,28 @@ describe("DACS-1 §6.3.4 LRR-1..LRR-6", () => {
     });
   });
 
+  it("never verifies malformed runtime authority envelopes", () => {
+    const malformed = {
+      trustPhase: "PA-2",
+      payPhases: [{ kind: "pay-x402", rail: "x402:default" }],
+      acceptedRails: [{ railId: "x402:default" }],
+      registry: {
+        state: "verified-finalized",
+        entries: [{ railId: "x402:default", latestVersion: 1, versions: [1] }],
+        definitions: [{
+          railId: "x402:default",
+          railVersion: 1,
+          phaseHandler: "pay-x402",
+          injected: true,
+        }],
+      },
+    } as unknown as ListingRailResolutionInput;
+    expect(resolveListingRails(malformed)).toMatchObject({
+      disposition: "indeterminate",
+      reason: "malformed-rail-authority",
+    });
+  });
+
 });
 
 describe("DACS-1 §6.3.4 RB-1..RB-6", () => {
@@ -290,6 +312,120 @@ describe("ordered ListingValidationDisposition", () => {
       step: 9,
       revocation: "absent",
       railResolution: { disposition: "verified", reason: "not-applicable" },
+    });
+  });
+
+  it("owns the Listing before awaits and returns no caller-owned alias", async () => {
+    const listing = fixture();
+    const originalName = listing.seller.displayName;
+    const deps = baseDeps();
+    deps.verifyListingSignature = (request) => {
+      listing.seller.displayName = "mutated concurrently";
+      request.signature.value = "caller-mutated-request";
+      return true;
+    };
+    deps.verifyIdentityPresentation = ({ bundle }) => {
+      bundle.claims[0]!.ref = "did:mutated:callback";
+      return true;
+    };
+    const result = await validateListingArtifact(
+      listing as unknown as Record<string, unknown>,
+      deps,
+    );
+    expect(result).toMatchObject({ disposition: "verified" });
+    expect(result.listing?.seller.displayName).toBe(originalName);
+    expect(result.listing?.seller.identity.claims[0]?.ref).not.toBe(
+      "did:mutated:callback",
+    );
+    listing.seller.displayName = "mutated after return";
+    expect(result.listing?.seller.displayName).toBe(originalName);
+  });
+
+  it("rejects getters, sparse arrays, exotic objects, cycles, and proxies without invoking them", async () => {
+    const candidates: Record<string, unknown>[] = [];
+    let getterCalls = 0;
+    const getter = fixture() as unknown as Record<string, unknown>;
+    Object.defineProperty(getter, "listingId", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "listing";
+      },
+    });
+    candidates.push(getter);
+    const sparse = fixture() as unknown as Record<string, unknown>;
+    (sparse.pipeline as unknown[]) = new Array(2);
+    candidates.push(sparse);
+    const exotic = fixture() as unknown as Record<string, unknown>;
+    exotic.extension = new Date();
+    candidates.push(exotic);
+    const cyclic = fixture() as unknown as Record<string, unknown>;
+    cyclic.extension = cyclic;
+    candidates.push(cyclic);
+    candidates.push(new Proxy(fixture() as unknown as Record<string, unknown>, {}));
+
+    for (const candidate of candidates) {
+      await expect(validateListingArtifact(candidate, baseDeps())).resolves.toMatchObject({
+        disposition: "rejected",
+        step: 1,
+      });
+    }
+    expect(getterCalls).toBe(0);
+  });
+
+  it("captures verifier identities before inspecting the artifact", async () => {
+    let dependencyGetterCalls = 0;
+    let artifactGetterCalls = 0;
+    const deps = baseDeps();
+    Object.defineProperty(deps, "verifyListingSignature", {
+      enumerable: true,
+      get() {
+        dependencyGetterCalls += 1;
+        return () => true;
+      },
+    });
+    const listing = fixture() as unknown as Record<string, unknown>;
+    Object.defineProperty(listing, "listingId", {
+      enumerable: true,
+      get() {
+        artifactGetterCalls += 1;
+        return "listing";
+      },
+    });
+    await expect(validateListingArtifact(listing, deps)).rejects.toThrow(
+      /signature verifier.*stable data/i,
+    );
+    expect(dependencyGetterCalls).toBe(0);
+    expect(artifactGetterCalls).toBe(0);
+  });
+
+  it.each([
+    ["listing signature", { verifyListingSignature: async () => { throw new Error("offline"); } }, 4],
+    ["identity presentation", { verifyIdentityPresentation: async () => { throw new Error("offline"); } }, 6],
+    ["seller control", { verifySellerControl: async () => { throw new Error("offline"); } }, 9],
+  ])("maps a %s verifier outage to indeterminate", async (_name, override, step) => {
+    await expect(
+      validateListingArtifact(
+        fixture() as unknown as Record<string, unknown>,
+        { ...baseDeps(), ...override },
+      ),
+    ).resolves.toMatchObject({ disposition: "indeterminate", step });
+  });
+
+  it("does not let a malformed revocation surface establish absence", async () => {
+    const deps = baseDeps();
+    deps.revocation.surfaces = [
+      { kind: "invented", status: "active" } as never,
+    ];
+    await expect(
+      validateListingArtifact(
+        fixture() as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      step: 5,
+      reason: "malformed-revocation-surface",
     });
   });
 
@@ -628,13 +764,40 @@ describe("DACS-1 §6.3.4 LP-5 reachability evidence", () => {
   });
 
   it("enforces a whole-request timeout even when the probe does not", async () => {
+    let aborted = false;
     const result = await assessListingReachability(listing(), {
       nowMs: () => 1,
       timeoutMs: 5,
       resolveHost: async () => ["203.0.114.10"],
-      probe: async () => new Promise<never>(() => undefined),
+      probe: async ({ signal }) => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+        return new Promise<never>(() => undefined);
+      },
     });
     expect(result).toMatchObject({ status: "indeterminate", reason: "probe-timeout" });
+    expect(aborted).toBe(true);
+  });
+
+  it("never treats malformed DNS or probe results as reachable", async () => {
+    await expect(
+      assessListingReachability(listing(), {
+        nowMs: () => 1,
+        resolveHost: async () => ["203.0.114.10"],
+        probe: async () => ({ status: 200, bytes: -1, actionable: true }),
+      }),
+    ).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: "probe-result-malformed",
+    });
+    await expect(
+      assessListingReachability(listing(), {
+        nowMs: () => 1,
+        resolveHost: async () => [42] as never,
+        probe: async () => ({ status: 200, bytes: 1, actionable: true }),
+      }),
+    ).resolves.toMatchObject({ status: "indeterminate", reason: "dns-malformed" });
   });
 
   it("refuses redirects and oversized responses", async () => {

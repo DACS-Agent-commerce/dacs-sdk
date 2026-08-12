@@ -103,6 +103,7 @@ type CapturedPublishListingDeps = Readonly<PublishListingDeps>;
 function captureDataMethod<K extends keyof PublishListingDeps>(
   deps: PublishListingDeps,
   key: K,
+  optional = false,
 ): PublishListingDeps[K] {
   if (
     deps === null ||
@@ -118,6 +119,9 @@ function captureDataMethod<K extends keyof PublishListingDeps>(
       if (nodeTypes.isProxy(owner)) throw new TypeError("proxy prototype");
       const descriptor = Object.getOwnPropertyDescriptor(owner, key);
       if (descriptor) {
+        if (optional && "value" in descriptor && descriptor.value === undefined) {
+          return undefined as PublishListingDeps[K];
+        }
         if (
           !("value" in descriptor) ||
           typeof descriptor.value !== "function" ||
@@ -139,6 +143,8 @@ function captureDataMethod<K extends keyof PublishListingDeps>(
     );
   }
 
+  if (optional) return undefined as PublishListingDeps[K];
+
   throw new DacsError(
     `publishListing dependency ${String(key)} must be a stable data method`,
   );
@@ -155,6 +161,7 @@ function capturePublishListingDeps(
       "scanOwnAnchorsByNamePrefix",
     ),
     anchorWriteOnce: captureDataMethod(deps, "anchorWriteOnce"),
+    loadRailResolution: captureDataMethod(deps, "loadRailResolution", true),
   });
 }
 
@@ -411,7 +418,7 @@ export async function publishListingCore(
     );
   }
   if (listing.pipeline.some((phase) => phase.kind.startsWith("pay-"))) {
-    if (!deps.loadRailResolution) {
+    if (!capturedDeps.loadRailResolution) {
       throw new DacsError(
         "pay-bearing Listing publication requires an authenticated DACS-4 rail " +
           "authority read; LP-6 forbids treating acceptedRails as proof",
@@ -419,8 +426,17 @@ export async function publishListingCore(
     }
     let railResolution;
     try {
+      const authority = snapshotCanonicalJsonRead(
+        await capturedDeps.loadRailResolution(
+          snapshotCanonicalJson(listing, "rail authority Listing input"),
+        ),
+        "listing rail authority result",
+      );
+      if (authority === null || typeof authority !== "object" || Array.isArray(authority)) {
+        throw new TypeError("malformed rail authority result");
+      }
       railResolution = resolveListingRails({
-        ...(await deps.loadRailResolution(listing)),
+        ...authority,
         payPhases: listing.pipeline
           .filter((phase) => phase.kind.startsWith("pay-"))
           .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail })),

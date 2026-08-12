@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { types as nodeTypes } from "node:util";
 
 import type {
   ComponentSignature,
@@ -26,6 +27,51 @@ import {
   publicKeyFromRaw,
   signedBytes,
 } from "../crypto/index.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
+import { DacsError } from "../errors.js";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+function stableDataProperty(
+  source: object,
+  key: PropertyKey,
+  label: string,
+): unknown {
+  if (nodeTypes.isProxy(source)) throw new DacsError(`${label} must be stable data`);
+  let owner: object | null = source;
+  try {
+    while (owner !== null) {
+      if (nodeTypes.isProxy(owner)) throw new TypeError("proxy prototype");
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor) {
+        if (!("value" in descriptor)) throw new TypeError("accessor property");
+        return descriptor.value;
+      }
+      owner = Object.getPrototypeOf(owner);
+    }
+  } catch (cause) {
+    throw new DacsError(`${label} must be stable data`, { cause });
+  }
+  return undefined;
+}
+
+function stableDataMethod<T>(
+  source: object,
+  key: PropertyKey,
+  label: string,
+  optional = false,
+): T {
+  const candidate = stableDataProperty(source, key, label);
+  if (candidate === undefined && optional) return undefined as T;
+  if (typeof candidate !== "function" || nodeTypes.isProxy(candidate)) {
+    throw new DacsError(`${label} must be a stable data method`);
+  }
+  return Function.prototype.bind.call(candidate, source) as T;
+}
 
 /** DACS-1 §6.3.4 reader result; LR-3 permits new sessions only for `verified`. */
 export type ListingValidationDisposition =
@@ -94,6 +140,28 @@ export interface RevocationCheckResult {
   reason: string;
 }
 
+function captureRevocationDeps(
+  value: ListingRevocationDeps,
+): ListingRevocationDeps {
+  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) {
+    throw new DacsError("revocation dependencies must be stable data");
+  }
+  const surfaces = snapshotCanonicalJson(
+    stableDataProperty(value, "surfaces", "revocation.surfaces"),
+    "revocation surfaces",
+  ) as RevocationSurface[];
+  return Object.freeze({
+    nowMs: stableDataMethod<ListingRevocationDeps["nowMs"]>(value, "nowMs", "revocation.nowMs"),
+    surfaces,
+    readMarker: stableDataMethod<ListingRevocationDeps["readMarker"]>(value, "readMarker", "revocation.readMarker"),
+    verifyMarkerSignature: stableDataMethod<ListingRevocationDeps["verifyMarkerSignature"]>(
+      value,
+      "verifyMarkerSignature",
+      "revocation.verifyMarkerSignature",
+    ),
+  });
+}
+
 const revocationLogicalAddress = (listing: Listing): string =>
   `dacs1-revoked:${encodeAddressSegment(
     listing.seller.identity.presentedBy,
@@ -105,6 +173,40 @@ async function checkRevokedSurface(
   surface: RevocationSurface,
   deps: ListingRevocationDeps,
 ): Promise<RevocationCheckResult> {
+  const now = deps.nowMs();
+  if (!Number.isSafeInteger(now) || now < 0) {
+    return { disposition: "indeterminate", reason: "revocation-clock-invalid" };
+  }
+  if (
+    !isRecord(surface) ||
+    !hasOnlyKeys(
+      surface,
+      ["kind", "status"],
+      [
+        "readStatus",
+        "readFailureReason",
+        "integrity",
+        "catalogObservedAt",
+        "binding",
+      ],
+    ) ||
+    (surface.kind !== "well-known" && surface.kind !== "catalog") ||
+    (surface.status !== "active" && surface.status !== "revoked") ||
+    (surface.readStatus !== undefined &&
+      surface.readStatus !== "ok" &&
+      surface.readStatus !== "unavailable") ||
+    (surface.readFailureReason !== undefined &&
+      (typeof surface.readFailureReason !== "string" ||
+        surface.readFailureReason.trim().length === 0)) ||
+    (surface.integrity !== undefined &&
+      surface.integrity !== "verified" &&
+      surface.integrity !== "indeterminate") ||
+    (surface.catalogObservedAt !== undefined &&
+      (!Number.isSafeInteger(surface.catalogObservedAt) ||
+        surface.catalogObservedAt < 0))
+  ) {
+    return { disposition: "indeterminate", reason: "malformed-revocation-surface" };
+  }
   if (surface.readStatus === "unavailable") {
     return {
       disposition: "indeterminate",
@@ -117,8 +219,8 @@ async function checkRevokedSurface(
   if (
     surface.kind === "catalog" &&
     (surface.catalogObservedAt === undefined ||
-      surface.catalogObservedAt > deps.nowMs() ||
-      deps.nowMs() - surface.catalogObservedAt > 24 * 60 * 60 * 1_000)
+      surface.catalogObservedAt > now ||
+      now - surface.catalogObservedAt > 24 * 60 * 60 * 1_000)
   ) {
     return { disposition: "indeterminate", reason: "catalog-stale" };
   }
@@ -146,7 +248,12 @@ async function checkRevokedSurface(
 
   let raw: Record<string, unknown> | null;
   try {
-    raw = await deps.readMarker(binding.markerAnchor);
+    const result = await deps.readMarker(
+      snapshotCanonicalJson(binding.markerAnchor, "revocation marker anchor"),
+    );
+    raw = result === null
+      ? null
+      : snapshotCanonicalJsonRead(result, "revocation marker read");
   } catch {
     return { disposition: "indeterminate", reason: "marker-fetch-failed" };
   }
@@ -167,18 +274,23 @@ async function checkRevokedSurface(
   if (marker.signature.signer !== listing.signature.signer) {
     return { disposition: "indeterminate", reason: "marker-signer-mismatch" };
   }
-  let signatureValid = false;
+  let signatureValid: unknown;
   try {
     signatureValid = await deps.verifyMarkerSignature({
       signedBytes: signedBytes("dacs-revocation:v1:", contentHash(raw)),
-      signature: marker.signature,
+      signature: snapshotCanonicalJson(
+        marker.signature,
+        "revocation marker signature",
+      ),
     });
   } catch {
-    signatureValid = false;
+    return { disposition: "indeterminate", reason: "marker-signature-unavailable" };
   }
-  return signatureValid
+  return signatureValid === true
     ? { disposition: "revoked", reason: "verified-revocation-marker" }
-    : { disposition: "indeterminate", reason: "marker-signature-invalid" };
+    : signatureValid === false
+      ? { disposition: "indeterminate", reason: "marker-signature-invalid" }
+      : { disposition: "indeterminate", reason: "marker-signature-malformed-result" };
 }
 
 /**
@@ -190,11 +302,32 @@ export async function checkListingRevocation(
   listingContentHash: string,
   deps: ListingRevocationDeps,
 ): Promise<RevocationCheckResult> {
-  if (deps.surfaces.length === 0) {
+  try {
+    deps = captureRevocationDeps(deps);
+    listing = snapshotCanonicalJson(listing, "revocation Listing");
+    if (!isListingEnvelope(listing)) {
+      return { disposition: "indeterminate", reason: "malformed-revocation-listing" };
+    }
+    if (typeof listingContentHash !== "string" || !/^[0-9a-f]{64}$/.test(listingContentHash)) {
+      return { disposition: "indeterminate", reason: "malformed-listing-content-hash" };
+    }
+  } catch {
+    return { disposition: "indeterminate", reason: "malformed-revocation-input" };
+  }
+  let surfaces: RevocationSurface[];
+  try {
+    surfaces = snapshotCanonicalJson(
+      deps.surfaces,
+      "revocation surfaces",
+    );
+  } catch {
+    return { disposition: "indeterminate", reason: "malformed-revocation-surfaces" };
+  }
+  if (surfaces.length === 0) {
     return { disposition: "indeterminate", reason: "no-revocation-surface" };
   }
   const checks: RevocationCheckResult[] = [];
-  for (const surface of deps.surfaces) {
+  for (const surface of surfaces) {
     checks.push(
       await checkRevokedSurface(listing, listingContentHash, surface, deps),
     );
@@ -273,6 +406,79 @@ const railResult = (
   ...(authorityBasis ? { authorityBasis } : {}),
 });
 
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean {
+  const keys = Object.keys(value);
+  return required.every((key) => Object.prototype.hasOwnProperty.call(value, key)) &&
+    keys.every((key) => required.includes(key) || optional.includes(key));
+}
+
+function isRailDefinitionProof(value: unknown): value is RailDefinitionProof {
+  return isRecord(value) &&
+    hasOnlyKeys(value, ["unsigned", "indexContentHash", "stewardPublicKey", "signature"]) &&
+    isRecord(value.unsigned) &&
+    typeof value.indexContentHash === "string" && /^[0-9a-f]{64}$/.test(value.indexContentHash) &&
+    typeof value.stewardPublicKey === "string" &&
+    typeof value.signature === "string";
+}
+
+function isRailDefinition(value: unknown): value is ListingRailDefinition {
+  return isRecord(value) &&
+    hasOnlyKeys(
+      value,
+      ["railId", "railVersion", "phaseHandler"],
+      ["state", "governanceAnchoring", "signatureValid", "proof"],
+    ) &&
+    typeof value.railId === "string" && value.railId.length > 0 &&
+    typeof value.railVersion === "number" && Number.isSafeInteger(value.railVersion) && value.railVersion > 0 &&
+    typeof value.phaseHandler === "string" && value.phaseHandler.startsWith("pay-") &&
+    (value.state === undefined ||
+      value.state === "verified-finalized" ||
+      value.state === "verified-included" ||
+      value.state === "unavailable") &&
+    (value.governanceAnchoring === undefined || typeof value.governanceAnchoring === "string") &&
+    (value.signatureValid === undefined || typeof value.signatureValid === "boolean") &&
+    (value.proof === undefined || isRailDefinitionProof(value.proof));
+}
+
+function isRailResolutionInput(value: unknown): value is ListingRailResolutionInput {
+  if (!isRecord(value) ||
+    !hasOnlyKeys(
+      value,
+      ["trustPhase", "payPhases", "acceptedRails", "registry"],
+      ["trustPolicyAcceptsPA1", "inCodeDefinitions"],
+    ) ||
+    (value.trustPhase !== "PA-1" && value.trustPhase !== "PA-2" && value.trustPhase !== "PA-3") ||
+    (value.trustPolicyAcceptsPA1 !== undefined && typeof value.trustPolicyAcceptsPA1 !== "boolean") ||
+    !Array.isArray(value.payPhases) ||
+    !value.payPhases.every((phase) =>
+      isRecord(phase) && hasOnlyKeys(phase, ["kind", "rail"])) ||
+    !Array.isArray(value.acceptedRails) ||
+    !isRecord(value.registry) ||
+    !hasOnlyKeys(value.registry, ["state", "entries", "definitions"]) ||
+    !["verified-finalized", "verified-included", "unavailable", "absent", "invalid-authority", "not-used"].includes(
+      value.registry.state as string,
+    ) ||
+    !Array.isArray(value.registry.entries) ||
+    !value.registry.entries.every((entry) =>
+      isRecord(entry) && hasOnlyKeys(entry, ["railId", "latestVersion", "versions"]) &&
+      typeof entry.railId === "string" && entry.railId.length > 0 &&
+      typeof entry.latestVersion === "number" && Number.isSafeInteger(entry.latestVersion) && entry.latestVersion > 0 &&
+      Array.isArray(entry.versions) && entry.versions.length > 0 &&
+      entry.versions.every((version) => Number.isSafeInteger(version) && version > 0)) ||
+    !Array.isArray(value.registry.definitions) ||
+    !value.registry.definitions.every(isRailDefinition) ||
+    (value.inCodeDefinitions !== undefined &&
+      (!Array.isArray(value.inCodeDefinitions) ||
+        !value.inCodeDefinitions.every(isRailDefinition)))) {
+    return false;
+  }
+  return true;
+}
+
 function validateRailProof(
   proof: RailDefinitionProof,
 ): "valid" | "hash-mismatch" | "signature-invalid" {
@@ -284,9 +490,22 @@ function validateRailProof(
   }
   if (hash !== proof.indexContentHash) return "hash-mismatch";
   try {
+    if (
+      !/^[A-Za-z0-9_-]{43}$/.test(proof.stewardPublicKey) ||
+      !/^[A-Za-z0-9_-]{86}$/.test(proof.signature)
+    ) {
+      return "signature-invalid";
+    }
     const key = Buffer.from(proof.stewardPublicKey, "base64url");
     const signature = Buffer.from(proof.signature, "base64url");
-    if (key.length !== 32 || signature.length !== 64) return "signature-invalid";
+    if (
+      key.length !== 32 ||
+      signature.length !== 64 ||
+      key.toString("base64url") !== proof.stewardPublicKey ||
+      signature.toString("base64url") !== proof.signature
+    ) {
+      return "signature-invalid";
+    }
     return ed25519Verify(
       signedBytes("dacs-rail:v1:", hash),
       signature,
@@ -492,11 +711,20 @@ function resolveAnchoredRegistry(
 export function resolveListingRails(
   input: ListingRailResolutionInput,
 ): ListingRailResolutionResult {
-  const staticFailure = staticRailBinding(input);
+  let captured: unknown;
+  try {
+    captured = snapshotCanonicalJson(input, "Listing rail resolution input");
+  } catch {
+    return railResult("indeterminate", "malformed-rail-authority");
+  }
+  if (!isRailResolutionInput(captured)) {
+    return railResult("indeterminate", "malformed-rail-authority");
+  }
+  const staticFailure = staticRailBinding(captured);
   if (staticFailure) return staticFailure;
-  return input.trustPhase === "PA-1"
-    ? resolvePa1(input)
-    : resolveAnchoredRegistry(input);
+  return captured.trustPhase === "PA-1"
+    ? resolvePa1(captured)
+    : resolveAnchoredRegistry(captured);
 }
 
 export interface ListingValidationDeps {
@@ -519,6 +747,68 @@ export interface ListingValidationDeps {
   }) => Promise<boolean> | boolean;
 }
 
+function captureListingValidationDeps(
+  value: ListingValidationDeps,
+): ListingValidationDeps {
+  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) {
+    throw new DacsError("Listing validation dependencies must be stable data");
+  }
+  const revocationValue = stableDataProperty(
+    value,
+    "revocation",
+    "Listing validation revocation dependencies",
+  );
+  if (
+    revocationValue === null ||
+    typeof revocationValue !== "object" ||
+    nodeTypes.isProxy(revocationValue)
+  ) {
+    throw new DacsError("Listing validation revocation dependencies must be stable data");
+  }
+  const revocation = revocationValue as ListingValidationDeps["revocation"];
+  const surfaces = snapshotCanonicalJson(
+    stableDataProperty(revocation, "surfaces", "revocation.surfaces"),
+    "revocation surfaces",
+  ) as RevocationSurface[];
+  return Object.freeze({
+    nowMs: stableDataMethod<ListingValidationDeps["nowMs"]>(value, "nowMs", "Listing validation nowMs"),
+    verifyListingSignature: stableDataMethod<ListingValidationDeps["verifyListingSignature"]>(
+      value,
+      "verifyListingSignature",
+      "Listing signature verifier",
+    ),
+    revocation: Object.freeze({
+      surfaces,
+      readMarker: stableDataMethod<ListingValidationDeps["revocation"]["readMarker"]>(
+        revocation,
+        "readMarker",
+        "revocation marker reader",
+      ),
+      verifyMarkerSignature: stableDataMethod<ListingValidationDeps["revocation"]["verifyMarkerSignature"]>(
+        revocation,
+        "verifyMarkerSignature",
+        "revocation marker verifier",
+      ),
+    }),
+    verifyIdentityPresentation: stableDataMethod<ListingValidationDeps["verifyIdentityPresentation"]>(
+      value,
+      "verifyIdentityPresentation",
+      "identity presentation verifier",
+    ),
+    loadRailResolution: stableDataMethod<ListingValidationDeps["loadRailResolution"]>(
+      value,
+      "loadRailResolution",
+      "rail authority loader",
+      true,
+    ),
+    verifySellerControl: stableDataMethod<ListingValidationDeps["verifySellerControl"]>(
+      value,
+      "verifySellerControl",
+      "seller control verifier",
+    ),
+  });
+}
+
 const identityPresentationBytes = (bundle: IdentityBundle): Uint8Array => {
   const { presentation: _presentation, ...signedScope } = bundle;
   return signedBytes(
@@ -534,12 +824,20 @@ const identityPresentationBytes = (bundle: IdentityBundle): Uint8Array => {
  */
 export async function validateListingArtifact(
   raw: Record<string, unknown>,
-  deps: ListingValidationDeps,
+  inputDeps: ListingValidationDeps,
 ): Promise<ListingValidationResult> {
-  if (!isListingEnvelope(raw)) {
+  // Fix every dependency identity before inspecting caller-owned artifact data.
+  const deps = captureListingValidationDeps(inputDeps);
+  let capturedRaw: Record<string, unknown>;
+  try {
+    capturedRaw = snapshotCanonicalJson(raw, "Listing validation artifact");
+  } catch {
     return { disposition: "rejected", step: 1, reason: "schema-invalid" };
   }
-  const envelope = raw;
+  if (!isListingEnvelope(capturedRaw)) {
+    return { disposition: "rejected", step: 1, reason: "schema-invalid" };
+  }
+  const envelope = capturedRaw;
   if (envelope.dacsVersion !== "1") {
     return {
       disposition: "rejected",
@@ -549,6 +847,9 @@ export async function validateListingArtifact(
   }
   const listing = envelope as Listing;
   const now = deps.nowMs();
+  if (!Number.isSafeInteger(now) || now < 0) {
+    return { disposition: "indeterminate", step: 3, reason: "validation-clock-invalid" };
+  }
   if (
     now < listing.validity.notBefore ||
     (listing.validity.notAfter !== undefined && now > listing.validity.notAfter)
@@ -556,21 +857,33 @@ export async function validateListingArtifact(
     return { disposition: "rejected", step: 3, reason: "outside-validity-window", listing };
   }
 
-  const listingContentHash = contentHash(raw);
-  let listingSignatureValid = false;
+  const listingContentHash = contentHash(capturedRaw);
+  let listingSignatureValid: unknown;
   try {
     listingSignatureValid = await deps.verifyListingSignature({
       signedBytes: signedBytes("dacs-listing:v1:", listingContentHash),
-      signature: listing.signature,
+      signature: snapshotCanonicalJson(
+        listing.signature,
+        "Listing signature verification input",
+      ),
     });
   } catch {
-    listingSignatureValid = false;
-  }
-  if (!listingSignatureValid) {
     return {
-      disposition: "rejected",
+      disposition: "indeterminate",
       step: 4,
-      reason: "listing-signature-invalid",
+      reason: "listing-signature-unavailable",
+      listing,
+      listingContentHash,
+    };
+  }
+  if (listingSignatureValid !== true) {
+    return {
+      disposition: listingSignatureValid === false ? "rejected" : "indeterminate",
+      step: 4,
+      reason:
+        listingSignatureValid === false
+          ? "listing-signature-invalid"
+          : "listing-signature-malformed-result",
       listing,
       listingContentHash,
     };
@@ -591,20 +904,33 @@ export async function validateListingArtifact(
     };
   }
 
-  let identityVerified = false;
+  let identityVerified: unknown;
   try {
     identityVerified = await deps.verifyIdentityPresentation({
-      bundle: listing.seller.identity,
+      bundle: snapshotCanonicalJson(
+        listing.seller.identity,
+        "identity presentation verification bundle",
+      ),
       signedBytes: identityPresentationBytes(listing.seller.identity),
     });
   } catch {
-    identityVerified = false;
-  }
-  if (!identityVerified) {
     return {
-      disposition: "rejected",
+      disposition: "indeterminate",
       step: 6,
-      reason: "identity-presentation-invalid",
+      reason: "identity-presentation-unavailable",
+      listing,
+      listingContentHash,
+      revocation: "absent",
+    };
+  }
+  if (identityVerified !== true) {
+    return {
+      disposition: identityVerified === false ? "rejected" : "indeterminate",
+      step: 6,
+      reason:
+        identityVerified === false
+          ? "identity-presentation-invalid"
+          : "identity-presentation-malformed-result",
       listing,
       listingContentHash,
       revocation: "absent",
@@ -630,11 +956,18 @@ export async function validateListingArtifact(
       railResolution = railResult("indeterminate", "rail-authority-unavailable");
     } else {
       try {
+        const authority = snapshotCanonicalJsonRead(
+          await deps.loadRailResolution(
+            snapshotCanonicalJson(listing, "rail authority Listing input"),
+          ),
+          "rail authority result",
+        );
+        if (!isRecord(authority)) throw new TypeError("malformed rail authority");
         railResolution = resolveListingRails({
-          ...(await deps.loadRailResolution(listing)),
+          ...authority,
           payPhases,
           acceptedRails: listing.acceptedRails ?? [],
-        });
+        } as ListingRailResolutionInput);
       } catch {
         railResolution = railResult("indeterminate", "rail-authority-unavailable");
       }
@@ -655,22 +988,40 @@ export async function validateListingArtifact(
   const signerIsCarried = listing.seller.identity.claims.some(
     (claim) => claim.ref === listing.signature.signer,
   );
-  let signerControlled = false;
+  let signerControlled: unknown = false;
   if (signerIsCarried) {
     try {
       signerControlled = await deps.verifySellerControl({
-        bundle: listing.seller.identity,
+        bundle: snapshotCanonicalJson(
+          listing.seller.identity,
+          "seller control verification bundle",
+        ),
         signer: listing.signature.signer,
       });
     } catch {
-      signerControlled = false;
+      return {
+        disposition: "indeterminate",
+        step: 9,
+        reason: "signer-control-unavailable",
+        listing,
+        listingContentHash,
+        revocation: "absent",
+        railResolution,
+      };
     }
   }
-  if (!signerIsCarried || !signerControlled) {
+  if (!signerIsCarried || signerControlled !== true) {
     return {
-      disposition: "rejected",
+      disposition:
+        !signerIsCarried || signerControlled === false
+          ? "rejected"
+          : "indeterminate",
       step: 9,
-      reason: signerIsCarried ? "signer-control-invalid" : "signer-not-in-identity",
+      reason: !signerIsCarried
+        ? "signer-not-in-identity"
+        : signerControlled === false
+          ? "signer-control-invalid"
+          : "signer-control-malformed-result",
       listing,
       listingContentHash,
       revocation: "absent",
@@ -723,6 +1074,8 @@ export interface ListingReachabilityDeps {
     maxBytes: number;
     redirect: "error";
     credentials: "omit";
+    /** Aborted by the SDK when its hard timeout wins the race. */
+    signal: AbortSignal;
   }) => Promise<ReachabilityProbeResult>;
   timeoutMs?: number;
   maxBytes?: number;
@@ -739,6 +1092,48 @@ export interface ListingReachabilityResult {
   checkedAt: number;
   reason: string;
   url?: string;
+}
+
+function captureReachabilityDeps(
+  value: ListingReachabilityDeps,
+): ListingReachabilityDeps {
+  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) {
+    throw new DacsError("Listing reachability dependencies must be stable data");
+  }
+  const timeoutMs = stableDataProperty(value, "timeoutMs", "reachability.timeoutMs");
+  const maxBytes = stableDataProperty(value, "maxBytes", "reachability.maxBytes");
+  if (
+    (timeoutMs !== undefined &&
+      (typeof timeoutMs !== "number" ||
+        !Number.isSafeInteger(timeoutMs) ||
+        timeoutMs <= 0)) ||
+    (maxBytes !== undefined &&
+      (typeof maxBytes !== "number" ||
+        !Number.isSafeInteger(maxBytes) ||
+        maxBytes <= 0))
+  ) {
+    throw new DacsError("reachability bounds must be positive safe integers");
+  }
+  const surfaces = stableDataProperty(
+    value,
+    "registryHttpsSurfaces",
+    "reachability.registryHttpsSurfaces",
+  );
+  return Object.freeze({
+    nowMs: stableDataMethod<ListingReachabilityDeps["nowMs"]>(value, "nowMs", "reachability.nowMs"),
+    resolveHost: stableDataMethod<ListingReachabilityDeps["resolveHost"]>(value, "resolveHost", "reachability.resolveHost"),
+    probe: stableDataMethod<ListingReachabilityDeps["probe"]>(value, "probe", "reachability.probe"),
+    ...(timeoutMs === undefined ? {} : { timeoutMs: timeoutMs as number }),
+    ...(maxBytes === undefined ? {} : { maxBytes: maxBytes as number }),
+    ...(surfaces === undefined
+      ? {}
+      : {
+          registryHttpsSurfaces: snapshotCanonicalJson(
+            surfaces,
+            "reachability registry HTTPS surfaces",
+          ) as string[],
+        }),
+  });
 }
 
 const ipv4Number = (address: string): number | null => {
@@ -867,9 +1262,15 @@ async function assessEndpoint(
     : url.hostname;
   let addresses: string[];
   try {
-    addresses = await deps.resolveHost(hostname);
+    addresses = snapshotCanonicalJsonRead(
+      await deps.resolveHost(hostname),
+      "reachability DNS result",
+    );
   } catch {
     return { status: "indeterminate", checkedAt, reason: "dns-unavailable", url: endpoint };
+  }
+  if (!Array.isArray(addresses) || addresses.some((address) => typeof address !== "string")) {
+    return { status: "indeterminate", checkedAt, reason: "dns-malformed", url: endpoint };
   }
   if (addresses.length === 0) {
     return { status: "indeterminate", checkedAt, reason: "dns-empty", url: endpoint };
@@ -887,8 +1288,12 @@ async function assessEndpoint(
         ? deps.maxBytes!
         : 64 * 1_024;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
     const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error("probe-timeout")), timeoutMs);
+      timer = setTimeout(() => {
+        controller.abort(new Error("probe-timeout"));
+        reject(new Error("probe-timeout"));
+      }, timeoutMs);
     });
     let response: ReachabilityProbeResult;
     try {
@@ -900,12 +1305,39 @@ async function assessEndpoint(
           maxBytes,
           redirect: "error",
           credentials: "omit",
+          signal: controller.signal,
         }),
         timeout,
       ]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+    let capturedResponse: unknown;
+    try {
+      capturedResponse = snapshotCanonicalJsonRead(
+        response,
+        "reachability probe result",
+      );
+    } catch {
+      return { status: "indeterminate", checkedAt, reason: "probe-result-malformed", url: endpoint };
+    }
+    if (
+      !isRecord(capturedResponse) ||
+      !hasOnlyKeys(capturedResponse, ["status", "bytes", "actionable"], ["redirected"]) ||
+      typeof capturedResponse.status !== "number" ||
+      !Number.isSafeInteger(capturedResponse.status) ||
+      capturedResponse.status < 100 ||
+      capturedResponse.status > 599 ||
+      typeof capturedResponse.bytes !== "number" ||
+      !Number.isSafeInteger(capturedResponse.bytes) ||
+      capturedResponse.bytes < 0 ||
+      typeof capturedResponse.actionable !== "boolean" ||
+      (capturedResponse.redirected !== undefined &&
+        typeof capturedResponse.redirected !== "boolean")
+    ) {
+      return { status: "indeterminate", checkedAt, reason: "probe-result-malformed", url: endpoint };
+    }
+    response = capturedResponse as unknown as ReachabilityProbeResult;
     if (response.redirected) {
       return { status: "unreachable", checkedAt, reason: "redirect-refused", url: endpoint };
     }
@@ -929,14 +1361,35 @@ async function assessEndpoint(
 }
 
 export async function assessListingReachability(
-  listing: Listing,
-  deps: ListingReachabilityDeps,
+  inputListing: Listing,
+  inputDeps: ListingReachabilityDeps,
 ): Promise<ListingReachabilityResult> {
+  let deps: ListingReachabilityDeps;
+  try {
+    deps = captureReachabilityDeps(inputDeps);
+  } catch {
+    return { status: "indeterminate", checkedAt: 0, reason: "reachability-input-malformed" };
+  }
+  let listing: Listing;
+  try {
+    listing = snapshotCanonicalJson(inputListing, "reachability Listing");
+  } catch {
+    return { status: "indeterminate", checkedAt: 0, reason: "listing-malformed" };
+  }
+  if (!isListingEnvelope(listing)) {
+    return { status: "indeterminate", checkedAt: 0, reason: "listing-malformed" };
+  }
   const checkedAt = deps.nowMs();
+  if (!Number.isSafeInteger(checkedAt) || checkedAt < 0) {
+    return { status: "indeterminate", checkedAt: 0, reason: "reachability-clock-invalid" };
+  }
   const surfaces = [
     ...(listing.seller.publicEndpoint ? [listing.seller.publicEndpoint] : []),
     ...(deps.registryHttpsSurfaces ?? []),
   ];
+  if (surfaces.some((surface) => typeof surface !== "string")) {
+    return { status: "indeterminate", checkedAt, reason: "engagement-surface-malformed" };
+  }
   if (surfaces.length === 0) {
     return { status: "indeterminate", checkedAt, reason: "no-engagement-surface" };
   }

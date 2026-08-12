@@ -96,6 +96,12 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
           return valid;
         },
         nowMs: () => 1_790_000_000_000,
+        validateListing: (raw) => ({
+          disposition: "verified",
+          step: 9,
+          reason: "verified",
+          listingContentHash: contentHash(raw),
+        }),
         resolvePublicKey: (claim) => {
           const encoded = VECTOR.publicKeys[claim];
           return encoded

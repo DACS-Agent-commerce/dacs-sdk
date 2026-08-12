@@ -99,6 +99,12 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     // These fixtures exercise ORCHESTRATION, not listing signatures — the #41
     // gate itself is covered by its own cases below and in discover.test.ts.
     trustListing: true,
+    validateListing: (raw) => ({
+      disposition: "verified",
+      step: 9,
+      reason: "verified",
+      listingContentHash: contentHash(raw),
+    }),
     ...overrides,
   };
 }
@@ -325,8 +331,9 @@ describe("runSession orchestration (T4)", () => {
       "indeterminate",
     ] as const) {
       let settled = false;
-      await expect(
-        runSessionCore(
+      let vetted = false;
+      let anchored = false;
+      const attempt = runSessionCore(
           "stor-normative-v7",
           {
             ...TERMS,
@@ -343,10 +350,23 @@ describe("runSession orchestration (T4)", () => {
               settled = true;
               throw new Error("must not settle");
             },
+            vet: async () => {
+              vetted = true;
+              throw new Error("must not vet");
+            },
+            anchor: async () => {
+              anchored = true;
+              throw new Error("must not anchor");
+            },
           }),
-        ),
-      ).rejects.toThrow(new RegExp(`${disposition}.*LR-3`));
+        );
+      await expect(attempt).rejects.toThrow(new RegExp(`${disposition}.*LR-3`));
+      await expect(attempt).rejects.toMatchObject({
+        category: disposition === "indeterminate" ? "substrate" : "counterparty",
+      });
       expect(settled).toBe(false);
+      expect(vetted).toBe(false);
+      expect(anchored).toBe(false);
     }
   });
 

@@ -261,6 +261,22 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
  * ship. Not exported from the package barrel; internal test seam.
  */
 export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
+  const loadListingRailResolution = stableAgentMethod<
+    AgentConfig["loadListingRailResolution"]
+  >(
+    config,
+    "loadListingRailResolution",
+    "AgentConfig.loadListingRailResolution",
+    true,
+  );
+  const configuredValidateListing = stableAgentMethod<
+    AgentConfig["validateListing"]
+  >(
+    config,
+    "validateListing",
+    "AgentConfig.validateListing",
+    true,
+  );
   const identity = stableAgentData(config, "identity", "AgentConfig.identity");
   if (
     identity !== undefined &&
@@ -359,7 +375,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
         scanOwnAnchorsByNamePrefix: (prefix) =>
           adapter.scanOwnAnchorsByNamePrefix(prefix),
         anchorWriteOnce: (name, value) => adapter.anchorWriteOnce(name, value),
-        loadRailResolution: config.loadListingRailResolution,
+        loadRailResolution: loadListingRailResolution,
       });
     },
 
@@ -380,7 +396,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
         verify: ed25519RawVerify,
         resolvePublicKey: (claim) => publicKeyFromDid(claim),
-        validateListing: config.validateListing,
+        validateListing: configuredValidateListing,
       });
     },
 
@@ -415,6 +431,14 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
         opts,
         "resumeSettlement",
         "Agent.runSession resumeSettlement",
+        true,
+      );
+      const validateListing = stableAgentMethod<
+        RunSessionOptions["validateListing"]
+      >(
+        opts,
+        "validateListing",
+        "Agent.runSession validateListing",
         true,
       );
       const sessionStore = stableAgentData(
@@ -687,7 +711,7 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           resumeSettlement,
           vet,
           newJobId: () => generateCanonicalJobId(),
-          validateListing: opts.validateListing ?? config.validateListing,
+          validateListing: validateListing ?? configuredValidateListing,
           now: () => new Date().toISOString(),
           nowMs: () => Date.now(),
           sessionStore,

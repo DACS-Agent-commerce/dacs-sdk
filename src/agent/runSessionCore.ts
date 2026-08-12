@@ -1330,6 +1330,12 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
       "deps.authenticateRecoveredArtifact",
       true,
     ),
+    validateListing: stableDataMethod<SessionDeps["validateListing"]>(
+      input,
+      "validateListing",
+      "deps.validateListing",
+      true,
+    ),
     trustListing: trustListing as boolean | undefined,
     sessionStore,
   });
@@ -2171,7 +2177,11 @@ export async function runSessionCore(
     { allowColon: true },
   );
 
-  if (readableListing.compatibility === "normative") {
+  // LR-3 is a fresh-admission gate. An expired resume must instead prove the
+  // exact already-paid state through the authenticated recovery path below;
+  // reapplying the current validity/revocation disposition would strand deals
+  // that finalized while the Listing was live.
+  if (readableListing.compatibility === "normative" && !listingExpired) {
     if (!deps.validateListing) {
       throw new DacsError(
         "runSessionCore requires deps.validateListing for normative DACS-1 Listings; " +
@@ -2180,10 +2190,35 @@ export async function runSessionCore(
     }
     let validation: ListingValidationResult;
     try {
-      validation = await deps.validateListing(storedRecord);
-    } catch {
-      throw new CounterpartyError(
+      const rawValidation = snapshotCanonicalJsonRead(
+        await deps.validateListing(
+          snapshotCanonicalJson(storedRecord, "Listing validator input"),
+        ),
+        "Listing validation result",
+      );
+      if (
+        rawValidation === null ||
+        typeof rawValidation !== "object" ||
+        Array.isArray(rawValidation) ||
+        !["verified", "rejected", "revoked", "indeterminate"].includes(
+          (rawValidation as { disposition?: string }).disposition ?? "",
+        ) ||
+        !Number.isSafeInteger((rawValidation as { step?: number }).step) ||
+        typeof (rawValidation as { reason?: unknown }).reason !== "string"
+      ) {
+        throw new TypeError("malformed Listing validation result");
+      }
+      validation = rawValidation as ListingValidationResult;
+    } catch (cause) {
+      throw new SubstrateError(
         `listing at ${listingRef} validation was indeterminate (validator threw)`,
+        { cause },
+      );
+    }
+    if (validation.disposition === "indeterminate") {
+      throw new SubstrateError(
+        `listing at ${listingRef} validation is indeterminate at DACS-1 reader step ` +
+          `${validation.step} (${validation.reason}); LR-3 refuses the new session`,
       );
     }
     if (validation.disposition !== "verified") {
