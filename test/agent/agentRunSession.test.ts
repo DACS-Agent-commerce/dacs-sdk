@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { buildAgent } from "../../src/agent/Agent.js";
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
@@ -34,12 +34,21 @@ const buyerPublicKey = rawPublicKey(publicKeyFromSeed(BUYER_SEED));
 const buyerDid = `did:demos:agent:${Buffer.from(buyerPublicKey).toString("hex")}`;
 
 /** In-memory adapter — just the surface buildAgent's runSession path touches. */
-function memAdapter() {
+function memAdapter(options: { failBundleOnce?: boolean } = {}) {
   const store = new Map<string, Record<string, unknown>>();
+  let bundleFailed = false;
   const adapter = {
     store,
     sign: async (bytes: Uint8Array) => ed25519Sign(bytes, buyerPriv),
     anchor: async (name: string, value: object) => {
+      if (
+        options.failBundleOnce &&
+        !bundleFailed &&
+        name.startsWith("dacs5:bundle:")
+      ) {
+        bundleFailed = true;
+        throw new Error("simulated process failure before bundle anchor");
+      }
       const address = `stor:${name}`;
       store.set(address, value as Record<string, unknown>);
       return { address, txRef: `tx:${address}` };
@@ -79,7 +88,14 @@ const TERMS = {
   deliveryFormat: "application/json",
 };
 
-async function anchorListing(store: Map<string, Record<string, unknown>>, priv = sellerPriv, agentId = sellerDid) {
+async function anchorListing(
+  store: Map<string, Record<string, unknown>>,
+  priv = sellerPriv,
+  agentId = sellerDid,
+  validity: { notBefore: number; notAfter?: number } = {
+    notBefore: 1_700_000_000_000,
+  },
+) {
   const signed = await signComponentArtifact(
     {
       dacsVersion: "1",
@@ -122,7 +138,7 @@ async function anchorListing(store: Map<string, Record<string, unknown>>, priv =
       },
       acceptedRails: [{ railId: "x402:default" }],
       terms: { deadlineSecAfterCommit: 3_600 },
-      validity: { notBefore: 1_700_000_000_000 },
+      validity,
     },
     ARTIFACT_SEPARATORS.Listing,
     {
@@ -188,6 +204,53 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       }),
     ).rejects.toThrow(/failed signature verification/);
     expect(settled).toBe(false);
+  });
+
+  test("public runSession resumes an admitted job after expiry without paying twice", async () => {
+    vi.useFakeTimers();
+    try {
+      const admittedAt = 1_800_000_000_000;
+      vi.setSystemTime(admittedAt);
+      const { adapter, store } = memAdapter({ failBundleOnce: true });
+      const ref = await anchorListing(store, sellerPriv, sellerDid, {
+        notBefore: admittedAt - 1_000,
+        notAfter: admittedAt + 1_000,
+      });
+      const agent = buildAgent(adapter as never, {
+        demosRpc: "mem",
+        wallet: "x",
+        identity: { agentId: buyerDid },
+      });
+      let settleCalls = 0;
+      const settle = async () => {
+        settleCalls += 1;
+        return {
+          ok: true,
+          txHash: "0xpaid-once",
+          chainId: "c",
+          payer: buyerDid,
+          payee: sellerDid,
+        };
+      };
+
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/simulated process failure/);
+      expect(settleCalls).toBe(1);
+
+      vi.setSystemTime(admittedAt + 2_000);
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).resolves.toMatchObject({ outcome: "completed", jobId: "job-expiry" });
+      expect(settleCalls).toBe(1);
+
+      await expect(
+        agent.runSession(ref, { jobId: "job-arbitrary", terms: TERMS, settle }),
+      ).rejects.toThrow(/outside.*validity window.*no prior Agreement/i);
+      expect(settleCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("getReputation ignores a structurally plausible but unverified bundle", async () => {

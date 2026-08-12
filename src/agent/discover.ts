@@ -63,11 +63,14 @@ function intrinsicKey(claim: string): Uint8Array | null {
 }
 
 /**
- * DACS-1 §6.3.4 signature gate with an explicit historical read arm. New
- * normative Listings use ListingSignature; the legacy string signature is
- * accepted only for already-anchored MVP artifacts (#41 compatibility policy).
+ * Authenticate a structurally valid Listing without applying its admission
+ * clock. Session recovery uses this narrower gate because an already-admitted,
+ * durably bound session can legitimately finish after the Listing expires.
+ * Discovery uses verifyReadableListingArtifact below; runSessionCore applies
+ * the same DACS-1 §6.3.4 clock policy while distinguishing fresh admission
+ * from recovery.
  */
-export async function verifyReadableListingArtifact(
+export async function authenticateReadableListingArtifact(
   raw: Record<string, unknown>,
   deps: DiscoverDeps,
 ): Promise<ReadableListing | null> {
@@ -79,14 +82,6 @@ export async function verifyReadableListingArtifact(
     );
   }
   if (readable.compatibility === "normative") {
-    const now = deps.nowMs?.() ?? Date.now();
-    const validity = readable.listing.validity;
-    if (
-      now < validity.notBefore ||
-      (validity.notAfter !== undefined && now > validity.notAfter)
-    ) {
-      return null;
-    }
     // DACS-1 permits a Listing signer to be any claim carried by the seller's
     // IdentityBundle. Until this SDK verifies the complete §6.3.2 presentation,
     // however, claim membership alone cannot prove control of `presentedBy`.
@@ -148,6 +143,35 @@ export async function verifyReadableListingArtifact(
     },
   );
   return verdict.status === "valid" ? readable : null;
+}
+
+/**
+ * DACS-1 §6.3.4 discovery/fresh-admission gate with an explicit historical
+ * read arm. It applies the reader validity step, then authenticates the exact
+ * artifact before returning it.
+ */
+export async function verifyReadableListingArtifact(
+  raw: Record<string, unknown>,
+  deps: DiscoverDeps,
+): Promise<ReadableListing | null> {
+  if (!deps.verify && !deps.trustListings) {
+    throw new DacsError(
+      "Listing verification requires deps.verify or explicit trustListings: true",
+    );
+  }
+  const readable = readListingArtifact(raw);
+  if (!readable) return null;
+  if (readable.compatibility === "normative") {
+    const now = deps.nowMs?.() ?? Date.now();
+    const validity = readable.listing.validity;
+    if (
+      now < validity.notBefore ||
+      (validity.notAfter !== undefined && now > validity.notAfter)
+    ) {
+      return null;
+    }
+  }
+  return authenticateReadableListingArtifact(raw, deps);
 }
 
 export async function discoverListings(

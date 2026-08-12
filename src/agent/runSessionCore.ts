@@ -185,7 +185,9 @@ export interface SessionDeps {
    * that never passed through `discover`, and the listing drives vetting, rail
    * and recipient selection, and payment. Verification therefore happens before
    * the vet step and before settlement — a forged listing must never reach the
-   * money path. REQUIRED unless `trustListing` is set.
+   * money path. This seam authenticates the exact artifact; runSessionCore owns
+   * validity-window admission so authenticated recovery can complete a deal
+   * already paid before `notAfter`. REQUIRED unless `trustListing` is set.
    */
   verifyListing?: (
     raw: Record<string, unknown>,
@@ -441,6 +443,7 @@ export async function runSessionCore(
           },
         };
 
+  let listingExpired = false;
   if (readableListing.compatibility === "normative") {
     if (
       readableListing.listing.signature.signer !==
@@ -454,11 +457,12 @@ export async function runSessionCore(
     }
     const now = deps.nowMs();
     const validity = readableListing.listing.validity;
-    if (now < validity.notBefore || (validity.notAfter !== undefined && now > validity.notAfter)) {
+    if (now < validity.notBefore) {
       throw new CounterpartyError(
         `listing ${listing.pin.listingId} v${listing.pin.version} is outside its DACS-1 §6.3.4 validity window`,
       );
     }
+    listingExpired = validity.notAfter !== undefined && now > validity.notAfter;
   }
 
   const listingView: {
@@ -500,21 +504,22 @@ export async function runSessionCore(
   const paymentEvidencePhase =
     readableListing.compatibility === "normative"
       ? (() => {
-          const matching = readableListing.listing.pipeline.filter(
-            (phase) =>
-              phase.kind.startsWith("pay-") &&
-              phase.parameters?.rail === terms.price.rail,
+          const paymentPhases = readableListing.listing.pipeline.filter(
+            (phase) => phase.kind.startsWith("pay-"),
+          );
+          if (paymentPhases.length > 1) {
+            throw new UnsupportedCapabilityError(
+              `runSessionCore cannot execute ${paymentPhases.length} pay-* invocations ` +
+                `across the normative pipeline: DACS-4 PIPE-5 repetition is valid, ` +
+                `but this single-settle orchestrator supports one invocation`,
+            );
+          }
+          const matching = paymentPhases.filter(
+            (phase) => phase.parameters?.rail === terms.price.rail,
           );
           if (matching.length === 0) {
             throw new CounterpartyError(
               `rail ${terms.price.rail} has no matching normative payment phase`,
-            );
-          }
-          if (matching.length > 1) {
-            throw new UnsupportedCapabilityError(
-              `runSessionCore cannot execute ${matching.length} pay-* invocations ` +
-                `for rail ${terms.price.rail}: DACS-4 PIPE-5 repetition is valid, ` +
-                `but this single-settle orchestrator supports one invocation`,
             );
           }
           return matching[0]!.kind;
@@ -524,7 +529,15 @@ export async function runSessionCore(
     throw new Error(`delivery ${terms.deliveryPhase} not offered by the listing`);
   }
 
-  // A caller-supplied jobId resumes an interrupted session; otherwise fresh.
+  if (listingExpired && resumeJobId === undefined) {
+    throw new CounterpartyError(
+      `listing ${listing.pin.listingId} v${listing.pin.version} is outside its DACS-1 §6.3.4 validity window`,
+    );
+  }
+
+  // A caller-supplied jobId requests recovery; otherwise this is a fresh
+  // admission. Invalid Listings and unsupported pipelines fail before minting
+  // a new id; an expired recovery uses the caller's exact prior id below.
   const jobId = resumeJobId ?? deps.newJobId();
 
   const signSessionArtifact = <T extends object>(
@@ -582,11 +595,12 @@ export async function runSessionCore(
     match: (v: Record<string, unknown>) => Match,
     build: () => Promise<object>,
     expectedComponentSigner?: string,
+    knownLookup?: AnchorLookup,
   ): Promise<{ ref: string; value: Record<string, unknown>; existing: boolean }> => {
     // Resolve BY NAME (the address can't be recomputed). Fail closed on an
     // indeterminate lookup: proceeding as if absent could re-anchor a duplicate
     // or, for evidence, defeat the no-double-pay guard and settle twice (#70).
-    const found = await deps.resolveAnchor(name);
+    const found = knownLookup ?? (await deps.resolveAnchor(name));
     if (found.status === "indeterminate") {
       throw new SubstrateError(
         `resume: could not determine whether "${name}" is already anchored (${found.reason}); ` +
@@ -623,6 +637,121 @@ export async function runSessionCore(
     a.asset === b.asset &&
     a.decimals === b.decimals &&
     a.rail === b.rail;
+
+  const matchAgreement = (v: Record<string, unknown>): Match => {
+    if (!isAgreementDocument(v))
+      return { ok: false, reason: "not an agreement" };
+    const a = v as unknown as AgreementDocument;
+    if (a.jobId !== jobId)
+      return { ok: false, reason: `jobId ${a.jobId} ≠ ${jobId}` };
+    if (a.buyer !== deps.buyerId)
+      return { ok: false, reason: `buyer ${a.buyer} ≠ ${deps.buyerId}` };
+    if (a.seller !== listingView.sellerClaim)
+      return { ok: false, reason: `seller ${a.seller} ≠ ${listingView.sellerClaim}` };
+    if (a.listingRef !== listingRef)
+      return { ok: false, reason: `listingRef ${a.listingRef} ≠ ${listingRef}` };
+    if (!pricesEqual(a.price, terms.price))
+      return { ok: false, reason: "price mismatch" };
+    if (
+      a.delivery.phase !== terms.deliveryPhase ||
+      a.delivery.format !== terms.deliveryFormat
+    )
+      return { ok: false, reason: "delivery mismatch" };
+    return { ok: true };
+  };
+
+  const matchSettlementEvidence = (v: Record<string, unknown>): Match => {
+    if (!isSettlementEvidence(v))
+      return { ok: false, reason: "not settlement evidence" };
+    const e = v as unknown as SettlementEvidence;
+    if (e.jobId !== jobId)
+      return { ok: false, reason: `jobId ${e.jobId} ≠ ${jobId}` };
+    if (e.phase !== paymentEvidencePhase)
+      return {
+        ok: false,
+        reason: `payment phase ${e.phase} ≠ ${paymentEvidencePhase}`,
+      };
+    if (!e.paymentAmount)
+      return { ok: false, reason: "settlement evidence has no payment amount" };
+    if (e.paymentAmount.amount !== terms.price.amount)
+      return { ok: false, reason: "settled amount mismatch" };
+    if (e.paymentAmount.currency !== terms.price.asset)
+      return { ok: false, reason: "settled currency mismatch" };
+    return { ok: true };
+  };
+
+  // Listing expiry closes admission, not audit completion of an already paid
+  // deal. An explicit job id or Agreement alone is not proof of payment: before
+  // any Vet, anchor, or settlement effect, require exact Agreement AND successful
+  // buyer-signed SettlementEvidence in their deterministic, buyer-owned slots.
+  let recoveredAgreement: AnchorLookup | undefined;
+  let recoveredEvidence: AnchorLookup | undefined;
+  if (listingExpired) {
+    const agreementName = sessionAnchorName.agreement(jobId);
+    recoveredAgreement = await deps.resolveAnchor(agreementName);
+    if (recoveredAgreement.status === "indeterminate") {
+      throw new SubstrateError(
+        `resume: could not authenticate prior admission at "${agreementName}" ` +
+          `(${recoveredAgreement.reason}); refusing an expired-Listing resume`,
+      );
+    }
+    if (recoveredAgreement.status === "absent") {
+      throw new CounterpartyError(
+        `listing ${listing.pin.listingId} v${listing.pin.version} is outside its ` +
+          `DACS-1 §6.3.4 validity window and job ${jobId} has no prior Agreement`,
+      );
+    }
+    const agreementMatch = matchAgreement(stripSignature(recoveredAgreement.value));
+    if (!agreementMatch.ok) {
+      throw new CounterpartyError(
+        `resume: prior admission anchored at ${recoveredAgreement.ref} does not match ` +
+        `the requested deal: ${agreementMatch.reason}`,
+      );
+    }
+
+    const evidenceName = sessionAnchorName.evidence(jobId);
+    recoveredEvidence = await deps.resolveAnchor(evidenceName);
+    if (recoveredEvidence.status === "indeterminate") {
+      throw new SubstrateError(
+        `resume: could not authenticate prior payment at "${evidenceName}" ` +
+          `(${recoveredEvidence.reason}); refusing an expired-Listing resume`,
+      );
+    }
+    if (recoveredEvidence.status === "absent") {
+      throw new CounterpartyError(
+        `listing ${listing.pin.listingId} v${listing.pin.version} is outside its ` +
+          `DACS-1 §6.3.4 validity window and job ${jobId} has no prior SettlementEvidence`,
+      );
+    }
+    const evidenceSignature = storedComponentSignatureMatches(
+      recoveredEvidence.value,
+      deps.buyerId,
+    );
+    if (!evidenceSignature.ok) {
+      throw new CounterpartyError(
+        `resume: prior payment at ${recoveredEvidence.ref} has unacceptable ` +
+          `signature: ${evidenceSignature.reason}`,
+      );
+    }
+    const evidenceMatch = matchSettlementEvidence(
+      stripSignature(recoveredEvidence.value),
+    );
+    if (!evidenceMatch.ok) {
+      throw new CounterpartyError(
+        `resume: prior payment at ${recoveredEvidence.ref} does not match the ` +
+          `requested deal: ${evidenceMatch.reason}`,
+      );
+    }
+    if (
+      (stripSignature(recoveredEvidence.value) as { outcome?: unknown }).outcome !==
+      "success"
+    ) {
+      throw new CounterpartyError(
+        `resume: prior payment at ${recoveredEvidence.ref} was not successful; ` +
+          `refusing an expired-Listing resume`,
+      );
+    }
+  }
 
   /** Content-addressed ref to a signed artifact's signed scope. */
   const refTo = (kind: string, id: string, value: Record<string, unknown>): AttestationRef => ({
@@ -673,27 +802,7 @@ export async function runSessionCore(
   // Negotiate (fixed-price): accept the listed terms.
   const { ref: agreementRef, value: agreementValue } = await anchorOnce(
     sessionAnchorName.agreement(jobId),
-    (v) => {
-      if (!isAgreementDocument(v))
-        return { ok: false, reason: "not an agreement" };
-      const a = v as unknown as AgreementDocument;
-      if (a.jobId !== jobId)
-        return { ok: false, reason: `jobId ${a.jobId} ≠ ${jobId}` };
-      if (a.buyer !== deps.buyerId)
-        return { ok: false, reason: `buyer ${a.buyer} ≠ ${deps.buyerId}` };
-      if (a.seller !== listingView.sellerClaim)
-        return { ok: false, reason: `seller ${a.seller} ≠ ${listingView.sellerClaim}` };
-      if (a.listingRef !== listingRef)
-        return { ok: false, reason: `listingRef ${a.listingRef} ≠ ${listingRef}` };
-      if (!pricesEqual(a.price, terms.price))
-        return { ok: false, reason: "price mismatch" };
-      if (
-        a.delivery.phase !== terms.deliveryPhase ||
-        a.delivery.format !== terms.deliveryFormat
-      )
-        return { ok: false, reason: "delivery mismatch" };
-      return { ok: true };
-    },
+    matchAgreement,
     () => {
       const agreement: AgreementDocument = {
         jobId,
@@ -707,6 +816,8 @@ export async function runSessionCore(
       };
       return deps.sign(agreement, ARTIFACT_SEPARATORS.AgreementDocument);
     },
+    undefined,
+    recoveredAgreement,
   );
 
   // The agreement's content hash is this deal's anti-replay key.
@@ -850,25 +961,7 @@ export async function runSessionCore(
     existing: evidenceExisting,
   } = await anchorOnce(
     sessionAnchorName.evidence(jobId),
-    (v) => {
-      if (!isSettlementEvidence(v))
-        return { ok: false, reason: "not settlement evidence" };
-      const e = v as unknown as SettlementEvidence;
-      if (e.jobId !== jobId)
-        return { ok: false, reason: `jobId ${e.jobId} ≠ ${jobId}` };
-      if (e.phase !== paymentEvidencePhase)
-        return {
-          ok: false,
-          reason: `payment phase ${e.phase} ≠ ${paymentEvidencePhase}`,
-        };
-      if (!e.paymentAmount)
-        return { ok: false, reason: "settlement evidence has no payment amount" };
-      if (e.paymentAmount.amount !== terms.price.amount)
-        return { ok: false, reason: "settled amount mismatch" };
-      if (e.paymentAmount.currency !== terms.price.asset)
-        return { ok: false, reason: "settled currency mismatch" };
-      return { ok: true };
-    },
+    matchSettlementEvidence,
     async () => {
       const settleRequest: SettleRequest = {
         rail: terms.price.rail,
@@ -989,6 +1082,7 @@ export async function runSessionCore(
       );
     },
     deps.buyerId,
+    recoveredEvidence,
   );
   if (evidenceExisting) {
     // Reused a prior settlement — take the outcome from the anchored evidence.

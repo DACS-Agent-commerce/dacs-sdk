@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { verifyReadableListingArtifact } from "../../src/agent/discover.js";
+import {
+  authenticateReadableListingArtifact,
+  verifyReadableListingArtifact,
+} from "../../src/agent/discover.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { Listing, ListingDraft } from "../../src/artifacts/types.js";
@@ -74,6 +77,30 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     );
     expect(verified).toMatchObject({ compatibility: "normative" });
     expect(signer).toBe(listing.seller.identity.presentedBy);
+  });
+
+  it("separates signature authentication from fresh-admission expiry", async () => {
+    const listing = fixture();
+    const resolvePublicKey = (claim: string) => {
+      const encoded = VECTOR.publicKeys[claim];
+      return encoded
+        ? Uint8Array.from(Buffer.from(encoded, "base64url"))
+        : null;
+    };
+    const expiredAt = listing.validity.notAfter! + 1;
+
+    await expect(
+      authenticateReadableListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        { verify, nowMs: () => expiredAt, resolvePublicKey },
+      ),
+    ).resolves.toMatchObject({ compatibility: "normative" });
+    await expect(
+      verifyReadableListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        { verify, nowMs: () => expiredAt, resolvePublicKey },
+      ),
+    ).resolves.toBeNull();
   });
 
   it("does not let one carried claim authenticate a different unproven payee", async () => {

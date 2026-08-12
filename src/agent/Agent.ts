@@ -24,8 +24,8 @@ import {
 } from "./runSessionCore.js";
 import { publishListingCore } from "./publishListingCore.js";
 import {
+  authenticateReadableListingArtifact,
   discoverListings,
-  verifyReadableListingArtifact,
   type DiscoveredListing,
 } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
@@ -303,7 +303,11 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           // vetting or settlement. Without this the money path would run on an
           // unverified listing (and the gate below would throw).
           verifyListing: async (raw, sellerClaim) => {
-            const verified = await verifyReadableListingArtifact(raw, {
+            // Authenticate the exact Listing independently of its current
+            // wall-clock validity. runSessionCore applies that admission policy:
+            // fresh sessions must be in-window, while an expired resume must
+            // prove an exact pre-existing Agreement before any side effect.
+            const verified = await authenticateReadableListingArtifact(raw, {
               verify: ed25519RawVerify,
               resolvePublicKey: (claim) => publicKeyFromDid(claim),
             });

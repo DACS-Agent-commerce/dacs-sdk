@@ -151,6 +151,55 @@ describe("runSession orchestration (T4)", () => {
     expect(evidence?.phase).toBe("pay-x402");
   });
 
+  test("treats notAfter as inclusive but never bypasses a future notBefore on resume", async () => {
+    const boundary = 1_780_000_000_000;
+    const atExpiry = {
+      ...normativeListing(),
+      validity: { notBefore: boundary - 1, notAfter: boundary },
+    };
+    const terms = {
+      ...TERMS,
+      price: { ...TERMS.price, rail: "x402:default" },
+    };
+    await expect(
+      runSessionCore(
+        "stor-valid-through-boundary",
+        terms,
+        makeDeps({ readListing: async () => atExpiry, nowMs: () => boundary }),
+      ),
+    ).resolves.toMatchObject({ outcome: "completed" });
+
+    const future = {
+      ...normativeListing(),
+      validity: { notBefore: boundary + 1, notAfter: boundary + 10_000 },
+    };
+    let effects = 0;
+    await expect(
+      runSessionCore(
+        "stor-not-yet-valid",
+        terms,
+        makeDeps({
+          readListing: async () => future,
+          nowMs: () => boundary,
+          resolveAnchor: async () => {
+            effects += 1;
+            return { status: "absent" as const };
+          },
+          anchor: async () => {
+            effects += 1;
+            throw new Error("must not anchor");
+          },
+          settle: async () => {
+            effects += 1;
+            throw new Error("must not settle");
+          },
+        }),
+        "job-FUTURE",
+      ),
+    ).rejects.toThrow(/outside.*validity window/i);
+    expect(effects).toBe(0);
+  });
+
   test("refuses unsupported PIPE-5 repetition before settlement or anchoring", async () => {
     const normative = normativeListing();
     normative.pipeline.splice(3, 0, {
@@ -188,6 +237,41 @@ describe("runSession orchestration (T4)", () => {
       ),
     });
 
+    expect(settles).toBe(0);
+    expect(anchors).toBe(0);
+  });
+
+  test("refuses payment phases on different rails before selecting only one", async () => {
+    const normative = normativeListing();
+    normative.acceptedRails.push({ railId: "evm:secondary" });
+    normative.pipeline.splice(3, 0, {
+      kind: "pay-x402",
+      parameters: { rail: "evm:secondary" },
+    });
+    let settles = 0;
+    let anchors = 0;
+
+    const attempt = runSessionCore(
+      "stor-multi-rail-payment-phases",
+      {
+        ...TERMS,
+        price: { ...TERMS.price, rail: "x402:default" },
+      },
+      makeDeps({
+        readListing: async () => normative,
+        settle: async () => {
+          settles += 1;
+          throw new Error("must not settle");
+        },
+        anchor: async () => {
+          anchors += 1;
+          throw new Error("must not anchor");
+        },
+      }),
+    );
+
+    await expect(attempt).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(attempt).rejects.toThrow(/2 pay-\* invocations.*single-settle/i);
     expect(settles).toBe(0);
     expect(anchors).toBe(0);
   });
@@ -435,6 +519,106 @@ describe("runSession orchestration (T4)", () => {
     const second = await runSessionCore("stor-listing", TERMS, deps, "job-RESUME");
     expect(second).toEqual(first); // identical refs
     expect(settleCalls).toBe(1); // settlement NOT executed again
+  });
+
+  test("finishes an admitted session after Listing expiry but rejects an arbitrary resume id", async () => {
+    const expiry = 1_780_000_000_100;
+    const normative = {
+      ...normativeListing(),
+      validity: { notBefore: 1_770_000_000_000, notAfter: expiry },
+    };
+    const store = new Map<string, Record<string, unknown>>();
+    let now = 1_780_000_000_000;
+    let failBundleOnce = true;
+    let settleCalls = 0;
+    let anchorCalls = 0;
+    const deps = makeDeps({
+      readListing: async () => normative,
+      nowMs: () => now,
+      anchor: async (name, value) => {
+        anchorCalls += 1;
+        if (name === "dacs5:bundle:job-EXPIRES" && failBundleOnce) {
+          failBundleOnce = false;
+          throw new Error("simulated crash before bundle publication");
+        }
+        const ref = `stor-${name}`;
+        store.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+      resolveAnchor: async (name) => {
+        const ref = `stor-${name}`;
+        const value = store.get(ref);
+        return value
+          ? { status: "present" as const, ref, value }
+          : { status: "absent" as const };
+      },
+      settle: async () => {
+        settleCalls += 1;
+        return {
+          ok: true,
+          txHash: "0xexpiry",
+          chainId: "eip155:8453",
+          payer: "0xbob",
+          payee: "0xalice",
+        };
+      },
+    });
+    const terms = {
+      ...TERMS,
+      price: { ...TERMS.price, rail: "x402:default" },
+    };
+
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, "job-EXPIRES"),
+    ).rejects.toThrow(/simulated crash/);
+    expect(settleCalls).toBe(1);
+
+    now = expiry + 1;
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, "job-EXPIRES"),
+    ).resolves.toMatchObject({ outcome: "completed", jobId: "job-EXPIRES" });
+    expect(settleCalls).toBe(1);
+
+    const callsBeforeRejectedResume = anchorCalls;
+    await expect(
+      runSessionCore("stor-expiring-listing", terms, deps, "job-NOT-ADMITTED"),
+    ).rejects.toThrow(/outside.*validity window.*no prior Agreement/i);
+    expect(settleCalls).toBe(1);
+    expect(anchorCalls).toBe(callsBeforeRejectedResume);
+
+    let freshIds = 0;
+    await expect(
+      runSessionCore(
+        "stor-expiring-listing",
+        terms,
+        { ...deps, newJobId: () => `fresh-${++freshIds}` },
+      ),
+    ).rejects.toThrow(/outside.*validity window/i);
+    expect(freshIds).toBe(0);
+    expect(settleCalls).toBe(1);
+    expect(anchorCalls).toBe(callsBeforeRejectedResume);
+
+    store.set("stor-dacs3:agreement:job-AGREEMENT-ONLY", {
+      jobId: "job-AGREEMENT-ONLY",
+      pattern: "negotiate-fixed-price",
+      buyer: "did:demos:agent:bob",
+      seller: "did:demos:agent:alice",
+      listingRef: "stor-expiring-listing",
+      price: terms.price,
+      delivery: { phase: terms.deliveryPhase, format: terms.deliveryFormat },
+      expiresAt: "2026-01-01T00:00:00Z",
+      signature: "sig",
+    });
+    await expect(
+      runSessionCore(
+        "stor-expiring-listing",
+        terms,
+        deps,
+        "job-AGREEMENT-ONLY",
+      ),
+    ).rejects.toThrow(/no prior SettlementEvidence/i);
+    expect(settleCalls).toBe(1);
+    expect(anchorCalls).toBe(callsBeforeRejectedResume);
   });
 
   test("resume aborts when the anchored artifact is for a different deal", async () => {
