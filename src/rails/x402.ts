@@ -317,17 +317,16 @@ export async function dacsX402AuthorizationNonce(input: {
   if (
     typeof input.jobId !== "string" ||
     input.jobId.length === 0 ||
-    input.jobId.normalize("NFC") !== input.jobId ||
     !Number.isSafeInteger(input.phaseIndex) ||
     input.phaseIndex < 0 ||
     Object.is(input.phaseIndex, -0)
   ) {
     throw new Error(
-      "x402 DACS binding requires an exact NFC jobId and a non-negative phaseIndex",
+      "x402 DACS binding requires a jobId and a non-negative phaseIndex",
     );
   }
   const { sha256, stringToHex } = await import("viem");
-  const preimage = `dacs-sb3:v1:${input.jobId}:${input.phaseIndex}`;
+  const preimage = `dacs-sb3:v1:${input.jobId.normalize("NFC")}:${input.phaseIndex}`;
   return sha256(stringToHex(preimage));
 }
 

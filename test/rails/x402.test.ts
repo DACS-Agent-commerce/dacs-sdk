@@ -71,7 +71,9 @@ describe("DACS EIP-3009 session binding", () => {
     await expect(dacsX402AuthorizationNonce({
       jobId: "cafe\u0301-job",
       phaseIndex: 0,
-    })).rejects.toThrow(/jobId|non-negative phaseIndex/);
+    })).resolves.toBe(
+      "0xc4d6eb3c8774ff6078765567559c1ce1953badb01ba1ea8a5252561712294397",
+    );
     await expect(dacsX402AuthorizationNonce({
       jobId: "practice-dacs-0001",
       phaseIndex: -1,
