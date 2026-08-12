@@ -52,6 +52,7 @@ function hasIntrinsicConstructor(
 function isDataOnlyJson(
   value: unknown,
   ancestors = new Set<object>(),
+  omitUndefinedObjectProperties = false,
 ): boolean {
   if (value === null || typeof value === "boolean") {
     return true;
@@ -74,6 +75,7 @@ function isDataOnlyJson(
 
   try {
     const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && nodeTypes.isProxy(prototype)) return false;
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const keys = Reflect.ownKeys(descriptors);
     if (keys.some((key) => typeof key === "symbol")) return false;
@@ -109,7 +111,11 @@ function isDataOnlyJson(
           descriptor.writable !== true ||
           !descriptor.enumerable ||
           descriptor.configurable !== true ||
-          !isDataOnlyJson(descriptor.value, ancestors)
+          !isDataOnlyJson(
+            descriptor.value,
+            ancestors,
+            omitUndefinedObjectProperties,
+          )
         ) {
           return false;
         }
@@ -132,8 +138,13 @@ function isDataOnlyJson(
         descriptor.writable !== true ||
         !descriptor.enumerable ||
         descriptor.configurable !== true ||
-        descriptor.value === undefined ||
-        !isDataOnlyJson(descriptor.value, ancestors)
+        (descriptor.value === undefined
+          ? !omitUndefinedObjectProperties
+          : !isDataOnlyJson(
+              descriptor.value,
+              ancestors,
+              omitUndefinedObjectProperties,
+            ))
       ) {
         return false;
       }
@@ -148,8 +159,28 @@ function isDataOnlyJson(
 
 /** Own one stable canonical JSON value without retaining caller references. */
 export function snapshotCanonicalJson<T>(value: T, label: string): T {
+  return snapshotCanonicalJsonInternal(value, label, false);
+}
+
+/**
+ * Own callback/configuration JSON while treating optional `undefined` object
+ * members as absent. Arrays and protocol artifacts remain strict: only this
+ * explicit configuration boundary opts into JavaScript's optional-property
+ * convention.
+ */
+export function snapshotCanonicalJsonConfig<T>(value: T, label: string): T {
+  return snapshotCanonicalJsonInternal(value, label, true);
+}
+
+function snapshotCanonicalJsonInternal<T>(
+  value: T,
+  label: string,
+  omitUndefinedObjectProperties: boolean,
+): T {
   try {
-    if (!isDataOnlyJson(value)) throw new TypeError("not data-only JSON");
+    if (!isDataOnlyJson(value, new Set(), omitUndefinedObjectProperties)) {
+      throw new TypeError("not data-only JSON");
+    }
     const canonical = canonicalize(value);
     // Parsing the canonical wire form both owns the result and deliberately
     // expands repeated in-memory references into independent JSON values.
@@ -162,4 +193,19 @@ export function snapshotCanonicalJson<T>(value: T, label: string): T {
   } catch (cause) {
     throw new DacsError(`${label} is not stable canonical JSON`, { cause });
   }
+}
+
+/** Own one stable canonical JSON object (arrays are not object documents). */
+export function snapshotCanonicalJsonObject<
+  T extends Record<string, unknown>,
+>(value: T, label: string): T {
+  const snapshot = snapshotCanonicalJson(value, label);
+  if (
+    snapshot === null ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot)
+  ) {
+    throw new DacsError(`${label} must be a JSON object in canonical form`);
+  }
+  return snapshot;
 }

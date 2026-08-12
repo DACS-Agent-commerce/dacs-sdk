@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildComponentSignature,
+  contentHash,
   ed25519Sign,
   ed25519Verify,
   isComponentSignature,
@@ -356,6 +357,33 @@ describe("ComponentSignature foundation", () => {
     ).rejects.toThrow("must be a JSON object");
   });
 
+  it("rejects primitive roots before invoking either component wallet API", async () => {
+    const wallet = vi.fn(sign);
+    const options = {
+      algorithm: "ed25519",
+      signer: seller,
+      sign: wallet,
+    } as const;
+
+    for (const artifact of [null, 42, "listing", true]) {
+      await expect(
+        buildComponentSignature(
+          artifact as never,
+          "dacs-listing:v1:",
+          options,
+        ),
+      ).rejects.toThrow("must be a JSON object");
+      await expect(
+        signComponentArtifact(
+          artifact as never,
+          "dacs-listing:v1:",
+          options,
+        ),
+      ).rejects.toThrow("must be a JSON object");
+    }
+    expect(wallet).not.toHaveBeenCalled();
+  });
+
   it("rejects proxies without invoking their reflective traps", async () => {
     const ownKeys = vi.fn(() => Reflect.ownKeys(listing));
     const artifact = new Proxy(listing, { ownKeys });
@@ -367,6 +395,24 @@ describe("ComponentSignature foundation", () => {
       }),
     ).rejects.toThrow("not stable canonical JSON");
     expect(ownKeys).not.toHaveBeenCalled();
+  });
+
+  it("rejects proxy prototypes without invoking their reflective traps", async () => {
+    const getOwnPropertyDescriptor = vi.fn(() => undefined);
+    const proxyPrototype = new Proxy(Object.prototype, {
+      getOwnPropertyDescriptor,
+    });
+    const artifact = { ...listing };
+    Object.setPrototypeOf(artifact, proxyPrototype);
+
+    await expect(
+      buildComponentSignature(artifact, "dacs-listing:v1:", {
+        algorithm: "ed25519",
+        signer: seller,
+        sign,
+      }),
+    ).rejects.toThrow("not stable canonical JSON");
+    expect(getOwnPropertyDescriptor).not.toHaveBeenCalled();
   });
 
   it("preserves method-style this binding for signer and verifier callbacks", async () => {
@@ -453,6 +499,36 @@ describe("ComponentSignature foundation", () => {
     );
 
     expect(signature.value).toBe("-_8");
+  });
+
+  it("accepts genuine Uint8Array signature bytes from another realm", async () => {
+    const signatureBytes = runInNewContext(
+      "new Uint8Array([251, 255])",
+    ) as Uint8Array;
+    const signature = await buildComponentSignature(
+      listing,
+      "dacs-listing:v1:",
+      {
+        algorithm: "ed25519",
+        signer: seller,
+        sign: () => signatureBytes,
+      },
+    );
+
+    expect(signature.value).toBe("-_8");
+  });
+
+  it("contains proxy-wrapped signature bytes as a typed wallet error", async () => {
+    const proxyBytes = new Proxy(new Uint8Array([251, 255]), {});
+    await expect(
+      buildComponentSignature(listing, "dacs-listing:v1:", {
+        algorithm: "ed25519",
+        signer: seller,
+        sign: () => proxyBytes,
+      }),
+    ).rejects.toThrow(
+      "component signer must return signature bytes or a canonical unpadded base64url string",
+    );
   });
 
   it("accepts canonical base64url values from string-returning wallets", async () => {
@@ -615,6 +691,81 @@ describe("ComponentSignature foundation", () => {
       status: "invalid",
       reason: "cryptographic-verification-failed",
       signature: signed.signature,
+    });
+  });
+
+  it("cryptographically binds dangerous own keys while omitting only root signature fields", async () => {
+    const artifact = JSON.parse(
+      JSON.stringify({
+        ...listing,
+        __proto__: undefined,
+        constructor: { policy: "constructor-bound" },
+        prototype: { policy: "prototype-bound" },
+        metadata: { signature: "nested-signature-bound" },
+      }),
+    ) as Record<string, unknown>;
+    // Object-literal `__proto__` syntax is special, so install the adversarial
+    // wire member through JSON parsing exactly as a registry/network reader
+    // would receive it.
+    Object.defineProperty(artifact, "__proto__", {
+      configurable: true,
+      enumerable: true,
+      value: { policy: "proto-bound" },
+      writable: true,
+    });
+
+    const signed = await signComponentArtifact(
+      artifact,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const originalHash = contentHash(signed);
+
+    expect(Object.getPrototypeOf(signed)).toBe(Object.prototype);
+    expect(Object.hasOwn(signed, "__proto__")).toBe(true);
+    await expect(
+      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
+    ).resolves.toMatchObject({ status: "valid" });
+
+    for (const key of ["__proto__", "constructor", "prototype"] as const) {
+      const tampered = JSON.parse(JSON.stringify(signed)) as Record<
+        string,
+        unknown
+      >;
+      (tampered[key] as { policy: string }).policy = "tampered";
+      expect(contentHash(tampered)).not.toBe(originalHash);
+      await expect(
+        verifyComponentSignature(tampered, "dacs-listing:v1:", deps()),
+      ).resolves.toMatchObject({
+        status: "invalid",
+        reason: "cryptographic-verification-failed",
+      });
+    }
+
+    const nestedTampered = JSON.parse(JSON.stringify(signed)) as Record<
+      string,
+      unknown
+    >;
+    (nestedTampered["metadata"] as { signature: string }).signature =
+      "tampered";
+    expect(contentHash(nestedTampered)).not.toBe(originalHash);
+
+    const rootSignatureChanged = {
+      ...signed,
+      signature: { ...signed.signature, value: "AQ" },
+    };
+    expect(contentHash(rootSignatureChanged)).toBe(originalHash);
+    const withPluralSignature = { ...signed, signatures: [{ value: "AQ" }] };
+    expect(contentHash(withPluralSignature)).toBe(originalHash);
+    await expect(
+      verifyComponentSignature(
+        withPluralSignature,
+        "dacs-listing:v1:",
+        deps(),
+      ),
+    ).resolves.toEqual({
+      status: "malformed",
+      reason: "ambiguous-signature-fields",
     });
   });
 

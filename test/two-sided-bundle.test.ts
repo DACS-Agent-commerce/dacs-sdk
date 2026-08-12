@@ -173,6 +173,43 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     expect(attestationBundleHash(golden("seller"))).toBe(GOLDEN_HASH);
   });
 
+  test("ISC-8 ANTI: bundle hashes bind dangerous unknown own keys", () => {
+    const base = golden("buyer") as unknown as Record<string, unknown>;
+    const withUnknownKeys = JSON.parse(JSON.stringify(base)) as Record<
+      string,
+      unknown
+    >;
+    Object.defineProperty(withUnknownKeys, "__proto__", {
+      configurable: true,
+      enumerable: true,
+      value: { policy: "proto-bound" },
+      writable: true,
+    });
+    withUnknownKeys["constructor"] = { policy: "constructor-bound" };
+    withUnknownKeys["prototype"] = { policy: "prototype-bound" };
+    const boundHash = attestationBundleHash(
+      withUnknownKeys as unknown as AnyAttestationBundle,
+    );
+
+    for (const key of ["__proto__", "constructor", "prototype"] as const) {
+      const tampered = JSON.parse(JSON.stringify(withUnknownKeys)) as Record<
+        string,
+        unknown
+      >;
+      (tampered[key] as { policy: string }).policy = "tampered";
+      expect(
+        attestationBundleHash(tampered as unknown as AnyAttestationBundle),
+      ).not.toBe(boundHash);
+    }
+
+    const envelopeChanged = {
+      ...withUnknownKeys,
+      signatures: [],
+      anchoredByRole: "seller",
+    } as unknown as AnyAttestationBundle;
+    expect(attestationBundleHash(envelopeChanged)).toBe(boundHash);
+  });
+
   test("ISC-8 ANTI: v0.3 production refuses legacy MVP shared-field shapes", async () => {
     const g = golden("buyer");
     const stub = () => new Uint8Array(64);

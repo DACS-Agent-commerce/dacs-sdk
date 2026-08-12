@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
@@ -30,6 +30,14 @@ const stewardPublicKey = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
 const stewardSigner = `did:demos:steward:${Buffer.from(stewardPublicKey).toString("hex")}`;
 const verify = (b: Uint8Array, s: Uint8Array, p: Uint8Array) =>
   ed25519Verify(b, s, publicKeyFromRaw(p));
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 async function railRegistry() {
   const sign = signerFor(STEWARD_SEED);
@@ -145,6 +153,119 @@ describe("registry resolution (T12/T13)", () => {
       signer: stewardSigner,
     });
     expect(resolved.signature.value).not.toMatch(/=/);
+  });
+
+  test("authenticates and returns one owned registry snapshot across async verification", async () => {
+    const doc = await railRegistry();
+    const entries = doc["entries"] as Array<Record<string, unknown>>;
+    const sourceEntry = entries[0]!;
+    const sourceParams = sourceEntry["params"] as Record<string, unknown>;
+    const resolutionDeps = depsFor(doc);
+    resolutionDeps.verify = async (bytes, signature, key) => {
+      sourceParams["network"] = "caller-mutated";
+      return verify(bytes, signature, key);
+    };
+
+    const resolved = await resolveRail(
+      "anchor",
+      "x402:default",
+      resolutionDeps,
+    );
+    expect(resolved.params).toEqual({ network: "eip155:84532" });
+    expect(resolved).not.toBe(sourceEntry);
+    expect(resolved.params).not.toBe(sourceParams);
+
+    resolved.params["network"] = "consumer-mutated";
+    expect(sourceParams["network"]).toBe("caller-mutated");
+  });
+
+  test("pins trust-root dependencies and key bytes before a delayed registry read", async () => {
+    const doc = await railRegistry();
+    const gate = deferred();
+    const resolutionDeps: RegistryResolveDeps = {
+      ...depsFor(doc),
+      stewardPublicKey: Uint8Array.from(stewardPublicKey),
+      readRegistry: async () => {
+        await gate.promise;
+        return doc;
+      },
+    };
+    const pending = resolveRail("anchor", "x402:default", resolutionDeps);
+
+    resolutionDeps.stewardPublicKey.fill(0);
+    resolutionDeps.stewardSigner = "did:demos:attacker";
+    resolutionDeps.verify = () => false;
+    resolutionDeps.legacySignatures = "reject";
+    gate.resolve();
+
+    await expect(pending).resolves.toMatchObject({ id: "x402:default" });
+  });
+
+  test("normalises the configured steward signer under CF-1", async () => {
+    const nfdSigner = "did:demos:steward:cafe\u0301";
+    const nfcSigner = "did:demos:steward:caf\u00e9";
+    const entry = await signComponentArtifact(
+      {
+        id: "x402:nfc-steward",
+        kind: "x402",
+        availability: "live",
+        params: {},
+      },
+      "dacs-rail:v1:",
+      {
+        algorithm: "ed25519",
+        signer: nfcSigner,
+        sign: signerFor(STEWARD_SEED),
+      },
+    );
+    const doc = { entries: [entry] } as Record<string, unknown>;
+
+    await expect(
+      resolveRail("anchor", "x402:nfc-steward", {
+        ...depsFor(doc),
+        stewardSigner: nfdSigner,
+      }),
+    ).resolves.toMatchObject({ id: "x402:nfc-steward" });
+  });
+
+  test("normalises the requested registry entry id under CF-1", async () => {
+    const nfdId = "x402:cafe\u0301";
+    const nfcId = "x402:caf\u00e9";
+    const entry = await signComponentArtifact(
+      { id: nfcId, kind: "x402", availability: "live", params: {} },
+      "dacs-rail:v1:",
+      {
+        algorithm: "ed25519",
+        signer: stewardSigner,
+        sign: signerFor(STEWARD_SEED),
+      },
+    );
+    const doc = { entries: [entry] } as Record<string, unknown>;
+
+    await expect(
+      resolveRail("anchor", nfdId, depsFor(doc)),
+    ).resolves.toMatchObject({ id: nfcId });
+  });
+
+  test("rejects accessor and proxy registry views without invoking their traps", async () => {
+    const accessor = vi.fn(() => []);
+    const accessorDoc = {} as Record<string, unknown>;
+    Object.defineProperty(accessorDoc, "entries", {
+      configurable: true,
+      enumerable: true,
+      get: accessor,
+    });
+    await expect(
+      resolveRail("anchor", "x402:default", depsFor(accessorDoc)),
+    ).rejects.toThrow("not stable canonical JSON");
+    expect(accessor).not.toHaveBeenCalled();
+
+    const ownKeys = vi.fn(() => ["entries"]);
+    const proxyDoc = new Proxy({ entries: [] }, { ownKeys });
+    await expect(
+      resolveRail("anchor", "x402:default", depsFor(proxyDoc)),
+    ).rejects.toThrow("not stable canonical JSON");
+    expect(ownKeys).not.toHaveBeenCalled();
   });
 });
 

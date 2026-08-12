@@ -1,7 +1,10 @@
+import { types as nodeTypes } from "node:util";
+
 import { contentHash } from "../canonical/index.js";
 import {
   isSafeJsonString,
   snapshotCanonicalJson,
+  snapshotCanonicalJsonObject,
 } from "../canonical/snapshot.js";
 import {
   type DomainSeparator,
@@ -196,10 +199,10 @@ function asRecord(value: object): Record<string, unknown> {
 
 /** Take an exact JSON ownership boundary before any user-supplied callback. */
 function snapshotArtifact<T extends object>(artifact: T): T {
-  if (Array.isArray(artifact)) {
-    throw new DacsError("component signature artifact must be a JSON object");
-  }
-  return snapshotCanonicalJson(artifact, "component signature artifact");
+  return snapshotCanonicalJsonObject(
+    artifact as Record<string, unknown>,
+    "component signature artifact",
+  ) as T;
 }
 
 function assertUnsignedComponentArtifact(artifact: object): void {
@@ -215,15 +218,35 @@ function assertUnsignedComponentArtifact(artifact: object): void {
 }
 
 function encodedSignatureValue(value: unknown): string {
-  if (typeof value !== "string" && !(value instanceof Uint8Array)) {
+  if (typeof value === "string") {
+    if (!isCanonicalBase64Url(value)) {
+      throw new DacsError(
+        "component signer must return a canonical unpadded base64url signature value",
+      );
+    }
+    return value;
+  }
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    nodeTypes.isProxy(value) ||
+    !nodeTypes.isUint8Array(value)
+  ) {
     throw new DacsError(
       "component signer must return signature bytes or a canonical unpadded base64url string",
     );
   }
-  const encoded =
-    typeof value === "string"
-      ? value
-      : Buffer.from(value).toString("base64url");
+  let encoded: string;
+  try {
+    // The typed-array constructor uses the source's internal slots rather than
+    // an input-controlled iterator or `byteLength` property. It therefore owns
+    // cross-realm/subclass bytes without dispatching through overrides.
+    encoded = Buffer.from(new Uint8Array(value)).toString("base64url");
+  } catch (cause) {
+    throw new DacsError("component signer returned unreadable signature bytes", {
+      cause,
+    });
+  }
   if (!isCanonicalBase64Url(encoded)) {
     throw new DacsError(
       "component signer must return a canonical unpadded base64url signature value",
