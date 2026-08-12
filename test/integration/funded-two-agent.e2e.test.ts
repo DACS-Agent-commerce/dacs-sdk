@@ -291,8 +291,24 @@ function safeStageFailureClass(error: unknown): string {
   if (/binding/i.test(message)) return "listing-binding-invalid";
   if (/publication|anchor|write/i.test(message)) return "listing-publication-invalid";
   return error instanceof Error && /^[A-Za-z][A-Za-z0-9]*Error$/.test(error.name)
-    ? error.name
+    ? `${error.name.toLowerCase()}-${sha256Hex(message).slice(0, 12)}`
     : "unknown-error";
+}
+
+async function diagnosticStep<T>(code: string, operation: () => Promise<T> | T): Promise<T> {
+  requireCondition(/^[a-z0-9-]+$/.test(code), "diagnostic-step-code-invalid");
+  process.stderr.write(`funded-e2e-step:${code}:start\n`);
+  try {
+    const result = await operation();
+    process.stderr.write(`funded-e2e-step:${code}:passed\n`);
+    return result;
+  } catch (error) {
+    process.stderr.write(`funded-e2e-step:${code}:failed\n`);
+    process.stderr.write(
+      `funded-e2e-step:${code}:detail:${safeStageFailureClass(error)}\n`,
+    );
+    throw error;
+  }
 }
 
 function verifyEd25519ArtifactSignature(
@@ -3375,10 +3391,14 @@ async function closeDurableDetachedRoleBundles(input: {
     input.preflight.seller.adapter.getPublicKey(),
     input.preflight.buyer.adapter.getPublicKey(),
   ]);
-  const terminalStore = await createFsFencedSessionStore({
-    dir: input.settlement.sellerDirectories.fulfilment,
-  });
-  const terminalRecord = await terminalStore.load(input.jobId);
+  const terminalStore = await diagnosticStep("bundle-terminal-store-open", () =>
+    createFsFencedSessionStore({
+      dir: input.settlement.sellerDirectories.fulfilment,
+    })
+  );
+  const terminalRecord = await diagnosticStep("bundle-terminal-record-load", () =>
+    terminalStore.load(input.jobId)
+  );
   requireCondition(terminalRecord.status === "ok", "terminal-fulfilment-record-missing");
   const commitmentHash = contentHash(
     input.commitment.record as unknown as Record<string, unknown>,
@@ -3471,7 +3491,9 @@ async function closeDurableDetachedRoleBundles(input: {
           reason: "terminal-evidence-receipt-invalid",
         },
   };
-  const projection = await projectDurableSellerAuditPending(terminalVerification);
+  const projection = await diagnosticStep("bundle-terminal-projection", () =>
+    projectDurableSellerAuditPending(terminalVerification)
+  );
   const verifiedTerminal = projection.terminal;
   const fulfilment = verifiedTerminal.result;
   requireCondition(
@@ -4155,7 +4177,9 @@ async function closeDurableDetachedRoleBundles(input: {
       },
     },
   };
-  const request = prepareCompletedSellerBundleCounterSignatureRequest(requestInput);
+  const request = await diagnosticStep("bundle-request-prepare", () =>
+    prepareCompletedSellerBundleCounterSignatureRequest(requestInput)
+  );
   await anchorArtifact({
     adapter: input.preflight.seller.adapter,
     writer: input.preflight.env.SELLER_DID,
@@ -4280,10 +4304,12 @@ async function closeDurableDetachedRoleBundles(input: {
     reconcileBindingPublication: (binding) =>
       reconcileRoleBindingPublication("buyer", binding),
   });
-  const waiting = await advanceCompletedBuyerBundleDurable(
-    buyerInput,
-    buyerProvider,
-    buyerDurability("funded-buyer-bundle-process-a"),
+  const waiting = await diagnosticStep("bundle-buyer-process-a", () =>
+    advanceCompletedBuyerBundleDurable(
+      buyerInput,
+      buyerProvider,
+      buyerDurability("funded-buyer-bundle-process-a"),
+    )
   );
   requireCondition(
     waiting.disposition === "waiting" && waiting.stage === "seller-finalisation" &&
@@ -4360,10 +4386,12 @@ async function closeDurableDetachedRoleBundles(input: {
     reconcileBindingPublication: (binding) =>
       reconcileRoleBindingPublication("seller", binding),
   });
-  sellerFinalization = await finalizeCompletedSellerBundleDurable(
-    sellerInput,
-    sellerProvider,
-    sellerDurability(input.settlement.seller.fulfilmentStore, "funded-seller-bundle-process-a"),
+  sellerFinalization = await diagnosticStep("bundle-seller-process-a", () =>
+    finalizeCompletedSellerBundleDurable(
+      sellerInput,
+      sellerProvider,
+      sellerDurability(input.settlement.seller.fulfilmentStore, "funded-seller-bundle-process-a"),
+    )
   );
   await anchorArtifact({
     adapter: input.preflight.seller.adapter,
@@ -4372,10 +4400,12 @@ async function closeDurableDetachedRoleBundles(input: {
     artifact: sellerFinalization as unknown as Record<string, unknown>,
   });
   buyerBundleStore = await createFsFencedSessionStore({ dir: buyerBundleDir });
-  const buyerFinalization = await advanceCompletedBuyerBundleDurable(
-    buyerInput,
-    buyerProvider,
-    buyerDurability("funded-buyer-bundle-process-b"),
+  const buyerFinalization = await diagnosticStep("bundle-buyer-process-b", () =>
+    advanceCompletedBuyerBundleDurable(
+      buyerInput,
+      buyerProvider,
+      buyerDurability("funded-buyer-bundle-process-b"),
+    )
   );
   requireCondition(buyerFinalization.disposition === "finalised", "buyer-bundle-finalization-failed");
   await anchorArtifact({
