@@ -109,10 +109,12 @@ describe("DemosAdapter", () => {
     });
 
     let releaseFirstRead!: () => void;
-    const firstReadBlocked = new Promise<Record<string, unknown>>((resolveRead) => {
-      releaseFirstRead = () =>
-        resolveRead({ serviceId: "svc", signature: "old-signature" });
-    });
+    const firstReadBlocked = new Promise<Record<string, unknown>>(
+      (resolveRead) => {
+        releaseFirstRead = () =>
+          resolveRead({ serviceId: "svc", signature: "old-signature" });
+      },
+    );
     vi.spyOn(adapter, "readAnchor")
       .mockReturnValueOnce(firstReadBlocked)
       .mockResolvedValue({ serviceId: "svc", signature: "old-signature" });
@@ -152,8 +154,17 @@ describe("DemosAdapter", () => {
       .mockResolvedValueOnce({ status: "absent" })
       .mockResolvedValueOnce({ status: "present", address });
     vi.spyOn(adapter, "readAnchor").mockResolvedValue(value);
+    vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
+    vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
+      state: "included",
+    } as never);
     vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
-      async (payload: unknown) => payload as never,
+      async (payload: unknown) =>
+        ({
+          ...(payload as Record<string, unknown>),
+          hash: "tx-create",
+          content: { nonce: 1 },
+        }) as never,
     );
     vi.spyOn(adapter.raw.tx, "confirm").mockImplementation(
       async (payload: unknown) => payload as never,
@@ -168,7 +179,7 @@ describe("DemosAdapter", () => {
     ).resolves.toEqual({ address, txRef: "tx-create" });
   });
 
-  it("reconciles two adapter instances racing with different content", async () => {
+  it("serializes two adapter instances sharing a wallet and rejects different content", async () => {
     const adapters = [
       new DemosAdapter({ rpc: RPC }),
       new DemosAdapter({ rpc: RPC }),
@@ -177,23 +188,11 @@ describe("DemosAdapter", () => {
     const name = "listing-v1";
     const address = StorageProgram.deriveStorageAddress(owner, name, 1, "");
     let winner: Record<string, unknown> | null = null;
-    let initialLookups = 0;
-    let releaseInitialLookups!: () => void;
-    const bothLookupsStarted = new Promise<void>((resolve) => {
-      releaseInitialLookups = resolve;
-    });
 
-    const resolveByName = async () => {
-      if (initialLookups < 2) {
-        initialLookups += 1;
-        if (initialLookups === 2) releaseInitialLookups();
-        await bothLookupsStarted;
-        return { status: "absent" as const };
-      }
-      return winner
+    const resolveByName = async () =>
+      winner
         ? { status: "present" as const, address }
         : { status: "absent" as const };
-    };
     const broadcast = async (validity: unknown) => {
       const candidate = (validity as { data: Record<string, unknown> }).data;
       if (!winner) {
@@ -213,15 +212,26 @@ describe("DemosAdapter", () => {
         adapter as unknown as { nextAnchorNonce(): Promise<number> },
         "nextAnchorNonce",
       ).mockResolvedValue(1);
-      vi.spyOn(adapter, "resolveAnchorByName").mockImplementation(resolveByName);
+      vi.spyOn(adapter, "resolveAnchorByName").mockImplementation(
+        resolveByName,
+      );
       vi.spyOn(adapter, "readAnchor").mockImplementation(async () => winner);
+      vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
+      vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
+        state: "included",
+      } as never);
       vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
-        async (payload: unknown) => payload as never,
+        async (payload: unknown) =>
+          ({
+            ...(payload as Record<string, unknown>),
+            hash: "tx-winner",
+            content: { nonce: 1 },
+          }) as never,
       );
       vi.spyOn(adapter.raw.tx, "confirm").mockImplementation(
         async (payload: unknown) => payload as never,
       );
-      vi.spyOn(adapter.raw, "broadcastAndWait").mockImplementation(
+      vi.spyOn(adapter.raw.tx, "broadcast").mockImplementation(
         broadcast as never,
       );
     }
@@ -239,8 +249,12 @@ describe("DemosAdapter", () => {
       ),
     ]);
 
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
     const rejected = results.find((result) => result.status === "rejected");
     expect(rejected).toMatchObject({
       status: "rejected",
@@ -248,6 +262,13 @@ describe("DemosAdapter", () => {
         message: expect.stringMatching(/different signed-scope content/),
       }),
     });
+    expect(
+      adapters.reduce(
+        (count, adapter) =>
+          count + vi.mocked(adapter.raw.tx.broadcast).mock.calls.length,
+        0,
+      ),
+    ).toBe(1);
   });
 
   it("preserves lookup failure as indeterminate instead of false absence", async () => {

@@ -53,12 +53,17 @@ export function classifyAnchorResolution(
   outcomes: CandidateOutcome[],
   expectedOwner: string,
 ): AnchorResolution {
-  const want = expectedOwner.trim().toLowerCase();
+  // Demos APIs are inconsistent about the cosmetic 0x prefix. Ownership is a
+  // byte identity, so compare the canonical hex payload rather than its wire
+  // spelling while retaining fail-closed behavior for unreadable candidates.
+  const normalizeOwner = (owner: string) =>
+    owner.trim().toLowerCase().replace(/^0x/, "");
+  const want = normalizeOwner(expectedOwner);
   const matches = outcomes.filter(
     (o) =>
       !o.error &&
       o.owner != null &&
-      o.owner.trim().toLowerCase() === want,
+      normalizeOwner(o.owner) === want,
   );
   if (matches.length > 1) {
     return {

@@ -35,6 +35,15 @@ function memAdapter() {
       store.set(address, value as Record<string, unknown>);
       return { address, txRef: `tx:${address}` };
     },
+    anchorAndWait: async (name: string, value: object) => {
+      const address = `stor:${name}`;
+      store.set(address, value as Record<string, unknown>);
+      return {
+        address,
+        txRef: `tx:${address}`,
+        completion: "read-visible" as const,
+      };
+    },
     anchorAddress: async (name: string) => `stor:${name}`,
     readAnchor: async (address: string) => store.get(address) ?? null,
     // #70 surface: resume resolution is BY NAME, owner-bound. The mem adapter's
