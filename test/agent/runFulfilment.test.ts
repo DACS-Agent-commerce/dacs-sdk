@@ -1578,6 +1578,55 @@ describe("runFulfilmentCore", () => {
     expect(f.deps.reconcileDelivery).not.toHaveBeenCalled();
   });
 
+  test.each([
+    {
+      name: "an explicitly undefined optional field",
+      prime: (_authorization: SellerPaymentAuthorization) => {},
+      alias: (authorization: SellerPaymentAuthorization) => {
+        authorization.evidenceInput.paymentAmount.unit = undefined;
+      },
+    },
+    {
+      name: "negative zero",
+      prime: (authorization: SellerPaymentAuthorization) => {
+        authorization.commitment.finalizedAt = 0;
+      },
+      alias: (authorization: SellerPaymentAuthorization) => {
+        authorization.commitment.finalizedAt = -0;
+      },
+    },
+  ])("rejects a JCS-aliased authorization with $name before every fulfilment effect", async ({
+    prime,
+    alias,
+  }) => {
+    const f = fixture();
+    prime(f.authorization);
+    const canonicalAuthorization = structuredClone(f.authorization);
+    alias(f.authorization);
+    expect(canonicalize(f.authorization)).toBe(canonicalize(canonicalAuthorization));
+
+    f.deps.resolveAgreement = vi.fn(f.deps.resolveAgreement);
+    f.deps.prepareDelivery = vi.fn(f.deps.prepareDelivery);
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    f.deps.anchorPayloadAttestation = vi.fn(f.deps.anchorPayloadAttestation);
+    f.deps.anchorEvidence = vi.fn(f.deps.anchorEvidence);
+    const consumePermit = vi.spyOn(f.store, "consumePermit");
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "indeterminate",
+      code: "payment-permit-store-invalid",
+      reasons: ["receipt store returned a malformed authorization"],
+      safeToRetryDelivery: false,
+    });
+    expect(f.store.consumed).toBe(false);
+    expect(consumePermit).not.toHaveBeenCalled();
+    expect(f.deps.resolveAgreement).not.toHaveBeenCalled();
+    expect(f.deps.prepareDelivery).not.toHaveBeenCalled();
+    expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    expect(f.deps.anchorPayloadAttestation).not.toHaveBeenCalled();
+    expect(f.deps.anchorEvidence).not.toHaveBeenCalled();
+  });
+
   test("reconciles a consumed permit or resumes only its exact retained candidate", async () => {
     const complete = fixture(undefined, true);
     complete.deps.submitDelivery = vi.fn(complete.deps.submitDelivery);

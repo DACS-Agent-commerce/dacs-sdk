@@ -38,6 +38,7 @@ import {
   type X402ResponseHeader,
 } from "./x402Receipt.js";
 import {
+  hasExactJcsView,
   isSellerFulfilmentAuditSource,
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
@@ -1359,6 +1360,7 @@ export function isValidSellerReceiptClaim(value: unknown): value is SellerReceip
   ) return false;
 
   const authorization = value.authorization;
+  if (!hasExactJcsView(authorization)) return false;
   const evidenceInput = authorization.evidenceInput;
   if (
     !hasOnlyKeys(authorization, [

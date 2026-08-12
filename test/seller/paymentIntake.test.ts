@@ -8,6 +8,7 @@ import { identityBundleHash } from "../../src/identity/index.js";
 import {
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,
+  isValidSellerReceiptClaim,
   sellerFulfilmentCandidateHash,
   sellerFulfilmentAuditSourceHash,
   verifySellerPaymentIntake,
@@ -693,6 +694,30 @@ function fulfilmentHandoff(
 }
 
 describe("verifySellerPaymentIntake", () => {
+  it.each([
+    {
+      name: "an explicitly undefined optional field",
+      mutate: (claim: SellerReceiptClaim) => {
+        claim.authorization.evidenceInput.paymentAmount.unit = undefined;
+      },
+    },
+    {
+      name: "negative zero",
+      mutate: (claim: SellerReceiptClaim) => {
+        claim.authorization.commitment.finalizedAt = -0;
+      },
+    },
+  ])("rejects $name even when JCS aliases the authorization", ({ mutate }) => {
+    const canonicalClaim = receiptClaim();
+    const aliasedClaim = structuredClone(canonicalClaim);
+    mutate(aliasedClaim);
+
+    expect(canonicalize(aliasedClaim.authorization))
+      .toBe(canonicalize(canonicalClaim.authorization));
+    expect(isValidSellerReceiptClaim(canonicalClaim)).toBe(true);
+    expect(isValidSellerReceiptClaim(aliasedClaim)).toBe(false);
+  });
+
   it("verifies pay-DEM in OS, emits exact normative evidence, and claims once", async () => {
     const store = createInMemorySellerReceiptStore();
     const first = makeContext("pay-dem", store);

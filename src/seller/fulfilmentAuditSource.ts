@@ -164,7 +164,7 @@ function isCanonicalJsonString(value: string): boolean {
 }
 
 /** Reject every JavaScript view that exact JSON/JCS would omit or alias. */
-function hasExactJcsView(
+export function hasExactJcsView(
   value: unknown,
   ancestors = new WeakSet<object>(),
 ): boolean {
