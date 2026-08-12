@@ -1,6 +1,6 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
-import { DacsError } from "../errors.js";
+import { DacsError, TransientError } from "../errors.js";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -193,23 +193,43 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     address: demos.getAddress(),
     transfer: async ({ to, amountOs }) => {
       const signed = await demos.transfer(to, amountOs);
+      const signedNonceValue = (signed as { content?: { nonce?: unknown } })
+        .content?.nonce;
+      if (
+        !Number.isSafeInteger(signedNonceValue) ||
+        (signedNonceValue as number) < 0
+      ) {
+        throw new DacsError(
+          "pay-dem: signed transfer has no valid transaction nonce",
+        );
+      }
+      const signedNonce = signedNonceValue as number;
       const validity = await demos.tx.confirm(signed, demos);
-      const fallbackHash = (signed as { hash?: string }).hash ?? "";
+      const signedHash = (signed as { hash?: string }).hash;
+      const confirmedHash = (
+        validity as {
+          response?: { data?: { transaction?: { hash?: string } } };
+        }
+      ).response?.data?.transaction?.hash;
+      // broadcastAndWait polls the confirmed transaction hash. Keep that same
+      // identity authoritative for timeout and success receipts; a broadcast
+      // response is transport metadata and must not substitute another hash.
+      const txHash = confirmedHash ?? signedHash ?? "";
+      if (!txHash) {
+        throw new DacsError(
+          "pay-dem: confirmed transfer has no transaction hash",
+        );
+      }
+      let broadcast: { response?: { hash?: string; message?: string } };
+      let status: { state: "included" | "failed"; blockNumber?: number };
       try {
         // broadcastAndWait POLLS to a terminal state (included|failed) instead
         // of returning on broadcast acceptance — so `ok`/`bft-final` reflect
         // observed inclusion, and `status.blockNumber` gives the finality witness.
-        const { broadcast, status } = (await demos.broadcastAndWait(validity)) as {
+        ({ broadcast, status } = (await demos.broadcastAndWait(validity)) as {
           broadcast: { response?: { hash?: string; message?: string } };
           status: { state: "included" | "failed"; blockNumber?: number };
-        };
-        return {
-          ok: status.state === "included",
-          state: status.state,
-          hash: broadcast?.response?.hash ?? fallbackHash,
-          blockNumber: status.blockNumber,
-          message: broadcast?.response?.message,
-        };
+        });
       } catch (err) {
         // Timeout / broadcast failure → no terminal inclusion observed. Report a
         // non-final result (ok:false) rather than throwing, so the settle seam
@@ -217,10 +237,32 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         return {
           ok: false,
           state: "timeout",
-          hash: fallbackHash,
+          hash: txHash,
           message: err instanceof Error ? err.message : String(err),
         };
       }
+
+      if (status.state === "included") {
+        try {
+          // Inclusion can precede the account read reflecting the consumed
+          // nonce. Do not let runSession sign its follow-on evidence anchor
+          // from a stale value (DEMOS-MAPPING A.1/A.2).
+          await demos.waitForNonce(demos.getAddress(), signedNonce);
+        } catch (error) {
+          throw new TransientError(
+            `pay-dem: transfer ${txHash} was included, but account nonce ${signedNonce} did not become readable; refusing a follow-on anchor`,
+            { cause: error },
+          );
+        }
+      }
+
+      return {
+        ok: status.state === "included",
+        state: status.state,
+        hash: txHash,
+        blockNumber: status.blockNumber,
+        message: broadcast?.response?.message,
+      };
     },
   };
 
