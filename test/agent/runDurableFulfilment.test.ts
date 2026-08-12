@@ -13,6 +13,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 import {
   runFulfilmentCore,
@@ -47,6 +48,11 @@ import type {
   SellerPaymentEvidenceInput,
   SellerReceiptClaim,
 } from "../../src/seller/paymentIntake.js";
+import { sellerFulfilmentCandidateHash } from "../../src/seller/paymentIntake.js";
+import {
+  sellerFulfilmentAuditSourceHash,
+  type SellerFulfilmentAuditSourceV1,
+} from "../../src/seller/fulfilmentAuditSource.js";
 
 const NOW = 1_780_000_000_000;
 const SELLER = "did:demos:seller";
@@ -63,6 +69,13 @@ const H = {
   paymentTx: "f".repeat(64),
   attestation: "1".repeat(64),
 };
+const BUYER_REQUIREMENT = {
+  requirementVersion: "1" as const,
+  required: [{ scheme: "did", verificationRequired: true }],
+};
+const COMMITMENT_ADDRESS = "dacs3:commit:job-17";
+const AUDIT_SOURCE_COMMITMENT_SEPARATOR =
+  "dacs-x-seller-fulfilment-audit-source:v1:";
 
 function anchorReceipt(
   logicalAddress: string,
@@ -112,15 +125,16 @@ function paymentAuthorization(): SellerPaymentAuthorization {
   };
   return {
     jobId: "job-17",
-    phaseIndex: 0,
+    phaseIndex: 1,
     agreementHash: H.agreement,
     listingRef: { listingId: "listing-17", version: 4, contentHash: H.listing },
     railId: "x402-test",
     railRegistryVersion: 7,
     commitment: {
-      ref: "commitment:job-17",
+      ref: COMMITMENT_ADDRESS,
       contentHash: H.commitment,
       finalizedAt: NOW - 3_000,
+      signer: SELLER,
     },
     settlementIdentity: {
       kind: "evm",
@@ -305,6 +319,7 @@ interface Fixture {
   agreement: SellerFulfilmentAgreement;
   listing: SellerFulfilmentListing;
   session: SellerFulfilmentSessionRecord;
+  auditSource: SellerFulfilmentAuditSourceV1;
   artifact: SellerDeliveredArtifact;
   request: SellerFulfilmentRequest;
   deps: SellerFulfilmentDeps;
@@ -333,10 +348,30 @@ function fixture(
   }
   const claim = receiptClaim(authorization);
   const store = controlledStore(claim, false);
+  const buyerVetRef = {
+    anchor: {
+      kind: "storage-program" as const,
+      locator: "dacs2:composite:job-17:did%3Ademos%3Abuyer",
+    },
+    contentHash: "2".repeat(64),
+  };
+  const sellerVetRef = {
+    anchor: {
+      kind: "storage-program" as const,
+      locator: "dacs2:composite:job-17:did%3Ademos%3Aseller",
+    },
+    contentHash: "3".repeat(64),
+  };
+  const commitmentRef = {
+    anchor: { kind: "storage-program" as const, locator: COMMITMENT_ADDRESS },
+    contentHash: H.commitment,
+  };
   const listing: SellerFulfilmentListing = {
     pin: { ...authorization.listingRef },
     sellerPrimaryClaim: SELLER,
+    buyerRequirement: structuredClone(BUYER_REQUIREMENT),
     pipeline: [
+      { kind: "commit-payee-bound-agreement" },
       { kind: "pay-x402", parameters: { rail: authorization.railId } },
       { kind: phase },
     ],
@@ -351,10 +386,15 @@ function fixture(
     buyer: {
       primaryClaim: BUYER,
       bundleHash: H.buyerBundle,
+      vetRecordRef: structuredClone(buyerVetRef),
       storageAddress: "demos-address-buyer",
       encryptionKey: "demos-encryption-key-buyer",
     },
-    seller: { primaryClaim: SELLER, bundleHash: H.sellerBundle },
+    seller: {
+      primaryClaim: SELLER,
+      bundleHash: H.sellerBundle,
+      vetRecordRef: structuredClone(sellerVetRef),
+    },
     deliverableRef: {
       deliverableType: spec.kind,
       hash: sha256Hex(canonicalize(spec)),
@@ -362,16 +402,17 @@ function fixture(
     },
     commitment: {
       status: "finalized",
-      ref: "commitment:job-17",
+      ref: COMMITMENT_ADDRESS,
       agreementHash: H.agreement,
       recordContentHash: H.commitment,
       finalizedAt: NOW - 3_000,
+      signer: SELLER,
     },
   };
   const paymentRef = {
     anchor: {
       kind: "storage-program" as const,
-      locator: `dacs4:payment:${authorization.jobId}:${authorization.railId}:0`,
+      locator: `dacs4:payment:${authorization.jobId}:${authorization.railId}:1`,
     },
     contentHash: authorization.evidenceHash,
   };
@@ -381,27 +422,113 @@ function fixture(
     state: "settle-pending",
     listingRef: { ...authorization.listingRef },
     parties: [
-      { role: "buyer", bundleHash: H.buyerBundle, primaryClaim: BUYER },
-      { role: "seller", bundleHash: H.sellerBundle, primaryClaim: SELLER },
+      {
+        role: "buyer",
+        bundleHash: H.buyerBundle,
+        primaryClaim: BUYER,
+        vetRecordRef: structuredClone(buyerVetRef),
+      },
+      {
+        role: "seller",
+        bundleHash: H.sellerBundle,
+        primaryClaim: SELLER,
+        vetRecordRef: structuredClone(sellerVetRef),
+      },
       { role: "orchestrator", bundleHash: H.sellerBundle, primaryClaim: SELLER },
     ],
     pipeline: structuredClone(listing.pipeline),
-    phaseResults: [{
-      index: 0,
-      step: structuredClone(listing.pipeline[0]!),
-      invokedAt: NOW - 2_100,
-      result: {
-        ok: true,
-        txRefs: structuredClone(authorization.evidenceInput.paymentTxRefs),
+    phaseResults: [
+      {
+        index: 0,
+        step: structuredClone(listing.pipeline[0]!),
+        invokedAt: NOW - 4_000,
+        result: {
+          ok: true,
+          txRefs: [{
+            kind: "storage-program",
+            address: "stor-commitment-job-17",
+            writeTxHash: "5".repeat(64),
+          }],
+          contextDelta: {},
+          attestationRef: structuredClone(commitmentRef),
+        },
         contextDelta: {},
-        attestationRef: paymentRef,
       },
-      contextDelta: {},
-    }],
+      {
+        index: 1,
+        step: structuredClone(listing.pipeline[1]!),
+        invokedAt: NOW - 2_100,
+        result: {
+          ok: true,
+          txRefs: structuredClone(authorization.evidenceInput.paymentTxRefs),
+          contextDelta: {},
+          attestationRef: paymentRef,
+        },
+        contextDelta: {},
+      },
+    ],
     startedAt: NOW - 10_000,
     lastUpdatedAt: NOW - 2_000,
     recipeRegistryVersion: 3,
     railRegistryVersion: authorization.railRegistryVersion,
+  };
+  const commitmentAnchorReceipt = anchorReceipt(
+    COMMITMENT_ADDRESS,
+    H.commitment,
+    "finalized",
+  );
+  commitmentAnchorReceipt.blockRef!.timestamp = authorization.commitment.finalizedAt;
+  const commitmentContext = {
+    "commit-payee-bound-agreement": {
+      agreementHash: authorization.agreementHash,
+      anchorTxRef: structuredClone(session.phaseResults[0]!.result.txRefs![0]!),
+      anchorReceipt: commitmentAnchorReceipt,
+      committedAt: authorization.commitment.finalizedAt,
+    },
+  };
+  session.phaseResults[0]!.result.contextDelta = structuredClone(commitmentContext);
+  session.phaseResults[0]!.contextDelta = structuredClone(commitmentContext);
+  const auditSource: SellerFulfilmentAuditSourceV1 = {
+    sourceVersion: "1",
+    session: structuredClone(session),
+    artifacts: {
+      agreementCommitment: structuredClone(commitmentRef),
+      vetRecords: [structuredClone(buyerVetRef), structuredClone(sellerVetRef)],
+      vetRequirements: [
+        {
+          vetRecordRef: structuredClone(buyerVetRef),
+          evaluatedParty: BUYER,
+          requirement: structuredClone(BUYER_REQUIREMENT),
+          verifier: SELLER,
+          freshness: [{
+            ref: {
+              anchor: {
+                kind: "storage-program",
+                locator: "dacs2:job-17:did:demos%3Abuyer:v1",
+              },
+              contentHash: "4".repeat(64),
+              recipeVersion: 1,
+            },
+            sourceJobId: "job-17",
+            scheme: "did",
+            identifier: "demos:buyer",
+            method: "self-signed",
+            requirement: structuredClone(BUYER_REQUIREMENT.required[0]!),
+          }],
+          dealSpecific: [],
+        },
+        {
+          vetRecordRef: structuredClone(sellerVetRef),
+          evaluatedParty: SELLER,
+          requirement: { requirementVersion: "1", required: [] },
+          verifier: SELLER,
+          freshness: [],
+          dealSpecific: [],
+        },
+      ],
+      settlementEvidence: [structuredClone(paymentRef)],
+    },
+    provenanceProfile: "dacs-sdk-operational-v1",
   };
   const artifact = defaultArtifact(spec);
   const preparedPayloadRecord = spec.kind === "attested-payload" && artifact.cleartextBytes
@@ -411,26 +538,48 @@ function fixture(
     ? "dacs4:entitlement:job-17:0"
     : "dacs4:deliverable:job-17";
   if (initiallyConsumed) {
+    const fulfilmentId = sellerFulfilmentId({
+      jobId: authorization.jobId,
+      paymentPhaseIndex: authorization.phaseIndex,
+      deliveryPhaseIndex: 2,
+      settlementId: authorization.settlementId,
+      agreementHash: authorization.agreementHash,
+      paymentEvidenceHash: authorization.evidenceHash,
+    });
+    const authorizationHash = sha256Hex(canonicalize(authorization));
+    const auditSourceHash = sellerFulfilmentAuditSourceHash(auditSource);
+    const candidate: SellerFulfilmentHandoff["candidate"] = {
+      status: "prepared",
+      validatedAt: NOW,
+      artifactHash: handoffArtifactHash(artifact),
+      delivery: {
+        artifact: structuredClone(artifact),
+        ...(preparedPayloadRecord
+          ? { payloadAttestationRecord: structuredClone(preparedPayloadRecord) }
+          : {}),
+      },
+    };
+    const unsignedCommitment = {
+      commitmentVersion: "1" as const,
+      fulfilmentId,
+      jobId: authorization.jobId,
+      authorizationHash,
+      auditSourceHash,
+      candidateHash: sellerFulfilmentCandidateHash(candidate),
+    };
     store.consumed = true;
     store.handoffValue = {
-      handoffVersion: "1",
-      fulfilmentId: sellerFulfilmentId({
-        jobId: authorization.jobId,
-        paymentPhaseIndex: authorization.phaseIndex,
-        deliveryPhaseIndex: 1,
-        settlementId: authorization.settlementId,
-        agreementHash: authorization.agreementHash,
-        paymentEvidenceHash: authorization.evidenceHash,
-      }),
+      handoffVersion: "2",
+      fulfilmentId,
       jobId: authorization.jobId,
       agreementRef: agreement.ref,
       agreementHash: authorization.agreementHash,
       commitmentRef: agreement.commitment.ref,
-      authorizationHash: sha256Hex(canonicalize(authorization)),
+      authorizationHash,
       settlementId: authorization.settlementId,
       paymentEvidenceHash: authorization.evidenceHash,
       paymentPhaseIndex: authorization.phaseIndex,
-      deliveryPhaseIndex: 1,
+      deliveryPhaseIndex: 2,
       phase,
       logicalAddress,
       deliverableSpecHash: sha256Hex(canonicalize(spec)),
@@ -441,17 +590,23 @@ function fixture(
         session.lastUpdatedAt,
       ),
       evidenceAuthority: { primaryClaim: SELLER, algorithm: "ed25519" },
-      candidate: {
-        status: "prepared",
-        validatedAt: NOW,
-        artifactHash: handoffArtifactHash(artifact),
-        delivery: {
-          artifact: structuredClone(artifact),
-          ...(preparedPayloadRecord
-            ? { payloadAttestationRecord: structuredClone(preparedPayloadRecord) }
-            : {}),
+      auditSource: structuredClone(auditSource),
+      auditSourceHash,
+      auditSourceCommitment: {
+        ...unsignedCommitment,
+        signature: {
+          algorithm: "ed25519",
+          signer: SELLER,
+          value: Buffer.from(ed25519Sign(
+            signedBytes(
+              AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+              contentHash(unsignedCommitment as unknown as Record<string, unknown>),
+            ),
+            privateKeyFromSeed(SELLER_SEED),
+          )).toString("base64url"),
         },
       },
+      candidate,
     };
   }
   const anchoredHash = phase === "deliver-attested-payload"
@@ -465,7 +620,7 @@ function fixture(
     agreementRef: agreement.ref,
     agreementHash: agreement.contentHash,
     commitmentRef: agreement.commitment.ref,
-    deliveryPhaseIndex: 1,
+    deliveryPhaseIndex: 2,
     paymentPermitId: "permit-17",
     ...(authorization.payloadVerificationProducerAdmission
       ? {
@@ -477,9 +632,13 @@ function fixture(
   };
   const deps: SellerFulfilmentDeps = {
     receiptStore: store,
+    auditSourceProfile: "v2",
     resolveAgreement: async () => ({ status: "verified", value: agreement }),
     resolveListing: async () => ({ status: "verified", value: listing }),
-    resolveSessionRecord: async () => ({ status: "verified", value: session }),
+    resolveAuditSource: async () => ({
+      status: "verified",
+      value: { ...structuredClone(auditSource), session: structuredClone(session) },
+    }),
     prepareDelivery: async () => ({
       status: "prepared",
       delivery: {
@@ -535,6 +694,11 @@ function fixture(
       signer: SELLER,
       sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
     },
+    auditSourceCommitmentSigner: {
+      algorithm: "ed25519",
+      signer: SELLER,
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+    },
     verifyEvidenceSignature: async ({ signedBytes, signature, expectedSigner }) => {
       if (signature.algorithm !== "ed25519" || signature.signer !== expectedSigner) {
         return { disposition: "invalid", reason: "unexpected signer or algorithm" };
@@ -543,6 +707,22 @@ function fixture(
       return ed25519Verify(
         signedBytes,
         signatureBytes,
+        publicKeyFromSeed(SELLER_SEED),
+      )
+        ? { disposition: "valid" }
+        : { disposition: "invalid", reason: "signature mismatch" };
+    },
+    verifyAuditSourceCommitmentSignature: async ({
+      signedBytes: commitmentBytes,
+      signature,
+      expectedSigner,
+    }) => {
+      if (signature.algorithm !== "ed25519" || signature.signer !== expectedSigner) {
+        return { disposition: "invalid", reason: "unexpected signer or algorithm" };
+      }
+      return ed25519Verify(
+        commitmentBytes,
+        Uint8Array.from(Buffer.from(signature.value, "base64url")),
         publicKeyFromSeed(SELLER_SEED),
       )
         ? { disposition: "valid" }
@@ -562,7 +742,18 @@ function fixture(
       : { status: "verified", value: structuredClone(anchoredEvidence) },
     nowMs: () => NOW,
   };
-  return { authorization, claim, store, agreement, listing, session, artifact, request, deps };
+  return {
+    authorization,
+    claim,
+    store,
+    agreement,
+    listing,
+    session,
+    auditSource,
+    artifact,
+    request,
+    deps,
+  };
 }
 
 function singularSignatureHash(record: Record<string, unknown>): string {
@@ -746,12 +937,12 @@ function durableHashForTest(encoded: string): string {
 
 function terminalEffectSnapshotHashForTest(record: FencedStoreRecord): string {
   const keys = new Set([
-    sellerFulfilmentCheckpointKey.payloadPublication(1),
-    sellerFulfilmentCheckpointKey.payloadReadback(1),
-    sellerFulfilmentCheckpointKey.delivery(1),
-    sellerFulfilmentCheckpointKey.deliveryReconciliation(1),
-    sellerFulfilmentCheckpointKey.deliveryReadback(1),
-    sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+    sellerFulfilmentCheckpointKey.payloadPublication(2),
+    sellerFulfilmentCheckpointKey.payloadReadback(2),
+    sellerFulfilmentCheckpointKey.delivery(2),
+    sellerFulfilmentCheckpointKey.deliveryReconciliation(2),
+    sellerFulfilmentCheckpointKey.deliveryReadback(2),
+    sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
   ]);
   return durableHashForTest(encodeDurableForTest(record.checkpoints
     .filter((checkpoint) => keys.has(checkpoint.key))
@@ -778,7 +969,7 @@ const terminalTamperCases: Array<{
     label: "final receipt intent",
     tamper(record) {
       const checkpoint = record.checkpoints.find(
-        (item) => item.key === sellerFulfilmentCheckpointKey.finalReceipt(1) &&
+        (item) => item.key === sellerFulfilmentCheckpointKey.finalReceipt(2) &&
           item.stage === "intent",
       );
       if (typeof checkpoint?.data?.input !== "string") {
@@ -791,7 +982,7 @@ const terminalTamperCases: Array<{
     label: "final receipt outcome",
     tamper(record) {
       const checkpoint = [...record.checkpoints].reverse().find(
-        (item) => item.key === sellerFulfilmentCheckpointKey.finalReceipt(1) &&
+        (item) => item.key === sellerFulfilmentCheckpointKey.finalReceipt(2) &&
           item.stage === "outcome",
       );
       if (typeof checkpoint?.data?.output !== "string") {
@@ -804,7 +995,7 @@ const terminalTamperCases: Array<{
     label: "deleted consumed handoff history",
     tamper(record) {
       record.checkpoints = record.checkpoints.filter(
-        (item) => item.key !== sellerFulfilmentCheckpointKey.handoff(1),
+        (item) => item.key !== sellerFulfilmentCheckpointKey.handoff(2),
       );
     },
   },
@@ -812,7 +1003,7 @@ const terminalTamperCases: Array<{
     label: "coherently rehashed consumed handoff",
     tamper(record) {
       const checkpoints = record.checkpoints.filter(
-        (item) => item.key === sellerFulfilmentCheckpointKey.handoff(1),
+        (item) => item.key === sellerFulfilmentCheckpointKey.handoff(2),
       );
       if (checkpoints.length !== 2 || checkpoints.some(
         (checkpoint) => typeof checkpoint.data?.handoff !== "string",
@@ -830,7 +1021,7 @@ const terminalTamperCases: Array<{
     label: "deleted evidence-publication history",
     tamper(record) {
       record.checkpoints = record.checkpoints.filter(
-        (item) => item.key !== sellerFulfilmentCheckpointKey.evidencePublication(1),
+        (item) => item.key !== sellerFulfilmentCheckpointKey.evidencePublication(2),
       );
     },
   },
@@ -838,7 +1029,7 @@ const terminalTamperCases: Array<{
     label: "deleted evidence-readback history",
     tamper(record) {
       record.checkpoints = record.checkpoints.filter(
-        (item) => item.key !== sellerFulfilmentCheckpointKey.evidenceReadback(1),
+        (item) => item.key !== sellerFulfilmentCheckpointKey.evidenceReadback(2),
       );
     },
   },
@@ -846,7 +1037,7 @@ const terminalTamperCases: Array<{
     label: "deleted delivery-submission history",
     tamper(record) {
       record.checkpoints = record.checkpoints.filter(
-        (item) => item.key !== sellerFulfilmentCheckpointKey.delivery(1),
+        (item) => item.key !== sellerFulfilmentCheckpointKey.delivery(2),
       );
     },
   },
@@ -854,7 +1045,7 @@ const terminalTamperCases: Array<{
     label: "deleted delivery-reconciliation history",
     tamper(record) {
       record.checkpoints = record.checkpoints.filter(
-        (item) => item.key !== sellerFulfilmentCheckpointKey.deliveryReconciliation(1),
+        (item) => item.key !== sellerFulfilmentCheckpointKey.deliveryReconciliation(2),
       );
     },
   },
@@ -862,7 +1053,7 @@ const terminalTamperCases: Array<{
     label: "deleted delivery-readback history",
     tamper(record) {
       record.checkpoints = record.checkpoints.filter(
-        (item) => item.key !== sellerFulfilmentCheckpointKey.deliveryReadback(1),
+        (item) => item.key !== sellerFulfilmentCheckpointKey.deliveryReadback(2),
       );
     },
   },
@@ -870,7 +1061,7 @@ const terminalTamperCases: Array<{
     label: "coherently rehashed delivery agreement parties",
     tamper(record) {
       const checkpoints = record.checkpoints.filter(
-        (item) => item.key === sellerFulfilmentCheckpointKey.delivery(1),
+        (item) => item.key === sellerFulfilmentCheckpointKey.delivery(2),
       );
       if (checkpoints.length !== 2) throw new Error("delivery WAL history missing");
       for (const checkpoint of checkpoints) {
@@ -1240,8 +1431,8 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       agreementHash: h.fixture.authorization.agreementHash,
       paymentEvidenceHash: h.fixture.authorization.evidenceHash,
       settlementId: h.fixture.authorization.settlementId,
-      paymentPhaseIndex: 0,
-      deliveryPhaseIndex: 1,
+      paymentPhaseIndex: 1,
+      deliveryPhaseIndex: 2,
     });
     expect(binding?.fulfilmentId).toMatch(/^[0-9a-f]{64}$/);
     expect(binding?.handoffBindingHash).toMatch(/^[0-9a-f]{64}$/);
@@ -1328,7 +1519,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
           jobId: "job-17",
           owner: "later-phase-worker",
           ttlMs: 1_000,
-          sellerPhaseIndex: 2,
+          sellerPhaseIndex: 3,
           now: NOW + 1,
         });
         if (!laterLease.ok) throw new Error("later phase lease missing");
@@ -1336,7 +1527,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
           jobId: "job-17",
           expectedRevision: laterLease.record.revision,
           leaseToken: laterLease.lease,
-          phase: "seller:validation-pending:2",
+          phase: "seller:validation-pending:3",
           now: NOW + 2,
         });
         if (!pending.ok) throw new Error(`later pending phase failed: ${pending.reason}`);
@@ -1350,7 +1541,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
           jobId: "job-17",
           expectedRevision: pending.record.revision,
           leaseToken: laterLease.lease,
-          phase: "seller:delivery-completed:2",
+          phase: "seller:delivery-completed:3",
           lease: null,
           now: NOW + 3,
         });
@@ -1439,31 +1630,31 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const result = await runDurableFulfilmentCore(h.fixture.request, h.deps, h.durability);
     expect(result.decision).toBe("completed");
 
-    const status = await getSellerFulfilmentStatus(h.store, "job-17", 1);
+    const status = await getSellerFulfilmentStatus(h.store, "job-17", 2);
     expect(status).toMatchObject({
       status: "ok",
       jobId: "job-17",
-      phase: "seller:delivery-completed:1",
+      phase: "seller:delivery-completed:2",
       delivery: "outcome",
       evidence: "outcome",
       receipts: {
         agreement: "agreement:job-17",
-        "settlement:0": h.fixture.authorization.settlementId,
-        "delivery:1": "dacs4:test-delivery-evidence:job-17",
-        "fulfilment:1": expect.stringMatching(/^[0-9a-f]{64}$/),
+        "settlement:1": h.fixture.authorization.settlementId,
+        "delivery:2": "dacs4:test-delivery-evidence:job-17",
+        "fulfilment:2": expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     });
     if (status.status !== "ok") throw new Error("status missing");
-    status.receipts["fulfilment:1"] = "mutated";
-    status.receipts["delivery:1"] = "mutated";
-    const reloaded = await getSellerFulfilmentStatus(h.store, "job-17", 1);
+    status.receipts["fulfilment:2"] = "mutated";
+    status.receipts["delivery:2"] = "mutated";
+    const reloaded = await getSellerFulfilmentStatus(h.store, "job-17", 2);
     expect(reloaded).toMatchObject({
       status: "ok",
       receipts: {
         agreement: "agreement:job-17",
-        "settlement:0": h.fixture.authorization.settlementId,
-        "delivery:1": "dacs4:test-delivery-evidence:job-17",
-        "fulfilment:1": expect.stringMatching(/^[0-9a-f]{64}$/),
+        "settlement:1": h.fixture.authorization.settlementId,
+        "delivery:2": "dacs4:test-delivery-evidence:job-17",
+        "fulfilment:2": expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     });
   });
@@ -1483,14 +1674,14 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       expect(second.decision).toBe("completed");
       expect(h.counts[lostEffect]).toBe(1);
       expect(h.fences[lostEffect][0]).toMatchObject({ owner: "worker-a", generation: 1 });
-      const status = await getSellerFulfilmentStatus(h.store, "job-17", 1);
+      const status = await getSellerFulfilmentStatus(h.store, "job-17", 2);
       expect(status).toMatchObject({
         status: "ok",
         receipts: {
           agreement: "agreement:job-17",
-          "settlement:0": h.fixture.authorization.settlementId,
-          "delivery:1": "dacs4:test-delivery-evidence:job-17",
-          "fulfilment:1": expect.stringMatching(/^[0-9a-f]{64}$/),
+          "settlement:1": h.fixture.authorization.settlementId,
+          "delivery:2": "dacs4:test-delivery-evidence:job-17",
+          "fulfilment:2": expect.stringMatching(/^[0-9a-f]{64}$/),
         },
       });
     },
@@ -1504,7 +1695,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         const transitioned = await baseStore.transition(input);
         if (crashAfterReconciliation && transitioned.ok &&
             input.checkpoint?.key ===
-              sellerFulfilmentCheckpointKey.deliveryReconciliation(1) &&
+              sellerFulfilmentCheckpointKey.deliveryReconciliation(2) &&
             input.checkpoint.stage === "outcome") {
           crashAfterReconciliation = false;
           throw new Error("delivery reconciliation response lost after durable commit");
@@ -1523,7 +1714,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (committed.status !== "ok") throw new Error("reconciliation session missing");
     const reconciliationOutcome = committed.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.deliveryReconciliation(1) &&
+          sellerFulfilmentCheckpointKey.deliveryReconciliation(2) &&
         checkpoint.stage === "outcome",
     );
     expect(reconciliationOutcome?.data).toMatchObject({
@@ -1531,7 +1722,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       observation: expect.any(String),
     });
     const deliveryOutcome = committed.record.checkpoints.find(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.delivery(1) &&
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.delivery(2) &&
         checkpoint.stage === "outcome",
     );
     expect(deliveryOutcome?.data).toMatchObject({
@@ -1560,7 +1751,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       claimCheckpoint: async (input) => {
         const claimed = await baseStore.claimCheckpoint(input);
         if (crashAfterObservationIntent && claimed.ok && input.key ===
-            sellerFulfilmentCheckpointKey.deliveryReconciliation(1)) {
+            sellerFulfilmentCheckpointKey.deliveryReconciliation(2)) {
           crashAfterObservationIntent = false;
           throw new Error("reconciliation intent response lost after durable commit");
         }
@@ -1578,7 +1769,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (committed.status !== "ok") throw new Error("reconciliation session missing");
     const observationIntent = committed.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.deliveryReconciliation(1) &&
+          sellerFulfilmentCheckpointKey.deliveryReconciliation(2) &&
         checkpoint.stage === "intent",
     );
     expect(observationIntent?.data).toMatchObject({
@@ -1625,7 +1816,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (afterInvalid.status !== "ok") throw new Error("session missing");
     expect(afterInvalid.record.checkpoints.some(
       (checkpoint) => checkpoint.key ===
-        sellerFulfilmentCheckpointKey.deliveryReconciliation(1),
+        sellerFulfilmentCheckpointKey.deliveryReconciliation(2),
     )).toBe(false);
 
     const recovered = await runDurableFulfilmentCore(
@@ -1653,10 +1844,10 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const loaded = await h.store.load("job-17");
     if (loaded.status !== "ok") throw new Error("session missing");
     const publication = loaded.record.checkpoints.filter(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.payloadPublication(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.payloadPublication(2),
     );
     const readback = loaded.record.checkpoints.filter(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.payloadReadback(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.payloadReadback(2),
     );
     expect(publication.map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
     expect(readback.map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
@@ -1714,10 +1905,10 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       expect(first.decision).toBe("indeterminate");
       expect(resolverCalls).toBe(1);
       const readbackKey = target === "payload"
-        ? sellerFulfilmentCheckpointKey.payloadReadback(1)
+        ? sellerFulfilmentCheckpointKey.payloadReadback(2)
         : target === "delivery"
-          ? sellerFulfilmentCheckpointKey.deliveryReadback(1)
-          : sellerFulfilmentCheckpointKey.evidenceReadback(1);
+          ? sellerFulfilmentCheckpointKey.deliveryReadback(2)
+          : sellerFulfilmentCheckpointKey.evidenceReadback(2);
       const afterMalformed = await h.store.load("job-17");
       if (afterMalformed.status !== "ok") throw new Error("readback session missing");
       expect(afterMalformed.record.checkpoints.filter(
@@ -1726,7 +1917,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (target === "payload") {
         expect(afterMalformed.record.checkpoints.filter(
           (checkpoint) => checkpoint.key ===
-            sellerFulfilmentCheckpointKey.payloadPublication(1),
+            sellerFulfilmentCheckpointKey.payloadPublication(2),
         ).map((checkpoint) => checkpoint.stage)).toEqual(["intent"]);
         expect(h.counts).toEqual({ payload: 1, delivery: 0, evidence: 0, final: 0 });
       } else if (target === "delivery") {
@@ -1752,7 +1943,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (target === "payload") {
         expect(terminal.record.checkpoints.filter(
           (checkpoint) => checkpoint.key ===
-            sellerFulfilmentCheckpointKey.payloadPublication(1),
+            sellerFulfilmentCheckpointKey.payloadPublication(2),
         ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
       }
     },
@@ -1800,7 +1991,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       transition: async (input) => {
         if (
           loseHandoffOutcome &&
-          input.checkpoint?.key === sellerFulfilmentCheckpointKey.handoff(1) &&
+          input.checkpoint?.key === sellerFulfilmentCheckpointKey.handoff(2) &&
           input.checkpoint.stage === "outcome"
         ) {
           loseHandoffOutcome = false;
@@ -1826,7 +2017,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const afterLoss = await baseStore.load("job-17");
     if (afterLoss.status !== "ok") throw new Error("session missing after handoff intent");
     expect(afterLoss.record.checkpoints.filter(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.handoff(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.handoff(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
 
     const recovered = await runDurableFulfilmentCore(h.fixture.request, h.deps, {
@@ -1840,7 +2031,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const afterRecovery = await baseStore.load("job-17");
     if (afterRecovery.status !== "ok") throw new Error("session missing after recovery");
     expect(afterRecovery.record.checkpoints.filter(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.handoff(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.handoff(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
   });
 
@@ -1870,7 +2061,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (afterBadRetry.status !== "ok") throw new Error("session missing after bad retry");
     expect(checkpointStateForTest(
       afterBadRetry.record,
-      sellerFulfilmentCheckpointKey.result(1),
+      sellerFulfilmentCheckpointKey.result(2),
     )).toBeUndefined();
     expect(afterBadRetry.record.phase).not.toMatch(/delivery-(completed|failed):1$/);
 
@@ -1884,11 +2075,11 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (finalRecord.status !== "ok") throw new Error("terminal session missing");
     expect(checkpointStateForTest(
       finalRecord.record,
-      sellerFulfilmentCheckpointKey.delivery(1),
+      sellerFulfilmentCheckpointKey.delivery(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       finalRecord.record,
-      sellerFulfilmentCheckpointKey.result(1),
+      sellerFulfilmentCheckpointKey.result(2),
     )).toBe("outcome");
   });
 
@@ -2046,12 +2237,12 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
           }
         : { kind: "storage-program" as const, accessModel: "public" as const };
       const targetKey = target === "payload"
-        ? sellerFulfilmentCheckpointKey.payloadPublication(1)
+        ? sellerFulfilmentCheckpointKey.payloadPublication(2)
         : target === "delivery"
-          ? sellerFulfilmentCheckpointKey.delivery(1)
+          ? sellerFulfilmentCheckpointKey.delivery(2)
           : target === "evidence"
-            ? sellerFulfilmentCheckpointKey.evidencePublication(1)
-            : sellerFulfilmentCheckpointKey.finalReceipt(1);
+            ? sellerFulfilmentCheckpointKey.evidencePublication(2)
+            : sellerFulfilmentCheckpointKey.finalReceipt(2);
       const baseStore = createInMemoryFencedSessionStore();
       let crashAfterClaim = true;
       const crashedStore = proxyFencedStore(baseStore, {
@@ -2175,7 +2366,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (afterLoss.status !== "ok") throw new Error("session missing after evidence loss");
     const intent = afterLoss.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.evidencePublication(1) &&
+          sellerFulfilmentCheckpointKey.evidencePublication(2) &&
         checkpoint.stage === "intent",
     );
     if (typeof intent?.data?.input !== "string" ||
@@ -2217,7 +2408,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (afterRecovery.status !== "ok") throw new Error("session missing after recovery");
     const outcome = [...afterRecovery.record.checkpoints].reverse().find(
       (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.evidencePublication(1) &&
+          sellerFulfilmentCheckpointKey.evidencePublication(2) &&
         checkpoint.stage === "outcome",
     );
     expect(outcome?.data?.input).toBe(retainedInput);
@@ -2334,8 +2525,8 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         claimCheckpoint: async (input) => {
           const claimed = await baseStore.claimCheckpoint(input);
           const target = crashPoint === "evidence-intent"
-            ? sellerFulfilmentCheckpointKey.evidencePublication(1)
-            : sellerFulfilmentCheckpointKey.terminalFailureSource(1);
+            ? sellerFulfilmentCheckpointKey.evidencePublication(2)
+            : sellerFulfilmentCheckpointKey.terminalFailureSource(2);
           if (crash && claimed.ok && input.key === target) {
             crash = false;
             throw new Error(`process crashed after ${crashPoint} claim`);
@@ -2369,11 +2560,11 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (afterCrash.status !== "ok") throw new Error("source-ordering session missing");
       expect(checkpointStateForTest(
         afterCrash.record,
-        sellerFulfilmentCheckpointKey.evidencePublication(1),
+        sellerFulfilmentCheckpointKey.evidencePublication(2),
       )).toBe("intent");
       expect(checkpointStateForTest(
         afterCrash.record,
-        sellerFulfilmentCheckpointKey.terminalFailureSource(1),
+        sellerFulfilmentCheckpointKey.terminalFailureSource(2),
       )).toBe(crashPoint === "evidence-intent" ? undefined : "intent");
 
       h.durability.reconcileEvidencePublication = async () => ({
@@ -2398,7 +2589,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (terminal.status !== "ok") throw new Error("source-ordering recovery missing");
       expect(checkpointStateForTest(
         terminal.record,
-        sellerFulfilmentCheckpointKey.terminalFailureSource(1),
+        sellerFulfilmentCheckpointKey.terminalFailureSource(2),
       )).toBe("outcome");
     },
   );
@@ -2430,10 +2621,10 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       const first = await runDurableFulfilmentCore(h.fixture.request, h.deps, h.durability);
       expect(first.decision).toBe("indeterminate");
       const key = target === "delivery"
-        ? sellerFulfilmentCheckpointKey.delivery(1)
+        ? sellerFulfilmentCheckpointKey.delivery(2)
         : target === "evidence"
-          ? sellerFulfilmentCheckpointKey.evidencePublication(1)
-          : sellerFulfilmentCheckpointKey.finalReceipt(1);
+          ? sellerFulfilmentCheckpointKey.evidencePublication(2)
+          : sellerFulfilmentCheckpointKey.finalReceipt(2);
       const afterMalformed = await h.store.load("job-17");
       if (afterMalformed.status !== "ok") throw new Error("session missing after malformed output");
       expect(afterMalformed.record.checkpoints.filter(
@@ -2474,7 +2665,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const retained = await h.store.load("job-17");
     if (retained.status !== "ok") throw new Error("sparse-receipt session missing");
     expect(retained.record.checkpoints.filter(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.finalReceipt(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.finalReceipt(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent"]);
 
     const recovered = await runDurableFulfilmentCore(
@@ -2486,7 +2677,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const reopened = await h.store.load("job-17");
     if (reopened.status !== "ok") throw new Error("recovered session missing");
     expect(reopened.record.checkpoints.filter(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.finalReceipt(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.finalReceipt(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
   });
 
@@ -2520,7 +2711,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (pending.status !== "ok") throw new Error("pending evidence session missing");
       expect(pending.record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.evidencePublication(1),
+          sellerFulfilmentCheckpointKey.evidencePublication(2),
       ).map((checkpoint) => checkpoint.stage)).toEqual(["intent"]);
 
       const recovered = await runDurableFulfilmentCore(
@@ -2534,7 +2725,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (complete.status !== "ok") throw new Error("recovered evidence session missing");
       expect(complete.record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.evidencePublication(1),
+          sellerFulfilmentCheckpointKey.evidencePublication(2),
       ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
     },
   );
@@ -2578,7 +2769,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (pending.status !== "ok") throw new Error("pending payload session missing");
     expect(pending.record.checkpoints.filter(
       (checkpoint) => checkpoint.key ===
-        sellerFulfilmentCheckpointKey.payloadPublication(1),
+        sellerFulfilmentCheckpointKey.payloadPublication(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent"]);
 
     const recovered = await runDurableFulfilmentCore(
@@ -2635,7 +2826,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (pending.status !== "ok") throw new Error("pending readback session missing");
       expect(pending.record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.evidenceReadback(1),
+          sellerFulfilmentCheckpointKey.evidenceReadback(2),
       ).map((checkpoint) => checkpoint.stage)).toEqual(["intent"]);
 
       const recovered = await runDurableFulfilmentCore(
@@ -2649,7 +2840,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (complete.status !== "ok") throw new Error("recovered readback session missing");
       expect(complete.record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.evidenceReadback(1),
+          sellerFulfilmentCheckpointKey.evidenceReadback(2),
       ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
     },
   );
@@ -2721,7 +2912,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         transition: async (input) => {
           const transitioned = await baseStore.transition(input);
           if (crashAfterFinalOutcome && transitioned.ok &&
-              input.checkpoint?.key === sellerFulfilmentCheckpointKey.finalReceipt(1) &&
+              input.checkpoint?.key === sellerFulfilmentCheckpointKey.finalReceipt(2) &&
               input.checkpoint.stage === "outcome") {
             crashAfterFinalOutcome = false;
             throw new Error("process crashed after final receipt outcome commit");
@@ -2740,16 +2931,16 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (afterCrash.status !== "ok") throw new Error("final receipt crash session missing");
       expect(checkpointStateForTest(
         afterCrash.record,
-        sellerFulfilmentCheckpointKey.finalReceipt(1),
+        sellerFulfilmentCheckpointKey.finalReceipt(2),
       )).toBe("outcome");
       expect(checkpointStateForTest(
         afterCrash.record,
-        sellerFulfilmentCheckpointKey.result(1),
+        sellerFulfilmentCheckpointKey.result(2),
       )).toBeUndefined();
 
       const missingKey = missing === "publication"
-        ? sellerFulfilmentCheckpointKey.evidencePublication(1)
-        : sellerFulfilmentCheckpointKey.evidenceReadback(1);
+        ? sellerFulfilmentCheckpointKey.evidencePublication(2)
+        : sellerFulfilmentCheckpointKey.evidenceReadback(2);
       const damagedStore = proxyRecordView(baseStore, (record) => {
         record.checkpoints = record.checkpoints.filter(
           (checkpoint) => checkpoint.key !== missingKey,
@@ -2778,7 +2969,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (unchanged.status !== "ok") throw new Error("damaged final session missing");
       expect(checkpointStateForTest(
         unchanged.record,
-        sellerFulfilmentCheckpointKey.result(1),
+        sellerFulfilmentCheckpointKey.result(2),
       )).toBeUndefined();
     },
   );
@@ -2789,7 +2980,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const unstableStore = proxyFencedStore(baseStore, {
       claimCheckpoint: async (input) => {
         const claimed = await baseStore.claimCheckpoint(input);
-        if (input.key !== sellerFulfilmentCheckpointKey.result(1)) return claimed;
+        if (input.key !== sellerFulfilmentCheckpointKey.result(2)) return claimed;
         if (crashAfterResultIntent && claimed.ok) {
           crashAfterResultIntent = false;
           throw new Error("process crashed after terminal result intent");
@@ -2797,7 +2988,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         if (!claimed.ok && claimed.record) {
           const record = structuredClone(claimed.record);
           const intent = record.checkpoints.find(
-            (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(1) &&
+            (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2) &&
               checkpoint.stage === "intent",
           );
           if (!intent?.data) throw new Error("terminal result intent missing");
@@ -2817,7 +3008,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const afterCrash = await baseStore.load("job-17");
     if (afterCrash.status !== "ok") throw new Error("result-intent session missing");
     expect(afterCrash.record.checkpoints.filter(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent"]);
 
     const replay = await runDurableFulfilmentCore(
@@ -2833,7 +3024,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const unchanged = await baseStore.load("job-17");
     if (unchanged.status !== "ok") throw new Error("result-intent session disappeared");
     expect(unchanged.record.checkpoints.filter(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent"]);
   });
 
@@ -2849,7 +3040,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       claimCheckpoint: async (input) => {
         const claimed = await baseStore.claimCheckpoint(input);
         if (crashAfterDpaIntent && claimed.ok && input.key ===
-            sellerFulfilmentCheckpointKey.dpaTerminalFailure(1)) {
+            sellerFulfilmentCheckpointKey.dpaTerminalFailure(2)) {
           crashAfterDpaIntent = false;
           throw new Error("process crashed after durable DPA terminal intent");
         }
@@ -2875,7 +3066,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (afterCrash.status !== "ok") throw new Error("DPA crash session missing");
     expect(afterCrash.record.checkpoints.filter(
       (checkpoint) => checkpoint.key ===
-        sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+        sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
 
     const callsAtCrash = proofCalls;
@@ -2903,7 +3094,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (complete.status !== "ok") throw new Error("recovered DPA session missing");
     expect(complete.record.checkpoints.filter(
       (checkpoint) => checkpoint.key ===
-        sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+        sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
   });
 
@@ -2953,7 +3144,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (terminal.status !== "ok") throw new Error("immediate-invalid session missing");
       expect(checkpointStateForTest(
         terminal.record,
-        sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+        sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
       )).toBe(target === "anchor-receipt" ? "outcome" : undefined);
     },
   );
@@ -3022,7 +3213,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (terminal.status !== "ok") throw new Error("stateful-adapter session missing");
       expect(checkpointStateForTest(
         terminal.record,
-        sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+        sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
       )).toBeUndefined();
     },
   );
@@ -3063,7 +3254,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (afterMalformed.status !== "ok") throw new Error("malformed DPA session missing");
       expect(checkpointStateForTest(
         afterMalformed.record,
-        sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+        sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
       )).toBeUndefined();
 
       h.deps.verifyPayloadMethodProof = async () => ({ disposition: "valid" });
@@ -3109,11 +3300,11 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (terminal.status !== "ok") throw new Error("imported DPA session missing");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.payloadReadback(1),
+      sellerFulfilmentCheckpointKey.payloadReadback(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     )).toBe("outcome");
   });
 
@@ -3158,7 +3349,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (loaded.status !== "ok") throw new Error("session missing");
     expect(checkpointStateForTest(
       loaded.record,
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     )).toBe("outcome");
   });
 
@@ -3190,7 +3381,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (loaded.status !== "ok") throw new Error("DPA session missing");
     const terminal = loaded.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.dpaTerminalFailure(1) &&
+          sellerFulfilmentCheckpointKey.dpaTerminalFailure(2) &&
         checkpoint.stage === "outcome",
     );
     expect(terminal?.data?.observedAt).toBe(NOW);
@@ -3236,7 +3427,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const tamperedStore = proxyRecordView(h.store, (record) => {
       const checkpoints = record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+          sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
       );
       expect(checkpoints.map((checkpoint) => checkpoint.stage)).toEqual([
         "intent",
@@ -3309,7 +3500,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (loaded.status !== "ok") throw new Error("session missing");
     expect(checkpointStateForTest(
       loaded.record,
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     )).toBe("outcome");
   });
 
@@ -3597,7 +3788,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const persisted = await h.store.load("job-17");
     if (persisted.status !== "ok") throw new Error("failed terminal session missing");
     const persistedResult = persisted.record.checkpoints.find(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(1) &&
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2) &&
         checkpoint.stage === "intent",
     );
     expect(persistedResult?.data?.result).toBe(encodeDurableForTest(failed));
@@ -3621,17 +3812,17 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         }));
         for (const checkpoint of record.checkpoints) {
           if (!checkpoint.data) continue;
-          if (checkpoint.key === sellerFulfilmentCheckpointKey.finalReceipt(1)) {
+          if (checkpoint.key === sellerFulfilmentCheckpointKey.finalReceipt(2)) {
             checkpoint.data.input = finalInputEncoded;
             checkpoint.data.inputHash = durableHashForTest(finalInputEncoded);
             checkpoint.data.identityHash = finalIdentityHash;
           }
-          if (checkpoint.key === sellerFulfilmentCheckpointKey.result(1)) {
+          if (checkpoint.key === sellerFulfilmentCheckpointKey.result(2)) {
             checkpoint.data.result = rewrittenResultEncoded;
             checkpoint.data.resultHash = rewrittenResultHash;
           }
         }
-        record.phase = "seller:delivery-completed:1";
+        record.phase = "seller:delivery-completed:2";
         return record;
     });
 
@@ -3693,8 +3884,8 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       );
       expect(completed.decision).toBe("completed");
       const key = missing === "publication"
-        ? sellerFulfilmentCheckpointKey.payloadPublication(1)
-        : sellerFulfilmentCheckpointKey.payloadReadback(1);
+        ? sellerFulfilmentCheckpointKey.payloadPublication(2)
+        : sellerFulfilmentCheckpointKey.payloadReadback(2);
       const damaged = proxyRecordView(h.store, (record) => {
         record.checkpoints = record.checkpoints.filter(
           (checkpoint) => checkpoint.key !== key,
@@ -3745,9 +3936,9 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       const damaged = proxyRecordView(h.store, (record) => {
         record.checkpoints = record.checkpoints.filter((checkpoint) => {
           const isDpa = checkpoint.key ===
-            sellerFulfilmentCheckpointKey.dpaTerminalFailure(1);
+            sellerFulfilmentCheckpointKey.dpaTerminalFailure(2);
           const isSource = checkpoint.key ===
-            sellerFulfilmentCheckpointKey.terminalFailureSource(1);
+            sellerFulfilmentCheckpointKey.terminalFailureSource(2);
           return missing === "both"
             ? !isDpa && !isSource
             : missing === "dpa"
@@ -3803,7 +3994,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const coherentlyReclassified = proxyRecordView(h.store, (record) => {
       record.checkpoints = record.checkpoints.filter(
         (checkpoint) => checkpoint.key !==
-          sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+          sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
       );
       const effectSnapshotHash = terminalEffectSnapshotHashForTest(record);
       const failureSource = {
@@ -3815,7 +4006,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       };
       for (const checkpoint of record.checkpoints) {
         if (!checkpoint.data) continue;
-        if (checkpoint.key === sellerFulfilmentCheckpointKey.terminalFailureSource(1)) {
+        if (checkpoint.key === sellerFulfilmentCheckpointKey.terminalFailureSource(2)) {
           checkpoint.data.sourceKind = failureSource.kind;
           checkpoint.data.reason = signedReason;
           checkpoint.data.observedAt = observedAt;
@@ -3823,7 +4014,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
           checkpoint.data.payloadClosure = failureSource.payloadClosure;
           checkpoint.data.effectSnapshotHash = effectSnapshotHash;
         }
-        if (checkpoint.key === sellerFulfilmentCheckpointKey.evidencePublication(1)) {
+        if (checkpoint.key === sellerFulfilmentCheckpointKey.evidencePublication(2)) {
           checkpoint.data.identityHash = durableHashForTest(encodeDurableForTest({
             fulfilmentId: failed.fulfilmentId,
             evidenceHash: failed.evidenceHash,
@@ -3881,7 +4072,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (terminal.status !== "ok") throw new Error("preparation-collision session missing");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     )).toBeUndefined();
   });
 
@@ -3916,7 +4107,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (terminal.status !== "ok") throw new Error("reconciliation-collision session missing");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     )).toBeUndefined();
   });
 
@@ -3979,15 +4170,15 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (held.status !== "ok") throw new Error("held-delivery DPA session missing");
     expect(checkpointStateForTest(
       held.record,
-      sellerFulfilmentCheckpointKey.delivery(1),
+      sellerFulfilmentCheckpointKey.delivery(2),
     )).toBe("intent");
     expect(checkpointStateForTest(
       held.record,
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       held.record,
-      sellerFulfilmentCheckpointKey.evidencePublication(1),
+      sellerFulfilmentCheckpointKey.evidencePublication(2),
     )).toBeUndefined();
 
     deliverySubmissionVisible = true;
@@ -4013,11 +4204,11 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const terminal = await h.store.load("job-17");
     if (terminal.status !== "ok") throw new Error("recovered DPA session missing");
     for (const key of [
-      sellerFulfilmentCheckpointKey.delivery(1),
-      sellerFulfilmentCheckpointKey.deliveryReconciliation(1),
-      sellerFulfilmentCheckpointKey.deliveryReadback(1),
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
-      sellerFulfilmentCheckpointKey.evidencePublication(1),
+      sellerFulfilmentCheckpointKey.delivery(2),
+      sellerFulfilmentCheckpointKey.deliveryReconciliation(2),
+      sellerFulfilmentCheckpointKey.deliveryReadback(2),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
+      sellerFulfilmentCheckpointKey.evidencePublication(2),
     ]) {
       expect(checkpointStateForTest(terminal.record, key)).toBe("outcome");
     }
@@ -4099,18 +4290,18 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const terminal = await h.store.load("job-17");
     if (terminal.status !== "ok") throw new Error("failed-delivery DPA session missing");
     for (const key of [
-      sellerFulfilmentCheckpointKey.payloadPublication(1),
-      sellerFulfilmentCheckpointKey.payloadReadback(1),
-      sellerFulfilmentCheckpointKey.delivery(1),
-      sellerFulfilmentCheckpointKey.deliveryReconciliation(1),
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
-      sellerFulfilmentCheckpointKey.evidencePublication(1),
+      sellerFulfilmentCheckpointKey.payloadPublication(2),
+      sellerFulfilmentCheckpointKey.payloadReadback(2),
+      sellerFulfilmentCheckpointKey.delivery(2),
+      sellerFulfilmentCheckpointKey.deliveryReconciliation(2),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
+      sellerFulfilmentCheckpointKey.evidencePublication(2),
     ]) {
       expect(checkpointStateForTest(terminal.record, key)).toBe("outcome");
     }
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.deliveryReadback(1),
+      sellerFulfilmentCheckpointKey.deliveryReadback(2),
     )).toBeUndefined();
   });
 
@@ -4164,7 +4355,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const held = await h.store.load("job-17");
     if (held.status !== "ok") throw new Error("delivery-absence session missing");
     const absence = [...held.record.checkpoints].reverse().find(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.delivery(1),
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.delivery(2),
     );
     expect(absence).toMatchObject({
       stage: "outcome",
@@ -4249,15 +4440,15 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (held.status !== "ok") throw new Error("held-payload DPA session missing");
     expect(checkpointStateForTest(
       held.record,
-      sellerFulfilmentCheckpointKey.payloadPublication(1),
+      sellerFulfilmentCheckpointKey.payloadPublication(2),
     )).toBe("intent");
     expect(checkpointStateForTest(
       held.record,
-      sellerFulfilmentCheckpointKey.dpaTerminalFailure(1),
+      sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       held.record,
-      sellerFulfilmentCheckpointKey.evidencePublication(1),
+      sellerFulfilmentCheckpointKey.evidencePublication(2),
     )).toBeUndefined();
 
     payloadPublicationVisible = true;
@@ -4282,15 +4473,15 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (terminal.status !== "ok") throw new Error("recovered payload DPA session missing");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.payloadPublication(1),
+      sellerFulfilmentCheckpointKey.payloadPublication(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.payloadReadback(1),
+      sellerFulfilmentCheckpointKey.payloadReadback(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.evidencePublication(1),
+      sellerFulfilmentCheckpointKey.evidencePublication(2),
     )).toBe("outcome");
   });
 
@@ -4363,7 +4554,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (held.status !== "ok") throw new Error("payload-absence session missing");
     const absence = [...held.record.checkpoints].reverse().find(
       (checkpoint) => checkpoint.key ===
-        sellerFulfilmentCheckpointKey.payloadPublication(1),
+        sellerFulfilmentCheckpointKey.payloadPublication(2),
     );
     expect(absence).toMatchObject({
       stage: "outcome",
@@ -4426,15 +4617,15 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (terminal.status !== "ok") throw new Error("superseded-rejection session missing");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.delivery(1),
+      sellerFulfilmentCheckpointKey.delivery(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.deliveryReconciliation(1),
+      sellerFulfilmentCheckpointKey.deliveryReconciliation(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.deliveryReadback(1),
+      sellerFulfilmentCheckpointKey.deliveryReadback(2),
     )).toBe("outcome");
   });
 
@@ -4461,11 +4652,11 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (terminal.status !== "ok") throw new Error("payload-rejection session missing");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.payloadPublication(1),
+      sellerFulfilmentCheckpointKey.payloadPublication(2),
     )).toBe("outcome");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.payloadReadback(1),
+      sellerFulfilmentCheckpointKey.payloadReadback(2),
     )).toBe("outcome");
   });
 
@@ -4514,13 +4705,13 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (terminal.status !== "ok") throw new Error("rejected-delivery DPA session missing");
     const source = terminal.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.terminalFailureSource(1) &&
+          sellerFulfilmentCheckpointKey.terminalFailureSource(2) &&
         checkpoint.stage === "outcome",
     );
     expect(source?.data?.deliveryClosure).toBe("reconciled-absent");
     expect(checkpointStateForTest(
       terminal.record,
-      sellerFulfilmentCheckpointKey.deliveryReadback(1),
+      sellerFulfilmentCheckpointKey.deliveryReadback(2),
     )).toBeUndefined();
   });
 
@@ -4531,7 +4722,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       claimCheckpoint: async (input) => {
         const claimed = await baseStore.claimCheckpoint(input);
         if (crashAfterEvidenceIntent && claimed.ok && input.key ===
-            sellerFulfilmentCheckpointKey.evidencePublication(1)) {
+            sellerFulfilmentCheckpointKey.evidencePublication(2)) {
           crashAfterEvidenceIntent = false;
           throw new Error("process crashed after evidence intent commit");
         }
@@ -4553,7 +4744,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (afterCrash.status !== "ok") throw new Error("evidence-intent session missing");
     expect(afterCrash.record.checkpoints.filter(
       (checkpoint) => checkpoint.key ===
-          sellerFulfilmentCheckpointKey.evidencePublication(1),
+          sellerFulfilmentCheckpointKey.evidencePublication(2),
     ).map((checkpoint) => checkpoint.stage)).toEqual(["intent"]);
 
     const invalidSignature = Buffer.from(ed25519Sign(
@@ -4563,7 +4754,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const tamperEvidenceIntent = (record: FencedStoreRecord): FencedStoreRecord => {
       const intent = record.checkpoints.find(
         (checkpoint) => checkpoint.key ===
-            sellerFulfilmentCheckpointKey.evidencePublication(1) &&
+            sellerFulfilmentCheckpointKey.evidencePublication(2) &&
           checkpoint.stage === "intent",
       );
       if (typeof intent?.data?.input !== "string") {

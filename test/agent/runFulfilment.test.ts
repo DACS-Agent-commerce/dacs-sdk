@@ -604,6 +604,13 @@ function fixture(
       phase,
       logicalAddress,
       deliverableSpecHash: sha256Hex(canonicalize(spec)),
+      agreementViewHash: sha256Hex(canonicalize(agreement)),
+      validationFloorAt: Math.max(
+        agreement.commitment.finalizedAt,
+        authorization.evidenceInput.observedAt,
+        session.lastUpdatedAt,
+      ),
+      evidenceAuthority: { primaryClaim: SELLER, algorithm: "ed25519" },
       auditSource: structuredClone(auditSource),
       auditSourceHash,
       auditSourceCommitment: {

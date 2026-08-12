@@ -823,7 +823,8 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
   const receiptStoreSource = source.receiptStore;
   const resolveAgreementSource = source.resolveAgreement;
   const resolveListingSource = source.resolveListing;
-  const resolveSessionRecordSource = source.resolveSessionRecord;
+  const auditSourceProfile = source.auditSourceProfile;
+  const resolveAuditSourceSource = source.resolveAuditSource;
   const prepareDeliverySource = source.prepareDelivery;
   const submitDeliverySource = source.submitDelivery;
   const reconcileDeliverySource = source.reconcileDelivery;
@@ -838,13 +839,19 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
   const verifyPayloadMethodProofSource = source.verifyPayloadMethodProof;
   const verifyEntitlementSignatureSource = source.verifyEntitlementSignature;
   const evidenceSignerSource = source.evidenceSigner;
+  const auditSourceCommitmentSignerSource = source.auditSourceCommitmentSigner;
   const verifyEvidenceSignatureSource = source.verifyEvidenceSignature;
+  const verifyAuditSourceCommitmentSignatureSource =
+    source.verifyAuditSourceCommitmentSignature;
   const anchorEvidenceSource = source.anchorEvidence;
   const resolveEvidenceSource = source.resolveEvidence;
   const nowMsSource = source.nowMs;
   if (!receiptStoreSource || typeof receiptStoreSource !== "object" ||
-      !evidenceSignerSource || typeof evidenceSignerSource !== "object") {
-    throw new TypeError("receipt store or evidence signer is unavailable");
+      !evidenceSignerSource || typeof evidenceSignerSource !== "object" ||
+      !auditSourceCommitmentSignerSource ||
+      typeof auditSourceCommitmentSignerSource !== "object" ||
+      auditSourceProfile !== "v2") {
+    throw new TypeError("receipt store, audit profile, or fulfilment signer is unavailable");
   }
   const claimSource = receiptStoreSource.claim;
   const inspectPermitSource = receiptStoreSource.inspectPermit;
@@ -852,10 +859,13 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
   const evidenceAlgorithm = evidenceSignerSource.algorithm;
   const evidenceSignerClaim = evidenceSignerSource.signer;
   const evidenceSignSource = evidenceSignerSource.sign;
+  const auditSourceCommitmentAlgorithm = auditSourceCommitmentSignerSource.algorithm;
+  const auditSourceCommitmentSignerClaim = auditSourceCommitmentSignerSource.signer;
+  const auditSourceCommitmentSignSource = auditSourceCommitmentSignerSource.sign;
   if ([
     resolveAgreementSource,
     resolveListingSource,
-    resolveSessionRecordSource,
+    resolveAuditSourceSource,
     prepareDeliverySource,
     submitDeliverySource,
     reconcileDeliverySource,
@@ -869,6 +879,8 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
     inspectPermitSource,
     consumePermitSource,
     evidenceSignSource,
+    auditSourceCommitmentSignSource,
+    verifyAuditSourceCommitmentSignatureSource,
   ].some((candidate) => typeof candidate !== "function")) {
     throw new TypeError("a required durable fulfilment dependency is not callable");
   }
@@ -890,9 +902,10 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
       inspectPermit: bindCaptured(inspectPermitSource, receiptStoreSource),
       consumePermit: bindCaptured(consumePermitSource, receiptStoreSource),
     }),
+    auditSourceProfile,
     resolveAgreement: bindCaptured(resolveAgreementSource, source),
     resolveListing: bindCaptured(resolveListingSource, source),
-    resolveSessionRecord: bindCaptured(resolveSessionRecordSource, source),
+    resolveAuditSource: bindCaptured(resolveAuditSourceSource, source),
     prepareDelivery: bindCaptured(prepareDeliverySource, source),
     submitDelivery: bindCaptured(submitDeliverySource, source),
     reconcileDelivery: bindCaptured(reconcileDeliverySource, source),
@@ -933,7 +946,19 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
       signer: evidenceSignerClaim,
       sign: bindCaptured(evidenceSignSource, evidenceSignerSource),
     }),
+    auditSourceCommitmentSigner: Object.freeze({
+      algorithm: auditSourceCommitmentAlgorithm,
+      signer: auditSourceCommitmentSignerClaim,
+      sign: bindCaptured(
+        auditSourceCommitmentSignSource,
+        auditSourceCommitmentSignerSource,
+      ),
+    }),
     verifyEvidenceSignature: bindCaptured(verifyEvidenceSignatureSource, source),
+    verifyAuditSourceCommitmentSignature: bindCaptured(
+      verifyAuditSourceCommitmentSignatureSource,
+      source,
+    ),
     anchorEvidence: bindCaptured(anchorEvidenceSource, source),
     resolveEvidence: bindCaptured(resolveEvidenceSource, source),
     nowMs: bindCaptured(nowMsSource, source),
@@ -1386,6 +1411,7 @@ class DurableCoordinator {
           "jobId",
           "phase",
           "outcome",
+          "dacsSdkAuditSourceHash",
           "deliverableContentHash",
           "deliverableAnchor",
           ...(this.#authority.handoff.phase === "deliver-attested-payload"
@@ -1399,6 +1425,7 @@ class DurableCoordinator {
           "jobId",
           "phase",
           "outcome",
+          "dacsSdkAuditSourceHash",
           "reason",
           "observedAt",
           "signature",
@@ -1413,6 +1440,7 @@ class DurableCoordinator {
         signedEvidenceHash(evidence) !== value.evidenceHash ||
         evidence.jobId !== this.#authority.handoff.jobId ||
         evidence.phase !== this.#authority.handoff.phase ||
+        evidence.dacsSdkAuditSourceHash !== this.#authority.handoff.auditSourceHash ||
         evidence.outcome !== (value.decision === "completed" ? "success" : "failure") ||
         !isSafeUint(evidence.observedAt) ||
         (value.decision === "completed" &&

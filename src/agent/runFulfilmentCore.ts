@@ -1067,6 +1067,7 @@ function sameFulfilmentHandoff(
     "validationFloorAt",
   ] as const;
   if (scalarKeys.some((key) => left[key] !== right[key]) ||
+      !exact(left.evidenceAuthority, right.evidenceAuthority) ||
       left.auditSourceHash !== right.auditSourceHash ||
       !exact(left.auditSource, right.auditSource) ||
       !exact(left.auditSourceCommitment, right.auditSourceCommitment) ||
@@ -3770,6 +3771,12 @@ async function runFulfilmentCoreInner(
       phase,
       logicalAddress,
       deliverableSpecHash: specHash,
+      agreementViewHash,
+      validationFloorAt: minimumDeliveryTime,
+      evidenceAuthority: {
+        primaryClaim: requiredEvidenceSigner,
+        algorithm: evidenceSigner.algorithm,
+      },
       auditSource: structuredClone(auditSource),
       auditSourceHash,
       auditSourceCommitment: signedAuditSourceCommitment.commitment,
