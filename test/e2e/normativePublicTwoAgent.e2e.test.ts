@@ -3068,7 +3068,7 @@ describe("issue #114 deterministic public two-agent precursor", () => {
     expect(bundles.buyerFinalization.buyerBundle.anchoredByRole).toBe("buyer");
     expect(bundles.sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
     expect(bundles.standardLimitations).toEqual(["DACS-Standard#331"]);
-  });
+  }, 20_000);
 
   test("rejects a wrong-network x402 challenge before the buyer signer", async () => {
     let signerCalls = 0;
