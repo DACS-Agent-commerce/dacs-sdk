@@ -1048,20 +1048,39 @@ async function anchorArtifact(input: {
   const hash = isFaultAttestationBundle(input.artifact)
     ? attestationBundleHash(input.artifact)
     : contentHash(input.artifact);
-  const anchored = await input.adapter.anchorWriteOnce(
-    input.logicalAddress,
-    structuredClone(input.artifact),
-    {
-      metadata: {
-        logicalAddress: input.logicalAddress,
-        contentHash: hash,
-        // `contentHash` intentionally excludes signature envelopes. Retain the
-        // exact JCS envelope as immutable metadata too, so write-once replay
-        // cannot accept a different signature over the same signed scope.
-        envelopeHash: sha256Hex(canonicalize(input.artifact)),
-      },
-    },
-  );
+  const metadata = {
+    logicalAddress: input.logicalAddress,
+    contentHash: hash,
+    // `contentHash` intentionally excludes signature envelopes. Retain the
+    // exact JCS envelope as immutable metadata too, so write-once replay
+    // cannot accept a different signature over the same signed scope.
+    envelopeHash: sha256Hex(canonicalize(input.artifact)),
+  };
+  let anchored: Awaited<ReturnType<DemosBackedAdapter["anchorWriteOnce"]>> | undefined;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      anchored = await input.adapter.anchorWriteOnce(
+        input.logicalAddress,
+        structuredClone(input.artifact),
+        { metadata },
+      );
+      break;
+    } catch (error) {
+      if (
+        !(error instanceof AnchorWaitError) ||
+        error.receipt.name !== input.logicalAddress ||
+        attempt === 3
+      ) throw error;
+      const state = typeof error.receipt.state === "string" &&
+          /^[a-z-]+$/.test(error.receipt.state)
+        ? error.receipt.state : "unknown";
+      process.stderr.write(
+        `funded-e2e-step:anchor-write-recovery-${attempt}-${error.code}-${state}\n`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  requireCondition(anchored !== undefined, "anchor-write-result-missing");
   requireCondition(typeof anchored.txRef === "string" && anchored.txRef.length > 0, "anchor-tx-missing");
   const resolution = await input.adapter.resolveAnchorByName(
     input.logicalAddress,
