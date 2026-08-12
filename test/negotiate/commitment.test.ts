@@ -25,7 +25,7 @@ import {
   sha256Hex,
   type AgreementArtifact,
   type AnchoredFinalityCommitment,
-  type AnchorReceipt,
+  type ProtocolAnchorReceipt,
   type CommitmentSignatureVerifier,
   type FinalityCommitmentProvider,
   type FinalityCommitmentRecord,
@@ -177,6 +177,65 @@ async function agreementFixture(
   return { listing: value, agreement, verifiedListing };
 }
 
+async function signAgreementDraft(
+  draft: Parameters<typeof signFixedPriceAgreement>[0],
+): Promise<AgreementArtifact> {
+  return signFixedPriceAgreement(
+    draft,
+    {
+      party: BUYER,
+      algorithm: "ed25519",
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(BUYER_SEED)),
+    },
+    {
+      party: SELLER,
+      algorithm: "ed25519",
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+    },
+  );
+}
+
+async function meteredAgreementFixture(options: {
+  unitPrice?: { amount: string; currency: string };
+  unit?: string;
+  minTotal?: { amount: string; currency: string };
+  total: { amount: string; currency: string };
+  quantity?: string;
+  quantityUnit?: string;
+}): Promise<Awaited<ReturnType<typeof agreementFixture>>> {
+  const base = await agreementFixture();
+  const value = structuredClone(base.listing);
+  const unit = options.unit ?? "request";
+  value.pricing = {
+    kind: "metered",
+    unitPrice: options.unitPrice ?? { amount: "1.25", currency: "USDC" },
+    unit,
+    ...(options.minTotal === undefined ? {} : { minTotal: options.minTotal }),
+  };
+  const pin = {
+    listingId: value.listingId,
+    version: value.listingVersion,
+    contentHash: contentHash(value as unknown as Record<string, unknown>),
+  };
+  const { signatures: _signatures, ...draft } = structuredClone(base.agreement);
+  draft.listingRef = pin;
+  draft.terms.price = options.total;
+  if (options.quantity === undefined) {
+    delete draft.terms.meteredQuantity;
+  } else {
+    draft.terms.meteredQuantity = {
+      quantity: options.quantity,
+      unit: options.quantityUnit ?? unit,
+    };
+  }
+  const agreement = await signAgreementDraft(draft);
+  return {
+    listing: value,
+    agreement,
+    verifiedListing: { disposition: "verified", listing: value, pin },
+  };
+}
+
 const keys = new Map([
   [BUYER, publicKeyFromSeed(BUYER_SEED)],
   [SELLER, publicKeyFromSeed(SELLER_SEED)],
@@ -197,10 +256,10 @@ const verifySignature: CommitmentSignatureVerifier = (input) => {
 
 function anchored(
   record: FinalityCommitmentRecord,
-  overrides: Partial<AnchorReceipt> = {},
+  overrides: Partial<ProtocolAnchorReceipt> = {},
 ): AnchoredFinalityCommitment {
   const nativeAddress = "stor-finality-commitment";
-  const receipt: AnchorReceipt = {
+  const receipt: ProtocolAnchorReceipt = {
     receiptVersion: "1",
     substrate: "demos:testnet",
     finalityProfile: "demos-bft-final",
@@ -612,6 +671,414 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
         verifySignature,
       ),
     ).rejects.toThrow(/authoritative agreement\/Listing checks/);
+  });
+
+  test("resumes an in-time finalized commitment after local Listing expiry", async () => {
+    const fixture = await agreementFixture();
+    const first = await commitFixedPriceAgreement(
+      commitmentInput(fixture),
+      provider(),
+      verifySignature,
+    );
+    const retryInput = {
+      ...commitmentInput(fixture, () => {
+        throw new Error("a resumed commitment must not sign again");
+      }),
+      createdAt: fixture.listing.validity.notAfter! + 1,
+    };
+
+    const resumed = await commitFixedPriceAgreement(
+      retryInput,
+      provider({ present: anchored(first.record) }),
+      verifySignature,
+    );
+    expect(resumed.resumed).toBe(true);
+    expect(resumed.record.createdAt).toBe(first.record.createdAt);
+
+    await expect(
+      commitFixedPriceAgreement(
+        retryInput,
+        provider(),
+        verifySignature,
+      ),
+    ).rejects.toThrow(/provisional time checks/);
+  });
+
+  test("requires the canonical uppercase ULID address spelling before callbacks", async () => {
+    expect(finalityCommitmentAddress(JOB_ID)).toBe(
+      `dacs3:commit:${JOB_ID}`,
+    );
+    for (const invalid of [
+      JOB_ID.toLowerCase(),
+      `8${JOB_ID.slice(1)}`,
+      `${JOB_ID.slice(0, -1)}I`,
+      JOB_ID.slice(1),
+      `${JOB_ID}0`,
+      "job-finality-1",
+    ]) {
+      expect(() => finalityCommitmentAddress(invalid), invalid).toThrow(
+        /canonical uppercase ULID/,
+      );
+    }
+
+    const fixture = await agreementFixture();
+    const nonCanonicalAgreement = structuredClone(fixture.agreement);
+    nonCanonicalAgreement.jobId = JOB_ID.toLowerCase();
+    let verifications = 0;
+    let resolves = 0;
+    await expect(
+      commitFixedPriceAgreement(
+        {
+          ...commitmentInput(fixture),
+          agreement: nonCanonicalAgreement,
+        },
+        {
+          ...provider(),
+          resolve: async () => {
+            resolves += 1;
+            return { disposition: "absent" };
+          },
+        },
+        (request) => {
+          verifications += 1;
+          return verifySignature(request);
+        },
+      ),
+    ).rejects.toThrow(/canonical uppercase ULID/);
+    expect(verifications).toBe(0);
+    expect(resolves).toBe(0);
+  });
+
+  test("owns caller artifacts and dependency choices before the first await", async () => {
+    const fixture = await agreementFixture();
+    const input = commitmentInput(fixture);
+    const expectedAgreementHash = contentHash(
+      input.agreement as unknown as Record<string, unknown>,
+    );
+    const selectedProvider = provider();
+    let mutated = false;
+
+    const result = await commitFixedPriceAgreement(
+      input,
+      selectedProvider,
+      async (request) => {
+        if (!mutated) {
+          mutated = true;
+          input.agreement.terms.price.amount = "999";
+          input.verifiedListing.listing.pricing = {
+            kind: "fixed",
+            price: { amount: "999", currency: "USDC" },
+          };
+          input.commitmentSigner.signer = BUYER;
+          selectedProvider.resolve = async () => ({
+            disposition: "indeterminate",
+            reason: "swapped after verification began",
+          });
+          await Promise.resolve();
+        }
+        return verifySignature(request);
+      },
+    );
+
+    expect(result.agreementHash).toBe(expectedAgreementHash);
+    expect(result.record.signature.signer).toBe(ORCHESTRATOR);
+    expect(result.resumed).toBe(false);
+  });
+
+  test("rejects accessor-backed input without invoking it or external work", async () => {
+    const fixture = await agreementFixture();
+    const input = commitmentInput(fixture);
+    let getterCalls = 0;
+    let resolves = 0;
+    let verifications = 0;
+    Object.defineProperty(input, "agreement", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        getterCalls += 1;
+        return fixture.agreement;
+      },
+    });
+
+    await expect(
+      commitFixedPriceAgreement(
+        input,
+        {
+          ...provider(),
+          resolve: async () => {
+            resolves += 1;
+            return { disposition: "absent" };
+          },
+        },
+        (request) => {
+          verifications += 1;
+          return verifySignature(request);
+        },
+      ),
+    ).rejects.toThrow(/agreement must be an enumerable data property/);
+    expect(getterCalls).toBe(0);
+    expect(resolves).toBe(0);
+    expect(verifications).toBe(0);
+  });
+
+  test("captures only stable provider data methods without invoking getters", async () => {
+    const fixture = await agreementFixture();
+    const selectedProvider = provider();
+    let getterCalls = 0;
+    Object.defineProperty(selectedProvider, "resolve", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        getterCalls += 1;
+        return async () => ({ disposition: "absent" as const });
+      },
+    });
+    await expect(
+      commitFixedPriceAgreement(
+        commitmentInput(fixture),
+        selectedProvider,
+        verifySignature,
+      ),
+    ).rejects.toThrow(/resolve must be a data method/);
+    expect(getterCalls).toBe(0);
+
+    const proxyProvider = provider();
+    proxyProvider.resolve = new Proxy(proxyProvider.resolve, {});
+    await expect(
+      commitFixedPriceAgreement(
+        commitmentInput(fixture),
+        proxyProvider,
+        verifySignature,
+      ),
+    ).rejects.toThrow(/resolve must be a data method/);
+  });
+
+  test("rejects non-exact lookup and present-result envelopes", async () => {
+    const fixture = await agreementFixture();
+    const first = await commitFixedPriceAgreement(
+      commitmentInput(fixture),
+      provider(),
+      verifySignature,
+    );
+    const malformedLookups: unknown[] = [
+      { disposition: "absent", reason: "extra" },
+      { disposition: "indeterminate", reason: "" },
+      {
+        disposition: "present",
+        anchored: anchored(first.record),
+        extra: true,
+      },
+    ];
+    for (const lookup of malformedLookups) {
+      await expect(
+        commitFixedPriceAgreement(
+          commitmentInput(fixture),
+          {
+            ...provider(),
+            resolve: async () => lookup as never,
+          },
+          verifySignature,
+        ),
+        JSON.stringify(lookup),
+      ).rejects.toThrow(/malformed lookup envelope/);
+    }
+
+    await expect(
+      commitFixedPriceAgreement(
+        commitmentInput(fixture),
+        {
+          ...provider(),
+          resolve: async () => ({
+            disposition: "present",
+            anchored: { ...anchored(first.record), extra: true } as never,
+          }),
+        },
+        verifySignature,
+      ),
+    ).rejects.toThrow(/malformed anchor result/);
+
+    let getterCalls = 0;
+    const accessorLookup = Object.defineProperty({}, "disposition", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "absent";
+      },
+    });
+    await expect(
+      commitFixedPriceAgreement(
+        commitmentInput(fixture),
+        {
+          ...provider(),
+          resolve: async () => accessorLookup as never,
+        },
+        verifySignature,
+      ),
+    ).rejects.toThrow(/unstable or non-wire result/);
+    expect(getterCalls).toBe(0);
+  });
+
+  test("requires a fresh anchor to return the exact submitted record", async () => {
+    const fixture = await agreementFixture();
+    await expect(
+      commitFixedPriceAgreement(
+        commitmentInput(fixture),
+        {
+          ...provider(),
+          submit: async (_logicalAddress, record) =>
+            anchored({ ...record, createdAt: record.createdAt + 1 }),
+        },
+        verifySignature,
+      ),
+    ).rejects.toThrow(/exact submitted record/);
+  });
+
+  test("rejects a receipt verifier that mutates its isolated proof input", async () => {
+    const fixture = await agreementFixture();
+    await expect(
+      commitFixedPriceAgreement(
+        commitmentInput(fixture),
+        {
+          ...provider(),
+          verifyAnchorReceipt: async (candidate) => {
+            (
+              candidate.anchorReceipt as ProtocolAnchorReceipt
+            ).writer = "mutated-writer";
+            return "valid" as const;
+          },
+        },
+        verifySignature,
+      ),
+    ).rejects.toThrow(/proof verifier mutated its input/);
+  });
+
+  test("fails closed for auto-accept until its typed proof path exists", async () => {
+    const fixture = await agreementFixture();
+    const value = structuredClone(fixture.listing);
+    value.terms.acceptanceModel = "auto-accept";
+    const input = commitmentInput(fixture);
+    input.verifiedListing = {
+      disposition: "verified",
+      listing: value,
+      pin: {
+        listingId: value.listingId,
+        version: value.listingVersion,
+        contentHash: contentHash(value as unknown as Record<string, unknown>),
+      },
+    };
+    let resolves = 0;
+    let verifications = 0;
+
+    await expect(
+      commitFixedPriceAgreement(
+        input,
+        {
+          ...provider(),
+          resolve: async () => {
+            resolves += 1;
+            return { disposition: "absent" };
+          },
+        },
+        (request) => {
+          verifications += 1;
+          return verifySignature(request);
+        },
+      ),
+    ).rejects.toThrow(/auto-accept requires a verified commitment/);
+    expect(resolves).toBe(0);
+    expect(verifications).toBe(0);
+  });
+
+  test("accepts exact metered products and minimum-total floors", async () => {
+    const cases = [
+      await meteredAgreementFixture({
+        total: { amount: "5", currency: "USDC" },
+        quantity: "4",
+      }),
+      await meteredAgreementFixture({
+        unitPrice: { amount: "0.25", currency: "USDC" },
+        minTotal: { amount: "2", currency: "USDC" },
+        total: { amount: "2", currency: "USDC" },
+        quantity: "2",
+      }),
+      await meteredAgreementFixture({
+        unitPrice: { amount: "0.5", currency: "USDC" },
+        minTotal: { amount: "1", currency: "USDC" },
+        total: { amount: "1", currency: "USDC" },
+        quantity: "0",
+      }),
+      await meteredAgreementFixture({
+        unitPrice: { amount: "0.000001", currency: "USDC" },
+        unit: "token",
+        total: { amount: "123.456789", currency: "USDC" },
+        quantity: "123456789",
+      }),
+    ];
+    for (const fixture of cases) {
+      const result = await commitFixedPriceAgreement(
+        commitmentInput(fixture),
+        provider(),
+        verifySignature,
+      );
+      expect(result.resumed).toBe(false);
+    }
+  });
+
+  test("rejects incomplete or incorrectly recomputed metered terms before lookup", async () => {
+    const cases = [
+      {
+        fixture: await meteredAgreementFixture({
+          total: { amount: "5.01", currency: "USDC" },
+          quantity: "4",
+        }),
+        reason: /metered-total-mismatch/,
+      },
+      {
+        fixture: await meteredAgreementFixture({
+          total: { amount: "5", currency: "USDC" },
+          quantity: "4",
+          quantityUnit: "token",
+        }),
+        reason: /metered-unit-mismatch/,
+      },
+      {
+        fixture: await meteredAgreementFixture({
+          total: { amount: "5", currency: "USDC" },
+        }),
+        reason: /missing-metered-quantity/,
+      },
+    ];
+    for (const { fixture, reason } of cases) {
+      let resolves = 0;
+      await expect(
+        commitFixedPriceAgreement(
+          commitmentInput(fixture),
+          {
+            ...provider(),
+            resolve: async () => {
+              resolves += 1;
+              return { disposition: "absent" };
+            },
+          },
+          verifySignature,
+        ),
+      ).rejects.toThrow(reason);
+      expect(resolves).toBe(0);
+    }
+
+    const fixed = await agreementFixture();
+    const { signatures: _signatures, ...draft } = structuredClone(
+      fixed.agreement,
+    );
+    draft.terms.meteredQuantity = { quantity: "1", unit: "request" };
+    const agreement = await signAgreementDraft(draft);
+    await expect(
+      commitFixedPriceAgreement(
+        { ...commitmentInput(fixed), agreement },
+        provider(),
+        verifySignature,
+      ),
+    ).rejects.toThrow(/unexpected-metered-quantity/);
   });
 
   test("rejects a finality record signed under the legacy domain", async () => {

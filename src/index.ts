@@ -445,7 +445,10 @@ export {
   type AnchorTransactionRef,
   type AnchorReceiptEvidence,
   type AnchorLifecycleState,
-  type AnchorReceipt,
+  // The top-level `AnchorReceipt` name is the long-standing substrate write
+  // receipt. Keep that API stable and expose CORE §5.1's portable receipt under
+  // an unambiguous alias; the artifacts subpath retains its normative name.
+  type AnchorReceipt as ProtocolAnchorReceipt,
   type ArtifactSignature,
   type PaymentPhaseType,
   type DeliveryPhaseType,

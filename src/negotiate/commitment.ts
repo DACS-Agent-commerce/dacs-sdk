@@ -1,7 +1,16 @@
-import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
+import { types as nodeTypes } from "node:util";
+
+import {
+  canonicalize,
+  canonicalizeDecimal,
+  contentHash,
+  sha256Hex,
+} from "../canonical/index.js";
+import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import {
+  COMPONENT_SIGNATURE_ALGORITHMS,
   signComponentArtifact,
   type BuildComponentSignatureOptions,
 } from "../artifacts/signatures.js";
@@ -100,23 +109,233 @@ export interface FinalizedAgreementCommitment {
   resumed: boolean;
 }
 
+interface CapturedCommitmentInput {
+  agreement: AgreementArtifact;
+  verifiedListing: VerifiedListingInput;
+  orchestrator: string;
+  createdAt: number;
+  commitmentSigner: BuildComponentSignatureOptions;
+}
+
+interface CapturedCommitmentProvider {
+  resolve: FinalityCommitmentProvider["resolve"];
+  submit: FinalityCommitmentProvider["submit"];
+  verifyAnchorReceipt: FinalityCommitmentProvider["verifyAnchorReceipt"];
+}
+
+interface FixedPriceBinding {
+  agreementHash: string;
+  pin: ListingPin;
+  parties: string[];
+  deadlineSeconds: number;
+}
+
 const isSafeTime = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+// CORE §B.1 fixes every logical-address jobId segment to the canonical
+// 26-character Crockford-Base32 ULID form.  In particular, accepting a
+// lowercase or delimiter-free free-form token here would create a second
+// address spelling for the same session in implementations that canonicalise
+// job identifiers before lookup.
+const CANONICAL_JOB_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-const exact = (a: unknown, b: unknown): boolean =>
-  canonicalize(a) === canonicalize(b);
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === expected.length &&
+    keys.every((key) =>
+      typeof key === "string" && expected.includes(key),
+    )
+  );
+}
 
-const listingPinEquals = (a: ListingPin, b: ListingPin): boolean =>
-  a.listingId === b.listingId &&
-  a.version === b.version &&
-  a.contentHash === b.contentHash;
+function exact(a: unknown, b: unknown): boolean {
+  return canonicalize(a) === canonicalize(b);
+}
+
+function listingPinEquals(a: ListingPin, b: ListingPin): boolean {
+  return (
+    a.listingId === b.listingId &&
+    a.version === b.version &&
+    a.contentHash === b.contentHash
+  );
+}
+
+function ownDataProperty(
+  value: unknown,
+  key: string,
+  label: string,
+): unknown {
+  if (
+    !isRecord(value) ||
+    nodeTypes.isProxy(value) ||
+    (Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null)
+  ) {
+    throw new DacsError(`${label} must be a plain data object`);
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+    throw new DacsError(`${label}.${key} must be an enumerable data property`);
+  }
+  return descriptor.value;
+}
+
+function capturedSignerOptions(value: unknown): BuildComponentSignatureOptions {
+  const algorithm = ownDataProperty(
+    value,
+    "algorithm",
+    "commitmentSigner",
+  );
+  const signer = ownDataProperty(value, "signer", "commitmentSigner");
+  const signCandidate = ownDataProperty(value, "sign", "commitmentSigner");
+  const algorithms: ReadonlySet<unknown> = new Set(
+    COMPONENT_SIGNATURE_ALGORITHMS,
+  );
+  if (!algorithms.has(algorithm)) {
+    throw new DacsError("commitment signer uses an unsupported algorithm");
+  }
+  if (
+    typeof signer !== "string" ||
+    signer.length === 0 ||
+    signer.trim() !== signer
+  ) {
+    throw new DacsError("commitment signer claim must be a non-empty string");
+  }
+  if (typeof signCandidate !== "function" || nodeTypes.isProxy(signCandidate)) {
+    throw new DacsError("commitment signer callback must be a function");
+  }
+  return {
+    algorithm: algorithm as BuildComponentSignatureOptions["algorithm"],
+    signer,
+    sign: Function.prototype.bind.call(
+      signCandidate,
+      value,
+    ) as BuildComponentSignatureOptions["sign"],
+  };
+}
+
+/** Capture all scalar/callback choices before inspecting either signed artifact. */
+function captureCommitmentInput(
+  value: CommitFixedPriceAgreementInput,
+): CapturedCommitmentInput {
+  const signerOptions = capturedSignerOptions(
+    ownDataProperty(value, "commitmentSigner", "commitment input"),
+  );
+  const orchestrator = ownDataProperty(
+    value,
+    "orchestrator",
+    "commitment input",
+  );
+  const createdAt = ownDataProperty(value, "createdAt", "commitment input");
+  const agreement = ownDataProperty(value, "agreement", "commitment input");
+  const verifiedListing = ownDataProperty(
+    value,
+    "verifiedListing",
+    "commitment input",
+  );
+  if (
+    typeof orchestrator !== "string" ||
+    orchestrator.length === 0 ||
+    orchestrator.trim() !== orchestrator
+  ) {
+    throw new DacsError("authenticated commitment orchestrator must be non-empty");
+  }
+  if (!isSafeTime(createdAt)) {
+    throw new DacsError("commitment createdAt must be non-negative unix ms");
+  }
+
+  const artifacts = snapshotCanonicalJson(
+    { agreement, verifiedListing },
+    "commitment input artifacts",
+  ) as {
+    agreement: AgreementArtifact;
+    verifiedListing: VerifiedListingInput;
+  };
+  return {
+    agreement: artifacts.agreement,
+    verifiedListing: artifacts.verifiedListing,
+    orchestrator,
+    createdAt,
+    commitmentSigner: signerOptions,
+  };
+}
+
+function providerDataMethod<K extends keyof FinalityCommitmentProvider>(
+  provider: FinalityCommitmentProvider,
+  key: K,
+): FinalityCommitmentProvider[K] {
+  if (
+    provider === null ||
+    typeof provider !== "object" ||
+    nodeTypes.isProxy(provider)
+  ) {
+    throw new SubstrateError("commitment provider must be a stable object");
+  }
+  let cursor: object | null = provider;
+  while (cursor !== null) {
+    if (nodeTypes.isProxy(cursor)) {
+      throw new SubstrateError(
+        `commitment provider ${String(key)} must not come from a proxy prototype`,
+      );
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+    if (descriptor) {
+      if (
+        !("value" in descriptor) ||
+        typeof descriptor.value !== "function" ||
+        nodeTypes.isProxy(descriptor.value)
+      ) {
+        throw new SubstrateError(
+          `commitment provider ${String(key)} must be a data method`,
+        );
+      }
+      return Function.prototype.bind.call(
+        descriptor.value,
+        provider,
+      ) as FinalityCommitmentProvider[K];
+    }
+    cursor = Object.getPrototypeOf(cursor) as object | null;
+  }
+  throw new SubstrateError(
+    `commitment provider is missing ${String(key)}`,
+  );
+}
+
+function captureProvider(
+  provider: FinalityCommitmentProvider,
+): CapturedCommitmentProvider {
+  return Object.freeze({
+    resolve: providerDataMethod(provider, "resolve"),
+    submit: providerDataMethod(provider, "submit"),
+    verifyAnchorReceipt: providerDataMethod(provider, "verifyAnchorReceipt"),
+  });
+}
+
+function captureVerifier(
+  verifier: CommitmentSignatureVerifier,
+): CommitmentSignatureVerifier {
+  if (typeof verifier !== "function" || nodeTypes.isProxy(verifier)) {
+    throw new DacsError("commitment signature verifier must be a function");
+  }
+  return Function.prototype.bind.call(
+    verifier,
+    undefined,
+  ) as CommitmentSignatureVerifier;
+}
 
 export function finalityCommitmentAddress(jobId: string): string {
-  if (typeof jobId !== "string" || jobId.length === 0 || jobId.includes(":")) {
-    throw new DacsError("commitment jobId must be a non-empty delimiter-free value");
+  if (typeof jobId !== "string" || !CANONICAL_JOB_ID.test(jobId)) {
+    throw new DacsError(
+      "commitment jobId must be a canonical uppercase ULID",
+    );
   }
   return `dacs3:commit:${jobId}`;
 }
@@ -125,8 +344,8 @@ function expectedDeliverable(listing: Listing): Record<string, unknown> {
   const deliverable = listing.offering.deliverable;
   return {
     deliverableType: deliverable.kind,
-    // DACS-4 §9.3 hashes the complete, anchored DeliverableSpec JCS bytes. This
-    // is deliberately not the artifact signed-scope helper.
+    // DACS-4 §9.3 hashes the complete anchored DeliverableSpec JCS bytes. Do
+    // not use contentHash(), whose artifact scope omits signature-named fields.
     hash: sha256Hex(canonicalize(deliverable)),
     ...(deliverable.kind === "storage-program" &&
     deliverable.schemaUrl !== undefined
@@ -149,25 +368,34 @@ function validateRailAndPayoutCoverage(
   const rail = agreement.terms.rail;
   if (indexes.length === 0) {
     if (rail !== undefined) {
-      throw new DacsError("zero-pay commitment requires agreement terms.rail to be absent");
+      throw new DacsError(
+        "zero-pay commitment requires agreement terms.rail to be absent",
+      );
     }
   } else {
     if (
       rail === undefined ||
       !(listing.acceptedRails ?? []).some((candidate) => exact(candidate, rail))
     ) {
-      throw new DacsError("agreement rail is not an exact acceptedRails member");
+      throw new DacsError(
+        "agreement rail is not an exact acceptedRails member",
+      );
     }
     for (const index of indexes) {
       if (listing.pipeline[index]!.parameters?.rail !== rail.railId) {
-        throw new DacsError(`pay phase ${index} does not bind the agreement rail`);
+        throw new DacsError(
+          `pay phase ${index} does not bind the agreement rail`,
+        );
       }
     }
   }
 
   if (!("payeeBoundAgreementVersion" in agreement)) return;
   const expected = new Set(
-    indexes.map((index) => `${listing.pipeline[index]!.parameters?.rail}\u0000${index}`),
+    indexes.map(
+      (index) =>
+        `${listing.pipeline[index]!.parameters?.rail}\u0000${index}`,
+    ),
   );
   const actual = new Set(
     agreement.terms.payoutBindings.map(
@@ -179,17 +407,21 @@ function validateRailAndPayoutCoverage(
     expected.size !== actual.size ||
     [...expected].some((key) => !actual.has(key))
   ) {
-    throw new DacsError("payee-bound agreement does not exactly cover the Listing pay phases");
+    throw new DacsError(
+      "payee-bound agreement does not exactly cover the Listing pay phases",
+    );
   }
 }
 
 function selectFixedPriceArtifact(
-  input: CommitFixedPriceAgreementInput,
+  input: CapturedCommitmentInput,
 ): { agreement: AgreementArtifact; listing: Listing } {
   const agreement = input.agreement;
   const verified = input.verifiedListing;
   if (verified.disposition !== "verified") {
-    throw new DacsError("commitment requires an explicitly verified Listing disposition");
+    throw new DacsError(
+      "commitment requires an explicitly verified Listing disposition",
+    );
   }
   const candidate = verified.listing as unknown;
   if (isRecord(candidate) && isRecord(candidate.pricing)) {
@@ -202,63 +434,183 @@ function selectFixedPriceArtifact(
     }
   }
   if (!isListing(verified.listing) || !isAgreementArtifact(agreement)) {
-    throw new DacsError("commitment input has a non-normative Listing or agreement shape");
+    throw new DacsError(
+      "commitment input has a non-normative Listing or agreement shape",
+    );
   }
   const listing = verified.listing;
+  if (listing.terms.acceptanceModel === "auto-accept") {
+    throw new DacsError(
+      "auto-accept requires a verified commitment and live instance-signature path",
+    );
+  }
   const negotiate = listing.pipeline.filter((phase) =>
     phase.kind.startsWith("negotiate-"),
   );
-  const commits = listing.pipeline.filter((phase) => phase.kind.startsWith("commit-"));
+  const commits = listing.pipeline.filter((phase) =>
+    phase.kind.startsWith("commit-"),
+  );
   if (
     negotiate.length !== 1 ||
     negotiate[0]!.kind !== "negotiate-fixed-price" ||
     commits.length !== 1
   ) {
-    throw new DacsError("Listing does not select one fixed-price commitment pipeline");
+    throw new DacsError(
+      "Listing does not select one fixed-price commitment pipeline",
+    );
   }
   const expectedCommit =
     "agreementVersion" in agreement
       ? "commit-agreement"
       : "commit-payee-bound-agreement";
   if (commits[0]!.kind !== expectedCommit) {
-    throw new DacsError("agreement artifact discriminator does not match the commit phase (CA-5)");
+    throw new DacsError(
+      "agreement artifact discriminator does not match the commit phase (CA-5)",
+    );
   }
   return { agreement, listing };
 }
 
+function decimalParts(value: string): { whole: string; fraction: string } {
+  const [whole = "0", fraction = ""] = value.split(".");
+  return { whole, fraction };
+}
+
+function compareCanonicalDecimal(left: string, right: string): number {
+  const a = decimalParts(left);
+  const b = decimalParts(right);
+  if (a.whole.length !== b.whole.length) {
+    return a.whole.length < b.whole.length ? -1 : 1;
+  }
+  if (a.whole !== b.whole) return a.whole < b.whole ? -1 : 1;
+  const width = Math.max(a.fraction.length, b.fraction.length);
+  const aFraction = a.fraction.padEnd(width, "0");
+  const bFraction = b.fraction.padEnd(width, "0");
+  return aFraction === bFraction ? 0 : aFraction < bFraction ? -1 : 1;
+}
+
+function multiplyCanonicalDecimal(amount: string, quantity: string): string {
+  const { whole, fraction } = decimalParts(amount);
+  const digits = `${whole}${fraction}`;
+  const product = BigInt(digits) * BigInt(quantity);
+  if (fraction.length === 0) return product.toString();
+  const padded = product.toString().padStart(fraction.length + 1, "0");
+  const split = padded.length - fraction.length;
+  return canonicalizeDecimal(`${padded.slice(0, split)}.${padded.slice(split)}`);
+}
+
+function validatePricingBinding(
+  listing: Listing,
+  agreement: AgreementArtifact,
+): void {
+  const quantity = agreement.terms.meteredQuantity;
+  if (listing.pricing.kind === "fixed" || listing.pricing.kind === "negotiable") {
+    if (quantity !== undefined) {
+      throw new DacsError(
+        "unexpected-metered-quantity: non-metered agreement must omit meteredQuantity",
+      );
+    }
+    const expectedPrice =
+      listing.pricing.kind === "fixed"
+        ? listing.pricing.price
+        : listing.pricing.bandCenter;
+    if (agreement.terms.price.currency !== expectedPrice.currency) {
+      throw new DacsError("agreement price currency does not match the Listing");
+    }
+    if (!exact(agreement.terms.price, expectedPrice)) {
+      throw new DacsError(
+        "agreement price is not the exact fixed-price Listing term",
+      );
+    }
+    return;
+  }
+
+  if (listing.pricing.kind !== "metered") {
+    throw new DacsError(
+      `${listing.pricing.kind} pricing is unsupported by fixed-price commitment`,
+    );
+  }
+  if (agreement.terms.price.currency !== listing.pricing.unitPrice.currency) {
+    throw new DacsError(
+      "price-currency-mismatch: metered agreement currency differs from unitPrice",
+    );
+  }
+  if (
+    listing.pricing.minTotal !== undefined &&
+    listing.pricing.minTotal.currency !== listing.pricing.unitPrice.currency
+  ) {
+    throw new DacsError(
+      "min-total-currency-mismatch: metered minimum uses a different currency",
+    );
+  }
+  if (!quantity) {
+    throw new DacsError(
+      "missing-metered-quantity: metered agreement requires meteredQuantity",
+    );
+  }
+  if (
+    typeof quantity.quantity !== "string" ||
+    !/^(0|[1-9][0-9]*)$/.test(quantity.quantity)
+  ) {
+    throw new DacsError(
+      "non-canonical-metered-quantity: quantity must be an unsigned canonical integer",
+    );
+  }
+  if (quantity.unit !== listing.pricing.unit) {
+    throw new DacsError(
+      "metered-unit-mismatch: metered quantity unit differs from the Listing",
+    );
+  }
+
+  const product = multiplyCanonicalDecimal(
+    listing.pricing.unitPrice.amount,
+    quantity.quantity,
+  );
+  const minimum = listing.pricing.minTotal?.amount;
+  const expectedAmount =
+    minimum !== undefined && compareCanonicalDecimal(minimum, product) > 0
+      ? minimum
+      : product;
+  if (expectedAmount === "0") {
+    throw new DacsError(
+      "metered total must be positive when no minimum total applies",
+    );
+  }
+  if (agreement.terms.price.amount !== expectedAmount) {
+    throw new DacsError(
+      `metered-total-mismatch: expected ${expectedAmount}`,
+    );
+  }
+}
+
 function fixedPriceBinding(
-  input: CommitFixedPriceAgreementInput,
+  input: CapturedCommitmentInput,
   selected: ReturnType<typeof selectFixedPriceArtifact>,
-): {
-  agreementHash: string;
-  pin: ListingPin;
-  parties: string[];
-  deadlineSeconds: number;
-} {
+): FixedPriceBinding {
   const { agreement, listing } = selected;
-  const verified = input.verifiedListing;
   const pin: ListingPin = {
     listingId: listing.listingId,
     version: listing.listingVersion,
     contentHash: contentHash(listing as unknown as Record<string, unknown>),
   };
-  if (!listingPinEquals(verified.pin, pin) || !listingPinEquals(agreement.listingRef, pin)) {
-    throw new DacsError("agreement commitment does not bind the exact verified Listing pin");
+  if (
+    !listingPinEquals(input.verifiedListing.pin, pin) ||
+    !listingPinEquals(agreement.listingRef, pin)
+  ) {
+    throw new DacsError(
+      "agreement commitment does not bind the exact verified Listing pin",
+    );
   }
   if (agreement.derivedFromPattern !== "fixed-price") {
-    throw new DacsError("this commitment core supports only fixed-price agreements");
+    throw new DacsError(
+      "this commitment core supports only fixed-price agreements",
+    );
   }
-  const expectedPrice =
-    listing.pricing.kind === "fixed"
-      ? listing.pricing.price
-      : listing.pricing.kind === "negotiable"
-        ? listing.pricing.bandCenter
-        : null;
-  if (!expectedPrice || !exact(agreement.terms.price, expectedPrice)) {
-    throw new DacsError("agreement price is not the exact fixed-price Listing term");
-  }
+  validatePricingBinding(listing, agreement);
   if (!exact(agreement.terms.deliverable, expectedDeliverable(listing))) {
-    throw new DacsError("agreement deliverable does not match the pinned Listing");
+    throw new DacsError(
+      "agreement deliverable does not match the pinned Listing",
+    );
   }
   validateRailAndPayoutCoverage(listing, agreement);
 
@@ -269,47 +621,121 @@ function fixedPriceBinding(
     !seller ||
     seller.primaryClaim !== listing.seller.identity.presentedBy
   ) {
-    throw new DacsError("agreement parties do not match the pinned Listing seller");
+    throw new DacsError(
+      "agreement parties do not match the pinned Listing seller",
+    );
   }
   const deadlineSeconds = listing.terms.deadlineSecAfterCommit;
-  if (
-    !Number.isSafeInteger(deadlineSeconds) ||
-    (deadlineSeconds ?? 0) <= 0 ||
-    !isSafeTime(input.createdAt) ||
-    agreement.generatedAt > input.createdAt ||
-    input.createdAt < listing.validity.notBefore ||
-    (listing.validity.notAfter !== undefined &&
-      input.createdAt > listing.validity.notAfter)
-  ) {
-    throw new DacsError("agreement commitment fails its provisional time checks");
-  }
-  const provisionalLimit = input.createdAt + deadlineSeconds! * 1_000;
-  if (!Number.isSafeInteger(provisionalLimit) || agreement.terms.deadline > provisionalLimit) {
-    throw new DacsError("agreement deadline exceeds the provisional Listing limit");
+  if (!Number.isSafeInteger(deadlineSeconds) || (deadlineSeconds ?? 0) <= 0) {
+    throw new DacsError(
+      "Listing commitment requires a positive deadlineSecAfterCommit",
+    );
   }
   return {
-    agreementHash: contentHash(agreement as unknown as Record<string, unknown>),
+    agreementHash: contentHash(
+      agreement as unknown as Record<string, unknown>,
+    ),
     pin,
     parties: [buyer.primaryClaim, seller.primaryClaim],
     deadlineSeconds: deadlineSeconds!,
   };
 }
 
+function validateProvisionalTime(
+  input: CapturedCommitmentInput,
+  selected: ReturnType<typeof selectFixedPriceArtifact>,
+  binding: FixedPriceBinding,
+): void {
+  const { agreement, listing } = selected;
+  if (
+    !isSafeTime(input.createdAt) ||
+    agreement.generatedAt > input.createdAt ||
+    input.createdAt < listing.validity.notBefore ||
+    (listing.validity.notAfter !== undefined &&
+      input.createdAt > listing.validity.notAfter)
+  ) {
+    throw new DacsError(
+      "agreement commitment fails its provisional time checks",
+    );
+  }
+  const provisionalLimit =
+    input.createdAt + binding.deadlineSeconds * 1_000;
+  if (
+    !Number.isSafeInteger(provisionalLimit) ||
+    agreement.terms.deadline > provisionalLimit
+  ) {
+    throw new DacsError(
+      "agreement deadline exceeds the provisional Listing limit",
+    );
+  }
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function verificationRequestUnchanged(
+  request: CommitmentSignatureVerificationInput,
+  expected: CommitmentSignatureVerificationInput,
+): boolean {
+  const descriptors = Object.getOwnPropertyDescriptors(request);
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.length !== 5 ||
+    keys.some(
+      (key) =>
+        typeof key !== "string" ||
+        !["purpose", "signedBytes", "algorithm", "signer", "value"].includes(
+          key,
+        ),
+    )
+  ) {
+    return false;
+  }
+  const data = (key: string): unknown => {
+    const descriptor = descriptors[key];
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  };
+  const callbackBytes = data("signedBytes");
+  return (
+    data("purpose") === expected.purpose &&
+    callbackBytes instanceof Uint8Array &&
+    sameBytes(callbackBytes, expected.signedBytes) &&
+    data("algorithm") === expected.algorithm &&
+    data("signer") === expected.signer &&
+    data("value") === expected.value
+  );
+}
+
 async function requireSignature(
   verifier: CommitmentSignatureVerifier,
-  request: CommitmentSignatureVerificationInput,
+  expected: CommitmentSignatureVerificationInput,
 ): Promise<void> {
+  const request: CommitmentSignatureVerificationInput = {
+    ...expected,
+    signedBytes: Uint8Array.from(expected.signedBytes),
+  };
   let disposition: CommitmentVerificationDisposition;
   try {
     disposition = await verifier(request);
   } catch (error) {
-    throw new DacsError(`${request.purpose} signature verification errored`, {
-      cause: error,
-    });
+    throw new DacsError(
+      `${expected.purpose} signature verification errored`,
+      { cause: error },
+    );
+  }
+  if (!verificationRequestUnchanged(request, expected)) {
+    throw new DacsError(
+      `${expected.purpose} signature verifier mutated its verification input`,
+    );
   }
   if (disposition !== "valid") {
     throw new DacsError(
-      `${request.purpose} signature is not verified (${disposition})`,
+      `${expected.purpose} signature is not verified (${String(disposition)})`,
     );
   }
 }
@@ -326,6 +752,8 @@ async function verifyAgreementSignatures(
     separator,
     contentHash(agreement as unknown as Record<string, unknown>),
   );
+  // The captured Agreement has exactly two required signatures. Iterate this
+  // owned fixed-length snapshot so a verifier cannot remove the second check.
   for (const signature of agreement.signatures) {
     await requireSignature(verifier, {
       purpose: "agreement",
@@ -338,8 +766,8 @@ async function verifyAgreementSignatures(
 }
 
 function unsignedFinalityRecord(
-  input: CommitFixedPriceAgreementInput,
-  binding: ReturnType<typeof fixedPriceBinding>,
+  input: CapturedCommitmentInput,
+  binding: FixedPriceBinding,
 ): Omit<FinalityCommitmentRecord, "signature"> {
   return {
     finalityCommitmentVersion: "1",
@@ -354,15 +782,17 @@ function unsignedFinalityRecord(
 
 function recordMatchesBinding(
   record: FinalityCommitmentRecord,
-  input: CommitFixedPriceAgreementInput,
-  binding: ReturnType<typeof fixedPriceBinding>,
+  input: CapturedCommitmentInput,
+  binding: FixedPriceBinding,
 ): boolean {
   return (
     record.jobId === input.agreement.jobId &&
     record.agreementHash === binding.agreementHash &&
     listingPinEquals(record.listingRef, binding.pin) &&
     record.parties.length === binding.parties.length &&
-    binding.parties.every((party, index) => record.parties[index] === party) &&
+    binding.parties.every(
+      (party, index) => record.parties[index] === party,
+    ) &&
     record.pattern === "fixed-price" &&
     record.signature.signer === input.orchestrator
   );
@@ -384,10 +814,87 @@ async function verifyCommitmentSignature(
   });
 }
 
+function snapshotAnchored(
+  value: unknown,
+  label: string,
+): AnchoredFinalityCommitment {
+  let captured: unknown;
+  try {
+    captured = snapshotCanonicalJson(value, label);
+  } catch (cause) {
+    throw new SubstrateError(
+      `${label} returned an unstable or non-wire anchor result`,
+      { cause },
+    );
+  }
+  if (
+    !isRecord(captured) ||
+    !hasExactKeys(captured, [
+      "record",
+      "nativeAddress",
+      "anchorTxRef",
+      "anchorReceipt",
+    ]) ||
+    !isRecord(captured.record) ||
+    typeof captured.nativeAddress !== "string" ||
+    !isRecord(captured.anchorTxRef) ||
+    !isRecord(captured.anchorReceipt)
+  ) {
+    throw new SubstrateError(`${label} returned a malformed anchor result`);
+  }
+  return captured as unknown as AnchoredFinalityCommitment;
+}
+
+function snapshotLookup(value: unknown): FinalityCommitmentLookup {
+  let captured: unknown;
+  try {
+    captured = snapshotCanonicalJson(value, "commitment lookup");
+  } catch (cause) {
+    throw new SubstrateError(
+      "commitment lookup returned an unstable or non-wire result",
+      { cause },
+    );
+  }
+  if (!isRecord(captured)) {
+    throw new SubstrateError(
+      "commitment lookup returned a malformed lookup envelope",
+    );
+  }
+  if (
+    captured.disposition === "absent" &&
+    hasExactKeys(captured, ["disposition"])
+  ) {
+    return { disposition: "absent" };
+  }
+  if (
+    captured.disposition === "indeterminate" &&
+    hasExactKeys(captured, ["disposition", "reason"]) &&
+    typeof captured.reason === "string" &&
+    captured.reason.trim().length > 0
+  ) {
+    return { disposition: "indeterminate", reason: captured.reason };
+  }
+  if (
+    captured.disposition === "present" &&
+    hasExactKeys(captured, ["disposition", "anchored"])
+  ) {
+    return {
+      disposition: "present",
+      anchored: snapshotAnchored(
+        captured.anchored,
+        "commitment lookup present result",
+      ),
+    };
+  }
+  throw new SubstrateError(
+    "commitment lookup returned a malformed lookup envelope",
+  );
+}
+
 async function finalizedReceiptTime(
   logicalAddress: string,
   anchored: AnchoredFinalityCommitment,
-  provider: FinalityCommitmentProvider,
+  verifyAnchorReceipt: CapturedCommitmentProvider["verifyAnchorReceipt"],
 ): Promise<number> {
   const record = anchored.record as FinalityCommitmentRecord;
   const receipt = anchored.anchorReceipt;
@@ -404,15 +911,43 @@ async function finalizedReceiptTime(
       contentHash(record as unknown as Record<string, unknown>) ||
     !isSafeTime(receipt.blockRef?.timestamp)
   ) {
-    throw new DacsError("commitment receipt is not an exact finalized SR-2 binding");
+    throw new DacsError(
+      "commitment receipt is not an exact finalized SR-2 binding",
+    );
   }
+  // Capture authoritative time before the proof callback and give that callback
+  // a separate owned view. Mutation is a provider contract violation, not time.
+  const committedAt = receipt.blockRef.timestamp;
+  const callbackAnchored = snapshotCanonicalJson(
+    anchored,
+    "commitment receipt proof input",
+  );
+  const expectedCallbackCanonical = canonicalize(callbackAnchored);
   let disposition: CommitmentVerificationDisposition;
   try {
-    disposition = await provider.verifyAnchorReceipt(anchored);
+    disposition = await verifyAnchorReceipt(callbackAnchored);
   } catch (error) {
-    throw new SubstrateError("commitment receipt proof verification errored", {
-      cause: error,
-    });
+    throw new SubstrateError(
+      "commitment receipt proof verification errored",
+      { cause: error },
+    );
+  }
+  try {
+    if (
+      canonicalize(
+        snapshotCanonicalJson(
+          callbackAnchored,
+          "commitment receipt proof callback input",
+        ),
+      ) !== expectedCallbackCanonical
+    ) {
+      throw new TypeError("proof callback changed its input");
+    }
+  } catch (cause) {
+    throw new SubstrateError(
+      "commitment receipt proof verifier mutated its input",
+      { cause },
+    );
   }
   if (disposition === "indeterminate" || disposition === "error") {
     throw new SubstrateError(
@@ -422,7 +957,25 @@ async function finalizedReceiptTime(
   if (disposition !== "valid") {
     throw new DacsError("commitment receipt proof is invalid");
   }
-  return receipt.blockRef!.timestamp!;
+  return committedAt;
+}
+
+function validateAuthoritativeTime(
+  committedAt: number,
+  selected: ReturnType<typeof selectFixedPriceArtifact>,
+  binding: FixedPriceBinding,
+): void {
+  const finalizedLimit = committedAt + binding.deadlineSeconds * 1_000;
+  if (
+    !Number.isSafeInteger(finalizedLimit) ||
+    selected.agreement.terms.deadline > finalizedLimit ||
+    (selected.listing.validity.notAfter !== undefined &&
+      selected.listing.validity.notAfter < committedAt)
+  ) {
+    throw new DacsError(
+      "finalized receipt timestamp fails authoritative agreement/Listing checks",
+    );
+  }
 }
 
 /**
@@ -430,44 +983,51 @@ async function finalizedReceiptTime(
  * transport-independent and fails closed before any caller may enter DACS-4.
  */
 export async function commitFixedPriceAgreement(
-  input: CommitFixedPriceAgreementInput,
-  provider: FinalityCommitmentProvider,
-  verifySignature: CommitmentSignatureVerifier,
+  callerInput: CommitFixedPriceAgreementInput,
+  callerProvider: FinalityCommitmentProvider,
+  callerVerifySignature: CommitmentSignatureVerifier,
 ): Promise<FinalizedAgreementCommitment> {
+  // Dependency identity is fixed before any caller-owned artifact is read.
+  const provider = captureProvider(callerProvider);
+  const verifySignature = captureVerifier(callerVerifySignature);
+  const input = captureCommitmentInput(callerInput);
   const selected = selectFixedPriceArtifact(input);
+  const logicalAddress = finalityCommitmentAddress(selected.agreement.jobId);
+
   await verifyAgreementSignatures(selected.agreement, verifySignature);
   const binding = fixedPriceBinding(input, selected);
-  if (input.commitmentSigner.signer !== input.orchestrator) {
-    throw new DacsError("commitment signer is not the authenticated orchestrator (CA-6)");
-  }
 
-  const logicalAddress = finalityCommitmentAddress(input.agreement.jobId);
   let lookup: FinalityCommitmentLookup;
   try {
-    lookup = await provider.resolve(logicalAddress);
+    lookup = snapshotLookup(await provider.resolve(logicalAddress));
   } catch (error) {
-    throw new SubstrateError("commitment lookup errored and is indeterminate", {
-      cause: error,
-    });
-  }
-  if (
-    !isRecord(lookup) ||
-    !["present", "absent", "indeterminate"].includes(
-      String(lookup.disposition),
-    )
-  ) {
-    throw new SubstrateError("commitment lookup returned an invalid disposition");
+    if (error instanceof SubstrateError) throw error;
+    throw new SubstrateError(
+      "commitment lookup errored and is indeterminate",
+      { cause: error },
+    );
   }
   if (lookup.disposition === "indeterminate") {
-    throw new SubstrateError(`commitment lookup is indeterminate: ${lookup.reason}`);
+    throw new SubstrateError(
+      `commitment lookup is indeterminate: ${lookup.reason}`,
+    );
   }
 
   let anchored: AnchoredFinalityCommitment;
-  let resumed = false;
+  let resumed: boolean;
+  let submittedCanonical: string | undefined;
   if (lookup.disposition === "present") {
+    // A retry clock cannot invalidate an immutable commitment that finalized
+    // while the Listing was live. Only its receipt timestamp is authoritative.
     anchored = lookup.anchored;
     resumed = true;
   } else {
+    validateProvisionalTime(input, selected, binding);
+    if (input.commitmentSigner.signer !== input.orchestrator) {
+      throw new DacsError(
+        "commitment signer is not the authenticated orchestrator (CA-6)",
+      );
+    }
     const unsigned = unsignedFinalityRecord(input, binding);
     const placeholder: ComponentSignature = {
       algorithm: input.commitmentSigner.algorithm,
@@ -485,19 +1045,25 @@ export async function commitFixedPriceAgreement(
     if (!isFinalityCommitmentRecord(record)) {
       throw new DacsError("signed finality commitment is not normative");
     }
+    submittedCanonical = canonicalize(record);
     try {
-      anchored = await provider.submit(logicalAddress, record);
+      anchored = snapshotAnchored(
+        await provider.submit(
+          logicalAddress,
+          snapshotCanonicalJson(record, "commitment submission record"),
+        ),
+        "commitment submission",
+      );
     } catch (error) {
+      if (error instanceof SubstrateError) throw error;
       throw new SubstrateError(
         "commitment submission outcome is ambiguous; resolve before any retry",
         { cause: error },
       );
     }
+    resumed = false;
   }
 
-  if (!isRecord(anchored)) {
-    throw new SubstrateError("commitment provider returned an invalid anchor result");
-  }
   if (
     !isFinalityCommitmentRecord(anchored.record) ||
     !recordMatchesBinding(anchored.record, input, binding)
@@ -506,33 +1072,33 @@ export async function commitFixedPriceAgreement(
       "existing commitment is legacy, malformed, or binds different session content (CA-3/CA-9)",
     );
   }
+  if (
+    submittedCanonical !== undefined &&
+    canonicalize(anchored.record) !== submittedCanonical
+  ) {
+    throw new DacsError(
+      "fresh commitment anchor does not contain the exact submitted record (CA-3)",
+    );
+  }
   await verifyCommitmentSignature(anchored.record, verifySignature);
   const committedAt = await finalizedReceiptTime(
     logicalAddress,
     anchored,
-    provider,
+    provider.verifyAnchorReceipt,
   );
-  const listing = input.verifiedListing.listing;
-  const finalizedLimit = committedAt + binding.deadlineSeconds * 1_000;
-  if (
-    !Number.isSafeInteger(finalizedLimit) ||
-    input.agreement.terms.deadline > finalizedLimit ||
-    (listing.validity.notAfter !== undefined &&
-      listing.validity.notAfter < committedAt)
-  ) {
-    throw new DacsError(
-      "finalized receipt timestamp fails authoritative agreement/Listing checks",
-    );
-  }
+  validateAuthoritativeTime(committedAt, selected, binding);
 
-  return {
-    logicalAddress,
-    nativeAddress: anchored.nativeAddress,
-    agreementHash: binding.agreementHash,
-    record: anchored.record,
-    anchorTxRef: anchored.anchorTxRef,
-    anchorReceipt: anchored.anchorReceipt,
-    committedAt,
-    resumed,
-  };
+  return snapshotCanonicalJson(
+    {
+      logicalAddress,
+      nativeAddress: anchored.nativeAddress,
+      agreementHash: binding.agreementHash,
+      record: anchored.record,
+      anchorTxRef: anchored.anchorTxRef,
+      anchorReceipt: anchored.anchorReceipt,
+      committedAt,
+      resumed,
+    },
+    "finalized agreement commitment result",
+  );
 }
