@@ -3,11 +3,13 @@ import { describe, expect, test } from "vitest";
 import {
   termsMatchD402,
   payD402SettleCore,
+  payD402Settle,
   createPayD402Rail,
   PAY_D402_AVAILABILITY,
   type D402ClientLike,
   type D402PaymentRequirement,
   type D402SettlementResult,
+  type PayD402Rail,
 } from "../../src/rails/payD402.js";
 
 const RECIPIENT = "demos1recipientaddress0000000000000000000000";
@@ -179,5 +181,35 @@ describe("createPayD402Rail — experimental quarantine (RAV-R1)", () => {
     await expect(
       createPayD402Rail({ rpc: "https://node.demos.sh", secret: "x" } as never),
     ).rejects.toThrow(/EXPERIMENTAL|acknowledgeExperimental/);
+  });
+});
+
+describe("payD402Settle bridge destination binding", () => {
+  test("rejects a request/config destination mismatch before rail submission", async () => {
+    let calls = 0;
+    const rail: PayD402Rail = {
+      address: PAYER,
+      settle: async () => {
+        calls += 1;
+        throw new Error("must not submit");
+      },
+    };
+    const settle = payD402Settle(rail, {
+      url: URL,
+      recipient: RECIPIENT,
+      network: "demos:testnet",
+    });
+    expect(() =>
+      settle({
+        rail: "pay-d402",
+        phase: "pay-d402",
+        amount: "1",
+        asset: "DEM",
+        payee: "did:demos:seller",
+        expectedPayee: "demos1wrong",
+        jobId: "destination-mismatch",
+      }),
+    ).toThrow(/destination mismatch/);
+    expect(calls).toBe(0);
   });
 });

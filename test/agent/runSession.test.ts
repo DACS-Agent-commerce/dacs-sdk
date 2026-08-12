@@ -85,6 +85,7 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     signBytes: async () => new Uint8Array(64),
     anchor: async (name) => `stor-${name}`,
     resolveAnchor: async () => ({ status: "absent" as const }),
+    expectedSettlementPayee: "0xalice",
     settle: async () => ({
       ok: true,
       txHash: "0xabc",
@@ -112,10 +113,151 @@ describe("runSession orchestration (T4)", () => {
     expect(res.bundleRef).toBe("stor-dacs5:bundle:job-1");
   });
 
+  test("rejects dependency accessors without invoking them or reading the Listing", async () => {
+    const deps = makeDeps();
+    let getterCalls = 0;
+    let listingReads = 0;
+    deps.readListing = async () => {
+      listingReads += 1;
+      return LISTING;
+    };
+    Object.defineProperty(deps, "settle", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        getterCalls += 1;
+        return async () => ({
+          ok: true,
+          txHash: "0xgetter",
+          chainId: "chain",
+          payer: "payer",
+          payee: "payee",
+        });
+      },
+    });
+    await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
+      /deps\.settle must be stable data/,
+    );
+    expect(getterCalls).toBe(0);
+    expect(listingReads).toBe(0);
+  });
+
+  test("pins the signer, anchor, and rail callbacks before Listing resolution", async () => {
+    const deps = makeDeps();
+    const originalSettle = deps.settle;
+    const originalSign = deps.sign;
+    const originalAnchor = deps.anchor;
+    let replacementCalls = 0;
+    deps.readListing = async () => {
+      deps.settle = async () => {
+        replacementCalls += 1;
+        throw new Error("replacement rail must not run");
+      };
+      deps.sign = async () => {
+        replacementCalls += 1;
+        throw new Error("replacement signer must not run");
+      };
+      deps.anchor = async () => {
+        replacementCalls += 1;
+        throw new Error("replacement anchor must not run");
+      };
+      await Promise.resolve();
+      return LISTING;
+    };
+    await expect(runSessionCore("stor-listing", TERMS, deps)).resolves.toMatchObject({
+      outcome: "completed",
+    });
+    expect(deps.settle).not.toBe(originalSettle);
+    expect(deps.sign).not.toBe(originalSign);
+    expect(deps.anchor).not.toBe(originalAnchor);
+    expect(replacementCalls).toBe(0);
+  });
+
+  test("rejects a newly signed Agreement that changes the authenticated deal", async () => {
+    const deps = makeDeps({
+      sign: async (artifact) => ({
+        ...artifact,
+        buyer: "did:demos:agent:attacker",
+        signature: "sig",
+      }),
+    });
+    let settles = 0;
+    deps.settle = async () => {
+      settles += 1;
+      throw new Error("must not settle");
+    };
+    await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
+      /new artifact.*does not match.*buyer/i,
+    );
+    expect(settles).toBe(0);
+  });
+
+  test("rejects non-boolean or aliased rail results before evidence publication", async () => {
+    const nonBoolean = makeDeps({
+      settle: async () => ({
+        ok: "yes",
+        txHash: "0xpaid",
+        chainId: "chain",
+        payer: "payer",
+        payee: "payee",
+      } as never),
+    });
+    await expect(
+      runSessionCore("stor-listing", TERMS, nonBoolean),
+    ).rejects.toThrow(/settlement rail returned a malformed result/);
+
+    const retained = {
+      ok: true,
+      txHash: "0xowned",
+      chainId: "chain",
+      payer: "payer",
+      payee: "0xalice",
+    };
+    const anchored: Record<string, unknown> = {};
+    const aliased = makeDeps({
+      settle: async () => retained,
+      anchor: async (name, value) => {
+        if (name.includes("evidence")) {
+          retained.txHash = "0xmutated-after-return";
+          anchored.evidence = value;
+        }
+        return `stor-${name}`;
+      },
+    });
+    await expect(
+      runSessionCore("stor-listing", TERMS, aliased),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(
+      ((anchored.evidence as { paymentTxRefs: Array<{ txHash: string }> })
+        .paymentTxRefs[0]!.txHash),
+    ).toBe("0xowned");
+  });
+
+  test("requires an exact 64-byte buyer signature before any artifact is anchored", async () => {
+    let anchors = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          signBytes: async () => new Uint8Array(63),
+          anchor: async () => {
+            anchors += 1;
+            return "stor-unexpected";
+          },
+        }),
+      ),
+    ).rejects.toThrow(/exactly 64 bytes/);
+    // The reduced Agreement is anchored first; the invalid component signature
+    // is rejected before SettlementEvidence or bundle publication.
+    expect(anchors).toBe(1);
+  });
+
   test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {
     const normative = normativeListing();
     let evidence: Record<string, unknown> | undefined;
     let selectedRail: string | undefined;
+    let selectedPhase: string | undefined;
     const res = await runSessionCore(
       "stor-normative-v7",
       {
@@ -126,6 +268,7 @@ describe("runSession orchestration (T4)", () => {
         readListing: async () => normative,
         settle: async (request) => {
           selectedRail = request.rail;
+          selectedPhase = request.phase;
           return {
             ok: true,
             txHash: "0xabc",
@@ -148,6 +291,7 @@ describe("runSession orchestration (T4)", () => {
       contentHash: contentHash(normative),
     });
     expect(selectedRail).toBe("x402:default");
+    expect(selectedPhase).toBe("pay-x402");
     expect(evidence?.phase).toBe("pay-x402");
   });
 
@@ -366,7 +510,7 @@ describe("runSession orchestration (T4)", () => {
           txHash: "",
           chainId: "x",
           payer: "p",
-          payee: "q",
+          payee: "0xalice",
         }),
         anchor: async (name: string, value: object) => {
           if (name.includes("evidence")) anchored.evidence = value;
@@ -427,6 +571,7 @@ describe("runSession orchestration (T4)", () => {
     const store = new Map<string, Record<string, unknown>>();
     let settleCalls = 0;
     const deps = makeDeps({
+      authenticateRecoveredArtifact: () => true,
       anchor: async (name, value) => {
         const addr = `stor-${name}`;
         store.set(addr, value as Record<string, unknown>);
@@ -439,7 +584,7 @@ describe("runSession orchestration (T4)", () => {
       },
       settle: async () => {
         settleCalls += 1;
-        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
+        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "0xalice" };
       },
       vet: async (subject) => ({
         subject,
@@ -495,6 +640,7 @@ describe("runSession orchestration (T4)", () => {
     const store = new Map<string, Record<string, unknown>>();
     let settleCalls = 0;
     const deps = makeDeps({
+      authenticateRecoveredArtifact: () => true,
       anchor: async (name, value) => {
         const addr = `stor-${name}`;
         store.set(addr, value as Record<string, unknown>);
@@ -507,7 +653,7 @@ describe("runSession orchestration (T4)", () => {
       },
       settle: async () => {
         settleCalls += 1;
-        return { ok: true, txHash: "0xabc", chainId: "c", payer: "p", payee: "q" };
+        return { ok: true, txHash: "0xabc", chainId: "c", payer: "p", payee: "0xalice" };
       },
     });
 
@@ -519,6 +665,12 @@ describe("runSession orchestration (T4)", () => {
     const second = await runSessionCore("stor-listing", TERMS, deps, "job-RESUME");
     expect(second).toEqual(first); // identical refs
     expect(settleCalls).toBe(1); // settlement NOT executed again
+
+    deps.expectedSettlementPayee = "0xattacker";
+    await expect(
+      runSessionCore("stor-listing", TERMS, deps, "job-RESUME"),
+    ).rejects.toThrow(/signed settlement destination/);
+    expect(settleCalls).toBe(1);
   });
 
   test("proves exact paid state before authenticating an expired Listing", async () => {
@@ -627,6 +779,7 @@ describe("runSession orchestration (T4)", () => {
       buyer: "did:demos:agent:bob",
       seller: "did:demos:agent:alice",
       listingRef: "stor-expiring-listing",
+      dacsSdkExpectedSettlementPayee: "0xalice",
       dacsSdkListingPin: exactPin,
       price: terms.price,
       delivery: { phase: terms.deliveryPhase, format: terms.deliveryFormat },
@@ -675,12 +828,17 @@ describe("runSession orchestration (T4)", () => {
         // then yielded while the resolver owner mutated its retained alias.
         const authenticatedFailure = raw.outcome === "failure";
         await Promise.resolve();
-        const aliasedEvidence = store.get(evidenceRef)!;
-        aliasedEvidence.outcome = "success";
-        aliasedEvidence.settlementFinality = {
-          model: "provider-receipt",
-          finalityObservedAt: now,
-        };
+        // Publication now freezes the value passed to the adapter. Replace the
+        // resolver's retained entry to model an independently mutable backing
+        // cache rather than attempting to mutate that protected publication.
+        store.set(evidenceRef, {
+          ...structuredClone(store.get(evidenceRef)!),
+          outcome: "success",
+          settlementFinality: {
+            model: "provider-receipt",
+            finalityObservedAt: now,
+          },
+        });
         return authenticatedFailure;
       },
       anchor: async (name, value) => {
@@ -703,7 +861,10 @@ describe("runSession orchestration (T4)", () => {
         settleCalls += 1;
         return {
           ok: false,
-          txHash: "0xfailed",
+          // Empty tx + ok:false is a definitive no-payment result. A
+          // transaction-bearing failure is intentionally left unresolved and
+          // must never mint terminal failure evidence.
+          txHash: "",
           chainId: "eip155:8453",
           payer: "0xbob",
           payee: "0xalice",
@@ -1024,6 +1185,92 @@ describe("runSession orchestration (T4)", () => {
     expect(settleCalls).toBe(0);
   });
 
+  test("a truthy non-boolean listing-verifier result is not a pass", async () => {
+    let settleCalls = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          trustListing: undefined,
+          verifyListing: (() => "yes") as never,
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/failed signature verification/);
+    expect(settleCalls).toBe(0);
+  });
+
+  test("rejects NFD job identifiers instead of normalizing them into an existing namespace", async () => {
+    let listingReads = 0;
+    const nfdJobId = "job-e\u0301";
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          readListing: async () => {
+            listingReads += 1;
+            return LISTING;
+          },
+        }),
+        nfdJobId,
+      ),
+    ).rejects.toThrow(/canonical protocol string/);
+    expect(listingReads).toBe(0);
+  });
+
+  test("rejects a fresh rail result for a different request-bound destination before evidence", async () => {
+    let evidenceAnchors = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          settle: async () => ({
+            ok: true,
+            txHash: "0xpaid-wrong",
+            chainId: "eip155:1",
+            payer: "0xbuyer",
+            payee: "0xattacker",
+          }),
+          anchor: async (name) => {
+            if (name.includes("evidence")) evidenceAnchors += 1;
+            return `stor-${name}`;
+          },
+        }),
+      ),
+    ).rejects.toThrow(/request-bound destination/);
+    expect(evidenceAnchors).toBe(0);
+  });
+
+  test("keeps a transaction-bearing ok:false result unresolved and mints no failure evidence", async () => {
+    let evidenceAnchors = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          settle: async () => ({
+            ok: false,
+            txHash: "0xpossibly-landed",
+            chainId: "eip155:1",
+            payer: "0xbuyer",
+            payee: "0xalice",
+          }),
+          anchor: async (name) => {
+            if (name.includes("evidence")) evidenceAnchors += 1;
+            return `stor-${name}`;
+          },
+        }),
+      ),
+    ).rejects.toThrow(/remains indeterminate/);
+    expect(evidenceAnchors).toBe(0);
+  });
+
   test("the verifier receives the raw artifact and the ADVERTISED seller claim", async () => {
     let seenSeller = "";
     const deps = makeDeps({
@@ -1049,12 +1296,14 @@ describe("runSession orchestration (T4)", () => {
       buyer: "did:demos:agent:bob",
       seller: "did:demos:agent:alice",
       listingRef: "stor-listing",
+      dacsSdkExpectedSettlementPayee: "0xalice",
       price: TERMS.price,
       delivery: { phase: TERMS.deliveryPhase, format: TERMS.deliveryFormat },
       expiresAt: "2026-01-01T00:00:00Z",
       signature: "sig",
     };
     const deps = makeDeps({
+      authenticateRecoveredArtifact: () => true,
       resolveAnchor: async (name) => {
         if (name === "dacs3:agreement:job-DP")
           return { status: "present" as const, ref: "stor-a", value: agreement };

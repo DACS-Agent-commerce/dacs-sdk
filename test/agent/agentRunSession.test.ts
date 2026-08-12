@@ -195,6 +195,56 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     ).resolves.toMatchObject({ status: "valid" });
   });
 
+  test("a completed public retry authenticates the exact legacy one-sided bundle", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    let settleCalls = 0;
+    const settle = async () => {
+      settleCalls += 1;
+      return {
+        ok: true,
+        txHash: "0xbundle-retry",
+        chainId: "demos",
+        payer: buyerDid,
+        payee: sellerDid,
+      };
+    };
+
+    const first = await agent.runSession(ref, {
+      jobId: "completed-bundle-retry",
+      terms: TERMS,
+      settle,
+    });
+    await expect(
+      agent.runSession(ref, {
+        jobId: "completed-bundle-retry",
+        terms: TERMS,
+        settle,
+      }),
+    ).resolves.toEqual(first);
+    expect(settleCalls).toBe(1);
+
+    const bundle = structuredClone(store.get(first.bundleRef)!);
+    const signature = (bundle.signatures as Array<{ value: string }>)[0]!;
+    // Padding is a decodable alias in permissive codecs, but is not canonical
+    // Base64URL and therefore must not authenticate on resume.
+    signature.value += "=";
+    store.set(first.bundleRef, bundle);
+    await expect(
+      agent.runSession(ref, {
+        jobId: "completed-bundle-retry",
+        terms: TERMS,
+        settle,
+      }),
+    ).rejects.toThrow(/cryptographic authentication/);
+    expect(settleCalls).toBe(1);
+  });
+
   test("a listing signed by the WRONG key aborts before settlement — never pays", async () => {
     const { adapter, store } = memAdapter();
     // Signed by a different key than the advertised sellerDid.

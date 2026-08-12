@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 
 import type {
   AnyAttestationBundle,
@@ -11,9 +12,11 @@ import { verifyComponentSignature } from "../artifacts/signatures.js";
 import {
   ed25519Verify,
   publicKeyFromRaw,
+  signedBytes,
   type DomainSeparator,
 } from "../crypto/index.js";
 import { isAnyAttestationBundle } from "../artifacts/validators.js";
+import { isLegacyMvpAttestationBundle } from "../artifacts/legacyMvp.js";
 import { DacsError } from "../errors.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
 import type { DemosAdapter } from "../substrate/index.js";
@@ -31,6 +34,7 @@ import {
   discoverListings,
   type DiscoveredListing,
 } from "./discover.js";
+import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { computeReputation, type Reputation } from "./reputation.js";
 import {
   buildSignedArtifact,
@@ -39,12 +43,52 @@ import {
   type Verifier,
 } from "./signedArtifact.js";
 import {
+  attestationBundleHash,
+} from "./twoSidedBundle.js";
+import {
   verifyBundleCore,
   type SignatureCheck,
   type BundleVerification,
 } from "./verifyBundleCore.js";
 
 export type { SignatureCheck, BundleVerification, Reputation, CciRecord };
+
+function stableAgentData(
+  source: object,
+  key: PropertyKey,
+  label: string,
+): unknown {
+  if (nodeTypes.isProxy(source)) throw new DacsError(`${label} must be stable data`);
+  let owner: object | null = source;
+  try {
+    while (owner !== null) {
+      if (nodeTypes.isProxy(owner)) throw new TypeError("proxy prototype");
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor) {
+        if (!("value" in descriptor)) throw new TypeError("accessor property");
+        return descriptor.value;
+      }
+      owner = Object.getPrototypeOf(owner);
+    }
+  } catch (cause) {
+    throw new DacsError(`${label} must be stable data`, { cause });
+  }
+  return undefined;
+}
+
+function stableAgentMethod<T>(
+  source: object,
+  key: PropertyKey,
+  label: string,
+  optional = false,
+): T {
+  const candidate = stableAgentData(source, key, label);
+  if (candidate === undefined && optional) return undefined as T;
+  if (typeof candidate !== "function" || nodeTypes.isProxy(candidate)) {
+    throw new DacsError(`${label} must be a stable function`);
+  }
+  return Function.prototype.bind.call(candidate, source) as T;
+}
 
 /**
  * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
@@ -68,6 +112,13 @@ export interface RunSessionOptions {
   /** Executes payment on the chosen rail (e.g. an x402 rail). */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
+   * Exact destination the selected rail will pay. Required when that address is
+   * in a different namespace from the signed seller claim (for example an EVM
+   * recipient bound to a seller DID). Defaults to the seller claim only for
+   * same-namespace rails.
+   */
+  expectedSettlementPayee?: string;
+  /**
    * Optional Vet step: verify the seller before paying (e.g. resolveRecipe +
    * vetCore). Returns a CompositeVerificationRecord; the session aborts before
    * settlement unless the decision is `pass`. Omit to skip vetting.
@@ -78,6 +129,13 @@ export interface RunSessionOptions {
    * idempotently (reuse anchored artifacts, never re-pay). Omit for a new session.
    */
   jobId?: string;
+  /** Optional durable buyer-session lifecycle store used for restart recovery. */
+  sessionStore?: import("./sessionStore.js").SessionStore;
+  /**
+   * Reconcile a previously claimed payment whose durable session record still
+   * has only an intent checkpoint. Must use the same rail idempotency key.
+   */
+  resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
 }
 
 export interface AgentConfig {
@@ -174,6 +232,23 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
  * ship. Not exported from the package barrel; internal test seam.
  */
 export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
+  const identity = stableAgentData(config, "identity", "AgentConfig.identity");
+  if (
+    identity !== undefined &&
+    (identity === null || typeof identity !== "object" || nodeTypes.isProxy(identity))
+  ) {
+    throw new DacsError("AgentConfig.identity must be stable data");
+  }
+  const configuredBuyerId =
+    identity === undefined
+      ? undefined
+      : stableAgentData(identity, "agentId", "AgentConfig.identity.agentId");
+  if (
+    configuredBuyerId !== undefined &&
+    typeof configuredBuyerId !== "string"
+  ) {
+    throw new DacsError("AgentConfig.identity.agentId must be a string");
+  }
   const sign: Signer = (bytes) => adapter.sign(bytes);
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
@@ -265,10 +340,67 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
       listingRef: string,
       opts: RunSessionOptions,
     ): Promise<SessionResult> {
-      const buyerId = config.identity?.agentId;
+      if (opts === null || typeof opts !== "object" || nodeTypes.isProxy(opts)) {
+        throw new DacsError("Agent.runSession options must be stable data");
+      }
+      const inputTerms = stableAgentData(opts, "terms", "Agent.runSession terms");
+      const inputJobId = stableAgentData(opts, "jobId", "Agent.runSession jobId");
+      const inputExpectedSettlementPayee = stableAgentData(
+        opts,
+        "expectedSettlementPayee",
+        "Agent.runSession expectedSettlementPayee",
+      );
+      const settle = stableAgentMethod<RunSessionOptions["settle"]>(
+        opts,
+        "settle",
+        "Agent.runSession settle",
+      );
+      const vet = stableAgentMethod<RunSessionOptions["vet"]>(
+        opts,
+        "vet",
+        "Agent.runSession vet",
+        true,
+      );
+      const resumeSettlement = stableAgentMethod<
+        RunSessionOptions["resumeSettlement"]
+      >(
+        opts,
+        "resumeSettlement",
+        "Agent.runSession resumeSettlement",
+        true,
+      );
+      const sessionStore = stableAgentData(
+        opts,
+        "sessionStore",
+        "Agent.runSession sessionStore",
+      ) as RunSessionOptions["sessionStore"];
+      const options = snapshotCanonicalJson(
+        {
+          terms: inputTerms,
+          ...(inputJobId !== undefined ? { jobId: inputJobId } : {}),
+          ...(inputExpectedSettlementPayee !== undefined
+            ? { expectedSettlementPayee: inputExpectedSettlementPayee }
+            : {}),
+        },
+        "Agent.runSession options",
+      ) as {
+        terms: SessionTerms;
+        jobId?: string;
+        expectedSettlementPayee?: string;
+      };
+      const buyerId = configuredBuyerId;
       if (!buyerId) {
         throw new Error(
           "runSession requires createAgent({ identity: { agentId } })",
+        );
+      }
+      if (
+        buyerId.normalize("NFC") !== buyerId ||
+        buyerId.trim() !== buyerId ||
+        /[\u0000-\u001f\u007f]/.test(buyerId)
+      ) {
+        throw new DacsError(
+          "runSession buyer identity must be an exact NFC protocol identifier",
         );
       }
       // Recovery needs the connected wallet's actual signing key, while a fresh
@@ -298,9 +430,33 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
         });
         return buyerSigningPublicKeyPromise;
       };
+      const verifyBuyerComponentArtifact = async (
+        raw: Record<string, unknown>,
+        separator: DomainSeparator,
+        buyerClaim: string,
+      ): Promise<boolean> => {
+        if (buyerClaim !== buyerId) return false;
+        const publicKey = await buyerSigningPublicKey();
+        const verdict = await verifyComponentSignature(raw, separator, {
+          isSignerAuthorized: (_artifact, signature) =>
+            signature.algorithm === "ed25519" &&
+            signature.signer === buyerClaim,
+          resolvePublicKey: (signature) =>
+            signature.signer === buyerClaim ? publicKey : null,
+          verify: ({ signedBytes: bytes, signature, publicKey }) => {
+            const signatureBytes = Uint8Array.from(
+              Buffer.from(signature.value, "base64url"),
+            );
+            return signatureBytes.length === 64
+              ? ed25519RawVerify(bytes, signatureBytes, publicKey)
+              : false;
+          },
+        });
+        return verdict.status === "valid";
+      };
       return runSessionCore(
         listingRef,
-        opts.terms,
+        options.terms,
         {
           buyerId,
           readListing: (ref) => adapter.readAnchor(ref),
@@ -369,37 +525,125 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
           authenticateRecoveredSettlementEvidence: async (
             raw,
             buyerClaim,
-          ) => {
-            if (buyerClaim !== buyerId) return false;
-            const publicKey = await buyerSigningPublicKey();
-            const verdict = await verifyComponentSignature(
+          ) =>
+            verifyBuyerComponentArtifact(
               raw,
               ARTIFACT_SEPARATORS.SettlementEvidence,
-              {
-                isSignerAuthorized: (_artifact, signature) =>
-                  signature.algorithm === "ed25519" &&
-                  signature.signer === buyerClaim,
-                resolvePublicKey: (signature) =>
-                  signature.signer === buyerClaim ? publicKey : null,
-                verify: ({ signedBytes: bytes, signature, publicKey }) => {
-                  const signatureBytes = Uint8Array.from(
-                    Buffer.from(signature.value, "base64url"),
-                  );
-                  return signatureBytes.length === 64
-                    ? ed25519RawVerify(bytes, signatureBytes, publicKey)
-                    : false;
-                },
-              },
-            );
-            return verdict.status === "valid";
+              buyerClaim,
+            ),
+          authenticateRecoveredArtifact: async (
+            raw,
+            separator,
+            buyerClaim,
+          ) => {
+            if (buyerClaim !== buyerId) return false;
+            if (separator === ARTIFACT_SEPARATORS.AgreementDocument) {
+              if (
+                Object.prototype.hasOwnProperty.call(raw, "signatures") ||
+                typeof raw.signature !== "string" ||
+                !/^[0-9a-f]{128}$/.test(raw.signature)
+              ) {
+                return false;
+              }
+              return verifySignedArtifact(
+                raw,
+                ARTIFACT_SEPARATORS.AgreementDocument,
+                await buyerSigningPublicKey(),
+                ed25519RawVerify,
+              );
+            }
+            if (
+              separator === ARTIFACT_SEPARATORS.SettlementEvidence ||
+              separator === ARTIFACT_SEPARATORS.CompositeVerificationRecord
+            ) {
+              return verifyBuyerComponentArtifact(
+                raw,
+                separator as DomainSeparator,
+                buyerClaim,
+              );
+            }
+            if (separator === ARTIFACT_SEPARATORS.AttestationBundle) {
+              if (
+                !isLegacyMvpAttestationBundle(raw) ||
+                raw.anchoredByRole !== "buyer" ||
+                Object.prototype.hasOwnProperty.call(raw, "signature") ||
+                raw.parties.length !== 1 ||
+                raw.parties[0]?.role !== "buyer" ||
+                raw.parties[0]?.primaryClaim !== buyerClaim
+              ) {
+                return false;
+              }
+              const requiredRootKeys = new Set([
+                "bundleVersion",
+                "jobId",
+                "outcome",
+                "anchoredByRole",
+                "listingRef",
+                "agreementRef",
+                "parties",
+                "phaseSummary",
+                "vetRecords",
+                "settlementEvidence",
+                "recipeRegistryVersion",
+                "railRegistryVersion",
+                "finalisedAt",
+                "signatures",
+              ]);
+              if (
+                Object.keys(raw).length !== requiredRootKeys.size ||
+                Object.keys(raw).some((key) => !requiredRootKeys.has(key))
+              ) {
+                return false;
+              }
+              const signatures = Array.isArray(raw.signatures)
+                ? raw.signatures
+                : [];
+              if (signatures.length !== 1) return false;
+              const signature = signatures[0];
+              if (
+                signature?.party !== buyerClaim ||
+                signature.algorithm !== "ed25519" ||
+                typeof signature.value !== "string" ||
+                Object.keys(signature).length !== 3 ||
+                !Object.prototype.hasOwnProperty.call(signature, "party") ||
+                !Object.prototype.hasOwnProperty.call(signature, "algorithm") ||
+                !Object.prototype.hasOwnProperty.call(signature, "value") ||
+                !/^[A-Za-z0-9_-]{86}$/.test(signature.value)
+              ) {
+                return false;
+              }
+              const bytes = Uint8Array.from(
+                Buffer.from(signature.value, "base64url"),
+              );
+              if (
+                bytes.length !== 64 ||
+                Buffer.from(bytes).toString("base64url") !== signature.value
+              ) {
+                return false;
+              }
+              return ed25519RawVerify(
+                signedBytes(
+                  ARTIFACT_SEPARATORS.AttestationBundle,
+                  attestationBundleHash(
+                    raw as unknown as AnyAttestationBundle,
+                  ),
+                ),
+                bytes,
+                await buyerSigningPublicKey(),
+              );
+            }
+            return false;
           },
-          settle: opts.settle,
-          vet: opts.vet,
+          settle,
+          expectedSettlementPayee: options.expectedSettlementPayee,
+          resumeSettlement,
+          vet,
           newJobId: () => randomUUID(),
           now: () => new Date().toISOString(),
           nowMs: () => Date.now(),
+          sessionStore,
         },
-        opts.jobId,
+        options.jobId,
       );
     },
 

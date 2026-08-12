@@ -21,12 +21,11 @@ const HARDHAT_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784e7bf4f2ff80";
 
 describe("DACS EIP-3009 session binding", () => {
-  test("reproduces the normative SB-3 live, phase, job, NFC and ULID vectors", async () => {
+  test("reproduces the normative SB-3 live, phase, job and ULID vectors", async () => {
     const vectors = [
       ["practice-dacs-0001", 3, "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff"],
       ["practice-dacs-0001", 4, "0x80fa47321a52f728f5ecbde7a5ceb44dd6086c9902dd8b95980b05909e5ea969"],
       ["practice-dacs-0002", 3, "0x69256a3bf1c9bd6a5ba1ffc93705d44c5322e03de8f1e3ad6b6d709f4254ce29"],
-      ["cafe\u0301-job", 0, "0xc4d6eb3c8774ff6078765567559c1ce1953badb01ba1ea8a5252561712294397"],
       ["01ARZ3NDEKTSV4RRFFQ69G5FAV", 3, "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
     ] as const;
     for (const [jobId, phaseIndex, expected] of vectors) {
@@ -68,6 +67,10 @@ describe("DACS EIP-3009 session binding", () => {
   });
 
   test("rejects malformed derivation inputs", async () => {
+    await expect(dacsX402AuthorizationNonce({
+      jobId: "cafe\u0301-job",
+      phaseIndex: 0,
+    })).rejects.toThrow(/jobId|non-negative phaseIndex/);
     await expect(dacsX402AuthorizationNonce({
       jobId: "practice-dacs-0001",
       phaseIndex: -1,
@@ -302,6 +305,35 @@ describe("x402SettleCore (buyer 402-dance)", () => {
 });
 
 describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () => {
+  test("rejects a request/config destination mismatch before the rail or idempotency store", async () => {
+    let calls = 0;
+    const rail: X402Rail = {
+      address: PAYER,
+      settle: async () => {
+        calls += 1;
+        throw new Error("must not submit");
+      },
+    };
+    const settle = x402Settle(rail, {
+      url: "https://seller.example/deliver",
+      network: NETWORK,
+      recipientEvm: RECIPIENT,
+      asset: "0xtoken",
+    });
+    expect(() =>
+      settle({
+        rail: "pay-x402",
+        phase: "pay-x402",
+        amount: "1",
+        asset: "USDC",
+        payee: "did:example:seller",
+        expectedPayee: "0xwrong",
+        jobId: "destination-mismatch",
+      }),
+    ).toThrow(/destination mismatch/);
+    expect(calls).toBe(0);
+  });
+
   test("hands the rail the configured token id as the guard's asset", async () => {
     let captured: X402SettleParams | undefined;
     const rail: X402Rail = {
@@ -323,9 +355,11 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     // for the guard — it uses the rail-configured on-chain token id.
     await settle({
       rail: "pay-x402",
+      phase: "pay-x402",
       amount: "1000000",
       asset: "USDC",
       payee: RECIPIENT,
+      expectedPayee: RECIPIENT,
       jobId: "j1",
     });
 
@@ -359,9 +393,11 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
 
     await settle({
       rail: "pay-x402",
+      phase: "pay-x402",
       amount: "1000000",
       asset: "USDC",
       payee: RECIPIENT,
+      expectedPayee: RECIPIENT,
       jobId: "j1",
       phaseIndex: 2,
     });
@@ -385,7 +421,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     });
 
-    await settle({ rail: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, jobId: "j1" });
+    await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "j1" });
 
     expect(captured?.phaseIndex).toBe(0);
   });

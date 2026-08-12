@@ -145,6 +145,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     // 2. Buyer runs the session: the x402 rail is the injected settle executor.
     const deps: SessionDeps = {
       buyerId: buyerDid,
+      expectedSettlementPayee: RECIPIENT_EVM,
       readListing: sub.read,
       sign: (artifact, sep) =>
         buildSignedArtifact(artifact, sep as never, signBuyer),

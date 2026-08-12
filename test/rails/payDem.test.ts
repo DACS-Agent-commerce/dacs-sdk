@@ -138,9 +138,11 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   };
   const req = (over: Record<string, unknown> = {}) => ({
     rail: "pay-dem",
+    phase: "pay-dem",
     amount: "5",
     asset: "DEM",
     payee: PAYEE_CLAIM,
+    expectedPayee: SELLER_HEX,
     jobId: "j1",
     ...over,
   });
@@ -218,6 +220,16 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const client = fakeClient();
     await settleWith(client, { network: "demos" })(req());
     expect(client.sent!.to).toBe(SELLER_HEX);
+  });
+
+  test("rejects an expected destination mismatch before transfer", async () => {
+    const client = fakeClient();
+    await expect(
+      settleWith(client, { network: "demos" })(
+        req({ expectedPayee: OTHER_HEX }),
+      ),
+    ).rejects.toThrow(/destination mismatch/);
+    expect(client.sent).toBeUndefined();
   });
 
   test("a configured recipient that is NOT the agreement payee ABORTS — and performs NO transfer", async () => {

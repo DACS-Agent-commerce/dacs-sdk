@@ -44,6 +44,20 @@ import { DacsError } from "../errors.js";
 
 /** Deterministic settlement idempotency key: `railId:jobId:phaseIndex`. */
 export function settlementKey(railId: string, jobId: string, phaseIndex: number): string {
+  if (
+    typeof railId !== "string" ||
+    railId.length === 0 ||
+    railId.normalize("NFC") !== railId ||
+    typeof jobId !== "string" ||
+    jobId.length === 0 ||
+    jobId.normalize("NFC") !== jobId ||
+    !Number.isSafeInteger(phaseIndex) ||
+    phaseIndex < 0
+  ) {
+    throw new DacsError(
+      "settlement key requires exact NFC rail/job identifiers and a non-negative phase index",
+    );
+  }
   return `${railId}:${jobId}:${phaseIndex}`;
 }
 

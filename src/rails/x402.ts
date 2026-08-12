@@ -280,13 +280,16 @@ export async function dacsX402AuthorizationNonce(input: {
   if (
     typeof input.jobId !== "string" ||
     input.jobId.length === 0 ||
+    input.jobId.normalize("NFC") !== input.jobId ||
     !Number.isSafeInteger(input.phaseIndex) ||
     input.phaseIndex < 0
   ) {
-    throw new Error("x402 DACS binding requires jobId and a non-negative phaseIndex");
+    throw new Error(
+      "x402 DACS binding requires an exact NFC jobId and a non-negative phaseIndex",
+    );
   }
   const { sha256, stringToHex } = await import("viem");
-  const preimage = `dacs-sb3:v1:${input.jobId.normalize("NFC")}:${input.phaseIndex}`;
+  const preimage = `dacs-sb3:v1:${input.jobId}:${input.phaseIndex}`;
   return sha256(stringToHex(preimage));
 }
 
@@ -440,7 +443,19 @@ export function x402Settle(
   opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
   const store = opts.store ?? createIdempotencyStore();
+  const paywallUrl = paywall.url;
+  const network = paywall.network;
+  const recipientEvm = paywall.recipientEvm;
+  const asset = paywall.asset;
+  const configuredPhaseIndex = paywall.phaseIndex;
+  const reconcile = opts.reconcile;
   return (req) => {
+    const { amount, expectedPayee, jobId, rail: railId } = req;
+    if (expectedPayee !== recipientEvm) {
+      throw new CounterpartyError(
+        `x402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipientEvm}`,
+      );
+    }
     // phaseIndex is a property of the SETTLEMENT REQUEST, not the static paywall
     // descriptor: the SB-3 authorization nonce MUST bind the same phase the
     // idempotency key dedupes on, or the on-chain single-use nonce and the
@@ -449,15 +464,15 @@ export function x402Settle(
     // for BOTH. (The prior `paywall.phaseIndex`-only wiring made the production
     // `requireSessionBinding` path throw whenever the paywall omitted it, even
     // though the session carried a phase.)
-    const phaseIndex = req.phaseIndex ?? paywall.phaseIndex ?? 0;
+    const phaseIndex = req.phaseIndex ?? configuredPhaseIndex ?? 0;
     const submit = () =>
       rail.settle({
-        paywallUrl: paywall.url,
-        network: paywall.network,
-        recipientEvm: paywall.recipientEvm,
-        amount: req.amount,
-        asset: paywall.asset,
-        jobId: req.jobId,
+        paywallUrl,
+        network,
+        recipientEvm,
+        amount,
+        asset,
+        jobId,
         phaseIndex,
       });
     // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
@@ -465,6 +480,10 @@ export function x402Settle(
     // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
     // on a reconciled resubmit is the SB-3 work in #33 — supplied via `reconcile`;
     // absent it, an unresolved intent fails closed instead of resubmitting.
-    return store.once(settlementKey(req.rail, req.jobId, phaseIndex), submit, opts.reconcile);
+    return store.once(
+      settlementKey(railId, jobId, phaseIndex),
+      submit,
+      reconcile,
+    );
   };
 }

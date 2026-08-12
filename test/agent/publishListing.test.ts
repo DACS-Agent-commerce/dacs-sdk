@@ -239,6 +239,159 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
     )).toMatchObject({ status: "valid" });
   });
 
+  test("rejects accessor-backed dependency methods without invoking them", async () => {
+    const deps = fakeDeps();
+    const draft = listing({ description: "entry snapshot" });
+    let getterCalls = 0;
+    Object.defineProperty(deps, "sign", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        draft.offering.description = "getter-mutated draft";
+        return sign;
+      },
+    });
+
+    await expect(publishListingCore(draft, deps)).rejects.toThrow(
+      /dependency sign must be a stable data method/,
+    );
+    expect(getterCalls).toBe(0);
+    expect(draft.offering.description).toBe("entry snapshot");
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("rejects proxy-backed Listing drafts without running proxy traps", async () => {
+    const deps = fakeDeps();
+    let traps = 0;
+    const draft = new Proxy(listing(), {
+      get(target, key, receiver) {
+        traps += 1;
+        return Reflect.get(target, key, receiver);
+      },
+      ownKeys(target) {
+        traps += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    await expect(publishListingCore(draft, deps)).rejects.toThrow(
+      /not stable canonical JSON/,
+    );
+    expect(traps).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("owns and enforces the exact listing-history callback envelope", async () => {
+    const extra = fakeDeps();
+    let signs = 0;
+    extra.sign = (bytes) => {
+      signs += 1;
+      return sign(bytes);
+    };
+    extra.scanOwnAnchorsByNamePrefix = async () => ({
+      status: "ok",
+      anchors: [],
+      ignored: true,
+    } as never);
+    await expect(publishListingCore(listing(), extra)).rejects.toThrow(
+      /history scan returned a malformed envelope/,
+    );
+    expect(signs).toBe(0);
+    expect(extra.stats.creates).toBe(0);
+
+    const accessor = fakeDeps();
+    let getterCalls = 0;
+    accessor.scanOwnAnchorsByNamePrefix = async () => {
+      const scan = { status: "ok" } as Record<string, unknown>;
+      Object.defineProperty(scan, "anchors", {
+        enumerable: true,
+        get() {
+          getterCalls += 1;
+          return [];
+        },
+      });
+      return scan as never;
+    };
+    await expect(publishListingCore(listing(), accessor)).rejects.toThrow(
+      /history scan returned an unstable or non-wire result/,
+    );
+    expect(getterCalls).toBe(0);
+    expect(accessor.stats.creates).toBe(0);
+
+    const outsidePrefix = fakeDeps();
+    outsidePrefix.scanOwnAnchorsByNamePrefix = async () => ({
+      status: "ok",
+      anchors: [{
+        address: "stor-other",
+        programName: "outside-the-requested-prefix",
+        value: await signedListing(),
+      }],
+    });
+    await expect(publishListingCore(listing(), outsidePrefix)).rejects.toThrow(
+      /history scan returned a malformed anchor/,
+    );
+    expect(outsidePrefix.stats.creates).toBe(0);
+  });
+
+  test("pins callback identities before history discovery can swap them", async () => {
+    const deps = fakeDeps();
+    const originalSign = deps.sign;
+    deps.scanOwnAnchorsByNamePrefix = async () => {
+      deps.sign = () => new Uint8Array(64);
+      return { status: "ok", anchors: [] };
+    };
+
+    const result = await publishListingCore(listing(), deps);
+    const stored = deps.store.get(result.ref)!;
+    expect(deps.sign).not.toBe(originalSign);
+    expect(await verifyComponentSignature(
+      stored,
+      ARTIFACT_SEPARATORS.Listing,
+      {
+        isSignerAuthorized: (_artifact, signature) => signature.signer === SELLER,
+        resolvePublicKey: () => rawPublicKey(publicKeyFromSeed(
+          Uint8Array.from(Buffer.alloc(32, 7)),
+        )),
+        verify: ({ signedBytes, signature, publicKey }) => ed25519Verify(
+          signedBytes,
+          Uint8Array.from(Buffer.from(signature.value, "base64url")),
+          publicKeyFromRaw(publicKey),
+        ),
+      },
+    )).toMatchObject({ status: "valid" });
+  });
+
+  test("owns and enforces the exact immutable-write result envelope", async () => {
+    const extra = fakeDeps();
+    extra.anchorWriteOnce = async () => ({
+      address: "stor-1",
+      txRef: "tx-1",
+      completion: "read-visible",
+    } as never);
+    await expect(publishListingCore(listing(), extra)).rejects.toThrow(
+      /anchor returned a malformed result/,
+    );
+
+    const accessor = fakeDeps();
+    let getterCalls = 0;
+    accessor.anchorWriteOnce = async () => {
+      const result = { address: "stor-1" } as Record<string, unknown>;
+      Object.defineProperty(result, "txRef", {
+        enumerable: true,
+        get() {
+          getterCalls += 1;
+          return "tx-1";
+        },
+      });
+      return result as never;
+    };
+    await expect(publishListingCore(listing(), accessor)).rejects.toThrow(
+      /anchor returned an unstable or non-wire result/,
+    );
+    expect(getterCalls).toBe(0);
+  });
+
   test("§6.3.4: the native program name is colon-free and the logical address is the returned binding (#46)", async () => {
     const deps = fakeDeps();
     await publishListingCore(listing({ listingVersion: 1 }), deps);

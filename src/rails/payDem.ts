@@ -307,43 +307,55 @@ export function payDemSettle(
   opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
   const store = opts.store ?? createIdempotencyStore();
+  const configuredRecipient = cfg.recipient;
+  const network = cfg.network ?? "demos";
+  const reconcile = opts.reconcile;
   return async (req) => {
-    if (req.asset !== DEM_CURRENCY) {
+    const { amount, asset, expectedPayee, jobId, payee, rail: railId } = req;
+    const phaseIndex = req.phaseIndex ?? 0;
+    if (asset !== DEM_CURRENCY) {
       throw new DacsError(
-        `pay-dem settles ${DEM_CURRENCY} only, got asset "${req.asset}" (§9.5.9)`,
+        `pay-dem settles ${DEM_CURRENCY} only, got asset "${asset}" (§9.5.9)`,
       );
     }
     // Destination guard: resolve the address from the agreement's payee claim.
-    const payeeAddress = demosAddressFromClaim(req.payee);
+    const payeeAddress = demosAddressFromClaim(payee);
     if (!payeeAddress) {
       throw new DacsError(
-        `pay-dem: payee "${req.payee}" does not intrinsically resolve to a Demos ` +
+        `pay-dem: payee "${payee}" does not intrinsically resolve to a Demos ` +
           `address; refusing to transfer`,
       );
     }
+    if (expectedPayee !== payeeAddress) {
+      throw new DacsError(
+        `pay-dem destination mismatch: request binds ${expectedPayee}, agreement claim resolves to ${payeeAddress}`,
+      );
+    }
     // A configured recipient may only CONFIRM the agreement's payee, never replace it.
-    if (cfg.recipient) {
-      const configured = demosAddressFromClaim(cfg.recipient) ?? cfg.recipient.trim().toLowerCase();
+    if (configuredRecipient) {
+      const configured =
+        demosAddressFromClaim(configuredRecipient) ??
+        configuredRecipient.trim().toLowerCase();
       if (configured !== payeeAddress) {
         throw new DacsError(
-          `pay-dem destination mismatch: configured recipient "${cfg.recipient}" is not the ` +
-            `agreement payee "${req.payee}"; refusing to transfer`,
+          `pay-dem destination mismatch: configured recipient "${configuredRecipient}" is not the ` +
+            `agreement payee "${payee}"; refusing to transfer`,
         );
       }
     }
     // Decimal DEM → integer OS base units (string/integer math, no float).
     // baseUnits also rejects sub-OS precision (> 9 fractional digits).
-    const amountOs = baseUnits(req.amount, DEM_DECIMALS);
+    const amountOs = baseUnits(amount, DEM_DECIMALS);
     const submit = () =>
       rail.settle({
         recipient: payeeAddress,
         amount: amountOs,
-        network: cfg.network ?? "demos",
+        network,
       });
     return store.once(
-      settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0),
+      settlementKey(railId, jobId, phaseIndex),
       submit,
-      opts.reconcile,
+      reconcile,
     );
   };
 }

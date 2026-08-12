@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { signComponentArtifact } from "../artifacts/signatures.js";
 import type { ListingDraft, ListingPin } from "../artifacts/types.js";
@@ -11,6 +13,7 @@ import {
   listingAddress,
   logicalToStorageProgramName,
 } from "../canonical/index.js";
+import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
 import type { Signer } from "./signedArtifact.js";
@@ -73,6 +76,187 @@ export interface PublishListingDeps {
     name: string,
     value: object,
   ) => Promise<{ address: string; txRef?: string }>;
+}
+
+type CapturedPublishListingDeps = Readonly<PublishListingDeps>;
+
+/**
+ * Capture a dependency as a data method without invoking caller-controlled
+ * accessors. Prototype methods remain supported, but proxy-backed dependency
+ * objects/functions are rejected because even inspecting them can run traps.
+ */
+function captureDataMethod<K extends keyof PublishListingDeps>(
+  deps: PublishListingDeps,
+  key: K,
+): PublishListingDeps[K] {
+  if (
+    deps === null ||
+    typeof deps !== "object" ||
+    nodeTypes.isProxy(deps)
+  ) {
+    throw new DacsError("publishListing dependencies must be a stable object");
+  }
+
+  let owner: object | null = deps;
+  try {
+    while (owner !== null) {
+      if (nodeTypes.isProxy(owner)) throw new TypeError("proxy prototype");
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor) {
+        if (
+          !("value" in descriptor) ||
+          typeof descriptor.value !== "function" ||
+          nodeTypes.isProxy(descriptor.value)
+        ) {
+          throw new TypeError("dependency is not a data method");
+        }
+        return Function.prototype.bind.call(
+          descriptor.value,
+          deps,
+        ) as PublishListingDeps[K];
+      }
+      owner = Object.getPrototypeOf(owner);
+    }
+  } catch (cause) {
+    throw new DacsError(
+      `publishListing dependency ${String(key)} must be a stable data method`,
+      { cause },
+    );
+  }
+
+  throw new DacsError(
+    `publishListing dependency ${String(key)} must be a stable data method`,
+  );
+}
+
+/** Select all asynchronous seams before inspecting the caller's Listing. */
+function capturePublishListingDeps(
+  deps: PublishListingDeps,
+): CapturedPublishListingDeps {
+  return Object.freeze({
+    sign: captureDataMethod(deps, "sign"),
+    scanOwnAnchorsByNamePrefix: captureDataMethod(
+      deps,
+      "scanOwnAnchorsByNamePrefix",
+    ),
+    anchorWriteOnce: captureDataMethod(deps, "anchorWriteOnce"),
+  });
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.length === expected.length &&
+    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  );
+}
+
+/** Own and validate the exact owner-bound history callback envelope. */
+function snapshotOwnedAnchorScan(
+  value: unknown,
+  prefix: string,
+): OwnedAnchorScan {
+  let snapshot: unknown;
+  try {
+    snapshot = snapshotCanonicalJson(value, "listing history scan");
+  } catch (cause) {
+    throw new SubstrateError(
+      "listing history scan returned an unstable or non-wire result",
+      { cause },
+    );
+  }
+  if (
+    snapshot === null ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot)
+  ) {
+    throw new SubstrateError("listing history scan returned a malformed envelope");
+  }
+
+  const record = snapshot as Record<string, unknown>;
+  if (
+    record.status === "indeterminate" &&
+    hasExactKeys(record, ["status", "reason"]) &&
+    typeof record.reason === "string" &&
+    record.reason.length > 0 &&
+    record.reason.trim() === record.reason
+  ) {
+    return record as OwnedAnchorScan;
+  }
+  if (
+    record.status !== "ok" ||
+    !hasExactKeys(record, ["status", "anchors"]) ||
+    !Array.isArray(record.anchors)
+  ) {
+    throw new SubstrateError("listing history scan returned a malformed envelope");
+  }
+
+  for (const candidate of record.anchors) {
+    if (
+      candidate === null ||
+      typeof candidate !== "object" ||
+      Array.isArray(candidate)
+    ) {
+      throw new SubstrateError("listing history scan returned a malformed anchor");
+    }
+    const anchor = candidate as Record<string, unknown>;
+    if (
+      !hasExactKeys(anchor, ["address", "programName", "value"]) ||
+      typeof anchor.address !== "string" ||
+      anchor.address.length === 0 ||
+      anchor.address.trim() !== anchor.address ||
+      typeof anchor.programName !== "string" ||
+      !anchor.programName.startsWith(prefix) ||
+      anchor.value === null ||
+      typeof anchor.value !== "object" ||
+      Array.isArray(anchor.value)
+    ) {
+      throw new SubstrateError("listing history scan returned a malformed anchor");
+    }
+  }
+  return record as OwnedAnchorScan;
+}
+
+/** Own and validate the immutable-write result before exposing its refs. */
+function snapshotAnchorWriteResult(
+  value: unknown,
+): { address: string; txRef?: string } {
+  let snapshot: unknown;
+  try {
+    snapshot = snapshotCanonicalJson(value, "immutable listing anchor result");
+  } catch (cause) {
+    throw new SubstrateError(
+      "immutable listing anchor returned an unstable or non-wire result",
+      { cause },
+    );
+  }
+  if (
+    snapshot === null ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot)
+  ) {
+    throw new SubstrateError("immutable listing anchor returned a malformed result");
+  }
+  const record = snapshot as Record<string, unknown>;
+  const exact =
+    hasExactKeys(record, ["address"]) ||
+    hasExactKeys(record, ["address", "txRef"]);
+  if (
+    !exact ||
+    typeof record.address !== "string" ||
+    record.address.length === 0 ||
+    record.address.trim() !== record.address ||
+    (Object.prototype.hasOwnProperty.call(record, "txRef") &&
+      (typeof record.txRef !== "string" ||
+        record.txRef.length === 0 ||
+        record.txRef.trim() !== record.txRef))
+  ) {
+    throw new SubstrateError("immutable listing anchor returned a malformed result");
+  }
+  return record as { address: string; txRef?: string };
 }
 
 function listingHistoryPrefix(listing: ListingDraft): string {
@@ -181,21 +365,14 @@ export async function publishListingCore(
   inputListing: ListingDraft,
   deps: PublishListingDeps,
 ): Promise<PublishListingResult> {
-  let listing: ListingDraft;
-  try {
-    // Own every nested field before the history scan or signer can yield. The
-    // signature and immutable publication must describe this one snapshot even
-    // if the caller mutates its retained draft while either dependency awaits.
-    listing = structuredClone(inputListing);
-  } catch (cause) {
-    throw new DacsError("publishListing requires a stable JSON Listing draft", {
-      cause,
-    });
-  }
-  const scanOwnAnchorsByNamePrefix =
-    deps.scanOwnAnchorsByNamePrefix.bind(deps);
-  const anchorWriteOnce = deps.anchorWriteOnce.bind(deps);
-  const sign = deps.sign.bind(deps);
+  // Select dependency identities without invoking accessors, then own the
+  // caller's exact canonical JSON view. Neither side can swap the other while
+  // this synchronous entry boundary is being established.
+  const capturedDeps = capturePublishListingDeps(deps);
+  const listing = snapshotCanonicalJson(
+    inputListing,
+    "publishListing Listing draft",
+  ) as ListingDraft;
 
   const candidateVersion = (listing as { listingVersion?: unknown })
     .listingVersion;
@@ -229,7 +406,10 @@ export async function publishListingCore(
   const versions = assertContiguousHistory(
     listing,
     historyPrefix,
-    await scanOwnAnchorsByNamePrefix(historyPrefix),
+    snapshotOwnedAnchorScan(
+      await capturedDeps.scanOwnAnchorsByNamePrefix(historyPrefix),
+      historyPrefix,
+    ),
   );
   if (!versions.has(version)) {
     const expected = versions.size + 1;
@@ -246,7 +426,7 @@ export async function publishListingCore(
     {
       algorithm: "ed25519",
       signer: listing.seller.identity.presentedBy,
-      sign,
+      sign: capturedDeps.sign,
     },
   );
   if (!isListing(signed)) {
@@ -258,7 +438,9 @@ export async function publishListingCore(
   try {
     // The signer result is authoritative. Give the adapter an owned, deeply
     // immutable copy so no await-time mutation can change the bytes written.
-    publication = deepFreezePublication(structuredClone(signed));
+    publication = deepFreezePublication(
+      snapshotCanonicalJson(signed, "signed Listing publication"),
+    );
   } catch (cause) {
     throw new DacsError("signed Listing could not form an immutable publication", {
       cause,
@@ -269,6 +451,8 @@ export async function publishListingCore(
     version,
     contentHash: contentHash(publication as unknown as Record<string, unknown>),
   };
-  const { address: anchored, txRef } = await anchorWriteOnce(storageName, publication);
+  const { address: anchored, txRef } = snapshotAnchorWriteResult(
+    await capturedDeps.anchorWriteOnce(storageName, publication),
+  );
   return { ref: anchored, logicalAddress, storageName, listingPin, txRef };
 }

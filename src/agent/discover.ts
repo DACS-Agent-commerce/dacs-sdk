@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { verifyComponentSignature } from "../artifacts/signatures.js";
 import type {
@@ -6,6 +8,7 @@ import type {
   ReadableListing,
 } from "../artifacts/types.js";
 import { readListingArtifact } from "../artifacts/validators.js";
+import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
 
@@ -63,26 +66,75 @@ type CapturedDiscoverDeps = Readonly<{
   nowMs: DiscoverDeps["nowMs"];
 }>;
 
-/** Capture callback identities once so an in-flight read cannot swap its gate. */
+function dataProperty(
+  deps: DiscoverDeps,
+  key: keyof DiscoverDeps,
+): unknown {
+  if (
+    deps === null ||
+    typeof deps !== "object" ||
+    nodeTypes.isProxy(deps)
+  ) {
+    throw new DacsError("Listing verification dependencies must be stable data");
+  }
+  let owner: object | null = deps;
+  try {
+    while (owner !== null) {
+      if (nodeTypes.isProxy(owner)) throw new TypeError("proxy prototype");
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor) {
+        if (!("value" in descriptor)) throw new TypeError("accessor dependency");
+        return descriptor.value;
+      }
+      owner = Object.getPrototypeOf(owner);
+    }
+  } catch (cause) {
+    throw new DacsError(
+      `Listing verification dependency ${String(key)} must be stable data`,
+      { cause },
+    );
+  }
+  return undefined;
+}
+
+function optionalDataMethod<K extends keyof DiscoverDeps>(
+  deps: DiscoverDeps,
+  key: K,
+): DiscoverDeps[K] {
+  const candidate = dataProperty(deps, key);
+  if (candidate === undefined) return undefined as DiscoverDeps[K];
+  if (typeof candidate !== "function" || nodeTypes.isProxy(candidate)) {
+    throw new DacsError(
+      `Listing verification dependency ${String(key)} must be a stable data method`,
+    );
+  }
+  return Function.prototype.bind.call(candidate, deps) as DiscoverDeps[K];
+}
+
+/** Capture and validate callback identities before inspecting a Listing. */
 function captureDiscoverDeps(deps: DiscoverDeps): CapturedDiscoverDeps {
+  const trustListings = dataProperty(deps, "trustListings");
+  if (trustListings !== undefined && typeof trustListings !== "boolean") {
+    throw new DacsError("trustListings must be a boolean when provided");
+  }
   return Object.freeze({
-    verify: deps.verify,
-    resolvePublicKey: deps.resolvePublicKey,
-    trustListings: deps.trustListings,
-    nowMs: deps.nowMs,
+    verify: optionalDataMethod(deps, "verify"),
+    resolvePublicKey: optionalDataMethod(deps, "resolvePublicKey"),
+    trustListings,
+    nowMs: optionalDataMethod(deps, "nowMs"),
   });
 }
 
 /**
  * Own the resolver value before validation or any await. A Listing is an
- * authenticated JSON artifact; structuredClone both rejects non-cloneable live
- * values and severs every nested alias retained by the resolver.
+ * authenticated JSON artifact; the canonical wire round-trip rejects live
+ * views and severs every nested alias retained by the resolver.
  */
 function snapshotListingArtifact(
   raw: Record<string, unknown>,
 ): Record<string, unknown> | null {
   try {
-    const snapshot = structuredClone(raw) as unknown;
+    const snapshot = snapshotCanonicalJson(raw, "Listing artifact") as unknown;
     return snapshot !== null &&
       typeof snapshot === "object" &&
       !Array.isArray(snapshot)
@@ -136,15 +188,16 @@ async function authenticateListingSnapshot(
   const resolveKey = deps.resolvePublicKey ?? intrinsicKey;
   if (readable.compatibility === "legacy-mvp") {
     try {
-      const key = await resolveKey(readable.listing.agentId);
-      if (!key || key.length !== 32) return null;
+      const resolved = await resolveKey(readable.listing.agentId);
+      if (!(resolved instanceof Uint8Array) || resolved.length !== 32) return null;
+      const key = Uint8Array.from(resolved);
       const valid = await verifySignedArtifact(
         raw,
         ARTIFACT_SEPARATORS.Listing,
         key,
         deps.verify,
       );
-      return valid ? readable : null;
+      return valid === true ? readable : null;
     } catch {
       return null;
     }
@@ -165,8 +218,10 @@ async function authenticateListingSnapshot(
           (claim) => claim.ref === signature.signer,
         ),
       resolvePublicKey: async (signature) => {
-        const key = await resolveKey(signature.signer);
-        return key && key.length === 32 ? key : null;
+        const resolved = await resolveKey(signature.signer);
+        return resolved instanceof Uint8Array && resolved.length === 32
+          ? Uint8Array.from(resolved)
+          : null;
       },
       verify: ({ signedBytes, signature, publicKey }) => {
         const bytes = Uint8Array.from(
@@ -213,6 +268,9 @@ export async function verifyReadableListingArtifact(
   if (!readable) return null;
   if (readable.compatibility === "normative") {
     const now = capturedDeps.nowMs?.() ?? Date.now();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      throw new DacsError("Listing verification clock must return unix-ms safe integer data");
+    }
     const validity = readable.listing.validity;
     if (
       now < validity.notBefore ||
@@ -236,8 +294,21 @@ export async function discoverListings(
         "returning unverified listings lets a forged listing drive negotiation and payment (#41)",
     );
   }
+  if (typeof readAnchor !== "function" || nodeTypes.isProxy(readAnchor)) {
+    throw new DacsError("discoverListings readAnchor must be a stable function");
+  }
+  const refs = snapshotCanonicalJson(listingRefs, "Listing refs");
+  if (
+    !Array.isArray(refs) ||
+    refs.some(
+      (ref) =>
+        typeof ref !== "string" || ref.length === 0 || ref.trim() !== ref,
+    )
+  ) {
+    throw new DacsError("discoverListings requires non-empty canonical Listing refs");
+  }
   const found: DiscoveredListing[] = [];
-  for (const ref of listingRefs) {
+  for (const ref of refs) {
     const raw = await readAnchor(ref);
     if (!raw) continue;
     const readable = await verifyReadableListingArtifact(raw, capturedDeps);

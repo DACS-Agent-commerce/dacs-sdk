@@ -59,6 +59,119 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
   test("requires an explicit gate — neither dep rejects (no fail-open)", async () => {
     await expect(discoverListings(["ref:1"], read)).rejects.toThrow(/verify|trustListings/);
   });
+
+  test("owns the requested ref list before the first asynchronous read", async () => {
+    const refs = ["ref:1"];
+    const seen: string[] = [];
+    const found = await discoverListings(
+      refs,
+      async (ref) => {
+        seen.push(ref);
+        refs.push("ref:3");
+        await Promise.resolve();
+        return store[ref] ?? null;
+      },
+      TRUST,
+    );
+    expect(seen).toEqual(["ref:1"]);
+    expect(found.map((item) => item.ref)).toEqual(["ref:1"]);
+  });
+
+  test("rejects accessor-backed gates without invoking dependency getters", async () => {
+    let getterCalls = 0;
+    const deps = {} as { trustListings: boolean };
+    Object.defineProperty(deps, "trustListings", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return true;
+      },
+    });
+    await expect(discoverListings(["ref:1"], read, deps)).rejects.toThrow(
+      /dependency trustListings must be stable data/,
+    );
+    expect(getterCalls).toBe(0);
+  });
+
+  test("drops a proxy-backed resolver artifact without running its traps", async () => {
+    let traps = 0;
+    const live = new Proxy(LISTING, {
+      get(target, key, receiver) {
+        traps += 1;
+        return Reflect.get(target, key, receiver);
+      },
+      ownKeys(target) {
+        traps += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    await expect(
+      discoverListings(["ref:proxy"], async () => live, TRUST),
+    ).resolves.toEqual([]);
+    // Resolving any Promise-like value performs one unavoidable `then` probe;
+    // the SDK itself must not traverse the proxy-backed artifact after that.
+    expect(traps).toBe(1);
+  });
+
+  test("requires exact booleans and a safe unix-ms admission clock", async () => {
+    await expect(
+      discoverListings(["ref:1"], read, { trustListings: "yes" } as never),
+    ).rejects.toThrow(/trustListings must be a boolean/);
+
+    const normative = {
+      dacsVersion: "1",
+      listingVersion: 1,
+      listingId: "clocked",
+      seller: {
+        identity: {
+          bundleVersion: "1",
+          presentedBy: "did:demos:agent:seller",
+          presentedAt: 1,
+          claims: [{ ref: "did:demos:agent:seller" }],
+          presentation: {
+            kind: "per-claim",
+            signatures: [{
+              ref: "did:demos:agent:seller",
+              signature: "presentation",
+            }],
+          },
+        },
+        displayName: "Seller",
+      },
+      offering: {
+        title: "Clocked",
+        description: "Clock validation",
+        category: "test",
+        tags: [],
+        deliverable: {
+          kind: "attested-payload",
+          payloadFormat: "application/json",
+        },
+      },
+      buyerRequirement: { requirementVersion: "1", required: [] },
+      pipeline: [
+        { kind: "negotiate-fixed-price" },
+        { kind: "commit-agreement" },
+        { kind: "pay-x402", parameters: { rail: "x402:default" } },
+        { kind: "deliver-attested-payload" },
+      ],
+      pricing: { kind: "fixed", price: { amount: "1", currency: "USDC" } },
+      acceptedRails: [{ railId: "x402:default" }],
+      terms: { deadlineSecAfterCommit: 60 },
+      validity: { notBefore: 0 },
+      signature: {
+        algorithm: "ed25519",
+        signer: "did:demos:agent:seller",
+        value: "AA",
+      },
+    } as unknown as Record<string, unknown>;
+    await expect(
+      discoverListings(["normative"], async () => normative, {
+        trustListings: true,
+        nowMs: () => Number.NaN,
+      }),
+    ).rejects.toThrow(/clock must return unix-ms safe integer/);
+  });
 });
 
 describe("discoverListings signature verification (#41)", () => {
@@ -138,5 +251,19 @@ describe("discoverListings signature verification (#41)", () => {
     });
     // The throw dropped only "bad"; "good" is still discovered.
     expect(found.map((f) => f.ref)).toEqual(["good"]);
+  });
+
+  test("copies resolver-owned key bytes before handing them to verification", async () => {
+    const ok = await signedBy(ALICE.did, ALICE.priv);
+    const retained = Uint8Array.from(Buffer.from(ALICE.hex, "hex"));
+    const found = await discoverListings(["a"], async () => ok, {
+      resolvePublicKey: () => retained,
+      verify: (bytes, signature, publicKey) => {
+        retained.fill(0);
+        return ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey));
+      },
+    });
+    expect(found).toHaveLength(1);
+    expect(retained.every((byte) => byte === 0)).toBe(true);
   });
 });
