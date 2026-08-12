@@ -1803,6 +1803,7 @@ interface CommerceState {
   loseResponseAcknowledgement: boolean;
   facilitatorVerifyOutcome?: "valid" | "invalid" | "threw";
   facilitatorOutcome?: "success" | "failure" | "threw";
+  facilitatorFailureCode?: string;
   preSettlementOutcome?: "authorized" | "rejected" | "indeterminate";
   preSettlementReason?: string;
   coldAuthorityOutcome?: string;
@@ -1842,6 +1843,12 @@ function agreementBindingFailure(error: unknown): string {
   if (/authenticated finality time/.test(message)) return "finality-time-invalid";
   if (/deadline exceeds/.test(message)) return "deadline-invalid";
   return "unclassified";
+}
+
+function facilitatorFailureCode(reason: unknown): string {
+  return typeof reason === "string" && /^[a-z0-9_]{1,96}$/.test(reason)
+    ? reason.replace(/_/g, "-")
+    : "unclassified";
 }
 
 function commerceState(): CommerceState {
@@ -2695,6 +2702,7 @@ async function createSellerRuntime(input: {
         throw error;
       }
       state.facilitatorOutcome = result.success ? "success" : "failure";
+      if (!result.success) state.facilitatorFailureCode = facilitatorFailureCode(result.errorReason);
       // This is the seller's durable handoff for the ambiguity window after
       // the facilitator has returned but before the paywall WAL is terminal.
       return retainSuccessfulFacilitatorSettlement(
@@ -2920,7 +2928,7 @@ async function settleAndRecover(input: {
   const pending = await buyerStore.load(intent.settlementKey);
   if (pending.status !== "held" || pending.pendingDisclosure === undefined) {
     throw new Error(
-      `funded-e2e:buyer-disclosure-missing-after-verify-${state.facilitatorVerifyOutcome ?? "not-called"}-presettle-${state.preSettlementOutcome ?? "not-called"}-${state.preSettlementReason ?? "no-reason"}-cold-${state.coldAuthorityOutcome ?? "not-called"}-settle-${state.facilitatorOutcome ?? "not-called"}`,
+      `funded-e2e:buyer-disclosure-missing-after-verify-${state.facilitatorVerifyOutcome ?? "not-called"}-presettle-${state.preSettlementOutcome ?? "not-called"}-${state.preSettlementReason ?? "no-reason"}-cold-${state.coldAuthorityOutcome ?? "not-called"}-settle-${state.facilitatorOutcome ?? "not-called"}-${state.facilitatorFailureCode ?? "no-failure-code"}`,
     );
   }
   requireCondition(
@@ -4676,6 +4684,12 @@ describe("issue #114 guarded funded two-agent spine", () => {
       rejectedPermit2 = true;
     }
     requireCondition(rejectedPermit2, "legacy-facilitator-projection-not-fail-closed");
+    requireCondition(
+      facilitatorFailureCode("invalid_exact_evm_transaction_failed") ===
+        "invalid-exact-evm-transaction-failed" &&
+        facilitatorFailureCode("rpc failure: 0xsecret") === "unclassified",
+      "facilitator-failure-code-not-safely-classified",
+    );
   });
 
   if (missingReadOnly.length > 0) {
