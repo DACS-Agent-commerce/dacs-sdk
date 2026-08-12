@@ -1781,6 +1781,7 @@ interface CommerceCounts {
 
 interface CommerceState {
   loseResponseAcknowledgement: boolean;
+  facilitatorOutcome?: "success" | "failure" | "threw";
   permit?: X402SellerPaymentPermitAuthorization;
   observedTransfer?: Extract<X402TransferObservation, { status: "finalized" }>;
   delivered?: Awaited<ReturnType<DurableSellerFulfilmentDeps["submitDelivery"]>>;
@@ -1791,6 +1792,17 @@ interface CommerceState {
   fulfilment?: Extract<SellerFulfilmentResult, { decision: "completed" }>;
   settlementResult?: X402PaywallSettlementResult & { success: true };
   counts: CommerceCounts;
+}
+
+function legacyFacilitatorRequirements(
+  requirements: X402BuyerPaymentRequirements,
+): X402BuyerPaymentRequirements {
+  requireCondition(
+    requirements.extra.assetTransferMethod === "eip3009",
+    "facilitator-requirements-not-eip3009",
+  );
+  const { assetTransferMethod: _method, ...extra } = requirements.extra;
+  return structuredClone({ ...requirements, extra });
 }
 
 function commerceState(): CommerceState {
@@ -2580,14 +2592,28 @@ async function createSellerRuntime(input: {
     getSupported: () => preflight.facilitator.getSupported(),
     verify: async (payload: unknown, requirements: unknown) => {
       state.counts.facilitatorVerify += 1;
-      return preflight.facilitator.verify(payload as never, requirements as never);
+      return preflight.facilitator.verify(
+        payload as never,
+        legacyFacilitatorRequirements(
+          requirements as X402BuyerPaymentRequirements,
+        ) as never,
+      );
     },
     settle: async (payload: unknown, requirements: unknown) => {
       state.counts.facilitatorSettle += 1;
-      const result = await preflight.facilitator.settle(
-        payload as never,
-        requirements as never,
-      );
+      let result: Awaited<ReturnType<HTTPFacilitatorClient["settle"]>>;
+      try {
+        result = await preflight.facilitator.settle(
+          payload as never,
+          legacyFacilitatorRequirements(
+            requirements as X402BuyerPaymentRequirements,
+          ) as never,
+        );
+      } catch (error) {
+        state.facilitatorOutcome = "threw";
+        throw error;
+      }
+      state.facilitatorOutcome = result.success ? "success" : "failure";
       // This is the seller's durable handoff for the ambiguity window after
       // the facilitator has returned but before the paywall WAL is terminal.
       return retainSuccessfulFacilitatorSettlement(
@@ -2804,6 +2830,11 @@ async function settleAndRecover(input: {
     "buyer-post-response-chain-loss-not-indeterminate",
   );
   const pending = await buyerStore.load(intent.settlementKey);
+  if (pending.status !== "held" || pending.pendingDisclosure === undefined) {
+    throw new Error(
+      `funded-e2e:buyer-disclosure-missing-after-facilitator-${state.facilitatorOutcome ?? "not-called"}`,
+    );
+  }
   requireCondition(
     pending.status === "held" && pending.pendingDisclosure !== undefined,
     "buyer-pending-disclosure-not-durable",
@@ -4479,6 +4510,38 @@ describe("issue #114 guarded funded two-agent spine", () => {
       }),
       "facilitator-result-not-written-to-wal",
     );
+  });
+
+  it("projects only the x402-defined EIP-3009 default for a legacy facilitator", () => {
+    const requirements: X402BuyerPaymentRequirements = {
+      scheme: "exact",
+      network: BASE_SEPOLIA_NETWORK,
+      amount: PAYMENT_AMOUNT.toString(),
+      asset: `0x${"3".repeat(40)}`,
+      payTo: `0x${"4".repeat(40)}`,
+      maxTimeoutSeconds: PAYMENT_TIMEOUT_SECONDS,
+      extra: {
+        name: TOKEN_NAME,
+        version: TOKEN_VERSION,
+        assetTransferMethod: "eip3009",
+      },
+    };
+    const projected = legacyFacilitatorRequirements(requirements);
+    requireCondition(
+      projected.extra.assetTransferMethod === undefined &&
+        requirements.extra.assetTransferMethod === "eip3009",
+      "legacy-facilitator-projection-mutated-authority",
+    );
+    let rejectedPermit2 = false;
+    try {
+      legacyFacilitatorRequirements({
+        ...requirements,
+        extra: { ...requirements.extra, assetTransferMethod: "permit2" },
+      });
+    } catch {
+      rejectedPermit2 = true;
+    }
+    requireCondition(rejectedPermit2, "legacy-facilitator-projection-not-fail-closed");
   });
 
   if (missingReadOnly.length > 0) {
