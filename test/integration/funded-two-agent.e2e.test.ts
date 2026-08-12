@@ -1806,6 +1806,10 @@ interface CommerceState {
   facilitatorFailureCode?: string;
   preSettlementOutcome?: "authorized" | "rejected" | "indeterminate";
   preSettlementReason?: string;
+  paymentAuthorizationOutcome?: "authorized" | "rejected" | "indeterminate";
+  paymentAuthorizationReason?: string;
+  fulfilmentOutcome?: "fulfilled" | "failed" | "indeterminate";
+  fulfilmentReason?: string;
   coldAuthorityOutcome?: string;
   permit?: X402SellerPaymentPermitAuthorization;
   observedTransfer?: Extract<X402TransferObservation, { status: "finalized" }>;
@@ -1848,6 +1852,12 @@ function agreementBindingFailure(error: unknown): string {
 function facilitatorFailureCode(reason: unknown): string {
   return typeof reason === "string" && /^[a-z0-9_]{1,96}$/.test(reason)
     ? reason.replace(/_/g, "-")
+    : "unclassified";
+}
+
+function safeDiagnosticCode(reason: unknown): string {
+  return typeof reason === "string" && /^[a-z0-9-]{1,128}$/.test(reason)
+    ? reason
     : "unclassified";
 }
 
@@ -2741,9 +2751,19 @@ async function createSellerRuntime(input: {
     },
     authorizePayment: async (context) => {
       const result = await spine.authorizePayment(context);
+      state.paymentAuthorizationOutcome = result.disposition;
+      state.paymentAuthorizationReason = result.disposition === "authorized"
+        ? "authorized" : safeDiagnosticCode(result.reason);
       if (result.disposition === "authorized") {
         state.permit = structuredClone(result.authorization);
       }
+      return result;
+    },
+    fulfil: async (context) => {
+      const result = await spine.fulfil(context);
+      state.fulfilmentOutcome = result.disposition;
+      state.fulfilmentReason = result.disposition === "fulfilled"
+        ? "fulfilled" : safeDiagnosticCode(result.reason);
       return result;
     },
   });
@@ -2996,7 +3016,19 @@ async function settleAndRecover(input: {
     redirect: "error",
   });
   await replayResponse.arrayBuffer();
-  requireCondition(replayResponse.status === 200, "seller-request-replay-failed");
+  if (replayResponse.status !== 200) {
+    const replayFulfilmentStatus = await getSellerFulfilmentStatus(
+      seller.fulfilmentStore,
+      input.jobId,
+      DELIVERY_PHASE_INDEX,
+    );
+    const walCode = replayFulfilmentStatus.status === "ok"
+      ? `${replayFulfilmentStatus.delivery}-${replayFulfilmentStatus.evidence}`
+      : replayFulfilmentStatus.status;
+    throw new Error(
+      `funded-e2e:seller-request-replay-failed-http-${replayResponse.status}-auth-${restartedState.paymentAuthorizationOutcome ?? "not-called"}-${restartedState.paymentAuthorizationReason ?? "no-reason"}-fulfil-${restartedState.fulfilmentOutcome ?? "not-called"}-${restartedState.fulfilmentReason ?? "no-reason"}-wal-${walCode}-cold-${restartedState.coldAuthorityOutcome ?? "not-called"}`,
+    );
+  }
   requireCondition(Number(input.preflight.host.requestCounts.paid) === 2, "seller-replay-not-observed");
   requireCondition(
     restartedState.counts.facilitatorVerify === 0 &&
