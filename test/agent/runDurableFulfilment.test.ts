@@ -73,7 +73,7 @@ const BUYER_REQUIREMENT = {
   requirementVersion: "1" as const,
   required: [{ scheme: "did", verificationRequired: true }],
 };
-const COMMITMENT_ADDRESS = "dacs3:commit:job-17";
+const COMMITMENT_ADDRESS = "dacs3:commit:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const AUDIT_SOURCE_COMMITMENT_SEPARATOR =
   "dacs-x-seller-fulfilment-audit-source:v1:";
 
@@ -104,7 +104,7 @@ function anchorReceipt(
 function paymentAuthorization(): SellerPaymentAuthorization {
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1",
-    jobId: "job-17",
+    jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     phase: "pay-x402",
     paymentTxRefs: [{
       kind: "x402",
@@ -124,7 +124,7 @@ function paymentAuthorization(): SellerPaymentAuthorization {
     },
   };
   return {
-    jobId: "job-17",
+    jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     phaseIndex: 1,
     agreementHash: H.agreement,
     listingRef: { listingId: "listing-17", version: 4, contentHash: H.listing },
@@ -218,7 +218,7 @@ function payloadAttestationRecord(
   const methodHash = sha256Hex(canonicalize(spec.verificationMethod!));
   return {
     payloadAttestationVersion: "1",
-    jobId: "job-17",
+    jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     agreementHash: H.agreement,
     deliverableSpecHash: sha256Hex(canonicalize(spec)),
     payloadFormat: spec.payloadFormat,
@@ -241,7 +241,7 @@ function defaultArtifact(spec: SellerDeliverableSpec): SellerDeliveredArtifact {
   if (spec.kind === "entitlement") {
     const record = {
       entitlementVersion: "1",
-      jobId: "job-17",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       grantee: BUYER,
       grantor: SELLER,
       startsAt: NOW - 1_000,
@@ -269,7 +269,7 @@ function defaultArtifact(spec: SellerDeliverableSpec): SellerDeliveredArtifact {
       attestationRef: {
         anchor: {
           kind: "storage-program",
-          locator: `dacs4:payload-attestation:job-17:${methodHash}:0`,
+          locator: `dacs4:payload-attestation:01J8ME0SXKQ4T9V2RC5HJ6WX7D:${methodHash}:0`,
         },
         contentHash: contentHash(record as unknown as Record<string, unknown>),
       },
@@ -351,14 +351,14 @@ function fixture(
   const buyerVetRef = {
     anchor: {
       kind: "storage-program" as const,
-      locator: "dacs2:composite:job-17:did%3Ademos%3Abuyer",
+      locator: "dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did%3Ademos%3Abuyer",
     },
     contentHash: "2".repeat(64),
   };
   const sellerVetRef = {
     anchor: {
       kind: "storage-program" as const,
-      locator: "dacs2:composite:job-17:did%3Ademos%3Aseller",
+      locator: "dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did%3Ademos%3Aseller",
     },
     contentHash: "3".repeat(64),
   };
@@ -379,7 +379,7 @@ function fixture(
   };
   const agreement: SellerFulfilmentAgreement = {
     artifactKind: "payee-bound",
-    ref: "agreement:job-17",
+    ref: "agreement:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     contentHash: H.agreement,
     jobId: authorization.jobId,
     listingPin: { ...authorization.listingRef },
@@ -446,7 +446,7 @@ function fixture(
           ok: true,
           txRefs: [{
             kind: "storage-program",
-            address: "stor-commitment-job-17",
+            address: "stor-commitment-01J8ME0SXKQ4T9V2RC5HJ6WX7D",
             writeTxHash: "5".repeat(64),
           }],
           contextDelta: {},
@@ -504,12 +504,12 @@ function fixture(
             ref: {
               anchor: {
                 kind: "storage-program",
-                locator: "dacs2:job-17:did:demos%3Abuyer:v1",
+                locator: "dacs2:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did:demos%3Abuyer:v1",
               },
               contentHash: "4".repeat(64),
               recipeVersion: 1,
             },
-            sourceJobId: "job-17",
+            sourceJobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
             scheme: "did",
             identifier: "demos:buyer",
             method: "self-signed",
@@ -535,8 +535,8 @@ function fixture(
     ? payloadAttestationRecord(spec, artifact.cleartextBytes)
     : undefined;
   const logicalAddress = phase === "deliver-entitlement"
-    ? "dacs4:entitlement:job-17:0"
-    : "dacs4:deliverable:job-17";
+    ? "dacs4:entitlement:01J8ME0SXKQ4T9V2RC5HJ6WX7D:0"
+    : "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
   if (initiallyConsumed) {
     const fulfilmentId = sellerFulfilmentId({
       jobId: authorization.jobId,
@@ -648,14 +648,14 @@ function fixture(
           : {}),
       },
     }),
-    submitDelivery: async () => ({ status: "accepted", reconciliationId: "delivery:job-17:1" }),
+    submitDelivery: async () => ({ status: "accepted", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1" }),
     reconcileDelivery: vi.fn(async () => {
       reconciliationCount += 1;
       return reconciliationCount === 1 && !initiallyConsumed
         ? { status: "absent" as const, reason: "authoritative absence" }
         : {
             status: "complete" as const,
-            reconciliationId: "delivery:job-17:1",
+            reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
             observedAt: NOW,
           };
     }),
@@ -730,7 +730,7 @@ function fixture(
     },
     anchorEvidence: async ({ evidence, evidenceHash }) => {
       anchoredEvidence = structuredClone(evidence);
-      const locator = "dacs4:test-delivery-evidence:job-17";
+      const locator = "dacs4:test-delivery-evidence:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
       return {
         status: "anchored",
         ref: { anchor: { kind: "storage-program", locator }, contentHash: evidenceHash },
@@ -773,7 +773,7 @@ function installPayloadRecord(
   f.artifact.attestationRef = {
     anchor: {
       kind: "storage-program",
-      locator: `dacs4:payload-attestation:job-17:${methodHash}:${record.attempt}`,
+      locator: `dacs4:payload-attestation:01J8ME0SXKQ4T9V2RC5HJ6WX7D:${methodHash}:${record.attempt}`,
     },
     contentHash: recordHash,
   };
@@ -1152,7 +1152,7 @@ function durableHarness(
   const loseAfter = new Set<EffectName>();
   const committed: Partial<Record<EffectName, unknown>> = {};
   const finalReceipt = {
-    exact: "final-receipt:job-17:1",
+    exact: "final-receipt:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
     bytes: Uint8Array.from([0, 1, 2, 253, 254, 255]),
   };
   const maybeLose = (name: EffectName): void => {
@@ -1341,13 +1341,13 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       let store = h.store;
       if (failure === "lease-contention") {
         await store.create({
-          jobId: "job-17",
+          jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           agreementHash: h.fixture.authorization.agreementHash,
           phase: "created",
           now: NOW,
         });
         const held = await store.acquireLease({
-          jobId: "job-17",
+          jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           owner: "another-live-worker",
           ttlMs: 60_000,
           sellerPhaseIndex: 1,
@@ -1516,7 +1516,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         expect(completed.decision).toBe("completed");
 
         const laterLease = await store.acquireLease({
-          jobId: "job-17",
+          jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           owner: "later-phase-worker",
           ttlMs: 1_000,
           sellerPhaseIndex: 3,
@@ -1524,7 +1524,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         });
         if (!laterLease.ok) throw new Error("later phase lease missing");
         const pending = await store.transition({
-          jobId: "job-17",
+          jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           expectedRevision: laterLease.record.revision,
           leaseToken: laterLease.lease,
           phase: "seller:validation-pending:3",
@@ -1538,7 +1538,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         )).toEqual(completed);
 
         const laterComplete = await store.transition({
-          jobId: "job-17",
+          jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           expectedRevision: pending.record.revision,
           leaseToken: laterLease.lease,
           phase: "seller:delivery-completed:3",
@@ -1555,14 +1555,14 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         )).toEqual(completed);
 
         const finaliseLease = await store.acquireLease({
-          jobId: "job-17",
+          jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           owner: "bundle-finaliser",
           ttlMs: 1_000,
           now: NOW + 4,
         });
         if (!finaliseLease.ok) throw new Error("finalisation lease missing");
         const finalised = await store.transition({
-          jobId: "job-17",
+          jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           expectedRevision: finaliseLease.record.revision,
           leaseToken: finaliseLease.lease,
           phase: "seller:finalised",
@@ -1592,7 +1592,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         : {
             status: "failed",
             reason: "delivery substrate recorded failure",
-            reconciliationId: "delivery:job-17:1",
+            reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
             observedAt: NOW,
           };
     };
@@ -1603,14 +1603,14 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     );
     expect(failed.decision).toBe("failed");
     const lease = await h.store.acquireLease({
-      jobId: "job-17",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       owner: "bundle-finaliser",
       ttlMs: 1_000,
       now: NOW + 1,
     });
     if (!lease.ok) throw new Error("failed-session finalisation lease missing");
     const finalised = await h.store.transition({
-      jobId: "job-17",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       expectedRevision: lease.record.revision,
       leaseToken: lease.lease,
       phase: "seller:finalised",
@@ -1630,30 +1630,30 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const result = await runDurableFulfilmentCore(h.fixture.request, h.deps, h.durability);
     expect(result.decision).toBe("completed");
 
-    const status = await getSellerFulfilmentStatus(h.store, "job-17", 2);
+    const status = await getSellerFulfilmentStatus(h.store, "01J8ME0SXKQ4T9V2RC5HJ6WX7D", 2);
     expect(status).toMatchObject({
       status: "ok",
-      jobId: "job-17",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       phase: "seller:delivery-completed:2",
       delivery: "outcome",
       evidence: "outcome",
       receipts: {
-        agreement: "agreement:job-17",
+        agreement: "agreement:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
         "settlement:1": h.fixture.authorization.settlementId,
-        "delivery:2": "dacs4:test-delivery-evidence:job-17",
+        "delivery:2": "dacs4:test-delivery-evidence:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
         "fulfilment:2": expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     });
     if (status.status !== "ok") throw new Error("status missing");
     status.receipts["fulfilment:2"] = "mutated";
     status.receipts["delivery:2"] = "mutated";
-    const reloaded = await getSellerFulfilmentStatus(h.store, "job-17", 2);
+    const reloaded = await getSellerFulfilmentStatus(h.store, "01J8ME0SXKQ4T9V2RC5HJ6WX7D", 2);
     expect(reloaded).toMatchObject({
       status: "ok",
       receipts: {
-        agreement: "agreement:job-17",
+        agreement: "agreement:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
         "settlement:1": h.fixture.authorization.settlementId,
-        "delivery:2": "dacs4:test-delivery-evidence:job-17",
+        "delivery:2": "dacs4:test-delivery-evidence:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
         "fulfilment:2": expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     });
@@ -1674,13 +1674,13 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       expect(second.decision).toBe("completed");
       expect(h.counts[lostEffect]).toBe(1);
       expect(h.fences[lostEffect][0]).toMatchObject({ owner: "worker-a", generation: 1 });
-      const status = await getSellerFulfilmentStatus(h.store, "job-17", 2);
+      const status = await getSellerFulfilmentStatus(h.store, "01J8ME0SXKQ4T9V2RC5HJ6WX7D", 2);
       expect(status).toMatchObject({
         status: "ok",
         receipts: {
-          agreement: "agreement:job-17",
+          agreement: "agreement:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           "settlement:1": h.fixture.authorization.settlementId,
-          "delivery:2": "dacs4:test-delivery-evidence:job-17",
+          "delivery:2": "dacs4:test-delivery-evidence:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           "fulfilment:2": expect.stringMatching(/^[0-9a-f]{64}$/),
         },
       });
@@ -1710,7 +1710,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability,
     );
     expect(interruptedRecovery.decision).toBe("indeterminate");
-    const committed = await baseStore.load("job-17");
+    const committed = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (committed.status !== "ok") throw new Error("reconciliation session missing");
     const reconciliationOutcome = committed.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
@@ -1765,7 +1765,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability,
     );
     expect(interrupted.decision).toBe("indeterminate");
-    const committed = await baseStore.load("job-17");
+    const committed = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (committed.status !== "ok") throw new Error("reconciliation session missing");
     const observationIntent = committed.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
@@ -1801,7 +1801,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       }
       return {
         status: "complete" as const,
-        reconciliationId: "delivery:job-17:1",
+        reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
         observedAt: reconciliationCalls === 2 ? NOW - 20_000 : NOW,
       };
     });
@@ -1812,7 +1812,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability,
     );
     expect(invalid).toMatchObject({ decision: "indeterminate", code: "clock-invalid" });
-    const afterInvalid = await h.store.load("job-17");
+    const afterInvalid = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterInvalid.status !== "ok") throw new Error("session missing");
     expect(afterInvalid.record.checkpoints.some(
       (checkpoint) => checkpoint.key ===
@@ -1841,7 +1841,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const result = await runDurableFulfilmentCore(h.fixture.request, h.deps, h.durability);
     expect(result.decision).toBe("completed");
     expect(h.counts).toEqual({ payload: 1, delivery: 1, evidence: 1, final: 1 });
-    const loaded = await h.store.load("job-17");
+    const loaded = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (loaded.status !== "ok") throw new Error("session missing");
     const publication = loaded.record.checkpoints.filter(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.payloadPublication(2),
@@ -1865,7 +1865,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         : { kind: "storage-program" as const, accessModel: "public" as const };
       const h = durableHarness(spec);
       h.deps.reconcileDelivery = async () => h.committed.delivery
-        ? { status: "complete", reconciliationId: "delivery:job-17:1", observedAt: NOW }
+        ? { status: "complete", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
         : { status: "absent", reason: "authoritative delivery absence" };
       let resolverCalls = 0;
       if (target === "payload") {
@@ -1909,7 +1909,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         : target === "delivery"
           ? sellerFulfilmentCheckpointKey.deliveryReadback(2)
           : sellerFulfilmentCheckpointKey.evidenceReadback(2);
-      const afterMalformed = await h.store.load("job-17");
+      const afterMalformed = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (afterMalformed.status !== "ok") throw new Error("readback session missing");
       expect(afterMalformed.record.checkpoints.filter(
         (checkpoint) => checkpoint.key === readbackKey,
@@ -1935,7 +1935,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       expect(h.counts).toEqual(target === "payload"
         ? { payload: 1, delivery: 1, evidence: 1, final: 1 }
         : { payload: 0, delivery: 1, evidence: 1, final: 1 });
-      const terminal = await h.store.load("job-17");
+      const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (terminal.status !== "ok") throw new Error("recovered readback session missing");
       expect(terminal.record.checkpoints.filter(
         (checkpoint) => checkpoint.key === readbackKey,
@@ -1965,7 +1965,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     h.fixture.deps.prepareDelivery = prepare;
     h.deps.prepareDelivery = prepare;
     h.deps.reconcileDelivery = async () => h.committed.delivery
-      ? { status: "complete", reconciliationId: "delivery:job-17:1", observedAt: NOW }
+      ? { status: "complete", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
       : { status: "absent", reason: "authoritative absence" };
 
     const first = await runDurableFulfilmentCore(h.fixture.request, h.deps, h.durability);
@@ -1973,7 +1973,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       decision: "completed",
       consumedPaymentAuthorization: h.fixture.authorization,
     });
-    expect((await h.store.load("job-17")).status).toBe("ok");
+    expect((await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D")).status).toBe("ok");
 
     const second = await runDurableFulfilmentCore(h.fixture.request, h.deps, {
       ...h.durability,
@@ -2005,7 +2005,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     h.fixture.deps.prepareDelivery = prepare;
     h.deps.prepareDelivery = prepare;
     h.deps.reconcileDelivery = async () => h.committed.delivery
-      ? { status: "complete", reconciliationId: "delivery:job-17:1", observedAt: NOW }
+      ? { status: "complete", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
       : { status: "absent", reason: "authoritative absence" };
 
     const first = await runDurableFulfilmentCore(h.fixture.request, h.deps, h.durability);
@@ -2014,7 +2014,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       consumedPaymentAuthorization: h.fixture.authorization,
     });
     expect(h.fixture.store.consumed).toBe(true);
-    const afterLoss = await baseStore.load("job-17");
+    const afterLoss = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterLoss.status !== "ok") throw new Error("session missing after handoff intent");
     expect(afterLoss.record.checkpoints.filter(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.handoff(2),
@@ -2028,7 +2028,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(recovered).toEqual(first);
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(h.counts.delivery).toBe(1);
-    const afterRecovery = await baseStore.load("job-17");
+    const afterRecovery = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterRecovery.status !== "ok") throw new Error("session missing after recovery");
     expect(afterRecovery.record.checkpoints.filter(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.handoff(2),
@@ -2057,7 +2057,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       code: "durable-permit-inspection-failed",
     });
     expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
-    const afterBadRetry = await h.store.load("job-17");
+    const afterBadRetry = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterBadRetry.status !== "ok") throw new Error("session missing after bad retry");
     expect(checkpointStateForTest(
       afterBadRetry.record,
@@ -2071,7 +2071,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     });
     expect(recovered.decision).toBe("completed");
     expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
-    const finalRecord = await h.store.load("job-17");
+    const finalRecord = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (finalRecord.status !== "ok") throw new Error("terminal session missing");
     expect(checkpointStateForTest(
       finalRecord.record,
@@ -2111,7 +2111,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     h.durability.leaseTtlMs = 10;
     h.durability.leaseNowMs = () => now;
     h.deps.reconcileDelivery = async () => h.committed.delivery
-      ? { status: "complete", reconciliationId: "delivery:job-17:1", observedAt: NOW }
+      ? { status: "complete", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
       : { status: "absent", reason: "authoritative absence" };
     let started!: () => void;
     let unblock!: () => void;
@@ -2148,7 +2148,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       generation: 1,
       idempotencyKey: expect.any(String),
     }]);
-    const loaded = await h.store.load("job-17");
+    const loaded = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (loaded.status !== "ok") throw new Error("session missing");
     expect(loaded.record.leaseGeneration).toBe(3);
   });
@@ -2168,7 +2168,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability.leaseTtlMs = 10;
       h.durability.leaseNowMs = () => now;
       h.deps.reconcileDelivery = async () => h.committed.delivery
-        ? { status: "complete", reconciliationId: "delivery:job-17:1", observedAt: NOW }
+        ? { status: "complete", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
         : { status: "absent", reason: "authoritative absence" };
       let started!: () => void;
       let unblock!: () => void;
@@ -2273,7 +2273,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
             : resolvePayload(ref);
       }
       h.deps.reconcileDelivery = async () => h.committed.delivery
-        ? { status: "complete", reconciliationId: "delivery:job-17:1", observedAt: NOW }
+        ? { status: "complete", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
         : { status: "absent", reason: "authoritative delivery absence" };
       const absent = {
         status: "absent" as const,
@@ -2308,7 +2308,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       );
       expect(interrupted.decision).toBe("indeterminate");
       expect(h.counts[target]).toBe(0);
-      const afterCrash = await baseStore.load("job-17");
+      const afterCrash = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (afterCrash.status !== "ok") throw new Error("crashed session missing");
       expect(afterCrash.record.lease).toMatchObject({
         owner: "worker-a",
@@ -2335,7 +2335,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       expect(h.counts).toEqual(target === "payload"
         ? { payload: 1, delivery: 1, evidence: 1, final: 1 }
         : { payload: 0, delivery: 1, evidence: 1, final: 1 });
-      const terminal = await baseStore.load("job-17");
+      const terminal = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (terminal.status !== "ok") throw new Error("recovered session missing");
       expect(terminal.record.leaseGeneration).toBe(2);
       expect(terminal.record.lease).toBeUndefined();
@@ -2362,7 +2362,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability,
     )).decision).toBe("indeterminate");
     if (!firstSignature) throw new Error("first signature missing");
-    const afterLoss = await h.store.load("job-17");
+    const afterLoss = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterLoss.status !== "ok") throw new Error("session missing after evidence loss");
     const intent = afterLoss.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
@@ -2404,7 +2404,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(recovered.evidence.signature.value).toBe(firstSignature);
     expect(reconciliationInput).toEqual(firstPublicationInput);
     expect(h.counts.evidence).toBe(1);
-    const afterRecovery = await h.store.load("job-17");
+    const afterRecovery = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterRecovery.status !== "ok") throw new Error("session missing after recovery");
     const outcome = [...afterRecovery.record.checkpoints].reverse().find(
       (checkpoint) => checkpoint.key ===
@@ -2556,7 +2556,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         decision: "indeterminate",
         consumedPaymentAuthorization: h.fixture.authorization,
       });
-      const afterCrash = await baseStore.load("job-17");
+      const afterCrash = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (afterCrash.status !== "ok") throw new Error("source-ordering session missing");
       expect(checkpointStateForTest(
         afterCrash.record,
@@ -2585,7 +2585,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         },
       });
       expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
-      const terminal = await baseStore.load("job-17");
+      const terminal = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (terminal.status !== "ok") throw new Error("source-ordering recovery missing");
       expect(checkpointStateForTest(
         terminal.record,
@@ -2625,7 +2625,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         : target === "evidence"
           ? sellerFulfilmentCheckpointKey.evidencePublication(2)
           : sellerFulfilmentCheckpointKey.finalReceipt(2);
-      const afterMalformed = await h.store.load("job-17");
+      const afterMalformed = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (afterMalformed.status !== "ok") throw new Error("session missing after malformed output");
       expect(afterMalformed.record.checkpoints.filter(
         (checkpoint) => checkpoint.key === key,
@@ -2637,7 +2637,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       });
       expect(recovered.decision).toBe("completed");
       expect(h.counts[target]).toBe(1);
-      const finalRecord = await h.store.load("job-17");
+      const finalRecord = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (finalRecord.status !== "ok") throw new Error("session missing after recovery");
       expect(finalRecord.record.checkpoints.filter(
         (checkpoint) => checkpoint.key === key,
@@ -2662,7 +2662,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability,
     );
     expect(rejected.decision).toBe("indeterminate");
-    const retained = await h.store.load("job-17");
+    const retained = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (retained.status !== "ok") throw new Error("sparse-receipt session missing");
     expect(retained.record.checkpoints.filter(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.finalReceipt(2),
@@ -2674,7 +2674,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       { ...h.durability, workerId: "worker-sparse-final-receipt" },
     );
     expect(recovered.decision).toBe("completed");
-    const reopened = await h.store.load("job-17");
+    const reopened = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (reopened.status !== "ok") throw new Error("recovered session missing");
     expect(reopened.record.checkpoints.filter(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.finalReceipt(2),
@@ -2707,7 +2707,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         decision: "indeterminate",
         code: "delivery-evidence-publication-pending",
       });
-      const pending = await h.store.load("job-17");
+      const pending = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (pending.status !== "ok") throw new Error("pending evidence session missing");
       expect(pending.record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
@@ -2721,7 +2721,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       );
       expect(recovered.decision).toBe("completed");
       expect(h.counts.evidence).toBe(1);
-      const complete = await h.store.load("job-17");
+      const complete = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (complete.status !== "ok") throw new Error("recovered evidence session missing");
       expect(complete.record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
@@ -2765,7 +2765,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       decision: "indeterminate",
       code: "payload-attestation-publication-pending",
     });
-    const pending = await h.store.load("job-17");
+    const pending = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (pending.status !== "ok") throw new Error("pending payload session missing");
     expect(pending.record.checkpoints.filter(
       (checkpoint) => checkpoint.key ===
@@ -2822,7 +2822,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         decision: "indeterminate",
         code: "delivery-evidence-publication-pending",
       });
-      const pending = await h.store.load("job-17");
+      const pending = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (pending.status !== "ok") throw new Error("pending readback session missing");
       expect(pending.record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
@@ -2836,7 +2836,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       );
       expect(recovered.decision).toBe("completed");
       expect(resolutionCalls).toBe(2);
-      const complete = await h.store.load("job-17");
+      const complete = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (complete.status !== "ok") throw new Error("recovered readback session missing");
       expect(complete.record.checkpoints.filter(
         (checkpoint) => checkpoint.key ===
@@ -2927,7 +2927,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         h.durability,
       );
       expect(interrupted.decision).toBe("indeterminate");
-      const afterCrash = await baseStore.load("job-17");
+      const afterCrash = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (afterCrash.status !== "ok") throw new Error("final receipt crash session missing");
       expect(checkpointStateForTest(
         afterCrash.record,
@@ -2965,7 +2965,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       });
       expect(reconcileFinal).not.toHaveBeenCalled();
       expect(h.counts.final).toBe(1);
-      const unchanged = await baseStore.load("job-17");
+      const unchanged = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (unchanged.status !== "ok") throw new Error("damaged final session missing");
       expect(checkpointStateForTest(
         unchanged.record,
@@ -3005,7 +3005,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability,
     );
     expect(interrupted.decision).toBe("indeterminate");
-    const afterCrash = await baseStore.load("job-17");
+    const afterCrash = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterCrash.status !== "ok") throw new Error("result-intent session missing");
     expect(afterCrash.record.checkpoints.filter(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2),
@@ -3021,7 +3021,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       code: "durable-final-session-receipt-recovery-failed",
       safeToRetryDelivery: false,
     });
-    const unchanged = await baseStore.load("job-17");
+    const unchanged = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (unchanged.status !== "ok") throw new Error("result-intent session disappeared");
     expect(unchanged.record.checkpoints.filter(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2),
@@ -3062,7 +3062,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       h.durability,
     );
     expect(interrupted.decision).toBe("failed");
-    const afterCrash = await baseStore.load("job-17");
+    const afterCrash = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterCrash.status !== "ok") throw new Error("DPA crash session missing");
     expect(afterCrash.record.checkpoints.filter(
       (checkpoint) => checkpoint.key ===
@@ -3090,7 +3090,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     });
     expect(proofCalls).toBe(callsAtCrash);
     expect(externalReconcile).not.toHaveBeenCalled();
-    const complete = await baseStore.load("job-17");
+    const complete = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (complete.status !== "ok") throw new Error("recovered DPA session missing");
     expect(complete.record.checkpoints.filter(
       (checkpoint) => checkpoint.key ===
@@ -3140,7 +3140,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         evidence: 1,
         final: 1,
       });
-      const terminal = await h.store.load("job-17");
+      const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (terminal.status !== "ok") throw new Error("immediate-invalid session missing");
       expect(checkpointStateForTest(
         terminal.record,
@@ -3209,7 +3209,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         evidence: 1,
         final: 1,
       });
-      const terminal = await h.store.load("job-17");
+      const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (terminal.status !== "ok") throw new Error("stateful-adapter session missing");
       expect(checkpointStateForTest(
         terminal.record,
@@ -3250,7 +3250,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         h.durability,
       );
       expect(first.decision).toBe("indeterminate");
-      const afterMalformed = await h.store.load("job-17");
+      const afterMalformed = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
       if (afterMalformed.status !== "ok") throw new Error("malformed DPA session missing");
       expect(checkpointStateForTest(
         afterMalformed.record,
@@ -3296,7 +3296,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     });
     expect(rejectedReadback).toHaveBeenCalledTimes(1);
     expect(h.counts).toEqual({ payload: 0, delivery: 0, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("imported DPA session missing");
     expect(checkpointStateForTest(
       terminal.record,
@@ -3345,7 +3345,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     });
     expect(proofCalls).toBe(callsAtFailure);
     expect(h.counts.delivery).toBe(0);
-    const loaded = await h.store.load("job-17");
+    const loaded = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (loaded.status !== "ok") throw new Error("session missing");
     expect(checkpointStateForTest(
       loaded.record,
@@ -3377,7 +3377,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       errorClass: "permanent",
       evidence: { observedAt: NOW },
     });
-    const loaded = await h.store.load("job-17");
+    const loaded = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (loaded.status !== "ok") throw new Error("DPA session missing");
     const terminal = loaded.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
@@ -3496,7 +3496,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     });
     expect(resolverCalls).toBe(callsAtFailure);
     expect(h.counts.delivery).toBe(0);
-    const loaded = await h.store.load("job-17");
+    const loaded = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (loaded.status !== "ok") throw new Error("session missing");
     expect(checkpointStateForTest(
       loaded.record,
@@ -3567,7 +3567,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         );
         expect(replay).toEqual(completed);
         const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<string, unknown>;
-        expect(marker.jobId).toBe("job-17");
+        expect(marker.jobId).toBe("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
         if (kind === "agreement") expect(marker.kind).toBe("agreement");
         expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
       } finally {
@@ -3609,8 +3609,8 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
               h.fixture.artifact.cleartextPayload as Record<string, unknown>,
             );
         const deliveryLocator = kind === "storage"
-          ? "dacs4:deliverable:job-17"
-          : "dacs4:entitlement:job-17:0";
+          ? "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D"
+          : "dacs4:entitlement:01J8ME0SXKQ4T9V2RC5HJ6WX7D:0";
         h.deps.resolveDelivery = async () => ({
           status: "verified",
           value: {
@@ -3768,7 +3768,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         : {
             status: "failed",
             reason: "delivery substrate recorded a terminal failure",
-            reconciliationId: "delivery:job-17:1",
+            reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
             observedAt: NOW,
           };
     };
@@ -3785,7 +3785,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     };
     const rewrittenResultEncoded = encodeDurableForTest(rewrittenResult);
     const rewrittenResultHash = durableHashForTest(rewrittenResultEncoded);
-    const persisted = await h.store.load("job-17");
+    const persisted = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (persisted.status !== "ok") throw new Error("failed terminal session missing");
     const persistedResult = persisted.record.checkpoints.find(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2) &&
@@ -4068,7 +4068,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       },
     });
     expect(h.counts).toEqual({ payload: 0, delivery: 0, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("preparation-collision session missing");
     expect(checkpointStateForTest(
       terminal.record,
@@ -4103,7 +4103,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       },
     });
     expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("reconciliation-collision session missing");
     expect(checkpointStateForTest(
       terminal.record,
@@ -4143,7 +4143,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     const reconcileTerminal = vi.fn(async () => deliveryTerminal
       ? {
           status: "complete" as const,
-          reconciliationId: "delivery:job-17:1",
+          reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
           observedAt: NOW,
         }
       : { status: "absent" as const, reason: "delivery is not yet terminal" });
@@ -4166,7 +4166,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(invalidProof).toHaveBeenCalledTimes(1);
     expect(reconcileSubmission).toHaveBeenCalledTimes(1);
     expect(h.counts).toEqual({ payload: 1, delivery: 1, evidence: 0, final: 0 });
-    const held = await h.store.load("job-17");
+    const held = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (held.status !== "ok") throw new Error("held-delivery DPA session missing");
     expect(checkpointStateForTest(
       held.record,
@@ -4201,7 +4201,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(reconcileTerminal).toHaveBeenCalledTimes(2);
     expect(invalidProof).toHaveBeenCalledTimes(1);
     expect(h.counts).toEqual({ payload: 1, delivery: 1, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("recovered DPA session missing");
     for (const key of [
       sellerFulfilmentCheckpointKey.delivery(2),
@@ -4247,7 +4247,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         : {
             status: "failed" as const,
             reason: "delivery substrate recorded a terminal failure",
-            reconciliationId: "delivery:job-17:1",
+            reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
             observedAt: NOW,
           };
     });
@@ -4287,7 +4287,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(laterRejectedPayloadResolver).not.toHaveBeenCalled();
     expect(deliveryReadback).not.toHaveBeenCalled();
     expect(h.counts).toEqual({ payload: 1, delivery: 1, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("failed-delivery DPA session missing");
     for (const key of [
       sellerFulfilmentCheckpointKey.payloadPublication(2),
@@ -4352,7 +4352,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       decision: "indeterminate",
       safeToRetryDelivery: false,
     });
-    const held = await h.store.load("job-17");
+    const held = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (held.status !== "ok") throw new Error("delivery-absence session missing");
     const absence = [...held.record.checkpoints].reverse().find(
       (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.delivery(2),
@@ -4436,7 +4436,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(invalidProof).toHaveBeenCalledTimes(1);
     expect(reconcilePayload).toHaveBeenCalledTimes(1);
     expect(h.counts).toEqual({ payload: 1, delivery: 0, evidence: 0, final: 0 });
-    const held = await h.store.load("job-17");
+    const held = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (held.status !== "ok") throw new Error("held-payload DPA session missing");
     expect(checkpointStateForTest(
       held.record,
@@ -4469,7 +4469,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(reconcilePayload).toHaveBeenCalledTimes(2);
     expect(invalidProof).toHaveBeenCalledTimes(1);
     expect(h.counts).toEqual({ payload: 1, delivery: 0, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("recovered payload DPA session missing");
     expect(checkpointStateForTest(
       terminal.record,
@@ -4550,7 +4550,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       decision: "indeterminate",
       safeToRetryDelivery: false,
     });
-    const held = await baseStore.load("job-17");
+    const held = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (held.status !== "ok") throw new Error("payload-absence session missing");
     const absence = [...held.record.checkpoints].reverse().find(
       (checkpoint) => checkpoint.key ===
@@ -4597,7 +4597,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         ? { status: "absent" as const, reason: "delivery is not visible before submission" }
         : {
             status: "complete" as const,
-            reconciliationId: "delivery:job-17:1",
+            reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
             observedAt: NOW,
           };
     });
@@ -4613,7 +4613,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     });
     expect(reconciliationCalls).toBe(2);
     expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("superseded-rejection session missing");
     expect(checkpointStateForTest(
       terminal.record,
@@ -4648,7 +4648,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     );
     expect(completed).toMatchObject({ decision: "completed" });
     expect(h.counts).toEqual({ payload: 1, delivery: 1, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("payload-rejection session missing");
     expect(checkpointStateForTest(
       terminal.record,
@@ -4701,7 +4701,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     });
     expect(phaseReconciliation).toHaveBeenCalledTimes(2);
     expect(h.counts).toEqual({ payload: 1, delivery: 1, evidence: 1, final: 1 });
-    const terminal = await h.store.load("job-17");
+    const terminal = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (terminal.status !== "ok") throw new Error("rejected-delivery DPA session missing");
     const source = terminal.record.checkpoints.find(
       (checkpoint) => checkpoint.key ===
@@ -4740,7 +4740,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     );
     expect(interrupted.decision).toBe("indeterminate");
     expect(anchorEvidence).not.toHaveBeenCalled();
-    const afterCrash = await baseStore.load("job-17");
+    const afterCrash = await baseStore.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     if (afterCrash.status !== "ok") throw new Error("evidence-intent session missing");
     expect(afterCrash.record.checkpoints.filter(
       (checkpoint) => checkpoint.key ===
