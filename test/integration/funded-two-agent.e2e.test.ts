@@ -66,6 +66,7 @@ import {
   discoverListings,
   ed25519Verify,
   ed25519Sign,
+  encodeAddressSegment,
   finalityCommitmentAddress,
   finalizeCompletedSellerBundleDurable,
   getSellerFulfilmentStatus,
@@ -73,6 +74,7 @@ import {
   isFaultAttestationBundle,
   prepareCompletedSellerBundleCounterSignatureRequest,
   prepareX402BuyerSettlement,
+  projectDurableSellerAuditPending,
   publishSellerSessionSettlement,
   publicKeyFromRaw,
   privateKeyFromSeed,
@@ -89,7 +91,7 @@ import {
   x402Eip3009Nonce,
   type AgreementArtifact,
   type AnchorBinding,
-  type AnchorReceipt,
+  type ProtocolAnchorReceipt as AnchorReceipt,
   type AnchoredBuyerBundle,
   type AnchoredFinalityCommitment,
   type AnchoredSellerBundle,
@@ -1506,6 +1508,7 @@ async function commitAgreement(input: {
   jobId: string;
   published: PublishedListing;
   agreement: AgreementRun;
+  vet: VetArtifacts;
   now: number;
 }) {
   let retained: AnchoredFinalityCommitment | undefined;
@@ -1559,13 +1562,28 @@ async function commitAgreement(input: {
     ) ? "valid" : "invalid";
   };
   const committed = await commitFixedPriceAgreement({
-    agreement: input.agreement.agreement,
+    agreement: structuredClone(input.agreement.agreement),
     verifiedListing: {
       disposition: "verified",
-      listing: input.published.listing,
-      pin: input.published.listingPin,
+      listing: structuredClone(input.published.listing),
+      pin: structuredClone(input.published.listingPin),
     },
-    orchestrator: input.preflight.env.SELLER_DID,
+    session: {
+      jobId: input.jobId,
+      listingRef: structuredClone(input.published.listingPin),
+      phaseKind: "commit-payee-bound-agreement",
+      orchestrator: input.preflight.env.SELLER_DID,
+      buyer: {
+        primaryClaim: input.preflight.env.BUYER_DID,
+        bundleHash: input.vet.buyer.bundleHash,
+        vetRecordRef: structuredClone(input.vet.buyerRef),
+      },
+      seller: {
+        primaryClaim: input.preflight.env.SELLER_DID,
+        bundleHash: input.vet.seller.bundleHash,
+        vetRecordRef: structuredClone(input.vet.sellerRef),
+      },
+    },
     createdAt: input.now,
     commitmentSigner: {
       algorithm: "ed25519",
@@ -1574,13 +1592,28 @@ async function commitAgreement(input: {
     },
   }, provider, verify);
   const resumed = await commitFixedPriceAgreement({
-    agreement: input.agreement.agreement,
+    agreement: structuredClone(input.agreement.agreement),
     verifiedListing: {
       disposition: "verified",
-      listing: input.published.listing,
-      pin: input.published.listingPin,
+      listing: structuredClone(input.published.listing),
+      pin: structuredClone(input.published.listingPin),
     },
-    orchestrator: input.preflight.env.SELLER_DID,
+    session: {
+      jobId: input.jobId,
+      listingRef: structuredClone(input.published.listingPin),
+      phaseKind: "commit-payee-bound-agreement",
+      orchestrator: input.preflight.env.SELLER_DID,
+      buyer: {
+        primaryClaim: input.preflight.env.BUYER_DID,
+        bundleHash: input.vet.buyer.bundleHash,
+        vetRecordRef: structuredClone(input.vet.buyerRef),
+      },
+      seller: {
+        primaryClaim: input.preflight.env.SELLER_DID,
+        bundleHash: input.vet.seller.bundleHash,
+        vetRecordRef: structuredClone(input.vet.sellerRef),
+      },
+    },
     createdAt: input.now,
     commitmentSigner: {
       algorithm: "ed25519",
@@ -1751,6 +1784,7 @@ async function createSellerRuntime(input: {
   selectedRail: PaymentRailRef;
   buyerIdentity: IdentityBundle;
   sellerIdentity: IdentityBundle;
+  vet: VetArtifacts;
   directories: SellerDirectories;
   state: CommerceState;
   workerId: string;
@@ -1764,6 +1798,7 @@ async function createSellerRuntime(input: {
     selectedRail,
     buyerIdentity,
     sellerIdentity,
+    vet,
     state,
   } = input;
   const settlementStore = await createFsX402PaywallSettlementStore({
@@ -1810,6 +1845,7 @@ async function createSellerRuntime(input: {
       agreementHash: agreement.agreementHash,
       listingRef: published.listingPin,
       committedAt: commitment.committedAt,
+      signer: preflight.env.SELLER_DID,
     },
     railRegistryVersion: RAIL_REGISTRY_VERSION,
   };
@@ -1980,6 +2016,7 @@ async function createSellerRuntime(input: {
   const fulfilmentListing: SellerFulfilmentListing = {
     pin: published.listingPin,
     sellerPrimaryClaim: preflight.env.SELLER_DID,
+    buyerRequirement: structuredClone(published.listing.buyerRequirement),
     pipeline: published.listing.pipeline,
     deliverable: published.listing.offering.deliverable,
   };
@@ -1992,9 +2029,14 @@ async function createSellerRuntime(input: {
     buyer: {
       primaryClaim: preflight.env.BUYER_DID,
       bundleHash: buyerHash,
+      vetRecordRef: structuredClone(input.vet.buyerRef),
       storageAddress: preflight.buyer.adapter.getAddress(),
     },
-    seller: { primaryClaim: preflight.env.SELLER_DID, bundleHash: sellerHash },
+    seller: {
+      primaryClaim: preflight.env.SELLER_DID,
+      bundleHash: sellerHash,
+      vetRecordRef: structuredClone(input.vet.sellerRef),
+    },
     deliverableRef: {
       deliverableType: "storage-program",
       hash: sha256Hex(canonicalize(published.listing.offering.deliverable)),
@@ -2005,6 +2047,7 @@ async function createSellerRuntime(input: {
       agreementHash: agreement.agreementHash,
       recordContentHash: commitmentHash,
       finalizedAt: commitment.committedAt,
+      signer: preflight.env.SELLER_DID,
     },
   };
   const deliveredArtifact: SellerDeliveredArtifact = {
@@ -2032,8 +2075,18 @@ async function createSellerRuntime(input: {
     state: "settle-pending",
     listingRef: published.listingPin,
     parties: [
-      { role: "buyer", bundleHash: buyerHash, primaryClaim: preflight.env.BUYER_DID },
-      { role: "seller", bundleHash: sellerHash, primaryClaim: preflight.env.SELLER_DID },
+      {
+        role: "buyer",
+        bundleHash: buyerHash,
+        primaryClaim: preflight.env.BUYER_DID,
+        vetRecordRef: structuredClone(input.vet.buyerRef),
+      },
+      {
+        role: "seller",
+        bundleHash: sellerHash,
+        primaryClaim: preflight.env.SELLER_DID,
+        vetRecordRef: structuredClone(input.vet.sellerRef),
+      },
       { role: "orchestrator", bundleHash: sellerHash, primaryClaim: preflight.env.SELLER_DID },
     ],
     pipeline: published.listing.pipeline,
@@ -2062,8 +2115,28 @@ async function createSellerRuntime(input: {
         index: 1,
         step: published.listing.pipeline[1]!,
         invokedAt: commitment.committedAt,
-        result: { ok: true, attestationRef: commitmentRef, contextDelta: {} },
-        contextDelta: {},
+        result: {
+          ok: true,
+          txRefs: [structuredClone(commitment.anchorTxRef)],
+          attestationRef: commitmentRef,
+          anchorReceipt: structuredClone(commitment.anchorReceipt),
+          contextDelta: {
+            "commit-payee-bound-agreement": {
+              agreementHash: agreement.agreementHash,
+              anchorTxRef: structuredClone(commitment.anchorTxRef),
+              anchorReceipt: structuredClone(commitment.anchorReceipt),
+              committedAt: commitment.committedAt,
+            },
+          },
+        },
+        contextDelta: {
+          "commit-payee-bound-agreement": {
+            agreementHash: agreement.agreementHash,
+            anchorTxRef: structuredClone(commitment.anchorTxRef),
+            anchorReceipt: structuredClone(commitment.anchorReceipt),
+            committedAt: commitment.committedAt,
+          },
+        },
       },
       {
         index: PAYMENT_PHASE_INDEX,
@@ -2083,9 +2156,57 @@ async function createSellerRuntime(input: {
     railRegistryVersion: RAIL_REGISTRY_VERSION,
   });
   const fulfilmentDeps: Omit<DurableSellerFulfilmentDeps, "receiptStore"> = {
+    auditSourceProfile: "v2",
     resolveAgreement: async () => ({ status: "verified", value: structuredClone(fulfilmentAgreement) }),
     resolveListing: async () => ({ status: "verified", value: structuredClone(fulfilmentListing) }),
-    resolveSessionRecord: async () => ({ status: "verified", value: sessionRecord() }),
+    resolveAuditSource: async () => {
+      const retainedAuthorization = state.permit?.paymentAuthorization;
+      if (!retainedAuthorization) {
+        return {
+          status: "indeterminate" as const,
+          reason: "payment authorization is unavailable for audit-source binding",
+        };
+      }
+      return {
+        status: "verified" as const,
+        value: {
+          sourceVersion: "1" as const,
+          session: sessionRecord(),
+          artifacts: {
+            agreementCommitment: structuredClone(commitmentRef),
+            vetRecords: [structuredClone(vet.buyerRef), structuredClone(vet.sellerRef)],
+            vetRequirements: [
+              {
+                vetRecordRef: structuredClone(vet.buyerRef),
+                evaluatedParty: preflight.env.BUYER_DID,
+                requirement: structuredClone(EMPTY_REQUIREMENT),
+                verifier: preflight.env.SELLER_DID,
+                freshness: [],
+                dealSpecific: [],
+              },
+              {
+                vetRecordRef: structuredClone(vet.sellerRef),
+                evaluatedParty: preflight.env.SELLER_DID,
+                requirement: structuredClone(EMPTY_REQUIREMENT),
+                verifier: preflight.env.SELLER_DID,
+                freshness: [],
+                dealSpecific: [],
+              },
+            ],
+            settlementEvidence: [{
+              anchor: {
+                kind: "storage-program" as const,
+                locator:
+                  `dacs4:payment:${jobId}:${encodeAddressSegment(selectedRail.railId)}:${PAYMENT_PHASE_INDEX}`,
+              },
+              contentHash: retainedAuthorization.evidenceHash,
+              signer: preflight.env.SELLER_DID,
+            }],
+          },
+          provenanceProfile: "dacs-sdk-operational-v1",
+        },
+      };
+    },
     prepareDelivery: async () => ({ status: "prepared", delivery: { artifact: deliveredArtifact } }),
     submitDelivery: async () => {
       state.counts.applicationCallback += 1;
@@ -2161,6 +2282,11 @@ async function createSellerRuntime(input: {
       signer: preflight.env.SELLER_DID,
       sign: (bytes) => preflight.seller.adapter.sign(bytes),
     },
+    auditSourceCommitmentSigner: {
+      algorithm: "ed25519",
+      signer: preflight.env.SELLER_DID,
+      sign: (bytes) => preflight.seller.adapter.sign(bytes),
+    },
     verifyEvidenceSignature: async ({ signedBytes: bytes, signature, expectedSigner }) => {
       const valid = expectedSigner === preflight.env.SELLER_DID &&
         signature.algorithm === "ed25519" &&
@@ -2173,6 +2299,23 @@ async function createSellerRuntime(input: {
       return valid
         ? { disposition: "valid" }
         : { disposition: "invalid", reason: "delivery-evidence-signature-invalid" };
+    },
+    verifyAuditSourceCommitmentSignature: async ({
+      signedBytes: bytes,
+      signature,
+      expectedSigner,
+    }) => {
+      const valid = expectedSigner === preflight.env.SELLER_DID &&
+        signature.algorithm === "ed25519" &&
+        signature.signer === expectedSigner &&
+        ed25519Verify(
+          bytes,
+          Uint8Array.from(Buffer.from(signature.value, "base64url")),
+          publicKeyFromRaw(await preflight.seller.adapter.getPublicKey()),
+        );
+      return valid
+        ? { disposition: "valid" }
+        : { disposition: "invalid", reason: "audit-source-signature-invalid" };
     },
     anchorEvidence: async ({ evidence, evidenceHash }) => {
       state.counts.evidence += 1;
@@ -2386,6 +2529,7 @@ async function settleAndRecover(input: {
   selectedRail: PaymentRailRef;
   buyerIdentity: IdentityBundle;
   sellerIdentity: IdentityBundle;
+  vet: VetArtifacts;
 }): Promise<SettlementRun> {
   const sellerDirectories = {
     settlement: await temporaryDirectory("seller-settlement"),
@@ -2942,9 +3086,57 @@ async function closeDurableDetachedRoleBundles(input: {
   });
   const terminalRecord = await terminalStore.load(input.jobId);
   requireCondition(terminalRecord.status === "ok", "terminal-fulfilment-record-missing");
-  const verifiedTerminal = await verifyDurableSellerTerminalResult({
+  const commitmentHash = contentHash(
+    input.commitment.record as unknown as Record<string, unknown>,
+  );
+  const commitmentRef: AttestationRef = {
+    anchor: { kind: "storage-program", locator: input.commitment.logicalAddress },
+    contentHash: commitmentHash,
+    signer: input.preflight.env.SELLER_DID,
+  };
+  const verifiedAgreement: SellerFulfilmentAgreement = {
+    artifactKind: "payee-bound",
+    ref: input.agreement.agreementRef.anchor.locator,
+    contentHash: input.agreement.agreementHash,
+    jobId: input.jobId,
+    listingPin: input.published.listingPin,
+    buyer: {
+      primaryClaim: input.preflight.env.BUYER_DID,
+      bundleHash: identityBundleHash(input.buyerIdentity),
+      vetRecordRef: input.vet.buyerRef,
+      storageAddress: input.preflight.buyer.adapter.getAddress(),
+    },
+    seller: {
+      primaryClaim: input.preflight.env.SELLER_DID,
+      bundleHash: identityBundleHash(input.sellerIdentity),
+      vetRecordRef: input.vet.sellerRef,
+    },
+    deliverableRef: {
+      deliverableType: "storage-program",
+      hash: sha256Hex(canonicalize(input.published.listing.offering.deliverable)),
+    },
+    commitment: {
+      status: "finalized",
+      ref: input.commitment.logicalAddress,
+      agreementHash: input.agreement.agreementHash,
+      recordContentHash: commitmentHash,
+      finalizedAt: input.commitment.committedAt,
+      signer: input.preflight.env.SELLER_DID,
+    },
+  };
+  const verifiedListing: SellerFulfilmentListing = {
+    pin: structuredClone(input.published.listingPin),
+    sellerPrimaryClaim: input.preflight.env.SELLER_DID,
+    buyerRequirement: structuredClone(input.published.listing.buyerRequirement),
+    pipeline: structuredClone(input.published.listing.pipeline),
+    deliverable: structuredClone(input.published.listing.offering.deliverable),
+  };
+  const terminalVerification: Parameters<
+    typeof projectDurableSellerAuditPending
+  >[0] = {
     record: terminalRecord.record,
-    suppliedResult: suppliedFulfilment,
+    verifiedAgreement: structuredClone(verifiedAgreement),
+    verifiedListing: structuredClone(verifiedListing),
     expectedDeliveryWriter: {
       role: "seller",
       primaryClaim: input.preflight.env.SELLER_DID,
@@ -2960,6 +3152,20 @@ async function closeDurableDetachedRoleBundles(input: {
           disposition: "invalid",
           reason: "terminal-evidence-signature-invalid",
         },
+    verifyAuditSourceCommitmentSignature: async ({
+      signedBytes: bytes,
+      signature,
+      expectedSigner,
+    }) => expectedSigner === input.preflight.env.SELLER_DID &&
+        signature.algorithm === "ed25519" && signature.signer === expectedSigner &&
+        ed25519Verify(
+          bytes,
+          Uint8Array.from(Buffer.from(signature.value, "base64url")),
+          publicKeyFromRaw(sellerPublicKey),
+        ) ? { disposition: "valid" } : {
+          disposition: "invalid",
+          reason: "terminal-audit-source-signature-invalid",
+        },
     verifyAnchorReceipt: async ({ receipt, expectedWriter }) =>
       expectedWriter.primaryClaim === input.preflight.env.SELLER_DID &&
         await verifyAnchorReceipt(
@@ -2970,7 +3176,9 @@ async function closeDurableDetachedRoleBundles(input: {
           disposition: "invalid",
           reason: "terminal-evidence-receipt-invalid",
         },
-  });
+  };
+  const projection = await projectDurableSellerAuditPending(terminalVerification);
+  const verifiedTerminal = projection.terminal;
   const fulfilment = verifiedTerminal.result;
   requireCondition(
     verifiedTerminal.handoff.jobId === input.jobId &&
@@ -3001,159 +3209,16 @@ async function closeDurableDetachedRoleBundles(input: {
     "delivered-artifact-readback-mismatch",
   );
 
-  const commitmentHash = contentHash(
-    input.commitment.record as unknown as Record<string, unknown>,
-  );
-  const commitmentRef: AttestationRef = {
-    anchor: { kind: "storage-program", locator: input.commitment.logicalAddress },
-    contentHash: commitmentHash,
-    signer: input.preflight.env.SELLER_DID,
-  };
   const paymentRef = input.sellerSettlement.settlement.evidenceRef;
   const deliveryRef = fulfilment.evidenceRef;
   const finalisedAt = Math.max(Date.now(), input.now + 5_000);
-  // Public-API gap: verifyDurableSellerTerminalResult exposes the authenticated
-  // fulfilment, consumed authorization binding and exact handoff, but it does
-  // not expose a decoded authenticated SellerFulfilmentSessionRecord/phase
-  // projection from the terminal WAL. The finalizer therefore still requires
-  // this audit-pending session projection as caller data. Every referenced fact
-  // below is re-bound to signed/anchored dependencies and the verified terminal
-  // handoff, but this harness does not claim independent WAL-derived provenance
-  // for the phase-history envelope until that public projection API exists.
-  const auditSession: FinalizeCompletedSellerBundleInput["session"] = {
-    recordVersion: "1",
-    jobId: input.jobId,
-    state: "audit-pending",
-    listingRef: input.published.listingPin,
-    parties: [
-      {
-        role: "buyer",
-        bundleHash: identityBundleHash(input.buyerIdentity),
-        primaryClaim: input.preflight.env.BUYER_DID,
-        vetRecordRef: input.vet.buyerRef,
-      },
-      {
-        role: "seller",
-        bundleHash: identityBundleHash(input.sellerIdentity),
-        primaryClaim: input.preflight.env.SELLER_DID,
-        vetRecordRef: input.vet.sellerRef,
-      },
-      {
-        role: "orchestrator",
-        bundleHash: identityBundleHash(input.sellerIdentity),
-        primaryClaim: input.preflight.env.SELLER_DID,
-        vetRecordRef: input.vet.sellerRef,
-      },
-    ],
-    pipeline: input.published.listing.pipeline,
-    phaseResults: [
-      {
-        index: 0,
-        step: input.published.listing.pipeline[0]!,
-        invokedAt: input.agreement.agreement.generatedAt,
-        result: {
-          ok: true,
-          contextDelta: {
-            "negotiate-fixed-price": {
-              agreementHash: input.agreement.agreementHash,
-              agreementRef: input.agreement.agreementRef,
-            },
-          },
-        },
-        contextDelta: {
-          "negotiate-fixed-price": {
-            agreementHash: input.agreement.agreementHash,
-            agreementRef: input.agreement.agreementRef,
-          },
-        },
-      },
-      {
-        index: 1,
-        step: input.published.listing.pipeline[1]!,
-        invokedAt: input.commitment.committedAt,
-        result: { ok: true, attestationRef: commitmentRef, contextDelta: {} },
-        contextDelta: {},
-      },
-      {
-        index: PAYMENT_PHASE_INDEX,
-        step: input.published.listing.pipeline[PAYMENT_PHASE_INDEX]!,
-        invokedAt: fulfilment.consumedPaymentAuthorization.settlementIdentity.includedAt,
-        result: {
-          ok: true,
-          txRefs: fulfilment.consumedPaymentAuthorization.evidenceInput.paymentTxRefs,
-          attestationRef: paymentRef,
-          contextDelta: {},
-        },
-        contextDelta: {},
-      },
-      {
-        index: DELIVERY_PHASE_INDEX,
-        step: input.published.listing.pipeline[DELIVERY_PHASE_INDEX]!,
-        invokedAt: deliveryEvidence.observedAt,
-        result: { ok: true, attestationRef: deliveryRef, contextDelta: {} },
-        contextDelta: {},
-      },
-    ],
-    startedAt: input.agreement.agreement.generatedAt,
-    lastUpdatedAt: finalisedAt,
-    recipeRegistryVersion: RECIPE_REGISTRY_VERSION,
-    railRegistryVersion: RAIL_REGISTRY_VERSION,
-  };
-  const sessionArtifacts: FinalizeCompletedSellerBundleInput["sessionArtifacts"] = {
-    agreementCommitment: commitmentRef,
-    vetRecords: [input.vet.buyerRef, input.vet.sellerRef],
-    vetRequirements: [
-      {
-        vetRecordRef: input.vet.buyerRef,
-        evaluatedParty: input.preflight.env.BUYER_DID,
-        requirement: EMPTY_REQUIREMENT,
-        verifier: input.preflight.env.SELLER_DID,
-        freshness: [],
-        dealSpecific: [],
-      },
-      {
-        vetRecordRef: input.vet.sellerRef,
-        evaluatedParty: input.preflight.env.SELLER_DID,
-        requirement: EMPTY_REQUIREMENT,
-        verifier: input.preflight.env.SELLER_DID,
-        freshness: [],
-        dealSpecific: [],
-      },
-    ],
-    settlementEvidence: [paymentRef, deliveryRef],
-  };
   const sellerInput: FinalizeCompletedSellerBundleDurableInput = {
-    agreement: {
-      artifactKind: "payee-bound",
-      ref: input.agreement.agreementRef.anchor.locator,
-      contentHash: input.agreement.agreementHash,
-      jobId: input.jobId,
-      listingPin: input.published.listingPin,
-      buyer: {
-        primaryClaim: input.preflight.env.BUYER_DID,
-        bundleHash: identityBundleHash(input.buyerIdentity),
-        storageAddress: input.preflight.buyer.adapter.getAddress(),
-      },
-      seller: {
-        primaryClaim: input.preflight.env.SELLER_DID,
-        bundleHash: identityBundleHash(input.sellerIdentity),
-      },
-      deliverableRef: {
-        deliverableType: "storage-program",
-        hash: sha256Hex(canonicalize(input.published.listing.offering.deliverable)),
-      },
-      commitment: {
-        status: "finalized",
-        ref: input.commitment.logicalAddress,
-        agreementHash: input.agreement.agreementHash,
-        recordContentHash: commitmentHash,
-        finalizedAt: input.commitment.committedAt,
-      },
-    },
+    agreement: structuredClone(verifiedAgreement),
+    verifiedListing: structuredClone(verifiedListing),
     agreementRef: input.agreement.agreementRef,
     fulfilment,
-    session: auditSession,
-    sessionArtifacts,
+    session: projection.session,
+    sessionArtifacts: projection.sessionArtifacts,
     finalisedAt,
     seller: {
       primaryClaim: input.preflight.env.SELLER_DID,
@@ -3940,6 +4005,22 @@ async function closeDurableDetachedRoleBundles(input: {
             reason: "terminal-evidence-signature-invalid",
           };
       },
+      verifyAuditSourceCommitmentSignature: async ({
+        signedBytes: bytes,
+        signature,
+        expectedSigner,
+      }) => {
+        const key = publicKey(expectedSigner);
+        return key && signature.algorithm === "ed25519" &&
+          signature.signer === expectedSigner && ed25519Verify(
+            bytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(key),
+          ) ? { disposition: "valid" } : {
+            disposition: "invalid",
+            reason: "terminal-audit-source-signature-invalid",
+          };
+      },
       verifyAnchorReceipt: async ({ receipt, expectedWriter }) =>
         expectedWriter.primaryClaim === input.preflight.env.SELLER_DID &&
           await verifyAnchorReceipt(
@@ -4301,6 +4382,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
           jobId,
           published,
           agreement,
+          vet,
           now: now + 3,
         }));
         const settlement = await stage("settlement", () => settleAndRecover({
@@ -4312,6 +4394,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
           selectedRail,
           buyerIdentity,
           sellerIdentity,
+          vet,
         }));
         const sellerSettlement = await stage("settlement-publication", () =>
           publishAndVerifySellerSettlement({
