@@ -531,6 +531,10 @@ class DurableBundleCoordinator {
     return verifyDurableSellerTerminalResult({
       record: clone(record),
       suppliedResult: clone(this.#input.fulfilment),
+      expectedDeliveryWriter: {
+        role: "seller",
+        primaryClaim: this.#input.agreement.seller.primaryClaim,
+      },
       ...this.#durability.terminalVerification,
     });
   }
@@ -1559,6 +1563,8 @@ function captureDurability(
   const leaseNowMs = durability.leaseNowMs;
   const terminalVerification = durability.terminalVerification;
   const verifyEvidenceSignature = terminalVerification?.verifyEvidenceSignature;
+  const verifyAuditSourceCommitmentSignature =
+    terminalVerification?.verifyAuditSourceCommitmentSignature;
   const verifyAnchorReceipt = terminalVerification?.verifyAnchorReceipt;
   const reconcileSignature = durability.reconcileSignature;
   const reconcileBundleAnchor = durability.reconcileBundleAnchor;
@@ -1566,6 +1572,7 @@ function captureDurability(
   if (
     (leaseNowMs !== undefined && typeof leaseNowMs !== "function") ||
     typeof verifyEvidenceSignature !== "function" ||
+    typeof verifyAuditSourceCommitmentSignature !== "function" ||
     typeof verifyAnchorReceipt !== "function" ||
     typeof reconcileSignature !== "function" ||
     typeof reconcileBundleAnchor !== "function" ||
@@ -1582,6 +1589,10 @@ function captureDurability(
     ...(leaseNowMs ? { leaseNowMs: bind(leaseNowMs, durability) } : {}),
     terminalVerification: Object.freeze({
       verifyEvidenceSignature: bind(verifyEvidenceSignature, terminalVerification),
+      verifyAuditSourceCommitmentSignature: bind(
+        verifyAuditSourceCommitmentSignature,
+        terminalVerification,
+      ),
       verifyAnchorReceipt: bind(verifyAnchorReceipt, terminalVerification),
     }),
     reconcileSignature: bind(reconcileSignature, durability),

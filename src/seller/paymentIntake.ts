@@ -309,6 +309,8 @@ interface SellerFulfilmentHandoffBase {
   agreementViewHash: string;
   /** Immutable causal floor used when the retained candidate was validated. */
   validationFloorAt: number;
+  /** Exact delivery phase invocation time, signed before permit consumption. */
+  deliveryInvokedAt: number;
   /** Authenticated SessionRecord phase-orchestrator authority at consumption. */
   evidenceAuthority: {
     primaryClaim: string;
@@ -352,6 +354,7 @@ export interface SellerFulfilmentAuditSourceCommitmentV1 {
   authorizationHash: string;
   auditSourceHash: string;
   candidateHash: string;
+  deliveryInvokedAt: number;
   signature: ComponentSignature;
 }
 
@@ -702,6 +705,7 @@ export function isSellerFulfilmentHandoff(
     "deliverableSpecHash",
     "agreementViewHash",
     "validationFloorAt",
+    "deliveryInvokedAt",
     "evidenceAuthority",
     "candidate",
     "auditSource",
@@ -726,6 +730,7 @@ export function isSellerFulfilmentHandoff(
     !HASH_RE.test(value.deliverableSpecHash as string) ||
     !HASH_RE.test(value.agreementViewHash as string) ||
     !isSafeUint(value.validationFloorAt) ||
+    !isSafeUint(value.deliveryInvokedAt) ||
     !isRecord(value.evidenceAuthority) ||
     !hasExactKeys(value.evidenceAuthority, ["primaryClaim", "algorithm"]) ||
     !nonEmpty(value.evidenceAuthority.primaryClaim) ||
@@ -760,6 +765,10 @@ export function isSellerFulfilmentHandoff(
   } else {
     return false;
   }
+  if (
+    (value.deliveryInvokedAt as number) < (value.validationFloorAt as number) ||
+    (value.deliveryInvokedAt as number) > (candidate.validatedAt as number)
+  ) return false;
   try {
     if (!isSellerFulfilmentAuditSource(value.auditSource) ||
         !HASH_RE.test(value.auditSourceHash as string) ||
@@ -772,12 +781,14 @@ export function isSellerFulfilmentHandoff(
           "authorizationHash",
           "auditSourceHash",
           "candidateHash",
+          "deliveryInvokedAt",
           "signature",
         ]) || value.auditSourceCommitment.commitmentVersion !== "1" ||
         value.auditSourceCommitment.fulfilmentId !== value.fulfilmentId ||
         value.auditSourceCommitment.jobId !== value.jobId ||
         value.auditSourceCommitment.authorizationHash !== value.authorizationHash ||
         value.auditSourceCommitment.auditSourceHash !== value.auditSourceHash ||
+        value.auditSourceCommitment.deliveryInvokedAt !== value.deliveryInvokedAt ||
         !HASH_RE.test(value.auditSourceCommitment.candidateHash as string) ||
         value.auditSourceCommitment.candidateHash !==
           sellerFulfilmentCandidateHash(value.candidate as SellerFulfilmentHandoff["candidate"]) ||

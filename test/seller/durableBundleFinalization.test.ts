@@ -472,6 +472,7 @@ async function createHarness(
     handoff: {} as Awaited<
       ReturnType<typeof verifyDurableSellerTerminalResult>
     >["handoff"],
+    deliveryAnchorReceipt: structuredClone(suppliedResult.evidenceAnchorReceipt),
     resultHash: "0".repeat(64),
     finalReceiptHash: "1".repeat(64),
   }));
@@ -589,6 +590,7 @@ function durability(
     leaseNowMs: () => clock.now,
     terminalVerification: {
       verifyEvidenceSignature: vi.fn(() => "valid"),
+      verifyAuditSourceCommitmentSignature: vi.fn(() => "valid"),
       verifyAnchorReceipt: vi.fn(() => "valid"),
     } as unknown as DurableSellerTerminalVerification,
     reconcileSignature:

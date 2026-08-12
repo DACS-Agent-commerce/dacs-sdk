@@ -102,6 +102,7 @@ export {
   type SellerPaymentIntakeResult,
 } from "./paymentIntake.js";
 export {
+  SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
   isSellerFulfilmentAuditSource,
   isSellerFulfilmentSessionRecord,
   sellerFulfilmentAuditSourceHash,
@@ -149,10 +150,13 @@ export {
 export {
   runDurableFulfilmentCore,
   verifyDurableSellerTerminalResult,
+  projectDurableSellerAuditPending,
   getSellerFulfilmentStatus,
   sellerFulfilmentCheckpointKey,
   type DurableSellerFulfilmentDeps,
   type DurableSellerTerminalVerification,
+  type ProjectDurableSellerAuditPendingInput,
+  type VerifiedDurableSellerAuditPendingProjection,
   type SellerEffectAuthoritativeAbsence,
   type SellerEffectFence,
   type SellerFinalSessionReceiptInput,

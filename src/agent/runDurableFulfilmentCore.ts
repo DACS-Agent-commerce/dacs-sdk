@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import type { AnchorReceipt } from "../artifacts/types.js";
@@ -17,6 +19,13 @@ import {
   type SellerReceiptInspectionResult,
   type SellerReceiptPermitResult,
 } from "../seller/paymentIntake.js";
+import {
+  SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+  isSellerFulfilmentAuditSource,
+  isSellerFulfilmentSessionRecord,
+  type SellerFulfilmentAuditArtifactsV1,
+  type SellerFulfilmentSessionRecord,
+} from "../seller/fulfilmentAuditSource.js";
 import {
   runFulfilmentCore,
   sellerFulfilmentId,
@@ -171,14 +180,23 @@ export type SellerFulfilmentStatusLoad =
 export interface VerifyDurableSellerTerminalResultInput {
   record: unknown;
   suppliedResult: Extract<SellerFulfilmentResult, { decision: "completed" }>;
+  /** Independently trusted identity expected to have written the delivery anchor. */
+  expectedDeliveryWriter: {
+    role: "seller";
+    primaryClaim: string;
+  };
   verifyEvidenceSignature: SellerFulfilmentDeps["verifyEvidenceSignature"];
+  verifyAuditSourceCommitmentSignature:
+    SellerFulfilmentDeps["verifyAuditSourceCommitmentSignature"];
   verifyAnchorReceipt: SellerFulfilmentDeps["verifyAnchorReceipt"];
 }
 
 /** Cryptographic verification seam held by a durable bundle coordinator. */
 export type DurableSellerTerminalVerification = Pick<
   VerifyDurableSellerTerminalResultInput,
-  "verifyEvidenceSignature" | "verifyAnchorReceipt"
+  | "verifyEvidenceSignature"
+  | "verifyAuditSourceCommitmentSignature"
+  | "verifyAnchorReceipt"
 >;
 
 /** Exact authority and hashes recovered from a fully authenticated durable completion. */
@@ -186,10 +204,31 @@ export interface VerifiedDurableSellerTerminalResult {
   result: Extract<SellerFulfilmentResult, { decision: "completed" }>;
   binding: SessionPaymentAuthorizationBinding;
   handoff: SellerFulfilmentHandoff;
+  /** Exact delivery receipt recovered from and authenticated against the durable WAL. */
+  deliveryAnchorReceipt: AnchorReceipt;
   resultHash: string;
   finalReceiptHash: string;
 }
 
+/** Read-only input for deriving finalizer-ready audit facts from one terminal WAL. */
+export type ProjectDurableSellerAuditPendingInput = Omit<
+  VerifyDurableSellerTerminalResultInput,
+  "suppliedResult"
+>;
+
+/**
+ * Authenticated, caller-assembly-free input pair for seller bundle finalization.
+ * This focused projection covers a terminal delivery only when it is the final
+ * pinned pipeline step; suffix phases require their own authenticated WAL.
+ */
+export interface VerifiedDurableSellerAuditPendingProjection {
+  terminal: VerifiedDurableSellerTerminalResult;
+  session: SellerFulfilmentSessionRecord & {
+    state: "audit-pending";
+    endedAt?: never;
+  };
+  sessionArtifacts: SellerFulfilmentAuditArtifactsV1;
+}
 interface ConsumedAuthority {
   claim: SellerReceiptClaim;
   handoff: SellerFulfilmentHandoff;
@@ -251,6 +290,26 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   const sortedExpected = [...expected].sort();
   return actual.length === sortedExpected.length &&
     actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function exactEnumerableDataDescriptors(
+  value: unknown,
+  expected: readonly string[],
+): PropertyDescriptorMap | null {
+  if (!isRecord(value) || nodeTypes.isProxy(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== expected.length ||
+      keys.some((key) => typeof key !== "string" || !expected.includes(key))) {
+    return null;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (expected.some((key) => {
+    const descriptor = descriptors[key];
+    return !descriptor || descriptor.enumerable !== true || !("value" in descriptor);
+  })) return null;
+  return descriptors;
 }
 
 function isDeliverySubmission(value: unknown): value is SellerDeliverySubmission {
@@ -750,6 +809,20 @@ function deriveConsumedAuthority(
   };
 }
 
+function retainedEvidenceAuthority(handoff: SellerFulfilmentHandoff): string {
+  const orchestrators = handoff.auditSource.session.parties.filter(
+    (party) => party.role === "orchestrator",
+  );
+  if (orchestrators.length !== 1 ||
+      handoff.evidenceAuthority.primaryClaim !== orchestrators[0]!.primaryClaim ||
+      handoff.auditSourceCommitment.signature.signer !==
+        handoff.evidenceAuthority.primaryClaim ||
+      handoff.auditSourceCommitment.signature.algorithm !==
+        handoff.evidenceAuthority.algorithm) {
+    throw new Error("durable audit source lacks its exact orchestrator authority");
+  }
+  return handoff.evidenceAuthority.primaryClaim;
+}
 function deriveCompletedAuthorityFromRecord(
   record: SessionRecord,
   suppliedResult: Extract<SellerFulfilmentResult, { decision: "completed" }>,
@@ -919,10 +992,10 @@ function captureStore(source: FencedSessionStoreV2): FencedSessionStoreV2 {
 
 function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilmentDeps {
   const receiptStoreSource = source.receiptStore;
-  const resolveAgreementSource = source.resolveAgreement;
-  const resolveListingSource = source.resolveListing;
   const auditSourceProfile = source.auditSourceProfile;
   const resolveAuditSourceSource = source.resolveAuditSource;
+  const resolveAgreementSource = source.resolveAgreement;
+  const resolveListingSource = source.resolveListing;
   const prepareDeliverySource = source.prepareDelivery;
   const submitDeliverySource = source.submitDelivery;
   const reconcileDeliverySource = source.reconcileDelivery;
@@ -961,15 +1034,16 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
   const auditSourceCommitmentSignerClaim = auditSourceCommitmentSignerSource.signer;
   const auditSourceCommitmentSignSource = auditSourceCommitmentSignerSource.sign;
   if ([
+    resolveAuditSourceSource,
     resolveAgreementSource,
     resolveListingSource,
-    resolveAuditSourceSource,
     prepareDeliverySource,
     submitDeliverySource,
     reconcileDeliverySource,
     resolveDeliverySource,
     verifyAnchorReceiptSource,
     verifyEvidenceSignatureSource,
+    verifyAuditSourceCommitmentSignatureSource,
     anchorEvidenceSource,
     resolveEvidenceSource,
     nowMsSource,
@@ -978,7 +1052,6 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
     consumePermitSource,
     evidenceSignSource,
     auditSourceCommitmentSignSource,
-    verifyAuditSourceCommitmentSignatureSource,
   ].some((candidate) => typeof candidate !== "function")) {
     throw new TypeError("a required durable fulfilment dependency is not callable");
   }
@@ -995,12 +1068,12 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
     throw new TypeError("an optional durable fulfilment dependency is not callable");
   }
   const captured: DurableSellerFulfilmentDeps = Object.freeze({
+    auditSourceProfile,
     receiptStore: Object.freeze({
       claim: bindCaptured(claimSource, receiptStoreSource),
       inspectPermit: bindCaptured(inspectPermitSource, receiptStoreSource),
       consumePermit: bindCaptured(consumePermitSource, receiptStoreSource),
     }),
-    auditSourceProfile,
     resolveAgreement: bindCaptured(resolveAgreementSource, source),
     resolveListing: bindCaptured(resolveListingSource, source),
     resolveAuditSource: bindCaptured(resolveAuditSourceSource, source),
@@ -1286,6 +1359,10 @@ class DurableCoordinator {
     record: SessionRecord,
     suppliedResult: Extract<SellerFulfilmentResult, { decision: "completed" }>,
     authority: ConsumedAuthority,
+    expectedDeliveryWriter: Readonly<{
+      role: "seller";
+      primaryClaim: string;
+    }>,
     verification: DurableSellerTerminalVerification,
   ): Promise<VerifiedDurableSellerTerminalResult> {
     const request: SellerFulfilmentRequest = {
@@ -1302,12 +1379,12 @@ class DurableCoordinator {
           }
         : {}),
     };
-    // The terminal decoder is side-effect free and reads only #authority. The
-    // authenticator additionally reads these two captured cryptographic seams.
-    // Empty capabilities make any future accidental effect/store access fail
-    // closed instead of granting the read-only verifier new authority.
+    // The decoder/authenticator is read-only. Empty effect/store capabilities
+    // make any future accidental authority expansion fail closed.
     const dependencies = Object.freeze({
       verifyEvidenceSignature: verification.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        verification.verifyAuditSourceCommitmentSignature,
       verifyAnchorReceipt: verification.verifyAnchorReceipt,
     }) as unknown as DurableSellerFulfilmentDeps;
     const coordinator = new DurableCoordinator(
@@ -1322,6 +1399,10 @@ class DurableCoordinator {
       throw new Error("supplied completion is not the exact durable terminal result");
     }
     await coordinator.#authenticateTerminalResult(decoded);
+    const deliveryAnchorReceipt = await coordinator.#authenticateTerminalDeliveryReceipt(
+      record,
+      expectedDeliveryWriter,
+    );
     const resultCheckpoint = latestCheckpoint(
       record,
       sellerFulfilmentCheckpointKey.result(authority.binding.deliveryPhaseIndex),
@@ -1335,6 +1416,7 @@ class DurableCoordinator {
       result: clone(decoded),
       binding: clone(authority.binding),
       handoff: clone(authority.handoff),
+      deliveryAnchorReceipt: clone(deliveryAnchorReceipt),
       resultHash,
       finalReceiptHash,
     };
@@ -1659,12 +1741,11 @@ class DurableCoordinator {
 
   async #authenticateTerminalResult(result: TerminalFulfilmentResult): Promise<void> {
     if (!this.#authority) throw new Error("consumed authority is unavailable");
-    const expectedSigner = this.#authority.handoff.evidenceAuthority.primaryClaim;
-    const expectedAlgorithm = this.#authority.handoff.evidenceAuthority.algorithm;
-    if (result.evidence.signature.signer !== expectedSigner ||
-        result.evidence.signature.algorithm !== expectedAlgorithm) {
+    await this.#authenticateAuditSourceCommitment();
+    const expectedSigner = retainedEvidenceAuthority(this.#authority.handoff);
+    if (result.evidence.signature.signer !== expectedSigner) {
       throw new Error(
-        "durable terminal evidence is not signed by the configured phase authority/algorithm",
+        "durable terminal evidence is not signed by the retained phase authority",
       );
     }
     const signatureInput: Parameters<
@@ -1715,6 +1796,92 @@ class DurableCoordinator {
         }`,
       );
     }
+  }
+
+  async #authenticateAuditSourceCommitment(): Promise<void> {
+    if (!this.#authority) throw new Error("consumed authority is unavailable");
+    const commitment = clone(this.#authority.handoff.auditSourceCommitment);
+    const expectedSigner = retainedEvidenceAuthority(this.#authority.handoff);
+    if (commitment.signature.signer !== expectedSigner) {
+      throw new Error("durable audit-source commitment signer is unauthorized");
+    }
+    const { signature: _signature, ...unsigned } = commitment;
+    const input: Parameters<
+      SellerFulfilmentDeps["verifyAuditSourceCommitmentSignature"]
+    >[0] = {
+      commitment: clone(commitment),
+      signedBytes: signedBytes(
+        SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+        sha256Hex(canonicalize(unsigned)),
+      ),
+      signature: clone(commitment.signature),
+      expectedSigner,
+    };
+    const before = encodeDurable(input);
+    const result = clone(
+      await this.#deps.verifyAuditSourceCommitmentSignature(input),
+    );
+    if (encodeDurable(input) !== before || !isVerificationResult(result) ||
+        result.disposition !== "valid") {
+      throw new Error(
+        `durable audit-source commitment is not authenticated${
+          isVerificationResult(result) && result.disposition !== "valid"
+            ? `: ${result.reason}`
+            : ""
+        }`,
+      );
+    }
+  }
+
+  async #authenticateTerminalDeliveryReceipt(
+    record: SessionRecord,
+    expectedWriter: Readonly<{ role: "seller"; primaryClaim: string }>,
+  ): Promise<AnchorReceipt> {
+    if (!this.#authority) throw new Error("consumed authority is unavailable");
+    const readback = this.#readTerminalDeliveryReadback(record);
+    const expectedContentHash = retainedAnchoredContentHash(this.#authority.handoff);
+    if (!readback || readback.output.status !== "verified" ||
+        expectedContentHash === null) {
+      throw new Error("durable terminal delivery receipt is unavailable");
+    }
+    const receipt = clone(readback.output.value.anchorReceipt);
+    const retainedDelivery = this.#readDeliveryCheckpoint(record);
+    if (retainedDelivery &&
+        retainedDelivery.input.agreement.seller.primaryClaim !==
+          expectedWriter.primaryClaim) {
+      throw new Error("expected delivery writer contradicts the retained agreement seller");
+    }
+    if (receipt.writer !== expectedWriter.primaryClaim ||
+        receipt.logicalAddress !== this.#authority.handoff.logicalAddress ||
+        receipt.contentHash !== expectedContentHash) {
+      throw new Error("durable terminal delivery receipt is rebound to another writer or artifact");
+    }
+    const ref: SellerAttestationRef = {
+      anchor: {
+        kind: "storage-program",
+        locator: this.#authority.handoff.logicalAddress,
+      },
+      contentHash: expectedContentHash,
+    };
+    const input: Parameters<SellerFulfilmentDeps["verifyAnchorReceipt"]>[0] = {
+      purpose: "delivery",
+      expectedWriter: clone(expectedWriter),
+      ref,
+      receipt: clone(receipt),
+    };
+    const before = encodeDurable(input);
+    const result = clone(await this.#deps.verifyAnchorReceipt(input));
+    if (encodeDurable(input) !== before || !isVerificationResult(result) ||
+        result.disposition !== "valid") {
+      throw new Error(
+        `durable terminal delivery anchor is not authenticated${
+          isVerificationResult(result) && result.disposition !== "valid"
+            ? `: ${result.reason}`
+            : ""
+        }`,
+      );
+    }
+    return receipt;
   }
 
   #readFinalReceiptCheckpoint(record: SessionRecord): {
@@ -3250,8 +3417,6 @@ class DurableCoordinator {
         value.logicalAddress === this.#authority.handoff.logicalAddress &&
         value.artifactHash === this.#authority.handoff.candidate.artifactHash &&
         exact(value.artifact, this.#authority.handoff.candidate.delivery.artifact) &&
-        sha256Hex(canonicalize(value.agreement)) ===
-          this.#authority.handoff.agreementViewHash &&
         sha256Hex(canonicalize(value.deliverable)) ===
           this.#authority.handoff.deliverableSpecHash &&
         value.agreement.artifactKind === "payee-bound" &&
@@ -3325,9 +3490,7 @@ class DurableCoordinator {
         !isRecord(value.evidence.signature) ||
         !hasExactKeys(value.evidence.signature, ["algorithm", "signer", "value"]) ||
         value.evidence.signature.signer !==
-          this.#authority.handoff.evidenceAuthority.primaryClaim ||
-        value.evidence.signature.algorithm !==
-          this.#authority.handoff.evidenceAuthority.algorithm ||
+          retainedEvidenceAuthority(this.#authority.handoff) ||
         signedEvidenceHash(value.evidence) !== value.evidenceHash ||
         value.evidence.jobId !== this.#authority.handoff.jobId ||
         value.evidence.phase !== this.#authority.handoff.phase ||
@@ -3354,7 +3517,7 @@ class DurableCoordinator {
     if (!this.#authority || !this.#evidenceAnchorInputBindsAuthority(input)) {
       throw new Error("durable evidence publication input is rebound");
     }
-    const expectedSigner = this.#authority.handoff.evidenceAuthority.primaryClaim;
+    const expectedSigner = retainedEvidenceAuthority(this.#authority.handoff);
     const verificationInput: Parameters<
       SellerFulfilmentDeps["verifyEvidenceSignature"]
     >[0] = {
@@ -4484,47 +4647,57 @@ class DurableCoordinator {
 
 /**
  * Authenticate an already-completed fulfilment directly from its durable v2
- * record. This is deliberately read-only: callers supply only the two
- * cryptographic verification seams, and no store or effect capability.
+ * record. This boundary is read-only and grants no store or effect capability.
  */
 export async function verifyDurableSellerTerminalResult(
   input: VerifyDurableSellerTerminalResultInput,
 ): Promise<VerifiedDurableSellerTerminalResult> {
-  if (!isRecord(input) || !hasExactKeys(input, [
+  const fields = [
     "record",
     "suppliedResult",
+    "expectedDeliveryWriter",
     "verifyEvidenceSignature",
-    "verifyAnchorReceipt",
-  ])) {
-    throw new TypeError("durable terminal verification input is malformed");
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(input);
-  const expectedFields = [
-    "record",
-    "suppliedResult",
-    "verifyEvidenceSignature",
+    "verifyAuditSourceCommitmentSignature",
     "verifyAnchorReceipt",
   ] as const;
-  if (expectedFields.some((field) => {
-    const descriptor = descriptors[field];
-    return !descriptor || !("value" in descriptor);
-  })) {
-    throw new TypeError("durable terminal verification input requires data properties");
+  const descriptors = exactEnumerableDataDescriptors(input, fields);
+  if (!descriptors) {
+    throw new TypeError(
+      "durable terminal verification input requires an exact data-property record",
+    );
   }
   const recordInput = descriptors.record!.value as unknown;
   const suppliedResultInput = descriptors.suppliedResult!.value as unknown;
-  const verifyEvidenceSignatureSource = descriptors.verifyEvidenceSignature!.value as unknown;
-  const verifyAnchorReceiptSource = descriptors.verifyAnchorReceipt!.value as unknown;
-  if (typeof verifyEvidenceSignatureSource !== "function" ||
-      typeof verifyAnchorReceiptSource !== "function") {
+  const writerInput = descriptors.expectedDeliveryWriter!.value as unknown;
+  const verifyEvidenceSource = descriptors.verifyEvidenceSignature!.value as unknown;
+  const verifyAuditSource =
+    descriptors.verifyAuditSourceCommitmentSignature!.value as unknown;
+  const verifyReceiptSource = descriptors.verifyAnchorReceipt!.value as unknown;
+  if (typeof verifyEvidenceSource !== "function" ||
+      typeof verifyAuditSource !== "function" ||
+      typeof verifyReceiptSource !== "function") {
     throw new TypeError("durable terminal verification callbacks must be callable");
   }
+  const writerDescriptors = exactEnumerableDataDescriptors(
+    writerInput,
+    ["role", "primaryClaim"],
+  );
+  if (!writerDescriptors) {
+    throw new TypeError("expected delivery writer is malformed");
+  }
+  const role = writerDescriptors.role;
+  const primaryClaim = writerDescriptors.primaryClaim;
+  if (!role || !("value" in role) || role.value !== "seller" ||
+      !primaryClaim || !("value" in primaryClaim) ||
+      !isNonEmpty(primaryClaim.value)) {
+    throw new TypeError("expected delivery writer requires seller data properties");
+  }
+  const expectedDeliveryWriter = {
+    role: "seller" as const,
+    primaryClaim: primaryClaim.value as string,
+  };
   const violation = sessionRecordShapeViolation(recordInput);
   if (violation) throw new Error(`durable session is corrupt: ${violation}`);
-
-  // Snapshot every caller-controlled value and executable authority before the
-  // first await. Revalidate the clone so hostile clone hooks cannot weaken the
-  // record shape accepted by the terminal decoder.
   const record = clone(recordInput) as SessionRecord;
   const suppliedResult = clone(suppliedResultInput) as Extract<
     SellerFulfilmentResult,
@@ -4534,19 +4707,168 @@ export async function verifyDurableSellerTerminalResult(
   if (snapshotViolation) {
     throw new Error(`durable session snapshot is corrupt: ${snapshotViolation}`);
   }
-  const verifyEvidenceSignature = bindCaptured(verifyEvidenceSignatureSource, input) as
-    SellerFulfilmentDeps["verifyEvidenceSignature"];
-  const verifyAnchorReceipt = bindCaptured(verifyAnchorReceiptSource, input) as
-    SellerFulfilmentDeps["verifyAnchorReceipt"];
+  const verification: DurableSellerTerminalVerification = {
+    verifyEvidenceSignature: bindCaptured(verifyEvidenceSource, input) as
+      SellerFulfilmentDeps["verifyEvidenceSignature"],
+    verifyAuditSourceCommitmentSignature: bindCaptured(verifyAuditSource, input) as
+      SellerFulfilmentDeps["verifyAuditSourceCommitmentSignature"],
+    verifyAnchorReceipt: bindCaptured(verifyReceiptSource, input) as
+      SellerFulfilmentDeps["verifyAnchorReceipt"],
+  };
   const authority = deriveCompletedAuthorityFromRecord(record, suppliedResult);
   return DurableCoordinator.verifyCompletedRecord(
     record,
     suppliedResult,
     authority,
-    { verifyEvidenceSignature, verifyAnchorReceipt },
+    expectedDeliveryWriter,
+    verification,
   );
 }
 
+function onlyCompletedResultInRecord(
+  record: SessionRecord,
+): Extract<SellerFulfilmentResult, { decision: "completed" }> {
+  const keys = new Set<string>();
+  for (const checkpoint of record.checkpoints) {
+    if (/^seller:result:(0|[1-9][0-9]*)$/.test(checkpoint.key)) {
+      keys.add(checkpoint.key);
+    }
+  }
+  if (keys.size !== 1) {
+    throw new Error(
+      "focused audit projection requires exactly one durable seller terminal delivery",
+    );
+  }
+  const key = [...keys][0]!;
+  const checkpoint = latestCheckpoint(record, key);
+  const encoded = checkpoint?.data?.result;
+  if (checkpoint?.stage !== "outcome" || typeof encoded !== "string") {
+    throw new Error("durable seller terminal delivery is incomplete");
+  }
+  const result = decodeDurable<unknown>(encoded);
+  if (!isRecord(result) || result.decision !== "completed") {
+    throw new Error("focused audit projection requires a completed seller delivery");
+  }
+  return result as Extract<SellerFulfilmentResult, { decision: "completed" }>;
+}
+
+/**
+ * Derive the exact finalizer-ready `audit-pending` session and artifact
+ * inventory from one authenticated V2 pre-delivery source plus its terminal
+ * durable WAL. Caller-supplied phase rows or artifact arrays are not accepted.
+ */
+export async function projectDurableSellerAuditPending(
+  input: ProjectDurableSellerAuditPendingInput,
+): Promise<VerifiedDurableSellerAuditPendingProjection> {
+  const fields = [
+    "record",
+    "expectedDeliveryWriter",
+    "verifyEvidenceSignature",
+    "verifyAuditSourceCommitmentSignature",
+    "verifyAnchorReceipt",
+  ] as const;
+  const descriptors = exactEnumerableDataDescriptors(input, fields);
+  if (!descriptors) {
+    throw new TypeError(
+      "durable audit projection input requires an exact data-property record",
+    );
+  }
+  const recordInput = descriptors.record!.value as unknown;
+  const violation = sessionRecordShapeViolation(recordInput);
+  if (violation) throw new Error(`durable session is corrupt: ${violation}`);
+  const record = clone(recordInput) as SessionRecord;
+  const snapshotViolation = sessionRecordShapeViolation(record);
+  if (snapshotViolation) {
+    throw new Error(`durable session snapshot is corrupt: ${snapshotViolation}`);
+  }
+  const suppliedResult = onlyCompletedResultInRecord(record);
+  const terminal = await verifyDurableSellerTerminalResult({
+    record,
+    suppliedResult,
+    expectedDeliveryWriter: descriptors.expectedDeliveryWriter!.value as
+      VerifyDurableSellerTerminalResultInput["expectedDeliveryWriter"],
+    verifyEvidenceSignature: bindCaptured(
+      descriptors.verifyEvidenceSignature!.value,
+      input,
+    ) as SellerFulfilmentDeps["verifyEvidenceSignature"],
+    verifyAuditSourceCommitmentSignature: bindCaptured(
+      descriptors.verifyAuditSourceCommitmentSignature!.value,
+      input,
+    ) as SellerFulfilmentDeps["verifyAuditSourceCommitmentSignature"],
+    verifyAnchorReceipt: bindCaptured(
+      descriptors.verifyAnchorReceipt!.value,
+      input,
+    ) as SellerFulfilmentDeps["verifyAnchorReceipt"],
+  });
+  const source = clone(terminal.handoff.auditSource);
+  if (!isSellerFulfilmentAuditSource(source)) {
+    throw new Error("authenticated durable handoff lost its V2 audit source");
+  }
+  const deliveryIndex = terminal.binding.deliveryPhaseIndex;
+  const evidence = terminal.result.evidence;
+  const deliveryStep = source.session.pipeline[deliveryIndex];
+  if (source.session.phaseResults.length !== deliveryIndex || !deliveryStep ||
+      deliveryIndex !== source.session.pipeline.length - 1) {
+    throw new Error(
+      "focused audit projection rejects missing, repeated, or post-delivery suffix phases",
+    );
+  }
+  if (!deliveryStep.kind.startsWith("deliver-") ||
+      deliveryStep.kind !== terminal.result.bundleContribution.phaseSummary.kind ||
+      deliveryStep.kind !== evidence.phase || evidence.outcome !== "success" ||
+      terminal.handoff.deliveryInvokedAt < source.session.lastUpdatedAt ||
+      terminal.handoff.deliveryInvokedAt > evidence.observedAt) {
+    throw new Error("terminal delivery cannot extend the retained phase history exactly");
+  }
+  if (source.session.endedAt !== undefined) {
+    throw new Error("pre-delivery audit source is already terminal");
+  }
+  const existingEvidence = source.artifacts.settlementEvidence;
+  if (existingEvidence.some((ref) =>
+    ref.contentHash === terminal.result.evidenceRef.contentHash)) {
+    throw new Error("terminal delivery evidence aliases the retained settlement inventory");
+  }
+  const contextDelta: Record<string, unknown> = {};
+  const { endedAt: _endedAt, ...preDeliverySession } = clone(source.session);
+  const session = {
+    ...preDeliverySession,
+    state: "audit-pending" as const,
+    phaseResults: [
+      ...clone(source.session.phaseResults),
+      {
+        index: deliveryIndex,
+        step: clone(deliveryStep),
+        invokedAt: terminal.handoff.deliveryInvokedAt,
+        result: {
+          ok: true,
+          attestationRef: clone(terminal.result.evidenceRef),
+          anchorReceipt: clone(terminal.deliveryAnchorReceipt),
+          contextDelta: clone(contextDelta),
+        },
+        contextDelta,
+      },
+    ],
+    lastUpdatedAt: evidence.observedAt,
+  };
+  if (!isSellerFulfilmentSessionRecord(session) ||
+      session.state !== "audit-pending" ||
+      Object.prototype.hasOwnProperty.call(session, "endedAt") ||
+      session.phaseResults.length !== session.pipeline.length) {
+    throw new Error("derived audit-pending SessionRecord is malformed");
+  }
+  const sessionArtifacts: SellerFulfilmentAuditArtifactsV1 = {
+    ...clone(source.artifacts),
+    settlementEvidence: [
+      ...clone(existingEvidence),
+      clone(terminal.result.evidenceRef),
+    ],
+  };
+  return {
+    terminal: clone(terminal),
+    session: clone(session),
+    sessionArtifacts: clone(sessionArtifacts),
+  };
+}
 function durableIndeterminate(
   code: string,
   reason: string,

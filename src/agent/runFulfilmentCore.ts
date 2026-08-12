@@ -43,6 +43,7 @@ import {
   type SellerReceiptClaim,
 } from "../seller/paymentIntake.js";
 import {
+  SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
   isSellerFulfilmentAuditSource,
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
@@ -61,9 +62,6 @@ const ENTITLEMENT_SEPARATOR =
   "dacs-entitlement:v1:" as const satisfies DomainSeparator;
 const PAYLOAD_ATTESTATION_SEPARATOR =
   "dacs-payload-attestation:v1:" as const satisfies DomainSeparator;
-/** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
-const AUDIT_SOURCE_COMMITMENT_SEPARATOR =
-  "dacs-x-seller-fulfilment-audit-source:v1:" as const;
 
 /** Artifact-local §B.2 scope: these records omit only singular `signature`. */
 function singularSignatureScope(record: Record<string, unknown>): Record<string, unknown> {
@@ -1065,6 +1063,7 @@ function sameFulfilmentHandoff(
     "deliverableSpecHash",
     "agreementViewHash",
     "validationFloorAt",
+    "deliveryInvokedAt",
   ] as const;
   if (scalarKeys.some((key) => left[key] !== right[key]) ||
       !exact(left.evidenceAuthority, right.evidenceAuthority) ||
@@ -1133,6 +1132,8 @@ function handoffBindingViolation(
         authorization.evidenceInput.observedAt,
       ) ||
       handoff.validationFloorAt > handoff.candidate.validatedAt ||
+      handoff.deliveryInvokedAt < handoff.validationFloorAt ||
+      handoff.deliveryInvokedAt > handoff.candidate.validatedAt ||
       handoff.evidenceAuthority.primaryClaim !== evidenceSigner.signer ||
       handoff.evidenceAuthority.algorithm !== evidenceSigner.algorithm) {
     return "retained fulfilment handoff does not bind the exact authorization, request, and deliverable";
@@ -2533,7 +2534,7 @@ async function verifyAuditSourceCommitment(
     input = {
       commitment: structuredClone(commitment),
       signedBytes: signedBytes(
-        AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+        SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
         auditSourceCommitmentHash(commitment),
       ),
       signature: structuredClone(commitment.signature),
@@ -2603,7 +2604,7 @@ async function signAuditSourceCommitment(
   let contextBefore: string;
   try {
     bytes = signedBytes(
-      AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+      SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
       auditSourceCommitmentHash(unsigned),
     );
     expectedBytes = bytes.slice();
@@ -3415,6 +3416,7 @@ async function runFulfilmentCoreInner(
     | undefined;
   let preparationFailureReason: string | undefined;
   let preparationValidatedAt: number | undefined;
+  let deliveryInvokedAt: number | undefined;
   let retainedPreparedCandidate:
     | Extract<SellerFulfilmentHandoff["candidate"], { status: "prepared" }>
     | undefined;
@@ -3441,6 +3443,7 @@ async function runFulfilmentCoreInner(
       });
     }
     preparationValidatedAt = retainedHandoff.candidate.validatedAt;
+    deliveryInvokedAt = retainedHandoff.deliveryInvokedAt;
     if (retainedHandoff.candidate.status === "preparation-failed") {
       preparationFailureReason = retainedHandoff.candidate.reason;
     } else {
@@ -3548,6 +3551,7 @@ async function runFulfilmentCoreInner(
         "delivery clock precedes the finalized commitment, payment observation, or SessionRecord",
       ], { fulfilmentId: id, safeToRetryDelivery: true });
     }
+    deliveryInvokedAt = preparationStartedAt;
     let rawPreparation: unknown;
     const preparationInput = {
       fulfilmentId: id,
@@ -3703,7 +3707,7 @@ async function runFulfilmentCoreInner(
 
   let proposedHandoff: SellerFulfilmentHandoffEnvelope | undefined;
   if (inspection.status === "available") {
-    if (preparationValidatedAt === undefined) {
+    if (preparationValidatedAt === undefined || deliveryInvokedAt === undefined) {
       return indeterminate("delivery-preparation-invalid", [
         "delivery preparation did not produce a durable validation time",
       ], { fulfilmentId: id, safeToRetryDelivery: true });
@@ -3746,6 +3750,7 @@ async function runFulfilmentCoreInner(
         authorizationHash,
         auditSourceHash,
         candidateHash: sellerFulfilmentCandidateHash(candidate),
+        deliveryInvokedAt,
       },
       auditSourceCommitmentSigner,
       requiredEvidenceSigner,
@@ -3773,6 +3778,7 @@ async function runFulfilmentCoreInner(
       deliverableSpecHash: specHash,
       agreementViewHash,
       validationFloorAt: minimumDeliveryTime,
+      deliveryInvokedAt,
       evidenceAuthority: {
         primaryClaim: requiredEvidenceSigner,
         algorithm: evidenceSigner.algorithm,

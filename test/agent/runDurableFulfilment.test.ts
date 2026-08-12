@@ -567,6 +567,7 @@ function fixture(
       authorizationHash,
       auditSourceHash,
       candidateHash: sellerFulfilmentCandidateHash(candidate),
+      deliveryInvokedAt: session.lastUpdatedAt,
     };
     store.consumed = true;
     store.handoffValue = {
@@ -590,6 +591,7 @@ function fixture(
         authorization.evidenceInput.observedAt,
         session.lastUpdatedAt,
       ),
+      deliveryInvokedAt: session.lastUpdatedAt,
       evidenceAuthority: { primaryClaim: SELLER, algorithm: "ed25519" },
       auditSource: structuredClone(auditSource),
       auditSourceHash,
@@ -1495,7 +1497,10 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       lastVerified = await verifyDurableSellerTerminalResult({
         record,
         suppliedResult: completed,
+        expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
         verifyEvidenceSignature,
+        verifyAuditSourceCommitmentSignature:
+          h.deps.verifyAuditSourceCommitmentSignature,
         verifyAnchorReceipt,
       });
       expect(lastVerified.result).toEqual(completed);
@@ -1505,7 +1510,9 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     }
 
     expect(verifyEvidenceSignature).toHaveBeenCalledTimes(phases.length);
-    expect(verifyAnchorReceipt).toHaveBeenCalledTimes(phases.length);
+    // Each read-only pass authenticates both the evidence publication and the
+    // independently read delivery anchor retained in the WAL.
+    expect(verifyAnchorReceipt).toHaveBeenCalledTimes(phases.length * 2);
     if (!lastVerified) throw new Error("terminal verification missing");
     lastVerified.result.evidence.signature.value = "mutated";
     lastVerified.binding.authorizationHash = "0".repeat(64);
@@ -1533,7 +1540,10 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       await expect(verifyDurableSellerTerminalResult({
         record,
         suppliedResult: completed,
+        expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
         verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+        verifyAuditSourceCommitmentSignature:
+          h.deps.verifyAuditSourceCommitmentSignature,
         verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
       }), tamperCase.label).rejects.toThrow();
     }
@@ -1544,7 +1554,10 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     await expect(verifyDurableSellerTerminalResult({
       record: loaded.record,
       suppliedResult: reboundResult,
+      expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
       verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        h.deps.verifyAuditSourceCommitmentSignature,
       verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
     })).rejects.toThrow("supplied completion is not the exact durable terminal result");
   });
@@ -1569,9 +1582,12 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       await expect(verifyDurableSellerTerminalResult({
         record: loaded.record,
         suppliedResult: completed,
+        expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
         verifyEvidenceSignature: target === "signature"
           ? rejected
           : h.deps.verifyEvidenceSignature,
+        verifyAuditSourceCommitmentSignature:
+          h.deps.verifyAuditSourceCommitmentSignature,
         verifyAnchorReceipt: target === "anchor-receipt"
           ? rejected
           : h.deps.verifyAnchorReceipt,

@@ -316,6 +316,7 @@ function resignHandoff(
     authorizationHash: handoff.authorizationHash,
     auditSourceHash: handoff.auditSourceHash,
     candidateHash: sellerFulfilmentCandidateHash(handoff.candidate),
+    deliveryInvokedAt: handoff.deliveryInvokedAt,
   };
   handoff.auditSourceCommitment = {
     ...unsignedCommitment,
@@ -587,6 +588,7 @@ function fixture(
       authorizationHash,
       auditSourceHash,
       candidateHash: sellerFulfilmentCandidateHash(candidate),
+      deliveryInvokedAt: session.lastUpdatedAt,
     };
     store.consumed = true;
     store.handoffValue = {
@@ -610,6 +612,7 @@ function fixture(
         authorization.evidenceInput.observedAt,
         session.lastUpdatedAt,
       ),
+      deliveryInvokedAt: session.lastUpdatedAt,
       evidenceAuthority: { primaryClaim: SELLER, algorithm: "ed25519" },
       auditSource: structuredClone(auditSource),
       auditSourceHash,

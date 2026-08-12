@@ -591,6 +591,7 @@ function fulfilmentHandoffBase(
       claim.authorization.commitment.finalizedAt,
       claim.authorization.evidenceInput.observedAt,
     ),
+    deliveryInvokedAt: claim.observedAt,
     evidenceAuthority: { primaryClaim: "did:demos:seller", algorithm: "ed25519" },
     candidate: {
       status: "prepared",
@@ -695,6 +696,7 @@ function fulfilmentHandoff(
       authorizationHash: base.authorizationHash,
       auditSourceHash: sellerFulfilmentAuditSourceHash(auditSource),
       candidateHash: sellerFulfilmentCandidateHash(base.candidate),
+      deliveryInvokedAt: base.deliveryInvokedAt,
       signature: { algorithm: "ed25519", signer: SELLER, value: "c2ln" },
     },
   };

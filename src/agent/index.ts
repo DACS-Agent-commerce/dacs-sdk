@@ -260,10 +260,13 @@ export {
 export {
   runDurableFulfilmentCore,
   verifyDurableSellerTerminalResult,
+  projectDurableSellerAuditPending,
   getSellerFulfilmentStatus,
   sellerFulfilmentCheckpointKey,
   type DurableSellerFulfilmentDeps,
   type DurableSellerTerminalVerification,
+  type ProjectDurableSellerAuditPendingInput,
+  type VerifiedDurableSellerAuditPendingProjection,
   type SellerEffectAuthoritativeAbsence,
   type SellerEffectFence,
   type SellerFinalSessionReceiptInput,
