@@ -351,7 +351,18 @@ export interface SellerFulfilmentAuditSourceCommitmentV1 {
   commitmentVersion: "1";
   fulfilmentId: string;
   jobId: string;
+  agreementRef: string;
+  agreementHash: string;
+  commitmentRef: string;
   authorizationHash: string;
+  paymentPhaseIndex: number;
+  deliveryPhaseIndex: number;
+  phase:
+    | "deliver-storage-program"
+    | "deliver-entitlement"
+    | "deliver-attested-payload";
+  logicalAddress: string;
+  deliverableSpecHash: string;
   auditSourceHash: string;
   candidateHash: string;
   deliveryInvokedAt: number;
@@ -653,6 +664,44 @@ function hasExactKeys(
     expected.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
+/**
+ * The exact phase-aware identity used by #120 before a prepared candidate may
+ * cross the one-shot payment-permit boundary. Byte-bearing DPA candidates are
+ * projected to explicit length+digest records because raw Uint8Array values
+ * are not JCS values; the other delivery profiles bind their complete JSON
+ * artifact directly.
+ */
+export function sellerPreparedArtifactHash(artifact: unknown): string {
+  if (!isRecord(artifact)) {
+    throw new TypeError("prepared delivery artifact must be an object");
+  }
+  if (artifact.kind !== "deliver-attested-payload") {
+    return sha256Hex(canonicalize(artifact));
+  }
+  if (!hasExactKeys(artifact, [
+    "kind",
+    "cleartextBytes",
+    "anchoredValue",
+    "attestationRef",
+  ]) || !(artifact.cleartextBytes instanceof Uint8Array) ||
+      !(artifact.anchoredValue instanceof Uint8Array) ||
+      !hasExactJcsView(artifact.attestationRef)) {
+    throw new TypeError("attested-payload candidate bytes are missing");
+  }
+  return sha256Hex(canonicalize({
+    kind: artifact.kind,
+    cleartextBytes: {
+      length: artifact.cleartextBytes.byteLength,
+      sha256: sha256Hex(artifact.cleartextBytes),
+    },
+    anchoredValue: {
+      length: artifact.anchoredValue.byteLength,
+      sha256: sha256Hex(artifact.anchoredValue),
+    },
+    attestationRef: artifact.attestationRef,
+  }));
+}
+
 /** Canonical binding for the candidate bytes retained in a durable handoff. */
 export function sellerFulfilmentCandidateHash(
   candidate: SellerFulfilmentHandoff["candidate"],
@@ -668,10 +717,16 @@ export function sellerFulfilmentCandidateHash(
     candidate.delivery,
     "payloadAttestationRecord",
   );
+  const artifactHash = sellerPreparedArtifactHash(candidate.delivery.artifact);
+  if (artifactHash !== candidate.artifactHash) {
+    throw new TypeError(
+      "prepared delivery candidate does not match its phase-aware artifact hash",
+    );
+  }
   return sha256Hex(canonicalize({
     status: candidate.status,
     validatedAt: candidate.validatedAt,
-    artifactHash: candidate.artifactHash,
+    artifactHash,
     hasPayloadAttestationRecord: hasPayloadRecord,
     ...(hasPayloadRecord
       ? {
@@ -751,6 +806,10 @@ export function isSellerFulfilmentHandoff(
     if (!hasExactKeys(candidate, ["status", "validatedAt", "reason"]) ||
         !isSafeUint(candidate.validatedAt) || !nonEmpty(candidate.reason)) return false;
   } else if (candidate.status === "prepared") {
+    const hasPayloadRecord = Object.prototype.hasOwnProperty.call(
+      candidate.delivery ?? {},
+      "payloadAttestationRecord",
+    );
     if (!hasExactKeys(candidate, [
       "status",
       "validatedAt",
@@ -761,7 +820,9 @@ export function isSellerFulfilmentHandoff(
         !isRecord(candidate.delivery) ||
         !hasOnlyKeys(candidate.delivery, ["artifact", "payloadAttestationRecord"]) ||
         !Object.prototype.hasOwnProperty.call(candidate.delivery, "artifact") ||
-        !isRecord(candidate.delivery.artifact)) return false;
+        !isRecord(candidate.delivery.artifact) ||
+        candidate.delivery.artifact.kind !== value.phase ||
+        hasPayloadRecord !== (value.phase === "deliver-attested-payload")) return false;
   } else {
     return false;
   }
@@ -778,7 +839,15 @@ export function isSellerFulfilmentHandoff(
           "commitmentVersion",
           "fulfilmentId",
           "jobId",
+          "agreementRef",
+          "agreementHash",
+          "commitmentRef",
           "authorizationHash",
+          "paymentPhaseIndex",
+          "deliveryPhaseIndex",
+          "phase",
+          "logicalAddress",
+          "deliverableSpecHash",
           "auditSourceHash",
           "candidateHash",
           "deliveryInvokedAt",
@@ -786,7 +855,15 @@ export function isSellerFulfilmentHandoff(
         ]) || value.auditSourceCommitment.commitmentVersion !== "1" ||
         value.auditSourceCommitment.fulfilmentId !== value.fulfilmentId ||
         value.auditSourceCommitment.jobId !== value.jobId ||
+        value.auditSourceCommitment.agreementRef !== value.agreementRef ||
+        value.auditSourceCommitment.agreementHash !== value.agreementHash ||
+        value.auditSourceCommitment.commitmentRef !== value.commitmentRef ||
         value.auditSourceCommitment.authorizationHash !== value.authorizationHash ||
+        value.auditSourceCommitment.paymentPhaseIndex !== value.paymentPhaseIndex ||
+        value.auditSourceCommitment.deliveryPhaseIndex !== value.deliveryPhaseIndex ||
+        value.auditSourceCommitment.phase !== value.phase ||
+        value.auditSourceCommitment.logicalAddress !== value.logicalAddress ||
+        value.auditSourceCommitment.deliverableSpecHash !== value.deliverableSpecHash ||
         value.auditSourceCommitment.auditSourceHash !== value.auditSourceHash ||
         value.auditSourceCommitment.deliveryInvokedAt !== value.deliveryInvokedAt ||
         !HASH_RE.test(value.auditSourceCommitment.candidateHash as string) ||

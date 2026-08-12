@@ -28,12 +28,15 @@ import {
 } from "../seller/fulfilmentAuditSource.js";
 import {
   runFulfilmentCore,
+  sellerFulfilmentAuditSourceViolation,
   sellerFulfilmentId,
   type SellerAttestationRef,
   type SellerDeliveryReconciliation,
   type SellerDeliverySubmission,
   type SellerEvidenceAnchorResult,
   type SellerFulfilmentDeps,
+  type SellerFulfilmentAgreement,
+  type SellerFulfilmentListing,
   type SellerFulfilmentResolution,
   type SellerFulfilmentRequest,
   type SellerFulfilmentResult,
@@ -214,12 +217,20 @@ export interface VerifiedDurableSellerTerminalResult {
 export type ProjectDurableSellerAuditPendingInput = Omit<
   VerifyDurableSellerTerminalResultInput,
   "suppliedResult"
->;
+> & {
+  /** Independently authenticated CA-7 Agreement view retained for #132 handoff. */
+  verifiedAgreement: SellerFulfilmentAgreement;
+  /** Independently authenticated exact Listing version pinned by that Agreement. */
+  verifiedListing: SellerFulfilmentListing;
+};
 
 /**
  * Authenticated, caller-assembly-free input pair for seller bundle finalization.
  * This focused projection covers a terminal delivery only when it is the final
  * pinned pipeline step; suffix phases require their own authenticated WAL.
+ * The #132/#133 restack must pass this projection directly to
+ * `finalizeCompletedSellerBundleCore` in an integration test; that finalizer is
+ * intentionally absent from this branch and no caller reconstruction is safe.
  */
 export interface VerifiedDurableSellerAuditPendingProjection {
   terminal: VerifiedDurableSellerTerminalResult;
@@ -791,6 +802,7 @@ function deriveConsumedAuthority(
   ) {
     throw new TypeError("consumed handoff contradicts its retained payment authorization");
   }
+  retainedEvidenceAuthority(handoff, authorization);
   const handoffEncoded = encodeDurable(handoff);
   return {
     claim,
@@ -809,17 +821,23 @@ function deriveConsumedAuthority(
   };
 }
 
-function retainedEvidenceAuthority(handoff: SellerFulfilmentHandoff): string {
+function retainedEvidenceAuthority(
+  handoff: SellerFulfilmentHandoff,
+  authorization: SellerPaymentAuthorization,
+): string {
   const orchestrators = handoff.auditSource.session.parties.filter(
     (party) => party.role === "orchestrator",
   );
   if (orchestrators.length !== 1 ||
       handoff.evidenceAuthority.primaryClaim !== orchestrators[0]!.primaryClaim ||
+      authorization.commitment.signer !== orchestrators[0]!.primaryClaim ||
       handoff.auditSourceCommitment.signature.signer !==
         handoff.evidenceAuthority.primaryClaim ||
       handoff.auditSourceCommitment.signature.algorithm !==
         handoff.evidenceAuthority.algorithm) {
-    throw new Error("durable audit source lacks its exact orchestrator authority");
+    throw new Error(
+      "durable audit source lacks its exact authenticated commitment orchestrator authority",
+    );
   }
   return handoff.evidenceAuthority.primaryClaim;
 }
@@ -1191,6 +1209,55 @@ function recordFromLoad(value: Awaited<ReturnType<FencedSessionStoreV2["load"]>>
   return value.record;
 }
 
+interface SellerWalLineage {
+  intentGeneration: number;
+  outcomeGeneration?: number;
+}
+
+function sellerWalLineage(
+  record: SessionRecord,
+  checkpoint: SessionRecord["checkpoints"][number],
+): SellerWalLineage | undefined {
+  if (!checkpoint.key.startsWith("seller:")) return undefined;
+  const data = checkpoint.data;
+  const intentGeneration = data?.intentGeneration;
+  const outcomeGeneration = data?.outcomeGeneration;
+  if (!isSafeUint(intentGeneration) || intentGeneration === 0 ||
+      intentGeneration > record.leaseGeneration) {
+    throw new Error(
+      `durable WAL ${checkpoint.key} lacks a valid intent generation`,
+    );
+  }
+  if (checkpoint.stage === "intent") {
+    if (outcomeGeneration !== undefined) {
+      throw new Error(
+        `durable WAL ${checkpoint.key} intent claims an outcome generation`,
+      );
+    }
+    return { intentGeneration };
+  }
+  if (!isSafeUint(outcomeGeneration) || outcomeGeneration === 0 ||
+      outcomeGeneration < intentGeneration ||
+      outcomeGeneration > record.leaseGeneration) {
+    throw new Error(
+      `durable WAL ${checkpoint.key} lacks a valid takeover/outcome generation`,
+    );
+  }
+  return { intentGeneration, outcomeGeneration };
+}
+
+function withoutSellerWalLineage(
+  data: Record<string, CheckpointValue> | undefined,
+): Record<string, CheckpointValue> | undefined {
+  if (!data) return undefined;
+  const {
+    intentGeneration: _intentGeneration,
+    outcomeGeneration: _outcomeGeneration,
+    ...semantic
+  } = data;
+  return semantic;
+}
+
 function latestCheckpoint(record: SessionRecord, key: string) {
   const history = record.checkpoints.filter((checkpoint) => checkpoint.key === key);
   if (history.length === 0) return undefined;
@@ -1198,6 +1265,7 @@ function latestCheckpoint(record: SessionRecord, key: string) {
       (history.length === 2 && history[1]?.stage !== "outcome")) {
     throw new Error(`durable WAL ${key} has an invalid intent/outcome history`);
   }
+  for (const checkpoint of history) sellerWalLineage(record, checkpoint);
   if (history.length === 2) {
     const outcomeData = history[1]!.data ?? {};
     const permitsAuthoritativeAbsence =
@@ -1206,6 +1274,7 @@ function latestCheckpoint(record: SessionRecord, key: string) {
     const retainedIntentData = Object.fromEntries(
       Object.entries(outcomeData).filter(([field]) =>
         field !== "outputHash" && field !== "output" &&
+        field !== "outcomeGeneration" &&
         !(permitsAuthoritativeAbsence && field === "authoritativeAbsence")
       ),
     );
@@ -1213,7 +1282,14 @@ function latestCheckpoint(record: SessionRecord, key: string) {
       throw new Error(`durable WAL ${key} outcome contradicts its retained intent`);
     }
   }
-  return history[history.length - 1];
+  const latest = history[history.length - 1];
+  if (!latest || !key.startsWith("seller:")) return latest;
+  return {
+    ...latest,
+    ...(latest.data
+      ? { data: withoutSellerWalLineage(latest.data) }
+      : {}),
+  };
 }
 
 function checkpointState(record: SessionRecord, key: string): SellerFulfilmentCheckpointState {
@@ -1742,7 +1818,10 @@ class DurableCoordinator {
   async #authenticateTerminalResult(result: TerminalFulfilmentResult): Promise<void> {
     if (!this.#authority) throw new Error("consumed authority is unavailable");
     await this.#authenticateAuditSourceCommitment();
-    const expectedSigner = retainedEvidenceAuthority(this.#authority.handoff);
+    const expectedSigner = retainedEvidenceAuthority(
+      this.#authority.handoff,
+      this.#authority.claim.authorization,
+    );
     if (result.evidence.signature.signer !== expectedSigner) {
       throw new Error(
         "durable terminal evidence is not signed by the retained phase authority",
@@ -1801,7 +1880,10 @@ class DurableCoordinator {
   async #authenticateAuditSourceCommitment(): Promise<void> {
     if (!this.#authority) throw new Error("consumed authority is unavailable");
     const commitment = clone(this.#authority.handoff.auditSourceCommitment);
-    const expectedSigner = retainedEvidenceAuthority(this.#authority.handoff);
+    const expectedSigner = retainedEvidenceAuthority(
+      this.#authority.handoff,
+      this.#authority.claim.authorization,
+    );
     if (commitment.signature.signer !== expectedSigner) {
       throw new Error("durable audit-source commitment signer is unauthorized");
     }
@@ -1846,10 +1928,16 @@ class DurableCoordinator {
     }
     const receipt = clone(readback.output.value.anchorReceipt);
     const retainedDelivery = this.#readDeliveryCheckpoint(record);
-    if (retainedDelivery &&
+    const sourceSellers = this.#authority.handoff.auditSource.session.parties.filter(
+      (party) => party.role === "seller",
+    );
+    if (!retainedDelivery || sourceSellers.length !== 1 ||
+        sourceSellers[0]!.primaryClaim !== expectedWriter.primaryClaim ||
         retainedDelivery.input.agreement.seller.primaryClaim !==
           expectedWriter.primaryClaim) {
-      throw new Error("expected delivery writer contradicts the retained agreement seller");
+      throw new Error(
+        "expected delivery writer contradicts the retained source/agreement seller",
+      );
     }
     if (receipt.writer !== expectedWriter.primaryClaim ||
         receipt.logicalAddress !== this.#authority.handoff.logicalAddress ||
@@ -2816,6 +2904,11 @@ class DurableCoordinator {
     if (!this.#authority || !this.#leaseToken) throw new Error("durable lease is unavailable");
     await this.#renew();
     const current = await this.#load();
+    if (this.#leaseToken.generation !== current.leaseGeneration ||
+        current.lease?.owner !== this.#leaseToken.owner ||
+        current.lease.generation !== this.#leaseToken.generation) {
+      throw new Error(`durable WAL ${key} has no exact current lease generation`);
+    }
     let claimPhase: string | undefined = nextPhase;
     if (sessionPhaseMutationFailure(current, nextPhase) && allowPhasePreservingFresh) {
       const currentMatch = SELLER_DELIVERY_PHASE_RE.exec(current.phase);
@@ -2834,7 +2927,10 @@ class DurableCoordinator {
     const result = await this.#durability.store.claimCheckpoint({
       jobId: this.#authority.handoff.jobId,
       key,
-      data: clone(data),
+      data: clone({
+        ...data,
+        intentGeneration: this.#leaseToken.generation,
+      }),
       ...(claimPhase === undefined ? {} : { phase: claimPhase }),
       leaseToken: this.#leaseToken,
       now: this.#now(),
@@ -2864,6 +2960,16 @@ class DurableCoordinator {
     for (let attempt = 0; attempt < 16; attempt += 1) {
       await this.#renew();
       const record = await this.#load();
+      if (this.#leaseToken.generation !== record.leaseGeneration ||
+          record.lease?.owner !== this.#leaseToken.owner ||
+          record.lease.generation !== this.#leaseToken.generation) {
+        throw new Error(`durable WAL ${key} outcome has no exact current lease generation`);
+      }
+      const rawHistory = record.checkpoints.filter(
+        (checkpoint) => checkpoint.key === key,
+      );
+      const rawCheckpoint = rawHistory[rawHistory.length - 1];
+      if (rawCheckpoint) sellerWalLineage(record, rawCheckpoint);
       const checkpoint = latestCheckpoint(record, key);
       if (checkpoint?.stage === "outcome") {
         if (!exact(checkpoint.data, outcomeData)) {
@@ -2877,12 +2983,25 @@ class DurableCoordinator {
       if (!exact(checkpoint.data ?? {}, expectedIntentData)) {
         throw new Error(`durable WAL ${key} intent changed before outcome`);
       }
+      const intentGeneration = rawCheckpoint?.data?.intentGeneration;
+      if (!isSafeUint(intentGeneration) || intentGeneration === 0 ||
+          intentGeneration > this.#leaseToken.generation) {
+        throw new Error(`durable WAL ${key} has invalid takeover lineage`);
+      }
       const transitioned = await this.#durability.store.transition({
         jobId: this.#authority.handoff.jobId,
         expectedRevision: record.revision,
         leaseToken: this.#leaseToken,
         ...(options.phase ? { phase: options.phase } : {}),
-        checkpoint: { key, stage: "outcome", data: clone(outcomeData) },
+        checkpoint: {
+          key,
+          stage: "outcome",
+          data: clone({
+            ...outcomeData,
+            intentGeneration,
+            outcomeGeneration: this.#leaseToken.generation,
+          }),
+        },
         ...(options.receiptRef
           ? {
               receipt: {
@@ -3490,7 +3609,10 @@ class DurableCoordinator {
         !isRecord(value.evidence.signature) ||
         !hasExactKeys(value.evidence.signature, ["algorithm", "signer", "value"]) ||
         value.evidence.signature.signer !==
-          retainedEvidenceAuthority(this.#authority.handoff) ||
+          retainedEvidenceAuthority(
+            this.#authority.handoff,
+            this.#authority.claim.authorization,
+          ) ||
         signedEvidenceHash(value.evidence) !== value.evidenceHash ||
         value.evidence.jobId !== this.#authority.handoff.jobId ||
         value.evidence.phase !== this.#authority.handoff.phase ||
@@ -3517,7 +3639,10 @@ class DurableCoordinator {
     if (!this.#authority || !this.#evidenceAnchorInputBindsAuthority(input)) {
       throw new Error("durable evidence publication input is rebound");
     }
-    const expectedSigner = retainedEvidenceAuthority(this.#authority.handoff);
+    const expectedSigner = retainedEvidenceAuthority(
+      this.#authority.handoff,
+      this.#authority.claim.authorization,
+    );
     const verificationInput: Parameters<
       SellerFulfilmentDeps["verifyEvidenceSignature"]
     >[0] = {
@@ -4752,6 +4877,241 @@ function onlyCompletedResultInRecord(
   return result as Extract<SellerFulfilmentResult, { decision: "completed" }>;
 }
 
+function assertFocusedProjectionClosure(
+  record: SessionRecord,
+  terminal: VerifiedDurableSellerTerminalResult,
+): void {
+  const phaseIndex = terminal.binding.deliveryPhaseIndex;
+  if (record.lease !== undefined || record.leaseGeneration === 0) {
+    throw new Error(
+      "focused audit projection requires a quiescent generation-fenced terminal record",
+    );
+  }
+  if (record.phase !== phase("delivery-completed", phaseIndex)) {
+    throw new Error(
+      "focused audit projection requires the exact authenticated delivery-completed phase",
+    );
+  }
+  if (record.paymentAuthorizations.length !== 1 ||
+      !exact(record.paymentAuthorizations[0], terminal.binding)) {
+    throw new Error(
+      "focused audit projection requires exactly one matching payment authorization",
+    );
+  }
+
+  const expectedKeys = new Set<string>([
+    sellerFulfilmentCheckpointKey.handoff(phaseIndex),
+    sellerFulfilmentCheckpointKey.delivery(phaseIndex),
+    sellerFulfilmentCheckpointKey.deliveryReconciliation(phaseIndex),
+    sellerFulfilmentCheckpointKey.deliveryReadback(phaseIndex),
+    sellerFulfilmentCheckpointKey.evidencePublication(phaseIndex),
+    sellerFulfilmentCheckpointKey.evidenceReadback(phaseIndex),
+    sellerFulfilmentCheckpointKey.finalReceipt(phaseIndex),
+    sellerFulfilmentCheckpointKey.result(phaseIndex),
+  ]);
+  if (terminal.handoff.phase === "deliver-attested-payload") {
+    expectedKeys.add(sellerFulfilmentCheckpointKey.payloadPublication(phaseIndex));
+    expectedKeys.add(sellerFulfilmentCheckpointKey.payloadReadback(phaseIndex));
+  }
+  const actualKeys = new Set(record.checkpoints.map((checkpoint) => checkpoint.key));
+  if (actualKeys.size !== expectedKeys.size ||
+      [...actualKeys].some((key) => !expectedKeys.has(key)) ||
+      [...expectedKeys].some((key) => !actualKeys.has(key))) {
+    throw new Error(
+      "focused audit projection rejects partial, unknown, failed, or cross-phase seller checkpoints",
+    );
+  }
+  for (const key of expectedKeys) {
+    const history = record.checkpoints.filter((checkpoint) => checkpoint.key === key);
+    if (history.length !== 2 || history[0]?.stage !== "intent" ||
+        history[1]?.stage !== "outcome") {
+      throw new Error(`focused audit projection requires a complete ${key} WAL pair`);
+    }
+    sellerWalLineage(record, history[0]!);
+    const outcomeLineage = sellerWalLineage(record, history[1]!);
+    // latestCheckpoint also proves that the outcome retained the exact intent
+    // fields and only added its operation-specific terminal fields.
+    latestCheckpoint(record, key);
+    if (key === sellerFulfilmentCheckpointKey.result(phaseIndex) &&
+        outcomeLineage?.outcomeGeneration !== record.leaseGeneration) {
+      throw new Error(
+        "focused audit projection terminal result was not closed by the final lease generation",
+      );
+    }
+  }
+
+  const checkpointGroups: string[][] = [
+    [sellerFulfilmentCheckpointKey.handoff(phaseIndex)],
+    ...(terminal.handoff.phase === "deliver-attested-payload"
+      ? [[
+          sellerFulfilmentCheckpointKey.payloadPublication(phaseIndex),
+          sellerFulfilmentCheckpointKey.payloadReadback(phaseIndex),
+        ]]
+      : []),
+    [
+      sellerFulfilmentCheckpointKey.delivery(phaseIndex),
+      sellerFulfilmentCheckpointKey.deliveryReconciliation(phaseIndex),
+    ],
+    [sellerFulfilmentCheckpointKey.deliveryReadback(phaseIndex)],
+    [sellerFulfilmentCheckpointKey.evidencePublication(phaseIndex)],
+    [sellerFulfilmentCheckpointKey.evidenceReadback(phaseIndex)],
+    [sellerFulfilmentCheckpointKey.finalReceipt(phaseIndex)],
+    [sellerFulfilmentCheckpointKey.result(phaseIndex)],
+  ];
+  let priorGroupEnd = -1;
+  for (const group of checkpointGroups) {
+    const positions = record.checkpoints.flatMap((checkpoint, index) =>
+      group.includes(checkpoint.key) ? [index] : []);
+    const groupStart = Math.min(...positions);
+    const groupEnd = Math.max(...positions);
+    if (positions.length === 0 || groupStart <= priorGroupEnd) {
+      throw new Error(
+        "focused audit projection rejects a reordered seller lifecycle WAL",
+      );
+    }
+    priorGroupEnd = groupEnd;
+  }
+  if (priorGroupEnd !== record.checkpoints.length - 1) {
+    throw new Error("focused audit projection terminal result is not the final WAL row");
+  }
+
+  const expectedReceipts = new Map<string, string>([
+    ["agreement", terminal.handoff.agreementRef],
+    [`settlement:${terminal.binding.paymentPhaseIndex}`, terminal.binding.settlementId],
+    [
+      `delivery:${phaseIndex}`,
+      terminal.result.evidenceRef.anchor.locator,
+    ],
+    [`fulfilment:${phaseIndex}`, terminal.finalReceiptHash],
+  ]);
+  if (record.receipts.length !== expectedReceipts.size) {
+    throw new Error(
+      "focused audit projection rejects extra or missing lifecycle receipts",
+    );
+  }
+  const expectedReceiptOrder = [
+    "agreement",
+    `settlement:${terminal.binding.paymentPhaseIndex}`,
+    `delivery:${phaseIndex}`,
+    `fulfilment:${phaseIndex}`,
+  ];
+  let priorRecordedAt: number | undefined;
+  for (const receipt of record.receipts) {
+    const key = sessionReceiptKey(receipt);
+    if (key !== expectedReceiptOrder.shift() || expectedReceipts.get(key) !== receipt.ref ||
+        (receipt.recordedAt !== undefined &&
+          (!isSafeUint(receipt.recordedAt) || receipt.recordedAt < record.createdAt ||
+            receipt.recordedAt > record.updatedAt ||
+            (priorRecordedAt !== undefined && receipt.recordedAt < priorRecordedAt)))) {
+      throw new Error(
+        "focused audit projection rejects a rebound or malformed lifecycle receipt",
+      );
+    }
+    if (receipt.recordedAt !== undefined) priorRecordedAt = receipt.recordedAt;
+  }
+}
+
+function projectionVerifiedViewsViolation(
+  agreement: SellerFulfilmentAgreement,
+  listing: SellerFulfilmentListing,
+  terminal: VerifiedDurableSellerTerminalResult,
+  expectedDeliveryWriter: Readonly<{ role: "seller"; primaryClaim: string }>,
+): string | null {
+  if (!isRecord(agreement) || !hasExactJcsView(agreement) ||
+      !isRecord(listing) || !hasExactJcsView(listing)) {
+    return "verified Agreement or Listing is not an exact data-only JCS view";
+  }
+  const authorization = terminal.result.consumedPaymentAuthorization;
+  const handoff = terminal.handoff;
+  const candidateHasPayloadRecord = handoff.candidate.status === "prepared" &&
+    Object.prototype.hasOwnProperty.call(
+      handoff.candidate.delivery,
+      "payloadAttestationRecord",
+    );
+  if (handoff.candidate.status !== "prepared" ||
+      !isRecord(handoff.candidate.delivery.artifact) ||
+      handoff.candidate.delivery.artifact.kind !== handoff.phase ||
+      candidateHasPayloadRecord !== (handoff.phase === "deliver-attested-payload") ||
+      handoff.candidate.validatedAt < authorization.commitment.finalizedAt ||
+      handoff.candidate.validatedAt < authorization.evidenceInput.observedAt ||
+      handoff.candidate.validatedAt < handoff.auditSource.session.lastUpdatedAt ||
+      handoff.candidate.validatedAt < handoff.deliveryInvokedAt) {
+    return "retained prepared candidate precedes its authenticated causal floor";
+  }
+  let deliverableSpecHash: string;
+  try {
+    deliverableSpecHash = sha256Hex(canonicalize(listing.deliverable));
+  } catch {
+    return "verified Listing deliverable is not canonicalizable";
+  }
+  if (agreement.artifactKind !== "payee-bound" ||
+      agreement.ref !== handoff.agreementRef ||
+      agreement.contentHash !== handoff.agreementHash ||
+      agreement.contentHash !== authorization.agreementHash ||
+      agreement.jobId !== handoff.jobId ||
+      !exact(agreement.listingPin, authorization.listingRef) ||
+      agreement.commitment.status !== "finalized" ||
+      agreement.commitment.ref !== handoff.commitmentRef ||
+      agreement.commitment.ref !== authorization.commitment.ref ||
+      agreement.commitment.agreementHash !== handoff.agreementHash ||
+      agreement.commitment.recordContentHash !== authorization.commitment.contentHash ||
+      agreement.commitment.finalizedAt !== authorization.commitment.finalizedAt ||
+      agreement.commitment.signer !== authorization.commitment.signer) {
+    return "verified Agreement does not bind the exact authorization and finalized commitment";
+  }
+  if (!exact(listing.pin, authorization.listingRef) ||
+      listing.sellerPrimaryClaim !== agreement.seller.primaryClaim ||
+      agreement.seller.primaryClaim !== expectedDeliveryWriter.primaryClaim ||
+      agreement.deliverableRef.hash !== deliverableSpecHash ||
+      handoff.deliverableSpecHash !== deliverableSpecHash ||
+      agreement.deliverableRef.deliverableType !== listing.deliverable.kind ||
+      agreement.deliverableRef.schemaUrl !==
+        (listing.deliverable.kind === "storage-program"
+          ? listing.deliverable.schemaUrl
+          : undefined) ||
+      !exact(listing.pipeline, handoff.auditSource.session.pipeline)) {
+    return "verified Listing/Agreement does not bind the exact seller, pipeline, or deliverable";
+  }
+  const deliverySteps = listing.pipeline.filter((step) => step.kind.startsWith("deliver-"));
+  const paymentSteps = listing.pipeline.filter((step) => step.kind.startsWith("pay-"));
+  const expectedLogicalAddress = handoff.phase === "deliver-entitlement"
+    ? `dacs4:entitlement:${handoff.jobId}:0`
+    : `dacs4:deliverable:${handoff.jobId}`;
+  if (handoff.deliveryPhaseIndex !== listing.pipeline.length - 1) {
+    return "focused audit projection rejects post-delivery suffix phases";
+  }
+  if (deliverySteps.length !== 1 || paymentSteps.length !== 1 ||
+      handoff.logicalAddress !== expectedLogicalAddress ||
+      listing.pipeline[handoff.deliveryPhaseIndex]?.kind !== handoff.phase ||
+      authorization.phaseIndex >= handoff.deliveryPhaseIndex ||
+      listing.pipeline[authorization.phaseIndex]?.kind !== authorization.evidenceInput.phase ||
+      listing.pipeline[authorization.phaseIndex]?.parameters?.rail !== authorization.railId) {
+    return "verified pipeline is not the focused one-payment, final-delivery profile";
+  }
+  return sellerFulfilmentAuditSourceViolation(
+    handoff.auditSource,
+    authorization,
+    agreement,
+    listing,
+    {
+      agreementRef: handoff.agreementRef,
+      agreementHash: handoff.agreementHash,
+      commitmentRef: handoff.commitmentRef,
+      deliveryPhaseIndex: handoff.deliveryPhaseIndex,
+      paymentPermitId: "durable-audit-projection",
+      ...(authorization.payloadVerificationProducerAdmission
+        ? {
+            payloadVerificationProducerAdmission: clone(
+              authorization.payloadVerificationProducerAdmission,
+            ),
+          }
+        : {}),
+    },
+    handoff.deliveryPhaseIndex,
+    handoff.commitmentRef,
+  );
+}
+
 /**
  * Derive the exact finalizer-ready `audit-pending` session and artifact
  * inventory from one authenticated V2 pre-delivery source plus its terminal
@@ -4762,6 +5122,8 @@ export async function projectDurableSellerAuditPending(
 ): Promise<VerifiedDurableSellerAuditPendingProjection> {
   const fields = [
     "record",
+    "verifiedAgreement",
+    "verifiedListing",
     "expectedDeliveryWriter",
     "verifyEvidenceSignature",
     "verifyAuditSourceCommitmentSignature",
@@ -4774,6 +5136,14 @@ export async function projectDurableSellerAuditPending(
     );
   }
   const recordInput = descriptors.record!.value as unknown;
+  const agreementInput = descriptors.verifiedAgreement!.value as unknown;
+  const listingInput = descriptors.verifiedListing!.value as unknown;
+  if (!isRecord(agreementInput) || !hasExactJcsView(agreementInput) ||
+      !isRecord(listingInput) || !hasExactJcsView(listingInput)) {
+    throw new TypeError(
+      "durable audit projection requires exact data-only verified Agreement and Listing views",
+    );
+  }
   const violation = sessionRecordShapeViolation(recordInput);
   if (violation) throw new Error(`durable session is corrupt: ${violation}`);
   const record = clone(recordInput) as SessionRecord;
@@ -4782,11 +5152,26 @@ export async function projectDurableSellerAuditPending(
     throw new Error(`durable session snapshot is corrupt: ${snapshotViolation}`);
   }
   const suppliedResult = onlyCompletedResultInRecord(record);
+  const writerInput = descriptors.expectedDeliveryWriter!.value as unknown;
+  const writerDescriptors = exactEnumerableDataDescriptors(
+    writerInput,
+    ["role", "primaryClaim"],
+  );
+  const writerRole = writerDescriptors?.role;
+  const writerClaim = writerDescriptors?.primaryClaim;
+  if (!writerDescriptors || !writerRole || !("value" in writerRole) ||
+      writerRole.value !== "seller" || !writerClaim || !("value" in writerClaim) ||
+      !isNonEmpty(writerClaim.value)) {
+    throw new TypeError("expected delivery writer is malformed");
+  }
+  const expectedDeliveryWriter = {
+    role: "seller" as const,
+    primaryClaim: writerClaim.value as string,
+  };
   const terminal = await verifyDurableSellerTerminalResult({
     record,
     suppliedResult,
-    expectedDeliveryWriter: descriptors.expectedDeliveryWriter!.value as
-      VerifyDurableSellerTerminalResultInput["expectedDeliveryWriter"],
+    expectedDeliveryWriter,
     verifyEvidenceSignature: bindCaptured(
       descriptors.verifyEvidenceSignature!.value,
       input,
@@ -4800,6 +5185,18 @@ export async function projectDurableSellerAuditPending(
       input,
     ) as SellerFulfilmentDeps["verifyAnchorReceipt"],
   });
+  assertFocusedProjectionClosure(record, terminal);
+  const verifiedAgreement = clone(agreementInput) as unknown as SellerFulfilmentAgreement;
+  const verifiedListing = clone(listingInput) as unknown as SellerFulfilmentListing;
+  const sourceViolation = projectionVerifiedViewsViolation(
+    verifiedAgreement,
+    verifiedListing,
+    terminal,
+    expectedDeliveryWriter,
+  );
+  if (sourceViolation) {
+    throw new Error(`durable audit source is not projection-authoritative: ${sourceViolation}`);
+  }
   const source = clone(terminal.handoff.auditSource);
   if (!isSellerFulfilmentAuditSource(source)) {
     throw new Error("authenticated durable handoff lost its V2 audit source");

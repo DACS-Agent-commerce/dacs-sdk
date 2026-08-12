@@ -693,7 +693,15 @@ function fulfilmentHandoff(
       commitmentVersion: "1",
       fulfilmentId: base.fulfilmentId,
       jobId: base.jobId,
+      agreementRef: base.agreementRef,
+      agreementHash: base.agreementHash,
+      commitmentRef: base.commitmentRef,
       authorizationHash: base.authorizationHash,
+      paymentPhaseIndex: base.paymentPhaseIndex,
+      deliveryPhaseIndex: base.deliveryPhaseIndex,
+      phase: base.phase,
+      logicalAddress: base.logicalAddress,
+      deliverableSpecHash: base.deliverableSpecHash,
       auditSourceHash: sellerFulfilmentAuditSourceHash(auditSource),
       candidateHash: sellerFulfilmentCandidateHash(base.candidate),
       deliveryInvokedAt: base.deliveryInvokedAt,
@@ -723,6 +731,56 @@ describe("SellerFulfilmentHandoff runtime guard", () => {
       expect(isSellerFulfilmentHandoff(ambiguous)).toBe(false);
     },
   );
+  it("binds the exact delivery invocation time into the signed audit-source commitment", () => {
+    const handoff = fulfilmentHandoff();
+    handoff.auditSourceCommitment.deliveryInvokedAt += 1;
+    expect(isSellerFulfilmentHandoff(handoff)).toBe(false);
+  });
+
+  it("recomputes the prepared artifact hash instead of signing a claimed digest", () => {
+    const handoff = fulfilmentHandoff();
+    if (handoff.candidate.status !== "prepared") throw new Error("prepared fixture required");
+    const artifact = handoff.candidate.delivery.artifact as {
+      anchoredValue: { value: number };
+    };
+    artifact.anchoredValue.value = 43;
+
+    expect(() => sellerFulfilmentCandidateHash(handoff.candidate)).toThrow(
+      "phase-aware artifact hash",
+    );
+    expect(isSellerFulfilmentHandoff(handoff)).toBe(false);
+  });
+
+  it("binds every effect-selecting handoff field into the signed commitment", () => {
+    const reboundAddress = fulfilmentHandoff();
+    reboundAddress.logicalAddress = "dacs4:deliverable:attacker";
+    expect(isSellerFulfilmentHandoff(reboundAddress)).toBe(false);
+
+    const reboundAgreement = fulfilmentHandoff();
+    reboundAgreement.auditSourceCommitment.agreementRef = "agreement:attacker";
+    expect(isSellerFulfilmentHandoff(reboundAgreement)).toBe(false);
+  });
+
+  it("accepts canonical NFC audit data and rejects a decomposed non-canonical view", () => {
+    const nfc = fulfilmentHandoff();
+    const nfd = structuredClone(nfc);
+    const nfcDelta = { "caf\u00e9": "r\u00e9sum\u00e9" };
+    const nfdDelta = { "cafe\u0301": "re\u0301sume\u0301" };
+    nfc.auditSource.session.phaseResults[0]!.contextDelta = nfcDelta;
+    nfc.auditSource.session.phaseResults[0]!.result.contextDelta =
+      structuredClone(nfcDelta);
+    nfd.auditSource.session.phaseResults[0]!.contextDelta = nfdDelta;
+    nfd.auditSource.session.phaseResults[0]!.result.contextDelta =
+      structuredClone(nfdDelta);
+    const normalizedHash = sellerFulfilmentAuditSourceHash(nfc.auditSource);
+    expect(() => sellerFulfilmentAuditSourceHash(nfd.auditSource)).toThrow(
+      "audit source is malformed",
+    );
+    nfc.auditSourceHash = normalizedHash;
+    nfc.auditSourceCommitment.auditSourceHash = normalizedHash;
+    expect(isSellerFulfilmentHandoff(nfc)).toBe(true);
+    expect(isSellerFulfilmentHandoff(nfd)).toBe(false);
+  });
 });
 
 describe("verifySellerPaymentIntake", () => {

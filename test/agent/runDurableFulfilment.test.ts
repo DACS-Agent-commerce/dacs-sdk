@@ -31,6 +31,7 @@ import {
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import {
   getSellerFulfilmentStatus,
+  projectDurableSellerAuditPending,
   runDurableFulfilmentCore,
   sellerFulfilmentCheckpointKey,
   verifyDurableSellerTerminalResult,
@@ -564,7 +565,15 @@ function fixture(
       commitmentVersion: "1" as const,
       fulfilmentId,
       jobId: authorization.jobId,
+      agreementRef: agreement.ref,
+      agreementHash: authorization.agreementHash,
+      commitmentRef: agreement.commitment.ref,
       authorizationHash,
+      paymentPhaseIndex: authorization.phaseIndex,
+      deliveryPhaseIndex: 2,
+      phase: phase as SellerFulfilmentHandoff["phase"],
+      logicalAddress,
+      deliverableSpecHash: sha256Hex(canonicalize(spec)),
       auditSourceHash,
       candidateHash: sellerFulfilmentCandidateHash(candidate),
       deliveryInvokedAt: session.lastUpdatedAt,
@@ -2489,9 +2498,29 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       if (terminal.status !== "ok") throw new Error("recovered session missing");
       expect(terminal.record.leaseGeneration).toBe(2);
       expect(terminal.record.lease).toBeUndefined();
-      expect(terminal.record.checkpoints.filter(
+      const targetHistory = terminal.record.checkpoints.filter(
         (checkpoint) => checkpoint.key === targetKey,
-      ).map((checkpoint) => checkpoint.stage)).toEqual(["intent", "outcome"]);
+      );
+      expect(targetHistory.map((checkpoint) => checkpoint.stage))
+        .toEqual(["intent", "outcome"]);
+      expect(targetHistory[0]?.data).toMatchObject({ intentGeneration: 1 });
+      expect(targetHistory[1]?.data).toMatchObject({
+        intentGeneration: 1,
+        outcomeGeneration: 2,
+      });
+      await expect(projectDurableSellerAuditPending({
+        record: terminal.record,
+        verifiedAgreement: h.fixture.agreement,
+        verifiedListing: h.fixture.listing,
+        expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
+        verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+        verifyAuditSourceCommitmentSignature:
+          h.deps.verifyAuditSourceCommitmentSignature,
+        verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+      })).resolves.toMatchObject({
+        session: { state: "audit-pending" },
+        terminal: { result: { decision: "completed" } },
+      });
     },
   );
 
@@ -4955,6 +4984,453 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(reconcileEvidence).not.toHaveBeenCalled();
     expect(anchorEvidence).not.toHaveBeenCalled();
     expect(h.counts.evidence).toBe(0);
+  });
+
+  test("derives the finalizer-ready audit history only from the authenticated terminal WAL", async () => {
+    const h = durableHarness();
+    const completed = await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+    if (completed.decision !== "completed") throw new Error("completion missing");
+    const loaded = await h.store.load(h.fixture.authorization.jobId);
+    if (loaded.status !== "ok") throw new Error("terminal WAL missing");
+    const recordSnapshot = structuredClone(loaded.record);
+    const sourceSnapshot = structuredClone(h.fixture.auditSource);
+    const verifyEvidenceSignature = vi.fn(h.deps.verifyEvidenceSignature);
+    const verifyAuditSourceCommitmentSignature = vi.fn(
+      h.deps.verifyAuditSourceCommitmentSignature,
+    );
+    const verifyAnchorReceipt = vi.fn(h.deps.verifyAnchorReceipt);
+
+    const projected = await projectDurableSellerAuditPending({
+      record: loaded.record,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: h.fixture.listing,
+      expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
+      verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature,
+      verifyAnchorReceipt,
+    });
+    const retainedHandoff = h.fixture.store.handoffValue;
+    if (!retainedHandoff) throw new Error("consumed handoff missing");
+    expect(projected.session).toMatchObject({
+      jobId: h.fixture.authorization.jobId,
+      state: "audit-pending",
+      lastUpdatedAt: completed.evidence.observedAt,
+      phaseResults: [
+        sourceSnapshot.session.phaseResults[0],
+        sourceSnapshot.session.phaseResults[1],
+        {
+          index: 2,
+          step: { kind: "deliver-storage-program" },
+          invokedAt: retainedHandoff.deliveryInvokedAt,
+          result: {
+            ok: true,
+            attestationRef: completed.evidenceRef,
+            anchorReceipt: projected.terminal.deliveryAnchorReceipt,
+            contextDelta: {},
+          },
+          contextDelta: {},
+        },
+      ],
+    });
+    expect(projected.session).not.toHaveProperty("endedAt");
+    expect(projected.sessionArtifacts.settlementEvidence).toEqual([
+      ...sourceSnapshot.artifacts.settlementEvidence,
+      completed.evidenceRef,
+    ]);
+    expect(projected.terminal.result).toEqual(completed);
+    expect(projected.terminal.binding.deliveryPhaseIndex).toBe(2);
+    expect(verifyAuditSourceCommitmentSignature).toHaveBeenCalledOnce();
+    expect(verifyEvidenceSignature).toHaveBeenCalledOnce();
+    expect(verifyAnchorReceipt).toHaveBeenCalledTimes(2);
+    expect(loaded.record).toEqual(recordSnapshot);
+    expect(h.fixture.auditSource).toEqual(sourceSnapshot);
+
+    const pristine = structuredClone(projected);
+    projected.session.phaseResults[2]!.contextDelta.mutated = true;
+    projected.sessionArtifacts.settlementEvidence[0]!.anchor.locator = "mutated";
+    projected.terminal.result.evidence.signature.value = "mutated";
+    const replay = await projectDurableSellerAuditPending({
+      record: loaded.record,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: h.fixture.listing,
+      expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
+      verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        h.deps.verifyAuditSourceCommitmentSignature,
+      verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+    });
+    expect(replay).toEqual(pristine);
+    expect(loaded.record).toEqual(recordSnapshot);
+  });
+
+  test("records explicit generation lineage and projects only one exact quiescent lifecycle", async () => {
+    const h = durableHarness();
+    expect((await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    )).decision).toBe("completed");
+    const loaded = await h.store.load(h.fixture.authorization.jobId);
+    if (loaded.status !== "ok") throw new Error("terminal WAL missing");
+
+    for (const checkpoint of loaded.record.checkpoints) {
+      expect(checkpoint.data?.intentGeneration).toBeGreaterThan(0);
+      expect(checkpoint.data?.intentGeneration).toBeLessThanOrEqual(
+        loaded.record.leaseGeneration,
+      );
+      if (checkpoint.stage === "intent") {
+        expect(checkpoint.data).not.toHaveProperty("outcomeGeneration");
+      } else {
+        expect(checkpoint.data?.outcomeGeneration).toBeGreaterThanOrEqual(
+          checkpoint.data?.intentGeneration as number,
+        );
+        expect(checkpoint.data?.outcomeGeneration).toBeLessThanOrEqual(
+          loaded.record.leaseGeneration,
+        );
+      }
+    }
+    const resultOutcome = loaded.record.checkpoints.find(
+      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2) &&
+        checkpoint.stage === "outcome",
+    );
+    expect(resultOutcome?.data?.outcomeGeneration).toBe(
+      loaded.record.leaseGeneration,
+    );
+
+    const project = (record: FencedStoreRecord) => projectDurableSellerAuditPending({
+      record,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: h.fixture.listing,
+      expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
+      verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        h.deps.verifyAuditSourceCommitmentSignature,
+      verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+    });
+    const cases: Array<{
+      name: string;
+      mutate(record: FencedStoreRecord): void;
+    }> = [
+      {
+        name: "unauthenticated seller:finalised demotion",
+        mutate(record) { record.phase = "seller:finalised"; },
+      },
+      {
+        name: "active lease",
+        mutate(record) {
+          record.lease = {
+            owner: "stale-worker",
+            generation: record.leaseGeneration,
+            expiresAt: NOW + 1,
+          };
+        },
+      },
+      {
+        name: "another payment authorization",
+        mutate(record) {
+          const binding = record.paymentAuthorizations[0]!;
+          record.paymentAuthorizations.push({
+            ...structuredClone(binding),
+            authorizationHash: "0".repeat(64),
+            fulfilmentId: "1".repeat(64),
+            handoffBindingHash: "2".repeat(64),
+            paymentEvidenceHash: "3".repeat(64),
+            settlementId: `evm:8453:${"4".repeat(64)}:1`,
+            paymentPhaseIndex: 3,
+            deliveryPhaseIndex: 4,
+          });
+        },
+      },
+      {
+        name: "another reserved seller phase",
+        mutate(record) {
+          record.checkpoints.push(
+            {
+              key: sellerFulfilmentCheckpointKey.handoff(3),
+              stage: "intent",
+              data: { fulfilmentId: "5".repeat(64), intentGeneration: 1 },
+            },
+            {
+              key: sellerFulfilmentCheckpointKey.handoff(3),
+              stage: "outcome",
+              data: {
+                fulfilmentId: "5".repeat(64),
+                intentGeneration: 1,
+                outcomeGeneration: 1,
+              },
+            },
+          );
+        },
+      },
+      {
+        name: "partial unknown seller checkpoint",
+        mutate(record) {
+          record.checkpoints.push({
+            key: "seller:future-operation:2",
+            stage: "intent",
+            data: { fulfilmentId: "5".repeat(64), intentGeneration: 1 },
+          });
+        },
+      },
+      {
+        name: "DPA terminal failure source",
+        mutate(record) {
+          record.checkpoints.push(
+            {
+              key: sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
+              stage: "intent",
+              data: { fulfilmentId: "5".repeat(64), intentGeneration: 1 },
+            },
+            {
+              key: sellerFulfilmentCheckpointKey.dpaTerminalFailure(2),
+              stage: "outcome",
+              data: {
+                fulfilmentId: "5".repeat(64),
+                intentGeneration: 1,
+                outcomeGeneration: 1,
+              },
+            },
+          );
+        },
+      },
+      {
+        name: "terminal failure-source checkpoint",
+        mutate(record) {
+          record.checkpoints.push(
+            {
+              key: sellerFulfilmentCheckpointKey.terminalFailureSource(2),
+              stage: "intent",
+              data: { fulfilmentId: "5".repeat(64), intentGeneration: 1 },
+            },
+            {
+              key: sellerFulfilmentCheckpointKey.terminalFailureSource(2),
+              stage: "outcome",
+              data: {
+                fulfilmentId: "5".repeat(64),
+                intentGeneration: 1,
+                outcomeGeneration: 1,
+              },
+            },
+          );
+        },
+      },
+      {
+        name: "premature bundle receipt",
+        mutate(record) {
+          record.receipts.push({
+            kind: "bundle",
+            ref: "bundle:job-17:seller",
+            recordedAt: NOW,
+          });
+        },
+      },
+      {
+        name: "extra settlement receipt",
+        mutate(record) {
+          record.receipts.push({
+            kind: "settlement",
+            ref: `evm:8453:${"6".repeat(64)}:1`,
+            phaseIndex: 3,
+            recordedAt: NOW,
+          });
+        },
+      },
+      {
+        name: "zero intent generation",
+        mutate(record) {
+          const intent = record.checkpoints.find(
+            (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.handoff(2) &&
+              checkpoint.stage === "intent",
+          );
+          if (!intent?.data) throw new Error("handoff intent missing");
+          intent.data.intentGeneration = 0;
+        },
+      },
+      {
+        name: "outcome generation preceding intent",
+        mutate(record) {
+          record.leaseGeneration = 2;
+          const history = record.checkpoints.filter(
+            (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(2),
+          );
+          if (!history[0]?.data || !history[1]?.data) {
+            throw new Error("result lineage missing");
+          }
+          history[0].data.intentGeneration = 2;
+          history[1].data.intentGeneration = 2;
+          history[1].data.outcomeGeneration = 1;
+        },
+      },
+      {
+        name: "additive checkpoint semantics",
+        mutate(record) {
+          const history = record.checkpoints.filter(
+            (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.handoff(2),
+          );
+          for (const checkpoint of history) {
+            if (!checkpoint.data) throw new Error("handoff checkpoint missing");
+            checkpoint.data.futureField = true;
+          }
+        },
+      },
+      {
+        name: "reordered lifecycle groups",
+        mutate(record) {
+          const readbackKey = sellerFulfilmentCheckpointKey.deliveryReadback(2);
+          const evidenceKey = sellerFulfilmentCheckpointKey.evidencePublication(2);
+          const before = record.checkpoints.findIndex(
+            (checkpoint) => checkpoint.key === readbackKey,
+          );
+          const selected = record.checkpoints.filter(
+            (checkpoint) => checkpoint.key === readbackKey || checkpoint.key === evidenceKey,
+          );
+          record.checkpoints = record.checkpoints.filter(
+            (checkpoint) => checkpoint.key !== readbackKey && checkpoint.key !== evidenceKey,
+          );
+          const evidence = selected.filter((checkpoint) => checkpoint.key === evidenceKey);
+          const readback = selected.filter((checkpoint) => checkpoint.key === readbackKey);
+          record.checkpoints.splice(before, 0, ...evidence, ...readback);
+        },
+      },
+      {
+        name: "reordered lifecycle receipts",
+        mutate(record) {
+          [record.receipts[0], record.receipts[1]] = [
+            record.receipts[1]!,
+            record.receipts[0]!,
+          ];
+        },
+      },
+    ];
+
+    for (const candidate of cases) {
+      const record = structuredClone(loaded.record);
+      candidate.mutate(record);
+      await expect(project(record), candidate.name).rejects.toThrow();
+    }
+  });
+
+  test("re-runs the exact verified Agreement, Listing, party, and finality bindings", async () => {
+    const h = durableHarness();
+    expect((await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    )).decision).toBe("completed");
+    const loaded = await h.store.load(h.fixture.authorization.jobId);
+    if (loaded.status !== "ok") throw new Error("terminal WAL missing");
+    const base = {
+      record: loaded.record,
+      expectedDeliveryWriter: { role: "seller" as const, primaryClaim: SELLER },
+      verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        h.deps.verifyAuditSourceCommitmentSignature,
+      verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+    };
+
+    const wrongCommitment = structuredClone(h.fixture.agreement);
+    wrongCommitment.commitment.signer = "did:demos:attacker";
+    await expect(projectDurableSellerAuditPending({
+      ...base,
+      verifiedAgreement: wrongCommitment,
+      verifiedListing: h.fixture.listing,
+    })).rejects.toThrow("finalized commitment");
+
+    const wrongRequirement = structuredClone(h.fixture.listing);
+    wrongRequirement.buyerRequirement.required = [];
+    await expect(projectDurableSellerAuditPending({
+      ...base,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: wrongRequirement,
+    })).rejects.toThrow("Vet provenance");
+
+    await expect(projectDurableSellerAuditPending({
+      ...base,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: h.fixture.listing,
+      expectedDeliveryWriter: {
+        role: "seller",
+        primaryClaim: "did:demos:attacker",
+      },
+    })).rejects.toThrow("source/agreement seller");
+  });
+
+  test("fails closed when the signed pipeline has a post-delivery suffix", async () => {
+    const h = durableHarness();
+    const suffix = { kind: "rate" as const };
+    h.fixture.listing.pipeline.push(structuredClone(suffix));
+    h.fixture.session.pipeline.push(structuredClone(suffix));
+    const completed = await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+    expect(completed.decision).toBe("completed");
+    const loaded = await h.store.load(h.fixture.authorization.jobId);
+    if (loaded.status !== "ok") throw new Error("terminal WAL missing");
+
+    await expect(projectDurableSellerAuditPending({
+      record: loaded.record,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: h.fixture.listing,
+      expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
+      verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        h.deps.verifyAuditSourceCommitmentSignature,
+      verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+    })).rejects.toThrow("post-delivery suffix phases");
+  });
+
+  test("rejects verifier mutation while authenticating the audit-source commitment", async () => {
+    const h = durableHarness();
+    expect((await runDurableFulfilmentCore(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    )).decision).toBe("completed");
+    const loaded = await h.store.load(h.fixture.authorization.jobId);
+    if (loaded.status !== "ok") throw new Error("terminal WAL missing");
+
+    await expect(projectDurableSellerAuditPending({
+      record: loaded.record,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: h.fixture.listing,
+      expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
+      verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature: async (input) => {
+        (input as { expectedSigner: string }).expectedSigner = "did:demos:attacker";
+        return { disposition: "valid" };
+      },
+      verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+    })).rejects.toThrow("audit-source commitment is not authenticated");
+
+    let writerGetterCalls = 0;
+    const accessorWriter = { primaryClaim: SELLER } as {
+      role: "seller";
+      primaryClaim: string;
+    };
+    Object.defineProperty(accessorWriter, "role", {
+      enumerable: true,
+      get() {
+        writerGetterCalls += 1;
+        return "seller";
+      },
+    });
+    await expect(projectDurableSellerAuditPending({
+      record: loaded.record,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: h.fixture.listing,
+      expectedDeliveryWriter: accessorWriter,
+      verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        h.deps.verifyAuditSourceCommitmentSignature,
+      verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+    })).rejects.toThrow("expected delivery writer is malformed");
+    expect(writerGetterCalls).toBe(0);
   });
 
   test("rejects a v1 SessionStore at the explicit v2 durability boundary", async () => {

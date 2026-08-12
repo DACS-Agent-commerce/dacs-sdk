@@ -313,7 +313,15 @@ function resignHandoff(
     commitmentVersion: "1" as const,
     fulfilmentId: handoff.fulfilmentId,
     jobId: handoff.jobId,
+    agreementRef: handoff.agreementRef,
+    agreementHash: handoff.agreementHash,
+    commitmentRef: handoff.commitmentRef,
     authorizationHash: handoff.authorizationHash,
+    paymentPhaseIndex: handoff.paymentPhaseIndex,
+    deliveryPhaseIndex: handoff.deliveryPhaseIndex,
+    phase: handoff.phase,
+    logicalAddress: handoff.logicalAddress,
+    deliverableSpecHash: handoff.deliverableSpecHash,
     auditSourceHash: handoff.auditSourceHash,
     candidateHash: sellerFulfilmentCandidateHash(handoff.candidate),
     deliveryInvokedAt: handoff.deliveryInvokedAt,
@@ -585,7 +593,15 @@ function fixture(
       commitmentVersion: "1" as const,
       fulfilmentId,
       jobId: authorization.jobId,
+      agreementRef: agreement.ref,
+      agreementHash: authorization.agreementHash,
+      commitmentRef: agreement.commitment.ref,
       authorizationHash,
+      paymentPhaseIndex: authorization.phaseIndex,
+      deliveryPhaseIndex: 2,
+      phase: phase as SellerFulfilmentHandoff["phase"],
+      logicalAddress,
+      deliverableSpecHash: sha256Hex(canonicalize(spec)),
       auditSourceHash,
       candidateHash: sellerFulfilmentCandidateHash(candidate),
       deliveryInvokedAt: session.lastUpdatedAt,
@@ -2032,7 +2048,7 @@ describe("runFulfilmentCore", () => {
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "indeterminate",
       code: "payment-permit-store-invalid",
-      reasons: ["receipt store returned a different retained fulfilment handoff"],
+      reasons: ["receipt store returned a malformed consumed handoff"],
       safeToRetryDelivery: false,
       consumedPaymentAuthorization: f.authorization,
     });
@@ -2725,6 +2741,20 @@ describe("runFulfilmentCore", () => {
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "rejected",
       code: "phase-orchestrator-missing",
+    });
+    expect(f.store.consumed).toBe(false);
+  });
+
+  test("does not let the retained source self-authorize a different orchestrator", async () => {
+    const f = fixture();
+    const orchestrator = f.session.parties.find(
+      (party) => party.role === "orchestrator",
+    );
+    if (!orchestrator) throw new Error("orchestrator fixture missing");
+    orchestrator.primaryClaim = "did:demos:attacker";
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "agreement-commitment-mismatch",
     });
     expect(f.store.consumed).toBe(false);
   });
