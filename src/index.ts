@@ -693,6 +693,9 @@ export {
   type SellerFulfilmentStatusLoad,
   type VerifyDurableSellerTerminalResultInput,
   type VerifiedDurableSellerTerminalResult,
+  publishListingCore,
+  type PublishListingDeps,
+  type PublishListingResult,
 } from "./agent/index.js";
 
 // Settlement rails (SR-4): x402 reference rail + the runSession `settle` bridge.

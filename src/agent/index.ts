@@ -53,6 +53,11 @@ export {
 } from "./bundleCopyValidity.js";
 export { computeReputation } from "./reputation.js";
 export {
+  publishListingCore,
+  type PublishListingDeps,
+  type PublishListingResult,
+} from "./publishListingCore.js";
+export {
   deriveReputation,
   type ReputationDerivation,
   type ReputationMetrics,

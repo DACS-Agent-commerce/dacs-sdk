@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, test } from "vitest";
 import { verifyMessage, verifyTypedData } from "viem";
@@ -38,6 +40,7 @@ import {
   discoverListings,
   ed25519Sign,
   ed25519Verify,
+  encodeAddressSegment,
   finalityCommitmentAddress,
   finalizeCompletedSellerBundleDurable,
   finalizeCompletedSellerBundleCore,
@@ -46,6 +49,7 @@ import {
   listingAddress,
   prepareX402BuyerSettlement,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  projectDurableSellerAuditPending,
   privateKeyFromSeed,
   publicKeyFromRaw,
   publicKeyFromSeed,
@@ -64,7 +68,7 @@ import {
   x402PaywallCore,
   type AgreementArtifact,
   type AnchorBinding,
-  type AnchorReceipt,
+  type ProtocolAnchorReceipt as AnchorReceipt,
   type AnchoredFinalityCommitment,
   type AnchoredBuyerBundle,
   type AnchoredSellerBundle,
@@ -135,7 +139,9 @@ import {
 } from "../../src/index.js";
 
 const NOW = 1_790_000_000_000;
-const JOB_ID = "issue-114-offline-two-agent";
+const JOB_ID = "01JZ0000000000000000000114";
+const SELLER_MISMATCH_JOB_ID = "01JZ0000000000000000000115";
+const MISSING_COSIGNATURE_JOB_ID = "01JZ0000000000000000000116";
 const PAYMENT_PHASE_INDEX = 2;
 const DELIVERY_PHASE_INDEX = 3;
 const CHAIN_ID = 84_532;
@@ -152,6 +158,7 @@ const PENDING_HEAD_HASH = `0x${"ce".repeat(32)}` as const;
 const HEAD_HASH = `0x${"cd".repeat(32)}` as const;
 const ENGAGEMENT_ENDPOINT = "https://local.seller.test/dacs/engage";
 const HTTP_RESOURCE = `https://seller.example/deliver/${JOB_ID}`;
+const PROCESS_STAGE = process.env.DACS_ISSUE114_PROCESS_STAGE?.trim();
 
 const BUYER_SEED = new Uint8Array(32).fill(91);
 const SELLER_SEED = new Uint8Array(32).fill(92);
@@ -529,8 +536,12 @@ async function publishAndDiscoverListing(): Promise<PublishedListing> {
 
 function vetRef(role: "buyer" | "seller"): AttestationRef {
   const record = role === "buyer" ? BUYER_VET : SELLER_VET;
+  const evaluatedParty = role === "buyer" ? BUYER : SELLER;
   return {
-    anchor: { kind: "storage-program", locator: `dacs2:vet:${JOB_ID}:${role}` },
+    anchor: {
+      kind: "storage-program",
+      locator: `dacs2:composite:${JOB_ID}:${encodeAddressSegment(evaluatedParty)}`,
+    },
     contentHash: contentHash(record as unknown as Record<string, unknown>),
   };
 }
@@ -920,13 +931,28 @@ async function commitAgreement(
     ) ? "valid" : "invalid";
   };
   const input = {
-    agreement: agreement.agreement,
+    agreement: structuredClone(agreement.agreement),
     verifiedListing: {
       disposition: "verified" as const,
-      listing: published.listing,
-      pin: published.listingPin,
+      listing: structuredClone(published.listing),
+      pin: structuredClone(published.listingPin),
     },
-    orchestrator: SELLER,
+    session: {
+      jobId: JOB_ID,
+      listingRef: published.listingPin,
+      phaseKind: "commit-payee-bound-agreement" as const,
+      orchestrator: SELLER,
+      buyer: {
+        primaryClaim: BUYER,
+        bundleHash: identityBundleHash(BUYER_IDENTITY),
+        vetRecordRef: vetRef("buyer"),
+      },
+      seller: {
+        primaryClaim: SELLER,
+        bundleHash: identityBundleHash(SELLER_IDENTITY),
+        vetRecordRef: vetRef("seller"),
+      },
+    },
     createdAt: NOW + 500,
     commitmentSigner: {
       algorithm: "ed25519" as const,
@@ -1089,6 +1115,28 @@ async function verifySellerEvidenceSignature(
     : {
         disposition: "invalid" as const,
         reason: "delivery evidence signature mismatch",
+      };
+}
+
+async function verifySellerAuditSourceCommitmentSignature(
+  input: Parameters<
+    DurableSellerFulfilmentDeps["verifyAuditSourceCommitmentSignature"]
+  >[0],
+) {
+  const signature = input.signature;
+  const valid = signature.algorithm === "ed25519" &&
+    signature.signer === input.expectedSigner &&
+    input.expectedSigner === SELLER &&
+    ed25519Verify(
+      input.signedBytes,
+      Uint8Array.from(Buffer.from(signature.value, "base64url")),
+      publicKeyFromSeed(SELLER_SEED),
+    );
+  return valid
+    ? { disposition: "valid" as const }
+    : {
+        disposition: "invalid" as const,
+        reason: "audit-source commitment signature mismatch",
       };
 }
 
@@ -1279,6 +1327,7 @@ async function createSellerRuntime(input: {
       agreementHash: agreement.agreementHash,
       listingRef: published.listingPin,
       committedAt: commitment.committedAt,
+      signer: SELLER,
     },
     railRegistryVersion: 7,
   };
@@ -1366,6 +1415,7 @@ async function createSellerRuntime(input: {
   const fulfilmentListing: SellerFulfilmentListing = {
     pin: published.listingPin,
     sellerPrimaryClaim: SELLER,
+    buyerRequirement: structuredClone(published.listing.buyerRequirement),
     pipeline: published.listing.pipeline,
     deliverable: published.listing.offering.deliverable,
   };
@@ -1378,9 +1428,14 @@ async function createSellerRuntime(input: {
     buyer: {
       primaryClaim: BUYER,
       bundleHash: buyerHash,
+      vetRecordRef: vetRef("buyer"),
       storageAddress: "demos:buyer-storage",
     },
-    seller: { primaryClaim: SELLER, bundleHash: sellerHash },
+    seller: {
+      primaryClaim: SELLER,
+      bundleHash: sellerHash,
+      vetRecordRef: vetRef("seller"),
+    },
     deliverableRef: {
       deliverableType: "storage-program",
       hash: sha256Hex(canonicalize(published.listing.offering.deliverable)),
@@ -1391,6 +1446,7 @@ async function createSellerRuntime(input: {
       agreementHash: agreement.agreementHash,
       recordContentHash: commitmentHash,
       finalizedAt: commitment.committedAt,
+      signer: SELLER,
     },
   };
   const deliveredArtifact: SellerDeliveredArtifact = {
@@ -1407,8 +1463,18 @@ async function createSellerRuntime(input: {
     state: "settle-pending",
     listingRef: published.listingPin,
     parties: [
-      { role: "buyer", bundleHash: buyerHash, primaryClaim: BUYER },
-      { role: "seller", bundleHash: sellerHash, primaryClaim: SELLER },
+      {
+        role: "buyer",
+        bundleHash: buyerHash,
+        primaryClaim: BUYER,
+        vetRecordRef: vetRef("buyer"),
+      },
+      {
+        role: "seller",
+        bundleHash: sellerHash,
+        primaryClaim: SELLER,
+        vetRecordRef: vetRef("seller"),
+      },
       { role: "orchestrator", bundleHash: sellerHash, primaryClaim: SELLER },
     ],
     pipeline: published.listing.pipeline,
@@ -1437,8 +1503,28 @@ async function createSellerRuntime(input: {
         index: 1,
         step: published.listing.pipeline[1]!,
         invokedAt: NOW + 1_000,
-        result: { ok: true, attestationRef: commitmentRef, contextDelta: {} },
-        contextDelta: {},
+        result: {
+          ok: true,
+          txRefs: [structuredClone(commitment.anchorTxRef)],
+          attestationRef: commitmentRef,
+          anchorReceipt: structuredClone(commitment.anchorReceipt),
+          contextDelta: {
+            "commit-payee-bound-agreement": {
+              agreementHash: agreement.agreementHash,
+              anchorTxRef: structuredClone(commitment.anchorTxRef),
+              anchorReceipt: structuredClone(commitment.anchorReceipt),
+              committedAt: commitment.committedAt,
+            },
+          },
+        },
+        contextDelta: {
+          "commit-payee-bound-agreement": {
+            agreementHash: agreement.agreementHash,
+            anchorTxRef: structuredClone(commitment.anchorTxRef),
+            anchorReceipt: structuredClone(commitment.anchorReceipt),
+            committedAt: commitment.committedAt,
+          },
+        },
       },
       {
         index: PAYMENT_PHASE_INDEX,
@@ -1460,9 +1546,61 @@ async function createSellerRuntime(input: {
     railRegistryVersion: 7,
   });
   const fulfilmentDeps: Omit<DurableSellerFulfilmentDeps, "receiptStore"> = {
+    auditSourceProfile: "v2",
     resolveAgreement: async () => ({ status: "verified", value: fulfilmentAgreement }),
     resolveListing: async () => ({ status: "verified", value: fulfilmentListing }),
-    resolveSessionRecord: async () => ({ status: "verified", value: sessionRecord() }),
+    resolveAuditSource: async () => {
+      const retainedAuthorization = process.permit?.paymentAuthorization;
+      if (!retainedAuthorization) {
+        return {
+          status: "indeterminate" as const,
+          reason: "payment authorization was not retained before audit-source resolution",
+        };
+      }
+      return {
+        status: "verified" as const,
+        value: {
+        sourceVersion: "1",
+        session: sessionRecord(),
+        artifacts: {
+          agreementCommitment: {
+            anchor: { kind: "storage-program", locator: commitment.logicalAddress },
+            contentHash: commitmentHash,
+            signer: SELLER,
+          },
+          vetRecords: [vetRef("buyer"), vetRef("seller")],
+          vetRequirements: [
+            {
+              vetRecordRef: vetRef("buyer"),
+              evaluatedParty: BUYER,
+              requirement: structuredClone(EMPTY_REQUIREMENT),
+              verifier: SELLER,
+              freshness: [],
+              dealSpecific: [],
+            },
+            {
+              vetRecordRef: vetRef("seller"),
+              evaluatedParty: SELLER,
+              requirement: structuredClone(EMPTY_REQUIREMENT),
+              verifier: SELLER,
+              freshness: [],
+              dealSpecific: [],
+            },
+          ],
+          settlementEvidence: [{
+            anchor: {
+              kind: "storage-program",
+              locator:
+                `dacs4:payment:${JOB_ID}:${encodeAddressSegment(RAIL.railId)}:${PAYMENT_PHASE_INDEX}`,
+            },
+            contentHash: retainedAuthorization.evidenceHash,
+            signer: SELLER,
+          }],
+        },
+        provenanceProfile: "dacs-sdk-operational-v1",
+        },
+      };
+    },
     prepareDelivery: async () => {
       rejectTerminalReplayEffect("delivery preparation");
       return input.deliveryFailure
@@ -1505,7 +1643,14 @@ async function createSellerRuntime(input: {
       signer: SELLER,
       sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
     },
+    auditSourceCommitmentSigner: {
+      algorithm: "ed25519",
+      signer: SELLER,
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+    },
     verifyEvidenceSignature: verifySellerEvidenceSignature,
+    verifyAuditSourceCommitmentSignature:
+      verifySellerAuditSourceCommitmentSignature,
     anchorEvidence: async ({ evidence, evidenceHash }) => {
       rejectTerminalReplayEffect("evidence publication");
       state.counts.evidence += 1;
@@ -1848,26 +1993,9 @@ interface SettlementRun {
   sellerDirs: { settlement: string; receipt: string; fulfilment: string };
 }
 
-async function settleAndRecover(input: {
-  published: PublishedListing;
+async function prepareSettlementIntent(input: {
   agreement: AgreementRun;
-  commitment: Awaited<ReturnType<typeof commitAgreement>>;
-}): Promise<SettlementRun> {
-  const sellerDirs = {
-    settlement: await tempDir("issue114-seller-settlement"),
-    receipt: await tempDir("issue114-seller-receipt"),
-    fulfilment: await tempDir("issue114-seller-fulfilment"),
-  };
-  const buyerStoreDir = await tempDir("issue114-buyer-settlement");
-  const state = commerceState(true);
-  let sellerA: SellerRuntime | undefined = await createSellerRuntime({
-    ...input,
-    settlementDir: sellerDirs.settlement,
-    receiptDir: sellerDirs.receipt,
-    fulfilmentDir: sellerDirs.fulfilment,
-    workerId: "seller-process-a",
-    state,
-  });
+}): Promise<Readonly<X402BuyerSettlementIntent>> {
   const challenge = {
     x402Version: 2,
     resource: { url: HTTP_RESOURCE },
@@ -1897,7 +2025,30 @@ async function settleAndRecover(input: {
   });
   expect(prepared.disposition).toBe("prepared");
   if (prepared.disposition !== "prepared") throw new Error(prepared.reason);
-  const intent = prepared.intent;
+  return prepared.intent;
+}
+
+async function settleAndRecover(input: {
+  published: PublishedListing;
+  agreement: AgreementRun;
+  commitment: Awaited<ReturnType<typeof commitAgreement>>;
+}): Promise<SettlementRun> {
+  const sellerDirs = {
+    settlement: await tempDir("issue114-seller-settlement"),
+    receipt: await tempDir("issue114-seller-receipt"),
+    fulfilment: await tempDir("issue114-seller-fulfilment"),
+  };
+  const buyerStoreDir = await tempDir("issue114-buyer-settlement");
+  const state = commerceState(true);
+  let sellerA: SellerRuntime | undefined = await createSellerRuntime({
+    ...input,
+    settlementDir: sellerDirs.settlement,
+    receiptDir: sellerDirs.receipt,
+    fulfilmentDir: sellerDirs.fulfilment,
+    workerId: "seller-process-a",
+    state,
+  });
+  const intent = await prepareSettlementIntent(input);
   const paidTransport = createX402BuyerPaidRequestTransport({
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
@@ -1936,7 +2087,6 @@ async function settleAndRecover(input: {
     },
   });
   expect("outcome" in buyerPending).toBe(false);
-  expect(state.responseAcknowledgementLosses).toBe(1);
   expect(state.counts).toEqual({
     paidRequests: 1,
     settlement: 1,
@@ -1946,6 +2096,7 @@ async function settleAndRecover(input: {
     finalReceipt: 1,
     render: 1,
   });
+  expect(state.responseAcknowledgementLosses).toBe(1);
 
   // Simulate a real process boundary: no process-A permit, fulfilment result,
   // callback closure, or rendered response remains available to process B.
@@ -1997,7 +2148,10 @@ async function settleAndRecover(input: {
   const authenticatedTerminal = await verifyDurableSellerTerminalResult({
     record: durableRecord.record,
     suppliedResult: fulfilment,
+    expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
     verifyEvidenceSignature: verifySellerEvidenceSignature,
+    verifyAuditSourceCommitmentSignature:
+      verifySellerAuditSourceCommitmentSignature,
     verifyAnchorReceipt: verifySellerAnchorReceipt,
   });
   expect(authenticatedTerminal.result).toEqual(fulfilment);
@@ -2376,104 +2530,7 @@ async function closeDetachedRoleBundles(input: {
   const deliveryRef = fulfilment.evidenceRef;
   const buyerVetRef = vetRef("buyer");
   const sellerVetRef = vetRef("seller");
-  const auditSession: FinalizeCompletedSellerBundleInput["session"] = {
-    recordVersion: "1",
-    jobId: JOB_ID,
-    state: "audit-pending",
-    listingRef: input.published.listingPin,
-    parties: [
-      {
-        role: "buyer",
-        bundleHash: identityBundleHash(BUYER_IDENTITY),
-        primaryClaim: BUYER,
-        vetRecordRef: buyerVetRef,
-      },
-      {
-        role: "seller",
-        bundleHash: identityBundleHash(SELLER_IDENTITY),
-        primaryClaim: SELLER,
-        vetRecordRef: sellerVetRef,
-      },
-    ],
-    pipeline: input.published.listing.pipeline,
-    phaseResults: [
-      {
-        index: 0,
-        step: input.published.listing.pipeline[0]!,
-        invokedAt: NOW,
-        result: {
-          ok: true,
-          contextDelta: {
-            "negotiate-fixed-price": {
-              agreementHash: input.agreement.agreementHash,
-              agreementRef: input.agreement.agreementRef,
-            },
-          },
-        },
-        contextDelta: {
-          "negotiate-fixed-price": {
-            agreementHash: input.agreement.agreementHash,
-            agreementRef: input.agreement.agreementRef,
-          },
-        },
-      },
-      {
-        index: 1,
-        step: input.published.listing.pipeline[1]!,
-        invokedAt: NOW + 1_000,
-        result: { ok: true, attestationRef: commitmentRef, contextDelta: {} },
-        contextDelta: {},
-      },
-      {
-        index: PAYMENT_PHASE_INDEX,
-        step: input.published.listing.pipeline[PAYMENT_PHASE_INDEX]!,
-        invokedAt: NOW + 3_000,
-        result: {
-          ok: true,
-          txRefs: fulfilment.consumedPaymentAuthorization.evidenceInput.paymentTxRefs,
-          attestationRef: paymentRef,
-          contextDelta: {},
-        },
-        contextDelta: {},
-      },
-      {
-        index: DELIVERY_PHASE_INDEX,
-        step: input.published.listing.pipeline[DELIVERY_PHASE_INDEX]!,
-        invokedAt: NOW + 4_000,
-        result: { ok: true, attestationRef: deliveryRef, contextDelta: {} },
-        contextDelta: {},
-      },
-    ],
-    startedAt: NOW - 1_000,
-    lastUpdatedAt: input.settlement.state.now,
-    recipeRegistryVersion: 3,
-    railRegistryVersion: 7,
-  };
-  const sessionArtifacts: FinalizeCompletedSellerBundleInput["sessionArtifacts"] = {
-    agreementCommitment: commitmentRef,
-    vetRecords: [buyerVetRef, sellerVetRef],
-    vetRequirements: [
-      {
-        vetRecordRef: buyerVetRef,
-        evaluatedParty: BUYER,
-        requirement: EMPTY_REQUIREMENT,
-        verifier: SELLER,
-        freshness: [],
-        dealSpecific: [],
-      },
-      {
-        vetRecordRef: sellerVetRef,
-        evaluatedParty: SELLER,
-        requirement: EMPTY_REQUIREMENT,
-        verifier: SELLER,
-        freshness: [],
-        dealSpecific: [],
-      },
-    ],
-    settlementEvidence: [paymentRef, deliveryRef],
-  };
-  const sellerInput: FinalizeCompletedSellerBundleInput = {
-    agreement: {
+  const verifiedAgreement: SellerFulfilmentAgreement = {
       artifactKind: "payee-bound",
       ref: input.agreement.agreementRef.anchor.locator,
       contentHash: input.agreement.agreementHash,
@@ -2482,11 +2539,13 @@ async function closeDetachedRoleBundles(input: {
       buyer: {
         primaryClaim: BUYER,
         bundleHash: identityBundleHash(BUYER_IDENTITY),
+        vetRecordRef: buyerVetRef,
         storageAddress: "demos:buyer-storage",
       },
       seller: {
         primaryClaim: SELLER,
         bundleHash: identityBundleHash(SELLER_IDENTITY),
+        vetRecordRef: sellerVetRef,
       },
       deliverableRef: {
         deliverableType: "storage-program",
@@ -2498,12 +2557,36 @@ async function closeDetachedRoleBundles(input: {
         agreementHash: input.agreement.agreementHash,
         recordContentHash: commitmentHash,
         finalizedAt: input.commitment.committedAt,
+        signer: SELLER,
       },
-    },
+  };
+  const verifiedListing: SellerFulfilmentListing = {
+    pin: structuredClone(input.published.listingPin),
+    sellerPrimaryClaim: SELLER,
+    buyerRequirement: structuredClone(input.published.listing.buyerRequirement),
+    pipeline: structuredClone(input.published.listing.pipeline),
+    deliverable: structuredClone(input.published.listing.offering.deliverable),
+  };
+  const durableRecord = await input.settlement.seller.fulfilmentStore.load(JOB_ID);
+  if (durableRecord.status !== "ok") {
+    throw new Error("seller terminal WAL was unavailable for audit projection");
+  }
+  const projection = await projectDurableSellerAuditPending({
+    record: durableRecord.record,
+    verifiedAgreement: structuredClone(verifiedAgreement),
+    verifiedListing: structuredClone(verifiedListing),
+    expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
+    verifyEvidenceSignature: verifySellerEvidenceSignature,
+    verifyAuditSourceCommitmentSignature:
+      verifySellerAuditSourceCommitmentSignature,
+    verifyAnchorReceipt: verifySellerAnchorReceipt,
+  });
+  const sellerInput: FinalizeCompletedSellerBundleInput = {
+    agreement: verifiedAgreement,
     agreementRef: input.agreement.agreementRef,
-    fulfilment,
-    session: auditSession,
-    sessionArtifacts,
+    fulfilment: projection.terminal.result,
+    session: projection.session,
+    sessionArtifacts: projection.sessionArtifacts,
     finalisedAt: input.settlement.state.now,
     seller: {
       primaryClaim: SELLER,
@@ -2954,6 +3037,13 @@ async function closeDetachedRoleBundles(input: {
     loseSignatureAcknowledgement = false,
   ): FinalizeCompletedSellerBundleDurableInput => ({
     ...sellerInput,
+    verifiedListing: {
+      pin: input.published.listingPin,
+      sellerPrimaryClaim: SELLER,
+      buyerRequirement: structuredClone(input.published.listing.buyerRequirement),
+      pipeline: structuredClone(input.published.listing.pipeline),
+      deliverable: structuredClone(input.published.listing.offering.deliverable),
+    },
     counterSignatures: structuredClone(counterSignatures),
     seller: {
       primaryClaim: SELLER,
@@ -2994,6 +3084,8 @@ async function closeDetachedRoleBundles(input: {
     leaseNowMs: () => input.settlement.state.now,
     terminalVerification: {
       verifyEvidenceSignature: verifySellerEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        verifySellerAuditSourceCommitmentSignature,
       verifyAnchorReceipt: verifySellerAnchorReceipt,
     },
     reconcileSignature: async ({ signedBytes: bytes, fence }) => {
@@ -3504,7 +3596,221 @@ async function validPaymentHeader(): Promise<string> {
   return encodeJson(payload);
 }
 
-describe("issue #114 deterministic public two-agent precursor", () => {
+function processRecoveryPaths(root: string) {
+  return {
+    settlement: join(root, "seller-settlement"),
+    receipt: join(root, "seller-receipt"),
+    fulfilment: join(root, "seller-fulfilment"),
+    buyer: join(root, "buyer-settlement"),
+  };
+}
+
+async function runWholeProcessStageA(root: string, runId: string): Promise<never> {
+  const fixture = await commerceFixture();
+  const paths = processRecoveryPaths(root);
+  const state = commerceState(true);
+  const seller = await createSellerRuntime({
+    ...fixture,
+    settlementDir: paths.settlement,
+    receiptDir: paths.receipt,
+    fulfilmentDir: paths.fulfilment,
+    workerId: `${runId}:seller-process-a`,
+    state,
+  });
+  const intent = await prepareSettlementIntent(fixture);
+  const store = await createFsX402BuyerSettlementStore({ dir: paths.buyer });
+  const transport = createX402BuyerPaidRequestTransport({
+    fetchImpl: async (_url, init) => {
+      const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
+      if (!header) throw new Error("process A lost its retained payment header");
+      const paywall = await seller.runPaidRequest(header);
+      return new Response(JSON.stringify(paywall.response.body), {
+        status: paywall.response.status,
+        headers: paywall.response.headers,
+      });
+    },
+  });
+  const first = await advanceX402BuyerSettlement({
+    intent,
+    owner: `${runId}:buyer-process-a`,
+    store,
+    authorizationProvider: buyerAuthorizationProvider(state),
+    transport,
+    now: () => state.now,
+    leaseDurationMs: 1_000,
+  });
+  expect(first).toEqual({
+    status: "indeterminate",
+    reason: "eip3009-settlement-not-finalized",
+  });
+  expect(state.responseAcknowledgementLosses).toBe(1);
+  expect(state.counts).toEqual({
+    paidRequests: 1,
+    settlement: 1,
+    applicationCallback: 1,
+    delivery: 1,
+    evidence: 1,
+    finalReceipt: 1,
+    render: 1,
+  });
+  await writeExternalRecord(root, "whole-process-manifest", {
+    runId,
+    jobId: JOB_ID,
+    settlementKey: intent.settlementKey,
+    intent,
+    stageAEffects: state.counts,
+  });
+
+  // Model the failure that matters for #114: the process disappears after all
+  // irreversible seller effects commit but before the fulfilled response is
+  // acknowledged. A new process must own no closure or in-memory result.
+  process.kill(process.pid, "SIGKILL");
+  return await new Promise<never>(() => undefined);
+}
+
+async function runWholeProcessStageB(root: string, runId: string): Promise<void> {
+  const manifest = await readExternalRecord<{
+    runId: string;
+    jobId: string;
+    settlementKey: string;
+    intent: X402BuyerSettlementIntent;
+    stageAEffects: CommerceCounts;
+  }>(root, "whole-process-manifest");
+  if (!manifest) throw new Error("process B could not read process A's manifest");
+  expect(manifest).toMatchObject({ runId, jobId: JOB_ID });
+  expect(manifest.intent.jobId).toBe(JOB_ID);
+  expect(manifest.intent.settlementKey).toBe(manifest.settlementKey);
+
+  const fixture = await commerceFixture();
+  const paths = processRecoveryPaths(root);
+  const state = commerceState();
+  state.settled = true;
+  state.buyerFinalityVisible = true;
+  state.terminalReplayMustBeReadOnly = true;
+  state.now += 2_000;
+  const seller = await createSellerRuntime({
+    ...fixture,
+    settlementDir: paths.settlement,
+    receiptDir: paths.receipt,
+    fulfilmentDir: paths.fulfilment,
+    workerId: `${runId}:seller-process-b`,
+    state,
+  });
+  await expect(getSellerFulfilmentStatus(
+    seller.fulfilmentStore,
+    JOB_ID,
+    DELIVERY_PHASE_INDEX,
+  )).resolves.toMatchObject({
+    status: "ok",
+    delivery: "outcome",
+    evidence: "outcome",
+  });
+
+  const replayed = await seller.runPaidRequest(manifest.intent.paymentHeader.value);
+  expect(replayed).toMatchObject({
+    disposition: "settled",
+    settled: true,
+    response: { status: 200, body: { delivered: true } },
+  });
+  if (!seller.process.permit || !seller.process.fulfilment) {
+    throw new Error("process B did not reconstruct the terminal seller handoff");
+  }
+  await expect(seller.receiptStore.inspectPermit(
+    seller.process.permit.paymentPermitId,
+  )).resolves.toMatchObject({ status: "already-consumed" });
+  expect(state.counts).toEqual({
+    paidRequests: 1,
+    settlement: 0,
+    applicationCallback: 0,
+    delivery: 0,
+    evidence: 0,
+    finalReceipt: 0,
+    render: 1,
+  });
+
+  const buyerStore = await createFsX402BuyerSettlementStore({ dir: paths.buyer });
+  let resubmissions = 0;
+  const buyer = await advanceX402BuyerSettlement({
+    intent: manifest.intent,
+    owner: `${runId}:buyer-process-b`,
+    store: buyerStore,
+    authorizationProvider: buyerAuthorizationProvider(state),
+    transport: {
+      submitRetained: async () => {
+        resubmissions += 1;
+        throw new Error("process B must not resubmit the paid request");
+      },
+    },
+    now: () => state.now,
+    leaseDurationMs: 1_000,
+  });
+  expect(buyer.status).toBe("captured");
+  expect(resubmissions).toBe(0);
+
+  await writeExternalRecord(root, "whole-process-result", {
+    runId,
+    jobId: JOB_ID,
+    settlementKey: manifest.settlementKey,
+    stageAEffects: manifest.stageAEffects,
+    stageBEffects: state.counts,
+    totals: {
+      settlement: manifest.stageAEffects.settlement + state.counts.settlement,
+      applicationCallback:
+        manifest.stageAEffects.applicationCallback + state.counts.applicationCallback,
+      delivery: manifest.stageAEffects.delivery + state.counts.delivery,
+      evidence: manifest.stageAEffects.evidence + state.counts.evidence,
+      finalReceipt: manifest.stageAEffects.finalReceipt + state.counts.finalReceipt,
+      paidRequestResubmissions: resubmissions,
+    },
+  });
+}
+
+async function spawnWholeProcessStage(
+  stage: "a" | "b",
+  root: string,
+  runId: string,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; output: string }> {
+  const child = spawn(process.execPath, [
+    join(process.cwd(), "node_modules", "vitest", "vitest.mjs"),
+    "run",
+    fileURLToPath(import.meta.url),
+    "-t",
+    "whole-process worker stage",
+    "--pool=forks",
+    "--maxWorkers=1",
+    "--reporter=dot",
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      DACS_ISSUE114_PROCESS_STAGE: stage,
+      DACS_ISSUE114_PROCESS_ROOT: root,
+      DACS_ISSUE114_RUN_ID: runId,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += String(chunk); });
+  child.stderr.on("data", (chunk) => { output += String(chunk); });
+  return await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`whole-process stage ${stage} timed out\n${output}`));
+    }, 25_000);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, signal, output });
+    });
+  });
+}
+
+describe.skipIf(PROCESS_STAGE !== undefined)(
+  "issue #114 deterministic public two-agent precursor",
+  () => {
   test("runs cold durable buyer/seller closure and rejects a missing buyer counter-signature", async () => {
     const { published, agreement, commitment } = await commerceFixture();
     expect(commitment.record.agreementHash).toBe(agreement.agreementHash);
@@ -3532,6 +3838,65 @@ describe("issue #114 deterministic public two-agent precursor", () => {
     expect(bundles.sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
     expect(bundles.standardLimitations).toEqual(["DACS-Standard#331"]);
   }, 20_000);
+
+  test("recovers the same run after a real process crash without replaying effects", async () => {
+    const root = await tempDir("issue114-whole-process");
+    const runId = `issue114-${process.pid}-${Date.now()}`;
+    const first = await spawnWholeProcessStage("a", root, runId);
+    expect(first.code === 0 && first.signal === null).toBe(false);
+    const manifest = await readExternalRecord<{
+      runId: string;
+      jobId: string;
+      settlementKey: string;
+      stageAEffects: CommerceCounts;
+    }>(root, "whole-process-manifest");
+    expect(manifest).toMatchObject({
+      runId,
+      jobId: JOB_ID,
+      stageAEffects: {
+        settlement: 1,
+        applicationCallback: 1,
+        delivery: 1,
+        evidence: 1,
+        finalReceipt: 1,
+      },
+    });
+
+    const second = await spawnWholeProcessStage("b", root, runId);
+    expect(second.code, second.output).toBe(0);
+    expect(second.signal, second.output).toBeNull();
+    const result = await readExternalRecord<{
+      runId: string;
+      jobId: string;
+      settlementKey: string;
+      stageAEffects: CommerceCounts;
+      stageBEffects: CommerceCounts;
+      totals: Record<string, number>;
+    }>(root, "whole-process-result");
+    expect(result).toEqual({
+      runId,
+      jobId: JOB_ID,
+      settlementKey: manifest?.settlementKey,
+      stageAEffects: manifest?.stageAEffects,
+      stageBEffects: {
+        paidRequests: 1,
+        settlement: 0,
+        applicationCallback: 0,
+        delivery: 0,
+        evidence: 0,
+        finalReceipt: 0,
+        render: 1,
+      },
+      totals: {
+        settlement: 1,
+        applicationCallback: 1,
+        delivery: 1,
+        evidence: 1,
+        finalReceipt: 1,
+        paidRequestResubmissions: 0,
+      },
+    });
+  }, 40_000);
 
   test("rejects a wrong-network x402 challenge before the buyer signer", async () => {
     let signerCalls = 0;
@@ -3643,7 +4008,7 @@ describe("issue #114 deterministic public two-agent precursor", () => {
   test("rejects a seller identity that does not control the pinned Listing", async () => {
     const published = await publishAndDiscoverListing();
     expect(() => deriveFixedPriceAgreement({
-      jobId: `${JOB_ID}:seller-identity-mismatch`,
+      jobId: SELLER_MISMATCH_JOB_ID,
       verifiedListing: {
         disposition: "verified",
         listing: published.listing,
@@ -3708,7 +4073,7 @@ describe("issue #114 deterministic public two-agent precursor", () => {
 
   test("rejects completed bundle closure when the seller co-signature is missing", async () => {
     await expect(buildTwoSidedBundle({
-      jobId: `${JOB_ID}:missing-cosignature`,
+      jobId: MISSING_COSIGNATURE_JOB_ID,
       outcome: "completed",
       listingRef: {
         listingId: "missing-cosignature",
@@ -3779,4 +4144,15 @@ describe("issue #114 deterministic public two-agent precursor", () => {
       reason: "insufficient-payment-balance",
     });
   });
+});
+
+describe.skipIf(PROCESS_STAGE === undefined)("issue #114 whole-process worker", () => {
+  test("whole-process worker stage", async () => {
+    const root = process.env.DACS_ISSUE114_PROCESS_ROOT?.trim();
+    const runId = process.env.DACS_ISSUE114_RUN_ID?.trim();
+    if (!root || !runId) throw new Error("whole-process worker environment is incomplete");
+    if (PROCESS_STAGE === "a") await runWholeProcessStageA(root, runId);
+    else if (PROCESS_STAGE === "b") await runWholeProcessStageB(root, runId);
+    else throw new Error(`unknown whole-process worker stage: ${PROCESS_STAGE}`);
+  }, 20_000);
 });
