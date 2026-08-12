@@ -2043,10 +2043,10 @@ async function createSellerRuntime(input: {
     }
     try {
       validateFixedPriceAgreementBinding({
-        agreement: agreement.agreement,
+        agreement: agreementArtifact as unknown as AgreementArtifact,
         verifiedListing: {
           disposition: "verified",
-          listing: published.listing,
+          listing: listingArtifact as unknown as Listing,
           pin: published.listingPin,
         },
         committedAt: commitment.committedAt,
@@ -3791,12 +3791,24 @@ async function closeDurableDetachedRoleBundles(input: {
       }
       if (requirement.contentHash === input.agreement.agreementRef.contentHash) {
         if (canonicalize(record) !== canonicalize(input.agreement.agreement)) return "invalid" as const;
+        const listingReadback = await input.preflight.buyer.adapter.readAnchor(
+          input.published.receipt.nativeAddress,
+        );
+        if (
+          listingReadback === null ||
+          contentHash(listingReadback) !== input.published.listingPin.contentHash ||
+          !await verifyAnchorReceipt(
+            input.preflight.buyer.adapter,
+            input.published.receipt,
+            input.preflight.env.SELLER_DID,
+          )
+        ) return "invalid" as const;
         try {
           validateFixedPriceAgreementBinding({
-            agreement: input.agreement.agreement,
+            agreement: record as unknown as AgreementArtifact,
             verifiedListing: {
               disposition: "verified",
-              listing: input.published.listing,
+              listing: listingReadback as unknown as Listing,
               pin: input.published.listingPin,
             },
             committedAt: input.commitment.committedAt,
@@ -3804,13 +3816,14 @@ async function closeDurableDetachedRoleBundles(input: {
         } catch {
           return "invalid" as const;
         }
-        const separator = "agreementVersion" in input.agreement.agreement
+        const agreementRecord = record as unknown as AgreementArtifact;
+        const separator = "agreementVersion" in agreementRecord
           ? ARTIFACT_SEPARATORS.AgreementDocument
           : ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument;
-        return input.agreement.agreement.signatures.every((signature) =>
+        return agreementRecord.signatures.every((signature) =>
           verifyEd25519(
             separator,
-            input.agreement.agreement as unknown as Record<string, unknown>,
+            record,
             signature,
             signature.party,
           )
