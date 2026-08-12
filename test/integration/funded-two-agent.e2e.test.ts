@@ -49,6 +49,7 @@ import {
   bundleConsistency,
   canonicalize,
   commitFixedPriceAgreement,
+  compositeVerificationAddress,
   contentHash,
   createAgent,
   createDacsX402BuyerEvmChallengeClient,
@@ -1292,14 +1293,20 @@ async function publishVetRecords(input: {
     anchorArtifact({
       adapter: input.preflight.seller.adapter,
       writer: input.preflight.env.SELLER_DID,
-      logicalAddress: `dacs2:vet:${input.jobId}:buyer`,
+      logicalAddress: compositeVerificationAddress(
+        input.jobId,
+        input.preflight.env.BUYER_DID,
+      ),
       artifact: buyerRecord as unknown as Record<string, unknown>,
     }),
     anchorArtifact({
       adapter: input.preflight.buyer.adapter,
       writer: input.preflight.env.BUYER_DID,
       refSigner: input.preflight.env.SELLER_DID,
-      logicalAddress: `dacs2:vet:${input.jobId}:seller`,
+      logicalAddress: compositeVerificationAddress(
+        input.jobId,
+        input.preflight.env.SELLER_DID,
+      ),
       artifact: sellerRecord as unknown as Record<string, unknown>,
     }),
   ]);
