@@ -2931,7 +2931,11 @@ async function settleAndRecover(input: {
   requireCondition(input.preflight.host.requestCounts.paid === 1, "paid-request-count-mismatch");
   requireCondition(buyerTransportSubmissions === 1, "buyer-submit-count-mismatch");
   requireCondition(state.counts.facilitatorSettle === 1, "settlement-effect-count-mismatch");
-  requireCondition(state.counts.delivery === 1 && state.counts.evidence === 1, "fulfilment-effect-count-mismatch");
+  requireCondition(
+    state.counts.applicationCallback <= 1 && state.counts.delivery <= 1 &&
+      state.counts.evidence <= 1 && state.counts.finalReceipt <= 1,
+    "pre-recovery-fulfilment-effect-duplicated",
+  );
 
   // Runtime B has only the filesystem WAL and a fresh production chain reader.
   // It captures the already-mined authorization without another HTTP request.
@@ -2941,9 +2945,10 @@ async function settleAndRecover(input: {
   );
   requireCondition(buyerTransportSubmissions === 1, "buyer-paid-request-replayed");
 
-  // Recreate both seller and buyer durable stacks. Neither restarted runtime is
-  // permitted to reach a second payment, delivery, or evidence effect. This is
-  // a cold-store recovery proof inside one test invocation, not a same-run-ID
+  // Recreate both seller and buyer durable stacks. The seller may complete work
+  // that paused while the just-mined authorization was not yet visible, but it
+  // may never duplicate an effect already completed by process A. This is a
+  // cold-store recovery proof inside one test invocation, not a same-run-ID
   // process-crash resurrection harness.
   const processAEffectCounts = structuredClone(state.counts);
   state.permit = undefined;
@@ -2984,11 +2989,8 @@ async function settleAndRecover(input: {
   requireCondition(Number(input.preflight.host.requestCounts.paid) === 2, "seller-replay-not-observed");
   requireCondition(
     restartedState.counts.facilitatorVerify === 0 &&
-    restartedState.counts.facilitatorSettle === 0 &&
-    restartedState.counts.applicationCallback === 0 &&
-    restartedState.counts.delivery === 0 && restartedState.counts.evidence === 0 &&
-    restartedState.counts.finalReceipt === 0 && restartedState.counts.render === 1,
-    "seller-replay-produced-duplicate-effect",
+    restartedState.counts.facilitatorSettle === 0 && restartedState.counts.render === 1,
+    "seller-replay-produced-duplicate-settlement",
   );
   requireCondition(restartedState.permit !== undefined, "seller-recovered-permit-missing");
   requireCondition(restartedState.fulfilment !== undefined, "seller-recovered-fulfilment-missing");
@@ -3006,9 +3008,11 @@ async function settleAndRecover(input: {
   );
   requireCondition(buyerTransportSubmissions === 1, "buyer-paid-request-replayed");
   requireCondition(
-    processAEffectCounts.applicationCallback === 1 && processAEffectCounts.delivery === 1 &&
-    processAEffectCounts.evidence === 1 && processAEffectCounts.finalReceipt === 1,
-    "seller-effects-replayed",
+    processAEffectCounts.applicationCallback + restartedState.counts.applicationCallback === 1 &&
+    processAEffectCounts.delivery + restartedState.counts.delivery === 1 &&
+    processAEffectCounts.evidence + restartedState.counts.evidence === 1 &&
+    processAEffectCounts.finalReceipt + restartedState.counts.finalReceipt === 1,
+    "seller-effects-not-exactly-once-across-recovery",
   );
   return {
     intent,
