@@ -2738,20 +2738,26 @@ async function createSellerRuntime(input: {
   const facilitator = {
     getSupported: () => preflight.facilitator.getSupported(),
     verify: async (payload: unknown, requirements: unknown) => {
-      state.counts.facilitatorVerify += 1;
-      try {
-        const result = await preflight.facilitator.verify(
-          payload as never,
-          legacyFacilitatorRequirements(
-            requirements as X402BuyerPaymentRequirements,
-          ) as never,
-        );
-        state.facilitatorVerifyOutcome = result.isValid ? "valid" : "invalid";
-        return result;
-      } catch (error) {
-        state.facilitatorVerifyOutcome = "threw";
-        throw error;
+      const projected = legacyFacilitatorRequirements(
+        requirements as X402BuyerPaymentRequirements,
+      );
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        state.counts.facilitatorVerify += 1;
+        try {
+          const result = await preflight.facilitator.verify(
+            payload as never,
+            projected as never,
+          );
+          state.facilitatorVerifyOutcome = result.isValid ? "valid" : "invalid";
+          return result;
+        } catch (error) {
+          state.facilitatorVerifyOutcome = "threw";
+          if (attempt === 3) throw error;
+          process.stderr.write(`funded-e2e-step:facilitator-verify-retry-${attempt}\n`);
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
       }
+      throw new Error("funded-e2e:facilitator-verify-retry-exhausted");
     },
     settle: async (payload: unknown, requirements: unknown) => {
       state.counts.facilitatorSettle += 1;
