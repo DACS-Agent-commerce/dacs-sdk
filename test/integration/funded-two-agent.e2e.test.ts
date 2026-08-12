@@ -69,9 +69,12 @@ import {
   encodeAddressSegment,
   finalityCommitmentAddress,
   finalizeCompletedSellerBundleDurable,
+  generateCanonicalJobId,
   getSellerFulfilmentStatus,
   identityBundleHash,
   isFaultAttestationBundle,
+  listingAddress,
+  logicalToStorageProgramName,
   prepareCompletedSellerBundleCounterSignatureRequest,
   prepareX402BuyerSettlement,
   projectDurableSellerAuditPending,
@@ -272,6 +275,21 @@ function requireCondition(condition: unknown, code: string): asserts condition {
   if (!condition) throw new Error(`funded-e2e:${code}`);
 }
 
+function safeStageFailureClass(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (/normative unsigned/.test(message)) return "listing-draft-invalid";
+  if (/signed Listing failed/.test(message)) return "listing-signature-envelope-invalid";
+  if (/canonical JSON|exact snapshot|stable/.test(message)) return "canonical-snapshot-invalid";
+  if (/rail/i.test(message)) return "rail-authority-invalid";
+  if (/history|prior listing|version/i.test(message)) return "listing-history-invalid";
+  if (/identity|self-certifying|wallet/i.test(message)) return "listing-identity-invalid";
+  if (/binding/i.test(message)) return "listing-binding-invalid";
+  if (/publication|anchor|write/i.test(message)) return "listing-publication-invalid";
+  return error instanceof Error && /^[A-Za-z][A-Za-z0-9]*Error$/.test(error.name)
+    ? error.name
+    : "unknown-error";
+}
+
 function verifyEd25519ArtifactSignature(
   separator: string,
   artifact: Record<string, unknown>,
@@ -301,6 +319,9 @@ async function stage<T>(code: string, operation: () => Promise<T>): Promise<T> {
     return result;
   } catch (error) {
     process.stderr.write(`funded-e2e-stage:${code}:failed\n`);
+    process.stderr.write(
+      `funded-e2e-stage:${code}:detail:${safeStageFailureClass(error)}\n`,
+    );
     if (
       error instanceof Error &&
       /^funded-e2e:[a-z0-9-]+$/.test(error.message)
@@ -610,6 +631,7 @@ async function startLocalPaywallHost(
 
 interface Preflight {
   env: LiveEnv;
+  jobId: string;
   seller: Awaited<ReturnType<typeof createAgent>>;
   buyer: Awaited<ReturnType<typeof createAgent>>;
   evm: PublicClient;
@@ -729,7 +751,25 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
     chainName: "Base Sepolia",
     finalityTag: "latest",
   });
-  const jobId = `issue-114-funded-${env.LIVE_E2E_RUN_ID}`;
+  const jobId = generateCanonicalJobId({
+    timestamp: Date.now(),
+    entropy: Uint8Array.from(
+      Buffer.from(sha256Hex(env.LIVE_E2E_RUN_ID), "hex").subarray(0, 10),
+    ),
+  });
+  const listingId = `funded-${env.LIVE_E2E_RUN_ID}`;
+  const listingPrefix = logicalToStorageProgramName(
+    listingAddress(env.SELLER_DID, listingId, "v"),
+  );
+  const listingName = logicalToStorageProgramName(
+    listingAddress(env.SELLER_DID, listingId, 1),
+  );
+  const listingScan = await seller.adapter.scanOwnAnchorsByNamePrefix(listingPrefix);
+  requireCondition(listingScan.status === "ok", "run-id-listing-scan-indeterminate");
+  requireCondition(
+    !listingScan.anchors.some((anchor) => anchor.programName === listingName),
+    "run-id-already-published",
+  );
   const host = await startLocalPaywallHost(env.LIVE_E2E_RUN_ID, jobId);
   try {
     const resource = new URL(host.resourceUrl);
@@ -749,6 +789,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
     requireCondition(tlsProbe.status === 503, "local-tls-preflight-failed");
     return {
       env,
+      jobId,
       seller,
       buyer,
       evm,
@@ -4329,7 +4370,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
       try {
         preflight = await stage("preflight", () => runNoWritePreflight(env));
         const now = Date.now();
-        const jobId = `issue-114-funded-${env.LIVE_E2E_RUN_ID}`;
+        const jobId = preflight.jobId;
         const selectedRail = rail(preflight.host.resourceUrl);
         const [buyerIdentity, sellerIdentity] = await Promise.all([
           identity(env.BUYER_DID, preflight.buyer.adapter, now, env.BUYER_EVM_KEY),
