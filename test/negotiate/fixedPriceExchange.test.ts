@@ -30,6 +30,8 @@ const claim = (seed: Uint8Array) =>
 const BUYER = claim(BUYER_SEED);
 const SELLER = claim(SELLER_SEED);
 const SEEDS = { buyer: BUYER_SEED, seller: SELLER_SEED } as const;
+const JOB_ID = "01JZ0000000000000000000001";
+const OTHER_JOB_ID = "01JZ0000000000000000000002";
 
 function identity(primaryClaim: string): IdentityBundle {
   return {
@@ -100,7 +102,7 @@ function listing(): Listing {
 function draft() {
   const value = listing();
   return deriveFixedPriceAgreement({
-    jobId: "job-independent-agreement",
+    jobId: JOB_ID,
     verifiedListing: {
       disposition: "verified",
       listing: value,
@@ -209,7 +211,7 @@ describe("role-owned fixed-price agreement exchange", () => {
 
     const otherPlan = createFixedPriceAgreementSigningPlan({
       ...draft(),
-      jobId: "job-substituted-agreement",
+      jobId: OTHER_JOB_ID,
     });
     await expect(
       finalizeFixedPriceAgreementContributions(otherPlan, [buyer, seller], verify),
@@ -268,7 +270,7 @@ describe("role-owned fixed-price agreement exchange", () => {
     const input = draft();
     const plan = createFixedPriceAgreementSigningPlan(input);
     input.jobId = "mutated-after-plan";
-    expect(plan.draft.jobId).toBe("job-independent-agreement");
+    expect(plan.draft.jobId).toBe(JOB_ID);
 
     const sig5Input = draft();
     const additionalTerms = Object.create(null) as Record<string, unknown>;

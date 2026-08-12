@@ -1120,7 +1120,8 @@ describe("verifyFinalizedSessionSettlement", () => {
     );
     expect(keyFailure).toEqual({
       disposition: "indeterminate",
-      reason: "normative settlement evidence verification threw",
+      reason:
+        'normative settlement evidence: signer key for "did:demos:orchestrator" could not be resolved',
     });
 
     const verifyFailure = await verifyFinalizedSessionSettlement(
@@ -1136,8 +1137,9 @@ describe("verifyFinalizedSessionSettlement", () => {
       }),
     );
     expect(verifyFailure).toEqual({
-      disposition: "indeterminate",
-      reason: "normative settlement evidence verification threw",
+      disposition: "error",
+      reason:
+        "normative settlement evidence: evidence signature verification could not be evaluated",
     });
 
   });

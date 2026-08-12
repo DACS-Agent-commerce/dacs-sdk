@@ -23,11 +23,16 @@ import {
   createFsSellerReceiptStore as createRootFsSellerReceiptStore,
 } from "../../src/index.js";
 import {
+  sellerFulfilmentCandidateHash,
   type SellerFulfilmentHandoff,
   type SellerPaymentAuthorization,
   type SellerPaymentEvidenceInput,
   type SellerReceiptClaim,
 } from "../../src/seller/paymentIntake.js";
+import {
+  sellerFulfilmentAuditSourceHash,
+  type SellerFulfilmentAuditSourceV1,
+} from "../../src/seller/fulfilmentAuditSource.js";
 import {
   SELLER_RECEIPT_STORE_VERSION as SELLER_SURFACE_RECEIPT_STORE_VERSION,
   createFsSellerReceiptStore as createSellerSurfaceFsSellerReceiptStore,
@@ -129,6 +134,7 @@ function receiptClaim(overrides: Partial<{
       ref: `dacs3:commitment:${jobId}`,
       contentHash: "cc".repeat(32),
       finalizedAt: 0,
+      signer: "did:demos:agent:commitment-authority",
     },
     settlementIdentity: evm
       ? {
@@ -154,8 +160,7 @@ function handoff(claim: SellerReceiptClaim, artifactValue = 42): SellerFulfilmen
     anchoredValue: { value: artifactValue },
     access: { model: "public" },
   };
-  return {
-    handoffVersion: "1",
+  const base = {
     fulfilmentId: `fulfilment:${claim.jobId}:${claim.phaseIndex + 1}`,
     jobId: claim.jobId,
     agreementRef: `agreement:${claim.jobId}`,
@@ -166,7 +171,7 @@ function handoff(claim: SellerReceiptClaim, artifactValue = 42): SellerFulfilmen
     paymentEvidenceHash: claim.evidenceHash,
     paymentPhaseIndex: claim.phaseIndex,
     deliveryPhaseIndex: claim.phaseIndex + 1,
-    phase: "deliver-storage-program",
+    phase: "deliver-storage-program" as const,
     logicalAddress: `dacs4:deliverable:${claim.jobId}`,
     deliverableSpecHash: "dd".repeat(32),
     agreementViewHash: "ee".repeat(32),
@@ -174,12 +179,106 @@ function handoff(claim: SellerReceiptClaim, artifactValue = 42): SellerFulfilmen
       claim.authorization.commitment.finalizedAt,
       claim.observedAt,
     ),
-    evidenceAuthority: { primaryClaim: "did:demos:seller", algorithm: "ed25519" },
+    deliveryInvokedAt: claim.observedAt,
+    evidenceAuthority: {
+      primaryClaim: "did:demos:seller",
+      algorithm: "ed25519" as const,
+    },
     candidate: {
-      status: "prepared",
+      status: "prepared" as const,
       validatedAt: claim.observedAt,
       artifactHash: sha256Hex(canonicalize(artifact)),
       delivery: { artifact },
+    },
+  };
+  const pipeline = [
+    { kind: "negotiate-fixed-price" as const },
+    {
+      kind: claim.authorization.evidenceInput.phase,
+      parameters: { rail: claim.authorization.railId },
+    },
+    { kind: "deliver-storage-program" as const },
+  ];
+  const paymentRef = {
+    anchor: {
+      kind: "storage-program" as const,
+      locator: `dacs4:payment:${claim.jobId}:${claim.phaseIndex}`,
+    },
+    contentHash: claim.evidenceHash,
+  };
+  const auditSource: SellerFulfilmentAuditSourceV1 = {
+    sourceVersion: "1" as const,
+    session: {
+      recordVersion: "1" as const,
+      jobId: claim.jobId,
+      state: "settle-pending",
+      listingRef: structuredClone(claim.authorization.listingRef),
+      parties: [
+        { role: "buyer" as const, bundleHash: "1".repeat(64), primaryClaim: "did:demos:buyer" },
+        { role: "seller" as const, bundleHash: "2".repeat(64), primaryClaim: "did:demos:seller" },
+        { role: "orchestrator" as const, bundleHash: "2".repeat(64), primaryClaim: "did:demos:seller" },
+      ],
+      pipeline,
+      phaseResults: [
+        {
+          index: 0,
+          step: structuredClone(pipeline[0]!),
+          invokedAt: Math.max(0, claim.observedAt - 1),
+          result: { ok: true, contextDelta: {} },
+          contextDelta: {},
+        },
+        {
+          index: claim.phaseIndex,
+          step: structuredClone(pipeline[claim.phaseIndex]!),
+          invokedAt: claim.observedAt,
+          result: {
+            ok: true,
+            txRefs: structuredClone(claim.authorization.evidenceInput.paymentTxRefs),
+            attestationRef: structuredClone(paymentRef),
+            contextDelta: {},
+          },
+          contextDelta: {},
+        },
+      ],
+      startedAt: Math.max(0, claim.observedAt - 2),
+      lastUpdatedAt: claim.observedAt,
+      recipeRegistryVersion: 1,
+      railRegistryVersion: claim.authorization.railRegistryVersion,
+    },
+    artifacts: {
+      agreementCommitment: {
+        anchor: { kind: "storage-program" as const, locator: claim.authorization.commitment.ref },
+        contentHash: claim.authorization.commitment.contentHash,
+      },
+      vetRecords: [],
+      vetRequirements: [],
+      settlementEvidence: [structuredClone(paymentRef)],
+    },
+    provenanceProfile: "dacs-sdk-operational-v1" as const,
+  };
+  const auditSourceHash = sellerFulfilmentAuditSourceHash(auditSource);
+  return {
+    ...base,
+    handoffVersion: "2",
+    auditSource,
+    auditSourceHash,
+    auditSourceCommitment: {
+      commitmentVersion: "1",
+      fulfilmentId: base.fulfilmentId,
+      jobId: base.jobId,
+      agreementRef: base.agreementRef,
+      agreementHash: base.agreementHash,
+      commitmentRef: base.commitmentRef,
+      authorizationHash: base.authorizationHash,
+      paymentPhaseIndex: base.paymentPhaseIndex,
+      deliveryPhaseIndex: base.deliveryPhaseIndex,
+      phase: base.phase,
+      logicalAddress: base.logicalAddress,
+      deliverableSpecHash: base.deliverableSpecHash,
+      auditSourceHash,
+      candidateHash: sellerFulfilmentCandidateHash(base.candidate),
+      deliveryInvokedAt: base.deliveryInvokedAt,
+      signature: { algorithm: "ed25519", signer: "did:demos:seller", value: "c2ln" },
     },
   };
 }

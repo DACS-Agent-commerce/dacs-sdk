@@ -1137,7 +1137,7 @@ export async function publishSellerSessionSettlement(
   try {
     readCheck = await verifySettlementEvidence(
       readEvidence,
-      { ...context, attestationRef: evidenceRef },
+      { ...context, attestationRef: structuredClone(evidenceRef) },
       deps.evidence,
     );
   } catch {

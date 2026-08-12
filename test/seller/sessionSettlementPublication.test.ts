@@ -46,6 +46,11 @@ import type {
   SellerReceiptClaim,
   SellerReceiptInspectionResult,
 } from "../../src/seller/paymentIntake.js";
+import {
+  sellerFulfilmentAuditSourceHash,
+  type SellerFulfilmentAuditSourceV1,
+} from "../../src/seller/fulfilmentAuditSource.js";
+import { sellerFulfilmentCandidateHash } from "../../src/seller/paymentIntake.js";
 
 const ORCHESTRATOR = "did:demos:orchestrator";
 const SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 41);
@@ -92,6 +97,7 @@ function authorization(jobId = "job-publication-1"): SellerPaymentAuthorization 
       ref: `commitment:${jobId}`,
       contentHash: "c".repeat(64),
       finalizedAt: NOW - 2_000,
+      signer: ORCHESTRATOR,
     },
     settlementIdentity: {
       kind: "evm",
@@ -124,8 +130,7 @@ function handoff(
   signer = ORCHESTRATOR,
   algorithm: ComponentSignatureAlgorithm = "ed25519",
 ): SellerFulfilmentHandoff {
-  return {
-    handoffVersion: "1",
+  const base = {
     fulfilmentId: `fulfilment:${value.jobId}`,
     jobId: value.jobId,
     agreementRef: `agreement:${value.jobId}`,
@@ -136,16 +141,96 @@ function handoff(
     paymentEvidenceHash: value.evidenceHash,
     paymentPhaseIndex: value.phaseIndex,
     deliveryPhaseIndex: 4,
-    phase: "deliver-storage-program",
+    phase: "deliver-storage-program" as const,
     logicalAddress: `dacs4:delivery:${value.jobId}`,
     deliverableSpecHash: "f".repeat(64),
     agreementViewHash: "1".repeat(64),
     validationFloorAt: NOW,
+    deliveryInvokedAt: NOW,
     evidenceAuthority: { primaryClaim: signer, algorithm },
     candidate: {
-      status: "preparation-failed",
+      status: "preparation-failed" as const,
       validatedAt: NOW,
       reason: "fixture terminal preparation failure",
+    },
+  };
+  const pipeline = [
+    { kind: "negotiate-fixed-price" as const },
+    { kind: "commit-agreement" as const },
+    { kind: "vet-credentials" as const },
+    { kind: value.evidenceInput.phase, parameters: { rail: value.railId } },
+    { kind: "deliver-storage-program" as const },
+  ];
+  const paymentRef = {
+    anchor: { kind: "storage-program" as const, locator: `payment:${value.jobId}:3` },
+    contentHash: value.evidenceHash,
+  };
+  const auditSource: SellerFulfilmentAuditSourceV1 = {
+    sourceVersion: "1" as const,
+    session: {
+      recordVersion: "1" as const,
+      jobId: value.jobId,
+      state: "settle-pending",
+      listingRef: structuredClone(value.listingRef),
+      parties: [
+        { role: "buyer" as const, bundleHash: "1".repeat(64), primaryClaim: "did:demos:buyer" },
+        { role: "seller" as const, bundleHash: "2".repeat(64), primaryClaim: signer },
+        { role: "orchestrator" as const, bundleHash: "3".repeat(64), primaryClaim: signer },
+      ],
+      pipeline,
+      phaseResults: pipeline.slice(0, 4).map((step, index) => ({
+        index,
+        step: structuredClone(step),
+        invokedAt: NOW - (3 - index),
+        result: index === 3
+          ? {
+              ok: true,
+              txRefs: structuredClone(value.evidenceInput.paymentTxRefs),
+              attestationRef: structuredClone(paymentRef),
+              contextDelta: {},
+            }
+          : { ok: true, contextDelta: {} },
+        contextDelta: {},
+      })),
+      startedAt: NOW - 4,
+      lastUpdatedAt: NOW,
+      recipeRegistryVersion: 1,
+      railRegistryVersion: value.railRegistryVersion,
+    },
+    artifacts: {
+      agreementCommitment: {
+        anchor: { kind: "storage-program" as const, locator: value.commitment.ref },
+        contentHash: value.commitment.contentHash,
+      },
+      vetRecords: [],
+      vetRequirements: [],
+      settlementEvidence: [structuredClone(paymentRef)],
+    },
+    provenanceProfile: "dacs-sdk-operational-v1" as const,
+  };
+  const auditSourceHash = sellerFulfilmentAuditSourceHash(auditSource);
+  return {
+    ...base,
+    handoffVersion: "2",
+    auditSource,
+    auditSourceHash,
+    auditSourceCommitment: {
+      commitmentVersion: "1",
+      fulfilmentId: base.fulfilmentId,
+      jobId: base.jobId,
+      agreementRef: base.agreementRef,
+      agreementHash: base.agreementHash,
+      commitmentRef: base.commitmentRef,
+      authorizationHash: base.authorizationHash,
+      paymentPhaseIndex: base.paymentPhaseIndex,
+      deliveryPhaseIndex: base.deliveryPhaseIndex,
+      phase: base.phase,
+      logicalAddress: base.logicalAddress,
+      deliverableSpecHash: base.deliverableSpecHash,
+      auditSourceHash,
+      candidateHash: sellerFulfilmentCandidateHash(base.candidate),
+      deliveryInvokedAt: base.deliveryInvokedAt,
+      signature: { algorithm, signer, value: "c2ln" },
     },
   };
 }
@@ -804,7 +889,7 @@ describe("publishSellerSessionSettlement", () => {
       publishSellerSessionSettlement(request(keyFailure), keyFailure.deps),
     ).resolves.toMatchObject({
       disposition: "indeterminate",
-      reason: expect.stringContaining("verification threw"),
+      reason: expect.stringContaining("could not be resolved"),
       effectId: expect.stringMatching(/^seller-settlement:v1:[0-9a-f]{64}$/),
     });
     expect(keyFailure.sign).toHaveBeenCalledOnce();
@@ -817,8 +902,8 @@ describe("publishSellerSessionSettlement", () => {
     await expect(
       publishSellerSessionSettlement(request(verifierFailure), verifierFailure.deps),
     ).resolves.toMatchObject({
-      disposition: "indeterminate",
-      reason: expect.stringContaining("verification threw"),
+      disposition: "error",
+      reason: expect.stringContaining("could not be evaluated"),
       effectId: expect.stringMatching(/^seller-settlement:v1:[0-9a-f]{64}$/),
     });
     expect(verifierFailure.sign).toHaveBeenCalledOnce();
@@ -838,8 +923,8 @@ describe("publishSellerSessionSettlement", () => {
     await expect(
       publishSellerSessionSettlement(request(h), h.deps),
     ).resolves.toMatchObject({
-      disposition: "indeterminate",
-      reason: expect.stringContaining("published payment evidence verification threw"),
+      disposition: "error",
+      reason: expect.stringContaining("could not be evaluated"),
       effectId: expect.stringMatching(/^seller-settlement:v1:[0-9a-f]{64}$/),
     });
     expect(verificationCount).toBe(2);

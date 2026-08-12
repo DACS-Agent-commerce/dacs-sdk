@@ -1543,7 +1543,7 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     verified.signedScope.jobId = "mutated-return";
     verified.requiredCounterSigners[0] = OUTSIDER;
     verified.signedBytes.fill(0);
-    expect(expected.signedScope.jobId).toBe("seller-finalization-17");
+    expect(expected.signedScope.jobId).toBe(JOB_ID);
     expect(expected.requiredCounterSigners).toEqual([BUYER]);
     expect(expected.signedBytes.some((byte) => byte !== 0)).toBe(true);
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();

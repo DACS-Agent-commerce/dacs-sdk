@@ -2025,6 +2025,7 @@ describe("runSession orchestration (T4)", () => {
           payee: "0xalice",
         };
       },
+      authenticateRecoveredAgreement: async () => true,
     });
     const terms = {
       ...TERMS,

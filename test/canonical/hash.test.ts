@@ -19,7 +19,7 @@ describe("signed-scope hashing", () => {
 
   test("rejects the lone-surrogate collision that UTF-8 replacement would create", () => {
     expect(() => contentHash({ value: "\ud800" })).toThrow(
-      /unpaired UTF-16 surrogate/,
+      /not stable canonical JSON/,
     );
     expect(() => contentHash({ value: "\ufffd" })).not.toThrow();
   });
@@ -34,11 +34,11 @@ describe("signed-scope hashing", () => {
         return "unsigned";
       },
     });
-    expect(() => contentHash(accessor)).toThrow(/enumerable data properties/);
+    expect(() => contentHash(accessor)).toThrow(/not stable canonical JSON/);
     expect(getterInvoked).toBe(false);
 
     const hidden = { value: "bound", signature: "00" };
     Object.defineProperty(hidden, "extension", { value: "unsigned" });
-    expect(() => contentHash(hidden)).toThrow(/enumerable data properties/);
+    expect(() => contentHash(hidden)).toThrow(/not stable canonical JSON/);
   });
 });

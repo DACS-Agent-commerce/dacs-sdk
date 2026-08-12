@@ -5,6 +5,7 @@ import { canonicalizeDecimal } from "../canonical/decimal.js";
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonConfig,
+  snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -258,7 +259,7 @@ export async function verifySettlementEvidence(
   let recordSnapshot: unknown;
   let contextSnapshot: EvidenceContext;
   try {
-    recordSnapshot = snapshotCanonicalJson(record, "settlement evidence");
+    recordSnapshot = snapshotCanonicalJsonRead(record, "settlement evidence");
     contextSnapshot = snapshotCanonicalJsonConfig(
       ctx,
       "settlement evidence context",

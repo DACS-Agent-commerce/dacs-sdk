@@ -160,6 +160,44 @@ function isDataOnlyJson(
   }
 }
 
+/**
+ * Re-home a validated JSON graph in this realm without invoking caller code.
+ * Descriptor values are used instead of property reads, so accessors remain
+ * impossible and repeated references become independent JSON values.
+ */
+function cloneValidatedJson(
+  value: unknown,
+  omitUndefinedObjectProperties: boolean,
+): unknown {
+  if (value === null || typeof value !== "object") return value;
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Array.isArray(value)) {
+    const length = (descriptors["length"] as PropertyDescriptor).value as number;
+    const clone = new Array<unknown>(length);
+    for (let index = 0; index < length; index += 1) {
+      clone[index] = cloneValidatedJson(
+        (descriptors[String(index)] as PropertyDescriptor).value,
+        omitUndefinedObjectProperties,
+      );
+    }
+    return clone;
+  }
+
+  const clone: Record<string, unknown> = {};
+  for (const key of Object.keys(descriptors)) {
+    const propertyValue = (descriptors[key] as PropertyDescriptor).value;
+    if (propertyValue === undefined && omitUndefinedObjectProperties) continue;
+    Object.defineProperty(clone, key, {
+      value: cloneValidatedJson(propertyValue, omitUndefinedObjectProperties),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return clone;
+}
+
 /** Own one stable canonical JSON value without retaining caller references. */
 export function snapshotCanonicalJson<T>(value: T, label: string): T {
   return snapshotCanonicalJsonInternal(value, label, false);
@@ -207,7 +245,9 @@ function snapshotCanonicalJsonInternal<T>(
     ) {
       throw new TypeError("not data-only JSON");
     }
-    const canonical = canonicalize(value);
+    const canonical = canonicalize(
+      cloneValidatedJson(value, omitUndefinedObjectProperties),
+    );
     // Parsing the canonical wire form both owns the result and deliberately
     // expands repeated in-memory references into independent JSON values.
     // CF-1 normalization therefore also happens exactly once at this boundary.

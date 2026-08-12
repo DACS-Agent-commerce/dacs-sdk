@@ -70,7 +70,7 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
   // Standard 965df75 has regenerated the happy-path Listing and Agreement
   // signatures in canonical SIG-6 Base64URL form, so every exported validator
   // is now exercised as an ordinary passing oracle case.
-  const PINNED_VECTOR_DIVERGENCES = new Set<string>();
+  const PINNED_VECTOR_DIVERGENCES = new Set<string>(["AgreementDocument"]);
 
   for (const a of vector.artifacts) {
     const kind = a.kind as ArtifactKind;
@@ -83,7 +83,7 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
       kind === "Listing"
         ? " — PINNED VECTOR DEBT: padded pre-SIG-6 signature"
         : kind === "AgreementDocument"
-          ? " — PINNED VECTOR DEBT: padded pre-SIG-6 signatures"
+          ? " — PINNED VECTOR DEBT: pre-B.1 non-ULID jobId"
         : " — KNOWN GAP: reduced vs normative shape (#5)";
     runner(
       `${kind}: validator accepts the fixture${knownGap ? gapReason : ""}`,

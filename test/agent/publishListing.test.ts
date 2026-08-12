@@ -607,9 +607,9 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("publishes immutable signed bytes when an async anchor attempts nested mutation", async () => {
     const deps = fakeDeps();
-    const anchor = deps.anchorWriteOnce;
+    const writeArtifact = deps.writeArtifact;
     let mutationBlocked = false;
-    deps.anchorWriteOnce = async (name, value) => {
+    deps.writeArtifact = async (logicalAddress, value, options) => {
       try {
         ((value as Record<string, unknown>).offering as { description: string })
           .description = "unsigned publication B";
@@ -617,7 +617,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
         mutationBlocked = true;
       }
       await Promise.resolve();
-      return anchor(name, value);
+      return writeArtifact(logicalAddress, value, options);
     };
 
     const result = await publishListingCore(
@@ -771,7 +771,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("owns and enforces the exact immutable-write result envelope", async () => {
     const extra = fakeDeps();
-    extra.anchorWriteOnce = async () => ({
+    extra.writeArtifact = async () => ({
       address: "stor-1",
       txRef: "tx-1",
       completion: "read-visible",
@@ -782,7 +782,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
     const accessor = fakeDeps();
     let getterCalls = 0;
-    accessor.anchorWriteOnce = async () => {
+    accessor.writeArtifact = async () => {
       const result = { address: "stor-1" } as Record<string, unknown>;
       Object.defineProperty(result, "txRef", {
         enumerable: true,
@@ -1016,11 +1016,17 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
   });
 
   test("rejects version 0, fractional, and negative (§6.3.4: positive integer ≥ 1)", async () => {
-    for (const bad of [0, 1.5, -1, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const bad of [0, 1.5, -1]) {
       await expect(
         publishListingCore(listing({ listingVersion: bad }), fakeDeps()),
       ).rejects.toThrow(/positive integer/);
     }
+    await expect(
+      publishListingCore(
+        listing({ listingVersion: Number.MAX_SAFE_INTEGER + 1 }),
+        fakeDeps(),
+      ),
+    ).rejects.toThrow(/stable canonical JSON/);
   });
 
   test("refuses the historical MVP shape on the write path", async () => {

@@ -841,7 +841,9 @@ async function authenticateRequest(
     if (context.jobId !== query.jobId) {
       throw new DacsError("authenticated context job does not match transport identity");
     }
-    derivedPlan = createFixedPriceAgreementSigningPlan(deriveFixedPriceAgreement(context));
+    derivedPlan = createFixedPriceAgreementSigningPlan(
+      deriveFixedPriceAgreement(structuredClone(context)),
+    );
   } catch (error) {
     throw new ProgressSignal(
       "rejected",

@@ -152,14 +152,15 @@ async function publishFailedTerminalBundle(
   result: Extract<SellerFulfilmentResult, { decision: "failed" }>,
   options: { sourcePhaseIndex?: number } = {},
 ): Promise<void> {
-  const loaded = await store.load("job-17");
+  const jobId = result.consumedPaymentAuthorization.jobId;
+  const loaded = await store.load(jobId);
   if (loaded.status !== "ok") throw new Error("failed terminal source record missing");
   const source = {
     ...result.bundleContribution.phaseSummary,
     index: options.sourcePhaseIndex ?? result.bundleContribution.phaseSummary.index,
   };
   const authority = createTerminalBundleAuthority({
-    jobId: "job-17",
+    jobId,
     terminalClass: result.errorClass === "substrate" ? "failed-substrate" : "failure",
     faultedParty: result.errorClass === "substrate" ? "none" : "seller",
     terminalPhase: {
@@ -1996,7 +1997,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         : {
             status: "failed",
             reason: "delivery substrate recorded failure",
-            reconciliationId: "delivery:job-17:1",
+            reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
             observedAt: NOW,
           };
     };

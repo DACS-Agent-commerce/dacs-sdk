@@ -3690,9 +3690,7 @@ export async function partyVetCore<TKey>(
             ),
           };
           return signComponentArtifact(
-            deepFreezeSnapshot(
-              snapshot(unsignedRecord, "unsigned party Vet composite"),
-            ),
+            snapshot(unsignedRecord, "unsigned party Vet composite"),
             "dacs-composite:v1:",
             compositeEffectDeps.componentSigner,
           );

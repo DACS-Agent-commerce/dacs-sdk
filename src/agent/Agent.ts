@@ -67,6 +67,7 @@ import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { computeReputation, type Reputation } from "./reputation.js";
 import {
   buildSignedArtifact,
+  verifySignedArtifact,
   type Signer,
   type Verifier,
 } from "./signedArtifact.js";

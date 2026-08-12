@@ -49,6 +49,9 @@ const claim = (seed: Uint8Array) =>
 const BUYER = claim(BUYER_SEED);
 const SELLER = claim(SELLER_SEED);
 const OTHER_SELLER = claim(OTHER_SELLER_SEED);
+const JOB_ID = "01J8N4YV7YVYQ4DB7M8T4C7W0A";
+const PAYEE_JOB_ID = "01J8N4YV7YVYQ4DB7M8T4C7W0B";
+const SUBSTITUTE_JOB_ID = "01J8N4YV7YVYQ4DB7M8T4C7W0C";
 
 function identity(primaryClaim: string): IdentityBundle {
   return {
@@ -119,7 +122,7 @@ function listing(payeeBound = false): Listing {
 }
 
 function agreementContext(
-  jobId = "job-seller-agreement-responder",
+  jobId = JOB_ID,
   payeeBound = false,
 ): FixedPriceAgreementInput {
   const exactListing = listing(payeeBound);
@@ -584,7 +587,12 @@ describe("durable seller fixed-price agreement proposal responder", () => {
     ]> = [
       ["listing version", (draft) => { draft.listingRef.version += 1; }, baseContext],
       ["listing hash", (draft) => { draft.listingRef.contentHash = "f".repeat(64); }, baseContext],
-      ["job", (draft) => { draft.jobId = "substituted-job"; }, baseContext],
+      ["job", (draft) => {
+        Object.assign(
+          draft,
+          deriveFixedPriceAgreement(agreementContext(SUBSTITUTE_JOB_ID)),
+        );
+      }, baseContext],
       ["price", (draft) => { draft.terms.price.amount = "3"; }, baseContext],
       ["rail", (draft) => {
         if (draft.terms.rail) draft.terms.rail.parameters = { network: "eip155:1" };
@@ -597,7 +605,7 @@ describe("durable seller fixed-price agreement proposal responder", () => {
       }, baseContext],
     ];
 
-    const payoutContext = agreementContext("job-payee-bound", true);
+    const payoutContext = agreementContext(PAYEE_JOB_ID, true);
     const payoutDraft = deriveFixedPriceAgreement(payoutContext);
     mutations.push(["payout", (draft) => {
       if ("payoutBindings" in draft.terms) {
@@ -646,8 +654,9 @@ describe("durable seller fixed-price agreement proposal responder", () => {
     };
     cases.push(["transport", wrongTransport.input]);
 
-    const otherDraft = structuredClone(draft);
-    otherDraft.jobId = "other-job";
+    const otherDraft = deriveFixedPriceAgreement(
+      agreementContext(SUBSTITUTE_JOB_ID),
+    );
     const other = await requestForDraft(otherDraft);
     const wrongBuyer = await requestForDraft(draft);
     const wrongBuyerMaterial = {
@@ -777,7 +786,7 @@ describe("durable seller fixed-price agreement proposal responder", () => {
   test("published substituted contribution and invalid buyer signature fail closed", async () => {
     const substituted = await harness();
     const other = await requestForDraft(
-      deriveFixedPriceAgreement(agreementContext("other-publication-job")),
+      deriveFixedPriceAgreement(agreementContext(SUBSTITUTE_JOB_ID)),
     );
     substituted.state.publicationResolution = {
       disposition: "present",

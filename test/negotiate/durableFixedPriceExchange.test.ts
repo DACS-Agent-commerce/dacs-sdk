@@ -20,7 +20,7 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
   type AnchorBinding,
-  type AnchorReceipt,
+  type ProtocolAnchorReceipt as AnchorReceipt,
   type AttestationRef,
   type DurableFixedPriceAgreementDurability,
   type DurableFixedPriceAgreementInput,
@@ -44,6 +44,7 @@ const claim = (seed: Uint8Array) =>
   `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
 const BUYER = claim(BUYER_SEED);
 const SELLER = claim(SELLER_SEED);
+const JOB_ID = "01JZ0000000000000000000003";
 
 function identity(primaryClaim: string): IdentityBundle {
   return {
@@ -111,7 +112,7 @@ function listing(): Listing {
   };
 }
 
-function draft(jobId = "job-durable-agreement") {
+function draft(jobId = JOB_ID) {
   const value = listing();
   return deriveFixedPriceAgreement({
     jobId,
@@ -483,7 +484,9 @@ describe("durable buyer-owned fixed-price agreement exchange", () => {
     });
 
     const substituted = await harness();
-    const otherPlan = createFixedPriceAgreementSigningPlan(draft("other-job"));
+    const otherPlan = createFixedPriceAgreementSigningPlan(
+      draft("01JZ0000000000000000000004"),
+    );
     const otherSeller = await createFixedPriceAgreementSignatureContribution(
       otherPlan,
       "seller",

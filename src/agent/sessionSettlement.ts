@@ -900,7 +900,7 @@ export async function verifyFinalizedSessionSettlement(
           network: context.rail.network,
           handler: context.rail.handler,
         },
-        attestationRef: settlement.evidenceRef,
+        attestationRef: structuredClone(settlement.evidenceRef),
         result: settlement.outcome === "success"
           ? { ok: true }
           : { ok: false, errorClass: settlement.evidence.reason },
