@@ -61,7 +61,7 @@ const BUYER_REQUIREMENT = {
   requirementVersion: "1" as const,
   required: [{ scheme: "did", verificationRequired: true }],
 };
-const COMMITMENT_ADDRESS = "dacs3:commit:job-17";
+const COMMITMENT_ADDRESS = "dacs3:commit:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const AUDIT_SOURCE_COMMITMENT_SEPARATOR =
   "dacs-x-seller-fulfilment-audit-source:v1:";
 
@@ -92,7 +92,7 @@ function anchorReceipt(
 function paymentAuthorization(): SellerPaymentAuthorization {
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1",
-    jobId: "job-17",
+    jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     phase: "pay-x402",
     paymentTxRefs: [{
       kind: "x402",
@@ -112,7 +112,7 @@ function paymentAuthorization(): SellerPaymentAuthorization {
     },
   };
   return {
-    jobId: "job-17",
+    jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     phaseIndex: 1,
     agreementHash: H.agreement,
     listingRef: { listingId: "listing-17", version: 4, contentHash: H.listing },
@@ -209,7 +209,7 @@ function payloadAttestationRecord(
   const methodHash = sha256Hex(canonicalize(spec.verificationMethod!));
   return {
     payloadAttestationVersion: "1",
-    jobId: "job-17",
+    jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     agreementHash: H.agreement,
     deliverableSpecHash: sha256Hex(canonicalize(spec)),
     payloadFormat: spec.payloadFormat,
@@ -232,7 +232,7 @@ function defaultArtifact(spec: SellerDeliverableSpec): SellerDeliveredArtifact {
   if (spec.kind === "entitlement") {
     const record = {
       entitlementVersion: "1",
-      jobId: "job-17",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       grantee: BUYER,
       grantor: SELLER,
       startsAt: NOW - 1_000,
@@ -260,7 +260,7 @@ function defaultArtifact(spec: SellerDeliverableSpec): SellerDeliveredArtifact {
       attestationRef: {
         anchor: {
           kind: "storage-program",
-          locator: `dacs4:payload-attestation:job-17:${methodHash}:0`,
+          locator: `dacs4:payload-attestation:01J8ME0SXKQ4T9V2RC5HJ6WX7D:${methodHash}:0`,
         },
         contentHash: contentHash(record as unknown as Record<string, unknown>),
       },
@@ -372,14 +372,14 @@ function fixture(
   const buyerVetRef = {
     anchor: {
       kind: "storage-program" as const,
-      locator: "dacs2:composite:job-17:did%3Ademos%3Abuyer",
+      locator: "dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did%3Ademos%3Abuyer",
     },
     contentHash: "2".repeat(64),
   };
   const sellerVetRef = {
     anchor: {
       kind: "storage-program" as const,
-      locator: "dacs2:composite:job-17:did%3Ademos%3Aseller",
+      locator: "dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did%3Ademos%3Aseller",
     },
     contentHash: "3".repeat(64),
   };
@@ -400,7 +400,7 @@ function fixture(
   };
   const agreement: SellerFulfilmentAgreement = {
     artifactKind: "payee-bound",
-    ref: "agreement:job-17",
+    ref: "agreement:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     contentHash: H.agreement,
     jobId: authorization.jobId,
     listingPin: { ...authorization.listingRef },
@@ -467,7 +467,7 @@ function fixture(
           ok: true,
           txRefs: [{
             kind: "storage-program",
-            address: "stor-commitment-job-17",
+            address: "stor-commitment-01J8ME0SXKQ4T9V2RC5HJ6WX7D",
             writeTxHash: "5".repeat(64),
           }],
           contextDelta: {},
@@ -525,12 +525,12 @@ function fixture(
             ref: {
               anchor: {
                 kind: "storage-program",
-                locator: "dacs2:job-17:did:demos%3Abuyer:v1",
+                locator: "dacs2:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did:demos%3Abuyer:v1",
               },
               contentHash: "4".repeat(64),
               recipeVersion: 1,
             },
-            sourceJobId: "job-17",
+            sourceJobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
             scheme: "did",
             identifier: "demos:buyer",
             method: "self-signed",
@@ -556,8 +556,8 @@ function fixture(
     ? payloadAttestationRecord(spec, artifact.cleartextBytes)
     : undefined;
   const logicalAddress = phase === "deliver-entitlement"
-    ? "dacs4:entitlement:job-17:0"
-    : "dacs4:deliverable:job-17";
+    ? "dacs4:entitlement:01J8ME0SXKQ4T9V2RC5HJ6WX7D:0"
+    : "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
   if (initiallyConsumed) {
     const fulfilmentId = sellerFulfilmentId({
       jobId: authorization.jobId,
@@ -662,14 +662,14 @@ function fixture(
           : {}),
       },
     }),
-    submitDelivery: async () => ({ status: "accepted", reconciliationId: "delivery:job-17:1" }),
+    submitDelivery: async () => ({ status: "accepted", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1" }),
     reconcileDelivery: vi.fn(async () => {
       reconciliationCount += 1;
       return reconciliationCount === 1 && !initiallyConsumed
         ? { status: "absent" as const, reason: "authoritative absence" }
         : {
             status: "complete" as const,
-            reconciliationId: "delivery:job-17:1",
+            reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
             observedAt: NOW,
           };
     }),
@@ -744,7 +744,7 @@ function fixture(
     },
     anchorEvidence: async ({ evidence, evidenceHash }) => {
       anchoredEvidence = structuredClone(evidence);
-      const locator = "dacs4:test-delivery-evidence:job-17";
+      const locator = "dacs4:test-delivery-evidence:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
       return {
         status: "anchored",
         ref: { anchor: { kind: "storage-program", locator }, contentHash: evidenceHash },
@@ -787,7 +787,7 @@ function installPayloadRecord(
   f.artifact.attestationRef = {
     anchor: {
       kind: "storage-program",
-      locator: `dacs4:payload-attestation:job-17:${methodHash}:${record.attempt}`,
+      locator: `dacs4:payload-attestation:01J8ME0SXKQ4T9V2RC5HJ6WX7D:${methodHash}:${record.attempt}`,
     },
     contentHash: recordHash,
   };
@@ -851,12 +851,12 @@ describe("runFulfilmentCore", () => {
       },
       evidence: {
         evidenceVersion: "1",
-        jobId: "job-17",
+        jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
         phase: "deliver-storage-program",
         outcome: "success",
         deliverableAnchor: {
           kind: "storage-program",
-          locator: "dacs4:deliverable:job-17",
+          locator: "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
         },
         signature: { signer: SELLER },
       },
@@ -866,11 +866,11 @@ describe("runFulfilmentCore", () => {
     });
     expect(f.store.consumed).toBe(true);
     expect(f.deps.prepareDelivery).toHaveBeenCalledWith(expect.objectContaining({
-      logicalAddress: "dacs4:deliverable:job-17",
+      logicalAddress: "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
     }));
     expect(f.deps.submitDelivery).toHaveBeenCalledOnce();
     expect(f.deps.submitDelivery).toHaveBeenCalledWith(expect.objectContaining({
-      logicalAddress: "dacs4:deliverable:job-17",
+      logicalAddress: "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       artifactHash: expect.stringMatching(/^[0-9a-f]{64}$/),
     }));
     expect(result).not.toHaveProperty("evidence.phaseIndex");
@@ -903,7 +903,7 @@ describe("runFulfilmentCore", () => {
     let handoffAtSubmit: SellerFulfilmentHandoffEnvelope | undefined;
     f.deps.submitDelivery = vi.fn(async () => {
       handoffAtSubmit = structuredClone(f.store.handoffValue);
-      return { status: "accepted" as const, reconciliationId: "delivery:job-17:1" };
+      return { status: "accepted" as const, reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1" };
     });
 
     const result = await runFulfilmentCore(f.request, f.deps);
@@ -1023,7 +1023,7 @@ describe("runFulfilmentCore", () => {
   test("requires an exact unique SettlementEvidence ref set in the audit source", async () => {
     const extra = fixture();
     extra.auditSource.artifacts.settlementEvidence.push({
-      anchor: { kind: "storage-program", locator: "dacs4:payment:job-17:other:0" },
+      anchor: { kind: "storage-program", locator: "dacs4:payment:01J8ME0SXKQ4T9V2RC5HJ6WX7D:other:0" },
       contentHash: "6".repeat(64),
     });
     expect(await runFulfilmentCore(extra.request, extra.deps)).toMatchObject({
@@ -1034,7 +1034,7 @@ describe("runFulfilmentCore", () => {
 
     const duplicateHash = fixture();
     duplicateHash.auditSource.artifacts.settlementEvidence.push({
-      anchor: { kind: "storage-program", locator: "dacs4:payment:job-17:other:0" },
+      anchor: { kind: "storage-program", locator: "dacs4:payment:01J8ME0SXKQ4T9V2RC5HJ6WX7D:other:0" },
       contentHash: duplicateHash.authorization.evidenceHash,
     });
     expect(await runFulfilmentCore(duplicateHash.request, duplicateHash.deps)).toMatchObject({
@@ -1201,13 +1201,13 @@ describe("runFulfilmentCore", () => {
 
     const wrongCompositeAddress = fixture();
     wrongCompositeAddress.auditSource.artifacts.vetRecords[0]!.anchor.locator =
-      "dacs2:composite:job-17:other";
+      "dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7D:other";
     wrongCompositeAddress.auditSource.artifacts.vetRequirements[0]!.vetRecordRef.anchor.locator =
-      "dacs2:composite:job-17:other";
+      "dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7D:other";
     wrongCompositeAddress.session.parties[0]!.vetRecordRef!.anchor.locator =
-      "dacs2:composite:job-17:other";
+      "dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7D:other";
     wrongCompositeAddress.agreement.buyer.vetRecordRef.anchor.locator =
-      "dacs2:composite:job-17:other";
+      "dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7D:other";
     expect(await runFulfilmentCore(
       wrongCompositeAddress.request,
       wrongCompositeAddress.deps,
@@ -1261,12 +1261,12 @@ describe("runFulfilmentCore", () => {
         ref: {
           anchor: {
             kind: "storage-program",
-            locator: "dacs2:job-17:did:demos%3Abuyer:v2",
+            locator: "dacs2:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did:demos%3Abuyer:v2",
           },
           contentHash: "4".repeat(64),
           recipeVersion: 2,
         },
-        sourceJobId: "job-17",
+        sourceJobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
         scheme: "did",
         identifier: "demos:buyer",
         method: "self-signed",
@@ -1335,7 +1335,7 @@ describe("runFulfilmentCore", () => {
       },
       (f: Fixture) => {
         f.auditSource.artifacts.vetRequirements[0]!.freshness[0]!.ref.anchor.locator =
-          "dacs2:job-17:did:other:v2";
+          "dacs2:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did:other:v2";
       },
     ]) {
       const f = fixture();
@@ -1372,7 +1372,7 @@ describe("runFulfilmentCore", () => {
       sharedInvocation.evaluatedParty = SELLER;
       sharedInvocation.freshness[0]!.identifier = "demos:seller";
       sharedInvocation.freshness[0]!.ref.anchor.locator =
-        "dacs2:job-17:did:demos%3Aseller:v1";
+        "dacs2:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did:demos%3Aseller:v1";
       f.auditSource.artifacts.vetRecords = [structuredClone(sharedRef)];
       f.auditSource.artifacts.vetRequirements = [sharedInvocation];
 
@@ -1456,7 +1456,7 @@ describe("runFulfilmentCore", () => {
   test("rejects post-settlement rating provenance from a pre-delivery source", async () => {
     const f = fixture();
     f.auditSource.artifacts.ratingRecords = [{
-      anchor: { kind: "storage-program", locator: "dacs5:rating:job-17" },
+      anchor: { kind: "storage-program", locator: "dacs5:rating:01J8ME0SXKQ4T9V2RC5HJ6WX7D" },
       contentHash: "7".repeat(64),
     }];
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
@@ -1638,10 +1638,10 @@ describe("runFulfilmentCore", () => {
     let submitted = false;
     absent.deps.submitDelivery = vi.fn(async () => {
       submitted = true;
-      return { status: "accepted" as const, reconciliationId: "delivery:job-17:1" };
+      return { status: "accepted" as const, reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1" };
     });
     absent.deps.reconcileDelivery = async () => submitted
-      ? { status: "complete", reconciliationId: "delivery:job-17:1", observedAt: NOW }
+      ? { status: "complete", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
       : { status: "absent", reason: "no reconcilable effect in authoritative state" };
     expect(await runFulfilmentCore(absent.request, absent.deps)).toMatchObject({
       decision: "completed",
@@ -1698,7 +1698,7 @@ describe("runFulfilmentCore", () => {
       status: "failed",
       reason: "exact retained rejection",
       observedAt: NOW,
-      reconciliationId: "failure:job-17:1",
+      reconciliationId: "failure:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
     });
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "failed",
@@ -1824,7 +1824,7 @@ describe("runFulfilmentCore", () => {
     async (status) => {
       const f = fixture();
       f.deps.reconcileDelivery = async () => status === "complete"
-        ? { status, reconciliationId: "delivery:job-17:1", observedAt: NOW }
+        ? { status, reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
         : { status, reason: "terminal effect exists", observedAt: NOW };
       expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
         decision: "rejected",
@@ -1850,10 +1850,10 @@ describe("runFulfilmentCore", () => {
     f.deps.prepareDelivery = vi.fn(f.deps.prepareDelivery);
     f.deps.submitDelivery = vi.fn(async () => {
       submitted = true;
-      return { status: "accepted" as const, reconciliationId: "delivery:job-17:1" };
+      return { status: "accepted" as const, reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1" };
     });
     f.deps.reconcileDelivery = async () => submitted
-      ? { status: "complete", reconciliationId: "delivery:job-17:1", observedAt: NOW }
+      ? { status: "complete", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1", observedAt: NOW }
       : { status: "absent", reason: "authoritative absence" };
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "indeterminate",
@@ -1894,7 +1894,7 @@ describe("runFulfilmentCore", () => {
       safeToRetryDelivery: false,
     });
     expect(f.store.consumed).toBe(true);
-    expect(f.store.handoffValue?.logicalAddress).toBe("dacs4:deliverable:job-17");
+    expect(f.store.handoffValue?.logicalAddress).toBe("dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D");
     expect(f.deps.submitDelivery).not.toHaveBeenCalled();
   });
 
@@ -1937,7 +1937,7 @@ describe("runFulfilmentCore", () => {
     const f = fixture(undefined, true);
     f.deps.reconcileDelivery = async () => ({
       status: "complete",
-      reconciliationId: "delivery:job-17:1",
+      reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
       observedAt,
     });
     f.deps.resolveDelivery = vi.fn(f.deps.resolveDelivery);
@@ -1960,7 +1960,7 @@ describe("runFulfilmentCore", () => {
       value: {
         artifact: f.artifact,
         anchorReceipt: anchorReceipt(
-          "dacs4:entitlement:job-17:0",
+          "dacs4:entitlement:01J8ME0SXKQ4T9V2RC5HJ6WX7D:0",
           contentHash(record),
         ),
       },
@@ -1974,7 +1974,7 @@ describe("runFulfilmentCore", () => {
         ? { status: "absent" as const, reason: "authoritative absence" }
         : {
             status: "complete" as const,
-            reconciliationId: "delivery:job-17:1",
+            reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
             observedAt: NOW + 1,
           };
     };
@@ -2351,7 +2351,7 @@ describe("runFulfilmentCore", () => {
       value: {
         artifact: delivery.artifact,
         anchorReceipt: anchorReceipt(
-          "dacs4:deliverable:job-17",
+          "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           sha256Hex(canonicalize(delivery.artifact.anchoredValue)),
           "accepted",
         ),
@@ -2364,7 +2364,7 @@ describe("runFulfilmentCore", () => {
 
     const evidence = fixture();
     evidence.deps.anchorEvidence = async ({ evidenceHash }) => {
-      const locator = "dacs4:test-delivery-evidence:job-17";
+      const locator = "dacs4:test-delivery-evidence:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
       return {
         status: "anchored",
         ref: { anchor: { kind: "storage-program", locator }, contentHash: evidenceHash },
@@ -2419,7 +2419,7 @@ describe("runFulfilmentCore", () => {
           anchoredValue: { answer: 99 },
         },
         anchorReceipt: anchorReceipt(
-          "dacs4:deliverable:job-17",
+          "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
           sha256Hex(canonicalize({ answer: 99 })),
         ),
       },
@@ -2692,7 +2692,7 @@ describe("runFulfilmentCore", () => {
     let persistedHash: string | undefined;
     let persistedFulfilmentId: string | undefined;
     let anchorCalls = 0;
-    const locator = "dacs4:test-delivery-evidence:job-17";
+    const locator = "dacs4:test-delivery-evidence:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
     f.deps.anchorEvidence = async (input) => {
       anchorCalls += 1;
       if (!persistedEvidence) {
@@ -2745,7 +2745,7 @@ describe("runFulfilmentCore", () => {
       }
       return {
         status: "complete",
-        reconciliationId: "delivery:job-17:1",
+        reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
         observedAt: reconciliationCalls === 2 ? NOW : NOW + 1,
       };
     };
@@ -2970,7 +2970,7 @@ describe("runFulfilmentCore", () => {
     const f = fixture();
     f.deps.submitDelivery = async () => ({
       status: "accepted",
-      reconciliationId: "delivery:job-17:1",
+      reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
       nonCloneable: () => undefined,
     } as never);
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
@@ -2989,7 +2989,7 @@ describe("runFulfilmentCore", () => {
     });
     f.deps.submitDelivery = async (input) => {
       (input.artifact as unknown as Record<string, unknown>).callerAssertion = true;
-      return { status: "accepted", reconciliationId: "delivery:job-17:1" };
+      return { status: "accepted", reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1" };
     };
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "indeterminate",
@@ -3151,7 +3151,7 @@ describe("runFulfilmentCore", () => {
           artifact: f.artifact,
           anchorReceipt: {
             ...anchorReceipt(
-              "dacs4:deliverable:job-17",
+              "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
               sha256Hex(canonicalize(f.artifact.anchoredValue)),
               state,
             ),
@@ -3291,7 +3291,7 @@ describe("runFulfilmentCore", () => {
     const f = fixture({ kind: "entitlement", durationSec: 3_600, renewable: true });
     (f.artifact.cleartextPayload as Record<string, unknown>).credentialRef = {
       ref: {
-        anchor: { kind: "storage-program", locator: "dacs4:credential:job-17" },
+        anchor: { kind: "storage-program", locator: "dacs4:credential:01J8ME0SXKQ4T9V2RC5HJ6WX7D" },
         contentHash: H.attestation,
       },
       accessModel: "buyer-only",
@@ -3302,7 +3302,7 @@ describe("runFulfilmentCore", () => {
       status: "verified",
       value: {
         artifact: f.artifact,
-        anchorReceipt: anchorReceipt("dacs4:entitlement:job-17:0", hash),
+        anchorReceipt: anchorReceipt("dacs4:entitlement:01J8ME0SXKQ4T9V2RC5HJ6WX7D:0", hash),
       },
     });
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
@@ -3410,7 +3410,7 @@ describe("runFulfilmentCore", () => {
       status: "failed",
       reason: "durably recorded DPA publication contradiction",
       observedAt: NOW,
-      reconciliationId: "failure:job-17:1",
+      reconciliationId: "failure:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
     });
     f.deps.verifyPayloadAttestationSignature = vi.fn(async () => ({
       disposition: "indeterminate" as const,
@@ -3442,7 +3442,7 @@ describe("runFulfilmentCore", () => {
     submit.deps.submitDelivery = async () => ({
       status: "indeterminate",
       reason: "response lost",
-      reconciliationId: "delivery:job-17:1",
+      reconciliationId: "delivery:01J8ME0SXKQ4T9V2RC5HJ6WX7D:1",
     });
     expect(await runFulfilmentCore(submit.request, submit.deps)).toMatchObject({
       decision: "indeterminate",
