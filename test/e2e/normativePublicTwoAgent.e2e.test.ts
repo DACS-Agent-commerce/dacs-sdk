@@ -1,9 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
-import { verifyTypedData } from "viem";
+import { verifyMessage, verifyTypedData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 /**
@@ -57,6 +57,7 @@ import {
   signedBytes,
   validateListingArtifact,
   verifyBundleCopy,
+  verifyCompletedSellerBundleCounterSignatureRequest,
   verifyDurableSellerTerminalResult,
   verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
@@ -175,6 +176,63 @@ async function tempDir(name: string): Promise<string> {
   return dir;
 }
 
+async function filesBelow(dir: string): Promise<string[]> {
+  const files: string[] = [];
+  const visit = async (current: string): Promise<void> => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else files.push(path.slice(dir.length + 1));
+    }
+  };
+  await visit(dir);
+  return files.sort();
+}
+
+async function writeExternalRecord(
+  dir: string,
+  key: string,
+  value: unknown,
+): Promise<void> {
+  await writeFile(
+    join(dir, `${sha256Hex(key)}.json`),
+    JSON.stringify(value, (_name, candidate: unknown) =>
+      candidate instanceof Uint8Array
+        ? { "$dacs-test-bytes": Buffer.from(candidate).toString("base64url") }
+        : candidate),
+    "utf8",
+  );
+}
+
+async function readExternalRecord<T>(
+  dir: string,
+  key: string,
+): Promise<T | undefined> {
+  try {
+    return JSON.parse(
+      await readFile(join(dir, `${sha256Hex(key)}.json`), "utf8"),
+      (_name, candidate: unknown) => {
+        if (
+          candidate !== null &&
+          typeof candidate === "object" &&
+          Object.keys(candidate).length === 1 &&
+          typeof (candidate as Record<string, unknown>)["$dacs-test-bytes"] ===
+            "string"
+        ) {
+          return Uint8Array.from(Buffer.from(
+            (candidate as Record<string, string>)["$dacs-test-bytes"]!,
+            "base64url",
+          ));
+        }
+        return candidate;
+      },
+    ) as T;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 function identity(primaryClaim: string, evmClaim?: string): IdentityBundle {
   const claims = [
     { ref: primaryClaim },
@@ -206,9 +264,80 @@ function identity(primaryClaim: string, evmClaim?: string): IdentityBundle {
   return bundle;
 }
 
-const BUYER_IDENTITY = identity(BUYER, `cci-xm:evm:base-sepolia:${PAYER}`);
+const BUYER_EVM_CLAIM = `cci-xm:evm:base-sepolia:${PAYER}`;
+const BUYER_IDENTITY = identity(BUYER, BUYER_EVM_CLAIM);
+if (BUYER_IDENTITY.presentation.kind !== "per-claim") {
+  throw new Error("buyer fixture requires a per-claim presentation");
+}
+const buyerWalletPresentation = BUYER_IDENTITY.presentation.signatures.find(
+  ({ ref }) => ref === BUYER_EVM_CLAIM,
+);
+if (!buyerWalletPresentation) {
+  throw new Error("buyer fixture omitted its paying-wallet claim");
+}
+buyerWalletPresentation.signature = await BUYER_EVM.signMessage({
+  message: {
+    raw: signedBytes(
+      "dacs-bundle-presentation:v1:",
+      identityBundleHash(BUYER_IDENTITY),
+    ),
+  },
+});
 const SELLER_IDENTITY = identity(SELLER);
 const EMPTY_REQUIREMENT = { requirementVersion: "1" as const, required: [] };
+
+async function verifyRoleIdentityPresentation(
+  bundle: Readonly<IdentityBundle>,
+  expectedPrimaryClaim: string,
+  suppliedBytes?: Uint8Array,
+): Promise<boolean> {
+  try {
+    const bytes = suppliedBytes ?? signedBytes(
+      "dacs-bundle-presentation:v1:",
+      identityBundleHash(bundle),
+    );
+    if (
+      bundle.presentedBy !== expectedPrimaryClaim ||
+      bundle.presentation.kind !== "per-claim" ||
+      bundle.presentation.signatures.length !== bundle.claims.length
+    ) {
+      return false;
+    }
+    for (const [index, signature] of bundle.presentation.signatures.entries()) {
+      const claim = bundle.claims[index]?.ref;
+      if (signature.ref !== claim) return false;
+      if (claim === expectedPrimaryClaim) {
+        const seed = expectedPrimaryClaim === BUYER
+          ? BUYER_SEED
+          : expectedPrimaryClaim === SELLER
+            ? SELLER_SEED
+            : null;
+        if (!seed || !ed25519Verify(
+          bytes,
+          Uint8Array.from(Buffer.from(signature.signature, "base64url")),
+          publicKeyFromSeed(seed),
+        )) {
+          return false;
+        }
+        continue;
+      }
+      if (
+        expectedPrimaryClaim !== BUYER ||
+        claim !== BUYER_EVM_CLAIM ||
+        !await verifyMessage({
+          address: PAYER,
+          message: { raw: bytes },
+          signature: signature.signature as `0x${string}`,
+        })
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function signedVetRecord(
   role: "buyer" | "seller",
@@ -298,24 +427,8 @@ function listingValidationDeps(): ListingValidationDeps {
       readMarker: async () => null,
       verifyMarkerSignature: () => false,
     },
-    verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) => {
-      const seed = bundle.presentedBy === BUYER
-        ? BUYER_SEED
-        : bundle.presentedBy === SELLER
-          ? SELLER_SEED
-          : null;
-      if (!seed || bundle.presentation.kind !== "per-claim" ||
-          bundle.presentation.signatures.length !== bundle.claims.length) {
-        return false;
-      }
-      return bundle.presentation.signatures.every((signature, index) =>
-        signature.ref === bundle.claims[index]?.ref &&
-        ed25519Verify(
-          bytes,
-          Uint8Array.from(Buffer.from(signature.signature, "base64url")),
-          publicKeyFromSeed(seed),
-        ));
-    },
+    verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) =>
+      verifyRoleIdentityPresentation(bundle, bundle.presentedBy, bytes),
     loadRailResolution: () => ({
       trustPhase: "PA-1",
       trustPolicyAcceptsPA1: true,
@@ -1012,6 +1125,7 @@ interface CommerceState {
   now: number;
   settled: boolean;
   buyerFinalityVisible: boolean;
+  terminalReplayMustBeReadOnly: boolean;
   loseResponseAcknowledgement: boolean;
   responseAcknowledgementLosses: number;
   delivered?: Awaited<ReturnType<DurableSellerFulfilmentDeps["submitDelivery"]>>;
@@ -1031,6 +1145,7 @@ function commerceState(loseResponseAcknowledgement = false): CommerceState {
     now: NOW + 4_000,
     settled: false,
     buyerFinalityVisible: false,
+    terminalReplayMustBeReadOnly: false,
     loseResponseAcknowledgement,
     responseAcknowledgementLosses: 0,
     counts: {
@@ -1097,6 +1212,7 @@ async function createSellerRuntime(input: {
   state: CommerceState;
   rejectSession?: boolean;
   deliveryFailure?: boolean;
+  buyerIdentityOverride?: IdentityBundle;
 }): Promise<SellerRuntime> {
   const {
     published,
@@ -1105,6 +1221,11 @@ async function createSellerRuntime(input: {
     state,
   } = input;
   const process: SellerProcessState = {};
+  const rejectTerminalReplayEffect = (effect: string): void => {
+    if (state.terminalReplayMustBeReadOnly) {
+      throw new Error(`terminal replay touched process-A-only ${effect}`);
+    }
+  };
   const settlementStore = await createFsX402PaywallSettlementStore({
     dir: input.settlementDir,
   });
@@ -1112,6 +1233,7 @@ async function createSellerRuntime(input: {
   const fulfilmentStore = await createFsFencedSessionStore({ dir: input.fulfilmentDir });
   const buyerHash = identityBundleHash(BUYER_IDENTITY);
   const sellerHash = identityBundleHash(SELLER_IDENTITY);
+  const resolvedBuyerIdentity = input.buyerIdentityOverride ?? BUYER_IDENTITY;
   const commitmentHash = contentHash(
     commitment.record as unknown as Record<string, unknown>,
   );
@@ -1184,6 +1306,27 @@ async function createSellerRuntime(input: {
       nonce: x402Eip3009Nonce(JOB_ID, PAYMENT_PHASE_INDEX),
     },
   };
+  const resolveAuthenticatedIdentityBundle = async (hash: string) => {
+    const role = hash === buyerHash
+      ? { bundle: resolvedBuyerIdentity, primaryClaim: BUYER }
+      : hash === sellerHash
+        ? { bundle: SELLER_IDENTITY, primaryClaim: SELLER }
+        : null;
+    const walletClaimIsBound = role?.primaryClaim !== BUYER ||
+      role.bundle.claims.some(({ ref }) => ref === BUYER_EVM_CLAIM);
+    if (!role || identityBundleHash(role.bundle) !== hash ||
+        !walletClaimIsBound ||
+        !await verifyRoleIdentityPresentation(role.bundle, role.primaryClaim)) {
+      return {
+        disposition: "rejected" as const,
+        reason: "identity presentation or exact bundle hash is not authenticated",
+      };
+    }
+    return {
+      disposition: "verified" as const,
+      bundle: structuredClone(role.bundle),
+    };
+  };
   const paymentIntakeDeps: Omit<SellerPaymentIntakeDeps, "receiptStore"> = {
     resolveCommittedAgreement: async () => committedResolution,
     resolveListingAtCommit: async () => listingResolution,
@@ -1192,11 +1335,16 @@ async function createSellerRuntime(input: {
       rail,
       railRegistryVersion,
     }),
-    resolveIdentityBundle: async (hash) => ({
-      disposition: "verified",
-      bundle: hash === buyerHash ? BUYER_IDENTITY : SELLER_IDENTITY,
-    }),
-    resolvePayerAddress: async () => ({ disposition: "verified", address: PAYER }),
+    resolveIdentityBundle: resolveAuthenticatedIdentityBundle,
+    resolvePayerAddress: async ({ payingKey, buyerBundle }) =>
+      payingKey === BUYER_EVM_CLAIM &&
+        buyerBundle.claims.some(({ ref }) => ref === BUYER_EVM_CLAIM) &&
+        await verifyRoleIdentityPresentation(buyerBundle, BUYER)
+        ? { disposition: "verified", address: PAYER }
+        : {
+            disposition: "rejected",
+            reason: "buyer wallet claim is not controlled by the presented DID",
+          },
     resolvePayeeDestination: async () => ({
       disposition: "bound",
       address: PAYEE,
@@ -1315,10 +1463,14 @@ async function createSellerRuntime(input: {
     resolveAgreement: async () => ({ status: "verified", value: fulfilmentAgreement }),
     resolveListing: async () => ({ status: "verified", value: fulfilmentListing }),
     resolveSessionRecord: async () => ({ status: "verified", value: sessionRecord() }),
-    prepareDelivery: async () => input.deliveryFailure
-      ? { status: "rejected", reason: "application rejected delivery" }
-      : { status: "prepared", delivery: { artifact: deliveredArtifact } },
+    prepareDelivery: async () => {
+      rejectTerminalReplayEffect("delivery preparation");
+      return input.deliveryFailure
+        ? { status: "rejected", reason: "application rejected delivery" }
+        : { status: "prepared", delivery: { artifact: deliveredArtifact } };
+    },
     submitDelivery: async () => {
+      rejectTerminalReplayEffect("delivery submission");
       state.counts.applicationCallback += 1;
       state.counts.delivery += 1;
       state.delivered = {
@@ -1327,20 +1479,26 @@ async function createSellerRuntime(input: {
       };
       return state.delivered;
     },
-    reconcileDelivery: async () => state.delivered
-      ? {
+    reconcileDelivery: async () => {
+      rejectTerminalReplayEffect("delivery reconciliation");
+      return state.delivered
+        ? {
           status: "complete",
           reconciliationId: `delivery:${JOB_ID}`,
           observedAt: state.now,
-        }
-      : { status: "absent", reason: "delivery absent" },
-    resolveDelivery: async () => ({
-      status: "verified",
-      value: {
-        artifact: deliveredArtifact,
-        anchorReceipt: finalizedReceipt(deliveryLogicalAddress, deliveredHash),
-      },
-    }),
+          }
+        : { status: "absent", reason: "delivery absent" };
+    },
+    resolveDelivery: async () => {
+      rejectTerminalReplayEffect("delivery readback");
+      return {
+        status: "verified",
+        value: {
+          artifact: deliveredArtifact,
+          anchorReceipt: finalizedReceipt(deliveryLogicalAddress, deliveredHash),
+        },
+      };
+    },
     verifyAnchorReceipt: verifySellerAnchorReceipt,
     evidenceSigner: {
       algorithm: "ed25519",
@@ -1349,6 +1507,7 @@ async function createSellerRuntime(input: {
     },
     verifyEvidenceSignature: verifySellerEvidenceSignature,
     anchorEvidence: async ({ evidence, evidenceHash }) => {
+      rejectTerminalReplayEffect("evidence publication");
       state.counts.evidence += 1;
       state.anchoredEvidence = structuredClone(evidence);
       state.evidencePublication = {
@@ -1368,9 +1527,12 @@ async function createSellerRuntime(input: {
       };
       return state.evidencePublication;
     },
-    resolveEvidence: async () => state.anchoredEvidence
-      ? { status: "verified", value: structuredClone(state.anchoredEvidence) }
-      : { status: "indeterminate", reason: "delivery evidence absent" },
+    resolveEvidence: async () => {
+      rejectTerminalReplayEffect("evidence readback");
+      return state.anchoredEvidence
+        ? { status: "verified" as const, value: structuredClone(state.anchoredEvidence) }
+        : { status: "indeterminate" as const, reason: "delivery evidence absent" };
+    },
     nowMs: () => state.now,
   };
   const fulfilmentDurability: SellerFulfilmentDurability = {
@@ -1378,19 +1540,29 @@ async function createSellerRuntime(input: {
     workerId: input.workerId,
     leaseTtlMs: 1_000,
     leaseNowMs: () => state.now,
-    reconcilePayloadAttestation: async () => ({
-      status: "absent",
-      reason: "storage delivery has no payload attestation",
-    }),
-    reconcileDeliverySubmission: async () => state.delivered ?? {
-      status: "absent",
-      reason: "delivery absent",
+    reconcilePayloadAttestation: async () => {
+      rejectTerminalReplayEffect("payload-attestation reconciliation");
+      return {
+        status: "absent",
+        reason: "storage delivery has no payload attestation",
+      };
     },
-    reconcileEvidencePublication: async () => state.evidencePublication ?? {
-      status: "absent",
-      reason: "evidence absent",
+    reconcileDeliverySubmission: async () => {
+      rejectTerminalReplayEffect("delivery-submission reconciliation");
+      return state.delivered ?? {
+        status: "absent",
+        reason: "delivery absent",
+      };
+    },
+    reconcileEvidencePublication: async () => {
+      rejectTerminalReplayEffect("evidence-publication reconciliation");
+      return state.evidencePublication ?? {
+        status: "absent",
+        reason: "evidence absent",
+      };
     },
     publishFinalSessionReceipt: async () => {
+      rejectTerminalReplayEffect("final receipt publication");
       state.counts.finalReceipt += 1;
       state.finalReceipt = {
         status: "recorded",
@@ -1398,9 +1570,12 @@ async function createSellerRuntime(input: {
       };
       return state.finalReceipt;
     },
-    reconcileFinalSessionReceipt: async () => state.finalReceipt ?? {
-      status: "absent",
-      reason: "final receipt absent",
+    reconcileFinalSessionReceipt: async () => {
+      rejectTerminalReplayEffect("final receipt reconciliation");
+      return state.finalReceipt ?? {
+        status: "absent",
+        reason: "final receipt absent",
+      };
     },
   };
   const scope: X402SellerCommittedSessionScope = {
@@ -1427,9 +1602,23 @@ async function createSellerRuntime(input: {
       ? { status: "settled", settlement: settlementResult() }
       : { status: "pending", reason: "settlement not observed" },
     receiptStore,
-    resolveCommittedSession: async () => input.rejectSession
-      ? { disposition: "rejected", reason: "seller policy rejected session" }
-      : { disposition: "verified", session: scope },
+    resolveCommittedSession: async () => {
+      if (input.rejectSession) {
+        return { disposition: "rejected", reason: "seller policy rejected session" };
+      }
+      const [buyerAdmission, sellerAdmission] = await Promise.all([
+        resolveAuthenticatedIdentityBundle(buyerHash),
+        resolveAuthenticatedIdentityBundle(sellerHash),
+      ]);
+      if (buyerAdmission.disposition !== "verified" ||
+          sellerAdmission.disposition !== "verified") {
+        return {
+          disposition: "rejected",
+          reason: "committed session identity presentation is not authenticated",
+        };
+      }
+      return { disposition: "verified", session: scope };
+    },
     paymentIntakeDeps,
     fulfilmentDeps,
     fulfilmentDurability,
@@ -1761,6 +1950,11 @@ async function settleAndRecover(input: {
   // Simulate a real process boundary: no process-A permit, fulfilment result,
   // callback closure, or rendered response remains available to process B.
   sellerA = undefined;
+  state.delivered = undefined;
+  state.anchoredEvidence = undefined;
+  state.evidencePublication = undefined;
+  state.finalReceipt = undefined;
+  state.terminalReplayMustBeReadOnly = true;
   state.now += 2_000;
   const seller = await createSellerRuntime({
     ...input,
@@ -2392,8 +2586,20 @@ async function closeDetachedRoleBundles(input: {
       deliveryEvidence.deliverableAnchor.locator,
     ),
   ];
-  const sellerAnchors = new Map<string, AnchoredSellerBundle>();
-  const buyerAnchors = new Map<string, AnchoredBuyerBundle>();
+  const externalDir = await tempDir("issue114-bundle-external");
+  const externalKey = {
+    sellerRequest: "transport:seller-request",
+    counterSignature: "transport:buyer-counter-signature",
+    sellerFinalization: "transport:seller-finalization",
+    sellerSignature: (idempotencyKey: string) =>
+      `signature:seller:${idempotencyKey}`,
+    buyerSignature: (idempotencyKey: string) =>
+      `signature:buyer:${idempotencyKey}`,
+    sellerAnchor: (logicalAddress: string) =>
+      `anchor:seller:${logicalAddress}`,
+    buyerAnchor: (logicalAddress: string) =>
+      `anchor:buyer:${logicalAddress}`,
+  } as const;
   const verifier = {
     resolvePublicKey: async (claim: string) => claim === BUYER
       ? rawPublicKey(publicKeyFromSeed(BUYER_SEED))
@@ -2602,10 +2808,13 @@ async function closeDetachedRoleBundles(input: {
           disposition: "invalid" as const,
           reason: "payment evidence anchor is not the exact PC-2 phase address",
         },
-    resolveSellerBundle: (logicalAddress: string) => {
-      const found = sellerAnchors.get(logicalAddress);
+    resolveSellerBundle: async (logicalAddress: string) => {
+      const found = await readExternalRecord<AnchoredSellerBundle>(
+        externalDir,
+        externalKey.sellerAnchor(logicalAddress),
+      );
       return found
-        ? { disposition: "present" as const, anchored: structuredClone(found) }
+        ? { disposition: "present" as const, anchored: found }
         : { disposition: "absent" as const };
     },
     verifyBundleAnchorReceipt: (anchored: Readonly<AnchoredSellerBundle>) =>
@@ -2630,7 +2839,10 @@ async function closeDetachedRoleBundles(input: {
       bundleHash: sellerSigner.bundleHash,
     },
   };
-  const request = prepareCompletedSellerBundleCounterSignatureRequest(sellerInput);
+  {
+    const processARequest = prepareCompletedSellerBundleCounterSignatureRequest(sellerInput);
+    await writeExternalRecord(externalDir, externalKey.sellerRequest, processARequest);
+  }
   let missingBuyerSignCalls = 0;
   let missingBuyerWrites = 0;
   await expect(finalizeCompletedSellerBundleCore({
@@ -2659,18 +2871,15 @@ async function closeDetachedRoleBundles(input: {
     sellerAnchor: 0,
     buyerSign: 0,
     counterSignaturePublication: 0,
+    sellerFinalizationPublication: 0,
     buyerAnchor: 0,
   };
-  const sellerSignatures = new Map<string, string>();
-  const buyerSignatures = new Map<string, string>();
-  let buyerCounterSignature: BundleSignature | undefined;
-  let retainedSellerFinalization:
-    | Awaited<ReturnType<typeof finalizeCompletedSellerBundleDurable>>
-    | undefined;
+  let loseCounterPublicationAcknowledgement = true;
+  let loseSellerSignatureAcknowledgement = true;
 
-  const sellerProvider = {
+  const createSellerProvider = (): DurableSellerBundleFinalizationProvider => ({
     ...sellerReadProvider,
-    submitSellerBundle: (
+    submitSellerBundle: async (
       logicalAddress: string,
       bundle: Readonly<FaultAttestationBundle>,
       fence: Readonly<SellerBundleEffectFence>,
@@ -2679,7 +2888,11 @@ async function closeDetachedRoleBundles(input: {
       const stored = structuredClone(bundle);
       const hash = attestationBundleHash(stored);
       const nativeAddress = `native:${sha256Hex(logicalAddress).slice(0, 24)}`;
-      const existing = sellerAnchors.get(logicalAddress);
+      const key = externalKey.sellerAnchor(logicalAddress);
+      const existing = await readExternalRecord<AnchoredSellerBundle>(
+        externalDir,
+        key,
+      );
       if (existing) {
         if (canonicalize(existing.bundle) !== canonicalize(stored)) {
           throw new Error("seller bundle idempotency key rebound to different bytes");
@@ -2687,23 +2900,26 @@ async function closeDetachedRoleBundles(input: {
         return;
       }
       effects.sellerAnchor += 1;
-      sellerAnchors.set(logicalAddress, {
+      await writeExternalRecord(externalDir, key, {
         bundle: stored,
         nativeAddress,
         anchorTx: `tx:${logicalAddress}`,
         anchorReceipt: finalizedReceipt(logicalAddress, hash),
       });
     },
-  } satisfies DurableSellerBundleFinalizationProvider;
-  const buyerProvider = {
+  });
+  const createBuyerProvider = (): DurableBuyerBundleFinalizationProvider => ({
     ...sellerReadProvider,
-    resolveBuyerBundle: (logicalAddress: string) => {
-      const found = buyerAnchors.get(logicalAddress);
+    resolveBuyerBundle: async (logicalAddress: string) => {
+      const found = await readExternalRecord<AnchoredBuyerBundle>(
+        externalDir,
+        externalKey.buyerAnchor(logicalAddress),
+      );
       return found
-        ? { disposition: "present" as const, anchored: structuredClone(found) }
+        ? { disposition: "present" as const, anchored: found }
         : { disposition: "absent" as const };
     },
-    submitBuyerBundle: (
+    submitBuyerBundle: async (
       logicalAddress: string,
       bundle: Readonly<FaultAttestationBundle>,
       fence: Readonly<BuyerBundleEffectFence>,
@@ -2712,7 +2928,11 @@ async function closeDetachedRoleBundles(input: {
       const stored = structuredClone(bundle);
       const hash = attestationBundleHash(stored);
       const nativeAddress = `native:${sha256Hex(logicalAddress).slice(0, 24)}`;
-      const existing = buyerAnchors.get(logicalAddress);
+      const key = externalKey.buyerAnchor(logicalAddress);
+      const existing = await readExternalRecord<AnchoredBuyerBundle>(
+        externalDir,
+        key,
+      );
       if (existing) {
         if (canonicalize(existing.bundle) !== canonicalize(stored)) {
           throw new Error("buyer bundle idempotency key rebound to different bytes");
@@ -2720,43 +2940,77 @@ async function closeDetachedRoleBundles(input: {
         return;
       }
       effects.buyerAnchor += 1;
-      buyerAnchors.set(logicalAddress, {
+      await writeExternalRecord(externalDir, key, {
         bundle: stored,
         nativeAddress,
         anchorTx: `tx:${logicalAddress}`,
         anchorReceipt: finalizedReceipt(logicalAddress, hash, BUYER),
       });
     },
-  } satisfies DurableBuyerBundleFinalizationProvider;
+  });
 
-  const sellerDurableInput: FinalizeCompletedSellerBundleDurableInput = {
+  const createSellerDurableInput = (
+    counterSignatures: BundleSignature[],
+    loseSignatureAcknowledgement = false,
+  ): FinalizeCompletedSellerBundleDurableInput => ({
     ...sellerInput,
+    counterSignatures: structuredClone(counterSignatures),
     seller: {
       primaryClaim: SELLER,
       bundleHash: identityBundleHash(SELLER_IDENTITY),
-      signer: (bytes, fence) => {
+      signer: async (bytes, fence) => {
         expect(fence.idempotencyKey.length).toBeGreaterThan(20);
+        const key = externalKey.sellerSignature(fence.idempotencyKey);
+        const existing = await readExternalRecord<string>(externalDir, key);
+        if (existing) {
+          const decoded = Uint8Array.from(Buffer.from(existing, "base64url"));
+          if (!ed25519Verify(bytes, decoded, publicKeyFromSeed(SELLER_SEED))) {
+            throw new Error("durable seller signature is rebound to another message");
+          }
+          return decoded;
+        }
         effects.sellerSign += 1;
         const value = ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED));
-        sellerSignatures.set(
-          fence.idempotencyKey,
+        await writeExternalRecord(
+          externalDir,
+          key,
           Buffer.from(value).toString("base64url"),
         );
+        if (loseSignatureAcknowledgement && loseSellerSignatureAcknowledgement) {
+          loseSellerSignatureAcknowledgement = false;
+          throw new Error("lost seller signature acknowledgement");
+        }
         return value;
       },
     },
-  };
-  const sellerDurability: SellerBundleFinalizationDurability = {
-    store: input.settlement.seller.fulfilmentStore,
-    workerId: "seller-bundle-process-a",
+  });
+  const createSellerDurability = (
+    store: Awaited<ReturnType<typeof createFsFencedSessionStore>>,
+    workerId: string,
+  ): SellerBundleFinalizationDurability => ({
+    store,
+    workerId,
     leaseTtlMs: 1_000,
     leaseNowMs: () => input.settlement.state.now,
     terminalVerification: {
       verifyEvidenceSignature: verifySellerEvidenceSignature,
       verifyAnchorReceipt: verifySellerAnchorReceipt,
     },
-    reconcileSignature: ({ fence }) => {
-      const value = sellerSignatures.get(fence.idempotencyKey);
+    reconcileSignature: async ({ signedBytes: bytes, fence }) => {
+      const value = await readExternalRecord<string>(
+        externalDir,
+        externalKey.sellerSignature(fence.idempotencyKey),
+      );
+      if (value && !ed25519Verify(
+        bytes,
+        Uint8Array.from(Buffer.from(value, "base64url")),
+        publicKeyFromSeed(SELLER_SEED),
+      )) {
+        return {
+          disposition: "indeterminate" as const,
+          reason: "seller signature is rebound",
+        };
+      }
       return value
         ? { disposition: "signed" as const, value }
         : {
@@ -2764,9 +3018,19 @@ async function closeDetachedRoleBundles(input: {
             reason: "seller signature is absent",
           };
     },
-    reconcileBundleAnchor: ({ logicalAddress, bundleContentHash }) => {
-      const anchored = sellerAnchors.get(logicalAddress);
-      return anchored && anchored.anchorReceipt.contentHash === bundleContentHash
+    reconcileBundleAnchor: async ({ logicalAddress, bundleContentHash }) => {
+      const anchored = await readExternalRecord<AnchoredSellerBundle>(
+        externalDir,
+        externalKey.sellerAnchor(logicalAddress),
+      );
+      return anchored &&
+          anchored.anchorReceipt.logicalAddress === logicalAddress &&
+          anchored.anchorReceipt.contentHash === bundleContentHash &&
+          anchored.anchorReceipt.nativeAddress === anchored.nativeAddress &&
+          attestationBundleHash(
+            anchored.bundle as FaultAttestationBundle,
+          ) === bundleContentHash &&
+          verifyLocalReceipt(anchored.anchorReceipt)
         ? { disposition: "present" as const }
         : {
             disposition: "authoritatively-absent" as const,
@@ -2777,7 +3041,7 @@ async function closeDetachedRoleBundles(input: {
       disposition: "authoritatively-absent",
       reason: "pure bundle mapping has no binding publication",
     }),
-  };
+  });
 
   const buyerStoreDir = await tempDir("issue114-buyer-bundle");
   let buyerStore = await createFsFencedSessionStore({ dir: buyerStoreDir });
@@ -2787,63 +3051,118 @@ async function closeDetachedRoleBundles(input: {
     phase: "settled",
     now: input.settlement.state.now,
   });
-  const buyerInput: DurableBuyerBundleFinalizationInput = {
+  const createBuyerInput = (): DurableBuyerBundleFinalizationInput => ({
     sellerVerificationInput: requestVerificationInput,
     settlementContext: input.sellerSettlement.context,
     settlement: input.sellerSettlement.settlement,
     buyer: {
       primaryClaim: BUYER,
       bundleHash: identityBundleHash(BUYER_IDENTITY),
-      signer: (bytes, fence) => {
+      signer: async (bytes, fence) => {
         expect(fence.idempotencyKey.length).toBeGreaterThan(20);
+        const key = externalKey.buyerSignature(fence.idempotencyKey);
+        const existing = await readExternalRecord<string>(externalDir, key);
+        if (existing) {
+          const decoded = Uint8Array.from(Buffer.from(existing, "base64url"));
+          if (!ed25519Verify(bytes, decoded, publicKeyFromSeed(BUYER_SEED))) {
+            throw new Error("durable buyer signature is rebound to another message");
+          }
+          return decoded;
+        }
         effects.buyerSign += 1;
         const value = ed25519Sign(bytes, privateKeyFromSeed(BUYER_SEED));
-        buyerSignatures.set(
-          fence.idempotencyKey,
+        await writeExternalRecord(
+          externalDir,
+          key,
           Buffer.from(value).toString("base64url"),
         );
         return value;
       },
     },
-  };
-  const buyerDurability: BuyerBundleFinalizationDurability = {
-    store: buyerStore,
-    workerId: "buyer-bundle-process-a",
+  });
+  const createBuyerDurability = (
+    store: Awaited<ReturnType<typeof createFsFencedSessionStore>>,
+    workerId: string,
+    losePublicationAcknowledgement = false,
+  ): BuyerBundleFinalizationDurability => ({
+    store,
+    workerId,
     leaseTtlMs: 1_000,
     leaseNowMs: () => input.settlement.state.now,
     settlementVerification: input.sellerSettlement.provider,
     transport: {
-      resolveSellerRequest: () => ({
-        disposition: "present",
-        value: structuredClone(request),
-      }),
-      publishCounterSignature: ({ signature }, fence) => {
+      resolveSellerRequest: async () => {
+        const retained = await readExternalRecord<unknown>(
+          externalDir,
+          externalKey.sellerRequest,
+        );
+        return retained
+          ? { disposition: "present" as const, value: retained }
+          : {
+              disposition: "absent" as const,
+              reason: "seller request is absent",
+            };
+      },
+      publishCounterSignature: async ({ signature }, fence) => {
         expect(fence.idempotencyKey.length).toBeGreaterThan(20);
-        if (!buyerCounterSignature) effects.counterSignaturePublication += 1;
-        buyerCounterSignature = structuredClone(signature);
+        const existing = await readExternalRecord<BundleSignature>(
+          externalDir,
+          externalKey.counterSignature,
+        );
+        if (existing && canonicalize(existing) !== canonicalize(signature)) {
+          throw new Error("counter-signature publication is rebound");
+        }
+        if (!existing) {
+          effects.counterSignaturePublication += 1;
+          await writeExternalRecord(
+            externalDir,
+            externalKey.counterSignature,
+            signature,
+          );
+        }
+        if (losePublicationAcknowledgement && loseCounterPublicationAcknowledgement) {
+          loseCounterPublicationAcknowledgement = false;
+          throw new Error("lost counter-signature publication acknowledgement");
+        }
         return { disposition: "published" };
       },
-      resolveCounterSignatures: () => buyerCounterSignature
-        ? {
-            disposition: "present",
-            value: [structuredClone(buyerCounterSignature)],
-          }
-        : {
-            disposition: "absent",
-            reason: "buyer counter-signature is not published",
-          },
-      resolveSellerFinalization: () => retainedSellerFinalization
-        ? {
-            disposition: "present",
-            value: structuredClone(retainedSellerFinalization),
-          }
-        : {
-            disposition: "absent",
-            reason: "seller is waiting for the buyer counter-signature",
-          },
+      resolveCounterSignatures: async () => {
+        const retained = await readExternalRecord<BundleSignature>(
+          externalDir,
+          externalKey.counterSignature,
+        );
+        return retained
+          ? { disposition: "present" as const, value: [retained] }
+          : {
+              disposition: "absent" as const,
+              reason: "buyer counter-signature is not published",
+            };
+      },
+      resolveSellerFinalization: async () => {
+        const retained = await readExternalRecord<unknown>(
+          externalDir,
+          externalKey.sellerFinalization,
+        );
+        return retained
+          ? { disposition: "present" as const, value: retained }
+          : {
+              disposition: "absent" as const,
+              reason: "seller is waiting for the buyer counter-signature",
+            };
+      },
     },
-    reconcileSignature: ({ fence }) => {
-      const value = buyerSignatures.get(fence.idempotencyKey);
+    reconcileSignature: async ({ signedBytes: bytes, fence }) => {
+      const value = await readExternalRecord<string>(
+        externalDir,
+        externalKey.buyerSignature(fence.idempotencyKey),
+      );
+      if (value && !ed25519Verify(
+        bytes,
+        Uint8Array.from(Buffer.from(value, "base64url")),
+        publicKeyFromSeed(BUYER_SEED),
+      )) {
+        return { disposition: "rejected", reason: "buyer signature is rebound" };
+      }
       return value
         ? { disposition: "signed" as const, value }
         : {
@@ -2851,18 +3170,37 @@ async function closeDetachedRoleBundles(input: {
             reason: "buyer signature is absent",
           };
     },
-    reconcileCounterSignaturePublication: () => buyerCounterSignature
-      ? {
-          disposition: "present",
-          signature: structuredClone(buyerCounterSignature),
-        }
-      : {
-          disposition: "authoritatively-absent",
-          reason: "buyer counter-signature publication is absent",
-        },
-    reconcileBuyerBundleAnchor: ({ logicalAddress, bundleContentHash }) => {
-      const anchored = buyerAnchors.get(logicalAddress);
-      return anchored && anchored.anchorReceipt.contentHash === bundleContentHash
+    reconcileCounterSignaturePublication: async ({ signature }) => {
+      const retained = await readExternalRecord<BundleSignature>(
+        externalDir,
+        externalKey.counterSignature,
+      );
+      if (retained && canonicalize(retained) !== canonicalize(signature)) {
+        return {
+          disposition: "rejected" as const,
+          reason: "counter-signature publication is substituted",
+        };
+      }
+      return retained
+        ? { disposition: "present" as const, signature: retained }
+        : {
+            disposition: "authoritatively-absent" as const,
+            reason: "buyer counter-signature publication is absent",
+          };
+    },
+    reconcileBuyerBundleAnchor: async ({ logicalAddress, bundleContentHash }) => {
+      const anchored = await readExternalRecord<AnchoredBuyerBundle>(
+        externalDir,
+        externalKey.buyerAnchor(logicalAddress),
+      );
+      return anchored &&
+          anchored.anchorReceipt.logicalAddress === logicalAddress &&
+          anchored.anchorReceipt.contentHash === bundleContentHash &&
+          anchored.anchorReceipt.nativeAddress === anchored.nativeAddress &&
+          attestationBundleHash(
+            anchored.bundle as FaultAttestationBundle,
+          ) === bundleContentHash &&
+          verifyLocalReceipt(anchored.anchorReceipt)
         ? { disposition: "present" as const }
         : {
             disposition: "authoritatively-absent" as const,
@@ -2873,60 +3211,169 @@ async function closeDetachedRoleBundles(input: {
       disposition: "authoritatively-absent",
       reason: "pure bundle mapping has no binding publication",
     }),
-  };
+  });
 
+  const interruptedBuyer = await advanceCompletedBuyerBundleDurable(
+    createBuyerInput(),
+    createBuyerProvider(),
+    createBuyerDurability(
+      buyerStore,
+      "buyer-bundle-process-a",
+      true,
+    ),
+  );
+  expect(interruptedBuyer).toMatchObject({
+    disposition: "indeterminate",
+    stage: "counter-signature-publication",
+    reason: "lost counter-signature publication acknowledgement",
+  });
+  expect(loseCounterPublicationAcknowledgement).toBe(false);
+
+  // Process B owns no process-A signature or transport cache. It reopens both
+  // its SDK store and the independently persisted publication through fresh adapters.
+  buyerStore = await createFsFencedSessionStore({ dir: buyerStoreDir });
   const waitingForSeller = await advanceCompletedBuyerBundleDurable(
-    buyerInput,
-    buyerProvider,
-    buyerDurability,
+    createBuyerInput(),
+    createBuyerProvider(),
+    createBuyerDurability(buyerStore, "buyer-bundle-process-b"),
   );
   expect(waitingForSeller).toMatchObject({
     disposition: "waiting",
     stage: "seller-finalisation",
   });
-  if (!buyerCounterSignature) {
-    throw new Error("durable buyer did not publish its counter-signature");
+  const readAuthenticatedBuyerCounterSignature = async (): Promise<BundleSignature> => {
+    const [retainedSellerRequest, retainedCounterSignature] = await Promise.all([
+      readExternalRecord<unknown>(externalDir, externalKey.sellerRequest),
+      readExternalRecord<BundleSignature>(externalDir, externalKey.counterSignature),
+    ]);
+    if (!retainedCounterSignature) {
+      throw new Error("fresh seller process could not recover the buyer counter-signature");
+    }
+    const authenticatedSellerRequest =
+      await verifyCompletedSellerBundleCounterSignatureRequest(
+        structuredClone(requestVerificationInput),
+        retainedSellerRequest,
+        createSellerProvider(),
+      );
+    expect(retainedCounterSignature).toMatchObject({
+      algorithm: "ed25519",
+      party: BUYER,
+    });
+    expect(ed25519Verify(
+      authenticatedSellerRequest.signedBytes,
+      Uint8Array.from(Buffer.from(retainedCounterSignature.value, "base64url")),
+      publicKeyFromSeed(BUYER_SEED),
+    )).toBe(true);
+    return structuredClone(retainedCounterSignature);
+  };
+
+  let sellerBundleStore = await createFsFencedSessionStore({
+    dir: input.settlement.sellerDirs.fulfilment,
+  });
+  await (async () => {
+    const processBCounterSignature = await readAuthenticatedBuyerCounterSignature();
+    await expect(finalizeCompletedSellerBundleDurable(
+      createSellerDurableInput([processBCounterSignature], true),
+      createSellerProvider(),
+      createSellerDurability(sellerBundleStore, "seller-bundle-process-b"),
+    )).rejects.toThrow("seller bundle signing failed");
+  })();
+  expect(loseSellerSignatureAcknowledgement).toBe(false);
+
+  // Process C recovers and authenticates the request, counter-signature, and
+  // seller signature again before it performs the one seller anchor write.
+  sellerBundleStore = await createFsFencedSessionStore({
+    dir: input.settlement.sellerDirs.fulfilment,
+  });
+  await (async () => {
+    const processCCounterSignature = await readAuthenticatedBuyerCounterSignature();
+    const produced = await finalizeCompletedSellerBundleDurable(
+      createSellerDurableInput([processCCounterSignature]),
+      createSellerProvider(),
+      createSellerDurability(sellerBundleStore, "seller-bundle-process-c"),
+    );
+    expect(await verifyBundleCopy(
+      produced.sellerBundle as unknown as Record<string, unknown>,
+      "seller",
+      verifier,
+    )).toMatchObject({ valid: true, fullySigned: true });
+    effects.sellerFinalizationPublication += 1;
+    await writeExternalRecord(
+      externalDir,
+      externalKey.sellerFinalization,
+      produced,
+    );
+  })();
+  const sellerFinalization = await readExternalRecord<
+    Awaited<ReturnType<typeof finalizeCompletedSellerBundleDurable>>
+  >(externalDir, externalKey.sellerFinalization);
+  if (!sellerFinalization) {
+    throw new Error("seller finalization handoff was not durably published");
   }
-  sellerDurableInput.counterSignatures = [structuredClone(buyerCounterSignature)];
-  retainedSellerFinalization = await finalizeCompletedSellerBundleDurable(
-    sellerDurableInput,
-    sellerProvider,
-    sellerDurability,
+  expect(attestationBundleHash(sellerFinalization.sellerBundle)).toBe(
+    sellerFinalization.bundleContentHash,
   );
+  expect(sellerFinalization.logicalAddress).toBe(bundleAddress(JOB_ID, "seller"));
+  expect(sellerFinalization.anchorReceipt).toMatchObject({
+    logicalAddress: sellerFinalization.logicalAddress,
+    nativeAddress: sellerFinalization.nativeAddress,
+    contentHash: sellerFinalization.bundleContentHash,
+    writer: SELLER,
+    state: "finalized",
+  });
+  expect(verifyLocalReceipt(sellerFinalization.anchorReceipt)).toBe(true);
+  expect(await verifyBundleCopy(
+    sellerFinalization.sellerBundle as unknown as Record<string, unknown>,
+    "seller",
+    verifier,
+  )).toMatchObject({ valid: true, fullySigned: true });
+  expect(await verifyBundleCopy(
+    sellerFinalization.buyerBundle as unknown as Record<string, unknown>,
+    "buyer",
+    verifier,
+  )).toMatchObject({ valid: true, fullySigned: true });
+  const sellerFinalizationAnchor = await readExternalRecord<AnchoredSellerBundle>(
+    externalDir,
+    externalKey.sellerAnchor(sellerFinalization.logicalAddress),
+  );
+  if (!sellerFinalizationAnchor) {
+    throw new Error("seller finalization anchor is not externally readable");
+  }
+  expect(sellerFinalizationAnchor).toMatchObject({
+    nativeAddress: sellerFinalization.nativeAddress,
+    anchorReceipt: sellerFinalization.anchorReceipt,
+  });
+  expect(canonicalize(sellerFinalizationAnchor.bundle)).toBe(
+    canonicalize(sellerFinalization.sellerBundle),
+  );
+
+  buyerStore = await createFsFencedSessionStore({ dir: buyerStoreDir });
   const completedBuyer = await advanceCompletedBuyerBundleDurable(
-    buyerInput,
-    buyerProvider,
-    buyerDurability,
+    createBuyerInput(),
+    createBuyerProvider(),
+    createBuyerDurability(buyerStore, "buyer-bundle-process-c"),
   );
   expect(completedBuyer.disposition).toBe("finalised");
   if (completedBuyer.disposition !== "finalised") {
     throw new Error(completedBuyer.reason);
   }
-  const sellerFinalization = retainedSellerFinalization;
   const buyerFinalization = completedBuyer.result;
 
   const beforeReplay = structuredClone(effects);
   const sellerReplayStore = await createFsFencedSessionStore({
     dir: input.settlement.sellerDirs.fulfilment,
   });
+  const processDCounterSignature = await readAuthenticatedBuyerCounterSignature();
   const sellerReplay = await finalizeCompletedSellerBundleDurable(
-    sellerDurableInput,
-    sellerProvider,
-    {
-      ...sellerDurability,
-      store: sellerReplayStore,
-      workerId: "seller-bundle-process-b",
-    },
+    createSellerDurableInput([processDCounterSignature]),
+    createSellerProvider(),
+    createSellerDurability(sellerReplayStore, "seller-bundle-process-d"),
   );
   buyerStore = await createFsFencedSessionStore({ dir: buyerStoreDir });
   const buyerReplay = await advanceCompletedBuyerBundleDurable(
-    buyerInput,
-    buyerProvider,
-    {
-      ...buyerDurability,
-      store: buyerStore,
-      workerId: "buyer-bundle-process-b",
-    },
+    createBuyerInput(),
+    createBuyerProvider(),
+    createBuyerDurability(buyerStore, "buyer-bundle-process-d"),
   );
   expect(sellerReplay.bundleContentHash).toBe(sellerFinalization.bundleContentHash);
   expect(buyerReplay).toMatchObject({ disposition: "finalised", recovered: true });
@@ -2936,14 +3383,22 @@ async function closeDetachedRoleBundles(input: {
     sellerAnchor: 1,
     buyerSign: 1,
     counterSignaturePublication: 1,
+    sellerFinalizationPublication: 1,
     buyerAnchor: 1,
   });
-  const retainedSellerBytes = canonicalize(
-    sellerAnchors.get(bundleAddress(JOB_ID, "seller"))!.bundle,
+  const retainedSellerAnchor = await readExternalRecord<AnchoredSellerBundle>(
+    externalDir,
+    externalKey.sellerAnchor(bundleAddress(JOB_ID, "seller")),
   );
-  const retainedBuyerBytes = canonicalize(
-    buyerAnchors.get(bundleAddress(JOB_ID, "buyer"))!.bundle,
+  const retainedBuyerAnchor = await readExternalRecord<AnchoredBuyerBundle>(
+    externalDir,
+    externalKey.buyerAnchor(bundleAddress(JOB_ID, "buyer")),
   );
+  if (!retainedSellerAnchor || !retainedBuyerAnchor) {
+    throw new Error("fresh external adapter could not recover both role anchors");
+  }
+  const retainedSellerBytes = canonicalize(retainedSellerAnchor.bundle);
+  const retainedBuyerBytes = canonicalize(retainedBuyerAnchor.bundle);
   (sellerReplay.sellerBundle as unknown as {
     phaseSummary: Array<{ outcome: string }>;
   }).phaseSummary[0]!.outcome = "tampered";
@@ -2954,12 +3409,14 @@ async function closeDetachedRoleBundles(input: {
       }).phaseSummary[0]!.outcome = "tampered";
     }).toThrow();
   }
-  expect(canonicalize(
-    sellerAnchors.get(bundleAddress(JOB_ID, "seller"))!.bundle,
-  )).toBe(retainedSellerBytes);
-  expect(canonicalize(
-    buyerAnchors.get(bundleAddress(JOB_ID, "buyer"))!.bundle,
-  )).toBe(retainedBuyerBytes);
+  expect(canonicalize((await readExternalRecord<AnchoredSellerBundle>(
+    externalDir,
+    externalKey.sellerAnchor(bundleAddress(JOB_ID, "seller")),
+  ))!.bundle)).toBe(retainedSellerBytes);
+  expect(canonicalize((await readExternalRecord<AnchoredBuyerBundle>(
+    externalDir,
+    externalKey.buyerAnchor(bundleAddress(JOB_ID, "buyer")),
+  ))!.bundle)).toBe(retainedBuyerBytes);
   expect(sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
   expect(buyerFinalization.buyerBundle.anchoredByRole).toBe("buyer");
   expect(await verifyBundleCopy(
@@ -2985,10 +3442,8 @@ async function closeDetachedRoleBundles(input: {
     isValid: async (bundle, role) =>
       (await verifyBundleCopy(bundle, role, verifier)).valid,
   })).toBe("unified");
-  expect(Object.hasOwn(sellerProvider, "submitBuyerBundle")).toBe(false);
-  expect(Object.hasOwn(buyerProvider, "submitSellerBundle")).toBe(false);
-  expect([...sellerAnchors.keys()]).toEqual([bundleAddress(JOB_ID, "seller")]);
-  expect([...buyerAnchors.keys()]).toEqual([bundleAddress(JOB_ID, "buyer")]);
+  expect(Object.hasOwn(createSellerProvider(), "submitBuyerBundle")).toBe(false);
+  expect(Object.hasOwn(createBuyerProvider(), "submitSellerBundle")).toBe(false);
   return {
     sellerFinalization,
     buyerFinalization,
@@ -3022,6 +3477,14 @@ function fundedPreflight(input: FundedPreflightInput):
 }
 
 async function commerceFixture() {
+  const [buyerPresentation, sellerPresentation] = await Promise.all([
+    verifyRoleIdentityPresentation(BUYER_IDENTITY, BUYER),
+    verifyRoleIdentityPresentation(SELLER_IDENTITY, SELLER),
+  ]);
+  expect({ buyerPresentation, sellerPresentation }).toEqual({
+    buyerPresentation: true,
+    sellerPresentation: true,
+  });
   const published = await publishAndDiscoverListing();
   const agreement = await negotiateAgreement(
     published,
@@ -3111,6 +3574,72 @@ describe("issue #114 deterministic public two-agent precursor", () => {
     expect(signerCalls).toBe(0);
   });
 
+  test("seller intake rejects unproven buyer wallet/DID linkage before any write", async () => {
+    const fixture = await commerceFixture();
+    const badSignature = structuredClone(BUYER_IDENTITY);
+    if (badSignature.presentation.kind !== "per-claim") {
+      throw new Error("buyer fixture requires per-claim signatures");
+    }
+    const walletSignature = badSignature.presentation.signatures.find(
+      ({ ref }) => ref === BUYER_EVM_CLAIM,
+    );
+    if (!walletSignature) throw new Error("buyer wallet signature is absent");
+    walletSignature.signature = `${walletSignature.signature.slice(0, -1)}${
+      walletSignature.signature.endsWith("0") ? "1" : "0"
+    }`;
+
+    const badAddress = structuredClone(BUYER_IDENTITY);
+    if (badAddress.presentation.kind !== "per-claim") {
+      throw new Error("buyer fixture requires per-claim signatures");
+    }
+    const replacementClaim =
+      `cci-xm:evm:base-sepolia:0x${"44".repeat(20)}`;
+    const walletClaim = badAddress.claims.find(({ ref }) => ref === BUYER_EVM_CLAIM);
+    const walletPresentation = badAddress.presentation.signatures.find(
+      ({ ref }) => ref === BUYER_EVM_CLAIM,
+    );
+    if (!walletClaim || !walletPresentation) {
+      throw new Error("buyer wallet claim is absent");
+    }
+    walletClaim.ref = replacementClaim;
+    walletPresentation.ref = replacementClaim;
+
+    for (const [name, buyerIdentityOverride] of [
+      ["bad-signature", badSignature],
+      ["bad-address", badAddress],
+    ] as const) {
+      const state = commerceState();
+      const settlementDir = await tempDir(`issue114-${name}-settlement`);
+      const receiptDir = await tempDir(`issue114-${name}-receipt`);
+      const fulfilmentDir = await tempDir(`issue114-${name}-fulfilment`);
+      const seller = await createSellerRuntime({
+        ...fixture,
+        settlementDir,
+        receiptDir,
+        fulfilmentDir,
+        workerId: `seller-${name}`,
+        state,
+        buyerIdentityOverride,
+      });
+      await expect(seller.runPaidRequest(await validPaymentHeader())).resolves.toMatchObject({
+        disposition: "rejected",
+        settled: false,
+      });
+      expect(state.counts).toEqual({
+        paidRequests: 1,
+        settlement: 0,
+        applicationCallback: 0,
+        delivery: 0,
+        evidence: 0,
+        finalReceipt: 0,
+        render: 0,
+      });
+      expect(await filesBelow(settlementDir)).toEqual([]);
+      expect(await filesBelow(receiptDir)).toEqual([]);
+      expect(await filesBelow(fulfilmentDir)).toEqual([]);
+    }
+  });
+
   test("rejects a seller identity that does not control the pinned Listing", async () => {
     const published = await publishAndDiscoverListing();
     expect(() => deriveFixedPriceAgreement({
@@ -3175,7 +3704,7 @@ describe("issue #114 deterministic public two-agent precursor", () => {
     expect(state.counts.settlement).toBe(1);
     expect(state.counts.applicationCallback).toBe(0);
     expect(state.counts.delivery).toBe(0);
-  });
+  }, 20_000);
 
   test("rejects completed bundle closure when the seller co-signature is missing", async () => {
     await expect(buildTwoSidedBundle({
