@@ -265,6 +265,7 @@ export {
   type SessionTerms,
   type SettleRequest,
   type SettleResult,
+  type SettlementRecoveryAttempt,
   // Durable session store / checkpoint API (#55) — restart-safe orchestration.
   assertCheckpointPayloadShape,
   createInMemorySessionStore,

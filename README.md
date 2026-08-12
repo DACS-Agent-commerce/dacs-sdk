@@ -63,6 +63,9 @@ if (compatibility !== "normative") throw new Error("legacy Listing refused");
 const rail = await createX402Rail({ evmPrivateKey });
 const session = await agent.runSession(listingRef, {
   terms,
+  // Bind the cross-namespace EVM destination into the signed Agreement and
+  // durable recovery state. Same-namespace rails may omit this option.
+  expectedSettlementPayee: recipientEvm,
   // optional Vet step: resolve a steward recipe + verify the seller before paying
   vet: (subject) =>
     resolveRecipe(recipeRegistryRef, "self-signed", {
@@ -84,8 +87,10 @@ const rep = await agent.getReputation(primaryClaim, bundleRefs);
 
 `session.listingPin` is the exact DACS-1 §6.3.4 LR-1
 `(listingId, listingVersion, contentHash)` tuple used by the session. To resume an
-interrupted session safely, pass the prior `jobId` to `runSession` — anchored
-artifacts are reused and settlement is never repeated.
+interrupted session, pass the prior `jobId` to `runSession`; anchored artifacts
+are reused. No-repayment across a whole-process crash additionally requires a
+durable `sessionStore` and a rail-idempotent `resumeSettlement` implementation—a
+job id alone cannot prove whether a lost rail response moved value.
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 

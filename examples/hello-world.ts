@@ -16,6 +16,7 @@
  *   PAYWALL_URL        seller's paywalled delivery URL (returns HTTP 402)
  *   PAY_NETWORK        CAIP-2 network, e.g. eip155:84532 (Base Sepolia)
  *   SELLER_EVM         seller EVM address that x402 pays
+ *   PAY_TOKEN          ERC-20 contract address advertised by the 402 response
  *
  *   npx tsx examples/hello-world.ts
  */
@@ -90,6 +91,7 @@ async function main(): Promise<void> {
   });
 
   const rail = await createX402Rail({ evmPrivateKey: env("BUYER_EVM_KEY") });
+  const sellerEvm = env("SELLER_EVM");
 
   const session = await buyer.runSession(published.ref, {
     terms: {
@@ -103,6 +105,7 @@ async function main(): Promise<void> {
       deliveryPhase: "deliver-attested-payload",
       deliveryFormat: "application/json",
     },
+    expectedSettlementPayee: sellerEvm,
     // Optional Vet step: verify the seller before paying. The session aborts
     // before settlement if it fails. In production resolve the recipe from the
     // steward registry (resolveRecipe) instead of inlining it.
@@ -114,7 +117,8 @@ async function main(): Promise<void> {
     settle: x402Settle(rail, {
       url: env("PAYWALL_URL"),
       network: env("PAY_NETWORK"),
-      recipientEvm: env("SELLER_EVM"),
+      recipientEvm: sellerEvm,
+      asset: env("PAY_TOKEN"),
     }),
   });
   console.log("session", session.outcome, "→ bundle", session.bundleRef);
@@ -122,8 +126,8 @@ async function main(): Promise<void> {
   // ── Anyone: independently verify the attestation bundle ──
   const verdict = await buyer.verifyBundle(session.bundleRef);
   console.log("bundle ok:", verdict.ok, "| fully verified:", verdict.fullyVerified);
-  for (const a of verdict.artifacts) {
-    console.log(`  ${a.kind}: ${a.signature}`);
+  for (const ref of verdict.refs) {
+    console.log(`  ${ref.kind}/${ref.id}: ${ref.verdict}`);
   }
 }
 

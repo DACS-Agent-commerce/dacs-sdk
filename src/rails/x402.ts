@@ -4,6 +4,7 @@ import type {
   PaymentPayloadResult,
   PaymentRequirements,
   SchemeNetworkClient,
+  SettleResponse,
 } from "@x402/core/types";
 import {
   createIdempotencyStore,
@@ -47,7 +48,7 @@ export interface X402ClientLike {
   encodePaymentSignatureHeader(payload: unknown): Record<string, string>;
   getPaymentSettleResponse(
     getHeader: (name: string) => string | null,
-  ): { transaction?: string } | undefined;
+  ): SettleResponse | undefined;
 }
 
 /** Per-session settlement inputs, derived from the negotiated agreement. */
@@ -232,26 +233,60 @@ export async function x402SettleCore(
     headers,
   });
 
-  // 5. Read the settlement tx hash from X-PAYMENT-RESPONSE. A money-safe receipt
-  //    needs a verifiable on-chain transaction id — without it the SettlementEvidence
-  //    would assert a provider-receipt finality that nobody can independently
-  //    check. So success REQUIRES both a passing gate (final.ok) and a non-empty
-  //    transaction id; a 200 with no parseable tx is reported as a non-success
-  //    settlement (ok:false) rather than an unverifiable "success".
-  let txHash = "";
+  // 5. Read and authenticate the settlement response. HTTP success only means
+  //    the paid request completed; the x402 receipt is authoritative for whether
+  //    settlement succeeded. Bind that receipt back to the negotiated network,
+  //    buyer, and (when the facilitator reports it) exact base-unit amount.
+  let settlement: SettleResponse | undefined;
   try {
-    txHash =
-      client.getPaymentSettleResponse((name) => final.headers.get(name))
-        ?.transaction ?? "";
+    settlement = client.getPaymentSettleResponse((name) =>
+      final.headers.get(name),
+    );
   } catch {
-    txHash = "";
+    settlement = undefined;
   }
 
+  const txHash =
+    typeof settlement?.transaction === "string" ? settlement.transaction : "";
+  const txHashValid =
+    txHash.length > 0 && txHash.trim() === txHash;
+  const reportedNetwork = settlement?.network;
+  const networkValid =
+    typeof reportedNetwork === "string" &&
+    reportedNetwork.length > 0 &&
+    reportedNetwork.trim() === reportedNetwork;
+  const responseNetwork =
+    networkValid ? reportedNetwork : params.network;
+  const reportedPayer = settlement?.payer;
+  const payerValid =
+    typeof reportedPayer === "string" &&
+    reportedPayer.length > 0 &&
+    reportedPayer.trim() === reportedPayer;
+  const responsePayer =
+    payerValid ? reportedPayer : payerAddress;
+  const payerMatches =
+    reportedPayer === undefined ||
+    (payerValid && responsePayer.toLowerCase() === payerAddress.toLowerCase());
+  const reportedAmount = settlement?.amount;
+  const amountMatches =
+    reportedAmount === undefined ||
+    (typeof reportedAmount === "string" &&
+      reportedAmount.length > 0 &&
+      reportedAmount.trim() === reportedAmount &&
+      sameAmount(reportedAmount, params.amount));
+  const receiptMatches =
+    settlement?.success === true &&
+    txHashValid &&
+    networkValid &&
+    responseNetwork === params.network &&
+    payerMatches &&
+    amountMatches;
+
   return {
-    ok: final.ok && txHash.trim().length > 0,
+    ok: final.ok && receiptMatches,
     txHash,
-    chainId: params.network,
-    payer: payerAddress,
+    chainId: responseNetwork,
+    payer: responsePayer,
     payee: params.recipientEvm,
   };
 }

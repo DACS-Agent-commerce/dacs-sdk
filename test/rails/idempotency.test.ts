@@ -232,4 +232,13 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
       /exact NFC/,
     );
   });
+
+  test("settlementKey rejects delimiter collisions between rail and job ids", () => {
+    expect(settlementKey("x402:default", "job", 0)).toBe(
+      "x402:default:job:0",
+    );
+    expect(() => settlementKey("x402", "default:job", 0)).toThrow(
+      /colon-free job id/,
+    );
+  });
 });

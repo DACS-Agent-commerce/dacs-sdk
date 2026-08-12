@@ -18,6 +18,7 @@ import {
   signedBytes,
 } from "../../src/crypto/index.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
+import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
 // listing verifier. Previously createAgent() supplied neither verifyListing nor
@@ -160,6 +161,67 @@ async function anchorListing(
 }
 
 describe("Agent.runSession wires the #41 listing verifier (public surface)", () => {
+  test("binds a cross-namespace x402 recipient explicitly and rejects omission before rail submission", async () => {
+    const recipientEvm = "0x1111111111111111111111111111111111111111";
+    const asset = "0x2222222222222222222222222222222222222222";
+    const makeRail = () => {
+      const settle = vi.fn(async () => ({
+        ok: true,
+        txHash: "0xx402-paid",
+        chainId: "eip155:84532",
+        payer: "0xbuyer",
+        payee: recipientEvm,
+      }));
+      return {
+        settle,
+        rail: { address: "0xbuyer", settle } as X402Rail,
+      };
+    };
+
+    const boundAdapter = memAdapter();
+    const boundRef = await anchorListing(boundAdapter.store);
+    const boundAgent = buildAgent(boundAdapter.adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    const boundRail = makeRail();
+    await expect(
+      boundAgent.runSession(boundRef, {
+        terms: TERMS,
+        expectedSettlementPayee: recipientEvm,
+        settle: x402Settle(boundRail.rail, {
+          url: "https://seller.example/paywall",
+          network: "eip155:84532",
+          recipientEvm,
+          asset,
+        }),
+      }),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(boundRail.settle).toHaveBeenCalledTimes(1);
+
+    const omittedAdapter = memAdapter();
+    const omittedRef = await anchorListing(omittedAdapter.store);
+    const omittedAgent = buildAgent(omittedAdapter.adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    const omittedRail = makeRail();
+    await expect(
+      omittedAgent.runSession(omittedRef, {
+        terms: TERMS,
+        settle: x402Settle(omittedRail.rail, {
+          url: "https://seller.example/paywall",
+          network: "eip155:84532",
+          recipientEvm,
+          asset,
+        }),
+      }),
+    ).rejects.toThrow(/x402 destination mismatch/);
+    expect(omittedRail.settle).not.toHaveBeenCalled();
+  });
+
   test("a genuinely signed listing settles through the public runSession", async () => {
     const { adapter, store } = memAdapter();
     const ref = await anchorListing(store);

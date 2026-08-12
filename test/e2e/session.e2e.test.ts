@@ -103,7 +103,13 @@ function fakeClient(accepts: X402PaymentRequired["accepts"]): X402ClientLike {
     getPaymentRequiredResponse: () => ({ accepts }),
     createPaymentPayload: async (pr) => pr,
     encodePaymentSignatureHeader: () => ({ "X-PAYMENT": "signed" }),
-    getPaymentSettleResponse: () => ({ transaction: "0xsettlement" }),
+    getPaymentSettleResponse: () => ({
+      success: true,
+      transaction: "0xsettlement",
+      network: NETWORK,
+      payer: BUYER_EVM,
+      amount: "1000000",
+    }),
   };
 }
 function fakeFetch(): typeof fetch {

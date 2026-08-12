@@ -65,7 +65,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json",
     "test": "vitest run",
     "test:live": "vitest run test/integration/live.e2e.test.ts",
     "test:watch": "vitest",

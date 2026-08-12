@@ -5,7 +5,10 @@ import {
   sha256Hex,
   stripSignature,
 } from "../canonical/index.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
@@ -97,6 +100,19 @@ export interface SettleRequest {
    * settle phase) when the caller omits it.
    */
   phaseIndex?: number;
+  /**
+   * Ordered durable transaction attempts supplied only to `resumeSettlement`.
+   * A fresh process uses this history to reconcile every ambiguous attempt and
+   * prove a replacement submission supersedes the latest one. Ordinary fresh
+   * settlement requests omit it.
+   */
+  priorAttempts?: readonly SettlementRecoveryAttempt[];
+}
+
+export interface SettlementRecoveryAttempt {
+  txHash: string;
+  chainId: string;
+  ok: boolean;
 }
 
 export interface SettleResult {
@@ -185,6 +201,9 @@ export interface SessionDeps {
    * This MUST use the original `(rail, jobId, phaseIndex)` idempotency binding,
    * return the prior definitive result when payment landed, resubmit only after a
    * rail query proves no payment landed, and throw while state is indeterminate.
+   * `req.priorAttempts` carries the validated ordered transaction history from
+   * the SessionStore; a fresh process must reconcile the entire chain before it
+   * may return a replacement transaction.
    * It MUST also serialize recovery with a possibly-live original submitter; a
    * non-observation is not proof of absence while that worker can still submit.
    * The durable #52 `SettlementIdempotencyStore.once(..., reconcile)` wrapper is
@@ -326,6 +345,9 @@ interface DurableSettlementOutcome {
   finalityBlocks?: number;
   blockNumber?: number;
   txRefKind?: string;
+  /** Authenticated recovery provenance when a safe resubmit used a new tx. */
+  supersedesTxHash?: string;
+  supersedesChainId?: string;
 }
 
 interface AuthenticatedEvidenceSettlementOutcome {
@@ -895,16 +917,50 @@ function captureSessionStore(value: unknown): SessionStore | undefined {
       );
       if (
         result.ok &&
-        (!hasCheckpoint(result.record, {
-          key: owned.key,
-          stage: "intent",
-          ...(owned.data ? { data: owned.data } : {}),
-        }) ||
+        (matching?.length !== 1 ||
+          matching[0]?.stage !== "intent" ||
+          !hasCheckpoint(result.record, {
+            key: owned.key,
+            stage: "intent",
+            ...(owned.data ? { data: owned.data } : {}),
+          }) ||
           (owned.phase !== undefined && result.record.phase !== owned.phase))
       ) {
         throw new DacsError(
-          "sessionStore.claimCheckpoint result does not contain the claimed intent",
+          "sessionStore.claimCheckpoint success does not contain exactly the claimed unresolved intent",
         );
+      }
+      if (!result.ok && result.reason === "held" && matching) {
+        if (
+          matching.length !== 1 ||
+          matching[0]?.stage !== "intent" ||
+          !hasCheckpoint(result.record!, {
+            key: owned.key,
+            stage: "intent",
+            ...(owned.data ? { data: owned.data } : {}),
+          })
+        ) {
+          throw new DacsError(
+            "sessionStore.claimCheckpoint returned held with contradictory checkpoint history",
+          );
+        }
+      }
+      if (!result.ok && result.reason === "completed" && matching) {
+        const firstOutcome = matching.findIndex(
+          (checkpoint) => checkpoint.stage === "outcome",
+        );
+        if (
+          firstOutcome < 0 ||
+          matching
+            .slice(firstOutcome + 1)
+            .some((checkpoint) => checkpoint.stage === "intent") ||
+          matching.filter((checkpoint) => checkpoint.stage === "intent")
+            .length > 1
+        ) {
+          throw new DacsError(
+            "sessionStore.claimCheckpoint returned completed with contradictory checkpoint history",
+          );
+        }
       }
       if (
         !result.ok &&
@@ -1283,7 +1339,7 @@ function deepFreezeJson<T extends object>(value: T): Readonly<T> {
 function snapshotAnchorLookup(value: unknown, label: string): AnchorLookup {
   let captured: unknown;
   try {
-    captured = snapshotCanonicalJson(value, label);
+    captured = snapshotCanonicalJsonRead(value, label);
   } catch (cause) {
     throw new SubstrateError(`${label} returned an unstable or non-wire result`, {
       cause,
@@ -1387,6 +1443,7 @@ function validateSettlementResultBinding(
 function durableSettlementOutcome(
   result: SettleResult,
   binding: SettlementBinding,
+  supersedes?: SettlementRecoveryAttempt,
 ): DurableSettlementOutcome {
   const ok = result.ok && result.txHash.trim().length > 0;
   return {
@@ -1403,6 +1460,14 @@ function durableSettlementOutcome(
       : {}),
     ...(result.blockNumber !== undefined ? { blockNumber: result.blockNumber } : {}),
     ...(result.txRefKind !== undefined ? { txRefKind: result.txRefKind } : {}),
+    ...(supersedes &&
+    (supersedes.txHash !== result.txHash ||
+      supersedes.chainId !== result.chainId)
+      ? {
+          supersedesTxHash: supersedes.txHash,
+          supersedesChainId: supersedes.chainId,
+        }
+      : {}),
   };
 }
 
@@ -1420,7 +1485,9 @@ function sameSettlementOutcome(
     left.finalityModel === right.finalityModel &&
     left.finalityBlocks === right.finalityBlocks &&
     left.blockNumber === right.blockNumber &&
-    left.txRefKind === right.txRefKind
+    left.txRefKind === right.txRefKind &&
+    left.supersedesTxHash === right.supersedesTxHash &&
+    left.supersedesChainId === right.supersedesChainId
   );
 }
 
@@ -1588,8 +1655,16 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
       phaseIndex: phaseIndex as number,
     };
     if (data.outcomeSource === "rail-result") {
-      const { payer, payee, finalityModel, finalityBlocks, blockNumber, txRefKind } =
-        data;
+      const {
+        payer,
+        payee,
+        finalityModel,
+        finalityBlocks,
+        blockNumber,
+        txRefKind,
+        supersedesTxHash,
+        supersedesChainId,
+      } = data;
       const allowed = new Set([
         "outcomeSource",
         ...bindingFields,
@@ -1602,6 +1677,8 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         "finalityBlocks",
         "blockNumber",
         "txRefKind",
+        "supersedesTxHash",
+        "supersedesChainId",
       ]);
       if (
         Object.keys(data).some((key) => !allowed.has(key)) ||
@@ -1627,7 +1704,16 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         (txRefKind !== undefined &&
           (typeof txRefKind !== "string" ||
             txRefKind.length === 0 ||
-            txRefKind.trim() !== txRefKind))
+            txRefKind.trim() !== txRefKind)) ||
+        ((supersedesTxHash === undefined) !==
+          (supersedesChainId === undefined)) ||
+        (supersedesTxHash !== undefined &&
+          (typeof supersedesTxHash !== "string" ||
+            supersedesTxHash.length === 0 ||
+            supersedesTxHash.trim() !== supersedesTxHash ||
+            typeof supersedesChainId !== "string" ||
+            supersedesChainId.length === 0 ||
+            supersedesChainId.trim() !== supersedesChainId))
       ) {
         return {
           status: "invalid",
@@ -1650,6 +1736,10 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           ...(typeof finalityBlocks === "number" ? { finalityBlocks } : {}),
           ...(typeof blockNumber === "number" ? { blockNumber } : {}),
           ...(typeof txRefKind === "string" ? { txRefKind } : {}),
+          ...(typeof supersedesTxHash === "string" &&
+          typeof supersedesChainId === "string"
+            ? { supersedesTxHash, supersedesChainId }
+            : {}),
         },
       };
     }
@@ -1740,9 +1830,16 @@ function isValidSettlementOutcomeProgression(
       prior.outcome.txHash.length === 0 ||
       (prior.outcome.txHash === next.outcome.txHash &&
         prior.outcome.chainId === next.outcome.chainId);
-    if (!sameKnownTransaction) return false;
+    const authenticatedSupersession =
+      !prior.outcome.ok &&
+      next.status === "current-rail" &&
+      next.outcome.supersedesTxHash === prior.outcome.txHash &&
+      next.outcome.supersedesChainId === prior.outcome.chainId;
+    if (!sameKnownTransaction && !authenticatedSupersession) return false;
     if (next.status === "current-evidence") {
-      return prior.outcome.ok === next.outcome.ok;
+      return prior.outcome.ok
+        ? next.outcome.ok && sameKnownTransaction
+        : next.outcome.ok;
     }
     // Rail-authenticated migration may promote an old non-definitive failure to
     // success, but can never demote an already-successful durable receipt.
@@ -1754,9 +1851,12 @@ function isValidSettlementOutcomeProgression(
     if (next.status === "current-evidence") {
       return (
         sameSettlementBinding(prior.outcome, next.outcome) &&
-        prior.outcome.txHash === next.outcome.txHash &&
-        prior.outcome.chainId === next.outcome.chainId &&
-        prior.outcome.ok === next.outcome.ok
+        ((prior.outcome.txHash === next.outcome.txHash &&
+          prior.outcome.chainId === next.outcome.chainId &&
+          prior.outcome.ok === next.outcome.ok) ||
+          (prior.outcome.ok === false &&
+            prior.outcome.txHash.length > 0 &&
+            next.outcome.ok === true))
       );
     }
     return (
@@ -1764,9 +1864,10 @@ function isValidSettlementOutcomeProgression(
       (sameSettlementBinding(prior.outcome, next.outcome) &&
         prior.outcome.ok === false &&
         prior.outcome.txHash.length > 0 &&
-        next.outcome.ok === true &&
-        prior.outcome.txHash === next.outcome.txHash &&
-        prior.outcome.chainId === next.outcome.chainId)
+        ((prior.outcome.txHash === next.outcome.txHash &&
+          prior.outcome.chainId === next.outcome.chainId) ||
+          (next.outcome.supersedesTxHash === prior.outcome.txHash &&
+            next.outcome.supersedesChainId === prior.outcome.chainId)))
     );
   }
 
@@ -1815,6 +1916,39 @@ function readSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
     prior = parsed;
   }
   return prior ?? { status: "absent" };
+}
+
+/** Ordered, validated rail attempts exposed to a fresh recovery process. */
+function settlementRecoveryAttempts(
+  load: SessionLoad,
+): SettlementRecoveryAttempt[] {
+  if (load.status !== "ok") return [];
+  const attempts: SettlementRecoveryAttempt[] = [];
+  for (const checkpoint of load.record.checkpoints) {
+    if (
+      checkpoint.key !== "settle:0" ||
+      checkpoint.stage !== "outcome" ||
+      !checkpoint.data
+    ) {
+      continue;
+    }
+    const parsed = readNewestSettleOutcome({
+      status: "ok",
+      record: { ...load.record, checkpoints: [checkpoint] },
+    });
+    if (
+      (parsed.status === "current-rail" ||
+        parsed.status === "legacy-unbound") &&
+      parsed.outcome.txHash.length > 0
+    ) {
+      attempts.push({
+        txHash: parsed.outcome.txHash,
+        chainId: parsed.outcome.chainId,
+        ok: parsed.outcome.ok,
+      });
+    }
+  }
+  return attempts;
 }
 
 function assertSessionAgreementBinding(
@@ -2753,7 +2887,19 @@ export async function runSessionCore(
       phase: "settling",
       now: deps.nowMs(),
     });
-    if (res.ok) return { status: "claimed" };
+    if (res.ok) {
+      // Defense in depth against a custom store that reports a successful
+      // atomic claim while returning an already-completed checkpoint history.
+      // The captured store wrapper rejects this too, but never turn a locally
+      // observable contradiction into authorization for an irreversible call.
+      const observed = readSettleOutcome({ status: "ok", record: res.record });
+      if (observed.status !== "absent") {
+        throw new CounterpartyError(
+          `settlement claim for ${jobId} contradicted existing durable outcome state`,
+        );
+      }
+      return { status: "claimed" };
+    }
     if (res.reason === "completed") {
       if (!res.record) {
         throw new CounterpartyError(
@@ -2818,8 +2964,10 @@ export async function runSessionCore(
         sameSettlementBinding(prior.outcome, outcome) &&
         prior.outcome.ok === false &&
         prior.outcome.txHash.length > 0 &&
-        prior.outcome.txHash === outcome.txHash &&
-        prior.outcome.chainId === outcome.chainId;
+        ((prior.outcome.txHash === outcome.txHash &&
+          prior.outcome.chainId === outcome.chainId) ||
+          (outcome.supersedesTxHash === prior.outcome.txHash &&
+            outcome.supersedesChainId === prior.outcome.chainId));
       if (!canResolveAmbiguous) {
         throw new CounterpartyError(
           `could not record settlement outcome for ${jobId}: existing outcome conflicts with ${outcome.txHash}`,
@@ -2876,11 +3024,37 @@ export async function runSessionCore(
           "resumeSettlement is required to reconcile it",
       );
     }
+    let priorAttempts: SettlementRecoveryAttempt[] = [];
+    if (store) {
+      const durable = await store.load(jobId);
+      assertSessionAgreementBinding(
+        durable,
+        jobId,
+        expectedSettlementBinding.agreementHash,
+        "settlement recovery history load",
+      );
+      const validated = readSettleOutcome(durable);
+      if (validated.status === "invalid") {
+        throw new CounterpartyError(
+          `settlement for ${jobId} has invalid recovery history: ${validated.reason}`,
+        );
+      }
+      priorAttempts = settlementRecoveryAttempts(durable);
+    }
+    if (priorAttempts.length === 0 && prior && prior.txHash.length > 0) {
+      priorAttempts = [
+        { txHash: prior.txHash, chainId: prior.chainId, ok: prior.ok },
+      ];
+    }
+    const recoveryRequest: SettleRequest = {
+      ...settleRequest,
+      ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
+    };
     const recovered = snapshotSettleResult(
       await deps.resumeSettlement(
         deepFreezeJson(
           snapshotCanonicalJson(
-            settleRequest,
+            recoveryRequest,
             "settlement recovery request",
           ),
         ),
@@ -2895,9 +3069,13 @@ export async function runSessionCore(
     const outcome = durableSettlementOutcome(
       recovered,
       expectedSettlementBinding,
+      prior && !prior.ok && prior.txHash.length > 0
+        ? { txHash: prior.txHash, chainId: prior.chainId, ok: prior.ok }
+        : undefined,
     );
     if (prior) {
       if (
+        prior.ok &&
         prior.txHash.length > 0 &&
         (outcome.txHash !== prior.txHash || outcome.chainId !== prior.chainId)
       ) {
@@ -2916,6 +3094,11 @@ export async function runSessionCore(
     // intent and require another reconciliation; never mint failure evidence.
     await bindSettlementTransaction(outcome);
     if (!outcome.ok && outcome.txHash.length > 0) {
+      // A tx-bearing non-success is not terminal evidence, but it is essential
+      // recovery history. Persist it before throwing so a process restart can
+      // audit the exact latest transaction instead of retaining only an opaque
+      // bindHash entry or a stale earlier attempt.
+      await completeSettlement(outcome, "settling");
       throw new CounterpartyError(
         `settlement ${outcome.chainId}:${outcome.txHash} remains indeterminate; refusing terminal failure evidence until reconciliation is definitive`,
       );
@@ -3037,6 +3220,7 @@ export async function runSessionCore(
           );
           await bindSettlementTransaction(settlement);
           if (!settlement.ok && settlement.txHash.length > 0) {
+            await completeSettlement(settlement, "settling");
             throw new CounterpartyError(
               `settlement ${settlement.chainId}:${settlement.txHash} remains indeterminate; refusing terminal failure evidence until reconciliation is definitive`,
             );

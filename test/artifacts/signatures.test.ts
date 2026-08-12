@@ -856,6 +856,27 @@ describe("ComponentSignature foundation", () => {
     });
   });
 
+  it("verifies an immutable artifact returned by storage without weakening signing inputs", async () => {
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    Object.freeze(signed.signature);
+    Object.freeze(signed);
+
+    await expect(
+      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
+    ).resolves.toMatchObject({ status: "valid" });
+    await expect(
+      buildComponentSignature(signed, "dacs-listing:v1:", {
+        algorithm: "ed25519",
+        signer: seller,
+        sign,
+      }),
+    ).rejects.toThrow(/not stable canonical JSON/);
+  });
+
   it("rejects ambiguous singular and plural signature fields", async () => {
     const signed = await signComponentArtifact(
       listing,

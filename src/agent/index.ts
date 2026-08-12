@@ -85,6 +85,7 @@ export {
   type SessionTerms,
   type SettleRequest,
   type SettleResult,
+  type SettlementRecoveryAttempt,
 } from "./runSessionCore.js";
 export {
   assertCheckpointPayloadShape,

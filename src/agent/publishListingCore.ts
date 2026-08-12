@@ -13,7 +13,10 @@ import {
   listingAddress,
   logicalToStorageProgramName,
 } from "../canonical/index.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
 import type { Signer } from "./signedArtifact.js";
@@ -161,7 +164,7 @@ function snapshotOwnedAnchorScan(
 ): OwnedAnchorScan {
   let snapshot: unknown;
   try {
-    snapshot = snapshotCanonicalJson(value, "listing history scan");
+    snapshot = snapshotCanonicalJsonRead(value, "listing history scan");
   } catch (cause) {
     throw new SubstrateError(
       "listing history scan returned an unstable or non-wire result",
@@ -226,7 +229,10 @@ function snapshotAnchorWriteResult(
 ): { address: string; txRef?: string } {
   let snapshot: unknown;
   try {
-    snapshot = snapshotCanonicalJson(value, "immutable listing anchor result");
+    snapshot = snapshotCanonicalJsonRead(
+      value,
+      "immutable listing anchor result",
+    );
   } catch (cause) {
     throw new SubstrateError(
       "immutable listing anchor returned an unstable or non-wire result",
@@ -435,12 +441,17 @@ export async function publishListingCore(
     );
   }
   let publication: typeof signed;
+  let listingContentHash: string;
   try {
     // The signer result is authoritative. Give the adapter an owned, deeply
     // immutable copy so no await-time mutation can change the bytes written.
-    publication = deepFreezePublication(
-      snapshotCanonicalJson(signed, "signed Listing publication"),
+    const owned = snapshotCanonicalJson(signed, "signed Listing publication");
+    // Hash the owned mutable wire snapshot before freezing it for the adapter;
+    // strict authoring hashes intentionally reject exotic/read-only inputs.
+    listingContentHash = contentHash(
+      owned as unknown as Record<string, unknown>,
     );
+    publication = deepFreezePublication(owned);
   } catch (cause) {
     throw new DacsError("signed Listing could not form an immutable publication", {
       cause,
@@ -449,7 +460,7 @@ export async function publishListingCore(
   const listingPin = {
     listingId: listing.listingId,
     version,
-    contentHash: contentHash(publication as unknown as Record<string, unknown>),
+    contentHash: listingContentHash,
   };
   const { address: anchored, txRef } = snapshotAnchorWriteResult(
     await capturedDeps.anchorWriteOnce(storageName, publication),

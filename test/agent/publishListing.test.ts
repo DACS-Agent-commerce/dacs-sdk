@@ -54,9 +54,12 @@ function fakeDeps() {
       const existingAddress = addresses.get(name);
       if (existingAddress) {
         const existing = store.get(existingAddress)!;
+        const candidate = structuredClone(
+          value as Record<string, unknown>,
+        );
         if (
           contentHash(existing) !==
-          contentHash(value as Record<string, unknown>)
+          contentHash(candidate)
         ) {
           throw new DacsError(
             `immutable anchor ${name} already exists with different signed-scope content`,
@@ -69,7 +72,9 @@ function fakeDeps() {
       // addresses are not predictable from the logical program name (#70).
       const address = `stor-${addresses.size + 1}`;
       addresses.set(name, address);
-      store.set(address, value as Record<string, unknown>);
+      // Model a storage serialization boundary rather than retaining the
+      // immutable callback object by reference.
+      store.set(address, structuredClone(value as Record<string, unknown>));
       stats.creates += 1;
       return { address, txRef: `tx-${address}` };
     },

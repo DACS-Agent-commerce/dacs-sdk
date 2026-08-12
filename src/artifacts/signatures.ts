@@ -5,6 +5,7 @@ import {
   isSafeJsonString,
   snapshotCanonicalJson,
   snapshotCanonicalJsonObject,
+  snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import {
   type DomainSeparator,
@@ -211,6 +212,22 @@ function snapshotArtifact<T extends object>(artifact: T): T {
   ) as T;
 }
 
+/** Own an artifact received from storage, where immutable descriptors are valid. */
+function snapshotReadArtifact<T extends object>(artifact: T): T {
+  const snapshot = snapshotCanonicalJsonRead(
+    artifact as Record<string, unknown>,
+    "component signature artifact",
+  );
+  if (
+    snapshot === null ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot)
+  ) {
+    throw new DacsError("component signature artifact must be a JSON object");
+  }
+  return snapshot as T;
+}
+
 function assertUnsignedComponentArtifact(artifact: object): void {
   const record = asRecord(artifact);
   if (
@@ -410,7 +427,7 @@ export async function verifyComponentSignature<TKey>(
   let artifactSnapshot: Record<string, unknown>;
   try {
     if (!isRecord(artifact)) throw new TypeError();
-    artifactSnapshot = snapshotArtifact(artifact);
+    artifactSnapshot = snapshotReadArtifact(artifact);
   } catch {
     return {
       status: "malformed",

@@ -125,15 +125,19 @@ export interface RunSessionOptions {
    */
   vet?: (subject: string) => Promise<CompositeVerificationRecord>;
   /**
-   * Resume an interrupted session: pass the prior run's jobId to re-drive it
-   * idempotently (reuse anchored artifacts, never re-pay). Omit for a new session.
+   * Resume an interrupted session by passing the prior run's jobId. Anchored
+   * artifacts are reused. Crash-safe no-repayment across processes additionally
+   * requires both `sessionStore` and a durable/idempotent `resumeSettlement`
+   * implementation; a job id alone cannot prove what happened after a lost rail
+   * response. Omit for a new session.
    */
   jobId?: string;
   /** Optional durable buyer-session lifecycle store used for restart recovery. */
   sessionStore?: import("./sessionStore.js").SessionStore;
   /**
    * Reconcile a previously claimed payment whose durable session record still
-   * has only an intent checkpoint. Must use the same rail idempotency key.
+   * has only an intent or ambiguous outcome. Must use the same rail idempotency
+   * key and reconcile every ordered `req.priorAttempts` entry before returning.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
 }

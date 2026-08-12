@@ -213,7 +213,11 @@ function x402Client(): X402ClientLike {
     encodePaymentSignatureHeader: () => ({ "X-PAYMENT": "signed-local-payment" }),
     getPaymentSettleResponse: (getHeader) => {
       const raw = getHeader("X-PAYMENT-RESPONSE");
-      return raw ? (JSON.parse(raw) as { transaction?: string }) : undefined;
+      return raw
+        ? (JSON.parse(raw) as ReturnType<
+            X402ClientLike["getPaymentSettleResponse"]
+          >)
+        : undefined;
     },
   };
 }
@@ -273,7 +277,13 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
             res.writeHead(receipt.status === "success" ? 200 : 500, {
               "content-type": "application/json",
-              "X-PAYMENT-RESPONSE": JSON.stringify({ transaction: txHash }),
+              "X-PAYMENT-RESPONSE": JSON.stringify({
+                success: receipt.status === "success",
+                transaction: txHash,
+                network: NETWORK,
+                payer: buyerAccount.address,
+                amount: AMOUNT,
+              }),
             });
             res.end(JSON.stringify({ ok: receipt.status === "success" }));
           } catch (err) {
@@ -314,10 +324,14 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           decision: "pass",
           verifiedAt: "2026-07-13T00:00:00Z",
         };
-        const vetSigned = await buildSignedArtifact(
+        const vetSigned = await signComponentArtifact(
           vet,
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
-          signBuyer,
+          {
+            algorithm: "ed25519",
+            signer: buyerDid,
+            sign: (bytes) => signBuyer(bytes),
+          },
         );
         const vetRef = await sub.anchor(`dacs2:verifyrecord:${JOB_ID}`, vetSigned);
 

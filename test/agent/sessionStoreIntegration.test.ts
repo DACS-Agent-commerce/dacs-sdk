@@ -522,7 +522,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     ).toBe(0);
   });
 
-  test("a transaction-bearing ok:false stays intent-only until reconciliation proves a terminal result", async () => {
+  test("a transaction-bearing ok:false is durably recorded until reconciliation proves a terminal result", async () => {
     const store = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();
     const first = await makeDeps(store, {
@@ -540,10 +540,20 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     ).rejects.toThrow(/remains indeterminate/);
     let mid = await store.load("job-1");
     expect(
-      mid.status === "ok" &&
-        mid.record.checkpoints.filter((checkpoint) => checkpoint.stage === "outcome")
-          .length,
-    ).toBe(0);
+      mid.status === "ok"
+        ? mid.record.checkpoints.filter(
+            (checkpoint) => checkpoint.stage === "outcome",
+          )
+        : [],
+    ).toMatchObject([
+      {
+        data: {
+          outcomeSource: "rail-result",
+          ok: false,
+          txHash: "0xambiguous",
+        },
+      },
+    ]);
     await expect(
       store.bindHash({
         hash: "0xambiguous",
@@ -568,9 +578,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     mid = await store.load("job-1");
     expect(
       mid.status === "ok" &&
-        mid.record.checkpoints.filter((checkpoint) => checkpoint.stage === "outcome")
-          .length,
-    ).toBe(0);
+        mid.record.checkpoints.filter(
+          (checkpoint) => checkpoint.stage === "outcome",
+        ).length,
+    ).toBe(1);
 
     const resolved = await makeDeps(store, {
       kv,
@@ -585,6 +596,80 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     await expect(
       runSessionCore(resolved.listingRef, terms, resolved.deps, "job-1"),
     ).resolves.toMatchObject({ outcome: "completed" });
+  });
+
+  test("persists a safely resubmitted transaction when reconciliation returns a new tx", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    const first = await makeDeps(store, {
+      kv,
+      settle: async (req) => ({
+        ok: false,
+        txHash: "0xold-attempt",
+        chainId: "eip155:84532",
+        payer: "0xbuyer",
+        payee: req.expectedPayee,
+      }),
+    });
+    await expect(runSessionCore(first.listingRef, terms, first.deps)).rejects.toThrow(
+      /remains indeterminate/,
+    );
+
+    let secondHistory: unknown;
+    const second = await makeDeps(store, {
+      kv,
+      resumeSettlement: async (req) => {
+        secondHistory = req.priorAttempts;
+        return {
+          ok: false,
+          txHash: "0xnew-attempt",
+          chainId: "eip155:84532",
+          payer: "0xbuyer",
+          payee: req.expectedPayee,
+        };
+      },
+    });
+    await expect(
+      runSessionCore(second.listingRef, terms, second.deps, "job-1"),
+    ).rejects.toThrow(/0xnew-attempt.*remains indeterminate/);
+    expect(secondHistory).toEqual([
+      {
+        txHash: "0xold-attempt",
+        chainId: "eip155:84532",
+        ok: false,
+      },
+    ]);
+
+    const recorded = await store.load("job-1");
+    expect(
+      recorded.status === "ok"
+        ? recorded.record.checkpoints
+            .filter((checkpoint) => checkpoint.stage === "outcome")
+            .map((checkpoint) => checkpoint.data?.txHash)
+        : [],
+    ).toEqual(["0xold-attempt", "0xnew-attempt"]);
+
+    let thirdHistory: unknown;
+    const third = await makeDeps(store, {
+      kv,
+      resumeSettlement: async (req) => {
+        thirdHistory = req.priorAttempts;
+        return {
+          ok: true,
+          txHash: "0xsafe-success",
+          chainId: "eip155:84532",
+          payer: "0xbuyer",
+          payee: req.expectedPayee,
+        };
+      },
+    });
+    await expect(
+      runSessionCore(third.listingRef, terms, third.deps, "job-1"),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(thirdHistory).toEqual([
+      { txHash: "0xold-attempt", chainId: "eip155:84532", ok: false },
+      { txHash: "0xnew-attempt", chainId: "eip155:84532", ok: false },
+    ]);
   });
 
   test("rejects a request-mismatched payee in a prior current outcome before reuse", async () => {
@@ -772,6 +857,44 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const { deps, listingRef, settleCalls } = await makeDeps(wrongFailure);
     await expect(runSessionCore(listingRef, terms, deps)).rejects.toThrow(
       /returned jobId different-job/,
+    );
+    expect(settleCalls.n).toBe(0);
+  });
+
+  test("rejects a successful checkpoint claim that already contains an outcome before paying", async () => {
+    const base = createInMemorySessionStore();
+    const contradictoryClaim: NonNullable<SessionDeps["sessionStore"]> = {
+      ...base,
+      claimCheckpoint: async (input) => {
+        const claimed = await base.claimCheckpoint(input);
+        if (!claimed.ok) return claimed;
+        const written = await base.transition({
+          jobId: input.jobId,
+          expectedRevision: claimed.record.revision,
+          phase: "settled",
+          checkpoint: {
+            key: input.key,
+            stage: "outcome",
+            data: {
+              outcomeSource: "rail-result",
+              ...(input.data ?? {}),
+              txHash: "0xalready-paid",
+              chainId: "eip155:84532",
+              payer: "0xbuyer",
+              payee: String(input.data?.expectedPayee),
+              ok: true,
+            },
+          },
+          now: input.now,
+        });
+        if (!written.ok) throw new Error("failed to build contradictory fixture");
+        return { ok: true as const, record: written.record };
+      },
+    };
+    const { deps, listingRef, settleCalls } = await makeDeps(contradictoryClaim);
+
+    await expect(runSessionCore(listingRef, terms, deps)).rejects.toThrow(
+      /exactly the claimed unresolved intent|contradicted existing durable outcome/i,
     );
     expect(settleCalls.n).toBe(0);
   });

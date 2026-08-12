@@ -163,11 +163,15 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         x402BuyerTokenBalance: buyerTokenBalance.toString(),
       });
 
+      // One captured destination drives the paywall, buyer-signed session
+      // binding, and x402 bridge. A seller DID and an EVM recipient are distinct
+      // namespaces; omitting this explicit binding must fail before payment.
+      const sellerEvm = env.SELLER_EVM!;
       const localPaywall =
         env.PAYWALL_URL === "local"
           ? await startLiveX402Paywall({
               network: env.PAY_NETWORK! as `${string}:${string}`,
-              payTo: env.SELLER_EVM!,
+              payTo: sellerEvm,
               asset: env.PAY_TOKEN!,
               amount: PAYMENT_AMOUNT.toString(),
               facilitatorUrl:
@@ -241,10 +245,11 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
             deliveryPhase: "deliver-attested-payload",
             deliveryFormat: "application/json",
           },
+          expectedSettlementPayee: sellerEvm,
           settle: x402Settle(rail, {
             url: localPaywall?.url ?? env.PAYWALL_URL!,
             network: env.PAY_NETWORK!,
-            recipientEvm: env.SELLER_EVM!,
+            recipientEvm: sellerEvm,
             asset: env.PAY_TOKEN!,
           }),
         });
