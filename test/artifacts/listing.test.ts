@@ -155,6 +155,20 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     expect(readListingArtifact(unknown)).toBeNull();
   });
 
+  it("rejects different payment phase kinds sharing one railId (LRR-4)", () => {
+    const listing = fixture();
+    listing.acceptedRails = [{ railId: "rail:shared" }];
+    listing.pipeline.splice(
+      2,
+      0,
+      { kind: "pay-x402", parameters: { rail: "rail:shared" } },
+      { kind: "pay-evm-erc20", parameters: { rail: "rail:shared" } },
+    );
+
+    expect(isListing(listing)).toBe(false);
+    expect(readListingArtifact(listing)).toBeNull();
+  });
+
   it("does not reinterpret an unsupported signature algorithm as Ed25519", async () => {
     const listing = fixture();
     listing.signature.algorithm = "ecdsa-secp256k1";

@@ -50,6 +50,18 @@ export class SubstrateError extends DacsError {
   }
 }
 
+/**
+ * The requested operation is valid, but this SDK component cannot execute the
+ * required capability. This is a local implementation boundary, not evidence
+ * that a counterparty artifact is nonconformant.
+ */
+export class UnsupportedCapabilityError extends DacsError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, { ...options, category: "permanent" });
+    this.name = "UnsupportedCapabilityError";
+  }
+}
+
 /** The fault category of any thrown value (non-DacsError defaults to transient). */
 export function faultCategory(err: unknown): FaultCategory {
   if (err instanceof DacsError) return err.category;

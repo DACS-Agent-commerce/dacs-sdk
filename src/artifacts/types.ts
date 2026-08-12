@@ -88,7 +88,10 @@ export interface Price {
   amount: string;
   asset: string;
   decimals: number;
-  /** Payment rail id, e.g. "pay-evm-erc20" / "pay-x402". */
+  /**
+   * Payment rail identifier. Normative Listings use a `PaymentRailRef.railId`
+   * value here (for example, `"x402:default"`), not a `pay-*` phase kind.
+   */
   rail: string;
 }
 

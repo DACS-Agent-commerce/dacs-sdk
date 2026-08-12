@@ -16,6 +16,7 @@ export {
   TransientError,
   CounterpartyError,
   SubstrateError,
+  UnsupportedCapabilityError,
   faultCategory,
   type FaultCategory,
 } from "./errors.js";

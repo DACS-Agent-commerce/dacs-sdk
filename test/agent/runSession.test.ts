@@ -6,6 +6,7 @@ import {
   type SessionTerms,
 } from "../../src/agent/runSessionCore.js";
 import { contentHash } from "../../src/canonical/index.js";
+import { UnsupportedCapabilityError } from "../../src/errors.js";
 
 const LISTING = {
   agentId: "did:demos:agent:alice",
@@ -150,16 +151,16 @@ describe("runSession orchestration (T4)", () => {
     expect(evidence?.phase).toBe("pay-x402");
   });
 
-  test("admits PIPE-5 repetitions of the same payment phase kind", async () => {
+  test("refuses unsupported PIPE-5 repetition before settlement or anchoring", async () => {
     const normative = normativeListing();
     normative.pipeline.splice(3, 0, {
       kind: "pay-x402",
       parameters: { rail: "x402:default" },
     });
     let settles = 0;
-    let evidence: Record<string, unknown> | undefined;
+    let anchors = 0;
 
-    const result = await runSessionCore(
+    const attempt = runSessionCore(
       "stor-repeated-payment-phase",
       {
         ...TERMS,
@@ -169,26 +170,26 @@ describe("runSession orchestration (T4)", () => {
         readListing: async () => normative,
         settle: async () => {
           settles += 1;
-          return {
-            ok: true,
-            txHash: "0xabc",
-            chainId: "eip155:8453",
-            payer: "0xbob",
-            payee: "0xalice",
-          };
+          throw new Error("must not settle");
         },
-        anchor: async (name, value) => {
-          if (name.includes("evidence")) {
-            evidence = value as Record<string, unknown>;
-          }
-          return `stor-${name}`;
+        anchor: async () => {
+          anchors += 1;
+          throw new Error("must not anchor");
         },
       }),
     );
 
-    expect(result.outcome).toBe("completed");
-    expect(settles).toBe(1);
-    expect(evidence?.phase).toBe("pay-x402");
+    await expect(attempt).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(attempt).rejects.toMatchObject({
+      name: "UnsupportedCapabilityError",
+      category: "permanent",
+      message: expect.stringMatching(
+        /PIPE-5 repetition is valid.*single-settle orchestrator supports one/i,
+      ),
+    });
+
+    expect(settles).toBe(0);
+    expect(anchors).toBe(0);
   });
 
   test("refuses to pay presentedBy when a different carried claim signed", async () => {

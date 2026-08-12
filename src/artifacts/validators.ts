@@ -528,6 +528,16 @@ function pipelineIsCoherent(listing: Record<string, unknown>): boolean {
     ) {
       return false; // DACS-1 §6.3.4 LRR-1 listing binding.
     }
+    const phaseKindByRail = new Map<string, string>();
+    for (const phase of payPhases) {
+      const railId = phase.parameters?.rail;
+      if (typeof railId !== "string") return false;
+      const priorKind = phaseKindByRail.get(railId);
+      if (priorKind !== undefined && priorKind !== phase.kind) {
+        return false; // LRR-4 local consequence; registry resolution stays separate.
+      }
+      phaseKindByRail.set(railId, phase.kind);
+    }
   }
   if (rails) {
     try {
