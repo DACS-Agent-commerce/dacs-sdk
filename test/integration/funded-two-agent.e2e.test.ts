@@ -3705,6 +3705,11 @@ async function closeDurableDetachedRoleBundles(input: {
   const counterSignatureLogicalAddress = `dacs-test:bundle-counter-signature:${input.jobId}`;
   const sellerFinalizationLogicalAddress = `dacs-test:bundle-finalization:${input.jobId}:seller`;
   const buyerFinalizationLogicalAddress = `dacs-test:bundle-finalization:${input.jobId}:buyer`;
+  const bundleTransportDir = await temporaryDirectory("bundle-transport");
+  const buyerFinalizationTransportPath = join(
+    bundleTransportDir,
+    `${sha256Hex(buyerFinalizationLogicalAddress)}.json`,
+  );
   const sellerBindingLogicalAddress = `dacs-test:bundle-binding:${input.jobId}:seller`;
   const buyerBindingLogicalAddress = `dacs-test:bundle-binding:${input.jobId}:buyer`;
   const resolveHandoff = async (logicalAddress: string, ownerDid: string) => {
@@ -3719,6 +3724,32 @@ async function closeDurableDetachedRoleBundles(input: {
       throw new Error("funded-e2e:demos-handoff-read-indeterminate");
     }
     return artifact;
+  };
+  const resolveBuyerFinalizationHandoff = async () => {
+    let encoded: string;
+    try {
+      encoded = await readFile(buyerFinalizationTransportPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    const envelope = JSON.parse(encoded) as unknown;
+    if (
+      !envelope || typeof envelope !== "object" || Array.isArray(envelope) ||
+      canonicalize(envelope) !== encoded
+    ) return null;
+    const record = envelope as Record<string, unknown>;
+    if (
+      Object.keys(record).sort().join(",") !==
+        "finalization,finalizationEnvelopeHash,logicalAddress,owner,transportVersion" ||
+      record.transportVersion !== "1" ||
+      record.logicalAddress !== buyerFinalizationLogicalAddress ||
+      record.owner !== input.preflight.env.BUYER_DID ||
+      !record.finalization || typeof record.finalization !== "object" ||
+      Array.isArray(record.finalization) ||
+      record.finalizationEnvelopeHash !== sha256Hex(canonicalize(record.finalization))
+    ) return null;
+    return structuredClone(record.finalization as Record<string, unknown>);
   };
   const resolveRoleOwnedBundle = async (
     role: "buyer" | "seller",
@@ -3757,7 +3788,9 @@ async function closeDurableDetachedRoleBundles(input: {
     // is not itself an anchor receipt and must never be promoted into one.
     const finalizationLogicalAddress = role === "seller"
       ? sellerFinalizationLogicalAddress : buyerFinalizationLogicalAddress;
-    const stored = await resolveHandoff(finalizationLogicalAddress, ownerDid);
+    const stored = role === "buyer"
+      ? await resolveBuyerFinalizationHandoff()
+      : await resolveHandoff(finalizationLogicalAddress, ownerDid);
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) return null;
     const finalization = stored as Record<string, unknown>;
     const retainedBundle = role === "seller"
@@ -4510,12 +4543,23 @@ async function closeDurableDetachedRoleBundles(input: {
   const buyerFinalization = await diagnosticStep("bundle-buyer-process-b", () =>
     advanceBuyerUntilFinalized("funded-buyer-bundle-process-b")
   );
-  await anchorArtifact({
-    adapter: input.preflight.buyer.adapter,
-    writer: input.preflight.env.BUYER_DID,
+  const buyerFinalizationTransport = {
+    transportVersion: "1" as const,
     logicalAddress: buyerFinalizationLogicalAddress,
-    artifact: buyerFinalization.result as unknown as Record<string, unknown>,
-  });
+    owner: input.preflight.env.BUYER_DID,
+    finalizationEnvelopeHash: sha256Hex(canonicalize(buyerFinalization.result)),
+    finalization: structuredClone(buyerFinalization.result),
+  };
+  await writeFile(
+    buyerFinalizationTransportPath,
+    canonicalize(buyerFinalizationTransport),
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
+  );
+  requireCondition(
+    canonicalize(await resolveBuyerFinalizationHandoff()) ===
+      canonicalize(buyerFinalization.result),
+    "buyer-finalization-transport-readback-failed",
+  );
 
   const expectedSellerFinalization = structuredClone(sellerFinalization);
   const expectedBuyerFinalization = structuredClone(buyerFinalization.result);
@@ -4528,8 +4572,8 @@ async function closeDurableDetachedRoleBundles(input: {
     ...sellerInput,
     counterSignatures: [durableCounter.signature as BundleSignature],
   };
-  // Simulate a cold runtime boundary. Only filesystem WALs, Demos role
-  // publications and the explicit Demos handoff artifacts survive.
+  // Simulate a cold runtime boundary. Only filesystem WALs, the explicit
+  // data-only transport handoff, and authenticated Demos publications survive.
   sellerAnchored = undefined;
   buyerAnchored = undefined;
   counterSignature = undefined;
