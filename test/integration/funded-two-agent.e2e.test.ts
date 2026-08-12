@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import { encodePaymentResponseHeader } from "@x402/core/http";
 import { afterEach, describe, it } from "vitest";
 import {
   createPublicClient,
@@ -64,6 +65,7 @@ import {
   createX402SellerSpine,
   deriveFixedPriceAgreement,
   discoverListings,
+  deriveX402ReceiptCommitment,
   ed25519Verify,
   ed25519Sign,
   encodeAddressSegment,
@@ -92,6 +94,7 @@ import {
   verifyDurableSellerTerminalResult,
   verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
+  x402PaywallSettlementKey,
   type AgreementArtifact,
   type AnchorBinding,
   type ProtocolAnchorReceipt as AnchorReceipt,
@@ -152,6 +155,7 @@ import {
   type X402Paywall,
   type X402PaywallHttpAdapter,
   type X402PaywallSettlementResult,
+  type X402PaywallSettlementStore,
   type X402SellerCommittedSessionScope,
   type X402SellerPaymentPermitAuthorization,
   type X402TransferObservation,
@@ -1776,6 +1780,7 @@ interface CommerceCounts {
 }
 
 interface CommerceState {
+  loseResponseAcknowledgement: boolean;
   permit?: X402SellerPaymentPermitAuthorization;
   observedTransfer?: Extract<X402TransferObservation, { status: "finalized" }>;
   delivered?: Awaited<ReturnType<DurableSellerFulfilmentDeps["submitDelivery"]>>;
@@ -1790,6 +1795,7 @@ interface CommerceState {
 
 function commerceState(): CommerceState {
   return {
+    loseResponseAcknowledgement: true,
     counts: {
       facilitatorVerify: 0,
       facilitatorSettle: 0,
@@ -1800,6 +1806,65 @@ function commerceState(): CommerceState {
       render: 0,
     },
   };
+}
+
+async function retainSuccessfulFacilitatorSettlement<
+  T extends Awaited<ReturnType<HTTPFacilitatorClient["settle"]>>,
+>(
+  state: CommerceState,
+  store: Pick<X402PaywallSettlementStore, "load" | "recordOutcome">,
+  settlementKey: string,
+  result: T,
+  requirements: X402BuyerPaymentRequirements,
+  expectedPayer: string,
+): Promise<T> {
+  if (result.success) {
+    const receipt = structuredClone(result);
+    // Recreate exactly the HTTP resource server's successful local envelope.
+    // The remote facilitator returns only the receipt; the local server owns
+    // PAYMENT-RESPONSE and the matched requirements fields.
+    const settlement = {
+      ...receipt,
+      success: true as const,
+      headers: { "PAYMENT-RESPONSE": encodePaymentResponseHeader(receipt) },
+      requirements: structuredClone(requirements),
+    } as X402PaywallSettlementResult & { success: true };
+    const commitment = deriveX402ReceiptCommitment({
+      protocolVersion: "2",
+      responseHeader: {
+        name: "PAYMENT-RESPONSE",
+        value: settlement.headers["PAYMENT-RESPONSE"]!,
+      },
+    });
+    requireCondition(
+      commitment.disposition === "pass" &&
+        settlement.network === requirements.network &&
+        settlement.payer?.toLowerCase() === expectedPayer.toLowerCase() &&
+        (settlement.amount === undefined || settlement.amount === requirements.amount),
+      "settlement-handoff-receipt-invalid",
+    );
+    const outcome = { status: "settled" as const, settlement };
+    const retained = await store.load(settlementKey);
+    requireCondition(retained.status === "held", "settlement-handoff-intent-not-held");
+    let terminal;
+    try {
+      terminal = await store.recordOutcome({
+        settlementKey,
+        bindingHash: retained.intent.bindingHash,
+        outcome,
+      });
+    } catch {
+      // A failed acknowledgement cannot erase a committed WAL write.
+      terminal = await store.load(settlementKey);
+    }
+    requireCondition(
+      terminal.status === "settled" &&
+        canonicalize(terminal.outcome) === canonicalize(outcome),
+      "settlement-handoff-not-durable",
+    );
+    state.settlementResult = structuredClone(settlement);
+  }
+  return result;
 }
 
 interface SellerDirectories {
@@ -2500,6 +2565,10 @@ async function createSellerRuntime(input: {
     renderResponse: async (context) => {
       state.counts.render += 1;
       state.fulfilment = structuredClone(context.fulfilment);
+      if (state.loseResponseAcknowledgement) {
+        state.loseResponseAcknowledgement = false;
+        throw new Error("injected-response-acknowledgement-loss");
+      }
       return {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -2515,7 +2584,20 @@ async function createSellerRuntime(input: {
     },
     settle: async (payload: unknown, requirements: unknown) => {
       state.counts.facilitatorSettle += 1;
-      return preflight.facilitator.settle(payload as never, requirements as never);
+      const result = await preflight.facilitator.settle(
+        payload as never,
+        requirements as never,
+      );
+      // This is the seller's durable handoff for the ambiguity window after
+      // the facilitator has returned but before the paywall WAL is terminal.
+      return retainSuccessfulFacilitatorSettlement(
+        state,
+        settlementStore,
+        x402PaywallSettlementKey({ jobId, phaseIndex: PAYMENT_PHASE_INDEX }),
+        result,
+        requirements as X402BuyerPaymentRequirements,
+        preflight.payer,
+      );
     },
   };
   const paywall = await createX402Paywall<
@@ -2755,6 +2837,7 @@ async function settleAndRecover(input: {
   state.fulfilment = undefined;
   state.settlementResult = undefined;
   const restartedState = commerceState();
+  restartedState.loseResponseAcknowledgement = false;
   seller = await createSellerRuntime({
     ...input,
     directories: sellerDirectories,
@@ -4333,6 +4416,68 @@ describe("issue #114 guarded funded two-agent spine", () => {
       tokenShort.disposition === "rejected" &&
       tokenShort.reason === "payment-token-balance-insufficient",
       "funded-preflight-negative-case-regression",
+    );
+  });
+
+  it("durably detaches a successful facilitator result before acknowledgement loss", async () => {
+    const state = commerceState();
+    const bindingHash = "a".repeat(64);
+    let recordedOutcome: unknown;
+    const handoffStore: Pick<X402PaywallSettlementStore, "load" | "recordOutcome"> = {
+      load: async () => recordedOutcome === undefined
+        ? {
+            status: "held",
+            intent: { bindingHash } as never,
+          }
+        : {
+            status: "settled",
+            intent: { bindingHash } as never,
+            outcome: structuredClone(recordedOutcome) as never,
+          },
+      recordOutcome: async (input) => {
+        recordedOutcome = structuredClone(input.outcome);
+        throw new Error("injected-WAL-acknowledgement-loss");
+      },
+    };
+    const result = {
+      success: true,
+      transaction: `0x${"1".repeat(64)}`,
+      network: BASE_SEPOLIA_NETWORK,
+      payer: `0x${"2".repeat(40)}`,
+      amount: PAYMENT_AMOUNT.toString(),
+    };
+    const expectedHeader = encodePaymentResponseHeader(result);
+    const requirements: X402BuyerPaymentRequirements = {
+      scheme: "exact",
+      network: BASE_SEPOLIA_NETWORK,
+      amount: PAYMENT_AMOUNT.toString(),
+      asset: `0x${"3".repeat(40)}`,
+      payTo: `0x${"4".repeat(40)}`,
+      maxTimeoutSeconds: PAYMENT_TIMEOUT_SECONDS,
+      extra: { name: TOKEN_NAME, version: TOKEN_VERSION, assetTransferMethod: "eip3009" },
+    };
+    requireCondition(
+      await retainSuccessfulFacilitatorSettlement(
+        state,
+        handoffStore,
+        "dacs:x402-settlement:test",
+        result,
+        requirements,
+        result.payer,
+      ) === result,
+      "facilitator-result-identity-changed",
+    );
+    result.transaction = `0x${"5".repeat(64)}`;
+    requireCondition(
+      state.settlementResult?.headers["PAYMENT-RESPONSE"] === expectedHeader,
+      "facilitator-result-not-detached",
+    );
+    requireCondition(
+      canonicalize(recordedOutcome) === canonicalize({
+        status: "settled",
+        settlement: state.settlementResult,
+      }),
+      "facilitator-result-not-written-to-wal",
     );
   });
 
