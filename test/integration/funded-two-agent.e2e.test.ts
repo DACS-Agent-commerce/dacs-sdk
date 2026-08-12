@@ -225,7 +225,13 @@ function verifyEd25519ArtifactSignature(
 async function stage<T>(code: string, operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      /^funded-e2e:[a-z0-9-]+$/.test(error.message)
+    ) {
+      throw error;
+    }
     throw new Error(`funded-e2e:${code}`);
   }
 }
