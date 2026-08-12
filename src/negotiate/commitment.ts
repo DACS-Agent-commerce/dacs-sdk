@@ -548,6 +548,7 @@ function validateRailAndPayoutCoverage(
 
 function selectFixedPriceArtifact(
   input: CapturedCommitmentBindingInput,
+  options: { allowLegacyJobId?: boolean } = {},
 ): { agreement: AgreementArtifact; listing: Listing } {
   const agreement = input.agreement;
   const verified = input.verifiedListing;
@@ -566,7 +567,16 @@ function selectFixedPriceArtifact(
       throw new DacsError(`unrecognized-pricing-kind: ${kind}`);
     }
   }
-  if (!isListing(verified.listing) || !isAgreementArtifact(agreement)) {
+  if (!options.allowLegacyJobId) {
+    // Validate the address-bearing discriminator before the broader artifact
+    // shape so a malformed/lowercase spelling cannot be hidden behind the
+    // generic agreement error and no resolver/verifier callback can run first.
+    requireCanonicalJobId(agreement.jobId, "agreement jobId");
+  }
+  const agreementIsReadable = options.allowLegacyJobId
+    ? isLegacyReadableAgreementArtifact(agreement)
+    : isAgreementArtifact(agreement);
+  if (!isListing(verified.listing) || !agreementIsReadable) {
     throw new DacsError(
       "commitment input has a non-normative Listing or agreement shape",
     );
@@ -602,6 +612,29 @@ function selectFixedPriceArtifact(
     );
   }
   return { agreement, listing };
+}
+
+/**
+ * Historical pre-ULID agreements differ from the current exact wire contract
+ * only in the job identifier grammar. Validate every other byte/field through
+ * the normative parser by substituting a canonical probe id; the original id
+ * remains signed, session-bound, and used for the read-only legacy address.
+ */
+function isLegacyReadableAgreementArtifact(
+  value: unknown,
+): value is AgreementArtifact {
+  if (
+    !isRecord(value) ||
+    typeof value.jobId !== "string" ||
+    value.jobId.length === 0 ||
+    value.jobId.includes(":")
+  ) {
+    return false;
+  }
+  return isAgreementArtifact({
+    ...value,
+    jobId: "00000000000000000000000000",
+  });
 }
 
 function validatePricingBinding(
@@ -1410,7 +1443,9 @@ export async function readLegacyFixedPriceAgreementCommitment(
     callerInput,
     "legacy commitment input",
   );
-  const selected = selectFixedPriceArtifact(input);
+  const selected = selectFixedPriceArtifact(input, {
+    allowLegacyJobId: true,
+  });
   const logicalAddress = legacyCommitmentAddress(selected.agreement.jobId);
   const authenticated = validateAuthenticatedSessionBinding(input, selected);
   await verifyAgreementSignatures(selected.agreement, verifySignature);
