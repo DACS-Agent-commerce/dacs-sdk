@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   ARTIFACT_SEPARATORS,
+  canonicalize,
   contentHash,
   deriveFixedPriceAgreement,
   ed25519Sign,
@@ -16,9 +17,11 @@ import {
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
+  sha256Hex,
   signFixedPriceAgreement,
   signedBytes,
   type AttestationRef,
+  type AgreementSigner,
   type IdentityBundle,
   type Listing,
   type PaymentRailRef,
@@ -155,9 +158,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
         deadline: NOW + 600_000,
         deliverable: {
           deliverableType: "attested-payload",
-          hash: contentHash(
-            value.offering.deliverable as unknown as Record<string, unknown>,
-          ),
+          hash: sha256Hex(canonicalize(value.offering.deliverable)),
         },
       },
     });
@@ -172,14 +173,21 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     expect("signatures" in draft).toBe(false);
   });
 
-  test("fails closed on pricing that requires negotiation, auction, or metering", () => {
+  test("fixed-price over negotiable pricing selects exactly the band centre", () => {
+    const value = listing();
+    value.pricing = {
+      kind: "negotiable",
+      bandCenter: { amount: "2.5", currency: "USDC" },
+      minPct: 10,
+      maxPct: 20,
+    };
+    expect(deriveFixedPriceAgreement(input(value)).terms.price).toEqual(
+      value.pricing.bandCenter,
+    );
+  });
+
+  test("fails closed on auction and metered pricing", () => {
     for (const pricing of [
-      {
-        kind: "negotiable",
-        bandCenter: { amount: "2.5", currency: "USDC" },
-        minPct: 10,
-        maxPct: 20,
-      } as const,
       { kind: "auction", selectionRule: "lowest-price" } as const,
       {
         kind: "metered",
@@ -193,6 +201,21 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
         /invalid wire shape|unsupported/,
       );
     }
+  });
+
+  test("hashes the complete anchored DeliverableSpec without signature stripping", () => {
+    const value = listing();
+    const deliverable = value.offering.deliverable as typeof value.offering.deliverable & {
+      signature?: string;
+    };
+    deliverable.signature = "ordinary-additive-deliverable-data";
+    const draft = deriveFixedPriceAgreement(input(value));
+    expect(draft.terms.deliverable.hash).toBe(
+      sha256Hex(canonicalize(deliverable)),
+    );
+    expect(draft.terms.deliverable.hash).not.toBe(
+      contentHash(deliverable as unknown as Record<string, unknown>),
+    );
   });
 
   test("uses the normative IdentityBundle hash and excludes only presentation", () => {
@@ -210,6 +233,75 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     changedClaim.buyer.identityBundle.claims[0]!.metadata = { revision: 2 };
     const third = deriveFixedPriceAgreement(changedClaim);
     expect(third.parties[0]!.bundleHash).not.toBe(first.parties[0]!.bundleHash);
+  });
+
+  test("owns every nested derivation input, including Vet and payout refs", () => {
+    const source = {
+      ...input(listing("commit-payee-bound-agreement")),
+      payoutBindings: [
+        { railId: rail.railId, phaseIndex: 2, payeeAddress: "0xseller" },
+      ],
+    };
+    const draft = deriveFixedPriceAgreement(source);
+    const expected = structuredClone(draft);
+
+    source.jobId = "mutated-job";
+    source.verifiedListing.pin.contentHash = "f".repeat(64);
+    const sourcePrice = source.verifiedListing.listing.pricing;
+    if (sourcePrice.kind === "fixed") sourcePrice.price.amount = "999";
+    source.buyer.vetRecordRef.anchor.locator = "stor:mutated-buyer-vet";
+    source.seller.vetRecordRef.contentHash = "e".repeat(64);
+    source.selectedRail = {
+      ...source.selectedRail,
+      parameters: { network: "eip155:1" },
+    };
+    source.payoutBindings[0]!.payeeAddress = "0xattacker";
+
+    expect(draft).toEqual(expected);
+
+    const secondSource = input();
+    const secondDraft = deriveFixedPriceAgreement(secondSource);
+    secondDraft.parties[0]!.vetRecordRef.anchor.locator = "stor:draft-only";
+    expect(secondSource.buyer.vetRecordRef.anchor.locator).toBe(
+      "stor:buyer-vet",
+    );
+  });
+
+  test("rejects accessor-backed derivation inputs without invoking getters", () => {
+    const source = input();
+    let reads = 0;
+    Object.defineProperty(source.buyer.vetRecordRef.anchor, "locator", {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return "stor:live-value";
+      },
+    });
+    expect(() => deriveFixedPriceAgreement(source)).toThrow(
+      /not stable canonical JSON/,
+    );
+    expect(reads).toBe(0);
+  });
+
+  test("rejects Proxy and negative-zero JCS aliases before derivation", () => {
+    const proxied = input();
+    let proxyReads = 0;
+    proxied.buyer.vetRecordRef = new Proxy(proxied.buyer.vetRecordRef, {
+      ownKeys(target) {
+        proxyReads += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    expect(() => deriveFixedPriceAgreement(proxied)).toThrow(
+      /not stable canonical JSON/,
+    );
+    expect(proxyReads).toBe(0);
+
+    const negativeZero = input();
+    negativeZero.generatedAt = -0;
+    expect(() => deriveFixedPriceAgreement(negativeZero)).toThrow(
+      /not stable canonical JSON/,
+    );
   });
 
   test("rejects stale pins, expired Listings, rail mutation, and seller substitution", () => {
@@ -271,7 +363,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       { kind: "commit-agreement" },
       { kind: "deliver-attested-payload" },
     ];
-    value.acceptedRails = undefined;
+    delete value.acceptedRails;
     const { selectedRail: _ignored, ...zeroPay } = input(value);
     const draft = deriveFixedPriceAgreement(zeroPay);
     expect(draft.terms.rail).toBeUndefined();
@@ -316,6 +408,83 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     }
   });
 
+  test("signs one owned draft with signer options captured before either await", async () => {
+    const callerDraft = deriveFixedPriceAgreement(input());
+    const expectedDraft = structuredClone(callerDraft);
+    const buyerPrivate = privateKeyFromSeed(BUYER_SEED);
+    const sellerPrivate = privateKeyFromSeed(SELLER_SEED);
+    let sellerCalls = 0;
+
+    const sellerSigner: AgreementSigner = {
+      party: SELLER,
+      algorithm: "ed25519",
+      sign(bytes) {
+        expect(this).toBe(sellerSigner);
+        sellerCalls += 1;
+        return ed25519Sign(bytes, sellerPrivate);
+      },
+    };
+    const buyerSigner: AgreementSigner = {
+      party: BUYER,
+      algorithm: "ed25519",
+      sign(bytes) {
+        expect(this).toBe(buyerSigner);
+        callerDraft.jobId = "mutated-after-snapshot";
+        callerDraft.parties[0]!.vetRecordRef.anchor.locator = "stor:mutated";
+        sellerSigner.party = "did:demos:agent:substitute";
+        sellerSigner.algorithm = "ecdsa-secp256k1";
+        sellerSigner.sign = () => new Uint8Array(1);
+        return ed25519Sign(bytes, buyerPrivate);
+      },
+    };
+
+    const signed = await signFixedPriceAgreement(
+      callerDraft,
+      buyerSigner,
+      sellerSigner,
+    );
+    expect(sellerCalls).toBe(1);
+    expect(contentHash(signed as unknown as Record<string, unknown>)).toBe(
+      contentHash(expectedDraft as unknown as Record<string, unknown>),
+    );
+    expect(signed.jobId).toBe(expectedDraft.jobId);
+    expect(signed.parties[0]!.vetRecordRef).toEqual(
+      expectedDraft.parties[0]!.vetRecordRef,
+    );
+    expect(signed.signatures.map(({ party, algorithm }) => ({ party, algorithm })))
+      .toEqual([
+        { party: BUYER, algorithm: "ed25519" },
+        { party: SELLER, algorithm: "ed25519" },
+      ]);
+  });
+
+  test("isolates signer inputs and rejects callback mutation", async () => {
+    let sellerInvoked = false;
+    await expect(
+      signFixedPriceAgreement(
+        deriveFixedPriceAgreement(input()),
+        {
+          party: BUYER,
+          algorithm: "ed25519",
+          sign: (bytes, context) => {
+            bytes[0] = (bytes[0] ?? 0) ^ 0xff;
+            context.party = "did:demos:agent:mutated";
+            return new Uint8Array(64);
+          },
+        },
+        {
+          party: SELLER,
+          algorithm: "ed25519",
+          sign: () => {
+            sellerInvoked = true;
+            return new Uint8Array(64);
+          },
+        },
+      ),
+    ).rejects.toThrow(/must not mutate its signing inputs/);
+    expect(sellerInvoked).toBe(false);
+  });
+
   test("rejects wrong role signers and non-canonical signature encodings", async () => {
     const draft = deriveFixedPriceAgreement(input());
     await expect(
@@ -332,6 +501,20 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
         { party: SELLER, algorithm: "ed25519", sign: () => new Uint8Array(64) },
       ),
     ).rejects.toThrow(/non-canonical/);
+    await expect(
+      signFixedPriceAgreement(
+        draft,
+        { party: BUYER, algorithm: "ed25519", sign: () => [] as never },
+        { party: SELLER, algorithm: "ed25519", sign: () => new Uint8Array(64) },
+      ),
+    ).rejects.toThrow(/must return signature bytes/);
+    await expect(
+      signFixedPriceAgreement(
+        draft,
+        { party: BUYER, algorithm: "ed25519", sign: () => new Uint8Array(63) },
+        { party: SELLER, algorithm: "ed25519", sign: () => new Uint8Array(64) },
+      ),
+    ).rejects.toThrow(/exactly 64 bytes/);
   });
 
   test("rejects malformed drafts before invoking either signer", async () => {
@@ -347,10 +530,21 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     await expect(
       signFixedPriceAgreement(
         { ...deriveFixedPriceAgreement(input()), signature: "ambiguous" } as never,
-        signer,
-        { ...signer, party: SELLER },
+        { ...signer, algorithm: "ed25519" },
+        { ...signer, party: SELLER, algorithm: "ed25519" },
       ),
     ).rejects.toThrow(/must not carry signature fields/);
+    expect(invoked).toBe(0);
+
+    const explicitUndefined = deriveFixedPriceAgreement(input());
+    explicitUndefined.terms.rail = undefined;
+    await expect(
+      signFixedPriceAgreement(
+        explicitUndefined,
+        { ...signer, algorithm: "ed25519" },
+        { ...signer, party: SELLER, algorithm: "ed25519" },
+      ),
+    ).rejects.toThrow(/not stable canonical JSON/);
     expect(invoked).toBe(0);
 
     await expect(
@@ -378,6 +572,18 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
         ...signed,
         signatures: [
           { ...signed.signatures[0], value: "YWJjZA==" },
+          signed.signatures[1],
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      isAgreementDocument({
+        ...signed,
+        signatures: [
+          {
+            ...signed.signatures[0],
+            value: Buffer.alloc(63).toString("base64url"),
+          },
           signed.signatures[1],
         ],
       }),

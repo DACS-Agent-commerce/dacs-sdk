@@ -343,6 +343,128 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(ev?.verdict).toBe("hash-mismatch");
   });
 
+  test("hash-matched agreements must preserve bundle job and party bindings", async () => {
+    for (const variant of ["job", "buyer-claim", "seller-bundle"] as const) {
+      const fx = await buildFixture(buyerDid, signBuyer);
+      const parties = fx.agreement.parties as Array<Record<string, unknown>>;
+      const agreementSignatures = fx.agreement.signatures as Array<
+        Record<string, unknown>
+      >;
+      if (variant === "job") {
+        fx.agreement.jobId = "different-job";
+      } else if (variant === "buyer-claim") {
+        const substitute = didFor(Uint8Array.from(Buffer.alloc(32, 11)));
+        parties[0]!.primaryClaim = substitute;
+        agreementSignatures[0]!.party = substitute;
+      } else {
+        parties[1]!.bundleHash = h("e");
+      }
+      (
+        fx.bundle.agreementRef as {
+          contentHash: string;
+        }
+      ).contentHash = contentHash(fx.agreement);
+      await resignFixture(fx, [
+        { party: buyerDid, sign: signBuyer },
+        { party: sellerDid, sign: signSeller },
+      ]);
+
+      const result = await verifyBundleCore("ref", depsFor(fx));
+      expect(result.ok, variant).toBe(false);
+      expect(
+        result.refs.find((ref) => ref.kind === "dacs-3-agreement")?.verdict,
+        variant,
+      ).toBe("incoherent");
+      expect(result.reason, variant).toMatch(
+        /agreement.*incoherent|missing required signature/i,
+      );
+    }
+  });
+
+  test("rejects accessor-backed resolver results without invoking getters", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const liveAgreement = structuredClone(fx.agreement);
+    let reads = 0;
+    Object.defineProperty(liveAgreement, "jobId", {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return "j1";
+      },
+    });
+    const result = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
+            ? liveAgreement
+            : ref.anchor.locator === "settlement-j1"
+              ? fx.evidence
+              : null,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(
+      result.refs.find((ref) => ref.kind === "dacs-3-agreement")?.verdict,
+    ).toBe("invalid-shape");
+    expect(reads).toBe(0);
+  });
+
+  test("owns callback results, captures deps, and isolates resolver/verifier inputs", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const deps = depsFor(fx);
+    let firstKeyResolution = true;
+
+    deps.resolveAttestationRef = async (ref, _jobId, parties) => {
+      const locator = ref.anchor.locator;
+      (ref as { contentHash: string }).contentHash = h("0");
+      (parties[0] as { primaryClaim: string }).primaryClaim =
+        "did:demos:agent:callback-mutation";
+      if (locator === "agreement-j1") return fx.agreement;
+      if (locator === "settlement-j1") {
+        (
+          fx.agreement.listingRef as {
+            contentHash: string;
+          }
+        ).contentHash = h("f");
+        return fx.evidence;
+      }
+      return null;
+    };
+    deps.resolvePublicKey = async (did) => {
+      if (firstKeyResolution) {
+        firstKeyResolution = false;
+        const signatures = fx.bundle.signatures as Array<
+          Record<string, unknown>
+        >;
+        signatures[1]!.value = Buffer.alloc(64).toString("base64url");
+      }
+      return resolveFromDid(did);
+    };
+    deps.verify = (bytes, signature, publicKey) => {
+      const result = verify(bytes, signature, publicKey);
+      bytes.fill(0);
+      signature.fill(0);
+      publicKey.fill(0);
+      return result;
+    };
+    const capturedRead = deps.readArtifact;
+    deps.readArtifact = async function (ref) {
+      expect(this).toBe(deps);
+      deps.resolveAttestationRef = async () => null;
+      deps.resolvePublicKey = async () => null;
+      deps.verify = () => false;
+      return capturedRead(ref);
+    };
+
+    const result = await verifyBundleCore("ref", deps);
+    expect(result.ok).toBe(true);
+    expect(result.signatures.every(({ verdict }) => verdict === "valid")).toBe(
+      true,
+    );
+    expect(result.refs.every(({ verdict }) => verdict === "ok")).toBe(true);
+  });
+
   test.each(["fail", "error", "indeterminate"] as const)(
     "optional verifyEvidence: %s fails closed and receives the signed record",
     async (decision) => {

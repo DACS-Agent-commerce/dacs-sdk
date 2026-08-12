@@ -711,12 +711,24 @@ const isAgreementParty = (v: unknown): v is AgreementParty =>
   isAttestationRef(v.vetRecordRef) &&
   (v.encryptionKey === undefined || isNonEmptyStr(v.encryptionKey));
 
-const isAgreementSignature = (v: unknown): boolean =>
-  isObj(v) &&
-  hasOnlyKeys(v, ["party", "algorithm", "value"]) &&
-  isClaimRef(v.party) &&
-  isOneOf(COMPONENT_SIGNATURE_ALGORITHMS, v.algorithm) &&
-  isCanonicalBase64Url(v.value);
+const isAgreementSignature = (v: unknown): boolean => {
+  if (
+    !isObj(v) ||
+    !hasOnlyKeys(v, ["party", "algorithm", "value"]) ||
+    !isClaimRef(v.party) ||
+    !isOneOf(COMPONENT_SIGNATURE_ALGORITHMS, v.algorithm) ||
+    !isCanonicalBase64Url(v.value)
+  ) {
+    return false;
+  }
+  // CORE §B.7 requires algorithm-specific validation after canonical wire
+  // decoding. Ed25519 has a fixed 64-byte representation; formats for the
+  // other registered algorithms are verified by their algorithm adapters.
+  return (
+    v.algorithm !== "ed25519" ||
+    Buffer.from(v.value, "base64url").byteLength === 64
+  );
+};
 
 const isFeeRecurrence = (v: unknown): boolean => {
   if (!isObj(v)) return false;

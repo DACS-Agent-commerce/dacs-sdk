@@ -1,7 +1,9 @@
 import {
   canonicalize,
   contentHash,
+  sha256Hex,
 } from "../canonical/index.js";
+import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -78,6 +80,12 @@ export interface AgreementSigner {
   ) => Promise<Uint8Array | string> | Uint8Array | string;
 }
 
+interface CapturedAgreementSigner {
+  party: string;
+  algorithm: ComponentSignatureAlgorithm;
+  sign: AgreementSigner["sign"];
+}
+
 const isSafeTime = (value: number): boolean =>
   Number.isSafeInteger(value) && value >= 0;
 
@@ -101,7 +109,7 @@ function agreementParty(
     role,
     bundleHash: identityBundleHash(input.identityBundle),
     primaryClaim: input.identityBundle.presentedBy,
-    vetRecordRef: input.vetRecordRef,
+    vetRecordRef: structuredClone(input.vetRecordRef),
     ...(input.encryptionKey === undefined
       ? {}
       : { encryptionKey: input.encryptionKey }),
@@ -211,8 +219,12 @@ function requirePayoutBindings(
  * this boundary: every signed term is derived from the exact pinned Listing.
  */
 export function deriveFixedPriceAgreement(
-  input: FixedPriceAgreementInput,
+  callerInput: FixedPriceAgreementInput,
 ): UnsignedAgreementArtifact {
+  const input = snapshotCanonicalJson(
+    callerInput,
+    "fixed-price agreement input",
+  );
   const { listing, pin } = input.verifiedListing;
   if (input.verifiedListing.disposition !== "verified") {
     throw new DacsError("fixed-price agreement requires a verified Listing disposition");
@@ -251,12 +263,20 @@ export function deriveFixedPriceAgreement(
   const deadline = input.generatedAt + deadlineSec! * 1_000;
   if (!Number.isSafeInteger(deadline)) throw new DacsError("derived deadline overflows unix ms");
 
-  if (listing.pricing.kind !== "fixed") {
+  if (
+    listing.pricing.kind !== "fixed" &&
+    listing.pricing.kind !== "negotiable"
+  ) {
     throw new DacsError(
       `${listing.pricing.kind} pricing is unsupported by the fixed-price handler`,
     );
   }
-  const price = listing.pricing.price;
+  // PS-3: fixed-price acceptance over a negotiable Listing selects the exact
+  // band centre. It cannot pick an arbitrary price merely within the band.
+  const price =
+    listing.pricing.kind === "fixed"
+      ? listing.pricing.price
+      : listing.pricing.bandCenter;
   const { commitment, paymentIndexes } = requirePipeline(listing);
   const rail = requireRail(listing, input.selectedRail, paymentIndexes);
   const buyer = agreementParty("buyer", input.buyer);
@@ -271,7 +291,10 @@ export function deriveFixedPriceAgreement(
   const terms = {
     deliverable: {
       deliverableType: deliverable.kind,
-      hash: contentHash(deliverable as unknown as Record<string, unknown>),
+      // DACS-4 §9.3 hashes the complete anchored DeliverableSpec. Do not use
+      // contentHash(): its artifact helper intentionally strips fields named
+      // `signature`/`signatures`, which are ordinary additive data here.
+      hash: sha256Hex(canonicalize(deliverable)),
       ...(deliverable.kind === "storage-program" && deliverable.schemaUrl !== undefined
         ? { schemaUrl: deliverable.schemaUrl }
         : {}),
@@ -307,22 +330,107 @@ export function deriveFixedPriceAgreement(
   };
 }
 
-function encodedSignature(value: Uint8Array | string): string {
+function encodedSignature(
+  value: unknown,
+  algorithm: ComponentSignatureAlgorithm,
+): string {
+  if (typeof value !== "string" && !(value instanceof Uint8Array)) {
+    throw new DacsError(
+      "agreement signer must return signature bytes or a canonical unpadded Base64URL string",
+    );
+  }
   const encoded =
     typeof value === "string" ? value : Buffer.from(value).toString("base64url");
   if (!isCanonicalBase64Url(encoded)) {
     throw new DacsError("agreement signer returned a non-canonical Base64URL value");
   }
+  // CORE §B.7 leaves decoded length algorithm-specific. Ed25519 is the only
+  // AgreementSignature algorithm whose exact 64-byte contract is implemented
+  // by this SDK; do not guess encodings for the other registered algorithms.
+  if (
+    algorithm === "ed25519" &&
+    Buffer.from(encoded, "base64url").byteLength !== 64
+  ) {
+    throw new DacsError("ed25519 agreement signatures must be exactly 64 bytes");
+  }
   return encoded;
+}
+
+function captureAgreementSigner(
+  signer: AgreementSigner,
+  label: "buyer" | "seller",
+): CapturedAgreementSigner {
+  const party = signer.party;
+  const algorithm = signer.algorithm;
+  const signCandidate = signer.sign;
+  const algorithms: ReadonlySet<string> = new Set(
+    COMPONENT_SIGNATURE_ALGORITHMS,
+  );
+  if (typeof party !== "string" || party.length === 0 || party.trim() !== party) {
+    throw new DacsError(`${label} agreement signer party must be a non-empty string`);
+  }
+  if (!algorithms.has(algorithm)) {
+    throw new DacsError(`${label} agreement signer uses an unsupported algorithm`);
+  }
+  if (typeof signCandidate !== "function") {
+    throw new DacsError(`${label} agreement signer callback must be a function`);
+  }
+  return {
+    party,
+    algorithm,
+    sign: Function.prototype.bind.call(
+      signCandidate,
+      signer,
+    ) as AgreementSigner["sign"],
+  };
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+async function collectAgreementSignature(
+  signer: CapturedAgreementSigner,
+  expectedBytes: Uint8Array,
+): Promise<AgreementSignature> {
+  const context = { party: signer.party, algorithm: signer.algorithm };
+  const callbackBytes = Uint8Array.from(expectedBytes);
+  const callbackContext = { ...context };
+  const rawValue = await signer.sign(callbackBytes, callbackContext);
+  if (
+    !sameBytes(callbackBytes, expectedBytes) ||
+    callbackContext.party !== context.party ||
+    callbackContext.algorithm !== context.algorithm ||
+    Object.keys(callbackContext).length !== 2
+  ) {
+    throw new DacsError("agreement signer must not mutate its signing inputs");
+  }
+  return {
+    ...context,
+    value: encodedSignature(rawValue, signer.algorithm),
+  };
 }
 
 /** Collect the exact buyer + seller DACS-3 §8.5.1 signatures. */
 export async function signFixedPriceAgreement(
-  draft: UnsignedAgreementArtifact,
+  callerDraft: UnsignedAgreementArtifact,
   buyerSigner: AgreementSigner,
   sellerSigner: AgreementSigner,
 ): Promise<AgreementArtifact> {
-  if ("signatures" in draft || "signature" in draft) {
+  // Capture both option bags and preserve method-style `this` before the first
+  // access to callerDraft. A draft accessor must not be able to switch signer
+  // identity or implementation selected for this operation.
+  const capturedBuyerSigner = captureAgreementSigner(buyerSigner, "buyer");
+  const capturedSellerSigner = captureAgreementSigner(sellerSigner, "seller");
+  const draft = snapshotCanonicalJson(callerDraft, "unsigned agreement draft");
+  if (
+    Object.prototype.hasOwnProperty.call(draft, "signatures") ||
+    Object.prototype.hasOwnProperty.call(draft, "signature")
+  ) {
     throw new DacsError("agreement draft must not carry signature fields");
   }
   const buyer = draft.parties.find((party) => party.role === "buyer")?.primaryClaim;
@@ -330,25 +438,26 @@ export async function signFixedPriceAgreement(
   if (
     !buyer ||
     !seller ||
-    buyerSigner.party !== buyer ||
-    sellerSigner.party !== seller
+    capturedBuyerSigner.party !== buyer ||
+    capturedSellerSigner.party !== seller
   ) {
     throw new DacsError("agreement signers do not match the bound buyer and seller claims");
-  }
-  const algorithms: ReadonlySet<string> = new Set(COMPONENT_SIGNATURE_ALGORITHMS);
-  if (
-    !algorithms.has(buyerSigner.algorithm) ||
-    !algorithms.has(sellerSigner.algorithm)
-  ) {
-    throw new DacsError("agreement signer uses an unsupported algorithm");
   }
   const placeholder = Buffer.alloc(64).toString("base64url");
   if (
     !isAgreementArtifact({
       ...draft,
       signatures: [
-        { party: buyer, algorithm: buyerSigner.algorithm, value: placeholder },
-        { party: seller, algorithm: sellerSigner.algorithm, value: placeholder },
+        {
+          party: buyer,
+          algorithm: capturedBuyerSigner.algorithm,
+          value: placeholder,
+        },
+        {
+          party: seller,
+          algorithm: capturedSellerSigner.algorithm,
+          value: placeholder,
+        },
       ],
     })
   ) {
@@ -362,14 +471,10 @@ export async function signFixedPriceAgreement(
     separator,
     contentHash(draft as unknown as Record<string, unknown>),
   );
-  const signatures: AgreementSignature[] = [];
-  for (const signer of [buyerSigner, sellerSigner]) {
-    const context = { party: signer.party, algorithm: signer.algorithm };
-    signatures.push({
-      ...context,
-      value: encodedSignature(await signer.sign(bytes, context)),
-    });
-  }
+  const signatures: AgreementSignature[] = [
+    await collectAgreementSignature(capturedBuyerSigner, bytes),
+    await collectAgreementSignature(capturedSellerSigner, bytes),
+  ];
   const signed = { ...draft, signatures } as AgreementArtifact;
   if (!isAgreementArtifact(signed)) {
     throw new DacsError("signed agreement failed exact DACS-3 §8.5 validation");
