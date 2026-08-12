@@ -9,6 +9,7 @@ const moduleMocks = vi.hoisted(() => ({
   prepareCounterSignatureRequest: vi.fn(),
   verifyFinalizedBundle: vi.fn(),
   verifyTerminalResult: vi.fn(),
+  projectAudit: vi.fn(),
 }));
 
 vi.mock("../../src/seller/bundleFinalization.js", async (importOriginal) => {
@@ -31,6 +32,7 @@ vi.mock("../../src/agent/runDurableFulfilmentCore.js", async (importOriginal) =>
   return {
     ...actual,
     verifyDurableSellerTerminalResult: moduleMocks.verifyTerminalResult,
+    projectDurableSellerAuditPending: moduleMocks.projectAudit,
   };
 });
 
@@ -70,6 +72,7 @@ import {
   type SellerBundleFinalizationProvider,
 } from "../../src/seller/bundleFinalization.js";
 import {
+  projectDurableSellerAuditPending,
   verifyDurableSellerTerminalResult,
   type DurableSellerTerminalVerification,
 } from "../../src/agent/runDurableFulfilmentCore.js";
@@ -102,6 +105,7 @@ const prepareRequestMock = vi.mocked(
   prepareCompletedSellerBundleCounterSignatureRequest,
 );
 const verifyTerminalResultMock = vi.mocked(verifyDurableSellerTerminalResult);
+const projectAuditMock = vi.mocked(projectDurableSellerAuditPending);
 const verifyFinalizedBundleMock = moduleMocks.verifyFinalizedBundle;
 
 function anchorReceipt(
@@ -350,6 +354,13 @@ async function createHarness(
   );
   const input: FinalizeCompletedSellerBundleDurableInput = {
     agreement,
+    verifiedListing: {
+      pin: structuredClone(agreement.listingPin),
+      sellerPrimaryClaim: SELLER,
+      buyerRequirement: { requirementVersion: "1", required: [] },
+      pipeline: [],
+      deliverable: { kind: "storage-program", accessModel: "public" },
+    },
     agreementRef,
     fulfilment,
     session: {
@@ -475,6 +486,23 @@ async function createHarness(
     deliveryAnchorReceipt: structuredClone(suppliedResult.evidenceAnchorReceipt),
     resultHash: "0".repeat(64),
     finalReceiptHash: "1".repeat(64),
+  }));
+  projectAuditMock.mockReset();
+  projectAuditMock.mockImplementation(async () => ({
+    terminal: {
+      result: structuredClone(input.fulfilment),
+      binding: structuredClone(binding),
+      handoff: {} as Awaited<
+        ReturnType<typeof projectDurableSellerAuditPending>
+      >["terminal"]["handoff"],
+      deliveryAnchorReceipt: structuredClone(input.fulfilment.evidenceAnchorReceipt),
+      resultHash: "0".repeat(64),
+      finalReceiptHash: "1".repeat(64),
+    },
+    session: structuredClone(input.session),
+    sessionArtifacts: structuredClone(input.sessionArtifacts) as Awaited<
+      ReturnType<typeof projectDurableSellerAuditPending>
+    >["sessionArtifacts"],
   }));
   verifyFinalizedBundleMock.mockImplementation(
     async (_input, suppliedResult) => structuredClone(suppliedResult),
@@ -716,9 +744,28 @@ beforeEach(() => {
   moduleMocks.prepareCounterSignatureRequest.mockReset();
   moduleMocks.verifyFinalizedBundle.mockReset();
   moduleMocks.verifyTerminalResult.mockReset();
+  moduleMocks.projectAudit.mockReset();
 });
 
 describe("durable seller bundle coordinator v2", () => {
+  test("rejects caller-assembled session facts that differ from the WAL projection", async () => {
+    const harness = await createHarness("write-input");
+    const store = createInMemoryFencedSessionStore();
+    await seedCompletedDelivery(store, harness.binding);
+    const project = projectAuditMock.getMockImplementation();
+    if (!project) throw new Error("projection mock missing");
+    const authoritative = await project({} as never);
+    authoritative.session.lastUpdatedAt -= 1;
+    projectAuditMock.mockResolvedValueOnce(authoritative);
+
+    await expect(finalizeCompletedSellerBundleDurable(
+      harness.input,
+      harness.provider,
+      durability(store),
+    )).rejects.toThrow("exact authenticated WAL projection");
+    expect(finalizeCoreMock).not.toHaveBeenCalled();
+  });
+
   test("passes one exact generation fence to every irreversible effect and commits atomically", async () => {
     const harness = await createHarness("write-input");
     const base = createInMemoryFencedSessionStore();
@@ -1385,7 +1432,7 @@ describe("durable seller bundle coordinator v2", () => {
     expect(harness.submitBundle).not.toHaveBeenCalled();
     expect(harness.publishBinding).not.toHaveBeenCalled();
 
-    verifyTerminalResultMock.mockRejectedValueOnce(
+    projectAuditMock.mockRejectedValueOnce(
       new Error("terminal verification provider unavailable"),
     );
     await expect(
