@@ -115,6 +115,7 @@ import {
   type DurableFixedPriceAgreementDurability,
   type DurableFixedPriceAgreementInput,
   type DurableBuyerBundleFinalizationInput,
+  type DurableBuyerBundleFinalizationProgress,
   type DurableBuyerBundleFinalizationProvider,
   type DurableSellerFixedPriceAgreementDurability,
   type DurableSellerFulfilmentDeps,
@@ -4364,6 +4365,34 @@ async function closeDurableDetachedRoleBundles(input: {
     reconcileBindingPublication: (binding) =>
       reconcileRoleBindingPublication("buyer", binding),
   });
+  const advanceBuyerUntilFinalized = async (
+    workerPrefix: string,
+    maxAttempts = 180,
+  ): Promise<Extract<DurableBuyerBundleFinalizationProgress, { disposition: "finalised" }>> => {
+    let last = "not-started";
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      buyerBundleStore = await createFsFencedSessionStore({ dir: buyerBundleDir });
+      const progress = await advanceCompletedBuyerBundleDurable(
+        buyerInput,
+        buyerProvider,
+        buyerDurability(`${workerPrefix}-${attempt}`),
+      );
+      if (progress.disposition === "finalised") return progress;
+      const reason = safeDiagnosticCode(progress.reason);
+      last = `${progress.disposition}-${progress.stage}-${reason}`;
+      requireCondition(
+        progress.disposition !== "rejected",
+        `buyer-bundle-rejected-${progress.stage}-${reason}`,
+      );
+      if (attempt % 30 === 0) {
+        process.stderr.write(`funded-e2e-step:buyer-bundle-recovery-${attempt}-${last}\n`);
+      }
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    }
+    throw new Error(`funded-e2e:buyer-bundle-recovery-timeout-${last}`);
+  };
   const waiting = await diagnosticStep("bundle-buyer-process-a", () =>
     advanceCompletedBuyerBundleDurable(
       buyerInput,
@@ -4459,15 +4488,9 @@ async function closeDurableDetachedRoleBundles(input: {
     logicalAddress: sellerFinalizationLogicalAddress,
     artifact: sellerFinalization as unknown as Record<string, unknown>,
   });
-  buyerBundleStore = await createFsFencedSessionStore({ dir: buyerBundleDir });
   const buyerFinalization = await diagnosticStep("bundle-buyer-process-b", () =>
-    advanceCompletedBuyerBundleDurable(
-      buyerInput,
-      buyerProvider,
-      buyerDurability("funded-buyer-bundle-process-b"),
-    )
+    advanceBuyerUntilFinalized("funded-buyer-bundle-process-b")
   );
-  requireCondition(buyerFinalization.disposition === "finalised", "buyer-bundle-finalization-failed");
   await anchorArtifact({
     adapter: input.preflight.buyer.adapter,
     writer: input.preflight.env.BUYER_DID,
@@ -4502,11 +4525,8 @@ async function closeDurableDetachedRoleBundles(input: {
     sellerProvider,
     sellerDurability(sellerReplayStore, "funded-seller-bundle-process-b"),
   );
-  buyerBundleStore = await createFsFencedSessionStore({ dir: buyerBundleDir });
-  const buyerReplay = await advanceCompletedBuyerBundleDurable(
-    buyerInput,
-    buyerProvider,
-    buyerDurability("funded-buyer-bundle-process-c"),
+  const buyerReplay = await advanceBuyerUntilFinalized(
+    "funded-buyer-bundle-process-c",
   );
   requireCondition(
     buyerReplay.disposition === "finalised" && buyerReplay.recovered &&
