@@ -1092,8 +1092,12 @@ const terminalTamperCases: Array<{
   {
     label: "indexed settlement receipt",
     tamper(record) {
+      const binding = record.paymentAuthorizations[0];
+      if (!binding) throw new Error("payment authorization binding missing");
       const receipt = record.receipts.find(
-        (item) => item.kind === "settlement" && item.phaseIndex === 0,
+        (item) =>
+          item.kind === "settlement" &&
+          item.phaseIndex === binding.paymentPhaseIndex,
       );
       if (!receipt) throw new Error("indexed settlement receipt missing");
       receipt.ref = `evm:8453:${"0".repeat(64)}:0`;
@@ -1102,8 +1106,12 @@ const terminalTamperCases: Array<{
   {
     label: "indexed delivery/evidence receipt",
     tamper(record) {
+      const binding = record.paymentAuthorizations[0];
+      if (!binding) throw new Error("payment authorization binding missing");
       const receipt = record.receipts.find(
-        (item) => item.kind === "delivery" && item.phaseIndex === 1,
+        (item) =>
+          item.kind === "delivery" &&
+          item.phaseIndex === binding.deliveryPhaseIndex,
       );
       if (!receipt) throw new Error("indexed delivery receipt missing");
       receipt.ref = "dacs4:test-delivery-evidence:attacker";
@@ -1112,8 +1120,12 @@ const terminalTamperCases: Array<{
   {
     label: "indexed fulfilment receipt",
     tamper(record) {
+      const binding = record.paymentAuthorizations[0];
+      if (!binding) throw new Error("payment authorization binding missing");
       const receipt = record.receipts.find(
-        (item) => item.kind === "fulfilment" && item.phaseIndex === 1,
+        (item) =>
+          item.kind === "fulfilment" &&
+          item.phaseIndex === binding.deliveryPhaseIndex,
       );
       if (!receipt) throw new Error("indexed fulfilment receipt missing");
       receipt.ref = "0".repeat(64);
@@ -1457,8 +1469,13 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     if (completed.decision !== "completed") throw new Error("expected completion");
     const loaded = await h.store.load(h.fixture.authorization.jobId);
     if (loaded.status !== "ok") throw new Error("session missing");
+    const binding = loaded.record.paymentAuthorizations[0];
+    if (!binding) throw new Error("payment authorization binding missing");
     const resultCheckpoint = loaded.record.checkpoints.find(
-      (checkpoint) => checkpoint.key === sellerFulfilmentCheckpointKey.result(1) &&
+      (checkpoint) =>
+        checkpoint.key === sellerFulfilmentCheckpointKey.result(
+          binding.deliveryPhaseIndex,
+        ) &&
         checkpoint.stage === "outcome",
     );
     const verifyEvidenceSignature = vi.fn(h.deps.verifyEvidenceSignature);
@@ -1482,7 +1499,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         verifyAnchorReceipt,
       });
       expect(lastVerified.result).toEqual(completed);
-      expect(lastVerified.binding).toEqual(loaded.record.paymentAuthorizations[0]);
+      expect(lastVerified.binding).toEqual(binding);
       expect(lastVerified.resultHash).toBe(resultCheckpoint?.data?.resultHash);
       expect(lastVerified.finalReceiptHash).toBe(resultCheckpoint?.data?.finalReceiptHash);
     }

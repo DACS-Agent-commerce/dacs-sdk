@@ -272,6 +272,14 @@ async function createHarness(
     anchor: { kind: "storage-program", locator: `agreement:${JOB_ID}` },
     contentHash: AGREEMENT_HASH,
   };
+  const buyerVetRef: AttestationRef = {
+    anchor: { kind: "storage-program", locator: `vet:${JOB_ID}:buyer` },
+    contentHash: "a".repeat(64),
+  };
+  const sellerVetRef: AttestationRef = {
+    anchor: { kind: "storage-program", locator: `vet:${JOB_ID}:seller` },
+    contentHash: "b".repeat(64),
+  };
   const agreement: FinalizeCompletedSellerBundleInput["agreement"] = {
     artifactKind: "payee-bound",
     ref: `agreement:${JOB_ID}`,
@@ -282,8 +290,16 @@ async function createHarness(
       version: 1,
       contentHash: "8".repeat(64),
     },
-    buyer: { primaryClaim: BUYER, bundleHash: "c".repeat(64) },
-    seller: { primaryClaim: SELLER, bundleHash: "d".repeat(64) },
+    buyer: {
+      primaryClaim: BUYER,
+      bundleHash: "c".repeat(64),
+      vetRecordRef: buyerVetRef,
+    },
+    seller: {
+      primaryClaim: SELLER,
+      bundleHash: "d".repeat(64),
+      vetRecordRef: sellerVetRef,
+    },
     deliverableRef: { deliverableType: "storage-program", hash: "e".repeat(64) },
     commitment: {
       status: "finalized",
@@ -291,6 +307,7 @@ async function createHarness(
       agreementHash: AGREEMENT_HASH,
       recordContentHash: "f".repeat(64),
       finalizedAt: NOW - 10_000,
+      signer: SELLER,
     },
   };
   const fulfilment = {
@@ -341,8 +358,18 @@ async function createHarness(
       state: "audit-pending",
       listingRef: agreement.listingPin,
       parties: [
-        { role: "buyer", bundleHash: agreement.buyer.bundleHash, primaryClaim: BUYER },
-        { role: "seller", bundleHash: agreement.seller.bundleHash, primaryClaim: SELLER },
+        {
+          role: "buyer",
+          bundleHash: agreement.buyer.bundleHash,
+          primaryClaim: BUYER,
+          vetRecordRef: buyerVetRef,
+        },
+        {
+          role: "seller",
+          bundleHash: agreement.seller.bundleHash,
+          primaryClaim: SELLER,
+          vetRecordRef: sellerVetRef,
+        },
       ],
       pipeline: [],
       phaseResults: [],
