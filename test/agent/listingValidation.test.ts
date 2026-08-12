@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   assessListingReachability,
   checkListingRevocation,
+  resolveListingPayloadVerificationCapability,
   resolveListingRails,
   validateListingArtifact,
   type ListingRailResolutionInput,
@@ -455,6 +456,48 @@ describe("ordered ListingValidationDisposition", () => {
         disposition: "error",
         reason: "payload-verification-capability-resolution-threw",
       },
+    });
+  });
+
+  it("fails closed on a non-snapshotable DPA-1 capability decision", async () => {
+    const listing = fixture();
+    const deps = baseDeps();
+    deps.verifyListingSignature = () => true;
+    deps.resolvePayloadVerificationCapability = () => new Proxy(
+      { disposition: "supported" as const },
+      {},
+    );
+
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      step: 7,
+      reason: "payload-verification-method-error",
+      payloadVerificationCapability: {
+        disposition: "error",
+        reason: "payload-verification-capability-resolution-invalid",
+      },
+    });
+  });
+
+  it("requires exact boolean passes from security verifiers", async () => {
+    const listing = fixture();
+    const deps = baseDeps();
+    deps.verifyListingSignature = () => ({}) as unknown as boolean;
+
+    await expect(
+      validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      step: 4,
+      reason: "listing-signature-malformed-result",
     });
   });
 

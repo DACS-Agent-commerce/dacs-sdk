@@ -153,6 +153,64 @@ describe("runSession orchestration (T4)", () => {
     expect(res.bundleRef).toBe("stor-dacs5:bundle:job-1");
   });
 
+  test("snapshots caller-owned fixed terms before any awaited dependency", async () => {
+    const terms = structuredClone(TERMS);
+    let settled: Parameters<SessionDeps["settle"]>[0] | undefined;
+    const result = await runSessionCore(
+      "stor-listing",
+      terms,
+      makeDeps({
+        readListing: async () => {
+          terms.price.rail = "pay-evil";
+          terms.price.amount = "999999999";
+          terms.deliveryPhase = "deliver-evil";
+          return LISTING;
+        },
+        settle: async (request) => {
+          settled = request;
+          return {
+            ok: true,
+            txHash: "0xabc",
+            chainId: "eip155:11155111",
+            payer: "0xbob",
+            payee: "0xalice",
+          };
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("completed");
+    expect(settled).toMatchObject({
+      rail: "pay-x402",
+      amount: "1000000",
+      asset: "USDC",
+    });
+  });
+
+  test("a live or proxied anchor lookup fails closed before write or payment", async () => {
+    let anchorCalls = 0;
+    let settleCalls = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          resolveAnchor: async () => new Proxy({ status: "absent" as const }, {}),
+          anchor: async (name) => {
+            anchorCalls += 1;
+            return `stor-${name}`;
+          },
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/unstable or non-wire result/);
+    expect(anchorCalls).toBe(0);
+    expect(settleCalls).toBe(0);
+  });
+
   test("rejects dependency accessors without invoking them or reading the Listing", async () => {
     const deps = makeDeps();
     let getterCalls = 0;
@@ -587,7 +645,7 @@ describe("runSession orchestration (T4)", () => {
     expect(settled).toBe(false);
   });
 
-  test.each(["absent", "mismatched"] as const)(
+  test.each(["absent", "mismatched", "wrong-operation"] as const)(
     "a stale verified result with %s DPA capability never reaches payment",
     async (capabilityCase) => {
       const listing = normativeDpaListing();
@@ -598,9 +656,15 @@ describe("runSession orchestration (T4)", () => {
             payloadVerificationCapability?: unknown;
           }
         ).payloadVerificationCapability;
-      } else {
+      } else if (capabilityCase === "mismatched") {
         admission.payloadVerificationCapability.verificationMethodHash =
           "0".repeat(64);
+      } else {
+        (
+          admission.payloadVerificationCapability as {
+            operation: "produce" | "verify";
+          }
+        ).operation = "produce";
       }
       let settled = false;
 
@@ -624,6 +688,30 @@ describe("runSession orchestration (T4)", () => {
       expect(settled).toBe(false);
     },
   );
+
+  test("a live or proxied Listing admission result never reaches payment", async () => {
+    const listing = normativeDpaListing();
+    const admission = verifiedAdmissionFor(listing);
+    let settled = false;
+    await expect(
+      runSessionCore(
+        "stor-live-admission",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => listing,
+          validateListing: () => new Proxy(admission, {}),
+          settle: async () => {
+            settled = true;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/validation was indeterminate \(validator threw\)/);
+    expect(settled).toBe(false);
+  });
 
   test("an unknown delivery envelope cannot be admitted by a stale verified result", async () => {
     const listing = normativeDpaListing();
