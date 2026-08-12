@@ -11,6 +11,7 @@ import {
   rawPublicKey,
   signComponentArtifact,
   verifyComponentSignature,
+  type BuildComponentSignatureOptions,
   type ComponentSignature,
   type DomainSeparator,
   type VerifyComponentSignatureDeps,
@@ -29,6 +30,17 @@ const listing = {
 };
 
 const sign = (bytes: Uint8Array) => ed25519Sign(bytes, privateKey);
+
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 function deps(
   overrides: Partial<VerifyComponentSignatureDeps<Uint8Array>> = {},
@@ -61,6 +73,191 @@ describe("ComponentSignature foundation", () => {
       value: expect.any(String),
     });
     expect(isComponentSignature(signature)).toBe(true);
+  });
+
+  it("signs and returns one exact nested artifact snapshot across an async wallet", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const artifact = {
+      ...listing,
+      service: {
+        name: "market-data",
+        regions: ["eu-west"],
+      },
+    };
+    const pending = signComponentArtifact(artifact, "dacs-listing:v1:", {
+      algorithm: "ed25519",
+      signer: seller,
+      sign: async (bytes) => {
+        entered.resolve();
+        await release.promise;
+        return sign(bytes);
+      },
+    });
+
+    await entered.promise;
+    artifact.service.name = "caller-mutated";
+    artifact.service.regions[0] = "caller-mutated";
+    artifact.service.regions.push("new-region");
+    release.resolve();
+
+    const signed = await pending;
+    expect(signed.service).toEqual({
+      name: "market-data",
+      regions: ["eu-west"],
+    });
+    expect(signed.service).not.toBe(artifact.service);
+    await expect(
+      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("builds against a nested snapshot when the caller mutates during await", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const artifact = {
+      ...listing,
+      terms: { currencies: ["USDC"] },
+    };
+    const original = structuredClone(artifact);
+    const pending = buildComponentSignature(artifact, "dacs-listing:v1:", {
+      algorithm: "ed25519",
+      signer: seller,
+      sign: async (bytes) => {
+        entered.resolve();
+        await release.promise;
+        return sign(bytes);
+      },
+    });
+
+    await entered.promise;
+    artifact.terms.currencies[0] = "ETH";
+    release.resolve();
+    const signature = await pending;
+
+    await expect(
+      verifyComponentSignature(
+        { ...original, signature },
+        "dacs-listing:v1:",
+        deps(),
+      ),
+    ).resolves.toMatchObject({ status: "valid" });
+    await expect(
+      verifyComponentSignature(
+        { ...artifact, signature },
+        "dacs-listing:v1:",
+        deps(),
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      reason: "cryptographic-verification-failed",
+    });
+  });
+
+  it("captures signer options before awaiting the wallet", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const options: BuildComponentSignatureOptions = {
+      algorithm: "ed25519",
+      signer: seller,
+      sign: async (bytes: Uint8Array) => {
+        entered.resolve();
+        await release.promise;
+        return sign(bytes);
+      },
+    };
+    const pending = buildComponentSignature(
+      listing,
+      "dacs-listing:v1:",
+      options,
+    );
+
+    await entered.promise;
+    options.signer = outsider;
+    options.sign = async () => "different-wallet-output";
+    release.resolve();
+
+    const signature = await pending;
+    expect(signature.signer).toBe(seller);
+    await expect(
+      verifyComponentSignature(
+        { ...listing, signature },
+        "dacs-listing:v1:",
+        deps(),
+      ),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("preserves method-style this binding for signer and verifier callbacks", async () => {
+    const signerOptions: BuildComponentSignatureOptions & {
+      expectedSigner: string;
+    } = {
+      algorithm: "ed25519",
+      signer: seller,
+      expectedSigner: seller,
+      sign(bytes) {
+        expect(this.expectedSigner).toBe(seller);
+        return sign(bytes);
+      },
+    };
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      signerOptions,
+    );
+    const verificationDeps: VerifyComponentSignatureDeps<Uint8Array> & {
+      expectedSigner: string;
+    } = {
+      expectedSigner: seller,
+      isSignerAuthorized(artifact, signature) {
+        expect(this.expectedSigner).toBe(seller);
+        return signature.signer === artifact["seller"];
+      },
+      resolvePublicKey() {
+        expect(this.expectedSigner).toBe(seller);
+        return publicKey;
+      },
+      verify({ signedBytes, signature, publicKey: key }) {
+        expect(this.expectedSigner).toBe(seller);
+        return ed25519Verify(
+          signedBytes,
+          Buffer.from(signature.value, "base64url"),
+          publicKeyFromRaw(key),
+        );
+      },
+    };
+
+    await expect(
+      verifyComponentSignature(
+        signed,
+        "dacs-listing:v1:",
+        verificationDeps,
+      ),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("rejects a wallet that mutates its signing bytes or context", async () => {
+    await expect(
+      buildComponentSignature(listing, "dacs-listing:v1:", {
+        algorithm: "ed25519",
+        signer: seller,
+        sign: (bytes, context) => {
+          bytes.fill(0);
+          context.signer = outsider;
+          return "wallet-output";
+        },
+      }),
+    ).rejects.toThrow("must not mutate its signing inputs");
+  });
+
+  it("runtime-rejects a signer output outside the declared bytes/string contract", async () => {
+    await expect(
+      buildComponentSignature(listing, "dacs-listing:v1:", {
+        algorithm: "ed25519",
+        signer: seller,
+        sign: (() => ({ value: "not-wire-bytes" })) as never,
+      }),
+    ).rejects.toThrow("must return signature bytes");
   });
 
   it("encodes byte-returning signers as unpadded base64url", async () => {
@@ -111,6 +308,110 @@ describe("ComponentSignature foundation", () => {
     await expect(
       verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
     ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("verifies one stable snapshot while the caller mutates during authorization", async () => {
+    const signed = await signComponentArtifact(
+      { ...listing, metadata: { regions: ["eu-west"] } },
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const originalSignature = structuredClone(signed.signature);
+    const entered = deferred();
+    const release = deferred();
+    const pending = verifyComponentSignature(
+      signed,
+      "dacs-listing:v1:",
+      deps({
+        isSignerAuthorized: async (artifact, signature) => {
+          entered.resolve();
+          await release.promise;
+          return signature.signer === artifact["seller"];
+        },
+      }),
+    );
+
+    await entered.promise;
+    signed.metadata.regions[0] = "caller-mutated";
+    signed.signature.value = "caller-mutated";
+    release.resolve();
+
+    await expect(pending).resolves.toEqual({
+      status: "valid",
+      signature: originalSignature,
+    });
+  });
+
+  it("captures verification dependencies before the first await", async () => {
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const entered = deferred();
+    const release = deferred();
+    const verificationDeps = deps({
+      isSignerAuthorized: async (artifact, signature) => {
+        entered.resolve();
+        await release.promise;
+        return signature.signer === artifact["seller"];
+      },
+    });
+    const pending = verifyComponentSignature(
+      signed,
+      "dacs-listing:v1:",
+      verificationDeps,
+    );
+
+    await entered.promise;
+    verificationDeps.isSignerAuthorized = () => false;
+    verificationDeps.resolvePublicKey = () => null;
+    verificationDeps.verify = () => false;
+    release.resolve();
+
+    await expect(pending).resolves.toMatchObject({ status: "valid" });
+  });
+
+  it("isolates verification callback inputs from the stable signed scope", async () => {
+    const signed = await signComponentArtifact(
+      { ...listing, metadata: { regions: ["eu-west"] } },
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const originalSignature = structuredClone(signed.signature);
+    const verificationDeps = deps({
+      isSignerAuthorized: (artifact, signature) => {
+        (artifact["metadata"] as { regions: string[] }).regions[0] =
+          "policy-mutated";
+        (signature as ComponentSignature).value = "policy-mutated";
+        return signature.signer === seller;
+      },
+      resolvePublicKey: (signature) => {
+        (signature as ComponentSignature).signer = outsider;
+        return publicKey;
+      },
+      verify: (input) => {
+        const valid = ed25519Verify(
+          input.signedBytes,
+          Buffer.from(input.signature.value, "base64url"),
+          publicKeyFromRaw(input.publicKey),
+        );
+        input.signedBytes.fill(0);
+        input.signature.value = "verifier-mutated";
+        return valid;
+      },
+    });
+
+    await expect(
+      verifyComponentSignature(
+        signed,
+        "dacs-listing:v1:",
+        verificationDeps,
+      ),
+    ).resolves.toEqual({
+      status: "valid",
+      signature: originalSignature,
+    });
   });
 
   it("preserves unknown fields in the signed scope (SIG-5)", async () => {
@@ -168,6 +469,30 @@ describe("ComponentSignature foundation", () => {
     ).resolves.toEqual({
       status: "malformed",
       reason: "unsupported-algorithm",
+    });
+  });
+
+  it("contains artifact snapshot traps as a malformed signed scope", async () => {
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const trappedArtifact = new Proxy(signed, {
+      ownKeys() {
+        throw new Error("caller-owned object became unreadable");
+      },
+    });
+
+    await expect(
+      verifyComponentSignature(
+        trappedArtifact,
+        "dacs-listing:v1:",
+        deps(),
+      ),
+    ).resolves.toEqual({
+      status: "malformed",
+      reason: "signed-scope-not-canonicalizable",
     });
   });
 
@@ -280,6 +605,75 @@ describe("ComponentSignature foundation", () => {
     });
   });
 
+  it("does not authorize a truthy non-boolean policy result", async () => {
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+
+    await expect(
+      verifyComponentSignature(
+        signed,
+        "dacs-listing:v1:",
+        deps({ isSignerAuthorized: (() => "authorized") as never }),
+      ),
+    ).resolves.toEqual({
+      status: "unresolved",
+      reason: "authorization-unresolved",
+      signature: signed.signature,
+    });
+  });
+
+  it("contains dependency getter failures in their explicit unresolved stage", async () => {
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const verificationDeps = deps();
+    Object.defineProperty(verificationDeps, "resolvePublicKey", {
+      configurable: true,
+      get() {
+        throw new Error("key resolver configuration unavailable");
+      },
+    });
+
+    await expect(
+      verifyComponentSignature(
+        signed,
+        "dacs-listing:v1:",
+        verificationDeps,
+      ),
+    ).resolves.toEqual({
+      status: "unresolved",
+      reason: "signer-key-resolution-failed",
+      signature: signed.signature,
+    });
+  });
+
+  it("contains a non-callable verifier dependency as a verification error", async () => {
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const verificationDeps = deps();
+    (verificationDeps as unknown as { verify: unknown }).verify = null;
+
+    await expect(
+      verifyComponentSignature(
+        signed,
+        "dacs-listing:v1:",
+        verificationDeps,
+      ),
+    ).resolves.toEqual({
+      status: "unresolved",
+      reason: "verification-error",
+      signature: signed.signature,
+    });
+  });
+
   it("reports a verifier exception as unresolved, not invalid", async () => {
     const signed = await signComponentArtifact(
       listing,
@@ -296,6 +690,26 @@ describe("ComponentSignature foundation", () => {
             throw new Error("algorithm backend unavailable");
           },
         }),
+      ),
+    ).resolves.toEqual({
+      status: "unresolved",
+      reason: "verification-error",
+      signature: signed.signature,
+    });
+  });
+
+  it("does not accept a truthy non-boolean verifier result", async () => {
+    const signed = await signComponentArtifact(
+      listing,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+
+    await expect(
+      verifyComponentSignature(
+        signed,
+        "dacs-listing:v1:",
+        deps({ verify: (() => "valid") as never }),
       ),
     ).resolves.toEqual({
       status: "unresolved",
