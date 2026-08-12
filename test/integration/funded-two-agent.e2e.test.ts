@@ -1784,6 +1784,8 @@ interface CommerceState {
   facilitatorVerifyOutcome?: "valid" | "invalid" | "threw";
   facilitatorOutcome?: "success" | "failure" | "threw";
   preSettlementOutcome?: "authorized" | "rejected" | "indeterminate";
+  preSettlementReason?: string;
+  coldAuthorityOutcome?: string;
   permit?: X402SellerPaymentPermitAuthorization;
   observedTransfer?: Extract<X402TransferObservation, { status: "finalized" }>;
   delivered?: Awaited<ReturnType<DurableSellerFulfilmentDeps["submitDelivery"]>>;
@@ -1984,6 +1986,10 @@ async function createSellerRuntime(input: {
     preflight.buyer.adapter.getPublicKey(),
   ]);
   const verifyColdCommittedAuthority = async (): Promise<boolean> => {
+    const rejectColdAuthority = (reason: string): false => {
+      state.coldAuthorityOutcome = reason;
+      return false;
+    };
     const [listingArtifact, agreementArtifact, commitmentArtifact, listingReceiptValid,
       agreementReceiptValid, commitmentReceiptValid] = await Promise.all([
       preflight.buyer.adapter.readAnchor(published.receipt.nativeAddress),
@@ -1993,11 +1999,21 @@ async function createSellerRuntime(input: {
       verifyAnchorReceipt(preflight.seller.adapter, agreement.anchorReceipt, preflight.env.BUYER_DID),
       verifyAnchorReceipt(preflight.buyer.adapter, commitment.anchorReceipt, preflight.env.SELLER_DID),
     ]);
-    if (!listingArtifact || !agreementArtifact || !commitmentArtifact ||
-        !listingReceiptValid || !agreementReceiptValid || !commitmentReceiptValid ||
-        canonicalize(listingArtifact) !== canonicalize(published.listing) ||
-        canonicalize(agreementArtifact) !== canonicalize(agreement.agreement) ||
-        canonicalize(commitmentArtifact) !== canonicalize(commitment.record)) return false;
+    if (!listingArtifact) return rejectColdAuthority("listing-artifact-absent");
+    if (!agreementArtifact) return rejectColdAuthority("agreement-artifact-absent");
+    if (!commitmentArtifact) return rejectColdAuthority("commitment-artifact-absent");
+    if (!listingReceiptValid) return rejectColdAuthority("listing-receipt-invalid");
+    if (!agreementReceiptValid) return rejectColdAuthority("agreement-receipt-invalid");
+    if (!commitmentReceiptValid) return rejectColdAuthority("commitment-receipt-invalid");
+    if (canonicalize(listingArtifact) !== canonicalize(published.listing)) {
+      return rejectColdAuthority("listing-artifact-mismatch");
+    }
+    if (canonicalize(agreementArtifact) !== canonicalize(agreement.agreement)) {
+      return rejectColdAuthority("agreement-artifact-mismatch");
+    }
+    if (canonicalize(commitmentArtifact) !== canonicalize(commitment.record)) {
+      return rejectColdAuthority("commitment-artifact-mismatch");
+    }
     const listingCheck = await validateListingArtifact(
       listingArtifact,
       listingValidationDeps({
@@ -2007,7 +2023,9 @@ async function createSellerRuntime(input: {
         now: commitment.committedAt,
       }),
     );
-    if (listingCheck.disposition !== "verified") return false;
+    if (listingCheck.disposition !== "verified") {
+      return rejectColdAuthority("listing-validation-failed");
+    }
     try {
       validateFixedPriceAgreementBinding({
         agreement: agreement.agreement,
@@ -2019,7 +2037,7 @@ async function createSellerRuntime(input: {
         committedAt: commitment.committedAt,
       });
     } catch {
-      return false;
+      return rejectColdAuthority("agreement-binding-invalid");
     }
     const agreementSeparator = "agreementVersion" in agreement.agreement
       ? ARTIFACT_SEPARATORS.AgreementDocument
@@ -2042,10 +2060,17 @@ async function createSellerRuntime(input: {
         Uint8Array.from(Buffer.from(commitmentSignature.value, "base64url")),
         publicKeyFromRaw(sellerPublicKey),
       );
-    return agreementSignaturesValid && commitmentSignatureValid &&
-      commitment.record.jobId === jobId &&
-      commitment.record.agreementHash === agreement.agreementHash &&
-      canonicalize(commitment.record.listingRef) === canonicalize(published.listingPin);
+    if (!agreementSignaturesValid) return rejectColdAuthority("agreement-signatures-invalid");
+    if (!commitmentSignatureValid) return rejectColdAuthority("commitment-signature-invalid");
+    if (commitment.record.jobId !== jobId) return rejectColdAuthority("commitment-job-mismatch");
+    if (commitment.record.agreementHash !== agreement.agreementHash) {
+      return rejectColdAuthority("commitment-agreement-mismatch");
+    }
+    if (canonicalize(commitment.record.listingRef) !== canonicalize(published.listingPin)) {
+      return rejectColdAuthority("commitment-listing-mismatch");
+    }
+    state.coldAuthorityOutcome = "verified";
+    return true;
   };
   const paymentIntakeDeps: Omit<SellerPaymentIntakeDeps, "receiptStore"> = {
     resolveCommittedAgreement: async (candidateJobId) =>
@@ -2655,6 +2680,8 @@ async function createSellerRuntime(input: {
     authorizeSettlement: async (context) => {
       const result = await spine.authorizeSettlement(context);
       state.preSettlementOutcome = result.disposition;
+      state.preSettlementReason = result.disposition === "authorized"
+        ? "authorized" : result.reason;
       return result;
     },
     authorizePayment: async (context) => {
@@ -2846,7 +2873,7 @@ async function settleAndRecover(input: {
   const pending = await buyerStore.load(intent.settlementKey);
   if (pending.status !== "held" || pending.pendingDisclosure === undefined) {
     throw new Error(
-      `funded-e2e:buyer-disclosure-missing-after-verify-${state.facilitatorVerifyOutcome ?? "not-called"}-presettle-${state.preSettlementOutcome ?? "not-called"}-settle-${state.facilitatorOutcome ?? "not-called"}`,
+      `funded-e2e:buyer-disclosure-missing-after-verify-${state.facilitatorVerifyOutcome ?? "not-called"}-presettle-${state.preSettlementOutcome ?? "not-called"}-${state.preSettlementReason ?? "no-reason"}-cold-${state.coldAuthorityOutcome ?? "not-called"}-settle-${state.facilitatorOutcome ?? "not-called"}`,
     );
   }
   requireCondition(
