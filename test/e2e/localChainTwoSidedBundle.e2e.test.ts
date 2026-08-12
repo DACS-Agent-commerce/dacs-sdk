@@ -7,15 +7,16 @@ import { describe, expect, test } from "vitest";
 import { createPublicClient, createWalletClient, defineChain, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
+import type { Signer } from "../../src/agent/signedArtifact.js";
 import { verifyBundleCore, type VerifyBundleDeps } from "../../src/agent/verifyBundleCore.js";
 import { attestationBundleHash, buildTwoSidedBundle } from "../../src/agent/twoSidedBundle.js";
 import type {
   AttestationRef,
   CompositeVerificationRecord,
-  LegacyMvpListing,
+  IdentityBundle,
+  ListingDraft,
+  PaymentRailRef,
 } from "../../src/artifacts/types.js";
-import type { LegacyMvpAgreementDocument as AgreementDocument } from "../../src/artifacts/legacyMvp.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import { contentHash, sha256Hex, stripSignature } from "../../src/canonical/index.js";
@@ -27,6 +28,11 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../../src/crypto/index.js";
+import { identityBundleHash } from "../../src/identity/bundle.js";
+import {
+  deriveFixedPriceAgreement,
+  signFixedPriceAgreement,
+} from "../../src/negotiate/fixedPrice.js";
 import { x402SettleCore, type X402ClientLike } from "../../src/rails/x402.js";
 
 const RUN = process.env.DACS_LOCAL_CHAIN_E2E === "1";
@@ -34,7 +40,7 @@ const PROOF_OUTDIR = process.env.DACS_LOCAL_CHAIN_E2E_OUTDIR?.trim();
 const CHAIN_ID = 31337;
 const NETWORK = `eip155:${CHAIN_ID}`;
 const AMOUNT = "1000000";
-const JOB_ID = "job-local-chain-two-sided";
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER_EVM_KEY = `0x${"1".padStart(64, "0")}` as const;
 const SELLER_EVM_KEY = `0x${"2".padStart(64, "0")}` as const;
 const TRANSFER_TOPIC =
@@ -67,6 +73,19 @@ function signerFor(seed: Uint8Array): Signer {
 
 function didFor(seed: Uint8Array): string {
   return `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
+}
+
+function identityFor(primaryClaim: string, presentedAt: number): IdentityBundle {
+  return {
+    bundleVersion: "1",
+    presentedBy: primaryClaim,
+    presentedAt,
+    claims: [{ ref: primaryClaim }],
+    presentation: {
+      kind: "per-claim",
+      signatures: [{ ref: primaryClaim, signature: "local-identity-proof" }],
+    },
+  };
 }
 
 function publicKeyHex(seed: Uint8Array): string {
@@ -298,25 +317,65 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
         const signSeller = signerFor(SELLER_SEED);
         const signBuyer = signerFor(BUYER_SEED);
         const sub = memStore();
-
-        const listing: LegacyMvpListing = {
-          agentId: sellerDid,
-          serviceId: "local-chain-x402",
-          name: "Local Chain x402 Desk",
-          description: "DACS local two-sided bundle proof",
-          claimRequirements: [],
-          supportedNegotiation: ["negotiate-fixed-price"],
-          supportedPaymentRails: ["pay-x402"],
-          supportedDelivery: ["deliver-attested-payload"],
+        const observedAt = 1780000000000;
+        const buyerIdentity = identityFor(buyerDid, observedAt - 1_000);
+        const sellerIdentity = identityFor(sellerDid, observedAt - 1_000);
+        const rail: PaymentRailRef = {
+          railId: "x402:local",
+          railVersion: 1,
+          parameters: { network: NETWORK, asset: tokenAddress },
         };
-        const listingSigned = await buildSignedArtifact(
-          listing,
+
+        const listingDraft: ListingDraft = {
+          dacsVersion: "1",
+          listingVersion: 1,
+          listingId: "local-chain-x402",
+          seller: {
+            identity: sellerIdentity,
+            displayName: "Local Chain x402 Desk",
+            publicEndpoint: "https://seller.example/dacs",
+          },
+          offering: {
+            title: "Local Chain x402 Desk",
+            description: "DACS local two-sided bundle proof",
+            category: "data.testing",
+            tags: ["local-chain", "x402"],
+            deliverable: {
+              kind: "attested-payload",
+              payloadFormat: "application/json",
+              verificationMethod: { kind: "self-signed" },
+            },
+          },
+          buyerRequirement: { requirementVersion: "1", required: [] },
+          pipeline: [
+            { kind: "negotiate-fixed-price" },
+            { kind: "commit-agreement" },
+            { kind: "pay-x402", parameters: { rail: rail.railId } },
+            { kind: "deliver-attested-payload" },
+          ],
+          pricing: {
+            kind: "fixed",
+            price: { amount: AMOUNT, currency: "USDC" },
+          },
+          acceptedRails: [rail],
+          terms: { deadlineSecAfterCommit: 600 },
+          validity: {
+            notBefore: observedAt - 1_000,
+            notAfter: observedAt + 1_000_000,
+          },
+        };
+        const listingSigned = await signComponentArtifact(
+          listingDraft,
           ARTIFACT_SEPARATORS.Listing,
-          signSeller,
+          {
+            algorithm: "ed25519",
+            signer: sellerDid,
+            sign: (bytes) => signSeller(bytes),
+          },
         );
         const listingRef = await sub.anchor(`dacs1:listing:${sellerDid}:local-chain-x402`, listingSigned);
 
-        const vet: CompositeVerificationRecord = {
+        const sellerVet: CompositeVerificationRecord = {
           subject: sellerDid,
           recipeId: "local-self-signed",
           recipeVersion: "0.1",
@@ -324,8 +383,8 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           decision: "pass",
           verifiedAt: "2026-07-13T00:00:00Z",
         };
-        const vetSigned = await signComponentArtifact(
-          vet,
+        const sellerVetSigned = await signComponentArtifact(
+          sellerVet,
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
           {
             algorithm: "ed25519",
@@ -333,22 +392,67 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             sign: (bytes) => signBuyer(bytes),
           },
         );
-        const vetRef = await sub.anchor(`dacs2:verifyrecord:${JOB_ID}`, vetSigned);
-
-        const agreement: AgreementDocument = {
-          jobId: JOB_ID,
-          pattern: "negotiate-fixed-price",
-          buyer: buyerDid,
-          seller: sellerDid,
-          listingRef,
-          price: { amount: AMOUNT, asset: "USDC", decimals: 6, rail: "pay-x402" },
-          delivery: { phase: "deliver-attested-payload", format: "application/json" },
-          expiresAt: "2026-07-13T01:00:00Z",
+        const sellerVetRef = await sub.anchor(`dacs2:verifyrecord:${JOB_ID}:seller`, sellerVetSigned);
+        const buyerVet: CompositeVerificationRecord = {
+          ...sellerVet,
+          subject: buyerDid,
+          results: [{ claimRef: buyerDid, method: "self-signed", status: "pass" }],
         };
-        const agreementSigned = await buildSignedArtifact(
-          agreement,
-          ARTIFACT_SEPARATORS.AgreementDocument,
-          signBuyer,
+        const buyerVetSigned = await signComponentArtifact(
+          buyerVet,
+          ARTIFACT_SEPARATORS.CompositeVerificationRecord,
+          {
+            algorithm: "ed25519",
+            signer: buyerDid,
+            sign: (bytes) => signBuyer(bytes),
+          },
+        );
+        const buyerVetRef = await sub.anchor(`dacs2:verifyrecord:${JOB_ID}:buyer`, buyerVetSigned);
+        const sellerVetAttRef = refTo(
+          "dacs-2-verifyresult",
+          `seller-vet-${JOB_ID}`,
+          record(sellerVetSigned),
+        );
+        const buyerVetAttRef = refTo(
+          "dacs-2-verifyresult",
+          `buyer-vet-${JOB_ID}`,
+          record(buyerVetSigned),
+        );
+
+        const agreementDraft = deriveFixedPriceAgreement({
+          jobId: JOB_ID,
+          verifiedListing: {
+            disposition: "verified",
+            listing: listingSigned,
+            pin: {
+              listingId: listingSigned.listingId,
+              version: listingSigned.listingVersion,
+              contentHash: contentHash(record(listingSigned)),
+            },
+          },
+          buyer: {
+            identityBundle: buyerIdentity,
+            vetRecordRef: buyerVetAttRef,
+          },
+          seller: {
+            identityBundle: sellerIdentity,
+            vetRecordRef: sellerVetAttRef,
+          },
+          selectedRail: rail,
+          generatedAt: observedAt,
+        });
+        const agreementSigned = await signFixedPriceAgreement(
+          agreementDraft,
+          {
+            party: buyerDid,
+            algorithm: "ed25519",
+            sign: (bytes) => signBuyer(bytes),
+          },
+          {
+            party: sellerDid,
+            algorithm: "ed25519",
+            sign: (bytes) => signSeller(bytes),
+          },
         );
         const agreementRef = await sub.anchor(`dacs3:agreement:${JOB_ID}`, agreementSigned);
 
@@ -382,7 +486,6 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           }),
         );
 
-        const observedAt = 1780000000000;
         const evidence = {
           evidenceVersion: "1",
           jobId: JOB_ID,
@@ -418,7 +521,6 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
         );
         const evidenceRef = await sub.anchor(`dacs4:evidence:${JOB_ID}`, evidenceSigned);
 
-        const vetAttRef = refTo("dacs-2-verifyresult", `vet-${JOB_ID}`, record(vetSigned));
         const settlementAttRef = refTo(
           "dacs-4-evidence",
           `settlement-${JOB_ID}`,
@@ -428,13 +530,13 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           jobId: JOB_ID,
           outcome: "completed",
           listingRef: {
-            listingId: listing.serviceId,
+            listingId: listingSigned.listingId,
             version: 1,
-            contentHash: contentHash(stripSignature(record(listingSigned))),
+            contentHash: contentHash(record(listingSigned)),
           },
           agreementRef: refTo("dacs-3-agreement", `agreement-${JOB_ID}`, record(agreementSigned)),
           phaseSummary: [
-            { index: 0, kind: "vet-credentials", outcome: "ok", attestationRef: vetAttRef },
+            { index: 0, kind: "vet-credentials", outcome: "ok", attestationRef: sellerVetAttRef },
             { index: 1, kind: "commit-agreement", outcome: "ok" },
             {
               index: 2,
@@ -444,19 +546,19 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
               attestationRef: settlementAttRef,
             },
           ],
-          vetRecords: [vetAttRef],
+          vetRecords: [buyerVetAttRef, sellerVetAttRef],
           settlementEvidence: [settlementAttRef],
           recipeRegistryVersion: 1,
           railRegistryVersion: 1,
           finalisedAt: observedAt,
           buyer: {
             primaryClaim: buyerDid,
-            bundleHash: sha256Hex(`identity:${buyerDid}`),
+            bundleHash: identityBundleHash(buyerIdentity),
             signer: BUYER_SEED,
           },
           seller: {
             primaryClaim: sellerDid,
-            bundleHash: sha256Hex(`identity:${sellerDid}`),
+            bundleHash: identityBundleHash(sellerIdentity),
             signer: SELLER_SEED,
           },
         });
@@ -487,9 +589,16 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           resolveAttestationRef: async (ref) => {
             if (ref.anchor.locator === `agreement-${JOB_ID}`) return sub.read(agreementRef);
             if (ref.anchor.locator === `settlement-${JOB_ID}`) return sub.read(evidenceRef);
-            if (ref.anchor.locator === `vet-${JOB_ID}`) return sub.read(vetRef);
+            if (ref.anchor.locator === `buyer-vet-${JOB_ID}`) return sub.read(buyerVetRef);
+            if (ref.anchor.locator === `seller-vet-${JOB_ID}`) return sub.read(sellerVetRef);
             return null;
           },
+          resolveListingRef: async (pin) =>
+            pin.listingId === listingSigned.listingId &&
+            pin.version === listingSigned.listingVersion &&
+            pin.contentHash === contentHash(record(listingSigned))
+              ? sub.read(listingRef)
+              : null,
           resolvePublicKey: async (did) => resolveFromDid(did),
           verify: (bytes, sig, pub) => ed25519Verify(bytes, sig, publicKeyFromRaw(pub)),
         };
