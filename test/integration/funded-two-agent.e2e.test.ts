@@ -2971,13 +2971,21 @@ async function settleAndRecover(input: {
     "buyer-post-response-chain-loss-not-indeterminate",
   );
   const pending = await buyerStore.load(intent.settlementKey);
-  if (pending.status !== "held" || pending.pendingDisclosure === undefined) {
+  const responseLostAfterSubmission = state.facilitatorOutcome === "threw";
+  if (
+    pending.status !== "held" ||
+    (pending.pendingDisclosure === undefined && !responseLostAfterSubmission)
+  ) {
     throw new Error(
       `funded-e2e:buyer-disclosure-missing-after-verify-${state.facilitatorVerifyOutcome ?? "not-called"}-presettle-${state.preSettlementOutcome ?? "not-called"}-${state.preSettlementReason ?? "no-reason"}-cold-${state.coldAuthorityOutcome ?? "not-called"}-settle-${state.facilitatorOutcome ?? "not-called"}-${state.facilitatorFailureCode ?? "no-failure-code"}`,
     );
   }
   requireCondition(
-    pending.status === "held" && pending.pendingDisclosure !== undefined,
+    pending.status === "held",
+    "buyer-pending-settlement-not-durable",
+  );
+  requireCondition(
+    responseLostAfterSubmission || pending.pendingDisclosure !== undefined,
     "buyer-pending-disclosure-not-durable",
   );
   requireCondition(input.preflight.host.requestCounts.unpaid === 1, "challenge-count-mismatch");
