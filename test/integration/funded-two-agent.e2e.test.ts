@@ -282,16 +282,18 @@ function requireCondition(condition: unknown, code: string): asserts condition {
 
 function safeStageFailureClass(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
-  if (/normative unsigned/.test(message)) return "listing-draft-invalid";
-  if (/signed Listing failed/.test(message)) return "listing-signature-envelope-invalid";
-  if (/canonical JSON|exact snapshot|stable/.test(message)) return "canonical-snapshot-invalid";
-  if (/rail/i.test(message)) return "rail-authority-invalid";
-  if (/history|prior listing|version/i.test(message)) return "listing-history-invalid";
-  if (/identity|self-certifying|wallet/i.test(message)) return "listing-identity-invalid";
-  if (/binding/i.test(message)) return "listing-binding-invalid";
-  if (/publication|anchor|write/i.test(message)) return "listing-publication-invalid";
+  if (/^funded-e2e:[a-z0-9-]+$/.test(message)) return message.slice("funded-e2e:".length);
+  const digest = sha256Hex(message).slice(0, 12);
+  if (/normative unsigned/.test(message)) return `listing-draft-invalid-${digest}`;
+  if (/signed Listing failed/.test(message)) return `listing-signature-envelope-invalid-${digest}`;
+  if (/canonical JSON|exact snapshot|stable/.test(message)) return `canonical-snapshot-invalid-${digest}`;
+  if (/rail/i.test(message)) return `rail-authority-invalid-${digest}`;
+  if (/history|prior listing|version/i.test(message)) return `listing-history-invalid-${digest}`;
+  if (/identity|self-certifying|wallet/i.test(message)) return `listing-identity-invalid-${digest}`;
+  if (/binding/i.test(message)) return `listing-binding-invalid-${digest}`;
+  if (/publication|anchor|write/i.test(message)) return `listing-publication-invalid-${digest}`;
   return error instanceof Error && /^[A-Za-z][A-Za-z0-9]*Error$/.test(error.name)
-    ? `${error.name.toLowerCase()}-${sha256Hex(message).slice(0, 12)}`
+    ? `${error.name.toLowerCase()}-${digest}`
     : "unknown-error";
 }
 
