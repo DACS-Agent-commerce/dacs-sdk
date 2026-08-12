@@ -188,7 +188,7 @@ describe("ComponentSignature foundation", () => {
     ).resolves.toMatchObject({ status: "valid" });
   });
 
-  it("captures build options before reading caller-owned artifact properties", async () => {
+  it("captures build options before rejecting accessor-backed artifacts", async () => {
     const options: BuildComponentSignatureOptions = {
       algorithm: "ed25519",
       signer: seller,
@@ -204,48 +204,81 @@ describe("ComponentSignature foundation", () => {
       },
     };
 
-    const signature = await buildComponentSignature(
-      artifact,
-      "dacs-listing:v1:",
-      options,
-    );
+    await expect(
+      buildComponentSignature(artifact, "dacs-listing:v1:", options),
+    ).rejects.toThrow("not stable canonical JSON");
+    expect(options.signer).toBe(seller);
+    expect(options.sign).toBe(sign);
+  });
 
-    expect(signature.signer).toBe(seller);
+  it("captures attach options before rejecting accessor-backed artifacts", async () => {
+    const options: BuildComponentSignatureOptions = {
+      algorithm: "ed25519",
+      signer: seller,
+      sign,
+    };
+    const artifact = {
+      listingVersion: "1",
+      seller,
+      get service() {
+        options.signer = outsider;
+        options.sign = () => "changed-wallet-output";
+        return "market-data";
+      },
+    };
+
+    await expect(
+      signComponentArtifact(artifact, "dacs-listing:v1:", options),
+    ).rejects.toThrow("not stable canonical JSON");
+    expect(options.signer).toBe(seller);
+    expect(options.sign).toBe(sign);
+  });
+
+  it("rejects non-wire JCS aliases before invoking a signer", async () => {
+    const wallet = vi.fn(sign);
+    for (const artifact of [
+      { ...listing, optional: undefined },
+      { ...listing, generatedAt: -0 },
+    ]) {
+      await expect(
+        buildComponentSignature(artifact, "dacs-listing:v1:", {
+          algorithm: "ed25519",
+          signer: seller,
+          sign: wallet,
+        }),
+      ).rejects.toThrow("not stable canonical JSON");
+    }
+    expect(wallet).not.toHaveBeenCalled();
+  });
+
+  it("preserves the normative CF-1 NFC normalization alias", async () => {
+    const nfd = { ...listing, service: "cafe\u0301" };
+    const nfc = { ...listing, service: "caf\u00e9" };
+    const signature = await buildComponentSignature(
+      nfd,
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
     await expect(
       verifyComponentSignature(
-        { ...listing, signature },
+        { ...nfc, signature },
         "dacs-listing:v1:",
         deps(),
       ),
     ).resolves.toMatchObject({ status: "valid" });
   });
 
-  it("captures attach options before reading caller-owned artifact properties", async () => {
-    const options: BuildComponentSignatureOptions = {
-      algorithm: "ed25519",
-      signer: seller,
-      sign,
-    };
-    const artifact = {
-      listingVersion: "1",
-      seller,
-      get service() {
-        options.signer = outsider;
-        options.sign = () => "changed-wallet-output";
-        return "market-data";
-      },
-    };
-
-    const signed = await signComponentArtifact(
-      artifact,
-      "dacs-listing:v1:",
-      options,
-    );
-
-    expect(signed.signature.signer).toBe(seller);
+  it("rejects proxies without invoking their reflective traps", async () => {
+    const ownKeys = vi.fn(() => Reflect.ownKeys(listing));
+    const artifact = new Proxy(listing, { ownKeys });
     await expect(
-      verifyComponentSignature(signed, "dacs-listing:v1:", deps()),
-    ).resolves.toMatchObject({ status: "valid" });
+      buildComponentSignature(artifact, "dacs-listing:v1:", {
+        algorithm: "ed25519",
+        signer: seller,
+        sign,
+      }),
+    ).rejects.toThrow("not stable canonical JSON");
+    expect(ownKeys).not.toHaveBeenCalled();
   });
 
   it("preserves method-style this binding for signer and verifier callbacks", async () => {

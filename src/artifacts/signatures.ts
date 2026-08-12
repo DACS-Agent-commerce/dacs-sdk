@@ -1,4 +1,5 @@
-import { canonicalize, contentHash } from "../canonical/index.js";
+import { contentHash } from "../canonical/index.js";
+import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import {
   type DomainSeparator,
   isCompositeSeparator,
@@ -175,21 +176,9 @@ function asRecord(value: object): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/**
- * Take an ownership boundary before invoking any user-supplied async callback.
- * Component artifacts are JSON values, so `structuredClone` preserves their
- * nested value graph (including `undefined`, which JCS deliberately omits)
- * without retaining caller-owned object or array references.
- */
+/** Take an exact JSON ownership boundary before any user-supplied callback. */
 function snapshotArtifact<T extends object>(artifact: T): T {
-  const receivedCanonical = canonicalize(artifact);
-  const snapshot = structuredClone(artifact);
-  if (canonicalize(snapshot) !== receivedCanonical) {
-    throw new DacsError(
-      "component signature artifact changed while it was being snapshotted",
-    );
-  }
-  return snapshot;
+  return snapshotCanonicalJson(artifact, "component signature artifact");
 }
 
 function assertUnsignedComponentArtifact(artifact: object): void {
