@@ -73,6 +73,7 @@
     "test": "vitest run",
     "test:live": "vitest run test/integration/live.e2e.test.ts",
     "test:watch": "vitest",
+    "funded:timing": "node scripts/summarize-funded-timing.mjs",
     "conformance:sync": "node scripts/sync-vectors.mjs",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
