@@ -2101,6 +2101,11 @@ async function observeFundedTransfer(input: {
         finalized.every((candidate) => sameFinalizedTransfer(finalized[0]!, candidate)),
         "cross-rpc-settlement-mismatch",
       );
+      process.stderr.write(
+        `funded-e2e-step:settlement-rpc-proof:${
+          input.requireAllRpcs ? "all" : "first"
+        }-${finalized.length}-of-${observations.length}\n`,
+      );
       return finalized[0]!;
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -6082,6 +6087,21 @@ describe("issue #114 guarded funded two-agent spine", () => {
             requireCondition(
               fundedFulfilmentEffectsComplete(settlement.state),
               "delivery-only-finalisation-incomplete",
+            );
+            const observation = settlement.state.observedTransfer;
+            requireCondition(observation !== undefined, "delivery-only-transfer-observation-missing");
+            const crossRpc = await diagnosticStep("delivery-only-cross-rpc", () =>
+              observeFundedTransfer({
+                preflight: preflight!,
+                jobId,
+                txHash: observation.txHash,
+                requireAllRpcs: true,
+              })
+            );
+            requireCondition(
+              crossRpc.status === "finalized" &&
+                sameFinalizedTransfer(crossRpc, observation),
+              "delivery-only-cross-rpc-mismatch",
             );
             process.stderr.write("funded-e2e-fast:delivery-only-complete\n");
             return;
