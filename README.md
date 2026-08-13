@@ -165,6 +165,26 @@ The Demos adapter and live rail clients are optional peers: install
 `viem` for the corresponding live rails. Pure artifact, verifier, canonical,
 and injected rail-core consumers do not install those integration trees.
 
+## Package artifacts
+
+`npm pack` runs a clean build before it creates the tarball, so a package made
+from a source checkout contains every declared ESM, type, and CLI export. To
+reproduce the release-candidate checks locally:
+
+```sh
+npm ci
+npm run package:verify -- --output-dir package-artifacts
+```
+
+The verifier creates the package twice and requires byte-identical tarballs,
+checks every declared export, records source/lockfile/toolchain and artifact
+digests, and installs the exact tarball in a fresh Bun consumer. It then removes
+the consumer's `node_modules`, performs a frozen rematerialization with an empty
+cache and an unreachable loopback registry, and reruns the substrate-free
+`canonical` and `artifacts` imports. CI uploads the
+tarball and `provenance.json` for the exact checkout SHA. This is a qualified
+package candidate, not evidence that the package was published to npm.
+
 ## License
 
 MIT — matching the DACS standard.

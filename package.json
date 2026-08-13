@@ -3,6 +3,14 @@
   "version": "0.1.0-alpha.0",
   "description": "TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents — the reusable runtime for the Identify → Vet → Negotiate → Settle → Verify lifecycle.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git"
+  },
+  "homepage": "https://github.com/DACS-Agent-commerce/dacs-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+  },
   "type": "module",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
@@ -71,7 +79,12 @@
     "test:watch": "vitest",
     "conformance:sync": "node scripts/sync-vectors.mjs",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run build"
+    "prepack": "npm run clean && npm run build",
+    "package:verify": "node scripts/verify-package.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "peerDependencies": {
     "@kynesyslabs/demosdk": "^4.0.16",
