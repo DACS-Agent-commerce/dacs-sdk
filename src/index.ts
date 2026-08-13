@@ -147,6 +147,7 @@ export {
 // consumers of the pure/verify surface). createAgent lazy-loads it when needed.
 export type {
   DemosAdapterConfig,
+  DemosWriteEvidence,
   SubstrateAdapter,
   AnchorAttemptReceipt,
   AnchorAttempts,
@@ -161,7 +162,27 @@ export type {
   ProxyFetchResult,
   ResolvedIdentity,
   AnchorReceipt as SubstrateAnchorReceipt,
+  DemosWriteJournal,
+  DemosWriteJournalKey,
+  DemosWriteJournalRecord,
+  DemosWriteJournalSnapshot,
 } from "./substrate/index.js";
+export {
+  createInMemoryDemosWriteJournal,
+} from "./substrate/demosWriteJournal.js";
+export {
+  createFsDemosWriteJournal,
+  type FsDemosWriteJournalOptions,
+} from "./substrate/demosWriteJournalFs.js";
+export {
+  assertDemosWriteEvidence,
+  decodeDemosAnchorReceiptProof,
+  demosSignedTransactionProofHash,
+  demosWriteEvidenceBindsReceiptContent,
+  demosWriteEvidenceToAnchorReceipt,
+  type DemosAnchorReceiptProof,
+  type DemosPortableAnchorReceiptInput,
+} from "./substrate/demosWriteEvidence.js";
 // Pure error value: exporting this directly does not eagerly load demosdk.
 export { AnchorWaitError } from "./substrate/AnchorWaitError.js";
 export {

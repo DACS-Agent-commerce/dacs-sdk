@@ -1,6 +1,7 @@
 import { types as nodeTypes } from "node:util";
 import type {
   AnyAttestationBundle,
+  AnchorReceipt as ProtocolAnchorReceipt,
   CompositeVerificationRecord,
   ListingDraft,
   ListingPin,
@@ -35,7 +36,10 @@ import {
 import { DacsError } from "../errors.js";
 import { parseCciRecord, type CciRecord } from "../identity/index.js";
 import { generateCanonicalJobId } from "../negotiate/jobId.js";
-import type { SubstrateAdapter } from "../substrate/SubstrateAdapter.js";
+import type {
+  DemosWriteEvidence,
+  SubstrateAdapter,
+} from "../substrate/SubstrateAdapter.js";
 import {
   runSessionCore,
   sessionAnchorName,
@@ -88,6 +92,7 @@ import {
   type ListingEnumerationResult,
   type ListingReadResult,
 } from "./listingDiscovery.js";
+import type { DemosWriteJournal } from "../substrate/demosWriteJournal.js";
 
 export type { SignatureCheck, BundleVerification, Reputation, CciRecord };
 export type {
@@ -315,6 +320,8 @@ export interface AgentConfig {
    * before side effects when it is absent.
    */
   wallet?: string;
+  /** Durable wallet/write authority required by Demos write methods. */
+  demosWriteJournal?: DemosWriteJournal;
   /** Optional identity metadata (e.g. the agent's DID / primary claim). */
   identity?: { agentId?: string };
   /** DACS-1 §6.3.4 LP-6 authority read for pay-bearing Listing publication. */
@@ -418,6 +425,14 @@ export type PublishResult =
 export interface DemosBackedAdapter extends SubstrateAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly raw: any;
+  /** Re-authenticate a portable Demos proof through this adapter's RPC. */
+  verifyDemosWriteEvidence(
+    evidence: Readonly<DemosWriteEvidence>,
+  ): Promise<boolean>;
+  /** Re-authenticate a compact portable Demos AnchorReceipt without its index. */
+  verifyDemosAnchorReceipt(
+    receipt: Readonly<ProtocolAnchorReceipt>,
+  ): Promise<boolean>;
 }
 
 /**
@@ -505,6 +520,9 @@ export async function createAgent(
   const adapter = new DemosAdapter({
     rpc: config.demosRpc,
     ...(config.wallet === undefined ? {} : { secret: config.wallet }),
+    ...(config.demosWriteJournal === undefined
+      ? {}
+      : { writeJournal: config.demosWriteJournal }),
   });
   await adapter.connect();
   return buildAgent(adapter, config);
@@ -800,7 +818,15 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             value,
             options,
           );
-          return publication.anchor;
+          // publishListingCore deliberately owns a narrow, exact dependency
+          // envelope. Keep richer substrate evidence on `publication.anchor`
+          // for callers, but project only the fields the pure core consumes.
+          return {
+            address: publication.anchor.address,
+            ...(publication.anchor.txRef === undefined
+              ? {}
+              : { txRef: publication.anchor.txRef }),
+          };
         },
         loadRailResolution: loadListingRailResolution,
         resolvePayloadVerificationCapability:

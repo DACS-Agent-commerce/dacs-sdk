@@ -1,7 +1,10 @@
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
   createAgent,
+  createFsDemosWriteJournal,
   createInMemoryBindingStore,
 } from "../../src/index.js";
 
@@ -11,17 +14,21 @@ import {
  * This writes two uniquely named listing versions, so it is gated on a funded
  * seller wallet and never runs in the offline/default suite:
  *
- *   DEMOS_RPC=… SELLER_WALLET=… SELLER_DID=… \
+ *   DEMOS_RPC=… SELLER_WALLET=… SELLER_DID=… DACS_STATE_DIR=… \
  *   npx vitest run test/integration/listing-versioning.live.test.ts
  */
 const RPC = process.env["DEMOS_RPC"];
 const WALLET = process.env["SELLER_WALLET"];
 const DID = process.env["SELLER_DID"];
-const ready = Boolean(RPC && WALLET && DID);
+const STATE_DIR = process.env["DACS_STATE_DIR"];
+const ready = Boolean(RPC && WALLET && DID && STATE_DIR);
 
 describe("LIVE listing version immutability + sequencing (#46)", () => {
   if (!ready) {
-    it.skip("needs DEMOS_RPC, SELLER_WALLET, and SELLER_DID", () => {});
+    it.skip(
+      "needs DEMOS_RPC, SELLER_WALLET, SELLER_DID, and DACS_STATE_DIR",
+      () => {},
+    );
     return;
   }
 
@@ -29,9 +36,13 @@ describe("LIVE listing version immutability + sequencing (#46)", () => {
     "creates v1/v2, reconciles an identical retry, and rejects overwrite/gap",
     async () => {
       const bindings = createInMemoryBindingStore();
+      const writeJournal = await createFsDemosWriteJournal({
+        dir: join(STATE_DIR!, "listing-versioning-demos-writes"),
+      });
       const agent = await createAgent({
         demosRpc: RPC!,
         wallet: WALLET!,
+        demosWriteJournal: writeJournal,
         identity: { agentId: DID! },
         bindings: { index: bindings, publisher: bindings },
       });

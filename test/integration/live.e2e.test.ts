@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 import { createPublicClient, erc20Abi, http } from "viem";
 
 import {
   createAgent,
+  createFsDemosWriteJournal,
   createInMemoryBindingStore,
   createX402Rail,
   x402Settle,
@@ -18,7 +20,7 @@ import { startLiveX402Paywall } from "./live-x402-paywall.js";
  *
  *   DEMOS_RPC=… SELLER_WALLET=… SELLER_DID=… BUYER_WALLET=… BUYER_DID=… \
  *   BUYER_EVM_KEY=0x… PAYWALL_URL=local PAY_NETWORK=eip155:84532 \
- *   SELLER_EVM=0x… PAY_TOKEN=0x… LIVE_E2E_CONFIRM=1 \
+ *   SELLER_EVM=0x… PAY_TOKEN=0x… DACS_STATE_DIR=… LIVE_E2E_CONFIRM=1 \
  *   npx vitest run test/integration/live.e2e.test.ts
  */
 
@@ -33,6 +35,7 @@ const ENV = [
   "PAY_NETWORK",
   "SELLER_EVM",
   "PAY_TOKEN",
+  "DACS_STATE_DIR",
   "LIVE_E2E_CONFIRM",
 ] as const;
 
@@ -131,15 +134,25 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
       }
 
       const sellerBindings = createInMemoryBindingStore();
+      const [sellerWriteJournal, buyerWriteJournal] = await Promise.all([
+        createFsDemosWriteJournal({
+          dir: join(env.DACS_STATE_DIR!, "live-e2e-seller-demos-writes"),
+        }),
+        createFsDemosWriteJournal({
+          dir: join(env.DACS_STATE_DIR!, "live-e2e-buyer-demos-writes"),
+        }),
+      ]);
       const seller = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.SELLER_WALLET!,
+        demosWriteJournal: sellerWriteJournal,
         identity: { agentId: env.SELLER_DID! },
         bindings: { index: sellerBindings, publisher: sellerBindings },
       });
       const buyer = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.BUYER_WALLET!,
+        demosWriteJournal: buyerWriteJournal,
         identity: { agentId: env.BUYER_DID! },
       });
       const rail = await createX402Rail({ evmPrivateKey: env.BUYER_EVM_KEY! });

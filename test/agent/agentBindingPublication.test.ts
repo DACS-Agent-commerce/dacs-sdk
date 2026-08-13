@@ -6,8 +6,10 @@ import { verifyComponentSignature } from "../../src/artifacts/signatures.js";
 import type { Listing, ListingDraft } from "../../src/artifacts/types.js";
 import { isListing } from "../../src/artifacts/validators.js";
 import {
+  canonicalize,
   contentHash,
   listingAddress,
+  sha256Hex,
 } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -281,7 +283,12 @@ describe("Agent.publishListing binding publication (#54)", () => {
     expect(result.publication.binding.contentHash).toBe(
       contentHash(state.records.get("stor-1")!),
     );
-    expect(state.metadata).toEqual([{ logicalAddress: LOGICAL }]);
+    const anchoredListing = state.records.get("stor-1")!;
+    expect(state.metadata).toEqual([{
+      logicalAddress: LOGICAL,
+      contentHash: contentHash(anchoredListing),
+      envelopeHash: sha256Hex(canonicalize(anchoredListing)),
+    }]);
     expect(bindings.snapshot()).toEqual([result.publication.binding]);
     await expect(bindings.resolve(LOGICAL, OWNER)).resolves.toMatchObject({
       status: "present",

@@ -56,6 +56,7 @@ import {
   createAgent,
   createDacsX402BuyerEvmChallengeClient,
   createFixedPriceAgreementSigningPlan,
+  createFsDemosWriteJournal,
   createFsFencedSessionStore,
   createFsSellerReceiptStore,
   createFsX402BuyerSettlementStore,
@@ -68,6 +69,7 @@ import {
   createX402SellerSpine,
   deriveFixedPriceAgreement,
   discoverListings,
+  demosWriteEvidenceToAnchorReceipt,
   deriveX402ReceiptCommitment,
   ed25519Verify,
   ed25519Sign,
@@ -801,6 +803,14 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
   requireCondition(payer.toLowerCase() !== payee.toLowerCase(), "payer-payee-not-independent");
 
   const bindings = createInMemoryBindingStore();
+  const [sellerWriteJournal, buyerWriteJournal] = await Promise.all([
+    temporaryDirectory("seller-demos-writes").then((dir) =>
+      createFsDemosWriteJournal({ dir })
+    ),
+    temporaryDirectory("buyer-demos-writes").then((dir) =>
+      createFsDemosWriteJournal({ dir })
+    ),
+  ]);
   const railAuthority = () => ({
     trustPhase: "PA-1" as const,
     trustPolicyAcceptsPA1: true,
@@ -818,6 +828,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
       createAgent({
       demosRpc: env.DEMOS_RPC,
       wallet: env.SELLER_WALLET,
+      demosWriteJournal: sellerWriteJournal,
       identity: { agentId: env.SELLER_DID },
       bindings: { index: bindings, publisher: bindings },
       loadListingRailResolution: railAuthority,
@@ -825,6 +836,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
       createAgent({
       demosRpc: env.DEMOS_RPC,
       wallet: env.BUYER_WALLET,
+      demosWriteJournal: buyerWriteJournal,
       identity: { agentId: env.BUYER_DID },
       bindings: { index: bindings },
       }),
@@ -1119,36 +1131,6 @@ interface PublishedListing {
   receipt: AnchorReceipt;
 }
 
-function portableReceipt(input: {
-  logicalAddress: string;
-  nativeAddress: string;
-  contentHash: string;
-  writer: string;
-  transactionRef: string;
-  observedAt: number;
-  blockNumber?: number;
-}): AnchorReceipt {
-  return {
-    receiptVersion: "1",
-    substrate: "demos",
-    finalityProfile: "demos-bft-read-visible",
-    logicalAddress: input.logicalAddress,
-    nativeAddress: input.nativeAddress,
-    contentHash: input.contentHash,
-    transactionRef: { kind: "demos-storage-program", value: input.transactionRef },
-    writer: input.writer,
-    state: "finalized",
-    observationDisposition: "established",
-    observedAt: input.observedAt,
-    blockRef: {
-      id: input.transactionRef,
-      ...(input.blockNumber === undefined ? {} : { height: String(input.blockNumber) }),
-      timestamp: input.observedAt,
-    },
-    evidence: { kind: "demos-owner-bound-readback", value: input.contentHash },
-  };
-}
-
 async function anchorArtifact(input: {
   adapter: DemosBackedAdapter;
   writer: string;
@@ -1193,30 +1175,12 @@ async function anchorArtifact(input: {
   }
   requireCondition(anchored !== undefined, "anchor-write-result-missing");
   requireCondition(typeof anchored.txRef === "string" && anchored.txRef.length > 0, "anchor-tx-missing");
-  const resolution = await input.adapter.resolveAnchorByName(
-    input.logicalAddress,
-    input.adapter.getAddress(),
-  );
-  requireCondition(
-    resolution.status === "present" && resolution.address === anchored.address,
-    "anchor-owner-bound-resolution-mismatch",
-  );
-  const readback = await input.adapter.readAnchor(anchored.address);
-  const readbackHash = readback !== null && isFaultAttestationBundle(readback)
-    ? attestationBundleHash(readback)
-    : readback === null ? null : contentHash(readback);
-  requireCondition(
-    readbackHash === hash && canonicalize(readback) === canonicalize(input.artifact),
-    "anchor-readback-mismatch",
-  );
-  const receipt = portableReceipt({
+  requireCondition(anchored.demosEvidence !== undefined, "anchor-evidence-missing");
+  const receipt = demosWriteEvidenceToAnchorReceipt({
     logicalAddress: input.logicalAddress,
-    nativeAddress: anchored.address,
     contentHash: hash,
     writer: input.writer,
-    transactionRef: anchored.txRef,
-    observedAt: Date.now(),
-    ...(anchored.blockNumber === undefined ? {} : { blockNumber: anchored.blockNumber }),
+    evidence: anchored.demosEvidence,
   });
   return {
     ref: {
@@ -1235,17 +1199,11 @@ async function verifyAnchorReceipt(
 ): Promise<boolean> {
   if (receipt.writer !== expectedWriter || receipt.state !== "finalized" ||
       receipt.observationDisposition !== "established") return false;
-  const readback = await adapter.readAnchor(receipt.nativeAddress);
-  if (!readback) return false;
-  const readbackHash = isFaultAttestationBundle(readback)
-    ? attestationBundleHash(readback)
-    : contentHash(readback);
-  if (readbackHash !== receipt.contentHash) return false;
-  const resolution = await adapter.resolveAnchorByName(
-    receipt.logicalAddress,
-    expectedWriter.replace(/^did:demos:agent:/, ""),
-  );
-  return resolution.status === "present" && resolution.address === receipt.nativeAddress;
+  try {
+    return await adapter.verifyDemosAnchorReceipt(receipt);
+  } catch {
+    return false;
+  }
 }
 
 async function publishAndDiscoverListing(input: {
@@ -1348,33 +1306,33 @@ async function publishAndDiscoverListing(input: {
   );
   const anchor = published.publication.anchor;
   requireCondition(typeof anchor.txRef === "string" && anchor.txRef.length > 0, "listing-anchor-tx-missing");
-  const listingResolution = await preflight.buyer.adapter.resolveAnchorByName(
-    published.logicalAddress,
-    preflight.seller.adapter.getAddress(),
-  );
-  const listingReadback = listingResolution.status === "present"
-    ? await preflight.buyer.adapter.readAnchor(listingResolution.address)
-    : null;
+  const listingReadback = await preflight.buyer.adapter.readAnchor(published.ref);
   requireCondition(
-    listingResolution.status === "present" &&
-    listingResolution.address === published.ref && listingReadback !== null &&
+    listingReadback !== null &&
     canonicalize(listingReadback) === canonicalize(listing),
-    "listing-owner-bound-readback-mismatch",
+    "listing-native-readback-mismatch",
+  );
+  requireCondition(anchor.demosEvidence !== undefined, "listing-anchor-evidence-missing");
+  const receipt = demosWriteEvidenceToAnchorReceipt({
+    logicalAddress: published.logicalAddress,
+    contentHash: pin.contentHash,
+    writer: preflight.env.SELLER_DID,
+    evidence: anchor.demosEvidence,
+  });
+  requireCondition(
+    await verifyAnchorReceipt(
+      preflight.buyer.adapter,
+      receipt,
+      preflight.env.SELLER_DID,
+    ),
+    "listing-anchor-receipt-invalid",
   );
   return {
     listing,
     listingRef: published.ref,
     listingPin: pin,
     logicalAddress: published.logicalAddress,
-    receipt: portableReceipt({
-      logicalAddress: published.logicalAddress,
-      nativeAddress: published.ref,
-      contentHash: pin.contentHash,
-      writer: preflight.env.SELLER_DID,
-      transactionRef: anchor.txRef,
-      observedAt: now,
-      ...(anchor.blockNumber === undefined ? {} : { blockNumber: anchor.blockNumber }),
-    }),
+    receipt,
   };
 }
 
@@ -4526,7 +4484,35 @@ async function closeDurableDetachedRoleBundles(input: {
     const logicalAddress = bundleAddress(input.jobId, role);
     const ownerDid = role === "seller"
       ? input.preflight.env.SELLER_DID : input.preflight.env.BUYER_DID;
-    const resolved = await input.preflight.buyer.adapter.resolveAnchorByName(
+    const cached = role === "seller" ? sellerAnchored : buyerAnchored;
+    if (cached) {
+      const bundle = await input.preflight.buyer.adapter.readAnchor(
+        cached.nativeAddress,
+      );
+      if (!bundle) throw new Error("funded-e2e:role-bundle-read-indeterminate");
+      const hash = attestationBundleHash(
+        bundle as unknown as FaultAttestationBundle,
+      );
+      if (
+        cached.anchorReceipt.logicalAddress !== logicalAddress ||
+        cached.anchorReceipt.nativeAddress !== cached.nativeAddress ||
+        cached.anchorReceipt.contentHash !== hash ||
+        !await verifyAnchorReceipt(
+          input.preflight.buyer.adapter,
+          cached.anchorReceipt,
+          ownerDid,
+        )
+      ) return null;
+      return {
+        bundle,
+        nativeAddress: cached.nativeAddress,
+        anchorReceipt: cached.anchorReceipt,
+        ...(cached.anchorTx ? { anchorTx: cached.anchorTx } : {}),
+      };
+    }
+    const ownerAdapter = role === "seller"
+      ? input.preflight.seller.adapter : input.preflight.buyer.adapter;
+    const resolved = await ownerAdapter.resolveAnchorByName(
       logicalAddress,
       ownerDid.replace(/^did:demos:agent:/, ""),
     );
@@ -4537,21 +4523,6 @@ async function closeDurableDetachedRoleBundles(input: {
     const bundle = await input.preflight.buyer.adapter.readAnchor(resolved.address);
     if (!bundle) throw new Error("funded-e2e:role-bundle-read-indeterminate");
     const hash = attestationBundleHash(bundle as unknown as FaultAttestationBundle);
-    const cached = role === "seller" ? sellerAnchored : buyerAnchored;
-    if (cached) {
-      if (
-        cached.nativeAddress !== resolved.address ||
-        cached.anchorReceipt.logicalAddress !== logicalAddress ||
-        cached.anchorReceipt.contentHash !== hash
-      ) return null;
-      return {
-        bundle,
-        nativeAddress: resolved.address,
-        anchorReceipt: cached.anchorReceipt,
-        ...(cached.anchorTx ? { anchorTx: cached.anchorTx } : {}),
-      };
-    }
-
     // A cold runtime must recover the exact original receipt and transaction
     // pointer from an owner-bound finalization handoff. A successful Demos read
     // is not itself an anchor receipt and must never be promoted into one.

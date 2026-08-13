@@ -3,11 +3,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AnchorWaitError,
   DemosAdapter,
+  createInMemoryDemosWriteJournal,
+  demosWriteEvidenceToAnchorReceipt,
   type AnchorAttemptReceipt,
 } from "../../src/substrate/index.js";
+import {
+  canonicalize,
+  contentHash,
+  logicalToStorageProgramName,
+  sha256Hex,
+} from "../../src/canonical/index.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
 let fixtureId = 0;
+const writeJournal = createInMemoryDemosWriteJournal();
 
 function notFound(): Error {
   return Object.assign(new Error("not found"), { response: { status: 404 } });
@@ -29,6 +38,24 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function signedStorageTransaction(
+  wallet: string,
+  hash: string,
+  payload: Record<string, unknown>,
+  nonce: number,
+) {
+  return {
+    hash,
+    content: {
+      type: "storageProgram",
+      from: wallet,
+      to: payload.storageAddress,
+      nonce,
+      data: ["storageProgram", payload],
+    },
+  };
+}
+
 async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
   fixtureId += 1;
   const id = fixtureId;
@@ -36,9 +63,18 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
   const wallet =
     options?.wallet ??
     `${WALLET.slice(0, -4)}${id.toString(16).padStart(4, "0")}`;
-  const adapter = new DemosAdapter({ rpc });
+  const adapter = new DemosAdapter({
+    rpc,
+    chainIdentity: "test-chain",
+    writeJournal,
+  });
   const raw = adapter.raw as any;
   let signedCount = 0;
+  const signedPayloads = new Map<
+    string,
+    { payload: Record<string, unknown>; nonce?: number }
+  >();
+  let lastObservedTxRef = "";
 
   raw.connect = vi.fn().mockResolvedValue(undefined);
   raw.getAddress = vi.fn(() => wallet);
@@ -46,13 +82,32 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
     status: "absent",
   });
   raw.getAddressNonce = vi.fn(async () => signedCount);
-  raw.storagePrograms.read = vi.fn().mockRejectedValue(notFound());
+  raw.storagePrograms.read = vi.fn(async (address: string) => {
+    const entry = [...signedPayloads.entries()]
+      .reverse()
+      .find(([, item]) => item.payload.storageAddress === address);
+    if (!entry) throw notFound();
+    const [txRef, { payload }] = entry;
+    return {
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: payload.programName,
+      data: payload.data,
+      metadata: payload.metadata,
+      createdByTx: txRef,
+      lastModifiedByTx: txRef,
+      interactionTxs: [txRef],
+    };
+  });
   raw.storagePrograms.sign = vi.fn(
-    async (_payload: unknown, options?: { nonce?: number }) => {
+    async (payload: Record<string, unknown>, options?: { nonce?: number }) => {
       const nonce =
         options?.nonce ?? (await raw.getAddressNonce(wallet)) + 1;
       signedCount += 1;
-      return { hash: `tx-${id}-${signedCount}`, content: { nonce } };
+      const hash = `tx-${id}-${signedCount}`;
+      signedPayloads.set(hash, { payload, nonce });
+      return signedStorageTransaction(wallet, hash, payload, nonce);
     },
   );
   raw.tx.confirm = vi.fn(async (signed: { hash: string }) => ({
@@ -65,13 +120,53 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
   raw.nodeCall = vi
     .fn()
     .mockResolvedValue({ state: "included", blockNumber: 42 });
-  raw.getTxByHash = vi.fn().mockResolvedValue({
-    status: "confirmed",
-    blockNumber: 42,
+  raw.getTxByHash = vi.fn(async (txRef: string) => {
+    lastObservedTxRef = txRef;
+    const signed = signedPayloads.get(txRef);
+    return {
+      hash: txRef,
+      status: "confirmed",
+      blockNumber: 42,
+      ...(signed?.nonce === undefined
+        ? {}
+        : {
+            content: {
+              type: "storageProgram",
+              from: wallet,
+              to: signed.payload.storageAddress,
+              nonce: signed.nonce,
+              data: ["storageProgram", signed.payload],
+            },
+          }),
+    };
   });
+  raw.getBlockByNumber = vi.fn(async (blockNumber: number) => ({
+    number: blockNumber,
+    hash: `block-${blockNumber}`,
+    status: "confirmed",
+    content: {
+      timestamp: 120,
+      ordered_transactions: [
+        (adapter as unknown as {
+          activeWriteRecord?: { txRef?: string };
+        }).activeWriteRecord?.txRef ?? lastObservedTxRef,
+      ],
+    },
+    validation_data: { signatures: ["validator-test-signature"] },
+  }));
   await adapter.connect();
 
-  return { adapter, raw, rpc, wallet };
+  return {
+    adapter,
+    raw,
+    rpc,
+    wallet,
+    recordSignedPayload: (
+      txRef: string,
+      payload: Record<string, unknown>,
+      nonce?: number,
+    ) => signedPayloads.set(txRef, { payload, nonce }),
+  };
 }
 
 function asAnchorError(error: unknown): AnchorWaitError {
@@ -125,6 +220,61 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.getTxByHash).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts only the live node's equivalent integer wire projection", async () => {
+    const { adapter, raw } = await makeAdapter();
+    const sign = raw.storagePrograms.sign.getMockImplementation()!;
+    raw.storagePrograms.sign.mockImplementation(async (...args: any[]) => {
+      const signed = await sign(...args);
+      Object.assign(signed.content, {
+        nonce: 1,
+        timestamp: 123,
+        amount: "0",
+        transaction_fee: {
+          network_fee: "1000",
+          rpc_fee: "1000",
+          additional_fee: "0",
+          rpc_address: null,
+        },
+        gcr_edits: [
+          { type: "balance", amount: "1000", txhash: "" },
+          { type: "nonce", amount: 1, txhash: "" },
+        ],
+      });
+      return signed;
+    });
+    const canonical = raw.getTxByHash.getMockImplementation()!;
+    raw.getTxByHash.mockImplementation(async (txRef: string) => {
+      const transaction = await canonical(txRef);
+      return {
+        ...transaction,
+        content: {
+          ...transaction.content,
+          nonce: "1",
+          timestamp: "123",
+          amount: 0,
+          transaction_fee: {
+            network_fee: 1000,
+            rpc_fee: 1000,
+            additional_fee: 0,
+            rpc_address: null,
+          },
+          gcr_edits: [
+            { type: "balance", amount: 1000, txhash: txRef },
+            { type: "nonce", amount: "1", txhash: txRef },
+          ],
+        },
+      };
+    });
+
+    await expect(
+      adapter.anchorAndWait(
+        "live-wire-integer-projection",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({ state: "included" });
+  });
+
   it("refuses a mutable create signed with a different nonce", async () => {
     const { adapter, raw } = await makeAdapter();
     raw.storagePrograms.sign.mockResolvedValue({
@@ -175,6 +325,45 @@ describe("DemosAdapter.anchorAndWait", () => {
         expect.objectContaining({ hash: error.receipt.txRef }),
       ),
     );
+  });
+
+  it("refuses confirmation for a different transaction before broadcast", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.tx.confirm.mockResolvedValue({
+      response: { data: { transaction: { hash: "tx-confirmed-other" } } },
+    });
+
+    await expect(
+      adapter.anchorAndWait(
+        "confirmation-hash-bound",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).rejects.toThrow(/confirmation returned transaction hash|confirmed anchor.*returned transaction hash/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("rejects canonical transaction content that differs from the signed write", async () => {
+    const { adapter, raw } = await makeAdapter();
+    const canonical = raw.getTxByHash.getMockImplementation()!;
+    raw.getTxByHash.mockImplementation(async (txRef: string) => {
+      const transaction = await canonical(txRef);
+      return {
+        ...transaction,
+        content: {
+          ...transaction.content,
+          to: "stor-attacker",
+        },
+      };
+    });
+
+    await expect(
+      adapter.anchorAndWait(
+        "canonical-content-bound",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).rejects.toThrow(/changed its signed content/);
   });
 
   it("rejects invalid completion and timing options before any write", async () => {
@@ -304,8 +493,8 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it("releases the nonce queue after nonce advancement, before slow read visibility", async () => {
-    const { adapter, raw } = await makeAdapter();
+  it("holds the nonce queue until authenticated native readback", async () => {
+    const { adapter, raw, wallet } = await makeAdapter();
     const firstValue = { value: "first" };
     const secondValue = { value: "second" };
     const firstAddress = await adapter.anchorAddress("first");
@@ -316,11 +505,20 @@ describe("DemosAdapter.anchorAndWait", () => {
       if (address === firstAddress) {
         return {
           success: true,
+          storageAddress: firstAddress,
+          owner: wallet,
+          programName: "first",
           data: firstVisible ? firstValue : { value: "stale" },
         };
       }
       if (address === secondAddress) {
-        return { success: true, data: secondValue };
+        return {
+          success: true,
+          storageAddress: secondAddress,
+          owner: wallet,
+          programName: "second",
+          data: secondValue,
+        };
       }
       throw new Error(`unexpected address ${address}`);
     });
@@ -335,15 +533,17 @@ describe("DemosAdapter.anchorAndWait", () => {
       expect(raw.nodeCall).toHaveBeenCalled();
     });
 
-    const second = await adapter.anchorAndWait("second", secondValue, {
+    const second = adapter.anchorAndWait("second", secondValue, {
       completion: "included",
       timeoutMs: 1_000,
       pollMs: 1,
     });
-    expect(second.state).toBe("included");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
 
     firstVisible = true;
     await expect(first).resolves.toMatchObject({ state: "read-visible" });
+    await expect(second).resolves.toMatchObject({ state: "included" });
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(2);
   });
 
@@ -361,15 +561,14 @@ describe("DemosAdapter.anchorAndWait", () => {
     for (const fixture of [first, second]) {
       fixture.raw.getAddressNonce.mockImplementation(async () => accountNonce);
       fixture.raw.storagePrograms.sign.mockImplementation(
-        async (_payload: unknown, options?: { nonce?: number }) => {
+        async (payload: Record<string, unknown>, options?: { nonce?: number }) => {
           const nonce =
             options?.nonce ??
             (await fixture.raw.getAddressNonce(wallet)) + 1;
           signedNonces.push(nonce);
-          return {
-            hash: `tx-nonce-lag-${signedNonces.length}`,
-            content: { nonce },
-          };
+          const hash = `tx-nonce-lag-${signedNonces.length}`;
+          fixture.recordSignedPayload(hash, payload, nonce);
+          return signedStorageTransaction(wallet, hash, payload, nonce);
         },
       );
     }
@@ -390,6 +589,127 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(queued).resolves.toMatchObject({ state: "included" });
     expect(signedNonces).toEqual([1, 2]);
     accountNonce = 2;
+  });
+
+  it("updates the durable native slot when the name index is unavailable", async () => {
+    fixtureId += 1;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const first = await makeAdapter({
+      rpc: `https://binding-first-${fixtureId}.test`,
+      wallet,
+    });
+    const restarted = await makeAdapter({
+      rpc: `https://binding-restarted-${fixtureId}.test`,
+      wallet,
+    });
+    const name = "durable-mutable-binding";
+    const initial = await first.adapter.anchorAndWait(
+      name,
+      { value: 1 },
+      { completion: "read-visible", timeoutMs: 1_000, pollMs: 1 },
+    );
+    restarted.raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: initial.address,
+      owner: wallet,
+      programName: name,
+      data: { value: 2 },
+    });
+    vi.mocked(restarted.adapter.resolveAnchorByName).mockResolvedValue({
+      status: "indeterminate",
+      reason: "secondary index unavailable",
+    });
+
+    const updated = await restarted.adapter.anchorAndWait(
+      name,
+      { value: 2 },
+      { completion: "read-visible", timeoutMs: 1_000, pollMs: 1 },
+    );
+    expect(updated.address).toBe(initial.address);
+    expect(restarted.raw.storagePrograms.sign).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "WRITE_STORAGE",
+        storageAddress: initial.address,
+      }),
+      { nonce: 2 },
+    );
+
+    const conflicting = await makeAdapter({
+      rpc: `https://binding-conflict-${fixtureId}.test`,
+      wallet,
+    });
+    vi.mocked(conflicting.adapter.resolveAnchorByName).mockResolvedValue({
+      status: "present",
+      address: "different-native-address",
+    });
+    const conflict = await conflicting.adapter.anchorAndWait(
+      name,
+      { value: 3 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    ).catch((error: unknown) => error) as Error & { cause?: Error };
+    expect(conflict.message).toMatch(/anchor lookup failed/);
+    expect(conflict.cause?.message).toMatch(
+      /index conflicts with its durable native binding/,
+    );
+    expect(conflicting.raw.storagePrograms.sign).not.toHaveBeenCalled();
+  });
+
+  it("does not release the wallet lane from secondary included status alone", async () => {
+    fixtureId += 1;
+    const rpc = `https://secondary-included-${fixtureId}.test`;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const first = await makeAdapter({ rpc, wallet });
+    const second = await makeAdapter({ rpc, wallet });
+    let canonicalConfirmed = false;
+
+    for (const fixture of [first, second]) {
+      fixture.raw.getAddressNonce.mockResolvedValue(0);
+    }
+    first.raw.nodeCall.mockResolvedValue({
+      state: "included",
+      blockNumber: 9,
+    });
+    first.raw.getTxByHash.mockImplementation(async () =>
+      canonicalConfirmed
+        ? { status: "confirmed", blockNumber: 9 }
+        : { status: "pending", blockNumber: null },
+    );
+
+    const timedOut = asAnchorError(
+      await first.adapter
+        .anchorAndWait(
+          "secondary-included",
+          { value: 1 },
+          { completion: "included", timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+    expect(timedOut).toMatchObject({
+      code: "timeout",
+      receipt: {
+        state: "included",
+        lastObservedState: "included-execution-pending",
+      },
+    });
+
+    const queued = second.adapter.anchorAndWait(
+      "after-secondary-included",
+      { value: 2 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(second.raw.storagePrograms.sign).not.toHaveBeenCalled();
+
+    canonicalConfirmed = true;
+    await expect(queued).resolves.toMatchObject({ state: "included" });
+    expect(second.raw.storagePrograms.sign).toHaveBeenCalledWith(
+      expect.anything(),
+      { nonce: 2 },
+    );
   });
 
   it("coordinates accepted writes across adapter instances sharing a wallet", async () => {
@@ -474,6 +794,45 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(queued).resolves.toMatchObject({ state: "included" });
   });
 
+  it("coordinates distinct RPC endpoints for the same chain and wallet", async () => {
+    fixtureId += 1;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId
+      .toString(16)
+      .padStart(4, "0")}`;
+    const first = await makeAdapter({
+      rpc: `https://primary-${fixtureId}.test`,
+      wallet,
+    });
+    const second = await makeAdapter({
+      rpc: `https://secondary-${fixtureId}.test`,
+      wallet,
+    });
+    let firstConfirmed = false;
+    first.raw.nodeCall.mockResolvedValue({ state: "included" });
+    first.raw.getTxByHash.mockImplementation(async () =>
+      firstConfirmed
+        ? { status: "confirmed", blockNumber: 5 }
+        : { status: "pending", blockNumber: null },
+    );
+
+    await first.adapter.anchorAndWait(
+      "primary-write",
+      { value: 1 },
+      { completion: "accepted", timeoutMs: 1_000, pollMs: 1 },
+    );
+    const queued = second.adapter.anchorAndWait(
+      "secondary-write",
+      { value: 2 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(second.raw.storagePrograms.sign).not.toHaveBeenCalled();
+    firstConfirmed = true;
+    await expect(queued).resolves.toMatchObject({ state: "included" });
+    expect(second.raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps anchorWriteOnce and anchorAndWait serialized through nonce advancement", async () => {
     fixtureId += 1;
     const rpc = `https://cross-surface-${fixtureId}.test`;
@@ -491,15 +850,14 @@ describe("DemosAdapter.anchorAndWait", () => {
     for (const fixture of [immutable, mutable]) {
       fixture.raw.getAddressNonce.mockImplementation(async () => accountNonce);
       fixture.raw.storagePrograms.sign.mockImplementation(
-        async (_payload: unknown, options?: { nonce?: number }) => {
+        async (payload: Record<string, unknown>, options?: { nonce?: number }) => {
           const nonce =
             options?.nonce ??
             (await fixture.raw.getAddressNonce(wallet)) + 1;
           signedNonces.push(nonce);
-          return {
-            hash: `tx-cross-surface-${signedNonces.length}`,
-            content: { nonce },
-          };
+          const hash = `tx-cross-surface-${signedNonces.length}`;
+          fixture.recordSignedPayload(hash, payload, nonce);
+          return signedStorageTransaction(wallet, hash, payload, nonce);
         },
       );
     }
@@ -508,7 +866,12 @@ describe("DemosAdapter.anchorAndWait", () => {
       .mockResolvedValueOnce({ status: "present", address });
     immutable.raw.storagePrograms.read.mockResolvedValue({
       success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
       data: value,
+      createdByTx: "tx-cross-surface-1",
+      interactionTxs: ["tx-cross-surface-1"],
     });
     immutable.raw.broadcastAndWait = vi.fn(async () => ({
       broadcast: { response: { hash: "tx-cross-surface-1" } },
@@ -533,21 +896,62 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("binds an immutable create to the nonce used to derive its address", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, wallet } = await makeAdapter();
     const name = "immutable-nonce-bound";
     const value = { value: 1 };
     const address = await adapter.anchorAddress(name);
     vi.mocked(adapter.resolveAnchorByName)
       .mockResolvedValueOnce({ status: "absent" })
       .mockResolvedValue({ status: "present", address });
-    raw.storagePrograms.read.mockResolvedValue({ success: true, data: value });
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
+      data: value,
+    });
 
+    const anchored = await adapter.anchorWriteOnce(name, value, {
+      timeoutMs: 1_000,
+      pollMs: 1,
+    });
+    expect(anchored).toMatchObject({
+      address,
+      txRef: expect.stringMatching(/^tx-/),
+      demosEvidence: {
+        transactionRef: expect.stringMatching(/^tx-/),
+        nativeAddress: address,
+        operation: "create",
+        nonce: 1,
+      },
+    });
     await expect(
-      adapter.anchorWriteOnce(name, value, {
-        timeoutMs: 1_000,
-        pollMs: 1,
+      adapter.verifyDemosWriteEvidence(anchored.demosEvidence!),
+    ).resolves.toBe(true);
+    const portableReceipt = demosWriteEvidenceToAnchorReceipt({
+      logicalAddress: name,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+      evidence: anchored.demosEvidence!,
+    });
+    await expect(
+      adapter.verifyDemosAnchorReceipt(portableReceipt),
+    ).resolves.toBe(true);
+    await expect(
+      adapter.verifyDemosAnchorReceipt({
+        ...portableReceipt,
+        blockRef: {
+          ...portableReceipt.blockRef,
+          id: "tampered-block",
+        },
       }),
-    ).resolves.toEqual({ address, txRef: expect.stringMatching(/^tx-/) });
+    ).resolves.toBe(false);
+    await expect(
+      adapter.verifyDemosWriteEvidence({
+        ...anchored.demosEvidence!,
+        blockHash: "tampered-block",
+      }),
+    ).resolves.toBe(false);
 
     expect(raw.storagePrograms.sign).toHaveBeenCalledWith(
       expect.anything(),
@@ -555,8 +959,57 @@ describe("DemosAdapter.anchorAndWait", () => {
     );
   });
 
+  it("re-authenticates a metadata-bound normative content hash", async () => {
+    const { adapter, wallet } = await makeAdapter();
+    const name = "immutable-normative-hash";
+    const value = { signedScope: { value: 1 }, signatures: ["sig"] };
+    const envelopeHash = sha256Hex(canonicalize(value));
+    const normativeHash = "56".repeat(32);
+    const anchored = await adapter.anchorWriteOnce(name, value, {
+      timeoutMs: 1_000,
+      pollMs: 1,
+      metadata: {
+        logicalAddress: name,
+        contentHash: normativeHash,
+        envelopeHash,
+      },
+    });
+    const receipt = demosWriteEvidenceToAnchorReceipt({
+      logicalAddress: name,
+      contentHash: normativeHash,
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+      evidence: anchored.demosEvidence!,
+    });
+
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt({
+      ...receipt,
+      contentHash: "78".repeat(32),
+    })).resolves.toBe(false);
+  });
+
+  it("retains a signed logical address behind its encoded native program name", async () => {
+    const { adapter, wallet } = await makeAdapter();
+    const logicalAddress = "dacs1:did%3Ademos%3Aagent%3Aseller:listing:v1";
+    const storageName = logicalToStorageProgramName(logicalAddress);
+    const value = { listingId: "listing", listingVersion: 1 };
+    const anchored = await adapter.anchorWriteOnce(storageName, value, {
+      timeoutMs: 1_000,
+      pollMs: 1,
+      metadata: { logicalAddress },
+    });
+
+    expect(anchored.demosEvidence?.logicalName).toBe(logicalAddress);
+    expect(() => demosWriteEvidenceToAnchorReceipt({
+      logicalAddress,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+      evidence: anchored.demosEvidence!,
+    })).not.toThrow();
+  });
+
   it("refuses an immutable create signed with a different nonce", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, wallet } = await makeAdapter();
     raw.storagePrograms.sign.mockResolvedValue({
       hash: "tx-wrong-immutable-nonce",
       content: { nonce: 2 },
@@ -573,14 +1026,20 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("completes an immutable write by hash while its broadcast response hangs", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, wallet } = await makeAdapter();
     const name = "hung-immutable";
     const value = { value: 1 };
     const address = await adapter.anchorAddress(name);
     vi.mocked(adapter.resolveAnchorByName)
       .mockResolvedValueOnce({ status: "absent" })
       .mockResolvedValueOnce({ status: "present", address });
-    raw.storagePrograms.read.mockResolvedValue({ success: true, data: value });
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
+      data: value,
+    });
     raw.tx.broadcast.mockImplementation(() => deferred<never>().promise);
 
     await expect(
@@ -588,7 +1047,11 @@ describe("DemosAdapter.anchorAndWait", () => {
         timeoutMs: 1_000,
         pollMs: 1,
       }),
-    ).resolves.toEqual({ address, txRef: expect.stringMatching(/^tx-/) });
+    ).resolves.toMatchObject({
+      address,
+      txRef: expect.stringMatching(/^tx-/),
+      demosEvidence: { nativeAddress: address },
+    });
     expect(raw.nodeCall).toHaveBeenCalledWith(
       "getTransactionStatus",
       expect.objectContaining({ hash: expect.stringMatching(/^tx-/) }),
@@ -718,7 +1181,10 @@ describe("DemosAdapter.anchorAndWait", () => {
         .anchorWriteOnce(
           "invisible-immutable",
           { value: 1 },
-          { timeoutMs: 20, pollMs: 1 },
+          // Leave enough wall-clock budget for the synchronous mocked finality
+          // stages even when Vitest is running the full suite under load. The
+          // deliberately unresolved native read remains the timeout subject.
+          { timeoutMs: 100, pollMs: 1 },
         )
         .catch((caught: unknown) => caught),
     );
@@ -735,58 +1201,42 @@ describe("DemosAdapter.anchorAndWait", () => {
       },
     });
     expect(error.message).toMatch(
-      /included but did not become exact-byte and uniquely name-index visible/,
+      /authenticated native readback did not complete/,
     );
     expect(error.message).not.toMatch(/immutable completion/);
     expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
-    expect(raw.storagePrograms.read).toHaveBeenCalledTimes(1);
+    expect(raw.storagePrograms.read).toHaveBeenCalledTimes(2);
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("never recreates a canonically confirmed immutable slot while its name index lags", async () => {
-    const { adapter, raw } = await makeAdapter();
-    raw.storagePrograms.read.mockImplementation(
-      () => deferred<never>().promise,
-    );
-
-    const first = asAnchorError(
-      await adapter
-        .anchorWriteOnce(
-          "confirmed-before-name-index",
-          { value: 1 },
-          { timeoutMs: 20, pollMs: 1 },
-        )
-        .catch((caught: unknown) => caught),
+    const { adapter, raw, wallet } = await makeAdapter();
+    const first = await adapter.anchorWriteOnce(
+      "confirmed-before-name-index",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
     );
     expect(first).toMatchObject({
-      code: "timeout",
-      receipt: {
-        state: "included",
-        address: expect.any(String),
-        txRef: expect.any(String),
+      address: expect.any(String),
+      txRef: expect.any(String),
+      demosEvidence: {
+        nativeRead: { valueHash: expect.any(String) },
       },
     });
+    vi.mocked(adapter.resolveAnchorByName).mockRestore();
+    await expect(
+      adapter.resolveAnchorByName("confirmed-before-name-index", wallet),
+    ).resolves.toEqual({ status: "present", address: first.address });
 
-    raw.storagePrograms.read.mockResolvedValue({
-      success: true,
-      data: { value: 1 },
-    });
-    const stillLagging = asAnchorError(
-      await adapter
-        .anchorWriteOnce(
-          "confirmed-before-name-index",
-          { value: 1 },
-          { timeoutMs: 20, pollMs: 1 },
-        )
-        .catch((caught: unknown) => caught),
-    );
-    expect(stillLagging).toMatchObject({
-      code: "timeout",
-      receipt: {
-        state: "included",
-        address: first.receipt.address,
-        txRef: first.receipt.txRef,
-      },
+    await expect(
+      adapter.anchorWriteOnce(
+        "confirmed-before-name-index",
+        { value: 1 },
+        { timeoutMs: 20, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({
+      address: first.address,
+      txRef: first.txRef,
     });
     await expect(
       adapter.anchorWriteOnce(
@@ -794,23 +1244,23 @@ describe("DemosAdapter.anchorAndWait", () => {
         { value: 2 },
         { timeoutMs: 20, pollMs: 1 },
       ),
-    ).rejects.toThrow(/different signed-scope content or metadata/);
+    ).rejects.toThrow(/different exact content or metadata/);
     expect(raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
 
-    vi.mocked(adapter.resolveAnchorByName).mockResolvedValue({
-      status: "present",
-      address: first.receipt.address!,
-    });
     await expect(
       adapter.anchorWriteOnce(
         "confirmed-before-name-index",
         { value: 1 },
         { timeoutMs: 1_000, pollMs: 1 },
       ),
-    ).resolves.toEqual({
-      address: first.receipt.address,
-      txRef: first.receipt.txRef,
+    ).resolves.toMatchObject({
+      address: first.address,
+      txRef: first.txRef,
+      demosEvidence: {
+        transactionRef: first.txRef,
+        nativeAddress: first.address,
+      },
     });
     expect(raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
@@ -931,13 +1381,16 @@ describe("DemosAdapter.anchorAndWait", () => {
     let signedCount = 0;
     raw.getAddressNonce.mockResolvedValue(0);
     raw.storagePrograms.sign.mockImplementation(
-      async (_payload: unknown, options?: { nonce?: number }) => {
+      async (payload: Record<string, unknown>, options?: { nonce?: number }) => {
         signedCount += 1;
-        signedNonces.push(options?.nonce as number);
-        return {
-          hash: `failed-nonce-floor-${signedCount}`,
-          content: { nonce: options?.nonce },
-        };
+        const nonce = options?.nonce as number;
+        signedNonces.push(nonce);
+        return signedStorageTransaction(
+          (adapter.raw as any).getAddress(),
+          `failed-nonce-floor-${signedCount}`,
+          payload,
+          nonce,
+        );
       },
     );
     raw.nodeCall.mockImplementation(

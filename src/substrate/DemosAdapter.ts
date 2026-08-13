@@ -7,14 +7,21 @@ import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
 import {
   canonicalize,
-  contentHash,
   logicalToStorageProgramName,
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import { parseClaimRef } from "../identity/index.js";
+import type { AnchorReceipt as ProtocolAnchorReceipt } from "../artifacts/types.js";
 import { AnchorWaitError } from "./AnchorWaitError.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
+import {
+  assertDemosWriteEvidence,
+  decodeDemosAnchorReceiptProof,
+  demosSignedTransactionProofHash,
+  demosTransactionContentDifferencePaths,
+  demosWriteEvidenceBindsReceiptContent,
+} from "./demosWriteEvidence.js";
 import {
   classifyAnchorResolution,
   type AnchorResolution,
@@ -30,12 +37,18 @@ import type {
   AnchorWaitOptions,
   AnchorWriteOnceOptions,
   DemosAdapterConfig,
+  DemosWriteEvidence,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
 import type { AnchorHistoryPageFetcher } from "../discovery/scanner.js";
+import type {
+  DemosWriteJournalLease,
+  DemosWriteJournalRecord,
+  DemosWriteStage,
+} from "./demosWriteJournal.js";
 
 /**
  * Address-derivation salt. EMPTY per the observed on-chain convention
@@ -52,6 +65,19 @@ const WRITE_ONCE_VISIBILITY_POLL_MS = 1_000;
 const STORAGE_SEARCH_PAGE_SIZE = 100;
 const STORAGE_SEARCH_MAX_PAGES = 100;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const exactJsonHash = (value: Record<string, unknown>): string =>
+  sha256Hex(canonicalize(value));
+
+/** Demos block headers currently expose Unix seconds; CORE timestamps are ms. */
+function demosBlockTimestampMs(value: unknown): number | undefined {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) return undefined;
+  const timestamp = value as number;
+  // Also accept future Demos nodes that already expose Unix milliseconds.
+  const normalized = timestamp < 100_000_000_000
+    ? timestamp * 1_000
+    : timestamp;
+  return Number.isSafeInteger(normalized) ? normalized : undefined;
+}
 
 function normalizeRpcQueueKey(rpc: string): string {
   try {
@@ -82,6 +108,7 @@ interface AnchorContext {
   signal?: AbortSignal;
   onProgress?: (receipt: AnchorAttemptReceipt) => void;
   receipt: MutableReceipt;
+  canonicalTransaction?: Record<string, unknown>;
 }
 
 interface QueuedWrite<T> {
@@ -89,22 +116,6 @@ interface QueuedWrite<T> {
   result: Promise<T>;
   /** Resolves only when the next same-wallet write can safely start. */
   safe: Promise<void>;
-}
-
-interface UnresolvedWrite {
-  txRef: string;
-  signedNonce: number;
-  receipt: AnchorAttemptReceipt;
-  pollMs: number;
-}
-
-interface ConfirmedImmutableWrite {
-  owner: string;
-  address: string;
-  txRef: string;
-  valueHash: string;
-  metadataHash?: string;
-  blockNumber?: number;
 }
 
 type BroadcastObservation =
@@ -115,16 +126,16 @@ type BroadcastObservation =
 // Coordinates every adapter instance in this JS process. RPC is part of the
 // key so the same wallet used on different networks does not block itself.
 const walletWriteTails = new Map<string, Promise<void>>();
-const unresolvedWrites = new Map<string, UnresolvedWrite>();
-// A canonical confirmed transaction is stronger nonce evidence than a lagging
-// account projection. This process-local floor lets the next queued write use
-// N+1 without waiting for a secondary account index to catch up. External
-// writers still require the documented external wallet lease.
-const confirmedWriteNonces = new Map<string, number>();
-// Name visibility may lag canonical execution beyond a caller's deadline. Keep
-// the exact confirmed immutable create so a same-process retry can only finish
-// its readback; it must never infer absence and submit the logical slot again.
-const confirmedImmutableWrites = new Map<string, ConfirmedImmutableWrite>();
+
+const JOURNAL_STAGE_RANK: Record<DemosWriteStage, number> = {
+  prepared: 0,
+  signed: 1,
+  "broadcast-intent": 2,
+  "canonical-confirmed": 3,
+  "canonical-failed": 3,
+  "native-visible": 4,
+  "index-visible": 5,
+};
 
 function queueWalletWrite<T>(
   key: string,
@@ -182,6 +193,65 @@ function isDefinitiveBroadcastRejection(value: unknown): boolean {
   );
 }
 
+function journalPortableValue(
+  value: unknown,
+  seen = new Set<object>(),
+): unknown {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new DacsError("signed Demos transaction contains a non-finite number");
+    }
+    return value;
+  }
+  if (typeof value === "bigint") return { $bigint: value.toString() };
+  if (value instanceof Uint8Array) {
+    return {
+      $bytes: Buffer.from(value).toString("base64url"),
+    };
+  }
+  if (typeof value !== "object" || value === null) {
+    throw new DacsError(
+      `signed Demos transaction contains unsupported ${typeof value}`,
+    );
+  }
+  if (seen.has(value)) {
+    throw new DacsError("signed Demos transaction contains a cycle");
+  }
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => journalPortableValue(item, seen));
+    }
+    if (value instanceof Map) {
+      return {
+        $map: [...value.entries()].map(([key, item]) => [
+          journalPortableValue(key, seen),
+          journalPortableValue(item, seen),
+        ]),
+      };
+    }
+    const record: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      const item = (value as Record<string, unknown>)[key];
+      if (item !== undefined) record[key] = journalPortableValue(item, seen);
+    }
+    return record;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function serializeSignedTransaction(value: unknown): string {
+  return canonicalize(journalPortableValue(value));
+}
+
 /**
  * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`.
  *
@@ -194,6 +264,9 @@ export class DemosAdapter implements SubstrateAdapter {
   private readonly demos: Demos;
   private readonly config: DemosAdapterConfig;
   private connected = false;
+  private chainIdentity?: string;
+  private activeWriteLease?: DemosWriteJournalLease;
+  private activeWriteRecord?: DemosWriteJournalRecord;
 
   private walletQueueKey(): string {
     return `${normalizeRpcQueueKey(this.config.rpc)}\0${this.getAddress().toLowerCase()}`;
@@ -226,7 +299,16 @@ export class DemosAdapter implements SubstrateAdapter {
         `anchor ${receipt.name} completed without a storage address`,
       );
     }
-    return { ...receipt, address: receipt.address };
+    const record = this.activeWriteRecord;
+    const demosEvidence = record && record.blockHash &&
+        record.finalityProofHash && record.nativeRead
+      ? this.writeEvidence(record)
+      : undefined;
+    return {
+      ...receipt,
+      address: receipt.address,
+      ...(demosEvidence === undefined ? {} : { demosEvidence }),
+    };
   }
 
   private emit(ctx: AnchorContext): void {
@@ -449,6 +531,155 @@ export class DemosAdapter implements SubstrateAdapter {
     );
   }
 
+  private async resolveChainIdentity(): Promise<string> {
+    if (this.chainIdentity) return this.chainIdentity;
+    if (this.config.chainIdentity) {
+      const pinned = this.config.chainIdentity.trim().toLowerCase();
+      if (!pinned) throw new DacsError("Demos chainIdentity must not be empty");
+      this.chainIdentity = pinned;
+      return pinned;
+    }
+    const genesisResult = await this.demos.getBlockByNumber(0) as unknown;
+    const genesis = isRecord(genesisResult) && isRecord(genesisResult.response)
+      ? genesisResult.response
+      : genesisResult;
+    if (isRecord(genesis)) {
+      const hash = typeof genesis.hash === "string"
+        ? genesis.hash.trim().toLowerCase()
+        : "";
+      const number = genesis.number ?? genesis.id;
+      if (hash && (number === undefined || number === 0)) {
+        this.chainIdentity = hash;
+        return hash;
+      }
+    }
+
+    // Some deployed Demos nodes number their first queryable block as one and
+    // return the literal `"error"` for block zero. In that layout, block one's
+    // authenticated predecessor is the stable genesis/chain identifier.
+    const firstResult = await this.demos.getBlockByNumber(1) as unknown;
+    const first = isRecord(firstResult) && isRecord(firstResult.response)
+      ? firstResult.response
+      : firstResult;
+    const content = isRecord(first) && isRecord(first.content)
+      ? first.content
+      : undefined;
+    const previousHash = typeof content?.previousHash === "string"
+      ? content.previousHash.trim().toLowerCase()
+      : "";
+    if (
+      !isRecord(first) ||
+      first.number !== 1 ||
+      first.status !== "confirmed" ||
+      typeof first.hash !== "string" ||
+      !first.hash.trim() ||
+      !previousHash
+    ) {
+      throw new DacsError("Demos genesis block has no valid chain identity");
+    }
+    this.chainIdentity = previousHash;
+    return previousHash;
+  }
+
+  private async acquireWriteLease(): Promise<DemosWriteJournalLease> {
+    if (!this.config.writeJournal) {
+      throw new DacsError(
+        "Demos writes require a durable writeJournal; read-only adapters may omit it",
+      );
+    }
+    return this.config.writeJournal.acquire({
+      chainIdentity: await this.resolveChainIdentity(),
+      wallet: this.demos.getAddress().toLowerCase(),
+    });
+  }
+
+  private async putActiveWrite(
+    stage: DemosWriteStage,
+    patch: Partial<DemosWriteJournalRecord> = {},
+  ): Promise<void> {
+    const lease = this.activeWriteLease;
+    const current = this.activeWriteRecord;
+    if (!lease || !current) {
+      throw new DacsError("Demos write journal has no active fenced record");
+    }
+    const currentRank = JOURNAL_STAGE_RANK[current.stage];
+    const requestedRank = JOURNAL_STAGE_RANK[stage];
+    const nextStage = requestedRank >= currentRank ? stage : current.stage;
+    const next: DemosWriteJournalRecord = {
+      ...current,
+      ...patch,
+      generation: lease.generation,
+      stage: nextStage,
+      updatedAt: Date.now(),
+    };
+    this.activeWriteRecord = next;
+    await lease.put(next);
+  }
+
+  private async withWriteLease<T>(
+    start: () => Promise<QueuedWrite<T>>,
+  ): Promise<QueuedWrite<T>> {
+    const lease = await this.acquireWriteLease();
+    this.activeWriteLease = lease;
+    this.activeWriteRecord = undefined;
+    try {
+      const queued = await start();
+      const safe = queued.safe.finally(async () => {
+        this.activeWriteRecord = undefined;
+        this.activeWriteLease = undefined;
+        await lease.release();
+      });
+      return { result: queued.result, safe };
+    } catch (error) {
+      this.activeWriteRecord = undefined;
+      this.activeWriteLease = undefined;
+      await lease.release();
+      throw error;
+    }
+  }
+
+  private observeIndexEventually(
+    record: DemosWriteJournalRecord,
+    pollMs: number,
+  ): void {
+    const journal = this.config.writeJournal;
+    const key = this.activeWriteLease?.key;
+    if (!journal || !key) return;
+    void (async () => {
+      await sleep(Math.max(1, pollMs));
+      const resolution = await this.resolveAnchorByIndex(
+        record.logicalName,
+        record.owner,
+      );
+      if (
+        resolution.status !== "present" ||
+        resolution.address !== record.nativeAddress
+      ) return;
+      const lease = await journal.acquire({ ...key });
+      try {
+        const current = lease.snapshot.records.find(
+          (candidate) => candidate.writeId === record.writeId,
+        );
+        if (!current) return;
+        await lease.put({
+          ...current,
+          generation: lease.generation,
+          stage: "index-visible",
+          indexRead: {
+            address: record.nativeAddress,
+            observedAt: Date.now(),
+          },
+          updatedAt: Date.now(),
+        });
+      } finally {
+        await lease.release();
+      }
+    })().catch(() => {
+      // Index visibility is diagnostic after authenticated native readback.
+      // The durable native-visible record remains authoritative on failure.
+    });
+  }
+
   constructor(config: DemosAdapterConfig) {
     if (!config?.rpc) {
       throw new Error("DemosAdapter requires an rpc URL");
@@ -491,6 +722,173 @@ export class DemosAdapter implements SubstrateAdapter {
     return this.demos.getAddress();
   }
 
+  private demosEvidenceMatchesObservations(
+    evidence: Readonly<DemosWriteEvidence>,
+    transactionResult: unknown,
+    blockResult: unknown,
+    nativeResult: unknown,
+  ): boolean {
+    const transaction = isRecord(transactionResult) &&
+        isRecord(transactionResult.response)
+      ? transactionResult.response
+      : transactionResult;
+    const block = isRecord(blockResult) && isRecord(blockResult.response)
+      ? blockResult.response
+      : blockResult;
+    if (!isRecord(transaction) || !isRecord(block) || !isRecord(nativeResult)) {
+      return false;
+    }
+    const signed = JSON.parse(evidence.signedTransaction) as unknown;
+    const signedContent = isRecord(signed) && isRecord(signed.content)
+      ? signed.content
+      : undefined;
+    const blockContent = isRecord(block.content) ? block.content : undefined;
+    const orderedTransactions = Array.isArray(blockContent?.ordered_transactions)
+      ? blockContent.ordered_transactions
+      : [];
+    const contentDifferences = isRecord(transaction.content) && signedContent
+      ? demosTransactionContentDifferencePaths(
+          signedContent,
+          transaction.content,
+          evidence.transactionRef,
+        )
+      : ["content"];
+    if (
+      transaction.status !== "confirmed" ||
+      transaction.hash !== evidence.transactionRef ||
+      transaction.blockNumber !== evidence.blockNumber ||
+      !isRecord(transaction.content) ||
+      !signedContent ||
+      contentDifferences.length > 0 ||
+      block.status !== "confirmed" ||
+      block.number !== evidence.blockNumber ||
+      block.hash !== evidence.blockHash ||
+      demosBlockTimestampMs(blockContent?.timestamp) !== evidence.blockTimestamp ||
+      !orderedTransactions.includes(evidence.transactionRef) ||
+      block.validation_data === undefined ||
+      serializeSignedTransaction(block.validation_data) !== evidence.finalityProof ||
+      nativeResult.success !== true ||
+      nativeResult.storageAddress !== evidence.nativeAddress ||
+      typeof nativeResult.owner !== "string" ||
+      nativeResult.owner.toLowerCase() !== evidence.writer.toLowerCase() ||
+      nativeResult.programName !== evidence.nativeRead.programName ||
+      !isJsonObject(nativeResult.data) ||
+      exactJsonHash(nativeResult.data) !== evidence.nativeRead.valueHash
+    ) {
+      return false;
+    }
+    const metadataHash = nativeResult.metadata === undefined ||
+        nativeResult.metadata === null
+      ? undefined
+      : isJsonObject(nativeResult.metadata)
+        ? exactJsonHash(nativeResult.metadata)
+        : null;
+    if (metadataHash === null || metadataHash !== evidence.nativeRead.metadataHash) {
+      return false;
+    }
+    const provenance = evidence.operation === "create"
+      ? nativeResult.createdByTx
+      : nativeResult.lastModifiedByTx;
+    const interactions = Array.isArray(nativeResult.interactionTxs)
+      ? nativeResult.interactionTxs
+      : [];
+    return provenance === evidence.transactionRef ||
+      interactions.includes(evidence.transactionRef) ||
+      (provenance === undefined && interactions.length === 0);
+  }
+
+  /** Re-authenticate full adapter-produced Demos evidence against this node. */
+  async verifyDemosWriteEvidence(
+    evidence: Readonly<DemosWriteEvidence>,
+  ): Promise<boolean> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    assertDemosWriteEvidence(evidence);
+    if (await this.resolveChainIdentity() !== evidence.chainIdentity) return false;
+
+    const observations = await Promise.all([
+      this.demos.getTxByHash(evidence.transactionRef),
+      this.demos.getBlockByNumber(evidence.blockNumber),
+      this.demos.storagePrograms.read(evidence.nativeAddress),
+    ]) as unknown[];
+    return this.demosEvidenceMatchesObservations(
+      evidence,
+      observations[0],
+      observations[1],
+      observations[2],
+    );
+  }
+
+  /** Re-authenticate a compact portable CORE AnchorReceipt without name-index IO. */
+  async verifyDemosAnchorReceipt(
+    receipt: Readonly<ProtocolAnchorReceipt>,
+  ): Promise<boolean> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const proof = decodeDemosAnchorReceiptProof(receipt);
+    if (await this.resolveChainIdentity() !== proof.chainIdentity) return false;
+    const nonce = Number(receipt.nonce);
+    const blockNumber = Number(receipt.blockRef!.height);
+    const observations = await Promise.all([
+      this.demos.getTxByHash(receipt.transactionRef.value),
+      this.demos.getBlockByNumber(blockNumber),
+      this.demos.storagePrograms.read(receipt.nativeAddress),
+    ]) as unknown[];
+    const transactionResult = observations[0];
+    const blockResult = observations[1];
+    const transaction = isRecord(transactionResult) &&
+        isRecord(transactionResult.response)
+      ? transactionResult.response
+      : transactionResult;
+    const block = isRecord(blockResult) && isRecord(blockResult.response)
+      ? blockResult.response
+      : blockResult;
+    if (!isRecord(transaction) || !isRecord(block) ||
+        block.validation_data === undefined) {
+      return false;
+    }
+    const evidence: DemosWriteEvidence = {
+      evidenceVersion: "1",
+      chainIdentity: proof.chainIdentity,
+      writer: proof.writer,
+      logicalName: receipt.logicalAddress,
+      nativeAddress: receipt.nativeAddress,
+      operation: proof.operation,
+      nonce,
+      transactionRef: receipt.transactionRef.value,
+      signedTransaction: serializeSignedTransaction(transaction),
+      signedTransactionHash: proof.signedTransactionHash,
+      blockNumber,
+      blockHash: receipt.blockRef!.id,
+      blockTimestamp: receipt.blockRef!.timestamp!,
+      finalityProof: serializeSignedTransaction(block.validation_data),
+      finalityProofHash: proof.finalityProofHash,
+      nativeRead: {
+        owner: proof.writer,
+        programName: proof.nativeRead.programName,
+        valueHash: proof.nativeRead.valueHash,
+        ...(proof.nativeRead.metadataHash === undefined
+          ? {}
+          : { metadataHash: proof.nativeRead.metadataHash }),
+        observedAt: proof.nativeRead.observedAt,
+      },
+    };
+    assertDemosWriteEvidence(evidence);
+    if (!demosWriteEvidenceBindsReceiptContent(
+      evidence,
+      receipt.logicalAddress,
+      receipt.contentHash,
+    )) return false;
+    return this.demosEvidenceMatchesObservations(
+      evidence,
+      observations[0],
+      observations[1],
+      observations[2],
+    );
+  }
+
   async sign(bytes: Uint8Array): Promise<Uint8Array> {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
@@ -528,7 +926,16 @@ export class DemosAdapter implements SubstrateAdapter {
    */
   private async nextAnchorNonce(key = this.walletQueueKey()): Promise<number> {
     const chainNext = (await this.demos.getAddressNonce(this.demos.getAddress())) + 1;
-    const confirmed = confirmedWriteNonces.get(key);
+    void key;
+    const confirmed = this.activeWriteLease?.snapshot.records.reduce<number | undefined>(
+      (highest, record) =>
+        record.stage === "canonical-confirmed" ||
+        record.stage === "native-visible" ||
+        record.stage === "index-visible"
+          ? Math.max(highest ?? -1, record.nonce)
+          : highest,
+      undefined,
+    );
     return confirmed === undefined ? chainNext : Math.max(chainNext, confirmed + 1);
   }
 
@@ -560,19 +967,54 @@ export class DemosAdapter implements SubstrateAdapter {
     data: Record<string, unknown>,
   ) {
     const owner = this.demos.getAddress();
-    const resolution = await this.resolveAnchorByName(name, owner);
-    if (resolution.status === "indeterminate") {
+    const journalBindings = (this.activeWriteLease?.snapshot.records ?? [])
+      .filter((record) =>
+        record.logicalName === name &&
+        record.owner.toLowerCase() === owner.toLowerCase() &&
+        (record.stage === "native-visible" || record.stage === "index-visible")
+      );
+    const journalAddresses = new Set(
+      journalBindings.map((record) => record.nativeAddress),
+    );
+    if (journalAddresses.size > 1) {
       throw new SubstrateError(
-        `anchor ${name}: owner-bound lookup was indeterminate (${resolution.reason})`,
+        `anchor ${name}: durable journal contains conflicting native bindings`,
       );
     }
-
+    const journalAddress = journalBindings.at(-1)?.nativeAddress;
+    const resolution = await this.resolveAnchorByName(name, owner);
     if (resolution.status === "present") {
+      if (journalAddress !== undefined && journalAddress !== resolution.address) {
+        throw new SubstrateError(
+          `anchor ${name}: logical-name index conflicts with its durable native binding`,
+        );
+      }
       return {
+        operation: "update" as const,
+        programName: logicalToStorageProgramName(name),
         address: resolution.address,
         nonce: await this.nextAnchorNonce(key),
         payload: StorageProgram.writeStorage(resolution.address, data, "json"),
       };
+    }
+
+    // Exact native content/provenance was authenticated before this binding
+    // entered the journal. A lagging secondary name index must not turn that
+    // known slot into a second create after restart.
+    if (journalAddress !== undefined) {
+      return {
+        operation: "update" as const,
+        programName: logicalToStorageProgramName(name),
+        address: journalAddress,
+        nonce: await this.nextAnchorNonce(key),
+        payload: StorageProgram.writeStorage(journalAddress, data, "json"),
+      };
+    }
+
+    if (resolution.status === "indeterminate") {
+      throw new SubstrateError(
+        `anchor ${name}: owner-bound lookup was indeterminate (${resolution.reason})`,
+      );
     }
 
     // A new program uses the live next account nonce and the same empty salt as
@@ -587,6 +1029,8 @@ export class DemosAdapter implements SubstrateAdapter {
       ANCHOR_SALT,
     );
     return {
+      operation: "create" as const,
+      programName,
       address,
       nonce,
       payload: StorageProgram.createStorageProgram(
@@ -707,7 +1151,10 @@ export class DemosAdapter implements SubstrateAdapter {
           ctx.receipt.blockNumber = observedBlockNumber;
         }
         this.emit(ctx);
-        if (executionStatus === "confirmed") return "included";
+        if (executionStatus === "confirmed") {
+          ctx.canonicalTransaction = transactionRecord as Record<string, unknown>;
+          return "included";
+        }
         ctx.receipt.lastObservedState = transaction === undefined
           ? "included-execution-read-error"
           : "included-execution-pending";
@@ -744,43 +1191,341 @@ export class DemosAdapter implements SubstrateAdapter {
     }
   }
 
-  /**
-   * Inclusion can become visible before the account read reflects the consumed
-   * nonce. Canonical confirmation records that stronger process-local evidence;
-   * otherwise keep polling the authoritative account nonce before releasing the
-   * wallet queue.
-   */
-  private async waitForNonceAdvancement(
-    key: string,
-    signedNonce: number,
+  private async waitForNativeJournalVisibility(
+    record: DemosWriteJournalRecord,
     ctx: AnchorContext,
-  ): Promise<void> {
-    const confirmed = confirmedWriteNonces.get(key);
-    if (confirmed !== undefined && confirmed >= signedNonce) return;
+  ): Promise<DemosWriteJournalRecord["nativeRead"]> {
+    const timeoutFailure = () =>
+      this.fail(
+        ctx,
+        "timeout",
+        `anchor ${ctx.receipt.name} was included but authenticated native ` +
+          "readback did not complete before timeout",
+      );
     for (;;) {
-      let accountNonce: number;
+      ctx.receipt.attempts.visibilityReads += 1;
       try {
-        accountNonce = await this.waitFor(
+        const result = await this.waitFor(
           ctx,
-          this.demos.getAddressNonce(this.demos.getAddress()),
-          "account nonce advancement",
-        );
+          this.demos.storagePrograms.read(record.nativeAddress),
+          "authenticated native readback",
+          () => timeoutFailure(),
+        ) as unknown;
+        if (isRecord(result) && result.success === true) {
+          const data = result.data;
+          const metadata = result.metadata;
+          const owner = typeof result.owner === "string" ? result.owner : "";
+          const programName = typeof result.programName === "string"
+            ? result.programName
+            : "";
+          const storageAddress = typeof result.storageAddress === "string"
+            ? result.storageAddress
+            : "";
+          const valueMatches = isJsonObject(data) &&
+            exactJsonHash(data) === record.valueHash;
+          const metadataMatches = record.metadataHash === undefined
+            ? true
+            : isJsonObject(metadata) &&
+              exactJsonHash(metadata) === record.metadataHash;
+          const provenanceTx = record.operation === "create"
+            ? result.createdByTx
+            : result.lastModifiedByTx;
+          const interactions = Array.isArray(result.interactionTxs)
+            ? result.interactionTxs
+            : [];
+          const provenanceMatches = provenanceTx === record.txRef ||
+            interactions.includes(record.txRef) ||
+            (provenanceTx === undefined && interactions.length === 0);
+          const ownerMatches = owner.toLowerCase() === record.owner.toLowerCase();
+          const programNameMatches = programName === record.programName;
+          const addressMatches = storageAddress === record.nativeAddress;
+          if (
+            valueMatches &&
+            metadataMatches &&
+            ownerMatches &&
+            programNameMatches &&
+            addressMatches &&
+            provenanceMatches
+          ) {
+            return {
+              owner,
+              programName,
+              valueHash: record.valueHash,
+              ...(record.metadataHash === undefined
+                ? {}
+                : { metadataHash: record.metadataHash }),
+              observedAt: Date.now(),
+            };
+          }
+          ctx.receipt.lastObservedState = "native-readback-mismatch";
+        } else {
+          ctx.receipt.lastObservedState = "native-not-visible";
+        }
       } catch (error) {
-        if (error instanceof AnchorWaitError) throw error;
-        ctx.receipt.lastObservedState = "account-nonce-read-error";
-        this.emit(ctx);
-        await this.delay(ctx);
-        continue;
+        if (error instanceof AnchorWaitError) {
+          throw error.code === "timeout" ? timeoutFailure() : error;
+        }
+        ctx.receipt.lastObservedState = "native-read-error";
       }
-
-      if (Number.isSafeInteger(accountNonce) && accountNonce >= signedNonce) {
-        return;
-      }
-      ctx.receipt.lastObservedState =
-        `account-nonce-${String(accountNonce)}-before-${signedNonce}`;
       this.emit(ctx);
-      await this.delay(ctx);
+      try {
+        await this.delay(ctx);
+      } catch (error) {
+        if (error instanceof AnchorWaitError && error.code === "timeout") {
+          throw timeoutFailure();
+        }
+        throw error;
+      }
     }
+  }
+
+  private async authenticateCanonicalWrite(
+    record: DemosWriteJournalRecord,
+    ctx: AnchorContext,
+  ): Promise<Pick<
+    DemosWriteJournalRecord,
+    | "blockNumber"
+    | "blockHash"
+    | "blockTimestamp"
+    | "finalityProof"
+    | "finalityProofHash"
+  >> {
+    const transaction = ctx.canonicalTransaction;
+    const blockNumber = ctx.receipt.blockNumber;
+    if (!transaction || !Number.isSafeInteger(blockNumber) || blockNumber! < 0) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `canonical Demos transaction ${record.txRef} has no block height`,
+      );
+    }
+    if (
+      transaction.hash !== undefined &&
+      transaction.hash !== record.txRef
+    ) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `canonical Demos transaction hash ${String(transaction.hash)} does not match ${record.txRef}`,
+      );
+    }
+    if (
+      !record.signedTransaction ||
+      !record.signedTransactionHash
+    ) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `journaled Demos transaction ${record.txRef} has an invalid signed envelope hash`,
+      );
+    }
+    let signed: unknown;
+    try {
+      signed = JSON.parse(record.signedTransaction) as unknown;
+      if (canonicalize(signed) !== record.signedTransaction) throw new Error();
+    } catch {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `journaled Demos transaction ${record.txRef} is not canonical JSON`,
+      );
+    }
+    if (demosSignedTransactionProofHash(signed) !== record.signedTransactionHash) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `journaled Demos transaction ${record.txRef} has an invalid signed envelope hash`,
+      );
+    }
+    if (!isRecord(signed) || signed.hash !== record.txRef) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `journaled Demos transaction does not bind hash ${record.txRef}`,
+      );
+    }
+    const content = isRecord(signed.content) ? signed.content : undefined;
+    const canonicalContent = isRecord(transaction.content)
+      ? transaction.content
+      : undefined;
+    const contentDifferences = content && canonicalContent
+      ? demosTransactionContentDifferencePaths(
+          content,
+          canonicalContent,
+          record.txRef ?? "",
+        )
+      : ["content"];
+    if (
+      transaction.content !== undefined &&
+      contentDifferences.length > 0
+    ) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `canonical Demos transaction ${record.txRef} changed its signed content at ` +
+          contentDifferences.join(", "),
+      );
+    }
+    const payloadTuple = Array.isArray(content?.data) ? content.data : [];
+    const payload = isRecord(payloadTuple[1]) ? payloadTuple[1] : undefined;
+    const expectedOperation = record.operation === "create"
+      ? "CREATE_STORAGE_PROGRAM"
+      : "WRITE_STORAGE";
+    const payloadDataMatches = isJsonObject(payload?.data) &&
+      exactJsonHash(payload.data) === record.valueHash;
+    const payloadMetadataMatches = record.metadataHash === undefined
+      ? payload?.metadata === undefined
+      : isJsonObject(payload?.metadata) &&
+        exactJsonHash(payload.metadata) === record.metadataHash;
+    if (
+      content?.type !== "storageProgram" ||
+      typeof content.from !== "string" ||
+      content.from.toLowerCase() !== record.owner.toLowerCase() ||
+      content.to !== record.nativeAddress ||
+      content.nonce !== record.nonce ||
+      payloadTuple[0] !== "storageProgram" ||
+      payload?.operation !== expectedOperation ||
+      payload.storageAddress !== record.nativeAddress ||
+      payload.encoding !== "json" ||
+      (record.operation === "create" && payload.programName !== record.programName) ||
+      !payloadDataMatches ||
+      !payloadMetadataMatches
+    ) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `canonical Demos transaction ${record.txRef} does not match its journaled write`,
+      );
+    }
+
+    const observed = await this.waitFor(
+      ctx,
+      this.demos.getBlockByNumber(blockNumber!),
+      "canonical block authentication",
+    ) as unknown;
+    const block = isRecord(observed) && isRecord(observed.response)
+      ? observed.response
+      : observed;
+    if (!isRecord(block)) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `Demos block ${blockNumber} is malformed`,
+      );
+    }
+    const blockHash = typeof block.hash === "string" ? block.hash : "";
+    const blockContent = isRecord(block.content) ? block.content : undefined;
+    const blockTimestamp = demosBlockTimestampMs(blockContent?.timestamp);
+    const orderedTransactions = Array.isArray(blockContent?.ordered_transactions)
+      ? blockContent.ordered_transactions
+      : [];
+    if (
+      !blockHash ||
+      block.status !== "confirmed" ||
+      block.number !== blockNumber ||
+      blockTimestamp === undefined ||
+      !orderedTransactions.includes(record.txRef)
+    ) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `Demos block ${blockNumber} does not authenticate transaction ${record.txRef}`,
+      );
+    }
+    if (block.validation_data === undefined) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `Demos block ${blockNumber} has no BFT validation data`,
+      );
+    }
+    const finalityProof = serializeSignedTransaction(block.validation_data);
+    return {
+      blockNumber: blockNumber!,
+      blockHash,
+      blockTimestamp,
+      finalityProof,
+      finalityProofHash: sha256Hex(finalityProof),
+    };
+  }
+
+  private writeEvidence(
+    record: DemosWriteJournalRecord,
+    chainIdentity = this.activeWriteLease?.key.chainIdentity,
+  ) {
+    if (
+      !chainIdentity ||
+      !record.txRef ||
+      !record.signedTransaction ||
+      !record.signedTransactionHash ||
+      record.blockNumber === undefined ||
+      !record.blockHash ||
+      record.blockTimestamp === undefined ||
+      !record.finalityProof ||
+      !record.finalityProofHash ||
+      !record.nativeRead
+    ) {
+      throw new DacsError(
+        `Demos write ${record.writeId} has incomplete authenticated evidence`,
+      );
+    }
+    return {
+      evidenceVersion: "1" as const,
+      chainIdentity,
+      writer: record.owner,
+      logicalName: record.logicalName,
+      nativeAddress: record.nativeAddress,
+      operation: record.operation,
+      nonce: record.nonce,
+      transactionRef: record.txRef,
+      signedTransaction: record.signedTransaction!,
+      signedTransactionHash: record.signedTransactionHash,
+      blockNumber: record.blockNumber,
+      blockHash: record.blockHash,
+      blockTimestamp: record.blockTimestamp,
+      finalityProof: record.finalityProof!,
+      finalityProofHash: record.finalityProofHash,
+      nativeRead: structuredClone(record.nativeRead),
+    };
+  }
+
+  private writeEvidenceFromLease(
+    lease: DemosWriteJournalLease,
+    writeId: string,
+  ) {
+    const record = lease.snapshot.records.find(
+      (candidate) => candidate.writeId === writeId,
+    );
+    if (!record) {
+      throw new DacsError(`Demos write ${writeId} is missing from its journal`);
+    }
+    return this.writeEvidence(record, lease.key.chainIdentity);
+  }
+
+  private async persistCanonicalWrite(ctx: AnchorContext): Promise<void> {
+    const record = this.activeWriteRecord;
+    if (!record) throw new DacsError("Demos write journal record is missing");
+    if (JOURNAL_STAGE_RANK[record.stage] >= JOURNAL_STAGE_RANK["canonical-confirmed"] &&
+        record.stage !== "canonical-failed") {
+      return;
+    }
+    const finality = await this.authenticateCanonicalWrite(record, ctx);
+    await this.putActiveWrite("canonical-confirmed", finality);
+  }
+
+  private async persistNativeReadback(ctx: AnchorContext): Promise<void> {
+    const record = this.activeWriteRecord;
+    if (!record) throw new DacsError("Demos write journal record is missing");
+    if (JOURNAL_STAGE_RANK[record.stage] >= JOURNAL_STAGE_RANK["native-visible"]) {
+      return;
+    }
+    const nativeRead = await this.waitForNativeJournalVisibility(record, ctx);
+    await this.putActiveWrite("native-visible", { nativeRead });
+    const now = Date.now();
+    ctx.receipt.state = "read-visible";
+    ctx.receipt.completion = "read-visible";
+    ctx.receipt.timings.readVisibleAt ??= now;
+    this.emit(ctx);
   }
 
   private async reconcileUntilNonceSafe(
@@ -788,17 +1533,26 @@ export class DemosAdapter implements SubstrateAdapter {
     txRef: string,
     signedNonce: number,
     ctx: AnchorContext,
+    canonicalConfirmed = false,
   ): Promise<void> {
-    const terminal =
-      ctx.receipt.state === "included"
-        ? "included"
-        : await this.waitForTerminal(txRef, ctx);
+    // A copied receipt may say `included` based only on the secondary status
+    // endpoint. That is progress evidence, not proof that execution succeeded:
+    // getTxByHash can still be pending or can later report failure. Always
+    // re-establish canonical terminal state before releasing the wallet lane.
+    const terminal = canonicalConfirmed
+      ? "included"
+      : await this.waitForTerminal(txRef, ctx);
     if (terminal === "included") {
-      confirmedWriteNonces.set(
-        key,
-        Math.max(confirmedWriteNonces.get(key) ?? -1, signedNonce),
-      );
-      await this.waitForNonceAdvancement(key, signedNonce, ctx);
+      void key;
+      if (this.activeWriteRecord?.nonce !== signedNonce) {
+        throw new DacsError(
+          `active Demos write nonce does not match confirmed nonce ${signedNonce}`,
+        );
+      }
+      await this.persistCanonicalWrite(ctx);
+      await this.persistNativeReadback(ctx);
+    } else {
+      await this.putActiveWrite("canonical-failed");
     }
   }
 
@@ -808,20 +1562,24 @@ export class DemosAdapter implements SubstrateAdapter {
     signedNonce: number,
     receipt: AnchorAttemptReceipt,
     pollMs: number,
+    canonicalConfirmed = false,
+    deadline?: number,
+    throwOnFailure = false,
   ): Promise<void> {
     const ctx = this.recoveryContext(receipt, pollMs);
+    if (deadline !== undefined) ctx.deadline = Math.min(ctx.deadline, deadline);
     try {
-      await this.reconcileUntilNonceSafe(key, txRef, signedNonce, ctx);
-      unresolvedWrites.delete(key);
-    } catch {
-      // A later queued call must reconcile this tx hash before preparing another
-      // transaction; silently reusing an ambiguous nonce is unsafe.
-      unresolvedWrites.set(key, {
+      await this.reconcileUntilNonceSafe(
+        key,
         txRef,
         signedNonce,
-        receipt: this.snapshot(ctx.receipt),
-        pollMs,
-      });
+        ctx,
+        canonicalConfirmed,
+      );
+    } catch (error) {
+      // The durable broadcast-intent record remains authoritative. A later
+      // process must reconcile this exact hash before reserving another nonce.
+      if (throwOnFailure) throw error;
     }
   }
 
@@ -829,30 +1587,60 @@ export class DemosAdapter implements SubstrateAdapter {
     key: string,
     current: AnchorContext,
   ): Promise<void> {
-    const unresolved = unresolvedWrites.get(key);
-    if (!unresolved) return;
-
-    const ctx = this.recoveryContext(unresolved.receipt, unresolved.pollMs);
-    ctx.deadline = current.deadline;
-    ctx.signal = current.signal;
-    try {
-      await this.reconcileUntilNonceSafe(
-        key,
-        unresolved.txRef,
-        unresolved.signedNonce,
-        ctx,
-      );
-      unresolvedWrites.delete(key);
-    } catch (error) {
-      if (error instanceof AnchorWaitError) {
-        throw new AnchorWaitError(
-          error.code,
-          `previous anchor ${unresolved.txRef} is unresolved; refusing a potentially conflicting nonce`,
-          error.receipt,
-          { cause: error },
+    const lease = this.activeWriteLease;
+    if (!lease) throw new DacsError("Demos write journal lease is missing");
+    for (const prior of lease.snapshot.records) {
+      if (
+        prior.stage !== "broadcast-intent" &&
+        prior.stage !== "canonical-confirmed"
+      ) {
+        continue;
+      }
+      if (!prior.txRef) {
+        throw new DacsError(
+          `Demos write journal ${prior.writeId} lacks its transaction hash`,
         );
       }
-      throw error;
+      const ctx = this.newContext(
+        prior.logicalName,
+        Math.max(1, current.deadline - Date.now()),
+        current.pollMs,
+        { signal: current.signal },
+      );
+      ctx.receipt.address = prior.nativeAddress;
+      ctx.receipt.txRef = prior.txRef;
+      if (prior.stage === "canonical-confirmed") {
+        ctx.receipt.state = "included";
+        ctx.receipt.completion = "included";
+        if (prior.blockNumber !== undefined) {
+          ctx.receipt.blockNumber = prior.blockNumber;
+        }
+      }
+      this.activeWriteRecord = {
+        ...prior,
+        generation: lease.generation,
+      };
+      try {
+        await this.reconcileUntilNonceSafe(
+          key,
+          prior.txRef,
+          prior.nonce,
+          ctx,
+          prior.stage === "canonical-confirmed",
+        );
+      } catch (error) {
+        if (error instanceof AnchorWaitError) {
+          throw new AnchorWaitError(
+            error.code,
+            `previous anchor ${prior.txRef} is unresolved; refusing a potentially conflicting nonce`,
+            error.receipt,
+            { cause: error },
+          );
+        }
+        throw error;
+      } finally {
+        this.activeWriteRecord = undefined;
+      }
     }
   }
 
@@ -876,15 +1664,9 @@ export class DemosAdapter implements SubstrateAdapter {
     const reconciliation = (async () => {
       try {
         await this.reconcileUntilNonceSafe(key, txRef, signedNonce, recovery);
-        unresolvedWrites.delete(key);
       } catch {
         if (controller.signal.aborted) return;
-        unresolvedWrites.set(key, {
-          txRef,
-          signedNonce,
-          receipt: this.snapshot(recovery.receipt),
-          pollMs: recovery.pollMs,
-        });
+        // Keep the durable broadcast intent unresolved for takeover recovery.
       }
     })();
 
@@ -906,6 +1688,9 @@ export class DemosAdapter implements SubstrateAdapter {
       if (outcome === "definitive") {
         controller.abort();
         await reconciliation;
+        if (this.activeWriteRecord?.stage === "broadcast-intent") {
+          await this.putActiveWrite("canonical-failed");
+        }
         return;
       }
       if (outcome === "reconcile") await reconciliation;
@@ -969,6 +1754,24 @@ export class DemosAdapter implements SubstrateAdapter {
         "owner-bound storage lookup",
       );
       ctx.receipt.address = prepared.address;
+      const lease = this.activeWriteLease;
+      if (!lease) throw new DacsError("Demos write journal lease is missing");
+      const preparedRecord: DemosWriteJournalRecord = {
+        writeId: `write-${lease.generation}`,
+        generation: lease.generation,
+        kind: "mutable",
+        operation: prepared.operation,
+        stage: "prepared",
+        logicalName: name,
+        programName: prepared.programName,
+        owner: this.demos.getAddress(),
+        nativeAddress: prepared.address,
+        valueHash: exactJsonHash(data),
+        nonce: prepared.nonce,
+        updatedAt: Date.now(),
+      };
+      this.activeWriteRecord = preparedRecord;
+      await lease.put(preparedRecord);
     } catch (error) {
       if (error instanceof AnchorWaitError) throw error;
       throw this.fail(
@@ -1031,19 +1834,35 @@ export class DemosAdapter implements SubstrateAdapter {
         `signed anchor ${prepared.address} used nonce ${signedNonce}; expected ${prepared.nonce}`,
       );
     }
-    const preBroadcastTxRef =
-      validityRecord.response?.data?.transaction?.hash ?? signedRecord.hash;
-    if (!preBroadcastTxRef) {
+    const signedTxRef = signedRecord.hash;
+    const confirmedTxRef = validityRecord.response?.data?.transaction?.hash;
+    if (!signedTxRef) {
       throw this.fail(
         ctx,
         "prepare-failed",
-        `confirmed anchor ${prepared.address} has no transaction hash`,
+        `signed anchor ${prepared.address} has no transaction hash`,
       );
     }
+    if (confirmedTxRef !== undefined && confirmedTxRef !== signedTxRef) {
+      throw this.fail(
+        ctx,
+        "prepare-failed",
+        `confirmed anchor ${prepared.address} returned transaction hash ${confirmedTxRef}; expected ${signedTxRef}`,
+      );
+    }
+    const preBroadcastTxRef = signedTxRef;
     ctx.receipt.txRef = preBroadcastTxRef;
+    const signedTransaction = serializeSignedTransaction(signed);
+    await this.putActiveWrite("signed", {
+      txRef: preBroadcastTxRef,
+      signedTransaction,
+      signedTransactionHash: demosSignedTransactionProofHash(signed),
+    });
     ctx.receipt.state = "broadcast-unknown";
     this.emit(ctx);
 
+    await this.putActiveWrite("broadcast-intent");
+    await this.activeWriteLease!.assertCurrent();
     const broadcastPromise = this.demos.tx.broadcast(
       validity,
       this.demos,
@@ -1060,6 +1879,7 @@ export class DemosAdapter implements SubstrateAdapter {
           broadcastPromise,
         );
         if (terminal === "failed") {
+          await this.putActiveWrite("canonical-failed");
           return {
             result: Promise.reject(
               this.fail(
@@ -1081,6 +1901,9 @@ export class DemosAdapter implements SubstrateAdapter {
                 `anchor inclusion failed for ${prepared.address}`,
                 error,
               );
+        if (wrapped.code === "broadcast-failed") {
+          await this.putActiveWrite("canonical-failed");
+        }
         return {
           result: Promise.reject(wrapped),
           safe:
@@ -1096,6 +1919,8 @@ export class DemosAdapter implements SubstrateAdapter {
         };
       }
 
+      await this.persistCanonicalWrite(ctx);
+
       if (completion === "included") {
         return {
           result: Promise.resolve(this.successReceipt(ctx)),
@@ -1105,18 +1930,29 @@ export class DemosAdapter implements SubstrateAdapter {
             signedNonce,
             this.snapshot(ctx.receipt),
             ctx.pollMs,
+            true,
           ),
         };
       }
 
+      const visibility = this.waitForVisibility(expected!, ctx);
+      const evidenceLease = this.activeWriteLease!;
+      const evidenceWriteId = this.activeWriteRecord!.writeId;
+      const result = visibility.then(async (receipt) => {
+        await this.persistNativeReadback(ctx);
+        return {
+          ...receipt,
+          demosEvidence: this.writeEvidenceFromLease(
+            evidenceLease,
+            evidenceWriteId,
+          ),
+        };
+      });
       return {
-        result: this.waitForVisibility(expected!, ctx),
-        safe: this.resolveInBackground(
-          key,
-          preBroadcastTxRef,
-          signedNonce,
-          this.snapshot(ctx.receipt),
-          ctx.pollMs,
+        result,
+        safe: result.then(
+          () => undefined,
+          () => undefined,
         ),
       };
     }
@@ -1191,6 +2027,7 @@ export class DemosAdapter implements SubstrateAdapter {
         `anchor ${prepared.address} was not accepted by the node`,
         response,
       );
+      if (!ambiguous) await this.putActiveWrite("canonical-failed");
       return {
         result: Promise.reject(error),
         safe:
@@ -1230,6 +2067,7 @@ export class DemosAdapter implements SubstrateAdapter {
     try {
       const terminal = await this.waitForTerminal(txRef, ctx);
       if (terminal === "failed") {
+        await this.putActiveWrite("canonical-failed");
         return {
           result: Promise.reject(
             this.fail(
@@ -1263,6 +2101,8 @@ export class DemosAdapter implements SubstrateAdapter {
       };
     }
 
+    await this.persistCanonicalWrite(ctx);
+
     if (completion === "included") {
       return {
         result: Promise.resolve(this.successReceipt(ctx)),
@@ -1272,21 +2112,29 @@ export class DemosAdapter implements SubstrateAdapter {
           signedNonce,
           this.snapshot(ctx.receipt),
           ctx.pollMs,
+          true,
         ),
       };
     }
 
+    const visibility = this.waitForVisibility(expected!, ctx);
+    const evidenceLease = this.activeWriteLease!;
+    const evidenceWriteId = this.activeWriteRecord!.writeId;
+    const result = visibility.then(async (receipt) => {
+      await this.persistNativeReadback(ctx);
+      return {
+        ...receipt,
+        demosEvidence: this.writeEvidenceFromLease(
+          evidenceLease,
+          evidenceWriteId,
+        ),
+      };
+    });
     return {
-      // Read visibility can continue independently. Same-wallet writes remain
-      // ordered until canonical confirmation records this transaction's nonce
-      // (or, without that proof, until the account projection catches up).
-      result: this.waitForVisibility(expected!, ctx),
-      safe: this.resolveInBackground(
-        key,
-        txRef,
-        signedNonce,
-        this.snapshot(ctx.receipt),
-        ctx.pollMs,
+      result,
+      safe: result.then(
+        () => undefined,
+        () => undefined,
       ),
     };
   }
@@ -1298,8 +2146,9 @@ export class DemosAdapter implements SubstrateAdapter {
   /**
    * Anchor to an explicit completion level (#57). The total timeout covers the
    * wallet queue, owner-bound lookup, nonce acquisition, signing, broadcast,
-   * inclusion, and exact canonical readback. This process coordinates all
-   * adapters sharing RPC+wallet; external writers need an external wallet lease.
+   * inclusion, and exact canonical readback. The process queue protects adapter
+   * instance state while the durable chain+wallet journal serializes and fences
+   * every participating process.
    */
   async anchorAndWait(
     name: string,
@@ -1346,7 +2195,9 @@ export class DemosAdapter implements SubstrateAdapter {
     return queueWalletWrite(
       key,
       (turn) => this.waitFor(ctx, turn, "wallet queue"),
-      () => this.startAnchorWrite(key, name, data, completion, expected, ctx),
+      () => this.withWriteLease(
+        () => this.startAnchorWrite(key, name, data, completion, expected, ctx),
+      ),
     );
   }
 
@@ -1377,9 +2228,9 @@ export class DemosAdapter implements SubstrateAdapter {
         `immutable anchor ${name}: resolved address ${resolution.address} was not readable`,
       );
     }
-    if (contentHash(existing) !== contentHash(data)) {
+    if (exactJsonHash(existing) !== exactJsonHash(data)) {
       throw new DacsError(
-        `immutable anchor ${name} already exists with different signed-scope content`,
+        `immutable anchor ${name} already exists with different exact content`,
       );
     }
     if (expectedMetadata !== undefined) {
@@ -1494,74 +2345,6 @@ export class DemosAdapter implements SubstrateAdapter {
     }
   }
 
-  private async waitForCreatedImmutable(
-    name: string,
-    data: Record<string, unknown>,
-    owner: string,
-    address: string,
-    txRef: string | undefined,
-    expectedMetadata: Record<string, unknown> | undefined,
-    ctx: AnchorContext,
-  ): Promise<AnchorRef> {
-    const expected = sha256Hex(canonicalize(data));
-    let lastState = "not read-visible";
-    for (;;) {
-      ctx.receipt.attempts.visibilityReads += 1;
-      let readBack: Record<string, unknown> | null = null;
-      let metadataMatches = expectedMetadata === undefined;
-      if (expectedMetadata === undefined) {
-        readBack = await this.readAnchor(address);
-      } else {
-        try {
-          const record = await this.readImmutableAnchor(address);
-          readBack = record?.data ?? null;
-          metadataMatches = this.metadataMatches(
-            record?.metadata ?? null,
-            expectedMetadata,
-          );
-          if (!metadataMatches) lastState = "descriptive metadata mismatch";
-        } catch (error) {
-          lastState =
-            error instanceof Error ? error.message : "metadata read failed";
-        }
-      }
-      if (
-        readBack &&
-        sha256Hex(canonicalize(readBack)) === expected &&
-        metadataMatches
-      ) {
-        const resolution = await this.resolveAnchorByName(name, owner);
-        if (resolution.status === "present" && resolution.address === address) {
-          const now = Date.now();
-          ctx.receipt.state = "read-visible";
-          ctx.receipt.completion = "read-visible";
-          ctx.receipt.timings.readVisibleAt = now;
-          this.emit(ctx);
-          return { address, ...(txRef ? { txRef } : {}) };
-        }
-        if (resolution.status === "present" && resolution.address !== address) {
-          throw new SubstrateError(
-            `immutable anchor ${name} resolved to ${resolution.address} after ` +
-              `this create included at ${address}; concurrent duplicate detected`,
-          );
-        }
-        lastState =
-          resolution.status === "indeterminate"
-            ? `name lookup indeterminate (${resolution.reason})`
-            : "name index not visible";
-      }
-      if (Date.now() >= ctx.deadline) {
-        throw this.fail(
-          ctx,
-          "timeout",
-          `immutable anchor ${name} was included but did not become exact-byte ` +
-            `and uniquely name-index visible before timeout (last state: ${lastState})`,
-        );
-      }
-      await sleep(ctx.pollMs);
-    }
-  }
-
   /**
    * Create-or-return an immutable StorageProgram for `name`.
    *
@@ -1569,10 +2352,10 @@ export class DemosAdapter implements SubstrateAdapter {
    * version slots and other immutable artifacts must never flow through an
    * update path. Existing programs are resolved by NAME and OWNER (#70), not by
    * predicting the writer's next nonce-derived address. New programs use only
-   * `createStorageProgram`, wait for terminal inclusion, exact-byte readback,
-   * and unique name-index visibility. A failed create is reconciled against a
-   * concurrent winner so same-wallet publishers deterministically return
-   * identical content or reject different content instead of overwriting it.
+   * `createStorageProgram`, wait for authenticated canonical inclusion and an
+   * exact owner/provenance-bound native readback, then let the secondary name
+   * index catch up asynchronously. The durable journal prevents a lagging index
+   * from causing a duplicate create after restart.
    */
   async anchorWriteOnce(
     name: string,
@@ -1613,32 +2396,55 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     const key = this.walletQueueKey();
 
-    // Share the same process-wide RPC+wallet queue as anchor()/anchorAndWait().
-    // The immutable result remains part of the safe point so a second publisher
-    // cannot race a first create whose name index is not visible yet. Once a
-    // transaction is signed, nonce reconciliation runs independently so a hung
-    // broadcast transport cannot hold every same-wallet write forever.
-    return queueWalletWrite(key, (turn) => turn, async () => {
+    // Share the same process queue as anchor()/anchorAndWait() to protect this
+    // adapter's active lease/record fields. The durable chain+wallet lease is the
+    // cross-process authority. Once signed, the safe point retains that lease
+    // through canonical confirmation and exact native readback; the secondary
+    // logical-name index is observed asynchronously.
+    return queueWalletWrite(
+      key,
+      (turn) => turn,
+      () => this.withWriteLease<AnchorRef>(async () => {
       const ctx = this.newContext(name, timeoutMs, pollMs, opts);
       await this.reconcilePrevious(key, ctx);
       const owner = this.demos.getAddress();
       const programName = logicalToStorageProgramName(name);
-      const immutableKey = `${key}\0${programName}`;
-      const valueHash = contentHash(data);
+      const metadataLogicalAddress = typeof metadata?.logicalAddress === "string" &&
+          metadata.logicalAddress.length > 0 &&
+          metadata.logicalAddress.trim() === metadata.logicalAddress &&
+          logicalToStorageProgramName(metadata.logicalAddress) === programName
+        ? metadata.logicalAddress
+        : name;
+      const valueHash = exactJsonHash(data);
       const metadataHash = metadata === undefined
         ? undefined
-        : contentHash(metadata);
-      const retained = confirmedImmutableWrites.get(immutableKey);
+        : exactJsonHash(metadata);
+      const lease = this.activeWriteLease!;
+      const retained = [...lease.snapshot.records]
+        .reverse()
+        .find((record) =>
+          record.kind === "immutable" &&
+          record.programName === programName &&
+          record.owner.toLowerCase() === owner.toLowerCase() &&
+          (record.stage === "canonical-confirmed" ||
+            record.stage === "native-visible" ||
+            record.stage === "index-visible")
+        );
       if (retained) {
-        if (retained.owner !== owner || retained.valueHash !== valueHash ||
+        if (retained.owner.toLowerCase() !== owner.toLowerCase() ||
+            retained.valueHash !== valueHash ||
             retained.metadataHash !== metadataHash) {
           throw new DacsError(
             `immutable anchor ${name} has a canonically confirmed create with ` +
-              "different signed-scope content or metadata",
+              "different exact content or metadata",
           );
         }
+        this.activeWriteRecord = {
+          ...retained,
+          generation: lease.generation,
+        };
         const now = Date.now();
-        ctx.receipt.address = retained.address;
+        ctx.receipt.address = retained.nativeAddress;
         ctx.receipt.txRef = retained.txRef;
         ctx.receipt.state = "included";
         ctx.receipt.completion = "included";
@@ -1648,29 +2454,11 @@ export class DemosAdapter implements SubstrateAdapter {
           ctx.receipt.blockNumber = retained.blockNumber;
         }
         this.emit(ctx);
-        const result = this.waitFor(
-          ctx,
-          this.waitForCreatedImmutable(
-            name,
-            data,
-            owner,
-            retained.address,
-            retained.txRef,
-            metadata,
-            ctx,
-          ),
-          "retained immutable completion",
-          () => this.fail(
-            ctx,
-            "timeout",
-            `immutable anchor ${name} was canonically confirmed but did not ` +
-              "become exact-byte and uniquely name-index visible before timeout",
-          ),
-        ).then((ref) => {
-          if (confirmedImmutableWrites.get(immutableKey)?.txRef === retained.txRef) {
-            confirmedImmutableWrites.delete(immutableKey);
-          }
-          return ref;
+        this.observeIndexEventually(this.activeWriteRecord, pollMs);
+        const result = Promise.resolve({
+          address: retained.nativeAddress,
+          ...(retained.txRef === undefined ? {} : { txRef: retained.txRef }),
+          demosEvidence: this.writeEvidence(this.activeWriteRecord),
         });
         return {
           result,
@@ -1717,6 +2505,23 @@ export class DemosAdapter implements SubstrateAdapter {
         },
       );
       ctx.receipt.address = address;
+      const preparedRecord: DemosWriteJournalRecord = {
+        writeId: `write-${lease.generation}`,
+        generation: lease.generation,
+        kind: "immutable",
+        operation: "create",
+        stage: "prepared",
+        logicalName: metadataLogicalAddress,
+        programName,
+        owner,
+        nativeAddress: address,
+        valueHash,
+        ...(metadataHash === undefined ? {} : { metadataHash }),
+        nonce,
+        updatedAt: Date.now(),
+      };
+      this.activeWriteRecord = preparedRecord;
+      await lease.put(preparedRecord);
       const signed = await this.waitFor(
         ctx,
         this.demos.storagePrograms.sign(payload, { nonce }),
@@ -1749,15 +2554,28 @@ export class DemosAdapter implements SubstrateAdapter {
       const validityRecord = validity as unknown as {
         response?: { data?: { transaction?: { hash?: string } } };
       };
-      const txRef =
-        validityRecord.response?.data?.transaction?.hash ?? signedRecord.hash;
-      if (!txRef) {
+      const signedTxRef = signedRecord.hash;
+      const confirmedTxRef = validityRecord.response?.data?.transaction?.hash;
+      if (!signedTxRef) {
         throw new SubstrateError(
           `immutable anchor ${name} signed without a transaction hash`,
         );
       }
+      if (confirmedTxRef !== undefined && confirmedTxRef !== signedTxRef) {
+        throw new SubstrateError(
+          `immutable anchor ${name} confirmation returned transaction hash ` +
+            `${confirmedTxRef}; expected ${signedTxRef}`,
+        );
+      }
+      const txRef = signedTxRef;
 
       ctx.receipt.txRef = txRef;
+      const signedTransaction = serializeSignedTransaction(signed);
+      await this.putActiveWrite("signed", {
+        txRef,
+        signedTransaction,
+        signedTransactionHash: demosSignedTransactionProofHash(signed),
+      });
       if (this.remaining(ctx) <= 0) {
         throw this.fail(
           ctx,
@@ -1766,6 +2584,8 @@ export class DemosAdapter implements SubstrateAdapter {
         );
       }
       ctx.receipt.state = "broadcast-unknown";
+      await this.putActiveWrite("broadcast-intent");
+      await lease.assertCurrent();
       const broadcastPromise = this.demos.tx.broadcast(
         validity,
         this.demos,
@@ -1818,30 +2638,14 @@ export class DemosAdapter implements SubstrateAdapter {
               completionFailure,
             );
           }
-          const confirmed: ConfirmedImmutableWrite = {
-            owner,
+          await this.persistCanonicalWrite(ctx);
+          await this.persistNativeReadback(ctx);
+          this.observeIndexEventually(this.activeWriteRecord!, pollMs);
+          return {
             address,
             txRef,
-            valueHash,
-            ...(metadataHash === undefined ? {} : { metadataHash }),
-            ...(ctx.receipt.blockNumber === undefined
-              ? {}
-              : { blockNumber: ctx.receipt.blockNumber }),
+            demosEvidence: this.writeEvidence(this.activeWriteRecord!),
           };
-          confirmedImmutableWrites.set(immutableKey, confirmed);
-          const ref = await this.waitForCreatedImmutable(
-            name,
-            data,
-            owner,
-            address,
-            txRef,
-            metadata,
-            ctx,
-          );
-          if (confirmedImmutableWrites.get(immutableKey)?.txRef === txRef) {
-            confirmedImmutableWrites.delete(immutableKey);
-          }
-          return ref;
         })(),
         "immutable completion",
         () => {
@@ -1862,8 +2666,8 @@ export class DemosAdapter implements SubstrateAdapter {
             ? this.fail(
                 ctx,
                 "timeout",
-                `immutable anchor ${name} was included but did not become ` +
-                  "exact-byte and uniquely name-index visible before timeout",
+                `immutable anchor ${name} was included but authenticated ` +
+                  "native readback did not complete before timeout",
               )
             : this.fail(
                 ctx,
@@ -1879,18 +2683,28 @@ export class DemosAdapter implements SubstrateAdapter {
         signedNonce,
         this.snapshot(ctx.receipt),
         pollMs,
+        false,
+        ctx.deadline,
       );
+      const safe = Promise.all([
+        nonceSafe,
+        result.then(
+          () => undefined,
+          () => undefined,
+        ),
+      ]).then(() => undefined);
       return {
-        result,
-        safe: Promise.all([
-          nonceSafe,
-          result.then(
-            () => undefined,
-            () => undefined,
+        result: Promise.all([result, nonceSafe]).then(([ref]) => ({
+          ...ref,
+          demosEvidence: this.writeEvidenceFromLease(
+            lease,
+            preparedRecord.writeId,
           ),
-        ]).then(() => undefined),
+        })),
+        safe,
       };
-    });
+      }),
+    );
   }
 
   async scanOwnAnchorsByNamePrefix(prefix: string): Promise<OwnedAnchorScan> {
@@ -1974,7 +2788,69 @@ export class DemosAdapter implements SubstrateAdapter {
    * before returning it. (The node's name-index rows don't carry the owner, so the
    * check costs one read per candidate.)
    */
-  async resolveAnchorByName(
+  private async resolveAnchorFromJournal(
+    name: string,
+    expectedOwner: string,
+  ): Promise<AnchorResolution | null> {
+    const journal = this.config.writeJournal;
+    if (
+      !journal ||
+      this.demos.getAddress().toLowerCase() !== expectedOwner.toLowerCase()
+    ) return null;
+
+    let lease = this.activeWriteLease;
+    let release = false;
+    try {
+      if (!lease) {
+        lease = await journal.acquire({
+          chainIdentity: await this.resolveChainIdentity(),
+          wallet: this.demos.getAddress().toLowerCase(),
+        });
+        release = true;
+      }
+      const bindings = lease.snapshot.records.filter((record) =>
+        record.logicalName === name &&
+        record.owner.toLowerCase() === expectedOwner.toLowerCase() &&
+        JOURNAL_STAGE_RANK[record.stage] >= JOURNAL_STAGE_RANK["native-visible"]
+      );
+      if (bindings.length === 0) return null;
+      const addresses = [...new Set(bindings.map((record) => record.nativeAddress))];
+      if (addresses.length !== 1) {
+        return {
+          status: "indeterminate",
+          reason: "durable journal contains conflicting native bindings",
+        };
+      }
+      const address = addresses[0]!;
+      const native = await this.demos.storagePrograms.read(address) as unknown;
+      const programName = logicalToStorageProgramName(name);
+      if (
+        !isRecord(native) ||
+        native.success !== true ||
+        native.storageAddress !== address ||
+        typeof native.owner !== "string" ||
+        native.owner.toLowerCase() !== expectedOwner.toLowerCase() ||
+        native.programName !== programName
+      ) {
+        return {
+          status: "indeterminate",
+          reason: "durable native binding failed owner-bound readback",
+        };
+      }
+      return { status: "present", address };
+    } catch (error) {
+      return {
+        status: "indeterminate",
+        reason: `durable native binding lookup failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    } finally {
+      if (release) await lease?.release();
+    }
+  }
+
+  private async resolveAnchorByIndex(
     name: string,
     expectedOwner: string,
   ): Promise<AnchorResolution> {
@@ -2016,6 +2892,20 @@ export class DemosAdapter implements SubstrateAdapter {
       }
     }
     return classifyAnchorResolution(outcomes, expectedOwner);
+  }
+
+  async resolveAnchorByName(
+    name: string,
+    expectedOwner: string,
+  ): Promise<AnchorResolution> {
+    // An authenticated native-visible journal binding is authoritative for the
+    // owning wallet. The logical-name index remains discovery-only and may lag
+    // finality by several blocks.
+    const journalResolution = await this.resolveAnchorFromJournal(
+      name,
+      expectedOwner,
+    );
+    return journalResolution ?? this.resolveAnchorByIndex(name, expectedOwner);
   }
 
   async readAnchor(address: string): Promise<Record<string, unknown> | null> {
