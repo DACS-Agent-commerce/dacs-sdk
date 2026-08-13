@@ -527,10 +527,16 @@ function validateStaticConfiguration(env: LiveEnv): void {
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(env.SELLER_EVM_KEY), "seller-evm-key-invalid");
   requireCondition(/^[A-Za-z0-9._-]{1,64}$/.test(env.LIVE_E2E_RUN_ID), "run-id-invalid");
   requireCondition(PAYMENT_AMOUNT > 0n && PAYMENT_AMOUNT <= MAX_PAYMENT_AMOUNT, "spend-cap-invalid");
-  for (const key of ["DEMOS_RPC", "PAY_RPC", "X402_FACILITATOR"] as const) {
+  for (const endpoint of [
+    env.DEMOS_RPC,
+    env.PAY_RPC,
+    env.X402_FACILITATOR,
+    ...(process.env.PAY_RPC_SECONDARY === undefined
+      ? [] : [process.env.PAY_RPC_SECONDARY]),
+  ]) {
     let parsed: URL;
     try {
-      parsed = new URL(env[key]);
+      parsed = new URL(endpoint);
     } catch {
       throw new Error("funded-e2e:url-invalid");
     }
@@ -540,6 +546,12 @@ function validateStaticConfiguration(env: LiveEnv): void {
       parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1" &&
       parsed.hostname !== "[::1]",
       "remote-url-loopback-invalid",
+    );
+  }
+  if (process.env.PAY_RPC_SECONDARY !== undefined) {
+    requireCondition(
+      new URL(process.env.PAY_RPC_SECONDARY).origin !== new URL(env.PAY_RPC).origin,
+      "secondary-rpc-not-independent",
     );
   }
 }
@@ -761,6 +773,7 @@ interface Preflight {
   seller: Awaited<ReturnType<typeof createAgent>>;
   buyer: Awaited<ReturnType<typeof createAgent>>;
   evm: PublicClient;
+  evmVerificationClients: readonly PublicClient[];
   evmReader: X402BuyerEvmReadClient;
   payer: `0x${string}`;
   payee: `0x${string}`;
@@ -827,6 +840,10 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
   );
 
   const evm = createPublicClient({ transport: http(env.PAY_RPC) });
+  const secondaryRpc = process.env.PAY_RPC_SECONDARY;
+  const secondaryEvm = secondaryRpc === undefined
+    ? undefined
+    : createPublicClient({ transport: http(secondaryRpc) });
   const facilitator = new HTTPFacilitatorClient({ url: env.X402_FACILITATOR });
   const [
     sellerBalance,
@@ -839,6 +856,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
     tokenVersion,
     currentBlock,
     supported,
+    secondaryChainId,
   ] = await diagnosticStep("preflight-remote-reads", () =>
     retryReadOnly(() => Promise.all([
       demosBalanceOs(seller.adapter),
@@ -851,6 +869,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
       evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "version" }),
       evm.getBlockNumber(),
       facilitator.getSupported(),
+      secondaryEvm?.getChainId() ?? Promise.resolve(BASE_SEPOLIA_CHAIN_ID),
     ]), 3, 250)
   );
   const funding = fundedPreflightDecision({
@@ -874,6 +893,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
     ),
     "facilitator-network-unsupported",
   );
+  requireCondition(secondaryChainId === BASE_SEPOLIA_CHAIN_ID, "secondary-rpc-chain-invalid");
   requireCondition(currentBlock <= BigInt(Number.MAX_SAFE_INTEGER), "evm-height-unsupported");
   // Construct every remaining fallible read adapter before opening the local
   // listener, so a failed no-write preflight cannot leave a host behind.
@@ -925,6 +945,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
       seller,
       buyer,
       evm,
+      evmVerificationClients: secondaryEvm === undefined ? [evm] : [evm, secondaryEvm],
       evmReader,
       payer,
       payee,
@@ -1999,22 +2020,25 @@ async function observeFundedTransfer(input: {
   preflight: Preflight;
   jobId: string;
   txHash: string;
+  requireAllRpcs?: boolean;
 }): Promise<X402TransferObservation> {
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(input.txHash), "settlement-tx-invalid");
   const transactionHash = input.txHash as `0x${string}`;
-  // The facilitator returns only after broadcast/inclusion. Poll a bounded
-  // latest-head window so the seller never promotes a pending transfer.
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  // Older deterministic fixtures construct the preflight boundary directly.
+  const verificationClients = input.preflight.evmVerificationClients ?? [input.preflight.evm];
+  const observeOnce = async (client: PublicClient): Promise<X402TransferObservation> => {
     try {
       const [receipt, head] = await Promise.all([
-        input.preflight.evm.getTransactionReceipt({ hash: transactionHash }),
-        input.preflight.evm.getBlockNumber(),
+        client.getTransactionReceipt({ hash: transactionHash }),
+        client.getBlockNumber(),
       ]);
       if (receipt.status !== "success") return { status: "failed", reason: "transaction-reverted" };
       const confirmations = head >= receipt.blockNumber
         ? head - receipt.blockNumber + 1n
         : 0n;
-      if (confirmations < 1n) continue;
+      if (confirmations < 1n) {
+        return { status: "unavailable", reason: "settlement-not-final" };
+      }
       const payerTopic = addressTopic(input.preflight.payer);
       const payeeTopic = addressTopic(input.preflight.payee);
       const nonce = x402Eip3009Nonce(input.jobId, PAYMENT_PHASE_INDEX).toLowerCase();
@@ -2034,7 +2058,7 @@ async function observeFundedTransfer(input: {
         BigInt(log.data) === PAYMENT_AMOUNT
       );
       requireCondition(used.length === 1 && transfers.length === 1, "settlement-events-mismatch");
-      const block = await input.preflight.evm.getBlock({ blockHash: receipt.blockHash });
+      const block = await client.getBlock({ blockHash: receipt.blockHash });
       const includedAt = asSafeNumber(block.timestamp * 1_000n, "settlement-time-unsupported");
       return {
         status: "finalized",
@@ -2056,6 +2080,28 @@ async function observeFundedTransfer(input: {
       };
     } catch {
       // A just-mined transaction may not be visible on every RPC backend yet.
+      return { status: "unavailable", reason: "settlement-rpc-unavailable" };
+    }
+  };
+  // Race independently configured RPCs, but accept only a complete receipt,
+  // canonical block, exact nonce event, and exact value-transfer event.
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const observations = await Promise.all(
+      verificationClients.map(observeOnce),
+    );
+    const failed = observations.find((candidate) => candidate.status === "failed");
+    if (failed !== undefined) return failed;
+    const finalized = observations.filter(
+      (candidate): candidate is Extract<X402TransferObservation, { status: "finalized" }> =>
+        candidate.status === "finalized",
+    );
+    if (finalized.length > 0 &&
+        (!input.requireAllRpcs || finalized.length === observations.length)) {
+      requireCondition(
+        finalized.every((candidate) => sameFinalizedTransfer(finalized[0]!, candidate)),
+        "cross-rpc-settlement-mismatch",
+      );
+      return finalized[0]!;
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
@@ -3950,6 +3996,7 @@ async function publishAndVerifySellerSettlement(input: {
         preflight: input.preflight,
         jobId: input.jobId,
         txHash: observation.txHash,
+        requireAllRpcs: true,
       });
       return revalidated.status === "finalized" && observation.status === "finalized" &&
         sameFinalizedTransfer(revalidated, observation)
@@ -4117,6 +4164,7 @@ async function publishAndVerifySellerSettlement(input: {
         preflight: input.preflight,
         jobId: input.jobId,
         txHash: observation.txHash,
+        requireAllRpcs: true,
       });
       if (fresh.status !== "finalized") {
         return { disposition: "indeterminate", reason: "evm-revalidation-unavailable" };
@@ -5774,6 +5822,85 @@ describe("issue #114 guarded funded two-agent spine", () => {
     requireCondition(
       rebound.status === "indeterminate" && logReads === 1,
       "seller-settlement-reconstruction-not-session-bound",
+    );
+  });
+
+  it("uses the first exact RPC proof and rejects cross-RPC disagreement", async () => {
+    const payer = `0x${"11".repeat(20)}` as `0x${string}`;
+    const payee = `0x${"22".repeat(20)}` as `0x${string}`;
+    const asset = `0x${"33".repeat(20)}` as `0x${string}`;
+    const transactionHash = `0x${"aa".repeat(32)}` as `0x${string}`;
+    const blockHash = `0x${"bb".repeat(32)}` as `0x${string}`;
+    const jobId = "01K2D6Y7W8Q9R0S1T2V3W4X5Y6";
+    const nonce = x402Eip3009Nonce(jobId, PAYMENT_PHASE_INDEX);
+    const receipt = {
+      status: "success" as const,
+      blockNumber: 100n,
+      blockHash,
+      logs: [
+        {
+          address: asset,
+          topics: [EIP3009_AUTHORIZATION_USED_TOPIC, addressTopic(payer), nonce],
+          data: "0x",
+          logIndex: 5,
+        },
+        {
+          address: asset,
+          topics: [ERC20_TRANSFER_TOPIC, addressTopic(payer), addressTopic(payee)],
+          data: `0x${PAYMENT_AMOUNT.toString(16).padStart(64, "0")}`,
+          logIndex: 7,
+        },
+      ],
+    };
+    let laggingReads = 0;
+    const lagging = {
+      getTransactionReceipt: async () => {
+        laggingReads += 1;
+        throw new Error("not-yet-visible");
+      },
+      getBlockNumber: async () => 110n,
+    } as unknown as PublicClient;
+    const exact = {
+      getTransactionReceipt: async () => receipt,
+      getBlockNumber: async () => 110n,
+      getBlock: async () => ({ timestamp: 2_000n }),
+    } as unknown as PublicClient;
+    const inconsistent = {
+      getTransactionReceipt: async () => ({
+        ...receipt,
+        logs: receipt.logs.map((log, index) => index === 1
+          ? { ...log, logIndex: 8 } : log),
+      }),
+      getBlockNumber: async () => 110n,
+      getBlock: async () => ({ timestamp: 2_000n }),
+    } as unknown as PublicClient;
+    const preflight = {
+      payer,
+      payee,
+      asset,
+      evm: exact,
+      evmVerificationClients: [lagging, exact],
+    } as unknown as Preflight;
+    const observed = await observeFundedTransfer({ preflight, jobId, txHash: transactionHash });
+    requireCondition(
+      observed.status === "finalized" && observed.logIndex === 7 && laggingReads === 1,
+      "secondary-rpc-proof-not-used",
+    );
+
+    let mismatch = "";
+    try {
+      await observeFundedTransfer({
+        preflight: { ...preflight, evmVerificationClients: [exact, inconsistent] },
+        jobId,
+        txHash: transactionHash,
+        requireAllRpcs: true,
+      });
+    } catch (error) {
+      mismatch = error instanceof Error ? error.message : "non-error";
+    }
+    requireCondition(
+      mismatch === "funded-e2e:cross-rpc-settlement-mismatch",
+      "cross-rpc-disagreement-not-rejected",
     );
   });
 
