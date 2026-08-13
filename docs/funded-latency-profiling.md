@@ -55,7 +55,27 @@ Summary:
 
 The latency gates pass for the successful sample.
 
-## Failed attempts and remaining acceptance gap
+## Fresh exhaustive recovery proof
+
+A separate funded run on the same exact head completed the default exhaustive
+profile in **349.94 s** with all 12 assertions passing. It proved:
+
+- authenticated x402 settlement on both RPCs;
+- recovery from the injected buyer post-payment chain-read loss;
+- recovery from seller response-rendering loss using newly opened filesystem
+  stores and a fresh seller runtime;
+- exactly one application callback, delivery, evidence publication, and final
+  receipt across process A and process B;
+- settlement-evidence publication and verification;
+- WAL-derived terminal phase-history projection;
+- buyer and seller process-A/process-B bundle recovery; and
+- final role-owned DACS-5 bundle verification.
+
+The measured stages were Listing 17.532 s, Vet 14.938 s, agreement 38.399 s,
+commitment 23.350 s (overlapped with agreement), settlement/recovery 47.433 s,
+settlement publication 22.400 s, and bundle finalization 218.928 s.
+
+## Retained safe failures
 
 The campaign also retained failures instead of silently replacing them:
 
@@ -69,14 +89,16 @@ The campaign also retained failures instead of silently replacing them:
 For every failed authorization, both independent RPCs later agreed that the
 exact nonce was expired and unused, no matching authorization event or
 receipt existed, the buyer still owned the one unit, and no delivery ran.
-These are safe failures, but they mean the all-attempt reliability gate is not
-yet met.
+These are safe failures and caused no payment or delivery. They remain relevant
+to facilitator availability and should not be erased from the reliability
+record, even though the subsequent fresh exhaustive run succeeded.
 
-An earlier productized run completed `audit-complete` successfully, but it
-predates the final same-process immutable-write retention repair. Two attempts
-to refresh that exhaustive proof on `d663f45` stopped before payment because
-of the facilitator behavior above. Therefore the final exact head does **not**
-yet have a fresh funded `audit-complete` result and must remain draft.
+The strict campaign plan also asks for `audit-complete` after every one of the
+ten latency samples. Those samples deliberately stopped after the restarted
+evidence finalizer and cross-RPC proof, so they establish delivery-ready
+performance and durable post-delivery evidence, not ten DACS-5 closures. The
+fresh exhaustive run establishes one current-head DACS-5 closure. Keep the PR
+draft if ten independent full closures remains a release gate.
 
 ## Running the guarded profile
 
