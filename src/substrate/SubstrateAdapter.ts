@@ -115,6 +115,8 @@ export interface AnchorWriteOnceOptions {
   timeoutMs?: number;
   /** Poll interval while waiting for visibility or a concurrent winner. */
   pollMs?: number;
+  /** Immutable progress snapshots; observer exceptions never alter execution. */
+  onProgress?: (receipt: AnchorAttemptReceipt) => void;
   /**
    * Immutable descriptive metadata stored alongside, but outside, artifact
    * data. Implementations must compare requested metadata on idempotent retry;

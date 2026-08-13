@@ -35,9 +35,13 @@ import {
 } from "../../src/agent/runFulfilmentCore.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import {
+  advanceDeliveryFinalisation,
+  getDeliveryFinalisationStatus,
   getSellerFulfilmentStatus,
   projectDurableSellerAuditPending,
+  resumeDeliveryFinalisation,
   runDurableFulfilmentCore,
+  runDurableFulfilmentToDeliveryReady,
   sellerFulfilmentCheckpointKey,
   verifyDurableSellerTerminalResult,
   type DurableSellerFulfilmentDeps,
@@ -1475,6 +1479,357 @@ function durableHarness(
 }
 
 describe("runDurableFulfilmentCore on repaired #120", () => {
+  test("returns a durable delivery-ready result and resumes without a background promise", async () => {
+    const h = durableHarness();
+
+    const ready = await runDurableFulfilmentToDeliveryReady(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+
+    expect(ready.status).toBe("delivery-ready");
+    if (ready.status !== "delivery-ready") throw new Error("delivery was not ready");
+    expect(ready.result).toMatchObject({
+      jobId: h.fixture.authorization.jobId,
+      fulfilmentId: ready.finalisation.fulfilmentId,
+      deliveryPhaseIndex: 2,
+      logicalAddress: "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
+      evidence: { outcome: "success", signature: { signer: SELLER } },
+      evidenceHash: ready.finalisation.evidenceHash,
+    });
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
+    expect(await getDeliveryFinalisationStatus(
+      h.store,
+      h.fixture.authorization.jobId,
+      2,
+    )).toMatchObject({
+      status: "ok",
+      milestone: "delivery-ready",
+      deliveryReady: "outcome",
+      publicationStarted: "not-started",
+      evidence: "intent",
+      finalReceipt: "not-started",
+      result: "not-started",
+    });
+
+    const completed = await advanceDeliveryFinalisation(
+      ready.finalisation,
+      h.fixture.request,
+      h.deps,
+      { ...h.durability, workerId: "delivery-finaliser-b" },
+    );
+    expect(completed, JSON.stringify(completed)).toMatchObject({ decision: "completed" });
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
+    expect(await getDeliveryFinalisationStatus(
+      h.store,
+      h.fixture.authorization.jobId,
+      2,
+    )).toMatchObject({
+      status: "ok",
+      milestone: "fulfilment-finalised",
+      deliveryReady: "outcome",
+      publicationStarted: "outcome",
+      evidence: "outcome",
+      finalReceipt: "outcome",
+      result: "outcome",
+    });
+    const terminal = await h.store.load(h.fixture.authorization.jobId);
+    if (terminal.status !== "ok") throw new Error("delivery-ready terminal WAL missing");
+    await expect(projectDurableSellerAuditPending({
+      record: terminal.record,
+      verifiedAgreement: h.fixture.agreement,
+      verifiedListing: h.fixture.listing,
+      expectedDeliveryWriter: { role: "seller", primaryClaim: SELLER },
+      verifyEvidenceSignature: h.deps.verifyEvidenceSignature,
+      verifyAuditSourceCommitmentSignature:
+        h.deps.verifyAuditSourceCommitmentSignature,
+      verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
+    })).resolves.toMatchObject({
+      terminal: { result: { decision: "completed" } },
+      session: { state: "audit-pending" },
+    });
+
+    const replay = await resumeDeliveryFinalisation(
+      h.fixture.authorization.jobId,
+      h.fixture.request,
+      h.deps,
+      { ...h.durability, workerId: "delivery-finaliser-c" },
+    );
+    expect(replay).toEqual(completed);
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
+  });
+
+  test("rejects rebound finalisation authority before publishing evidence", async () => {
+    const h = durableHarness();
+    const ready = await runDurableFulfilmentToDeliveryReady(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+    if (ready.status !== "delivery-ready") throw new Error("delivery was not ready");
+
+    const rebound = await advanceDeliveryFinalisation(
+      { ...ready.finalisation, evidenceHash: "0".repeat(64) },
+      h.fixture.request,
+      h.deps,
+      { ...h.durability, workerId: "rebound-finaliser" },
+    );
+    expect(rebound).toMatchObject({
+      decision: "indeterminate",
+      code: "durable-finalisation-authority-invalid",
+      safeToRetryDelivery: false,
+    });
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
+
+    const wrongJob = await resumeDeliveryFinalisation(
+      "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+      h.fixture.request,
+      h.deps,
+      { ...h.durability, workerId: "wrong-job-finaliser" },
+    );
+    expect(wrongJob).toMatchObject({
+      decision: "indeterminate",
+      code: "durable-finalisation-authority-invalid",
+    });
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
+  });
+
+  test("resumes the delivery-ready handoff from a reopened filesystem store", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dacs-delivery-ready-restart-"));
+    try {
+      const processAStore = await createFsFencedSessionStore({ dir });
+      const h = durableHarness(undefined, { store: processAStore });
+      const ready = await runDurableFulfilmentToDeliveryReady(
+        h.fixture.request,
+        h.deps,
+        h.durability,
+      );
+      if (ready.status !== "delivery-ready") throw new Error("delivery was not ready");
+      expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
+
+      const processBStore = await createFsFencedSessionStore({ dir });
+      const completed = await resumeDeliveryFinalisation(
+        h.fixture.authorization.jobId,
+        h.fixture.request,
+        h.deps,
+        {
+          ...h.durability,
+          store: processBStore,
+          workerId: "restarted-delivery-finaliser",
+        },
+      );
+      expect(completed, JSON.stringify(completed)).toMatchObject({ decision: "completed" });
+      expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fences concurrent finalisers and preserves exactly-once effects", async () => {
+    const h = durableHarness();
+    const ready = await runDurableFulfilmentToDeliveryReady(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+    if (ready.status !== "delivery-ready") throw new Error("delivery was not ready");
+
+    const attempts = await Promise.all([
+      advanceDeliveryFinalisation(
+        ready.finalisation,
+        h.fixture.request,
+        h.deps,
+        { ...h.durability, workerId: "concurrent-finaliser-a" },
+      ),
+      advanceDeliveryFinalisation(
+        ready.finalisation,
+        h.fixture.request,
+        h.deps,
+        { ...h.durability, workerId: "concurrent-finaliser-b" },
+      ),
+    ]);
+    expect(attempts.some((value) => value.decision === "completed")).toBe(true);
+    const terminal = await resumeDeliveryFinalisation(
+      h.fixture.authorization.jobId,
+      h.fixture.request,
+      h.deps,
+      { ...h.durability, workerId: "concurrent-finaliser-c" },
+    );
+    expect(terminal).toMatchObject({ decision: "completed" });
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
+  });
+
+  test("reconciles ambiguity after finaliser activation instead of reusing the deferral", async () => {
+    const h = durableHarness();
+    const ready = await runDurableFulfilmentToDeliveryReady(
+      h.fixture.request,
+      h.deps,
+      h.durability,
+    );
+    if (ready.status !== "delivery-ready") throw new Error("delivery was not ready");
+    h.loseAfter.add("evidence");
+
+    const ambiguous = await advanceDeliveryFinalisation(
+      ready.finalisation,
+      h.fixture.request,
+      h.deps,
+      { ...h.durability, workerId: "ambiguous-finaliser-a" },
+    );
+    expect(ambiguous).toMatchObject({
+      decision: "indeterminate",
+      code: "delivery-evidence-publication-pending",
+    });
+    expect(h.counts.evidence).toBe(1);
+
+    const recovered = await resumeDeliveryFinalisation(
+      h.fixture.authorization.jobId,
+      h.fixture.request,
+      h.deps,
+      { ...h.durability, workerId: "ambiguous-finaliser-b" },
+    );
+    expect(recovered).toMatchObject({ decision: "completed" });
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
+  });
+
+  test.each(["intent", "outcome"] as const)(
+    "recovers a lost delivery-ready %s store response without publishing early",
+    async (lostStage) => {
+      const baseStore = createInMemoryFencedSessionStore();
+      let loseResponse = true;
+      const unstableStore = proxyFencedStore(baseStore, {
+        claimCheckpoint: async (input) => {
+          const claimed = await baseStore.claimCheckpoint(input);
+          if (loseResponse && lostStage === "intent" && claimed.ok &&
+              input.key === sellerFulfilmentCheckpointKey.deliveryReady(2)) {
+            loseResponse = false;
+            throw new Error("delivery-ready intent response lost");
+          }
+          return claimed;
+        },
+        transition: async (input) => {
+          const transitioned = await baseStore.transition(input);
+          if (loseResponse && lostStage === "outcome" && transitioned.ok &&
+              input.checkpoint?.key === sellerFulfilmentCheckpointKey.deliveryReady(2) &&
+              input.checkpoint.stage === "outcome") {
+            loseResponse = false;
+            throw new Error("delivery-ready outcome response lost");
+          }
+          return transitioned;
+        },
+      });
+      const h = durableHarness(undefined, { store: unstableStore });
+      const interrupted = await runDurableFulfilmentToDeliveryReady(
+        h.fixture.request,
+        h.deps,
+        h.durability,
+      );
+      expect(interrupted).toMatchObject({
+        status: "not-ready",
+        result: {
+          decision: "indeterminate",
+          code: "durable-delivery-ready-projection-failed",
+        },
+      });
+      expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
+
+      const recovered = await runDurableFulfilmentToDeliveryReady(
+        h.fixture.request,
+        h.deps,
+        { ...h.durability, store: baseStore, workerId: `ready-${lostStage}-recovery` },
+      );
+      expect(recovered.status).toBe("delivery-ready");
+      expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
+    },
+  );
+
+  test.each(["intent", "outcome"] as const)(
+    "recovers a lost finalisation-activation %s store response without duplicate evidence",
+    async (lostStage) => {
+      const baseStore = createInMemoryFencedSessionStore();
+      let loseResponse = true;
+      const activationKey = sellerFulfilmentCheckpointKey
+        .deliveryFinalisationStarted(2);
+      const unstableStore = proxyFencedStore(baseStore, {
+        claimCheckpoint: async (input) => {
+          const claimed = await baseStore.claimCheckpoint(input);
+          if (loseResponse && lostStage === "intent" && claimed.ok &&
+              input.key === activationKey) {
+            loseResponse = false;
+            throw new Error("finalisation activation intent response lost");
+          }
+          return claimed;
+        },
+        transition: async (input) => {
+          const transitioned = await baseStore.transition(input);
+          if (loseResponse && lostStage === "outcome" && transitioned.ok &&
+              input.checkpoint?.key === activationKey &&
+              input.checkpoint.stage === "outcome") {
+            loseResponse = false;
+            throw new Error("finalisation activation outcome response lost");
+          }
+          return transitioned;
+        },
+      });
+      const h = durableHarness(undefined, { store: unstableStore });
+      const ready = await runDurableFulfilmentToDeliveryReady(
+        h.fixture.request,
+        h.deps,
+        h.durability,
+      );
+      if (ready.status !== "delivery-ready") throw new Error("delivery was not ready");
+
+      const interrupted = await advanceDeliveryFinalisation(
+        ready.finalisation,
+        h.fixture.request,
+        h.deps,
+        { ...h.durability, workerId: `activation-${lostStage}-interrupted` },
+      );
+      expect(interrupted).toMatchObject({
+        decision: "indeterminate",
+        code: "delivery-evidence-publication-pending",
+      });
+      expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
+      expect(await getDeliveryFinalisationStatus(
+        baseStore,
+        h.fixture.authorization.jobId,
+        2,
+      )).toMatchObject({
+        status: "ok",
+        milestone: "delivery-ready",
+        publicationStarted: lostStage,
+        evidence: "intent",
+      });
+
+      const reconcileAuthoritativeAbsence = vi.fn(async () => ({
+        status: "absent" as const,
+        reason: "fenced evidence slot is authoritatively absent",
+      }));
+      if (lostStage === "outcome") {
+        // Once activation itself is durable, a restart cannot infer whether the
+        // old worker reached the publisher. The binding-owned reconciler must
+        // fence the old generation and prove absence before the retained input
+        // can be invoked.
+        h.durability.reconcileEvidencePublication = reconcileAuthoritativeAbsence;
+      }
+      const recovered = await resumeDeliveryFinalisation(
+        h.fixture.authorization.jobId,
+        h.fixture.request,
+        h.deps,
+        {
+          ...h.durability,
+          store: baseStore,
+          workerId: `activation-${lostStage}-recovery`,
+        },
+      );
+      expect(recovered).toMatchObject({ decision: "completed" });
+      expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
+      expect(reconcileAuthoritativeAbsence).toHaveBeenCalledTimes(
+        lostStage === "outcome" ? 1 : 0,
+      );
+    },
+  );
+
   test("captures optional effects and durability authority exactly once before the first await", async () => {
     const spec = {
       kind: "attested-payload",

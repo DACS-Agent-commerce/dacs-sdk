@@ -56,6 +56,7 @@ export {
   type X402SellerCommittedSessionScope,
   type X402SellerPaymentPermitAuthorization,
   type X402SellerRenderedResponse,
+  type X402SellerDeliveryReadyResponseContext,
   type X402SellerResponseContext,
   type X402SellerSpine,
   type X402SellerSpineOptions,

@@ -237,6 +237,9 @@ describe("DemosAdapter", () => {
     vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
       state: "included",
     } as never);
+    vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
+      status: "confirmed",
+    } as never);
     vi.spyOn(adapter.raw.storagePrograms, "read").mockResolvedValue({
       success: true,
       data: value,
@@ -257,12 +260,17 @@ describe("DemosAdapter", () => {
       broadcast: { response: { hash: "tx-create" } },
       status: { state: "included", blockNumber: 42 },
     } as never);
+    const progress: Array<{ state: string; timings: { elapsedMs: number } }> = [];
 
     await expect(
       adapter.anchorWriteOnce(name, value, {
         timeoutMs: 20,
         pollMs: 0,
         metadata: { logicalAddress: "dacs1:seller:svc:v1" },
+        onProgress: (receipt) => progress.push({
+          state: receipt.state,
+          timings: { elapsedMs: receipt.timings.elapsedMs },
+        }),
       }),
     ).resolves.toEqual({ address, txRef: "tx-create" });
     expect(sign).toHaveBeenCalledWith(
@@ -271,6 +279,10 @@ describe("DemosAdapter", () => {
       }),
       { nonce: 1 },
     );
+    expect(progress.at(-1)).toMatchObject({
+      state: "read-visible",
+      timings: { elapsedMs: expect.any(Number) },
+    });
   });
 
   it("serializes two adapter instances sharing a wallet and rejects different content", async () => {
@@ -313,6 +325,9 @@ describe("DemosAdapter", () => {
       vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
       vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
         state: "included",
+      } as never);
+      vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
+        status: "confirmed",
       } as never);
       vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
         async (payload: unknown) =>

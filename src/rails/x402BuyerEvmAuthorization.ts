@@ -154,7 +154,7 @@ export interface X402BuyerEvmAuthorizationProviderOptions {
    * deployment proves that no still-live facilitator/request can race replay.
    */
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
-  /** Optional authoritative facilitator receipt recovery by settled tx hash. */
+  /** Optional authoritative settlement-response recovery by exact settled tx hash. */
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
 }
 
@@ -848,8 +848,34 @@ export function createX402BuyerEvmAuthorizationProvider(
         };
         const finalHead = captureHead(await options.client.getFinalityHead());
         await fence.assertCurrent();
-        if (!finalHead || canonicalize(finalHead) !== canonicalize(head)) {
+        if (!finalHead) {
           return { disposition: "unavailable", reason: "evm-finality-head-changed" };
+        }
+        if (canonicalize(finalHead) !== canonicalize(head)) {
+          // A faster chain can advance while the hash-pinned read set is being
+          // collected. Forward progress does not invalidate that snapshot: it
+          // is safe only when the original head is still canonical beneath the
+          // newer head. Same-height substitution, rollback, and reorg all
+          // remain fail-closed.
+          if (finalHead.chainId !== head.chainId ||
+              finalHead.blockNumber <= head.blockNumber) {
+            return { disposition: "unavailable", reason: "evm-finality-head-changed" };
+          }
+          const rawHeadAncestry = await options.client.confirmBlockAncestor(deepFreeze({
+            blockNumber: head.blockNumber,
+            blockHash: head.blockHash,
+            headBlockNumber: finalHead.blockNumber,
+            headBlockHash: finalHead.blockHash,
+          }));
+          await fence.assertCurrent();
+          const headAncestry = captureBlockAncestry(rawHeadAncestry);
+          if (!headAncestry || !headAncestry.canonical ||
+              headAncestry.blockNumber !== head.blockNumber ||
+              headAncestry.blockHash !== head.blockHash ||
+              headAncestry.headBlockNumber !== finalHead.blockNumber ||
+              headAncestry.headBlockHash !== finalHead.blockHash) {
+            return { disposition: "unavailable", reason: "evm-finality-head-changed" };
+          }
         }
         const observation = deepFreeze({ ...body, observationHash: observationHash(body) });
         issuedObservations.add(observation);

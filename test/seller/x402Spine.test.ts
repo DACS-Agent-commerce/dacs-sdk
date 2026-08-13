@@ -14,6 +14,7 @@ import type {
   SellerFinalSessionReceiptResult,
   SellerFulfilmentDurability,
 } from "../../src/agent/runDurableFulfilmentCore.js";
+import { resumeDeliveryFinalisation } from "../../src/agent/runDurableFulfilmentCore.js";
 import type {
   SellerDeliveredArtifact,
   SellerFulfilmentAgreement,
@@ -226,10 +227,11 @@ interface Harness {
   retainSettlement(sessionAuthorization: unknown): void;
   runThroughPaywallCore(): Promise<unknown>;
   setObservation(observation: X402TransferObservation): void;
+  resumeFinalisation(authorization: X402SellerPaymentPermitAuthorization): Promise<unknown>;
   counts: { delivery: number; evidence: number; final: number; render: number };
 }
 
-function makeHarness(): Harness {
+function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
   const buyerBundle = identity(BUYER, `cci-xm:evm:base:${PAYER}`);
   const sellerBundle = identity(SELLER);
   const railRef: PaymentRailRef = {
@@ -835,6 +837,20 @@ function makeHarness(): Harness {
     paymentIntakeDeps,
     fulfilmentDeps,
     fulfilmentDurability: durability,
+    ...(options.deliveryReady
+      ? {
+          deliveryReady: {
+            renderResponse: async () => {
+              counts.render += 1;
+              return {
+                status: 200,
+                headers: { "content-type": "application/json" },
+                body: { delivered: true },
+              };
+            },
+          },
+        }
+      : {}),
     renderResponse: async () => {
       counts.render += 1;
       return {
@@ -950,6 +966,18 @@ function makeHarness(): Harness {
     setObservation(value) {
       observation = structuredClone(value);
     },
+    resumeFinalisation: (authorization) => resumeDeliveryFinalisation(
+      JOB_ID,
+      {
+        agreementRef: resolvedScope.agreementRef,
+        agreementHash: resolvedScope.agreementHash,
+        commitmentRef: resolvedScope.commitmentRef,
+        deliveryPhaseIndex: resolvedScope.deliveryPhaseIndex,
+        paymentPermitId: authorization.paymentPermitId,
+      },
+      { ...fulfilmentDeps, receiptStore },
+      { ...durability, workerId: "seller-spine-finaliser" },
+    ),
     counts,
   };
 }
@@ -971,6 +999,25 @@ async function authorize(harness: Harness): Promise<X402SellerPaymentPermitAutho
 }
 
 describe("createX402SellerSpine", () => {
+  it("returns at delivery-ready and lets a restarted host finalise explicitly", async () => {
+    const harness = makeHarness({ deliveryReady: true });
+    const authorization = await authorize(harness);
+
+    await expect(harness.spine.fulfil(
+      harness.fulfilmentContext(authorization),
+    )).resolves.toMatchObject({
+      disposition: "fulfilled",
+      status: 200,
+      body: { delivered: true },
+    });
+    expect(harness.counts).toEqual({ delivery: 1, evidence: 0, final: 0, render: 1 });
+
+    await expect(harness.resumeFinalisation(authorization)).resolves.toMatchObject({
+      decision: "completed",
+    });
+    expect(harness.counts).toEqual({ delivery: 1, evidence: 1, final: 1, render: 1 });
+  });
+
   it("runs the real x402 paywall WAL shape through the seller compositor", async () => {
     const harness = makeHarness();
 

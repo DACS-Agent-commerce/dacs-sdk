@@ -98,6 +98,15 @@ interface UnresolvedWrite {
   pollMs: number;
 }
 
+interface ConfirmedImmutableWrite {
+  owner: string;
+  address: string;
+  txRef: string;
+  valueHash: string;
+  metadataHash?: string;
+  blockNumber?: number;
+}
+
 type BroadcastObservation =
   | { state: "accepted" }
   | { state: "ambiguous" }
@@ -107,6 +116,15 @@ type BroadcastObservation =
 // key so the same wallet used on different networks does not block itself.
 const walletWriteTails = new Map<string, Promise<void>>();
 const unresolvedWrites = new Map<string, UnresolvedWrite>();
+// A canonical confirmed transaction is stronger nonce evidence than a lagging
+// account projection. This process-local floor lets the next queued write use
+// N+1 without waiting for a secondary account index to catch up. External
+// writers still require the documented external wallet lease.
+const confirmedWriteNonces = new Map<string, number>();
+// Name visibility may lag canonical execution beyond a caller's deadline. Keep
+// the exact confirmed immutable create so a same-process retry can only finish
+// its readback; it must never infer absence and submit the logical slot again.
+const confirmedImmutableWrites = new Map<string, ConfirmedImmutableWrite>();
 
 function queueWalletWrite<T>(
   key: string,
@@ -508,8 +526,10 @@ export class DemosAdapter implements SubstrateAdapter {
    * sequential nonces and REJECTS the skeleton default of 0, so a fixed nonce
    * made every live create fail (#58).
    */
-  private async nextAnchorNonce(): Promise<number> {
-    return (await this.demos.getAddressNonce(this.demos.getAddress())) + 1;
+  private async nextAnchorNonce(key = this.walletQueueKey()): Promise<number> {
+    const chainNext = (await this.demos.getAddressNonce(this.demos.getAddress())) + 1;
+    const confirmed = confirmedWriteNonces.get(key);
+    return confirmed === undefined ? chainNext : Math.max(chainNext, confirmed + 1);
   }
 
   /**
@@ -535,6 +555,7 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /** Prepare against current owner-bound state while holding the wallet queue. */
   private async prepareAnchorPayload(
+    key: string,
     name: string,
     data: Record<string, unknown>,
   ) {
@@ -549,7 +570,7 @@ export class DemosAdapter implements SubstrateAdapter {
     if (resolution.status === "present") {
       return {
         address: resolution.address,
-        nonce: undefined,
+        nonce: await this.nextAnchorNonce(key),
         payload: StorageProgram.writeStorage(resolution.address, data, "json"),
       };
     }
@@ -558,7 +579,7 @@ export class DemosAdapter implements SubstrateAdapter {
     // current Demos writes (#58 / DACS-Standard #242). This must happen inside
     // the same-wallet queue so another SDK write cannot consume the nonce first.
     const programName = logicalToStorageProgramName(name);
-    const nonce = await this.nextAnchorNonce();
+    const nonce = await this.nextAnchorNonce(key);
     const address = StorageProgram.deriveStorageAddress(
       owner,
       programName,
@@ -607,16 +628,26 @@ export class DemosAdapter implements SubstrateAdapter {
     for (;;) {
       ctx.receipt.attempts.inclusionPolls += 1;
       let status: unknown;
+      let transaction: unknown;
       try {
-        status = await this.waitFor(
+        const observations = await this.waitFor(
           ctx,
-          this.demos.nodeCall("getTransactionStatus", { hash: txRef }),
+          Promise.allSettled([
+            this.demos.nodeCall("getTransactionStatus", { hash: txRef }),
+            this.demos.getTxByHash(txRef),
+          ]),
           "inclusion",
         );
+        if (observations[0]?.status === "fulfilled") {
+          status = observations[0].value;
+        }
+        if (observations[1]?.status === "fulfilled") {
+          transaction = observations[1].value;
+        }
       } catch (error) {
         if (error instanceof AnchorWaitError) throw error;
-        // Status transport errors are retryable within the original budget and
-        // never trigger a rebroadcast of the already-submitted transaction.
+        // Observation transport errors are retryable within the original
+        // budget and never trigger a rebroadcast of the submitted transaction.
         ctx.receipt.lastObservedState = "status-read-error";
         this.emit(ctx);
         await this.delay(ctx);
@@ -632,11 +663,37 @@ export class DemosAdapter implements SubstrateAdapter {
           ? record.state
           : undefined;
       if (state) ctx.receipt.lastObservedState = state;
+      const transactionRecord = isRecord(transaction) && isRecord(transaction.response)
+        ? transaction.response
+        : transaction;
+      const executionStatus = isRecord(transactionRecord) &&
+          typeof transactionRecord.status === "string"
+        ? transactionRecord.status
+        : undefined;
+      const observedBlockNumber = isRecord(transactionRecord) &&
+          typeof transactionRecord.blockNumber === "number"
+        ? transactionRecord.blockNumber
+        : isRecord(record) && typeof record.blockNumber === "number"
+          ? record.blockNumber
+          : undefined;
 
-      if (state === "included") {
+      if (executionStatus === "failed" || state === "failed") {
+        ctx.receipt.state = "failed";
+        ctx.receipt.lastObservedState = "failed";
+        if (observedBlockNumber !== undefined) {
+          ctx.receipt.blockNumber = observedBlockNumber;
+        }
+        this.emit(ctx);
+        return "failed";
+      }
+
+      if (state === "included" || executionStatus === "confirmed") {
         const now = Date.now();
-        // Inclusion proves the node accepted the signed transaction even if
-        // its broadcast response is still in flight or was lost.
+        // The status index and canonical transaction row can advance in either
+        // order. `included` alone never proves execution success: live Demos
+        // can keep reporting it after getTxByHash finalized the transaction as
+        // failed. A canonical `confirmed` row is sufficient even when the
+        // secondary status index is still behind.
         if (ctx.receipt.timings.acceptedAt == null) {
           ctx.receipt.state = "accepted";
           ctx.receipt.completion = "accepted";
@@ -645,12 +702,18 @@ export class DemosAdapter implements SubstrateAdapter {
         }
         ctx.receipt.state = "included";
         ctx.receipt.completion = "included";
-        ctx.receipt.timings.includedAt = now;
-        if (isRecord(record) && typeof record.blockNumber === "number") {
-          ctx.receipt.blockNumber = record.blockNumber;
+        ctx.receipt.timings.includedAt ??= now;
+        if (observedBlockNumber !== undefined) {
+          ctx.receipt.blockNumber = observedBlockNumber;
         }
         this.emit(ctx);
-        return "included";
+        if (executionStatus === "confirmed") return "included";
+        ctx.receipt.lastObservedState = transaction === undefined
+          ? "included-execution-read-error"
+          : "included-execution-pending";
+        this.emit(ctx);
+        await this.delay(ctx);
+        continue;
       }
 
       // A chain observation is authoritative. Only after checking it do we use
@@ -676,12 +739,6 @@ export class DemosAdapter implements SubstrateAdapter {
         ctx.receipt.timings.acceptedAt = now;
         this.emit(ctx);
       }
-      if (state === "failed") {
-        ctx.receipt.state = "failed";
-        this.emit(ctx);
-        return "failed";
-      }
-
       this.emit(ctx);
       await this.delay(ctx);
     }
@@ -689,15 +746,17 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * Inclusion can become visible before the account read reflects the consumed
-   * nonce. demosdk 4.0.13 reads that account value again when it signs the next
-   * storage transaction, so releasing the wallet queue at inclusion alone can
-   * sign two writes with the same nonce. Keep the queue held until the
-   * authoritative account nonce has caught up with the transaction we signed.
+   * nonce. Canonical confirmation records that stronger process-local evidence;
+   * otherwise keep polling the authoritative account nonce before releasing the
+   * wallet queue.
    */
   private async waitForNonceAdvancement(
+    key: string,
     signedNonce: number,
     ctx: AnchorContext,
   ): Promise<void> {
+    const confirmed = confirmedWriteNonces.get(key);
+    if (confirmed !== undefined && confirmed >= signedNonce) return;
     for (;;) {
       let accountNonce: number;
       try {
@@ -725,6 +784,7 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   private async reconcileUntilNonceSafe(
+    key: string,
     txRef: string,
     signedNonce: number,
     ctx: AnchorContext,
@@ -734,7 +794,11 @@ export class DemosAdapter implements SubstrateAdapter {
         ? "included"
         : await this.waitForTerminal(txRef, ctx);
     if (terminal === "included") {
-      await this.waitForNonceAdvancement(signedNonce, ctx);
+      confirmedWriteNonces.set(
+        key,
+        Math.max(confirmedWriteNonces.get(key) ?? -1, signedNonce),
+      );
+      await this.waitForNonceAdvancement(key, signedNonce, ctx);
     }
   }
 
@@ -747,7 +811,7 @@ export class DemosAdapter implements SubstrateAdapter {
   ): Promise<void> {
     const ctx = this.recoveryContext(receipt, pollMs);
     try {
-      await this.reconcileUntilNonceSafe(txRef, signedNonce, ctx);
+      await this.reconcileUntilNonceSafe(key, txRef, signedNonce, ctx);
       unresolvedWrites.delete(key);
     } catch {
       // A later queued call must reconcile this tx hash before preparing another
@@ -773,6 +837,7 @@ export class DemosAdapter implements SubstrateAdapter {
     ctx.signal = current.signal;
     try {
       await this.reconcileUntilNonceSafe(
+        key,
         unresolved.txRef,
         unresolved.signedNonce,
         ctx,
@@ -810,7 +875,7 @@ export class DemosAdapter implements SubstrateAdapter {
     // have accepted the transaction even when the transport hangs forever.
     const reconciliation = (async () => {
       try {
-        await this.reconcileUntilNonceSafe(txRef, signedNonce, recovery);
+        await this.reconcileUntilNonceSafe(key, txRef, signedNonce, recovery);
         unresolvedWrites.delete(key);
       } catch {
         if (controller.signal.aborted) return;
@@ -900,7 +965,7 @@ export class DemosAdapter implements SubstrateAdapter {
     try {
       prepared = await this.waitFor(
         ctx,
-        this.prepareAnchorPayload(name, data),
+        this.prepareAnchorPayload(key, name, data),
         "owner-bound storage lookup",
       );
       ctx.receipt.address = prepared.address;
@@ -921,7 +986,7 @@ export class DemosAdapter implements SubstrateAdapter {
         ctx,
         this.demos.storagePrograms.sign(
           prepared.payload,
-          prepared.nonce === undefined ? undefined : { nonce: prepared.nonce },
+          { nonce: prepared.nonce },
         ),
         "signing",
       );
@@ -959,7 +1024,7 @@ export class DemosAdapter implements SubstrateAdapter {
       );
     }
     const signedNonce = signedNonceValue as number;
-    if (prepared.nonce !== undefined && signedNonce !== prepared.nonce) {
+    if (signedNonce !== prepared.nonce) {
       throw this.fail(
         ctx,
         "prepare-failed",
@@ -1212,8 +1277,9 @@ export class DemosAdapter implements SubstrateAdapter {
     }
 
     return {
-      // Read visibility can continue independently, but same-wallet writes stay
-      // queued until the account read reflects this transaction's signed nonce.
+      // Read visibility can continue independently. Same-wallet writes remain
+      // ordered until canonical confirmation records this transaction's nonce
+      // (or, without that proof, until the account projection catches up).
       result: this.waitForVisibility(expected!, ctx),
       safe: this.resolveInBackground(
         key,
@@ -1435,12 +1501,12 @@ export class DemosAdapter implements SubstrateAdapter {
     address: string,
     txRef: string | undefined,
     expectedMetadata: Record<string, unknown> | undefined,
-    deadline: number,
-    pollMs: number,
+    ctx: AnchorContext,
   ): Promise<AnchorRef> {
     const expected = sha256Hex(canonicalize(data));
     let lastState = "not read-visible";
     for (;;) {
+      ctx.receipt.attempts.visibilityReads += 1;
       let readBack: Record<string, unknown> | null = null;
       let metadataMatches = expectedMetadata === undefined;
       if (expectedMetadata === undefined) {
@@ -1466,6 +1532,11 @@ export class DemosAdapter implements SubstrateAdapter {
       ) {
         const resolution = await this.resolveAnchorByName(name, owner);
         if (resolution.status === "present" && resolution.address === address) {
+          const now = Date.now();
+          ctx.receipt.state = "read-visible";
+          ctx.receipt.completion = "read-visible";
+          ctx.receipt.timings.readVisibleAt = now;
+          this.emit(ctx);
           return { address, ...(txRef ? { txRef } : {}) };
         }
         if (resolution.status === "present" && resolution.address !== address) {
@@ -1479,13 +1550,15 @@ export class DemosAdapter implements SubstrateAdapter {
             ? `name lookup indeterminate (${resolution.reason})`
             : "name index not visible";
       }
-      if (Date.now() >= deadline) {
-        throw new SubstrateError(
+      if (Date.now() >= ctx.deadline) {
+        throw this.fail(
+          ctx,
+          "timeout",
           `immutable anchor ${name} was included but did not become exact-byte ` +
             `and uniquely name-index visible before timeout (last state: ${lastState})`,
         );
       }
-      await sleep(pollMs);
+      await sleep(ctx.pollMs);
     }
   }
 
@@ -1546,9 +1619,67 @@ export class DemosAdapter implements SubstrateAdapter {
     // transaction is signed, nonce reconciliation runs independently so a hung
     // broadcast transport cannot hold every same-wallet write forever.
     return queueWalletWrite(key, (turn) => turn, async () => {
-      const ctx = this.newContext(name, timeoutMs, pollMs);
+      const ctx = this.newContext(name, timeoutMs, pollMs, opts);
       await this.reconcilePrevious(key, ctx);
       const owner = this.demos.getAddress();
+      const programName = logicalToStorageProgramName(name);
+      const immutableKey = `${key}\0${programName}`;
+      const valueHash = contentHash(data);
+      const metadataHash = metadata === undefined
+        ? undefined
+        : contentHash(metadata);
+      const retained = confirmedImmutableWrites.get(immutableKey);
+      if (retained) {
+        if (retained.owner !== owner || retained.valueHash !== valueHash ||
+            retained.metadataHash !== metadataHash) {
+          throw new DacsError(
+            `immutable anchor ${name} has a canonically confirmed create with ` +
+              "different signed-scope content or metadata",
+          );
+        }
+        const now = Date.now();
+        ctx.receipt.address = retained.address;
+        ctx.receipt.txRef = retained.txRef;
+        ctx.receipt.state = "included";
+        ctx.receipt.completion = "included";
+        ctx.receipt.timings.acceptedAt = now;
+        ctx.receipt.timings.includedAt = now;
+        if (retained.blockNumber !== undefined) {
+          ctx.receipt.blockNumber = retained.blockNumber;
+        }
+        this.emit(ctx);
+        const result = this.waitFor(
+          ctx,
+          this.waitForCreatedImmutable(
+            name,
+            data,
+            owner,
+            retained.address,
+            retained.txRef,
+            metadata,
+            ctx,
+          ),
+          "retained immutable completion",
+          () => this.fail(
+            ctx,
+            "timeout",
+            `immutable anchor ${name} was canonically confirmed but did not ` +
+              "become exact-byte and uniquely name-index visible before timeout",
+          ),
+        ).then((ref) => {
+          if (confirmedImmutableWrites.get(immutableKey)?.txRef === retained.txRef) {
+            confirmedImmutableWrites.delete(immutableKey);
+          }
+          return ref;
+        });
+        return {
+          result,
+          safe: result.then(
+            () => undefined,
+            () => undefined,
+          ),
+        };
+      }
       const existing = await this.waitFor(
         ctx,
         this.resolveExistingImmutable(name, data, owner, metadata),
@@ -1562,10 +1693,9 @@ export class DemosAdapter implements SubstrateAdapter {
       }
 
       // Absent → CREATE ONLY. Never call the update-capable anchor() path here.
-      const programName = logicalToStorageProgramName(name);
       const nonce = await this.waitFor(
         ctx,
-        this.nextAnchorNonce(),
+        this.nextAnchorNonce(key),
         "immutable nonce acquisition",
       );
       const address = StorageProgram.deriveStorageAddress(
@@ -1586,7 +1716,6 @@ export class DemosAdapter implements SubstrateAdapter {
           ...(metadata === undefined ? {} : { metadata }),
         },
       );
-      const deadline = ctx.deadline;
       ctx.receipt.address = address;
       const signed = await this.waitFor(
         ctx,
@@ -1689,16 +1818,30 @@ export class DemosAdapter implements SubstrateAdapter {
               completionFailure,
             );
           }
-          return this.waitForCreatedImmutable(
+          const confirmed: ConfirmedImmutableWrite = {
+            owner,
+            address,
+            txRef,
+            valueHash,
+            ...(metadataHash === undefined ? {} : { metadataHash }),
+            ...(ctx.receipt.blockNumber === undefined
+              ? {}
+              : { blockNumber: ctx.receipt.blockNumber }),
+          };
+          confirmedImmutableWrites.set(immutableKey, confirmed);
+          const ref = await this.waitForCreatedImmutable(
             name,
             data,
             owner,
             address,
             txRef,
             metadata,
-            deadline,
-            pollMs,
+            ctx,
           );
+          if (confirmedImmutableWrites.get(immutableKey)?.txRef === txRef) {
+            confirmedImmutableWrites.delete(immutableKey);
+          }
+          return ref;
         })(),
         "immutable completion",
         () => {

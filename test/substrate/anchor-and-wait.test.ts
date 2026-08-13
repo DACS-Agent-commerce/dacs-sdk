@@ -45,10 +45,6 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
   vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
     status: "absent",
   });
-  vi.spyOn(
-    adapter as unknown as { nextAnchorNonce(): Promise<number> },
-    "nextAnchorNonce",
-  ).mockResolvedValue(1);
   raw.getAddressNonce = vi.fn(async () => signedCount);
   raw.storagePrograms.read = vi.fn().mockRejectedValue(notFound());
   raw.storagePrograms.sign = vi.fn(
@@ -69,6 +65,10 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
   raw.nodeCall = vi
     .fn()
     .mockResolvedValue({ state: "included", blockNumber: 42 });
+  raw.getTxByHash = vi.fn().mockResolvedValue({
+    status: "confirmed",
+    blockNumber: 42,
+  });
   await adapter.connect();
 
   return { adapter, raw, rpc, wallet };
@@ -100,6 +100,29 @@ describe("DemosAdapter.anchorAndWait", () => {
       expect.anything(),
       { nonce: 1 },
     );
+  });
+
+  it("accepts canonical confirmed execution while the status index still lags", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.nodeCall.mockResolvedValue({ state: "pending" });
+    raw.getTxByHash.mockResolvedValue({
+      status: "confirmed",
+      blockNumber: 43,
+    });
+
+    await expect(
+      adapter.anchorAndWait(
+        "canonical-confirmed-before-index",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({
+      state: "included",
+      blockNumber: 43,
+      attempts: { inclusionPolls: 1 },
+    });
+    expect(raw.nodeCall).toHaveBeenCalledTimes(1);
+    expect(raw.getTxByHash).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a mutable create signed with a different nonce", async () => {
@@ -324,7 +347,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(2);
   });
 
-  it("holds the wallet queue until the authoritative account nonce catches up", async () => {
+  it("continues from canonical confirmed nonce while the account index lags", async () => {
     fixtureId += 1;
     const rpc = `https://nonce-lag-${fixtureId}.test`;
     const wallet = `${WALLET.slice(0, -4)}${fixtureId
@@ -337,13 +360,6 @@ describe("DemosAdapter.anchorAndWait", () => {
 
     for (const fixture of [first, second]) {
       fixture.raw.getAddressNonce.mockImplementation(async () => accountNonce);
-      vi.mocked(
-        (
-          fixture.adapter as unknown as {
-            nextAnchorNonce(): Promise<number>;
-          }
-        ).nextAnchorNonce,
-      ).mockImplementation(async () => accountNonce + 1);
       fixture.raw.storagePrograms.sign.mockImplementation(
         async (_payload: unknown, options?: { nonce?: number }) => {
           const nonce =
@@ -371,11 +387,6 @@ describe("DemosAdapter.anchorAndWait", () => {
       { value: 2 },
       { completion: "included", timeoutMs: 1_000, pollMs: 1 },
     );
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(second.raw.storagePrograms.sign).not.toHaveBeenCalled();
-    expect(signedNonces).toEqual([1]);
-
-    accountNonce = 1;
     await expect(queued).resolves.toMatchObject({ state: "included" });
     expect(signedNonces).toEqual([1, 2]);
     accountNonce = 2;
@@ -394,6 +405,11 @@ describe("DemosAdapter.anchorAndWait", () => {
       firstIncluded
         ? { state: "included", blockNumber: 1 }
         : { state: "pending" },
+    );
+    first.raw.getTxByHash.mockImplementation(async () =>
+      firstIncluded
+        ? { status: "confirmed", blockNumber: 1 }
+        : { status: "pending", blockNumber: null },
     );
 
     await expect(
@@ -435,6 +451,11 @@ describe("DemosAdapter.anchorAndWait", () => {
     first.raw.nodeCall.mockImplementation(async () =>
       firstIncluded ? { state: "included" } : { state: "pending" },
     );
+    first.raw.getTxByHash.mockImplementation(async () =>
+      firstIncluded
+        ? { status: "confirmed", blockNumber: 1 }
+        : { status: "pending", blockNumber: null },
+    );
 
     await first.adapter.anchorAndWait(
       "one",
@@ -469,13 +490,6 @@ describe("DemosAdapter.anchorAndWait", () => {
 
     for (const fixture of [immutable, mutable]) {
       fixture.raw.getAddressNonce.mockImplementation(async () => accountNonce);
-      vi.mocked(
-        (
-          fixture.adapter as unknown as {
-            nextAnchorNonce(): Promise<number>;
-          }
-        ).nextAnchorNonce,
-      ).mockImplementation(async () => accountNonce + 1);
       fixture.raw.storagePrograms.sign.mockImplementation(
         async (_payload: unknown, options?: { nonce?: number }) => {
           const nonce =
@@ -513,11 +527,6 @@ describe("DemosAdapter.anchorAndWait", () => {
       { value: 2 },
       { completion: "included", timeoutMs: 1_000, pollMs: 1 },
     );
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(mutable.raw.storagePrograms.sign).not.toHaveBeenCalled();
-    expect(signedNonces).toEqual([1]);
-
-    accountNonce = 1;
     await expect(queued).resolves.toMatchObject({ state: "included" });
     expect(signedNonces).toEqual([1, 2]);
     accountNonce = 2;
@@ -625,8 +634,40 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("does not promote included status to success when execution failed", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.getTxByHash.mockResolvedValue({
+      status: "failed",
+      blockNumber: 42,
+    });
+
+    const error = asAnchorError(
+      await adapter
+        .anchorWriteOnce(
+          "failed-after-inclusion",
+          { value: 1 },
+          { timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+
+    expect(error).toMatchObject({
+      code: "inclusion-failed",
+      receipt: {
+        name: "failed-after-inclusion",
+        state: "failed",
+        lastObservedState: "failed",
+        txRef: expect.stringMatching(/^tx-/),
+        blockNumber: 42,
+      },
+    });
+    expect(raw.getTxByHash).toHaveBeenCalledWith(error.receipt.txRef);
+    expect(error.message).toMatch(/terminal state failed/);
+  });
+
   it("preserves immutable inclusion-timeout evidence at the shared completion deadline", async () => {
     const { adapter, raw } = await makeAdapter();
+    raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
     raw.nodeCall
       .mockResolvedValueOnce({ state: "pending" })
       .mockImplementation(() => deferred<never>().promise);
@@ -702,6 +743,79 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("never recreates a canonically confirmed immutable slot while its name index lags", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.storagePrograms.read.mockImplementation(
+      () => deferred<never>().promise,
+    );
+
+    const first = asAnchorError(
+      await adapter
+        .anchorWriteOnce(
+          "confirmed-before-name-index",
+          { value: 1 },
+          { timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+    expect(first).toMatchObject({
+      code: "timeout",
+      receipt: {
+        state: "included",
+        address: expect.any(String),
+        txRef: expect.any(String),
+      },
+    });
+
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      data: { value: 1 },
+    });
+    const stillLagging = asAnchorError(
+      await adapter
+        .anchorWriteOnce(
+          "confirmed-before-name-index",
+          { value: 1 },
+          { timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+    expect(stillLagging).toMatchObject({
+      code: "timeout",
+      receipt: {
+        state: "included",
+        address: first.receipt.address,
+        txRef: first.receipt.txRef,
+      },
+    });
+    await expect(
+      adapter.anchorWriteOnce(
+        "confirmed-before-name-index",
+        { value: 2 },
+        { timeoutMs: 20, pollMs: 1 },
+      ),
+    ).rejects.toThrow(/different signed-scope content or metadata/);
+    expect(raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+
+    vi.mocked(adapter.resolveAnchorByName).mockResolvedValue({
+      status: "present",
+      address: first.receipt.address!,
+    });
+    await expect(
+      adapter.anchorWriteOnce(
+        "confirmed-before-name-index",
+        { value: 1 },
+        { timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toEqual({
+      address: first.receipt.address,
+      txRef: first.receipt.txRef,
+    });
+    expect(raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it("bounds hung anchorWriteOnce preparation without poisoning the shared queue", async () => {
     fixtureId += 1;
     const rpc = `https://hung-immutable-sign-${fixtureId}.test`;
@@ -745,6 +859,11 @@ describe("DemosAdapter.anchorAndWait", () => {
     first.raw.nodeCall.mockImplementation(async () =>
       recover ? { state: "included" } : { state: "pending" },
     );
+    first.raw.getTxByHash.mockImplementation(async () =>
+      recover
+        ? { status: "confirmed", blockNumber: 1 }
+        : { status: "pending", blockNumber: null },
+    );
     await first.adapter.anchorAndWait(
       "one",
       { value: 1 },
@@ -778,6 +897,11 @@ describe("DemosAdapter.anchorAndWait", () => {
     raw.nodeCall
       .mockResolvedValueOnce({ state: "failed" })
       .mockResolvedValue({ state: "included", blockNumber: 7 });
+    raw.getTxByHash.mockImplementation(async (txRef: string) =>
+      txRef.endsWith("-1")
+        ? { status: "failed", blockNumber: 6 }
+        : { status: "confirmed", blockNumber: 7 },
+    );
 
     const failed = await adapter
       .anchorAndWait(
@@ -801,11 +925,64 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(2);
   });
 
+  it("does not advance the confirmed nonce floor after terminal failure", async () => {
+    const { adapter, raw } = await makeAdapter();
+    const signedNonces: number[] = [];
+    let signedCount = 0;
+    raw.getAddressNonce.mockResolvedValue(0);
+    raw.storagePrograms.sign.mockImplementation(
+      async (_payload: unknown, options?: { nonce?: number }) => {
+        signedCount += 1;
+        signedNonces.push(options?.nonce as number);
+        return {
+          hash: `failed-nonce-floor-${signedCount}`,
+          content: { nonce: options?.nonce },
+        };
+      },
+    );
+    raw.nodeCall.mockImplementation(
+      async (_method: string, params: { hash: string }) =>
+        params.hash.endsWith("-1")
+          ? { state: "failed", blockNumber: 6 }
+          : { state: "included", blockNumber: 7 },
+    );
+    raw.getTxByHash.mockImplementation(async (txRef: string) =>
+      txRef.endsWith("-1")
+        ? { status: "failed", blockNumber: 6 }
+        : { status: "confirmed", blockNumber: 7 },
+    );
+
+    await expect(
+      adapter.anchorAndWait(
+        "failed-nonce-floor",
+        { attempt: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).rejects.toMatchObject({
+      code: "inclusion-failed",
+      receipt: { state: "failed" },
+    });
+    await expect(
+      adapter.anchorAndWait(
+        "failed-nonce-floor",
+        { attempt: 2 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({ state: "included", blockNumber: 7 });
+
+    expect(signedNonces).toEqual([1, 1]);
+  });
+
   it("preserves accepted state and tx hash on total-operation timeout", async () => {
     const { adapter, raw } = await makeAdapter();
     let recover = false;
     raw.nodeCall.mockImplementation(async () =>
       recover ? { state: "included", blockNumber: 9 } : { state: "pending" },
+    );
+    raw.getTxByHash.mockImplementation(async () =>
+      recover
+        ? { status: "confirmed", blockNumber: 9 }
+        : { status: "pending", blockNumber: null },
     );
 
     const timedOut = await adapter
@@ -915,6 +1092,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     const { adapter, raw } = await makeAdapter();
     raw.tx.broadcast.mockResolvedValue({ result: 400, response: "invalid tx" });
     raw.nodeCall.mockResolvedValue({ state: "unknown" });
+    raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
 
     const error = asAnchorError(
       await adapter
@@ -946,6 +1124,11 @@ describe("DemosAdapter.anchorAndWait", () => {
     );
     first.raw.nodeCall.mockImplementation(async () =>
       firstIncluded ? { state: "included" } : { state: "pending" },
+    );
+    first.raw.getTxByHash.mockImplementation(async () =>
+      firstIncluded
+        ? { status: "confirmed", blockNumber: 1 }
+        : { status: "pending", blockNumber: null },
     );
 
     const error = asAnchorError(
@@ -981,6 +1164,11 @@ describe("DemosAdapter.anchorAndWait", () => {
     let recover = false;
     raw.nodeCall.mockImplementation(async () =>
       recover ? { state: "included", blockNumber: 10 } : { state: "pending" },
+    );
+    raw.getTxByHash.mockImplementation(async () =>
+      recover
+        ? { status: "confirmed", blockNumber: 10 }
+        : { status: "pending", blockNumber: null },
     );
 
     const operation = adapter.anchorAndWait(
