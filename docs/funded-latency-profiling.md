@@ -115,11 +115,16 @@ PAY_RPC_SECONDARY=https://independent.example \
 npx vitest run test/integration/funded-two-agent.e2e.test.ts
 ```
 
-Concatenate retained logs and summarize delivery-ready results with:
+For repository-local exploratory analysis, concatenate retained logs and run:
 
 ```sh
-npm run funded:timing < funded-runs.log
+node scripts/summarize-funded-timing.mjs < funded-runs.log
 ```
+
+This legacy text summarizer is heuristic: it counts markers globally and does
+not establish per-run provenance. It must not be used for a release-grade
+latency claim without the structured, per-run records described in the PR
+review. It is repository tooling and is not included in the published package.
 
 Omit `LIVE_E2E_PROFILE` and `LIVE_E2E_DELIVERY_ONLY` for the exhaustive
 response-loss, buyer reconciliation, cold seller restart, settlement
