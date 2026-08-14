@@ -19,6 +19,7 @@ import {
 } from "../../src/crypto/index.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
+import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
 // listing verifier. Previously createAgent() supplied neither verifyListing nor
@@ -104,6 +105,17 @@ async function anchorListing(
     notBefore: 1_700_000_000_000,
   },
   description = "d",
+  payment: {
+    phase: "pay-x402" | "pay-dem";
+    railId: string;
+    currency: string;
+    price: string;
+  } = {
+    phase: "pay-x402",
+    railId: "x402:default",
+    currency: "USDC",
+    price: "1",
+  },
 ) {
   const signed = await signComponentArtifact(
     {
@@ -138,14 +150,14 @@ async function anchorListing(
       pipeline: [
         { kind: "negotiate-fixed-price" },
         { kind: "commit-agreement" },
-        { kind: "pay-x402", parameters: { rail: "x402:default" } },
+        { kind: payment.phase, parameters: { rail: payment.railId } },
         { kind: "deliver-attested-payload" },
       ],
       pricing: {
         kind: "fixed",
-        price: { amount: "1", currency: "USDC" },
+        price: { amount: payment.price, currency: payment.currency },
       },
-      acceptedRails: [{ railId: "x402:default" }],
+      acceptedRails: [{ railId: payment.railId }],
       terms: { deadlineSecAfterCommit: 3_600 },
       validity,
     },
@@ -220,6 +232,62 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       }),
     ).rejects.toThrow(/x402 destination mismatch/);
     expect(omittedRail.settle).not.toHaveBeenCalled();
+  });
+
+  test("defaults a normative pay-dem session to the seller Demos claim", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(
+      store,
+      sellerPriv,
+      sellerDid,
+      { notBefore: 1_700_000_000_000 },
+      "native DEM listing",
+      {
+        phase: "pay-dem",
+        railId: "demos:native",
+        currency: "DEM",
+        price: "1",
+      },
+    );
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    const transfer = vi.fn(
+      async ({ recipient, network }: { recipient: string; network?: string }) => ({
+        ok: true,
+        txHash: "demos:paid",
+        chainId: network ?? "demos",
+        payer: buyerDid,
+        payee: recipient,
+        finality: { model: "bft-final" as const },
+        blockNumber: 42,
+        txRefKind: "demos",
+      }),
+    );
+    const rail: PayDemRail = { address: buyerDid, settle: transfer };
+
+    await expect(
+      agent.runSession(ref, {
+        terms: {
+          price: {
+            amount: "1",
+            asset: "DEM",
+            decimals: 9,
+            rail: "demos:native",
+          },
+          deliveryPhase: "deliver-attested-payload",
+          deliveryFormat: "application/json",
+        },
+        settle: payDemSettle(rail, { network: "demos:testnet" }),
+      }),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(transfer).toHaveBeenCalledWith({
+      recipient: sellerHex,
+      amount: "1000000000",
+      network: "demos:testnet",
+    });
   });
 
   test("a genuinely signed listing settles through the public runSession", async () => {

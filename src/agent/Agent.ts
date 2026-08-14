@@ -112,10 +112,12 @@ export interface RunSessionOptions {
   /** Executes payment on the chosen rail (e.g. an x402 rail). */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
-   * Exact destination the selected rail will pay. Required when that address is
-   * in a different namespace from the signed seller claim (for example an EVM
-   * recipient bound to a seller DID). Defaults to the seller claim only for
-   * same-namespace rails.
+   * Runtime destination the buyer instructs the selected rail to pay and records
+   * in its buyer-signed legacy Agreement extension. Required when that address
+   * is in a different namespace from the seller claim (for example an EVM
+   * recipient associated with a seller DID). Defaults to the seller claim only
+   * for same-namespace rails. This option is not seller-authenticated payout
+   * negotiation; use a PayeeBoundAgreementDocument for PB-1 binding.
    */
   expectedSettlementPayee?: string;
   /**

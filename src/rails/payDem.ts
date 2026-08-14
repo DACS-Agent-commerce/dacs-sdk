@@ -37,8 +37,8 @@ export function demosAddressFromClaim(claim: string): string | null {
  * pay-dem settlement rail — native DEM transfer (DACS-4 §9.5.9, SR-4).
  *
  * The plain native path: the buyer submits a `demos.transfer` of the agreed DEM
- * amount straight to the seller's address; the cosigned agreement + the on-chain
- * transfer ARE the settlement (no HTTP 402 flow — that's the separate,
+ * amount straight to the seller's address; the buyer-signed runtime agreement +
+ * the on-chain transfer are the settlement inputs (no HTTP 402 flow — that's the separate,
  * experimental pay-d402). This is the live-settleable native rail: for Demos,
  * BFT *inclusion IS finality*, so the evidence carries `settlementFinality.model:
  * "bft-final"` and a `demos` txRef (hash + block height).
@@ -277,9 +277,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
  * Bridge a PayDemRail to the runSession `settle` seam.
  *
  * DESTINATION (legacy safety guard, not PB-2 conformance): the transfer
- * destination is derived from the AGREEMENT's `req.payee` — the seller's primary
- * claim — never from separate config. A Demos primary claim intrinsically IS the
- * address, so the money can only go where the fixed-price agreement says.
+ * destination is derived from the request's `req.payee` — the seller primary
+ * claim carried from the Listing into the buyer-signed legacy Agreement — never
+ * from separate config. A Demos primary claim intrinsically resolves to the
+ * address, so the runtime request cannot redirect payment to an unrelated key.
  * `cfg.recipient` is therefore an optional CROSS-CHECK: if it disagrees with the
  * agreement's payee the settle ABORTS **before** any transfer, rather than paying
  * a third address while returning evidence for the session price.
@@ -326,7 +327,8 @@ export function payDemSettle(
           `address; refusing to transfer`,
       );
     }
-    if (expectedPayee !== payeeAddress) {
+    const expectedPayeeAddress = demosAddressFromClaim(expectedPayee);
+    if (expectedPayeeAddress !== payeeAddress) {
       throw new DacsError(
         `pay-dem destination mismatch: request binds ${expectedPayee}, agreement claim resolves to ${payeeAddress}`,
       );
@@ -352,10 +354,20 @@ export function payDemSettle(
         amount: amountOs,
         network,
       });
-    return store.once(
+    const result = await store.once(
       settlementKey(railId, jobId, phaseIndex),
       submit,
       reconcile,
     );
+    // The low-level native rail reports the exact on-chain address. The public
+    // settlement seam must return the request-bound identifier verbatim so the
+    // orchestrator can check it without applying rail-specific normalization.
+    // Verify the equivalence here before restoring that identifier.
+    if (demosAddressFromClaim(result.payee) !== payeeAddress) {
+      throw new DacsError(
+        `pay-dem settlement returned payee ${result.payee}, expected Demos address ${payeeAddress}`,
+      );
+    }
+    return { ...result, payee: expectedPayee };
   };
 }

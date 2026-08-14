@@ -87,10 +87,11 @@ export interface SettleRequest {
   /** The seller claim bound by the Listing/Agreement. */
   payee: string;
   /**
-   * Exact rail destination selected for this deal. This is separate from
-   * `payee`: an EVM/x402 destination and a seller DID are different namespaces
-   * even when the signed deal binds them. A rail MUST pay this destination and
-   * return this exact value as `SettleResult.payee`.
+   * Runtime rail destination selected by the buyer. This is separate from
+   * `payee`: an EVM/x402 destination and a seller DID are different namespaces.
+   * On the legacy path it is retained in a buyer-signed extension, not negotiated
+   * with seller authority. A rail MUST pay this destination and return this exact
+   * identifier as `SettleResult.payee`.
    */
   expectedPayee: string;
   jobId: string;
@@ -189,9 +190,11 @@ export interface SessionDeps {
    */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
-   * Exact rail destination selected from authenticated deal data. Omit only
-   * when the seller claim itself is the rail destination (for example a native
-   * Demos claim); otherwise this must be supplied explicitly.
+   * Runtime rail destination selected by the buyer and retained in the
+   * buyer-signed legacy Agreement extension. Omit only when the seller claim
+   * itself resolves to the rail destination (for example a native Demos claim);
+   * otherwise this must be supplied explicitly. This is not PB-1
+   * seller-authenticated payout negotiation.
    */
   expectedSettlementPayee?: string;
   /**
@@ -2788,7 +2791,7 @@ export async function runSessionCore(
       const agreement: AgreementDocument & {
         /** SDK operational extension; retained inside the legacy signed scope. */
         dacsSdkListingPin?: ListingPin;
-        /** Exact rail destination; distinct from the seller claim namespace. */
+        /** Buyer-requested rail destination; distinct from the seller claim namespace. */
         dacsSdkExpectedSettlementPayee: string;
       } = {
         jobId,

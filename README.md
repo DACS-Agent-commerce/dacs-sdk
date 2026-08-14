@@ -63,8 +63,10 @@ if (compatibility !== "normative") throw new Error("legacy Listing refused");
 const rail = await createX402Rail({ evmPrivateKey });
 const session = await agent.runSession(listingRef, {
   terms,
-  // Bind the cross-namespace EVM destination into the signed Agreement and
-  // durable recovery state. Same-namespace rails may omit this option.
+  // Record the buyer-selected cross-namespace EVM destination in the
+  // buyer-signed legacy Agreement extension and durable recovery state.
+  // Same-namespace rails may omit this option; PB-1 payout negotiation uses a
+  // PayeeBoundAgreementDocument instead.
   expectedSettlementPayee: recipientEvm,
   // optional Vet step: resolve a steward recipe + verify the seller before paying
   vet: (subject) =>

@@ -216,10 +216,19 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(client.sent!.to).toBe(SELLER_HEX);
   });
 
-  test("payee is authoritative even with NO configured recipient", async () => {
+  test("the request payee determines the destination with NO configured recipient", async () => {
     const client = fakeClient();
     await settleWith(client, { network: "demos" })(req());
     expect(client.sent!.to).toBe(SELLER_HEX);
+  });
+
+  test("normalizes a same-address Demos DID request binding and returns it verbatim", async () => {
+    const client = fakeClient();
+    const result = await settleWith(client, { network: "demos" })(
+      req({ expectedPayee: PAYEE_CLAIM }),
+    );
+    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(result.payee).toBe(PAYEE_CLAIM);
   });
 
   test("rejects an expected destination mismatch before transfer", async () => {

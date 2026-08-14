@@ -233,10 +233,12 @@ export async function x402SettleCore(
     headers,
   });
 
-  // 5. Read and authenticate the settlement response. HTTP success only means
-  //    the paid request completed; the x402 receipt is authoritative for whether
-  //    settlement succeeded. Bind that receipt back to the negotiated network,
-  //    buyer, and (when the facilitator reports it) exact base-unit amount.
+  // 5. Decode and consistency-check the provider's settlement response. HTTP
+  //    success alone does not prove settlement. This header is not independently
+  //    authenticated and does not establish chain finality; the checks below
+  //    only bind its claims back to the requested network, buyer, and (when the
+  //    facilitator reports it) exact base-unit amount. Full receipt/finality
+  //    authentication remains tracked by #102.
   let settlement: SettleResponse | undefined;
   try {
     settlement = client.getPaymentSettleResponse((name) =>
