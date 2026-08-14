@@ -1,8 +1,8 @@
 # Funded delivery-ready profiling
 
-This report covers the productized supplier API in PR #153 at exact head
-`d663f4518a8d220ab41f3d1efb3a9bf5eae59c0c`. It is evidence for review, not
-authorization to merge the supplier stack.
+This report preserves a funded campaign run against historical PR #153 feature
+head `d663f4518a8d220ab41f3d1efb3a9bf5eae59c0c`. It is evidence for review, not
+a current-head latency claim or authorization to merge the supplier stack.
 
 ## Finish lines
 
@@ -57,8 +57,8 @@ The latency gates pass for the successful sample.
 
 ## Fresh exhaustive recovery proof
 
-A separate funded run on the same exact head completed the default exhaustive
-profile in **349.94 s** with all 12 assertions passing. It proved:
+A separate funded run on that historical feature head completed the default
+exhaustive profile in **349.94 s** with all 12 assertions passing. It proved:
 
 - authenticated x402 settlement on both RPCs;
 - recovery from the injected buyer post-payment chain-read loss;
@@ -97,8 +97,10 @@ The strict campaign plan also asks for `audit-complete` after every one of the
 ten latency samples. Those samples deliberately stopped after the restarted
 evidence finalizer and cross-RPC proof, so they establish delivery-ready
 performance and durable post-delivery evidence, not ten DACS-5 closures. The
-fresh exhaustive run establishes one current-head DACS-5 closure. Keep the PR
-draft if ten independent full closures remains a release gate.
+fresh exhaustive run establishes one closure for that historical feature head.
+Later #153 repairs have separate funded evidence in #153; this report does not
+silently relabel the old ten-run sample as current-head data. Keep the PR draft
+if ten independent full closures remains a release gate.
 
 ## Running the guarded profile
 
