@@ -74,6 +74,7 @@ function buildArtifacts() {
       deliverable: {
         kind: "attested-payload",
         payloadFormat: "application/json",
+        verificationMethod: { kind: "self-signed" },
       },
     },
     buyerRequirement: { requirementVersion: "1", required: [] },

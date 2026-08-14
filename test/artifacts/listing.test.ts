@@ -13,13 +13,21 @@ import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { Listing, ListingDraft } from "../../src/artifacts/types.js";
 import {
+  isDeliverableSpec,
   isLegacyMvpListing,
   isListing,
   isListingDraft,
+  isListingEnvelope,
   isListingPublicEndpoint,
+  isVerificationMethod,
   readListingArtifact,
 } from "../../src/artifacts/validators.js";
-import { contentHash, stripSignature } from "../../src/canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  sha256Hex,
+  stripSignature,
+} from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -48,6 +56,35 @@ const VECTOR = JSON.parse(readFileSync(VECTOR_PATH, "utf8")) as {
 
 const fixture = (): Listing =>
   structuredClone(VECTOR.fixtures["listing-with-inert-extension"].listing);
+
+const verifiedAdmissionFor = (listing: Listing) => {
+  const deliverable = listing.offering.deliverable;
+  if (
+    deliverable.kind !== "attested-payload" ||
+    !deliverable.verificationMethod
+  ) {
+    throw new Error("fixture drift");
+  }
+  return {
+    disposition: "verified" as const,
+    step: 9 as const,
+    reason: "verified",
+    listing,
+    listingContentHash: contentHash(
+      listing as unknown as Record<string, unknown>,
+    ),
+    payloadVerificationCapability: {
+      operation: "verify" as const,
+      disposition: "supported" as const,
+      reason: "supported",
+      verificationMethodKind: deliverable.verificationMethod.kind,
+      verificationMethodHash: sha256Hex(
+        canonicalize(deliverable.verificationMethod),
+      ),
+      deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
+    },
+  };
+};
 
 const verify = (bytes: Uint8Array, signature: Uint8Array, key: Uint8Array) =>
   ed25519Verify(bytes, signature, publicKeyFromRaw(key));
@@ -96,12 +133,7 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
           return valid;
         },
         nowMs: () => 1_790_000_000_000,
-        validateListing: (raw) => ({
-          disposition: "verified",
-          step: 9,
-          reason: "verified",
-          listingContentHash: contentHash(raw),
-        }),
+        validateListing: (raw) => verifiedAdmissionFor(raw as unknown as Listing),
         resolvePublicKey: (claim) => {
           const encoded = VECTOR.publicKeys[claim];
           return encoded
@@ -225,7 +257,9 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
       VECTOR.fixtures["listing-with-unknown-phase"].listing,
     );
     expect(isListing(unknown)).toBe(false);
-    expect(readListingArtifact(unknown)).toBeNull();
+    expect(readListingArtifact(unknown)).toMatchObject({
+      compatibility: "normative",
+    });
   });
 
   it("rejects different payment phase kinds sharing one railId (LRR-4)", () => {
@@ -239,7 +273,11 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     );
 
     expect(isListing(listing)).toBe(false);
-    expect(readListingArtifact(listing)).toBeNull();
+    // The envelope remains readable so ordered validation can return the
+    // required step-8 rejection; it is never a valid admitted Listing.
+    expect(readListingArtifact(listing)).toMatchObject({
+      compatibility: "normative",
+    });
   });
 
   it("does not reinterpret an unsupported signature algorithm as Ed25519", async () => {
@@ -302,6 +340,76 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
         signature: { ...listing.signature, value: `${listing.signature.value}=` },
       }),
     ).toBe(false);
+  });
+
+  it("keeps the legacy-optional method readable but enforces DPA-1 pipeline coherence", () => {
+    const listing = fixture();
+    const unsigned = stripSignature(
+      listing as unknown as Record<string, unknown>,
+    ) as unknown as ListingDraft;
+    const deliverable = unsigned.offering.deliverable;
+    if (deliverable.kind !== "attested-payload") throw new Error("fixture drift");
+    delete deliverable.verificationMethod;
+
+    // DACS-4 §9.12 retains the optional wire member, so an historical envelope
+    // reaches reader step 7. A current producer/session may not use it.
+    expect(isDeliverableSpec(deliverable)).toBe(true);
+    expect(isListingDraft(unsigned)).toBe(false);
+    const signedWithoutMethod = { ...unsigned, signature: listing.signature };
+    expect(isListingEnvelope(signedWithoutMethod)).toBe(true);
+    expect(isListing(signedWithoutMethod)).toBe(false);
+    expect(readListingArtifact(signedWithoutMethod)).toMatchObject({
+      compatibility: "normative",
+    });
+
+    for (const verificationMethod of [
+      null,
+      { kind: "future-method" },
+      { kind: "tlsnotary" },
+    ]) {
+      const malformed = {
+        kind: "attested-payload",
+        payloadFormat: "application/json",
+        verificationMethod,
+      };
+      expect(isDeliverableSpec(malformed)).toBe(false);
+      expect(
+        isListingDraft({
+          ...unsigned,
+          offering: { ...unsigned.offering, deliverable: malformed },
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it.each([
+    ["blank TLSNotary endpoint", { kind: "tlsnotary", endpoint: "" }],
+    ["padded TLSNotary endpoint", { kind: "tlsnotary", endpoint: " https://notary.example " }],
+    ["blank zkTLS provider", { kind: "zktls", provider: "", programId: "program" }],
+    ["blank zkTLS program", { kind: "zktls", provider: "reclaim", programId: "" }],
+    [
+      "blank proxy URL template",
+      { kind: "consensus-backed-proxy", endpoint: { method: "GET", urlTemplate: "" } },
+    ],
+    ["blank OAuth provider", { kind: "oauth-attested", provider: "", scopes: ["openid"], maxTokenAgeSec: 60 }],
+    ["blank OAuth scope", { kind: "oauth-attested", provider: "oidc", scopes: [""], maxTokenAgeSec: 60 }],
+    ["zero EVM chain", { kind: "evm-rpc", chainId: 0, contract: `0x${"1".repeat(40)}`, method: "ownerOf" }],
+    ["non-address EVM contract", { kind: "evm-rpc", chainId: 1, contract: "0xabc", method: "ownerOf" }],
+    ["blank EVM method", { kind: "evm-rpc", chainId: 1, contract: `0x${"1".repeat(40)}`, method: "" }],
+  ])("rejects a verification method with %s at every structural write/envelope gate", (_name, method) => {
+    expect(isVerificationMethod(method)).toBe(false);
+    const listing = fixture();
+    const unsigned = stripSignature(
+      listing as unknown as Record<string, unknown>,
+    ) as unknown as ListingDraft;
+    unsigned.offering.deliverable = {
+      kind: "attested-payload",
+      payloadFormat: "application/json",
+      verificationMethod: method as never,
+    };
+    expect(isDeliverableSpec(unsigned.offering.deliverable)).toBe(false);
+    expect(isListingDraft(unsigned)).toBe(false);
+    expect(isListingEnvelope({ ...unsigned, signature: listing.signature })).toBe(false);
   });
 });
 

@@ -9,10 +9,13 @@ import {
   signComponentArtifact,
   verifyComponentSignature,
 } from "../../src/artifacts/signatures.js";
+import type { ListingDraft } from "../../src/artifacts/types.js";
 import {
+  canonicalize,
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
+  sha256Hex,
 } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -40,6 +43,7 @@ function fakeDeps() {
     store,
     stats,
     sign,
+    resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
     loadRailResolution: (draft) => ({
       trustPhase: "PA-1",
       trustPolicyAcceptsPA1: true,
@@ -158,12 +162,307 @@ const signedListing = (over: Record<string, unknown> = {}) =>
   });
 
 describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () => {
+  test("DPA-1 rejects a missing method before capability resolution, signing, or anchoring", async () => {
+    const deps = fakeDeps();
+    let capabilityReads = 0;
+    let signCalls = 0;
+    deps.resolvePayloadVerificationCapability = () => {
+      capabilityReads += 1;
+      return { disposition: "supported" };
+    };
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    const candidate = listing() as ListingDraft;
+    const deliverable = candidate.offering.deliverable;
+    delete (deliverable as { verificationMethod?: unknown }).verificationMethod;
+
+    await expect(publishListingCore(candidate, deps)).rejects.toThrow(
+      /normative unsigned DACS-1.*Listing/,
+    );
+    expect(capabilityReads).toBe(0);
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("does not require a payload-method resolver for a non-attested delivery", async () => {
+    const deps = fakeDeps();
+    delete deps.resolvePayloadVerificationCapability;
+    const base = listing();
+    const candidate = listing({
+      offering: {
+        ...base.offering,
+        deliverable: { kind: "storage-program" as const },
+      },
+      pipeline: [
+        { kind: "negotiate-fixed-price" as const },
+        { kind: "commit-agreement" as const },
+        { kind: "pay-x402" as const, parameters: { rail: "x402:default" } },
+        { kind: "deliver-storage-program" as const },
+      ],
+    });
+
+    await expect(publishListingCore(candidate, deps)).resolves.toMatchObject({
+      ref: "stor-1",
+    });
+  });
+
+  test.each([
+    ["unsupported", "not-installed"],
+    ["indeterminate", "dependency-offline"],
+    ["error", "dependency-failed"],
+  ] as const)(
+    "DPA-1 refuses a %s producer before rail reads, signing, or anchoring",
+    async (disposition, reason) => {
+      const deps = fakeDeps();
+      let railReads = 0;
+      let historyReads = 0;
+      let signCalls = 0;
+      deps.resolvePayloadVerificationCapability = () => ({ disposition, reason });
+      deps.loadRailResolution = () => {
+        railReads += 1;
+        throw new Error("must not resolve rails");
+      };
+      deps.scanOwnAnchorsByNamePrefix = async () => {
+        historyReads += 1;
+        return { status: "ok", anchors: [] };
+      };
+      deps.sign = (bytes) => {
+        signCalls += 1;
+        return sign(bytes);
+      };
+
+      await expect(publishListingCore(listing(), deps)).rejects.toMatchObject({
+        message: expect.stringContaining(`method is ${disposition}`),
+        category:
+          disposition === "unsupported" ? "permanent" : "transient",
+      });
+      expect(railReads).toBe(0);
+      expect(historyReads).toBe(0);
+      expect(signCalls).toBe(0);
+      expect(deps.stats.creates).toBe(0);
+    },
+  );
+
+  test.each([
+    ["tlsnotary", { kind: "tlsnotary", endpoint: "" }],
+    ["zktls-provider", { kind: "zktls", provider: "", programId: "program" }],
+    ["zktls-program", { kind: "zktls", provider: "reclaim", programId: "" }],
+    ["proxy", { kind: "consensus-backed-proxy", endpoint: { method: "GET", urlTemplate: "" } }],
+    ["oauth-provider", { kind: "oauth-attested", provider: "", scopes: ["openid"], maxTokenAgeSec: 60 }],
+    ["oauth-scope", { kind: "oauth-attested", provider: "oidc", scopes: [""], maxTokenAgeSec: 60 }],
+    ["evm-contract", { kind: "evm-rpc", chainId: 1, contract: "0xabc", method: "ownerOf" }],
+    ["evm-method", { kind: "evm-rpc", chainId: 1, contract: `0x${"1".repeat(40)}`, method: "" }],
+  ])("refuses malformed %s method configuration before resolver or side effects", async (_name, method) => {
+    const deps = fakeDeps();
+    let capabilityReads = 0;
+    let signCalls = 0;
+    deps.resolvePayloadVerificationCapability = () => {
+      capabilityReads += 1;
+      return { disposition: "supported" };
+    };
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    const candidate = listing() as ListingDraft;
+    const deliverable = candidate.offering.deliverable;
+    if (deliverable.kind !== "attested-payload") throw new Error("fixture drift");
+    deliverable.verificationMethod = method as never;
+
+    await expect(publishListingCore(candidate, deps)).rejects.toThrow(
+      /normative unsigned DACS-1.*Listing/,
+    );
+    expect(capabilityReads).toBe(0);
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("passes the exact method/spec and their full hashes to producer capability resolution", async () => {
+    const deps = fakeDeps();
+    const candidate = listing() as ListingDraft;
+    const deliverable = candidate.offering.deliverable;
+    if (deliverable.kind !== "attested-payload") throw new Error("fixture drift");
+    const method = {
+      kind: "tlsnotary" as const,
+      endpoint: "https://notary.example/session",
+      extension: { policy: "exact-bytes" },
+    };
+    deliverable.verificationMethod = method;
+    deps.resolvePayloadVerificationCapability = (input) => {
+      expect(input.operation).toBe("produce");
+      expect(input.verificationMethod).not.toBe(method);
+      expect(input.deliverableSpec).not.toBe(deliverable);
+      expect(input.verificationMethod).toEqual(method);
+      expect(input.deliverableSpec).toEqual(deliverable);
+      expect(input.verificationMethod).toHaveProperty(
+        "extension.policy",
+        "exact-bytes",
+      );
+      expect(input.verificationMethodHash).toBe(
+        sha256Hex(canonicalize(method)),
+      );
+      expect(input.deliverableSpecHash).toBe(
+        sha256Hex(canonicalize(deliverable)),
+      );
+      return { disposition: "supported" };
+    };
+
+    await expect(publishListingCore(candidate, deps)).resolves.toMatchObject({
+      ref: "stor-1",
+    });
+  });
+
+  test("refuses a capability resolver that mutates the to-be-signed method/spec", async () => {
+    const deps = fakeDeps();
+    let signCalls = 0;
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    deps.resolvePayloadVerificationCapability = ({ deliverableSpec }) => {
+      (deliverableSpec as { payloadFormat: string }).payloadFormat = "text/plain";
+      return { disposition: "supported" };
+    };
+
+    const candidate = listing();
+    const before = structuredClone(candidate);
+    await expect(publishListingCore(candidate, deps)).rejects.toMatchObject({
+      message: expect.stringMatching(/resolution-mutated-input/),
+      category: "permanent",
+    });
+    expect(candidate).toEqual(before);
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("contains a resolver mutation before a thrown dependency error", async () => {
+    const deps = fakeDeps();
+    let signCalls = 0;
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    deps.resolvePayloadVerificationCapability = ({ deliverableSpec }) => {
+      (deliverableSpec as { payloadFormat: string }).payloadFormat = "text/plain";
+      throw new Error("notary offline");
+    };
+    const candidate = listing();
+    const before = structuredClone(candidate);
+
+    await expect(publishListingCore(candidate, deps)).rejects.toMatchObject({
+      category: "transient",
+    });
+    expect(candidate).toEqual(before);
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("a delayed resolver mutation cannot swap the approved method/spec before signing", async () => {
+    const deps = fakeDeps();
+    let signCalls = 0;
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    deps.resolvePayloadVerificationCapability = ({ deliverableSpec }) => {
+      queueMicrotask(() => {
+        (deliverableSpec as { payloadFormat: string }).payloadFormat = "text/plain";
+      });
+      return { disposition: "supported" };
+    };
+    const candidate = listing();
+    await expect(publishListingCore(candidate, deps)).rejects.toThrow(
+      /resolution-mutated-input/,
+    );
+    expect(candidate.offering.deliverable).toMatchObject({
+      payloadFormat: "application/json",
+    });
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("a live capability-decision envelope cannot authorize publication", async () => {
+    const deps = fakeDeps();
+    let signCalls = 0;
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    deps.resolvePayloadVerificationCapability = () => new Proxy(
+      { disposition: "supported" as const },
+      {},
+    );
+
+    await expect(publishListingCore(listing(), deps)).rejects.toMatchObject({
+      message: expect.stringMatching(/resolution-invalid/),
+      category: "permanent",
+    });
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
   test("LP-6 refuses pay-bearing publication without authoritative rail resolution", async () => {
     const deps = fakeDeps();
     delete deps.loadRailResolution;
     await expect(publishListingCore(listing(), deps)).rejects.toThrow(/LP-6/);
     expect(deps.stats.creates).toBe(0);
   });
+
+  test("LP-6 snapshots the rail-authority result before reading it", async () => {
+    const deps = fakeDeps();
+    const load = deps.loadRailResolution!;
+    let signCalls = 0;
+    deps.sign = (bytes) => {
+      signCalls += 1;
+      return sign(bytes);
+    };
+    deps.loadRailResolution = async (draft) => new Proxy(
+      await load(draft),
+      {},
+    );
+
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /rail resolution was indeterminate/,
+    );
+    expect(signCalls).toBe(0);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test.each([
+    ["trust phase", (authority: Record<string, unknown>) => {
+      authority.trustPhase = "PA-future";
+    }],
+    ["PA-1 policy", (authority: Record<string, unknown>) => {
+      authority.trustPolicyAcceptsPA1 = "yes";
+    }],
+    ["registry state", (authority: Record<string, unknown>) => {
+      (authority.registry as Record<string, unknown>).state = "future";
+    }],
+  ] as const)(
+    "LP-6 rejects malformed runtime rail authority %s before signing",
+    async (_name, mutate) => {
+      const deps = fakeDeps();
+      const load = deps.loadRailResolution!;
+      let signCalls = 0;
+      deps.sign = (bytes) => {
+        signCalls += 1;
+        return sign(bytes);
+      };
+      deps.loadRailResolution = async (draft) => {
+        const authority = structuredClone(await load(draft)) as unknown as Record<string, unknown>;
+        mutate(authority);
+        return authority as never;
+      };
+
+      await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+        /rail resolution is indeterminate \(malformed-rail-authority\)/,
+      );
+      expect(signCalls).toBe(0);
+      expect(deps.stats.creates).toBe(0);
+    },
+  );
 
   test("LP-6 refuses an indeterminate rail authority before signing or anchoring", async () => {
     const deps = fakeDeps();
@@ -578,6 +877,51 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
     await expect(publishListingCore(listing(), deps)).rejects.toThrow(
       /history lookup was indeterminate/,
+    );
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("snapshots listing-history results before enforcing monotonicity", async () => {
+    const deps = fakeDeps();
+    const scan = deps.scanOwnAnchorsByNamePrefix;
+    deps.scanOwnAnchorsByNamePrefix = async (prefix) => new Proxy(
+      await scan(prefix),
+      {},
+    );
+
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /history scan returned an unstable or non-wire result/,
+    );
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("an anchor adapter cannot mutate the signed Listing after DPA-1 approval", async () => {
+    const deps = fakeDeps();
+    deps.anchorWriteOnce = async (_name, value) => {
+      const candidate = value as ListingDraft;
+      const deliverable = candidate.offering.deliverable;
+      if (deliverable.kind !== "attested-payload") {
+        throw new Error("fixture drift");
+      }
+      deliverable.payloadFormat = "text/plain";
+      return { address: "stor-mutated" };
+    };
+
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /publication was indeterminate/i,
+    );
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("a live anchor result cannot establish successful publication", async () => {
+    const deps = fakeDeps();
+    deps.anchorWriteOnce = async () => new Proxy(
+      { address: "stor-live" },
+      {},
+    );
+
+    await expect(publishListingCore(listing(), deps)).rejects.toThrow(
+      /anchor returned an unstable or non-wire result/,
     );
     expect(deps.stats.creates).toBe(0);
   });

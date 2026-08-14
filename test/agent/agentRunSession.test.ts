@@ -7,11 +7,14 @@ import {
   verifyComponentSignature,
 } from "../../src/artifacts/signatures.js";
 import {
+  canonicalize,
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
+  sha256Hex,
   stripSignature,
 } from "../../src/canonical/index.js";
+import { isListing } from "../../src/artifacts/validators.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -102,12 +105,33 @@ const TERMS = {
   deliveryFormat: "application/json",
 };
 
-const verifiedListing = (raw: Record<string, unknown>) => ({
-  disposition: "verified" as const,
-  step: 9 as const,
-  reason: "verified",
-  listingContentHash: contentHash(raw),
-});
+const verifiedListing = (raw: Record<string, unknown>) => {
+  if (!isListing(raw)) throw new Error("fixture drift");
+  const deliverable = raw.offering.deliverable;
+  if (
+    deliverable.kind !== "attested-payload" ||
+    !deliverable.verificationMethod
+  ) {
+    throw new Error("fixture drift");
+  }
+  return {
+    disposition: "verified" as const,
+    step: 9 as const,
+    reason: "verified",
+    listing: raw,
+    listingContentHash: contentHash(raw),
+    payloadVerificationCapability: {
+      operation: "verify" as const,
+      disposition: "supported" as const,
+      reason: "supported",
+      verificationMethodKind: deliverable.verificationMethod.kind,
+      verificationMethodHash: sha256Hex(
+        canonicalize(deliverable.verificationMethod),
+      ),
+      deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
+    },
+  };
+};
 
 async function anchorListing(
   store: Map<string, Record<string, unknown>>,
@@ -156,6 +180,7 @@ async function anchorListing(
         deliverable: {
           kind: "attested-payload",
           payloadFormat: "application/json",
+          verificationMethod: { kind: "self-signed" },
         },
       },
       buyerRequirement: { requirementVersion: "1", required: [] },
@@ -186,6 +211,34 @@ async function anchorListing(
     signed as Record<string, unknown>,
   );
   return "stor:listing";
+}
+
+function verifiedAdmission(raw: Record<string, unknown>) {
+  if (!isListing(raw)) throw new Error("fixture drift");
+  const deliverable = raw.offering.deliverable;
+  if (
+    deliverable.kind !== "attested-payload" ||
+    !deliverable.verificationMethod
+  ) {
+    throw new Error("fixture drift");
+  }
+  return {
+    disposition: "verified" as const,
+    step: 9 as const,
+    reason: "verified",
+    listing: raw,
+    listingContentHash: contentHash(raw),
+    payloadVerificationCapability: {
+      operation: "verify" as const,
+      disposition: "supported" as const,
+      reason: "supported",
+      verificationMethodKind: deliverable.verificationMethod.kind,
+      verificationMethodHash: sha256Hex(
+        canonicalize(deliverable.verificationMethod),
+      ),
+      deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
+    },
+  };
 }
 
 describe("Agent.runSession wires the #41 listing verifier (public surface)", () => {
@@ -317,12 +370,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     let settled = false;
     const res = await agent.runSession(ref, {
       terms: TERMS,
-      validateListing: (raw) => ({
-        disposition: "verified",
-        step: 9,
-        reason: "verified",
-        listingContentHash: contentHash(raw),
-      }),
+      validateListing: verifiedAdmission,
       settle: async () => {
         settled = true;
         return { ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
@@ -411,12 +459,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     await expect(
       agent.runSession(ref, {
         terms: TERMS,
-        validateListing: (raw) => ({
-          disposition: "verified",
-          step: 9,
-          reason: "verified",
-          listingContentHash: contentHash(raw),
-        }),
+        validateListing: verifiedAdmission,
         settle: async () => {
           settled = true;
           return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };

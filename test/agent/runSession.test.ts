@@ -5,7 +5,12 @@ import {
   type SessionDeps,
   type SessionTerms,
 } from "../../src/agent/runSessionCore.js";
-import { contentHash } from "../../src/canonical/index.js";
+import type { Listing } from "../../src/artifacts/types.js";
+import {
+  canonicalize,
+  contentHash,
+  sha256Hex,
+} from "../../src/canonical/index.js";
 import { UnsupportedCapabilityError } from "../../src/errors.js";
 
 const LISTING = {
@@ -25,57 +30,6 @@ const TERMS: SessionTerms = {
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
-
-const normativeListing = () => ({
-  dacsVersion: "1" as const,
-  listingVersion: 7,
-  listingId: "market-data-vendor",
-  seller: {
-    identity: {
-      bundleVersion: "1" as const,
-      presentedBy: "did:demos:agent:alice",
-      presentedAt: 1_770_000_000_000,
-      claims: [{ ref: "did:demos:agent:alice" }],
-      presentation: {
-        kind: "per-claim" as const,
-        signatures: [
-          { ref: "did:demos:agent:alice", signature: "presentation" },
-        ],
-      },
-    },
-    displayName: "Alice",
-    publicEndpoint: "https://alice.example/dacs",
-  },
-  offering: {
-    title: "Market Data",
-    description: "Pinned listing",
-    category: "data.finance",
-    tags: ["market"],
-    deliverable: {
-      kind: "attested-payload" as const,
-      payloadFormat: "application/json",
-    },
-  },
-  buyerRequirement: { requirementVersion: "1" as const, required: [] },
-  pipeline: [
-    { kind: "negotiate-fixed-price" as const },
-    { kind: "commit-agreement" as const },
-    { kind: "pay-x402" as const, parameters: { rail: "x402:default" } },
-    { kind: "deliver-attested-payload" as const },
-  ],
-  pricing: {
-    kind: "fixed" as const,
-    price: { amount: "1", currency: "USDC" },
-  },
-  acceptedRails: [{ railId: "x402:default" }],
-  terms: { deadlineSecAfterCommit: 3_600 },
-  validity: { notBefore: 1_770_000_000_000 },
-  signature: {
-    algorithm: "ed25519" as const,
-    signer: "did:demos:agent:alice",
-    value: "AQ",
-  },
-});
 
 function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
   return {
@@ -99,13 +53,93 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     // These fixtures exercise ORCHESTRATION, not listing signatures — the #41
     // gate itself is covered by its own cases below and in discover.test.ts.
     trustListing: true,
-    validateListing: (raw) => ({
-      disposition: "verified",
-      step: 9,
-      reason: "verified",
-      listingContentHash: contentHash(raw),
-    }),
+    validateListing: (raw) => verifiedAdmissionFor(raw as unknown as Listing),
     ...overrides,
+  };
+}
+
+function normativeDpaListing(): Listing {
+  return {
+    dacsVersion: "1",
+    listingVersion: 7,
+    listingId: "market-data-vendor",
+    seller: {
+      identity: {
+        bundleVersion: "1",
+        presentedBy: "did:demos:agent:alice",
+        presentedAt: 1_770_000_000_000,
+        claims: [{ ref: "did:demos:agent:alice" }],
+        presentation: {
+          kind: "per-claim",
+          signatures: [
+            { ref: "did:demos:agent:alice", signature: "presentation" },
+          ],
+        },
+      },
+      displayName: "Alice",
+      publicEndpoint: "https://alice.example/dacs",
+    },
+    offering: {
+      title: "Market Data",
+      description: "Pinned listing",
+      category: "data.finance",
+      tags: ["market"],
+      deliverable: {
+        kind: "attested-payload",
+        payloadFormat: "application/json",
+        verificationMethod: { kind: "self-signed" },
+      },
+    },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [
+      { kind: "negotiate-fixed-price" },
+      { kind: "commit-agreement" },
+      { kind: "pay-x402", parameters: { rail: "x402:default" } },
+      { kind: "deliver-attested-payload" },
+    ],
+    pricing: {
+      kind: "fixed",
+      price: { amount: "1", currency: "USDC" },
+    },
+    acceptedRails: [{ railId: "x402:default" }],
+    terms: { deadlineSecAfterCommit: 3_600 },
+    validity: { notBefore: 1_770_000_000_000 },
+    signature: {
+      algorithm: "ed25519",
+      signer: "did:demos:agent:alice",
+      value: "AQ",
+    },
+  };
+}
+
+const normativeListing = normativeDpaListing;
+
+function verifiedAdmissionFor(listing: Listing) {
+  const deliverable = listing.offering.deliverable;
+  if (
+    deliverable.kind !== "attested-payload" ||
+    !deliverable.verificationMethod
+  ) {
+    throw new Error("fixture drift");
+  }
+  return {
+    disposition: "verified" as const,
+    step: 9 as const,
+    reason: "verified",
+    listing,
+    listingContentHash: contentHash(
+      listing as unknown as Record<string, unknown>,
+    ),
+    payloadVerificationCapability: {
+      operation: "verify" as const,
+      disposition: "supported" as const,
+      reason: "supported",
+      verificationMethodKind: deliverable.verificationMethod.kind,
+      verificationMethodHash: sha256Hex(
+        canonicalize(deliverable.verificationMethod),
+      ),
+      deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
+    },
   };
 }
 
@@ -117,6 +151,64 @@ describe("runSession orchestration (T4)", () => {
     expect(res.agreementRef).toBe("stor-dacs3:agreement:job-1");
     expect(res.settlementRef).toBe("stor-dacs4:evidence:job-1");
     expect(res.bundleRef).toBe("stor-dacs5:bundle:job-1");
+  });
+
+  test("snapshots caller-owned fixed terms before any awaited dependency", async () => {
+    const terms = structuredClone(TERMS);
+    let settled: Parameters<SessionDeps["settle"]>[0] | undefined;
+    const result = await runSessionCore(
+      "stor-listing",
+      terms,
+      makeDeps({
+        readListing: async () => {
+          terms.price.rail = "pay-evil";
+          terms.price.amount = "999999999";
+          terms.deliveryPhase = "deliver-evil";
+          return LISTING;
+        },
+        settle: async (request) => {
+          settled = request;
+          return {
+            ok: true,
+            txHash: "0xabc",
+            chainId: "eip155:11155111",
+            payer: "0xbob",
+            payee: "0xalice",
+          };
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("completed");
+    expect(settled).toMatchObject({
+      rail: "pay-x402",
+      amount: "1000000",
+      asset: "USDC",
+    });
+  });
+
+  test("a live or proxied anchor lookup fails closed before write or payment", async () => {
+    let anchorCalls = 0;
+    let settleCalls = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          resolveAnchor: async () => new Proxy({ status: "absent" as const }, {}),
+          anchor: async (name) => {
+            anchorCalls += 1;
+            return `stor-${name}`;
+          },
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/unstable or non-wire result/);
+    expect(anchorCalls).toBe(0);
+    expect(settleCalls).toBe(0);
   });
 
   test("rejects dependency accessors without invoking them or reading the Listing", async () => {
@@ -260,7 +352,7 @@ describe("runSession orchestration (T4)", () => {
   });
 
   test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {
-    const normative = normativeListing();
+    const normative = normativeDpaListing();
     let evidence: Record<string, unknown> | undefined;
     let selectedRail: string | undefined;
     let selectedPhase: string | undefined;
@@ -272,12 +364,7 @@ describe("runSession orchestration (T4)", () => {
       },
       makeDeps({
         readListing: async () => normative,
-        validateListing: () => ({
-          disposition: "verified",
-          step: 9,
-          reason: "verified",
-          listingContentHash: contentHash(normative),
-        }),
+        validateListing: () => verifiedAdmissionFor(normative),
         settle: async (request) => {
           selectedRail = request.rail;
           selectedPhase = request.phase;
@@ -300,7 +387,9 @@ describe("runSession orchestration (T4)", () => {
     expect(res.listingPin).toEqual({
       listingId: "market-data-vendor",
       version: 7,
-      contentHash: contentHash(normative),
+      contentHash: contentHash(
+        normative as unknown as Record<string, unknown>,
+      ),
     });
     expect(selectedRail).toBe("x402:default");
     expect(selectedPhase).toBe("pay-x402");
@@ -462,7 +551,7 @@ describe("runSession orchestration (T4)", () => {
 
   test("refuses payment phases on different rails before selecting only one", async () => {
     const normative = normativeListing();
-    normative.acceptedRails.push({ railId: "evm:secondary" });
+    normative.acceptedRails!.push({ railId: "evm:secondary" });
     normative.pipeline.splice(3, 0, {
       kind: "pay-x402",
       parameters: { rail: "evm:secondary" },
@@ -496,7 +585,7 @@ describe("runSession orchestration (T4)", () => {
   });
 
   test("refuses to pay presentedBy when a different carried claim signed", async () => {
-    const normative = normativeListing();
+    const normative = normativeDpaListing();
     normative.seller.identity.claims.push({ ref: "did:demos:agent:signer" });
     normative.signature.signer = "did:demos:agent:signer";
     let settles = 0;
@@ -510,12 +599,7 @@ describe("runSession orchestration (T4)", () => {
         },
         makeDeps({
           readListing: async () => normative,
-          validateListing: () => ({
-            disposition: "verified",
-            step: 9,
-            reason: "verified",
-            listingContentHash: contentHash(normative),
-          }),
+          validateListing: () => verifiedAdmissionFor(normative),
           settle: async () => {
             settles += 1;
             throw new Error("must not settle");
@@ -524,6 +608,143 @@ describe("runSession orchestration (T4)", () => {
       ),
     ).rejects.toThrow(/not payee-bound|signer must equal/i);
     expect(settles).toBe(0);
+  });
+
+  test("a readable missing-method envelope reaches ordered DPA-1 step 7 and never pays", async () => {
+    const envelope = normativeDpaListing();
+    delete (envelope.offering.deliverable as { verificationMethod?: unknown })
+      .verificationMethod;
+    let validationCalls = 0;
+    let settled = false;
+
+    await expect(
+      runSessionCore(
+        "stor-missing-method",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => envelope,
+          validateListing: () => {
+            validationCalls += 1;
+            return {
+              disposition: "rejected",
+              step: 7,
+              reason: "pipeline-invalid",
+            };
+          },
+          settle: async () => {
+            settled = true;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/rejected at DACS-1 reader step 7.*LR-3/);
+    expect(validationCalls).toBe(1);
+    expect(settled).toBe(false);
+  });
+
+  test.each(["absent", "mismatched", "wrong-operation"] as const)(
+    "a stale verified result with %s DPA capability never reaches payment",
+    async (capabilityCase) => {
+      const listing = normativeDpaListing();
+      const admission = verifiedAdmissionFor(listing);
+      if (capabilityCase === "absent") {
+        delete (
+          admission as {
+            payloadVerificationCapability?: unknown;
+          }
+        ).payloadVerificationCapability;
+      } else if (capabilityCase === "mismatched") {
+        admission.payloadVerificationCapability.verificationMethodHash =
+          "0".repeat(64);
+      } else {
+        (
+          admission.payloadVerificationCapability as {
+            operation: "produce" | "verify";
+          }
+        ).operation = "produce";
+      }
+      let settled = false;
+
+      await expect(
+        runSessionCore(
+          "stor-stale-capability",
+          {
+            ...TERMS,
+            price: { ...TERMS.price, rail: "x402:default" },
+          },
+          makeDeps({
+            readListing: async () => listing,
+            validateListing: () => admission,
+            settle: async () => {
+              settled = true;
+              throw new Error("must not settle");
+            },
+          }),
+        ),
+      ).rejects.toThrow(/capability-incomplete.*DPA-1/);
+      expect(settled).toBe(false);
+    },
+  );
+
+  test("a live or proxied Listing admission result never reaches payment", async () => {
+    const listing = normativeDpaListing();
+    const admission = verifiedAdmissionFor(listing);
+    let settled = false;
+    await expect(
+      runSessionCore(
+        "stor-live-admission",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => listing,
+          validateListing: () => new Proxy(admission, {}),
+          settle: async () => {
+            settled = true;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/validation was indeterminate \(validator threw\)/);
+    expect(settled).toBe(false);
+  });
+
+  test("an unknown delivery envelope cannot be admitted by a stale verified result", async () => {
+    const listing = normativeDpaListing();
+    listing.pipeline[3] = { kind: "deliver-future" as never };
+    let settled = false;
+
+    await expect(
+      runSessionCore(
+        "stor-unknown-delivery",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+          deliveryPhase: "deliver-future",
+        },
+        makeDeps({
+          readListing: async () => listing,
+          validateListing: () => ({
+            disposition: "verified",
+            step: 9,
+            reason: "stale-validator-pass",
+            listing,
+            listingContentHash: contentHash(
+              listing as unknown as Record<string, unknown>,
+            ),
+          }),
+          settle: async () => {
+            settled = true;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/stale, substituted, or capability-incomplete/);
+    expect(settled).toBe(false);
   });
 
   test("rail-reported finality flows onto the evidence (bft-final / demos / block), F7/#22", async () => {
