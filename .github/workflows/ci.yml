@@ -34,11 +34,17 @@ jobs:
       - name: Typecheck Node host kit
         run: npm run host:typecheck
 
+      - name: Typecheck project generator
+        run: npm run generator:typecheck
+
       - name: Build
         run: npm run build
 
       - name: Build Node host kit
         run: npm run host:build
+
+      - name: Build project generator
+        run: npm run generator:build
 
       - name: Package smoke (core install without live peers)
         run: |
@@ -60,11 +66,75 @@ jobs:
           (cd host-package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runDeterministicOfflineLifecycle !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function') process.exit(1) })")
           node -e "const p=require('./package.json'); if ((p.dependencies && p.dependencies['@kynesyslabs/dacs-node']) || (p.optionalDependencies && p.optionalDependencies['@kynesyslabs/dacs-node']) || (p.peerDependencies && p.peerDependencies['@kynesyslabs/dacs-node'])) process.exit(1)"
 
+      - name: Packed generator clean-project acceptance
+        run: |
+          mkdir -p generator-smoke/packs generator-smoke/runner
+          npm pack --pack-destination generator-smoke/packs
+          npm pack --workspace @kynesyslabs/dacs-node --pack-destination generator-smoke/packs
+          npm pack --workspace create-dacs-agent --pack-destination generator-smoke/packs
+          npm install --prefix generator-smoke/runner --ignore-scripts \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/create-dacs-agent-0.1.0-alpha.0.tgz
+          node generator-smoke/runner/node_modules/create-dacs-agent/dist/bin.js \
+            generator-smoke/generated-agent --yes --no-install
+          npm install --prefix generator-smoke/generated-agent --ignore-scripts \
+            --no-save --package-lock=false \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
+            typescript@5.9.2 @types/node@20.19.1
+          (cd generator-smoke/generated-agent && npm run typecheck && npm test && npm run dacs:smoke:offline)
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = path.resolve("generator-smoke/generated-agent");
+          const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          const exact = {
+            "@kynesyslabs/dacs": "0.1.0-alpha.0",
+            "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
+          };
+          if (JSON.stringify(packageJson.dependencies) !== JSON.stringify(exact)) process.exit(1);
+          const files = [];
+          const visit = (directory) => {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              if (["node_modules", "dist", "data"].includes(entry.name)) continue;
+              const candidate = path.join(directory, entry.name);
+              if (entry.isDirectory()) visit(candidate);
+              else files.push(candidate);
+            }
+          };
+          visit(root);
+          const source = files.map((file) => fs.readFileSync(file, "utf8")).join("\n");
+          for (const forbidden of ["../../src/", "@kynesyslabs/dacs/dist", "PRIVATE_KEY", "SEED_PHRASE", "MNEMONIC"]) {
+            if (source.includes(forbidden)) {
+              console.error(`generated tree contains forbidden token: ${forbidden}`);
+              process.exit(1);
+            }
+          }
+          const reports = [];
+          const findReports = (directory) => {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const candidate = path.join(directory, entry.name);
+              if (entry.isDirectory()) findReports(candidate);
+              else if (entry.name === "run-report.json") reports.push(candidate);
+            }
+          };
+          findReports(path.join(root, "data"));
+          if (reports.length !== 1) process.exit(1);
+          const report = JSON.parse(fs.readFileSync(reports[0], "utf8"));
+          if (!report.overallSuccess || report.mode !== "offline" ||
+              report.payment.availability !== "mocked" ||
+              report.phases.map((phase) => phase.stage).join(",") !== "DACS-1,DACS-2,DACS-3,DACS-4,DACS-5") {
+            process.exit(1);
+          }
+          NODE
+
       - name: Test (unit + conformance harness)
         run: npm test
 
       - name: Test Node host kit
         run: npm run host:test
+
+      - name: Test project generator
+        run: npm run generator:test
 
       # Informational (non-blocking): surface production-tree advisories per the
       # SECURITY.md audit policy (#40). continue-on-error keeps the JOB green, but
