@@ -249,6 +249,11 @@ export interface FixedPriceX402EffectFence {
 export interface FixedPriceX402TrackOperationInput {
   order: Readonly<FixedPriceX402OrderRecord>;
   fence: Readonly<FixedPriceX402EffectFence>;
+  /**
+   * Cooperative cancellation owned by the scheduler. Adapters must still
+   * reconcile an irreversible effect once submission may have occurred.
+   */
+  signal?: AbortSignal;
 }
 
 export type FixedPriceX402TrackOperation = (
@@ -395,6 +400,11 @@ function plainRecord(value: unknown): value is Record<string, unknown> {
       nodeTypes.isProxy(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function storeObject(value: unknown): value is object {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    !nodeTypes.isProxy(value);
 }
 
 function exactKeys(
@@ -596,16 +606,23 @@ function successful(
   return retained?.state === "final" && retained.outcome === "success";
 }
 
-function terminalPhaseOutcome(
+type FixedPriceX402TerminalPhaseResult = Readonly<
+  | { outcome: "failure"; errorClass: FixedPriceX402ErrorClass }
+  | { outcome: "aborted" }
+>;
+
+function terminalPhaseResult(
   record: Readonly<FixedPriceX402OrderRecord>,
-): FixedPriceX402NormativeOutcome | null {
+): FixedPriceX402TerminalPhaseResult | null {
   const tracks: readonly FixedPriceX402Track[] = record.role === "buyer"
     ? ["agreement", "payment", "buyer-received"]
     : ["agreement", "payment", "delivery"];
   for (const track of tracks) {
     const retained = trackRecord(record, track);
     if (retained?.state === "final" && retained.outcome !== "success") {
-      return retained.outcome ?? null;
+      return retained.outcome === "failure"
+        ? { outcome: "failure", errorClass: retained.errorClass! }
+        : { outcome: "aborted" };
     }
   }
   return null;
@@ -645,16 +662,21 @@ function eligible(
   }
 }
 
-function trackOutcomeAllowed(
+function trackResultAllowed(
   record: Readonly<FixedPriceX402OrderRecord>,
   track: FixedPriceX402Track,
-  outcome: FixedPriceX402NormativeOutcome,
+  result: Readonly<{
+    outcome: FixedPriceX402NormativeOutcome;
+    errorClass?: FixedPriceX402ErrorClass;
+  }>,
 ): boolean {
   if (track === "payment-evidence" || track === "delivery-evidence") {
-    return outcome === "success";
+    return result.outcome === "success";
   }
   if (track === "audit") {
-    return outcome === (terminalPhaseOutcome(record) ?? "success");
+    const expected = terminalPhaseResult(record) ?? { outcome: "success" as const };
+    return result.outcome === expected.outcome &&
+      (expected.outcome !== "failure" || result.errorClass === expected.errorClass);
   }
   return true;
 }
@@ -667,7 +689,10 @@ function dependencyViolation(record: Readonly<FixedPriceX402OrderRecord>): strin
       return `coordinator ${track} track violates the role dependency DAG`;
     }
     if (retained.state === "final" && retained.outcome &&
-        !trackOutcomeAllowed(record, track, retained.outcome)) {
+        !trackResultAllowed(record, track, {
+          outcome: retained.outcome,
+          ...(retained.errorClass === undefined ? {} : { errorClass: retained.errorClass }),
+        })) {
       return `coordinator ${track} outcome contradicts the normative terminal path`;
     }
   }
@@ -961,7 +986,7 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
         return { status: "conflict" };
       }
       if (result.status === "final" &&
-          !trackOutcomeAllowed(current, input.track, result.outcome)) {
+          !trackResultAllowed(current, input.track, result)) {
         return { status: "conflict" };
       }
       const updatedAt = stamp(current, now);
@@ -1196,7 +1221,7 @@ function captureOptions(value: unknown): {
     ["role", "store", "workerId", "operations"],
     ["leaseDurationMs"],
   ) || (value.role !== "buyer" && value.role !== "seller") ||
-      !nonEmpty(value.workerId) || !plainRecord(value.store) ||
+      !nonEmpty(value.workerId) || !storeObject(value.store) ||
       !plainRecord(value.operations)) {
     throw new DacsError("fixed-price x402 coordinator options are malformed");
   }
@@ -1281,11 +1306,21 @@ export function combineFixedPriceX402OrderStatus(input: Readonly<{
     if (buyerAudit.outcome !== sellerAudit.outcome) {
       throw new DacsError("actor audit outcomes contradict the shared terminal session");
     }
+    if (buyerAudit.outcome === "failure" &&
+        buyerAudit.errorClass !== sellerAudit.errorClass) {
+      throw new DacsError(
+        "actor audit error classes contradict the shared terminal session",
+      );
+    }
     milestone = buyerAudit.outcome === "failure"
       ? "terminal-failure"
       : buyerAudit.outcome === "aborted"
         ? "terminal-aborted"
         : "audit-complete";
+  } else if (buyerAudit?.state === "final" && buyerAudit.outcome !== "success") {
+    milestone = buyerAudit.outcome === "failure" ? "terminal-failure" : "terminal-aborted";
+  } else if (sellerAudit?.state === "final" && sellerAudit.outcome !== "success") {
+    milestone = sellerAudit.outcome === "failure" ? "terminal-failure" : "terminal-aborted";
   } else if (seller.tracks["delivery-evidence"]?.state === "final" &&
       seller.tracks["delivery-evidence"]?.outcome === "success") {
     milestone = "commercial-performance-complete";
@@ -1520,10 +1555,11 @@ export function createFixedPriceX402CommerceCoordinator(
           const raw = await Reflect.apply(captured.operations.get(track)!, INERT_RECEIVER, [{
             order: copyRecord(record),
             fence,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
           }]);
           result = captureOperationResult(raw);
           if (result.status === "final" &&
-              !trackOutcomeAllowed(record, track, result.outcome)) {
+              !trackResultAllowed(record, track, result)) {
             result = { status: "operator-action", reasonCode: "invalid-normative-outcome" };
           }
         } catch {
