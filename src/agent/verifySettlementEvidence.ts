@@ -1,8 +1,15 @@
+import { types as nodeTypes } from "node:util";
+
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { canonicalizeDecimal } from "../canonical/decimal.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonConfig,
+} from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { AttestationRef } from "../artifacts/types.js";
+import { isComponentSignature } from "../artifacts/signatures.js";
 import {
   isAttestationRef,
   isChainTxRef,
@@ -215,6 +222,59 @@ export async function verifySettlementEvidence(
     failCount += 1;
     reasons.push(r);
   };
+
+  // Pin callback implementations before inspecting either caller-owned input,
+  // then own one exact JSON view of the record and contextual claims. Optional
+  // context members whose value is `undefined` are equivalent to omission at
+  // this JavaScript configuration boundary; protocol evidence remains strict.
+  let resolvePublicKey: EvidenceDeps["resolvePublicKey"];
+  let verify: EvidenceDeps["verify"];
+  try {
+    const resolveCandidate: unknown = deps.resolvePublicKey;
+    const verifyCandidate: unknown = deps.verify;
+    if (resolveCandidate !== undefined && typeof resolveCandidate !== "function") {
+      throw new TypeError("resolvePublicKey must be a function");
+    }
+    if (verifyCandidate !== undefined && typeof verifyCandidate !== "function") {
+      throw new TypeError("verify must be a function");
+    }
+    resolvePublicKey =
+      resolveCandidate === undefined
+        ? undefined
+        : (Function.prototype.bind.call(
+            resolveCandidate,
+            deps,
+          ) as NonNullable<EvidenceDeps["resolvePublicKey"]>);
+    verify =
+      verifyCandidate === undefined
+        ? undefined
+        : (Function.prototype.bind.call(
+            verifyCandidate,
+            deps,
+          ) as NonNullable<EvidenceDeps["verify"]>);
+  } catch {
+    return {
+      decision: "error",
+      reasons: ["evidence verifier dependencies are malformed"],
+    };
+  }
+
+  let recordSnapshot: unknown;
+  let contextSnapshot: EvidenceContext;
+  try {
+    recordSnapshot = snapshotCanonicalJson(record, "settlement evidence");
+    contextSnapshot = snapshotCanonicalJsonConfig(
+      ctx,
+      "settlement evidence context",
+    );
+  } catch {
+    return {
+      decision: "error",
+      reasons: ["evidence or verification context is not stable canonical JSON"],
+    };
+  }
+  record = recordSnapshot;
+  ctx = contextSnapshot;
 
   // A non-object root isn't a record at all — it can't be evaluated as evidence,
   // so it's `error` (input isn't parseable), not a definite `fail` (§7.5.1) —
@@ -479,27 +539,81 @@ export async function verifySettlementEvidence(
   }
 
   // ── Signature (§9.7: signer is the phase orchestrator) ───────────────────
-  const sig = isObj(record["signature"]) ? (record["signature"] as Record<string, unknown>) : null;
-  if (!sig || !isStr(sig["signer"]) || !isStr(sig["value"])) {
-    fail("evidence MUST carry a signature {signer, value}");
+  const hasPluralSignatures = Object.prototype.hasOwnProperty.call(
+    record,
+    "signatures",
+  );
+  const sig = record["signature"];
+  if (hasPluralSignatures) {
+    fail("evidence MUST NOT carry ambiguous singular and plural signature fields");
+  }
+  if (!isComponentSignature(sig)) {
+    fail(
+      "evidence MUST carry a ComponentSignature {algorithm, signer, canonical base64url value}",
+    );
   } else {
-    const signer = sig["signer"];
+    const signer = sig.signer;
     if (ctx.orchestrator && signer !== ctx.orchestrator) {
       fail(`signer "${signer}" is not the phase orchestrator "${ctx.orchestrator}"`);
     }
-    if (deps.resolvePublicKey && deps.verify) {
-      const key = await deps.resolvePublicKey(signer);
-      if (!key) {
-        sawIndeterminate = true;
-        reasons.push(`signer key for "${signer}" is unresolvable`);
-      } else if (key.length !== 32) {
+    if (resolvePublicKey && verify) {
+      if (sig.algorithm !== "ed25519") {
         sawError = true;
-        reasons.push(`signer key for "${signer}" is malformed`);
+        reasons.push(
+          `evidence verifier has no ${sig.algorithm} backend (only ed25519 is configured)`,
+        );
       } else {
-        const message = signedBytes(ARTIFACT_SEPARATORS.SettlementEvidence, scopeHash);
-        const sigBytes = Uint8Array.from(Buffer.from(sig["value"], "base64url"));
-        if (!(await deps.verify(message, sigBytes, key))) {
-          fail("evidence signature does not verify under the signer's key");
+        let resolvedKey: Uint8Array | null;
+        try {
+          const candidate: unknown = await resolvePublicKey(signer);
+          if (candidate === null) {
+            resolvedKey = null;
+          } else if (
+            typeof candidate === "object" &&
+            !nodeTypes.isProxy(candidate) &&
+            nodeTypes.isUint8Array(candidate)
+          ) {
+            resolvedKey = new Uint8Array(candidate);
+          } else {
+            sawError = true;
+            reasons.push(`signer key for "${signer}" is malformed`);
+            resolvedKey = null;
+          }
+        } catch {
+          sawIndeterminate = true;
+          reasons.push(`signer key for "${signer}" could not be resolved`);
+          resolvedKey = null;
+        }
+        if (!resolvedKey && !sawError && !sawIndeterminate) {
+          sawIndeterminate = true;
+          reasons.push(`signer key for "${signer}" is unresolvable`);
+        } else if (resolvedKey && resolvedKey.length !== 32) {
+          sawError = true;
+          reasons.push(`signer key for "${signer}" is malformed`);
+        } else if (resolvedKey) {
+          const message = signedBytes(
+            ARTIFACT_SEPARATORS.SettlementEvidence,
+            scopeHash,
+          );
+          const sigBytes = Uint8Array.from(
+            Buffer.from(sig.value, "base64url"),
+          );
+          try {
+            const verified: unknown = await verify(
+              Uint8Array.from(message),
+              Uint8Array.from(sigBytes),
+              Uint8Array.from(resolvedKey),
+            );
+            if (verified !== true && verified !== false) {
+              sawError = true;
+              reasons.push("evidence signature verifier returned a non-boolean result");
+            } else if (!verified) {
+              fail("evidence signature does not verify under the signer's key");
+            }
+          } catch {
+            sawError = true;
+            reasons.push("evidence signature verification could not be evaluated");
+          }
         }
       }
     }

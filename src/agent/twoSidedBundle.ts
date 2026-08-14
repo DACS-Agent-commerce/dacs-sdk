@@ -16,6 +16,7 @@ import type { KeyObject } from "node:crypto";
 
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
+import { snapshotCanonicalJsonObject } from "../canonical/snapshot.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { isFaultAttestationBundle } from "../artifacts/validators.js";
 import { ed25519Sign, privateKeyFromSeed } from "../crypto/ed25519.js";
@@ -62,11 +63,19 @@ type SessionSigner = Uint8Array | KeyObject | ((bytes: Uint8Array) => Promise<Ui
 
 /** The §B.2 canonical form of a bundle: the document minus `signatures` and `anchoredByRole`. */
 export function bundleSignedScope(bundle: AnyAttestationBundle): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(bundle)) {
-    if (!(BUNDLE_SIGNED_SCOPE_OMIT as readonly string[]).includes(k)) out[k] = v;
-  }
-  return out;
+  const snapshot = snapshotCanonicalJsonObject(
+    bundle as unknown as Record<string, unknown>,
+    "attestation bundle",
+  );
+  // Object.fromEntries creates own data properties even for `__proto__`.
+  // Unknown minor-version fields therefore stay hash-bound; only the two
+  // normative bundle envelope fields are omitted.
+  return Object.fromEntries(
+    Object.entries(snapshot).filter(
+      ([key]) =>
+        !(BUNDLE_SIGNED_SCOPE_OMIT as readonly string[]).includes(key),
+    ),
+  );
 }
 
 /**

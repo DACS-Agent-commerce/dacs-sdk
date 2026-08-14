@@ -1,6 +1,10 @@
 import { contentHash, sha256Hex, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import {
+  isComponentSignature,
+  signComponentArtifact,
+} from "../artifacts/signatures.js";
 import { CounterpartyError, DacsError, SubstrateError } from "../errors.js";
 import type { SessionLoad, SessionReceipt, SessionStore } from "./sessionStore.js";
 import type {
@@ -97,10 +101,20 @@ export interface SessionDeps {
   buyerId: string;
   /** Read the (signed) listing at a ref. */
   readListing: (ref: string) => Promise<unknown>;
-  /** Sign an artifact under a separator, returning the signed envelope. */
+  /**
+   * Sign the reduced-MVP AgreementDocument compatibility artifact. The exact
+   * DACS-3 AgreementSignature[] producer replaces this seam in #98.
+   */
   sign: (artifact: object, separator: string) => Promise<object>;
-  /** Sign raw bytes (for artifacts whose signature shape the core assembles, e.g. the bundle). */
+  /** Sign raw bytes for ComponentSignature artifacts and the bundle. */
   signBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
+  /**
+   * Explicit compatibility policy for pre-ComponentSignature anchored session
+   * artifacts. The secure default rejects legacy string signatures. The opt-in
+   * exists only to resume deployments that have authenticated old anchors by an
+   * external mechanism; the SDK cannot recover signer role metadata from them.
+   */
+  legacyComponentSignatures?: "reject" | "accept-unverified";
   /** Anchor a value under a name; returns the storage address. */
   anchor: (name: string, value: object) => Promise<string>;
   /**
@@ -429,6 +443,46 @@ export async function runSessionCore(
   // A caller-supplied jobId resumes an interrupted session; otherwise fresh.
   const jobId = resumeJobId ?? deps.newJobId();
 
+  const signSessionArtifact = <T extends object>(
+    artifact: T,
+    separator: Parameters<typeof signComponentArtifact>[1],
+  ) =>
+    signComponentArtifact(artifact, separator, {
+      algorithm: "ed25519",
+      signer: deps.buyerId,
+      sign: (bytes) => deps.signBytes(bytes),
+    });
+
+  const storedComponentSignatureMatches = (
+    value: Record<string, unknown>,
+    expectedSigner: string,
+  ): Match => {
+    if (Object.prototype.hasOwnProperty.call(value, "signatures")) {
+      return { ok: false, reason: "ambiguous singular/plural signature fields" };
+    }
+    if (isComponentSignature(value.signature)) {
+      return value.signature.signer === expectedSigner
+        ? { ok: true }
+        : {
+            ok: false,
+            reason: `component signer ${value.signature.signer} ≠ ${expectedSigner}`,
+          };
+    }
+    if (
+      typeof value.signature === "string" &&
+      deps.legacyComponentSignatures === "accept-unverified"
+    ) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      reason:
+        typeof value.signature === "string"
+          ? "legacy string signature rejected by component-signature policy"
+          : "missing or malformed ComponentSignature",
+    };
+  };
+
   /**
    * Anchor `build()` under `name` only if a matching artifact isn't already there.
    * `match` is a resume-safety predicate: it must confirm an already-anchored
@@ -443,6 +497,7 @@ export async function runSessionCore(
     name: string,
     match: (v: Record<string, unknown>) => Match,
     build: () => Promise<object>,
+    expectedComponentSigner?: string,
   ): Promise<{ ref: string; value: Record<string, unknown>; existing: boolean }> => {
     // Resolve BY NAME (the address can't be recomputed). Fail closed on an
     // indeterminate lookup: proceeding as if absent could re-anchor a duplicate
@@ -455,6 +510,17 @@ export async function runSessionCore(
       );
     }
     if (found.status === "present") {
+      if (expectedComponentSigner) {
+        const signatureMatch = storedComponentSignatureMatches(
+          found.value,
+          expectedComponentSigner,
+        );
+        if (!signatureMatch.ok) {
+          throw new CounterpartyError(
+            `resume: artifact anchored at ${found.ref} has unacceptable signature: ${signatureMatch.reason}`,
+          );
+        }
+      }
       const m = match(stripSignature(found.value));
       if (!m.ok) {
         throw new CounterpartyError(
@@ -502,10 +568,11 @@ export async function runSessionCore(
         return { ok: true };
       },
       async () =>
-        deps.sign(
+        signSessionArtifact(
           await deps.vet!(listing.agentId),
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
         ),
+      deps.buyerId,
     );
     vetRef = ref;
     vetValue = value;
@@ -826,8 +893,12 @@ export async function runSessionCore(
         }
         evidence = { ...evidenceBase, outcome: "success", settlementFinality };
       }
-      return deps.sign(evidence, ARTIFACT_SEPARATORS.SettlementEvidence);
+      return signSessionArtifact(
+        evidence,
+        ARTIFACT_SEPARATORS.SettlementEvidence,
+      );
     },
+    deps.buyerId,
   );
   if (evidenceExisting) {
     // Reused a prior settlement — take the outcome from the anchored evidence.

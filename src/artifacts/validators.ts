@@ -29,6 +29,12 @@ const isNonNegativeInt = (v: unknown): v is number =>
   isNum(v) && Number.isInteger(v) && v >= 0;
 const isSha256 = (v: unknown): v is string =>
   isStr(v) && /^[0-9a-f]{64}$/.test(v);
+const hasValidOptionalComponentSignature = (
+  v: Record<string, unknown>,
+): boolean =>
+  !Object.prototype.hasOwnProperty.call(v, "signatures") &&
+  (!Object.prototype.hasOwnProperty.call(v, "signature") ||
+    isComponentSignature(v.signature));
 
 // §9.7 enums — enforced so an out-of-spec value (e.g. outcome:"banana") is
 // rejected, not just any string.
@@ -183,7 +189,8 @@ export function isCompositeVerificationRecord(
         isOneOf(VERIFICATION_DECISIONS, r.status),
     ) &&
     isOneOf(VERIFICATION_DECISIONS, v.decision) &&
-    isStr(v.verifiedAt)
+    isStr(v.verifiedAt) &&
+    hasValidOptionalComponentSignature(v)
   );
 }
 
@@ -376,6 +383,7 @@ export function faultedPartyIsPermitted(bundle: Record<string, unknown>): boolea
 
 export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
   if (!isObj(v)) return false;
+  if (Object.prototype.hasOwnProperty.call(v, "signatures")) return false;
   // CORE §B.7 SIG-5: unknown artifact-level fields are retained in the signed
   // scope and do not alone invalidate a known version. Variant-owned fields
   // below are still checked conditionally and nested oneOf shapes stay exact.

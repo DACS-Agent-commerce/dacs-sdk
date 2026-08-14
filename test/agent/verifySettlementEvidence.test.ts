@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, test } from "vitest";
+import { describe, expect, it, test, vi } from "vitest";
 
 import {
   verifySettlementEvidence,
@@ -19,6 +19,14 @@ const haveVectors = existsSync(join(CONF, "vectors/golden.json"));
 const read = (p: string) => JSON.parse(readFileSync(join(CONF, p), "utf8"));
 
 const b64u = (s: string) => Uint8Array.from(Buffer.from(s, "base64url"));
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 // Resolve the orchestrator's real key + verify with real ed25519.
 function realDeps(publicKeys: Record<string, string>): EvidenceDeps {
@@ -245,6 +253,21 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ev = payment(); // signer is did:demos:orchestrator
     expect((await verify(ev, { orchestrator: "did:demos:someone-else" })).decision).toBe("fail");
   });
+  test("legacy string signature → fail", async () => {
+    const ev = payment();
+    ev.signature = "deadbeef";
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+  test("padded signature value → fail", async () => {
+    const ev = payment();
+    ev.signature.value = "YWJjZA==";
+    expect((await verify(ev)).decision).toBe("fail");
+  });
+  test("singular plus plural signature fields → fail", async () => {
+    const ev = payment();
+    ev.signatures = [];
+    expect((await verify(ev)).decision).toBe("fail");
+  });
 
   // Key-dependent verdicts (error / indeterminate / signature-fail).
   test("unresolvableKey → indeterminate", async () => {
@@ -269,6 +292,85 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       { resolvePublicKey: async () => new Uint8Array(32), verify: () => false },
     );
     expect(r.decision).toBe("fail");
+  });
+  test("uses one authoritative evidence/context snapshot across async key resolution", async () => {
+    const ev = payment();
+    const ctx: EvidenceContext = { orchestrator: ORCH };
+    const publicKeys = read("vectors/golden.json").settlement.publicKeys as Record<
+      string,
+      string
+    >;
+    const entered = deferred();
+    const release = deferred();
+    const pending = verifySettlementEvidence(ev, ctx, {
+      resolvePublicKey: async (signer) => {
+        entered.resolve();
+        await release.promise;
+        return publicKeys[signer] ? b64u(publicKeys[signer]) : null;
+      },
+      verify: (bytes, signature, key) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(key)),
+    });
+
+    await entered.promise;
+    ev.observedAt = -0;
+    ev.signature.value = "AQ";
+    ctx.orchestrator = "did:demos:attacker";
+    release.resolve();
+
+    const result = await pending;
+    expect(result).toEqual({ decision: "pass", reasons: [] });
+  });
+  test("rejects accessor evidence before invoking its getter", async () => {
+    const getter = vi.fn(() => "1");
+    const ev = payment();
+    Object.defineProperty(ev, "evidenceVersion", {
+      configurable: true,
+      enumerable: true,
+      get: getter,
+    });
+
+    const result = await verifySettlementEvidence(ev);
+    expect(result.decision).toBe("error");
+    expect(result.reasons).toContain(
+      "evidence or verification context is not stable canonical JSON",
+    );
+    expect(getter).not.toHaveBeenCalled();
+  });
+  test("maps non-boolean and throwing crypto dependencies to explicit verdicts", async () => {
+    const ev = payment();
+    const key = new Uint8Array(32);
+
+    const nonBoolean = await verifySettlementEvidence(ev, {}, {
+      resolvePublicKey: async () => key,
+      verify: (() => "yes") as never,
+    });
+    expect(nonBoolean.decision).toBe("error");
+    expect(nonBoolean.reasons).toContain(
+      "evidence signature verifier returned a non-boolean result",
+    );
+
+    const resolverThrow = await verifySettlementEvidence(ev, {}, {
+      resolvePublicKey: async () => {
+        throw new Error("key backend unavailable");
+      },
+      verify: () => true,
+    });
+    expect(resolverThrow.decision).toBe("indeterminate");
+    expect(resolverThrow.reasons).toContain(
+      `signer key for "${ORCH}" could not be resolved`,
+    );
+
+    const verifierThrow = await verifySettlementEvidence(ev, {}, {
+      resolvePublicKey: async () => key,
+      verify: () => {
+        throw new Error("crypto backend unavailable");
+      },
+    });
+    expect(verifierThrow.decision).toBe("error");
+    expect(verifierThrow.reasons).toContain(
+      "evidence signature verification could not be evaluated",
+    );
   });
 
   // HTLC route params (HTLC-7).

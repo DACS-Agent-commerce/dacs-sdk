@@ -1,4 +1,11 @@
+import { types as nodeTypes } from "node:util";
+
 import { contentHash } from "../canonical/index.js";
+import {
+  isSafeJsonString,
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonObject,
+} from "../canonical/snapshot.js";
 import {
   type DomainSeparator,
   isCompositeSeparator,
@@ -29,16 +36,29 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.trim() === value;
 
+/** True only for the canonical, unpadded RFC 4648 base64url spelling. */
+function isCanonicalBase64Url(value: unknown): value is string {
+  if (!isNonEmptyString(value) || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  try {
+    return Buffer.from(value, "base64url").toString("base64url") === value;
+  } catch {
+    return false;
+  }
+}
+
 export function isComponentSignature(
   value: unknown,
 ): value is ComponentSignature {
-  return (
-    isRecord(value) &&
-    typeof value.algorithm === "string" &&
-    ALGORITHM_SET.has(value.algorithm) &&
-    isNonEmptyString(value.signer) &&
-    isNonEmptyString(value.value)
-  );
+  if (!isRecord(value)) return false;
+  try {
+    return (
+      signatureShapeReason(
+        snapshotCanonicalJson(value, "component signature"),
+      ) === null
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** A standalone artifact carrying one normative ComponentSignature envelope. */
@@ -48,8 +68,8 @@ export type ComponentSignedArtifact<T extends object> = Omit<T, "signature"> & {
 
 /**
  * Signs the already-domain-separated bytes. Returning bytes uses the SDK's
- * unpadded base64url encoding; returning a string preserves a wallet's
- * native wire encoding.
+ * unpadded base64url encoding. String-returning wallets must already return
+ * that canonical wire encoding; alternate encodings are rejected.
  */
 export type ComponentSigner = (
   bytes: Uint8Array,
@@ -57,6 +77,12 @@ export type ComponentSigner = (
 ) => Promise<Uint8Array | string> | Uint8Array | string;
 
 export interface BuildComponentSignatureOptions {
+  algorithm: ComponentSignatureAlgorithm;
+  signer: string;
+  sign: ComponentSigner;
+}
+
+interface CapturedComponentSignatureOptions {
   algorithm: ComponentSignatureAlgorithm;
   signer: string;
   sign: ComponentSigner;
@@ -74,6 +100,7 @@ export type ComponentSignatureMalformedReason =
   | "unsupported-algorithm"
   | "invalid-signer"
   | "invalid-value"
+  | "unexpected-signature-fields"
   | "ambiguous-signature-fields"
   | "unregistered-domain-separator"
   | "composite-domain-separator"
@@ -144,19 +171,38 @@ function signatureShapeReason(
   value: unknown,
 ): ComponentSignatureMalformedReason | null {
   if (!isRecord(value)) return "signature-not-an-object";
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 3 ||
+    !keys.includes("algorithm") ||
+    !keys.includes("signer") ||
+    !keys.includes("value")
+  ) {
+    return "unexpected-signature-fields";
+  }
   if (
     typeof value.algorithm !== "string" ||
     !ALGORITHM_SET.has(value.algorithm)
   ) {
     return "unsupported-algorithm";
   }
-  if (!isNonEmptyString(value.signer)) return "invalid-signer";
-  if (!isNonEmptyString(value.value)) return "invalid-value";
+  if (!isNonEmptyString(value.signer) || !isSafeJsonString(value.signer)) {
+    return "invalid-signer";
+  }
+  if (!isCanonicalBase64Url(value.value)) return "invalid-value";
   return null;
 }
 
 function asRecord(value: object): Record<string, unknown> {
   return value as Record<string, unknown>;
+}
+
+/** Take an exact JSON ownership boundary before any user-supplied callback. */
+function snapshotArtifact<T extends object>(artifact: T): T {
+  return snapshotCanonicalJsonObject(
+    artifact as Record<string, unknown>,
+    "component signature artifact",
+  ) as T;
 }
 
 function assertUnsignedComponentArtifact(artifact: object): void {
@@ -171,15 +217,128 @@ function assertUnsignedComponentArtifact(artifact: object): void {
   }
 }
 
-function encodedSignatureValue(value: Uint8Array | string): string {
-  const encoded =
-    typeof value === "string"
-      ? value
-      : Buffer.from(value).toString("base64url");
-  if (!isNonEmptyString(encoded)) {
-    throw new DacsError("component signer returned an empty signature value");
+function encodedSignatureValue(value: unknown): string {
+  if (typeof value === "string") {
+    if (!isCanonicalBase64Url(value)) {
+      throw new DacsError(
+        "component signer must return a canonical unpadded base64url signature value",
+      );
+    }
+    return value;
+  }
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    nodeTypes.isProxy(value) ||
+    !nodeTypes.isUint8Array(value)
+  ) {
+    throw new DacsError(
+      "component signer must return signature bytes or a canonical unpadded base64url string",
+    );
+  }
+  let encoded: string;
+  try {
+    // The typed-array constructor uses the source's internal slots rather than
+    // an input-controlled iterator or `byteLength` property. It therefore owns
+    // cross-realm/subclass bytes without dispatching through overrides.
+    encoded = Buffer.from(new Uint8Array(value)).toString("base64url");
+  } catch (cause) {
+    throw new DacsError("component signer returned unreadable signature bytes", {
+      cause,
+    });
+  }
+  if (!isCanonicalBase64Url(encoded)) {
+    throw new DacsError(
+      "component signer must return a canonical unpadded base64url signature value",
+    );
   }
   return encoded;
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function captureComponentSignatureOptions(
+  options: BuildComponentSignatureOptions,
+): CapturedComponentSignatureOptions {
+  // Read each caller-owned option exactly once and preserve method-style
+  // callback binding before inspecting the artifact. Artifact accessors must
+  // not be able to switch the signer configuration selected at API entry.
+  const algorithm = options.algorithm;
+  const signer = options.signer;
+  const signCandidate = options.sign;
+  if (!ALGORITHM_SET.has(algorithm)) {
+    throw new DacsError(`unsupported signature algorithm: ${algorithm}`);
+  }
+  if (!isNonEmptyString(signer) || !isSafeJsonString(signer)) {
+    throw new DacsError(
+      "component signature signer must be a non-empty valid JSON string",
+    );
+  }
+  if (typeof signCandidate !== "function") {
+    throw new DacsError("component signature signer callback must be a function");
+  }
+
+  return {
+    algorithm,
+    signer: signer.normalize("NFC"),
+    sign: Function.prototype.bind.call(
+      signCandidate,
+      options,
+    ) as ComponentSigner,
+  };
+}
+
+async function buildComponentSignatureFromSnapshot(
+  artifact: object,
+  separator: DomainSeparator,
+  options: CapturedComponentSignatureOptions,
+): Promise<ComponentSignature> {
+  assertUnsignedComponentArtifact(artifact);
+  if (!isRegisteredSeparator(separator)) {
+    throw new DacsError(`unregistered domain separator: ${separator}`);
+  }
+  if (isCompositeSeparator(separator)) {
+    // A ComponentSignature is a single-hash envelope; a composite-payload
+    // separator (§B.7) must use its recipe-specific signer, not this path.
+    throw new DacsError(
+      `composite-payload separator ${separator} is not a single-hash ` +
+        `ComponentSignature recipe (§B.7)`,
+    );
+  }
+
+  // These values were captured before any caller-owned artifact property was
+  // read. A wallet callback (or another task running while it is pending)
+  // therefore cannot switch the advertised algorithm, signer, or
+  // implementation after the operation begins.
+  const algorithm = options.algorithm;
+  const signer = options.signer;
+  const sign = options.sign;
+
+  const context = { algorithm, signer };
+  const expectedBytes = signedBytes(separator, contentHash(asRecord(artifact)));
+  const callbackBytes = Uint8Array.from(expectedBytes);
+  const callbackContext = { ...context };
+  const rawValue = await sign(callbackBytes, callbackContext);
+
+  // The callback receives isolated inputs. Reject visible mutation as a wallet
+  // contract violation rather than accidentally accepting a signature over
+  // bytes or identity metadata other than the values selected above.
+  if (
+    !sameBytes(callbackBytes, expectedBytes) ||
+    callbackContext.algorithm !== algorithm ||
+    callbackContext.signer !== signer ||
+    Object.keys(callbackContext).length !== 2
+  ) {
+    throw new DacsError("component signer must not mutate its signing inputs");
+  }
+
+  return { ...context, value: encodedSignatureValue(rawValue) };
 }
 
 /**
@@ -194,29 +353,13 @@ export async function buildComponentSignature(
   separator: DomainSeparator,
   options: BuildComponentSignatureOptions,
 ): Promise<ComponentSignature> {
-  assertUnsignedComponentArtifact(artifact);
-  if (!isRegisteredSeparator(separator)) {
-    throw new DacsError(`unregistered domain separator: ${separator}`);
-  }
-  if (isCompositeSeparator(separator)) {
-    // A ComponentSignature is a single-hash envelope; a composite-payload
-    // separator (§B.7) must use its recipe-specific signer, not this path.
-    throw new DacsError(
-      `composite-payload separator ${separator} is not a single-hash ` +
-        `ComponentSignature recipe (§B.7)`,
-    );
-  }
-  if (!ALGORITHM_SET.has(options.algorithm)) {
-    throw new DacsError(`unsupported signature algorithm: ${options.algorithm}`);
-  }
-  if (!isNonEmptyString(options.signer)) {
-    throw new DacsError("component signature signer must be a non-empty string");
-  }
-
-  const context = { algorithm: options.algorithm, signer: options.signer };
-  const bytes = signedBytes(separator, contentHash(asRecord(artifact)));
-  const value = encodedSignatureValue(await options.sign(bytes, context));
-  return { ...context, value };
+  const capturedOptions = captureComponentSignatureOptions(options);
+  const artifactSnapshot = snapshotArtifact(artifact);
+  return buildComponentSignatureFromSnapshot(
+    artifactSnapshot,
+    separator,
+    capturedOptions,
+  );
 }
 
 /** Build and attach a ComponentSignature without mutating the input artifact. */
@@ -225,8 +368,14 @@ export async function signComponentArtifact<T extends object>(
   separator: DomainSeparator,
   options: BuildComponentSignatureOptions,
 ): Promise<ComponentSignedArtifact<T>> {
-  const signature = await buildComponentSignature(artifact, separator, options);
-  return { ...artifact, signature } as ComponentSignedArtifact<T>;
+  const capturedOptions = captureComponentSignatureOptions(options);
+  const artifactSnapshot = snapshotArtifact(artifact);
+  const signature = await buildComponentSignatureFromSnapshot(
+    artifactSnapshot,
+    separator,
+    capturedOptions,
+  );
+  return { ...artifactSnapshot, signature } as ComponentSignedArtifact<T>;
 }
 
 /**
@@ -248,24 +397,99 @@ export async function verifyComponentSignature<TKey>(
   if (isCompositeSeparator(separator)) {
     return { status: "malformed", reason: "composite-domain-separator" };
   }
-  if (!Object.prototype.hasOwnProperty.call(artifact, "signature")) {
+
+  // Snapshot the complete received artifact and dependency functions before
+  // crossing an async trust boundary. Caller mutation while authorisation or
+  // key resolution is pending must never change the scope ultimately verified.
+  let artifactSnapshot: Record<string, unknown>;
+  try {
+    if (!isRecord(artifact)) throw new TypeError();
+    artifactSnapshot = snapshotArtifact(artifact);
+  } catch {
+    return {
+      status: "malformed",
+      reason: "signed-scope-not-canonicalizable",
+    };
+  }
+  if (!Object.prototype.hasOwnProperty.call(artifactSnapshot, "signature")) {
     return { status: "missing" };
   }
-  if (Object.prototype.hasOwnProperty.call(artifact, "signatures")) {
+  if (Object.prototype.hasOwnProperty.call(artifactSnapshot, "signatures")) {
     return { status: "malformed", reason: "ambiguous-signature-fields" };
   }
 
-  const rawSignature = artifact.signature;
+  const rawSignature = artifactSnapshot.signature;
   const malformedReason = signatureShapeReason(rawSignature);
   if (malformedReason) {
     return { status: "malformed", reason: malformedReason };
   }
   const signature = rawSignature as ComponentSignature;
 
+  // Preserve method-style callback `this` semantics while preventing a later
+  // property replacement on the dependency object from switching policy or
+  // crypto implementations mid-verification. Capture all three before the
+  // first await; invalid JavaScript inputs fail into their explicit unresolved
+  // category rather than escaping as an unhandled TypeError.
+  let isSignerAuthorized: VerifyComponentSignatureDeps<TKey>["isSignerAuthorized"];
+  try {
+    const candidate: unknown = deps.isSignerAuthorized;
+    if (typeof candidate !== "function") throw new TypeError();
+    isSignerAuthorized = Function.prototype.bind.call(
+      candidate,
+      deps,
+    ) as VerifyComponentSignatureDeps<TKey>["isSignerAuthorized"];
+  } catch {
+    return {
+      status: "unresolved",
+      reason: "authorization-unresolved",
+      signature,
+    };
+  }
+  let resolvePublicKey: VerifyComponentSignatureDeps<TKey>["resolvePublicKey"];
+  try {
+    const candidate: unknown = deps.resolvePublicKey;
+    if (typeof candidate !== "function") throw new TypeError();
+    resolvePublicKey = Function.prototype.bind.call(
+      candidate,
+      deps,
+    ) as VerifyComponentSignatureDeps<TKey>["resolvePublicKey"];
+  } catch {
+    return {
+      status: "unresolved",
+      reason: "signer-key-resolution-failed",
+      signature,
+    };
+  }
+  let verify: VerifyComponentSignatureDeps<TKey>["verify"];
+  try {
+    const candidate: unknown = deps.verify;
+    if (typeof candidate !== "function") throw new TypeError();
+    verify = Function.prototype.bind.call(
+      candidate,
+      deps,
+    ) as VerifyComponentSignatureDeps<TKey>["verify"];
+  } catch {
+    return {
+      status: "unresolved",
+      reason: "verification-error",
+      signature,
+    };
+  }
+
   let authorized: boolean;
   try {
-    authorized = await deps.isSignerAuthorized(artifact, signature);
+    authorized = await isSignerAuthorized(
+      snapshotArtifact(artifactSnapshot),
+      snapshotArtifact(signature),
+    );
   } catch {
+    return {
+      status: "unresolved",
+      reason: "authorization-unresolved",
+      signature,
+    };
+  }
+  if (authorized !== true && authorized !== false) {
     return {
       status: "unresolved",
       reason: "authorization-unresolved",
@@ -278,7 +502,7 @@ export async function verifyComponentSignature<TKey>(
 
   let publicKey: TKey | null;
   try {
-    publicKey = await deps.resolvePublicKey(signature);
+    publicKey = await resolvePublicKey(snapshotArtifact(signature));
   } catch {
     return {
       status: "unresolved",
@@ -298,7 +522,7 @@ export async function verifyComponentSignature<TKey>(
   try {
     // contentHash omits the signature field(s) but preserves every unknown
     // artifact field, which is the SIG-5 signed scope required here.
-    payload = signedBytes(separator, contentHash(artifact));
+    payload = signedBytes(separator, contentHash(artifactSnapshot));
   } catch {
     return {
       status: "malformed",
@@ -307,7 +531,18 @@ export async function verifyComponentSignature<TKey>(
   }
 
   try {
-    const valid = await deps.verify({ signedBytes: payload, signature, publicKey });
+    const valid = await verify({
+      signedBytes: Uint8Array.from(payload),
+      signature: snapshotArtifact(signature),
+      publicKey,
+    });
+    if (valid !== true && valid !== false) {
+      return {
+        status: "unresolved",
+        reason: "verification-error",
+        signature,
+      };
+    }
     return valid
       ? { status: "valid", signature }
       : {

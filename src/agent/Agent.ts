@@ -25,7 +25,12 @@ import {
 import { publishListingCore } from "./publishListingCore.js";
 import { discoverListings } from "./discover.js";
 import { computeReputation, type Reputation } from "./reputation.js";
-import { buildSignedArtifact, verifySignedArtifact, type Signer, type Verifier } from "./signedArtifact.js";
+import {
+  buildSignedArtifact,
+  verifySignedArtifact,
+  type Signer,
+  type Verifier,
+} from "./signedArtifact.js";
 import {
   verifyBundleCore,
   type SignatureCheck,
@@ -263,6 +268,9 @@ export function buildAgent(adapter: DemosAdapter, config: AgentConfig): Agent {
         {
           buyerId,
           readListing: (ref) => adapter.readAnchor(ref),
+          // Temporary reduced-MVP agreement writer. DACS-3 AgreementSignature[]
+          // migration is owned by #98; it is deliberately not coerced into a
+          // ComponentSignature envelope here.
           sign: (artifact, separator) =>
             buildSignedArtifact(artifact, separator as DomainSeparator, sign),
           signBytes: async (bytes) => sign(bytes),

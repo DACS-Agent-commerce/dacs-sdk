@@ -126,6 +126,14 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
   it("SettlementEvidence validator enforces the §9.7 enums", () => {
     const valid = JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence;
     expect(isSettlementEvidence(valid)).toBe(true);
+    expect(isSettlementEvidence({ ...valid, signature: "deadbeef" })).toBe(false);
+    expect(isSettlementEvidence({ ...valid, signatures: [] })).toBe(false);
+    expect(
+      isSettlementEvidence({
+        ...valid,
+        signature: { ...valid.signature, value: "YWJjZA==" },
+      }),
+    ).toBe(false);
     // outcome must be success|failure — not any string.
     expect(isSettlementEvidence({ ...valid, outcome: "banana" })).toBe(false);
     // finality model must be a §9.7 member — not the old "observed".
@@ -381,7 +389,7 @@ describe("version literal pinning (#5)", () => {
       signature: {
         algorithm: "ed25519",
         signer: "did:demos:orchestrator",
-        value: "sig",
+        value: Buffer.alloc(64, 5).toString("base64url"),
       },
     };
     expect(isSettlementEvidence(base)).toBe(false);
