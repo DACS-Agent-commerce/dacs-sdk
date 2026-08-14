@@ -464,6 +464,20 @@ export interface FinalizedSellerBundle {
   resumedBinding: boolean;
 }
 
+/** Data-only scope accepted by the terminal verifier; no signing capability. */
+export type VerifyFinalizedSellerBundleInput = Omit<
+  FinalizeCompletedSellerBundleInput,
+  "seller" | "bindingSigner"
+> & {
+  seller: Omit<SigningSessionParty, "signer">;
+};
+
+/** Read/verification-only provider scope accepted by the terminal verifier. */
+export type SellerBundleFinalizationReadProvider = Omit<
+  SellerBundleFinalizationProvider,
+  "submitSellerBundle" | "publishBundleBinding"
+>;
+
 interface PreparedSession {
   jobId: string;
   listingRef: SellerFulfilmentAgreement["listingPin"];
@@ -3368,8 +3382,7 @@ async function publishBinding(
       lookup.disposition !== "present" ||
       !isBundleBinding(lookup.binding) ||
       !bindingMatches(lookup.binding, expected) ||
-      contentHash(lookup.binding as unknown as Record<string, unknown>) !==
-        contentHash(binding as unknown as Record<string, unknown>)
+      !exact(lookup.binding, binding)
     ) {
       throw new SubstrateError(
         "BundleBinding publication outcome is ambiguous; resolve before any retry",
@@ -3403,8 +3416,7 @@ async function publishBinding(
     publishedLookup.disposition !== "present" ||
     !isBundleBinding(publishedLookup.binding) ||
     !bindingMatches(publishedLookup.binding, expected) ||
-    contentHash(publishedLookup.binding as unknown as Record<string, unknown>) !==
-      contentHash(binding as unknown as Record<string, unknown>)
+    !exact(publishedLookup.binding, binding)
   ) {
     throw new SubstrateError("published BundleBinding is not independently readable and exact");
   }
@@ -3413,6 +3425,364 @@ async function publishBinding(
     binding: snapshot(publishedLookup.binding, "published BundleBinding"),
     resumed: false,
   };
+}
+
+function retainSellerBundleProvider(
+  provider: SellerBundleFinalizationProvider | SellerBundleFinalizationReadProvider,
+  readOnly = false,
+): SellerBundleFinalizationProvider {
+  const mapping = provider.mapping;
+  const bundleCopyVerifier = provider.bundleCopyVerifier;
+  const compositeVerificationDeps = provider.compositeVerificationDeps;
+  const bundleResolvePublicKey = bundleCopyVerifier?.resolvePublicKey;
+  const bundleVerify = bundleCopyVerifier?.verify;
+  const compositeResolveRecipe = compositeVerificationDeps?.resolveRecipe;
+  const compositeIsRecipeSignerAuthorized =
+    compositeVerificationDeps?.isRecipeSignerAuthorized;
+  const compositeIsVerifyResultSignerAuthorized =
+    compositeVerificationDeps?.isVerifyResultSignerAuthorized;
+  const compositeResolvePublicKey = compositeVerificationDeps?.resolvePublicKey;
+  const compositeVerify = compositeVerificationDeps?.verify;
+  const compositeVerifyAuthorityAttestation =
+    compositeVerificationDeps?.verifyAuthorityAttestation;
+  const compositeVerifyRequirementParameters =
+    compositeVerificationDeps?.verifyRequirementParameters;
+  const resolveDependency = provider.resolveDependency;
+  const verifyDependencyReceipt = provider.verifyDependencyReceipt;
+  const verifyDependencyBinding = provider.verifyDependencyBinding;
+  const verifyListingPublisherIdentityLinkage =
+    provider.verifyListingPublisherIdentityLinkage;
+  const verifyVetRequirementProvenance = provider.verifyVetRequirementProvenance;
+  const verifyPayloadMethodProof = provider.verifyPayloadMethodProof;
+  const verifyPayloadMethodTransaction = provider.verifyPayloadMethodTransaction;
+  const resolvePaymentPhaseIndex = provider.resolvePaymentPhaseIndex;
+  const resolveSellerBundle = provider.resolveSellerBundle;
+  const submitSellerBundle = readOnly
+    ? () => {
+        throw new DacsError("read-only bundle verification cannot submit a bundle");
+      }
+    : (provider as SellerBundleFinalizationProvider).submitSellerBundle;
+  const verifyBundleAnchorReceipt = provider.verifyBundleAnchorReceipt;
+  const resolveBundleBinding = provider.resolveBundleBinding;
+  const publishBundleBinding = readOnly
+    ? mapping === "write-input"
+      ? () => {
+          throw new DacsError("read-only bundle verification cannot publish a binding");
+        }
+      : undefined
+    : (provider as SellerBundleFinalizationProvider).publishBundleBinding;
+  const verifyBundleBinding = provider.verifyBundleBinding;
+  if (mapping !== "pure" && mapping !== "write-input") {
+    throw new DacsError("unsupported bundle address mapping policy");
+  }
+  if (
+    !bundleCopyVerifier ||
+    typeof bundleResolvePublicKey !== "function" ||
+    typeof bundleVerify !== "function"
+  ) {
+    throw new DacsError("local bundle signature verifier is unavailable");
+  }
+  if (
+    !isRecord(compositeVerificationDeps) ||
+    typeof compositeResolveRecipe !== "function" ||
+    typeof compositeIsRecipeSignerAuthorized !== "function" ||
+    typeof compositeIsVerifyResultSignerAuthorized !== "function" ||
+    typeof compositeResolvePublicKey !== "function" ||
+    typeof compositeVerify !== "function" ||
+    typeof compositeVerifyAuthorityAttestation !== "function" ||
+    (compositeVerifyRequirementParameters !== undefined &&
+      typeof compositeVerifyRequirementParameters !== "function")
+  ) {
+    throw new DacsError("strict CompositeVerificationRecord verifier is unavailable");
+  }
+  if (typeof verifyListingPublisherIdentityLinkage !== "function") {
+    throw new DacsError("Listing/session IdentityBundle linkage verifier is unavailable");
+  }
+  if (typeof verifyVetRequirementProvenance !== "function") {
+    throw new DacsError("Vet requirement provenance verifier is unavailable (#331)");
+  }
+  if (
+    [
+      resolveDependency,
+      verifyDependencyReceipt,
+      verifyDependencyBinding,
+      resolveSellerBundle,
+      submitSellerBundle,
+      verifyBundleAnchorReceipt,
+    ].some((candidate) => typeof candidate !== "function") ||
+    [
+      verifyPayloadMethodProof,
+      verifyPayloadMethodTransaction,
+      resolvePaymentPhaseIndex,
+      resolveBundleBinding,
+      publishBundleBinding,
+      verifyBundleBinding,
+    ].some((candidate) => candidate !== undefined && typeof candidate !== "function") ||
+    (mapping === "write-input" &&
+      (typeof resolveBundleBinding !== "function" ||
+        typeof publishBundleBinding !== "function"))
+  ) {
+    throw new DacsError("seller bundle provider is incomplete or non-callable");
+  }
+  const bindTo = <T extends Function>(callback: T, owner: unknown): T =>
+    Function.prototype.bind.call(callback, owner) as T;
+  const bind = <T extends Function>(callback: T): T => bindTo(callback, provider);
+  return {
+    mapping,
+    bundleCopyVerifier: {
+      resolvePublicKey: bindTo(bundleResolvePublicKey, bundleCopyVerifier),
+      verify: bindTo(bundleVerify, bundleCopyVerifier),
+    },
+    compositeVerificationDeps: {
+      resolveRecipe: bindTo(
+        compositeResolveRecipe,
+        compositeVerificationDeps,
+      ),
+      isRecipeSignerAuthorized: bindTo(
+        compositeIsRecipeSignerAuthorized,
+        compositeVerificationDeps,
+      ),
+      isVerifyResultSignerAuthorized: bindTo(
+        compositeIsVerifyResultSignerAuthorized,
+        compositeVerificationDeps,
+      ),
+      resolvePublicKey: bindTo(
+        compositeResolvePublicKey,
+        compositeVerificationDeps,
+      ),
+      verify: bindTo(compositeVerify, compositeVerificationDeps),
+      verifyAuthorityAttestation: bindTo(
+        compositeVerifyAuthorityAttestation,
+        compositeVerificationDeps,
+      ),
+      ...(compositeVerifyRequirementParameters
+        ? {
+            verifyRequirementParameters: bindTo(
+              compositeVerifyRequirementParameters,
+              compositeVerificationDeps,
+            ),
+          }
+        : {}),
+    },
+    resolveDependency: bind(resolveDependency),
+    verifyDependencyReceipt: bind(verifyDependencyReceipt),
+    verifyDependencyBinding: bind(verifyDependencyBinding),
+    verifyListingPublisherIdentityLinkage: bind(
+      verifyListingPublisherIdentityLinkage,
+    ),
+    verifyVetRequirementProvenance: bind(verifyVetRequirementProvenance),
+    ...(verifyPayloadMethodProof
+      ? { verifyPayloadMethodProof: bind(verifyPayloadMethodProof) }
+      : {}),
+    ...(verifyPayloadMethodTransaction
+      ? { verifyPayloadMethodTransaction: bind(verifyPayloadMethodTransaction) }
+      : {}),
+    ...(resolvePaymentPhaseIndex
+      ? { resolvePaymentPhaseIndex: bind(resolvePaymentPhaseIndex) }
+      : {}),
+    resolveSellerBundle: bind(resolveSellerBundle),
+    submitSellerBundle: bind(submitSellerBundle),
+    verifyBundleAnchorReceipt: bind(verifyBundleAnchorReceipt),
+    ...(resolveBundleBinding
+      ? { resolveBundleBinding: bind(resolveBundleBinding) }
+      : {}),
+    ...(publishBundleBinding
+      ? { publishBundleBinding: bind(publishBundleBinding) }
+      : {}),
+    ...(verifyBundleBinding
+      ? { verifyBundleBinding: bind(verifyBundleBinding) }
+      : {}),
+  };
+}
+
+function terminalResultKeys(value: Record<string, unknown>): string[] {
+  return [
+    "state",
+    "logicalAddress",
+    "nativeAddress",
+    "bundleContentHash",
+    "sellerBundle",
+    "buyerBundle",
+    ...(value.orchestratorBundle === undefined ? [] : ["orchestratorBundle"]),
+    "anchorReceipt",
+    ...(value.anchorTx === undefined ? [] : ["anchorTx"]),
+    ...(value.binding === undefined ? [] : ["binding"]),
+    "resumedBundle",
+    "resumedBinding",
+  ];
+}
+
+/**
+ * Re-authenticate a retained terminal bundle without exposing any signer or
+ * write path. Reads may refresh receipt proof material, but the immutable
+ * publication identity, complete role copies, signatures, and binding must
+ * still match the exact persisted result.
+ */
+export async function verifyFinalizedSellerBundleReadOnly(
+  input: VerifyFinalizedSellerBundleInput,
+  suppliedResult: unknown,
+  provider: SellerBundleFinalizationReadProvider,
+): Promise<FinalizedSellerBundle> {
+  const capturedInput = snapshot(input, "read-only seller bundle verification input");
+  const retainedProvider = retainSellerBundleProvider(provider, true);
+  const properties = ownEnumerableDataProperties(suppliedResult);
+  if (!properties || !hasExactPropertySet(
+    properties,
+    terminalResultKeys(suppliedResult as Record<string, unknown>),
+  )) {
+    throw new DacsError("retained seller bundle result has a non-canonical shape");
+  }
+  const result = snapshot(suppliedResult, "retained seller bundle result") as Record<
+    string,
+    unknown
+  >;
+  if (
+    result.state !== "finalised" ||
+    typeof result.resumedBundle !== "boolean" ||
+    typeof result.resumedBinding !== "boolean" ||
+    typeof result.logicalAddress !== "string" ||
+    typeof result.nativeAddress !== "string" ||
+    !isHash(result.bundleContentHash) ||
+    !isFaultAttestationBundle(result.sellerBundle) ||
+    !isFaultAttestationBundle(result.buyerBundle) ||
+    !isAnchorReceipt(result.anchorReceipt) ||
+    (result.anchorTx !== undefined &&
+      (typeof result.anchorTx !== "string" || result.anchorTx.length === 0)) ||
+    (result.binding !== undefined && !isBundleBinding(result.binding)) ||
+    (result.orchestratorBundle !== undefined &&
+      !isFaultAttestationBundle(result.orchestratorBundle))
+  ) {
+    throw new DacsError("retained seller bundle result is malformed");
+  }
+
+  const { seller, bindingSigner: _discardedBindingSigner, ...inputData } =
+    capturedInput as FinalizeCompletedSellerBundleInput;
+  const session = prepareSession({
+    ...inputData,
+    seller: {
+      primaryClaim: seller.primaryClaim,
+      bundleHash: seller.bundleHash,
+      signer: () => {
+        throw new DacsError("read-only bundle verification cannot sign a bundle");
+      },
+    },
+  });
+  const expectedScope = expectedBundleScope(session);
+  assertNormativeExpectedScope(expectedScope);
+  await verifyDependencies(session, capturedInput.dependencies, retainedProvider);
+  const logicalAddress = bundleAddress(session.jobId, "seller");
+  const expectedBundleHash = bundlePayload(expectedScope).bundleContentHash;
+  if (
+    result.logicalAddress !== logicalAddress ||
+    result.bundleContentHash !== expectedBundleHash ||
+    attestationBundleHash(result.sellerBundle) !== expectedBundleHash ||
+    !exact(bundleSignedScope(result.sellerBundle), expectedScope)
+  ) {
+    throw new DacsError("retained seller bundle result changed its reviewed session scope");
+  }
+
+  const retainedAnchored: AnchoredSellerBundle = {
+    bundle: snapshot(result.sellerBundle, "retained seller bundle"),
+    nativeAddress: result.nativeAddress,
+    anchorReceipt: snapshot(result.anchorReceipt, "retained bundle anchor receipt"),
+    ...(result.anchorTx === undefined ? {} : { anchorTx: result.anchorTx }),
+  };
+  const retainedSellerBundle = await verifyAnchoredBundle(
+    logicalAddress,
+    expectedScope,
+    retainedAnchored,
+    retainedProvider,
+  );
+  const current = await resolveBundle(logicalAddress, retainedProvider);
+  if (current.disposition !== "present") {
+    throw new SubstrateError(
+      current.disposition === "indeterminate"
+        ? `retained seller bundle readback is indeterminate: ${current.reason}`
+        : "retained seller bundle is authoritatively absent",
+    );
+  }
+  const currentSellerBundle = await verifyAnchoredBundle(
+    logicalAddress,
+    expectedScope,
+    current.anchored,
+    retainedProvider,
+  );
+  if (
+    !exact(currentSellerBundle, retainedSellerBundle) ||
+    current.anchored.nativeAddress !== result.nativeAddress ||
+    !sameAnchorPublicationIdentity(current.anchored.anchorReceipt, result.anchorReceipt) ||
+    (current.anchored.anchorTx !== undefined &&
+      result.anchorTx !== undefined &&
+      current.anchored.anchorTx !== result.anchorTx)
+  ) {
+    throw new DacsError("retained seller bundle differs from its authenticated readback");
+  }
+
+  const expectedBuyerBundle = roleCopy(retainedSellerBundle, "buyer");
+  if (!exact(result.buyerBundle, expectedBuyerBundle)) {
+    throw new DacsError("retained buyer bundle is not the exact seller role copy");
+  }
+  await locallyVerifyCompletedBundle(result.buyerBundle, "buyer", retainedProvider);
+  if (session.orchestrator) {
+    const expectedOrchestratorBundle = roleCopy(retainedSellerBundle, "orchestrator");
+    if (
+      !result.orchestratorBundle ||
+      !exact(result.orchestratorBundle, expectedOrchestratorBundle)
+    ) {
+      throw new DacsError("retained orchestrator bundle is not the exact seller role copy");
+    }
+    await locallyVerifyCompletedBundle(
+      result.orchestratorBundle,
+      "orchestrator",
+      retainedProvider,
+    );
+  } else if (result.orchestratorBundle !== undefined) {
+    throw new DacsError("retained seller bundle invented an orchestrator role copy");
+  }
+
+  if (retainedProvider.mapping === "pure") {
+    if (result.binding !== undefined) {
+      throw new DacsError("pure bundle mapping retained an inapplicable BundleBinding");
+    }
+  } else {
+    if (!result.binding || !retainedProvider.resolveBundleBinding) {
+      throw new DacsError("write-input bundle mapping lacks its read-only BundleBinding seam");
+    }
+    const expectedBinding: Omit<BundleBinding, "signature"> = {
+      bindingVersion: "1",
+      jobId: session.jobId,
+      role: "seller",
+      logicalAddress,
+      nativeAddress: result.nativeAddress,
+      bundleContentHash: expectedBundleHash,
+      ...(result.anchorTx === undefined ? {} : { anchorTx: result.anchorTx }),
+      signer: session.seller.primaryClaim,
+    };
+    if (!bindingMatches(result.binding, expectedBinding)) {
+      throw new DacsError("retained BundleBinding maps different bundle content");
+    }
+    await locallyVerifyBindingSignature(result.binding, retainedProvider);
+    let bindingLookup: SellerBundleBindingLookup;
+    try {
+      bindingLookup = snapshot(
+        await retainedProvider.resolveBundleBinding(logicalAddress, session.seller.primaryClaim),
+        "retained BundleBinding readback",
+      );
+    } catch (error) {
+      throw new SubstrateError("retained BundleBinding readback errored", { cause: error });
+    }
+    if (
+      bindingLookup.disposition !== "present" ||
+      !isBundleBinding(bindingLookup.binding) ||
+      !bindingMatches(bindingLookup.binding, expectedBinding) ||
+      !exact(bindingLookup.binding, result.binding)
+    ) {
+      throw new DacsError("retained BundleBinding is not independently readable and exact");
+    }
+    await locallyVerifyBindingSignature(bindingLookup.binding, retainedProvider);
+  }
+
+  return snapshot(result as unknown as FinalizedSellerBundle, "verified seller bundle result");
 }
 
 /**
@@ -3424,74 +3794,7 @@ export async function finalizeCompletedSellerBundleCore(
   input: FinalizeCompletedSellerBundleInput,
   provider: SellerBundleFinalizationProvider,
 ): Promise<FinalizedSellerBundle> {
-  const mapping = provider.mapping;
-  if (mapping !== "pure" && mapping !== "write-input") {
-    throw new DacsError("unsupported bundle address mapping policy");
-  }
-  if (
-    !provider.bundleCopyVerifier ||
-    typeof provider.bundleCopyVerifier.resolvePublicKey !== "function" ||
-    typeof provider.bundleCopyVerifier.verify !== "function"
-  ) {
-    throw new DacsError("local bundle signature verifier is unavailable");
-  }
-  const compositeVerificationDeps = provider.compositeVerificationDeps;
-  if (
-    !isRecord(compositeVerificationDeps) ||
-    typeof compositeVerificationDeps.resolveRecipe !== "function" ||
-    typeof compositeVerificationDeps.isRecipeSignerAuthorized !== "function" ||
-    typeof compositeVerificationDeps.isVerifyResultSignerAuthorized !== "function" ||
-    typeof compositeVerificationDeps.resolvePublicKey !== "function" ||
-    typeof compositeVerificationDeps.verify !== "function" ||
-    typeof compositeVerificationDeps.verifyAuthorityAttestation !== "function" ||
-    (compositeVerificationDeps.verifyRequirementParameters !== undefined &&
-      typeof compositeVerificationDeps.verifyRequirementParameters !== "function")
-  ) {
-    throw new DacsError("strict CompositeVerificationRecord verifier is unavailable");
-  }
-  if (typeof provider.verifyListingPublisherIdentityLinkage !== "function") {
-    throw new DacsError("Listing/session IdentityBundle linkage verifier is unavailable");
-  }
-  if (typeof provider.verifyVetRequirementProvenance !== "function") {
-    throw new DacsError("Vet requirement provenance verifier is unavailable (#331)");
-  }
-  const retainedProvider: SellerBundleFinalizationProvider = {
-    ...provider,
-    mapping,
-    bundleCopyVerifier: {
-      resolvePublicKey: provider.bundleCopyVerifier.resolvePublicKey,
-      verify: provider.bundleCopyVerifier.verify,
-    },
-    compositeVerificationDeps: {
-      resolveRecipe: compositeVerificationDeps.resolveRecipe.bind(
-        compositeVerificationDeps,
-      ),
-      isRecipeSignerAuthorized:
-        compositeVerificationDeps.isRecipeSignerAuthorized.bind(
-          compositeVerificationDeps,
-        ),
-      isVerifyResultSignerAuthorized:
-        compositeVerificationDeps.isVerifyResultSignerAuthorized.bind(
-          compositeVerificationDeps,
-        ),
-      resolvePublicKey: compositeVerificationDeps.resolvePublicKey.bind(
-        compositeVerificationDeps,
-      ),
-      verify: compositeVerificationDeps.verify.bind(compositeVerificationDeps),
-      verifyAuthorityAttestation:
-        compositeVerificationDeps.verifyAuthorityAttestation.bind(
-          compositeVerificationDeps,
-        ),
-      ...(compositeVerificationDeps.verifyRequirementParameters
-        ? {
-            verifyRequirementParameters:
-              compositeVerificationDeps.verifyRequirementParameters.bind(
-                compositeVerificationDeps,
-              ),
-          }
-        : {}),
-    },
-  };
+  const retainedProvider = retainSellerBundleProvider(provider);
   const session = prepareSession(input);
   assertNormativeExpectedScope(expectedBundleScope(session));
   await verifyDependencies(session, input.dependencies, retainedProvider);

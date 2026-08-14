@@ -10,9 +10,13 @@ import {
   createInMemorySessionStore,
   runFulfilmentCore,
   runDurableFulfilmentCore,
+  verifyDurableSellerTerminalResult,
   getSellerFulfilmentStatus,
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  verifyFinalizedSellerBundleReadOnly,
+  finalizeCompletedSellerBundleDurable,
+  getSellerBundleFinalizationStatus,
   runSessionCore,
   sellerFulfilmentId,
   type SellerFulfilmentDeps,
@@ -31,9 +35,13 @@ import {
   createInMemoryFencedSessionStore as sellerCreateInMemoryFencedSessionStore,
   finalizeCompletedSellerBundleCore as sellerFinalizeCompletedBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest as sellerPrepareCompletedBundleCounterSignatureRequest,
+  verifyFinalizedSellerBundleReadOnly as sellerVerifyFinalizedBundleReadOnly,
+  finalizeCompletedSellerBundleDurable as sellerFinalizeCompletedBundleDurable,
+  getSellerBundleFinalizationStatus as sellerGetBundleFinalizationStatus,
   getSellerFulfilmentStatus as sellerGetFulfilmentStatus,
   runFulfilmentCore as sellerRunFulfilmentCore,
   runDurableFulfilmentCore as sellerRunDurableFulfilmentCore,
+  verifyDurableSellerTerminalResult as sellerVerifyDurableTerminalResult,
   sellerFulfilmentId as sellerSurfaceFulfilmentId,
 } from "../../src/seller/index.js";
 
@@ -44,8 +52,10 @@ describe("public core surface (#14)", () => {
 
   it("#55: durable seller recovery is exported from root and seller surfaces", () => {
     expect(typeof runDurableFulfilmentCore).toBe("function");
+    expect(typeof verifyDurableSellerTerminalResult).toBe("function");
     expect(typeof getSellerFulfilmentStatus).toBe("function");
     expect(sellerRunDurableFulfilmentCore).toBe(runDurableFulfilmentCore);
+    expect(sellerVerifyDurableTerminalResult).toBe(verifyDurableSellerTerminalResult);
     expect(sellerGetFulfilmentStatus).toBe(getSellerFulfilmentStatus);
     const deps: Partial<DurableSellerFulfilmentDeps> = { nowMs: () => 2 };
     const durability: Partial<SellerFulfilmentDurability> = { workerId: "worker" };
@@ -84,9 +94,13 @@ describe("public core surface (#14)", () => {
     expect(typeof runFulfilmentCore).toBe("function");
     expect(typeof finalizeCompletedSellerBundleCore).toBe("function");
     expect(typeof prepareCompletedSellerBundleCounterSignatureRequest).toBe("function");
+    expect(typeof verifyFinalizedSellerBundleReadOnly).toBe("function");
     expect(sellerFinalizeCompletedBundleCore).toBe(finalizeCompletedSellerBundleCore);
     expect(sellerPrepareCompletedBundleCounterSignatureRequest).toBe(
       prepareCompletedSellerBundleCounterSignatureRequest,
+    );
+    expect(sellerVerifyFinalizedBundleReadOnly).toBe(
+      verifyFinalizedSellerBundleReadOnly,
     );
     expect(sellerRunFulfilmentCore).toBe(runFulfilmentCore);
     expect(sellerSurfaceFulfilmentId).toBe(sellerFulfilmentId);
@@ -104,6 +118,23 @@ describe("public core surface (#14)", () => {
     };
     expect(artifacts.settlementEvidence).toEqual([]);
     expect(paymentPhase.phaseIndex).toBe(2);
+  });
+
+  it("#55: durable seller recovery and status are public on both entrypoints", () => {
+    expect(typeof runDurableFulfilmentCore).toBe("function");
+    expect(typeof verifyDurableSellerTerminalResult).toBe("function");
+    expect(typeof getSellerFulfilmentStatus).toBe("function");
+    expect(sellerRunDurableFulfilmentCore).toBe(runDurableFulfilmentCore);
+    expect(sellerVerifyDurableTerminalResult).toBe(verifyDurableSellerTerminalResult);
+    expect(sellerGetFulfilmentStatus).toBe(getSellerFulfilmentStatus);
+    expect(typeof finalizeCompletedSellerBundleDurable).toBe("function");
+    expect(typeof getSellerBundleFinalizationStatus).toBe("function");
+    expect(sellerFinalizeCompletedBundleDurable).toBe(
+      finalizeCompletedSellerBundleDurable,
+    );
+    expect(sellerGetBundleFinalizationStatus).toBe(
+      getSellerBundleFinalizationStatus,
+    );
   });
 
   // NOTE (#48): `sessionAnchorName` is intentionally NOT part of the public

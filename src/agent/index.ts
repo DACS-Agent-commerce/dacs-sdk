@@ -259,9 +259,11 @@ export {
 } from "./runFulfilmentCore.js";
 export {
   runDurableFulfilmentCore,
+  verifyDurableSellerTerminalResult,
   getSellerFulfilmentStatus,
   sellerFulfilmentCheckpointKey,
   type DurableSellerFulfilmentDeps,
+  type DurableSellerTerminalVerification,
   type SellerEffectAuthoritativeAbsence,
   type SellerEffectFence,
   type SellerFinalSessionReceiptInput,
@@ -269,4 +271,6 @@ export {
   type SellerFulfilmentDurability,
   type SellerFulfilmentCheckpointState,
   type SellerFulfilmentStatusLoad,
+  type VerifyDurableSellerTerminalResultInput,
+  type VerifiedDurableSellerTerminalResult,
 } from "./runDurableFulfilmentCore.js";

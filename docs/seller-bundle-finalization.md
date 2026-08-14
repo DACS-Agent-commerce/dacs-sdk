@@ -40,6 +40,10 @@ normal Standard pin/version review before release.
 | Existing content is resolved before any write and never overwritten on ambiguity | CORE §5.1 read trichotomy; SR2-9; DACS-5 §10.4.2 | `indeterminate` is never treated as `absent`; an existing exact verified copy resumes without signing or submission. A thrown submission is reconciled by hash before the caller is told to resolve before retry. |
 | Bundle anchor is finalized, independently readable, hash-bound, and proof-verified | DACS-5 §10.3 ST-11(3); CORE §5.1 SR2-4..SR2-9 | The resolved copy, logical/native address, `attestation_bundle_hash`, finalized receipt, and binding-native proof must all verify. |
 | Write-input mappings publish and read back the exact signed `BundleBinding`; pure mappings do not | DACS-5 §10.3 ST-11(4); §10.4.2 BB-1, BB-4, BB-5, BB-7 | The SDK emits the normative object under `dacs-bundle-binding:v1:`, locally verifies its seller signature, publishes it, then independently resolves the exact signed binding before returning. Optional `anchorTx` learning/loss cannot invalidate an otherwise identical mapping, but conflicting known pointers fail. |
+| Bundle recovery inherits the exact consumed fulfilment authority | DACS-4 §9.5.8 SB-1/SB-2; DACS-5 §10.3 ST-7 | The durable wrapper requires an existing v2 fulfilment record and re-authenticates its complete handoff, payment authorization, delivery/evidence publication and readback spine, final receipt, terminal result, indexed receipts, SettlementEvidence signature, and anchor proof before acquiring a bundle lease. Missing state is never synthesized. |
+| Restarted signature/write intents reconcile under a generation fence | DACS-5 §10.3 ST-7; CORE §5.1 read/lifecycle reconciliation | Every seller-sign, bundle-submit, binding-sign, and binding-publish invocation and reconciler receives the exact frozen `{ owner, generation, idempotencyKey }`. Re-drive is permitted only after the reconciler returns `authoritatively-absent`, which contractually means it atomically raised the adapter's minimum accepted generation. |
+| Detached signatures cannot be spliced across retries | DACS-5 §10.4.1; CORE §B.7 SIG-6 | Buyer and distinct-orchestrator signatures remain out-of-band inputs, but the durable input checkpoint binds each complete `(party, algorithm, canonical value)` envelope as well as the reviewed signed bytes before any seller effect. |
+| Terminal bundle state is atomic and read-only | DACS-5 §10.3 ST-1, ST-6, ST-11 | One fenced CAS appends the exact finalized-result outcome and immutable bundle receipt, enters `seller:finalised`, and releases the lease. Replay receives no signer or write capability: it re-audits the dependency closure, cryptographically verifies the exact signer set and role copies, authenticates the finalized receipt and current bundle readback, and (for write-input mappings) verifies the exact signed `BundleBinding` readback before returning the retained result. Failure cleanup never demotes terminal state or releases a successor generation. |
 
 ## Provider contract
 
@@ -96,9 +100,33 @@ PayloadAttestationRecord, FaultAttestationBundle, or BundleBinding.
 
 ## Deliberate scope boundary
 
-This core advances seller bundle production in #17 and the delivery-evidence
-path in #15. It does not close durable recovery #55: bundle intent/outcome,
-anchor-reconciliation, and binding-publication checkpoints belong in the next
-focused durability layer. It also does not publish the buyer copy on the
-seller's behalf or replace buyer session orchestration #81; each signing party
-anchors its own role-specific copy as required by DACS-5 §10.4.2.
+`finalizeCompletedSellerBundleDurable` composes this core with the public
+`FencedSessionStoreV2`. It will not create a bundle-only session: callers must
+provide the same store record completed by `runDurableFulfilmentCore`, together
+with the two cryptographic verification callbacks needed to authenticate that
+retained terminal fulfilment. Bundle work then advances monotonically through
+`seller:bundle-signing`, anchor pending, optional binding signing/publication,
+and `seller:finalised` under one unscoped generation lease.
+
+The durability adapters must enforce the supplied fence at their own commit
+boundary. In particular, `authoritatively-absent` is not an advisory read: it is
+a promise that the adapter atomically registered the supplied generation as its
+minimum accepted fence before reporting absence. `indeterminate`, malformed,
+rejected, or thrown reconciliation never authorizes a duplicate effect.
+
+Terminal replay is intentionally not an offline cache hit. It performs fresh
+read-only authenticity checks and can pause on a resolver or verifier outage,
+but the verifier is capability-narrow: seller/binding signers and bundle/binding
+write callbacks are removed before the first await.
+
+The public `getSellerBundleFinalizationStatus` projection exposes checkpoint
+states and the immutable native bundle receipt without requiring an
+application-specific job database. Checkpoints contain references, hashes, and
+already-public signature values only; they are operational recovery state, not
+new signed DACS fields.
+
+Together the pure and durable cores advance seller bundle production in #17,
+the delivery-evidence path in #15, and the remaining bundle recovery scope in
+#55. They do not publish the buyer copy on the seller's behalf or replace buyer
+session orchestration #81; each signing party anchors its own role-specific copy
+as required by DACS-5 §10.4.2.

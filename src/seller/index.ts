@@ -102,9 +102,11 @@ export {
 } from "../agent/runFulfilmentCore.js";
 export {
   runDurableFulfilmentCore,
+  verifyDurableSellerTerminalResult,
   getSellerFulfilmentStatus,
   sellerFulfilmentCheckpointKey,
   type DurableSellerFulfilmentDeps,
+  type DurableSellerTerminalVerification,
   type SellerEffectAuthoritativeAbsence,
   type SellerEffectFence,
   type SellerFinalSessionReceiptInput,
@@ -112,6 +114,8 @@ export {
   type SellerFulfilmentDurability,
   type SellerFulfilmentCheckpointState,
   type SellerFulfilmentStatusLoad,
+  type VerifyDurableSellerTerminalResultInput,
+  type VerifiedDurableSellerTerminalResult,
 } from "../agent/runDurableFulfilmentCore.js";
 export {
   FENCED_SESSION_STORE_VERSION,
@@ -145,6 +149,7 @@ export {
 export {
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  verifyFinalizedSellerBundleReadOnly,
   type SellerBundleVerificationDisposition,
   type SellerBundleDependencyKind,
   type CompletedSellerPhaseHandlerResult,
@@ -164,7 +169,29 @@ export {
   type SellerPaymentPhaseIndexResolution,
   type SellerCompositeVerificationDeps,
   type SellerBundleFinalizationProvider,
+  type SellerBundleFinalizationReadProvider,
   type FinalizeCompletedSellerBundleInput,
+  type VerifyFinalizedSellerBundleInput,
   type CompletedSellerBundleCounterSignatureRequest,
   type FinalizedSellerBundle,
 } from "./bundleFinalization.js";
+export {
+  finalizeCompletedSellerBundleDurable,
+  getSellerBundleFinalizationStatus,
+  sellerBundleFinalizationCheckpointKey,
+  type SellerBundleEffectFence,
+  type SellerBundleFencedSigner,
+  type SellerBundleDurableSigner,
+  type SellerBundleFencedComponentSigner,
+  type FinalizeCompletedSellerBundleDurableInput,
+  type DurableSellerBundleFinalizationProvider,
+  type SellerBundleFinalizationRole,
+  type SellerBundleSignaturePurpose,
+  type SellerBundleSignatureReconciliation,
+  type SellerBundleAnchorReconciliation,
+  type SellerBundleBindingPublicationReconciliation,
+  type SellerBundleFinalizationDurability,
+  type SellerBundleCheckpointState,
+  type SellerBundlePublicationCheckpointState,
+  type SellerBundleFinalizationStatusLoad,
+} from "./durableBundleFinalization.js";
