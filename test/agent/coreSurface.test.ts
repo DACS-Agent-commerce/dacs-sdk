@@ -14,9 +14,29 @@ import {
   getSellerFulfilmentStatus,
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  verifyCompletedSellerBundleCounterSignatureRequest,
   verifyFinalizedSellerBundleReadOnly,
   finalizeCompletedSellerBundleDurable,
   getSellerBundleFinalizationStatus,
+  verifyFinalizedSessionSettlement,
+  createCompletedBuyerBundleCounterSignature,
+  finalizeCompletedBuyerBundleCore,
+  createCompletedCounterpartyBundleCounterSignature,
+  finalizeCompletedCounterpartyBundleCore,
+  advanceCompletedBuyerBundleDurable,
+  getBuyerBundleFinalizationStatus,
+  assembleTerminalBundleForOwnRole,
+  createTerminalBundleAuthority,
+  createTerminalBundlePlan,
+  createTerminalBundleSignatureContribution,
+  createTerminalBundleSignatureMatrix,
+  terminalBundleAuthorityHash,
+  terminalBundleSignedBytes,
+  advanceTerminalBundleDurable,
+  getTerminalBundleFinalizationStatus,
+  terminalBundleFinalizationCheckpointKey,
+  verifyFinalizedTerminalBundleReadOnly,
+  isCanonicalSettlementIdentity,
   createX402Paywall,
   x402PaywallCore,
   x402PaywallSettlementKey,
@@ -31,13 +51,41 @@ import {
   type SessionStore,
   type CompletedSellerSessionArtifacts,
   type SellerPaymentPhaseIndexResolution,
+  type BuyerBundleFinalizationDurability,
+  type DurableBuyerBundleFinalizationInput,
+  type AuthenticatedBundleRolePublication,
+  type CounterpartyBundleRole,
+  type CounterpartyBundleFinalizationProvider,
+  type DurableFinalizedBuyerBundle,
+  type SessionSettlementContext,
   type SessionDeps,
+  type TerminalBundleAuthorityInput,
+  type TerminalBundlePlan,
+  type TerminalBundleSigningMode,
+  type DurableTerminalBundleInput,
+  type TerminalBundleFinalizationDurability,
+  type TerminalBundleResolution,
 } from "../../src/index.js";
+import {
+  createCompletedCounterpartyBundleCounterSignature as agentCreateCompletedCounterpartyBundleCounterSignature,
+  finalizeCompletedCounterpartyBundleCore as agentFinalizeCompletedCounterpartyBundleCore,
+  assembleTerminalBundleForOwnRole as agentAssembleTerminalBundleForOwnRole,
+  createTerminalBundleAuthority as agentCreateTerminalBundleAuthority,
+  createTerminalBundlePlan as agentCreateTerminalBundlePlan,
+  createTerminalBundleSignatureContribution as agentCreateTerminalBundleSignatureContribution,
+  createTerminalBundleSignatureMatrix as agentCreateTerminalBundleSignatureMatrix,
+  terminalBundleAuthorityHash as agentTerminalBundleAuthorityHash,
+  terminalBundleSignedBytes as agentTerminalBundleSignedBytes,
+  advanceTerminalBundleDurable as agentAdvanceTerminalBundleDurable,
+  getTerminalBundleFinalizationStatus as agentGetTerminalBundleFinalizationStatus,
+  verifyFinalizedTerminalBundleReadOnly as agentVerifyFinalizedTerminalBundleReadOnly,
+} from "../../src/agent/index.js";
 import {
   FENCED_SESSION_STORE_VERSION as sellerFencedSessionStoreVersion,
   createInMemoryFencedSessionStore as sellerCreateInMemoryFencedSessionStore,
   finalizeCompletedSellerBundleCore as sellerFinalizeCompletedBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest as sellerPrepareCompletedBundleCounterSignatureRequest,
+  verifyCompletedSellerBundleCounterSignatureRequest as sellerVerifyCompletedBundleCounterSignatureRequest,
   verifyFinalizedSellerBundleReadOnly as sellerVerifyFinalizedBundleReadOnly,
   finalizeCompletedSellerBundleDurable as sellerFinalizeCompletedBundleDurable,
   getSellerBundleFinalizationStatus as sellerGetBundleFinalizationStatus,
@@ -105,10 +153,14 @@ describe("public core surface (#14)", () => {
     expect(typeof runFulfilmentCore).toBe("function");
     expect(typeof finalizeCompletedSellerBundleCore).toBe("function");
     expect(typeof prepareCompletedSellerBundleCounterSignatureRequest).toBe("function");
+    expect(typeof verifyCompletedSellerBundleCounterSignatureRequest).toBe("function");
     expect(typeof verifyFinalizedSellerBundleReadOnly).toBe("function");
     expect(sellerFinalizeCompletedBundleCore).toBe(finalizeCompletedSellerBundleCore);
     expect(sellerPrepareCompletedBundleCounterSignatureRequest).toBe(
       prepareCompletedSellerBundleCounterSignatureRequest,
+    );
+    expect(sellerVerifyCompletedBundleCounterSignatureRequest).toBe(
+      verifyCompletedSellerBundleCounterSignatureRequest,
     );
     expect(sellerVerifyFinalizedBundleReadOnly).toBe(
       verifyFinalizedSellerBundleReadOnly,
@@ -129,6 +181,101 @@ describe("public core surface (#14)", () => {
     };
     expect(artifacts.settlementEvidence).toEqual([]);
     expect(paymentPhase.phaseIndex).toBe(2);
+  });
+
+  it("#81: authenticated buyer finalization is public and composable", () => {
+    expect(typeof verifyFinalizedSessionSettlement).toBe("function");
+    expect(typeof createCompletedBuyerBundleCounterSignature).toBe("function");
+    expect(typeof finalizeCompletedBuyerBundleCore).toBe("function");
+    expect(typeof advanceCompletedBuyerBundleDurable).toBe("function");
+    expect(typeof getBuyerBundleFinalizationStatus).toBe("function");
+    expect(isCanonicalSettlementIdentity(`demos:${"1".repeat(64)}`)).toBe(true);
+
+    const input: Partial<DurableBuyerBundleFinalizationInput> = {};
+    const durability: Partial<BuyerBundleFinalizationDurability> = {
+      workerId: "buyer-worker",
+    };
+    const context: Partial<SessionSettlementContext> = {
+      contextVersion: "1",
+      jobId: "job-81",
+    };
+    expect(input.buyer).toBeUndefined();
+    expect(durability.workerId).toBe("buyer-worker");
+    expect(context.jobId).toBe("job-81");
+  });
+
+  it("#81: role-owned finalization and durable publication metadata are public", () => {
+    expect(typeof createCompletedCounterpartyBundleCounterSignature).toBe("function");
+    expect(typeof finalizeCompletedCounterpartyBundleCore).toBe("function");
+    expect(agentCreateCompletedCounterpartyBundleCounterSignature).toBe(
+      createCompletedCounterpartyBundleCounterSignature,
+    );
+    expect(agentFinalizeCompletedCounterpartyBundleCore).toBe(
+      finalizeCompletedCounterpartyBundleCore,
+    );
+
+    const role: CounterpartyBundleRole = "orchestrator";
+    const provider: Partial<CounterpartyBundleFinalizationProvider> = {
+      mapping: "pure",
+    };
+    const publication: Partial<AuthenticatedBundleRolePublication> = {
+      role: "seller",
+      logicalAddress: "dacs5:bundle:job-81:seller",
+    };
+    const durable: Partial<DurableFinalizedBuyerBundle> = {
+      state: "finalised",
+    };
+    expect(role).toBe("orchestrator");
+    expect(provider.mapping).toBe("pure");
+    expect(publication.role).toBe("seller");
+    expect(durable.state).toBe("finalised");
+  });
+
+  it("#81: pure terminal bundle planning and matrix verification are public", () => {
+    expect(agentCreateTerminalBundleAuthority).toBe(createTerminalBundleAuthority);
+    expect(agentTerminalBundleAuthorityHash).toBe(terminalBundleAuthorityHash);
+    expect(agentCreateTerminalBundlePlan).toBe(createTerminalBundlePlan);
+    expect(agentTerminalBundleSignedBytes).toBe(terminalBundleSignedBytes);
+    expect(agentCreateTerminalBundleSignatureContribution).toBe(
+      createTerminalBundleSignatureContribution,
+    );
+    expect(agentCreateTerminalBundleSignatureMatrix).toBe(
+      createTerminalBundleSignatureMatrix,
+    );
+    expect(agentAssembleTerminalBundleForOwnRole).toBe(
+      assembleTerminalBundleForOwnRole,
+    );
+
+    const input: Partial<TerminalBundleAuthorityInput> = { jobId: "job-81" };
+    const plan: Partial<TerminalBundlePlan> = { planVersion: "1" };
+    const mode: TerminalBundleSigningMode = { kind: "co-signed" };
+    expect(input.jobId).toBe("job-81");
+    expect(plan.planVersion).toBe("1");
+    expect(mode.kind).toBe("co-signed");
+  });
+
+  it("#81: durable role-local terminal publication is public", () => {
+    expect(agentAdvanceTerminalBundleDurable).toBe(advanceTerminalBundleDurable);
+    expect(agentGetTerminalBundleFinalizationStatus).toBe(
+      getTerminalBundleFinalizationStatus,
+    );
+    expect(agentVerifyFinalizedTerminalBundleReadOnly).toBe(
+      verifyFinalizedTerminalBundleReadOnly,
+    );
+    expect(terminalBundleFinalizationCheckpointKey("seller", "result")).toBe(
+      "terminal:seller:result",
+    );
+    const input: Partial<DurableTerminalBundleInput> = {};
+    const durability: Partial<TerminalBundleFinalizationDurability> = {
+      workerId: "terminal-worker",
+    };
+    const absent: TerminalBundleResolution<never> = {
+      disposition: "authoritatively-absent",
+      reason: "authenticated absence",
+    };
+    expect(input.authority).toBeUndefined();
+    expect(durability.workerId).toBe("terminal-worker");
+    expect(absent.disposition).toBe("authoritatively-absent");
   });
 
   it("#55: durable seller recovery and status are public on both entrypoints", () => {

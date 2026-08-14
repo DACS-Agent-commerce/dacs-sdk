@@ -102,6 +102,41 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     expect(r.status).toBe("indeterminate");
   });
 
+  test("indeterminate: an index that THROWS is not an absence", async () => {
+    const r = await resolveAndRead(
+      {
+        resolve: async () => {
+          throw new Error("catalog unavailable");
+        },
+      },
+      LOGICAL,
+      SELLER,
+      depsWith({}),
+    );
+    expect(r).toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("catalog unavailable"),
+    });
+  });
+
+  test("binding-mismatch: a custom index cannot substitute another logical address or owner", async () => {
+    for (const substituted of [
+      binding({ logicalAddress: "dacs1:other" }),
+      binding({ owner: "0xother" }),
+      binding({ revoked: true }),
+    ]) {
+      const r = await resolveAndRead(
+        {
+          resolve: async () => ({ status: "present", binding: substituted }),
+        },
+        LOGICAL,
+        SELLER,
+        depsWith({ "stor-real": RECORD }),
+      );
+      expect(r.status).toBe("binding-mismatch");
+    }
+  });
+
   test("signature verifier: a valid signature keeps the read verified", async () => {
     const index = createInMemoryBindingIndex([binding()]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, {
@@ -128,5 +163,94 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     const index = createInMemoryBindingIndex([binding({ contentHash: undefined })]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith({ "stor-real": RECORD }));
     expect(r.status).toBe("unverifiable");
+  });
+
+  test("unverifiable: a signature verifier cannot compensate for a missing binding hash", async () => {
+    let verifierCalled = false;
+    const index = createInMemoryBindingIndex([
+      binding({ contentHash: undefined }),
+    ]);
+    const r = await resolveAndRead(
+      index,
+      LOGICAL,
+      SELLER,
+      depsWith(
+        { "stor-real": RECORD },
+        {
+          verifySignature: () => {
+            verifierCalled = true;
+            return true;
+          },
+        },
+      ),
+    );
+    expect(r).toMatchObject({
+      status: "unverifiable",
+      reason: expect.stringContaining("does not carry a content hash"),
+    });
+    expect(verifierCalled).toBe(false);
+  });
+
+  test("unverifiable: malformed bytes that cannot be hashed return a diagnostic", async () => {
+    const index = createInMemoryBindingIndex([binding()]);
+    const r = await resolveAndRead(index, LOGICAL, SELLER, {
+      read: async () => RECORD,
+      contentHashOf: () => {
+        throw new Error("non-canonical number");
+      },
+      verifySignature: () => true,
+    });
+
+    expect(r).toMatchObject({
+      status: "unverifiable",
+      nativeAddress: "stor-real",
+      record: RECORD,
+      reason: expect.stringContaining("non-canonical number"),
+    });
+  });
+
+  test("snapshots binding and record before asynchronous artifact verification", async () => {
+    const mutableBinding = binding();
+    const mutableRecord = { ...RECORD };
+    let entered!: () => void;
+    const verifierEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = resolveAndRead(
+      {
+        resolve: async () => ({
+          status: "present",
+          binding: mutableBinding,
+        }),
+      },
+      LOGICAL,
+      SELLER,
+      {
+        read: async () => mutableRecord,
+        contentHashOf,
+        verifySignature: async (record, resolvedBinding) => {
+          entered();
+          await gate;
+          return (
+            record.serviceId === "market-data" &&
+            resolvedBinding.nativeAddress === "stor-real"
+          );
+        },
+      },
+    );
+    await verifierEntered;
+    mutableBinding.nativeAddress = "stor-mutated";
+    mutableRecord.serviceId = "mutated";
+    release();
+
+    await expect(pending).resolves.toMatchObject({
+      status: "verified",
+      nativeAddress: "stor-real",
+      record: { serviceId: "market-data" },
+    });
   });
 });

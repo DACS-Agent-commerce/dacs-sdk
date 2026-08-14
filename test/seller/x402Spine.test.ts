@@ -498,11 +498,12 @@ function makeHarness(): Harness {
 
   function sessionRecord(): SellerFulfilmentSessionRecord {
     const paymentTxRefs = activeAuthorization?.evidenceInput.paymentTxRefs ?? [{
-      kind: "x402" as const,
+      kind: "x402-event" as const,
       httpResource: HTTP_RESOURCE,
       paymentReceiptHash,
-      settlementTxHash: EVM_TX,
+      settlementTxHash: EVM_TX.slice(2),
       chainId: 84532,
+      logIndex: 2,
       protocolVersion: "2",
     }];
     const paymentEvidenceHash = activeAuthorization?.evidenceHash ?? sha256Hex(

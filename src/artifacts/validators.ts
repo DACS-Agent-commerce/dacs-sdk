@@ -181,6 +181,11 @@ const isPositiveSafeInt = (v: unknown): v is number =>
   isNum(v) && Number.isSafeInteger(v) && v > 0;
 const isSha256 = (v: unknown): v is string =>
   isStr(v) && /^[0-9a-f]{64}$/.test(v);
+const isCanonicalEvmEventHash = (v: unknown): v is string =>
+  isStr(v) && /^[0-9a-f]{64}$/.test(v);
+const isMinimalUnsignedDecimal = (v: unknown): v is string =>
+  isStr(v) && /^(0|[1-9][0-9]*)$/.test(v);
+
 const isIdentityBundleHash = (v: unknown): v is string =>
   isSha256(v) || (isStr(v) && /^sha256:[0-9a-f]{64}$/.test(v));
 const hasValidOptionalComponentSignature = (
@@ -1590,11 +1595,30 @@ export function isChainTxRef(v: unknown): v is ChainTxRef {
         isNonNegativeInt(v.chainId) &&
         isNonEmptyStr(v.txHash)
       );
+    case "evm-event":
+      return (
+        hasOnlyKeys(v, ["kind", "chainId", "txHash", "logIndex"]) &&
+        isPositiveSafeInt(v.chainId) &&
+        isCanonicalEvmEventHash(v.txHash) &&
+        isNonNegativeSafeInt(v.logIndex) &&
+        !Object.is(v.logIndex, -0)
+      );
     case "solana":
       return (
         hasOnlyKeys(v, ["kind", "cluster", "signature"]) &&
         isOneOf(["mainnet", "devnet", "testnet"], v.cluster) &&
         isNonEmptyStr(v.signature)
+      );
+    case "solana-instruction":
+      return (
+        hasOnlyKeys(v, ["kind", "cluster", "signature", "instructionIndex"]) &&
+        isOneOf(["mainnet", "devnet", "testnet"], v.cluster) &&
+        // §9.3 wire validation remains structural (the Standard reference-shape
+        // vector uses an illustrative signature). SB-1 projection performs the
+        // required exact 64-byte Base58 decode before minting an identity.
+        isNonEmptyStr(v.signature) &&
+        isNonNegativeSafeInt(v.instructionIndex) &&
+        !Object.is(v.instructionIndex, -0)
       );
     case "demos":
       return (
@@ -1638,6 +1662,25 @@ export function isChainTxRef(v: unknown): v is ChainTxRef {
         (v.settlementTxHash === undefined || isNonEmptyStr(v.settlementTxHash)) &&
         (v.chainId === undefined || isNonNegativeInt(v.chainId)) &&
         isNonEmptyStr(v.protocolVersion)
+      );
+    case "x402-event":
+      return (
+        hasOnlyKeys(v, [
+          "kind",
+          "httpResource",
+          "paymentReceiptHash",
+          "settlementTxHash",
+          "chainId",
+          "logIndex",
+          "protocolVersion",
+        ]) &&
+        isNonEmptyStr(v.httpResource) &&
+        isSha256(v.paymentReceiptHash) &&
+        isCanonicalEvmEventHash(v.settlementTxHash) &&
+        isPositiveSafeInt(v.chainId) &&
+        isNonNegativeSafeInt(v.logIndex) &&
+        !Object.is(v.logIndex, -0) &&
+        isMinimalUnsignedDecimal(v.protocolVersion)
       );
     case "htlc-lock":
     case "htlc-reveal":

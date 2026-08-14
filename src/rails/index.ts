@@ -46,6 +46,11 @@ export {
   type X402PaywallSettlementStore,
 } from "./x402Paywall.js";
 export {
+  X402_PAYWALL_SETTLEMENT_STORE_VERSION,
+  createFsX402PaywallSettlementStore,
+  type FsX402PaywallSettlementStoreOptions,
+} from "./x402PaywallSettlementFs.js";
+export {
   createX402SellerSpine,
   type X402SellerCommittedSessionResolution,
   type X402SellerCommittedSessionScope,
@@ -64,6 +69,84 @@ export {
   type EvmErc20SettleParams,
   type EvmTransferClient,
 } from "./evmErc20.js";
+export {
+  X402_BUYER_SETTLEMENT_STORE_VERSION,
+  x402BuyerSettlementKey,
+  createX402BuyerSettlementIntent,
+  assertX402BuyerSettlementIntent,
+  x402BuyerSettlementAuthenticationHash,
+  createInMemoryX402BuyerSettlementStore,
+  advanceX402BuyerSettlement,
+  type X402BuyerJson,
+  type X402BuyerPaymentRequirements,
+  type X402BuyerSettlementIntent,
+  type X402BuyerSettlementIntentDraft,
+  type X402BuyerSignedEventReference,
+  type X402BuyerCapturedSettlement,
+  type X402BuyerTerminalFailureKind,
+  type X402BuyerSettlementOutcome,
+  type X402BuyerLeaseToken,
+  type X402BuyerSettlementLease,
+  type X402BuyerSettlementLoad,
+  type X402BuyerSettlementClaim,
+  type X402BuyerRecoveryGrant,
+  type X402BuyerDisclosureWrite,
+  type X402BuyerOutcomeWrite,
+  type X402BuyerSettlementStore,
+  type X402BuyerEffectFence,
+  type X402BuyerAuthorizationLookup,
+  type X402BuyerAuthorizationReconciliation,
+  type X402BuyerIntentAuthorization,
+  type X402BuyerAuthorizationProvider,
+  type X402BuyerSettlementDisclosure,
+  type X402BuyerPaidRequestResult,
+  type X402BuyerPaidRequestTransport,
+  type X402BuyerSettlementProgress,
+  type AdvanceX402BuyerSettlementInput,
+} from "./x402BuyerSettlement.js";
+export {
+  createFsX402BuyerSettlementStore,
+  type FsX402BuyerSettlementStoreOptions,
+} from "./x402BuyerSettlementFs.js";
+export {
+  EIP3009_AUTHORIZATION_USED_TOPIC,
+  EIP3009_AUTHORIZATION_CANCELED_TOPIC,
+  ERC20_TRANSFER_TOPIC,
+  createX402BuyerEvmAuthorizationProvider,
+  type X402BuyerEip3009Authorization,
+  type X402BuyerEvmFinalityHead,
+  type X402BuyerEvmLog,
+  type X402BuyerEvmTransactionReceipt,
+  type X402BuyerEvmAuthorizationState,
+  type X402BuyerEvmBlockAncestry,
+  type X402BuyerEvmReadClient,
+  type X402BuyerEvmIntentAuthority,
+  type X402BuyerEvmSignatureVerifier,
+  type X402BuyerEvmUnusedConfirmer,
+  type X402BuyerEvmDisclosureRecovery,
+  type X402BuyerEvmAuthorizationProviderOptions,
+  type X402BuyerEvmAuthorizationObservation,
+} from "./x402BuyerEvmAuthorization.js";
+export {
+  createViemX402BuyerEvmReadClient,
+  type ViemX402BuyerEvmReadClientOptions,
+} from "./x402BuyerEvmViem.js";
+export {
+  prepareX402BuyerSettlement,
+  createX402BuyerPaidRequestTransport,
+  type X402BuyerChallengeClient,
+  type X402BuyerPreparationAuthority,
+  type PrepareX402BuyerSettlementInput,
+  type PrepareX402BuyerSettlementDeps,
+  type X402BuyerSettlementPreparation,
+  type X402BuyerPaidRequestTransportOptions,
+  type X402BuyerHeaderInit,
+} from "./x402BuyerTransport.js";
+export {
+  createDacsX402BuyerEvmChallengeClient,
+  type DacsX402BuyerEvmChallengeClient,
+  type DacsX402BuyerEvmChallengeClientConfig,
+} from "./x402BuyerDacsEvm.js";
 export {
   createIdempotencyStore,
   createInMemorySettlementLog,

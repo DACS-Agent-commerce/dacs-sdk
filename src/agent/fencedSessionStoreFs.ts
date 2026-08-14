@@ -21,6 +21,9 @@ import {
   sessionAuthorizationPhaseFailure,
   sessionLeaseScopeFailure,
   sessionPhaseMutationFailure,
+  sessionPhaseIsTerminal,
+  sessionPhaseIsSellerFailureOrigin,
+  terminalBundleSealMutationFailure,
   sessionReceiptKey,
   sessionRecordShapeViolation,
   snapshotFencedAcquireLeaseInput,
@@ -82,12 +85,6 @@ const safe = (s: string) => encodeURIComponent(s);
 
 const isNonEmpty = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.trim() === value;
-
-const sellerTerminal = (phase: string): boolean =>
-  phase === "seller:completed" ||
-  phase === "seller:failed" ||
-  phase === "seller:rejected" ||
-  phase === "seller:finalised";
 
 function leaseFailure(
   record: SessionRecord,
@@ -987,7 +984,7 @@ export async function createFsFencedSessionStore(
         if (record.revision !== input.expectedRevision) {
           return { ok: false, reason: "revision-mismatch", record };
         }
-        if (sellerTerminal(record.phase)) {
+        if (sessionPhaseIsTerminal(record.phase)) {
           return { ok: false, reason: "terminal-state", record };
         }
         const now = input.now ?? Date.now();
@@ -1002,6 +999,19 @@ export async function createFsFencedSessionStore(
           ? null
           : sessionPhaseMutationFailure(record, input.phase);
         if (phaseProblem) return { ok: false, reason: phaseProblem, record };
+        if (
+          sessionPhaseIsSellerFailureOrigin(record.phase) &&
+          !releasesOnly &&
+          (input.phase !== "terminal:seller:authority" ||
+            input.receipt !== undefined ||
+            input.checkpoint?.key !== "terminal:seller:authority" ||
+            input.checkpoint.stage !== "intent" ||
+            input.lease === null)
+        ) {
+          return { ok: false, reason: "phase-regression", record };
+        }
+        const sealProblem = terminalBundleSealMutationFailure(record, input);
+        if (sealProblem) return { ok: false, reason: sealProblem, record };
         if (input.checkpoint) {
           assertCheckpointPayloadShape(input.checkpoint);
           if (!validCheckpointAppend(record, input.checkpoint)) {
@@ -1047,7 +1057,7 @@ export async function createFsFencedSessionStore(
         if (loaded.status === "corrupt") return { ok: false, reason: "corrupt" };
         if (loaded.status === "unsupported") return { ok: false, reason: "unsupported" };
         const record = loaded.record;
-        if (sellerTerminal(record.phase)) {
+        if (sessionPhaseIsTerminal(record.phase)) {
           return { ok: false, reason: "terminal-state", record };
         }
         const now = input.now ?? Date.now();
@@ -1063,6 +1073,16 @@ export async function createFsFencedSessionStore(
         }
         const phaseProblem = sessionPhaseMutationFailure(record, input.phase);
         if (phaseProblem) return { ok: false, reason: phaseProblem, record };
+        if (
+          sessionPhaseIsSellerFailureOrigin(record.phase) &&
+          (input.phase !== "terminal:seller:authority" ||
+            input.key !== "terminal:seller:authority")
+        ) {
+          return { ok: false, reason: "phase-regression", record };
+        }
+        if (input.phase?.startsWith("terminal:") && input.phase.endsWith(":finalised")) {
+          return { ok: false, reason: "phase-regression", record };
+        }
         const checkpoint = {
           key: input.key,
           stage: "intent" as const,
@@ -1103,7 +1123,7 @@ export async function createFsFencedSessionStore(
         if (loaded.status === "corrupt") return { ok: false, reason: "corrupt" };
         if (loaded.status === "unsupported") return { ok: false, reason: "unsupported" };
         const record = loaded.record;
-        if (sellerTerminal(record.phase)) {
+        if (sessionPhaseIsTerminal(record.phase)) {
           return { ok: false, reason: "terminal-state", record };
         }
         if (record.lease && record.lease.expiresAt > now) {
@@ -1140,7 +1160,7 @@ export async function createFsFencedSessionStore(
         if (loaded.status === "corrupt") return { ok: false, reason: "corrupt" };
         if (loaded.status === "unsupported") return { ok: false, reason: "unsupported" };
         const record = loaded.record;
-        if (sellerTerminal(record.phase)) {
+        if (sessionPhaseIsTerminal(record.phase)) {
           return { ok: false, reason: "terminal-state", record };
         }
         const problem = leaseFailure(record, leaseToken, now);
@@ -1202,7 +1222,7 @@ export async function createFsFencedSessionStore(
           }
           return { ok: true, record };
         }
-        if (sellerTerminal(record.phase)) {
+        if (sessionPhaseIsTerminal(record.phase)) {
           return { ok: false, reason: "terminal-state", record };
         }
         if (!record.lease) {
@@ -1278,7 +1298,8 @@ export async function createFsFencedSessionStore(
         if (
           kind === "agreement" &&
           loaded.status === "ok" &&
-          sellerTerminal(loaded.record.phase)
+          (sessionPhaseIsSellerFailureOrigin(loaded.record.phase) ||
+            sessionPhaseIsTerminal(loaded.record.phase))
         ) {
           return loaded.record.agreementHash === hash
             ? bindAuthorizationAgreement(hash, jobId)

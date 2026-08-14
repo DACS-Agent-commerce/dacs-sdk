@@ -34,7 +34,7 @@ describe.skipIf(!haveVector)(
 
     it("replays every pinned Standard case", () => {
       expect(vector.vectors).toHaveLength(vector.count);
-      expect(vector.count).toBe(19);
+      expect(vector.count).toBe(23);
 
       for (const testCase of vector.vectors) {
         const actual =

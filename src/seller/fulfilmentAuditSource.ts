@@ -20,6 +20,10 @@ import {
 } from "../artifacts/index.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 
+/** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
+export const SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR =
+  "dacs-x-seller-fulfilment-audit-source:v1:" as const;
+
 export interface SellerSessionPhaseHandlerResult {
   ok: boolean;
   reason?: string;

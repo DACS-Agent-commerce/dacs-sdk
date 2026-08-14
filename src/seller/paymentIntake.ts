@@ -62,8 +62,8 @@ export interface SellerDemosTxRef {
   blockNumber?: number;
 }
 
-/** DACS-4 §9.7 exact pay-x402 `ChainTxRef`. */
-export interface SellerX402TxRef {
+/** Frozen pre-v0.6 pay-x402 `ChainTxRef`, accepted for durable replay only. */
+export interface SellerLegacyX402TxRef {
   kind: "x402";
   httpResource: string;
   paymentReceiptHash: string;
@@ -71,6 +71,19 @@ export interface SellerX402TxRef {
   chainId?: number;
   protocolVersion: string;
 }
+
+/** DACS-4 v0.6 current signed event-level pay-x402 `ChainTxRef`. */
+export interface SellerX402EventTxRef {
+  kind: "x402-event";
+  httpResource: string;
+  paymentReceiptHash: string;
+  settlementTxHash: string;
+  chainId: number;
+  logIndex: number;
+  protocolVersion: string;
+}
+
+export type SellerX402TxRef = SellerLegacyX402TxRef | SellerX402EventTxRef;
 
 export type SellerPaymentTxRef = SellerDemosTxRef | SellerX402TxRef;
 
@@ -309,6 +322,8 @@ interface SellerFulfilmentHandoffBase {
   agreementViewHash: string;
   /** Immutable causal floor used when the retained candidate was validated. */
   validationFloorAt: number;
+  /** Exact delivery phase invocation time, signed before permit consumption. */
+  deliveryInvokedAt: number;
   /** Authenticated SessionRecord phase-orchestrator authority at consumption. */
   evidenceAuthority: {
     primaryClaim: string;
@@ -349,9 +364,21 @@ export interface SellerFulfilmentAuditSourceCommitmentV1 {
   commitmentVersion: "1";
   fulfilmentId: string;
   jobId: string;
+  agreementRef: string;
+  agreementHash: string;
+  commitmentRef: string;
   authorizationHash: string;
+  paymentPhaseIndex: number;
+  deliveryPhaseIndex: number;
+  phase:
+    | "deliver-storage-program"
+    | "deliver-entitlement"
+    | "deliver-attested-payload";
+  logicalAddress: string;
+  deliverableSpecHash: string;
   auditSourceHash: string;
   candidateHash: string;
+  deliveryInvokedAt: number;
   signature: ComponentSignature;
 }
 
@@ -650,6 +677,44 @@ function hasExactKeys(
     expected.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
+/**
+ * The exact phase-aware identity used by #120 before a prepared candidate may
+ * cross the one-shot payment-permit boundary. Byte-bearing DPA candidates are
+ * projected to explicit length+digest records because raw Uint8Array values
+ * are not JCS values; the other delivery profiles bind their complete JSON
+ * artifact directly.
+ */
+export function sellerPreparedArtifactHash(artifact: unknown): string {
+  if (!isRecord(artifact)) {
+    throw new TypeError("prepared delivery artifact must be an object");
+  }
+  if (artifact.kind !== "deliver-attested-payload") {
+    return sha256Hex(canonicalize(artifact));
+  }
+  if (!hasExactKeys(artifact, [
+    "kind",
+    "cleartextBytes",
+    "anchoredValue",
+    "attestationRef",
+  ]) || !(artifact.cleartextBytes instanceof Uint8Array) ||
+      !(artifact.anchoredValue instanceof Uint8Array) ||
+      !hasExactJcsView(artifact.attestationRef)) {
+    throw new TypeError("attested-payload candidate bytes are missing");
+  }
+  return sha256Hex(canonicalize({
+    kind: artifact.kind,
+    cleartextBytes: {
+      length: artifact.cleartextBytes.byteLength,
+      sha256: sha256Hex(artifact.cleartextBytes),
+    },
+    anchoredValue: {
+      length: artifact.anchoredValue.byteLength,
+      sha256: sha256Hex(artifact.anchoredValue),
+    },
+    attestationRef: artifact.attestationRef,
+  }));
+}
+
 /** Canonical binding for the candidate bytes retained in a durable handoff. */
 export function sellerFulfilmentCandidateHash(
   candidate: SellerFulfilmentHandoff["candidate"],
@@ -665,10 +730,16 @@ export function sellerFulfilmentCandidateHash(
     candidate.delivery,
     "payloadAttestationRecord",
   );
+  const artifactHash = sellerPreparedArtifactHash(candidate.delivery.artifact);
+  if (artifactHash !== candidate.artifactHash) {
+    throw new TypeError(
+      "prepared delivery candidate does not match its phase-aware artifact hash",
+    );
+  }
   return sha256Hex(canonicalize({
     status: candidate.status,
     validatedAt: candidate.validatedAt,
-    artifactHash: candidate.artifactHash,
+    artifactHash,
     hasPayloadAttestationRecord: hasPayloadRecord,
     ...(hasPayloadRecord
       ? {
@@ -702,6 +773,7 @@ export function isSellerFulfilmentHandoff(
     "deliverableSpecHash",
     "agreementViewHash",
     "validationFloorAt",
+    "deliveryInvokedAt",
     "evidenceAuthority",
     "candidate",
     "auditSource",
@@ -726,6 +798,7 @@ export function isSellerFulfilmentHandoff(
     !HASH_RE.test(value.deliverableSpecHash as string) ||
     !HASH_RE.test(value.agreementViewHash as string) ||
     !isSafeUint(value.validationFloorAt) ||
+    !isSafeUint(value.deliveryInvokedAt) ||
     !isRecord(value.evidenceAuthority) ||
     !hasExactKeys(value.evidenceAuthority, ["primaryClaim", "algorithm"]) ||
     !nonEmpty(value.evidenceAuthority.primaryClaim) ||
@@ -746,6 +819,10 @@ export function isSellerFulfilmentHandoff(
     if (!hasExactKeys(candidate, ["status", "validatedAt", "reason"]) ||
         !isSafeUint(candidate.validatedAt) || !nonEmpty(candidate.reason)) return false;
   } else if (candidate.status === "prepared") {
+    const hasPayloadRecord = Object.prototype.hasOwnProperty.call(
+      candidate.delivery ?? {},
+      "payloadAttestationRecord",
+    );
     if (!hasExactKeys(candidate, [
       "status",
       "validatedAt",
@@ -756,10 +833,16 @@ export function isSellerFulfilmentHandoff(
         !isRecord(candidate.delivery) ||
         !hasOnlyKeys(candidate.delivery, ["artifact", "payloadAttestationRecord"]) ||
         !Object.prototype.hasOwnProperty.call(candidate.delivery, "artifact") ||
-        !isRecord(candidate.delivery.artifact)) return false;
+        !isRecord(candidate.delivery.artifact) ||
+        candidate.delivery.artifact.kind !== value.phase ||
+        hasPayloadRecord !== (value.phase === "deliver-attested-payload")) return false;
   } else {
     return false;
   }
+  if (
+    (value.deliveryInvokedAt as number) < (value.validationFloorAt as number) ||
+    (value.deliveryInvokedAt as number) > (candidate.validatedAt as number)
+  ) return false;
   try {
     if (!isSellerFulfilmentAuditSource(value.auditSource) ||
         !HASH_RE.test(value.auditSourceHash as string) ||
@@ -769,15 +852,33 @@ export function isSellerFulfilmentHandoff(
           "commitmentVersion",
           "fulfilmentId",
           "jobId",
+          "agreementRef",
+          "agreementHash",
+          "commitmentRef",
           "authorizationHash",
+          "paymentPhaseIndex",
+          "deliveryPhaseIndex",
+          "phase",
+          "logicalAddress",
+          "deliverableSpecHash",
           "auditSourceHash",
           "candidateHash",
+          "deliveryInvokedAt",
           "signature",
         ]) || value.auditSourceCommitment.commitmentVersion !== "1" ||
         value.auditSourceCommitment.fulfilmentId !== value.fulfilmentId ||
         value.auditSourceCommitment.jobId !== value.jobId ||
+        value.auditSourceCommitment.agreementRef !== value.agreementRef ||
+        value.auditSourceCommitment.agreementHash !== value.agreementHash ||
+        value.auditSourceCommitment.commitmentRef !== value.commitmentRef ||
         value.auditSourceCommitment.authorizationHash !== value.authorizationHash ||
+        value.auditSourceCommitment.paymentPhaseIndex !== value.paymentPhaseIndex ||
+        value.auditSourceCommitment.deliveryPhaseIndex !== value.deliveryPhaseIndex ||
+        value.auditSourceCommitment.phase !== value.phase ||
+        value.auditSourceCommitment.logicalAddress !== value.logicalAddress ||
+        value.auditSourceCommitment.deliverableSpecHash !== value.deliverableSpecHash ||
         value.auditSourceCommitment.auditSourceHash !== value.auditSourceHash ||
+        value.auditSourceCommitment.deliveryInvokedAt !== value.deliveryInvokedAt ||
         !HASH_RE.test(value.auditSourceCommitment.candidateHash as string) ||
         value.auditSourceCommitment.candidateHash !==
           sellerFulfilmentCandidateHash(value.candidate as SellerFulfilmentHandoff["candidate"]) ||
@@ -1011,25 +1112,37 @@ function isValidPaymentEvidenceInput(value: unknown): value is SellerPaymentEvid
       value.settlementFinality.model !== "bft-final" ||
       !isSafeUint(value.settlementFinality.finalityObservedAt)
     ) return false;
-  } else if (
-    !hasOnlyKeys(txRef, [
+  } else {
+    const commonShape = hasOnlyKeys(txRef, [
       "kind",
       "httpResource",
       "paymentReceiptHash",
       "settlementTxHash",
       "chainId",
+      "logIndex",
       "protocolVersion",
-    ]) ||
-    txRef.kind !== "x402" ||
-    typeof txRef.httpResource !== "string" ||
-    txRef.httpResource.length === 0 ||
-    !HASH_RE.test(String(txRef.paymentReceiptHash)) ||
-    typeof txRef.settlementTxHash !== "string" ||
-    canonicalTxHash(txRef.settlementTxHash) === null ||
-    !isSafeUint(txRef.chainId) || txRef.chainId === 0 ||
-    typeof txRef.protocolVersion !== "string" ||
-    txRef.protocolVersion.length === 0 ||
-    !hasOnlyKeys(value.settlementFinality, [
+    ]);
+    const current = txRef.kind === "x402-event" &&
+      hasExactKeys(txRef, [
+        "kind", "httpResource", "paymentReceiptHash", "settlementTxHash",
+        "chainId", "logIndex", "protocolVersion",
+      ]) &&
+      typeof txRef.settlementTxHash === "string" &&
+      /^[0-9a-f]{64}$/.test(txRef.settlementTxHash) &&
+      isSafeUint(txRef.logIndex);
+    const legacy = txRef.kind === "x402" &&
+      !Object.prototype.hasOwnProperty.call(txRef, "logIndex") &&
+      typeof txRef.settlementTxHash === "string" &&
+      canonicalTxHash(txRef.settlementTxHash) !== null;
+    if (
+      !commonShape || (!current && !legacy) ||
+      typeof txRef.httpResource !== "string" ||
+      txRef.httpResource.length === 0 ||
+      !HASH_RE.test(String(txRef.paymentReceiptHash)) ||
+      !isSafeUint(txRef.chainId) || txRef.chainId === 0 ||
+      typeof txRef.protocolVersion !== "string" ||
+      txRef.protocolVersion.length === 0 ||
+      !hasOnlyKeys(value.settlementFinality, [
       "model",
       "finalityBlocks",
       "finalityObservedAt",
@@ -1037,8 +1150,9 @@ function isValidPaymentEvidenceInput(value: unknown): value is SellerPaymentEvid
     value.settlementFinality.model !== "block-depth" ||
     !isSafeUint(value.settlementFinality.finalityBlocks) ||
     value.settlementFinality.finalityBlocks === 0 ||
-    !isSafeUint(value.settlementFinality.finalityObservedAt)
-  ) return false;
+      !isSafeUint(value.settlementFinality.finalityObservedAt)
+    ) return false;
+  }
   return value.settlementFinality.finalityObservedAt === value.observedAt;
 }
 
@@ -1474,9 +1588,12 @@ export function isValidSellerReceiptClaim(value: unknown): value is SellerReceip
         typeof identity.txHash !== "string" || canonicalTxHash(identity.txHash) === null ||
         !isSafeUint(identity.logIndex) || !isSafeUint(identity.includedAt) ||
         identity.includedAt < authorization.commitment.finalizedAt ||
-        identity.includedAt > evidenceInput.observedAt || txRef.kind !== "x402" ||
+        identity.includedAt > evidenceInput.observedAt ||
+        (txRef.kind !== "x402" && txRef.kind !== "x402-event") ||
         txRef.chainId !== identity.chainId ||
-        canonicalTxHash(txRef.settlementTxHash!) !== canonicalTxHash(identity.txHash) ||
+        typeof txRef.settlementTxHash !== "string" ||
+        canonicalTxHash(txRef.settlementTxHash) !== canonicalTxHash(identity.txHash) ||
+        (txRef.kind === "x402-event" && txRef.logIndex !== identity.logIndex) ||
         canonicalSellerSettlementId({
           kind: "evm",
           chainId: identity.chainId,
@@ -1714,6 +1831,64 @@ export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
   return `0x${sha256Hex(`dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`)}`;
 }
 
+function exactSellerReceiptClaim(
+  left: SellerReceiptClaim,
+  right: SellerReceiptClaim,
+): boolean {
+  return canonicalize(left) === canonicalize(right);
+}
+
+function sellerReceiptWinnerOrder(
+  left: SellerReceiptClaim,
+  right: SellerReceiptClaim,
+): number {
+  if (left.observedAt !== right.observedAt) {
+    return left.observedAt < right.observedAt ? -1 : 1;
+  }
+  if (left.evidenceHash !== right.evidenceHash) {
+    return left.evidenceHash < right.evidenceHash ? -1 : 1;
+  }
+  // Equal signed-scope hashes cannot bind different sessions without a hash
+  // collision. Keep every store deterministic even under malformed/colliding
+  // external state; the lower canonical binding wins.
+  const leftBinding = `${left.jobId}\u0000${left.phaseIndex}`;
+  const rightBinding = `${right.jobId}\u0000${right.phaseIndex}`;
+  return leftBinding < rightBinding ? -1 : leftBinding > rightBinding ? 1 : 0;
+}
+
+function sameSelectedAuthorizationScope(
+  left: SellerReceiptClaim,
+  right: SellerReceiptClaim,
+): boolean {
+  return left.authorization.agreementHash === right.authorization.agreementHash &&
+    sameListingRef(left.authorization.listingRef, right.authorization.listingRef) &&
+    left.authorization.railId === right.authorization.railId &&
+    left.authorization.railRegistryVersion ===
+      right.authorization.railRegistryVersion &&
+    canonicalize(left.authorization.commitment) ===
+      canonicalize(right.authorization.commitment) &&
+    sameSettlementEventIdentity(
+      left.authorization.settlementIdentity,
+      right.authorization.settlementIdentity,
+    ) &&
+    sameProducerAdmission(
+      left.authorization.payloadVerificationProducerAdmission,
+      right.authorization.payloadVerificationProducerAdmission,
+    );
+}
+
+/**
+ * Shared state-machine predicates for SDK receipt-store implementations.
+ * This is intentionally not re-exported from the public seller entry point.
+ */
+export const sellerReceiptStoreInternals = Object.freeze({
+  exactClaim: exactSellerReceiptClaim,
+  winnerOrder: sellerReceiptWinnerOrder,
+  sameSelectedAuthorizationScope,
+  sameClaimAuthorizationScope,
+  isCanonicalReplayWinner,
+});
+
 /**
  * Process-local reference store for tests and single-process deployments.
  * Recovery-capable sellers MUST inject a durable implementation with the same
@@ -1745,22 +1920,6 @@ export function createInMemorySellerReceiptStore(
       throw new TypeError("seller receipt claim is malformed or internally inconsistent");
     }
   };
-  const exactClaim = (left: SellerReceiptClaim, right: SellerReceiptClaim): boolean =>
-    canonicalize(left) === canonicalize(right);
-  const winnerOrder = (left: SellerReceiptClaim, right: SellerReceiptClaim): number => {
-    if (left.observedAt !== right.observedAt) {
-      return left.observedAt < right.observedAt ? -1 : 1;
-    }
-    if (left.evidenceHash !== right.evidenceHash) {
-      return left.evidenceHash < right.evidenceHash ? -1 : 1;
-    }
-    // Equal signed-scope hashes cannot bind different sessions without a hash
-    // collision. Keep the store deterministic even under malformed/colliding
-    // external state; the lower canonical binding wins.
-    const leftBinding = `${left.jobId}\u0000${left.phaseIndex}`;
-    const rightBinding = `${right.jobId}\u0000${right.phaseIndex}`;
-    return leftBinding < rightBinding ? -1 : leftBinding > rightBinding ? 1 : 0;
-  };
   const install = (claim: SellerReceiptClaim): StoredClaim => {
     const pendingPermitId = permitId();
     const stored = { selected: cloneClaim(claim), pendingPermitId };
@@ -1785,7 +1944,7 @@ export function createInMemorySellerReceiptStore(
     const existing = claims.get(candidate.settlementId);
     if (!existing) {
       install(candidate);
-    } else if (winnerOrder(candidate, existing.selected) < 0) {
+    } else if (sellerReceiptWinnerOrder(candidate, existing.selected) < 0) {
       replacePendingSelection(existing, candidate);
     }
   }
@@ -1803,29 +1962,13 @@ export function createInMemorySellerReceiptStore(
           claim: cloneClaim(stored.selected),
         };
       }
-      const order = winnerOrder(candidate, existing.selected);
+      const order = sellerReceiptWinnerOrder(candidate, existing.selected);
       const sameSelectedSession = existing.selected.jobId === candidate.jobId &&
         existing.selected.phaseIndex === candidate.phaseIndex;
-      const sameAuthorizationScope =
-        existing.selected.authorization.agreementHash ===
-          candidate.authorization.agreementHash &&
-        sameListingRef(
-          existing.selected.authorization.listingRef,
-          candidate.authorization.listingRef,
-        ) &&
-        existing.selected.authorization.railId === candidate.authorization.railId &&
-        existing.selected.authorization.railRegistryVersion ===
-          candidate.authorization.railRegistryVersion &&
-        canonicalize(existing.selected.authorization.commitment) ===
-          canonicalize(candidate.authorization.commitment) &&
-        sameSettlementEventIdentity(
-          existing.selected.authorization.settlementIdentity,
-          candidate.authorization.settlementIdentity,
-        ) &&
-        sameProducerAdmission(
-          existing.selected.authorization.payloadVerificationProducerAdmission,
-          candidate.authorization.payloadVerificationProducerAdmission,
-        );
+      const sameAuthorizationScope = sameSelectedAuthorizationScope(
+        existing.selected,
+        candidate,
+      );
       if (existing.consumed &&
           sameClaimAuthorizationScope(existing.consumed.claim, candidate) &&
           isCanonicalReplayWinner(existing.consumed.claim, candidate)) {
@@ -1860,10 +2003,10 @@ export function createInMemorySellerReceiptStore(
           claim: cloneClaim(existing.selected),
         };
       }
-      if (exactClaim(existing.selected, candidate) ||
+      if (exactSellerReceiptClaim(existing.selected, candidate) ||
           (sameSelectedSession && sameAuthorizationScope)) {
         if (existing.consumed) {
-          if (!exactClaim(existing.selected, existing.consumed.claim)) {
+          if (!exactSellerReceiptClaim(existing.selected, existing.consumed.claim)) {
             return {
               status: "conflict",
               reason: "winner-already-consumed",
@@ -2725,11 +2868,14 @@ export async function verifySellerPaymentIntake(
     phase: "pay-x402",
     outcome: "success",
     paymentTxRefs: [{
-      kind: "x402",
+      // The event coordinate comes only from the finalized, shape-validated
+      // ledger observation above; receipt/request fields cannot supply it.
+      kind: "x402-event",
       httpResource: request.receipt.httpResource,
       paymentReceiptHash: request.receipt.paymentReceiptHash,
-      settlementTxHash: request.receipt.settlementTxHash,
-      chainId: request.receipt.chainId,
+      settlementTxHash: canonicalTxHash(observed.txHash)!,
+      chainId: observed.chainId,
+      logIndex: observed.logIndex,
       protocolVersion: request.receipt.protocolVersion,
     }],
     paymentAmount: { ...agreement.terms.price },

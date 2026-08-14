@@ -504,6 +504,11 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
         extensions: { facilitator: { trace: "kept" } },
       })),
     );
+    // The paywall authenticates only the complete receipt envelope. It cannot
+    // mint the v0.6 event coordinate; seller intake adds that only after an
+    // independent finalized ledger observation.
+    expect(result.paymentClaim).not.toHaveProperty("logIndex");
+    expect(result.paymentClaim).not.toHaveProperty("settlementId");
   });
 
   it("isolates and freezes every security-bearing callback boundary", async () => {

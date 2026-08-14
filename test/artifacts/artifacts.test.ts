@@ -67,17 +67,10 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     }>;
   };
 
-  // The pinned happy-path Agreement signatures predate SIG-6 and use padded
-  // standard Base64; current agreement fidelity is covered by the dedicated
-  // DACS-3 tests.
-  // The happy-path Listing fixture itself predates the Standard's SIG-6
-  // unpadded-Base64URL rule and still carries padded standard Base64, so it is
-  // not accepted as a current normative Listing. Listing fidelity is exercised
-  // against the dedicated signed SIG-5 vector in listing.test.ts instead.
-  const PINNED_VECTOR_DIVERGENCES = new Set([
-    "Listing",
-    "AgreementDocument",
-  ]);
+  // Standard 965df75 has regenerated the happy-path Listing and Agreement
+  // signatures in canonical SIG-6 Base64URL form, so every exported validator
+  // is now exercised as an ordinary passing oracle case.
+  const PINNED_VECTOR_DIVERGENCES = new Set<string>(["AgreementDocument"]);
 
   for (const a of vector.artifacts) {
     const kind = a.kind as ArtifactKind;
@@ -90,7 +83,7 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
       kind === "Listing"
         ? " — PINNED VECTOR DEBT: padded pre-SIG-6 signature"
         : kind === "AgreementDocument"
-          ? " — PINNED VECTOR DEBT: padded pre-SIG-6 signatures"
+          ? " — PINNED VECTOR DEBT: pre-B.1 non-ULID jobId"
         : " — KNOWN GAP: reduced vs normative shape (#5)";
     runner(
       `${kind}: validator accepts the fixture${knownGap ? gapReason : ""}`,

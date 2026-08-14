@@ -5,6 +5,7 @@ import { canonicalizeDecimal } from "../canonical/decimal.js";
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonConfig,
+  snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -262,7 +263,7 @@ export async function verifySettlementEvidence(
   let recordSnapshot: unknown;
   let contextSnapshot: EvidenceContext;
   try {
-    recordSnapshot = snapshotCanonicalJson(record, "settlement evidence");
+    recordSnapshot = snapshotCanonicalJsonRead(record, "settlement evidence");
     contextSnapshot = snapshotCanonicalJsonConfig(
       ctx,
       "settlement evidence context",
@@ -326,6 +327,35 @@ export async function verifySettlementEvidence(
   }
   if (txRefs && txRefs.some((ref) => !isChainTxRef(ref))) {
     fail("paymentTxRefs MUST contain exact DACS-4 §9.3 ChainTxRef variants");
+  }
+  if (txRefs) {
+    for (const ref of txRefs) {
+      if (!isObj(ref)) continue;
+      const kind = ref["kind"];
+      if (kind === "evm-event") {
+        if (phase !== "pay-evm-erc20") {
+          fail('evm-event is valid only for pay-evm-erc20 evidence');
+        }
+        if (outcome === "success" && finality?.["model"] !== "block-depth") {
+          fail('evm-event success evidence MUST use block-depth finality');
+        }
+      } else if (kind === "solana-instruction") {
+        if (phase !== "pay-solana-spl") {
+          fail('solana-instruction is valid only for pay-solana-spl evidence');
+        }
+        if (outcome === "success" &&
+            finality?.["model"] !== "commitment-level") {
+          fail('solana-instruction success evidence MUST use commitment-level finality');
+        }
+      } else if (kind === "x402-event") {
+        if (phase !== "pay-x402") {
+          fail('x402-event is valid only for pay-x402 evidence');
+        }
+        if (outcome === "success" && finality?.["model"] !== "block-depth") {
+          fail('x402-event success evidence MUST use block-depth finality');
+        }
+      }
+    }
   }
   if (amount) {
     if (!isCanonicalDecimal(amount["amount"])) fail("paymentAmount.amount MUST be a canonical CD-1 decimal");
@@ -431,18 +461,15 @@ export async function verifySettlementEvidence(
       `rail handler "${ctx.rail.handler}" is incoherent with rail type "${ctx.rail.railType}"`,
     );
   }
-  // NOTE (SB scope): this verifier checks each txRef's structural coherence with
-  // the pinned rail (below). It does NOT implement DACS-4 §9.5.8 session-binding
-  // (SB-1 settlement-tx-id keying, SB-2 cross-session uniqueness, SB-3 handler
-  // binding) — that layer is a consumer/aggregation concern (verifyBundle +
-  // reputation reconciliation), normative only from spec v0.2, and the vendored
-  // spec here is v0.1. Tracked as a distinct workstream in issue #33; a record
-  // that passes here can still be a coincidental-citation or cross-session
-  // double-count until SB lands. Do not read a `pass` as SB-clean.
+  // This layer validates the signed ChainTxRef and its pinned-rail tuple. The
+  // independently authenticated ledger-event selection, complete PC-2 address
+  // binding and SB-2 cross-session uniqueness check live in
+  // resolveSettlementEventIdentity: shape-valid legacy refs are intentionally
+  // still readable here, but they cannot mint an event identity by themselves.
   if (txRefs && ctx.rail) {
     const allowedKinds: Record<string, ReadonlySet<string>> = {
-      "evm-erc20": new Set(["evm"]),
-      "solana-spl": new Set(["solana"]),
+      "evm-erc20": new Set(["evm", "evm-event"]),
+      "solana-spl": new Set(["solana", "solana-instruction"]),
       "cross-chain-htlc": new Set([
         "htlc-lock",
         "htlc-reveal",
@@ -451,7 +478,7 @@ export async function verifySettlementEvidence(
       ]),
       "cross-chain-liquidity-tank": new Set(["liquidity-tank"]),
       ap2: new Set(["ap2"]),
-      x402: new Set(["x402"]),
+      x402: new Set(["x402", "x402-event"]),
       "demos-native": new Set(["demos"]),
     };
     const pinnedNetwork = ctx.rail.network === undefined
@@ -471,7 +498,10 @@ export async function verifySettlementEvidence(
           `paymentTxRef.kind "${String(t["kind"])}" is incoherent with rail type "${ctx.rail.railType}"`,
         );
       }
-      if (pinnedNetwork && t["kind"] === "evm") {
+      if (
+        pinnedNetwork &&
+        (t["kind"] === "evm" || t["kind"] === "evm-event")
+      ) {
         if (
           pinnedNetwork.kind !== "evm" ||
           t["chainId"] !== pinnedNetwork.chainId
@@ -481,7 +511,10 @@ export async function verifySettlementEvidence(
               `match pinned rail network "${ctx.rail.network}"`,
           );
         }
-      } else if (pinnedNetwork && t["kind"] === "solana") {
+      } else if (
+        pinnedNetwork &&
+        (t["kind"] === "solana" || t["kind"] === "solana-instruction")
+      ) {
         if (
           pinnedNetwork.kind !== "solana" ||
           t["cluster"] !== pinnedNetwork.cluster
@@ -500,7 +533,7 @@ export async function verifySettlementEvidence(
         }
       } else if (
         pinnedNetwork &&
-        t["kind"] === "x402" &&
+        (t["kind"] === "x402" || t["kind"] === "x402-event") &&
         t["chainId"] !== undefined &&
         (pinnedNetwork.kind !== "evm" ||
           t["chainId"] !== pinnedNetwork.chainId)

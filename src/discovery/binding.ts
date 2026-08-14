@@ -32,6 +32,8 @@
  * a hint that survives a wrong hint only because the read is verified.
  */
 
+import { normalizedBindingOwner } from "./owner.js";
+
 /** A published logical→native binding entry (§6.3.4 (c)). */
 export interface AnchorBinding {
   /** The colon-bearing §6.3.4 LOGICAL address — the stable discovery key. */
@@ -45,14 +47,19 @@ export interface AnchorBinding {
    */
   owner: string;
   /**
-   * Content hash of the record's signed scope, when the publisher knows it. A
-   * consumer that reads the native address SHOULD re-hash and compare — the
-   * binding is a pointer, never a substitute for verifying the content.
+   * Content hash of the record's signed scope. Optional only so raw discovery
+   * candidates can be represented; {@link resolveAndRead} will never return a
+   * hashless binding as `verified`. Supported publication paths populate it and
+   * consumers re-hash before signature/context verification.
    */
   contentHash?: string;
   /** For versioned artifacts (listings), the version this binding pins. */
   version?: number;
-  /** Marks a superseded/withdrawn entry; a revoked binding never resolves. */
+  /**
+   * Generic index tombstone only; a tombstoned binding never resolves. This is
+   * not DACS-1 RevocationBinding evidence and must not be used to decide the
+   * protocol revocation check without its signed marker validation.
+   */
   revoked?: boolean;
 }
 
@@ -68,18 +75,17 @@ export type BindingResolution =
   | { status: "absent" }
   | { status: "indeterminate"; reason: string };
 
-/** Bindings that are eligible to resolve for `expectedOwner` (not revoked). */
-function eligible(
+/** Bindings claiming the requested logical address and owner, in any state. */
+function matchingBindings(
   bindings: readonly AnchorBinding[],
   logicalAddress: string,
   expectedOwner: string,
 ): AnchorBinding[] {
-  const owner = expectedOwner.trim().toLowerCase();
+  const owner = normalizedBindingOwner(expectedOwner);
   return bindings.filter(
     (b) =>
-      b.revoked !== true &&
       b.logicalAddress === logicalAddress &&
-      b.owner.trim().toLowerCase() === owner,
+      normalizedBindingOwner(b.owner) === owner,
   );
 }
 
@@ -100,23 +106,26 @@ export function resolveBinding(
   logicalAddress: string,
   expectedOwner: string,
 ): BindingResolution {
-  const matches = eligible(bindings, logicalAddress, expectedOwner);
+  const matches = matchingBindings(bindings, logicalAddress, expectedOwner);
   if (matches.length === 0) return { status: "absent" };
-  const distinct = new Set(matches.map((b) => b.nativeAddress));
-  if (distinct.size > 1) {
+  const first = matches[0]!;
+  if (matches.some((candidate) => !sameBinding(first, candidate))) {
     return {
       status: "indeterminate",
-      reason: `published bindings disagree on the native address for ${logicalAddress} (${distinct.size} candidates)`,
+      reason: `published bindings disagree on the native address, content hash, version, or state for ${logicalAddress}`,
     };
   }
-  return { status: "present", binding: matches[0]! };
+  if (first.revoked === true) return { status: "absent" };
+  return { status: "present", binding: first };
 }
 
 /**
- * Resolve the LATEST live version of a versioned logical artifact (a listing),
- * owner-bound. Version-aware lookup is required by #29/#46: each version is
- * independently anchored and prior versions MUST remain readable, so "latest" is
- * a selection over the index — never an overwrite of a shared address.
+ * Resolve the LATEST published version slot of a versioned logical artifact (a
+ * listing), owner-bound. Version-aware lookup is required by #29/#46: each
+ * version is independently anchored and prior versions MUST remain readable, so
+ * "latest" is a selection over the index — never an overwrite of a shared
+ * address. If the newest known published slot is tombstoned, this fails closed
+ * instead of silently reactivating an older superseded listing.
  *
  * Entries without a `version` are ignored here (they are unversioned artifacts);
  * use {@link resolveBinding} for those.
@@ -127,17 +136,38 @@ export function resolveLatestVersion(
   expectedOwner: string,
   knownVersions: readonly number[],
 ): BindingResolution {
-  const live: AnchorBinding[] = [];
-  for (const v of knownVersions) {
-    const r = resolveBinding(bindings, logicalAddressForVersion(v), expectedOwner);
-    // A conflicting version is fatal to "latest" — we cannot say which is newest
-    // if the index is ambiguous about one of them.
+  const versions = [...new Set(knownVersions)].sort((a, b) => b - a);
+  for (const v of versions) {
+    const logicalAddress = logicalAddressForVersion(v);
+    const candidates = matchingBindings(
+      bindings,
+      logicalAddress,
+      expectedOwner,
+    );
+    if (candidates.length === 0) continue;
+
+    const r = resolveBinding(bindings, logicalAddress, expectedOwner);
+    // A conflict in the newest published slot is fatal. Likewise, a tombstone
+    // withdraws that newest version; it never reactivates an older superseded
+    // listing for new sessions.
     if (r.status === "indeterminate") return r;
-    if (r.status === "present") live.push({ ...r.binding, version: v });
+    if (r.status === "absent") {
+      return {
+        status: "indeterminate",
+        reason: `newest published binding ${logicalAddress} is tombstoned`,
+      };
+    }
+    if (r.binding.version !== v) {
+      return {
+        status: "indeterminate",
+        reason:
+          `published binding for ${logicalAddress} carries ` +
+          `version ${String(r.binding.version)} instead of ${v}`,
+      };
+    }
+    return r;
   }
-  if (live.length === 0) return { status: "absent" };
-  live.sort((a, b) => (b.version ?? 0) - (a.version ?? 0));
-  return { status: "present", binding: live[0]! };
+  return { status: "absent" };
 }
 
 /**
@@ -150,6 +180,60 @@ export interface BindingIndex {
 }
 
 /**
+ * Outcome of publishing a logical→native binding. Publication is deliberately
+ * separate from anchoring: on a real deployment it may update a well-known index
+ * or catalog after the substrate write has already succeeded. `indeterminate`
+ * therefore means callers MUST retain the anchored native address and retry the
+ * same publication; it never means the anchor should be recreated.
+ */
+export type BindingPublication =
+  | { status: "published"; binding: AnchorBinding }
+  | { status: "already-published"; binding: AnchorBinding }
+  | { status: "conflict"; reason: string; existing?: AnchorBinding }
+  | { status: "indeterminate"; reason: string };
+
+/**
+ * A target that can publish the binding produced by an anchor write. Its
+ * acknowledgement alone is not consumer visibility: BoundArtifactRepository
+ * independently resolves the exact tuple through its configured index before
+ * reporting `published`/`already-published`.
+ */
+export interface BindingPublisher {
+  publish(binding: AnchorBinding): Promise<BindingPublication>;
+}
+
+/** Combined read/write binding surface used by the reference repository. */
+export interface BindingStore extends BindingIndex, BindingPublisher {
+  /** Immutable snapshot for persistence, inspection, or test hand-off. */
+  snapshot(): readonly AnchorBinding[];
+}
+
+function cloneBinding(binding: AnchorBinding): AnchorBinding {
+  return { ...binding };
+}
+
+function cloneResolution(resolution: BindingResolution): BindingResolution {
+  return resolution.status === "present"
+    ? { status: "present", binding: cloneBinding(resolution.binding) }
+    : { ...resolution };
+}
+
+function sameOwner(left: string, right: string): boolean {
+  return normalizedBindingOwner(left) === normalizedBindingOwner(right);
+}
+
+function sameBinding(left: AnchorBinding, right: AnchorBinding): boolean {
+  return (
+    left.logicalAddress === right.logicalAddress &&
+    left.nativeAddress === right.nativeAddress &&
+    sameOwner(left.owner, right.owner) &&
+    left.contentHash === right.contentHash &&
+    left.version === right.version &&
+    (left.revoked === true) === (right.revoked === true)
+  );
+}
+
+/**
  * An in-memory {@link BindingIndex} over a fixed set of published bindings —
  * the reference implementation, and what a consumer wraps a fetched
  * `listings.json` / catalog page in.
@@ -157,10 +241,65 @@ export interface BindingIndex {
 export function createInMemoryBindingIndex(
   bindings: readonly AnchorBinding[],
 ): BindingIndex {
-  const snapshot = [...bindings];
+  const snapshot = bindings.map(cloneBinding);
   return {
     async resolve(logicalAddress, expectedOwner) {
-      return resolveBinding(snapshot, logicalAddress, expectedOwner);
+      return cloneResolution(
+        resolveBinding(snapshot, logicalAddress, expectedOwner),
+      );
+    },
+  };
+}
+
+/**
+ * Mutable in-memory reference store for the complete publish→resolve lifecycle.
+ * It models a shared well-known index/catalog without pretending that an SDK can
+ * autonomously update either one: production users provide a {@link BindingStore}
+ * backed by their actual publication authority.
+ *
+ * Exact re-publication is idempotent. A second live entry for the same
+ * `(logicalAddress, owner)` that changes the native address, hash, version, or
+ * revocation state is a conflict and is NOT inserted.
+ */
+export function createInMemoryBindingStore(
+  initial: readonly AnchorBinding[] = [],
+): BindingStore {
+  const bindings = initial.map(cloneBinding);
+
+  return {
+    async resolve(logicalAddress, expectedOwner) {
+      return cloneResolution(
+        resolveBinding(bindings, logicalAddress, expectedOwner),
+      );
+    },
+
+    async publish(binding) {
+      const existing = bindings.filter(
+        (candidate) =>
+          candidate.logicalAddress === binding.logicalAddress &&
+          sameOwner(candidate.owner, binding.owner),
+      );
+      if (existing.length > 0) {
+        if (existing.every((candidate) => sameBinding(candidate, binding))) {
+          return {
+            status: "already-published",
+            binding: cloneBinding(existing[0]!),
+          };
+        }
+        return {
+          status: "conflict",
+          reason: `a different binding is already published for ${binding.logicalAddress} and owner ${binding.owner}`,
+          existing: cloneBinding(existing[0]!),
+        };
+      }
+
+      const published = cloneBinding(binding);
+      bindings.push(published);
+      return { status: "published", binding: cloneBinding(published) };
+    },
+
+    snapshot() {
+      return bindings.map(cloneBinding);
     },
   };
 }

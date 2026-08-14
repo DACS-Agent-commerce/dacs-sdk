@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   classifyAnchor,
@@ -100,12 +100,63 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
     expect(got.map((a) => a.nativeAddress)).toEqual(["stor-1", "stor-2"]); // stor-1 only once
   });
 
+  test("the same native address cannot change logical metadata across pages", async () => {
+    const seen = new Map<string, string>();
+    const fetch = pagedFetcher([
+      { entries: [entry("stor-1", "dacs1:s:svc:v1")], nextCursor: "1" },
+      { entries: [entry("stor-1", "dacs1:s:other:v1")], nextCursor: null },
+    ]);
+    expect(await scanAnchorPage(fetch, null, { seen })).toMatchObject({
+      status: "page",
+    });
+    expect(await scanAnchorPage(fetch, "1", { seen })).toMatchObject({
+      status: "indeterminate",
+      cursor: "1",
+      reason: expect.stringContaining("conflicting logical metadata"),
+    });
+  });
+
   test("NO SKIPPED PAGES: a fetch that throws → indeterminate carrying the SAME cursor", async () => {
     const fetch = async (): Promise<RawScanPage> => {
       throw new Error("rpc timeout");
     };
     const res = await scanAnchorPage(fetch, "cursor-7");
     expect(res).toMatchObject({ status: "indeterminate", cursor: "cursor-7" });
+  });
+
+  test("malformed pages and non-advancing cursors fail closed at the same cursor", async () => {
+    const malformed = await scanAnchorPage(
+      // @ts-expect-error — exercise the runtime boundary against an RPC adapter.
+      async () => ({ entries: "not-an-array", nextCursor: null }),
+      "cursor-2",
+    );
+    expect(malformed).toMatchObject({
+      status: "indeterminate",
+      cursor: "cursor-2",
+      reason: expect.stringContaining("entries array"),
+    });
+
+    const stuck = await scanAnchorPage(
+      async () => ({ entries: [], nextCursor: "cursor-2" }),
+      "cursor-2",
+    );
+    expect(stuck).toMatchObject({
+      status: "indeterminate",
+      cursor: "cursor-2",
+      reason: expect.stringContaining("did not advance"),
+    });
+  });
+
+  test("invalid page limits are indeterminate and never call the RPC seam", async () => {
+    const fetch = vi.fn(async (): Promise<RawScanPage> => ({
+      entries: [],
+      nextCursor: null,
+    }));
+    await expect(scanAnchorPage(fetch, null, { limit: 0 })).resolves.toMatchObject({
+      status: "indeterminate",
+      cursor: null,
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   test("unknown kinds are dropped by default, kept with includeUnknown", async () => {
@@ -156,5 +207,16 @@ describe("scanAllAnchors (drain the whole history)", () => {
     const res = await scanAllAnchors(fetch, { maxPages: 3 });
     expect(res.status).toBe("aborted");
     if (res.status === "aborted") expect(res.reason).toMatch(/maxPages/);
+  });
+
+  test("aborts a multi-page cursor cycle instead of spinning", async () => {
+    const fetch = async (cursor: string | null): Promise<RawScanPage> => ({
+      entries: [],
+      nextCursor: cursor === null ? "a" : cursor === "a" ? "b" : "a",
+    });
+    await expect(scanAllAnchors(fetch)).resolves.toMatchObject({
+      status: "aborted",
+      reason: expect.stringContaining("cursor cycle"),
+    });
   });
 });

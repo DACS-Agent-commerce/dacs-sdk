@@ -4,6 +4,28 @@ export {
   type AuthenticatedRecipeDescriptor,
   type RegistryResolveDeps,
 } from "./resolve.js";
+export {
+  RECIPE_REGISTRY_INDEX_ADDRESS,
+  authenticateRecipeRegistrySnapshot,
+  selectLatestRecipeAtSessionStart,
+  resolveHistoricalRecipeFromSnapshot,
+  isAuthenticatedRecipeRegistrySnapshot,
+  isLatestRecipeSelection,
+  isHistoricalRecipeResolution,
+  type RecipeRegistryRecipeRef,
+  type RecipeRegistryIndexDocument,
+  type CurrentRecipeRegistryIndex,
+  type RecipeRegistryAuthorityVerification,
+  type RecipeRegistryAuthorityInput,
+  type RecipeRegistrySelectionProvider,
+  type AuthenticatedRecipeRegistryEntry,
+  type RecipeFamilyIdentity,
+  type RecipeRegistryProvenance,
+  type AuthenticatedRecipeRegistrySnapshot,
+  type LatestRecipeSelector,
+  type LatestRecipeSelection,
+  type HistoricalRecipeResolution,
+} from "./recipeSelection.js";
 export { settleFromRail, type RailDispatchOptions } from "./dispatch.js";
 export type {
   Availability,

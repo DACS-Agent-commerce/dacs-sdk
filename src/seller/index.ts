@@ -1,4 +1,19 @@
 export {
+  respondToFixedPriceAgreementProposalDurable,
+  durableSellerFixedPriceAgreementCheckpointKey,
+  type SellerFixedPriceAgreementEffectFence,
+  type DurableSellerFixedPriceAgreementSigner,
+  type DurableSellerFixedPriceAgreementInput,
+  type SellerFixedPriceAgreementContextQuery,
+  type SellerFixedPriceAgreementContextResolution,
+  type SellerFixedPriceAgreementSignatureReconciliationInput,
+  type SellerFixedPriceAgreementContributionTransport,
+  type DurableSellerFixedPriceAgreementDurability,
+  type DurableSellerFixedPriceAgreementResponse,
+  type DurableSellerFixedPriceAgreementStage,
+  type DurableSellerFixedPriceAgreementProgress,
+} from "./agreementResponder.js";
+export {
   deriveX402ReceiptCommitment,
   verifyX402ReceiptClaim,
   X402_V1_CHAIN_IDS,
@@ -64,6 +79,8 @@ export {
   type SellerFulfilmentPermit,
   type SellerSessionBindingGuarantee,
   type SellerDemosTxRef,
+  type SellerLegacyX402TxRef,
+  type SellerX402EventTxRef,
   type SellerX402TxRef,
   type SellerPaymentTxRef,
   type SellerPaymentFinality,
@@ -102,6 +119,7 @@ export {
   type SellerPaymentIntakeResult,
 } from "./paymentIntake.js";
 export {
+  SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
   isSellerFulfilmentAuditSource,
   isSellerFulfilmentSessionRecord,
   sellerFulfilmentAuditSourceHash,
@@ -110,6 +128,24 @@ export {
   type SellerFulfilmentExpectedVerifyResult,
   type SellerFulfilmentVetRequirementInvocation,
 } from "./fulfilmentAuditSource.js";
+export {
+  publishSellerSessionSettlement,
+  type SellerSessionSettlementPublicationRequest,
+  type SellerSessionSettlementNativeProofBinding,
+  type SellerSessionSettlementAuthenticatedNativeProof,
+  type SellerSessionSettlementNativeProofAuthentication,
+  type SellerSessionSettlementSignedEvidenceResolution,
+  type SellerSessionSettlementAnchorResult,
+  type SellerSessionSettlementEvidenceResolution,
+  type SellerSessionSettlementEvidenceSigner,
+  type SellerSessionSettlementPublicationDeps,
+  type SellerSessionSettlementPublicationResult,
+} from "./sessionSettlementPublication.js";
+export {
+  SELLER_RECEIPT_STORE_VERSION,
+  createFsSellerReceiptStore,
+  type FsSellerReceiptStoreOptions,
+} from "./receiptStoreFs.js";
 export {
   runFulfilmentCore,
   sellerFulfilmentId,
@@ -149,10 +185,13 @@ export {
 export {
   runDurableFulfilmentCore,
   verifyDurableSellerTerminalResult,
+  projectDurableSellerAuditPending,
   getSellerFulfilmentStatus,
   sellerFulfilmentCheckpointKey,
   type DurableSellerFulfilmentDeps,
   type DurableSellerTerminalVerification,
+  type ProjectDurableSellerAuditPendingInput,
+  type VerifiedDurableSellerAuditPendingProjection,
   type SellerEffectAuthoritativeAbsence,
   type SellerEffectFence,
   type SellerFinalSessionReceiptInput,
@@ -195,6 +234,7 @@ export {
 export {
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  verifyCompletedSellerBundleCounterSignatureRequest,
   verifyFinalizedSellerBundleReadOnly,
   type SellerBundleVerificationDisposition,
   type SellerBundleDependencyKind,
@@ -219,6 +259,7 @@ export {
   type FinalizeCompletedSellerBundleInput,
   type VerifyFinalizedSellerBundleInput,
   type CompletedSellerBundleCounterSignatureRequest,
+  type VerifyCompletedSellerBundleCounterSignatureRequestInput,
   type FinalizedSellerBundle,
 } from "./bundleFinalization.js";
 export {

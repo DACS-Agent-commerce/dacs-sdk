@@ -113,6 +113,35 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     delete ev.paymentAmount;
     expect((await verify(ev)).decision).toBe("fail");
   });
+  test("accepts a current signed EVM event arm for the matching phase", async () => {
+    const ev = payment();
+    ev.paymentTxRefs = [{
+      kind: "evm-event",
+      chainId: 80002,
+      txHash: "a".repeat(64),
+      logIndex: 7,
+    }];
+    expect((await verify(ev)).decision).toBe("pass");
+  });
+  test("rejects current event arms under the wrong phase or finality model", async () => {
+    const ev = payment();
+    ev.paymentTxRefs = [{
+      kind: "x402-event",
+      httpResource: "https://seller.example/resource",
+      paymentReceiptHash: "b".repeat(64),
+      settlementTxHash: "a".repeat(64),
+      chainId: 80002,
+      logIndex: 7,
+      protocolVersion: "2",
+    }];
+    expect((await verify(ev)).decision).toBe("fail");
+    ev.phase = "pay-x402";
+    ev.settlementFinality = {
+      model: "provider-receipt",
+      finalityObservedAt: ev.observedAt,
+    };
+    expect((await verify(ev)).decision).toBe("fail");
+  });
   test("nonCanonicalAmount → fail", async () => {
     const ev = payment();
     ev.paymentAmount.amount = "5.00"; // canonical is "5"
@@ -210,22 +239,132 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ev = payment();
     expect((await verify(ev, { rail: { railType: "solana-spl" } })).decision).toBe("fail");
   });
-  test("railNetworkMismatch → fail", async () => {
-    const ev = payment();
-    expect((await verify(ev, {
-      rail: { railType: "evm-erc20", network: "eip155:1" },
-    })).decision).toBe("fail");
-  });
-  test("railNetworkMatch → pass", async () => {
-    const ev = payment();
-    expect((await verify(ev, {
+  test("binds legacy and current EVM refs to the canonical pinned chain", async () => {
+    const legacy = payment();
+    expect((await verify(legacy, {
       rail: { railType: "evm-erc20", network: "eip155:80002" },
     })).decision).toBe("pass");
+    expect((await verify(legacy, {
+      rail: { railType: "evm-erc20", network: "eip155:8453" },
+    })).decision).toBe("fail");
+
+    const current = payment();
+    current.paymentTxRefs = [{
+      kind: "evm-event",
+      chainId: 80002,
+      txHash: "a".repeat(64),
+      logIndex: 7,
+    }];
+    expect((await verify(current, {
+      rail: { railType: "evm-erc20", network: "eip155:80002" },
+    })).decision).toBe("pass");
+    expect((await verify(current, {
+      rail: { railType: "evm-erc20", network: "eip155:8453" },
+    })).decision).toBe("fail");
   });
-  test("non-canonical pinned rail network → fail closed", async () => {
+
+  test("binds legacy and current Solana refs to the canonical pinned cluster", async () => {
+    const legacy = payment();
+    legacy.phase = "pay-solana-spl";
+    legacy.paymentTxRefs = [{
+      kind: "solana",
+      cluster: "devnet",
+      signature: "illustrative-signature",
+    }];
+    legacy.settlementFinality = {
+      model: "commitment-level",
+      finalityCommitmentLevel: "finalized",
+      finalityObservedAt: legacy.observedAt,
+    };
+    expect((await verify(legacy, {
+      rail: { railType: "solana-spl", network: "solana:devnet" },
+    })).decision).toBe("pass");
+    expect((await verify(legacy, {
+      rail: { railType: "solana-spl", network: "solana:testnet" },
+    })).decision).toBe("fail");
+
+    const current = structuredClone(legacy);
+    current.paymentTxRefs = [{
+      kind: "solana-instruction",
+      cluster: "devnet",
+      signature: "1".repeat(64),
+      instructionIndex: 2,
+    }];
+    expect((await verify(current, {
+      rail: { railType: "solana-spl", network: "solana:devnet" },
+    })).decision).toBe("pass");
+    expect((await verify(current, {
+      rail: { railType: "solana-spl", network: "solana:mainnet" },
+    })).decision).toBe("fail");
+  });
+
+  test("binds legacy and current x402 refs to the canonical pinned chain", async () => {
+    const legacy = payment();
+    legacy.phase = "pay-x402";
+    legacy.paymentTxRefs = [{
+      kind: "x402",
+      httpResource: "https://seller.example/resource",
+      paymentReceiptHash: "b".repeat(64),
+      settlementTxHash: `0x${"a".repeat(64)}`,
+      chainId: 80002,
+      protocolVersion: "2",
+    }];
+    expect((await verify(legacy, {
+      rail: { railType: "x402", network: "eip155:80002" },
+    })).decision).toBe("pass");
+    expect((await verify(legacy, {
+      rail: { railType: "x402", network: "eip155:8453" },
+    })).decision).toBe("fail");
+
+    const current = structuredClone(legacy);
+    current.paymentTxRefs = [{
+      kind: "x402-event",
+      httpResource: "https://seller.example/resource",
+      paymentReceiptHash: "b".repeat(64),
+      settlementTxHash: "a".repeat(64),
+      chainId: 80002,
+      logIndex: 7,
+      protocolVersion: "2",
+    }];
+    expect((await verify(current, {
+      rail: { railType: "x402", network: "eip155:80002" },
+    })).decision).toBe("pass");
+    expect((await verify(current, {
+      rail: { railType: "x402", network: "eip155:8453" },
+    })).decision).toBe("fail");
+  });
+
+  test.each([
+    "eip155:0",
+    "eip155:08453",
+    "base-sepolia",
+    "solana:localnet",
+    "demos:testnet",
+  ])("rejects malformed or non-canonical pinned network %s", async (network) => {
     const ev = payment();
     expect((await verify(ev, {
-      rail: { railType: "evm-erc20", network: "polygon-amoy" },
+      rail: { railType: "evm-erc20", network },
+    })).decision).toBe("fail");
+  });
+
+  test("accepts only the Demos network pin for a Demos tx ref", async () => {
+    const ev = payment();
+    ev.phase = "pay-dem";
+    ev.paymentTxRefs = [{
+      kind: "demos",
+      txHash: `0x${"a".repeat(64)}`,
+      blockNumber: 77,
+    }];
+    ev.paymentAmount = { amount: "5", currency: "DEM" };
+    ev.settlementFinality = {
+      model: "bft-final",
+      finalityObservedAt: ev.observedAt,
+    };
+    expect((await verify(ev, {
+      rail: { railType: "demos-native", network: "demos" },
+    })).decision).toBe("pass");
+    expect((await verify(ev, {
+      rail: { railType: "demos-native", network: "eip155:80002" },
     })).decision).toBe("fail");
   });
 

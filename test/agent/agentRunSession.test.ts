@@ -1,6 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 
-import { buildAgent } from "../../src/agent/Agent.js";
+import {
+  buildAgent,
+  type AuthenticatedListing,
+} from "../../src/agent/Agent.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
   signComponentArtifact,
@@ -29,7 +32,11 @@ import {
   signedBytes,
 } from "../../src/crypto/index.js";
 import { identityBundleHash } from "../../src/identity/bundle.js";
-import type { ListingValidationDeps } from "../../src/agent/listingValidation.js";
+import {
+  isVerifiedListingAdmission,
+  validateListingArtifact,
+  type ListingValidationDeps,
+} from "../../src/agent/listingValidation.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
@@ -621,6 +628,69 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test("an authenticated normative selection pins content across the pre-payment reread", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const original = store.get(ref)!;
+    if (!isListing(original)) throw new Error("fixture is not a Listing");
+    const validation = await validateListingArtifact(
+      original,
+      listingValidationDeps(),
+    );
+    if (!isVerifiedListingAdmission(original, validation)) {
+      throw new Error("fixture did not pass ordered Listing validation");
+    }
+    const selected: AuthenticatedListing = {
+      status: "verified",
+      compatibility: "normative",
+      ref,
+      logicalAddress: listingAddress(sellerDid, "svc", 1),
+      version: 1,
+      contentHash: contentHash(original),
+      listingPin: {
+        listingId: "svc",
+        version: 1,
+        contentHash: contentHash(original),
+      },
+      listing: validation.listing,
+      validation,
+    };
+
+    // A valid, same-seller replacement at the same native ref must not change
+    // the exact Listing the buyer selected through the logical index.
+    await anchorListing(
+      store,
+      sellerPriv,
+      sellerDid,
+      { notBefore: 1_700_000_000_000 },
+      "substituted listing",
+    );
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+      listingValidationDeps: listingValidationDeps(),
+    });
+
+    let settled = false;
+    await expect(
+      agent.runSession(selected, {
+        terms: TERMS,
+        settle: async () => {
+          settled = true;
+          return {
+            ok: true,
+            txHash: "0x",
+            chainId: "c",
+            payer: buyerDid,
+            payee: sellerDid,
+          };
+        },
+      }),
+    ).rejects.toThrow(/does not match the caller-held expected Listing pin/);
+    expect(settled).toBe(false);
   });
 
   test("public RunSessionOptions wires caller-held Vet finality authentication", async () => {

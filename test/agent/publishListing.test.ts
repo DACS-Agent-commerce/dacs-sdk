@@ -35,10 +35,16 @@ const sign = (bytes: Uint8Array) => ed25519Sign(bytes, priv);
 function fakeDeps() {
   const store = new Map<string, Record<string, unknown>>();
   const addresses = new Map<string, string>();
-  const stats = { creates: 0 };
+  const stats: {
+    creates: number;
+    lastMetadata?: Record<string, unknown>;
+  } = { creates: 0 };
   const deps: PublishListingDeps & {
     store: Map<string, Record<string, unknown>>;
-    stats: { creates: number };
+    stats: {
+      creates: number;
+      lastMetadata?: Record<string, unknown>;
+    };
   } = {
     store,
     stats,
@@ -72,7 +78,9 @@ function fakeDeps() {
           value: store.get(address)!,
         })),
     }),
-    anchorWriteOnce: async (name, value) => {
+    writeArtifact: async (_logicalAddress, value, options) => {
+      const name = options.storageName;
+      stats.lastMetadata = options.anchor.metadata;
       const existingAddress = addresses.get(name);
       if (existingAddress) {
         const existing = store.get(existingAddress)!;
@@ -502,6 +510,60 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
       version: 1,
       contentHash: contentHash(stored),
     });
+    expect(deps.stats.lastMetadata).toEqual({
+      logicalAddress: listingAddress(SELLER, "market-data", 1),
+    });
+  });
+
+  test("rejects a non-canonical listing identifier before anchoring", async () => {
+    const deps = fakeDeps();
+    await expect(
+      publishListingCore(listing({ listingId: "caf\u0065\u0301" }), deps),
+    ).rejects.toThrow(/normative unsigned DACS-1/);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("pins one deep listing snapshot across asynchronous history lookup", async () => {
+    const deps = fakeDeps();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    deps.scanOwnAnchorsByNamePrefix = async () => {
+      await gate;
+      return { status: "ok", anchors: [] };
+    };
+    const input = listing();
+    const expectedLogical = listingAddress(SELLER, "market-data", 1);
+
+    const pending = publishListingCore(input, deps);
+    input.listingId = "mutated-after-call";
+    (input.buyerRequirement.required as unknown[]).push({
+      claim: { kind: "domain", host: "mutated.example" },
+    });
+    release();
+
+    const result = await pending;
+    expect(result.logicalAddress).toBe(expectedLogical);
+    expect(deps.store.get(result.ref)).toMatchObject({
+      listingId: "market-data",
+      buyerRequirement: { required: [] },
+    });
+  });
+
+  test("rejects a malformed normative Listing before scanning or anchoring", async () => {
+    const deps = fakeDeps();
+    deps.scanOwnAnchorsByNamePrefix = async () => {
+      throw new Error("history scan must not run");
+    };
+
+    await expect(
+      publishListingCore(
+        listing({ pipeline: "not-an-array" as never }),
+        deps,
+      ),
+    ).rejects.toThrow(/normative unsigned DACS-1/);
+    expect(deps.stats.creates).toBe(0);
   });
 
   test("publishes the exact input snapshot signed before an async signer mutates the caller draft", async () => {
@@ -545,9 +607,9 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("publishes immutable signed bytes when an async anchor attempts nested mutation", async () => {
     const deps = fakeDeps();
-    const anchor = deps.anchorWriteOnce;
+    const writeArtifact = deps.writeArtifact;
     let mutationBlocked = false;
-    deps.anchorWriteOnce = async (name, value) => {
+    deps.writeArtifact = async (logicalAddress, value, options) => {
       try {
         ((value as Record<string, unknown>).offering as { description: string })
           .description = "unsigned publication B";
@@ -555,7 +617,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
         mutationBlocked = true;
       }
       await Promise.resolve();
-      return anchor(name, value);
+      return writeArtifact(logicalAddress, value, options);
     };
 
     const result = await publishListingCore(
@@ -709,7 +771,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("owns and enforces the exact immutable-write result envelope", async () => {
     const extra = fakeDeps();
-    extra.anchorWriteOnce = async () => ({
+    extra.writeArtifact = async () => ({
       address: "stor-1",
       txRef: "tx-1",
       completion: "read-visible",
@@ -720,7 +782,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
     const accessor = fakeDeps();
     let getterCalls = 0;
-    accessor.anchorWriteOnce = async () => {
+    accessor.writeArtifact = async () => {
       const result = { address: "stor-1" } as Record<string, unknown>;
       Object.defineProperty(result, "txRef", {
         enumerable: true,
@@ -897,7 +959,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("an anchor adapter cannot mutate the signed Listing after DPA-1 approval", async () => {
     const deps = fakeDeps();
-    deps.anchorWriteOnce = async (_name, value) => {
+    deps.writeArtifact = async (_logicalAddress, value) => {
       const candidate = value as ListingDraft;
       const deliverable = candidate.offering.deliverable;
       if (deliverable.kind !== "attested-payload") {
@@ -915,7 +977,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("a live anchor result cannot establish successful publication", async () => {
     const deps = fakeDeps();
-    deps.anchorWriteOnce = async () => new Proxy(
+    deps.writeArtifact = async () => new Proxy(
       { address: "stor-live" },
       {},
     );
@@ -941,7 +1003,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("fails closed when immutable name resolution is indeterminate", async () => {
     const deps = fakeDeps();
-    deps.anchorWriteOnce = async () => {
+    deps.writeArtifact = async () => {
       throw new SubstrateError(
         "immutable anchor lookup was indeterminate (candidate unreadable)",
       );
@@ -959,6 +1021,12 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
         publishListingCore(listing({ listingVersion: bad }), fakeDeps()),
       ).rejects.toThrow(/positive integer/);
     }
+    await expect(
+      publishListingCore(
+        listing({ listingVersion: Number.MAX_SAFE_INTEGER + 1 }),
+        fakeDeps(),
+      ),
+    ).rejects.toThrow(/stable canonical JSON/);
   });
 
   test("refuses the historical MVP shape on the write path", async () => {
@@ -973,6 +1041,17 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
         deps,
       ),
     ).rejects.toThrow(/normative unsigned|legacy MVP shapes are read-only/);
+    expect(deps.stats.creates).toBe(0);
+  });
+
+  test("rejects an empty listing id before history lookup", async () => {
+    const deps = fakeDeps();
+    deps.scanOwnAnchorsByNamePrefix = async () => {
+      throw new Error("history lookup must not run");
+    };
+    await expect(
+      publishListingCore(listing({ listingId: "" }), deps),
+    ).rejects.toThrow(/normative unsigned DACS-1/);
     expect(deps.stats.creates).toBe(0);
   });
 });

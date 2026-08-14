@@ -1,4 +1,5 @@
 import type { AnchorBinding, BindingIndex } from "./binding.js";
+import { normalizedBindingOwner } from "./owner.js";
 
 /**
  * Typed read-with-verification over the published binding (#54). This is the
@@ -28,6 +29,7 @@ export type VerifiedRead =
   | { status: "verified"; nativeAddress: string; record: Record<string, unknown> }
   | { status: "hash-mismatch"; nativeAddress: string; record: Record<string, unknown> }
   | { status: "signature-invalid"; nativeAddress: string; record: Record<string, unknown> }
+  | { status: "binding-mismatch"; reason: string }
   | {
       status: "unverifiable";
       nativeAddress: string;
@@ -67,13 +69,53 @@ export async function resolveAndRead(
   expectedOwner: string,
   deps: VerifiedReadDeps,
 ): Promise<VerifiedRead> {
-  const resolution = await index.resolve(logicalAddress, expectedOwner);
+  let resolution;
+  try {
+    resolution = await index.resolve(logicalAddress, expectedOwner);
+  } catch (e) {
+    return {
+      status: "indeterminate",
+      reason: `binding resolution failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
   if (resolution.status === "indeterminate") {
     return { status: "indeterminate", reason: resolution.reason };
   }
   if (resolution.status === "absent") return { status: "absent" };
 
-  const { binding } = resolution;
+  let binding: AnchorBinding;
+  try {
+    const snapshot: unknown = structuredClone(resolution.binding);
+    if (
+      typeof snapshot !== "object" ||
+      snapshot === null ||
+      Array.isArray(snapshot)
+    ) {
+      throw new Error("binding is not an object");
+    }
+    binding = snapshot as AnchorBinding;
+  } catch (e) {
+    return {
+      status: "indeterminate",
+      reason: `binding snapshot failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (
+    typeof binding.logicalAddress !== "string" ||
+    binding.logicalAddress !== logicalAddress ||
+    typeof binding.owner !== "string" ||
+    normalizedBindingOwner(binding.owner) !==
+      normalizedBindingOwner(expectedOwner) ||
+    typeof binding.nativeAddress !== "string" ||
+    binding.nativeAddress.trim().length === 0 ||
+    binding.revoked === true
+  ) {
+    return {
+      status: "binding-mismatch",
+      reason:
+        "binding index returned a logical address, owner, native address, or state that does not match the request",
+    };
+  }
   const nativeAddress = binding.nativeAddress;
 
   let record: Record<string, unknown> | null;
@@ -88,12 +130,48 @@ export async function resolveAndRead(
     };
   }
   if (!record) return { status: "unreadable", nativeAddress };
-
-  // (1) Content-hash binding: the read record MUST hash to what the binding pins.
-  if (binding.contentHash !== undefined) {
-    if (deps.contentHashOf(record) !== binding.contentHash) {
-      return { status: "hash-mismatch", nativeAddress, record };
+  try {
+    const snapshot: unknown = structuredClone(record);
+    if (
+      typeof snapshot !== "object" ||
+      snapshot === null ||
+      Array.isArray(snapshot)
+    ) {
+      throw new Error("record is not an object");
     }
+    record = snapshot as Record<string, unknown>;
+  } catch (e) {
+    return {
+      status: "indeterminate",
+      reason: `read record snapshot failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  // (1) Content-hash binding: a reader cannot authenticate the pointer without
+  // an exact signed-scope hash, even when the pointed-to record has a valid
+  // signature. A valid artifact at the wrong logical slot is still the wrong
+  // artifact.
+  if (binding.contentHash === undefined) {
+    return {
+      status: "unverifiable",
+      nativeAddress,
+      record,
+      reason: "published binding does not carry a content hash",
+    };
+  }
+  let actualContentHash: string;
+  try {
+    actualContentHash = deps.contentHashOf(record);
+  } catch (e) {
+    return {
+      status: "unverifiable",
+      nativeAddress,
+      record,
+      reason: `content hash computation failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (actualContentHash !== binding.contentHash) {
+    return { status: "hash-mismatch", nativeAddress, record };
   }
 
   // (2) Authorship/authorization: a hash against an untrusted pointer is never
@@ -101,7 +179,10 @@ export async function resolveAndRead(
   if (deps.verifySignature) {
     let ok: boolean;
     try {
-      ok = await deps.verifySignature(record, binding);
+      ok = await deps.verifySignature(
+        structuredClone(record),
+        structuredClone(binding),
+      );
     } catch (e) {
       return {
         status: "unverifiable",

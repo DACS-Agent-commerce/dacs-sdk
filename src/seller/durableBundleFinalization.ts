@@ -27,9 +27,10 @@ import {
   type SessionRecord,
 } from "../agent/fencedSessionStore.js";
 import {
-  verifyDurableSellerTerminalResult,
+  projectDurableSellerAuditPending,
   type DurableSellerTerminalVerification,
 } from "../agent/runDurableFulfilmentCore.js";
+import type { SellerFulfilmentListing } from "../agent/runFulfilmentCore.js";
 import {
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
@@ -72,6 +73,8 @@ export type FinalizeCompletedSellerBundleDurableInput = Omit<
   FinalizeCompletedSellerBundleInput,
   "seller" | "bindingSigner"
 > & {
+  /** Independently verified exact signed Listing view used for WAL projection. */
+  verifiedListing: SellerFulfilmentListing;
   seller: Omit<FinalizeCompletedSellerBundleInput["seller"], "signer"> & {
     signer: SellerBundleDurableSigner;
   };
@@ -188,6 +191,14 @@ const isNonEmpty = (value: unknown): value is string =>
 
 const isHash = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+
+const exact = (left: unknown, right: unknown): boolean => {
+  try {
+    return canonicalize(left) === canonicalize(right);
+  } catch {
+    return false;
+  }
+};
 
 function latestCheckpoint(
   checkpoints: readonly SessionCheckpoint[],
@@ -528,15 +539,100 @@ class DurableBundleCoordinator {
   }
 
   async #verifyFulfilmentSpine(record: SessionRecord) {
-    return verifyDurableSellerTerminalResult({
-      record: clone(record),
-      suppliedResult: clone(this.#input.fulfilment),
+    const deliveryPhaseIndex = this.#input.fulfilment.bundleContribution.phaseSummary.index;
+    const deliveryPhase = `seller:delivery-completed:${deliveryPhaseIndex}`;
+    let projectionRecord = clone(record);
+    if (projectionRecord.phase !== deliveryPhase) {
+      const bundlePhases = new Set([
+        "seller:bundle-signing",
+        "seller:bundle-anchor-pending",
+        "seller:bundle-binding-signing",
+        "seller:bundle-binding-publication-pending",
+        "seller:finalised",
+      ]);
+      if (!bundlePhases.has(projectionRecord.phase)) {
+        throw new DacsError(
+          "seller bundle recovery found an unexpected predecessor phase",
+        );
+      }
+      const bundleKeys = new Set<string>([
+        sellerBundleFinalizationCheckpointKey.input,
+        sellerBundleFinalizationCheckpointKey.signature("buyer"),
+        sellerBundleFinalizationCheckpointKey.signature("seller"),
+        sellerBundleFinalizationCheckpointKey.signature("orchestrator"),
+        sellerBundleFinalizationCheckpointKey.anchor,
+        sellerBundleFinalizationCheckpointKey.bindingSignature,
+        sellerBundleFinalizationCheckpointKey.bindingPublication,
+        sellerBundleFinalizationCheckpointKey.result,
+      ]);
+      const fulfilmentResultKey = `seller:result:${deliveryPhaseIndex}`;
+      const terminalOutcomes = projectionRecord.checkpoints.filter(
+        (checkpoint) =>
+          checkpoint.key === fulfilmentResultKey && checkpoint.stage === "outcome",
+      );
+      const terminalGeneration = terminalOutcomes[0]?.data?.outcomeGeneration;
+      if (terminalOutcomes.length !== 1 ||
+          !Number.isSafeInteger(terminalGeneration) ||
+          (terminalGeneration as number) <= 0) {
+        throw new DacsError(
+          "seller bundle recovery cannot identify the terminal fulfilment generation",
+        );
+      }
+      const bundleReceipts = projectionRecord.receipts.filter(
+        (receipt) => receipt.kind === "bundle",
+      );
+      if (bundleReceipts.length > 1) {
+        throw new DacsError("seller bundle recovery found duplicate bundle receipts");
+      }
+      projectionRecord.checkpoints = projectionRecord.checkpoints.filter(
+        (checkpoint) => !bundleKeys.has(checkpoint.key),
+      );
+      projectionRecord.receipts = projectionRecord.receipts.filter(
+        (receipt) => receipt.kind !== "bundle",
+      );
+      projectionRecord.phase = deliveryPhase;
+      projectionRecord.leaseGeneration = terminalGeneration as number;
+      delete projectionRecord.lease;
+    }
+    const projected = await projectDurableSellerAuditPending({
+      record: projectionRecord,
+      verifiedAgreement: clone(this.#input.agreement),
+      verifiedListing: clone(this.#input.verifiedListing),
+      expectedDeliveryWriter: {
+        role: "seller",
+        primaryClaim: this.#input.agreement.seller.primaryClaim,
+      },
       ...this.#durability.terminalVerification,
     });
+    const projectedArtifacts = {
+      ...clone(projected.sessionArtifacts),
+      vetRequirements: projected.sessionArtifacts.vetRequirements.map((invocation) => ({
+        ...clone(invocation),
+        freshness: invocation.freshness.map(({ sourceJobId: _sourceJobId, ...entry }) =>
+          clone(entry)),
+        dealSpecific: invocation.dealSpecific.map(({
+          sourceJobId: _sourceJobId,
+          ...entry
+        }) => clone(entry)),
+      })),
+    };
+    if (!exact(projected.terminal.result, this.#input.fulfilment) ||
+        !exact(projected.session, this.#input.session) ||
+        !exact(projectedArtifacts, this.#input.sessionArtifacts)) {
+      throw new DacsError(
+        "bundle finalization input is not the exact authenticated WAL projection",
+      );
+    }
+    return projected.terminal;
   }
 
   verificationInput(): VerifyFinalizedSellerBundleInput {
-    const { seller, bindingSigner: _bindingSigner, ...data } = this.#input;
+    const {
+      seller,
+      bindingSigner: _bindingSigner,
+      verifiedListing: _verifiedListing,
+      ...data
+    } = this.#input;
     return {
       ...clone(data),
       seller: {
@@ -621,8 +717,9 @@ class DurableBundleCoordinator {
         "write-input durability requires the agreement seller's Ed25519 binding signer",
       );
     }
+    const { verifiedListing: _verifiedListing, ...coreInput } = this.#input;
     const request = prepareCompletedSellerBundleCounterSignatureRequest(
-      this.#input as FinalizeCompletedSellerBundleInput,
+      coreInput as FinalizeCompletedSellerBundleInput,
     );
     const jobId = this.#input.agreement.jobId;
     const agreementHash = this.#input.agreement.contentHash;
@@ -680,9 +777,20 @@ class DurableBundleCoordinator {
       owner: acquired.lease.owner,
       generation: acquired.lease.generation,
     };
-    const acquiredVerified = await this.#verifyFulfilmentSpine(clone(acquired.record));
-    if (canonicalize(acquiredVerified.binding) !== canonicalize(this.#authority)) {
-      throw new DacsError("durable consumed authorization changed during lease acquisition");
+    const acquiredStable = clone(acquired.record);
+    const beforeAcquire = clone(record);
+    delete acquiredStable.lease;
+    delete beforeAcquire.lease;
+    acquiredStable.revision = beforeAcquire.revision;
+    acquiredStable.leaseGeneration = beforeAcquire.leaseGeneration;
+    acquiredStable.updatedAt = beforeAcquire.updatedAt;
+    if (acquired.lease.owner !== this.#durability.workerId ||
+        acquired.lease.generation !== beforeAcquire.leaseGeneration + 1 ||
+        !exact(acquired.record.lease, acquired.lease) ||
+        !exact(acquiredStable, beforeAcquire)) {
+      throw new DacsError(
+        "durable terminal WAL changed unexpectedly during bundle lease acquisition",
+      );
     }
 
     await this.#ensureOutcome(
@@ -1100,8 +1208,9 @@ class DurableBundleCoordinator {
           "base64url",
         ),
     };
+    const { verifiedListing: _verifiedListing, ...coreInput } = this.#input;
     return {
-      ...this.#input,
+      ...coreInput,
       seller,
       ...(this.#input.bindingSigner
         ? {
@@ -1559,6 +1668,8 @@ function captureDurability(
   const leaseNowMs = durability.leaseNowMs;
   const terminalVerification = durability.terminalVerification;
   const verifyEvidenceSignature = terminalVerification?.verifyEvidenceSignature;
+  const verifyAuditSourceCommitmentSignature =
+    terminalVerification?.verifyAuditSourceCommitmentSignature;
   const verifyAnchorReceipt = terminalVerification?.verifyAnchorReceipt;
   const reconcileSignature = durability.reconcileSignature;
   const reconcileBundleAnchor = durability.reconcileBundleAnchor;
@@ -1566,6 +1677,7 @@ function captureDurability(
   if (
     (leaseNowMs !== undefined && typeof leaseNowMs !== "function") ||
     typeof verifyEvidenceSignature !== "function" ||
+    typeof verifyAuditSourceCommitmentSignature !== "function" ||
     typeof verifyAnchorReceipt !== "function" ||
     typeof reconcileSignature !== "function" ||
     typeof reconcileBundleAnchor !== "function" ||
@@ -1582,6 +1694,10 @@ function captureDurability(
     ...(leaseNowMs ? { leaseNowMs: bind(leaseNowMs, durability) } : {}),
     terminalVerification: Object.freeze({
       verifyEvidenceSignature: bind(verifyEvidenceSignature, terminalVerification),
+      verifyAuditSourceCommitmentSignature: bind(
+        verifyAuditSourceCommitmentSignature,
+        terminalVerification,
+      ),
       verifyAnchorReceipt: bind(verifyAnchorReceipt, terminalVerification),
     }),
     reconcileSignature: bind(reconcileSignature, durability),

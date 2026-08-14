@@ -39,6 +39,9 @@ describe("DemosAdapter", () => {
     await expect(
       adapter.scanOwnAnchorsByNamePrefix("dacs:test:v"),
     ).rejects.toThrow(/not connected/);
+    expect(() =>
+      adapter.createAnchorHistoryPageFetcher("0xowner"),
+    ).toThrow(/not connected/);
     await expect(adapter.sign(new Uint8Array())).rejects.toThrow(
       /not connected/,
     );
@@ -99,6 +102,83 @@ describe("DemosAdapter", () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  it("anchorWriteOnce compares requested descriptive metadata on retry", async () => {
+    const adapter = new DemosAdapter({ rpc: RPC });
+    Object.assign(adapter, { connected: true });
+    vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+    vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
+      status: "present",
+      address: "stor-existing",
+    });
+    const readMetadata = vi.spyOn(
+      adapter.raw.storagePrograms,
+      "read",
+    ).mockResolvedValue({
+      success: true,
+      data: { serviceId: "svc" },
+      metadata: { logicalAddress: "dacs1:seller:svc:v1", source: "catalog" },
+    } as never);
+
+    await expect(
+      adapter.anchorWriteOnce(
+        "listing-v1",
+        { serviceId: "svc" },
+        {
+          metadata: {
+            source: "catalog",
+            logicalAddress: "dacs1:seller:svc:v1",
+          },
+        },
+      ),
+    ).resolves.toEqual({ address: "stor-existing" });
+
+    await expect(
+      adapter.anchorWriteOnce(
+        "listing-v1",
+        { serviceId: "svc" },
+        { metadata: { logicalAddress: "dacs1:seller:svc:v2" } },
+      ),
+    ).rejects.toThrow(/different descriptive metadata/);
+
+    readMetadata.mockResolvedValueOnce({
+      success: true,
+      data: { serviceId: "svc" },
+      metadata: null,
+    } as never);
+    await expect(
+      adapter.anchorWriteOnce(
+        "listing-v1",
+        { serviceId: "svc" },
+        { metadata: { logicalAddress: "dacs1:seller:svc:v1" } },
+      ),
+    ).rejects.toThrow(/different descriptive metadata/);
+
+    readMetadata.mockResolvedValueOnce({
+      success: true,
+      data: { serviceId: "svc" },
+      metadata: [],
+    } as never);
+    await expect(
+      adapter.anchorWriteOnce(
+        "listing-v1",
+        { serviceId: "svc" },
+        { metadata: { logicalAddress: "dacs1:seller:svc:v1" } },
+      ),
+    ).rejects.toThrow(/malformed metadata/);
+  });
+
+  it("anchorWriteOnce rejects array metadata at the runtime boundary", async () => {
+    const adapter = new DemosAdapter({ rpc: RPC });
+    Object.assign(adapter, { connected: true });
+    await expect(
+      adapter.anchorWriteOnce(
+        "listing-v1",
+        { serviceId: "svc" },
+        { metadata: [] as unknown as Record<string, unknown> },
+      ),
+    ).rejects.toThrow(/metadata must be a JSON object/);
+  });
+
   it("serializes concurrent immutable publication through the full adapter seam", async () => {
     const adapter = new DemosAdapter({ rpc: RPC });
     Object.assign(adapter, { connected: true });
@@ -153,12 +233,16 @@ describe("DemosAdapter", () => {
     vi.spyOn(adapter, "resolveAnchorByName")
       .mockResolvedValueOnce({ status: "absent" })
       .mockResolvedValueOnce({ status: "present", address });
-    vi.spyOn(adapter, "readAnchor").mockResolvedValue(value);
     vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
     vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
       state: "included",
     } as never);
-    vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
+    vi.spyOn(adapter.raw.storagePrograms, "read").mockResolvedValue({
+      success: true,
+      data: value,
+      metadata: { logicalAddress: "dacs1:seller:svc:v1" },
+    } as never);
+    const sign = vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
       async (payload: unknown) =>
         ({
           ...(payload as Record<string, unknown>),
@@ -175,8 +259,18 @@ describe("DemosAdapter", () => {
     } as never);
 
     await expect(
-      adapter.anchorWriteOnce(name, value, { timeoutMs: 20, pollMs: 0 }),
+      adapter.anchorWriteOnce(name, value, {
+        timeoutMs: 20,
+        pollMs: 0,
+        metadata: { logicalAddress: "dacs1:seller:svc:v1" },
+      }),
     ).resolves.toEqual({ address, txRef: "tx-create" });
+    expect(sign).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { logicalAddress: "dacs1:seller:svc:v1" },
+      }),
+      { nonce: 1 },
+    );
   });
 
   it("serializes two adapter instances sharing a wallet and rejects different content", async () => {

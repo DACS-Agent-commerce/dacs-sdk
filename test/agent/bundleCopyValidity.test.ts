@@ -199,6 +199,28 @@ describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
     }
   });
 
+  test("a single-signed abort must be signed by the owner of its role address", async () => {
+    for (const faultBundle of [false, true]) {
+      const abortBody = body({
+        ...(faultBundle
+          ? {
+              bundleVersion: undefined,
+              faultBundleVersion: "1",
+              faultedParty: "seller",
+            }
+          : {}),
+        outcome: "aborted-by-other",
+      });
+      const result = await verifyBundleCopy(
+        sign(abortBody, [SELLER], "buyer"),
+        "buyer",
+        deps,
+      );
+      expect(result.valid, faultBundle ? "FAB" : "legacy").toBe(false);
+      if (!result.valid) expect(result.reason).toMatch(/missing required signatures/);
+    }
+  });
+
   test("a SINGLE-SIGNED NON-ABORT copy is REJECTED (§10.4.1)", async () => {
     const copy = sign(body({ outcome: "completed" }), [BUYER], "buyer");
     const r = await verifyBundleCopy(copy, "buyer", deps);

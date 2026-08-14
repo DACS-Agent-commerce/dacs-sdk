@@ -42,6 +42,14 @@ const HASH_RE = /^[0-9a-f]{64}$/;
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
 
+function canonicalEvmTxHash(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = /^0x/i.test(value) ? value.slice(2) : value;
+  return /^[0-9a-fA-F]{64}$/.test(normalized)
+    ? normalized.toLowerCase()
+    : null;
+}
+
 /**
  * Authenticated, pre-settlement DACS scope retained by the x402 WAL.
  *
@@ -671,11 +679,12 @@ function claimMatchesAuthorization(
   expectedPayer: string,
 ): boolean {
   const txRef = authorization.evidenceInput.paymentTxRefs[0];
-  if (txRef?.kind !== "x402" ||
+  if ((txRef?.kind !== "x402" && txRef?.kind !== "x402-event") ||
       paymentClaim.protocolVersion !== txRef.protocolVersion ||
       paymentClaim.httpResource !== txRef.httpResource ||
       paymentClaim.paymentReceiptHash !== txRef.paymentReceiptHash ||
-      paymentClaim.settlementTxHash !== txRef.settlementTxHash ||
+      canonicalEvmTxHash(paymentClaim.settlementTxHash) !==
+        canonicalEvmTxHash(txRef.settlementTxHash) ||
       paymentClaim.chainId !== txRef.chainId) return false;
   try {
     const verification = verifyX402ReceiptClaim({
@@ -683,10 +692,12 @@ function claimMatchesAuthorization(
       responseHeader: paymentClaim.responseHeader,
       evidence: {
         paymentReceiptHash: txRef.paymentReceiptHash,
-        ...(txRef.settlementTxHash === undefined
+        ...(paymentClaim.settlementTxHash === undefined
           ? {}
-          : { settlementTxHash: txRef.settlementTxHash }),
-        ...(txRef.chainId === undefined ? {} : { chainId: txRef.chainId }),
+          : { settlementTxHash: paymentClaim.settlementTxHash }),
+        ...(paymentClaim.chainId === undefined
+          ? {}
+          : { chainId: paymentClaim.chainId }),
       },
     });
     const receiptPayer = verification.receipt?.payer;

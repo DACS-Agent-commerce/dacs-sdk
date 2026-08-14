@@ -1,4 +1,5 @@
 import { DacsError } from "../errors.js";
+import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
 
 /**
  * Explicit generation-fenced session state schema. Version 2 adds fencing generations, immutable
@@ -10,6 +11,70 @@ import { DacsError } from "../errors.js";
 export const FENCED_SESSION_STORE_VERSION = 2 as const;
 
 export type SessionPhase = string;
+
+/** Role-local, unscoped operational lifecycle for terminal FAB publication. */
+export type TerminalBundleStoreRole = "buyer" | "seller" | "orchestrator";
+export type TerminalBundleStoreStage =
+  | "authority"
+  | "proposal-publication-pending"
+  | "contribution-signing"
+  | "contribution-publication-pending"
+  | "matrix-review"
+  | "bundle-anchor-pending"
+  | "bundle-binding-signing"
+  | "bundle-binding-publication-pending"
+  | "finalised";
+
+const TERMINAL_BUNDLE_STAGE_RANK: ReadonlyMap<TerminalBundleStoreStage, number> =
+  new Map<TerminalBundleStoreStage, number>([
+    ["authority", 0],
+    ["proposal-publication-pending", 1],
+    ["contribution-signing", 2],
+    ["contribution-publication-pending", 3],
+    ["matrix-review", 4],
+    ["bundle-anchor-pending", 5],
+    ["bundle-binding-signing", 6],
+    ["bundle-binding-publication-pending", 7],
+    ["finalised", 8],
+  ]);
+
+export function terminalBundleStorePhase(
+  role: TerminalBundleStoreRole,
+  stage: TerminalBundleStoreStage,
+): SessionPhase {
+  return `terminal:${role}:${stage}`;
+}
+
+interface TerminalBundlePhaseProgress {
+  role: TerminalBundleStoreRole;
+  stage: TerminalBundleStoreStage;
+  rank: number;
+  final: boolean;
+}
+
+function terminalBundlePhaseProgress(phase: string): TerminalBundlePhaseProgress | null {
+  const match = /^terminal:(buyer|seller|orchestrator):([a-z-]+)$/.exec(phase);
+  if (!match) return null;
+  const role = match[1] as TerminalBundleStoreRole;
+  const stage = match[2] as TerminalBundleStoreStage;
+  const rank = TERMINAL_BUNDLE_STAGE_RANK.get(stage);
+  return rank === undefined
+    ? null
+    : { role, stage, rank, final: stage === "finalised" };
+}
+
+/** Globally sealed phases reject every later lease or mutation. */
+export function sessionPhaseIsTerminal(phase: string): boolean {
+  return (
+    phase === "seller:completed" ||
+    // `seller:failed` is a semantic terminal outcome but remains operationally
+    // open until its terminal FAB publication is durably sealed.
+    phase === "seller:rejected" ||
+    phase === "seller:finalised" ||
+    phase === "buyer:finalised" ||
+    terminalBundlePhaseProgress(phase)?.final === true
+  );
+}
 
 /** An immutable reference to one session side effect. */
 export interface SessionReceipt {
@@ -116,17 +181,6 @@ function explicitUndefinedKey(
   return keys.find((key) => hasOwn(value, key) && value[key] === undefined);
 }
 
-function isCanonicalSettlementId(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  if (/^demos:[0-9a-f]{64}$/.test(value)) return true;
-  const match = /^evm:([1-9][0-9]*):([0-9a-f]{64}):(0|[1-9][0-9]*)$/.exec(value);
-  if (!match) return false;
-  const chainId = Number(match[1]);
-  const logIndex = Number(match[3]);
-  return Number.isSafeInteger(chainId) && chainId > 0 &&
-    Number.isSafeInteger(logIndex) && logIndex >= 0;
-}
-
 function unexpectedKey(
   value: Record<string, unknown>,
   allowed: readonly string[],
@@ -216,8 +270,8 @@ function paymentBindingShapeViolation(value: unknown): string | null {
       return `paymentAuthorization.${field} must be an exact lower-case sha256 hash`;
     }
   }
-  if (!isCanonicalSettlementId(value.settlementId)) {
-    return "paymentAuthorization.settlementId must be a canonical lower-case settlement identity";
+  if (!isCanonicalSettlementIdentity(value.settlementId)) {
+    return "paymentAuthorization.settlementId must be a canonical SB-1 settlement identity";
   }
   if (!isNonNegativeInteger(value.paymentPhaseIndex)) {
     return "paymentAuthorization.paymentPhaseIndex must be a non-negative safe integer";
@@ -303,10 +357,19 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
   }
   if (!isNonEmptyString(value.phase)) return "phase missing or invalid";
   if (value.phase.startsWith("seller:") &&
-      !sellerTerminal(value.phase) &&
+      value.phase !== "seller:failed" &&
+      !sessionPhaseIsTerminal(value.phase) &&
       sellerDeliveryPhaseProgress(value.phase) === null &&
       sellerBundlePhaseRank(value.phase) === null) {
     return "phase uses a malformed or unrecognized reserved seller lifecycle value";
+  }
+  if (value.phase.startsWith("buyer:") &&
+      !sessionPhaseIsTerminal(value.phase) &&
+      buyerBundlePhaseRank(value.phase) === null) {
+    return "phase uses a malformed or unrecognized reserved buyer lifecycle value";
+  }
+  if (value.phase.startsWith("terminal:") && terminalBundlePhaseProgress(value.phase) === null) {
+    return "phase uses a malformed or unrecognized reserved terminal bundle lifecycle value";
   }
   if (!isNonNegativeInteger(value.revision)) {
     return "revision must be a non-negative safe integer";
@@ -349,8 +412,8 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
     ) {
       return "lease.sellerPhaseIndex must be a non-negative safe integer";
     }
-    if (sellerTerminal(value.phase)) {
-      return "a globally terminal seller session cannot retain a lease";
+    if (sessionPhaseIsTerminal(value.phase)) {
+      return "a globally terminal session cannot retain a lease";
     }
     const progress = sellerDeliveryPhaseProgress(value.phase);
     if (
@@ -358,6 +421,18 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
       value.lease.sellerPhaseIndex !== undefined
     ) {
       return "a seller bundle phase requires an unscoped lease";
+    }
+    if (
+      buyerBundlePhaseRank(value.phase) !== null &&
+      value.lease.sellerPhaseIndex !== undefined
+    ) {
+      return "a buyer bundle phase requires an unscoped lease";
+    }
+    if (
+      terminalBundlePhaseProgress(value.phase) !== null &&
+      value.lease.sellerPhaseIndex !== undefined
+    ) {
+      return "a terminal bundle phase requires an unscoped lease";
     }
     if (
       progress &&
@@ -395,6 +470,7 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
   }
   if (!Array.isArray(value.receipts)) return "receipts missing or invalid";
   const receiptRefs = new Map<string, string>();
+  let hasBundleReceipt = false;
   for (let index = 0; index < value.receipts.length; index++) {
     const receipt = value.receipts[index];
     const violation = receiptShapeViolation(receipt);
@@ -408,6 +484,27 @@ export function sessionRecordShapeViolation(value: unknown): string | null {
         : `receipts[${index}]: immutable receipt ${key} conflicts`;
     }
     receiptRefs.set(key, typed.ref);
+    if (typed.kind === "bundle") hasBundleReceipt = true;
+  }
+  const terminalProgress = terminalBundlePhaseProgress(value.phase);
+  if (terminalProgress) {
+    const resultKey = `terminal:${terminalProgress.role}:result`;
+    const resultStage = stages.get(resultKey);
+    if (terminalProgress.final) {
+      if (resultStage !== "outcome") {
+        return "a final terminal bundle phase requires its durable result outcome";
+      }
+      if (!receiptRefs.has("bundle")) {
+        return "a final terminal bundle phase requires its immutable bundle receipt";
+      }
+    } else {
+      if (hasBundleReceipt) {
+        return "a terminal bundle receipt cannot precede the atomic final seal";
+      }
+      if (resultStage === "outcome") {
+        return "a terminal bundle result outcome cannot precede the atomic final seal";
+      }
+    }
   }
   return null;
 }
@@ -697,6 +794,23 @@ export function snapshotFencedCreateInput(value: unknown): CreateInput {
       "create.phase cannot enter seller bundle finalization without a completed delivery",
     );
   }
+  if (
+    input.phase !== undefined &&
+    (buyerBundlePhaseRank(input.phase) !== null ||
+      input.phase === "buyer:finalised")
+  ) {
+    throw new DacsError(
+      "create.phase cannot enter buyer bundle finalization without a fenced session",
+    );
+  }
+  if (
+    input.phase !== undefined &&
+    terminalBundlePhaseProgress(input.phase) !== null
+  ) {
+    throw new DacsError(
+      "create.phase cannot enter terminal bundle finalization without a fenced session",
+    );
+  }
   assertOptionalNow(input.now, "create.now");
   return structuredClone(input) as unknown as CreateInput;
 }
@@ -899,11 +1013,6 @@ export function compareFencedSessionRecords(
 }
 
 const clone = <T>(value: T): T => structuredClone(value);
-const sellerTerminal = (phase: string): boolean =>
-  phase === "seller:completed" ||
-  phase === "seller:failed" ||
-  phase === "seller:rejected" ||
-  phase === "seller:finalised";
 
 /** Monotonic, unscoped recovery lifecycle for seller bundle finalization. */
 function sellerBundlePhaseRank(phase: string): number | null {
@@ -916,6 +1025,28 @@ function sellerBundlePhaseRank(phase: string): number | null {
       return 2;
     case "seller:bundle-binding-publication-pending":
       return 3;
+    default:
+      return null;
+  }
+}
+
+/** Monotonic, unscoped recovery lifecycle for buyer bundle finalization. */
+function buyerBundlePhaseRank(phase: string): number | null {
+  switch (phase) {
+    case "buyer:bundle-review":
+      return 0;
+    case "buyer:counter-signing":
+      return 1;
+    case "buyer:counter-signature-publication-pending":
+      return 2;
+    case "buyer:awaiting-seller-finalisation":
+      return 3;
+    case "buyer:bundle-anchor-pending":
+      return 4;
+    case "buyer:bundle-binding-signing":
+      return 5;
+    case "buyer:bundle-binding-publication-pending":
+      return 6;
     default:
       return null;
   }
@@ -966,22 +1097,111 @@ function sellerDeliveryPhaseProgress(
   };
 }
 
+/** Seller terminal outcomes that remain open only for exact terminal FAB publication. */
+export function sessionPhaseIsSellerFailureOrigin(phase: string): boolean {
+  const progress = sellerDeliveryPhaseProgress(phase);
+  return phase === "seller:failed" ||
+    (progress?.terminal === true && progress.outcome !== "completed");
+}
+
 export function sessionPhaseMutationFailure(
   record: SessionRecord,
   nextPhase: string | undefined,
 ): "phase-regression" | null {
   if (nextPhase?.startsWith("seller:") &&
-      !sellerTerminal(nextPhase) &&
+      nextPhase !== "seller:failed" &&
+      !sessionPhaseIsTerminal(nextPhase) &&
       sellerDeliveryPhaseProgress(nextPhase) === null &&
       sellerBundlePhaseRank(nextPhase) === null) {
+    return "phase-regression";
+  }
+  if (nextPhase?.startsWith("buyer:") &&
+      !sessionPhaseIsTerminal(nextPhase) &&
+      buyerBundlePhaseRank(nextPhase) === null) {
+    return "phase-regression";
+  }
+  if (nextPhase?.startsWith("terminal:") && terminalBundlePhaseProgress(nextPhase) === null) {
     return "phase-regression";
   }
   const currentBundleRank = sellerBundlePhaseRank(record.phase);
   const nextBundleRank = nextPhase === undefined
     ? null
     : sellerBundlePhaseRank(nextPhase);
+  const currentBuyerRank = buyerBundlePhaseRank(record.phase);
+  const nextBuyerRank = nextPhase === undefined
+    ? null
+    : buyerBundlePhaseRank(nextPhase);
   const current = sellerDeliveryPhaseProgress(record.phase);
   const scope = record.lease?.sellerPhaseIndex;
+  const currentTerminalBundle = terminalBundlePhaseProgress(record.phase);
+  const nextTerminalBundle = nextPhase === undefined
+    ? null
+    : terminalBundlePhaseProgress(nextPhase);
+
+  if (record.phase === "buyer:finalised") return "phase-regression";
+
+  // Failure/abort FAB publication is role-local, unscoped, and forward-only.
+  // The globally sealed state is reachable only from the last publication
+  // phase, so a semantic `seller:failed` state can never strand an unanchored
+  // failure bundle.
+  if (currentTerminalBundle !== null) {
+    if (scope !== undefined || currentTerminalBundle.final) return "phase-regression";
+    if (nextPhase === undefined) return null;
+    if (!nextTerminalBundle || nextTerminalBundle.role !== currentTerminalBundle.role) {
+      return "phase-regression";
+    }
+    if (nextTerminalBundle.final) {
+      return currentTerminalBundle.stage === "bundle-binding-publication-pending"
+        ? null
+        : "phase-regression";
+    }
+    return nextTerminalBundle.rank >= currentTerminalBundle.rank
+      ? null
+      : "phase-regression";
+  }
+
+  if (nextTerminalBundle?.final) return "phase-regression";
+  if (nextTerminalBundle !== null) {
+    const ordinaryOrigin =
+      currentBundleRank === null &&
+      currentBuyerRank === null &&
+      current === null &&
+      !record.phase.startsWith("seller:") &&
+      !record.phase.startsWith("buyer:");
+    const failedSellerOrigin = sessionPhaseIsSellerFailureOrigin(record.phase);
+    const validOrigin = ordinaryOrigin ||
+      (failedSellerOrigin && nextTerminalBundle.role === "seller");
+    return nextTerminalBundle.rank === 0 &&
+      record.lease !== undefined &&
+      scope === undefined &&
+      validOrigin
+      ? null
+      : "phase-regression";
+  }
+
+  if (sessionPhaseIsSellerFailureOrigin(record.phase)) {
+    return "phase-regression";
+  }
+
+  // Buyer bundle work is an independent-agent lifecycle. Every irreversible
+  // step is unscoped, forward-only, and sealed by buyer:finalised.
+  if (currentBuyerRank !== null) {
+    if (scope !== undefined) return "phase-regression";
+    if (nextPhase === undefined) return null;
+    if (nextPhase === "buyer:finalised") return null;
+    return nextBuyerRank !== null && nextBuyerRank >= currentBuyerRank
+      ? null
+      : "phase-regression";
+  }
+
+  if (nextPhase === "buyer:finalised") return "phase-regression";
+
+  if (nextBuyerRank !== null) {
+    return currentBundleRank === null && current === null &&
+      scope === undefined && nextBuyerRank === 0 && record.lease !== undefined
+      ? null
+      : "phase-regression";
+  }
 
   if (nextPhase === "seller:finalised") {
     // Preserve the v2 store's pre-existing global-finalisation transition for
@@ -1041,10 +1261,48 @@ export function sessionPhaseMutationFailure(
   return null;
 }
 
+/** @internal Exact atomic seal required by the generic terminal FAB lifecycle. */
+export function terminalBundleSealMutationFailure(
+  record: SessionRecord,
+  input: Pick<TransitionInput, "phase" | "checkpoint" | "receipt" | "lease">,
+): "phase-regression" | null {
+  const current = terminalBundlePhaseProgress(record.phase);
+  const next = input.phase === undefined
+    ? current
+    : terminalBundlePhaseProgress(input.phase);
+  if (next !== null && !next.final && input.receipt?.kind === "bundle") {
+    return "phase-regression";
+  }
+  if (next?.final !== true) return null;
+  const resultKey = `terminal:${next.role}:result`;
+  const prior = [...record.checkpoints]
+    .reverse()
+    .find((checkpoint) => checkpoint.key === resultKey);
+  return current?.role === next.role &&
+      current.stage === "bundle-binding-publication-pending" &&
+      input.checkpoint?.key === resultKey &&
+      input.checkpoint.stage === "outcome" &&
+      prior?.stage === "intent" &&
+      input.receipt?.kind === "bundle" &&
+      input.receipt.phaseIndex === undefined &&
+      input.lease === null
+    ? null
+    : "phase-regression";
+}
+
 export function sessionLeaseScopeFailure(
   record: SessionRecord,
   sellerPhaseIndex: number | undefined,
 ): "phase-regression" | null {
+  if (sessionPhaseIsSellerFailureOrigin(record.phase)) {
+    return sellerPhaseIndex === undefined ? null : "phase-regression";
+  }
+  if (terminalBundlePhaseProgress(record.phase) !== null) {
+    return sellerPhaseIndex === undefined ? null : "phase-regression";
+  }
+  if (buyerBundlePhaseRank(record.phase) !== null) {
+    return sellerPhaseIndex === undefined ? null : "phase-regression";
+  }
   if (sellerBundlePhaseRank(record.phase) !== null) {
     return sellerPhaseIndex === undefined ? null : "phase-regression";
   }
@@ -1063,6 +1321,15 @@ export function sessionLeaseScopeFailure(
 export function sessionAuthorizationPhaseFailure(
   record: SessionRecord,
 ): "phase-regression" | null {
+  if (sessionPhaseIsSellerFailureOrigin(record.phase)) {
+    return "phase-regression";
+  }
+  if (terminalBundlePhaseProgress(record.phase) !== null) {
+    return "phase-regression";
+  }
+  if (buyerBundlePhaseRank(record.phase) !== null) {
+    return "phase-regression";
+  }
   if (sellerBundlePhaseRank(record.phase) !== null) {
     return "phase-regression";
   }
@@ -1189,7 +1456,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       if (current.revision !== input.expectedRevision) {
         return { ok: false, reason: "revision-mismatch", record: clone(current) };
       }
-      if (sellerTerminal(current.phase)) {
+      if (sessionPhaseIsTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       const now = input.now ?? Date.now();
@@ -1207,6 +1474,21 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
         : sessionPhaseMutationFailure(current, input.phase);
       if (phaseProblem) {
         return { ok: false, reason: phaseProblem, record: clone(current) };
+      }
+      if (
+        sessionPhaseIsSellerFailureOrigin(current.phase) &&
+        !releasesOnly &&
+        (input.phase !== terminalBundleStorePhase("seller", "authority") ||
+          input.receipt !== undefined ||
+          input.checkpoint?.key !== "terminal:seller:authority" ||
+          input.checkpoint.stage !== "intent" ||
+          input.lease === null)
+      ) {
+        return { ok: false, reason: "phase-regression", record: clone(current) };
+      }
+      const sealProblem = terminalBundleSealMutationFailure(current, input);
+      if (sealProblem) {
+        return { ok: false, reason: sealProblem, record: clone(current) };
       }
       if (input.checkpoint) {
         assertCheckpointPayloadShape(input.checkpoint);
@@ -1244,7 +1526,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       const input = snapshotFencedCheckpointClaimInput(rawInput);
       const current = sessions.get(input.jobId);
       if (!current) return { ok: false, reason: "not-found" };
-      if (sellerTerminal(current.phase)) {
+      if (sessionPhaseIsTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       const now = input.now ?? Date.now();
@@ -1265,6 +1547,16 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       const phaseProblem = sessionPhaseMutationFailure(current, input.phase);
       if (phaseProblem) {
         return { ok: false, reason: phaseProblem, record: clone(current) };
+      }
+      if (
+        sessionPhaseIsSellerFailureOrigin(current.phase) &&
+        (input.phase !== terminalBundleStorePhase("seller", "authority") ||
+          input.key !== "terminal:seller:authority")
+      ) {
+        return { ok: false, reason: "phase-regression", record: clone(current) };
+      }
+      if (terminalBundlePhaseProgress(input.phase ?? "")?.final === true) {
+        return { ok: false, reason: "phase-regression", record: clone(current) };
       }
       const checkpoint: SessionCheckpoint = {
         key: input.key,
@@ -1297,7 +1589,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       }
       const current = sessions.get(jobId);
       if (!current) return { ok: false, reason: "not-found" };
-      if (sellerTerminal(current.phase)) {
+      if (sessionPhaseIsTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       if (current.lease && current.lease.expiresAt > now) {
@@ -1332,7 +1624,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
       validTtl(ttlMs);
       const current = sessions.get(jobId);
       if (!current) return { ok: false, reason: "not-found" };
-      if (sellerTerminal(current.phase)) {
+      if (sessionPhaseIsTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       const problem = leaseFailure(current, leaseToken, now);
@@ -1396,7 +1688,7 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
         });
         return { ok: true, record: clone(current) };
       }
-      if (sellerTerminal(current.phase)) {
+      if (sessionPhaseIsTerminal(current.phase)) {
         return { ok: false, reason: "terminal-state", record: clone(current) };
       }
       if (!current.lease) {
@@ -1482,7 +1774,12 @@ export function createInMemoryFencedSessionStore(): FencedSessionStoreV2 {
     async bindHash(rawInput) {
       const { hash, jobId, kind } = snapshotFencedBindHashInput(rawInput);
       const current = sessions.get(jobId);
-      if (kind === "agreement" && current && sellerTerminal(current.phase)) {
+      if (
+        kind === "agreement" &&
+        current &&
+        (sessionPhaseIsSellerFailureOrigin(current.phase) ||
+          sessionPhaseIsTerminal(current.phase))
+      ) {
         return current.agreementHash === hash
           ? { ok: true, boundTo: jobId }
           : { ok: false, boundTo: jobId };

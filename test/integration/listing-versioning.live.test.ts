@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { createAgent } from "../../src/index.js";
+import {
+  createAgent,
+  createInMemoryBindingStore,
+} from "../../src/index.js";
 
 /**
  * Live-node acceptance gate for #46.
@@ -25,10 +28,12 @@ describe("LIVE listing version immutability + sequencing (#46)", () => {
   it(
     "creates v1/v2, reconciles an identical retry, and rejects overwrite/gap",
     async () => {
+      const bindings = createInMemoryBindingStore();
       const agent = await createAgent({
         demosRpc: RPC!,
         wallet: WALLET!,
         identity: { agentId: DID! },
+        bindings: { index: bindings, publisher: bindings },
       });
       const serviceId = `sdk-46-${Date.now()}`;
       const base = {
@@ -76,6 +81,11 @@ describe("LIVE listing version immutability + sequencing (#46)", () => {
 
       const v1 = await agent.publishListing({ ...base, listingVersion: 1 });
       const retry = await agent.publishListing({ ...base, listingVersion: 1 });
+      expect(v1.status).toBe("published");
+      expect(retry.status).toBe("already-published");
+      if (v1.status !== "published" || retry.status !== "already-published") {
+        throw new Error("listing binding publication failed");
+      }
       expect(retry.ref).toBe(v1.ref);
 
       await expect(
@@ -98,6 +108,10 @@ describe("LIVE listing version immutability + sequencing (#46)", () => {
         listingVersion: 2,
         offering: { ...base.offering, description: "v2" },
       });
+      expect(v2.status).toBe("published");
+      if (v2.status !== "published") {
+        throw new Error("v2 listing binding publication failed");
+      }
       expect(v2.ref).not.toBe(v1.ref);
     },
     360_000,

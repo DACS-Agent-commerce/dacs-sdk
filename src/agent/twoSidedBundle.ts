@@ -16,7 +16,7 @@ import type { KeyObject } from "node:crypto";
 
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
-import { snapshotCanonicalJsonObject } from "../canonical/snapshot.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { isFaultAttestationBundle } from "../artifacts/validators.js";
 import { ed25519Sign, privateKeyFromSeed } from "../crypto/ed25519.js";
@@ -63,10 +63,13 @@ type SessionSigner = Uint8Array | KeyObject | ((bytes: Uint8Array) => Promise<Ui
 
 /** The §B.2 canonical form of a bundle: the document minus `signatures` and `anchoredByRole`. */
 export function bundleSignedScope(bundle: AnyAttestationBundle): Record<string, unknown> {
-  const snapshot = snapshotCanonicalJsonObject(
+  const snapshot = snapshotCanonicalJsonRead(
     bundle as unknown as Record<string, unknown>,
     "attestation bundle",
   );
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new DacsError("attestation bundle must be a canonical JSON object");
+  }
   // Object.fromEntries creates own data properties even for `__proto__`.
   // Unknown minor-version fields therefore stay hash-bound; only the two
   // normative bundle envelope fields are omitted.
@@ -139,9 +142,11 @@ export interface TwoSidedSession {
   /**
    * The orchestrator, when it is a party DISTINCT from buyer and seller. §10.4.1: "If the
    * orchestrator is a distinct party (not buyer or seller), the orchestrator signature is also
-   * REQUIRED." Omit it for the ordinary two-party session, where no third signature is required.
+   * REQUIRED" for a fully signed copy. Its identity may be retained without a signer only for
+   * the exact single-role abort-suppression path; no unsigned role is erased from `parties[]`.
+   * Omit it for the ordinary two-party session, where no third role exists.
    */
-  orchestrator?: SigningSessionParty;
+  orchestrator?: SessionParty;
   faultBundleVersion?: "1";
 }
 
@@ -291,6 +296,9 @@ export async function buildTwoSidedBundle(
 
   const buyerSigner = canSign(buyer) ? buyer : undefined;
   const sellerSigner = canSign(seller) ? seller : undefined;
+  const orchestratorSigner = orchestrator && canSign(orchestrator)
+    ? orchestrator
+    : undefined;
   if (!buyerSigner && !SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
     throw new DacsError(
       `outcome "${outcome}" requires the buyer's signature (§10.4.1): only ${[
@@ -308,8 +316,25 @@ export async function buildTwoSidedBundle(
           .join(" or ")} may be single-signed.`,
     );
   }
-  if (!buyerSigner && !sellerSigner) {
-    throw new DacsError("a DACS-5 abort bundle requires at least one buyer or seller signature (§10.11).");
+  if (orchestrator && !orchestratorSigner && !SINGLE_SIGNATURE_PERMITTED.has(outcome)) {
+    throw new DacsError(
+      `outcome "${outcome}" requires the distinct orchestrator's signature (§10.4.1).`,
+    );
+  }
+  const availableSigners: Array<{
+    role: BundleAnchorRole;
+    party: SigningSessionParty;
+  }> = [
+    ...(buyerSigner ? [{ role: "buyer" as const, party: buyerSigner }] : []),
+    ...(sellerSigner ? [{ role: "seller" as const, party: sellerSigner }] : []),
+    ...(orchestratorSigner
+      ? [{ role: "orchestrator" as const, party: orchestratorSigner }]
+      : []),
+  ];
+  if (availableSigners.length === 0) {
+    throw new DacsError(
+      "a DACS-5 abort bundle requires at least one session-role signature (§10.11).",
+    );
   }
   const parties: BundleParty[] = [
     { role: "buyer", bundleHash: buyer.bundleHash, primaryClaim: buyer.primaryClaim },
@@ -332,23 +357,24 @@ export async function buildTwoSidedBundle(
     );
   }
 
+  const fullySigned =
+    buyerSigner !== undefined &&
+    sellerSigner !== undefined &&
+    (!orchestrator || orchestratorSigner !== undefined);
   const singlePartyAbort =
-    SINGLE_SIGNATURE_PERMITTED.has(outcome) &&
-    Number(Boolean(buyerSigner)) + Number(Boolean(sellerSigner)) === 1;
-  const singleSignerRole: BundleAnchorRole | undefined = singlePartyAbort
-    ? buyerSigner
-      ? "buyer"
-      : "seller"
+    SINGLE_SIGNATURE_PERMITTED.has(outcome) && availableSigners.length === 1;
+  if (!fullySigned && !singlePartyAbort) {
+    throw new DacsError(
+      `outcome "${outcome}" has an incomplete signer set: terminal copies must be fully signed, ` +
+        "or carry exactly one role-owner signature for an abort (§10.4.1/§10.11).",
+    );
+  }
+  const singleSignerRole = singlePartyAbort
+    ? availableSigners[0]!.role
     : undefined;
   if (singleSignerRole && faultedParty === singleSignerRole) {
     throw new DacsError(
       "single-signed abort must name a non-signer as faultedParty (§10.11 suppression).",
-    );
-  }
-  if (singlePartyAbort && orchestrator) {
-    throw new DacsError(
-      "single-signed abort with a distinct orchestrator is not supported by this helper; " +
-        "omit the orchestrator or provide both buyer and seller signatures.",
     );
   }
   const bodyFor = (role: BundleAnchorRole) => ({
@@ -370,18 +396,12 @@ export async function buildTwoSidedBundle(
     finalisedAt: session.finalisedAt,
   }) as unknown as FaultAttestationBundle;
 
-  const signers: SigningSessionParty[] = [
-    ...(buyerSigner ? [buyerSigner] : []),
-    ...(sellerSigner ? [sellerSigner] : []),
-    ...(orchestrator ? [orchestrator] : []),
-  ];
+  const signers = availableSigners.map(({ party }) => party);
   const roles: BundleAnchorRole[] = singlePartyAbort
-    ? buyerSigner
-      ? ["buyer"]
-      : ["seller"]
+    ? [singleSignerRole!]
     : [
         "buyer",
-        ...(sellerSigner ? (["seller"] as const) : []),
+        "seller",
         ...(orchestrator ? (["orchestrator"] as const) : []),
       ];
 

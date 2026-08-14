@@ -44,6 +44,7 @@ Rails and verification recipes are resolved from **steward-signed registries** (
 ```ts
 import {
   createAgent,
+  createInMemoryBindingStore,
   createX402Rail,
   x402Settle,
   resolveRecipe,
@@ -51,7 +52,10 @@ import {
   verifyCompositeVerificationRecord,
 } from "@kynesyslabs/dacs";
 
-const agent = await createAgent({
+// A production deployment supplies a well-known/catalog-backed implementation.
+// This in-memory store is suitable only for a same-process example or tests.
+const bindings = createInMemoryBindingStore();
+const seller = await createAgent({
   demosRpc,
   wallet,
   identity: { agentId },
@@ -64,18 +68,46 @@ const agent = await createAgent({
       expectedVetClosureForBundle(bundle),
       vetVerificationDeps,
     ),
+  bindings: { index: bindings, publisher: bindings },
 });
 
 // seller — sign + anchor a normative DACS-1 §6.3.4 ListingDraft. `spec`
 // carries seller.identity/displayName/publicEndpoint, offering, buyerRequirement,
 // pipeline, pricing, acceptedRails, terms, and validity; see hello-world.ts.
-const { ref } = await agent.publishListing(spec);
+const published = await seller.publishListing(spec);
+if (
+  published.status !== "published" &&
+  published.status !== "already-published"
+) {
+  throw new Error(`listing binding was not published: ${published.status}`);
+}
 
-// buyer — discovery identifies normative vs explicit legacy-read artifacts.
-const [{ ref: listingRef, compatibility }] = await agent.discover([ref]);
-if (compatibility !== "normative") throw new Error("legacy Listing refused");
+// A read-only Directory can omit both wallet and publisher. A session-capable
+// buyer supplies its own wallet but still needs only the consumer index.
+const buyer = await createAgent({
+  demosRpc,
+  wallet: buyerWallet,
+  identity: { agentId: buyerId },
+  bindings: { index: bindings },
+});
+
+// buyer — resolve the stable logical address and authenticate its binding tuple,
+// signed content, seller, service, version, and Listing-domain signature.
+const resolved = await buyer.readListing(published.logicalAddress);
+if (
+  resolved.status !== "verified" ||
+  resolved.compatibility !== "normative"
+) {
+  throw new Error(`listing could not pass ordered admission: ${resolved.status}`);
+}
+
+// Or page the historical Listings published by one known seller. This is
+// owner-scoped discovery, not global marketplace search.
+const firstPage = await buyer.enumerateListings(agentId);
 const rail = await createX402Rail({ evmPrivateKey });
-const session = await agent.runSession(listingRef, {
+// Passing the authenticated result (not only `resolved.ref`) pins the selected
+// content hash across runSession's pre-payment re-read.
+const session = await buyer.runSession(resolved, {
   terms,
   // Record the buyer-selected cross-namespace EVM destination in the
   // buyer-signed legacy Agreement extension and durable recovery state.
@@ -136,16 +168,52 @@ const session = await agent.runSession(listingRef, {
 
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
 // and (through the configured callback above) every normative vet closure
-const verdict = await agent.verifyBundle(session.bundleRef);
-const rep = await agent.getReputation(primaryClaim, bundleRefs);
+const verdict = await buyer.verifyBundle(session.bundleRef);
+const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
 
 `session.listingPin` is the exact DACS-1 §6.3.4 LR-1
-`(listingId, listingVersion, contentHash)` tuple used by the session. To resume an
-interrupted session, pass the prior `jobId` to `runSession`; anchored artifacts
-are reused. No-repayment across a whole-process crash additionally requires a
-durable `sessionStore` and a rail-idempotent `resumeSettlement` implementation—a
-job id alone cannot prove whether a lost rail response moved value.
+`(listingId, listingVersion, contentHash)` tuple used by the session. To resume
+an interrupted session safely, pass the prior `jobId` and the same authenticated
+Listing to `runSession`; anchored artifacts are reused and the Listing remains
+pinned. No-repayment across a whole-process crash additionally requires a durable
+`sessionStore` and a rail-idempotent `resumeSettlement` implementation—a job id
+alone cannot prove whether a lost rail response moved value. The legacy native-ref
+input remains available for callers with a separate trusted pin.
+
+`publishListing` requires `AgentConfig.wallet` and
+`AgentConfig.bindings.publisher`, and fails before anchoring when either write
+authority is absent. Its top-level `ref` exists only on a `published` or
+`already-published` result. On conflict or indeterminate, retain
+`publication.anchor` and retry the same listing; never create a replacement
+anchor. These success statuses mean the publisher acknowledged the exact binding
+and the configured index read it back; they do not by themselves prove portable
+anchor finality, active-listing eligibility, or complete DACS conformance.
+
+`readListing(logicalAddress)` and `enumerateListings(sellerId)` need only
+`AgentConfig.bindings.index`; the Agent wallet and publisher are optional for a
+read-only consumer. A normative `verified` result has passed the SDK-owned
+ordered DACS-1 reader through step 9 and carries its exact `listingPin`; an
+`authenticated` result is restricted to the explicit historical legacy-read
+arm. Both have passed exact binding-tuple, hash, Listing-context, and authorship
+checks. The binding owner is an
+index assertion; direct lookup does not by itself prove that the seller deployed
+the native anchor. Keep physical provenance separate from signed-content and
+ordered-admission evidence.
+
+Enumeration pages one known seller's confirmed Demos create history. Its opaque
+cursor is owner-bound and at-least-once: `historyPageSize` counts raw history
+rows, a page can contain no Listings, and `nextCursor: null` means only that the
+current traversal reached its end. Upsert results idempotently by
+`(logicalAddress, contentHash, ref)`. Restart from a null cursor to see a binding
+repaired after its history page was already consumed. Global/category discovery
+still requires a production catalog.
+
+Handle enumeration results by status. A `page` may contain permanent candidate
+`diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
+it returns no Listings or diagnostics, and the caller retries its unchanged
+`retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
+`historyPageSize`, when supplied, must be an integer from 1 through 100.
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 

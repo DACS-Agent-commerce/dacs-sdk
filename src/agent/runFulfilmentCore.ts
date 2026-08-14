@@ -34,6 +34,7 @@ import {
   isSellerFulfilmentHandoff,
   isValidSellerReceiptClaim,
   sellerFulfilmentCandidateHash,
+  sellerPreparedArtifactHash,
   type SellerFulfilmentReceiptStore,
   type SellerFulfilmentHandoff,
   type SellerFulfilmentHandoffEnvelope,
@@ -43,6 +44,7 @@ import {
   type SellerReceiptClaim,
 } from "../seller/paymentIntake.js";
 import {
+  SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
   isSellerFulfilmentAuditSource,
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
@@ -61,9 +63,6 @@ const ENTITLEMENT_SEPARATOR =
   "dacs-entitlement:v1:" as const satisfies DomainSeparator;
 const PAYLOAD_ATTESTATION_SEPARATOR =
   "dacs-payload-attestation:v1:" as const satisfies DomainSeparator;
-/** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
-const AUDIT_SOURCE_COMMITMENT_SEPARATOR =
-  "dacs-x-seller-fulfilment-audit-source:v1:" as const;
 
 /** Artifact-local §B.2 scope: these records omit only singular `signature`. */
 function singularSignatureScope(record: Record<string, unknown>): Record<string, unknown> {
@@ -941,7 +940,7 @@ function isAgreementValue(value: unknown): value is SellerFulfilmentAgreement {
 }
 
 function isListingValue(value: unknown): value is SellerFulfilmentListing {
-  return isRecord(value) && hasOnlyKeys(value, [
+  return isRecord(value) && hasExactJcsView(value) && hasOnlyKeys(value, [
     "pin", "sellerPrimaryClaim", "buyerRequirement", "pipeline", "deliverable",
   ]) && isListingRefValue(value.pin) && isNonEmpty(value.sellerPrimaryClaim) &&
     isBundleRequirement(value.buyerRequirement) &&
@@ -1022,28 +1021,6 @@ export function sellerFulfilmentId(input: {
   }));
 }
 
-function preparedArtifactHash(artifact: SellerDeliveredArtifact): string {
-  if (artifact.kind !== "deliver-attested-payload") {
-    return sha256Hex(canonicalize(artifact));
-  }
-  if (!(artifact.cleartextBytes instanceof Uint8Array) ||
-      !(artifact.anchoredValue instanceof Uint8Array)) {
-    throw new TypeError("attested-payload candidate bytes are missing");
-  }
-  return sha256Hex(canonicalize({
-    kind: artifact.kind,
-    cleartextBytes: {
-      length: artifact.cleartextBytes.byteLength,
-      sha256: sha256Hex(artifact.cleartextBytes),
-    },
-    anchoredValue: {
-      length: artifact.anchoredValue.byteLength,
-      sha256: sha256Hex(artifact.anchoredValue),
-    },
-    attestationRef: artifact.attestationRef,
-  }));
-}
-
 function sameFulfilmentHandoff(
   left: SellerFulfilmentHandoff,
   right: SellerFulfilmentHandoff,
@@ -1065,6 +1042,7 @@ function sameFulfilmentHandoff(
     "deliverableSpecHash",
     "agreementViewHash",
     "validationFloorAt",
+    "deliveryInvokedAt",
   ] as const;
   if (scalarKeys.some((key) => left[key] !== right[key]) ||
       !exact(left.evidenceAuthority, right.evidenceAuthority) ||
@@ -1133,6 +1111,8 @@ function handoffBindingViolation(
         authorization.evidenceInput.observedAt,
       ) ||
       handoff.validationFloorAt > handoff.candidate.validatedAt ||
+      handoff.deliveryInvokedAt < handoff.validationFloorAt ||
+      handoff.deliveryInvokedAt > handoff.candidate.validatedAt ||
       handoff.evidenceAuthority.primaryClaim !== evidenceSigner.signer ||
       handoff.evidenceAuthority.algorithm !== evidenceSigner.algorithm) {
     return "retained fulfilment handoff does not bind the exact authorization, request, and deliverable";
@@ -1681,6 +1661,138 @@ function auditSourceViolation(
     return "audit source payment evidence does not exactly match the retained authorization";
   }
   return null;
+}
+
+/**
+ * Re-run the complete #120 pre-delivery SessionRecord and provenance checks
+ * against independently verified Agreement and Listing views. Durable recovery
+ * and finalization use this seam instead of treating a signed source envelope
+ * as authority for its own parties, pipeline, or artifact inventory.
+ */
+export function sellerFulfilmentAuditSourceViolation(
+  source: unknown,
+  authorization: SellerPaymentAuthorization,
+  agreement: SellerFulfilmentAgreement,
+  listing: SellerFulfilmentListing,
+  request: SellerFulfilmentRequest,
+  deliveryPhaseIndex: number,
+  expectedCommitmentAddress: string,
+): string | null {
+  if (!isAgreementValue(agreement)) {
+    return "independently verified Agreement view is malformed";
+  }
+  if (!isListingValue(listing)) {
+    return "independently verified Listing view is malformed";
+  }
+  if (!isSellerFulfilmentAuditSource(source)) {
+    return "audit source is not the strict versioned operational provenance shape";
+  }
+  if (agreement.artifactKind !== "payee-bound" ||
+      agreement.ref !== request.agreementRef ||
+      agreement.contentHash !== request.agreementHash ||
+      agreement.contentHash !== authorization.agreementHash ||
+      agreement.jobId !== authorization.jobId ||
+      agreement.commitment.status !== "finalized" ||
+      agreement.commitment.ref !== request.commitmentRef ||
+      agreement.commitment.ref !== authorization.commitment.ref ||
+      agreement.commitment.ref !== expectedCommitmentAddress ||
+      agreement.commitment.agreementHash !== request.agreementHash ||
+      agreement.commitment.recordContentHash !== authorization.commitment.contentHash ||
+      agreement.commitment.finalizedAt !== authorization.commitment.finalizedAt ||
+      agreement.commitment.signer !== authorization.commitment.signer ||
+      authorization.evidenceInput.observedAt < agreement.commitment.finalizedAt ||
+      !pinsEqual(agreement.listingPin, authorization.listingRef)) {
+    return "Agreement does not bind the exact authorization and finalized commitment";
+  }
+  if (!pinsEqual(listing.pin, agreement.listingPin) ||
+      listing.sellerPrimaryClaim !== agreement.seller.primaryClaim ||
+      listing.deliverable.kind === "external") {
+    return "Listing does not bind the exact Agreement pin, seller, and supported deliverable";
+  }
+  const spec = listing.deliverable;
+  const specViolation = validateSpec(spec);
+  let specHash: string;
+  try {
+    specHash = sha256Hex(canonicalize(spec));
+  } catch {
+    return "Listing DeliverableSpec is not canonicalizable";
+  }
+  const schemaUrl = spec.kind === "storage-program" ? spec.schemaUrl : undefined;
+  if (specViolation || agreement.deliverableRef.deliverableType !== spec.kind ||
+      agreement.deliverableRef.hash !== specHash ||
+      agreement.deliverableRef.schemaUrl !== schemaUrl) {
+    return specViolation ?? "Agreement does not hash-bind the exact Listing DeliverableSpec";
+  }
+  const expectedPhase = phaseFor(spec.kind);
+  const deliveryIndices = listing.pipeline
+    .map((step, index) => step.kind.startsWith("deliver-") ? index : -1)
+    .filter((index) => index >= 0);
+  const paymentIndices = listing.pipeline
+    .map((step, index) => step.kind.startsWith("pay-") ? index : -1)
+    .filter((index) => index >= 0);
+  if (deliveryIndices.length !== 1 || deliveryIndices[0] !== deliveryPhaseIndex ||
+      listing.pipeline[deliveryPhaseIndex]?.kind !== expectedPhase) {
+    return "pipeline does not contain exactly one bound delivery phase";
+  }
+  if (paymentIndices.length !== 1 || paymentIndices[0] !== authorization.phaseIndex ||
+      authorization.phaseIndex >= deliveryPhaseIndex ||
+      listing.pipeline[authorization.phaseIndex]?.kind !== authorization.evidenceInput.phase ||
+      listing.pipeline[authorization.phaseIndex]?.parameters?.rail !== authorization.railId) {
+    return "pipeline does not contain exactly one authorization-bound prior payment";
+  }
+  const requestHasProducerAdmission = Object.prototype.hasOwnProperty.call(
+    request,
+    "payloadVerificationProducerAdmission",
+  );
+  const authorizationHasProducerAdmission = Object.prototype.hasOwnProperty.call(
+    authorization,
+    "payloadVerificationProducerAdmission",
+  );
+  if (spec.kind !== "attested-payload") {
+    if (requestHasProducerAdmission || authorizationHasProducerAdmission) {
+      return "DPA producer admission is forbidden for non-attested deliverables";
+    }
+  } else {
+    const requestAdmission = request.payloadVerificationProducerAdmission;
+    const retainedAdmission = authorization.payloadVerificationProducerAdmission;
+    if (!requestHasProducerAdmission || !authorizationHasProducerAdmission ||
+        !isProducerAdmissionValue(requestAdmission) ||
+        !isProducerAdmissionValue(retainedAdmission)) {
+      return "attested-payload fulfilment lacks its exact pre-commit DPA-1 admission";
+    }
+    let verificationMethodHash: string;
+    try {
+      verificationMethodHash = sha256Hex(canonicalize(spec.verificationMethod!));
+    } catch {
+      return "DPA-1 verification method is not canonicalizable";
+    }
+    if (!exact(requestAdmission, retainedAdmission) ||
+        !pinsEqual(retainedAdmission.listingRef, listing.pin) ||
+        retainedAdmission.verificationMethodKind !== spec.verificationMethod!.kind ||
+        retainedAdmission.verificationMethodHash !== verificationMethodHash ||
+        retainedAdmission.deliverableSpecHash !== specHash ||
+        retainedAdmission.admittedAt > agreement.commitment.finalizedAt) {
+      return "DPA-1 admission does not bind the Listing, method, spec, and pre-commit time";
+    }
+  }
+  const sessionViolation = sessionRecordViolation(
+    source.session,
+    authorization,
+    agreement,
+    listing,
+    deliveryPhaseIndex,
+    expectedCommitmentAddress,
+  );
+  return sessionViolation ?? auditSourceViolation(
+    source,
+    source.session,
+    authorization,
+    agreement,
+    listing,
+    request,
+    deliveryPhaseIndex,
+    expectedCommitmentAddress,
+  );
 }
 
 function anchorReceiptBinding(
@@ -2533,7 +2645,7 @@ async function verifyAuditSourceCommitment(
     input = {
       commitment: structuredClone(commitment),
       signedBytes: signedBytes(
-        AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+        SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
         auditSourceCommitmentHash(commitment),
       ),
       signature: structuredClone(commitment.signature),
@@ -2603,7 +2715,7 @@ async function signAuditSourceCommitment(
   let contextBefore: string;
   try {
     bytes = signedBytes(
-      AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+      SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
       auditSourceCommitmentHash(unsigned),
     );
     expectedBytes = bytes.slice();
@@ -3415,6 +3527,7 @@ async function runFulfilmentCoreInner(
     | undefined;
   let preparationFailureReason: string | undefined;
   let preparationValidatedAt: number | undefined;
+  let deliveryInvokedAt: number | undefined;
   let retainedPreparedCandidate:
     | Extract<SellerFulfilmentHandoff["candidate"], { status: "prepared" }>
     | undefined;
@@ -3441,6 +3554,7 @@ async function runFulfilmentCoreInner(
       });
     }
     preparationValidatedAt = retainedHandoff.candidate.validatedAt;
+    deliveryInvokedAt = retainedHandoff.deliveryInvokedAt;
     if (retainedHandoff.candidate.status === "preparation-failed") {
       preparationFailureReason = retainedHandoff.candidate.reason;
     } else {
@@ -3514,7 +3628,7 @@ async function runFulfilmentCoreInner(
       preparedArtifact = retainedDelivery.artifact as SellerDeliveredArtifact;
       preparedValidation = validation;
       try {
-        preparedArtifactBinding = preparedArtifactHash(preparedArtifact);
+        preparedArtifactBinding = sellerPreparedArtifactHash(preparedArtifact);
       } catch (error) {
         return indeterminate("payment-permit-store-invalid", [
           `retained fulfilment candidate identity is invalid: ${String(error)}`,
@@ -3548,6 +3662,7 @@ async function runFulfilmentCoreInner(
         "delivery clock precedes the finalized commitment, payment observation, or SessionRecord",
       ], { fulfilmentId: id, safeToRetryDelivery: true });
     }
+    deliveryInvokedAt = preparationStartedAt;
     let rawPreparation: unknown;
     const preparationInput = {
       fulfilmentId: id,
@@ -3673,7 +3788,7 @@ async function runFulfilmentCoreInner(
           preparedArtifact = preparedDelivery.artifact as SellerDeliveredArtifact;
           preparedValidation = validation;
           try {
-            preparedArtifactBinding = preparedArtifactHash(preparedArtifact);
+            preparedArtifactBinding = sellerPreparedArtifactHash(preparedArtifact);
           } catch (error) {
             preparationFailureReason = `prepared delivery identity is invalid: ${String(error)}`;
             preparedArtifact = undefined;
@@ -3703,7 +3818,7 @@ async function runFulfilmentCoreInner(
 
   let proposedHandoff: SellerFulfilmentHandoffEnvelope | undefined;
   if (inspection.status === "available") {
-    if (preparationValidatedAt === undefined) {
+    if (preparationValidatedAt === undefined || deliveryInvokedAt === undefined) {
       return indeterminate("delivery-preparation-invalid", [
         "delivery preparation did not produce a durable validation time",
       ], { fulfilmentId: id, safeToRetryDelivery: true });
@@ -3743,9 +3858,18 @@ async function runFulfilmentCoreInner(
         commitmentVersion: "1",
         fulfilmentId: id,
         jobId: authorization.jobId,
+        agreementRef: request.agreementRef,
+        agreementHash: authorization.agreementHash,
+        commitmentRef: request.commitmentRef,
         authorizationHash,
+        paymentPhaseIndex: authorization.phaseIndex,
+        deliveryPhaseIndex: request.deliveryPhaseIndex,
+        phase,
+        logicalAddress,
+        deliverableSpecHash: specHash,
         auditSourceHash,
         candidateHash: sellerFulfilmentCandidateHash(candidate),
+        deliveryInvokedAt,
       },
       auditSourceCommitmentSigner,
       requiredEvidenceSigner,
@@ -3773,6 +3897,7 @@ async function runFulfilmentCoreInner(
       deliverableSpecHash: specHash,
       agreementViewHash,
       validationFloorAt: minimumDeliveryTime,
+      deliveryInvokedAt,
       evidenceAuthority: {
         primaryClaim: requiredEvidenceSigner,
         algorithm: evidenceSigner.algorithm,
