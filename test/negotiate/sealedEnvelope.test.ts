@@ -8,7 +8,7 @@ import {
   type SealedEnvelopeDeps,
   type SealedEnvelopeInput,
 } from "../../src/negotiate/sealedEnvelope.js";
-import { isAgreementDocument } from "../../src/artifacts/validators.js";
+import { isLegacyMvpAgreementDocument as isAgreementDocument } from "../../src/artifacts/legacyMvp.js";
 import {
   makeCommitment,
   type AnchoredCommit,

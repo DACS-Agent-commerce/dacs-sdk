@@ -1,13 +1,17 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { buildAgent } from "../../src/agent/Agent.js";
-import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
   signComponentArtifact,
   verifyComponentSignature,
 } from "../../src/artifacts/signatures.js";
-import { contentHash, stripSignature } from "../../src/canonical/index.js";
+import {
+  contentHash,
+  listingAddress,
+  logicalToStorageProgramName,
+  stripSignature,
+} from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -41,6 +45,12 @@ function memAdapter(options: { failBundleOnce?: boolean } = {}) {
   const store = new Map<string, Record<string, unknown>>();
   let bundleFailed = false;
   const getPublicKey = vi.fn(async () => Uint8Array.from(buyerPublicKey));
+  const resolveAnchorByName = vi.fn(async (name: string) => {
+    const address = `stor:${name}`;
+    return store.has(address)
+      ? { status: "present" as const, address }
+      : { status: "absent" as const };
+  });
   const maybeFailBundle = (name: string) => {
     if (
       options.failBundleOnce &&
@@ -76,14 +86,9 @@ function memAdapter(options: { failBundleOnce?: boolean } = {}) {
     // addresses are deterministic (`stor:<name>`), so resolution is a lookup.
     getAddress: () => buyerDid,
     getPublicKey,
-    resolveAnchorByName: async (name: string) => {
-      const address = `stor:${name}`;
-      return store.has(address)
-        ? { status: "present" as const, address }
-        : { status: "absent" as const };
-    },
+    resolveAnchorByName,
   } as unknown as SubstrateAdapter;
-  return { adapter, store, getPublicKey };
+  return { adapter, store, getPublicKey, resolveAnchorByName };
 }
 
 const TERMS = {
@@ -169,6 +174,10 @@ async function anchorListing(
     },
   );
   store.set("stor:listing", signed as Record<string, unknown>);
+  store.set(
+    `stor:${logicalToStorageProgramName(listingAddress(agentId, "svc", 1))}`,
+    signed as Record<string, unknown>,
+  );
   return "stor:listing";
 }
 
@@ -546,26 +555,61 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const buyerPriv = privateKeyFromSeed(buyerSeed);
     const buyerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(buyerSeed))).toString("hex");
     const normativeBuyerDid = `did:demos:agent:${buyerHex}`;
-    const agreement = await buildSignedArtifact(
-      {
-        jobId: "normative-ref-job",
-        pattern: "fixed-price",
-        buyer: normativeBuyerDid,
-        seller: sellerDid,
-        listingRef,
-        price: TERMS.price,
-        delivery: { phase: TERMS.deliveryPhase, format: TERMS.deliveryFormat },
-        expiresAt: "2026-08-10T12:00:00.000Z",
+    const agreement = {
+      agreementVersion: "1",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+      listingRef: {
+        listingId: "svc",
+        version: 1,
+        contentHash: contentHash(stripSignature(listing)),
       },
-      ARTIFACT_SEPARATORS.AgreementDocument,
-      (bytes) => ed25519Sign(bytes, buyerPriv),
-    );
+      parties: [
+        {
+          role: "buyer",
+          bundleHash: "a".repeat(64),
+          primaryClaim: normativeBuyerDid,
+          vetRecordRef: {
+            anchor: { kind: "storage-program", locator: "stor:buyer-vet" },
+            contentHash: "c".repeat(64),
+          },
+        },
+        {
+          role: "seller",
+          bundleHash: "b".repeat(64),
+          primaryClaim: sellerDid,
+          vetRecordRef: {
+            anchor: { kind: "storage-program", locator: "stor:seller-vet" },
+            contentHash: "d".repeat(64),
+          },
+        },
+      ],
+      terms: {
+        deliverable: { deliverableType: "attested-payload", hash: "e".repeat(64) },
+        price: { amount: "1", currency: "USDC" },
+        rail: { railId: "x402:default" },
+        deadline: 1786366800000,
+      },
+      derivedFromPattern: "fixed-price",
+      generatedAt: 1786363200000,
+      signatures: [
+        {
+          party: normativeBuyerDid,
+          algorithm: "ed25519",
+          value: Buffer.alloc(64, 7).toString("base64url"),
+        },
+        {
+          party: sellerDid,
+          algorithm: "ed25519",
+          value: Buffer.alloc(64, 8).toString("base64url"),
+        },
+      ],
+    };
     store.set("stor:agreement", agreement as Record<string, unknown>);
 
     const unsigned = {
       faultBundleVersion: "1" as const,
       faultedParty: "none" as const,
-      jobId: "normative-ref-job",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
       outcome: "completed" as const,
       anchoredByRole: "buyer" as const,
       listingRef: {
@@ -615,5 +659,76 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     await expect(agent.getReputation(normativeBuyerDid, ["stor:bundle"]))
       .resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
+  });
+
+  test("public verifyBundle owner-resolves a normative pre-commit abort Listing", async () => {
+    const { adapter, store, resolveAnchorByName } = memAdapter();
+    const listingAddressRef = await anchorListing(store);
+    const listing = store.get(listingAddressRef)!;
+    const listingRef = {
+      listingId: "svc",
+      version: 1,
+      contentHash: contentHash(stripSignature(listing)),
+    };
+    const unsigned = {
+      bundleVersion: "1" as const,
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+      outcome: "aborted-by-self" as const,
+      anchoredByRole: "buyer" as const,
+      listingRef,
+      cancellation: { claimedPolicy: "pre-commit" },
+      parties: [
+        {
+          role: "buyer" as const,
+          bundleHash: "a".repeat(64),
+          primaryClaim: buyerDid,
+        },
+        {
+          role: "seller" as const,
+          bundleHash: "b".repeat(64),
+          primaryClaim: sellerDid,
+        },
+      ],
+      phaseSummary: [],
+      vetRecords: [],
+      settlementEvidence: [],
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+      finalisedAt: 1786363200000,
+    };
+    const signedScope: Record<string, unknown> = { ...unsigned };
+    delete signedScope.anchoredByRole;
+    const signature = ed25519Sign(
+      signedBytes(
+        ARTIFACT_SEPARATORS.AttestationBundle,
+        contentHash(signedScope),
+      ),
+      buyerPriv,
+    );
+    store.set("stor:pre-commit-bundle", {
+      ...unsigned,
+      signatures: [
+        {
+          party: buyerDid,
+          algorithm: "ed25519",
+          value: Buffer.from(signature).toString("base64url"),
+        },
+      ],
+    });
+
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    const result = await agent.verifyBundle("stor:pre-commit-bundle");
+    expect(result.ok).toBe(true);
+    expect(
+      result.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
+    ).toBe("ok");
+    expect(resolveAnchorByName).toHaveBeenCalledWith(
+      logicalToStorageProgramName(listingAddress(sellerDid, "svc", 1)),
+      sellerHex,
+    );
   });
 });

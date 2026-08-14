@@ -196,6 +196,13 @@ export type DeliverableSpec =
       verificationMethod?: VerificationMethod;
     };
 
+/** DACS-4 §9.3 content-addressed reference to the pinned Listing deliverable. */
+export interface DeliverableRef {
+  deliverableType: DeliverableSpec["kind"];
+  hash: string;
+  schemaUrl?: string;
+}
+
 /** DACS-4 §9.3 reference to one accepted payment rail. */
 export interface PaymentRailRef {
   railId: string;
@@ -356,17 +363,116 @@ export interface CompositeVerificationRecord {
   signature?: ComponentSignature;
 }
 
-/** DACS-3 — the agreed terms of a transaction. */
-export interface AgreementDocument {
-  jobId: string;
-  pattern: string;
-  buyer: string;
-  seller: string;
-  listingRef: string;
-  price: Price;
-  delivery: Delivery;
-  expiresAt: string;
+/** DACS-3 §8.5 party bound into an AgreementArtifact. */
+export interface AgreementParty {
+  role: "buyer" | "seller" | "bidder-non-winning";
+  bundleHash: string;
+  primaryClaim: ClaimRef;
+  vetRecordRef: AttestationRef;
+  encryptionKey?: string;
 }
+
+/** DACS-3 §8.5.1 signature over the selected agreement-domain payload. */
+export interface AgreementSignature {
+  party: ClaimRef;
+  algorithm: ComponentSignatureAlgorithm;
+  value: string;
+}
+
+/** DACS-3 §8.5 payout binding used only by PayeeBoundAgreementDocument. */
+export interface PayoutBinding {
+  railId: string;
+  phaseIndex: number;
+  payeeAddress: string;
+}
+
+export interface PriceAnchor {
+  asset: string;
+  quoteCurrency: string;
+  price: string;
+  attestationRef: AttestationRef;
+  observedAt: number;
+  sourceUrl: string;
+}
+
+export type FeeRecurrencePeriod =
+  | "daily"
+  | "weekly"
+  | "monthly"
+  | "quarterly"
+  | "annual"
+  | { everySeconds: number };
+
+interface FeeItemBase {
+  kind: "network" | "platform" | "processing" | "spread" | "subscription" | "other";
+  collector: ClaimRef | "substrate";
+  label?: string;
+  toleranceBps?: number;
+  recurrence?: {
+    period: FeeRecurrencePeriod;
+    count?: number;
+    until?: number;
+  };
+}
+
+export type FeeItem = FeeItemBase &
+  (
+    | { fixed: PriceTerm; rateBps?: never }
+    | { fixed?: never; rateBps: number }
+  );
+
+export interface FeeSchedule {
+  priceBasis: "inclusive" | "exclusive";
+  items: FeeItem[];
+  oneOffTotal: PriceTerm;
+  recurringTotal?: PriceTerm;
+  minimumTermSeconds?: number;
+  earlyTerminationFee?: FeeItem;
+  disclosureNote?: string;
+}
+
+export interface AgreementTerms {
+  deliverable: DeliverableRef;
+  price: PriceTerm;
+  meteredQuantity?: { quantity: string; unit: string };
+  rail?: PaymentRailRef;
+  deadline: number;
+  priceAnchor?: PriceAnchor;
+  feeSchedule?: FeeSchedule;
+  additionalTerms?: Record<string, unknown>;
+}
+
+export interface PayeeBoundAgreementTerms extends AgreementTerms {
+  payoutBindings: PayoutBinding[];
+}
+
+/** Exact legacy agreement artifact selected by `commit-agreement` (DACS-3 §8.5). */
+export interface AgreementDocument {
+  agreementVersion: "1";
+  jobId: string;
+  listingRef: ListingPin;
+  parties: AgreementParty[];
+  terms: AgreementTerms;
+  derivedFromPattern: "fixed-price" | "rfq" | "sealed-envelope";
+  derivedFromChannel?: { subnet: string; lastMessageHash: string };
+  generatedAt: number;
+  signatures: AgreementSignature[];
+}
+
+/** Minor-safe payee-bound agreement selected by `commit-payee-bound-agreement`. */
+export interface PayeeBoundAgreementDocument {
+  payeeBoundAgreementVersion: "1";
+  jobId: string;
+  listingRef: ListingPin;
+  parties: AgreementParty[];
+  terms: PayeeBoundAgreementTerms;
+  derivedFromPattern: "fixed-price" | "rfq" | "sealed-envelope";
+  derivedFromChannel?: { subnet: string; lastMessageHash: string };
+  generatedAt: number;
+  signatures: AgreementSignature[];
+}
+
+export type AgreementArtifact = AgreementDocument | PayeeBoundAgreementDocument;
 
 /** DACS-2 §7.5.2 — the closed set of normative attestation anchor kinds. */
 export type AttestationAnchorKind = "storage-program" | "ipfs" | "https";
@@ -740,6 +846,7 @@ export type ArtifactKind =
   | "Listing"
   | "CompositeVerificationRecord"
   | "AgreementDocument"
+  | "PayeeBoundAgreementDocument"
   | "SettlementEvidence"
   | "AttestationBundle"
   | "FaultAttestationBundle";

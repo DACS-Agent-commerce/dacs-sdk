@@ -14,6 +14,7 @@ import {
   isCompositeVerificationRecord,
   isListing,
   isLegacyMvpListing,
+  isPayeeBoundAgreementDocument,
   isPricingSpec,
   isSettlementEvidence,
 } from "../../src/index.js";
@@ -46,6 +47,7 @@ const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
   Listing: isListing,
   CompositeVerificationRecord: isCompositeVerificationRecord,
   AgreementDocument: isAgreementDocument,
+  PayeeBoundAgreementDocument: isPayeeBoundAgreementDocument,
   SettlementEvidence: isSettlementEvidence,
   AttestationBundle: isAttestationBundle,
   FaultAttestationBundle: isFaultAttestationBundle,
@@ -65,7 +67,9 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     }>;
   };
 
-  // CompositeVerificationRecord / AgreementDocument remain reduced MVP shapes.
+  // CompositeVerificationRecord remains reduced. The pinned happy-path
+  // Agreement signatures predate SIG-6 and use padded standard Base64; current
+  // agreement fidelity is covered by the dedicated DACS-3 tests.
   // The happy-path Listing fixture itself predates the Standard's SIG-6
   // unpadded-Base64URL rule and still carries padded standard Base64, so it is
   // not accepted as a current normative Listing. Listing fidelity is exercised
@@ -86,6 +90,8 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     const gapReason =
       kind === "Listing"
         ? " — PINNED VECTOR DEBT: padded pre-SIG-6 signature"
+        : kind === "AgreementDocument"
+          ? " — PINNED VECTOR DEBT: padded pre-SIG-6 signatures"
         : " — KNOWN GAP: reduced vs normative shape (#5)";
     runner(
       `${kind}: validator accepts the fixture${knownGap ? gapReason : ""}`,
