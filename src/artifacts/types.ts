@@ -619,6 +619,78 @@ export interface ComponentSignature {
   value: string;
 }
 
+/** Historical DACS-3 v0.1-v0.3 commitment. New producers MUST NOT emit it. */
+export interface CommitmentRecord {
+  dacsVersion: "1";
+  jobId: string;
+  agreementHash: string;
+  listingRef: ListingPin;
+  parties: ClaimRef[];
+  pattern: "fixed-price" | "rfq" | "sealed-envelope";
+  committedAt: number;
+}
+
+/** DACS-3 §8.6 v0.4 commitment; authoritative time comes from its receipt. */
+export interface FinalityCommitmentRecord {
+  finalityCommitmentVersion: "1";
+  jobId: string;
+  agreementHash: string;
+  listingRef: ListingPin;
+  parties: ClaimRef[];
+  pattern: "fixed-price" | "rfq" | "sealed-envelope";
+  createdAt: number;
+  signature: ComponentSignature;
+}
+
+export type AgreementCommitmentRecord =
+  | CommitmentRecord
+  | FinalityCommitmentRecord;
+
+export interface AnchorTransactionRef {
+  kind: string;
+  value: string;
+}
+
+export interface AnchorReceiptEvidence {
+  kind: string;
+  value: string;
+}
+
+export type AnchorLifecycleState =
+  | "submitted"
+  | "accepted"
+  | "included"
+  | "finalized"
+  | "rejected"
+  | "dropped"
+  | "replaced"
+  | "expired"
+  | "reorged";
+
+/** Portable CORE §5.1 immutable SR-2 lifecycle snapshot. */
+export interface AnchorReceipt {
+  receiptVersion: "1";
+  substrate: string;
+  finalityProfile: string;
+  logicalAddress: string;
+  nativeAddress: string;
+  contentHash: string;
+  transactionRef: AnchorTransactionRef;
+  writer: string;
+  nonce?: string;
+  state: AnchorLifecycleState;
+  observationDisposition: "established" | "indeterminate";
+  preservedReceiptHash?: string;
+  observedAt: number;
+  blockRef?: {
+    id: string;
+    height?: string;
+    timestamp?: number;
+  };
+  replacementTransactionRef?: AnchorTransactionRef;
+  evidence: AnchorReceiptEvidence;
+}
+
 /**
  * @deprecated Use {@link ComponentSignature}. Its broad `algorithm` field is
  * retained so existing consumers are not broken by introducing the foundation.

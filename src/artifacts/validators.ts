@@ -2,14 +2,18 @@ import type {
   AgreementDocument,
   AgreementArtifact,
   AgreementParty,
+  AgreementCommitmentRecord,
+  AnchorReceipt,
   AnyAttestationBundle,
   AttestationRef,
   AttestationBundle,
   ChainTxRef,
+  CommitmentRecord,
   BundleRequirement,
   CompositeVerificationRecord,
   DeliverableSpec,
   FaultAttestationBundle,
+  FinalityCommitmentRecord,
   IdentityBundle,
   LegacyMvpListing,
   Listing,
@@ -898,6 +902,200 @@ export function isPayeeBoundAgreementDocument(
 
 export function isAgreementArtifact(v: unknown): v is AgreementArtifact {
   return isAgreementDocument(v) || isPayeeBoundAgreementDocument(v);
+}
+
+const isCommitmentParties = (v: unknown): v is string[] =>
+  Array.isArray(v) &&
+  v.length >= 2 &&
+  v.every(isClaimRef) &&
+  new Set(v).size === v.length;
+
+const hasCommitmentCommon = (v: Record<string, unknown>): boolean =>
+  isNonEmptyStr(v.jobId) &&
+  isSha256(v.agreementHash) &&
+  isListingPin(v.listingRef) &&
+  isCommitmentParties(v.parties) &&
+  isOneOf(["fixed-price", "rfq", "sealed-envelope"], v.pattern);
+
+/** DACS-3 §8.6 CA-9 historical read arm. Never use this type for new writes. */
+export function isCommitmentRecord(v: unknown): v is CommitmentRecord {
+  return (
+    isObj(v) &&
+    hasOnlyKeys(v, [
+      "dacsVersion",
+      "jobId",
+      "agreementHash",
+      "listingRef",
+      "parties",
+      "pattern",
+      "committedAt",
+    ]) &&
+    v.dacsVersion === "1" &&
+    v.finalityCommitmentVersion === undefined &&
+    hasCommitmentCommon(v) &&
+    isSafeUint(v.committedAt)
+  );
+}
+
+/** Exact new-write DACS-3 §8.6 FinalityCommitmentRecord arm. */
+export function isFinalityCommitmentRecord(
+  v: unknown,
+): v is FinalityCommitmentRecord {
+  return (
+    isObj(v) &&
+    hasOnlyKeys(v, [
+      "finalityCommitmentVersion",
+      "jobId",
+      "agreementHash",
+      "listingRef",
+      "parties",
+      "pattern",
+      "createdAt",
+      "signature",
+    ]) &&
+    v.finalityCommitmentVersion === "1" &&
+    v.dacsVersion === undefined &&
+    hasCommitmentCommon(v) &&
+    isSafeUint(v.createdAt) &&
+    isComponentSignature(v.signature) &&
+    isObj(v.signature) &&
+    hasOnlyKeys(v.signature, ["algorithm", "signer", "value"]) &&
+    isClaimRef(v.signature.signer)
+  );
+}
+
+/**
+ * Forward-readable DACS-3 v0.x finality arm.
+ *
+ * Producers use {@link isFinalityCommitmentRecord}'s exact shape. Readers may
+ * accept additive optional fields from a later minor, but must reject the
+ * legacy discriminator and validate every known action-bearing field. The
+ * caller is responsible for hashing the complete received object (SIG-5).
+ */
+export function isReadableFinalityCommitmentRecord(
+  v: unknown,
+): v is FinalityCommitmentRecord {
+  return (
+    isObj(v) &&
+    v.finalityCommitmentVersion === "1" &&
+    !Object.prototype.hasOwnProperty.call(v, "dacsVersion") &&
+    !Object.prototype.hasOwnProperty.call(v, "signatures") &&
+    hasCommitmentCommon(v) &&
+    isSafeUint(v.createdAt) &&
+    isComponentSignature(v.signature) &&
+    isObj(v.signature) &&
+    isClaimRef(v.signature.signer)
+  );
+}
+
+export function isAgreementCommitmentRecord(
+  v: unknown,
+): v is AgreementCommitmentRecord {
+  return isCommitmentRecord(v) || isFinalityCommitmentRecord(v);
+}
+
+const ANCHOR_STATES = [
+  "submitted",
+  "accepted",
+  "included",
+  "finalized",
+  "rejected",
+  "dropped",
+  "replaced",
+  "expired",
+  "reorged",
+] as const;
+
+const isAnchorTransactionRef = (
+  v: unknown,
+  exactShape: boolean,
+): boolean =>
+  isObj(v) &&
+  (!exactShape || hasOnlyKeys(v, ["kind", "value"])) &&
+  isNonEmptyStr(v.kind) &&
+  isNonEmptyStr(v.value);
+
+function isAnchorReceiptShape(v: unknown, exactShape: boolean): v is AnchorReceipt {
+  if (
+    !isObj(v) ||
+    (exactShape &&
+      !hasOnlyKeys(v, [
+        "receiptVersion",
+        "substrate",
+        "finalityProfile",
+        "logicalAddress",
+        "nativeAddress",
+        "contentHash",
+        "transactionRef",
+        "writer",
+        "nonce",
+        "state",
+        "observationDisposition",
+        "preservedReceiptHash",
+        "observedAt",
+        "blockRef",
+        "replacementTransactionRef",
+        "evidence",
+      ])) ||
+    v.receiptVersion !== "1" ||
+    !isNonEmptyStr(v.substrate) ||
+    !isNonEmptyStr(v.finalityProfile) ||
+    !isNonEmptyStr(v.logicalAddress) ||
+    !isNonEmptyStr(v.nativeAddress) ||
+    !isSha256(v.contentHash) ||
+    !isAnchorTransactionRef(v.transactionRef, exactShape) ||
+    !isNonEmptyStr(v.writer) ||
+    (v.nonce !== undefined && !isNonEmptyStr(v.nonce)) ||
+    !isOneOf(ANCHOR_STATES, v.state) ||
+    !isOneOf(["established", "indeterminate"], v.observationDisposition) ||
+    !isSafeUint(v.observedAt) ||
+    !isAnchorTransactionRef(v.evidence, exactShape) ||
+    (v.replacementTransactionRef !== undefined &&
+      !isAnchorTransactionRef(v.replacementTransactionRef, exactShape))
+  ) {
+    return false;
+  }
+  if (
+    v.observationDisposition === "indeterminate" &&
+    v.preservedReceiptHash === undefined
+  ) {
+    return false;
+  }
+  if (
+    v.preservedReceiptHash !== undefined &&
+    !isSha256(v.preservedReceiptHash)
+  ) {
+    return false;
+  }
+  if (v.blockRef !== undefined) {
+    if (
+      !isObj(v.blockRef) ||
+      (exactShape && !hasOnlyKeys(v.blockRef, ["id", "height", "timestamp"])) ||
+      !isNonEmptyStr(v.blockRef.id) ||
+      (v.blockRef.height !== undefined &&
+        (!isStr(v.blockRef.height) || !/^(0|[1-9][0-9]*)$/.test(v.blockRef.height))) ||
+      (v.blockRef.timestamp !== undefined && !isSafeUint(v.blockRef.timestamp))
+    ) {
+      return false;
+    }
+  }
+  return (
+    !["included", "finalized"].includes(String(v.state)) ||
+    v.blockRef !== undefined
+  );
+}
+
+/** CORE §5.1 structural receipt gate; proof authentication remains binding-owned. */
+export function isAnchorReceipt(v: unknown): v is AnchorReceipt {
+  return isAnchorReceiptShape(v, true);
+}
+
+/**
+ * Forward-readable CORE v0.x receipt gate. Unknown additive fields are retained
+ * by the caller and authenticated by the binding-specific proof callback.
+ */
+export function isReadableAnchorReceipt(v: unknown): v is AnchorReceipt {
+  return isAnchorReceiptShape(v, false);
 }
 
 /** DACS-2 §7.5.2 exact AttestationRef wire shape. */

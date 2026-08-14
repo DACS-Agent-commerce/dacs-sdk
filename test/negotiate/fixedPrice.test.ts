@@ -7,11 +7,15 @@ import { describe, expect, test } from "vitest";
 import {
   ARTIFACT_SEPARATORS,
   canonicalize,
+  ceilMeteredQuantity,
   contentHash,
+  deriveMeteredPriceTerm,
   deriveFixedPriceAgreement,
   ed25519Sign,
   ed25519Verify,
   identityBundleHash,
+  generateCanonicalJobId,
+  isCanonicalJobId,
   isAgreementDocument,
   isPayeeBoundAgreementDocument,
   privateKeyFromSeed,
@@ -48,6 +52,29 @@ const PAYEE_BINDING_VECTORS = JSON.parse(
   ),
 ) as {
   vectors: Array<{ name: string; agreement: unknown }>;
+};
+
+const METERED_PRICING_VECTORS = JSON.parse(
+  readFileSync(
+    resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../vendor/DACS-Standard/conformance/vectors/security/metered-pricing-v0.3.json",
+    ),
+    "utf8",
+  ),
+) as {
+  vectors: Array<{
+    name: string;
+    surface: "agreement-validation" | "quantity-derivation";
+    expected: "accept" | "reject";
+    rawMeasurement?: string;
+    pricing?: Record<string, unknown>;
+    terms?: {
+      price?: { amount: string; currency: string };
+      meteredQuantity?: { quantity: string; unit: string };
+    };
+    want: Record<string, unknown>;
+  }>;
 };
 
 function vectorAgreement(name: string): unknown {
@@ -216,21 +243,142 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     );
   });
 
-  test("fails closed on auction and metered pricing", () => {
-    for (const pricing of [
-      { kind: "auction", selectionRule: "lowest-price" } as const,
-      {
-        kind: "metered",
-        unitPrice: { amount: "1", currency: "USDC" },
-        unit: "request",
-      } as const,
+  test("enforces and generates canonical uppercase ULID job ids", async () => {
+    expect(
+      generateCanonicalJobId({
+        timestamp: 0,
+        entropy: new Uint8Array(10),
+      }),
+    ).toBe("00000000000000000000000000");
+    const generated = generateCanonicalJobId({
+      timestamp: NOW,
+      entropy: Uint8Array.from({ length: 10 }, (_, index) => index),
+    });
+    expect(isCanonicalJobId(generated)).toBe(true);
+
+    for (const invalid of [
+      JOB_ID.toLowerCase(),
+      `8${JOB_ID.slice(1)}`,
+      `${JOB_ID.slice(0, -1)}I`,
+      JOB_ID.slice(1),
+      `${JOB_ID}0`,
+      "550e8400-e29b-41d4-a716-446655440000",
     ]) {
-      const unsupported = listing();
-      unsupported.pricing = pricing;
-      expect(() => deriveFixedPriceAgreement(input(unsupported))).toThrow(
-        /invalid wire shape|unsupported/,
-      );
+      expect(() =>
+        deriveFixedPriceAgreement({ ...input(), jobId: invalid }),
+      ).toThrow(/canonical uppercase ULID/);
     }
+
+    const nonCanonicalDraft = deriveFixedPriceAgreement(input());
+    nonCanonicalDraft.jobId = "550e8400-e29b-41d4-a716-446655440000";
+    let signerCalls = 0;
+    await expect(
+      signFixedPriceAgreement(
+        nonCanonicalDraft,
+        {
+          party: BUYER,
+          algorithm: "ed25519",
+          sign: () => {
+            signerCalls += 1;
+            return new Uint8Array(64);
+          },
+        },
+        {
+          party: SELLER,
+          algorithm: "ed25519",
+          sign: () => {
+            signerCalls += 1;
+            return new Uint8Array(64);
+          },
+        },
+      ),
+    ).rejects.toThrow(/canonical uppercase ULID/);
+    expect(signerCalls).toBe(0);
+  });
+
+  test("exposes a safe metered producer and matches every pinned MTR vector", () => {
+    const value = listing();
+    value.pricing = {
+      kind: "metered",
+      unitPrice: { amount: "1.25", currency: "USDC" },
+      unit: "request",
+      minTotal: { amount: "2", currency: "USDC" },
+    };
+    const draft = deriveFixedPriceAgreement({
+      ...input(value),
+      meteredQuantity: { quantity: "4", unit: "request" },
+    });
+    expect(draft.terms.price).toEqual({ amount: "5", currency: "USDC" });
+    expect(draft.terms.meteredQuantity).toEqual({
+      quantity: "4",
+      unit: "request",
+    });
+
+    let decisions = 0;
+    for (const vector of METERED_PRICING_VECTORS.vectors) {
+      if (vector.surface === "quantity-derivation") {
+        expect(
+          ceilMeteredQuantity(vector.rawMeasurement!),
+          vector.name,
+        ).toBe(vector.want.quantity);
+        decisions += 1;
+        continue;
+      }
+
+      const pricing = vector.pricing as Parameters<
+        typeof deriveMeteredPriceTerm
+      >[0];
+      const quantity = vector.terms?.meteredQuantity;
+      if (!quantity) {
+        const metered = listing();
+        metered.pricing = pricing;
+        expect(
+          () => deriveFixedPriceAgreement(input(metered)),
+          vector.name,
+        ).toThrow();
+        decisions += 1;
+        continue;
+      }
+
+      if (vector.expected === "accept") {
+        expect(
+          deriveMeteredPriceTerm(pricing, quantity),
+          vector.name,
+        ).toEqual(vector.terms?.price);
+      } else {
+        let derived: { amount: string; currency: string } | undefined;
+        let rejected = false;
+        try {
+          derived = deriveMeteredPriceTerm(pricing, quantity);
+        } catch {
+          rejected = true;
+        }
+        expect(
+          rejected || canonicalize(derived) !== canonicalize(vector.terms?.price),
+          vector.name,
+        ).toBe(true);
+      }
+      decisions += 1;
+    }
+    expect(decisions).toBe(METERED_PRICING_VECTORS.vectors.length);
+  });
+
+  test("fails closed on auction and incomplete metered pricing", () => {
+    const auction = listing();
+    auction.pricing = { kind: "auction", selectionRule: "lowest-price" };
+    expect(() => deriveFixedPriceAgreement(input(auction))).toThrow(
+      /invalid wire shape|unsupported/,
+    );
+
+    const metered = listing();
+    metered.pricing = {
+      kind: "metered",
+      unitPrice: { amount: "1", currency: "USDC" },
+      unit: "request",
+    };
+    expect(() => deriveFixedPriceAgreement(input(metered))).toThrow(
+      /missing-metered-quantity/,
+    );
   });
 
   test("hashes the complete anchored DeliverableSpec without signature stripping", () => {
