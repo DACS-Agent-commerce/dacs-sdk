@@ -20,6 +20,10 @@ import {
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
 import type { Signer } from "./signedArtifact.js";
+import {
+  resolveListingRails,
+  type ListingRailAuthorityInput,
+} from "./listingValidation.js";
 
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
@@ -79,6 +83,14 @@ export interface PublishListingDeps {
     name: string,
     value: object,
   ) => Promise<{ address: string; txRef?: string }>;
+  /**
+   * DACS-1 §6.3.4 LP-6 authenticated listing-time rail authority. Required
+   * for pay-bearing publication; the listing is not signed or anchored unless
+   * LRR-1..LRR-6 return `verified`.
+   */
+  loadRailResolution?: (
+    listing: Readonly<ListingDraft>,
+  ) => Promise<ListingRailAuthorityInput> | ListingRailAuthorityInput;
 }
 
 type CapturedPublishListingDeps = Readonly<PublishListingDeps>;
@@ -91,6 +103,7 @@ type CapturedPublishListingDeps = Readonly<PublishListingDeps>;
 function captureDataMethod<K extends keyof PublishListingDeps>(
   deps: PublishListingDeps,
   key: K,
+  optional = false,
 ): PublishListingDeps[K] {
   if (
     deps === null ||
@@ -106,6 +119,9 @@ function captureDataMethod<K extends keyof PublishListingDeps>(
       if (nodeTypes.isProxy(owner)) throw new TypeError("proxy prototype");
       const descriptor = Object.getOwnPropertyDescriptor(owner, key);
       if (descriptor) {
+        if (optional && "value" in descriptor && descriptor.value === undefined) {
+          return undefined as PublishListingDeps[K];
+        }
         if (
           !("value" in descriptor) ||
           typeof descriptor.value !== "function" ||
@@ -127,6 +143,8 @@ function captureDataMethod<K extends keyof PublishListingDeps>(
     );
   }
 
+  if (optional) return undefined as PublishListingDeps[K];
+
   throw new DacsError(
     `publishListing dependency ${String(key)} must be a stable data method`,
   );
@@ -143,6 +161,7 @@ function capturePublishListingDeps(
       "scanOwnAnchorsByNamePrefix",
     ),
     anchorWriteOnce: captureDataMethod(deps, "anchorWriteOnce"),
+    loadRailResolution: captureDataMethod(deps, "loadRailResolution", true),
   });
 }
 
@@ -397,6 +416,45 @@ export async function publishListingCore(
       "publishListing requires a normative unsigned DACS-1 §6.3.4 Listing; " +
         "legacy MVP shapes are read-only",
     );
+  }
+  if (listing.pipeline.some((phase) => phase.kind.startsWith("pay-"))) {
+    if (!capturedDeps.loadRailResolution) {
+      throw new DacsError(
+        "pay-bearing Listing publication requires an authenticated DACS-4 rail " +
+          "authority read; LP-6 forbids treating acceptedRails as proof",
+      );
+    }
+    let railResolution;
+    try {
+      const authority = snapshotCanonicalJsonRead(
+        await capturedDeps.loadRailResolution(
+          snapshotCanonicalJson(listing, "rail authority Listing input"),
+        ),
+        "listing rail authority result",
+      );
+      if (authority === null || typeof authority !== "object" || Array.isArray(authority)) {
+        throw new TypeError("malformed rail authority result");
+      }
+      railResolution = resolveListingRails({
+        ...authority,
+        payPhases: listing.pipeline
+          .filter((phase) => phase.kind.startsWith("pay-"))
+          .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail })),
+        acceptedRails: listing.acceptedRails ?? [],
+      });
+    } catch (error) {
+      throw new DacsError(
+        `listing-time rail resolution was indeterminate: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (railResolution.disposition !== "verified") {
+      throw new DacsError(
+        `listing-time rail resolution is ${railResolution.disposition} ` +
+          `(${railResolution.reason}); LP-6 refuses pay-bearing publication`,
+      );
+    }
   }
   const version = listing.listingVersion;
 

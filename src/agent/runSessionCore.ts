@@ -39,6 +39,7 @@ import type {
   SettlementFinalityModel,
 } from "../artifacts/types.js";
 import { attestationBundleHash } from "./twoSidedBundle.js";
+import type { ListingValidationResult } from "./listingValidation.js";
 import {
   type LegacyMvpAgreementDocument as AgreementDocument,
   type LegacyMvpAttestationBundle as AttestationBundle,
@@ -284,6 +285,15 @@ export interface SessionDeps {
    * verified upstream. Ignored when `verifyListing` is supplied.
    */
   trustListing?: boolean;
+  /**
+   * DACS-1 §6.3.4 LR-2/LR-3 full ordered validation result. A normative
+   * Listing cannot start a new session without this result, and only
+   * `verified` is admissible; `rejected`, `revoked`, and `indeterminate` all
+   * fail closed before Vet, rail selection, or settlement.
+   */
+  validateListing?: (
+    raw: Record<string, unknown>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult;
   /**
    * OPTIONAL durable session store (#55). When wired, the store is the
    * settlement BOUNDARY PROTOCOL (#52/#67), not just an after-the-fact log:
@@ -1320,6 +1330,12 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
       "deps.authenticateRecoveredArtifact",
       true,
     ),
+    validateListing: stableDataMethod<SessionDeps["validateListing"]>(
+      input,
+      "validateListing",
+      "deps.validateListing",
+      true,
+    ),
     trustListing: trustListing as boolean | undefined,
     sessionStore,
   });
@@ -2160,6 +2176,64 @@ export async function runSessionCore(
     "expected settlement payee",
     { allowColon: true },
   );
+
+  // LR-3 is a fresh-admission gate. An expired resume must instead prove the
+  // exact already-paid state through the authenticated recovery path below;
+  // reapplying the current validity/revocation disposition would strand deals
+  // that finalized while the Listing was live.
+  if (readableListing.compatibility === "normative" && !listingExpired) {
+    if (!deps.validateListing) {
+      throw new DacsError(
+        "runSessionCore requires deps.validateListing for normative DACS-1 Listings; " +
+          "LR-3 permits new sessions only when the disposition is verified",
+      );
+    }
+    let validation: ListingValidationResult;
+    try {
+      const rawValidation = snapshotCanonicalJsonRead(
+        await deps.validateListing(
+          snapshotCanonicalJson(storedRecord, "Listing validator input"),
+        ),
+        "Listing validation result",
+      );
+      if (
+        rawValidation === null ||
+        typeof rawValidation !== "object" ||
+        Array.isArray(rawValidation) ||
+        !["verified", "rejected", "revoked", "indeterminate"].includes(
+          (rawValidation as { disposition?: string }).disposition ?? "",
+        ) ||
+        !Number.isSafeInteger((rawValidation as { step?: number }).step) ||
+        typeof (rawValidation as { reason?: unknown }).reason !== "string"
+      ) {
+        throw new TypeError("malformed Listing validation result");
+      }
+      validation = rawValidation as ListingValidationResult;
+    } catch (cause) {
+      throw new SubstrateError(
+        `listing at ${listingRef} validation was indeterminate (validator threw)`,
+        { cause },
+      );
+    }
+    if (validation.disposition === "indeterminate") {
+      throw new SubstrateError(
+        `listing at ${listingRef} validation is indeterminate at DACS-1 reader step ` +
+          `${validation.step} (${validation.reason}); LR-3 refuses the new session`,
+      );
+    }
+    if (validation.disposition !== "verified") {
+      throw new CounterpartyError(
+        `listing at ${listingRef} is ${validation.disposition} at DACS-1 reader step ` +
+          `${validation.step} (${validation.reason}); LR-3 refuses the new session`,
+      );
+    }
+    if (validation.listingContentHash !== listingView.pin.contentHash) {
+      throw new CounterpartyError(
+        `listing at ${listingRef} validation result is not bound to the exact LR-1 ` +
+          `content hash; refusing the new session`,
+      );
+    }
+  }
 
   // #41 — authenticate the listing before any external effect. Fresh admission
   // preserves the existing early gate. An expired recovery deliberately waits

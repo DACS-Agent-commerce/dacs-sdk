@@ -18,11 +18,14 @@ import type {
   LegacyMvpListing,
   Listing,
   ListingDraft,
+  ListingEnvelope,
   ListingTerms,
   PayeeBoundAgreementDocument,
   PaymentRailRef,
   PhaseStep,
   ReadableListing,
+  RevocationBinding,
+  RevocationMarker,
   SettlementEvidence,
   VerificationMethod,
 } from "./types.js";
@@ -396,7 +399,7 @@ export function isDeliverableSpec(v: unknown): v is DeliverableSpec {
   }
 }
 
-const isPaymentRailRef = (v: unknown): v is PaymentRailRef =>
+export const isPaymentRailRef = (v: unknown): v is PaymentRailRef =>
   isObj(v) &&
   isStr(v.railId) &&
   v.railId.length > 0 &&
@@ -463,6 +466,13 @@ export function isPhaseStep(v: unknown): v is PhaseStep {
   return false;
 }
 
+/** DACS-1 §6.3.4 PhaseStep envelope before reader step 7 dispatches by kind. */
+const isPhaseStepEnvelope = (v: unknown): boolean =>
+  isObj(v) &&
+  isStr(v.kind) &&
+  v.kind.length > 0 &&
+  (v.parameters === undefined || isObj(v.parameters));
+
 /** DACS-1 §6.3.4 ListingTerms structural validation. */
 export function isListingTerms(v: unknown): v is ListingTerms {
   return (
@@ -496,7 +506,10 @@ export function isListingTerms(v: unknown): v is ListingTerms {
   );
 }
 
-function pipelineIsCoherent(listing: Record<string, unknown>): boolean {
+function pipelineIsCoherent(
+  listing: Record<string, unknown>,
+  includeRailBinding = true,
+): boolean {
   const pipeline = listing.pipeline as PhaseStep[];
   const negotiate = pipeline
     .map((phase, index) => ({ phase, index }))
@@ -529,6 +542,8 @@ function pipelineIsCoherent(listing: Record<string, unknown>): boolean {
   if (!pipeline.some((phase) => phase.kind.startsWith("deliver-"))) {
     return false; // DACS-4 §9.9 PIPE-1.
   }
+  if (!includeRailBinding) return true;
+
   const payPhases = pipeline.filter((phase) => phase.kind.startsWith("pay-"));
   const rails = listing.acceptedRails as PaymentRailRef[] | undefined;
   if (payPhases.length > 0) {
@@ -563,10 +578,28 @@ function pipelineIsCoherent(listing: Record<string, unknown>): boolean {
   return true;
 }
 
-function isListingBody(v: unknown): v is ListingDraft {
+/** DACS-1 §6.3.4 reader step 7, excluding the LRR-1 rail checks in step 8. */
+export function isListingPipelineValid(v: unknown): boolean {
+  return (
+    isObj(v) &&
+    Array.isArray(v.pipeline) &&
+    v.pipeline.length > 0 &&
+    v.pipeline.every(isPhaseStep) &&
+    isPricingSpec(v.pricing) &&
+    pipelineIsCoherent(v, false)
+  );
+}
+
+function isListingBody(
+  v: unknown,
+  requireSupportedVersion = true,
+  requirePipelineSemantics = true,
+): boolean {
   if (!isObj(v)) return false;
   return (
-    v.dacsVersion === "1" &&
+    (requireSupportedVersion
+      ? v.dacsVersion === "1"
+      : isStr(v.dacsVersion) && v.dacsVersion.length > 0) &&
     isPositiveSafeInt(v.listingVersion) &&
     isStr(v.listingId) &&
     /^[A-Za-z0-9._~-]{1,128}$/.test(v.listingId) &&
@@ -597,7 +630,9 @@ function isListingBody(v: unknown): v is ListingDraft {
     isBundleRequirement(v.buyerRequirement) &&
     Array.isArray(v.pipeline) &&
     v.pipeline.length > 0 &&
-    v.pipeline.every(isPhaseStep) &&
+    v.pipeline.every(
+      requirePipelineSemantics ? isPhaseStep : isPhaseStepEnvelope,
+    ) &&
     isPricingSpec(v.pricing) &&
     (v.acceptedRails === undefined ||
       (Array.isArray(v.acceptedRails) &&
@@ -608,35 +643,88 @@ function isListingBody(v: unknown): v is ListingDraft {
     (v.validity.notAfter === undefined ||
       (isSafeUint(v.validity.notAfter) &&
         v.validity.notAfter >= v.validity.notBefore)) &&
-    pipelineIsCoherent(v)
+    (!requirePipelineSemantics || pipelineIsCoherent(v))
   );
 }
 
 /** Unsigned DACS-1 §6.3.4 publication input; legacy shapes are refused. */
 export function isListingDraft(v: unknown): v is ListingDraft {
-  return isObj(v) && !("signature" in v) && isListingBody(v);
+  return isObj(v) && !("signature" in v) && isListingBody(v, true, true);
 }
 
-/** Signed normative DACS-1 §6.3.4 Listing structural validator. */
-export function isListing(v: unknown): v is Listing {
+/**
+ * DACS-1 §6.3.4 signed Listing envelope shape used by the ordered reader.
+ * Runtime validity, cryptographic verification, revocation and authority reads
+ * remain in their numbered steps. Signer authorization is deliberately
+ * excluded so step 9 can still run after retaining an LRR `indeterminate`.
+ */
+export function isListingEnvelope(v: unknown): v is ListingEnvelope {
   if (
     !isObj(v) ||
     !isComponentSignature(v.signature) ||
     !isCanonicalBase64Url(v.signature.value) ||
-    !isListingBody(v)
+    !isListingBody(v, false, false)
   ) {
     return false;
-  }
-  const listing = v as unknown as Listing;
-  const identity = listing.seller.identity;
-  if (!identity.claims.some((claim) => claim.ref === listing.signature.signer)) {
-    return false; // §6.3.4 ListingSignature signer authorization.
   }
   try {
     return Buffer.byteLength(canonicalize(v), "utf8") <= 16_384; // LR-2 size cap.
   } catch {
     return false;
   }
+}
+
+/** Signed normative DACS-1 §6.3.4 Listing structural validator. */
+export function isListing(v: unknown): v is Listing {
+  if (
+    !isListingEnvelope(v) ||
+    v.dacsVersion !== "1" ||
+    !isListingPipelineValid(v) ||
+    !pipelineIsCoherent(v as unknown as Record<string, unknown>, true)
+  ) {
+    return false;
+  }
+  return v.seller.identity.claims.some(
+    (claim) => claim.ref === v.signature.signer,
+  ); // §6.3.4 ListingSignature signer authorization.
+}
+
+/** DACS-1 §6.3.4 RB-1 RevocationMarker structural validator. */
+export function isRevocationMarker(v: unknown): v is RevocationMarker {
+  return (
+    isObj(v) &&
+    isStr(v.listingId) &&
+    /^[A-Za-z0-9._~-]{1,128}$/.test(v.listingId) &&
+    isPositiveSafeInt(v.listingVersion) &&
+    isStr(v.listingContentHash) &&
+    /^[0-9a-f]{64}$/.test(v.listingContentHash) &&
+    isSafeUint(v.revokedAt) &&
+    isOptionalStr(v.reason) &&
+    isComponentSignature(v.signature) &&
+    isCanonicalBase64Url(v.signature.value)
+  );
+}
+
+/** DACS-1 §6.3.4 RB-2 RevocationBinding structural validator. */
+export function isRevocationBinding(v: unknown): v is RevocationBinding {
+  return (
+    isObj(v) &&
+    isClaimRef(v.sellerPrimaryClaim) &&
+    isStr(v.listingId) &&
+    /^[A-Za-z0-9._~-]{1,128}$/.test(v.listingId) &&
+    isPositiveSafeInt(v.listingVersion) &&
+    isStr(v.listingContentHash) &&
+    /^[0-9a-f]{64}$/.test(v.listingContentHash) &&
+    isStr(v.logicalAddress) &&
+    v.logicalAddress.length > 0 &&
+    isObj(v.markerAnchor) &&
+    isStr(v.markerAnchor.kind) &&
+    v.markerAnchor.kind.length > 0 &&
+    isStr(v.markerAnchor.locator) &&
+    v.markerAnchor.locator.length > 0 &&
+    isStr(v.markerContentHash) &&
+    /^[0-9a-f]{64}$/.test(v.markerContentHash)
+  );
 }
 
 /** Historical reduced SDK shape, deliberately isolated to read compatibility. */

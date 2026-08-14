@@ -8,9 +8,14 @@ import type {
   ReadableListing,
 } from "../artifacts/types.js";
 import { readListingArtifact } from "../artifacts/validators.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
+import type { ListingValidationResult } from "./listingValidation.js";
+import { contentHash } from "../canonical/index.js";
 
 /**
  * Resolve, structurally validate, and VERIFY anchored listings at the given refs
@@ -53,6 +58,13 @@ export interface DiscoverDeps {
   trustListings?: boolean;
   /** DACS-1 §6.3.4 reader step 3 clock; defaults to Date.now(). */
   nowMs?: () => number;
+  /**
+   * DACS-1 §6.3.4 ordered reader result. Required for normative Listings;
+   * discovery returns only exact-hash `verified` records.
+   */
+  validateListing?: (
+    raw: Record<string, unknown>,
+  ) => Promise<ListingValidationResult> | ListingValidationResult;
 }
 
 export type DiscoveredListing =
@@ -64,6 +76,7 @@ type CapturedDiscoverDeps = Readonly<{
   resolvePublicKey: DiscoverDeps["resolvePublicKey"];
   trustListings: DiscoverDeps["trustListings"];
   nowMs: DiscoverDeps["nowMs"];
+  validateListing: DiscoverDeps["validateListing"];
 }>;
 
 function dataProperty(
@@ -122,6 +135,7 @@ function captureDiscoverDeps(deps: DiscoverDeps): CapturedDiscoverDeps {
     resolvePublicKey: optionalDataMethod(deps, "resolvePublicKey"),
     trustListings,
     nowMs: optionalDataMethod(deps, "nowMs"),
+    validateListing: optionalDataMethod(deps, "validateListing"),
   });
 }
 
@@ -297,6 +311,10 @@ export async function discoverListings(
   if (typeof readAnchor !== "function" || nodeTypes.isProxy(readAnchor)) {
     throw new DacsError("discoverListings readAnchor must be a stable function");
   }
+  const capturedReadAnchor = Function.prototype.bind.call(
+    readAnchor,
+    undefined,
+  ) as typeof readAnchor;
   const refs = snapshotCanonicalJson(listingRefs, "Listing refs");
   if (
     !Array.isArray(refs) ||
@@ -309,10 +327,45 @@ export async function discoverListings(
   }
   const found: DiscoveredListing[] = [];
   for (const ref of refs) {
-    const raw = await readAnchor(ref);
+    const raw = await capturedReadAnchor(ref);
     if (!raw) continue;
-    const readable = await verifyReadableListingArtifact(raw, capturedDeps);
+    const snapshot = snapshotListingArtifact(raw);
+    if (!snapshot) continue;
+    const readable = await verifyReadableListingArtifact(snapshot, capturedDeps);
     if (!readable) continue;
+    if (readable.compatibility === "normative") {
+      if (!capturedDeps.validateListing) {
+        throw new DacsError(
+          "discoverListings requires deps.validateListing for normative DACS-1 " +
+            "Listings; signature validity alone is not a verified disposition",
+        );
+      }
+      let validation: ListingValidationResult;
+      try {
+        const capturedValidation = snapshotCanonicalJsonRead(
+          await capturedDeps.validateListing(
+            snapshotCanonicalJson(snapshot, "Listing validator input"),
+          ),
+          "Listing validation result",
+        );
+        if (
+          capturedValidation === null ||
+          typeof capturedValidation !== "object" ||
+          Array.isArray(capturedValidation)
+        ) {
+          continue;
+        }
+        validation = capturedValidation as ListingValidationResult;
+      } catch {
+        continue;
+      }
+      if (
+        validation.disposition !== "verified" ||
+        validation.listingContentHash !== contentHash(snapshot)
+      ) {
+        continue;
+      }
+    }
     found.push({ ref, ...readable });
   }
   return found;

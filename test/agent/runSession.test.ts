@@ -99,6 +99,12 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     // These fixtures exercise ORCHESTRATION, not listing signatures — the #41
     // gate itself is covered by its own cases below and in discover.test.ts.
     trustListing: true,
+    validateListing: (raw) => ({
+      disposition: "verified",
+      step: 9,
+      reason: "verified",
+      listingContentHash: contentHash(raw),
+    }),
     ...overrides,
   };
 }
@@ -266,6 +272,12 @@ describe("runSession orchestration (T4)", () => {
       },
       makeDeps({
         readListing: async () => normative,
+        validateListing: () => ({
+          disposition: "verified",
+          step: 9,
+          reason: "verified",
+          listingContentHash: contentHash(normative),
+        }),
         settle: async (request) => {
           selectedRail = request.rail;
           selectedPhase = request.phase;
@@ -293,6 +305,69 @@ describe("runSession orchestration (T4)", () => {
     expect(selectedRail).toBe("x402:default");
     expect(selectedPhase).toBe("pay-x402");
     expect(evidence?.phase).toBe("pay-x402");
+
+    await expect(
+      runSessionCore(
+        "stor-normative-v7",
+        {
+          ...TERMS,
+          price: { ...TERMS.price, rail: "x402:default" },
+        },
+        makeDeps({
+          readListing: async () => normative,
+          validateListing: () => ({
+            disposition: "verified",
+            step: 9,
+            reason: "verified-different-content",
+            listingContentHash: "0".repeat(64),
+          }),
+        }),
+      ),
+    ).rejects.toThrow(/not bound to the exact LR-1 content hash/);
+
+    for (const disposition of [
+      "rejected",
+      "revoked",
+      "indeterminate",
+    ] as const) {
+      let settled = false;
+      let vetted = false;
+      let anchored = false;
+      const attempt = runSessionCore(
+          "stor-normative-v7",
+          {
+            ...TERMS,
+            price: { ...TERMS.price, rail: "x402:default" },
+          },
+          makeDeps({
+            readListing: async () => normative,
+            validateListing: () => ({
+              disposition,
+              step: disposition === "revoked" ? 5 : 8,
+              reason: `test-${disposition}`,
+            }),
+            settle: async () => {
+              settled = true;
+              throw new Error("must not settle");
+            },
+            vet: async () => {
+              vetted = true;
+              throw new Error("must not vet");
+            },
+            anchor: async () => {
+              anchored = true;
+              throw new Error("must not anchor");
+            },
+          }),
+        );
+      await expect(attempt).rejects.toThrow(new RegExp(`${disposition}.*LR-3`));
+      await expect(attempt).rejects.toMatchObject({
+        category: disposition === "indeterminate" ? "substrate" : "counterparty",
+      });
+      expect(settled).toBe(false);
+      expect(vetted).toBe(false);
+      expect(anchored).toBe(false);
+    }
   });
 
   test("treats notAfter as inclusive but never bypasses a future notBefore on resume", async () => {
@@ -435,6 +510,12 @@ describe("runSession orchestration (T4)", () => {
         },
         makeDeps({
           readListing: async () => normative,
+          validateListing: () => ({
+            disposition: "verified",
+            step: 9,
+            reason: "verified",
+            listingContentHash: contentHash(normative),
+          }),
           settle: async () => {
             settles += 1;
             throw new Error("must not settle");
