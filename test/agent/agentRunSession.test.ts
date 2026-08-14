@@ -331,7 +331,25 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
-      validateListing: verifiedListing,
+      listingValidationDeps: {
+        ...listingValidationDeps(),
+        loadRailResolution: () => ({
+          trustPhase: "PA-1" as const,
+          trustPolicyAcceptsPA1: true,
+          registry: {
+            state: "not-used" as const,
+            entries: [],
+            definitions: [],
+          },
+          inCodeDefinitions: [{
+            railId: "demos:native",
+            railVersion: 1,
+            phaseHandler: "pay-dem",
+            governanceAnchoring: "in-code" as const,
+            signatureValid: true,
+          }],
+        }),
+      },
     });
     const transfer = vi.fn(
       async ({ recipient, network }: { recipient: string; network?: string }) => ({

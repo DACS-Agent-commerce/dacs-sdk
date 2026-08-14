@@ -354,7 +354,9 @@ export function payDemSettle(
           `address; refusing to transfer`,
       );
     }
-    const expectedPayeeAddress = demosAddressFromClaim(expectedPayee);
+    const expectedPayeeAddress =
+      demosAddressFromClaim(expectedPayee) ??
+      normalizeDemosNativeAddress(expectedPayee);
     if (expectedPayeeAddress !== payeeAddress) {
       throw new DacsError(
         `pay-dem destination mismatch: request binds ${expectedPayee}, agreement claim resolves to ${payeeAddress}`,
@@ -395,7 +397,10 @@ export function payDemSettle(
     // settlement seam must return the request-bound identifier verbatim so the
     // orchestrator can check it without applying rail-specific normalization.
     // Verify the equivalence here before restoring that identifier.
-    if (demosAddressFromClaim(result.payee) !== payeeAddress) {
+    const resultPayeeAddress =
+      demosAddressFromClaim(result.payee) ??
+      normalizeDemosNativeAddress(result.payee);
+    if (resultPayeeAddress !== payeeAddress) {
       throw new DacsError(
         `pay-dem settlement returned payee ${result.payee}, expected Demos address ${payeeAddress}`,
       );
