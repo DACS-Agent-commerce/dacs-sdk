@@ -7,6 +7,9 @@
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -75,8 +78,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "host:build": "npm run build --workspace @kynesyslabs/dacs-node",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json",
+    "host:typecheck": "npm run typecheck --workspace @kynesyslabs/dacs-node",
     "test": "vitest run",
+    "host:test": "npm test --workspace @kynesyslabs/dacs-node",
     "test:live": "vitest run test/integration/live.e2e.test.ts",
     "test:watch": "vitest",
     "conformance:sync": "node scripts/sync-vectors.mjs",
