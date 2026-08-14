@@ -53,6 +53,7 @@ function isDataOnlyJson(
   value: unknown,
   ancestors = new Set<object>(),
   omitUndefinedObjectProperties = false,
+  allowReadOnlyDescriptors = false,
 ): boolean {
   if (value === null || typeof value === "boolean") {
     return true;
@@ -95,7 +96,7 @@ function isDataOnlyJson(
       if (
         !Number.isSafeInteger(length) ||
         length < 0 ||
-        lengthDescriptor.writable !== true ||
+        (!allowReadOnlyDescriptors && lengthDescriptor.writable !== true) ||
         lengthDescriptor.enumerable ||
         lengthDescriptor.configurable ||
         stringKeys.length !== length + 1 ||
@@ -108,13 +109,14 @@ function isDataOnlyJson(
         if (
           !descriptor ||
           !("value" in descriptor) ||
-          descriptor.writable !== true ||
+          (!allowReadOnlyDescriptors && descriptor.writable !== true) ||
           !descriptor.enumerable ||
-          descriptor.configurable !== true ||
+          (!allowReadOnlyDescriptors && descriptor.configurable !== true) ||
           !isDataOnlyJson(
             descriptor.value,
             ancestors,
             omitUndefinedObjectProperties,
+            allowReadOnlyDescriptors,
           )
         ) {
           return false;
@@ -135,15 +137,16 @@ function isDataOnlyJson(
         !isSafeJsonString(key) ||
         !descriptor ||
         !("value" in descriptor) ||
-        descriptor.writable !== true ||
+        (!allowReadOnlyDescriptors && descriptor.writable !== true) ||
         !descriptor.enumerable ||
-        descriptor.configurable !== true ||
+        (!allowReadOnlyDescriptors && descriptor.configurable !== true) ||
         (descriptor.value === undefined
           ? !omitUndefinedObjectProperties
           : !isDataOnlyJson(
               descriptor.value,
               ancestors,
               omitUndefinedObjectProperties,
+              allowReadOnlyDescriptors,
             ))
       ) {
         return false;
@@ -169,16 +172,39 @@ export function snapshotCanonicalJson<T>(value: T, label: string): T {
  * convention.
  */
 export function snapshotCanonicalJsonConfig<T>(value: T, label: string): T {
-  return snapshotCanonicalJsonInternal(value, label, true);
+  return snapshotCanonicalJsonInternal(value, label, true, false);
+}
+
+/**
+ * Own JSON returned by a storage/callback read. A compliant adapter may return
+ * the exact deeply frozen object previously handed to its write callback, so
+ * property writability/configurability cannot be used as a wire discriminator
+ * at this boundary. Accessors, proxies, exotic prototypes, hidden properties,
+ * unsupported scalars, cycles, sparse arrays, and `undefined` remain rejected.
+ *
+ * Keep authoring/signing inputs on {@link snapshotCanonicalJson}: accepting a
+ * read-only view here is deliberately limited to values already returned from
+ * an asynchronous read boundary.
+ */
+export function snapshotCanonicalJsonRead<T>(value: T, label: string): T {
+  return snapshotCanonicalJsonInternal(value, label, false, true);
 }
 
 function snapshotCanonicalJsonInternal<T>(
   value: T,
   label: string,
   omitUndefinedObjectProperties: boolean,
+  allowReadOnlyDescriptors = false,
 ): T {
   try {
-    if (!isDataOnlyJson(value, new Set(), omitUndefinedObjectProperties)) {
+    if (
+      !isDataOnlyJson(
+        value,
+        new Set(),
+        omitUndefinedObjectProperties,
+        allowReadOnlyDescriptors,
+      )
+    ) {
       throw new TypeError("not data-only JSON");
     }
     const canonical = canonicalize(value);

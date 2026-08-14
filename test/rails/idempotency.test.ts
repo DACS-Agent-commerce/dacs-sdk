@@ -186,13 +186,23 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
   }
   const req: SettleRequest = {
     rail: "evm-erc20-usdc",
+    phase: "pay-evm-erc20",
     amount: "1000000",
     asset: "USDC",
     payee: "0xpayee",
+    expectedPayee: "0xpayee",
     jobId: "job-1",
     phaseIndex: 0,
   };
   const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
+
+  test("direct EVM bridge rejects a destination mismatch before transfer", async () => {
+    const rail = countingRail();
+    expect(() =>
+      evmErc20Settle(rail, cfg)({ ...req, expectedPayee: "0xother" }),
+    ).toThrow(/destination mismatch/);
+    expect(rail.transferCalls).toBe(0);
+  });
 
   test("SAFE BY DEFAULT: twice with the same request → one transfer (no opt-in store needed)", async () => {
     const rail = countingRail();
@@ -215,5 +225,20 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
 
   test("settlementKey is (railId, jobId, phaseIndex)", () => {
     expect(settlementKey("evm-erc20-usdc", "job-1", 0)).toBe("evm-erc20-usdc:job-1:0");
+  });
+
+  test("settlementKey rejects a non-NFC job id instead of aliasing it", () => {
+    expect(() => settlementKey("evm-erc20-usdc", "cafe\u0301-job", 0)).toThrow(
+      /exact NFC/,
+    );
+  });
+
+  test("settlementKey rejects delimiter collisions between rail and job ids", () => {
+    expect(settlementKey("x402:default", "job", 0)).toBe(
+      "x402:default:job:0",
+    );
+    expect(() => settlementKey("x402", "default:job", 0)).toThrow(
+      /colon-free job id/,
+    );
   });
 });

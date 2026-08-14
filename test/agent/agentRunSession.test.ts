@@ -1,9 +1,12 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { buildAgent } from "../../src/agent/Agent.js";
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
-import { verifyComponentSignature } from "../../src/artifacts/signatures.js";
+import {
+  signComponentArtifact,
+  verifyComponentSignature,
+} from "../../src/artifacts/signatures.js";
 import { contentHash, stripSignature } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -15,6 +18,8 @@ import {
   signedBytes,
 } from "../../src/crypto/index.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
+import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
+import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
 // listing verifier. Previously createAgent() supplied neither verifyListing nor
@@ -25,23 +30,38 @@ const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 3));
 const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 7));
 const sellerPriv = privateKeyFromSeed(SELLER_SEED);
 const buyerPriv = privateKeyFromSeed(BUYER_SEED);
-const sellerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(SELLER_SEED))).toString("hex");
+const sellerPublicKey = rawPublicKey(publicKeyFromSeed(SELLER_SEED));
+const sellerHex = Buffer.from(sellerPublicKey).toString("hex");
 const sellerDid = `did:demos:agent:${sellerHex}`;
 const buyerPublicKey = rawPublicKey(publicKeyFromSeed(BUYER_SEED));
 const buyerDid = `did:demos:agent:${Buffer.from(buyerPublicKey).toString("hex")}`;
 
 /** In-memory adapter — just the surface buildAgent's runSession path touches. */
-function memAdapter() {
+function memAdapter(options: { failBundleOnce?: boolean } = {}) {
   const store = new Map<string, Record<string, unknown>>();
+  let bundleFailed = false;
+  const getPublicKey = vi.fn(async () => Uint8Array.from(buyerPublicKey));
+  const maybeFailBundle = (name: string) => {
+    if (
+      options.failBundleOnce &&
+      !bundleFailed &&
+      name.startsWith("dacs5:bundle:")
+    ) {
+      bundleFailed = true;
+      throw new Error("simulated process failure before bundle anchor");
+    }
+  };
   const adapter = {
     store,
     sign: async (bytes: Uint8Array) => ed25519Sign(bytes, buyerPriv),
     anchor: async (name: string, value: object) => {
+      maybeFailBundle(name);
       const address = `stor:${name}`;
       store.set(address, value as Record<string, unknown>);
       return { address, txRef: `tx:${address}` };
     },
     anchorAndWait: async (name: string, value: object) => {
+      maybeFailBundle(name);
       const address = `stor:${name}`;
       store.set(address, value as Record<string, unknown>);
       return {
@@ -55,6 +75,7 @@ function memAdapter() {
     // #70 surface: resume resolution is BY NAME, owner-bound. The mem adapter's
     // addresses are deterministic (`stor:<name>`), so resolution is a lookup.
     getAddress: () => buyerDid,
+    getPublicKey,
     resolveAnchorByName: async (name: string) => {
       const address = `stor:${name}`;
       return store.has(address)
@@ -62,35 +83,213 @@ function memAdapter() {
         : { status: "absent" as const };
     },
   } as unknown as SubstrateAdapter;
-  return { adapter, store };
+  return { adapter, store, getPublicKey };
 }
 
 const TERMS = {
-  price: { amount: "1000000", asset: "USDC", decimals: 6, rail: "pay-x402" },
+  price: {
+    amount: "1000000",
+    asset: "USDC",
+    decimals: 6,
+    rail: "x402:default",
+  },
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
 
-async function anchorListing(store: Map<string, Record<string, unknown>>, priv = sellerPriv, agentId = sellerDid) {
-  const signed = await buildSignedArtifact(
+async function anchorListing(
+  store: Map<string, Record<string, unknown>>,
+  priv = sellerPriv,
+  agentId = sellerDid,
+  validity: { notBefore: number; notAfter?: number } = {
+    notBefore: 1_700_000_000_000,
+  },
+  description = "d",
+  payment: {
+    phase: "pay-x402" | "pay-dem";
+    railId: string;
+    currency: string;
+    price: string;
+  } = {
+    phase: "pay-x402",
+    railId: "x402:default",
+    currency: "USDC",
+    price: "1",
+  },
+) {
+  const signed = await signComponentArtifact(
     {
-      agentId,
-      serviceId: "svc",
-      name: "Market Data",
-      description: "d",
-      claimRequirements: [],
-      supportedNegotiation: ["negotiate-fixed-price"],
-      supportedPaymentRails: ["pay-x402"],
-      supportedDelivery: ["deliver-attested-payload"],
+      dacsVersion: "1",
+      listingVersion: 1,
+      listingId: "svc",
+      seller: {
+        identity: {
+          bundleVersion: "1",
+          presentedBy: agentId,
+          presentedAt: 1_780_000_000_000,
+          claims: [{ ref: agentId }],
+          presentation: {
+            kind: "per-claim",
+            signatures: [{ ref: agentId, signature: "identity-presentation" }],
+          },
+        },
+        displayName: "Market Data",
+        publicEndpoint: "https://seller.example/dacs",
+      },
+      offering: {
+        title: "Market Data",
+        description,
+        category: "data.finance",
+        tags: ["market-data"],
+        deliverable: {
+          kind: "attested-payload",
+          payloadFormat: "application/json",
+        },
+      },
+      buyerRequirement: { requirementVersion: "1", required: [] },
+      pipeline: [
+        { kind: "negotiate-fixed-price" },
+        { kind: "commit-agreement" },
+        { kind: payment.phase, parameters: { rail: payment.railId } },
+        { kind: "deliver-attested-payload" },
+      ],
+      pricing: {
+        kind: "fixed",
+        price: { amount: payment.price, currency: payment.currency },
+      },
+      acceptedRails: [{ railId: payment.railId }],
+      terms: { deadlineSecAfterCommit: 3_600 },
+      validity,
     },
     ARTIFACT_SEPARATORS.Listing,
-    (b) => ed25519Sign(b, priv),
+    {
+      algorithm: "ed25519",
+      signer: agentId,
+      sign: (bytes) => ed25519Sign(bytes, priv),
+    },
   );
   store.set("stor:listing", signed as Record<string, unknown>);
   return "stor:listing";
 }
 
 describe("Agent.runSession wires the #41 listing verifier (public surface)", () => {
+  test("binds a cross-namespace x402 recipient explicitly and rejects omission before rail submission", async () => {
+    const recipientEvm = "0x1111111111111111111111111111111111111111";
+    const asset = "0x2222222222222222222222222222222222222222";
+    const makeRail = () => {
+      const settle = vi.fn(async () => ({
+        ok: true,
+        txHash: "0xx402-paid",
+        chainId: "eip155:84532",
+        payer: "0xbuyer",
+        payee: recipientEvm,
+      }));
+      return {
+        settle,
+        rail: { address: "0xbuyer", settle } as X402Rail,
+      };
+    };
+
+    const boundAdapter = memAdapter();
+    const boundRef = await anchorListing(boundAdapter.store);
+    const boundAgent = buildAgent(boundAdapter.adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    const boundRail = makeRail();
+    await expect(
+      boundAgent.runSession(boundRef, {
+        terms: TERMS,
+        expectedSettlementPayee: recipientEvm,
+        settle: x402Settle(boundRail.rail, {
+          url: "https://seller.example/paywall",
+          network: "eip155:84532",
+          recipientEvm,
+          asset,
+        }),
+      }),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(boundRail.settle).toHaveBeenCalledTimes(1);
+
+    const omittedAdapter = memAdapter();
+    const omittedRef = await anchorListing(omittedAdapter.store);
+    const omittedAgent = buildAgent(omittedAdapter.adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    const omittedRail = makeRail();
+    await expect(
+      omittedAgent.runSession(omittedRef, {
+        terms: TERMS,
+        settle: x402Settle(omittedRail.rail, {
+          url: "https://seller.example/paywall",
+          network: "eip155:84532",
+          recipientEvm,
+          asset,
+        }),
+      }),
+    ).rejects.toThrow(/x402 destination mismatch/);
+    expect(omittedRail.settle).not.toHaveBeenCalled();
+  });
+
+  test("defaults a normative pay-dem session to the seller Demos claim", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(
+      store,
+      sellerPriv,
+      sellerDid,
+      { notBefore: 1_700_000_000_000 },
+      "native DEM listing",
+      {
+        phase: "pay-dem",
+        railId: "demos:native",
+        currency: "DEM",
+        price: "1",
+      },
+    );
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    const transfer = vi.fn(
+      async ({ recipient, network }: { recipient: string; network?: string }) => ({
+        ok: true,
+        txHash: "demos:paid",
+        chainId: network ?? "demos",
+        payer: buyerDid,
+        payee: recipient,
+        finality: { model: "bft-final" as const },
+        blockNumber: 42,
+        txRefKind: "demos",
+      }),
+    );
+    const rail: PayDemRail = { address: buyerDid, settle: transfer };
+
+    await expect(
+      agent.runSession(ref, {
+        terms: {
+          price: {
+            amount: "1",
+            asset: "DEM",
+            decimals: 9,
+            rail: "demos:native",
+          },
+          deliveryPhase: "deliver-attested-payload",
+          deliveryFormat: "application/json",
+        },
+        settle: payDemSettle(rail, { network: "demos:testnet" }),
+      }),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(transfer).toHaveBeenCalledWith({
+      recipient: sellerHex,
+      amount: "1000000000",
+      network: "demos:testnet",
+    });
+  });
+
   test("a genuinely signed listing settles through the public runSession", async () => {
     const { adapter, store } = memAdapter();
     const ref = await anchorListing(store);
@@ -126,6 +325,56 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     ).resolves.toMatchObject({ status: "valid" });
   });
 
+  test("a completed public retry authenticates the exact legacy one-sided bundle", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    let settleCalls = 0;
+    const settle = async () => {
+      settleCalls += 1;
+      return {
+        ok: true,
+        txHash: "0xbundle-retry",
+        chainId: "demos",
+        payer: buyerDid,
+        payee: sellerDid,
+      };
+    };
+
+    const first = await agent.runSession(ref, {
+      jobId: "completed-bundle-retry",
+      terms: TERMS,
+      settle,
+    });
+    await expect(
+      agent.runSession(ref, {
+        jobId: "completed-bundle-retry",
+        terms: TERMS,
+        settle,
+      }),
+    ).resolves.toEqual(first);
+    expect(settleCalls).toBe(1);
+
+    const bundle = structuredClone(store.get(first.bundleRef)!);
+    const signature = (bundle.signatures as Array<{ value: string }>)[0]!;
+    // Padding is a decodable alias in permissive codecs, but is not canonical
+    // Base64URL and therefore must not authenticate on resume.
+    signature.value += "=";
+    store.set(first.bundleRef, bundle);
+    await expect(
+      agent.runSession(ref, {
+        jobId: "completed-bundle-retry",
+        terms: TERMS,
+        settle,
+      }),
+    ).rejects.toThrow(/cryptographic authentication/);
+    expect(settleCalls).toBe(1);
+  });
+
   test("a listing signed by the WRONG key aborts before settlement — never pays", async () => {
     const { adapter, store } = memAdapter();
     // Signed by a different key than the advertised sellerDid.
@@ -143,6 +392,120 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       }),
     ).rejects.toThrow(/failed signature verification/);
     expect(settled).toBe(false);
+  });
+
+  test("public recovery authenticates exact Listing, Agreement, and evidence without paying twice", async () => {
+    vi.useFakeTimers();
+    try {
+      const admittedAt = 1_800_000_000_000;
+      vi.setSystemTime(admittedAt);
+      const { adapter, store, getPublicKey } = memAdapter({
+        failBundleOnce: true,
+      });
+      const ref = await anchorListing(store, sellerPriv, sellerDid, {
+        notBefore: admittedAt - 1_000,
+        notAfter: admittedAt + 1_000,
+      });
+      const originalListing = structuredClone(store.get(ref)!);
+      const agent = buildAgent(adapter as never, {
+        demosRpc: "mem",
+        wallet: "x",
+        identity: { agentId: buyerDid },
+      });
+      let settleCalls = 0;
+      const settle = async () => {
+        settleCalls += 1;
+        return {
+          ok: true,
+          txHash: "0xpaid-once",
+          chainId: "c",
+          payer: buyerDid,
+          payee: sellerDid,
+        };
+      };
+
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/simulated process failure/);
+      expect(settleCalls).toBe(1);
+      // Fresh execution never acquires a recovery-only key.
+      expect(getPublicKey).not.toHaveBeenCalled();
+
+      vi.setSystemTime(admittedAt + 2_000);
+
+      await anchorListing(
+        store,
+        sellerPriv,
+        sellerDid,
+        { notBefore: admittedAt - 1_000, notAfter: admittedAt + 1_000 },
+        "same address, substituted Listing bytes",
+      );
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/signed Listing pin/i);
+      expect(settleCalls).toBe(1);
+      expect(getPublicKey).not.toHaveBeenCalled();
+      store.set(ref, originalListing);
+
+      const agreementAddress = "stor:dacs3:agreement:job-expiry";
+      const evidenceAddress = "stor:dacs4:evidence:job-expiry";
+      const agreement = structuredClone(store.get(agreementAddress)!);
+      const evidence = structuredClone(store.get(evidenceAddress)!);
+      expect(typeof agreement.signature).toBe("string");
+      expect(typeof (evidence.signature as { value?: unknown })?.value).toBe(
+        "string",
+      );
+
+      getPublicKey.mockResolvedValueOnce(Uint8Array.from(sellerPublicKey));
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/cryptographic Agreement authentication/i);
+      expect(settleCalls).toBe(1);
+      expect(getPublicKey).toHaveBeenCalledTimes(1);
+
+      const agreementSignature = agreement.signature as string;
+      store.set(agreementAddress, {
+        ...agreement,
+        signature: `${agreementSignature.startsWith("0") ? "1" : "0"}${agreementSignature.slice(1)}`,
+      });
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/cryptographic Agreement authentication/i);
+      expect(settleCalls).toBe(1);
+      expect(getPublicKey).toHaveBeenCalledTimes(2);
+      store.set(agreementAddress, agreement);
+
+      const evidenceSignature = evidence.signature as { value: string };
+      store.set(evidenceAddress, {
+        ...evidence,
+        signature: {
+          ...(evidence.signature as Record<string, unknown>),
+          value: `${evidenceSignature.value.startsWith("A") ? "B" : "A"}${evidenceSignature.value.slice(1)}`,
+        },
+      });
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).rejects.toThrow(/cryptographic SettlementEvidence authentication/i);
+      expect(settleCalls).toBe(1);
+      // One key lookup serves both Agreement and evidence checks in this run.
+      expect(getPublicKey).toHaveBeenCalledTimes(3);
+      store.set(evidenceAddress, evidence);
+
+      await expect(
+        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+      ).resolves.toMatchObject({ outcome: "completed", jobId: "job-expiry" });
+      expect(settleCalls).toBe(1);
+      expect(getPublicKey).toHaveBeenCalledTimes(4);
+
+      await expect(
+        agent.runSession(ref, { jobId: "job-arbitrary", terms: TERMS, settle }),
+      ).rejects.toThrow(/outside.*validity window.*no prior Agreement/i);
+      expect(settleCalls).toBe(1);
+      // Missing recovery state is rejected before key acquisition or Listing auth.
+      expect(getPublicKey).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("getReputation ignores a structurally plausible but unverified bundle", async () => {

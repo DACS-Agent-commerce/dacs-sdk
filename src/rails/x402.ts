@@ -4,6 +4,7 @@ import type {
   PaymentPayloadResult,
   PaymentRequirements,
   SchemeNetworkClient,
+  SettleResponse,
 } from "@x402/core/types";
 import {
   createIdempotencyStore,
@@ -47,7 +48,7 @@ export interface X402ClientLike {
   encodePaymentSignatureHeader(payload: unknown): Record<string, string>;
   getPaymentSettleResponse(
     getHeader: (name: string) => string | null,
-  ): { transaction?: string } | undefined;
+  ): SettleResponse | undefined;
 }
 
 /** Per-session settlement inputs, derived from the negotiated agreement. */
@@ -232,26 +233,62 @@ export async function x402SettleCore(
     headers,
   });
 
-  // 5. Read the settlement tx hash from X-PAYMENT-RESPONSE. A money-safe receipt
-  //    needs a verifiable on-chain transaction id — without it the SettlementEvidence
-  //    would assert a provider-receipt finality that nobody can independently
-  //    check. So success REQUIRES both a passing gate (final.ok) and a non-empty
-  //    transaction id; a 200 with no parseable tx is reported as a non-success
-  //    settlement (ok:false) rather than an unverifiable "success".
-  let txHash = "";
+  // 5. Decode and consistency-check the provider's settlement response. HTTP
+  //    success alone does not prove settlement. This header is not independently
+  //    authenticated and does not establish chain finality; the checks below
+  //    only bind its claims back to the requested network, buyer, and (when the
+  //    facilitator reports it) exact base-unit amount. Full receipt/finality
+  //    authentication remains tracked by #102.
+  let settlement: SettleResponse | undefined;
   try {
-    txHash =
-      client.getPaymentSettleResponse((name) => final.headers.get(name))
-        ?.transaction ?? "";
+    settlement = client.getPaymentSettleResponse((name) =>
+      final.headers.get(name),
+    );
   } catch {
-    txHash = "";
+    settlement = undefined;
   }
 
+  const txHash =
+    typeof settlement?.transaction === "string" ? settlement.transaction : "";
+  const txHashValid =
+    txHash.length > 0 && txHash.trim() === txHash;
+  const reportedNetwork = settlement?.network;
+  const networkValid =
+    typeof reportedNetwork === "string" &&
+    reportedNetwork.length > 0 &&
+    reportedNetwork.trim() === reportedNetwork;
+  const responseNetwork =
+    networkValid ? reportedNetwork : params.network;
+  const reportedPayer = settlement?.payer;
+  const payerValid =
+    typeof reportedPayer === "string" &&
+    reportedPayer.length > 0 &&
+    reportedPayer.trim() === reportedPayer;
+  const responsePayer =
+    payerValid ? reportedPayer : payerAddress;
+  const payerMatches =
+    reportedPayer === undefined ||
+    (payerValid && responsePayer.toLowerCase() === payerAddress.toLowerCase());
+  const reportedAmount = settlement?.amount;
+  const amountMatches =
+    reportedAmount === undefined ||
+    (typeof reportedAmount === "string" &&
+      reportedAmount.length > 0 &&
+      reportedAmount.trim() === reportedAmount &&
+      sameAmount(reportedAmount, params.amount));
+  const receiptMatches =
+    settlement?.success === true &&
+    txHashValid &&
+    networkValid &&
+    responseNetwork === params.network &&
+    payerMatches &&
+    amountMatches;
+
   return {
-    ok: final.ok && txHash.trim().length > 0,
+    ok: final.ok && receiptMatches,
     txHash,
-    chainId: params.network,
-    payer: payerAddress,
+    chainId: responseNetwork,
+    payer: responsePayer,
     payee: params.recipientEvm,
   };
 }
@@ -280,13 +317,16 @@ export async function dacsX402AuthorizationNonce(input: {
   if (
     typeof input.jobId !== "string" ||
     input.jobId.length === 0 ||
+    input.jobId.normalize("NFC") !== input.jobId ||
     !Number.isSafeInteger(input.phaseIndex) ||
     input.phaseIndex < 0
   ) {
-    throw new Error("x402 DACS binding requires jobId and a non-negative phaseIndex");
+    throw new Error(
+      "x402 DACS binding requires an exact NFC jobId and a non-negative phaseIndex",
+    );
   }
   const { sha256, stringToHex } = await import("viem");
-  const preimage = `dacs-sb3:v1:${input.jobId.normalize("NFC")}:${input.phaseIndex}`;
+  const preimage = `dacs-sb3:v1:${input.jobId}:${input.phaseIndex}`;
   return sha256(stringToHex(preimage));
 }
 
@@ -440,7 +480,19 @@ export function x402Settle(
   opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
   const store = opts.store ?? createIdempotencyStore();
+  const paywallUrl = paywall.url;
+  const network = paywall.network;
+  const recipientEvm = paywall.recipientEvm;
+  const asset = paywall.asset;
+  const configuredPhaseIndex = paywall.phaseIndex;
+  const reconcile = opts.reconcile;
   return (req) => {
+    const { amount, expectedPayee, jobId, rail: railId } = req;
+    if (expectedPayee !== recipientEvm) {
+      throw new CounterpartyError(
+        `x402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipientEvm}`,
+      );
+    }
     // phaseIndex is a property of the SETTLEMENT REQUEST, not the static paywall
     // descriptor: the SB-3 authorization nonce MUST bind the same phase the
     // idempotency key dedupes on, or the on-chain single-use nonce and the
@@ -449,15 +501,15 @@ export function x402Settle(
     // for BOTH. (The prior `paywall.phaseIndex`-only wiring made the production
     // `requireSessionBinding` path throw whenever the paywall omitted it, even
     // though the session carried a phase.)
-    const phaseIndex = req.phaseIndex ?? paywall.phaseIndex ?? 0;
+    const phaseIndex = req.phaseIndex ?? configuredPhaseIndex ?? 0;
     const submit = () =>
       rail.settle({
-        paywallUrl: paywall.url,
-        network: paywall.network,
-        recipientEvm: paywall.recipientEvm,
-        amount: req.amount,
-        asset: paywall.asset,
-        jobId: req.jobId,
+        paywallUrl,
+        network,
+        recipientEvm,
+        amount,
+        asset,
+        jobId,
         phaseIndex,
       });
     // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
@@ -465,6 +517,10 @@ export function x402Settle(
     // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
     // on a reconciled resubmit is the SB-3 work in #33 — supplied via `reconcile`;
     // absent it, an unresolved intent fails closed instead of resubmitting.
-    return store.once(settlementKey(req.rail, req.jobId, phaseIndex), submit, opts.reconcile);
+    return store.once(
+      settlementKey(railId, jobId, phaseIndex),
+      submit,
+      reconcile,
+    );
   };
 }

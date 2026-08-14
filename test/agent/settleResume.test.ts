@@ -74,6 +74,7 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
     // These fixtures exercise settle→anchor RESUME, not listing verification —
     // opt out of the #41 gate explicitly (same as runSession.test.ts).
     trustListing: true,
+    authenticateRecoveredArtifact: () => true,
     // kv shared across resume via the same closure
   };
   return { deps, kv, listingRef };

@@ -50,19 +50,32 @@ import {
   vetCore,
 } from "@kynesyslabs/dacs";
 
-const agent = createAgent({ demosRpc, wallet, identity: { agentId } });
+const agent = await createAgent({ demosRpc, wallet, identity: { agentId } });
 
-// seller — sign + anchor a fixed-price listing
+// seller — sign + anchor a normative DACS-1 §6.3.4 ListingDraft. `spec`
+// carries seller.identity/displayName/publicEndpoint, offering, buyerRequirement,
+// pipeline, pricing, acceptedRails, terms, and validity; see hello-world.ts.
 const { ref } = await agent.publishListing(spec);
 
-// buyer — discover, then vet → negotiate → settle → verify (anchoring the bundle)
-const [{ ref: listingRef }] = await agent.discover([ref]);
+// buyer — discovery identifies normative vs explicit legacy-read artifacts.
+const [{ ref: listingRef, compatibility }] = await agent.discover([ref]);
+if (compatibility !== "normative") throw new Error("legacy Listing refused");
 const rail = await createX402Rail({ evmPrivateKey });
 const session = await agent.runSession(listingRef, {
   terms,
+  // Record the buyer-selected cross-namespace EVM destination in the
+  // buyer-signed legacy Agreement extension and durable recovery state.
+  // Same-namespace rails may omit this option; PB-1 payout negotiation uses a
+  // PayeeBoundAgreementDocument instead.
+  expectedSettlementPayee: recipientEvm,
   // optional Vet step: resolve a steward recipe + verify the seller before paying
   vet: (subject) =>
-    resolveRecipe(recipeRegistryRef, "self-signed", { readRegistry, stewardPublicKey, verify })
+    resolveRecipe(recipeRegistryRef, "self-signed", {
+      readRegistry,
+      stewardPublicKey,
+      stewardSigner,
+      verify,
+    })
       .then((recipe) => vetCore({ subject, recipe }, { proxyFetch, now })),
   // `asset` is the on-chain token id (ERC-20 contract) the 402 must advertise —
   // the §4.1 guard compares against it, not the Price.asset symbol.
@@ -74,7 +87,12 @@ const verdict = await agent.verifyBundle(session.bundleRef);
 const rep = await agent.getReputation(primaryClaim, bundleRefs);
 ```
 
-To resume an interrupted session safely, pass the prior `jobId` to `runSession` — anchored artifacts are reused and settlement is never repeated.
+`session.listingPin` is the exact DACS-1 §6.3.4 LR-1
+`(listingId, listingVersion, contentHash)` tuple used by the session. To resume an
+interrupted session, pass the prior `jobId` to `runSession`; anchored artifacts
+are reused. No-repayment across a whole-process crash additionally requires a
+durable `sessionStore` and a rail-idempotent `resumeSettlement` implementation—a
+job id alone cannot prove whether a lost rail response moved value.
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 

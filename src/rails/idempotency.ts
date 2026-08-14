@@ -42,8 +42,28 @@ import { DacsError } from "../errors.js";
  * supplies that via `reconcile`.
  */
 
-/** Deterministic settlement idempotency key: `railId:jobId:phaseIndex`. */
+/**
+ * Deterministic settlement idempotency key: `railId:jobId:phaseIndex`.
+ * Rail ids may be namespaced with `:`, so job ids must not contain it; otherwise
+ * `(x402:default, job)` aliases `(x402, default:job)` and one deal can inherit
+ * another deal's payment outcome.
+ */
 export function settlementKey(railId: string, jobId: string, phaseIndex: number): string {
+  if (
+    typeof railId !== "string" ||
+    railId.length === 0 ||
+    railId.normalize("NFC") !== railId ||
+    typeof jobId !== "string" ||
+    jobId.length === 0 ||
+    jobId.normalize("NFC") !== jobId ||
+    jobId.includes(":") ||
+    !Number.isSafeInteger(phaseIndex) ||
+    phaseIndex < 0
+  ) {
+    throw new DacsError(
+      "settlement key requires exact NFC rail/job identifiers, a colon-free job id, and a non-negative phase index",
+    );
+  }
   return `${railId}:${jobId}:${phaseIndex}`;
 }
 

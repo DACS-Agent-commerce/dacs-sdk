@@ -1,9 +1,25 @@
+import { types as nodeTypes } from "node:util";
+
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { Listing } from "../artifacts/types.js";
-import { listingAddress, logicalToStorageProgramName } from "../canonical/index.js";
+import { signComponentArtifact } from "../artifacts/signatures.js";
+import type { ListingDraft, ListingPin } from "../artifacts/types.js";
+import {
+  isListing,
+  isListingDraft,
+  readListingArtifact,
+} from "../artifacts/validators.js";
+import {
+  contentHash,
+  listingAddress,
+  logicalToStorageProgramName,
+} from "../canonical/index.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
-import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
+import type { Signer } from "./signedArtifact.js";
 
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
@@ -12,7 +28,7 @@ import { buildSignedArtifact, type Signer } from "./signedArtifact.js";
  *
  * Rules enforced:
  *  - `listingVersion` MUST be a positive integer ≥ 1 (§6.3.4) — 0 / fractional /
- *    negative are rejected. Absent → the initial version 1.
+ *    negative are rejected.
  *  - Versions MUST be contiguous and monotonic: an absent target may be created
  *    only when it is exactly `max(existing versions) + 1`, and the visible
  *    owner-bound history must contain every version from 1 through max.
@@ -41,6 +57,8 @@ export interface PublishListingResult {
   logicalAddress: string;
   /** Colon-free NATIVE storage-program name the logical address encodes to. */
   storageName: string;
+  /** DACS-1 §6.3.4 LR-1 tuple for the exact signed Listing version. */
+  listingPin: ListingPin;
   txRef?: string;
 }
 
@@ -63,16 +81,204 @@ export interface PublishListingDeps {
   ) => Promise<{ address: string; txRef?: string }>;
 }
 
-function listingHistoryPrefix(listing: Listing): string {
+type CapturedPublishListingDeps = Readonly<PublishListingDeps>;
+
+/**
+ * Capture a dependency as a data method without invoking caller-controlled
+ * accessors. Prototype methods remain supported, but proxy-backed dependency
+ * objects/functions are rejected because even inspecting them can run traps.
+ */
+function captureDataMethod<K extends keyof PublishListingDeps>(
+  deps: PublishListingDeps,
+  key: K,
+): PublishListingDeps[K] {
+  if (
+    deps === null ||
+    typeof deps !== "object" ||
+    nodeTypes.isProxy(deps)
+  ) {
+    throw new DacsError("publishListing dependencies must be a stable object");
+  }
+
+  let owner: object | null = deps;
+  try {
+    while (owner !== null) {
+      if (nodeTypes.isProxy(owner)) throw new TypeError("proxy prototype");
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor) {
+        if (
+          !("value" in descriptor) ||
+          typeof descriptor.value !== "function" ||
+          nodeTypes.isProxy(descriptor.value)
+        ) {
+          throw new TypeError("dependency is not a data method");
+        }
+        return Function.prototype.bind.call(
+          descriptor.value,
+          deps,
+        ) as PublishListingDeps[K];
+      }
+      owner = Object.getPrototypeOf(owner);
+    }
+  } catch (cause) {
+    throw new DacsError(
+      `publishListing dependency ${String(key)} must be a stable data method`,
+      { cause },
+    );
+  }
+
+  throw new DacsError(
+    `publishListing dependency ${String(key)} must be a stable data method`,
+  );
+}
+
+/** Select all asynchronous seams before inspecting the caller's Listing. */
+function capturePublishListingDeps(
+  deps: PublishListingDeps,
+): CapturedPublishListingDeps {
+  return Object.freeze({
+    sign: captureDataMethod(deps, "sign"),
+    scanOwnAnchorsByNamePrefix: captureDataMethod(
+      deps,
+      "scanOwnAnchorsByNamePrefix",
+    ),
+    anchorWriteOnce: captureDataMethod(deps, "anchorWriteOnce"),
+  });
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.length === expected.length &&
+    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  );
+}
+
+/** Own and validate the exact owner-bound history callback envelope. */
+function snapshotOwnedAnchorScan(
+  value: unknown,
+  prefix: string,
+): OwnedAnchorScan {
+  let snapshot: unknown;
+  try {
+    snapshot = snapshotCanonicalJsonRead(value, "listing history scan");
+  } catch (cause) {
+    throw new SubstrateError(
+      "listing history scan returned an unstable or non-wire result",
+      { cause },
+    );
+  }
+  if (
+    snapshot === null ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot)
+  ) {
+    throw new SubstrateError("listing history scan returned a malformed envelope");
+  }
+
+  const record = snapshot as Record<string, unknown>;
+  if (
+    record.status === "indeterminate" &&
+    hasExactKeys(record, ["status", "reason"]) &&
+    typeof record.reason === "string" &&
+    record.reason.length > 0 &&
+    record.reason.trim() === record.reason
+  ) {
+    return record as OwnedAnchorScan;
+  }
+  if (
+    record.status !== "ok" ||
+    !hasExactKeys(record, ["status", "anchors"]) ||
+    !Array.isArray(record.anchors)
+  ) {
+    throw new SubstrateError("listing history scan returned a malformed envelope");
+  }
+
+  for (const candidate of record.anchors) {
+    if (
+      candidate === null ||
+      typeof candidate !== "object" ||
+      Array.isArray(candidate)
+    ) {
+      throw new SubstrateError("listing history scan returned a malformed anchor");
+    }
+    const anchor = candidate as Record<string, unknown>;
+    if (
+      !hasExactKeys(anchor, ["address", "programName", "value"]) ||
+      typeof anchor.address !== "string" ||
+      anchor.address.length === 0 ||
+      anchor.address.trim() !== anchor.address ||
+      typeof anchor.programName !== "string" ||
+      !anchor.programName.startsWith(prefix) ||
+      anchor.value === null ||
+      typeof anchor.value !== "object" ||
+      Array.isArray(anchor.value)
+    ) {
+      throw new SubstrateError("listing history scan returned a malformed anchor");
+    }
+  }
+  return record as OwnedAnchorScan;
+}
+
+/** Own and validate the immutable-write result before exposing its refs. */
+function snapshotAnchorWriteResult(
+  value: unknown,
+): { address: string; txRef?: string } {
+  let snapshot: unknown;
+  try {
+    snapshot = snapshotCanonicalJsonRead(
+      value,
+      "immutable listing anchor result",
+    );
+  } catch (cause) {
+    throw new SubstrateError(
+      "immutable listing anchor returned an unstable or non-wire result",
+      { cause },
+    );
+  }
+  if (
+    snapshot === null ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot)
+  ) {
+    throw new SubstrateError("immutable listing anchor returned a malformed result");
+  }
+  const record = snapshot as Record<string, unknown>;
+  const exact =
+    hasExactKeys(record, ["address"]) ||
+    hasExactKeys(record, ["address", "txRef"]);
+  if (
+    !exact ||
+    typeof record.address !== "string" ||
+    record.address.length === 0 ||
+    record.address.trim() !== record.address ||
+    (Object.prototype.hasOwnProperty.call(record, "txRef") &&
+      (typeof record.txRef !== "string" ||
+        record.txRef.length === 0 ||
+        record.txRef.trim() !== record.txRef))
+  ) {
+    throw new SubstrateError("immutable listing anchor returned a malformed result");
+  }
+  return record as { address: string; txRef?: string };
+}
+
+function listingHistoryPrefix(listing: ListingDraft): string {
   // Passing the already-prefixed version token "v" yields the logical prefix
   // `...:v`; the storage binding is idempotently colon-encoded.
   return logicalToStorageProgramName(
-    listingAddress(listing.agentId, listing.serviceId, "v"),
+    listingAddress(
+      listing.seller.identity.presentedBy,
+      listing.listingId,
+      "v",
+    ),
   );
 }
 
 function assertContiguousHistory(
-  listing: Listing,
+  listing: ListingDraft,
   prefix: string,
   scan: OwnedAnchorScan,
 ): Set<number> {
@@ -99,10 +305,27 @@ function assertContiguousHistory(
       );
     }
 
-    const storedVersion = anchor.value["listingVersion"] ?? 1;
+    const stored = readListingArtifact(anchor.value);
+    if (!stored) {
+      throw new DacsError(
+        `listing history anchor ${anchor.address} is not a readable signed Listing`,
+      );
+    }
+    // DACS-1 §6.3.4 prior versions remain readable. Historical reduced MVP
+    // versions participate only through this explicit read compatibility arm;
+    // the new version written below must still be normative.
+    const storedPublisher =
+      stored.compatibility === "normative"
+        ? stored.listing.seller.identity.presentedBy
+        : stored.listing.agentId;
+    const storedId =
+      stored.compatibility === "normative"
+        ? stored.listing.listingId
+        : stored.listing.serviceId;
+    const storedVersion = stored.listing.listingVersion ?? 1;
     if (
-      anchor.value["agentId"] !== listing.agentId ||
-      anchor.value["serviceId"] !== listing.serviceId ||
+      storedPublisher !== listing.seller.identity.presentedBy ||
+      storedId !== listing.listingId ||
       storedVersion !== version
     ) {
       throw new DacsError(
@@ -125,26 +348,74 @@ function assertContiguousHistory(
   return versions;
 }
 
+/**
+ * Make the exact signed publication graph immutable before it crosses the
+ * asynchronous substrate seam. Listings are JSON artifacts, so every nested
+ * object/array participates in the signature scope and must be frozen.
+ */
+function deepFreezePublication<T extends object>(value: T): Readonly<T> {
+  const seen = new WeakSet<object>();
+  const freeze = (candidate: object): void => {
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    for (const nested of Object.values(candidate)) {
+      if (nested !== null && typeof nested === "object") freeze(nested);
+    }
+    Object.freeze(candidate);
+  };
+  freeze(value);
+  return value;
+}
+
 export async function publishListingCore(
-  listing: Listing,
+  inputListing: ListingDraft,
   deps: PublishListingDeps,
 ): Promise<PublishListingResult> {
-  const version = listing.listingVersion ?? 1;
-  if (!Number.isInteger(version) || version < 1) {
+  // Select dependency identities without invoking accessors, then own the
+  // caller's exact canonical JSON view. Neither side can swap the other while
+  // this synchronous entry boundary is being established.
+  const capturedDeps = capturePublishListingDeps(deps);
+  const listing = snapshotCanonicalJson(
+    inputListing,
+    "publishListing Listing draft",
+  ) as ListingDraft;
+
+  const candidateVersion = (listing as { listingVersion?: unknown })
+    .listingVersion;
+  if (
+    !Number.isSafeInteger(candidateVersion) ||
+    (candidateVersion as number) < 1
+  ) {
     throw new DacsError(
-      `listingVersion must be a positive integer ≥ 1 (§6.3.4), got ${version}`,
+      `listingVersion must be a positive integer within the safe range (§6.3.4), got ${String(candidateVersion)}`,
     );
   }
+  // DACS-1 §6.3.4 LP-2 and CORE §11.1.2: new writes are normative only.
+  // Historical MVP artifacts are accepted solely by readListingArtifact().
+  if (!isListingDraft(listing)) {
+    throw new DacsError(
+      "publishListing requires a normative unsigned DACS-1 §6.3.4 Listing; " +
+        "legacy MVP shapes are read-only",
+    );
+  }
+  const version = listing.listingVersion;
 
   // Logical (colon-bearing, discovery key) vs native (colon-free program name the
   // substrate actually accepts). Anchor under the encoded name; return both.
-  const logicalAddress = listingAddress(listing.agentId, listing.serviceId, version);
+  const logicalAddress = listingAddress(
+    listing.seller.identity.presentedBy,
+    listing.listingId,
+    version,
+  );
   const storageName = logicalToStorageProgramName(logicalAddress);
   const historyPrefix = listingHistoryPrefix(listing);
   const versions = assertContiguousHistory(
     listing,
     historyPrefix,
-    await deps.scanOwnAnchorsByNamePrefix(historyPrefix),
+    snapshotOwnedAnchorScan(
+      await capturedDeps.scanOwnAnchorsByNamePrefix(historyPrefix),
+      historyPrefix,
+    ),
   );
   if (!versions.has(version)) {
     const expected = versions.size + 1;
@@ -155,11 +426,44 @@ export async function publishListingCore(
     }
   }
 
-  const signed = await buildSignedArtifact(
+  const signed = await signComponentArtifact(
     listing,
     ARTIFACT_SEPARATORS.Listing,
-    deps.sign,
+    {
+      algorithm: "ed25519",
+      signer: listing.seller.identity.presentedBy,
+      sign: capturedDeps.sign,
+    },
   );
-  const { address: anchored, txRef } = await deps.anchorWriteOnce(storageName, signed);
-  return { ref: anchored, logicalAddress, storageName, txRef };
+  if (!isListing(signed)) {
+    throw new DacsError(
+      "signed Listing failed DACS-1 §6.3.4 structural/signature-envelope validation",
+    );
+  }
+  let publication: typeof signed;
+  let listingContentHash: string;
+  try {
+    // The signer result is authoritative. Give the adapter an owned, deeply
+    // immutable copy so no await-time mutation can change the bytes written.
+    const owned = snapshotCanonicalJson(signed, "signed Listing publication");
+    // Hash the owned mutable wire snapshot before freezing it for the adapter;
+    // strict authoring hashes intentionally reject exotic/read-only inputs.
+    listingContentHash = contentHash(
+      owned as unknown as Record<string, unknown>,
+    );
+    publication = deepFreezePublication(owned);
+  } catch (cause) {
+    throw new DacsError("signed Listing could not form an immutable publication", {
+      cause,
+    });
+  }
+  const listingPin = {
+    listingId: listing.listingId,
+    version,
+    contentHash: listingContentHash,
+  };
+  const { address: anchored, txRef } = snapshotAnchorWriteResult(
+    await capturedDeps.anchorWriteOnce(storageName, publication),
+  );
+  return { ref: anchored, logicalAddress, storageName, listingPin, txRef };
 }

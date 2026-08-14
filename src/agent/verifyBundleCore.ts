@@ -1,4 +1,5 @@
 import { contentHash, stripSignature } from "../canonical/index.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type {
@@ -18,7 +19,8 @@ import {
   isAnyAttestationBundle,
   isAttestationRef,
   isCompositeVerificationRecord,
-  isListing,
+  isLegacyMvpListing,
+  isListingDraft,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
@@ -155,6 +157,16 @@ function isAnyRecord(v: Record<string, unknown>): boolean {
   return typeof v === "object" && v !== null;
 }
 
+/**
+ * Bundle refs hash and validate the unsigned Listing scope. DACS-1 §6.3.4
+ * Listings therefore use `isListingDraft` here, while historical SDK bundles
+ * remain readable only through the explicit MVP compatibility validator.
+ */
+function isReadableListingScope(v: Record<string, unknown>): boolean {
+  const scope = stripSignature(v);
+  return isListingDraft(scope) || isLegacyMvpListing(scope);
+}
+
 function isAgreementCommitPhase(kind: string): boolean {
   return kind === "commit" || kind.startsWith("commit-");
 }
@@ -206,7 +218,19 @@ export async function verifyBundleCore(
   bundleRef: string,
   deps: VerifyBundleDeps,
 ): Promise<BundleVerification> {
-  const raw = await deps.readArtifact(bundleRef);
+  const read = await deps.readArtifact(bundleRef);
+  let raw: Record<string, unknown> | null = null;
+  if (read !== null) {
+    try {
+      // Storage adapters may return the deeply frozen publication object they
+      // were given. Own its exact JSON view before validation and before any
+      // later await, while still rejecting accessors/proxies/non-wire aliases.
+      raw = snapshotCanonicalJsonRead(read, "attestation bundle read");
+    } catch {
+      // Verification is a verdict API: an unstable storage value is malformed,
+      // not an exception that callers could accidentally treat as unavailable.
+    }
+  }
   if (raw && isFaultBundle(raw) && !faultedPartyIsPermitted(raw)) {
     return {
       ok: false,
@@ -313,15 +337,33 @@ export async function verifyBundleCore(
         value: null,
       };
     }
+    let value: Record<string, unknown> | null = null;
+    if (resolved.value !== null) {
+      try {
+        value = snapshotCanonicalJsonRead(
+          resolved.value,
+          `${artifactKind} artifact read`,
+        );
+      } catch {
+        return {
+          check: {
+            kind: artifactKind,
+            id: refLocator(ref),
+            verdict: "invalid-shape",
+          },
+          value: null,
+        };
+      }
+    }
     return {
       check: checkArtifact(
         artifactKind,
         refLocator(ref),
         ref.contentHash,
         validate,
-        resolved.value,
+        value,
       ),
-      value: resolved.value,
+      value,
     };
   };
 
@@ -387,20 +429,35 @@ export async function verifyBundleCore(
       ? (stripSignature(agreementArtifact) as { listingRef: string }).listingRef
       : null;
   const canResolveListing = Boolean(listingAddr || deps.resolveRef);
-  const listing = listingAddr
+  const listingRead = listingAddr
     ? await deps.readArtifact(listingAddr)
     : deps.resolveRef
       ? await deps.resolveRef("dacs-1-listing", bundle.jobId, bundle.parties)
       : null;
+  let listing: Record<string, unknown> | null = null;
+  let listingMalformed = false;
+  if (listingRead !== null) {
+    try {
+      listing = snapshotCanonicalJsonRead(listingRead, "Listing artifact read");
+    } catch {
+      listingMalformed = true;
+    }
+  }
   refs.push(
     canResolveListing
-      ? checkArtifact(
-          "dacs-1-listing",
-          listingId,
-          bundle.listingRef.contentHash,
-          isListing,
-          listing,
-        )
+      ? listingMalformed
+        ? {
+            kind: "dacs-1-listing",
+            id: listingId,
+            verdict: "invalid-shape",
+          }
+        : checkArtifact(
+            "dacs-1-listing",
+            listingId,
+            bundle.listingRef.contentHash,
+            isReadableListingScope,
+            listing,
+          )
       : {
           kind: "dacs-1-listing",
           id: listingId,

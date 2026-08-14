@@ -6,6 +6,7 @@ import {
   faultCategory,
   SubstrateError,
   TransientError,
+  UnsupportedCapabilityError,
 } from "../src/errors.js";
 
 describe("fault classification (T9)", () => {
@@ -14,6 +15,7 @@ describe("fault classification (T9)", () => {
     expect(new TransientError("x").category).toBe("transient");
     expect(new CounterpartyError("x").category).toBe("counterparty");
     expect(new SubstrateError("x").category).toBe("substrate");
+    expect(new UnsupportedCapabilityError("x").category).toBe("permanent");
   });
 
   test("category override on the base error", () => {
@@ -32,5 +34,6 @@ describe("fault classification (T9)", () => {
 
   test("subclasses remain instanceof DacsError", () => {
     expect(new SubstrateError("x") instanceof DacsError).toBe(true);
+    expect(new UnsupportedCapabilityError("x") instanceof DacsError).toBe(true);
   });
 });

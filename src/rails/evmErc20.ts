@@ -176,14 +176,29 @@ export function evmErc20Settle(
   opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
   const store = opts.store ?? createIdempotencyStore();
+  const tokenAddress = cfg.tokenAddress;
+  const network = cfg.network;
+  const recipientEvm = cfg.recipientEvm;
+  const reconcile = opts.reconcile;
   return (req) => {
+    const { amount, expectedPayee, jobId, rail: railId } = req;
+    const phaseIndex = req.phaseIndex ?? 0;
+    if (expectedPayee !== recipientEvm) {
+      throw new DacsError(
+        `evm-erc20 destination mismatch: request binds ${expectedPayee}, configured rail pays ${recipientEvm}`,
+      );
+    }
     const submit = () =>
       rail.settle({
-        network: cfg.network,
-        tokenAddress: cfg.tokenAddress,
-        recipientEvm: cfg.recipientEvm,
-        amount: req.amount,
+        network,
+        tokenAddress,
+        recipientEvm,
+        amount,
       });
-    return store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), submit, opts.reconcile);
+    return store.once(
+      settlementKey(railId, jobId, phaseIndex),
+      submit,
+      reconcile,
+    );
   };
 }

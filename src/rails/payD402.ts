@@ -284,11 +284,21 @@ export function payD402Settle(
   rail: PayD402Rail,
   paywall: { url: string; recipient: string; network?: string },
 ): (req: SettleRequest) => Promise<SettleResult> {
-  return (req) =>
-    rail.settle({
-      paywallUrl: paywall.url,
-      recipient: paywall.recipient,
-      amount: req.amount,
-      network: paywall.network ?? "demos",
+  const paywallUrl = paywall.url;
+  const recipient = paywall.recipient;
+  const network = paywall.network ?? "demos";
+  return (req) => {
+    const { amount, expectedPayee } = req;
+    if (expectedPayee !== recipient) {
+      throw new DacsError(
+        `pay-d402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipient}`,
+      );
+    }
+    return rail.settle({
+      paywallUrl,
+      recipient,
+      amount,
+      network,
     });
+  };
 }

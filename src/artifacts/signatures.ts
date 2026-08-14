@@ -5,6 +5,7 @@ import {
   isSafeJsonString,
   snapshotCanonicalJson,
   snapshotCanonicalJsonObject,
+  snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import {
   type DomainSeparator,
@@ -36,9 +37,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.trim() === value;
 
-/** True only for the canonical, unpadded RFC 4648 base64url spelling. */
-function isCanonicalBase64Url(value: unknown): value is string {
-  if (!isNonEmptyString(value) || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+/** CORE §B.7 SIG-6 canonical unpadded Base64URL encoding. */
+export function isCanonicalBase64Url(value: unknown): value is string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    return false;
+  }
   try {
     return Buffer.from(value, "base64url").toString("base64url") === value;
   } catch {
@@ -203,6 +210,22 @@ function snapshotArtifact<T extends object>(artifact: T): T {
     artifact as Record<string, unknown>,
     "component signature artifact",
   ) as T;
+}
+
+/** Own an artifact received from storage, where immutable descriptors are valid. */
+function snapshotReadArtifact<T extends object>(artifact: T): T {
+  const snapshot = snapshotCanonicalJsonRead(
+    artifact as Record<string, unknown>,
+    "component signature artifact",
+  );
+  if (
+    snapshot === null ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot)
+  ) {
+    throw new DacsError("component signature artifact must be a JSON object");
+  }
+  return snapshot as T;
 }
 
 function assertUnsignedComponentArtifact(artifact: object): void {
@@ -404,7 +427,7 @@ export async function verifyComponentSignature<TKey>(
   let artifactSnapshot: Record<string, unknown>;
   try {
     if (!isRecord(artifact)) throw new TypeError();
-    artifactSnapshot = snapshotArtifact(artifact);
+    artifactSnapshot = snapshotReadArtifact(artifact);
   } catch {
     return {
       status: "malformed",
