@@ -16,7 +16,9 @@ describe("dacs bin", () => {
     if (result.status !== 0) {
       throw new Error(`failed to build CLI before bin tests\n${result.stdout}\n${result.stderr}`);
     }
-  }, 30_000);
+  // The suite runs this redundant package build alongside CPU-heavy worker
+  // pools; the dedicated CI build step remains the correctness gate.
+  }, 60_000);
 
   it("parses doctor flags", () => {
     expect(
