@@ -9,6 +9,7 @@ import {
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,
   isValidSellerReceiptClaim,
+  isSellerFulfilmentHandoff,
   sellerFulfilmentCandidateHash,
   sellerFulfilmentAuditSourceHash,
   verifySellerPaymentIntake,
@@ -585,6 +586,12 @@ function fulfilmentHandoffBase(
     phase: "deliver-storage-program",
     logicalAddress: `dacs4:deliverable:${claim.jobId}`,
     deliverableSpecHash: "dd".repeat(32),
+    agreementViewHash: "ee".repeat(32),
+    validationFloorAt: Math.max(
+      claim.authorization.commitment.finalizedAt,
+      claim.authorization.evidenceInput.observedAt,
+    ),
+    evidenceAuthority: { primaryClaim: "did:demos:seller", algorithm: "ed25519" },
     candidate: {
       status: "prepared",
       validatedAt: claim.observedAt,
@@ -692,6 +699,29 @@ function fulfilmentHandoff(
     },
   };
 }
+
+describe("SellerFulfilmentHandoff runtime guard", () => {
+  it.each([
+    "paymentPhaseIndex",
+    "deliveryPhaseIndex",
+    "candidate.validatedAt",
+  ] as const)(
+    "rejects negative zero in $field despite its zero JCS collision",
+    (field) => {
+      const baseline = fulfilmentHandoff();
+      const ambiguous = structuredClone(baseline);
+      if (field === "candidate.validatedAt") {
+        ambiguous.candidate.validatedAt = -0;
+        baseline.candidate.validatedAt = 0;
+      } else {
+        ambiguous[field] = -0;
+        baseline[field] = 0;
+      }
+      expect(canonicalize(ambiguous)).toBe(canonicalize(baseline));
+      expect(isSellerFulfilmentHandoff(ambiguous)).toBe(false);
+    },
+  );
+});
 
 describe("verifySellerPaymentIntake", () => {
   it.each([

@@ -75,6 +75,9 @@ function singularSignatureScope(record: Record<string, unknown>): Record<string,
 }
 
 function singularSignatureContentHash(record: Record<string, unknown>): string {
+  if (!hasExactJcsView(record)) {
+    throw new TypeError("signed artifact contains a JCS-ambiguous JavaScript value");
+  }
   return sha256Hex(canonicalize(singularSignatureScope(record)));
 }
 
@@ -743,11 +746,41 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isNonEmpty = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.trim() === value;
 const isSafeUint = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+  !Object.is(value, -0);
 const isPositiveSafeInt = (value: unknown): value is number =>
   isSafeUint(value) && value > 0;
 const isHash = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+
+/** Reject JavaScript views that JCS would silently alias to different values. */
+function hasExactJcsView(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (value === undefined || typeof value === "function" || typeof value === "symbol" ||
+      typeof value === "bigint") return false;
+  if (typeof value === "number") return Number.isFinite(value) && !Object.is(value, -0);
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    if (Object.keys(value).length !== value.length) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index) ||
+          !hasExactJcsView(value[index], seen)) return false;
+    }
+    return true;
+  }
+  const prototype = Object.getPrototypeOf(value) as object | null;
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string")) return false;
+  for (const key of keys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor) ||
+        !hasExactJcsView(descriptor.value, seen)) return false;
+  }
+  return true;
+}
+
 const exact = (left: unknown, right: unknown): boolean => {
   try {
     return canonicalize(left) === canonicalize(right);
@@ -872,7 +905,7 @@ function fulfilmentRequestViolation(
 }
 
 function isAgreementValue(value: unknown): value is SellerFulfilmentAgreement {
-  if (!isRecord(value) || !hasOnlyKeys(value, [
+  if (!isRecord(value) || !hasExactJcsView(value) || !hasOnlyKeys(value, [
     "artifactKind", "ref", "contentHash", "jobId", "listingPin", "buyer", "seller",
     "deliverableRef", "commitment",
   ]) || value.artifactKind !== "payee-bound" || !isNonEmpty(value.ref) ||
@@ -883,8 +916,10 @@ function isAgreementValue(value: unknown): value is SellerFulfilmentAgreement {
       ]) ||
       !isNonEmpty(value.buyer.primaryClaim) || !isHash(value.buyer.bundleHash) ||
       !isAttestationRef(value.buyer.vetRecordRef) ||
-      (value.buyer.storageAddress !== undefined && !isNonEmpty(value.buyer.storageAddress)) ||
-      (value.buyer.encryptionKey !== undefined && !isNonEmpty(value.buyer.encryptionKey)) ||
+      (Object.prototype.hasOwnProperty.call(value.buyer, "storageAddress") &&
+        !isNonEmpty(value.buyer.storageAddress)) ||
+      (Object.prototype.hasOwnProperty.call(value.buyer, "encryptionKey") &&
+        !isNonEmpty(value.buyer.encryptionKey)) ||
       !isRecord(value.seller) ||
       !hasOnlyKeys(value.seller, ["primaryClaim", "bundleHash", "vetRecordRef"]) ||
       !isNonEmpty(value.seller.primaryClaim) || !isHash(value.seller.bundleHash) ||
@@ -894,7 +929,8 @@ function isAgreementValue(value: unknown): value is SellerFulfilmentAgreement {
       !["storage-program", "entitlement", "attested-payload"].includes(
         String(value.deliverableRef.deliverableType),
       ) || !isHash(value.deliverableRef.hash) ||
-      (value.deliverableRef.schemaUrl !== undefined && !isNonEmpty(value.deliverableRef.schemaUrl)) ||
+      (Object.prototype.hasOwnProperty.call(value.deliverableRef, "schemaUrl") &&
+        !isNonEmpty(value.deliverableRef.schemaUrl)) ||
       !isRecord(value.commitment) || !hasOnlyKeys(value.commitment, [
         "status", "ref", "agreementHash", "recordContentHash", "finalizedAt", "signer",
       ]) || value.commitment.status !== "finalized" || !isNonEmpty(value.commitment.ref) ||
@@ -1027,8 +1063,11 @@ function sameFulfilmentHandoff(
     "phase",
     "logicalAddress",
     "deliverableSpecHash",
+    "agreementViewHash",
+    "validationFloorAt",
   ] as const;
   if (scalarKeys.some((key) => left[key] !== right[key]) ||
+      !exact(left.evidenceAuthority, right.evidenceAuthority) ||
       left.auditSourceHash !== right.auditSourceHash ||
       !exact(left.auditSource, right.auditSource) ||
       !exact(left.auditSourceCommitment, right.auditSourceCommitment) ||
@@ -1068,6 +1107,8 @@ function handoffBindingViolation(
   phase: SellerDeliveryPhase,
   logicalAddress: string,
   deliverableSpecHash: string,
+  agreementViewHash: string,
+  evidenceSigner: Pick<BuildComponentSignatureOptions, "signer" | "algorithm">,
 ): string | null {
   let authorizationHash: string;
   try {
@@ -1085,7 +1126,15 @@ function handoffBindingViolation(
       handoff.paymentPhaseIndex !== authorization.phaseIndex ||
       handoff.deliveryPhaseIndex !== request.deliveryPhaseIndex ||
       handoff.phase !== phase || handoff.logicalAddress !== logicalAddress ||
-      handoff.deliverableSpecHash !== deliverableSpecHash) {
+      handoff.deliverableSpecHash !== deliverableSpecHash ||
+      handoff.agreementViewHash !== agreementViewHash ||
+      handoff.validationFloorAt < Math.max(
+        authorization.commitment.finalizedAt,
+        authorization.evidenceInput.observedAt,
+      ) ||
+      handoff.validationFloorAt > handoff.candidate.validatedAt ||
+      handoff.evidenceAuthority.primaryClaim !== evidenceSigner.signer ||
+      handoff.evidenceAuthority.algorithm !== evidenceSigner.algorithm) {
     return "retained fulfilment handoff does not bind the exact authorization, request, and deliverable";
   }
   return null;
@@ -1111,6 +1160,9 @@ function sameDeliveredArtifact(
 }
 
 function validateSpec(spec: SellerDeliverableSpec): string | null {
+  if (!hasExactJcsView(spec)) {
+    return "DeliverableSpec contains a JCS-ambiguous JavaScript value";
+  }
   if (!isDeliverableSpec(spec)) return "DeliverableSpec is malformed or unsupported";
   if (spec.kind === "storage-program") return null;
   if (spec.kind === "entitlement") {
@@ -3090,6 +3142,15 @@ async function runFulfilmentCoreInner(
       !pinsEqual(agreement.listingPin, authorization.listingRef)) {
     return rejected("agreement-fields-malformed", "agreement parties or Listing binding are malformed");
   }
+  let agreementViewHash: string;
+  try {
+    agreementViewHash = sha256Hex(canonicalize(agreement));
+  } catch (error) {
+    return rejected(
+      "agreement-fields-malformed",
+      `authenticated agreement view is not canonicalizable: ${String(error)}`,
+    );
+  }
   let rawListingResolution: unknown;
   let listingPinInput: ListingRef;
   let listingPinBefore: string;
@@ -3370,6 +3431,8 @@ async function runFulfilmentCoreInner(
       phase,
       logicalAddress,
       specHash,
+      agreementViewHash,
+      evidenceSigner,
     );
     if (violation) {
       return indeterminate("payment-permit-store-invalid", [violation], {
@@ -3384,6 +3447,8 @@ async function runFulfilmentCoreInner(
       retainedPreparedCandidate = structuredClone(retainedHandoff.candidate);
     }
   }
+  const retainedValidationFloor = retainedHandoff?.validationFloorAt ??
+    minimumDeliveryTime;
 
   // Reconcile a consumed permit before re-running success-path candidate
   // verifiers. An exact durable failure must not be demoted by a later schema,
@@ -3434,7 +3499,7 @@ async function runFulfilmentCoreInner(
         agreement,
         spec,
         retainedPreparedCandidate.validatedAt,
-        minimumDeliveryTime,
+        retainedValidationFloor,
         deps,
       );
       if (validation.status !== "ok") {
@@ -3706,6 +3771,12 @@ async function runFulfilmentCoreInner(
       phase,
       logicalAddress,
       deliverableSpecHash: specHash,
+      agreementViewHash,
+      validationFloorAt: minimumDeliveryTime,
+      evidenceAuthority: {
+        primaryClaim: requiredEvidenceSigner,
+        algorithm: evidenceSigner.algorithm,
+      },
       auditSource: structuredClone(auditSource),
       auditSourceHash,
       auditSourceCommitment: signedAuditSourceCommitment.commitment,
@@ -3763,8 +3834,25 @@ async function runFulfilmentCoreInner(
     if (consumed.status === "invalid") {
       return rejected("payment-permit-invalid", "payment permit became invalid before consumption");
     }
-    if (!isValidSellerReceiptClaim(consumed.claim) || !exact(consumed.claim, claim) ||
-        !isSellerFulfilmentHandoff(consumed.handoff)) {
+    if (!isValidSellerReceiptClaim(consumed.claim)) {
+      return indeterminate("payment-permit-store-invalid", ["permit authorization changed during consumption"], {
+        fulfilmentId: id,
+        safeToRetryDelivery: false,
+      });
+    }
+    // A runtime-valid consumed response is authoritative proof of payment use,
+    // even when its exact claim/handoff later fails the request-binding check.
+    // Retain that proof before every post-consumption return path.
+    execution.consumedPaymentAuthorization = structuredClone(
+      consumed.claim.authorization,
+    );
+    if (!isSellerFulfilmentHandoff(consumed.handoff)) {
+      return indeterminate("payment-permit-store-invalid", ["receipt store returned a malformed consumed handoff"], {
+        fulfilmentId: id,
+        safeToRetryDelivery: false,
+      });
+    }
+    if (!exact(consumed.claim, claim)) {
       return indeterminate("payment-permit-store-invalid", ["permit authorization changed during consumption"], {
         fulfilmentId: id,
         safeToRetryDelivery: false,
@@ -3864,7 +3952,7 @@ async function runFulfilmentCoreInner(
             recovery: { action: "reconcile-payload-attestation" },
           });
         }
-        if (anchorObservedAt < minimumDeliveryTime) {
+        if (anchorObservedAt < retainedValidationFloor) {
           return indeterminate("clock-invalid", [
             "payload-attestation clock precedes the finalized payment/session state",
           ], {
@@ -3884,7 +3972,7 @@ async function runFulfilmentCoreInner(
           spec,
           retainedValidation.deliverableContentHash,
           anchorObservedAt,
-          minimumDeliveryTime,
+          retainedValidationFloor,
           deps,
         );
         if (anchoredRecord.status === "indeterminate") {
@@ -4052,7 +4140,19 @@ async function runFulfilmentCoreInner(
     });
   }
   const observedAt = reconciliation.observedAt;
-  if (!isSafeUint(observedAt) || observedAt < minimumDeliveryTime || observedAt > checkedAt) {
+  // Once the permit is consumed, the retained candidate's validation time is
+  // the stable causal lower bound for this exact delivery. A later authenticated
+  // SessionRecord update must not invalidate an already-terminal delivery fact
+  // that followed that retained validation.
+  const terminalDeliveryMinimum = retainedHandoff
+    ? Math.max(
+        agreement.commitment.finalizedAt,
+        authorization.evidenceInput.observedAt,
+        retainedHandoff.candidate.validatedAt,
+      )
+    : minimumDeliveryTime;
+  if (!isSafeUint(observedAt) || observedAt < terminalDeliveryMinimum ||
+      observedAt > checkedAt) {
     return indeterminate("clock-invalid", [
       "stable delivery observation is outside the finalized-state/current-clock bounds",
     ], {
@@ -4157,7 +4257,7 @@ async function runFulfilmentCoreInner(
         agreement,
         spec,
         observedAt,
-        minimumDeliveryTime,
+        retainedValidationFloor,
         deps,
         preparedArtifact,
       );

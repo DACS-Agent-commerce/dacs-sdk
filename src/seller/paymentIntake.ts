@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type {
+  ComponentSignatureAlgorithm,
   IdentityBundle,
   Listing,
   ListingRef,
@@ -304,6 +305,15 @@ interface SellerFulfilmentHandoffBase {
     | "deliver-attested-payload";
   logicalAddress: string;
   deliverableSpecHash: string;
+  /** Canonical hash of the complete authenticated agreement view at consumption. */
+  agreementViewHash: string;
+  /** Immutable causal floor used when the retained candidate was validated. */
+  validationFloorAt: number;
+  /** Authenticated SessionRecord phase-orchestrator authority at consumption. */
+  evidenceAuthority: {
+    primaryClaim: string;
+    algorithm: ComponentSignatureAlgorithm;
+  };
   candidate:
     | {
         status: "prepared";
@@ -621,7 +631,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isSafeUint(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+    !Object.is(value, -0);
 }
 
 function hasOnlyKeys(
@@ -689,6 +700,9 @@ export function isSellerFulfilmentHandoff(
     "phase",
     "logicalAddress",
     "deliverableSpecHash",
+    "agreementViewHash",
+    "validationFloorAt",
+    "evidenceAuthority",
     "candidate",
     "auditSource",
     "auditSourceHash",
@@ -710,6 +724,14 @@ export function isSellerFulfilmentHandoff(
     !HASH_RE.test(value.authorizationHash as string) ||
     !HASH_RE.test(value.paymentEvidenceHash as string) ||
     !HASH_RE.test(value.deliverableSpecHash as string) ||
+    !HASH_RE.test(value.agreementViewHash as string) ||
+    !isSafeUint(value.validationFloorAt) ||
+    !isRecord(value.evidenceAuthority) ||
+    !hasExactKeys(value.evidenceAuthority, ["primaryClaim", "algorithm"]) ||
+    !nonEmpty(value.evidenceAuthority.primaryClaim) ||
+    !["ed25519", "ecdsa-secp256k1", "sr1-aggregate"].includes(
+      String(value.evidenceAuthority.algorithm),
+    ) ||
     !isSafeUint(value.paymentPhaseIndex) ||
     !isSafeUint(value.deliveryPhaseIndex) ||
     ![
