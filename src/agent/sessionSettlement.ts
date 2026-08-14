@@ -640,13 +640,15 @@ function contextMatchesEvidence(
   if (evidenceAddress !== paymentAddress && evidenceAddress !== `${paymentAddress}:resolved`) {
     return "settlement evidence anchor does not bind the authenticated payment phase";
   }
-  if (settlement.anchorReceipt.writer !== context.orchestrator ||
+  const authenticatedWriter = settlement.anchorReceipt.writer === context.orchestrator ||
+    settlement.anchorReceipt.writer === context.payer.primaryClaim;
+  if (!authenticatedWriter ||
       settlement.anchorReceipt.logicalAddress !== evidenceAddress ||
       (settlement.evidenceRef.signer !== undefined &&
         settlement.evidenceRef.signer !== evidence.signature.signer) ||
       settlement.anchorReceipt.state !== "finalized" ||
       settlement.anchorReceipt.observationDisposition !== "established") {
-    return "settlement evidence lacks an exact finalized orchestrator receipt";
+    return "settlement evidence lacks an exact finalized authenticated-actor receipt";
   }
   return null;
 }

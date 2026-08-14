@@ -1199,11 +1199,31 @@ async function verifyAnchorReceipt(
 ): Promise<boolean> {
   if (receipt.writer !== expectedWriter || receipt.state !== "finalized" ||
       receipt.observationDisposition !== "established") return false;
-  try {
-    return await adapter.verifyDemosAnchorReceipt(receipt);
-  } catch {
-    return false;
+  return retryEstablishedRead(
+    () => adapter.verifyDemosAnchorReceipt(receipt),
+    3,
+    250,
+  );
+}
+
+async function retryEstablishedRead(
+  operation: () => Promise<boolean>,
+  attempts: number,
+  delayMs: number,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      if (await operation()) return true;
+    } catch {
+      // A finalized immutable proof may be temporarily absent or malformed in
+      // one RPC view. A later exact authentication can establish it; no false
+      // or thrown observation is ever promoted to valid.
+    }
+    if (attempt < attempts && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
   }
+  return false;
 }
 
 async function publishAndDiscoverListing(input: {
@@ -2399,6 +2419,12 @@ async function createSellerRuntime(input: {
   directories: SellerDirectories;
   state: CommerceState;
   workerId: string;
+  startPaymentEvidencePublication?: (input: Readonly<{
+    permit: X402SellerPaymentPermitAuthorization;
+    observation: Extract<X402TransferObservation, { status: "finalized" }>;
+    receiptStore: SellerRuntime["receiptStore"];
+  }>) => void;
+  notifyDeliveryReady?: () => void;
 }): Promise<SellerRuntime> {
   const {
     preflight,
@@ -2939,6 +2965,18 @@ async function createSellerRuntime(input: {
     },
     prepareDelivery: async () => ({ status: "prepared", delivery: { artifact: deliveredArtifact } }),
     submitDelivery: async () => {
+      if (input.startPaymentEvidencePublication) {
+        requireCondition(state.permit !== undefined, "payment-evidence-permit-missing");
+        requireCondition(
+          state.observedTransfer !== undefined,
+          "payment-evidence-native-observation-missing",
+        );
+        input.startPaymentEvidencePublication(Object.freeze({
+          permit: structuredClone(state.permit),
+          observation: structuredClone(state.observedTransfer),
+          receiptStore,
+        }));
+      }
       state.counts.applicationCallback += 1;
       const anchored = await anchorArtifact({
         adapter: preflight.seller.adapter,
@@ -3239,6 +3277,7 @@ async function createSellerRuntime(input: {
               state.deliveryReady = structuredClone(context.deliveryReady);
               state.deliveryReadyAt = Date.now();
               process.stderr.write("funded-e2e-step:delivery-ready:emitted\n");
+              input.notifyDeliveryReady?.();
               return {
                 status: 200,
                 headers: { "content-type": "application/json" },
@@ -3418,6 +3457,7 @@ interface SettlementRun {
   seller: SellerRuntime;
   buyerStoreDir: string;
   sellerDirectories: SellerDirectories;
+  paymentEvidencePublication?: ReturnType<typeof publishAndVerifySellerSettlement>;
 }
 
 async function settleAndRecover(input: {
@@ -3442,11 +3482,85 @@ async function settleAndRecover(input: {
   state.loseResponseAcknowledgement = !fastProfile;
   state.loseFacilitatorResponse = fastProfile &&
     process.env.LIVE_E2E_INJECT_FACILITATOR_RESPONSE_LOSS === "1";
-  let seller = await createSellerRuntime({
+  let paymentEvidencePublication:
+    | ReturnType<typeof publishAndVerifySellerSettlement>
+    | undefined;
+  let paymentEvidencePublicationBinding: string | undefined;
+  let retainedBuyerIntent: Readonly<X402BuyerSettlementIntent> | undefined;
+  const startPaymentEvidencePublication = fastProfile
+    ? (publicationInput: Readonly<{
+        permit: X402SellerPaymentPermitAuthorization;
+        observation: Extract<X402TransferObservation, { status: "finalized" }>;
+        receiptStore: SellerRuntime["receiptStore"];
+      }>) => {
+        if (!retainedBuyerIntent) {
+          throw new Error("funded-e2e:buyer-settlement-intent-missing");
+        }
+        const sessionBindingHash = retainedBuyerIntent.bindingHash;
+        const publicationBinding = sha256Hex(canonicalize({
+          permit: publicationInput.permit,
+          observation: publicationInput.observation,
+          sessionBindingHash,
+        }));
+        if (paymentEvidencePublication) {
+          requireCondition(
+            paymentEvidencePublicationBinding === publicationBinding,
+            "payment-evidence-publication-rebound",
+          );
+          return;
+        }
+        paymentEvidencePublicationBinding = publicationBinding;
+        paymentEvidencePublication = stage("settlement-publication", () =>
+          publishAndVerifySellerSettlement({
+            preflight: input.preflight,
+            jobId: input.jobId,
+            agreement: input.agreement,
+            selectedRail: input.selectedRail,
+            payment: {
+              ...publicationInput,
+              sessionBindingHash,
+            },
+          })
+        );
+        // The settlement coordinator owns and awaits this exact promise after
+        // delivery finality. Attach a handler now so an early failure cannot
+        // become an unhandled rejection while the seller lane is still active.
+        void paymentEvidencePublication.catch(() => undefined);
+      }
+    : undefined;
+  let seller: SellerRuntime;
+  let deliveryFinalisationPromise: Promise<void> | undefined;
+  let finaliserAttempts = 0;
+  const advanceReadyFinalisation = async (): Promise<void> => {
+    if (state.deliveryReady === undefined || state.fulfilment !== undefined) return;
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline && state.fulfilment === undefined) {
+      finaliserAttempts += 1;
+      const result = await diagnosticStep("delivery-finalisation-resume", () =>
+        seller.resumeFinalisation(`funded-fast-finaliser-${finaliserAttempts}`)
+      );
+      if (result.decision === "completed") return;
+      if (result.decision === "failed" || result.decision === "rejected") {
+        throw new Error(`funded-e2e:delivery-finalisation-${result.decision}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    throw new Error("funded-e2e:delivery-finalisation-timeout");
+  };
+  const ensureDeliveryFinalisation = (): Promise<void> => {
+    deliveryFinalisationPromise ??= advanceReadyFinalisation();
+    void deliveryFinalisationPromise.catch(() => undefined);
+    return deliveryFinalisationPromise;
+  };
+  seller = await createSellerRuntime({
     ...input,
     directories: sellerDirectories,
     state,
     workerId: "funded-seller-process-a",
+    ...(startPaymentEvidencePublication ? { startPaymentEvidencePublication } : {}),
+    ...(fastProfile
+      ? { notifyDeliveryReady: () => { void ensureDeliveryFinalisation(); } }
+      : {}),
   });
   // The three immutable authority anchors are already finalized. Start their
   // independent cold readback while the buyer prepares the exact bearer so
@@ -3502,6 +3616,7 @@ async function settleAndRecover(input: {
   );
   requireCondition(prepared.disposition === "prepared", "buyer-preparation-failed");
   const intent = prepared.intent;
+  retainedBuyerIntent = intent;
   const createAuthorizationProvider = (readClient: X402BuyerEvmReadClient) =>
     createX402BuyerEvmAuthorizationProvider({
       chainId: BASE_SEPOLIA_CHAIN_ID,
@@ -3659,27 +3774,11 @@ async function settleAndRecover(input: {
     requireCondition(input.preflight.host.requestCounts.unpaid === 1, "fast-challenge-count-mismatch");
     requireCondition(state.counts.facilitatorSettle === 1, "fast-settlement-effect-count-mismatch");
 
-    let finaliserAttempts = 0;
-    const advanceReadyFinalisation = async (): Promise<void> => {
-      if (state.deliveryReady === undefined || state.fulfilment !== undefined) return;
-      const deadline = Date.now() + 180_000;
-      while (Date.now() < deadline && state.fulfilment === undefined) {
-        finaliserAttempts += 1;
-        const result = await diagnosticStep("delivery-finalisation-resume", () =>
-          seller.resumeFinalisation(`funded-fast-finaliser-${finaliserAttempts}`)
-        );
-        if (result.decision === "completed") return;
-        if (result.decision === "failed" || result.decision === "rejected") {
-          throw new Error(`funded-e2e:delivery-finalisation-${result.decision}`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-      }
-      throw new Error("funded-e2e:delivery-finalisation-timeout");
-    };
-    // This deliberately reopens both filesystem stores before it advances:
-    // the paid response owns no background promise and process-local state is
-    // not needed to turn delivery-ready into a terminal fulfilment.
-    await advanceReadyFinalisation();
+    // The host starts this explicitly owned worker at delivery-ready, and the
+    // coordinator awaits the same promise here after buyer capture. Every
+    // attempt still reopens both filesystem stores, so process-local state is
+    // not authority for terminal fulfilment.
+    await ensureDeliveryFinalisation();
 
     // If the facilitator broadcast succeeded but the seller's first RPC view
     // could not yet authenticate it, replay the exact retained bearer only
@@ -3710,7 +3809,8 @@ async function settleAndRecover(input: {
           "fast-seller-replay-resettled",
         );
         if (replayResponse.status === 200) {
-          await advanceReadyFinalisation();
+          deliveryFinalisationPromise = undefined;
+          await ensureDeliveryFinalisation();
           if (fundedFulfilmentEffectsComplete(state)) break;
         }
         const retryableReason = state.settlementReconciliationReason;
@@ -3752,6 +3852,7 @@ async function settleAndRecover(input: {
       seller,
       buyerStoreDir,
       sellerDirectories,
+      ...(paymentEvidencePublication ? { paymentEvidencePublication } : {}),
     };
   }
   requireCondition(
@@ -3893,12 +3994,15 @@ async function publishAndVerifySellerSettlement(input: {
   jobId: string;
   agreement: AgreementRun;
   selectedRail: PaymentRailRef;
-  settlement: SettlementRun;
+  payment: Readonly<{
+    permit: X402SellerPaymentPermitAuthorization;
+    observation: Extract<X402TransferObservation, { status: "finalized" }>;
+    receiptStore: SellerRuntime["receiptStore"];
+    sessionBindingHash: string;
+  }>;
 }) {
-  const permit = input.settlement.state.permit;
-  const observation = input.settlement.state.observedTransfer;
-  requireCondition(permit !== undefined, "seller-payment-permit-missing");
-  requireCondition(observation !== undefined, "seller-chain-observation-missing");
+  const permit = input.payment.permit;
+  const observation = input.payment.observation;
   const authorization = permit.paymentAuthorization;
   const proofArtifact = {
     proofVersion: "evm-event-1",
@@ -3947,11 +4051,15 @@ async function publishAndVerifySellerSettlement(input: {
   let publication: { ref: AttestationRef; receipt: AnchorReceipt } | undefined;
   let anchorCalls = 0;
   const deps: SellerSessionSettlementPublicationDeps = {
-    receiptStore: input.settlement.seller.receiptStore,
+    receiptStore: input.payment.receiptStore,
     evidenceSigner: {
       algorithm: "ed25519",
       signer: input.preflight.env.SELLER_DID,
       sign: (bytes) => input.preflight.seller.adapter.sign(bytes),
+    },
+    anchorWriter: {
+      role: "buyer",
+      primaryClaim: input.preflight.env.BUYER_DID,
     },
     evidence: evidenceVerifier,
     resolveAuthenticatedNativeProof: async () => {
@@ -3973,7 +4081,12 @@ async function publishAndVerifySellerSettlement(input: {
           evidence: structuredClone(retainedEvidence),
         }
       : { disposition: "absent" },
-    anchorEvidence: async ({ logicalAddress, evidence, evidenceHash }) => {
+    anchorEvidence: async ({ logicalAddress, evidence, evidenceHash, expectedWriter }) => {
+      requireCondition(
+        expectedWriter.role === "buyer" &&
+          expectedWriter.primaryClaim === input.preflight.env.BUYER_DID,
+        "settlement-evidence-anchor-writer-substituted",
+      );
       if (publication || retainedEvidence) {
         requireCondition(
           publication !== undefined && retainedEvidence !== undefined &&
@@ -3983,7 +4096,7 @@ async function publishAndVerifySellerSettlement(input: {
           await verifyAnchorReceipt(
             input.preflight.buyer.adapter,
             publication.receipt,
-            input.preflight.env.SELLER_DID,
+            input.preflight.env.BUYER_DID,
           ),
           "settlement-evidence-publication-rebound",
         );
@@ -3995,8 +4108,9 @@ async function publishAndVerifySellerSettlement(input: {
       }
       anchorCalls += 1;
       const anchored = await anchorArtifact({
-        adapter: input.preflight.seller.adapter,
-        writer: input.preflight.env.SELLER_DID,
+        adapter: input.preflight.buyer.adapter,
+        writer: input.preflight.env.BUYER_DID,
+        refSigner: input.preflight.env.SELLER_DID,
         logicalAddress,
         artifact: evidence as unknown as Record<string, unknown>,
       });
@@ -4009,11 +4123,15 @@ async function publishAndVerifySellerSettlement(input: {
         anchorReceipt: anchored.receipt,
       };
     },
-    verifyAnchorReceipt: async ({ anchorReceipt }) => {
+    verifyAnchorReceipt: async ({ anchorReceipt, expectedWriter }) => {
+      requireCondition(
+        expectedWriter === input.preflight.env.BUYER_DID,
+        "settlement-evidence-receipt-writer-substituted",
+      );
       const valid = await verifyAnchorReceipt(
-        input.preflight.seller.adapter,
+        input.preflight.buyer.adapter,
         anchorReceipt,
-        input.preflight.env.SELLER_DID,
+        input.preflight.env.BUYER_DID,
       );
       return valid
         ? { disposition: "pass" }
@@ -4116,7 +4234,7 @@ async function publishAndVerifySellerSettlement(input: {
         await verifyAnchorReceipt(
           input.preflight.buyer.adapter,
           publication.receipt,
-          input.preflight.env.SELLER_DID,
+          input.preflight.env.BUYER_DID,
         ) ? { disposition: "pass" } : { disposition: "fail", reason: "anchor-invalid" },
     resolveNativeProof: (candidate) =>
       canonicalize(candidate) === canonicalize(nativeProofRef)
@@ -4152,7 +4270,7 @@ async function publishAndVerifySellerSettlement(input: {
           sessionBinding: {
             disposition: "established",
             kind: "eip3009",
-            bindingHash: input.settlement.intent.bindingHash,
+            bindingHash: input.payment.sessionBindingHash,
           },
           details: {
             chainId: fresh.chainId,
@@ -4415,7 +4533,7 @@ async function closeDurableDetachedRoleBundles(input: {
     [input.published.receipt.nativeAddress, input.preflight.env.SELLER_DID],
     [input.agreement.anchorReceipt.nativeAddress, input.preflight.env.BUYER_DID],
     [input.commitment.anchorReceipt.nativeAddress, input.preflight.env.SELLER_DID],
-    [input.sellerSettlement.settlement.anchorReceipt.nativeAddress, input.preflight.env.SELLER_DID],
+    [input.sellerSettlement.settlement.anchorReceipt.nativeAddress, input.preflight.env.BUYER_DID],
     [fulfilment.evidenceAnchorReceipt.nativeAddress, input.preflight.env.SELLER_DID],
     [input.vet.buyerReceipt.nativeAddress, input.preflight.env.SELLER_DID],
     [input.vet.sellerReceipt.nativeAddress, input.preflight.env.BUYER_DID],
@@ -5389,6 +5507,25 @@ async function closeDurableDetachedRoleBundles(input: {
 }
 
 describe("issue #114 guarded funded two-agent spine", () => {
+  it("retries immutable proof reads without promoting a non-establishing view", async () => {
+    let recoveringCalls = 0;
+    const recovered = await retryEstablishedRead(async () => {
+      recoveringCalls += 1;
+      if (recoveringCalls === 1) return false;
+      if (recoveringCalls === 2) throw new Error("injected-proof-read-outage");
+      return true;
+    }, 3, 0);
+    let invalidCalls = 0;
+    const invalid = await retryEstablishedRead(async () => {
+      invalidCalls += 1;
+      return false;
+    }, 3, 0);
+    requireCondition(
+      recovered && recoveringCalls === 3 && !invalid && invalidCalls === 3,
+      "immutable-proof-retry-regression",
+    );
+  });
+
   it("retries only thrown failures from immutable authority reads", async () => {
     let calls = 0;
     const result = await retryReadOnly(async () => {
@@ -6079,16 +6216,27 @@ describe("issue #114 guarded funded two-agent spine", () => {
           }
         }
         let commerceCompleteAt: number | undefined;
-        const [sellerSettlement, publishedVet] = await Promise.all([
-          stage("settlement-publication", () =>
-            publishAndVerifySellerSettlement({
+        const paymentEvidencePublication = settlement.paymentEvidencePublication ??
+          stage("settlement-publication", () => {
+            const permit = settlement.state.permit;
+            const observation = settlement.state.observedTransfer;
+            requireCondition(permit !== undefined, "seller-payment-permit-missing");
+            requireCondition(observation !== undefined, "seller-chain-observation-missing");
+            return publishAndVerifySellerSettlement({
               preflight: preflight!,
               jobId,
               agreement,
               selectedRail,
-              settlement,
-            })
-          ).then((result) => {
+              payment: {
+                permit,
+                observation,
+                receiptStore: settlement.seller.receiptStore,
+                sessionBindingHash: settlement.intent.bindingHash,
+              },
+            });
+          });
+        const [settlementPublicationResult, vetPublicationResult] = await Promise.allSettled([
+          paymentEvidencePublication.then((result) => {
             commerceCompleteAt = Date.now();
             return result;
           }),
@@ -6100,6 +6248,14 @@ describe("issue #114 guarded funded two-agent spine", () => {
             })
           ),
         ]);
+        if (settlementPublicationResult.status === "rejected") {
+          throw settlementPublicationResult.reason;
+        }
+        if (vetPublicationResult.status === "rejected") {
+          throw vetPublicationResult.reason;
+        }
+        const sellerSettlement = settlementPublicationResult.value;
+        const publishedVet = vetPublicationResult.value;
         if (fastProfile) {
           requireCondition(
             commerceCompleteAt !== undefined &&

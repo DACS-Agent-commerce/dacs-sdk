@@ -973,6 +973,7 @@ export {
   type SellerSessionSettlementAnchorResult,
   type SellerSessionSettlementEvidenceResolution,
   type SellerSessionSettlementEvidenceSigner,
+  type SellerSessionSettlementAnchorWriter,
   type SellerSessionSettlementPublicationDeps,
   type SellerSessionSettlementPublicationResult,
   type X402SellerCommittedSessionResolution,

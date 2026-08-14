@@ -139,6 +139,7 @@ export {
   type SellerSessionSettlementAnchorResult,
   type SellerSessionSettlementEvidenceResolution,
   type SellerSessionSettlementEvidenceSigner,
+  type SellerSessionSettlementAnchorWriter,
   type SellerSessionSettlementPublicationDeps,
   type SellerSessionSettlementPublicationResult,
 } from "./sessionSettlementPublication.js";

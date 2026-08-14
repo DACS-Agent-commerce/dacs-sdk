@@ -131,6 +131,18 @@ export type SellerSessionSettlementEvidenceSigner =
   };
 
 /**
+ * Authenticated actor whose native wallet owns the evidence publication.
+ *
+ * The phase orchestrator still authors and signs the normative evidence. A
+ * distinct buyer writer is permitted only when that exact primary claim is
+ * retained as the buyer in the consumed, store-backed fulfilment handoff.
+ */
+export interface SellerSessionSettlementAnchorWriter {
+  role: "phase-orchestrator" | "buyer";
+  primaryClaim: string;
+}
+
+/**
  * Transport-neutral publication boundary. Implementations that require
  * instance state must pass pre-bound functions; callbacks are captured once
  * and invoked with an inert receiver.
@@ -142,6 +154,11 @@ export interface SellerSessionSettlementPublicationDeps {
   };
   /** Locally owned authority authenticated by the consumed handoff. */
   evidenceSigner: SellerSessionSettlementEvidenceSigner;
+  /**
+   * Native publication lane. Omission preserves the phase-orchestrator lane;
+   * selecting the buyer lane is checked against the consumed handoff.
+   */
+  anchorWriter?: SellerSessionSettlementAnchorWriter;
   /** Independent cryptographic primitives used to self-check signed evidence. */
   evidence: Required<Pick<EvidenceDeps, "resolvePublicKey" | "verify">>;
   /**
@@ -174,6 +191,7 @@ export interface SellerSessionSettlementPublicationDeps {
     logicalAddress: string;
     evidenceHash: string;
     evidence: Readonly<SettlementEvidence>;
+    expectedWriter: Readonly<SellerSessionSettlementAnchorWriter>;
   }>): Promise<SellerSessionSettlementAnchorResult>;
   /** Authenticate the binding-native finalized receipt. */
   verifyAnchorReceipt(input: Readonly<{
@@ -210,6 +228,7 @@ interface CapturedDeps {
     signer: string;
     sign: BuildComponentSignatureOptions["sign"];
   };
+  anchorWriter: SellerSessionSettlementAnchorWriter;
   evidence: Required<Pick<EvidenceDeps, "resolvePublicKey" | "verify">>;
   resolveAuthenticatedNativeProof:
     SellerSessionSettlementPublicationDeps["resolveAuthenticatedNativeProof"];
@@ -363,6 +382,7 @@ function captureDeps(
   try {
     const receiptStore = ownData(source, "receiptStore");
     const evidenceSigner = ownData(source, "evidenceSigner");
+    const anchorWriterInput = ownData(source, "anchorWriter");
     const evidence = ownData(source, "evidence");
     const resolveAuthenticatedNativeProof = ownData(
       source,
@@ -391,6 +411,20 @@ function captureDeps(
         typeof resolvePublicKey !== "function" || typeof verify !== "function" ||
         algorithm !== "ed25519" ||
         !isNonEmpty(signer)) return null;
+    let anchorWriter: SellerSessionSettlementAnchorWriter;
+    if (anchorWriterInput === undefined) {
+      anchorWriter = { role: "phase-orchestrator", primaryClaim: signer };
+    } else {
+      if (!isRecord(anchorWriterInput) ||
+          !exactKeys(anchorWriterInput, ["role", "primaryClaim"]) ||
+          (anchorWriterInput.role !== "phase-orchestrator" &&
+            anchorWriterInput.role !== "buyer") ||
+          !isNonEmpty(anchorWriterInput.primaryClaim)) return null;
+      anchorWriter = {
+        role: anchorWriterInput.role,
+        primaryClaim: anchorWriterInput.primaryClaim,
+      };
+    }
     const call = <T extends Function>(fn: T, args: unknown[]): unknown =>
       Reflect.apply(fn, INERT_RECEIVER, args);
     return Object.freeze({
@@ -402,6 +436,7 @@ function captureDeps(
         sign: ((bytes: Uint8Array, context: Pick<ComponentSignature, "algorithm" | "signer">) =>
           call(sign, [bytes, context])) as BuildComponentSignatureOptions["sign"],
       }),
+      anchorWriter: Object.freeze(anchorWriter),
       evidence: Object.freeze({
         resolvePublicKey: async (candidateSigner: string) => {
           const value = await call(resolvePublicKey, [candidateSigner]);
@@ -695,6 +730,20 @@ function handoffMatches(
     handoff.evidenceAuthority.algorithm === signer.algorithm;
 }
 
+function anchorWriterMatchesHandoff(
+  handoff: SellerFulfilmentHandoff,
+  signer: CapturedDeps["signer"],
+  writer: SellerSessionSettlementAnchorWriter,
+): boolean {
+  if (writer.role === "phase-orchestrator") {
+    return writer.primaryClaim === signer.signer;
+  }
+  const buyers = handoff.auditSource.session.parties.filter(
+    (party) => party.role === "buyer",
+  );
+  return buyers.length === 1 && buyers[0]!.primaryClaim === writer.primaryClaim;
+}
+
 function signedSettlementId(
   authorization: SellerPaymentAuthorization,
 ): string | null {
@@ -770,10 +819,14 @@ function settlementPublicationEffectId(input: {
     primaryClaim: string;
     algorithm: "ed25519";
   }>;
+  anchorWriter: Readonly<SellerSessionSettlementAnchorWriter>;
 }): string {
   if (!validAuthorization(input.authorization) || !isProofRef(input.nativeProofRef) ||
       !isNonEmpty(input.evidenceAuthority?.primaryClaim) ||
-      input.evidenceAuthority?.algorithm !== "ed25519") {
+      input.evidenceAuthority?.algorithm !== "ed25519" ||
+      !isNonEmpty(input.anchorWriter?.primaryClaim) ||
+      (input.anchorWriter?.role !== "phase-orchestrator" &&
+        input.anchorWriter?.role !== "buyer")) {
     throw new TypeError("settlement publication identity input is malformed");
   }
   const authorizationHash = sha256Hex(canonicalize(input.authorization));
@@ -784,6 +837,7 @@ function settlementPublicationEffectId(input: {
     evidenceHash: input.authorization.evidenceHash,
     nativeProofRef: input.nativeProofRef,
     evidenceAuthority: input.evidenceAuthority,
+    anchorWriter: input.anchorWriter,
   }))}`;
 }
 
@@ -842,6 +896,12 @@ export async function publishSellerSessionSettlement(
   }
   if (!handoffMatches(handoff, request.authorization, authorizationHash, deps.signer)) {
     return failure("rejected", "consumed handoff does not bind the exact authorization and signer");
+  }
+  if (!anchorWriterMatchesHandoff(handoff, deps.signer, deps.anchorWriter)) {
+    return failure(
+      "rejected",
+      "settlement evidence anchor writer is not the authenticated phase orchestrator or buyer",
+    );
   }
   const projectedSettlementId = signedSettlementId(request.authorization);
   if (projectedSettlementId === null) {
@@ -906,6 +966,7 @@ export async function publishSellerSessionSettlement(
         primaryClaim: deps.signer.signer,
         algorithm: deps.signer.algorithm,
       },
+      anchorWriter: deps.anchorWriter,
     });
   } catch {
     return failure("error", "settlement publication identity cannot be derived");
@@ -1027,6 +1088,7 @@ export async function publishSellerSessionSettlement(
     logicalAddress,
     evidenceHash,
     evidence: structuredClone(evidence),
+    expectedWriter: structuredClone(deps.anchorWriter),
   });
   const anchorBefore = canonicalize(anchorInput);
   let rawAnchor: unknown;
@@ -1062,7 +1124,7 @@ export async function publishSellerSessionSettlement(
       (evidenceRef.signer !== undefined && evidenceRef.signer !== deps.signer.signer) ||
       anchorReceipt.logicalAddress !== logicalAddress ||
       anchorReceipt.contentHash !== evidenceHash ||
-      anchorReceipt.writer !== deps.signer.signer ||
+      anchorReceipt.writer !== deps.anchorWriter.primaryClaim ||
       anchorReceipt.state !== "finalized" ||
       anchorReceipt.observationDisposition !== "established") {
     return failure("rejected", "publication lacks the exact finalized evidence binding", effectId);
@@ -1070,7 +1132,7 @@ export async function publishSellerSessionSettlement(
 
   const receiptInput = deepFreeze({
     effectId,
-    expectedWriter: deps.signer.signer,
+    expectedWriter: deps.anchorWriter.primaryClaim,
     evidenceRef: structuredClone(evidenceRef),
     anchorReceipt: structuredClone(anchorReceipt),
   });
