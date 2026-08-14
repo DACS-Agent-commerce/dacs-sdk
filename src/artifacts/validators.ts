@@ -28,6 +28,12 @@ import type {
   RevocationMarker,
   SettlementEvidence,
   VerificationMethod,
+  LegacyCompositeVerificationRecord,
+  ReadableCompositeVerificationRecord,
+  SupplementarySignal,
+  VerificationWarning,
+  VerifyResult,
+  VerifyResultRef,
 } from "./types.js";
 import { canonicalizeDecimal } from "../canonical/decimal.js";
 import { assertPositiveAmount, canonicalize, stripSignature } from "../canonical/index.js";
@@ -48,6 +54,112 @@ const isOneOf = (set: readonly string[], v: unknown): boolean =>
   typeof v === "string" && set.includes(v);
 const hasOnlyKeys = (v: Record<string, unknown>, allowed: readonly string[]): boolean =>
   Object.keys(v).every((key) => allowed.includes(key));
+/**
+ * Current signed artifacts are JSON wire records, not class instances or
+ * prototype overlays. Requiring enumerable own data properties prevents a
+ * value from passing a guard with fields that canonical JSON would omit.
+ */
+const hasExactWireKeys = (
+  v: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean => {
+  try {
+    const prototype = Object.getPrototypeOf(v);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const allowed = [...required, ...optional];
+    const ownKeys = Reflect.ownKeys(v);
+    if (ownKeys.some((key) => typeof key !== "string")) return false;
+    const keys = ownKeys as string[];
+    if (!required.every((key) => keys.includes(key))) return false;
+    if (!keys.every((key) => allowed.includes(key))) return false;
+    return keys.every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(v, key);
+      return (
+        descriptor !== undefined &&
+        descriptor.enumerable &&
+        "value" in descriptor &&
+        descriptor.value !== undefined
+      );
+    });
+  } catch {
+    return false;
+  }
+};
+const isExactWireArray = (
+  value: unknown,
+  validate: (entry: unknown) => boolean,
+): boolean => {
+  if (!Array.isArray(value)) return false;
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.length !== value.length + 1 || !ownKeys.includes("length")) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (
+        descriptor === undefined ||
+        !descriptor.enumerable ||
+        !("value" in descriptor) ||
+        !validate(descriptor.value)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+function isExactJsonValue(
+  value: unknown,
+  seen: WeakSet<object>,
+): boolean {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return isExactWireArray(value, (entry) => isExactJsonValue(entry, seen));
+    }
+    if (!isObj(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) return false;
+    return (keys as string[]).every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return (
+        descriptor !== undefined &&
+        descriptor.enumerable === true &&
+        "value" in descriptor &&
+        descriptor.value !== undefined &&
+        isExactJsonValue(descriptor.value, seen)
+      );
+    });
+  } catch {
+    return false;
+  } finally {
+    // Shared subtrees are serializable as repeated JSON values; only an object
+    // that reappears on its current ancestor path is a cycle.
+    seen.delete(value);
+  }
+}
+
+/** Exact JSON object tree used by signed generic data/parameter fields. */
+export function isExactJsonRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return isObj(value) && isExactJsonValue(value, new WeakSet<object>());
+}
 const isNonEmptyStr = (v: unknown): v is string => isStr(v) && v.length > 0;
 /** CORE §B.1 canonical logical-address spelling for session identifiers. */
 export const isCanonicalJobId = (v: unknown): v is string =>
@@ -57,6 +169,10 @@ const isCanonicalNonBlankStr = (v: unknown): v is string =>
   isStr(v) && v.length > 0 && v.trim() === v;
 const isNonNegativeInt = (v: unknown): v is number =>
   isNum(v) && Number.isInteger(v) && v >= 0;
+const isNonNegativeSafeInt = (v: unknown): v is number =>
+  isNum(v) && Number.isSafeInteger(v) && v >= 0;
+const isPositiveSafeInt = (v: unknown): v is number =>
+  isNum(v) && Number.isSafeInteger(v) && v > 0;
 const isSha256 = (v: unknown): v is string =>
   isStr(v) && /^[0-9a-f]{64}$/.test(v);
 const isIdentityBundleHash = (v: unknown): v is string =>
@@ -129,6 +245,64 @@ const VERIFICATION_DECISIONS = [
   "indeterminate",
   "error",
 ] as const;
+const VERIFICATION_METHODS = [
+  "verifiable-credential",
+  "tlsnotary",
+  "zktls",
+  "consensus-backed-proxy",
+  "oauth-attested",
+  "evm-rpc",
+  "domain-tls-control",
+  "self-signed",
+  "demos-gcr-domain",
+] as const;
+
+/** Minimal shared CF-2 gate; scheme-specific identifier rules remain method-specific. */
+const isCanonicalClaimRef = (v: unknown): v is string => {
+  if (!isNonEmptyStr(v) || v.normalize("NFC") !== v || /[\s\u0000-\u001f\u007f]/.test(v)) {
+    return false;
+  }
+  const colon = v.indexOf(":");
+  if (colon <= 0 || !/^[a-z][a-z0-9-]*$/.test(v.slice(0, colon))) return false;
+  const remainder = v.slice(colon + 1);
+  const question = remainder.indexOf("?");
+  const identifier = question < 0 ? remainder : remainder.slice(0, question);
+  if (!identifier) return false;
+  if (question < 0) return true;
+  const query = remainder.slice(question + 1);
+  if (!query) return false;
+  const keys: string[] = [];
+  for (const parameter of query.split("&")) {
+    const equals = parameter.indexOf("=");
+    if (equals <= 0 || equals !== parameter.lastIndexOf("=")) return false;
+    const key = parameter.slice(0, equals);
+    const value = parameter.slice(equals + 1);
+    if (
+      !key ||
+      /[:?]/.test(key) ||
+      /[:?]/.test(value) ||
+      /%(?![0-9A-F]{2})/.test(key) ||
+      /%(?![0-9A-F]{2})/.test(value)
+    ) {
+      return false;
+    }
+    if (keys.includes(key)) return false;
+    keys.push(key);
+  }
+  return keys.every((key, index) => index === 0 || keys[index - 1]! < key);
+};
+
+const isExactComponentSignature = (v: unknown): boolean =>
+  isObj(v) &&
+  hasExactWireKeys(v, ["algorithm", "signer", "value"]) &&
+  isComponentSignature(v) &&
+  isCanonicalClaimRef(v.signer);
+
+/** Historical envelopes predate the current ClaimReference signer gate. */
+const isExactLegacyComponentSignature = (v: unknown): boolean =>
+  isObj(v) &&
+  hasOnlyKeys(v, ["algorithm", "signer", "value"]) &&
+  isComponentSignature(v);
 
 const isCanonicalAmount = (value: unknown, allowZero = false): value is string => {
   if (!isStr(value)) return false;
@@ -141,7 +315,6 @@ const isCanonicalAmount = (value: unknown, allowZero = false): value is string =
 
 const isSafeUint = (v: unknown): v is number =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
-const isPositiveSafeInt = (v: unknown): v is number => isSafeUint(v) && v > 0;
 const isOptionalStr = (v: unknown): boolean => v === undefined || isStr(v);
 const isClaimRef = (v: unknown): v is string =>
   isStr(v) && /^[a-z][a-z0-9-]*:.+$/.test(v) && v.trim() === v;
@@ -158,16 +331,6 @@ export function isListingPublicEndpoint(v: unknown): v is string {
     return false;
   }
 }
-
-const isVerifyResultRef = (v: unknown): boolean =>
-  isObj(v) &&
-  isObj(v.anchor) &&
-  isOneOf(["storage-program", "ipfs", "https"], v.anchor.kind) &&
-  isStr(v.anchor.locator) &&
-  v.anchor.locator.length > 0 &&
-  isStr(v.contentHash) &&
-  v.contentHash.length > 0 &&
-  isPositiveSafeInt(v.recipeVersion);
 
 const isBundleClaim = (v: unknown): boolean =>
   isObj(v) &&
@@ -790,26 +953,206 @@ export function readListingArtifact(v: unknown): ReadableListing | null {
     : null;
 }
 
+/** DACS-2 §7.5 exact current VerifyResult wire shape. */
+export function isVerifyResult(v: unknown): v is VerifyResult {
+  if (
+    !isObj(v) ||
+    !hasExactWireKeys(v, [
+      "resultVersion",
+      "scheme",
+      "identifier",
+      "recipeVersion",
+      "method",
+      "decision",
+      "reason",
+      "attestation",
+      "fetchedAt",
+      "verifiedAt",
+      "signature",
+    ], ["data", "validUntil"])
+  ) {
+    return false;
+  }
+  return (
+    v.resultVersion === "1" &&
+    isNonEmptyStr(v.scheme) &&
+    /^[a-z][a-z0-9-]*$/.test(v.scheme) &&
+    isNonEmptyStr(v.identifier) &&
+    v.identifier.normalize("NFC") === v.identifier &&
+    isPositiveSafeInt(v.recipeVersion) &&
+    isOneOf(VERIFICATION_METHODS, v.method) &&
+    isOneOf(VERIFICATION_DECISIONS, v.decision) &&
+    isStr(v.reason) &&
+    isAttestationRef(v.attestation) &&
+    (v.data === undefined || isExactJsonRecord(v.data)) &&
+    isNonNegativeSafeInt(v.fetchedAt) &&
+    isNonNegativeSafeInt(v.verifiedAt) &&
+    (v.validUntil === undefined || isNonNegativeSafeInt(v.validUntil)) &&
+    isExactComponentSignature(v.signature)
+  );
+}
+
+/** DACS-2 §7.7 exact reference to an anchored current VerifyResult. */
+export function isVerifyResultRef(v: unknown): v is VerifyResultRef {
+  if (!isObj(v) || !hasExactWireKeys(v, ["anchor", "contentHash", "recipeVersion"])) {
+    return false;
+  }
+  return (
+    isAttestationRef({ anchor: v.anchor, contentHash: v.contentHash }) &&
+    isPositiveSafeInt(v.recipeVersion)
+  );
+}
+
+/** DACS-2 §7.7 exact advisory supplementary-signal shape. */
+export function isSupplementarySignal(v: unknown): v is SupplementarySignal {
+  if (
+    !isObj(v) ||
+    !hasExactWireKeys(
+      v,
+      ["source", "signalType", "value", "observedAt"],
+      ["attestation"],
+    )
+  ) {
+    return false;
+  }
+  const valueIsSafeNumber =
+    typeof v.value === "number" &&
+    Number.isFinite(v.value) &&
+    Math.abs(v.value) <= Number.MAX_SAFE_INTEGER;
+  return (
+    isNonEmptyStr(v.source) &&
+    isNonEmptyStr(v.signalType) &&
+    (isStr(v.value) || valueIsSafeNumber) &&
+    isNonNegativeSafeInt(v.observedAt) &&
+    (v.attestation === undefined || isAttestationRef(v.attestation)) &&
+    (v.source !== "external" || isAttestationRef(v.attestation))
+  );
+}
+
+/** DACS-2 §7.7 exact advisory warning shape. Unknown WN-6 codes stay advisory. */
+export function isVerificationWarning(v: unknown): v is VerificationWarning {
+  if (
+    !isObj(v) ||
+    !hasExactWireKeys(
+      v,
+      ["claimRef", "code", "retryable"],
+      ["suggestedRetryAfterMs"],
+    )
+  ) {
+    return false;
+  }
+  return (
+    isCanonicalClaimRef(v.claimRef) &&
+    isNonEmptyStr(v.code) &&
+    isBool(v.retryable) &&
+    (v.suggestedRetryAfterMs === undefined ||
+      isNonNegativeSafeInt(v.suggestedRetryAfterMs))
+  );
+}
+
+/** DACS-2 §7.7 exact current record; a legacy shape can never satisfy it. */
 export function isCompositeVerificationRecord(
   v: unknown,
 ): v is CompositeVerificationRecord {
-  if (!isObj(v)) return false;
+  if (
+    !isObj(v) ||
+    !hasExactWireKeys(v, [
+      "recordVersion",
+      "jobId",
+      "evaluatedParty",
+      "bundleHash",
+      "requirementHash",
+      "freshness",
+      "supplementary",
+      "dealSpecific",
+      "overallDecision",
+      "generatedAt",
+      "signature",
+    ], ["warnings"])
+  ) {
+    return false;
+  }
   return (
-    isStr(v.subject) &&
-    isStr(v.recipeId) &&
-    isStr(v.recipeVersion) &&
-    Array.isArray(v.results) &&
-    v.results.every(
-      (r) =>
-        isObj(r) &&
-        isStr(r.claimRef) &&
-        isStr(r.method) &&
-        isOneOf(VERIFICATION_DECISIONS, r.status),
+    v.recordVersion === "1" &&
+    isNonEmptyStr(v.jobId) &&
+    isCanonicalClaimRef(v.evaluatedParty) &&
+    isSha256(v.bundleHash) &&
+    isSha256(v.requirementHash) &&
+    isExactWireArray(v.freshness, isVerifyResultRef) &&
+    isExactWireArray(v.supplementary, isSupplementarySignal) &&
+    isExactWireArray(v.dealSpecific, isVerifyResultRef) &&
+    isOneOf(VERIFICATION_DECISIONS, v.overallDecision) &&
+    (v.warnings === undefined ||
+      isExactWireArray(v.warnings, isVerificationWarning)) &&
+    isNonNegativeSafeInt(v.generatedAt) &&
+    isExactComponentSignature(v.signature)
+  );
+}
+
+/** Explicit historical guard for the obsolete pre-§7.7 SDK record. */
+export function isLegacyCompositeVerificationRecord(
+  v: unknown,
+): v is LegacyCompositeVerificationRecord {
+  if (
+    !isObj(v) ||
+    !hasExactWireKeys(v, [
+      "subject",
+      "recipeId",
+      "recipeVersion",
+      "results",
+      "decision",
+      "verifiedAt",
+    ], ["signature"])
+  ) {
+    return false;
+  }
+  return (
+    isNonEmptyStr(v.subject) &&
+    isNonEmptyStr(v.recipeId) &&
+    isNonEmptyStr(v.recipeVersion) &&
+    isExactWireArray(
+      v.results,
+      (result) =>
+        isObj(result) &&
+        hasExactWireKeys(result, [
+          "claimRef",
+          "method",
+          "status",
+        ], [
+          "authority",
+          "responseHash",
+          "proof",
+          "data",
+        ]) &&
+        isNonEmptyStr(result.claimRef) &&
+        isNonEmptyStr(result.method) &&
+        isOneOf(VERIFICATION_DECISIONS, result.status) &&
+        (result.authority === undefined || isNonEmptyStr(result.authority)) &&
+        (result.responseHash === undefined || isNonEmptyStr(result.responseHash)) &&
+        (result.proof === undefined ||
+          (isObj(result.proof) &&
+            hasExactWireKeys(result.proof, ["kind", "value"]) &&
+            isOneOf(["hash", "raw"], result.proof.kind) &&
+            isNonEmptyStr(result.proof.value))) &&
+        (result.data === undefined || isObj(result.data)),
     ) &&
     isOneOf(VERIFICATION_DECISIONS, v.decision) &&
-    isStr(v.verifiedAt) &&
-    hasValidOptionalComponentSignature(v)
+    isNonEmptyStr(v.verifiedAt) &&
+    (v.signature === undefined || isExactLegacyComponentSignature(v.signature))
   );
+}
+
+/** Parse through the explicit current/legacy boundary without shape conflation. */
+export function readCompositeVerificationRecord(
+  v: unknown,
+): ReadableCompositeVerificationRecord | null {
+  if (isCompositeVerificationRecord(v)) {
+    return { compatibility: "current", record: v };
+  }
+  if (isLegacyCompositeVerificationRecord(v)) {
+    return { compatibility: "legacy", record: v };
+  }
+  return null;
 }
 
 const isListingPin = (v: unknown): boolean =>
@@ -1217,15 +1560,17 @@ export function isReadableAnchorReceipt(v: unknown): v is AnchorReceipt {
 
 /** DACS-2 §7.5.2 exact AttestationRef wire shape. */
 export function isAttestationRef(v: unknown): v is AttestationRef {
-  if (!isObj(v) || !hasOnlyKeys(v, ["anchor", "contentHash", "signer"])) return false;
+  if (!isObj(v) || !hasExactWireKeys(v, ["anchor", "contentHash"], ["signer"])) {
+    return false;
+  }
   const anchor = v.anchor;
   return (
     isObj(anchor) &&
-    hasOnlyKeys(anchor, ["kind", "locator"]) &&
+    hasExactWireKeys(anchor, ["kind", "locator"]) &&
     isOneOf(["storage-program", "ipfs", "https"], anchor.kind) &&
     isNonEmptyStr(anchor.locator) &&
     isSha256(v.contentHash) &&
-    (v.signer === undefined || isNonEmptyStr(v.signer))
+    (v.signer === undefined || isCanonicalClaimRef(v.signer))
   );
 }
 

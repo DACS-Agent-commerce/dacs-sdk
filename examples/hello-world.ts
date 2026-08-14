@@ -16,7 +16,7 @@
  *   PAYWALL_URL        seller's paywalled delivery URL (returns HTTP 402)
  *   PAY_NETWORK        CAIP-2 network, e.g. eip155:84532 (Base Sepolia)
  *   SELLER_EVM         seller EVM address that x402 pays
- *   PAY_TOKEN          ERC-20 contract address advertised by the 402 response
+ *   PAY_ASSET          canonical ERC-20 contract address advertised by the paywall
  *
  *   npx tsx examples/hello-world.ts
  */
@@ -106,19 +106,17 @@ async function main(): Promise<void> {
       deliveryFormat: "application/json",
     },
     expectedSettlementPayee: sellerEvm,
-    // Optional Vet step: verify the seller before paying. The session aborts
-    // before settlement if it fails. In production resolve the recipe from the
-    // steward registry (resolveRecipe) instead of inlining it.
-    vet: (subject) =>
-      vetCore(
-        { subject, recipe: { id: "self-signed", method: "self-signed", availability: "live", params: {} } },
-        { proxyFetch: (r) => buyer.adapter.proxyFetch({ url: r.url }), now: () => new Date().toISOString() },
-      ),
+    // A production Vet configuration supplies `vet` (which emits signed,
+    // anchored DACS-2 §7.5/§7.7 records), `verifyVetRecord` (which verifies
+    // their complete caller-held reference closure), and
+    // `authenticateVetFinality` (which authenticates the exact finalized
+    // record/ref/receipt binding). This minimal funded x402 example omits Vet
+    // rather than demonstrating a shape-only trust shortcut.
     settle: x402Settle(rail, {
       url: env("PAYWALL_URL"),
       network: env("PAY_NETWORK"),
       recipientEvm: sellerEvm,
-      asset: env("PAY_TOKEN"),
+      asset: env("PAY_ASSET"),
     }),
   });
   console.log("session", session.outcome, "→ bundle", session.bundleRef);
@@ -126,8 +124,11 @@ async function main(): Promise<void> {
   // ── Anyone: independently verify the attestation bundle ──
   const verdict = await buyer.verifyBundle(session.bundleRef);
   console.log("bundle ok:", verdict.ok, "| fully verified:", verdict.fullyVerified);
+  for (const signature of verdict.signatures) {
+    console.log(`  signer ${signature.party}: ${signature.verdict}`);
+  }
   for (const ref of verdict.refs) {
-    console.log(`  ${ref.kind}/${ref.id}: ${ref.verdict}`);
+    console.log(`  ${ref.kind} ${ref.id}: ${ref.verdict}`);
   }
 }
 

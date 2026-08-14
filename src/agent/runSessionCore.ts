@@ -1,7 +1,9 @@
 import { types as nodeTypes } from "node:util";
 
 import {
+  canonicalize,
   contentHash,
+  encodeAddressSegment,
   sha256Hex,
   stripSignature,
 } from "../canonical/index.js";
@@ -55,8 +57,16 @@ import {
 } from "../artifacts/legacyMvp.js";
 import {
   isCompositeVerificationRecord,
+  isAttestationRef,
+  isExactJsonRecord,
   readListingArtifact,
 } from "../artifacts/validators.js";
+import type { StrictCompositeVerification } from "./compositeVerification.js";
+import {
+  isFinalizedVetAnchorReceipt,
+  type FinalizedVetAnchor,
+  type VetProduction,
+} from "./vetCore.js";
 
 /**
  * Pure orchestration for the legacy MVP buyer session (T4 runSession): negotiate
@@ -225,11 +235,32 @@ export interface SessionDeps {
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
-   * Optional Vet step: verify the seller before paying. Returns a
-   * CompositeVerificationRecord; unless the decision is `pass` the session
-   * aborts before settlement. Omit to skip vetting.
+   * Optional current DACS-2 Vet producer. It returns an already finalized,
+   * independently readable record plus its authenticated CORE §5.1 receipt.
    */
-  vet?: (subject: string) => Promise<CompositeVerificationRecord>;
+  vet?: (request: SessionVetRequest) => Promise<VetProduction>;
+  /**
+   * Mandatory with `vet`: recursively validate the record and its complete
+   * VerifyResult/authority closure against caller-held bundle and requirement
+   * expectations. Shape-only vet passes are never accepted by the money path.
+   */
+  verifyVetRecord?: (
+    record: Readonly<CompositeVerificationRecord>,
+    request: Readonly<SessionVetRequest>,
+  ) => Promise<StrictCompositeVerification>;
+  /**
+   * Mandatory with `vet`: independently resolve and cryptographically
+   * authenticate the finalized SR-2 record binding from caller-held substrate
+   * trust. On a fresh production, `claimed` is the producer's ref/receipt and
+   * the authenticated result must match it exactly. On resume, `claimed` is
+   * absent, so this seam must recover the finalized ref/receipt by the supplied
+   * logical/native address and exact record hash. Returning `null` fails closed.
+   *
+   * This must not accept a receipt merely because it has the CORE §5.1 shape.
+   */
+  authenticateVetFinality?: (
+    request: Readonly<VetFinalityAuthenticationRequest>,
+  ) => Promise<FinalizedVetAnchor | null>;
   /** Fresh canonical uppercase ULID for a new normative session. */
   newJobId: () => string;
   /** Current ISO-8601 timestamp (used where the spec field is a string). */
@@ -326,13 +357,31 @@ export interface SessionResult {
   bundleRef: string;
 }
 
+export interface SessionVetRequest {
+  jobId: string;
+  evaluatedParty: string;
+}
+
+/** Exact inputs to the caller-held VPC-3 finalized-anchor authenticator. */
+export interface VetFinalityAuthenticationRequest {
+  logicalAddress: string;
+  nativeAddress: string;
+  contentHash: string;
+  record: Readonly<CompositeVerificationRecord>;
+  /** Present only on the fresh-producer path; absent during durable resume. */
+  claimed?: Readonly<FinalizedVetAnchor>;
+}
+
 /**
  * Deterministic anchor names for a session's artifacts, keyed by jobId. The
  * address derived from each name IS the session's storage slot for that phase —
  * shared between runSessionCore (write/resume) and verifyBundle (dereference).
  */
 export const sessionAnchorName = {
-  vet: (jobId: string) => `dacs2:verifyrecord:${jobId}`,
+  vet: (jobId: string, evaluatedParty?: string) =>
+    evaluatedParty
+      ? `dacs2:composite:${encodeAddressSegment(jobId)}:${encodeAddressSegment(evaluatedParty)}`
+      : `dacs2:verifyrecord:${encodeAddressSegment(jobId)}`, // explicit pre-§7.7 read compatibility only
   agreement: (jobId: string) => `dacs3:agreement:${jobId}`,
   evidence: (jobId: string) => `dacs4:evidence:${jobId}`,
   bundle: (jobId: string) => `dacs5:bundle:${jobId}`,
@@ -340,6 +389,46 @@ export const sessionAnchorName = {
 
 /** Result of a resume-time semantic check on an already-anchored artifact. */
 type Match = { ok: boolean; reason?: string };
+type VerifiedVetMatch =
+  | { ok: false; reason: string }
+  | { ok: true; record: CompositeVerificationRecord };
+
+function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value as object)) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) return value;
+  seen.add(value as object);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreezeSnapshot(child, seen);
+  }
+  return Object.freeze(value);
+}
+
+function immutableSnapshot<T>(value: T, label: string): T {
+  try {
+    return deepFreezeSnapshot(structuredClone(value));
+  } catch {
+    throw new CounterpartyError(`${label} is not snapshot-safe`);
+  }
+}
+
+function immutableJsonSnapshot<T extends Record<string, unknown>>(
+  value: T,
+  label: string,
+): T {
+  // Validate before cloning: structuredClone invokes accessors and normalises
+  // prototypes, so using it first would turn a hostile callback response into
+  // apparently valid JSON.
+  if (!isExactJsonRecord(value)) {
+    throw new CounterpartyError(`${label} is not an exact JSON wire record`);
+  }
+  const captured = immutableSnapshot(value, label);
+  if (!isExactJsonRecord(captured)) {
+    throw new CounterpartyError(`${label} changed during snapshot`);
+  }
+  return captured;
+}
 
 interface DurableSettlementOutcome {
   outcomeSource: "rail-result";
@@ -1286,6 +1375,20 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
       "deps.vet",
       true,
     ),
+    verifyVetRecord: stableDataMethod<SessionDeps["verifyVetRecord"]>(
+      input,
+      "verifyVetRecord",
+      "deps.verifyVetRecord",
+      true,
+    ),
+    authenticateVetFinality: stableDataMethod<
+      SessionDeps["authenticateVetFinality"]
+    >(
+      input,
+      "authenticateVetFinality",
+      "deps.authenticateVetFinality",
+      true,
+    ),
     newJobId: () => protocolString(newJobId(), "new jobId"),
     now: () => {
       const value = protocolString(now(), "session ISO timestamp", {
@@ -2089,6 +2192,10 @@ export async function runSessionCore(
     resumeJobId = protocolString(resumeJobId, "resume jobId");
   }
   const terms = snapshotCanonicalJson(inputTerms, "session terms");
+  const runtime = deps;
+  const sessionTerms = terms;
+  const requestedListingRef = listingRef;
+  const requestedResumeJobId = resumeJobId;
   protocolString(terms.price.rail, "session price rail", { allowColon: true });
   protocolString(terms.price.asset, "session price asset", { allowColon: true });
   protocolString(terms.deliveryPhase, "session delivery phase");
@@ -2111,7 +2218,7 @@ export async function runSessionCore(
   }
   const readableListing = readListingArtifact(storedRecord);
   if (!readableListing) {
-    throw new Error(`listing not found or invalid at ${listingRef}`);
+    throw new Error(`listing not found or invalid at ${requestedListingRef}`);
   }
   const listing =
     readableListing.compatibility === "normative"
@@ -2226,32 +2333,32 @@ export async function runSessionCore(
     }
     if (validation.disposition !== "verified") {
       throw new CounterpartyError(
-        `listing at ${listingRef} is ${validation.disposition} at DACS-1 reader step ` +
+        `listing at ${requestedListingRef} is ${validation.disposition} at DACS-1 reader step ` +
           `${validation.step} (${validation.reason}); LR-3 refuses the new session`,
       );
     }
     const exactRawHash = contentHash(storedRecord);
     if (validation.listingContentHash !== exactRawHash) {
       throw new CounterpartyError(
-        `listing at ${listingRef} validation result is not bound to the exact LR-1 ` +
+        `listing at ${requestedListingRef} validation result is not bound to the exact LR-1 ` +
           `content hash; refusing the new session`,
       );
     }
     if (!isVerifiedListingAdmission(storedRecord, validation)) {
       throw new CounterpartyError(
-        `listing at ${listingRef} has a stale, substituted, or capability-incomplete ` +
+        `listing at ${requestedListingRef} has a stale, substituted, or capability-incomplete ` +
           `verified result; DACS-1 LR-3 / DACS-4 DPA-1 refuse the new session`,
       );
     }
     const admitted = validation.listing;
     if (admitted.signature.signer !== admitted.seller.identity.presentedBy) {
       throw new CounterpartyError(
-        `listing at ${listingRef} is not payee-bound: the Listing signer must equal ` +
+        `listing at ${requestedListingRef} is not payee-bound: the Listing signer must equal ` +
           `seller.identity.presentedBy until the complete DACS-1 §6.3.2 ` +
           `presentation is verified`,
       );
     }
-    const now = deps.nowMs();
+    const now = runtime.nowMs();
     if (
       now < admitted.validity.notBefore ||
       (admitted.validity.notAfter !== undefined && now > admitted.validity.notAfter)
@@ -2316,7 +2423,9 @@ export async function runSessionCore(
     try {
       verified =
         (await deps.verifyListing(
-          structuredClone(storedRecord),
+          deepFreezeJson(
+            snapshotCanonicalJson(storedRecord, "Listing verifier input"),
+          ),
           listingView.sellerClaim,
         )) === true;
     } catch {
@@ -2324,7 +2433,7 @@ export async function runSessionCore(
     }
     if (!verified) {
       throw new CounterpartyError(
-        `listing at ${listingRef} failed signature verification for seller ${listingView.sellerClaim} (#41)`,
+        `listing at ${requestedListingRef} failed signature verification for seller ${listingView.sellerClaim} (#41)`,
       );
     }
   };
@@ -2447,7 +2556,7 @@ export async function runSessionCore(
     }
     if (
       typeof value.signature === "string" &&
-      deps.legacyComponentSignatures === "accept-unverified"
+      runtime.legacyComponentSignatures === "accept-unverified"
     ) {
       return { ok: true };
     }
@@ -2472,11 +2581,12 @@ export async function runSessionCore(
    */
   const anchorOnce = async (
     name: string,
-    match: (v: Record<string, unknown>) => Match,
+    match: (v: Record<string, unknown>) => Match | Promise<Match>,
     build: () => Promise<object>,
     expectedComponentSigner?: string,
     knownLookup?: AnchorLookup,
     recoveredSeparator?: string,
+    preserveSignatureForMatch = false,
   ): Promise<{ ref: string; value: Record<string, unknown>; existing: boolean }> => {
     // Resolve BY NAME (the address can't be recomputed). Fail closed on an
     // indeterminate lookup: proceeding as if absent could re-anchor a duplicate
@@ -2526,7 +2636,9 @@ export async function runSessionCore(
           `resume: artifact anchored at ${found.ref} failed cryptographic authentication`,
         );
       }
-      const m = match(stripSignature(existing));
+      const m = await match(
+        preserveSignatureForMatch ? existing : stripSignature(existing),
+      );
       if (!m.ok) {
         throw new CounterpartyError(
           `resume: artifact anchored at ${found.ref} does not match the requested deal: ${m.reason}`,
@@ -2566,7 +2678,11 @@ export async function runSessionCore(
         );
       }
     }
-    const builtMatch = match(stripSignature(built));
+    const builtMatch = await match(
+      preserveSignatureForMatch
+        ? built
+        : stripSignature(built),
+    );
     if (!builtMatch.ok) {
       throw new CounterpartyError(
         `new artifact for "${name}" does not match the requested deal: ${builtMatch.reason}`,
@@ -2580,10 +2696,19 @@ export async function runSessionCore(
     const publication = deepFreezeJson(
       snapshotCanonicalJson(built, `publication for "${name}"`),
     );
+    const builtCanonical = canonicalize(built);
     const rawRef = await deps.anchor(name, publication);
     const ref = protocolString(rawRef, `anchor result for "${name}"`, {
       allowColon: true,
     });
+    if (
+      canonicalize(built) !== builtCanonical ||
+      canonicalize(publication) !== builtCanonical
+    ) {
+      throw new SubstrateError(
+        `anchor for "${name}" mutated the signed artifact; refusing to continue`,
+      );
+    }
     return { ref, value: built, existing: false };
   };
 
@@ -2859,42 +2984,228 @@ export async function runSessionCore(
   // verification fails — never pay a seller that didn't clear the recipe.
   let vetRef: string | undefined;
   let vetValue: Record<string, unknown> | undefined;
-  if (deps.vet) {
-    const { ref, value } = await anchorOnce(
-      sessionAnchorName.vet(jobId),
-      (v) => {
-        if (!isCompositeVerificationRecord(v))
-          return { ok: false, reason: "not a verification record" };
-        const r = v as unknown as CompositeVerificationRecord;
-        // The CVR has no jobId; its load-bearing invariant is the subject — a
-        // reused record MUST vet THIS seller, not whoever a stale job vetted.
-        if (r.subject !== listingView.sellerClaim)
-          return {
-            ok: false,
-            reason: `vet subject ${r.subject} ≠ seller ${listingView.sellerClaim}`,
-          };
-        return { ok: true };
-      },
-      async () =>
-        signSessionArtifact(
-          snapshotCanonicalJson(
-            await deps.vet!(listingView.sellerClaim),
-            "Vet result",
+  if (runtime.vet) {
+    if (!runtime.verifyVetRecord) {
+      throw new DacsError(
+        "runSessionCore requires verifyVetRecord with vet; a shape-only DACS-2 pass cannot authorize payment",
+      );
+    }
+    if (!runtime.authenticateVetFinality) {
+      throw new DacsError(
+        "runSessionCore requires authenticateVetFinality with vet; a shape-only or unresolved VPC-3 receipt cannot authorize payment",
+      );
+    }
+    const vetRequest: SessionVetRequest = {
+      jobId,
+      evaluatedParty: listingView.sellerClaim,
+    };
+    const vetProducer = runtime.vet;
+    const strictVetVerifier = runtime.verifyVetRecord;
+    const finalityAuthenticator = runtime.authenticateVetFinality;
+    const validateVetRecord = async (
+      v: Record<string, unknown>,
+    ): Promise<VerifiedVetMatch> => {
+      if (!isExactJsonRecord(v)) {
+        return { ok: false, reason: "not an exact JSON wire record" };
+      }
+      const candidate = immutableJsonSnapshot(v, "Vet record verification input");
+      if (!isCompositeVerificationRecord(candidate)) {
+        return { ok: false, reason: "not a current signed verification record" };
+      }
+      if (candidate.jobId !== jobId) {
+        return { ok: false, reason: `vet jobId ${candidate.jobId} ≠ ${jobId}` };
+      }
+      if (candidate.evaluatedParty !== listingView.sellerClaim) {
+        return {
+          ok: false,
+          reason: `vet party ${candidate.evaluatedParty} ≠ seller ${listingView.sellerClaim}`,
+        };
+      }
+      const rawVerification = await strictVetVerifier(
+          immutableSnapshot(candidate, "strict Vet callback input"),
+          immutableSnapshot(vetRequest, "strict Vet request input"),
+        );
+      if (!isExactJsonRecord(rawVerification)) {
+        return { ok: false, reason: "strict verifier returned a non-wire verdict" };
+      }
+      const verification = immutableJsonSnapshot(
+        rawVerification as unknown as Record<string, unknown>,
+        "strict Vet callback result",
+      ) as unknown as StrictCompositeVerification;
+      if (verification.status !== "valid") {
+        return {
+          ok: false,
+          reason: `strict vet closure ${verification.status}: ${verification.code}`,
+        };
+      }
+      if (
+        contentHash(verification.record as unknown as Record<string, unknown>) !==
+          contentHash(candidate) ||
+        verification.record.signature.algorithm !== candidate.signature.algorithm ||
+        verification.record.signature.signer !== candidate.signature.signer ||
+        verification.record.signature.value !== candidate.signature.value
+      ) {
+        return { ok: false, reason: "strict verifier returned a different record" };
+      }
+      // Return the exact private snapshot that was recursively verified. Callers
+      // must authorize from this value and never re-read resolver-owned bytes
+      // after the asynchronous verifier callback.
+      return { ok: true, record: candidate };
+    };
+    const authenticateFinality = async (
+      record: CompositeVerificationRecord,
+      nativeAddress: string,
+      claimed?: FinalizedVetAnchor,
+    ): Promise<FinalizedVetAnchor> => {
+      const hash = contentHash(record as unknown as Record<string, unknown>);
+      const rawAuthenticated = await finalityAuthenticator(
+          immutableSnapshot(
+            {
+              logicalAddress: vetName,
+              nativeAddress,
+              contentHash: hash,
+              record: immutableSnapshot(record, "Vet finality record input"),
+              ...(claimed
+                ? {
+                    claimed: immutableSnapshot(
+                      claimed,
+                      "Vet claimed finality input",
+                    ),
+                  }
+                : {}),
+            },
+            "Vet finality authentication request",
           ),
-          ARTIFACT_SEPARATORS.CompositeVerificationRecord,
-        ),
-      deps.buyerId,
-      undefined,
-      ARTIFACT_SEPARATORS.CompositeVerificationRecord,
+        );
+      const authenticated = rawAuthenticated === null
+        ? null
+        : immutableJsonSnapshot(
+            rawAuthenticated as unknown as Record<string, unknown>,
+            "authenticated Vet finality",
+          ) as unknown as FinalizedVetAnchor;
+      if (
+        authenticated === null ||
+        !isAttestationRef(authenticated.ref) ||
+        !isFinalizedVetAnchorReceipt(authenticated.receipt) ||
+        authenticated.ref.anchor.locator !== nativeAddress ||
+        authenticated.ref.contentHash !== hash ||
+        authenticated.receipt.logicalAddress !== vetName ||
+        authenticated.receipt.nativeAddress !== nativeAddress ||
+        authenticated.receipt.contentHash !== hash
+      ) {
+        throw new CounterpartyError(
+          `Vet finality for ${vetName} was not independently authenticated with exact record/ref/receipt bindings`,
+        );
+      }
+      if (
+        claimed &&
+        (canonicalize(authenticated.ref) !== canonicalize(claimed.ref) ||
+          canonicalize(authenticated.receipt) !== canonicalize(claimed.receipt))
+      ) {
+        throw new CounterpartyError(
+          `Vet producer's claimed finality for ${vetName} differs from the independently authenticated receipt`,
+        );
+      }
+      return authenticated;
+    };
+    const vetName = sessionAnchorName.vet(jobId, listingView.sellerClaim);
+    let durable = snapshotAnchorLookup(
+      await runtime.resolveAnchor(vetName),
+      `Vet lookup for ${vetName}`,
     );
-    vetRef = ref;
-    vetValue = value;
-    const record = stripSignature(value) as unknown as CompositeVerificationRecord;
+    let claimedFinality: FinalizedVetAnchor | undefined;
+    if (durable.status === "indeterminate") {
+      throw new SubstrateError(
+        `resume: could not establish finalized Vet anchor ${vetName}: ${durable.reason}`,
+      );
+    }
+    if (durable.status === "absent") {
+      const rawProduction = await vetProducer(
+        immutableSnapshot(vetRequest, "Vet producer request"),
+      );
+      const production = immutableJsonSnapshot(
+        rawProduction as unknown as Record<string, unknown>,
+        "Vet production",
+      ) as unknown as VetProduction;
+      if (
+        !isCompositeVerificationRecord(production.record) ||
+        !isAttestationRef(production.recordRef) ||
+        !isFinalizedVetAnchorReceipt(production.anchorReceipt) ||
+        production.recordRef.anchor.locator !==
+          production.anchorReceipt.nativeAddress ||
+        production.recordRef.contentHash !==
+          contentHash(
+            production.record as unknown as Record<string, unknown>,
+          ) ||
+        production.anchorReceipt.logicalAddress !== vetName ||
+        production.anchorReceipt.contentHash !== production.recordRef.contentHash
+      ) {
+        throw new CounterpartyError(
+          "Vet producer did not return an exact finalized record/ref/receipt binding",
+        );
+      }
+      claimedFinality = immutableSnapshot(
+        {
+          ref: production.recordRef,
+          receipt: production.anchorReceipt,
+        },
+        "Vet producer claimed finality",
+      );
+      const producedMatch = await validateVetRecord(
+        production.record as unknown as Record<string, unknown>,
+      );
+      if (!producedMatch.ok) {
+        throw new CounterpartyError(
+          `Vet producer returned an unsafe record: ${producedMatch.reason}`,
+        );
+      }
+      // The producer promises an independently readable finalized SR-2 write.
+      // Resolve it again by the canonical logical address and authorize money
+      // only from those durable exact bytes—not from its in-memory return.
+      durable = snapshotAnchorLookup(
+        await runtime.resolveAnchor(vetName),
+        `Vet finalized readback for ${vetName}`,
+      );
+      if (durable.status !== "present") {
+        throw new SubstrateError(
+          `Vet producer returned before ${vetName} was independently readable`,
+        );
+      }
+      if (
+        durable.ref !== production.recordRef.anchor.locator ||
+        canonicalize(durable.value) !== canonicalize(production.record)
+      ) {
+        throw new CounterpartyError(
+          "durable Vet readback differs from the producer's finalized record",
+        );
+      }
+    }
+    const durableRef = durable.ref;
+    const durableMatch = await validateVetRecord(durable.value);
+    if (!durableMatch.ok) {
+      throw new CounterpartyError(
+        `durable Vet record is unsafe: ${durableMatch.reason}`,
+      );
+    }
+    // VPC-3 money gate: a structurally plausible producer receipt and a present
+    // CVR are both insufficient. The caller-held seam must independently
+    // recover/authenticate finality on every run, including resume.
+    const authenticatedFinality = await authenticateFinality(
+      durableMatch.record,
+      durableRef,
+      claimedFinality,
+    );
+    vetRef = authenticatedFinality.ref.anchor.locator;
+    vetValue = immutableSnapshot(
+      durableMatch.record as unknown as Record<string, unknown>,
+      "verified durable Vet record",
+    );
+    const record = durableMatch.record;
     // Proceed only on an explicit pass — fail, indeterminate and error all abort
     // (indeterminate/error are NOT pass; DACS-2 §7.7).
-    if (record.decision !== "pass") {
+    if (record.overallDecision !== "pass") {
       throw new CounterpartyError(
-        `seller ${listingView.sellerClaim} did not pass verification (recipe ${record.recipeId}, decision=${record.decision})`,
+        `seller ${listingView.sellerClaim} did not pass verification (decision=${record.overallDecision})`,
       );
     }
   }
@@ -2912,7 +3223,7 @@ export async function runSessionCore(
       } = {
         jobId,
         pattern: "negotiate-fixed-price",
-        buyer: deps.buyerId,
+        buyer: runtime.buyerId,
         seller: listingView.sellerClaim,
         listingRef,
         dacsSdkExpectedSettlementPayee: expectedSettlementPayee,
@@ -2951,7 +3262,7 @@ export async function runSessionCore(
   // fail CLOSED on untrustworthy durable state, and reject a replayed agreement
   // hash. `create` binds the hash atomically and THROWS on a cross-session reuse,
   // so a replayed deal aborts here — before any call to `settle`.
-  const store = deps.sessionStore;
+  const store = runtime.sessionStore;
   if (store) {
     const loaded = await store.load(jobId);
     if (loaded.status === "corrupt" || loaded.status === "unsupported") {
@@ -2960,7 +3271,7 @@ export async function runSessionCore(
       );
     }
     if (loaded.status === "missing") {
-      await store.create({ jobId, agreementHash, phase: "negotiated", now: deps.nowMs() });
+      await store.create({ jobId, agreementHash, phase: "negotiated", now: runtime.nowMs() });
     } else {
       // Resume: enforce that the live record's bound hash is THIS deal's — a
       // mismatch is a replayed/altered agreement under a reused jobId.
@@ -3004,7 +3315,7 @@ export async function runSessionCore(
       key: "settle:0",
       data,
       phase: "settling",
-      now: deps.nowMs(),
+      now: runtime.nowMs(),
     });
     if (res.ok) {
       // Defense in depth against a custom store that reports a successful
@@ -3106,7 +3417,7 @@ export async function runSessionCore(
       expectedRevision: cur.record.revision,
       phase,
       checkpoint: { key: "settle:0", stage: "outcome", data: { ...outcome } },
-      now: deps.nowMs(),
+      now: runtime.nowMs(),
     });
     if (res.ok) return;
 
@@ -3575,7 +3886,10 @@ export async function runSessionCore(
   const phaseSummary: PhaseSummaryEntry[] = [];
   const vetRecords: AttestationRef[] = [];
   if (vetRef && vetValue) {
-    const vetAttRef = refTo("dacs-2-verifyresult", `vet-${jobId}`, vetValue);
+    // The surrounding bundle is still the explicit legacy-MVP shape, but a
+    // newly written vet entry names the actual native composite anchor so it
+    // remains resolvable after the move to the normative §7.7 logical address.
+    const vetAttRef = refTo("dacs-2-composite", vetRef, vetValue);
     vetRecords.push(vetAttRef);
     phaseSummary.push({
       index: phaseSummary.length,
@@ -3630,16 +3944,32 @@ export async function runSessionCore(
         listingRef: listingView.pin,
         agreementRef: refTo("dacs-3-agreement", `agreement-${jobId}`, agreementValue),
         parties: [
-          // MVP one-sided: the buyer's party. bundleHash stands in for the
-          // party's DACS-1 IdentityBundle hash (IdentityBundles are a follow-up).
-          { role: "buyer", bundleHash: sha256Hex(deps.buyerId), primaryClaim: deps.buyerId },
+          // The buyer's party. bundleHash remains the reduced-MVP stand-in until
+          // #140's normative IdentityBundle hash is wired into this legacy path.
+          {
+            role: "buyer",
+            bundleHash: sha256Hex(runtime.buyerId),
+            primaryClaim: runtime.buyerId,
+          },
+          // A current Vet record carries the exact IdentityBundle hash it
+          // evaluated. Retain that party binding in DACS-5 so a recursive
+          // verifier can reject CVR replay across parties or identity bundles.
+          ...(vetValue && isCompositeVerificationRecord(vetValue)
+            ? [
+                {
+                  role: "seller",
+                  bundleHash: vetValue.bundleHash,
+                  primaryClaim: listingView.sellerClaim,
+                },
+              ]
+            : []),
         ],
         phaseSummary,
         vetRecords,
         settlementEvidence: [evidenceRef],
         recipeRegistryVersion: 1,
         railRegistryVersion: 1,
-        finalisedAt: deps.nowMs(),
+        finalisedAt: runtime.nowMs(),
       };
       // Use the same single-source legacy-compatible §10.4.1 scope recipe as
       // the public recovery verifier: signatures + anchoredByRole are omitted.
@@ -3653,7 +3983,7 @@ export async function runSessionCore(
         ...body,
         signatures: [
           {
-            party: deps.buyerId,
+            party: runtime.buyerId,
             algorithm: "ed25519",
             value: Buffer.from(sig).toString("base64url"),
           },
@@ -3669,7 +3999,7 @@ export async function runSessionCore(
     await recordSessionOutcome(store, jobId, {
       agreementHash,
       phase: outcome,
-      now: deps.nowMs(),
+      now: runtime.nowMs(),
       receipts: [
         { kind: "agreement", ref: agreementRef },
         { kind: "settlement", ref: settlementRef },

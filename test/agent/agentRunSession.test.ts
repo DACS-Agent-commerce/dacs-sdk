@@ -6,13 +6,19 @@ import {
   signComponentArtifact,
   verifyComponentSignature,
 } from "../../src/artifacts/signatures.js";
+import type {
+  CompositeVerificationRecord,
+  IdentityBundle,
+} from "../../src/artifacts/types.js";
 import {
   contentHash,
+  encodeAddressSegment,
   listingAddress,
   logicalToStorageProgramName,
   stripSignature,
 } from "../../src/canonical/index.js";
-import type { IdentityBundle } from "../../src/artifacts/types.js";
+import { isListing } from "../../src/artifacts/validators.js";
+import type { VetProduction } from "../../src/agent/vetCore.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -617,6 +623,102 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     }
   });
 
+  test("public RunSessionOptions wires caller-held Vet finality authentication", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+    });
+    let finalityCalls = 0;
+    let settleCalls = 0;
+
+    await expect(
+      agent.runSession(ref, {
+        terms: TERMS,
+        jobId: "public-vet-finality",
+        listingValidationDeps: listingValidationDeps(),
+        vet: async ({ jobId, evaluatedParty }): Promise<VetProduction> => {
+          const record: CompositeVerificationRecord = {
+            recordVersion: "1",
+            jobId,
+            evaluatedParty,
+            bundleHash: "a".repeat(64),
+            requirementHash: "b".repeat(64),
+            freshness: [],
+            supplementary: [],
+            dealSpecific: [],
+            overallDecision: "pass",
+            generatedAt: 1780000000000,
+            signature: {
+              algorithm: "ed25519",
+              signer: buyerDid,
+              value: "AA",
+            },
+          };
+          const logicalAddress =
+            `dacs2:composite:${encodeAddressSegment(jobId)}:` +
+            encodeAddressSegment(evaluatedParty);
+          const nativeAddress = `stor:${logicalAddress}`;
+          const hash = contentHash(
+            record as unknown as Record<string, unknown>,
+          );
+          store.set(
+            nativeAddress,
+            structuredClone(record) as unknown as Record<string, unknown>,
+          );
+          return {
+            record,
+            recordRef: {
+              anchor: { kind: "storage-program", locator: nativeAddress },
+              contentHash: hash,
+            },
+            anchorReceipt: {
+              receiptVersion: "1",
+              substrate: "test",
+              finalityProfile: "instant",
+              logicalAddress,
+              nativeAddress,
+              contentHash: hash,
+              transactionRef: { kind: "test", value: "tx:vet" },
+              writer: buyerDid,
+              state: "finalized",
+              observationDisposition: "established",
+              observedAt: 1780000000000,
+              blockRef: { id: "block:vet" },
+              evidence: { kind: "test-proof", value: "authenticated" },
+            },
+          };
+        },
+        verifyVetRecord: async (record) => ({
+          status: "valid",
+          record: record as CompositeVerificationRecord,
+          freshness: [],
+          dealSpecific: [],
+          freshnessRecipes: [],
+          dealSpecificRecipes: [],
+        }),
+        authenticateVetFinality: async ({ claimed }) => {
+          finalityCalls += 1;
+          return claimed ? structuredClone(claimed) : null;
+        },
+        settle: async () => {
+          settleCalls += 1;
+          return {
+            ok: true,
+            txHash: "0xpublicvet",
+            chainId: "test",
+            payer: buyerDid,
+            payee: sellerDid,
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(finalityCalls).toBe(1);
+    expect(settleCalls).toBe(1);
+  });
+
   test("getReputation ignores a structurally plausible but unverified bundle", async () => {
     const { adapter, store } = memAdapter();
     store.set("stor:forged-bundle", {
@@ -646,7 +748,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
   });
 
-  test("getReputation resolves normative storage-program AttestationRefs by locator", async () => {
+  test("public verifyBundle/getReputation require the configured strict verifier for normative vet records", async () => {
     const { adapter, store } = memAdapter();
     const listingRef = await anchorListing(store);
     const listing = store.get(listingRef)!;
@@ -706,6 +808,28 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     };
     store.set("stor:agreement", agreement as Record<string, unknown>);
 
+    const composite: CompositeVerificationRecord = {
+      recordVersion: "1",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+      evaluatedParty: sellerDid,
+      bundleHash: "b".repeat(64),
+      requirementHash: "f".repeat(64),
+      freshness: [],
+      supplementary: [],
+      dealSpecific: [],
+      overallDecision: "pass",
+      generatedAt: 1786363100000,
+      signature: {
+        algorithm: "ed25519",
+        signer: normativeBuyerDid,
+        value: "AA",
+      },
+    };
+    store.set(
+      "stor:composite",
+      composite as unknown as Record<string, unknown>,
+    );
+
     const unsigned = {
       faultBundleVersion: "1" as const,
       faultedParty: "none" as const,
@@ -726,7 +850,17 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         { role: "seller", bundleHash: "b".repeat(64), primaryClaim: sellerDid },
       ],
       phaseSummary: [],
-      vetRecords: [],
+      vetRecords: [
+        {
+          anchor: {
+            kind: "storage-program" as const,
+            locator: "stor:composite",
+          },
+          contentHash: contentHash(
+            composite as unknown as Record<string, unknown>,
+          ),
+        },
+      ],
       settlementEvidence: [],
       recipeRegistryVersion: 1,
       railRegistryVersion: 1,
@@ -752,13 +886,50 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       ],
     });
 
-    const agent = buildAgent(adapter as never, {
+    const unconfiguredAgent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: normativeBuyerDid },
     });
+    const unconfiguredVerdict = await unconfiguredAgent.verifyBundle(
+      "stor:bundle",
+    );
+    expect(unconfiguredVerdict.ok).toBe(false);
+    expect(
+      unconfiguredVerdict.refs.find(
+        (entry) => entry.kind === "dacs-2-composite",
+      ),
+    ).toMatchObject({ verdict: "invalid-vet-record" });
+    await expect(
+      unconfiguredAgent.getReputation(normativeBuyerDid, ["stor:bundle"]),
+    ).resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
+
+    let verifierCalls = 0;
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: normativeBuyerDid },
+      verifyCompositeRecord: async (record, bundle) => {
+        verifierCalls += 1;
+        expect(bundle.jobId).toBe("01J8ME0SXKQ4T9V2RC5HJ6WX7E");
+        expect(record.evaluatedParty).toBe(sellerDid);
+        return {
+          status: "valid",
+          record: structuredClone(record),
+          freshness: [],
+          dealSpecific: [],
+          freshnessRecipes: [],
+          dealSpecificRecipes: [],
+        };
+      },
+    });
+    await expect(agent.verifyBundle("stor:bundle")).resolves.toMatchObject({
+      ok: true,
+      fullyVerified: true,
+    });
     await expect(agent.getReputation(normativeBuyerDid, ["stor:bundle"]))
       .resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
+    expect(verifierCalls).toBe(2);
   });
 
   test("public verifyBundle owner-resolves a normative pre-commit abort Listing", async () => {

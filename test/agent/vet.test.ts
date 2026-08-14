@@ -1,450 +1,1502 @@
 import { describe, expect, test } from "vitest";
 
-import { vetCore, type VetDeps } from "../../src/agent/vetCore.js";
-import { parseCciRecord } from "../../src/identity/cci.js";
-import type { RecipeDescriptor } from "../../src/registry/types.js";
+import {
+  canonicalize,
+  compositeVerificationAddress,
+  contentHash,
+  ed25519Sign,
+  ed25519Verify,
+  isCompositeVerificationRecord,
+  isFinalizedVetAnchorReceipt,
+  isVerifyResult,
+  privateKeyFromSeed,
+  publicKeyFromRaw,
+  publicKeyFromSeed,
+  rawPublicKey,
+  resolveRecipe,
+  selfSignedAssertionBytes,
+  sha256Hex,
+  signComponentArtifact,
+  vetCore,
+  type AttestationRef,
+  type CompositeBundleRequirement,
+  type FinalizedVetAnchor,
+  type FinalizedVetAnchorReceipt,
+  type RecipeDescriptor,
+  type VerificationMethod,
+  type VetDeps,
+  type VetOperationCheckpoint,
+  type VetRequest,
+} from "../../src/index.js";
 
-function recipe(over: Partial<RecipeDescriptor>): RecipeDescriptor {
-  return { id: "r", method: "self-signed", availability: "live", params: {}, ...over };
+const VERIFIER_SEED = new Uint8Array(32).fill(7);
+const VERIFIER =
+  `key:${Buffer.from(rawPublicKey(publicKeyFromSeed(VERIFIER_SEED))).toString("hex")}`;
+const STEWARD_SEED = new Uint8Array(32).fill(8);
+const STEWARD_PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
+const STEWARD =
+  `did:demos:steward:${Buffer.from(STEWARD_PUBLIC_KEY).toString("hex")}`;
+const BUNDLE_HASH = "b".repeat(64);
+const NOW = 1_780_000_000_000;
+
+interface StoredArtifact {
+  logicalAddress: string;
+  artifact: Record<string, unknown>;
+  ref: AttestationRef;
+  receipt: FinalizedVetAnchorReceipt;
 }
 
-const deps = (proxyStatus = 200): VetDeps => ({
-  proxyFetch: async () => ({ status: proxyStatus, responseHash: "0xhash", body: "" }),
-  now: () => "2026-01-01T00:00:00Z",
-});
+type FinalizedStore = Map<string, StoredArtifact>;
 
-describe("vetCore (DACS-2 Vet stage)", () => {
-  test("self-signed records a pass with the subject as its own authority", async () => {
-    const cvr = await vetCore(
-      { subject: "did:demos:agent:alice", recipe: recipe({ id: "self-signed", method: "self-signed" }) },
-      deps(),
+const operationStores = new WeakMap<
+  FinalizedStore,
+  Map<string, VetOperationCheckpoint>
+>();
+interface StoredOperationStep {
+  operationHash: string;
+  inputHash: string;
+  state: "complete" | "failed";
+  value?: unknown;
+  error?: string;
+}
+const operationStepStores = new WeakMap<
+  FinalizedStore,
+  Map<string, StoredOperationStep>
+>();
+const operationStepInflight = new WeakMap<
+  FinalizedStore,
+  Map<string, Promise<unknown>>
+>();
+
+function operationStoreFor(
+  store: FinalizedStore,
+): Map<string, VetOperationCheckpoint> {
+  let operations = operationStores.get(store);
+  if (!operations) {
+    operations = new Map();
+    operationStores.set(store, operations);
+  }
+  return operations;
+}
+
+function operationStepsFor(
+  store: FinalizedStore,
+): Map<string, StoredOperationStep> {
+  let steps = operationStepStores.get(store);
+  if (!steps) {
+    steps = new Map();
+    operationStepStores.set(store, steps);
+  }
+  return steps;
+}
+
+function operationInflightFor(
+  store: FinalizedStore,
+): Map<string, Promise<unknown>> {
+  let inflight = operationStepInflight.get(store);
+  if (!inflight) {
+    inflight = new Map();
+    operationStepInflight.set(store, inflight);
+  }
+  return inflight;
+}
+
+function recipe(over: Partial<RecipeDescriptor> = {}): RecipeDescriptor {
+  return {
+    recipeVersion: 1,
+    scheme: "domain",
+    defaultMethod: {
+      kind: "consensus-backed-proxy",
+      endpoint: {
+        method: "GET",
+        urlTemplate: "https://authority.example/claim/{identifier}",
+      },
+    },
+    defaultMaxAgeSec: 3_600,
+    parserRules: { format: "json", successJsonPath: "$.ok" },
+    retryClass: "permanent",
+    availability: "live",
+    governance: {
+      proposedBy: STEWARD,
+      acceptedAt: NOW - 10_000,
+      anchoring: "single-signer",
+    },
+    ...over,
+  };
+}
+
+async function authenticatedRecipe(
+  over: Partial<RecipeDescriptor> = {},
+  selectorMethod?: VerificationMethod["kind"],
+) {
+  const descriptor = recipe(over);
+  const signed = await signComponentArtifact(
+    descriptor,
+    "dacs-recipe:v1:",
+    {
+      algorithm: "ed25519",
+      signer: STEWARD,
+      sign: (bytes) =>
+        ed25519Sign(bytes, privateKeyFromSeed(STEWARD_SEED)),
+    },
+  );
+  return resolveRecipe(
+    "memory:recipe-registry",
+    {
+      scheme: descriptor.scheme,
+      method: selectorMethod ?? descriptor.defaultMethod.kind,
+      recipeVersion: descriptor.recipeVersion,
+    },
+    {
+      readRegistry: async () => ({
+        registryId: "dacs2:registry:v1",
+        version: "1",
+        entries: [signed],
+      }),
+      stewardPublicKey: STEWARD_PUBLIC_KEY,
+      stewardSigner: STEWARD,
+      verify: (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+    },
+  );
+}
+
+function requirement(
+  scheme: string,
+  recipeVersion = 1,
+  parameters?: Record<string, unknown>,
+): CompositeBundleRequirement {
+  return {
+    requirementVersion: "1",
+    required: [
+      {
+        scheme,
+        verificationRequired: true,
+        recipeVersion,
+        ...(parameters === undefined ? {} : { parameters }),
+      },
+    ],
+  };
+}
+
+function receiptFor(
+  logicalAddress: string,
+  nativeAddress: string,
+  artifactHash: string,
+): FinalizedVetAnchorReceipt {
+  return {
+    receiptVersion: "1",
+    substrate: "memory-finality-test",
+    finalityProfile: "instant-test-finality",
+    logicalAddress,
+    nativeAddress,
+    contentHash: artifactHash,
+    transactionRef: { kind: "memory-tx", value: `tx:${artifactHash}` },
+    writer: VERIFIER,
+    nonce: "1",
+    state: "finalized",
+    observationDisposition: "established",
+    observedAt: NOW,
+    blockRef: { id: "memory-block-1", height: "1", timestamp: NOW },
+    evidence: { kind: "memory-proof", value: `proof:${artifactHash}` },
+  };
+}
+
+function finalizedArtifactHash(artifact: Record<string, unknown>): string {
+  // The method-native assertion's `signature` is evidence, not the component
+  // envelope field excluded from a VerifyResult/composite signed scope.
+  return artifact.assertionVersion === "1"
+    ? sha256Hex(canonicalize(artifact))
+    : contentHash(artifact);
+}
+
+function baseDeps(
+  store: FinalizedStore,
+  body = JSON.stringify({ ok: true }),
+): VetDeps {
+  const operations = operationStoreFor(store);
+  const operationSteps = operationStepsFor(store);
+  const operationInflight = operationInflightFor(store);
+  const authority: AttestationRef = {
+    anchor: { kind: "https", locator: "https://authority.example/evidence/1" },
+    contentHash: sha256Hex(body),
+    signer: "substrate-validator-set:demos-testnet:1",
+  };
+  return {
+    proxyFetch: async () => ({
+      status: 200,
+      body,
+      attestation: authority,
+      fetchedAt: NOW,
+      complete: true,
+    }),
+    nowMs: () => NOW,
+    componentSigner: {
+      algorithm: "ed25519",
+      signer: VERIFIER,
+      sign: (bytes) =>
+        ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    },
+    anchorFinalizedArtifact: async ({ logicalAddress, artifact }) => {
+      const persisted = structuredClone(
+        artifact,
+      ) as unknown as Record<string, unknown>;
+      const artifactHash = finalizedArtifactHash(persisted);
+      const nativeAddress = `memory:${logicalAddress}`;
+      const existing = store.get(nativeAddress);
+      if (existing) {
+        if (
+          existing.ref.contentHash !== artifactHash ||
+          canonicalize(existing.artifact) !== canonicalize(persisted)
+        ) {
+          throw new Error(
+            `immutable logical address collision at ${logicalAddress}`,
+          );
+        }
+        return {
+          ref: structuredClone(existing.ref),
+          receipt: structuredClone(existing.receipt),
+        };
+      }
+      const ref: AttestationRef = {
+        anchor: { kind: "storage-program", locator: nativeAddress },
+        contentHash: artifactHash,
+        ...(persisted.assertionVersion === "1" &&
+        typeof persisted.subject === "string"
+          ? { signer: persisted.subject }
+          : {}),
+      };
+      const receipt = receiptFor(
+        logicalAddress,
+        nativeAddress,
+        artifactHash,
+      );
+      store.set(nativeAddress, {
+        logicalAddress,
+        artifact: persisted,
+        ref: structuredClone(ref),
+        receipt: structuredClone(receipt),
+      });
+      return { ref, receipt };
+    },
+    verifyFinalizedAnchor: ({
+      logicalAddress,
+      artifact,
+      ref,
+      receipt,
+    }) => {
+      const stored = store.get(ref.anchor.locator);
+      return (
+        stored !== undefined &&
+        stored.logicalAddress === logicalAddress &&
+        receipt.state === "finalized" &&
+        receipt.observationDisposition === "established" &&
+        receipt.contentHash === finalizedArtifactHash(
+          artifact as unknown as Record<string, unknown>,
+        ) &&
+        canonicalize(stored.artifact) === canonicalize(artifact)
+      );
+    },
+    readAnchoredJson: async (ref) => {
+      const stored = store.get(ref.anchor.locator);
+      return stored ? structuredClone(stored.artifact) : null;
+    },
+    resolveFinalizedArtifact: async ({ logicalAddress, contentHash }) => {
+      const stored = [...store.values()].find(
+        (candidate) =>
+          candidate.logicalAddress === logicalAddress &&
+          candidate.ref.contentHash === contentHash,
+      );
+      return stored
+        ? {
+            ref: structuredClone(stored.ref),
+            receipt: structuredClone(stored.receipt),
+          }
+        : null;
+    },
+    operationStore: {
+      load: async (operationKey) => {
+        const checkpoint = operations.get(operationKey);
+        return checkpoint === undefined ? null : structuredClone(checkpoint);
+      },
+      compareAndSet: async ({ operationKey, expected, next }) => {
+        const current = operations.get(operationKey);
+        const matches = expected === null
+          ? current === undefined
+          : current !== undefined &&
+            canonicalize(current) === canonicalize(expected);
+        if (!matches) return false;
+        operations.set(operationKey, structuredClone(next));
+        return true;
+      },
+      runOnce: async ({
+        operationKey,
+        operationHash,
+        step,
+        inputHash,
+        execute,
+      }) => {
+        const stepKey = `${operationKey}\u0000${step}`;
+        const replay = operationSteps.get(stepKey);
+        if (replay) {
+          if (
+            replay.operationHash !== operationHash ||
+            replay.inputHash !== inputHash
+          ) {
+            throw new Error(`operation step ${step} input mismatch`);
+          }
+          if (replay.state === "failed") {
+            throw new Error(replay.error ?? `operation step ${step} failed`);
+          }
+          return structuredClone(replay.value);
+        }
+        let pending = operationInflight.get(stepKey);
+        if (!pending) {
+          pending = (async () => {
+            try {
+              const value = structuredClone(await execute());
+              operationSteps.set(stepKey, {
+                operationHash,
+                inputHash,
+                state: "complete",
+                value,
+              });
+              return value;
+            } catch (error) {
+              const message = error instanceof Error
+                ? error.message
+                : "operation step failed";
+              operationSteps.set(stepKey, {
+                operationHash,
+                inputHash,
+                state: "failed",
+                error: message,
+              });
+              throw error;
+            } finally {
+              operationInflight.delete(stepKey);
+            }
+          })();
+          operationInflight.set(stepKey, pending);
+        }
+        return structuredClone(await pending);
+      },
+    },
+  };
+}
+
+function storedArtifacts(store: FinalizedStore): Record<string, unknown>[] {
+  return [...store.values()].map(({ artifact }) => artifact);
+}
+
+function storedVerifyResult(store: FinalizedStore) {
+  const result = storedArtifacts(store).find(isVerifyResult);
+  expect(result).toBeDefined();
+  return result!;
+}
+
+describe("vetCore current DACS-2 producer", () => {
+  test("accepts only the exact finalized receipt wire shape", () => {
+    const valid = receiptFor(
+      "dacs2:composite:job:domain%3Aalice.example",
+      "memory:dacs2:composite:job:domain%3Aalice.example",
+      "a".repeat(64),
     );
-    expect(cvr).toMatchObject({
-      subject: "did:demos:agent:alice",
-      recipeId: "self-signed",
+    expect(isFinalizedVetAnchorReceipt(valid)).toBe(true);
+    expect(isFinalizedVetAnchorReceipt({ ...valid, trusted: true })).toBe(false);
+    expect(
+      isFinalizedVetAnchorReceipt({
+        ...valid,
+        transactionRef: { ...valid.transactionRef, network: "test" },
+      }),
+    ).toBe(false);
+    expect(
+      isFinalizedVetAnchorReceipt(
+        Object.assign(Object.create({ trusted: true }), valid),
+      ),
+    ).toBe(false);
+  });
+
+  test("CF-4 encodes every variable composite-address segment", () => {
+    expect(
+      compositeVerificationAddress("deal:1?retry=2", "domain:alice.example"),
+    ).toBe(
+      "dacs2:composite:deal%3A1%3Fretry%3D2:domain%3Aalice.example",
+    );
+  });
+
+  test("returns only finalized VerifyResult and composite production", async () => {
+    const store: FinalizedStore = new Map();
+    const production = await vetCore(
+      {
+        jobId: "job-vet-1",
+        subject: "domain:alice.example",
+        bundleHash: BUNDLE_HASH,
+        requirement: requirement("domain"),
+        recipe: await authenticatedRecipe(),
+      },
+      baseDeps(store),
+    );
+
+    expect(isCompositeVerificationRecord(production.record)).toBe(true);
+    expect(production.record).toMatchObject({
+      recordVersion: "1",
+      jobId: "job-vet-1",
+      evaluatedParty: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirementHash: sha256Hex(canonicalize(requirement("domain"))),
+      freshness: [],
+      overallDecision: "pass",
+    });
+    expect(production.record.dealSpecific).toHaveLength(1);
+    expect(production.record.signature.signer).toBe(VERIFIER);
+    expect(production.recordRef.contentHash).toBe(
+      contentHash(production.record as unknown as Record<string, unknown>),
+    );
+    expect(production.anchorReceipt).toMatchObject({
+      state: "finalized",
+      observationDisposition: "established",
+      contentHash: production.recordRef.contentHash,
+    });
+    expect(store.size).toBe(2);
+    expect(storedVerifyResult(store)).toMatchObject({
+      resultVersion: "1",
+      scheme: "domain",
+      identifier: "alice.example",
+      recipeVersion: 1,
+      method: "consensus-backed-proxy",
       decision: "pass",
     });
-    expect(cvr.results).toEqual([
-      { claimRef: "did:demos:agent:alice", method: "self-signed", status: "pass", authority: "did:demos:agent:alice" },
-    ]);
   });
 
-  test("consensus-backed-proxy passes on a 2xx body matching its signed rules", async () => {
-    const cvr = await vetCore(
+  test("requires recipe provenance created by authenticated resolution", async () => {
+    const plainSignedRecipe = await signComponentArtifact(
+      recipe(),
+      "dacs-recipe:v1:",
       {
-        subject: "domain:alice.example",
-        recipe: recipe({
-          id: "domain-acme",
-          method: "consensus-backed-proxy",
-          params: { authorityUrl: "https://alice.example/.well-known/dacs" },
-          parserRules: { format: "raw", matcher: "^$" },
-        }),
+        algorithm: "ed25519",
+        signer: STEWARD,
+        sign: (bytes) =>
+          ed25519Sign(bytes, privateKeyFromSeed(STEWARD_SEED)),
       },
-      deps(200),
     );
-    expect(cvr.decision).toBe("pass");
-    expect(cvr.results[0]).toMatchObject({
-      method: "consensus-backed-proxy",
-      status: "pass",
-      authority: "https://alice.example/.well-known/dacs",
-      // R5: the DAHR attestation is recorded on the entry as evidence.
-      responseHash: "0xhash",
-    });
-  });
-
-  test("consensus-backed-proxy fails on a non-2xx", async () => {
-    const cvr = await vetCore(
-      {
-        subject: "domain:alice.example",
-        recipe: recipe({ method: "consensus-backed-proxy", params: { authorityUrl: "https://x/y" } }),
-      },
-      deps(404),
-    );
-    expect(cvr.decision).toBe("fail");
-    expect(cvr.results[0]!.status).toBe("fail");
-  });
-
-  // #16/#49 — a signed ParserSpec drives a DETERMINISTIC content verdict from the
-  // DAHR-attested body (PSP-1..5), evaluated by the default json/raw engine.
-  const bodyDeps = (body: string, complete?: boolean): VetDeps => ({
-    proxyFetch: async () => ({ status: 200, responseHash: "0xhash", body, ...(complete !== undefined ? { complete } : {}) }),
-    now: () => "2026-01-01T00:00:00Z",
-  });
-  const proxyRecipe = (over: Partial<RecipeDescriptor>) =>
-    recipe({ method: "consensus-backed-proxy", params: { authorityUrl: "https://x/y" }, ...over });
-  const req = (over: Partial<RecipeDescriptor>) => ({
-    subject: "did:demos:agent:alice",
-    recipe: proxyRecipe(over),
-  });
-
-  test("ParserSpec positive-match: JSONPath match ⇒ pass, no match ⇒ fail (PSP-1/2)", async () => {
-    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.login" };
-    expect(
-      (await vetCore(req({ parserRules: rules }), bodyDeps(JSON.stringify({ login: "alice" })))).decision,
-    ).toBe("pass");
-    expect(
-      (await vetCore(req({ parserRules: rules }), bodyDeps(JSON.stringify({ other: 1 })))).decision,
-    ).toBe("fail");
-    // Evidence is still recorded.
-    const r = await vetCore(req({ parserRules: rules }), bodyDeps(JSON.stringify({ login: "alice" })));
-    expect(r.results[0]!.responseHash).toBe("0xhash");
-  });
-
-  test("ParserSpec negative-match: a match ⇒ fail (listed), no match ⇒ pass (PSP-2)", async () => {
-    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.listed" };
-    const opts = { parserRules: rules, negativeMatch: true };
-    expect(
-      (await vetCore(req(opts), bodyDeps(JSON.stringify({ listed: true })))).decision,
-    ).toBe("fail");
-    expect(
-      (await vetCore(req(opts), bodyDeps(JSON.stringify({ clean: true })))).decision,
-    ).toBe("pass");
-  });
-
-  test("ParserSpec indeterminateOn is evaluated BEFORE the match ⇒ indeterminate (PSP-2)", async () => {
-    const rules: RecipeDescriptor["parserRules"] = {
-      format: "json",
-      successJsonPath: "$.login",
-      indeterminateOn: [{ jsonPath: "$.pending" }],
-      dataMap: { status: "$.status" },
-    };
-    const cvr = await vetCore(
-      req({ parserRules: rules }),
-      bodyDeps(JSON.stringify({ login: "alice", pending: true, status: "LAPSED" })),
-    );
-    expect(cvr.decision).toBe("indeterminate");
-    expect(cvr.results[0]!.data).toEqual({ status: "LAPSED" });
-  });
-
-  test("ParserSpec on a malformed body ⇒ error, never fail (PSP-2)", async () => {
-    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.login" };
-    const cvr = await vetCore(req({ parserRules: rules }), bodyDeps("{not json"));
-    expect(cvr.decision).toBe("error");
-  });
-
-  test("PSP-5: a negative-match pass on an unconfirmed-complete list ⇒ indeterminate", async () => {
-    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.hit" };
-    const opts = { parserRules: rules, negativeMatch: true, requiresListCompleteness: true };
-    // No hit (would be "not listed" = pass) but completeness unconfirmed → indeterminate.
-    expect(
-      (await vetCore(req(opts), bodyDeps(JSON.stringify({ records: [] }), false))).decision,
-    ).toBe("indeterminate");
-    // …confirmed complete → the pass stands.
-    expect(
-      (await vetCore(req(opts), bodyDeps(JSON.stringify({ records: [] }), true))).decision,
-    ).toBe("pass");
-  });
-
-  test("a non-2xx fails first — parserRules are not consulted", async () => {
-    const rules: RecipeDescriptor["parserRules"] = { format: "json", successJsonPath: "$.login" };
-    const cvr = await vetCore(req({ parserRules: rules }), {
-      proxyFetch: async () => ({ status: 404, responseHash: "0xhash", body: '{"login":"alice"}' }),
-      now: () => "2026-01-01T00:00:00Z",
-    });
-    expect(cvr.decision).toBe("fail");
-  });
-
-  test("HTTP status mapping: 404 (no record) differs from 5xx (reachable error)", async () => {
-    const at = (status: number, over: Partial<RecipeDescriptor> = {}) =>
-      vetCore(req(over), {
-        proxyFetch: async () => ({ status, responseHash: "0xhash", body: "{}" }),
-        now: () => "2026-01-01T00:00:00Z",
-      });
-    // 404 = the authority has no record → a positive-match check FAILS…
-    expect((await at(404)).decision).toBe("fail");
-    // …but for a negative-match recipe a bare 404 is not a confirmed-complete
-    // "not listed", so it is indeterminate (fail-closed), never a silent pass.
-    expect((await at(404, { negativeMatch: true })).decision).toBe("indeterminate");
-    // 5xx / other reachable errors are ERROR, not fail — the verifier couldn't
-    // obtain a trustworthy determination.
-    expect((await at(500)).decision).toBe("error");
-    expect((await at(429)).decision).toBe("error");
-  });
-
-  test("PSP-3: the parsed dataMap is persisted on the VerifyResult", async () => {
-    const rules: RecipeDescriptor["parserRules"] = {
-      format: "json",
-      successJsonPath: "$.status",
-      dataMap: { status: "$.status", id: "$.id" },
-    };
-    const cvr = await vetCore(
-      req({ parserRules: rules }),
-      bodyDeps(JSON.stringify({ status: "ISSUED", id: "abc" })),
-    );
-    expect(cvr.results[0]!.data).toEqual({ status: "ISSUED", id: "abc" });
-  });
-
-  test("PSP-3 preserves structured dataMap values on the VerifyResult", async () => {
-    const rules: RecipeDescriptor["parserRules"] = {
-      format: "json",
-      successJsonPath: "$.status",
-      dataMap: { active: "$.active", count: "$.count", details: "$.details" },
-    };
-    const cvr = await vetCore(
-      req({ parserRules: rules }),
-      bodyDeps(
-        JSON.stringify({
-          status: "ISSUED",
-          active: true,
-          count: 3,
-          details: { jurisdiction: "GB" },
-        }),
-      ),
-    );
-    expect(cvr.results[0]!.data).toEqual({
-      active: true,
-      count: 3,
-      details: { jurisdiction: "GB" },
-    });
-  });
-
-  test("missing body with parserRules is error; a present empty body may match", async () => {
-    const rules: RecipeDescriptor["parserRules"] = {
-      format: "raw",
-      matcher: "^$",
-    };
-    const missing = await vetCore(req({ parserRules: rules }), {
-      proxyFetch: async () => ({ status: 200, responseHash: "0xhash" }),
-      now: () => "2026-01-01T00:00:00Z",
-    });
-    expect(missing.decision).toBe("error");
-    expect(
-      (await vetCore(req({ parserRules: rules }), bodyDeps(""))).decision,
-    ).toBe("pass");
-  });
-
-  test("no parserRules ⇒ fail-closed error, never a status-only 2xx pass", async () => {
-    const cvr = await vetCore(req({}), bodyDeps("anything"));
-    expect(cvr.decision).toBe("error");
-  });
-
-  test("malformed runtime parserRules fail closed as error", async () => {
-    const malformed = {
-      format: "json",
-      successJsonPath: "$.ok",
-      indeterminateOn: "not-an-array",
-    } as unknown as NonNullable<RecipeDescriptor["parserRules"]>;
     await expect(
       vetCore(
-        req({ parserRules: malformed }),
-        bodyDeps(JSON.stringify({ ok: true })),
+        {
+          jobId: "job-vet-unauthenticated-recipe",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          // Deliberately cross the compile-time provenance boundary to prove
+          // the runtime WeakSet check rejects a structurally signed forgery.
+          recipe: plainSignedRecipe as never,
+        },
+        baseDeps(new Map()),
       ),
-    ).resolves.toMatchObject({ decision: "error" });
+    ).rejects.toThrow(/steward-authenticated recipe returned by resolveRecipe/);
   });
 
-  test("consensus-backed-proxy without an authorityUrl is rejected", async () => {
+  test("cannot swap an authenticated recipe through a request accessor", async () => {
+    const authenticated = await authenticatedRecipe();
+    const forged = structuredClone(authenticated);
+    forged.defaultMethod = {
+      kind: "consensus-backed-proxy",
+      endpoint: {
+        method: "GET",
+        urlTemplate: "https://attacker.example/{identifier}",
+      },
+    };
+    let recipeReads = 0;
+    let proxyCalled = false;
+    const request: Record<string, unknown> = {
+      jobId: "job-vet-recipe-accessor",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+    };
+    Object.defineProperty(request, "recipe", {
+      enumerable: true,
+      get: () => {
+        recipeReads += 1;
+        return recipeReads === 1 ? authenticated : forged;
+      },
+    });
+    const deps = baseDeps(new Map());
+    deps.proxyFetch = async () => {
+      proxyCalled = true;
+      throw new Error("must not query attacker-selected authority");
+    };
+
+    await expect(
+      vetCore(request as unknown as VetRequest, deps),
+    ).rejects.toThrow(/own enumerable data properties/);
+    expect(recipeReads).toBe(0);
+    expect(proxyCalled).toBe(false);
+  });
+
+  test("rejects callback accessors without invoking them during snapshot", async () => {
+    const deps = baseDeps(new Map());
+    let attestationReads = 0;
+    deps.proxyFetch = async () => {
+      const response: Record<string, unknown> = {
+        status: 200,
+        body: JSON.stringify({ ok: true }),
+        fetchedAt: NOW,
+      };
+      Object.defineProperty(response, "attestation", {
+        enumerable: true,
+        get: () => {
+          attestationReads += 1;
+          throw new Error("hostile callback accessor executed");
+        },
+      });
+      return response as unknown as Awaited<
+        ReturnType<VetDeps["proxyFetch"]>
+      >;
+    };
+
     await expect(
       vetCore(
-        { subject: "s", recipe: recipe({ method: "consensus-backed-proxy", params: {} }) },
-        deps(),
+        {
+          jobId: "job-vet-callback-accessor",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
       ),
-    ).rejects.toThrow(/authorityUrl/);
+    ).rejects.toThrow(/exact JSON evidence/);
+    expect(attestationReads).toBe(0);
   });
 
-  test("an unsupported method is rejected", async () => {
+  test("rejects proxy evidence with non-normative fields before anchoring", async () => {
+    const deps = baseDeps(new Map());
+    const proxyFetch = deps.proxyFetch;
+    let anchorCalls = 0;
+    deps.proxyFetch = async (input) => ({
+      ...(await proxyFetch(input)),
+      trustedByCaller: true,
+    });
+    deps.anchorFinalizedArtifact = async () => {
+      anchorCalls += 1;
+      throw new Error("must not anchor malformed authority evidence");
+    };
+
     await expect(
-      vetCore({ subject: "s", recipe: recipe({ method: "telepathy" }) }, deps()),
-    ).rejects.toThrow(/unsupported verification method/);
+      vetCore(
+        {
+          jobId: "job-vet-proxy-extra-field",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/exact JSON evidence/);
+    expect(anchorCalls).toBe(0);
   });
 
-  describe("cci-claim method (DACS-1 linked-claim vetting)", () => {
-    const SUBJECT = "did:demos:agent:alice";
-    const record = parseCciRecord(SUBJECT, {
-      linkedSocials: { twitter: "alice" },
-      linkedWallets: ["evm:0xAbC0000000000000000000000000000000000001"],
-    });
-    const cciDeps = (): VetDeps => ({ ...deps(), resolveCci: async () => record });
-
-    test("passes when the subject holds the required linked claim", async () => {
-      const cvr = await vetCore(
+  test("rejects a requirement pinned to a different recipe version", async () => {
+    await expect(
+      vetCore(
         {
-          subject: SUBJECT,
-          recipe: recipe({
-            id: "has-x",
-            method: "cci-claim",
-            params: { requiredClaim: "web2:twitter:alice" },
-          }),
+          jobId: "job-vet-version-mismatch",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain", 2),
+          recipe: await authenticatedRecipe(),
         },
-        cciDeps(),
-      );
-      expect(cvr.decision).toBe("pass");
-      expect(cvr.results[0]).toMatchObject({
-        claimRef: "web2:twitter:alice",
-        method: "cci-claim",
-        status: "pass",
-        authority: SUBJECT,
-      });
-    });
+        baseDeps(new Map()),
+      ),
+    ).rejects.toThrow(/must pin authenticated recipe v1/);
+  });
 
-    test("fails when the required claim is not in the record", async () => {
-      const cvr = await vetCore(
+  test("fails closed when a requirement omits the session-start recipe pin", async () => {
+    const store: FinalizedStore = new Map();
+    await expect(
+      vetCore(
         {
-          subject: SUBJECT,
-          recipe: recipe({
-            method: "cci-claim",
-            params: { requiredClaim: "web2:github:someone-else" },
-          }),
+          jobId: "job-vet-unpinned-recipe",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: {
+            requirementVersion: "1",
+            required: [
+              { scheme: "domain", verificationRequired: true },
+            ],
+          },
+          recipe: await authenticatedRecipe(),
         },
-        cciDeps(),
-      );
-      expect(cvr.decision).toBe("fail");
-      expect(cvr.results[0]!.status).toBe("fail");
-    });
+        baseDeps(store),
+      ),
+    ).rejects.toThrow(/must pin authenticated recipe v1/);
+    expect(store.size).toBe(0);
+  });
 
-    test("requireProof passes when the linked claim carries an attested proof (honest `proof`, not responseHash — #31)", async () => {
-      const proven = parseCciRecord(SUBJECT, {
-        web2: { twitter: [{ username: "alice", proof: "https://x.com/alice/status/1" }] },
-      });
-      const cvr = await vetCore(
-        {
-          subject: SUBJECT,
-          recipe: recipe({
-            method: "cci-claim",
-            params: { requiredClaim: "web2:twitter:alice", requireProof: true },
-          }),
-        },
-        { ...deps(), resolveCci: async () => proven },
-      );
-      expect(cvr.decision).toBe("pass");
-      // A raw /.well-known URL is `raw`, and it does NOT masquerade as a DAHR hash.
-      expect(cvr.results[0]!.proof).toEqual({ kind: "raw", value: "https://x.com/alice/status/1" });
-      expect(cvr.results[0]!.responseHash).toBeUndefined();
-    });
-
-    test("a 64-hex claim proof is classified `hash` (#31)", async () => {
-      const h = "a".repeat(64);
-      const proven = parseCciRecord(SUBJECT, {
-        web2: { twitter: [{ username: "alice", proof: h }] },
-      });
-      const cvr = await vetCore(
-        {
-          subject: SUBJECT,
-          recipe: recipe({
-            method: "cci-claim",
-            params: { requiredClaim: "web2:twitter:alice", requireProof: true },
-          }),
-        },
-        { ...deps(), resolveCci: async () => proven },
-      );
-      expect(cvr.results[0]!.proof).toEqual({ kind: "hash", value: h });
-      expect(cvr.results[0]!.responseHash).toBeUndefined();
-    });
-
-    test("requireProof fails a claim that is asserted but carries no proof", async () => {
-      // `record` (flat linkedSocials) has the claim but no attached proof.
-      const cvr = await vetCore(
-        {
-          subject: SUBJECT,
-          recipe: recipe({
-            method: "cci-claim",
-            params: { requiredClaim: "web2:twitter:alice", requireProof: true },
-          }),
-        },
-        cciDeps(),
-      );
-      expect(cvr.decision).toBe("fail");
-    });
-
-    test("rejects a cci-claim recipe with no requiredClaim", async () => {
-      await expect(
-        vetCore(
-          { subject: SUBJECT, recipe: recipe({ method: "cci-claim", params: {} }) },
-          cciDeps(),
-        ),
-      ).rejects.toThrow(/requiredClaim/);
-    });
-
-    test("rejects when resolveCci isn't wired", async () => {
+  test.each(["mocked", "disabled", "failed"] as const)(
+    "does not execute a %s recipe for a new verification",
+    async (availability) => {
+      const deps = baseDeps(new Map());
+      let proxyCalled = false;
+      deps.proxyFetch = async () => {
+        proxyCalled = true;
+        throw new Error("non-operational recipes must not query an authority");
+      };
       await expect(
         vetCore(
           {
-            subject: SUBJECT,
-            recipe: recipe({
-              method: "cci-claim",
-              params: { requiredClaim: "web2:twitter:alice" },
-            }),
+            jobId: `job-vet-${availability}-recipe`,
+            subject: "domain:alice.example",
+            bundleHash: BUNDLE_HASH,
+            requirement: requirement("domain"),
+            recipe: await authenticatedRecipe({ availability }),
           },
-          deps(), // no resolveCci
+          deps,
         ),
-      ).rejects.toThrow(/resolveCci/);
+      ).rejects.toThrow(new RegExp(`${availability} recipes cannot start`));
+      expect(proxyCalled).toBe(false);
+    },
+  );
+
+  test("fails closed when requirement parameters have no method matcher", async () => {
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-parameter-matcher-missing",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain", 1, { jurisdiction: "GB" }),
+          recipe: await authenticatedRecipe(),
+        },
+        baseDeps(new Map()),
+      ),
+    ).rejects.toThrow(/requires matchRequirementParameters/);
+  });
+
+  test("cannot override the canonical subject through a template parameter", async () => {
+    const deps = baseDeps(new Map());
+    let proxyCalled = false;
+    deps.proxyFetch = async () => {
+      proxyCalled = true;
+      throw new Error("reserved parameters must fail before authority access");
+    };
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-reserved-identifier",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain", 1, {
+            identifier: "mallory.example",
+          }),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/parameters\.identifier is reserved/);
+    expect(proxyCalled).toBe(false);
+  });
+
+  test("records fail when authenticated requirement parameters do not match", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    deps.matchRequirementParameters = (input) => {
+      expect(input.requirement.parameters).toEqual({ jurisdiction: "GB" });
+      expect(input.method.kind).toBe("consensus-backed-proxy");
+      expect(Object.isFrozen(input)).toBe(true);
+      return false;
+    };
+    const production = await vetCore(
+      {
+        jobId: "job-vet-parameter-mismatch",
+        subject: "domain:alice.example",
+        bundleHash: BUNDLE_HASH,
+        requirement: requirement("domain", 1, { jurisdiction: "GB" }),
+        recipe: await authenticatedRecipe(),
+      },
+      deps,
+    );
+
+    expect(storedVerifyResult(store).decision).toBe("fail");
+    expect(production.record.overallDecision).toBe("fail");
+  });
+
+  test("rejects authority evidence fetched before this verification attempt", async () => {
+    const deps = baseDeps(new Map());
+    const proxyFetch = deps.proxyFetch;
+    deps.proxyFetch = async (input) => ({
+      ...(await proxyFetch(input)),
+      fetchedAt: NOW - 1,
+    });
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-old-authority-response",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/fetchedAt predates this verification attempt/);
+  });
+
+  test("does not manufacture a ref when an anchor returns the wrong hash", async () => {
+    const deps = baseDeps(new Map());
+    const anchor = deps.anchorFinalizedArtifact;
+    const resolve = deps.resolveFinalizedArtifact!;
+    deps.anchorFinalizedArtifact = async (input) => {
+      const anchored = await anchor(input);
+      return {
+        ...anchored,
+        ref: { ...anchored.ref, contentHash: "0".repeat(64) },
+      };
+    };
+    deps.resolveFinalizedArtifact = async (input) => {
+      const anchored = await resolve(input);
+      return anchored === null
+        ? null
+        : {
+            ...anchored,
+            ref: { ...anchored.ref, contentHash: "0".repeat(64) },
+          };
+    };
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-wrong-anchor-hash",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/malformed (state|or mismatched finalized anchor)/);
+  });
+
+  test("rejects a composite anchor that is not finalized", async () => {
+    const deps = baseDeps(new Map());
+    const anchor = deps.anchorFinalizedArtifact;
+    const resolve = deps.resolveFinalizedArtifact!;
+    deps.anchorFinalizedArtifact = async (input): Promise<FinalizedVetAnchor> => {
+      const anchored = await anchor(input);
+      if (!input.logicalAddress.startsWith("dacs2:composite:")) return anchored;
+      return {
+        ...anchored,
+        receipt: {
+          ...anchored.receipt,
+          state: "pending" as "finalized",
+        },
+      };
+    };
+    deps.resolveFinalizedArtifact = async (input) => {
+      const anchored = await resolve(input);
+      if (
+        anchored === null ||
+        !input.logicalAddress.startsWith("dacs2:composite:")
+      ) {
+        return anchored;
+      }
+      return {
+        ...anchored,
+        receipt: {
+          ...anchored.receipt,
+          state: "pending" as "finalized",
+        },
+      };
+    };
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-composite-not-finalized",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/malformed (state|or mismatched finalized anchor)/);
+  });
+
+  test("rejects unauthenticated composite finality evidence", async () => {
+    const deps = baseDeps(new Map());
+    const verifyFinalizedAnchor = deps.verifyFinalizedAnchor;
+    deps.verifyFinalizedAnchor = (input) =>
+      input.logicalAddress.startsWith("dacs2:composite:")
+        ? false
+        : verifyFinalizedAnchor(input);
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-composite-bad-receipt",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/finalized receipt did not authenticate/);
+  });
+
+  test("rejects a composite readback that differs from exact signed bytes", async () => {
+    const deps = baseDeps(new Map());
+    const readAnchoredJson = deps.readAnchoredJson;
+    deps.readAnchoredJson = async (ref) => {
+      const readback = await readAnchoredJson(ref);
+      if (
+        readback !== null &&
+        ref.anchor.locator.includes("dacs2:composite:")
+      ) {
+        return { ...readback, generatedAt: NOW + 1 };
+      }
+      return readback;
+    };
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-composite-bad-readback",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/finalized readback does not match exact signed bytes/);
+  });
+
+  test("records authority query, verification, and composite generation in order", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const proxyFetch = deps.proxyFetch;
+    const clock = [NOW, NOW + 20, NOW + 30];
+    deps.nowMs = () => {
+      const value = clock.shift();
+      if (value === undefined) throw new Error("unexpected clock read");
+      return value;
+    };
+    deps.proxyFetch = async (input) => ({
+      ...(await proxyFetch(input)),
+      fetchedAt: NOW + 10,
+    });
+
+    const production = await vetCore(
+      {
+        jobId: "job-vet-order",
+        subject: "domain:alice.example",
+        bundleHash: BUNDLE_HASH,
+        requirement: requirement("domain"),
+        recipe: await authenticatedRecipe(),
+      },
+      deps,
+    );
+
+    expect(storedVerifyResult(store)).toMatchObject({
+      fetchedAt: NOW + 10,
+      verifiedAt: NOW + 20,
+    });
+    expect(production.record.generatedAt).toBe(NOW + 30);
+    expect(clock).toEqual([]);
+  });
+
+  test("rejects a verifier clock that regresses behind the authority query", async () => {
+    const deps = baseDeps(new Map());
+    const proxyFetch = deps.proxyFetch;
+    const clock = [NOW, NOW + 5];
+    deps.nowMs = () => clock.shift()!;
+    deps.proxyFetch = async (input) => ({
+      ...(await proxyFetch(input)),
+      fetchedAt: NOW + 10,
+    });
+
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-clock-regression",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/verifiedAt precedes the prior verified event/);
+  });
+
+  test("snapshots request, callback results, signer, and anchor inputs", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const originalProxyFetch = deps.proxyFetch;
+    const originalSign = deps.componentSigner.sign;
+    const request = {
+      jobId: "job-vet-snapshot",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+      supplementary: [
+        {
+          source: "dacs-5" as const,
+          signalType: "completion-rate",
+          value: 1,
+          observedAt: NOW - 100,
+        },
+      ],
+    };
+    let proxyResult: Awaited<ReturnType<VetDeps["proxyFetch"]>>;
+    deps.proxyFetch = async (input) => {
+      proxyResult = await originalProxyFetch(input);
+      request.jobId = "job-mutated-by-proxy";
+      request.requirement.required[0]!.scheme = "wallet";
+      return proxyResult;
+    };
+    let signCalls = 0;
+    deps.componentSigner.sign = async (bytes, context) => {
+      signCalls += 1;
+      request.bundleHash = "f".repeat(64);
+      if (signCalls === 1) {
+        deps.componentSigner.sign = () => Uint8Array.from([0]);
+        proxyResult.attestation.contentHash = "e".repeat(64);
+      }
+      return originalSign(bytes, context);
+    };
+    const originalAnchor = deps.anchorFinalizedArtifact;
+    deps.anchorFinalizedArtifact = async (input) => {
+      try {
+        (input.artifact as { scheme: string }).scheme = "wallet";
+      } catch {
+        // Frozen callback input: a hostile adapter cannot rewrite signed scope.
+      }
+      request.subject = "domain:mallory.example";
+      return originalAnchor(input);
+    };
+
+    const production = await vetCore(request, deps);
+
+    expect(signCalls).toBe(2);
+    expect(production.record).toMatchObject({
+      jobId: "job-vet-snapshot",
+      evaluatedParty: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      supplementary: [{ signalType: "completion-rate", value: 1 }],
+    });
+    expect(production.record.requirementHash).toBe(
+      sha256Hex(canonicalize(requirement("domain"))),
+    );
+    expect(storedVerifyResult(store)).toMatchObject({
+      scheme: "domain",
+      identifier: "alice.example",
     });
   });
 
-  describe("ofac-screen method (DAHR sanctions screening of linked wallets)", () => {
-    const SUBJECT = "did:demos:agent:alice";
-    const EVM = "0xAbC0000000000000000000000000000000000001";
-    const SOL = "So1anaAddr11111111111111111111111111111";
-    const record = parseCciRecord(SUBJECT, {
-      linkedWallets: [`evm:${EVM}`, `solana:${SOL}`],
+  test("reuses exact completed bytes across an advancing-clock restart", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const authenticated = await authenticatedRecipe();
+    const request: VetRequest = {
+      jobId: "job-vet-restart-complete",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: authenticated,
+    };
+    const proxyFetch = deps.proxyFetch;
+    const anchor = deps.anchorFinalizedArtifact;
+    const sign = deps.componentSigner.sign;
+    let authorityCalls = 0;
+    let anchorCalls = 0;
+    let signCalls = 0;
+    let clockCalls = 0;
+    deps.proxyFetch = async (input) => {
+      authorityCalls += 1;
+      return proxyFetch(input);
+    };
+    deps.anchorFinalizedArtifact = async (input) => {
+      anchorCalls += 1;
+      return anchor(input);
+    };
+    deps.componentSigner.sign = async (bytes, context) => {
+      signCalls += 1;
+      return sign(bytes, context);
+    };
+    deps.nowMs = () => {
+      clockCalls += 1;
+      return NOW;
+    };
+
+    const first = await vetCore(request, deps);
+    expect({ authorityCalls, anchorCalls, signCalls, clockCalls }).toEqual({
+      authorityCalls: 1,
+      anchorCalls: 2,
+      signCalls: 2,
+      clockCalls: 3,
     });
-    const ofacRecipe = recipe({
-      id: "ofac",
-      method: "ofac-screen",
-      params: { screeningUrlTemplate: "https://screen.example/ofac?a={address}" },
+
+    deps.proxyFetch = async () => {
+      authorityCalls += 1;
+      throw new Error("a completed retry must not contact the authority");
+    };
+    deps.anchorFinalizedArtifact = async () => {
+      anchorCalls += 1;
+      throw new Error("a completed retry must not submit an anchor");
+    };
+    deps.componentSigner.sign = async () => {
+      signCalls += 1;
+      throw new Error("a completed retry must not re-sign");
+    };
+    deps.nowMs = () => {
+      clockCalls += 1;
+      return NOW + 86_400_000;
+    };
+
+    const recovered = await vetCore(request, deps);
+    expect(canonicalize(recovered)).toBe(canonicalize(first));
+    expect({ authorityCalls, anchorCalls, signCalls, clockCalls }).toEqual({
+      authorityCalls: 1,
+      anchorCalls: 2,
+      signCalls: 2,
+      clockCalls: 3,
     });
-    // proxyFetch that returns { listed } per address; `listedAddrs` are sanctioned.
-    const ofacDeps = (opts: { listedAddrs?: string[]; status?: number } = {}): VetDeps => ({
-      now: () => "2026-01-01T00:00:00Z",
-      resolveCci: async () => record,
-      proxyFetch: async ({ url }) => {
-        const listed = (opts.listedAddrs ?? []).some((a) => url.includes(encodeURIComponent(a)));
-        return {
-          status: opts.status ?? 200,
-          responseHash: "0xhash",
-          body: JSON.stringify({ listed }),
-        };
+  });
+
+  test("safely resumes a loaded intent whose method executor never started", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const durableRunOnce = deps.operationStore!.runOnce;
+    const proxyFetch = deps.proxyFetch;
+    let simulateCrashBeforeMethodClaim = true;
+    let authorityCalls = 0;
+    deps.proxyFetch = async (input) => {
+      authorityCalls += 1;
+      return proxyFetch(input);
+    };
+    deps.operationStore = {
+      ...deps.operationStore!,
+      runOnce: async (input) => {
+        if (input.step === "method" && simulateCrashBeforeMethodClaim) {
+          simulateCrashBeforeMethodClaim = false;
+          throw new Error("process stopped after intent commit");
+        }
+        return durableRunOnce(input);
       },
-    });
+    };
+    const request: VetRequest = {
+      jobId: "job-vet-resume-loaded-intent",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
 
-    test("passes when every linked wallet screens clean", async () => {
-      const cvr = await vetCore({ subject: SUBJECT, recipe: ofacRecipe }, ofacDeps());
-      expect(cvr.decision).toBe("pass");
-      expect(cvr.results).toHaveLength(2);
-      expect(cvr.results.every((r) => r.status === "pass")).toBe(true);
-      // R5: each screened result records the DAHR attestation.
-      expect(cvr.results.every((r) => r.responseHash === "0xhash")).toBe(true);
-    });
+    await expect(vetCore(request, deps)).rejects.toThrow(
+      /process stopped after intent commit/,
+    );
+    expect(authorityCalls).toBe(0);
+    const recovered = await vetCore(request, deps);
+    expect(recovered.record.overallDecision).toBe("pass");
+    expect(authorityCalls).toBe(1);
+  });
 
-    test("fails when any linked wallet is sanctioned", async () => {
-      const cvr = await vetCore(
-        { subject: SUBJECT, recipe: ofacRecipe },
-        ofacDeps({ listedAddrs: [EVM] }),
+  test("fences concurrent callers across method, signing, and anchoring", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const proxyFetch = deps.proxyFetch;
+    const anchor = deps.anchorFinalizedArtifact;
+    const sign = deps.componentSigner.sign;
+    let authorityCalls = 0;
+    let anchorCalls = 0;
+    let signCalls = 0;
+    deps.proxyFetch = async (input) => {
+      authorityCalls += 1;
+      await Promise.resolve();
+      return proxyFetch(input);
+    };
+    deps.anchorFinalizedArtifact = async (input) => {
+      anchorCalls += 1;
+      await Promise.resolve();
+      return anchor(input);
+    };
+    deps.componentSigner.sign = async (bytes, context) => {
+      signCalls += 1;
+      await Promise.resolve();
+      return sign(bytes, context);
+    };
+    const request: VetRequest = {
+      jobId: "job-vet-concurrent-fence",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
+
+    const [first, second] = await Promise.all([
+      vetCore(request, deps),
+      vetCore(request, deps),
+    ]);
+    expect(canonicalize(second)).toBe(canonicalize(first));
+    expect({ authorityCalls, anchorCalls, signCalls }).toEqual({
+      authorityCalls: 1,
+      anchorCalls: 2,
+      signCalls: 2,
+    });
+  });
+
+  test("reconciles result-anchor response loss without duplicate work", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const proxyFetch = deps.proxyFetch;
+    const anchor = deps.anchorFinalizedArtifact;
+    let authorityCalls = 0;
+    let resultAnchorCalls = 0;
+    let compositeAnchorCalls = 0;
+    let loseResultResponse = true;
+    deps.proxyFetch = async (input) => {
+      authorityCalls += 1;
+      return proxyFetch(input);
+    };
+    deps.anchorFinalizedArtifact = async (input) => {
+      const anchored = await anchor(input);
+      if (input.logicalAddress.startsWith("dacs2:composite:")) {
+        compositeAnchorCalls += 1;
+      } else {
+        resultAnchorCalls += 1;
+        if (loseResultResponse) {
+          loseResultResponse = false;
+          throw new Error("result anchor response lost after commit");
+        }
+      }
+      return anchored;
+    };
+    const request: VetRequest = {
+      jobId: "job-vet-result-response-loss",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
+
+    const first = await vetCore(request, deps);
+    const recovered = await vetCore(request, deps);
+
+    expect(canonicalize(recovered)).toBe(canonicalize(first));
+    expect({ authorityCalls, resultAnchorCalls, compositeAnchorCalls }).toEqual({
+      authorityCalls: 1,
+      resultAnchorCalls: 1,
+      compositeAnchorCalls: 1,
+    });
+  });
+
+  test("reconciles composite-anchor response loss without duplicate work", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const proxyFetch = deps.proxyFetch;
+    const anchor = deps.anchorFinalizedArtifact;
+    let authorityCalls = 0;
+    let resultAnchorCalls = 0;
+    let compositeAnchorCalls = 0;
+    let loseCompositeResponse = true;
+    deps.proxyFetch = async (input) => {
+      authorityCalls += 1;
+      return proxyFetch(input);
+    };
+    deps.anchorFinalizedArtifact = async (input) => {
+      const anchored = await anchor(input);
+      if (input.logicalAddress.startsWith("dacs2:composite:")) {
+        compositeAnchorCalls += 1;
+        if (loseCompositeResponse) {
+          loseCompositeResponse = false;
+          throw new Error("composite anchor response lost after commit");
+        }
+      } else {
+        resultAnchorCalls += 1;
+      }
+      return anchored;
+    };
+    const request: VetRequest = {
+      jobId: "job-vet-composite-response-loss",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
+
+    const first = await vetCore(request, deps);
+    const recovered = await vetCore(request, deps);
+
+    expect(canonicalize(recovered)).toBe(canonicalize(first));
+    expect({ authorityCalls, resultAnchorCalls, compositeAnchorCalls }).toEqual({
+      authorityCalls: 1,
+      resultAnchorCalls: 1,
+      compositeAnchorCalls: 1,
+    });
+  });
+
+  test("binds the durable namespace to bundle, requirement, recipe, and classification", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const authenticated = await authenticatedRecipe();
+    const original: VetRequest = {
+      jobId: "job-vet-operation-bindings",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: authenticated,
+    };
+    await vetCore(original, deps);
+    let authorityCalls = 0;
+    deps.proxyFetch = async () => {
+      authorityCalls += 1;
+      throw new Error("a mismatched operation must not query the authority");
+    };
+    const mismatches: VetRequest[] = [
+      { ...original, bundleHash: "c".repeat(64) },
+      {
+        ...original,
+        requirement: {
+          requirementVersion: "1",
+          required: [
+            {
+              scheme: "domain",
+              verificationRequired: true,
+              recipeVersion: 1,
+              maxAge: 60,
+            },
+          ],
+        },
+      },
+      {
+        ...original,
+        recipe: await authenticatedRecipe({ defaultMaxAgeSec: 7_200 }),
+      },
+      { ...original, classification: "freshness" },
+    ];
+    for (const mismatch of mismatches) {
+      await expect(vetCore(mismatch, deps)).rejects.toThrow(
+        /checkpoint is corrupt or mismatched/,
       );
-      expect(cvr.decision).toBe("fail");
-      const evmResult = cvr.results.find((r) => r.claimRef === `xm:evm:${EVM}`);
-      expect(evmResult!.status).toBe("fail");
-    });
+    }
+    expect(authorityCalls).toBe(0);
+  });
 
-    test("indeterminate (never a silent pass) when a wallet can't be screened", async () => {
-      const cvr = await vetCore(
-        { subject: SUBJECT, recipe: ofacRecipe },
-        ofacDeps({ status: 503 }),
-      );
-      expect(cvr.decision).toBe("indeterminate");
-    });
+  test("durably replays a terminal method failure without rerunning authority", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    let authorityCalls = 0;
+    let anchorCalls = 0;
+    deps.proxyFetch = async () => {
+      authorityCalls += 1;
+      throw new Error("authority unavailable after operation intent");
+    };
+    deps.anchorFinalizedArtifact = async () => {
+      anchorCalls += 1;
+      throw new Error("must not anchor without a result");
+    };
+    const request: VetRequest = {
+      jobId: "job-vet-partial-intent",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
 
-    test("indeterminate when the subject has no linked wallets", async () => {
-      const cvr = await vetCore(
-        { subject: SUBJECT, recipe: ofacRecipe },
-        { ...ofacDeps(), resolveCci: async () => parseCciRecord(SUBJECT, {}) },
-      );
-      expect(cvr.decision).toBe("indeterminate");
-      expect(cvr.results[0]!.method).toBe("ofac-screen");
+    await expect(vetCore(request, deps)).rejects.toThrow(
+      /authority unavailable/,
+    );
+    await expect(vetCore(request, deps)).rejects.toThrow(
+      /authority unavailable/,
+    );
+    expect({ authorityCalls, anchorCalls }).toEqual({
+      authorityCalls: 1,
+      anchorCalls: 0,
     });
+  });
 
-    test("rejects a recipe without a valid screeningUrlTemplate", async () => {
-      await expect(
-        vetCore(
-          { subject: SUBJECT, recipe: recipe({ method: "ofac-screen", params: {} }) },
-          ofacDeps(),
-        ),
-      ).rejects.toThrow(/screeningUrlTemplate/);
-    });
+  test("does not resubmit an unanchored result from a prior partial submission", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const proxyFetch = deps.proxyFetch;
+    const anchor = deps.anchorFinalizedArtifact;
+    let authorityCalls = 0;
+    let anchorCalls = 0;
+    deps.proxyFetch = async (input) => {
+      authorityCalls += 1;
+      return proxyFetch(input);
+    };
+    deps.anchorFinalizedArtifact = async (input) => {
+      anchorCalls += 1;
+      if (!input.logicalAddress.startsWith("dacs2:composite:")) {
+        throw new Error("result submission failed before commit");
+      }
+      return anchor(input);
+    };
+    const request: VetRequest = {
+      jobId: "job-vet-partial-result-submission",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
 
-    test("rejects when resolveCci isn't wired", async () => {
-      await expect(
-        vetCore({ subject: SUBJECT, recipe: ofacRecipe }, deps()),
-      ).rejects.toThrow(/resolveCci/);
+    await expect(vetCore(request, deps)).rejects.toThrow(
+      /submission outcome is indeterminate.*refusing to resubmit/,
+    );
+    await expect(vetCore(request, deps)).rejects.toThrow(
+      /submission outcome is indeterminate.*refusing to resubmit/,
+    );
+    expect({ authorityCalls, anchorCalls }).toEqual({
+      authorityCalls: 1,
+      anchorCalls: 1,
     });
+  });
+
+  test("fails closed when durable operation lookup is indeterminate", async () => {
+    const deps = baseDeps(new Map());
+    let authorityCalls = 0;
+    let anchorCalls = 0;
+    deps.proxyFetch = async () => {
+      authorityCalls += 1;
+      throw new Error("must not reach authority");
+    };
+    deps.anchorFinalizedArtifact = async () => {
+      anchorCalls += 1;
+      throw new Error("must not reach anchor");
+    };
+    deps.operationStore = {
+      ...deps.operationStore!,
+      load: async () => {
+        throw new Error("operation database timed out");
+      },
+    };
+
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-indeterminate-operation-lookup",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/operation lookup is indeterminate/);
+    expect({ authorityCalls, anchorCalls }).toEqual({
+      authorityCalls: 0,
+      anchorCalls: 0,
+    });
+  });
+
+  test("rejects corrupt checkpoint bytes before authority or anchoring", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const request: VetRequest = {
+      jobId: "job-vet-corrupt-checkpoint",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
+    await vetCore(request, deps);
+    const operations = operationStoreFor(store);
+    const [operationKey, persisted] = [...operations.entries()][0]!;
+    const corrupt = structuredClone(persisted);
+    if (corrupt.stage !== "complete") throw new Error("expected complete checkpoint");
+    corrupt.record.bundleHash = "d".repeat(64);
+    operations.set(operationKey, corrupt);
+    let authorityCalls = 0;
+    let anchorCalls = 0;
+    deps.proxyFetch = async () => {
+      authorityCalls += 1;
+      throw new Error("must not query authority with corrupt state");
+    };
+    deps.anchorFinalizedArtifact = async () => {
+      anchorCalls += 1;
+      throw new Error("must not anchor corrupt state");
+    };
+
+    await expect(vetCore(request, deps)).rejects.toThrow(
+      /composite checkpoint is corrupt or mismatched/,
+    );
+    expect({ authorityCalls, anchorCalls }).toEqual({
+      authorityCalls: 0,
+      anchorCalls: 0,
+    });
+  });
+
+  test("rejects mismatched independently read finalized bytes on recovery", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const request: VetRequest = {
+      jobId: "job-vet-corrupt-readback",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
+    await vetCore(request, deps);
+    const stored = [...store.values()].find(({ artifact }) =>
+      isVerifyResult(artifact),
+    );
+    if (!stored) throw new Error("expected finalized VerifyResult");
+    stored.artifact.decision = "fail";
+    let authorityCalls = 0;
+    let anchorCalls = 0;
+    deps.proxyFetch = async () => {
+      authorityCalls += 1;
+      throw new Error("must not query authority during recovery");
+    };
+    deps.anchorFinalizedArtifact = async () => {
+      anchorCalls += 1;
+      throw new Error("must not anchor during recovery");
+    };
+
+    await expect(vetCore(request, deps)).rejects.toThrow(
+      /finalized (receipt did not authenticate|readback does not match exact signed bytes)/,
+    );
+    expect({ authorityCalls, anchorCalls }).toEqual({
+      authorityCalls: 0,
+      anchorCalls: 0,
+    });
+  });
+
+  test("self-signed proves key possession and finalizes exact method evidence", async () => {
+    const subjectSeed = new Uint8Array(32).fill(9);
+    const subject =
+      `key:${Buffer.from(rawPublicKey(publicKeyFromSeed(subjectSeed))).toString("hex")}`;
+    const assertionSignature = Buffer.from(
+      ed25519Sign(
+        selfSignedAssertionBytes(subject),
+        privateKeyFromSeed(subjectSeed),
+      ),
+    ).toString("hex");
+    const store: FinalizedStore = new Map();
+
+    const production = await vetCore(
+      {
+        jobId: "job-self-1",
+        subject,
+        bundleHash: BUNDLE_HASH,
+        requirement: requirement("key"),
+        recipe: await authenticatedRecipe({
+          scheme: "key",
+          defaultMethod: { kind: "self-signed" },
+        }),
+        selfSigned: { assertion: subject, signature: assertionSignature },
+      },
+      baseDeps(store),
+    );
+
+    expect(production.record.overallDecision).toBe("pass");
+    expect(storedVerifyResult(store).method).toBe("self-signed");
+    const assertion = storedArtifacts(store).find(
+      (artifact) => artifact.assertionVersion === "1",
+    );
+    expect(assertion).toMatchObject({ subject, assertion: subject });
   });
 });

@@ -9,13 +9,14 @@ export type {
   AnchorWaitFailureCode,
   AnchorWaitOptions,
   AnchorWriteOnceOptions,
+  DemosAdapterConfig,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
 export { AnchorWaitError } from "./AnchorWaitError.js";
-export { DemosAdapter, type DemosAdapterConfig } from "./DemosAdapter.js";
+export { DemosAdapter } from "./DemosAdapter.js";
 export type {
   AnchorResolution,
   CandidateOutcome,

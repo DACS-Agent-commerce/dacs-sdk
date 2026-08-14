@@ -60,7 +60,7 @@ export function isComponentSignature(
   try {
     return (
       signatureShapeReason(
-        snapshotCanonicalJson(value, "component signature"),
+        snapshotCanonicalJsonRead(value, "component signature"),
       ) === null
     );
   } catch {
