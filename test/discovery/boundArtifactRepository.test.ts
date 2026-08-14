@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { contentHash } from "../../src/canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  sha256Hex,
+} from "../../src/canonical/index.js";
 import {
   createBoundArtifactRepository,
   createInMemoryBindingIndex,
@@ -88,7 +92,11 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       },
     });
     expect(written.storageName).not.toContain(":");
-    expect(backend.anchorMetadata).toEqual([{ logicalAddress: LOGICAL }]);
+    expect(backend.anchorMetadata).toEqual([{
+      logicalAddress: LOGICAL,
+      contentHash: contentHash(RECORD),
+      envelopeHash: sha256Hex(canonicalize(RECORD)),
+    }]);
 
     // A separate repository instance has no nonce or storage-name input. It only
     // receives the logical address, expected signer, and published index.
@@ -191,6 +199,8 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       source: "catalog",
       logical_address: LOGICAL,
       logicalAddress: LOGICAL,
+      contentHash: contentHash(RECORD),
+      envelopeHash: sha256Hex(canonicalize(RECORD)),
     });
 
     const conflicting = createBackend();

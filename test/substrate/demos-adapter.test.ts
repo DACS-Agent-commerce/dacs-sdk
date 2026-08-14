@@ -3,9 +3,19 @@ import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 
 // DemosAdapter lives on the substrate subpath, not the top-level barrel (the
 // barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
-import { DemosAdapter } from "../../src/substrate/index.js";
+import {
+  DemosAdapter,
+  createInMemoryDemosWriteJournal,
+} from "../../src/substrate/index.js";
 
 const RPC = "https://node2.demos.sh";
+const makeAdapter = (
+  writeJournal = createInMemoryDemosWriteJournal(),
+) => new DemosAdapter({
+  rpc: RPC,
+  chainIdentity: "test-chain",
+  writeJournal,
+});
 
 describe("DemosAdapter", () => {
   afterEach(() => {
@@ -19,17 +29,94 @@ describe("DemosAdapter", () => {
   });
 
   it("constructs and exposes the raw demosdk instance", () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     expect(adapter.raw).toBeDefined();
   });
 
+  it("uses the directly queryable genesis block as the journal chain identity", async () => {
+    const adapter = new DemosAdapter({
+      rpc: RPC,
+      writeJournal: createInMemoryDemosWriteJournal(),
+    });
+    const getBlock = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({
+      number: 0,
+      hash: "GENESIS-HASH",
+      status: "confirmed",
+    } as never);
+
+    await expect(
+      (adapter as unknown as { resolveChainIdentity(): Promise<string> })
+        .resolveChainIdentity(),
+    ).resolves.toBe("genesis-hash");
+    expect(getBlock).toHaveBeenCalledTimes(1);
+    expect(getBlock).toHaveBeenCalledWith(0);
+  });
+
+  it("derives the genesis identity from confirmed block one when block zero is not queryable", async () => {
+    const adapter = new DemosAdapter({
+      rpc: RPC,
+      writeJournal: createInMemoryDemosWriteJournal(),
+    });
+    const getBlock = vi.spyOn(adapter.raw, "getBlockByNumber")
+      .mockResolvedValueOnce("error" as never)
+      .mockResolvedValueOnce({
+        number: 1,
+        hash: "BLOCK-ONE",
+        status: "confirmed",
+        content: { previousHash: "GENESIS-PREDECESSOR" },
+      } as never);
+
+    await expect(
+      (adapter as unknown as { resolveChainIdentity(): Promise<string> })
+        .resolveChainIdentity(),
+    ).resolves.toBe("genesis-predecessor");
+    expect(getBlock).toHaveBeenNthCalledWith(1, 0);
+    expect(getBlock).toHaveBeenNthCalledWith(2, 1);
+  });
+
+  it("rejects an unauthenticated block-one genesis fallback", async () => {
+    const adapter = new DemosAdapter({
+      rpc: RPC,
+      writeJournal: createInMemoryDemosWriteJournal(),
+    });
+    vi.spyOn(adapter.raw, "getBlockByNumber")
+      .mockResolvedValueOnce("error" as never)
+      .mockResolvedValueOnce({
+        number: 1,
+        hash: "BLOCK-ONE",
+        status: "pending",
+        content: { previousHash: "GENESIS-PREDECESSOR" },
+      } as never);
+
+    await expect(
+      (adapter as unknown as { resolveChainIdentity(): Promise<string> })
+        .resolveChainIdentity(),
+    ).rejects.toThrow(/no valid chain identity/);
+  });
+
+  it("refuses a write before preparation when no durable journal is configured", async () => {
+    const adapter = new DemosAdapter({ rpc: RPC, chainIdentity: "test-chain" });
+    Object.assign(adapter, { connected: true });
+    vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+    const lookup = vi.spyOn(adapter, "resolveAnchorByName");
+    const sign = vi.spyOn(adapter.raw.storagePrograms, "sign");
+    const broadcast = vi.spyOn(adapter.raw.tx, "broadcast");
+
+    await expect(
+      adapter.anchorWriteOnce("listing-v1", { serviceId: "svc" }),
+    ).rejects.toThrow(/durable writeJournal/);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
   it("getAddress throws before connect", () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     expect(() => adapter.getAddress()).toThrow(/not connected/);
   });
 
   it("substrate ops require a connection", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     await expect(adapter.anchor("dacs:test", { a: 1 })).rejects.toThrow(
       /not connected/,
     );
@@ -56,8 +143,8 @@ describe("DemosAdapter", () => {
     ).rejects.toThrow(/not connected/);
   });
 
-  it("anchorWriteOnce returns only a signed-scope-identical existing value", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+  it("anchorWriteOnce returns only an exact existing envelope", async () => {
+    const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
     vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
     vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
@@ -74,20 +161,27 @@ describe("DemosAdapter", () => {
       adapter.anchorWriteOnce("listing-v1", {
         serviceId: "svc",
         description: "original",
-        signature: "retry-signature",
+        signature: "old-signature",
       }),
     ).resolves.toEqual({ address: "stor-existing" });
+    await expect(
+      adapter.anchorWriteOnce("listing-v1", {
+        serviceId: "svc",
+        description: "original",
+        signature: "retry-signature",
+      }),
+    ).rejects.toThrow(/different exact content/);
     await expect(
       adapter.anchorWriteOnce("listing-v1", {
         serviceId: "svc",
         description: "changed",
         signature: "new-signature",
       }),
-    ).rejects.toThrow(/different signed-scope content/);
+    ).rejects.toThrow(/different exact content/);
   });
 
   it("anchorWriteOnce fails closed on indeterminate owner-bound lookup", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
     vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
     vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
@@ -103,7 +197,7 @@ describe("DemosAdapter", () => {
   });
 
   it("anchorWriteOnce compares requested descriptive metadata on retry", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
     vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
     vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
@@ -168,7 +262,7 @@ describe("DemosAdapter", () => {
   });
 
   it("anchorWriteOnce rejects array metadata at the runtime boundary", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
     await expect(
       adapter.anchorWriteOnce(
@@ -180,7 +274,7 @@ describe("DemosAdapter", () => {
   });
 
   it("serializes concurrent immutable publication through the full adapter seam", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
     vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
     const resolve = vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
@@ -201,11 +295,11 @@ describe("DemosAdapter", () => {
 
     const first = adapter.anchorWriteOnce("listing-v1", {
       serviceId: "svc",
-      signature: "first-retry",
+      signature: "old-signature",
     });
     const second = adapter.anchorWriteOnce("listing-v1", {
       serviceId: "svc",
-      signature: "second-retry",
+      signature: "old-signature",
     });
 
     await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));
@@ -217,8 +311,8 @@ describe("DemosAdapter", () => {
     expect(resolve).toHaveBeenCalledTimes(2);
   });
 
-  it("creates only, then waits for exact bytes and unique name-index visibility", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+  it("creates only, then waits for authenticated canonical native readback", async () => {
+    const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
     const owner = "0xWriter";
     const name = "listing-v1";
@@ -237,18 +331,42 @@ describe("DemosAdapter", () => {
     vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
       state: "included",
     } as never);
+    vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
+      status: "confirmed",
+      hash: "tx-create",
+      blockNumber: 42,
+    } as never);
+    vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({
+      number: 42,
+      hash: "block-42",
+      status: "confirmed",
+      content: { timestamp: 120, ordered_transactions: ["tx-create"] },
+      validation_data: { signatures: ["validator-test-signature"] },
+    } as never);
     vi.spyOn(adapter.raw.storagePrograms, "read").mockResolvedValue({
       success: true,
+      storageAddress: address,
+      owner,
+      programName: name,
       data: value,
       metadata: { logicalAddress: "dacs1:seller:svc:v1" },
+      createdByTx: "tx-create",
+      interactionTxs: ["tx-create"],
     } as never);
     const sign = vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
-      async (payload: unknown) =>
-        ({
-          ...(payload as Record<string, unknown>),
+      async (payload: unknown) => {
+        const write = payload as Record<string, unknown>;
+        return {
           hash: "tx-create",
-          content: { nonce: 1 },
-        }) as never,
+          content: {
+            type: "storageProgram",
+            from: owner,
+            to: write.storageAddress,
+            nonce: 1,
+            data: ["storageProgram", write],
+          },
+        } as never;
+      },
     );
     vi.spyOn(adapter.raw.tx, "confirm").mockImplementation(
       async (payload: unknown) => payload as never,
@@ -257,26 +375,45 @@ describe("DemosAdapter", () => {
       broadcast: { response: { hash: "tx-create" } },
       status: { state: "included", blockNumber: 42 },
     } as never);
+    const progress: Array<{ state: string; timings: { elapsedMs: number } }> = [];
 
     await expect(
       adapter.anchorWriteOnce(name, value, {
         timeoutMs: 20,
         pollMs: 0,
         metadata: { logicalAddress: "dacs1:seller:svc:v1" },
+        onProgress: (receipt) => progress.push({
+          state: receipt.state,
+          timings: { elapsedMs: receipt.timings.elapsedMs },
+        }),
       }),
-    ).resolves.toEqual({ address, txRef: "tx-create" });
+    ).resolves.toMatchObject({
+      address,
+      txRef: "tx-create",
+      demosEvidence: {
+        transactionRef: "tx-create",
+        blockHash: "block-42",
+        blockTimestamp: 120_000,
+        nativeAddress: address,
+      },
+    });
     expect(sign).toHaveBeenCalledWith(
       expect.objectContaining({
         metadata: { logicalAddress: "dacs1:seller:svc:v1" },
       }),
       { nonce: 1 },
     );
+    expect(progress.at(-1)).toMatchObject({
+      state: "read-visible",
+      timings: { elapsedMs: expect.any(Number) },
+    });
   });
 
   it("serializes two adapter instances sharing a wallet and rejects different content", async () => {
+    const sharedJournal = createInMemoryDemosWriteJournal();
     const adapters = [
-      new DemosAdapter({ rpc: RPC }),
-      new DemosAdapter({ rpc: RPC }),
+      makeAdapter(sharedJournal),
+      makeAdapter(sharedJournal),
     ];
     const owner = "0xWriter";
     const name = "listing-v1";
@@ -288,7 +425,11 @@ describe("DemosAdapter", () => {
         ? { status: "present" as const, address }
         : { status: "absent" as const };
     const broadcast = async (validity: unknown) => {
-      const candidate = (validity as { data: Record<string, unknown> }).data;
+      const candidate = (
+        validity as {
+          content: { data: [string, { data: Record<string, unknown> }] };
+        }
+      ).content.data[1].data;
       if (!winner) {
         winner = candidate;
         return {
@@ -310,17 +451,47 @@ describe("DemosAdapter", () => {
         resolveByName,
       );
       vi.spyOn(adapter, "readAnchor").mockImplementation(async () => winner);
+      vi.spyOn(adapter.raw.storagePrograms, "read").mockImplementation(
+        async () => ({
+          success: true,
+          storageAddress: address,
+          owner,
+          programName: name,
+          data: winner,
+          createdByTx: "tx-winner",
+          interactionTxs: ["tx-winner"],
+        }) as never,
+      );
       vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
       vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
         state: "included",
       } as never);
+      vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
+        status: "confirmed",
+        hash: "tx-winner",
+        blockNumber: 42,
+      } as never);
+      vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({
+        number: 42,
+        hash: "block-42",
+        status: "confirmed",
+        content: { timestamp: 120, ordered_transactions: ["tx-winner"] },
+        validation_data: { signatures: ["validator-test-signature"] },
+      } as never);
       vi.spyOn(adapter.raw.storagePrograms, "sign").mockImplementation(
-        async (payload: unknown) =>
-          ({
-            ...(payload as Record<string, unknown>),
+        async (payload: unknown) => {
+          const write = payload as Record<string, unknown>;
+          return {
             hash: "tx-winner",
-            content: { nonce: 1 },
-          }) as never,
+            content: {
+              type: "storageProgram",
+              from: owner,
+              to: write.storageAddress,
+              nonce: 1,
+              data: ["storageProgram", write],
+            },
+          } as never;
+        },
       );
       vi.spyOn(adapter.raw.tx, "confirm").mockImplementation(
         async (payload: unknown) => payload as never,
@@ -353,7 +524,7 @@ describe("DemosAdapter", () => {
     expect(rejected).toMatchObject({
       status: "rejected",
       reason: expect.objectContaining({
-        message: expect.stringMatching(/different signed-scope content/),
+        message: expect.stringMatching(/different exact content/),
       }),
     });
     expect(
@@ -366,7 +537,7 @@ describe("DemosAdapter", () => {
   });
 
   it("preserves lookup failure as indeterminate instead of false absence", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
     vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
     vi.stubGlobal(
@@ -389,7 +560,7 @@ describe("DemosAdapter", () => {
   });
 
   it("scans the exact prefix and returns only readable anchors owned by this writer", async () => {
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
     vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
     vi.stubGlobal(

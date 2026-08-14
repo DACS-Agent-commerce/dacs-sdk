@@ -511,6 +511,7 @@ class DurableBundleCoordinator {
   #terminalResult?: FinalizedSellerBundle;
   #inputData?: Record<string, CheckpointValue>;
   #bundleMessageHash?: string;
+  #renewal: Promise<void> = Promise.resolve();
   readonly #counterSignatureData = new Map<
     "buyer" | "orchestrator",
     Record<string, CheckpointValue>
@@ -817,14 +818,53 @@ class DurableBundleCoordinator {
   }
 
   async #renew(): Promise<void> {
-    if (!this.#leaseToken) throw new SubstrateError("durable bundle lease is unavailable");
-    const renewed = await this.#durability.store.renewLease({
-      jobId: this.#input.agreement.jobId,
-      leaseToken: this.#leaseToken,
-      ttlMs: this.#durability.leaseTtlMs,
-      now: this.#now(),
+    const renewal = this.#renewal.then(async () => {
+      if (!this.#leaseToken) {
+        throw new SubstrateError("durable bundle lease is unavailable");
+      }
+      const renewed = await this.#durability.store.renewLease({
+        jobId: this.#input.agreement.jobId,
+        leaseToken: this.#leaseToken,
+        ttlMs: this.#durability.leaseTtlMs,
+        now: this.#now(),
+      });
+      if (!renewed.ok) {
+        throw new SubstrateError(`durable bundle lease is stale: ${renewed.reason}`);
+      }
     });
-    if (!renewed.ok) throw new SubstrateError(`durable bundle lease is stale: ${renewed.reason}`);
+    this.#renewal = renewal.then(
+      () => undefined,
+      () => undefined,
+    );
+    return await renewal;
+  }
+
+  async withLeaseHeartbeat<T>(operation: () => Promise<T>): Promise<T> {
+    await this.#renew();
+    let heartbeat = Promise.resolve();
+    let heartbeatError: unknown;
+    const interval = Math.max(
+      1,
+      Math.min(30_000, Math.floor(this.#durability.leaseTtlMs / 3)),
+    );
+    const timer = setInterval(() => {
+      heartbeat = heartbeat
+        .then(() => this.#renew())
+        .catch((error: unknown) => {
+          heartbeatError ??= error;
+        });
+    }, interval);
+    timer.unref();
+    try {
+      const result = await operation();
+      clearInterval(timer);
+      await heartbeat;
+      if (heartbeatError) throw heartbeatError;
+      await this.#renew();
+      return result;
+    } finally {
+      clearInterval(timer);
+    }
   }
 
   #fence(idempotencyKey: string): Readonly<SellerBundleEffectFence> {
@@ -1901,16 +1941,18 @@ export async function finalizeCompletedSellerBundleDurable(
     await coordinator.initialize(wrappedProvider);
     const terminal = coordinator.terminalResult();
     if (terminal) return terminal;
-    const wrappedInput = coordinator.wrapInput();
-    const result = await finalizeCompletedSellerBundleCore(
-      wrappedInput,
-      wrappedProvider,
-    );
-    const authenticatedResult = await verifyFinalizedSellerBundleReadOnly(
-      coordinator.verificationInput(),
-      result,
-      readOnlyProvider(wrappedProvider),
-    );
+    const authenticatedResult = await coordinator.withLeaseHeartbeat(async () => {
+      const wrappedInput = coordinator.wrapInput();
+      const result = await finalizeCompletedSellerBundleCore(
+        wrappedInput,
+        wrappedProvider,
+      );
+      return await verifyFinalizedSellerBundleReadOnly(
+        coordinator.verificationInput(),
+        result,
+        readOnlyProvider(wrappedProvider),
+      );
+    });
     await coordinator.finish(authenticatedResult, capturedProvider.mapping);
     return clone(authenticatedResult);
   } catch (error) {

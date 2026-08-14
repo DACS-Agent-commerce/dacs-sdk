@@ -1,4 +1,5 @@
 import type { AnchorResolution, OwnedAnchorScan } from "./anchorResolution.js";
+import type { DemosWriteJournal } from "./demosWriteJournal.js";
 
 /** Configuration for the optional Demos-backed adapter. */
 export interface DemosAdapterConfig {
@@ -6,6 +7,16 @@ export interface DemosAdapterConfig {
   rpc: string;
   /** Wallet secret — mnemonic or private key. Optional for read-only use. */
   secret?: string;
+  /**
+   * Durable, cross-process wallet/write authority. Required by every write
+   * method; read-only adapters may omit it.
+   */
+  writeJournal?: DemosWriteJournal;
+  /**
+   * Optional pinned genesis-block hash. When omitted, the adapter reads block
+   * zero from the connected node before its first write.
+   */
+  chainIdentity?: string;
 }
 
 /**
@@ -37,6 +48,36 @@ export interface AnchorRef {
   completion?: AnchorCompletion;
   /** Block/ledger height the write was included at, when observed. */
   blockNumber?: number;
+  /** Authenticated Demos write/finality evidence when produced by DemosAdapter. */
+  demosEvidence?: DemosWriteEvidence;
+}
+
+export interface DemosWriteEvidence {
+  evidenceVersion: "1";
+  chainIdentity: string;
+  writer: string;
+  logicalName: string;
+  nativeAddress: string;
+  operation: "create" | "update";
+  nonce: number;
+  transactionRef: string;
+  /** Canonical JSON encoding of the exact wallet-signed transaction. */
+  signedTransaction: string;
+  signedTransactionHash: string;
+  blockNumber: number;
+  blockHash: string;
+  /** Timestamp committed in the authenticated Demos block content. */
+  blockTimestamp: number;
+  /** Canonical JSON encoding of the block's observed BFT validation data. */
+  finalityProof: string;
+  finalityProofHash: string;
+  nativeRead: {
+    owner: string;
+    programName: string;
+    valueHash: string;
+    metadataHash?: string;
+    observedAt: number;
+  };
 }
 
 /**
@@ -115,6 +156,8 @@ export interface AnchorWriteOnceOptions {
   timeoutMs?: number;
   /** Poll interval while waiting for visibility or a concurrent winner. */
   pollMs?: number;
+  /** Immutable progress snapshots; observer exceptions never alter execution. */
+  onProgress?: (receipt: AnchorAttemptReceipt) => void;
   /**
    * Immutable descriptive metadata stored alongside, but outside, artifact
    * data. Implementations must compare requested metadata on idempotent retry;
@@ -169,9 +212,9 @@ export interface SubstrateAdapter {
   anchor(name: string, value: object): Promise<AnchorReceipt>;
   /**
    * SR-2 — anchor and wait for an explicit completion level (#57). Same-wallet
-   * writes are serialized across adapter instances in this JS process until the
-   * submitted transaction reaches a nonce-safe terminal state. Separate
-   * processes and external writers still require an external wallet lease.
+   * writes are serialized through the configured durable chain+wallet journal
+   * across adapter instances and processes. The lane remains fenced through
+   * authenticated canonical inclusion and exact native readback.
    */
   anchorAndWait(
     name: string,
@@ -184,12 +227,10 @@ export interface SubstrateAdapter {
    * when lookup/read state is indeterminate. Unlike {@link anchor}, this method
    * MUST NEVER update an existing program with different content.
    *
-   * Implementations must serialize same-wallet concurrent calls in one process;
-   * a create returns only after the exact written bytes are read-visible so an
-   * immediate retry cannot mistake an accepted-but-not-visible write for absence.
-   * A failed same-wallet create must also be reconciled against an owner-bound
-   * concurrent winner: identical content returns that winner; different content
-   * is rejected.
+   * A create returns only after authenticated canonical inclusion and exact
+   * owner/provenance-bound native readback. Logical-name index visibility is an
+   * asynchronous diagnostic, not a protocol gate: restart recovery consults the
+   * durable native-slot journal before treating an index miss as absence.
    */
   anchorWriteOnce(
     name: string,

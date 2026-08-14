@@ -147,6 +147,7 @@ export {
 // consumers of the pure/verify surface). createAgent lazy-loads it when needed.
 export type {
   DemosAdapterConfig,
+  DemosWriteEvidence,
   SubstrateAdapter,
   AnchorAttemptReceipt,
   AnchorAttempts,
@@ -161,7 +162,27 @@ export type {
   ProxyFetchResult,
   ResolvedIdentity,
   AnchorReceipt as SubstrateAnchorReceipt,
+  DemosWriteJournal,
+  DemosWriteJournalKey,
+  DemosWriteJournalRecord,
+  DemosWriteJournalSnapshot,
 } from "./substrate/index.js";
+export {
+  createInMemoryDemosWriteJournal,
+} from "./substrate/demosWriteJournal.js";
+export {
+  createFsDemosWriteJournal,
+  type FsDemosWriteJournalOptions,
+} from "./substrate/demosWriteJournalFs.js";
+export {
+  assertDemosWriteEvidence,
+  decodeDemosAnchorReceiptProof,
+  demosSignedTransactionProofHash,
+  demosWriteEvidenceBindsReceiptContent,
+  demosWriteEvidenceToAnchorReceipt,
+  type DemosAnchorReceiptProof,
+  type DemosPortableAnchorReceiptInput,
+} from "./substrate/demosWriteEvidence.js";
 // Pure error value: exporting this directly does not eagerly load demosdk.
 export { AnchorWaitError } from "./substrate/AnchorWaitError.js";
 export {
@@ -676,11 +697,21 @@ export {
   type SellerDeliveryFailureEvidence,
   type SignedSellerDeliveryEvidence,
   runDurableFulfilmentCore,
+  runDurableFulfilmentToDeliveryReady,
+  advanceDeliveryFinalisation,
+  resumeDeliveryFinalisation,
   verifyDurableSellerTerminalResult,
   projectDurableSellerAuditPending,
   getSellerFulfilmentStatus,
+  getDeliveryFinalisationStatus,
   sellerFulfilmentCheckpointKey,
   type DurableSellerFulfilmentDeps,
+  type VerifiedDurableDeliverable,
+  type DeliveryFinalisationHandle,
+  type DeliveryReadyResult,
+  type DurableDeliveryReadyRunResult,
+  type DeliveryFinalisationMilestone,
+  type DeliveryFinalisationStatusLoad,
   type DurableSellerTerminalVerification,
   type ProjectDurableSellerAuditPendingInput,
   type VerifiedDurableSellerAuditPendingProjection,
@@ -942,12 +973,14 @@ export {
   type SellerSessionSettlementAnchorResult,
   type SellerSessionSettlementEvidenceResolution,
   type SellerSessionSettlementEvidenceSigner,
+  type SellerSessionSettlementAnchorWriter,
   type SellerSessionSettlementPublicationDeps,
   type SellerSessionSettlementPublicationResult,
   type X402SellerCommittedSessionResolution,
   type X402SellerCommittedSessionScope,
   type X402SellerPaymentPermitAuthorization,
   type X402SellerRenderedResponse,
+  type X402SellerDeliveryReadyResponseContext,
   type X402SellerResponseContext,
   type X402SellerSpine,
   type X402SellerSpineOptions,

@@ -2,7 +2,9 @@ import { isDeepStrictEqual } from "node:util";
 
 import type { ListingRef } from "../artifacts/types.js";
 import {
+  runDurableFulfilmentToDeliveryReady,
   runDurableFulfilmentCore,
+  type DeliveryReadyResult,
   type DurableSellerFulfilmentDeps,
   type SellerFulfilmentDurability,
 } from "../agent/runDurableFulfilmentCore.js";
@@ -101,6 +103,15 @@ export interface X402SellerResponseContext {
   fulfilment: CompletedSellerFulfilment;
 }
 
+export interface X402SellerDeliveryReadyResponseContext {
+  jobId: string;
+  paymentPhaseIndex: number;
+  deliveryPhaseIndex: number;
+  payer: string;
+  authorization: X402SellerPaymentPermitAuthorization;
+  deliveryReady: DeliveryReadyResult;
+}
+
 export interface X402SellerRenderedResponse<T = unknown> {
   status?: number;
   headers?: Record<string, string>;
@@ -125,6 +136,17 @@ export interface X402SellerSpineOptions<T = unknown> {
   paymentIntakeDeps: Omit<SellerPaymentIntakeDeps, "receiptStore">;
   fulfilmentDeps: Omit<DurableSellerFulfilmentDeps, "receiptStore">;
   fulfilmentDurability: SellerFulfilmentDurability;
+  /**
+   * Opt into the restart-safe delivery-ready boundary. The renderer may return
+   * the paid response once the deliverable and finalisation handoff are
+   * authenticated; a host worker must later call `advanceDeliveryFinalisation`
+   * or `resumeDeliveryFinalisation`. No background promise is created.
+   */
+  deliveryReady?: {
+    renderResponse(
+      context: Readonly<X402SellerDeliveryReadyResponseContext>,
+    ): Promise<X402SellerRenderedResponse<T>> | X402SellerRenderedResponse<T>;
+  };
   /** Render transport output only after durable fulfilment completed. */
   renderResponse(
     context: Readonly<X402SellerResponseContext>,
@@ -805,6 +827,10 @@ export function createX402SellerSpine<T = unknown>(
   const fulfilmentDeps = captureFulfilmentDeps(options.fulfilmentDeps, receiptStore);
   const fulfilmentDurability = captureDurability(options.fulfilmentDurability);
   const renderResponse = bind(options.renderResponse, options);
+  const deliveryReadySource = options.deliveryReady;
+  const renderDeliveryReadyResponse = deliveryReadySource === undefined
+    ? undefined
+    : bind(deliveryReadySource.renderResponse, deliveryReadySource);
 
   const authorizeSettlement = async (
     context: Readonly<X402PaywallPreSettlementContext>,
@@ -1056,21 +1082,121 @@ export function createX402SellerSpine<T = unknown>(
       };
     }
 
+    const fulfilmentRequest = {
+      agreementRef: session.agreementRef,
+      agreementHash: session.agreementHash,
+      commitmentRef: session.commitmentRef,
+      deliveryPhaseIndex: session.deliveryPhaseIndex,
+      paymentPermitId: authorization.paymentPermitId,
+      ...(authorization.paymentAuthorization.payloadVerificationProducerAdmission
+        ? {
+            payloadVerificationProducerAdmission:
+              authorization.paymentAuthorization.payloadVerificationProducerAdmission,
+          }
+        : {}),
+    };
+    if (renderDeliveryReadyResponse) {
+      let rawReady: Awaited<ReturnType<typeof runDurableFulfilmentToDeliveryReady>>;
+      try {
+        rawReady = await runDurableFulfilmentToDeliveryReady(
+          fulfilmentRequest,
+          fulfilmentDeps,
+          fulfilmentDurability,
+        );
+      } catch {
+        return { disposition: "indeterminate", reason: "seller-durable-fulfilment-unavailable" };
+      }
+      const ready = ownedFrozen(rawReady);
+      if (!ready || !isRecord(ready) ||
+          (ready.status !== "delivery-ready" && ready.status !== "not-ready")) {
+        return { disposition: "indeterminate", reason: "seller-durable-fulfilment-invalid" };
+      }
+      if (ready.status === "not-ready") {
+        const result = ready.result;
+        if (!isRecord(result) || typeof result.decision !== "string") {
+          return { disposition: "indeterminate", reason: "seller-durable-fulfilment-invalid" };
+        }
+        const consumedAuthorization = "consumedPaymentAuthorization" in result
+          ? result.consumedPaymentAuthorization
+          : undefined;
+        if (consumedAuthorization !== undefined &&
+            (!validPaymentAuthorization(consumedAuthorization) ||
+              !exactAuthorization(
+                consumedAuthorization,
+                authorization.paymentAuthorization,
+              ))) {
+          return {
+            disposition: "indeterminate",
+            reason: "seller-consumed-payment-authorization-mismatch",
+          };
+        }
+        if (result.decision === "rejected") {
+          return { disposition: "failed", reason: result.code };
+        }
+        if (result.decision === "failed") {
+          return {
+            disposition: "failed",
+            reason: `seller-fulfilment-${result.errorClass}`,
+          };
+        }
+        return {
+          disposition: "indeterminate",
+          reason: result.decision === "indeterminate"
+            ? result.code
+            : "seller-delivery-ready-result-unavailable",
+        };
+      }
+      if (ready.result.jobId !== session.jobId ||
+          ready.result.deliveryPhaseIndex !== session.deliveryPhaseIndex ||
+          ready.finalisation.jobId !== session.jobId ||
+          ready.finalisation.deliveryPhaseIndex !== session.deliveryPhaseIndex ||
+          !exactAuthorization(
+            ready.result.consumedPaymentAuthorization,
+            authorization.paymentAuthorization,
+          )) {
+        return {
+          disposition: "indeterminate",
+          reason: "seller-delivery-ready-session-mismatch",
+        };
+      }
+      let rendered: X402SellerRenderedResponse<T>;
+      try {
+        rendered = await renderDeliveryReadyResponse(Object.freeze({
+          jobId: session.jobId,
+          paymentPhaseIndex: session.paymentPhaseIndex,
+          deliveryPhaseIndex: session.deliveryPhaseIndex,
+          payer: session.payer,
+          authorization,
+          deliveryReady: ready,
+        }));
+      } catch {
+        return {
+          disposition: "indeterminate",
+          reason: "seller-delivery-ready-response-rendering-unavailable",
+        };
+      }
+      const response = ownedFrozen(rendered);
+      if (!response || !validRenderedResponse<T>(response)) {
+        return {
+          disposition: "indeterminate",
+          reason: "seller-delivery-ready-response-rendering-invalid",
+        };
+      }
+      return {
+        disposition: "fulfilled",
+        ...(response.status === undefined ? {} : { status: response.status }),
+        ...(response.headers === undefined ? {} : { headers: response.headers }),
+        ...(response.body === undefined ? {} : { body: response.body }),
+      };
+    }
+
     let raw: SellerFulfilmentResult;
     try {
-      raw = await runDurableFulfilmentCore({
-        agreementRef: session.agreementRef,
-        agreementHash: session.agreementHash,
-        commitmentRef: session.commitmentRef,
-        deliveryPhaseIndex: session.deliveryPhaseIndex,
-        paymentPermitId: authorization.paymentPermitId,
-        ...(authorization.paymentAuthorization.payloadVerificationProducerAdmission
-          ? {
-              payloadVerificationProducerAdmission:
-                authorization.paymentAuthorization.payloadVerificationProducerAdmission,
-            }
-          : {}),
-      }, fulfilmentDeps, fulfilmentDurability);
+      raw = await runDurableFulfilmentCore(
+        fulfilmentRequest,
+        fulfilmentDeps,
+        fulfilmentDurability,
+      );
     } catch {
       return { disposition: "indeterminate", reason: "seller-durable-fulfilment-unavailable" };
     }

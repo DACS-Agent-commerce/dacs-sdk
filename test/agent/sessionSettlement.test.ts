@@ -600,7 +600,7 @@ describe("verifyFinalizedSessionSettlement", () => {
       provider(proof, { verifyEvidenceAnchor: addressAnchorVerifier }),
     )).toEqual({
       disposition: "rejected",
-      reason: "settlement evidence lacks an exact finalized orchestrator receipt",
+      reason: "settlement evidence lacks an exact finalized authenticated-actor receipt",
     });
     expect(addressAnchorVerifier).not.toHaveBeenCalled();
 
@@ -613,9 +613,40 @@ describe("verifyFinalizedSessionSettlement", () => {
       provider(proof, { verifyEvidenceAnchor: signerAnchorVerifier }),
     )).toEqual({
       disposition: "rejected",
-      reason: "settlement evidence lacks an exact finalized orchestrator receipt",
+      reason: "settlement evidence lacks an exact finalized authenticated-actor receipt",
     });
     expect(signerAnchorVerifier).not.toHaveBeenCalled();
+  });
+
+  it("accepts a payer-owned receipt without changing orchestrator evidence authority", async () => {
+    const { settlement, proof } = fixture();
+    const authenticatedContext = context();
+    settlement.anchorReceipt.writer = authenticatedContext.payer.primaryClaim;
+
+    const result = await verifyFinalizedSessionSettlement(
+      authenticatedContext,
+      settlement,
+      provider(proof),
+    );
+
+    expect(result.disposition).toBe("verified");
+    expect(settlement.evidence.signature.signer).toBe(authenticatedContext.orchestrator);
+  });
+
+  it("rejects a receipt writer outside the authenticated orchestrator/payer actors", async () => {
+    const { settlement, proof } = fixture();
+    settlement.anchorReceipt.writer = "did:demos:outsider";
+    const verifyEvidenceAnchor = vi.fn(() => ({ disposition: "pass" as const }));
+
+    expect(await verifyFinalizedSessionSettlement(
+      context(),
+      settlement,
+      provider(proof, { verifyEvidenceAnchor }),
+    )).toEqual({
+      disposition: "rejected",
+      reason: "settlement evidence lacks an exact finalized authenticated-actor receipt",
+    });
+    expect(verifyEvidenceAnchor).not.toHaveBeenCalled();
   });
 
   it("requires an exact authenticated native job, rail, and phase binding", async () => {

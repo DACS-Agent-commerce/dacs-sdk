@@ -727,6 +727,62 @@ describe("x402 buyer EVM authorization provider", () => {
     });
   });
 
+  test("accepts a hash-pinned read set when the original head remains canonical", async () => {
+    const custom = reader();
+    let reads = 0;
+    const confirmBlockAncestor = vi.fn(custom.confirmBlockAncestor);
+    custom.confirmBlockAncestor = confirmBlockAncestor;
+    custom.getFinalityHead = async () => reads++ === 0
+      ? {
+          chainId: CHAIN_ID,
+          blockNumber: 110,
+          blockHash: HEAD_HASH,
+          timestamp: 2_000,
+        }
+      : {
+          chainId: CHAIN_ID,
+          blockNumber: 112,
+          blockHash: `0x${"dd".repeat(32)}`,
+          timestamp: 2_004,
+        };
+    const { lookup, result } = await reconcile(provider(custom));
+    expect(lookup.disposition).toBe("observed");
+    expect(result?.disposition).toBe("settled-same");
+    expect(confirmBlockAncestor).toHaveBeenCalledWith({
+      blockNumber: 110,
+      blockHash: HEAD_HASH,
+      headBlockNumber: 112,
+      headBlockHash: `0x${"dd".repeat(32)}`,
+    });
+  });
+
+  test("rejects an advanced head when the pinned head is no longer canonical", async () => {
+    const custom = reader();
+    let reads = 0;
+    custom.confirmBlockAncestor = async (input) => ({
+      canonical: input.blockNumber !== 110,
+      ...input,
+    });
+    custom.getFinalityHead = async () => reads++ === 0
+      ? {
+          chainId: CHAIN_ID,
+          blockNumber: 110,
+          blockHash: HEAD_HASH,
+          timestamp: 2_000,
+        }
+      : {
+          chainId: CHAIN_ID,
+          blockNumber: 112,
+          blockHash: `0x${"dd".repeat(32)}`,
+          timestamp: 2_004,
+        };
+    const { lookup } = await reconcile(provider(custom));
+    expect(lookup).toEqual({
+      disposition: "unavailable",
+      reason: "evm-finality-head-changed",
+    });
+  });
+
   test("rejects accessor callback verdicts without invoking them", async () => {
     let reads = 0;
     const verdict = {} as Record<string, unknown>;

@@ -942,6 +942,42 @@ describe("durable seller bundle coordinator v2", () => {
     });
   });
 
+  test("keeps the generation lease alive while the core performs long authenticated reads", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = await createHarness("pure");
+      const base = createInMemoryFencedSessionStore();
+      await seedCompletedDelivery(base, harness.binding);
+      const clock = { now: 10 };
+      const renewalTimes: number[] = [];
+      const observedStore = wrapStore(base, {
+        renewLease: async (input) => {
+          if (input.now !== undefined) renewalTimes.push(input.now);
+          return await base.renewLease(input);
+        },
+      });
+      const core = finalizeCoreMock.getMockImplementation();
+      if (!core) throw new Error("mock core implementation missing");
+      finalizeCoreMock.mockImplementationOnce(async (wrappedInput, wrappedProvider) => {
+        clock.now = 900;
+        await vi.advanceTimersByTimeAsync(334);
+        clock.now = 1_500;
+        await vi.advanceTimersByTimeAsync(334);
+        return await core(wrappedInput, wrappedProvider);
+      });
+
+      await expect(finalizeCompletedSellerBundleDurable(
+        harness.input,
+        harness.provider,
+        durability(observedStore, { clock }),
+      )).resolves.toMatchObject({ state: "finalised" });
+      expect(renewalTimes).toContain(900);
+      expect(renewalTimes).toContain(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("projects a recoverable partial status after an anchor-side ambiguity", async () => {
     const harness = await createHarness("pure");
     const store = createInMemoryFencedSessionStore();

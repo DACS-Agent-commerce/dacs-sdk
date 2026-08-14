@@ -18,12 +18,16 @@
  *   PAY_NETWORK        CAIP-2 network, e.g. eip155:84532 (Base Sepolia)
  *   PAY_TOKEN          ERC-20 contract address advertised by the x402 paywall
  *   SELLER_EVM         seller EVM address that x402 pays
+ *   DACS_STATE_DIR     durable private state directory for wallet journals
  *
  *   npx tsx examples/hello-world.ts
  */
 
+import { join } from "node:path";
+
 import {
   createAgent,
+  createFsDemosWriteJournal,
   createInMemoryBindingStore,
   createX402Rail,
   vetCore,
@@ -42,9 +46,13 @@ async function main(): Promise<void> {
   // Replace this same-process reference store with a well-known/catalog-backed
   // index + publisher in production.
   const bindings = createInMemoryBindingStore();
+  const sellerWriteJournal = await createFsDemosWriteJournal({
+    dir: join(env("DACS_STATE_DIR"), "seller-demos-writes"),
+  });
   const seller = await createAgent({
     demosRpc: env("DEMOS_RPC"),
     wallet: env("SELLER_WALLET"),
+    demosWriteJournal: sellerWriteJournal,
     identity: { agentId: env("SELLER_DID") },
     bindings: { index: bindings, publisher: bindings },
   });
@@ -107,6 +115,9 @@ async function main(): Promise<void> {
   const buyer = await createAgent({
     demosRpc: env("DEMOS_RPC"),
     wallet: env("BUYER_WALLET"),
+    demosWriteJournal: await createFsDemosWriteJournal({
+      dir: join(env("DACS_STATE_DIR"), "buyer-demos-writes"),
+    }),
     identity: { agentId: env("BUYER_DID") },
     // Consumer access needs only the index, not the seller's publication
     // authority. The in-memory index works here because both agents share this

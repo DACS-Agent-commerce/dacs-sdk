@@ -53,6 +53,7 @@ import {
 import { sellerFulfilmentCandidateHash } from "../../src/seller/paymentIntake.js";
 
 const ORCHESTRATOR = "did:demos:orchestrator";
+const BUYER = "did:demos:buyer";
 const SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 41);
 const PRIVATE_KEY = privateKeyFromSeed(SEED);
 const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
@@ -290,6 +291,7 @@ function proofRef(value: SellerPaymentAuthorization): SessionSettlementNativePro
 function finalizedReceipt(
   logicalAddress: string,
   evidenceHash: string,
+  writer = ORCHESTRATOR,
 ): AnchorReceipt {
   return {
     receiptVersion: "1",
@@ -299,7 +301,7 @@ function finalizedReceipt(
     nativeAddress: `native:${logicalAddress}`,
     contentHash: evidenceHash,
     transactionRef: { kind: "test", value: `tx:${evidenceHash}` },
-    writer: ORCHESTRATOR,
+    writer,
     state: "finalized",
     observationDisposition: "established",
     observedAt: NOW + 1,
@@ -475,6 +477,70 @@ describe("publishSellerSessionSettlement", () => {
       provider,
     );
     expect(verified.disposition).toBe("verified");
+  });
+
+  it("keeps seller evidence authority while an authenticated buyer owns the anchor lane", async () => {
+    const h = harness();
+    let observedWriter: unknown;
+    h.deps.anchorWriter = { role: "buyer", primaryClaim: BUYER };
+    let expectedReceiptWriter: string | undefined;
+    h.deps.verifyAnchorReceipt = async ({ expectedWriter }) => {
+      expectedReceiptWriter = expectedWriter;
+      return { disposition: "pass" };
+    };
+    let anchoredEvidence: SettlementEvidence | undefined;
+    h.deps.resolveRetainedSignedEvidence = async () => ({ disposition: "absent" });
+    h.deps.anchorEvidence = async (input) => {
+      observedWriter = structuredClone(input.expectedWriter);
+      anchoredEvidence = structuredClone(input.evidence);
+      return {
+        disposition: "anchored",
+        evidenceRef: {
+          anchor: { kind: "storage-program", locator: input.logicalAddress },
+          contentHash: input.evidenceHash,
+          signer: ORCHESTRATOR,
+        },
+        anchorReceipt: finalizedReceipt(input.logicalAddress, input.evidenceHash, BUYER),
+      };
+    };
+    h.deps.resolveEvidence = async () => anchoredEvidence
+      ? { disposition: "present", evidence: structuredClone(anchoredEvidence) }
+      : { disposition: "absent" };
+
+    const result = await publishSellerSessionSettlement(request(h), h.deps);
+
+    expect(result.disposition).toBe("published");
+    if (result.disposition !== "published") return;
+    expect(result.settlement.evidence.signature.signer).toBe(ORCHESTRATOR);
+    expect(result.settlement.anchorReceipt.writer).toBe(BUYER);
+    expect(observedWriter).toEqual({ role: "buyer", primaryClaim: BUYER });
+    expect(expectedReceiptWriter).toBe(BUYER);
+  });
+
+  it("rejects a buyer anchor lane absent from the consumed authenticated handoff", async () => {
+    const h = harness();
+    h.deps.anchorWriter = {
+      role: "buyer",
+      primaryClaim: "did:demos:unrelated-writer",
+    };
+
+    expect(await publishSellerSessionSettlement(request(h), h.deps)).toMatchObject({
+      disposition: "rejected",
+      reason: expect.stringContaining("anchor writer"),
+    });
+    expect(h.sign).not.toHaveBeenCalled();
+    expect(h.anchor).not.toHaveBeenCalled();
+  });
+
+  it("rejects an anchor receipt written by a different lane than the authorized buyer", async () => {
+    const h = harness();
+    h.deps.anchorWriter = { role: "buyer", primaryClaim: BUYER };
+
+    expect(await publishSellerSessionSettlement(request(h), h.deps)).toMatchObject({
+      disposition: "rejected",
+      reason: expect.stringContaining("finalized evidence binding"),
+    });
+    expect(h.anchor).toHaveBeenCalledOnce();
   });
 
   it("replays a retained publication without invoking the write-once adapter again", async () => {

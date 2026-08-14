@@ -39,11 +39,18 @@ All five lifecycle stages run end to end:
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
+Every write-capable Demos agent must supply a durable write journal. The
+filesystem implementation coordinates processes on one host and survives
+process termination; multi-host writers need a shared journal backend with the
+same exclusive lease and generation-fencing guarantees. Read-only agents may
+omit it.
+
 ## Public API
 
 ```ts
 import {
   createAgent,
+  createFsDemosWriteJournal,
   createInMemoryBindingStore,
   createX402Rail,
   x402Settle,
@@ -51,13 +58,18 @@ import {
   vetCore,
   verifyCompositeVerificationRecord,
 } from "@kynesyslabs/dacs";
+import { join } from "node:path";
 
 // A production deployment supplies a well-known/catalog-backed implementation.
 // This in-memory store is suitable only for a same-process example or tests.
 const bindings = createInMemoryBindingStore();
+const sellerWriteJournal = await createFsDemosWriteJournal({
+  dir: join(dacsStateDir, "seller-demos-writes"),
+});
 const seller = await createAgent({
   demosRpc,
   wallet,
+  demosWriteJournal: sellerWriteJournal,
   identity: { agentId },
   // Required to accept bundles with normative `vetRecords`. Derive this
   // closure from trusted listing/identity/registry state, never from `record`.
@@ -87,6 +99,9 @@ if (
 const buyer = await createAgent({
   demosRpc,
   wallet: buyerWallet,
+  demosWriteJournal: await createFsDemosWriteJournal({
+    dir: join(dacsStateDir, "buyer-demos-writes"),
+  }),
   identity: { agentId: buyerId },
   bindings: { index: bindings },
 });

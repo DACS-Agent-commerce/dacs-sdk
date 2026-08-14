@@ -10,8 +10,12 @@ import {
   createInMemorySessionStore,
   runFulfilmentCore,
   runDurableFulfilmentCore,
+  runDurableFulfilmentToDeliveryReady,
+  advanceDeliveryFinalisation,
+  resumeDeliveryFinalisation,
   verifyDurableSellerTerminalResult,
   getSellerFulfilmentStatus,
+  getDeliveryFinalisationStatus,
   finalizeCompletedSellerBundleCore,
   prepareCompletedSellerBundleCounterSignatureRequest,
   verifyCompletedSellerBundleCounterSignatureRequest,
@@ -90,8 +94,12 @@ import {
   finalizeCompletedSellerBundleDurable as sellerFinalizeCompletedBundleDurable,
   getSellerBundleFinalizationStatus as sellerGetBundleFinalizationStatus,
   getSellerFulfilmentStatus as sellerGetFulfilmentStatus,
+  getDeliveryFinalisationStatus as sellerGetDeliveryFinalisationStatus,
   runFulfilmentCore as sellerRunFulfilmentCore,
   runDurableFulfilmentCore as sellerRunDurableFulfilmentCore,
+  runDurableFulfilmentToDeliveryReady as sellerRunDurableFulfilmentToDeliveryReady,
+  advanceDeliveryFinalisation as sellerAdvanceDeliveryFinalisation,
+  resumeDeliveryFinalisation as sellerResumeDeliveryFinalisation,
   verifyDurableSellerTerminalResult as sellerVerifyDurableTerminalResult,
   sellerFulfilmentId as sellerSurfaceFulfilmentId,
   createX402Paywall as sellerCreateX402Paywall,
@@ -120,6 +128,19 @@ describe("public core surface (#14)", () => {
     const durability: Partial<SellerFulfilmentDurability> = { workerId: "worker" };
     expect(deps.nowMs?.()).toBe(2);
     expect(durability.workerId).toBe("worker");
+  });
+
+  it("#114: host-resumable delivery-ready finalisation is public", () => {
+    expect(typeof runDurableFulfilmentToDeliveryReady).toBe("function");
+    expect(typeof advanceDeliveryFinalisation).toBe("function");
+    expect(typeof resumeDeliveryFinalisation).toBe("function");
+    expect(typeof getDeliveryFinalisationStatus).toBe("function");
+    expect(sellerRunDurableFulfilmentToDeliveryReady).toBe(
+      runDurableFulfilmentToDeliveryReady,
+    );
+    expect(sellerAdvanceDeliveryFinalisation).toBe(advanceDeliveryFinalisation);
+    expect(sellerResumeDeliveryFinalisation).toBe(resumeDeliveryFinalisation);
+    expect(sellerGetDeliveryFinalisationStatus).toBe(getDeliveryFinalisationStatus);
   });
 
   it("#55: legacy v1 and generation-fenced v2 stores have distinct public APIs", () => {

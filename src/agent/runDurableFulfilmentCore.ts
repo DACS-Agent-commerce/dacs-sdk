@@ -33,6 +33,7 @@ import {
   type SellerAttestationRef,
   type SellerDeliveryReconciliation,
   type SellerDeliverySubmission,
+  type SellerDeliveredArtifact,
   type SellerEvidenceAnchorResult,
   type SellerFulfilmentDeps,
   type SellerFulfilmentAgreement,
@@ -162,12 +163,76 @@ export const sellerFulfilmentCheckpointKey = {
   terminalFailureSource: (phaseIndex: number) =>
     `seller:terminal-failure-source:${phaseIndex}`,
   evidencePublication: (phaseIndex: number) => `seller:evidence-publication:${phaseIndex}`,
+  deliveryReady: (phaseIndex: number) => `seller:delivery-ready:${phaseIndex}`,
+  deliveryFinalisationStarted: (phaseIndex: number) =>
+    `seller:delivery-finalisation-started:${phaseIndex}`,
   evidenceReadback: (phaseIndex: number) => `seller:evidence-readback:${phaseIndex}`,
   finalReceipt: (phaseIndex: number) => `seller:final-receipt:${phaseIndex}`,
   result: (phaseIndex: number) => `seller:result:${phaseIndex}`,
 } as const;
 
 export type SellerFulfilmentCheckpointState = "not-started" | "intent" | "outcome";
+
+/** Authenticated deliverable returned only after the exact evidence intent is durable. */
+export interface VerifiedDurableDeliverable {
+  fulfilmentId: string;
+  jobId: string;
+  deliveryPhaseIndex: number;
+  logicalAddress: string;
+  artifact: SellerDeliveredArtifact;
+  anchorReceipt: AnchorReceipt;
+  evidence: Extract<
+    SellerFulfilmentResult,
+    { decision: "completed" }
+  >["evidence"];
+  evidenceHash: string;
+  consumedPaymentAuthorization: SellerPaymentAuthorization;
+}
+
+/** Data-only pointer to the exact delivery-ready WAL boundary; it grants no authority. */
+export interface DeliveryFinalisationHandle {
+  finalisationVersion: "1";
+  jobId: string;
+  fulfilmentId: string;
+  deliveryPhaseIndex: number;
+  handoffBindingHash: string;
+  evidenceHash: string;
+}
+
+export interface DeliveryReadyResult {
+  status: "delivery-ready";
+  result: VerifiedDurableDeliverable;
+  finalisation: DeliveryFinalisationHandle;
+}
+
+export type DurableDeliveryReadyRunResult =
+  | DeliveryReadyResult
+  | { status: "not-ready"; result: SellerFulfilmentResult };
+
+export type DeliveryFinalisationMilestone =
+  | "not-ready"
+  | "delivery-ready"
+  | "delivery-evidence-published"
+  | "fulfilment-finalised";
+
+export type DeliveryFinalisationStatusLoad =
+  | { status: "missing" }
+  | { status: "corrupt"; reason: string }
+  | { status: "unsupported"; version: number }
+  | {
+      status: "ok";
+      jobId: string;
+      phase: string;
+      revision: number;
+      milestone: DeliveryFinalisationMilestone;
+      delivery: SellerFulfilmentCheckpointState;
+      deliveryReady: SellerFulfilmentCheckpointState;
+      publicationStarted: SellerFulfilmentCheckpointState;
+      evidence: SellerFulfilmentCheckpointState;
+      finalReceipt: SellerFulfilmentCheckpointState;
+      result: SellerFulfilmentCheckpointState;
+      updatedAt: number;
+    };
 
 export type SellerFulfilmentStatusLoad =
   | { status: "missing" }
@@ -2143,6 +2208,195 @@ class DurableCoordinator {
     return this.finalise(clone(persisted.input.result));
   }
 
+  #deliveryReadyCheckpointData(
+    input: Readonly<EvidenceAnchorInput>,
+  ): Record<string, CheckpointValue> {
+    if (!this.#authority) throw new Error("consumed authority is unavailable");
+    return {
+      fulfilmentId: this.#authority.binding.fulfilmentId,
+      handoffBindingHash: this.#authority.binding.handoffBindingHash,
+      evidenceHash: input.evidenceHash,
+    };
+  }
+
+  #deliveryFinalisationCheckpointIsOutcome(
+    record: SessionRecord,
+    input: Readonly<EvidenceAnchorInput>,
+    key: string,
+    label: string,
+  ): boolean {
+    const checkpoint = latestCheckpoint(record, key);
+    if (!checkpoint) return false;
+    const expected = this.#deliveryReadyCheckpointData(input);
+    if (!checkpoint.data || !hasExactKeys(checkpoint.data, [
+      "fulfilmentId",
+      "handoffBindingHash",
+      "evidenceHash",
+    ]) || !exact(checkpoint.data, expected)) {
+      throw new Error(`durable ${label} checkpoint is malformed or rebound`);
+    }
+    return checkpoint.stage === "outcome";
+  }
+
+  #deliveryReadyCheckpointIsOutcome(
+    record: SessionRecord,
+    input: Readonly<EvidenceAnchorInput>,
+  ): boolean {
+    if (!this.#authority) throw new Error("consumed authority is unavailable");
+    return this.#deliveryFinalisationCheckpointIsOutcome(
+      record,
+      input,
+      sellerFulfilmentCheckpointKey.deliveryReady(
+        this.#authority.binding.deliveryPhaseIndex,
+      ),
+      "delivery-ready",
+    );
+  }
+
+  #deliveryFinalisationStartedIsOutcome(
+    record: SessionRecord,
+    input: Readonly<EvidenceAnchorInput>,
+  ): boolean {
+    if (!this.#authority) throw new Error("consumed authority is unavailable");
+    return this.#deliveryFinalisationCheckpointIsOutcome(
+      record,
+      input,
+      sellerFulfilmentCheckpointKey.deliveryFinalisationStarted(
+        this.#authority.binding.deliveryPhaseIndex,
+      ),
+      "delivery finalisation activation",
+    );
+  }
+
+  async #activateDeferredEvidenceFinalisation(
+    input: Readonly<EvidenceAnchorInput>,
+  ): Promise<boolean> {
+    if (!this.#authority || !this.#leaseToken) {
+      throw new Error("durable delivery finalisation lease is unavailable");
+    }
+    let record = await this.#load();
+    if (!this.#deliveryReadyCheckpointIsOutcome(record, input)) return false;
+    if (this.#deliveryFinalisationStartedIsOutcome(record, input)) return false;
+    const data = this.#deliveryReadyCheckpointData(input);
+    const key = sellerFulfilmentCheckpointKey.deliveryFinalisationStarted(
+      this.#authority.binding.deliveryPhaseIndex,
+    );
+    const claimed = await this.#claim(
+      key,
+      data,
+      phase("evidence-pending", this.#authority.binding.deliveryPhaseIndex),
+      true,
+    );
+    if (!exact(claimed.data, data)) {
+      throw new Error("durable delivery finalisation activation contradicts its handoff");
+    }
+    if (claimed.state !== "outcome") {
+      record = await this.#appendOutcome(key, data, data);
+    } else {
+      record = claimed.record;
+    }
+    if (!this.#deliveryFinalisationStartedIsOutcome(record, input)) {
+      throw new Error("durable delivery finalisation activation did not commit");
+    }
+    // True only for the generation that converted the deliberate deferral into
+    // a real publication attempt. Every later generation must reconcile.
+    return claimed.state !== "outcome";
+  }
+
+  async #deriveDeliveryReadyResult(
+    record: SessionRecord,
+    requireDeferredMarker: boolean,
+  ): Promise<DeliveryReadyResult> {
+    if (!this.#authority) throw new Error("consumed authority is unavailable");
+    const retained = await this.#readEvidencePublicationCheckpoint(record);
+    if (!retained || retained.input.evidence.outcome !== "success") {
+      throw new Error("durable successful delivery evidence is unavailable");
+    }
+    if (retained.stage === "intent" && requireDeferredMarker &&
+        !this.#deliveryReadyCheckpointIsOutcome(record, retained.input)) {
+      throw new Error("durable delivery-ready handoff is not committed");
+    }
+    await this.#authenticateAuditSourceCommitment();
+    this.#assertTerminalDeliverySpine(record, "completed", retained.input.evidence);
+    const delivery = this.#readTerminalDeliveryReadback(record);
+    if (!delivery || delivery.output.status !== "verified") {
+      throw new Error("durable delivery-ready artifact readback is unavailable");
+    }
+    const sellers = this.#authority.handoff.auditSource.session.parties.filter(
+      (party) => party.role === "seller",
+    );
+    if (sellers.length !== 1) {
+      throw new Error("durable delivery-ready source has ambiguous seller authority");
+    }
+    const anchorReceipt = await this.#authenticateTerminalDeliveryReceipt(record, {
+      role: "seller",
+      primaryClaim: sellers[0]!.primaryClaim,
+    });
+    const finalisation: DeliveryFinalisationHandle = {
+      finalisationVersion: "1",
+      jobId: this.#authority.handoff.jobId,
+      fulfilmentId: this.#authority.binding.fulfilmentId,
+      deliveryPhaseIndex: this.#authority.binding.deliveryPhaseIndex,
+      handoffBindingHash: this.#authority.binding.handoffBindingHash,
+      evidenceHash: retained.input.evidenceHash,
+    };
+    return {
+      status: "delivery-ready",
+      result: {
+        fulfilmentId: this.#authority.binding.fulfilmentId,
+        jobId: this.#authority.handoff.jobId,
+        deliveryPhaseIndex: this.#authority.binding.deliveryPhaseIndex,
+        logicalAddress: this.#authority.handoff.logicalAddress,
+        artifact: clone(delivery.output.value.artifact),
+        anchorReceipt: clone(anchorReceipt),
+        evidence: clone(retained.input.evidence) as VerifiedDurableDeliverable["evidence"],
+        evidenceHash: retained.input.evidenceHash,
+        consumedPaymentAuthorization: clone(this.#authority.claim.authorization),
+      },
+      finalisation,
+    };
+  }
+
+  /** Commit the explicit no-publication handoff before returning to the host. */
+  async commitDeliveryReady(): Promise<DeliveryReadyResult> {
+    if (!this.#authority || !this.#leaseToken) {
+      throw new Error("durable delivery-ready lease is unavailable");
+    }
+    let record = await this.#load();
+    const retained = await this.#readEvidencePublicationCheckpoint(record);
+    if (!retained || retained.input.evidence.outcome !== "success") {
+      throw new Error("durable successful delivery evidence is unavailable");
+    }
+    if (retained.stage === "intent") {
+      // Authenticate the complete delivery spine before marking the deliberate
+      // no-op callback. Once this outcome exists, no older process can still be
+      // inside a real evidence publisher: this worker awaited the no-op first.
+      await this.#deriveDeliveryReadyResult(record, false);
+      const data = this.#deliveryReadyCheckpointData(retained.input);
+      const key = sellerFulfilmentCheckpointKey.deliveryReady(
+        this.#authority.binding.deliveryPhaseIndex,
+      );
+      const claimed = await this.#claim(
+        key,
+        data,
+        phase("evidence-pending", this.#authority.binding.deliveryPhaseIndex),
+        true,
+      );
+      if (!exact(claimed.data, data)) {
+        throw new Error("durable delivery-ready handoff contradicts its evidence intent");
+      }
+      if (claimed.state !== "outcome") {
+        await this.#appendOutcome(key, data, data);
+      }
+      record = await this.#load();
+    }
+    return this.#deriveDeliveryReadyResult(record, true);
+  }
+
+  async projectDeliveryReady(): Promise<DeliveryReadyResult> {
+    return this.#deriveDeliveryReadyResult(await this.#load(), true);
+  }
+
   #pendingEvidenceRecovery(
     input: Readonly<EvidenceAnchorInput>,
     reason: string,
@@ -3679,7 +3933,20 @@ class DurableCoordinator {
       // the exact first signed evidence retained in the intent.
       requireExactInputOnResume: false,
       invoke: (fenced) => this.#deps.anchorEvidence(fenced),
-      reconcile: (fenced) => this.#durability.reconcileEvidencePublication(fenced),
+      reconcile: async (fenced) => {
+        // `runDurableFulfilmentToDeliveryReady` deliberately uses a no-op
+        // publisher and commits this marker only after that callback returns.
+        // It is therefore stronger than an ordinary ambiguous intent: no old
+        // generation can still publish it, so the next fenced generation may
+        // invoke the real adapter without depending on index visibility.
+        if (await this.#activateDeferredEvidenceFinalisation(fenced)) {
+          return {
+            status: "absent",
+            reason: "delivery-ready handoff activated its single deferred publication",
+          };
+        }
+        return this.#durability.reconcileEvidencePublication(fenced);
+      },
       validate: isDefinitiveEvidenceAnchorResult,
       indeterminate: (output) => output.status !== "anchored",
       onError: (error) => ({ status: "indeterminate", reason: String(error) }),
@@ -4996,6 +5263,15 @@ function assertFocusedProjectionClosure(
     sellerFulfilmentCheckpointKey.finalReceipt(phaseIndex),
     sellerFulfilmentCheckpointKey.result(phaseIndex),
   ]);
+  const deliveryReadyKey = sellerFulfilmentCheckpointKey.deliveryReady(phaseIndex);
+  const finalisationStartedKey =
+    sellerFulfilmentCheckpointKey.deliveryFinalisationStarted(phaseIndex);
+  const hasDeferredFinalisation = record.checkpoints.some((checkpoint) =>
+    checkpoint.key === deliveryReadyKey || checkpoint.key === finalisationStartedKey);
+  if (hasDeferredFinalisation) {
+    expectedKeys.add(deliveryReadyKey);
+    expectedKeys.add(finalisationStartedKey);
+  }
   if (terminal.handoff.phase === "deliver-attested-payload") {
     expectedKeys.add(sellerFulfilmentCheckpointKey.payloadPublication(phaseIndex));
     expectedKeys.add(sellerFulfilmentCheckpointKey.payloadReadback(phaseIndex));
@@ -5027,6 +5303,50 @@ function assertFocusedProjectionClosure(
     }
   }
 
+  if (hasDeferredFinalisation) {
+    const evidenceKey = sellerFulfilmentCheckpointKey.evidencePublication(phaseIndex);
+    const deferredLifecycle = record.checkpoints.filter((checkpoint) =>
+      checkpoint.key === evidenceKey || checkpoint.key === deliveryReadyKey ||
+        checkpoint.key === finalisationStartedKey);
+    const expectedLifecycle = [
+      [evidenceKey, "intent"],
+      [deliveryReadyKey, "intent"],
+      [deliveryReadyKey, "outcome"],
+      [finalisationStartedKey, "intent"],
+      [finalisationStartedKey, "outcome"],
+      [evidenceKey, "outcome"],
+    ] as const;
+    if (deferredLifecycle.length !== expectedLifecycle.length ||
+        deferredLifecycle.some((checkpoint, index) =>
+          checkpoint.key !== expectedLifecycle[index]![0] ||
+          checkpoint.stage !== expectedLifecycle[index]![1])) {
+      throw new Error(
+        "focused audit projection rejects a partial or reordered delivery-ready lifecycle",
+      );
+    }
+    const expectedData = {
+      fulfilmentId: terminal.binding.fulfilmentId,
+      handoffBindingHash: terminal.binding.handoffBindingHash,
+      evidenceHash: terminal.result.evidenceRef.contentHash,
+    };
+    for (const checkpoint of deferredLifecycle.filter((candidate) =>
+      candidate.key !== evidenceKey)) {
+      if (!checkpoint.data || !hasExactKeys(checkpoint.data, [
+        "fulfilmentId",
+        "handoffBindingHash",
+        "evidenceHash",
+        "intentGeneration",
+        ...(checkpoint.stage === "outcome" ? ["outcomeGeneration"] : []),
+      ]) || checkpoint.data.fulfilmentId !== expectedData.fulfilmentId ||
+          checkpoint.data.handoffBindingHash !== expectedData.handoffBindingHash ||
+          checkpoint.data.evidenceHash !== expectedData.evidenceHash) {
+        throw new Error(
+          "focused audit projection rejects a rebound delivery-ready lifecycle",
+        );
+      }
+    }
+  }
+
   const checkpointGroups: string[][] = [
     [sellerFulfilmentCheckpointKey.handoff(phaseIndex)],
     ...(terminal.handoff.phase === "deliver-attested-payload"
@@ -5040,7 +5360,13 @@ function assertFocusedProjectionClosure(
       sellerFulfilmentCheckpointKey.deliveryReconciliation(phaseIndex),
     ],
     [sellerFulfilmentCheckpointKey.deliveryReadback(phaseIndex)],
-    [sellerFulfilmentCheckpointKey.evidencePublication(phaseIndex)],
+    hasDeferredFinalisation
+      ? [
+          sellerFulfilmentCheckpointKey.evidencePublication(phaseIndex),
+          deliveryReadyKey,
+          finalisationStartedKey,
+        ]
+      : [sellerFulfilmentCheckpointKey.evidencePublication(phaseIndex)],
     [sellerFulfilmentCheckpointKey.evidenceReadback(phaseIndex)],
     [sellerFulfilmentCheckpointKey.finalReceipt(phaseIndex)],
     [sellerFulfilmentCheckpointKey.result(phaseIndex)],
@@ -5414,15 +5740,94 @@ export async function getSellerFulfilmentStatus(
 }
 
 /**
- * Restart-safe seller fulfilment. Durable identity is established only from an
- * already-consumed #120 receipt-store handoff; an available permit cannot create
- * session state. All irreversible adapters share one generation-fenced WAL.
+ * Stable operational projection for hosts scheduling finalisation work. This
+ * reports durable WAL progress; callers use the delivery-ready result itself,
+ * not this status projection, as cryptographic proof of the deliverable.
  */
-export async function runDurableFulfilmentCore(
+export async function getDeliveryFinalisationStatus(
+  store: FencedSessionStoreV2,
+  jobId: string,
+  deliveryPhaseIndex: number,
+): Promise<DeliveryFinalisationStatusLoad> {
+  if (!isSafeUint(deliveryPhaseIndex)) {
+    return { status: "corrupt", reason: "delivery phase index must be a safe unsigned integer" };
+  }
+  const loaded = clone(await store.load(jobId));
+  if (loaded.status !== "ok") return loaded;
+  const violation = sessionRecordShapeViolation(loaded.record);
+  if (violation) return { status: "corrupt", reason: violation };
+  try {
+    const delivery = checkpointState(
+      loaded.record,
+      sellerFulfilmentCheckpointKey.delivery(deliveryPhaseIndex),
+    );
+    const deliveryReady = checkpointState(
+      loaded.record,
+      sellerFulfilmentCheckpointKey.deliveryReady(deliveryPhaseIndex),
+    );
+    const publicationStarted = checkpointState(
+      loaded.record,
+      sellerFulfilmentCheckpointKey.deliveryFinalisationStarted(deliveryPhaseIndex),
+    );
+    const evidence = checkpointState(
+      loaded.record,
+      sellerFulfilmentCheckpointKey.evidencePublication(deliveryPhaseIndex),
+    );
+    const finalReceipt = checkpointState(
+      loaded.record,
+      sellerFulfilmentCheckpointKey.finalReceipt(deliveryPhaseIndex),
+    );
+    const result = checkpointState(
+      loaded.record,
+      sellerFulfilmentCheckpointKey.result(deliveryPhaseIndex),
+    );
+    const milestone: DeliveryFinalisationMilestone =
+      result === "outcome" && finalReceipt === "outcome"
+        ? "fulfilment-finalised"
+        : evidence === "outcome"
+          ? "delivery-evidence-published"
+          : deliveryReady === "outcome" && evidence === "intent"
+            ? "delivery-ready"
+            : "not-ready";
+    return {
+      status: "ok",
+      jobId: loaded.record.jobId,
+      phase: loaded.record.phase,
+      revision: loaded.record.revision,
+      milestone,
+      delivery,
+      deliveryReady,
+      publicationStarted,
+      evidence,
+      finalReceipt,
+      result,
+      updatedAt: loaded.record.updatedAt,
+    };
+  } catch (error) {
+    return { status: "corrupt", reason: String(error) };
+  }
+}
+
+interface DurableFulfilmentRunOptions {
+  deferEvidencePublication?: boolean;
+  expectedFinalisationHandle?: Readonly<DeliveryFinalisationHandle>;
+  expectedJobId?: string;
+}
+
+interface DurableFulfilmentRunOutput {
+  result: SellerFulfilmentResult;
+  deliveryReady?: DeliveryReadyResult;
+}
+
+const DELIVERY_READY_DEFERRED_REASON =
+  "delivery evidence publication deliberately deferred to the durable finaliser";
+
+async function runDurableFulfilmentInternal(
   request: SellerFulfilmentRequest,
   deps: DurableSellerFulfilmentDeps,
   durability: SellerFulfilmentDurability,
-): Promise<SellerFulfilmentResult> {
+  options: Readonly<DurableFulfilmentRunOptions> = {},
+): Promise<DurableFulfilmentRunOutput> {
   let requestSnapshot: SellerFulfilmentRequest;
   let capturedDeps: DurableSellerFulfilmentDeps;
   let capturedDurability: SellerFulfilmentDurability;
@@ -5432,52 +5837,121 @@ export async function runDurableFulfilmentCore(
     capturedDeps = captureDeps(deps);
     capturedDurability = captureDurability(durability);
   } catch (error) {
-    return durableIndeterminate("durable-dependencies-invalid", String(error));
+    return { result: durableIndeterminate("durable-dependencies-invalid", String(error)) };
   }
+
+  const effectiveDeps: DurableSellerFulfilmentDeps = options.deferEvidencePublication
+    ? Object.freeze({
+        ...capturedDeps,
+        anchorEvidence: async () => ({
+          status: "indeterminate" as const,
+          reason: DELIVERY_READY_DEFERRED_REASON,
+        }),
+      })
+    : capturedDeps;
 
   const coordinator = new DurableCoordinator(
     requestSnapshot,
-    capturedDeps,
+    effectiveDeps,
     capturedDurability,
   );
+  const output = async (
+    result: SellerFulfilmentResult,
+    commitDeliveryReady = false,
+  ): Promise<DurableFulfilmentRunOutput> => {
+    if (!options.deferEvidencePublication || !coordinator.hasAuthority()) {
+      return { result: clone(result) };
+    }
+    const canProject = result.decision === "completed" ||
+      (result.decision === "indeterminate" &&
+        result.code === "delivery-evidence-publication-pending");
+    if (!canProject) return { result: clone(result) };
+    try {
+      const deliveryReady = commitDeliveryReady
+        ? await coordinator.commitDeliveryReady()
+        : await coordinator.projectDeliveryReady();
+      return { result: clone(result), deliveryReady: clone(deliveryReady) };
+    } catch (error) {
+      return {
+        result: durableIndeterminate(
+          "durable-delivery-ready-projection-failed",
+          String(error),
+          coordinator.consumedPaymentAuthorization(),
+        ),
+      };
+    }
+  };
   try {
     await coordinator.inspectInitialPermit();
   } catch (error) {
     await coordinator.release().catch(() => {});
-    return durableIndeterminate(
-      "durable-permit-inspection-failed",
-      String(error),
-      coordinator.consumedPaymentAuthorization(),
-    );
+    return {
+      result: durableIndeterminate(
+        "durable-permit-inspection-failed",
+        String(error),
+        coordinator.consumedPaymentAuthorization(),
+      ),
+    };
+  }
+  if (options.expectedFinalisationHandle || options.expectedJobId !== undefined) {
+    try {
+      const projected = await coordinator.projectDeliveryReady();
+      if (options.expectedFinalisationHandle &&
+          !exact(projected.finalisation, options.expectedFinalisationHandle)) {
+        throw new Error("delivery finalisation handle is malformed or rebound");
+      }
+      if (options.expectedJobId !== undefined &&
+          projected.finalisation.jobId !== options.expectedJobId) {
+        throw new Error("delivery finalisation job id is rebound");
+      }
+    } catch (error) {
+      await coordinator.release().catch(() => {});
+      return {
+        result: durableIndeterminate(
+          "durable-finalisation-authority-invalid",
+          String(error),
+          coordinator.consumedPaymentAuthorization(),
+        ),
+      };
+    }
   }
   const replay = coordinator.terminalReplay();
-  if (replay) return replay;
+  if (replay) return output(replay);
   try {
     const pendingFinalReceipt = await coordinator.resumePendingFinalReceipt();
-    if (pendingFinalReceipt) return pendingFinalReceipt;
+    if (pendingFinalReceipt) return output(pendingFinalReceipt);
   } catch (error) {
     await coordinator.release().catch(() => {});
-    return durableIndeterminate(
-      "durable-final-session-receipt-recovery-failed",
-      String(error),
-      coordinator.consumedPaymentAuthorization(),
-    );
+    return {
+      result: durableIndeterminate(
+        "durable-final-session-receipt-recovery-failed",
+        String(error),
+        coordinator.consumedPaymentAuthorization(),
+      ),
+    };
   }
   try {
     const pendingEvidence = await coordinator.resumePendingEvidence();
     if (pendingEvidence) {
+      const projected = await output(
+        pendingEvidence,
+        pendingEvidence.decision === "indeterminate" &&
+          pendingEvidence.code === "delivery-evidence-publication-pending",
+      );
       if (pendingEvidence.decision === "indeterminate") {
         await coordinator.release();
       }
-      return pendingEvidence;
+      return projected;
     }
   } catch (error) {
     await coordinator.release().catch(() => {});
-    return durableIndeterminate(
-      "durable-evidence-recovery-failed",
-      String(error),
-      coordinator.consumedPaymentAuthorization(),
-    );
+    return {
+      result: durableIndeterminate(
+        "durable-evidence-recovery-failed",
+        String(error),
+        coordinator.consumedPaymentAuthorization(),
+      ),
+    };
   }
 
   const wrapped: SellerFulfilmentDeps = {
@@ -5609,16 +6083,81 @@ export async function runDurableFulfilmentCore(
       }
     }
     if (result.decision === "completed" || result.decision === "failed") {
-      return await coordinator.finalise(result);
+      return output(await coordinator.finalise(result));
     }
+    const projected = await output(
+      result,
+      result.code === "delivery-evidence-publication-pending",
+    );
     await coordinator.release();
-    return clone(result);
+    return projected;
   } catch (error) {
     await coordinator.release().catch(() => {});
-    return durableIndeterminate(
-      "durable-fulfilment-failed",
-      String(error),
-      coordinator.consumedPaymentAuthorization(),
-    );
+    return {
+      result: durableIndeterminate(
+        "durable-fulfilment-failed",
+        String(error),
+        coordinator.consumedPaymentAuthorization(),
+      ),
+    };
   }
+}
+
+/**
+ * Restart-safe seller fulfilment. Durable identity is established only from an
+ * already-consumed #120 receipt-store handoff; an available permit cannot create
+ * session state. All irreversible adapters share one generation-fenced WAL.
+ */
+export async function runDurableFulfilmentCore(
+  request: SellerFulfilmentRequest,
+  deps: DurableSellerFulfilmentDeps,
+  durability: SellerFulfilmentDurability,
+): Promise<SellerFulfilmentResult> {
+  return (await runDurableFulfilmentInternal(request, deps, durability)).result;
+}
+
+/**
+ * Stop after an authenticated deliverable and exact signed evidence intent are
+ * durable. No background promise is started; the returned handle is resumed by
+ * an explicit host call.
+ */
+export async function runDurableFulfilmentToDeliveryReady(
+  request: SellerFulfilmentRequest,
+  deps: DurableSellerFulfilmentDeps,
+  durability: SellerFulfilmentDurability,
+): Promise<DurableDeliveryReadyRunResult> {
+  const output = await runDurableFulfilmentInternal(request, deps, durability, {
+    deferEvidencePublication: true,
+  });
+  return output.deliveryReady ?? { status: "not-ready", result: output.result };
+}
+
+/** Advance the exact handle through evidence publication and final receipt closure. */
+export async function advanceDeliveryFinalisation(
+  handle: Readonly<DeliveryFinalisationHandle>,
+  request: SellerFulfilmentRequest,
+  deps: DurableSellerFulfilmentDeps,
+  durability: SellerFulfilmentDurability,
+): Promise<SellerFulfilmentResult> {
+  let expected: DeliveryFinalisationHandle;
+  try {
+    expected = clone(handle);
+  } catch (error) {
+    return durableIndeterminate("durable-finalisation-handle-invalid", String(error));
+  }
+  return (await runDurableFulfilmentInternal(request, deps, durability, {
+    expectedFinalisationHandle: expected,
+  })).result;
+}
+
+/** Resume a host-owned finalisation job after process restart. */
+export async function resumeDeliveryFinalisation(
+  jobId: string,
+  request: SellerFulfilmentRequest,
+  deps: DurableSellerFulfilmentDeps,
+  durability: SellerFulfilmentDurability,
+): Promise<SellerFulfilmentResult> {
+  return (await runDurableFulfilmentInternal(request, deps, durability, {
+    expectedJobId: jobId,
+  })).result;
 }

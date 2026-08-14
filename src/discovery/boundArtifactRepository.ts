@@ -1,6 +1,8 @@
 import {
+  canonicalize,
   contentHash,
   logicalToStorageProgramName,
+  sha256Hex,
 } from "../canonical/index.js";
 import type {
   AnchorRef,
@@ -100,6 +102,8 @@ export interface BoundArtifactRepository {
 function anchorOptionsWithLogicalAddress(
   logicalAddress: string,
   options: AnchorWriteOnceOptions | undefined,
+  artifactContentHash: string,
+  envelopeHash: string,
 ): AnchorWriteOnceOptions {
   const supplied = options?.metadata;
   if (
@@ -108,20 +112,36 @@ function anchorOptionsWithLogicalAddress(
   ) {
     throw new Error("anchor metadata must be an object");
   }
-  for (const key of ["logicalAddress", "logical_address"] as const) {
+  const requiredMetadata = {
+    logicalAddress,
+    contentHash: artifactContentHash,
+    envelopeHash,
+  };
+  for (const [key, expected] of Object.entries(requiredMetadata)) {
     if (
       supplied !== undefined &&
       Object.prototype.hasOwnProperty.call(supplied, key) &&
-      supplied[key] !== logicalAddress
+      supplied[key] !== expected
     ) {
       throw new Error(
-        `anchor metadata ${key} conflicts with the repository logical address`,
+        `anchor metadata ${key} conflicts with the repository ${
+          key === "logicalAddress" ? "logical address" : "artifact binding"
+        }`,
       );
     }
   }
+  if (
+    supplied !== undefined &&
+    Object.prototype.hasOwnProperty.call(supplied, "logical_address") &&
+    supplied.logical_address !== logicalAddress
+  ) {
+    throw new Error(
+      "anchor metadata logical_address conflicts with the repository logical address",
+    );
+  }
   return {
     ...options,
-    metadata: { ...supplied, logicalAddress },
+    metadata: { ...supplied, ...requiredMetadata },
   };
 }
 
@@ -251,10 +271,16 @@ export function createBoundArtifactRepository(
         });
       }
       const artifactContentHash = contentHash(pinnedArtifact);
+      const envelopeHash = sha256Hex(canonicalize(pinnedArtifact));
       const anchor = await deps.adapter.anchorWriteOnce(
         storageName,
         pinnedArtifact,
-        anchorOptionsWithLogicalAddress(logicalAddress, options?.anchor),
+        anchorOptionsWithLogicalAddress(
+          logicalAddress,
+          options?.anchor,
+          artifactContentHash,
+          envelopeHash,
+        ),
       );
       if (anchor.address.trim().length === 0) {
         throw new Error("anchorWriteOnce returned an empty native address");

@@ -20,6 +20,7 @@ import {
   getAddress,
   http,
   parseAbi,
+  parseAbiItem,
   verifyMessage,
   type PublicClient,
 } from "viem";
@@ -55,6 +56,7 @@ import {
   createAgent,
   createDacsX402BuyerEvmChallengeClient,
   createFixedPriceAgreementSigningPlan,
+  createFsDemosWriteJournal,
   createFsFencedSessionStore,
   createFsSellerReceiptStore,
   createFsX402BuyerSettlementStore,
@@ -67,6 +69,7 @@ import {
   createX402SellerSpine,
   deriveFixedPriceAgreement,
   discoverListings,
+  demosWriteEvidenceToAnchorReceipt,
   deriveX402ReceiptCommitment,
   ed25519Verify,
   ed25519Sign,
@@ -83,6 +86,7 @@ import {
   prepareX402BuyerSettlement,
   projectDurableSellerAuditPending,
   publishSellerSessionSettlement,
+  resumeDeliveryFinalisation,
   publicKeyFromRaw,
   privateKeyFromSeed,
   publicKeyFromSeed,
@@ -119,6 +123,7 @@ import {
   type DurableBuyerBundleFinalizationProvider,
   type DurableSellerFixedPriceAgreementDurability,
   type DurableSellerFulfilmentDeps,
+  type DeliveryReadyResult,
   type DurableSellerBundleFinalizationProvider,
   type FaultAttestationBundle,
   type FinalityCommitmentProvider,
@@ -136,6 +141,7 @@ import {
   type SellerBundleEffectFence,
   type SellerBundleFinalizationDurability,
   type SellerDeliveredArtifact,
+  type SellerFinalSessionReceiptInput,
   type SellerFinalSessionReceiptResult,
   type SellerFulfilmentAgreement,
   type SellerFulfilmentDurability,
@@ -157,6 +163,7 @@ import {
   type X402BuyerSettlementIntent,
   type X402Paywall,
   type X402PaywallHttpAdapter,
+  type X402PaywallSettlementIntent,
   type X402PaywallSettlementResult,
   type X402PaywallSettlementStore,
   type X402SellerCommittedSessionScope,
@@ -179,12 +186,16 @@ const TOKEN_VERSION = "2";
 const TOKEN_SYMBOL = "USDC";
 const TOKEN_DECIMALS = 6;
 const OS_PER_DEM = 1_000_000_000n;
-// Eleven seller writes and seven buyer writes at the currently observed 2 DEM
-// storage-program fee, plus one DEM per identity of explicit headroom. The
+// Ten seller writes and six buyer writes at the currently observed 2 DEM
+// storage-program fee, plus three DEM per identity of explicit headroom. The
 // extra writes are the role-owned BundleBindings and buyer finalization handoff.
 const SELLER_MINIMUM_OS = 23n * OS_PER_DEM;
 const BUYER_MINIMUM_OS = 15n * OS_PER_DEM;
 const LEASE_DURATION_MS = 120_000;
+const EIP3009_AUTHORIZATION_USED_EVENT = parseAbiItem(
+  "event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)",
+);
+const FUNDED_DELIVERABLE_SEPARATOR = "DACS-funded-e2e:deliverable:v1";
 
 // Test-only loopback identity. The key material is an intentionally public DER
 // fixture, not a credential. Both exact local routes use TLS because the
@@ -301,13 +312,16 @@ function safeStageFailureClass(error: unknown): string {
 
 async function diagnosticStep<T>(code: string, operation: () => Promise<T> | T): Promise<T> {
   requireCondition(/^[a-z0-9-]+$/.test(code), "diagnostic-step-code-invalid");
+  const startedAt = Date.now();
   process.stderr.write(`funded-e2e-step:${code}:start\n`);
   try {
     const result = await operation();
     process.stderr.write(`funded-e2e-step:${code}:passed\n`);
+    process.stderr.write(`funded-e2e-step:${code}:elapsed-ms:${Date.now() - startedAt}\n`);
     return result;
   } catch (error) {
     process.stderr.write(`funded-e2e-step:${code}:failed\n`);
+    process.stderr.write(`funded-e2e-step:${code}:elapsed-ms:${Date.now() - startedAt}\n`);
     process.stderr.write(
       `funded-e2e-step:${code}:detail:${safeStageFailureClass(error)}\n`,
     );
@@ -337,13 +351,16 @@ function verifyEd25519ArtifactSignature(
 
 async function stage<T>(code: string, operation: () => Promise<T>): Promise<T> {
   requireCondition(/^[a-z0-9-]+$/.test(code), "stage-code-invalid");
+  const startedAt = Date.now();
   process.stderr.write(`funded-e2e-stage:${code}:start\n`);
   try {
     const result = await operation();
     process.stderr.write(`funded-e2e-stage:${code}:passed\n`);
+    process.stderr.write(`funded-e2e-stage:${code}:elapsed-ms:${Date.now() - startedAt}\n`);
     return result;
   } catch (error) {
     process.stderr.write(`funded-e2e-stage:${code}:failed\n`);
+    process.stderr.write(`funded-e2e-stage:${code}:elapsed-ms:${Date.now() - startedAt}\n`);
     process.stderr.write(
       `funded-e2e-stage:${code}:detail:${safeStageFailureClass(error)}\n`,
     );
@@ -355,6 +372,63 @@ async function stage<T>(code: string, operation: () => Promise<T>): Promise<T> {
     }
     throw new Error(`funded-e2e:${code}`);
   }
+}
+
+function safeAnchorFamily(name: string): string {
+  const decoded = name.replaceAll("%3A", ":");
+  const segments = decoded.split(":");
+  const family = segments[0] === "dacs-test"
+    ? segments.slice(0, 2).join("-")
+    : segments.slice(0, 2).join("-");
+  return /^[a-z0-9-]+$/.test(family) ? family : "unclassified";
+}
+
+function installFundedAnchorTelemetry(
+  adapter: DemosBackedAdapter,
+  actor: "buyer" | "seller",
+): void {
+  const anchorWriteOnce = adapter.anchorWriteOnce.bind(adapter);
+  let sequence = 0;
+  adapter.anchorWriteOnce = async (name, value, options) => {
+    sequence += 1;
+    const operation = sequence;
+    const family = safeAnchorFamily(name);
+    const startedAt = Date.now();
+    let progress: Parameters<NonNullable<NonNullable<typeof options>["onProgress"]>>[0]
+      | undefined;
+    const onProgress = options?.onProgress;
+    process.stderr.write(
+      `funded-e2e-anchor:${actor}:${operation}:${family}:start\n`,
+    );
+    try {
+      const result = await anchorWriteOnce(name, value, {
+        ...options,
+        onProgress: (receipt) => {
+          progress = receipt;
+          onProgress?.(receipt);
+        },
+      });
+      const operationStartedAt = progress?.timings.startedAt ?? startedAt;
+      const relative = (value: number | undefined) => value === undefined
+        ? "na" : String(value - operationStartedAt);
+      const totalMs = Date.now() - startedAt;
+      const queueMs = operationStartedAt - startedAt;
+      process.stderr.write(
+        `funded-e2e-anchor:${actor}:${operation}:${family}:passed:` +
+          `${totalMs}:${queueMs}:${relative(progress?.timings.acceptedAt)}:` +
+          `${relative(progress?.timings.includedAt)}:` +
+          `${relative(progress?.timings.readVisibleAt)}:` +
+          `${progress?.attempts.inclusionPolls ?? 0}:` +
+          `${progress?.attempts.visibilityReads ?? 0}\n`,
+      );
+      return result;
+    } catch (error) {
+      process.stderr.write(
+        `funded-e2e-anchor:${actor}:${operation}:${family}:failed:${Date.now() - startedAt}\n`,
+      );
+      throw error;
+    }
+  };
 }
 
 async function retryReadOnly<T>(
@@ -455,10 +529,16 @@ function validateStaticConfiguration(env: LiveEnv): void {
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(env.SELLER_EVM_KEY), "seller-evm-key-invalid");
   requireCondition(/^[A-Za-z0-9._-]{1,64}$/.test(env.LIVE_E2E_RUN_ID), "run-id-invalid");
   requireCondition(PAYMENT_AMOUNT > 0n && PAYMENT_AMOUNT <= MAX_PAYMENT_AMOUNT, "spend-cap-invalid");
-  for (const key of ["DEMOS_RPC", "PAY_RPC", "X402_FACILITATOR"] as const) {
+  for (const endpoint of [
+    env.DEMOS_RPC,
+    env.PAY_RPC,
+    env.X402_FACILITATOR,
+    ...(process.env.PAY_RPC_SECONDARY === undefined
+      ? [] : [process.env.PAY_RPC_SECONDARY]),
+  ]) {
     let parsed: URL;
     try {
-      parsed = new URL(env[key]);
+      parsed = new URL(endpoint);
     } catch {
       throw new Error("funded-e2e:url-invalid");
     }
@@ -468,6 +548,12 @@ function validateStaticConfiguration(env: LiveEnv): void {
       parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1" &&
       parsed.hostname !== "[::1]",
       "remote-url-loopback-invalid",
+    );
+  }
+  if (process.env.PAY_RPC_SECONDARY !== undefined) {
+    requireCondition(
+      new URL(process.env.PAY_RPC_SECONDARY).origin !== new URL(env.PAY_RPC).origin,
+      "secondary-rpc-not-independent",
     );
   }
 }
@@ -483,6 +569,7 @@ interface LocalPaywallHost {
   ): void;
   close(): Promise<void>;
   readonly requestCounts: { unpaid: number; paid: number; engagement: number };
+  readonly lastHandlerFailure: string | undefined;
 }
 
 function requestAdapter(req: IncomingMessage, url: URL): X402PaywallHttpAdapter {
@@ -519,6 +606,7 @@ async function startLocalPaywallHost(
 ): Promise<LocalPaywallHost> {
   let paywall: X402Paywall<{ delivered: true }> | undefined;
   let engagement: ((proposal: unknown, identity: unknown) => Promise<unknown>) | undefined;
+  let lastHandlerFailure: string | undefined;
   const requestCounts = { unpaid: 0, paid: 0, engagement: 0 };
   const routePath = `/issue-114/${sha256Hex(runId).slice(0, 24)}`;
   const engagementPath = `${routePath}/engage`;
@@ -572,7 +660,11 @@ async function startLocalPaywallHost(
         request: requestAdapter(req, url),
       });
       writePaywallResponse(res, result.response);
-    })().catch(() => {
+    })().catch((error) => {
+      lastHandlerFailure = safeStageFailureClass(error);
+      process.stderr.write(
+        `funded-e2e-step:local-handler-failure:${lastHandlerFailure}\n`,
+      );
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
       }
@@ -668,6 +760,9 @@ async function startLocalPaywallHost(
       engagement = handler;
     },
     requestCounts,
+    get lastHandlerFailure() {
+      return lastHandlerFailure;
+    },
     close: () => server.listening
       ? new Promise((resolve) => server.close(() => resolve()))
       : Promise.resolve(),
@@ -680,6 +775,7 @@ interface Preflight {
   seller: Awaited<ReturnType<typeof createAgent>>;
   buyer: Awaited<ReturnType<typeof createAgent>>;
   evm: PublicClient;
+  evmVerificationClients: readonly PublicClient[];
   evmReader: X402BuyerEvmReadClient;
   payer: `0x${string}`;
   payee: `0x${string}`;
@@ -707,6 +803,14 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
   requireCondition(payer.toLowerCase() !== payee.toLowerCase(), "payer-payee-not-independent");
 
   const bindings = createInMemoryBindingStore();
+  const [sellerWriteJournal, buyerWriteJournal] = await Promise.all([
+    temporaryDirectory("seller-demos-writes").then((dir) =>
+      createFsDemosWriteJournal({ dir })
+    ),
+    temporaryDirectory("buyer-demos-writes").then((dir) =>
+      createFsDemosWriteJournal({ dir })
+    ),
+  ]);
   const railAuthority = () => ({
     trustPhase: "PA-1" as const,
     trustPolicyAcceptsPA1: true,
@@ -719,21 +823,27 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
       signatureValid: true,
     }],
   });
-  const [seller, buyer] = await Promise.all([
-    createAgent({
+  const [seller, buyer] = await diagnosticStep("preflight-agent-connect", () =>
+    Promise.all([
+      createAgent({
       demosRpc: env.DEMOS_RPC,
       wallet: env.SELLER_WALLET,
+      demosWriteJournal: sellerWriteJournal,
       identity: { agentId: env.SELLER_DID },
       bindings: { index: bindings, publisher: bindings },
       loadListingRailResolution: railAuthority,
     }),
-    createAgent({
+      createAgent({
       demosRpc: env.DEMOS_RPC,
       wallet: env.BUYER_WALLET,
+      demosWriteJournal: buyerWriteJournal,
       identity: { agentId: env.BUYER_DID },
       bindings: { index: bindings },
-    }),
-  ]);
+      }),
+    ])
+  );
+  installFundedAnchorTelemetry(seller.adapter, "seller");
+  installFundedAnchorTelemetry(buyer.adapter, "buyer");
   assertDemosIdentity(seller.adapter, env.SELLER_DID);
   assertDemosIdentity(buyer.adapter, env.BUYER_DID);
   requireCondition(
@@ -742,6 +852,10 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
   );
 
   const evm = createPublicClient({ transport: http(env.PAY_RPC) });
+  const secondaryRpc = process.env.PAY_RPC_SECONDARY;
+  const secondaryEvm = secondaryRpc === undefined
+    ? undefined
+    : createPublicClient({ transport: http(secondaryRpc) });
   const facilitator = new HTTPFacilitatorClient({ url: env.X402_FACILITATOR });
   const [
     sellerBalance,
@@ -754,18 +868,22 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
     tokenVersion,
     currentBlock,
     supported,
-  ] = await Promise.all([
-    demosBalanceOs(seller.adapter),
-    demosBalanceOs(buyer.adapter),
-    evm.getChainId(),
-    evm.readContract({ address: asset, abi: erc20Abi, functionName: "balanceOf", args: [payer] }),
-    evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "name" }),
-    evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "symbol" }),
-    evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "decimals" }),
-    evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "version" }),
-    evm.getBlockNumber(),
-    facilitator.getSupported(),
-  ]);
+    secondaryChainId,
+  ] = await diagnosticStep("preflight-remote-reads", () =>
+    retryReadOnly(() => Promise.all([
+      demosBalanceOs(seller.adapter),
+      demosBalanceOs(buyer.adapter),
+      evm.getChainId(),
+      evm.readContract({ address: asset, abi: erc20Abi, functionName: "balanceOf", args: [payer] }),
+      evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "name" }),
+      evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "symbol" }),
+      evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "decimals" }),
+      evm.readContract({ address: asset, abi: tokenMetadataAbi, functionName: "version" }),
+      evm.getBlockNumber(),
+      facilitator.getSupported(),
+      secondaryEvm?.getChainId() ?? Promise.resolve(BASE_SEPOLIA_CHAIN_ID),
+    ]), 3, 250)
+  );
   const funding = fundedPreflightDecision({
     connectedChainId: chainId,
     sellerDemosBalance: sellerBalance,
@@ -787,6 +905,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
     ),
     "facilitator-network-unsupported",
   );
+  requireCondition(secondaryChainId === BASE_SEPOLIA_CHAIN_ID, "secondary-rpc-chain-invalid");
   requireCondition(currentBlock <= BigInt(Number.MAX_SAFE_INTEGER), "evm-height-unsupported");
   // Construct every remaining fallible read adapter before opening the local
   // listener, so a failed no-write preflight cannot leave a host behind.
@@ -838,6 +957,7 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
       seller,
       buyer,
       evm,
+      evmVerificationClients: secondaryEvm === undefined ? [evm] : [evm, secondaryEvm],
       evmReader,
       payer,
       payee,
@@ -857,6 +977,7 @@ async function identity(
   signer: DemosBackedAdapter,
   now = Date.now(),
   evmPrivateKey?: string,
+  sessionBound = true,
 ): Promise<IdentityBundle> {
   const evmAccount = evmPrivateKey === undefined
     ? undefined
@@ -871,7 +992,9 @@ async function identity(
     bundleVersion: "1",
     presentedBy: primaryClaim,
     presentedAt: now,
-    sessionNonce: sha256Hex(`${primaryClaim}:${now}`),
+    ...(sessionBound
+      ? { sessionNonce: sha256Hex(`${primaryClaim}:${now}`) }
+      : {}),
     claims,
     presentation: {
       kind: "per-claim",
@@ -1008,36 +1131,6 @@ interface PublishedListing {
   receipt: AnchorReceipt;
 }
 
-function portableReceipt(input: {
-  logicalAddress: string;
-  nativeAddress: string;
-  contentHash: string;
-  writer: string;
-  transactionRef: string;
-  observedAt: number;
-  blockNumber?: number;
-}): AnchorReceipt {
-  return {
-    receiptVersion: "1",
-    substrate: "demos",
-    finalityProfile: "demos-bft-read-visible",
-    logicalAddress: input.logicalAddress,
-    nativeAddress: input.nativeAddress,
-    contentHash: input.contentHash,
-    transactionRef: { kind: "demos-storage-program", value: input.transactionRef },
-    writer: input.writer,
-    state: "finalized",
-    observationDisposition: "established",
-    observedAt: input.observedAt,
-    blockRef: {
-      id: input.transactionRef,
-      ...(input.blockNumber === undefined ? {} : { height: String(input.blockNumber) }),
-      timestamp: input.observedAt,
-    },
-    evidence: { kind: "demos-owner-bound-readback", value: input.contentHash },
-  };
-}
-
 async function anchorArtifact(input: {
   adapter: DemosBackedAdapter;
   writer: string;
@@ -1082,30 +1175,12 @@ async function anchorArtifact(input: {
   }
   requireCondition(anchored !== undefined, "anchor-write-result-missing");
   requireCondition(typeof anchored.txRef === "string" && anchored.txRef.length > 0, "anchor-tx-missing");
-  const resolution = await input.adapter.resolveAnchorByName(
-    input.logicalAddress,
-    input.adapter.getAddress(),
-  );
-  requireCondition(
-    resolution.status === "present" && resolution.address === anchored.address,
-    "anchor-owner-bound-resolution-mismatch",
-  );
-  const readback = await input.adapter.readAnchor(anchored.address);
-  const readbackHash = readback !== null && isFaultAttestationBundle(readback)
-    ? attestationBundleHash(readback)
-    : readback === null ? null : contentHash(readback);
-  requireCondition(
-    readbackHash === hash && canonicalize(readback) === canonicalize(input.artifact),
-    "anchor-readback-mismatch",
-  );
-  const receipt = portableReceipt({
+  requireCondition(anchored.demosEvidence !== undefined, "anchor-evidence-missing");
+  const receipt = demosWriteEvidenceToAnchorReceipt({
     logicalAddress: input.logicalAddress,
-    nativeAddress: anchored.address,
     contentHash: hash,
     writer: input.writer,
-    transactionRef: anchored.txRef,
-    observedAt: Date.now(),
-    ...(anchored.blockNumber === undefined ? {} : { blockNumber: anchored.blockNumber }),
+    evidence: anchored.demosEvidence,
   });
   return {
     ref: {
@@ -1124,17 +1199,31 @@ async function verifyAnchorReceipt(
 ): Promise<boolean> {
   if (receipt.writer !== expectedWriter || receipt.state !== "finalized" ||
       receipt.observationDisposition !== "established") return false;
-  const readback = await adapter.readAnchor(receipt.nativeAddress);
-  if (!readback) return false;
-  const readbackHash = isFaultAttestationBundle(readback)
-    ? attestationBundleHash(readback)
-    : contentHash(readback);
-  if (readbackHash !== receipt.contentHash) return false;
-  const resolution = await adapter.resolveAnchorByName(
-    receipt.logicalAddress,
-    expectedWriter.replace(/^did:demos:agent:/, ""),
+  return retryEstablishedRead(
+    () => adapter.verifyDemosAnchorReceipt(receipt),
+    3,
+    250,
   );
-  return resolution.status === "present" && resolution.address === receipt.nativeAddress;
+}
+
+async function retryEstablishedRead(
+  operation: () => Promise<boolean>,
+  attempts: number,
+  delayMs: number,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      if (await operation()) return true;
+    } catch {
+      // A finalized immutable proof may be temporarily absent or malformed in
+      // one RPC view. A later exact authentication can establish it; no false
+      // or thrown observation is ever promoted to valid.
+    }
+    if (attempt < attempts && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return false;
 }
 
 async function publishAndDiscoverListing(input: {
@@ -1237,34 +1326,84 @@ async function publishAndDiscoverListing(input: {
   );
   const anchor = published.publication.anchor;
   requireCondition(typeof anchor.txRef === "string" && anchor.txRef.length > 0, "listing-anchor-tx-missing");
-  const listingResolution = await preflight.buyer.adapter.resolveAnchorByName(
-    published.logicalAddress,
-    preflight.seller.adapter.getAddress(),
-  );
-  const listingReadback = listingResolution.status === "present"
-    ? await preflight.buyer.adapter.readAnchor(listingResolution.address)
-    : null;
+  const listingReadback = await preflight.buyer.adapter.readAnchor(published.ref);
   requireCondition(
-    listingResolution.status === "present" &&
-    listingResolution.address === published.ref && listingReadback !== null &&
+    listingReadback !== null &&
     canonicalize(listingReadback) === canonicalize(listing),
-    "listing-owner-bound-readback-mismatch",
+    "listing-native-readback-mismatch",
+  );
+  requireCondition(anchor.demosEvidence !== undefined, "listing-anchor-evidence-missing");
+  const receipt = demosWriteEvidenceToAnchorReceipt({
+    logicalAddress: published.logicalAddress,
+    contentHash: pin.contentHash,
+    writer: preflight.env.SELLER_DID,
+    evidence: anchor.demosEvidence,
+  });
+  requireCondition(
+    await verifyAnchorReceipt(
+      preflight.buyer.adapter,
+      receipt,
+      preflight.env.SELLER_DID,
+    ),
+    "listing-anchor-receipt-invalid",
   );
   return {
     listing,
     listingRef: published.ref,
     listingPin: pin,
     logicalAddress: published.logicalAddress,
-    receipt: portableReceipt({
-      logicalAddress: published.logicalAddress,
-      nativeAddress: published.ref,
-      contentHash: pin.contentHash,
-      writer: preflight.env.SELLER_DID,
-      transactionRef: anchor.txRef,
-      observedAt: now,
-      ...(anchor.blockNumber === undefined ? {} : { blockNumber: anchor.blockNumber }),
-    }),
+    receipt,
   };
+}
+
+async function rediscoverPublishedListing(input: {
+  preflight: Preflight;
+  published: PublishedListing;
+  selectedRail: PaymentRailRef;
+  now: number;
+}): Promise<PublishedListing> {
+  const sellerPublicKey = await input.preflight.seller.adapter.getPublicKey();
+  const discovered = await discoverListings(
+    [input.published.listingRef],
+    (ref) => input.preflight.buyer.adapter.readAnchor(ref),
+    {
+      verify: (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+      resolvePublicKey: (claim) => claim === input.preflight.env.SELLER_DID
+        ? sellerPublicKey
+        : null,
+      validateListing: (raw) => validateListingArtifact(raw, listingValidationDeps({
+        sellerDid: input.preflight.env.SELLER_DID,
+        sellerPublicKey,
+        selectedRail: input.selectedRail,
+        now: input.now,
+      })),
+      nowMs: () => input.now,
+    },
+  );
+  requireCondition(discovered.length === 1, "listing-rediscovery-failed");
+  const selected = discovered[0]!;
+  requireCondition(selected.compatibility === "normative", "listing-rediscovery-not-normative");
+  const listing = selected.listing;
+  const listingHash = contentHash(listing as unknown as Record<string, unknown>);
+  requireCondition(
+    input.published.listingPin.listingId === listing.listingId &&
+      input.published.listingPin.version === listing.listingVersion &&
+      input.published.listingPin.contentHash === listingHash &&
+      input.published.receipt.nativeAddress === input.published.listingRef &&
+      input.published.receipt.contentHash === listingHash,
+    "listing-rediscovery-pin-mismatch",
+  );
+  const listingResolution = await input.preflight.buyer.adapter.resolveAnchorByName(
+    input.published.logicalAddress,
+    input.preflight.seller.adapter.getAddress(),
+  );
+  requireCondition(
+    listingResolution.status === "present" &&
+      listingResolution.address === input.published.listingRef,
+    "listing-rediscovery-owner-binding-mismatch",
+  );
+  return { ...input.published, listing };
 }
 
 const EMPTY_REQUIREMENT = { requirementVersion: "1" as const, required: [] };
@@ -1321,25 +1460,31 @@ async function signedVetRecord(input: {
   };
 }
 
-interface VetArtifacts {
+interface PreparedVetArtifacts {
   buyer: CompositeVerificationRecord;
   seller: CompositeVerificationRecord;
   buyerRef: AttestationRef;
   sellerRef: AttestationRef;
+  externalSellerProvenance: ExternalVetProvenance;
+}
+
+interface VetArtifacts extends PreparedVetArtifacts {
   buyerReceipt: AnchorReceipt;
   sellerReceipt: AnchorReceipt;
-  externalSellerProvenance: ExternalVetProvenance;
+}
+
+interface PublishedVetArtifacts extends VetArtifacts {
   externalSellerProvenanceRef: AttestationRef;
   externalSellerProvenanceReceipt: AnchorReceipt;
 }
 
-async function publishVetRecords(input: {
+async function prepareVetRecords(input: {
   preflight: Preflight;
   jobId: string;
   buyerIdentity: IdentityBundle;
   sellerIdentity: IdentityBundle;
   now: number;
-}): Promise<VetArtifacts> {
+}): Promise<PreparedVetArtifacts> {
   const [buyerRecord, sellerRecord] = await Promise.all([
     signedVetRecord({
       jobId: input.jobId,
@@ -1358,27 +1503,28 @@ async function publishVetRecords(input: {
       generatedAt: input.now,
     }),
   ]);
-  const [buyerAnchor, sellerAnchor] = await Promise.all([
-    anchorArtifact({
-      adapter: input.preflight.seller.adapter,
-      writer: input.preflight.env.SELLER_DID,
-      logicalAddress: compositeVerificationAddress(
+  const buyerRef: AttestationRef = {
+    anchor: {
+      kind: "storage-program",
+      locator: compositeVerificationAddress(
         input.jobId,
         input.preflight.env.BUYER_DID,
       ),
-      artifact: buyerRecord as unknown as Record<string, unknown>,
-    }),
-    anchorArtifact({
-      adapter: input.preflight.buyer.adapter,
-      writer: input.preflight.env.BUYER_DID,
-      refSigner: input.preflight.env.SELLER_DID,
-      logicalAddress: compositeVerificationAddress(
+    },
+    contentHash: contentHash(buyerRecord as unknown as Record<string, unknown>),
+    signer: input.preflight.env.SELLER_DID,
+  };
+  const sellerRef: AttestationRef = {
+    anchor: {
+      kind: "storage-program",
+      locator: compositeVerificationAddress(
         input.jobId,
         input.preflight.env.SELLER_DID,
       ),
-      artifact: sellerRecord as unknown as Record<string, unknown>,
-    }),
-  ]);
+    },
+    contentHash: contentHash(sellerRecord as unknown as Record<string, unknown>),
+    signer: input.preflight.env.SELLER_DID,
+  };
   // DACS Standard #331 has not yet defined authenticated provenance for a
   // complementary VPC requirement. This is an explicit, external, fail-closed
   // policy seam for the funded test only; it is not represented as normative
@@ -1392,7 +1538,7 @@ async function publishVetRecords(input: {
     evaluatedParty: input.preflight.env.SELLER_DID,
     verifier: input.preflight.env.SELLER_DID,
     requirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
-    vetRecordHash: sellerAnchor.ref.contentHash,
+    vetRecordHash: sellerRef.contentHash,
   };
   const provenanceSignature = await input.preflight.buyer.adapter.sign(signedBytes(
     EXTERNAL_VET_PROVENANCE_SEPARATOR,
@@ -1406,22 +1552,79 @@ async function publishVetRecords(input: {
       value: Buffer.from(provenanceSignature).toString("base64url"),
     },
   };
-  const externalSellerProvenanceAnchor = await anchorArtifact({
-    adapter: input.preflight.buyer.adapter,
-    writer: input.preflight.env.BUYER_DID,
-    logicalAddress: `dacs-test:vet-provenance:${input.jobId}`,
-    artifact: externalSellerProvenance as unknown as Record<string, unknown>,
-  });
+  const { signature, ...unsigned } = externalSellerProvenance;
+  requireCondition(
+    signature.signer === input.preflight.env.BUYER_DID &&
+      ed25519Verify(
+        signedBytes(EXTERNAL_VET_PROVENANCE_SEPARATOR, contentHash(unsigned)),
+        Uint8Array.from(Buffer.from(signature.value, "base64url")),
+        publicKeyFromRaw(await input.preflight.buyer.adapter.getPublicKey()),
+      ),
+    "external-vet-provenance-signature-invalid",
+  );
   return {
     buyer: buyerRecord,
     seller: sellerRecord,
-    buyerRef: buyerAnchor.ref,
-    sellerRef: sellerAnchor.ref,
+    buyerRef,
+    sellerRef,
+    externalSellerProvenance,
+  };
+}
+
+async function publishPreparedVetRecords(input: {
+  preflight: Preflight;
+  prepared: PreparedVetArtifacts;
+}): Promise<VetArtifacts> {
+  const [buyerAnchor, sellerAnchor] = await Promise.all([
+    anchorArtifact({
+      adapter: input.preflight.seller.adapter,
+      writer: input.preflight.env.SELLER_DID,
+      logicalAddress: input.prepared.buyerRef.anchor.locator,
+      artifact: input.prepared.buyer as unknown as Record<string, unknown>,
+    }),
+    anchorArtifact({
+      adapter: input.preflight.buyer.adapter,
+      writer: input.preflight.env.BUYER_DID,
+      refSigner: input.preflight.env.SELLER_DID,
+      logicalAddress: input.prepared.sellerRef.anchor.locator,
+      artifact: input.prepared.seller as unknown as Record<string, unknown>,
+    }),
+  ]);
+  requireCondition(
+    canonicalize(buyerAnchor.ref) === canonicalize(input.prepared.buyerRef) &&
+      canonicalize(sellerAnchor.ref) === canonicalize(input.prepared.sellerRef),
+    "prepared-vet-anchor-ref-mismatch",
+  );
+  return {
+    ...structuredClone(input.prepared),
     buyerReceipt: buyerAnchor.receipt,
     sellerReceipt: sellerAnchor.receipt,
-    externalSellerProvenance,
-    externalSellerProvenanceRef: externalSellerProvenanceAnchor.ref,
-    externalSellerProvenanceReceipt: externalSellerProvenanceAnchor.receipt,
+  };
+}
+
+async function publishExternalSellerVetProvenance(input: {
+  preflight: Preflight;
+  jobId: string;
+  vet: VetArtifacts;
+}): Promise<PublishedVetArtifacts> {
+  requireCondition(
+    input.vet.externalSellerProvenance.jobId === input.jobId &&
+      input.vet.externalSellerProvenance.vetRecordHash === input.vet.sellerRef.contentHash,
+    "external-vet-provenance-rebound",
+  );
+  // This signed record authenticates the funded harness's non-normative #331
+  // policy seam before negotiation. Its public copy is audit material, not a
+  // VPC finality gate, so it can be published after buyer-visible delivery.
+  const anchored = await anchorArtifact({
+    adapter: input.preflight.buyer.adapter,
+    writer: input.preflight.env.BUYER_DID,
+    logicalAddress: `dacs-test:vet-provenance:${input.jobId}`,
+    artifact: input.vet.externalSellerProvenance as unknown as Record<string, unknown>,
+  });
+  return {
+    ...structuredClone(input.vet),
+    externalSellerProvenanceRef: anchored.ref,
+    externalSellerProvenanceReceipt: anchored.receipt,
   };
 }
 
@@ -1439,10 +1642,12 @@ async function negotiateAgreement(input: {
   selectedRail: PaymentRailRef;
   buyerIdentity: IdentityBundle;
   sellerIdentity: IdentityBundle;
-  vet: VetArtifacts;
+  vet: Pick<PreparedVetArtifacts, "buyerRef" | "sellerRef">;
   now: number;
   buyerDir: string;
   sellerDir: string;
+  beforeAgreementPublication?: () => Promise<void>;
+  onSignedAgreement?: (agreement: AgreementArtifact) => void;
 }): Promise<AgreementRun> {
   const { preflight, jobId, published, selectedRail, buyerIdentity, sellerIdentity, vet, now } = input;
   const context = {
@@ -1580,6 +1785,15 @@ async function negotiateAgreement(input: {
     },
     anchor: {
       anchorAgreement: async (value) => {
+        // The agreement is complete and both signatures have already passed
+        // the durable negotiator's verification gate. Publication remains
+        // fenced on both exact Vet anchors: preparation may overlap their
+        // inclusion wait, but no agreement/commitment write or payment can
+        // cross the finalized VPC-3 money gate.
+        await input.beforeAgreementPublication?.();
+        input.onSignedAgreement?.(
+          structuredClone(value.artifact) as unknown as AgreementArtifact,
+        );
         const live = await anchorArtifact({
           adapter: preflight.buyer.adapter,
           writer: preflight.env.BUYER_DID,
@@ -1648,7 +1862,7 @@ async function commitAgreement(input: {
   preflight: Preflight;
   jobId: string;
   published: PublishedListing;
-  agreement: AgreementRun;
+  agreement: Pick<AgreementRun, "agreement">;
   vet: VetArtifacts;
   now: number;
 }) {
@@ -1784,22 +1998,25 @@ async function observeFundedTransfer(input: {
   preflight: Preflight;
   jobId: string;
   txHash: string;
+  requireAllRpcs?: boolean;
 }): Promise<X402TransferObservation> {
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(input.txHash), "settlement-tx-invalid");
   const transactionHash = input.txHash as `0x${string}`;
-  // The facilitator returns only after broadcast/inclusion. Poll a bounded
-  // latest-head window so the seller never promotes a pending transfer.
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  // Older deterministic fixtures construct the preflight boundary directly.
+  const verificationClients = input.preflight.evmVerificationClients ?? [input.preflight.evm];
+  const observeOnce = async (client: PublicClient): Promise<X402TransferObservation> => {
     try {
       const [receipt, head] = await Promise.all([
-        input.preflight.evm.getTransactionReceipt({ hash: transactionHash }),
-        input.preflight.evm.getBlockNumber(),
+        client.getTransactionReceipt({ hash: transactionHash }),
+        client.getBlockNumber(),
       ]);
       if (receipt.status !== "success") return { status: "failed", reason: "transaction-reverted" };
       const confirmations = head >= receipt.blockNumber
         ? head - receipt.blockNumber + 1n
         : 0n;
-      if (confirmations < 1n) continue;
+      if (confirmations < 1n) {
+        return { status: "unavailable", reason: "settlement-not-final" };
+      }
       const payerTopic = addressTopic(input.preflight.payer);
       const payeeTopic = addressTopic(input.preflight.payee);
       const nonce = x402Eip3009Nonce(input.jobId, PAYMENT_PHASE_INDEX).toLowerCase();
@@ -1819,7 +2036,7 @@ async function observeFundedTransfer(input: {
         BigInt(log.data) === PAYMENT_AMOUNT
       );
       requireCondition(used.length === 1 && transfers.length === 1, "settlement-events-mismatch");
-      const block = await input.preflight.evm.getBlock({ blockHash: receipt.blockHash });
+      const block = await client.getBlock({ blockHash: receipt.blockHash });
       const includedAt = asSafeNumber(block.timestamp * 1_000n, "settlement-time-unsupported");
       return {
         status: "finalized",
@@ -1841,10 +2058,128 @@ async function observeFundedTransfer(input: {
       };
     } catch {
       // A just-mined transaction may not be visible on every RPC backend yet.
+      return { status: "unavailable", reason: "settlement-rpc-unavailable" };
+    }
+  };
+  // Race independently configured RPCs, but accept only a complete receipt,
+  // canonical block, exact nonce event, and exact value-transfer event.
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const observations = await Promise.all(
+      verificationClients.map(observeOnce),
+    );
+    const failed = observations.find((candidate) => candidate.status === "failed");
+    if (failed !== undefined) return failed;
+    const finalized = observations.filter(
+      (candidate): candidate is Extract<X402TransferObservation, { status: "finalized" }> =>
+        candidate.status === "finalized",
+    );
+    if (finalized.length > 0 &&
+        (!input.requireAllRpcs || finalized.length === observations.length)) {
+      requireCondition(
+        finalized.every((candidate) => sameFinalizedTransfer(finalized[0]!, candidate)),
+        "cross-rpc-settlement-mismatch",
+      );
+      process.stderr.write(
+        `funded-e2e-step:settlement-rpc-proof:${
+          input.requireAllRpcs ? "all" : "first"
+        }-${finalized.length}-of-${observations.length}\n`,
+      );
+      return finalized[0]!;
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   return { status: "unavailable", reason: "settlement-finality-timeout" };
+}
+
+function fundedPaymentResponseReceipt(
+  preflight: Preflight,
+  transaction: string,
+): Readonly<{
+  success: true;
+  transaction: string;
+  network: typeof BASE_SEPOLIA_NETWORK;
+  payer: string;
+  amount: string;
+}> {
+  requireCondition(/^0x[0-9a-fA-F]{64}$/.test(transaction), "recovered-settlement-tx-invalid");
+  return {
+    success: true,
+    transaction: transaction.toLowerCase(),
+    network: BASE_SEPOLIA_NETWORK,
+    payer: preflight.payer,
+    amount: PAYMENT_AMOUNT.toString(),
+  };
+}
+
+function fundedRecoveredSettlement(
+  preflight: Preflight,
+  requirements: X402PaywallSettlementIntent["paymentRequirements"],
+  transaction: string,
+): X402PaywallSettlementResult & { success: true } {
+  const receipt = fundedPaymentResponseReceipt(preflight, transaction);
+  return {
+    ...receipt,
+    headers: { "PAYMENT-RESPONSE": encodePaymentResponseHeader(receipt) },
+    requirements: structuredClone(requirements),
+  };
+}
+
+async function recoverFundedSellerSettlement(input: {
+  preflight: Preflight;
+  jobId: string;
+  intent: Readonly<X402PaywallSettlementIntent>;
+}): Promise<
+  | { status: "settled"; settlement: X402PaywallSettlementResult & { success: true } }
+  | { status: "pending" | "indeterminate"; reason: string }
+> {
+  if (input.intent.jobId !== input.jobId ||
+      input.intent.phaseIndex !== PAYMENT_PHASE_INDEX ||
+      input.intent.payer.toLowerCase() !== input.preflight.payer.toLowerCase() ||
+      input.intent.httpResource !== input.preflight.host.resourceUrl) {
+    return { status: "indeterminate", reason: "recovered-settlement-intent-mismatch" };
+  }
+  try {
+    const head = await input.preflight.evm.getBlockNumber();
+    const used = await input.preflight.evm.getLogs({
+      address: input.preflight.asset,
+      event: EIP3009_AUTHORIZATION_USED_EVENT,
+      args: {
+        authorizer: input.preflight.payer,
+        nonce: x402Eip3009Nonce(input.jobId, PAYMENT_PHASE_INDEX) as `0x${string}`,
+      },
+      fromBlock: BigInt(input.preflight.authorizationSearchFromBlock),
+      toBlock: head,
+    });
+    if (used.length === 0) {
+      return { status: "pending", reason: "settlement-authorization-not-yet-observed" };
+    }
+    if (used.length !== 1 || used[0]!.transactionHash === null) {
+      return { status: "indeterminate", reason: "settlement-authorization-events-ambiguous" };
+    }
+    const observed = await observeFundedTransfer({
+      preflight: input.preflight,
+      jobId: input.jobId,
+      txHash: used[0]!.transactionHash,
+    });
+    if (observed.status !== "finalized") {
+      return {
+        status: "indeterminate",
+        reason: observed.status === "failed"
+          ? "recovered-settlement-transfer-failed"
+          : "recovered-settlement-transfer-unavailable",
+      };
+    }
+    return {
+      status: "settled",
+      settlement: fundedRecoveredSettlement(
+        input.preflight,
+        input.intent.paymentRequirements,
+        observed.txHash,
+      ),
+    };
+  } catch {
+    return { status: "indeterminate", reason: "settlement-chain-recovery-unavailable" };
+  }
 }
 
 function sameFinalizedTransfer(
@@ -1877,6 +2212,7 @@ interface CommerceCounts {
 
 interface CommerceState {
   loseResponseAcknowledgement: boolean;
+  loseFacilitatorResponse: boolean;
   facilitatorVerifyOutcome?: "valid" | "invalid" | "threw";
   facilitatorOutcome?: "success" | "failure" | "threw";
   facilitatorFailureCode?: string;
@@ -1887,6 +2223,8 @@ interface CommerceState {
   fulfilmentOutcome?: "fulfilled" | "failed" | "indeterminate";
   fulfilmentReason?: string;
   coldAuthorityOutcome?: string;
+  settlementReconciliationOutcome?: "settled" | "pending" | "indeterminate";
+  settlementReconciliationReason?: string;
   permit?: X402SellerPaymentPermitAuthorization;
   observedTransfer?: Extract<X402TransferObservation, { status: "finalized" }>;
   delivered?: Awaited<ReturnType<DurableSellerFulfilmentDeps["submitDelivery"]>>;
@@ -1895,7 +2233,10 @@ interface CommerceState {
   evidencePublication?: Awaited<ReturnType<DurableSellerFulfilmentDeps["anchorEvidence"]>>;
   finalReceipt?: SellerFinalSessionReceiptResult;
   fulfilment?: Extract<SellerFulfilmentResult, { decision: "completed" }>;
+  deliveryReady?: DeliveryReadyResult;
   settlementResult?: X402PaywallSettlementResult & { success: true };
+  deliveryEvidenceSignatureVerified?: boolean;
+  deliveryReadyAt?: number;
   counts: CommerceCounts;
 }
 
@@ -1940,6 +2281,7 @@ function safeDiagnosticCode(reason: unknown): string {
 function commerceState(): CommerceState {
   return {
     loseResponseAcknowledgement: true,
+    loseFacilitatorResponse: false,
     counts: {
       facilitatorVerify: 0,
       facilitatorSettle: 0,
@@ -1950,6 +2292,45 @@ function commerceState(): CommerceState {
       render: 0,
     },
   };
+}
+
+function requireNoExplicitFacilitatorFailure(state: CommerceState): void {
+  if (state.facilitatorOutcome !== "failure") return;
+  throw new Error(
+    `funded-e2e:facilitator-settlement-failed-${state.facilitatorFailureCode ?? "unclassified"}`,
+  );
+}
+
+function fundedFulfilmentEffectsComplete(state: CommerceState): boolean {
+  return state.counts.applicationCallback === 1 && state.counts.delivery === 1 &&
+    state.counts.evidence === 1 && state.counts.finalReceipt === 1 &&
+    state.counts.render === 1 && state.permit !== undefined &&
+    state.fulfilment !== undefined;
+}
+
+function fundedFinalSessionReceipt(
+  jobId: string,
+  input: Pick<
+    SellerFinalSessionReceiptInput,
+    "fulfilmentId" | "authorizationBinding" | "resultHash"
+  >,
+): Extract<SellerFinalSessionReceiptResult, { status: "recorded" }> {
+  return {
+    status: "recorded",
+    receipt: {
+      receiptVersion: "dacs-sdk-funded-e2e-1",
+      jobId,
+      fulfilmentId: input.fulfilmentId,
+      authorizationBinding: structuredClone(input.authorizationBinding),
+      resultHash: input.resultHash,
+    },
+  };
+}
+
+function productionLatencyProfile(): boolean {
+  const profile = process.env.LIVE_E2E_PROFILE;
+  // `fast` remains as a compatibility alias for the earlier funded campaign.
+  return profile === "production-latency" || profile === "fast";
 }
 
 async function retainSuccessfulFacilitatorSettlement<
@@ -2021,6 +2402,8 @@ interface SellerRuntime {
   paywall: X402Paywall<{ delivered: true }>;
   receiptStore: Awaited<ReturnType<typeof createFsSellerReceiptStore>>;
   fulfilmentStore: Awaited<ReturnType<typeof createFsFencedSessionStore>>;
+  warmCommittedAuthority: () => Promise<boolean>;
+  resumeFinalisation: (workerId: string) => Promise<SellerFulfilmentResult>;
 }
 
 async function createSellerRuntime(input: {
@@ -2036,6 +2419,12 @@ async function createSellerRuntime(input: {
   directories: SellerDirectories;
   state: CommerceState;
   workerId: string;
+  startPaymentEvidencePublication?: (input: Readonly<{
+    permit: X402SellerPaymentPermitAuthorization;
+    observation: Extract<X402TransferObservation, { status: "finalized" }>;
+    receiptStore: SellerRuntime["receiptStore"];
+  }>) => void;
+  notifyDeliveryReady?: () => void;
 }): Promise<SellerRuntime> {
   const {
     preflight,
@@ -2113,32 +2502,77 @@ async function createSellerRuntime(input: {
     preflight.seller.adapter.getPublicKey(),
     preflight.buyer.adapter.getPublicKey(),
   ]);
-  const verifyColdCommittedAuthority = async (): Promise<boolean> => {
+  const verifyColdReceipt = async (
+    adapter: DemosBackedAdapter,
+    receipt: Readonly<AnchorReceipt>,
+    expectedWriter: string,
+    artifact: Readonly<Record<string, unknown>> | null,
+  ): Promise<boolean> => {
+    if (!artifact || receipt.writer !== expectedWriter || receipt.state !== "finalized" ||
+        receipt.observationDisposition !== "established" ||
+        contentHash(artifact) !== receipt.contentHash) return false;
+    const resolution = await retryReadOnly(() => adapter.resolveAnchorByName(
+      receipt.logicalAddress,
+      expectedWriter.replace(/^did:demos:agent:/, ""),
+    ));
+    return resolution.status === "present" && resolution.address === receipt.nativeAddress;
+  };
+  const verifyColdCommittedAuthorityOnce = async (): Promise<boolean> => {
     const rejectColdAuthority = (reason: string): false => {
       state.coldAuthorityOutcome = reason;
       return false;
     };
-    // These are immutable, read-only authority lookups. Keep them sequential
-    // because the Demos SDK shares transport state within each adapter, and
-    // retry only thrown transport failures before making a fail-closed choice.
-    const listingArtifact = await retryReadOnly(() =>
-      preflight.buyer.adapter.readAnchor(published.receipt.nativeAddress)
-    );
-    const agreementArtifact = await retryReadOnly(() =>
-      preflight.seller.adapter.readAnchor(agreement.anchorReceipt.nativeAddress)
-    );
-    const commitmentArtifact = await retryReadOnly(() =>
-      preflight.buyer.adapter.readAnchor(commitment.anchorReceipt.nativeAddress)
-    );
-    const listingReceiptValid = await retryReadOnly(() =>
-      verifyAnchorReceipt(preflight.buyer.adapter, published.receipt, preflight.env.SELLER_DID)
-    );
-    const agreementReceiptValid = await retryReadOnly(() =>
-      verifyAnchorReceipt(preflight.seller.adapter, agreement.anchorReceipt, preflight.env.BUYER_DID)
-    );
-    const commitmentReceiptValid = await retryReadOnly(() =>
-      verifyAnchorReceipt(preflight.buyer.adapter, commitment.anchorReceipt, preflight.env.SELLER_DID)
-    );
+    // These authorities are immutable and already finalized. Preserve
+    // sequential access within each Demos wallet, but run the independent
+    // buyer/seller read lanes together. Receipt authentication reuses the exact
+    // artifact readback instead of fetching the same bytes a second time.
+    const [buyerAuthority, sellerAuthority] = await Promise.all([
+      (async () => {
+        const listingArtifact = await retryReadOnly(() =>
+          preflight.buyer.adapter.readAnchor(published.receipt.nativeAddress)
+        );
+        const commitmentArtifact = await retryReadOnly(() =>
+          preflight.buyer.adapter.readAnchor(commitment.anchorReceipt.nativeAddress)
+        );
+        const listingReceiptValid = await verifyColdReceipt(
+          preflight.buyer.adapter,
+          published.receipt,
+          preflight.env.SELLER_DID,
+          listingArtifact,
+        );
+        const commitmentReceiptValid = await verifyColdReceipt(
+          preflight.buyer.adapter,
+          commitment.anchorReceipt,
+          preflight.env.SELLER_DID,
+          commitmentArtifact,
+        );
+        return {
+          listingArtifact,
+          commitmentArtifact,
+          listingReceiptValid,
+          commitmentReceiptValid,
+        };
+      })(),
+      (async () => {
+        const agreementArtifact = await retryReadOnly(() =>
+          preflight.seller.adapter.readAnchor(agreement.anchorReceipt.nativeAddress)
+        );
+        const agreementReceiptValid = await verifyColdReceipt(
+          preflight.seller.adapter,
+          agreement.anchorReceipt,
+          preflight.env.BUYER_DID,
+          agreementArtifact,
+        );
+        return { agreementArtifact, agreementReceiptValid };
+      })(),
+    ]);
+    const {
+      listingArtifact,
+      commitmentArtifact,
+      listingReceiptValid,
+      commitmentReceiptValid,
+    } = buyerAuthority;
+    const { agreementArtifact, agreementReceiptValid } = sellerAuthority;
     if (!listingArtifact) return rejectColdAuthority("listing-artifact-absent");
     if (!agreementArtifact) return rejectColdAuthority("agreement-artifact-absent");
     if (!commitmentArtifact) return rejectColdAuthority("commitment-artifact-absent");
@@ -2212,6 +2646,14 @@ async function createSellerRuntime(input: {
     state.coldAuthorityOutcome = "verified";
     return true;
   };
+  let coldAuthorityVerification: Promise<boolean> | undefined;
+  const verifyColdCommittedAuthority = (): Promise<boolean> => {
+    coldAuthorityVerification ??= diagnosticStep(
+      "cold-authority-verification",
+      verifyColdCommittedAuthorityOnce,
+    );
+    return coldAuthorityVerification;
+  };
   const paymentIntakeDeps: Omit<SellerPaymentIntakeDeps, "receiptStore"> = {
     resolveCommittedAgreement: async (candidateJobId) =>
       candidateJobId === jobId && await verifyColdCommittedAuthority()
@@ -2268,7 +2710,9 @@ async function createSellerRuntime(input: {
     observeDemosTransfer: async () => ({ status: "not-found" }),
     observeX402Transfer: async ({ chainId, txHash }) => {
       if (chainId !== BASE_SEPOLIA_CHAIN_ID) return { status: "failed", reason: "chain-mismatch" };
-      const observed = await observeFundedTransfer({ preflight, jobId, txHash });
+      const observed = await diagnosticStep("seller-transfer-observation", () =>
+        observeFundedTransfer({ preflight, jobId, txHash })
+      );
       if (observed.status === "finalized") state.observedTransfer = structuredClone(observed);
       return observed;
     },
@@ -2333,15 +2777,44 @@ async function createSellerRuntime(input: {
       signer: preflight.env.SELLER_DID,
     },
   };
+  const unsignedDeliverable = {
+    deliverableVersion: "dacs-sdk-funded-e2e-1" as const,
+    jobId,
+    result: "funded-proof" as const,
+  };
+  const deliverableSignature = {
+    algorithm: "ed25519" as const,
+    signer: preflight.env.SELLER_DID,
+    value: Buffer.from(await preflight.seller.adapter.sign(
+      signedBytes(FUNDED_DELIVERABLE_SEPARATOR, contentHash(unsignedDeliverable)),
+    )).toString("base64url"),
+  };
+  const signedDeliverable = {
+    ...unsignedDeliverable,
+    // This is application payload proof, not a DACS component-signature
+    // envelope. Keeping its distinct name makes the SR-2 receipt commit the
+    // entire anchored payload, including the proof bytes.
+    sellerProof: deliverableSignature,
+  };
+  const deliveryPublicKey = await preflight.seller.adapter.getPublicKey();
+  requireCondition(
+    verifyEd25519ArtifactSignature(
+      FUNDED_DELIVERABLE_SEPARATOR,
+      unsignedDeliverable,
+      deliverableSignature,
+      preflight.env.SELLER_DID,
+      deliveryPublicKey,
+    ),
+    "prepared-deliverable-signature-invalid",
+  );
   const deliveredArtifact: SellerDeliveredArtifact = {
     kind: "deliver-storage-program",
-    cleartextPayload: { result: "funded-proof", jobId },
-    anchoredValue: { result: "funded-proof", jobId },
+    cleartextPayload: structuredClone(signedDeliverable),
+    anchoredValue: structuredClone(signedDeliverable),
     access: { model: "public" },
   };
   const deliveryLogicalAddress = `dacs4:deliverable:${jobId}`;
   const evidenceLogicalAddress = `dacs4:delivery-evidence:${jobId}`;
-  const finalReceiptLogicalAddress = `dacs4:final-receipt:${jobId}`;
   const resolveSellerAnchor = async (logicalAddress: string) => {
     const resolved = await preflight.buyer.adapter.resolveAnchorByName(
       logicalAddress,
@@ -2492,6 +2965,18 @@ async function createSellerRuntime(input: {
     },
     prepareDelivery: async () => ({ status: "prepared", delivery: { artifact: deliveredArtifact } }),
     submitDelivery: async () => {
+      if (input.startPaymentEvidencePublication) {
+        requireCondition(state.permit !== undefined, "payment-evidence-permit-missing");
+        requireCondition(
+          state.observedTransfer !== undefined,
+          "payment-evidence-native-observation-missing",
+        );
+        input.startPaymentEvidencePublication(Object.freeze({
+          permit: structuredClone(state.permit),
+          observation: structuredClone(state.observedTransfer),
+          receiptStore,
+        }));
+      }
       state.counts.applicationCallback += 1;
       const anchored = await anchorArtifact({
         adapter: preflight.seller.adapter,
@@ -2499,6 +2984,28 @@ async function createSellerRuntime(input: {
         logicalAddress: deliveryLogicalAddress,
         artifact: deliveredArtifact.anchoredValue as Record<string, unknown>,
       });
+      const [buyerReadback, durableStatus] = await Promise.all([
+        preflight.buyer.adapter.readAnchor(anchored.receipt.nativeAddress),
+        getSellerFulfilmentStatus(fulfilmentStore, jobId, DELIVERY_PHASE_INDEX),
+      ]);
+      requireCondition(
+        buyerReadback !== null &&
+          canonicalize(buyerReadback) === canonicalize(signedDeliverable) &&
+          verifyEd25519ArtifactSignature(
+            FUNDED_DELIVERABLE_SEPARATOR,
+            unsignedDeliverable,
+            deliverableSignature,
+            preflight.env.SELLER_DID,
+            deliveryPublicKey,
+          ),
+        "buyer-deliverable-verification-failed",
+      );
+      requireCondition(
+        durableStatus.status === "ok" &&
+          durableStatus.delivery === "intent" &&
+          durableStatus.evidence === "not-started",
+        "delivery-ready-handoff-not-durable",
+      );
       state.counts.delivery += 1;
       state.deliveryPublication = {
         artifact: structuredClone(deliveredArtifact),
@@ -2579,6 +3086,7 @@ async function createSellerRuntime(input: {
           Uint8Array.from(Buffer.from(signature.value, "base64url")),
           publicKeyFromRaw(await preflight.seller.adapter.getPublicKey()),
         );
+      state.deliveryEvidenceSignatureVerified = valid;
       return valid
         ? { disposition: "valid" }
         : { disposition: "invalid", reason: "delivery-evidence-signature-invalid" };
@@ -2601,6 +3109,26 @@ async function createSellerRuntime(input: {
         : { disposition: "invalid", reason: "audit-source-signature-invalid" };
     },
     anchorEvidence: async ({ evidence, evidenceHash }) => {
+      const durableStatus = await getSellerFulfilmentStatus(
+        fulfilmentStore,
+        jobId,
+        DELIVERY_PHASE_INDEX,
+      );
+      requireCondition(
+        state.deliveryEvidenceSignatureVerified === true &&
+          durableStatus.status === "ok" &&
+          durableStatus.delivery === "outcome" &&
+          durableStatus.evidence === "intent",
+        "delivery-ready-evidence-handoff-not-durable",
+      );
+      // The core has now verified the independently readable seller-signed
+      // deliverable and the signed content-bound delivery evidence. The durable
+      // wrapper has persisted that exact evidence intent before invoking us.
+      // Public evidence anchoring and final receipt closure continue below.
+      if (state.deliveryReadyAt === undefined) {
+        state.deliveryReadyAt = Date.now();
+        process.stderr.write("funded-e2e-step:delivery-ready:emitted\n");
+      }
       state.counts.evidence += 1;
       const anchored = await anchorArtifact({
         adapter: preflight.seller.adapter,
@@ -2666,42 +3194,22 @@ async function createSellerRuntime(input: {
     },
     publishFinalSessionReceipt: async (candidate) => {
       state.counts.finalReceipt += 1;
-      const receiptArtifact = {
-        receiptVersion: "dacs-sdk-funded-e2e-1",
-        jobId,
-        fulfilmentId: candidate.fulfilmentId,
-        authorizationBinding: candidate.authorizationBinding,
-        resultHash: candidate.resultHash,
-      };
-      const anchored = await anchorArtifact({
-        adapter: preflight.seller.adapter,
-        writer: preflight.env.SELLER_DID,
-        logicalAddress: finalReceiptLogicalAddress,
-        artifact: receiptArtifact,
-      });
-      state.finalReceipt = {
-        status: "recorded",
-        receipt: {
-          ...receiptArtifact,
-          anchorReceipt: anchored.receipt,
-        },
-      };
+      // This is an operational receipt, not normative public evidence. The
+      // durable fulfilment coordinator commits this deterministic value to its
+      // fsync-backed WAL before rendering success. If acknowledgement is lost,
+      // recomputing the exact value is safe and the WAL remains authoritative.
+      state.finalReceipt = fundedFinalSessionReceipt(jobId, candidate);
       return state.finalReceipt;
     },
     reconcileFinalSessionReceipt: async (candidate) => {
-      const recovered = await resolveSellerAnchor(finalReceiptLogicalAddress);
-      if (!recovered || recovered.artifact.fulfilmentId !== candidate.fulfilmentId ||
-          recovered.artifact.resultHash !== candidate.resultHash ||
-          canonicalize(recovered.artifact.authorizationBinding) !==
-            canonicalize(candidate.authorizationBinding)) {
-        return { status: "absent", reason: "final-receipt-absent" };
-      }
-      return state.finalReceipt?.status === "recorded"
-        ? structuredClone(state.finalReceipt)
-        : {
-            status: "indeterminate",
-            reason: "exact-final-session-receipt-anchor-unavailable",
-          };
+      const receipt = state.finalReceipt;
+      if (receipt?.status === "recorded" &&
+          canonicalize(receipt) === canonicalize(
+            fundedFinalSessionReceipt(jobId, candidate),
+          )) return structuredClone(receipt);
+      // There is no external effect to recover: the exact deterministic
+      // receipt can be regenerated and durably committed by the coordinator.
+      return { status: "absent", reason: "final-receipt-wal-outcome-absent" };
     },
   };
   const expected = {
@@ -2731,9 +3239,29 @@ async function createSellerRuntime(input: {
   };
   const spine = createX402SellerSpine<{ delivered: true }>({
     settlementStore,
-    reconcileSettlement: async () => state.settlementResult
-      ? { status: "settled", settlement: structuredClone(state.settlementResult) }
-      : { status: "pending", reason: "settlement-not-observed" },
+    reconcileSettlement: async (intent) => {
+      if (state.settlementResult) {
+        state.settlementReconciliationOutcome = "settled";
+        state.settlementReconciliationReason = undefined;
+        return { status: "settled", settlement: structuredClone(state.settlementResult) };
+      }
+      const recovered = await diagnosticStep("seller-settlement-reconciliation", () =>
+        recoverFundedSellerSettlement({ preflight, jobId, intent })
+      );
+      state.settlementReconciliationOutcome = recovered.status;
+      state.settlementReconciliationReason = recovered.status === "settled"
+        ? undefined
+        : safeDiagnosticCode(recovered.reason);
+      process.stderr.write(
+        `funded-e2e-step:seller-settlement-reconciliation-outcome:${recovered.status}${
+          recovered.status === "settled" ? "" : `-${state.settlementReconciliationReason}`
+        }\n`,
+      );
+      if (recovered.status === "settled") {
+        state.settlementResult = structuredClone(recovered.settlement);
+      }
+      return recovered;
+    },
     receiptStore,
     resolveCommittedSession: async () => await verifyColdCommittedAuthority()
       ? { disposition: "verified", session: structuredClone(scope) }
@@ -2741,6 +3269,24 @@ async function createSellerRuntime(input: {
     paymentIntakeDeps,
     fulfilmentDeps,
     fulfilmentDurability,
+    ...(productionLatencyProfile()
+      ? {
+          deliveryReady: {
+            renderResponse: async (context) => {
+              state.counts.render += 1;
+              state.deliveryReady = structuredClone(context.deliveryReady);
+              state.deliveryReadyAt = Date.now();
+              process.stderr.write("funded-e2e-step:delivery-ready:emitted\n");
+              input.notifyDeliveryReady?.();
+              return {
+                status: 200,
+                headers: { "content-type": "application/json" },
+                body: { delivered: true as const },
+              };
+            },
+          },
+        }
+      : {}),
     renderResponse: async (context) => {
       state.counts.render += 1;
       state.fulfilment = structuredClone(context.fulfilment);
@@ -2764,9 +3310,11 @@ async function createSellerRuntime(input: {
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         state.counts.facilitatorVerify += 1;
         try {
-          const result = await preflight.facilitator.verify(
-            payload as never,
-            projected as never,
+          const result = await diagnosticStep("facilitator-verify", () =>
+            preflight.facilitator.verify(
+              payload as never,
+              projected as never,
+            )
           );
           state.facilitatorVerifyOutcome = result.isValid ? "valid" : "invalid";
           return result;
@@ -2783,18 +3331,32 @@ async function createSellerRuntime(input: {
       state.counts.facilitatorSettle += 1;
       let result: Awaited<ReturnType<HTTPFacilitatorClient["settle"]>>;
       try {
-        result = await preflight.facilitator.settle(
-          payload as never,
-          legacyFacilitatorRequirements(
-            requirements as X402BuyerPaymentRequirements,
-          ) as never,
+        result = await diagnosticStep("facilitator-settle", () =>
+          preflight.facilitator.settle(
+            payload as never,
+            legacyFacilitatorRequirements(
+              requirements as X402BuyerPaymentRequirements,
+            ) as never,
+          )
         );
       } catch (error) {
         state.facilitatorOutcome = "threw";
         throw error;
       }
       state.facilitatorOutcome = result.success ? "success" : "failure";
-      if (!result.success) state.facilitatorFailureCode = facilitatorFailureCode(result.errorReason);
+      if (!result.success) {
+        state.facilitatorFailureCode = facilitatorFailureCode(result.errorReason);
+        process.stderr.write(
+          `funded-e2e-step:facilitator-settle-outcome:failure-${state.facilitatorFailureCode}\n`,
+        );
+      } else {
+        process.stderr.write("funded-e2e-step:facilitator-settle-outcome:success\n");
+      }
+      if (result.success && state.loseFacilitatorResponse) {
+        state.loseFacilitatorResponse = false;
+        state.facilitatorOutcome = "threw";
+        throw new Error("injected-facilitator-response-loss");
+      }
       // This is the seller's durable handoff for the ambiguity window after
       // the facilitator has returned but before the paywall WAL is terminal.
       return retainSuccessfulFacilitatorSettlement(
@@ -2846,11 +3408,47 @@ async function createSellerRuntime(input: {
       state.fulfilmentOutcome = result.disposition;
       state.fulfilmentReason = result.disposition === "fulfilled"
         ? "fulfilled" : safeDiagnosticCode(result.reason);
+      process.stderr.write(
+        `funded-e2e-step:seller-fulfilment-outcome:${state.fulfilmentOutcome}-${
+          state.fulfilmentReason
+        }:effects-${state.counts.applicationCallback}-${state.counts.delivery}-${
+          state.counts.evidence
+        }-${state.counts.finalReceipt}-${state.counts.render}\n`,
+      );
       return result;
     },
   });
   requireCondition(canonicalize(paywall.terms) === canonicalize(expected), "paywall-terms-mismatch");
-  return { paywall, receiptStore, fulfilmentStore };
+  return {
+    paywall,
+    receiptStore,
+    fulfilmentStore,
+    warmCommittedAuthority: verifyColdCommittedAuthority,
+    resumeFinalisation: async (workerId) => {
+      const [restartedReceiptStore, restartedFulfilmentStore] = await Promise.all([
+        createFsSellerReceiptStore({ dir: input.directories.receipt }),
+        createFsFencedSessionStore({ dir: input.directories.fulfilment }),
+      ]);
+      const result = await resumeDeliveryFinalisation(
+        jobId,
+        {
+          agreementRef: agreement.agreementRef.anchor.locator,
+          agreementHash: agreement.agreementHash,
+          commitmentRef: commitment.logicalAddress,
+          deliveryPhaseIndex: DELIVERY_PHASE_INDEX,
+          paymentPermitId: state.permit?.paymentPermitId ?? "unavailable-payment-permit",
+        },
+        { ...fulfilmentDeps, receiptStore: restartedReceiptStore },
+        {
+          ...fulfilmentDurability,
+          store: restartedFulfilmentStore,
+          workerId,
+        },
+      );
+      if (result.decision === "completed") state.fulfilment = structuredClone(result);
+      return result;
+    },
+  };
 }
 
 interface SettlementRun {
@@ -2859,6 +3457,7 @@ interface SettlementRun {
   seller: SellerRuntime;
   buyerStoreDir: string;
   sellerDirectories: SellerDirectories;
+  paymentEvidencePublication?: ReturnType<typeof publishAndVerifySellerSettlement>;
 }
 
 async function settleAndRecover(input: {
@@ -2872,6 +3471,7 @@ async function settleAndRecover(input: {
   sellerIdentity: IdentityBundle;
   vet: VetArtifacts;
 }): Promise<SettlementRun> {
+  const fastProfile = productionLatencyProfile();
   const sellerDirectories = {
     settlement: await temporaryDirectory("seller-settlement"),
     receipt: await temporaryDirectory("seller-receipt"),
@@ -2879,12 +3479,95 @@ async function settleAndRecover(input: {
   };
   const buyerStoreDir = await temporaryDirectory("buyer-settlement");
   const state = commerceState();
-  let seller = await createSellerRuntime({
+  state.loseResponseAcknowledgement = !fastProfile;
+  state.loseFacilitatorResponse = fastProfile &&
+    process.env.LIVE_E2E_INJECT_FACILITATOR_RESPONSE_LOSS === "1";
+  let paymentEvidencePublication:
+    | ReturnType<typeof publishAndVerifySellerSettlement>
+    | undefined;
+  let paymentEvidencePublicationBinding: string | undefined;
+  let retainedBuyerIntent: Readonly<X402BuyerSettlementIntent> | undefined;
+  const startPaymentEvidencePublication = fastProfile
+    ? (publicationInput: Readonly<{
+        permit: X402SellerPaymentPermitAuthorization;
+        observation: Extract<X402TransferObservation, { status: "finalized" }>;
+        receiptStore: SellerRuntime["receiptStore"];
+      }>) => {
+        if (!retainedBuyerIntent) {
+          throw new Error("funded-e2e:buyer-settlement-intent-missing");
+        }
+        const sessionBindingHash = retainedBuyerIntent.bindingHash;
+        const publicationBinding = sha256Hex(canonicalize({
+          permit: publicationInput.permit,
+          observation: publicationInput.observation,
+          sessionBindingHash,
+        }));
+        if (paymentEvidencePublication) {
+          requireCondition(
+            paymentEvidencePublicationBinding === publicationBinding,
+            "payment-evidence-publication-rebound",
+          );
+          return;
+        }
+        paymentEvidencePublicationBinding = publicationBinding;
+        paymentEvidencePublication = stage("settlement-publication", () =>
+          publishAndVerifySellerSettlement({
+            preflight: input.preflight,
+            jobId: input.jobId,
+            agreement: input.agreement,
+            selectedRail: input.selectedRail,
+            payment: {
+              ...publicationInput,
+              sessionBindingHash,
+            },
+          })
+        );
+        // The settlement coordinator owns and awaits this exact promise after
+        // delivery finality. Attach a handler now so an early failure cannot
+        // become an unhandled rejection while the seller lane is still active.
+        void paymentEvidencePublication.catch(() => undefined);
+      }
+    : undefined;
+  let seller: SellerRuntime;
+  let deliveryFinalisationPromise: Promise<void> | undefined;
+  let finaliserAttempts = 0;
+  const advanceReadyFinalisation = async (): Promise<void> => {
+    if (state.deliveryReady === undefined || state.fulfilment !== undefined) return;
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline && state.fulfilment === undefined) {
+      finaliserAttempts += 1;
+      const result = await diagnosticStep("delivery-finalisation-resume", () =>
+        seller.resumeFinalisation(`funded-fast-finaliser-${finaliserAttempts}`)
+      );
+      if (result.decision === "completed") return;
+      if (result.decision === "failed" || result.decision === "rejected") {
+        throw new Error(`funded-e2e:delivery-finalisation-${result.decision}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    throw new Error("funded-e2e:delivery-finalisation-timeout");
+  };
+  const ensureDeliveryFinalisation = (): Promise<void> => {
+    deliveryFinalisationPromise ??= advanceReadyFinalisation();
+    void deliveryFinalisationPromise.catch(() => undefined);
+    return deliveryFinalisationPromise;
+  };
+  seller = await createSellerRuntime({
     ...input,
     directories: sellerDirectories,
     state,
     workerId: "funded-seller-process-a",
+    ...(startPaymentEvidencePublication ? { startPaymentEvidencePublication } : {}),
+    ...(fastProfile
+      ? { notifyDeliveryReady: () => { void ensureDeliveryFinalisation(); } }
+      : {}),
   });
+  // The three immutable authority anchors are already finalized. Start their
+  // independent cold readback while the buyer prepares the exact bearer so
+  // the seller's payment gate consumes the same memoized proof without adding
+  // another serial RPC round trip after facilitator verification.
+  const coldAuthorityWarmup = seller.warmCommittedAuthority();
+  void coldAuthorityWarmup.catch(() => undefined);
   input.preflight.host.install(seller.paywall);
   const authority = {
     jobId: input.jobId,
@@ -2925,12 +3608,15 @@ async function settleAndRecover(input: {
     authority,
     expectedRequirements,
   });
-  const prepared = await prepareX402BuyerSettlement({ authority }, {
-    client,
-    fetchImpl: input.preflight.host.fetchImpl,
-  });
+  const prepared = await diagnosticStep("buyer-settlement-prepare", () =>
+    prepareX402BuyerSettlement({ authority }, {
+      client,
+      fetchImpl: input.preflight.host.fetchImpl,
+    })
+  );
   requireCondition(prepared.disposition === "prepared", "buyer-preparation-failed");
   const intent = prepared.intent;
+  retainedBuyerIntent = intent;
   const createAuthorizationProvider = (readClient: X402BuyerEvmReadClient) =>
     createX402BuyerEvmAuthorizationProvider({
       chainId: BASE_SEPOLIA_CHAIN_ID,
@@ -2946,6 +3632,24 @@ async function settleAndRecover(input: {
         return authorized
           ? { disposition: "authorized", bindingHash: candidate.bindingHash }
           : { disposition: "rejected", reason: "finalized-session-authority-mismatch" };
+      },
+      recoverDisclosure: async ({ intent: candidate, transactionHash }) => {
+        if (candidate.bindingHash !== intent.bindingHash ||
+            candidate.authorizationNonce !== intent.authorizationNonce ||
+            candidate.httpResource !== intent.httpResource) {
+          return { disposition: "unavailable" };
+        }
+        // This is only a candidate reconstruction after an exact nonce event
+        // supplied its transaction hash. The provider still independently
+        // authenticates the receipt, AuthorizationUsed log, exact Transfer,
+        // canonical ancestry, amount, payer, payee, asset, and session intent.
+        const receipt = fundedPaymentResponseReceipt(input.preflight, transactionHash);
+        return {
+          protocolVersion: "2",
+          headerName: "PAYMENT-RESPONSE",
+          encodedSettlementHeader: encodePaymentResponseHeader(receipt),
+          httpResource: candidate.httpResource,
+        };
       },
     });
   let finalityHeadReads = 0;
@@ -2988,8 +3692,9 @@ async function settleAndRecover(input: {
     // authenticated chain reconciliation; it is never allowed to redrive the
     // retained HTTP request.
     let lastReason = "not-observed";
-    for (let attempt = 1; attempt <= 180; attempt += 1) {
-      buyerNow += 2_000;
+    const recoveryDeadline = Date.now() + 180_000;
+    for (let attempt = 1; Date.now() < recoveryDeadline; attempt += 1) {
+      buyerNow = Date.now();
       buyerStore = await createFsX402BuyerSettlementStore({ dir: buyerStoreDir });
       const progress = await advanceX402BuyerSettlement({
         intent,
@@ -3000,35 +3705,156 @@ async function settleAndRecover(input: {
         now: () => buyerNow,
         leaseDurationMs: 1_000,
       });
+      process.stderr.write(
+        `funded-e2e-step:${failureCode}-attempt-${attempt}-progress-` +
+          `${progress.status}-${"reason" in progress ? safeDiagnosticCode(progress.reason) : "terminal"}-` +
+          `submissions-${buyerTransportSubmissions}\n`,
+      );
       requireCondition(buyerTransportSubmissions === 1, "buyer-paid-request-replayed");
       if (progress.status === "captured") return progress;
-      requireCondition(progress.status === "indeterminate", `${failureCode}-terminal`);
+      if (progress.status === "failed") {
+        throw new Error(
+          `funded-e2e:${failureCode}-terminal-${progress.outcome.failure}`,
+        );
+      }
+      requireCondition(progress.status === "indeterminate", `${failureCode}-invalid-progress`);
       lastReason = safeDiagnosticCode(progress.reason);
-      if (attempt % 30 === 0) {
+      if (attempt % 10 === 0) {
         process.stderr.write(
           `funded-e2e-step:${failureCode}-attempt-${attempt}-${lastReason}\n`,
         );
       }
-      if (attempt < 180) {
+      if (Date.now() < recoveryDeadline) {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
     }
     throw new Error(`funded-e2e:${failureCode}-timeout-${lastReason}`);
   };
-  const submitted = await advanceX402BuyerSettlement({
-    intent,
-    owner: "funded-buyer-process-a",
-    store: buyerStore,
-    authorizationProvider: disruptedAuthorizationProvider,
-    transport: {
-      submitRetained: (candidate, fence) => {
-        buyerTransportSubmissions += 1;
-        return productionTransport.submitRetained(candidate, fence);
+  const submitted = await diagnosticStep("buyer-settlement-submit", () =>
+    advanceX402BuyerSettlement({
+      intent,
+      owner: fastProfile ? "funded-fast-buyer" : "funded-buyer-process-a",
+      store: buyerStore,
+      authorizationProvider: fastProfile
+        ? authorizationProvider
+        : disruptedAuthorizationProvider,
+      transport: {
+        submitRetained: (candidate, fence) => {
+          buyerTransportSubmissions += 1;
+          return productionTransport.submitRetained(candidate, fence);
+        },
       },
-    },
-    now: () => buyerNow,
-    leaseDurationMs: 1_000,
-  });
+      now: () => buyerNow,
+      leaseDurationMs: 1_000,
+    })
+  );
+  process.stderr.write(
+    `funded-e2e-step:buyer-settlement-submit-progress-${submitted.status}-` +
+      `${"reason" in submitted ? safeDiagnosticCode(submitted.reason) : "terminal"}-` +
+      `submissions-${buyerTransportSubmissions}\n`,
+  );
+  const submittedStore = await buyerStore.load(intent.settlementKey);
+  process.stderr.write(
+    `funded-e2e-step:buyer-settlement-store-${submittedStore.status}-` +
+      `disclosure-${submittedStore.status === "held" && submittedStore.pendingDisclosure !== undefined ? "present" : "absent"}\n`,
+  );
+  // A completed HTTP call is not proof of settlement. A facilitator can
+  // return a well-formed terminal rejection without broadcasting anything;
+  // that case must never be misclassified as an ambiguous in-flight payment.
+  requireNoExplicitFacilitatorFailure(state);
+  if (fastProfile) {
+    const captured = submitted.status === "captured"
+      ? submitted
+      : await recoverBuyerSettlementFromChain(
+          "funded-fast-buyer-reconcile",
+          "buyer-fast-chain-recovery",
+        );
+    requireCondition(captured.status === "captured", "buyer-fast-settlement-not-captured");
+    requireCondition(buyerTransportSubmissions === 1, "buyer-fast-paid-request-replayed");
+    requireCondition(input.preflight.host.requestCounts.unpaid === 1, "fast-challenge-count-mismatch");
+    requireCondition(state.counts.facilitatorSettle === 1, "fast-settlement-effect-count-mismatch");
+
+    // The host starts this explicitly owned worker at delivery-ready, and the
+    // coordinator awaits the same promise here after buyer capture. Every
+    // attempt still reopens both filesystem stores, so process-local state is
+    // not authority for terminal fulfilment.
+    await ensureDeliveryFinalisation();
+
+    // If the facilitator broadcast succeeded but the seller's first RPC view
+    // could not yet authenticate it, replay the exact retained bearer only
+    // after the buyer has independently captured the finalized transfer. The
+    // paywall's durable settlement WAL must bypass facilitator verify/settle.
+    let sellerReplayAttempts = 0;
+    if (!fundedFulfilmentEffectsComplete(state)) {
+      const verifyCount = state.counts.facilitatorVerify;
+      const settleCount = state.counts.facilitatorSettle;
+      const replayDeadline = Date.now() + 180_000;
+      while (Date.now() < replayDeadline && !fundedFulfilmentEffectsComplete(state)) {
+        sellerReplayAttempts += 1;
+        const replayResponse = await diagnosticStep("fast-seller-request-replay", async () => {
+          const response = await input.preflight.host.fetchImpl(
+            input.preflight.host.resourceUrl,
+            {
+              method: "GET",
+              headers: { [intent.paymentHeader.name]: intent.paymentHeader.value },
+              redirect: "error",
+            },
+          );
+          await response.arrayBuffer();
+          return response;
+        });
+        requireCondition(
+          state.counts.facilitatorVerify === verifyCount &&
+            state.counts.facilitatorSettle === settleCount,
+          "fast-seller-replay-resettled",
+        );
+        if (replayResponse.status === 200) {
+          deliveryFinalisationPromise = undefined;
+          await ensureDeliveryFinalisation();
+          if (fundedFulfilmentEffectsComplete(state)) break;
+        }
+        const retryableReason = state.settlementReconciliationReason;
+        requireCondition(
+          replayResponse.status === 503 &&
+            (retryableReason === "settlement-authorization-not-yet-observed" ||
+              retryableReason === "settlement-chain-recovery-unavailable" ||
+              retryableReason === "recovered-settlement-transfer-unavailable"),
+          `fast-seller-request-replay-http-${replayResponse.status}-${
+            retryableReason ?? input.preflight.host.lastHandlerFailure ?? "no-reconciliation-reason"
+          }`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    }
+    requireCondition(
+      input.preflight.host.requestCounts.paid === 1 + sellerReplayAttempts,
+      "fast-paid-request-count-mismatch",
+    );
+    requireCondition(
+      fundedFulfilmentEffectsComplete(state),
+      "fast-fulfilment-not-complete",
+    );
+    requireCondition(state.permit !== undefined, "fast-seller-permit-missing");
+    if (state.observedTransfer === undefined) {
+      const observed = await diagnosticStep("fast-transfer-reconciliation", () =>
+        observeFundedTransfer({
+          preflight: input.preflight,
+          jobId: input.jobId,
+          txHash: state.permit!.paymentAuthorization.settlementIdentity.txHash,
+        })
+      );
+      requireCondition(observed.status === "finalized", "fast-seller-chain-observation-missing");
+      state.observedTransfer = structuredClone(observed);
+    }
+    return {
+      intent,
+      state,
+      seller,
+      buyerStoreDir,
+      sellerDirectories,
+      ...(paymentEvidencePublication ? { paymentEvidencePublication } : {}),
+    };
+  }
   requireCondition(
     submitted.status === "indeterminate" &&
       submitted.reason === "evm-authorization-lookup-unavailable",
@@ -3168,12 +3994,15 @@ async function publishAndVerifySellerSettlement(input: {
   jobId: string;
   agreement: AgreementRun;
   selectedRail: PaymentRailRef;
-  settlement: SettlementRun;
+  payment: Readonly<{
+    permit: X402SellerPaymentPermitAuthorization;
+    observation: Extract<X402TransferObservation, { status: "finalized" }>;
+    receiptStore: SellerRuntime["receiptStore"];
+    sessionBindingHash: string;
+  }>;
 }) {
-  const permit = input.settlement.state.permit;
-  const observation = input.settlement.state.observedTransfer;
-  requireCondition(permit !== undefined, "seller-payment-permit-missing");
-  requireCondition(observation !== undefined, "seller-chain-observation-missing");
+  const permit = input.payment.permit;
+  const observation = input.payment.observation;
   const authorization = permit.paymentAuthorization;
   const proofArtifact = {
     proofVersion: "evm-event-1",
@@ -3222,11 +4051,15 @@ async function publishAndVerifySellerSettlement(input: {
   let publication: { ref: AttestationRef; receipt: AnchorReceipt } | undefined;
   let anchorCalls = 0;
   const deps: SellerSessionSettlementPublicationDeps = {
-    receiptStore: input.settlement.seller.receiptStore,
+    receiptStore: input.payment.receiptStore,
     evidenceSigner: {
       algorithm: "ed25519",
       signer: input.preflight.env.SELLER_DID,
       sign: (bytes) => input.preflight.seller.adapter.sign(bytes),
+    },
+    anchorWriter: {
+      role: "buyer",
+      primaryClaim: input.preflight.env.BUYER_DID,
     },
     evidence: evidenceVerifier,
     resolveAuthenticatedNativeProof: async () => {
@@ -3234,6 +4067,7 @@ async function publishAndVerifySellerSettlement(input: {
         preflight: input.preflight,
         jobId: input.jobId,
         txHash: observation.txHash,
+        requireAllRpcs: true,
       });
       return revalidated.status === "finalized" && observation.status === "finalized" &&
         sameFinalizedTransfer(revalidated, observation)
@@ -3247,7 +4081,12 @@ async function publishAndVerifySellerSettlement(input: {
           evidence: structuredClone(retainedEvidence),
         }
       : { disposition: "absent" },
-    anchorEvidence: async ({ logicalAddress, evidence, evidenceHash }) => {
+    anchorEvidence: async ({ logicalAddress, evidence, evidenceHash, expectedWriter }) => {
+      requireCondition(
+        expectedWriter.role === "buyer" &&
+          expectedWriter.primaryClaim === input.preflight.env.BUYER_DID,
+        "settlement-evidence-anchor-writer-substituted",
+      );
       if (publication || retainedEvidence) {
         requireCondition(
           publication !== undefined && retainedEvidence !== undefined &&
@@ -3257,7 +4096,7 @@ async function publishAndVerifySellerSettlement(input: {
           await verifyAnchorReceipt(
             input.preflight.buyer.adapter,
             publication.receipt,
-            input.preflight.env.SELLER_DID,
+            input.preflight.env.BUYER_DID,
           ),
           "settlement-evidence-publication-rebound",
         );
@@ -3269,8 +4108,9 @@ async function publishAndVerifySellerSettlement(input: {
       }
       anchorCalls += 1;
       const anchored = await anchorArtifact({
-        adapter: input.preflight.seller.adapter,
-        writer: input.preflight.env.SELLER_DID,
+        adapter: input.preflight.buyer.adapter,
+        writer: input.preflight.env.BUYER_DID,
+        refSigner: input.preflight.env.SELLER_DID,
         logicalAddress,
         artifact: evidence as unknown as Record<string, unknown>,
       });
@@ -3283,11 +4123,15 @@ async function publishAndVerifySellerSettlement(input: {
         anchorReceipt: anchored.receipt,
       };
     },
-    verifyAnchorReceipt: async ({ anchorReceipt }) => {
+    verifyAnchorReceipt: async ({ anchorReceipt, expectedWriter }) => {
+      requireCondition(
+        expectedWriter === input.preflight.env.BUYER_DID,
+        "settlement-evidence-receipt-writer-substituted",
+      );
       const valid = await verifyAnchorReceipt(
-        input.preflight.seller.adapter,
+        input.preflight.buyer.adapter,
         anchorReceipt,
-        input.preflight.env.SELLER_DID,
+        input.preflight.env.BUYER_DID,
       );
       return valid
         ? { disposition: "pass" }
@@ -3390,7 +4234,7 @@ async function publishAndVerifySellerSettlement(input: {
         await verifyAnchorReceipt(
           input.preflight.buyer.adapter,
           publication.receipt,
-          input.preflight.env.SELLER_DID,
+          input.preflight.env.BUYER_DID,
         ) ? { disposition: "pass" } : { disposition: "fail", reason: "anchor-invalid" },
     resolveNativeProof: (candidate) =>
       canonicalize(candidate) === canonicalize(nativeProofRef)
@@ -3401,6 +4245,7 @@ async function publishAndVerifySellerSettlement(input: {
         preflight: input.preflight,
         jobId: input.jobId,
         txHash: observation.txHash,
+        requireAllRpcs: true,
       });
       if (fresh.status !== "finalized") {
         return { disposition: "indeterminate", reason: "evm-revalidation-unavailable" };
@@ -3425,7 +4270,7 @@ async function publishAndVerifySellerSettlement(input: {
           sessionBinding: {
             disposition: "established",
             kind: "eip3009",
-            bindingHash: input.settlement.intent.bindingHash,
+            bindingHash: input.payment.sessionBindingHash,
           },
           details: {
             chainId: fresh.chainId,
@@ -3457,7 +4302,7 @@ async function closeDurableDetachedRoleBundles(input: {
   sellerSettlement: Awaited<ReturnType<typeof publishAndVerifySellerSettlement>>;
   buyerIdentity: IdentityBundle;
   sellerIdentity: IdentityBundle;
-  vet: VetArtifacts;
+  vet: PublishedVetArtifacts;
 }) {
   const suppliedFulfilment = input.settlement.state.fulfilment;
   requireCondition(suppliedFulfilment?.decision === "completed", "recovered-fulfilment-missing");
@@ -3688,7 +4533,7 @@ async function closeDurableDetachedRoleBundles(input: {
     [input.published.receipt.nativeAddress, input.preflight.env.SELLER_DID],
     [input.agreement.anchorReceipt.nativeAddress, input.preflight.env.BUYER_DID],
     [input.commitment.anchorReceipt.nativeAddress, input.preflight.env.SELLER_DID],
-    [input.sellerSettlement.settlement.anchorReceipt.nativeAddress, input.preflight.env.SELLER_DID],
+    [input.sellerSettlement.settlement.anchorReceipt.nativeAddress, input.preflight.env.BUYER_DID],
     [fulfilment.evidenceAnchorReceipt.nativeAddress, input.preflight.env.SELLER_DID],
     [input.vet.buyerReceipt.nativeAddress, input.preflight.env.SELLER_DID],
     [input.vet.sellerReceipt.nativeAddress, input.preflight.env.BUYER_DID],
@@ -3757,7 +4602,35 @@ async function closeDurableDetachedRoleBundles(input: {
     const logicalAddress = bundleAddress(input.jobId, role);
     const ownerDid = role === "seller"
       ? input.preflight.env.SELLER_DID : input.preflight.env.BUYER_DID;
-    const resolved = await input.preflight.buyer.adapter.resolveAnchorByName(
+    const cached = role === "seller" ? sellerAnchored : buyerAnchored;
+    if (cached) {
+      const bundle = await input.preflight.buyer.adapter.readAnchor(
+        cached.nativeAddress,
+      );
+      if (!bundle) throw new Error("funded-e2e:role-bundle-read-indeterminate");
+      const hash = attestationBundleHash(
+        bundle as unknown as FaultAttestationBundle,
+      );
+      if (
+        cached.anchorReceipt.logicalAddress !== logicalAddress ||
+        cached.anchorReceipt.nativeAddress !== cached.nativeAddress ||
+        cached.anchorReceipt.contentHash !== hash ||
+        !await verifyAnchorReceipt(
+          input.preflight.buyer.adapter,
+          cached.anchorReceipt,
+          ownerDid,
+        )
+      ) return null;
+      return {
+        bundle,
+        nativeAddress: cached.nativeAddress,
+        anchorReceipt: cached.anchorReceipt,
+        ...(cached.anchorTx ? { anchorTx: cached.anchorTx } : {}),
+      };
+    }
+    const ownerAdapter = role === "seller"
+      ? input.preflight.seller.adapter : input.preflight.buyer.adapter;
+    const resolved = await ownerAdapter.resolveAnchorByName(
       logicalAddress,
       ownerDid.replace(/^did:demos:agent:/, ""),
     );
@@ -3768,21 +4641,6 @@ async function closeDurableDetachedRoleBundles(input: {
     const bundle = await input.preflight.buyer.adapter.readAnchor(resolved.address);
     if (!bundle) throw new Error("funded-e2e:role-bundle-read-indeterminate");
     const hash = attestationBundleHash(bundle as unknown as FaultAttestationBundle);
-    const cached = role === "seller" ? sellerAnchored : buyerAnchored;
-    if (cached) {
-      if (
-        cached.nativeAddress !== resolved.address ||
-        cached.anchorReceipt.logicalAddress !== logicalAddress ||
-        cached.anchorReceipt.contentHash !== hash
-      ) return null;
-      return {
-        bundle,
-        nativeAddress: resolved.address,
-        anchorReceipt: cached.anchorReceipt,
-        ...(cached.anchorTx ? { anchorTx: cached.anchorTx } : {}),
-      };
-    }
-
     // A cold runtime must recover the exact original receipt and transaction
     // pointer from an owner-bound finalization handoff. A successful Demos read
     // is not itself an anchor receipt and must never be promoted into one.
@@ -4649,6 +5507,25 @@ async function closeDurableDetachedRoleBundles(input: {
 }
 
 describe("issue #114 guarded funded two-agent spine", () => {
+  it("retries immutable proof reads without promoting a non-establishing view", async () => {
+    let recoveringCalls = 0;
+    const recovered = await retryEstablishedRead(async () => {
+      recoveringCalls += 1;
+      if (recoveringCalls === 1) return false;
+      if (recoveringCalls === 2) throw new Error("injected-proof-read-outage");
+      return true;
+    }, 3, 0);
+    let invalidCalls = 0;
+    const invalid = await retryEstablishedRead(async () => {
+      invalidCalls += 1;
+      return false;
+    }, 3, 0);
+    requireCondition(
+      recovered && recoveringCalls === 3 && !invalid && invalidCalls === 3,
+      "immutable-proof-retry-regression",
+    );
+  });
+
   it("retries only thrown failures from immutable authority reads", async () => {
     let calls = 0;
     const result = await retryReadOnly(async () => {
@@ -4725,6 +5602,40 @@ describe("issue #114 guarded funded two-agent spine", () => {
         "dependency-signature-tamper-self-check-failed",
       );
     }
+  });
+
+  it("derives a replay-stable isolated local final receipt for WAL commit", () => {
+    const hash = (value: string) => sha256Hex(`funded-final-receipt:${value}`);
+    const authorizationBinding = {
+      authorizationHash: hash("authorization"),
+      fulfilmentId: `dacs4:fulfilment:${hash("fulfilment")}`,
+      handoffBindingHash: hash("handoff"),
+      agreementHash: hash("agreement"),
+      paymentEvidenceHash: hash("payment"),
+      settlementId: `settlement:${hash("settlement")}`,
+      paymentPhaseIndex: PAYMENT_PHASE_INDEX,
+      deliveryPhaseIndex: DELIVERY_PHASE_INDEX,
+    };
+    const input = {
+      fulfilmentId: authorizationBinding.fulfilmentId,
+      authorizationBinding,
+      resultHash: hash("result"),
+    };
+    const first = fundedFinalSessionReceipt("funded-final-receipt-job", input);
+    const replay = fundedFinalSessionReceipt(
+      "funded-final-receipt-job",
+      structuredClone(input),
+    );
+    authorizationBinding.settlementId = "mutated-after-publication";
+    requireCondition(
+      canonicalize(first) === canonicalize(replay) &&
+        canonicalize(first).includes("mutated-after-publication") === false &&
+        canonicalize(fundedFinalSessionReceipt("funded-final-receipt-job", {
+          ...structuredClone(input),
+          resultHash: hash("different-result"),
+        })) !== canonicalize(first),
+      "local-final-receipt-is-not-replay-stable-and-isolated",
+    );
   });
 
   it("uses a certificate-pinned loopback TLS transport for both exact routes", async () => {
@@ -4907,6 +5818,205 @@ describe("issue #114 guarded funded two-agent spine", () => {
     );
   });
 
+  it("never sends an explicit facilitator rejection into chain recovery", () => {
+    const rejected = commerceState();
+    rejected.facilitatorOutcome = "failure";
+    rejected.facilitatorFailureCode = "invalid-exact-evm-transaction-failed";
+    let failure = "";
+    try {
+      requireNoExplicitFacilitatorFailure(rejected);
+    } catch (error) {
+      failure = error instanceof Error ? error.message : "non-error";
+    }
+    requireCondition(
+      failure ===
+        "funded-e2e:facilitator-settlement-failed-invalid-exact-evm-transaction-failed",
+      "facilitator-rejection-entered-chain-recovery",
+    );
+
+    const ambiguous = commerceState();
+    ambiguous.facilitatorOutcome = "threw";
+    requireNoExplicitFacilitatorFailure(ambiguous);
+    const settled = commerceState();
+    settled.facilitatorOutcome = "success";
+    requireNoExplicitFacilitatorFailure(settled);
+  });
+
+  it("reconstructs a seller receipt only from the exact finalized nonce transfer", async () => {
+    const payer = `0x${"11".repeat(20)}` as `0x${string}`;
+    const payee = `0x${"22".repeat(20)}` as `0x${string}`;
+    const asset = `0x${"33".repeat(20)}` as `0x${string}`;
+    const transactionHash = `0x${"aa".repeat(32)}` as `0x${string}`;
+    const blockHash = `0x${"bb".repeat(32)}` as `0x${string}`;
+    const jobId = "01K2D6Y7W8Q9R0S1T2V3W4X5Y6";
+    const nonce = x402Eip3009Nonce(jobId, PAYMENT_PHASE_INDEX);
+    let logReads = 0;
+    const preflight = {
+      payer,
+      payee,
+      asset,
+      authorizationSearchFromBlock: 90,
+      host: { resourceUrl: "https://seller.example/recovered" },
+      evm: {
+        getBlockNumber: async () => 110n,
+        getLogs: async () => {
+          logReads += 1;
+          return [{ transactionHash }];
+        },
+        getTransactionReceipt: async () => ({
+          status: "success",
+          blockNumber: 100n,
+          blockHash,
+          logs: [
+            {
+              address: asset,
+              topics: [
+                EIP3009_AUTHORIZATION_USED_TOPIC,
+                addressTopic(payer),
+                nonce,
+              ],
+              data: "0x",
+              logIndex: 5,
+            },
+            {
+              address: asset,
+              topics: [ERC20_TRANSFER_TOPIC, addressTopic(payer), addressTopic(payee)],
+              data: `0x${PAYMENT_AMOUNT.toString(16).padStart(64, "0")}`,
+              logIndex: 7,
+            },
+          ],
+        }),
+        getBlock: async () => ({ timestamp: 2_000n }),
+      },
+    } as unknown as Preflight;
+    const requirements: X402BuyerPaymentRequirements = {
+      scheme: "exact",
+      network: BASE_SEPOLIA_NETWORK,
+      amount: PAYMENT_AMOUNT.toString(),
+      asset,
+      payTo: payee,
+      maxTimeoutSeconds: PAYMENT_TIMEOUT_SECONDS,
+      extra: {
+        name: TOKEN_NAME,
+        version: TOKEN_VERSION,
+        assetTransferMethod: "eip3009",
+      },
+    };
+    const intent = {
+      jobId,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+      payer,
+      httpResource: preflight.host.resourceUrl,
+      paymentRequirements: requirements,
+    } as X402PaywallSettlementIntent;
+    const recovered = await recoverFundedSellerSettlement({ preflight, jobId, intent });
+    requireCondition(recovered.status === "settled", "seller-settlement-not-recovered");
+    const commitment = deriveX402ReceiptCommitment({
+      protocolVersion: "2",
+      responseHeader: {
+        name: "PAYMENT-RESPONSE",
+        value: recovered.settlement.headers["PAYMENT-RESPONSE"]!,
+      },
+    });
+    requireCondition(
+      commitment.disposition === "pass" &&
+        recovered.settlement.transaction === transactionHash &&
+        recovered.settlement.payer === payer &&
+        recovered.settlement.amount === PAYMENT_AMOUNT.toString() &&
+        logReads === 1,
+      "seller-settlement-reconstruction-invalid",
+    );
+
+    const rebound = await recoverFundedSellerSettlement({
+      preflight,
+      jobId: `${jobId}-different`,
+      intent,
+    });
+    requireCondition(
+      rebound.status === "indeterminate" && logReads === 1,
+      "seller-settlement-reconstruction-not-session-bound",
+    );
+  });
+
+  it("uses the first exact RPC proof and rejects cross-RPC disagreement", async () => {
+    const payer = `0x${"11".repeat(20)}` as `0x${string}`;
+    const payee = `0x${"22".repeat(20)}` as `0x${string}`;
+    const asset = `0x${"33".repeat(20)}` as `0x${string}`;
+    const transactionHash = `0x${"aa".repeat(32)}` as `0x${string}`;
+    const blockHash = `0x${"bb".repeat(32)}` as `0x${string}`;
+    const jobId = "01K2D6Y7W8Q9R0S1T2V3W4X5Y6";
+    const nonce = x402Eip3009Nonce(jobId, PAYMENT_PHASE_INDEX);
+    const receipt = {
+      status: "success" as const,
+      blockNumber: 100n,
+      blockHash,
+      logs: [
+        {
+          address: asset,
+          topics: [EIP3009_AUTHORIZATION_USED_TOPIC, addressTopic(payer), nonce],
+          data: "0x",
+          logIndex: 5,
+        },
+        {
+          address: asset,
+          topics: [ERC20_TRANSFER_TOPIC, addressTopic(payer), addressTopic(payee)],
+          data: `0x${PAYMENT_AMOUNT.toString(16).padStart(64, "0")}`,
+          logIndex: 7,
+        },
+      ],
+    };
+    let laggingReads = 0;
+    const lagging = {
+      getTransactionReceipt: async () => {
+        laggingReads += 1;
+        throw new Error("not-yet-visible");
+      },
+      getBlockNumber: async () => 110n,
+    } as unknown as PublicClient;
+    const exact = {
+      getTransactionReceipt: async () => receipt,
+      getBlockNumber: async () => 110n,
+      getBlock: async () => ({ timestamp: 2_000n }),
+    } as unknown as PublicClient;
+    const inconsistent = {
+      getTransactionReceipt: async () => ({
+        ...receipt,
+        logs: receipt.logs.map((log, index) => index === 1
+          ? { ...log, logIndex: 8 } : log),
+      }),
+      getBlockNumber: async () => 110n,
+      getBlock: async () => ({ timestamp: 2_000n }),
+    } as unknown as PublicClient;
+    const preflight = {
+      payer,
+      payee,
+      asset,
+      evm: exact,
+      evmVerificationClients: [lagging, exact],
+    } as unknown as Preflight;
+    const observed = await observeFundedTransfer({ preflight, jobId, txHash: transactionHash });
+    requireCondition(
+      observed.status === "finalized" && observed.logIndex === 7 && laggingReads === 1,
+      "secondary-rpc-proof-not-used",
+    );
+
+    let mismatch = "";
+    try {
+      await observeFundedTransfer({
+        preflight: { ...preflight, evmVerificationClients: [exact, inconsistent] },
+        jobId,
+        txHash: transactionHash,
+        requireAllRpcs: true,
+      });
+    } catch (error) {
+      mismatch = error instanceof Error ? error.message : "non-error";
+    }
+    requireCondition(
+      mismatch === "funded-e2e:cross-rpc-settlement-mismatch",
+      "cross-rpc-disagreement-not-rejected",
+    );
+  });
+
   if (missingReadOnly.length > 0) {
     it.skip(`read-only preflight requires ${missingReadOnly.join(", ")}`, () => undefined);
   } else {
@@ -4934,66 +6044,131 @@ describe("issue #114 guarded funded two-agent spine", () => {
   } else {
     it("completes the real funded spine through cold-store-recovered role-owned bundles", async () => {
       const env = completeEnv();
+      const fastProfile = productionLatencyProfile();
       let preflight: Preflight | undefined;
       try {
         preflight = await stage("preflight", () => runNoWritePreflight(env));
-        const now = Date.now();
         const jobId = preflight.jobId;
         const selectedRail = rail(preflight.host.resourceUrl);
-        const [buyerIdentity, sellerIdentity] = await Promise.all([
+        let published: PublishedListing | undefined;
+
+        // The fast profile measures an honest buyer-visible session. A listing
+        // is a reusable discovery artifact, so publish it before the timer with
+        // a non-session-bound seller presentation. Vet remains inside the timer.
+        if (fastProfile) {
+          const listingNow = Date.now();
+          const listingSellerIdentity = await identity(
+            env.SELLER_DID,
+            preflight.seller.adapter,
+            listingNow,
+            undefined,
+            false,
+          );
+          requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
+          published = await stage("listing-presession", () => publishAndDiscoverListing({
+            preflight: preflight!,
+            jobId,
+            sellerIdentity: listingSellerIdentity,
+            selectedRail,
+            now: listingNow,
+          }));
+        }
+
+        const sessionStartedAt = Date.now();
+        const now = sessionStartedAt;
+        const [buyerIdentity, sellerIdentity, rediscovered] = await Promise.all([
           identity(env.BUYER_DID, preflight.buyer.adapter, now, env.BUYER_EVM_KEY),
           identity(env.SELLER_DID, preflight.seller.adapter, now),
+          fastProfile
+            ? stage("listing-discovery", () => rediscoverPublishedListing({
+                preflight: preflight!,
+                published: published!,
+                selectedRail,
+                now,
+              }))
+            : Promise.resolve(published),
         ]);
+        published = rediscovered;
         const [buyerAgreementDir, sellerAgreementDir] = await Promise.all([
           temporaryDirectory("buyer-agreement"),
           temporaryDirectory("seller-agreement"),
         ]);
 
-        // This check is deliberately adjacent to the first live Demos write.
-        // Every operation above it is local or read-only.
+        // This check is deliberately adjacent to the first session-bound live
+        // Demos write (or the first write in the exhaustive profile).
         requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
-        const published = await stage("listing", () => publishAndDiscoverListing({
-          preflight: preflight!,
-          jobId,
-          sellerIdentity,
-          selectedRail,
-          now,
-        }));
+        published ??= await stage("listing", () => publishAndDiscoverListing({
+            preflight: preflight!,
+            jobId,
+            sellerIdentity,
+            selectedRail,
+            now,
+          }));
         requireCondition(
           published.listing.seller.publicEndpoint === preflight.host.engagementUrl,
           "advertised-endpoint-mismatch",
         );
-        const vet = await stage("vet", () => publishVetRecords({
+        const preparedVet = await prepareVetRecords({
           preflight: preflight!,
           jobId,
           buyerIdentity,
           sellerIdentity,
           now: now + 1,
-        }));
-        const agreement = await stage("agreement", () => negotiateAgreement({
+        });
+        const vetPromise = stage("vet", () => publishPreparedVetRecords({
           preflight: preflight!,
-          jobId,
-          published,
-          selectedRail,
-          buyerIdentity,
-          sellerIdentity,
-          vet,
-          now: now + 2,
-          buyerDir: buyerAgreementDir,
-          sellerDir: sellerAgreementDir,
+          prepared: preparedVet,
         }));
+        // Handle either concurrent failure immediately; the ordered awaits
+        // below still rethrow the exact error after both branches are settled.
+        void vetPromise.catch(() => undefined);
+        let commitmentPromise: ReturnType<typeof commitAgreement> | undefined;
+        let finalizedVet: VetArtifacts | undefined;
+        let agreement: AgreementRun;
+        try {
+          agreement = await stage("agreement", () => negotiateAgreement({
+            preflight: preflight!,
+            jobId,
+            published,
+            selectedRail,
+            buyerIdentity,
+            sellerIdentity,
+            vet: preparedVet,
+            now: now + 2,
+            buyerDir: buyerAgreementDir,
+            sellerDir: sellerAgreementDir,
+            beforeAgreementPublication: async () => {
+              finalizedVet = await vetPromise;
+            },
+            onSignedAgreement: (signedAgreement) => {
+              requireCondition(finalizedVet !== undefined, "agreement-publication-before-vet-finality");
+              requireCondition(commitmentPromise === undefined, "commitment-started-more-than-once");
+              commitmentPromise = stage("commitment", () => commitAgreement({
+                preflight: preflight!,
+                jobId,
+                published: published!,
+                agreement: { agreement: signedAgreement },
+                vet: finalizedVet!,
+                now: now + 3,
+              }));
+              // The agreement anchor may outlive a quickly rejected commitment.
+              // Handle the concurrent promise now; awaiting it below still
+              // preserves its exact failure after agreement closure.
+              void commitmentPromise.catch(() => undefined);
+            },
+          }));
+        } catch (error) {
+          await vetPromise.catch(() => undefined);
+          await commitmentPromise?.catch(() => undefined);
+          throw error;
+        }
+        const vet = finalizedVet ?? await vetPromise;
         requireCondition(
           preflight.host.requestCounts.engagement === 1,
           "advertised-engagement-endpoint-not-invoked",
         );
-        const commitment = await stage("commitment", () => commitAgreement({
-          preflight: preflight!,
-          jobId,
-          published,
-          agreement,
-          vet,
-          now: now + 3,
-        }));
+        requireCondition(commitmentPromise !== undefined, "commitment-not-started");
+        const commitment = await commitmentPromise;
         const settlement = await stage("settlement", () => settleAndRecover({
           preflight: preflight!,
           jobId,
@@ -5005,15 +6180,94 @@ describe("issue #114 guarded funded two-agent spine", () => {
           sellerIdentity,
           vet,
         }));
-        const sellerSettlement = await stage("settlement-publication", () =>
-          publishAndVerifySellerSettlement({
-            preflight: preflight!,
-            jobId,
-            agreement,
-            selectedRail,
-            settlement,
-          })
-        );
+        if (fastProfile) {
+          requireCondition(
+            settlement.state.deliveryReadyAt !== undefined &&
+              settlement.state.deliveryReadyAt >= sessionStartedAt,
+            "delivery-ready-milestone-missing",
+          );
+          process.stderr.write(
+            `funded-e2e-fast:delivery-ready-elapsed-ms:${
+              settlement.state.deliveryReadyAt - sessionStartedAt
+            }\n`,
+          );
+          if (process.env.LIVE_E2E_DELIVERY_ONLY === "1") {
+            requireCondition(
+              fundedFulfilmentEffectsComplete(settlement.state),
+              "delivery-only-finalisation-incomplete",
+            );
+            const observation = settlement.state.observedTransfer;
+            requireCondition(observation !== undefined, "delivery-only-transfer-observation-missing");
+            const crossRpc = await diagnosticStep("delivery-only-cross-rpc", () =>
+              observeFundedTransfer({
+                preflight: preflight!,
+                jobId,
+                txHash: observation.txHash,
+                requireAllRpcs: true,
+              })
+            );
+            requireCondition(
+              crossRpc.status === "finalized" &&
+                sameFinalizedTransfer(crossRpc, observation),
+              "delivery-only-cross-rpc-mismatch",
+            );
+            process.stderr.write("funded-e2e-fast:delivery-only-complete\n");
+            return;
+          }
+        }
+        let commerceCompleteAt: number | undefined;
+        const paymentEvidencePublication = settlement.paymentEvidencePublication ??
+          stage("settlement-publication", () => {
+            const permit = settlement.state.permit;
+            const observation = settlement.state.observedTransfer;
+            requireCondition(permit !== undefined, "seller-payment-permit-missing");
+            requireCondition(observation !== undefined, "seller-chain-observation-missing");
+            return publishAndVerifySellerSettlement({
+              preflight: preflight!,
+              jobId,
+              agreement,
+              selectedRail,
+              payment: {
+                permit,
+                observation,
+                receiptStore: settlement.seller.receiptStore,
+                sessionBindingHash: settlement.intent.bindingHash,
+              },
+            });
+          });
+        const [settlementPublicationResult, vetPublicationResult] = await Promise.allSettled([
+          paymentEvidencePublication.then((result) => {
+            commerceCompleteAt = Date.now();
+            return result;
+          }),
+          stage("vet-provenance-publication", () =>
+            publishExternalSellerVetProvenance({
+              preflight: preflight!,
+              jobId,
+              vet,
+            })
+          ),
+        ]);
+        if (settlementPublicationResult.status === "rejected") {
+          throw settlementPublicationResult.reason;
+        }
+        if (vetPublicationResult.status === "rejected") {
+          throw vetPublicationResult.reason;
+        }
+        const sellerSettlement = settlementPublicationResult.value;
+        const publishedVet = vetPublicationResult.value;
+        if (fastProfile) {
+          requireCondition(
+            commerceCompleteAt !== undefined &&
+              commerceCompleteAt >= settlement.state.deliveryReadyAt!,
+            "commerce-complete-milestone-missing",
+          );
+          process.stderr.write(
+            `funded-e2e-fast:commerce-complete-elapsed-ms:${
+              commerceCompleteAt - sessionStartedAt
+            }\n`,
+          );
+        }
         const bundles = await stage("bundle-finalization", () =>
           closeDurableDetachedRoleBundles({
             preflight: preflight!,
@@ -5026,7 +6280,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
             sellerSettlement,
             buyerIdentity,
             sellerIdentity,
-            vet,
+            vet: publishedVet,
           })
         );
         requireCondition(
@@ -5034,6 +6288,11 @@ describe("issue #114 guarded funded two-agent spine", () => {
           bundles.buyerFinalization.buyerBundle.anchoredByRole === "buyer",
           "funded-role-owned-bundle-closure-failed",
         );
+        if (fastProfile) {
+          process.stderr.write(
+            `funded-e2e-fast:audit-complete-elapsed-ms:${Date.now() - sessionStartedAt}\n`,
+          );
+        }
       } finally {
         if (preflight) await preflight.host.close();
       }
