@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "noEmit": false,
+    "paths": {
+      "@kynesyslabs/dacs/artifacts": ["../../dist/artifacts/index.d.ts"],
+      "@kynesyslabs/dacs/canonical": ["../../dist/canonical/index.d.ts"],
+      "@kynesyslabs/dacs/commerce": ["../../dist/commerce/index.d.ts"],
+      "@kynesyslabs/dacs/crypto": ["../../dist/crypto/index.d.ts"],
+      "@kynesyslabs/dacs/negotiate": ["../../dist/negotiate/index.d.ts"],
+      "@kynesyslabs/dacs/seller": ["../../dist/seller/index.d.ts"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["test", "dist", "node_modules"]
+}
