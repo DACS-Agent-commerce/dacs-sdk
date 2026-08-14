@@ -26,6 +26,8 @@ export interface X402ReceiptVerification {
   receipt?: Record<string, unknown>;
 }
 
+export type X402ReceiptCommitment = X402ReceiptVerification;
+
 /** Registered legacy network names used by x402 v1 (X402-3). */
 export const X402_V1_CHAIN_IDS: Readonly<Record<string, number>> = Object.freeze({
   ethereum: 1,
@@ -229,26 +231,23 @@ function mappedChainId(
 }
 
 /**
- * Independently verifies an x402 settlement-response header against the exact
- * DACS-4 §9.5.7 `ChainTxRef` commitment. The complete receipt stays off-chain;
- * this returns it only so the caller can perform the rail/session checks before
- * constructing normative SettlementEvidence.
+ * Decode and derive the exact DACS-4 §9.5.7 X402-1/X402-2 commitment from a
+ * settlement-response header. This is the producer-side complement to
+ * `verifyX402ReceiptClaim`: it retains the complete response object and never
+ * treats the transaction hash alone as the receipt preimage.
  */
-export function verifyX402ReceiptClaim(input: {
+export function deriveX402ReceiptCommitment(input: {
   protocolVersion: string;
   responseHeader: X402ResponseHeader;
-  evidence: X402ReceiptEvidence;
-  legacyNetworkMap?: Readonly<Record<string, number>>;
-}): X402ReceiptVerification {
-  const { protocolVersion, responseHeader, evidence } = input;
+}): X402ReceiptCommitment {
+  const { protocolVersion, responseHeader } = input;
   if (typeof protocolVersion !== "string" ||
       !VERSION_RE.test(protocolVersion) ||
       (protocolVersion !== "1" && protocolVersion !== "2")) {
     return { disposition: "error", reason: "unsupported-protocolVersion" };
   }
   if (!isRecord(responseHeader) || typeof responseHeader.name !== "string" ||
-      typeof responseHeader.value !== "string" || !isRecord(evidence) ||
-      typeof evidence.paymentReceiptHash !== "string") {
+      typeof responseHeader.value !== "string") {
     return { disposition: "error", reason: "invalid-receipt-input" };
   }
 
@@ -320,11 +319,56 @@ export function verifyX402ReceiptClaim(input: {
       ...common,
     };
   }
+
+  return { disposition: "pass", reason: "derived", ...common };
+}
+
+/**
+ * Independently verifies an x402 settlement-response header against the exact
+ * DACS-4 §9.5.7 `ChainTxRef` commitment. The complete receipt stays off-chain;
+ * this returns it only so the caller can perform the rail/session checks before
+ * constructing normative SettlementEvidence.
+ */
+export function verifyX402ReceiptClaim(input: {
+  protocolVersion: string;
+  responseHeader: X402ResponseHeader;
+  evidence: X402ReceiptEvidence;
+  legacyNetworkMap?: Readonly<Record<string, number>>;
+}): X402ReceiptVerification {
+  const { protocolVersion, responseHeader, evidence } = input;
+  if (typeof protocolVersion !== "string" ||
+      !VERSION_RE.test(protocolVersion) || !["1", "2"].includes(protocolVersion)) {
+    return { disposition: "error", reason: "unsupported-protocolVersion" };
+  }
+  if (!isRecord(evidence) || typeof evidence.paymentReceiptHash !== "string") {
+    return { disposition: "error", reason: "invalid-receipt-input" };
+  }
+
+  const derived = deriveX402ReceiptCommitment({
+    protocolVersion,
+    responseHeader,
+  });
+  if (derived.disposition !== "pass" ||
+      !derived.computedPaymentReceiptHash || !derived.receipt) {
+    return derived;
+  }
+  const common = {
+    canonicalReceipt: derived.canonicalReceipt,
+    computedPaymentReceiptHash: derived.computedPaymentReceiptHash,
+    receipt: derived.receipt,
+  };
+  const parsed = derived.receipt;
+  const computedPaymentReceiptHash = derived.computedPaymentReceiptHash;
+  const transaction = parsed.transaction;
+  if (typeof transaction !== "string") {
+    return { disposition: "error", reason: "invalid-settlementResponse-schema", ...common };
+  }
+
   if (!HASH_RE.test(evidence.paymentReceiptHash)) {
     return { disposition: "fail", reason: "non-canonical-paymentReceiptHash", ...common };
   }
   if (computedPaymentReceiptHash !== evidence.paymentReceiptHash) {
-    const placeholderHash = sha256Hex(parsed.transaction);
+    const placeholderHash = sha256Hex(transaction);
     return {
       disposition: "fail",
       reason: evidence.paymentReceiptHash === placeholderHash
@@ -335,7 +379,7 @@ export function verifyX402ReceiptClaim(input: {
   }
   if (
     evidence.settlementTxHash !== undefined &&
-    parsed.transaction.toLowerCase() !== evidence.settlementTxHash.toLowerCase()
+    transaction.toLowerCase() !== evidence.settlementTxHash.toLowerCase()
   ) {
     return {
       disposition: "fail",
