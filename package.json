@@ -72,6 +72,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json",
     "test": "vitest run",
     "test:live": "vitest run test/integration/live.e2e.test.ts",
+    "test:live:pay-dem": "vitest run test/integration/pay-dem-two-agent.live.test.ts",
     "test:watch": "vitest",
     "conformance:sync": "node scripts/sync-vectors.mjs",
     "clean": "rm -rf dist",
