@@ -310,6 +310,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
+| `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
