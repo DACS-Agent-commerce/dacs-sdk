@@ -174,6 +174,7 @@ function buyer(input: Readonly<{
   store?: ReturnType<typeof createInMemoryPaymentEvidenceHandshakeStore>;
   anchor?: ReturnType<typeof vi.fn>;
   reconcile?: ReturnType<typeof vi.fn>;
+  verifyReceipt?: ReturnType<typeof vi.fn>;
   retryDelayMs?: number;
 }> = {}) {
   const store = input.store ?? createInMemoryPaymentEvidenceHandshakeStore();
@@ -188,9 +189,11 @@ function buyer(input: Readonly<{
     disposition: "indeterminate" as const,
     reason: "not-used",
   }));
+  const verifyReceipt = input.verifyReceipt ?? vi.fn(() => ({ disposition: "valid" as const }));
   return {
     anchor,
     reconcile,
+    verifyReceipt,
     handshake: createBuyerPaymentEvidenceHandshake({
       store,
       buyer: BUYER,
@@ -202,10 +205,23 @@ function buyer(input: Readonly<{
       verifyEvidence: () => ({ disposition: "valid" }),
       anchorEvidence: anchor as unknown as BuyerPaymentEvidenceHandshakeOptions["anchorEvidence"],
       reconcileAnchor: reconcile as unknown as BuyerPaymentEvidenceHandshakeOptions["reconcileAnchor"],
-      verifyAnchorReceipt: () => ({ disposition: "valid" }),
+      verifyAnchorReceipt: verifyReceipt as unknown as
+        BuyerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"],
       ...(input.retryDelayMs === undefined ? {} : { retryDelayMs: input.retryDelayMs }),
     }),
   };
+}
+
+function classBacked<T extends object>(delegate: T): T {
+  class StoreAdapter {}
+  for (const key of Object.keys(delegate) as Array<keyof T>) {
+    const member = delegate[key];
+    if (typeof member !== "function") continue;
+    Object.defineProperty(StoreAdapter.prototype, key, {
+      value: (...args: unknown[]) => Reflect.apply(member, delegate, args),
+    });
+  }
+  return new StoreAdapter() as T;
 }
 
 async function queueRequest(
@@ -308,21 +324,78 @@ describe("actor-separated payment-evidence handshake", () => {
       .toHaveLength(1);
   });
 
+  it("passes cooperative cancellation to an in-flight wallet callback", async () => {
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    const anchor = vi.fn((input: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        observedSignal = input.signal;
+        input.signal?.addEventListener("abort", () => reject(new Error("cancelled")), {
+          once: true,
+        });
+      }));
+    const { handshake } = buyer({ anchor });
+    const candidate = request();
+    await handshake.receiveRequest(candidate, {});
+
+    const pending = handshake.runPending({ signal: controller.signal });
+    await vi.waitFor(() => expect(observedSignal).toBe(controller.signal));
+    controller.abort();
+    expect((await pending).items).toEqual([{
+      messageId: candidate.messageId,
+      status: "reconciliation-required",
+      reasonCode: "anchor-threw",
+    }]);
+  });
+
+  it("accepts structurally valid handshake stores with prototype methods", async () => {
+    const sellerStore = classBacked(createInMemoryPaymentEvidenceHandshakeStore());
+    const buyerStore = classBacked(createInMemoryPaymentEvidenceHandshakeStore());
+    expect(Object.getPrototypeOf(sellerStore)).not.toBe(Object.prototype);
+    expect(Object.getPrototypeOf(buyerStore)).not.toBe(Object.prototype);
+    const candidate = await queueRequest(seller(sellerStore));
+    const { handshake } = buyer({ store: buyerStore });
+    await expect(handshake.receiveRequest(candidate, {})).resolves.toBe("accepted");
+    await expect(handshake.runPending()).resolves.toMatchObject({
+      items: [{ status: "completed" }],
+    });
+  });
+
   it("releases ambiguous anchor attempts and requires durable reconciliation before retry", async () => {
     let now = 1_000;
+    const signal = new AbortController().signal;
     const store = createInMemoryPaymentEvidenceHandshakeStore({ now: () => now });
     const candidate = request();
     const anchor = vi.fn()
-      .mockRejectedValueOnce(new Error("secret provider detail"))
-      .mockReturnValueOnce({ disposition: "anchored", ...finalAnchor(candidate) });
-    const reconcile = vi.fn(() => ({
-      disposition: "absent" as const,
-      absenceProofHash: ABSENCE_HASH,
-    }));
-    const { handshake } = buyer({ store, anchor, reconcile, retryDelayMs: 5 });
+      .mockImplementationOnce((input: { signal?: AbortSignal }) => {
+        expect(input.signal).toBe(signal);
+        throw new Error("secret provider detail");
+      })
+      .mockImplementationOnce((input: { signal?: AbortSignal }) => {
+        expect(input.signal).toBe(signal);
+        return { disposition: "anchored", ...finalAnchor(candidate) };
+      });
+    const reconcile = vi.fn((input: { signal?: AbortSignal }) => {
+      expect(input.signal).toBe(signal);
+      return {
+        disposition: "absent" as const,
+        absenceProofHash: ABSENCE_HASH,
+      };
+    });
+    const verifyReceipt = vi.fn((input: { signal?: AbortSignal }) => {
+      expect(input.signal).toBe(signal);
+      return { disposition: "valid" as const };
+    });
+    const { handshake } = buyer({
+      store,
+      anchor,
+      reconcile,
+      verifyReceipt,
+      retryDelayMs: 5,
+    });
     await handshake.receiveRequest(candidate, {});
 
-    expect((await handshake.runPending()).items).toEqual([{
+    expect((await handshake.runPending({ signal })).items).toEqual([{
       messageId: candidate.messageId,
       status: "reconciliation-required",
       reasonCode: "anchor-threw",
@@ -334,11 +407,12 @@ describe("actor-separated payment-evidence handshake", () => {
     expect(JSON.stringify(afterFailure)).not.toContain("secret provider detail");
 
     now += 5;
-    expect((await handshake.runPending()).items[0]?.status).toBe("reconciled-absent");
+    expect((await handshake.runPending({ signal })).items[0]?.status).toBe("reconciled-absent");
     expect(anchor).toHaveBeenCalledTimes(1);
-    expect((await handshake.runPending()).items[0]?.status).toBe("completed");
+    expect((await handshake.runPending({ signal })).items[0]?.status).toBe("completed");
     expect(anchor).toHaveBeenCalledTimes(2);
     expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(verifyReceipt).toHaveBeenCalledTimes(1);
   });
 
   it("parks permanent rejection for operator action and requeues only through repair", async () => {

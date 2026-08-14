@@ -101,6 +101,12 @@ the shared binding, role, track and exact role-local job identity. The adapter
 must assert the fence immediately before an irreversible action and use the key
 in its own intent/perform/commit/reconcile journal.
 
+Each operation also receives the scheduler's optional `AbortSignal`. This is
+cooperative cancellation: an adapter should stop before an irreversible action
+when the signal is aborted. Once submission may have occurred, it must retain
+the attempt as ambiguous and reconcile it; the coordinator deliberately does
+not race and forget an irreversible promise.
+
 ```ts
 import {
   createFixedPriceX402SellerCoordinator,
@@ -162,9 +168,12 @@ path. Evidence tracks themselves must finish successfully; returning a
 failure-shaped evidence result cannot be used to bypass the dependency graph.
 
 Only `combineFixedPriceX402OrderStatus` may report `audit-complete`, and only
-after both role-owned audit tracks are final with consistent outcomes. A local
-status reports `actor-audit-final`. Validation rejects impossible retained
-graphs such as a lone final audit track.
+after both role-owned audit tracks are final with consistent outcomes. Failure
+audits must also agree on their DACS error class, and each local failure audit
+must reproduce the originating failed phase's class. A one-sided failed or
+aborted terminal audit blocks any combined success projection. A local status
+reports `actor-audit-final`. Validation rejects impossible retained graphs such
+as a lone final audit track.
 
 An operator can explicitly requeue a non-final track:
 
@@ -261,10 +270,17 @@ between “absence observed” and “effect repeated.” `repairRequest` is the
 explicit operator requeue path and conservatively returns work to
 reconciliation, not directly to the wallet.
 
+Buyer `anchorEvidence`, `reconcileAnchor`, and `verifyAnchorReceipt` callback
+inputs receive the same optional cooperative `AbortSignal` passed to
+`runPending`. As with coordinator operations, adapters must not treat an abort
+as proof that a submitted wallet effect did not occur.
+
 ## Durable store requirements
 
-The included stores are process-local references. Production implementations
-must provide one shared atomic authority with:
+The included stores are process-local references. Store conformance is
+structural: plain object stores and class instances with prototype methods are
+both supported. Production implementations must provide one shared atomic
+authority with:
 
 - database/server-authoritative time for lease decisions;
 - monotonic logical `revision` increments;

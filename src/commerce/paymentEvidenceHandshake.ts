@@ -324,6 +324,7 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
       evidenceHash: string;
       evidence: Readonly<SettlementEvidence>;
       expectedWriter: Readonly<SellerSessionSettlementAnchorWriter & { role: "buyer" }>;
+      signal?: AbortSignal;
     }>,
     fence: Readonly<PaymentEvidenceAnchorFence>,
   ): Promise<SellerSessionSettlementAnchorResult> | SellerSessionSettlementAnchorResult;
@@ -335,12 +336,14 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
       evidenceHash: string;
       evidence: Readonly<SettlementEvidence>;
       expectedWriter: Readonly<SellerSessionSettlementAnchorWriter & { role: "buyer" }>;
+      signal?: AbortSignal;
     }>,
     fence: Readonly<PaymentEvidenceAnchorFence>,
   ): Promise<PaymentEvidenceAnchorReconciliation> | PaymentEvidenceAnchorReconciliation;
   verifyAnchorReceipt(input: Readonly<{
     request: Readonly<PaymentEvidenceAnchorRequest>;
     completion: Readonly<PaymentEvidenceAnchorCompletion>;
+    signal?: AbortSignal;
   }>): Promise<PaymentEvidenceAnchorVerification> | PaymentEvidenceAnchorVerification;
   leaseDurationMs?: number;
   retryDelayMs?: number;
@@ -451,6 +454,11 @@ function plainRecord(value: unknown): value is Record<string, unknown> {
       nodeTypes.isProxy(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function storeObject(value: unknown): value is object {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    !nodeTypes.isProxy(value);
 }
 
 function exactKeys(
@@ -1590,7 +1598,7 @@ function captureReconciliation(value: unknown): PaymentEvidenceAnchorReconciliat
 }
 
 function requireStore(value: unknown): PaymentEvidenceHandshakeStore {
-  if (!plainRecord(value)) throw new DacsError("payment-evidence handshake store is malformed");
+  if (!storeObject(value)) throw new DacsError("payment-evidence handshake store is malformed");
   const store = value as unknown as PaymentEvidenceHandshakeStore;
   for (const method of [
     "readTime",
@@ -1922,6 +1930,7 @@ export function createBuyerPaymentEvidenceHandshake(
           evidenceHash: retainedRequest.evidenceHash,
           evidence: clone(retainedRequest.evidence),
           expectedWriter: clone(retainedRequest.expectedWriter),
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
         };
         let anchored: SellerSessionSettlementAnchorResult | undefined;
         if (claim.mode === "reconcile") {
@@ -2029,7 +2038,11 @@ export function createBuyerPaymentEvidenceHandshake(
           verification = captureVerification(await Reflect.apply(
             verifyAnchorReceipt,
             INERT_RECEIVER,
-            [{ request: clone(retainedRequest), completion: clone(completion) }],
+            [{
+              request: clone(retainedRequest),
+              completion: clone(completion),
+              ...(input.signal === undefined ? {} : { signal: input.signal }),
+            }],
           ));
         } catch {
           results.push(await recordAttempt(
