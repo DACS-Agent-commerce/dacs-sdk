@@ -68,6 +68,13 @@ export {
   type X402SellerSpineOptions,
 } from "./x402Spine.js";
 export {
+  createPayDemSellerObserver,
+  observePayDemTransferCore,
+  type PayDemObservationClient,
+  type PayDemSellerObserver,
+  type PayDemSellerObserverConfig,
+} from "./payDemObserver.js";
+export {
   verifySellerPaymentIntake,
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,

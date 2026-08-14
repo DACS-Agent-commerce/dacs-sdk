@@ -34,7 +34,7 @@ All five lifecycle stages run end to end:
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
 | **Negotiate** | `runSession({ terms })` | fixed-price |
-| **Settle** | `x402Settle` · `evmErc20Settle` · `settleFromRail` | two rails, switchable by rail id; idempotent (no double-pay on resume) |
+| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
@@ -170,6 +170,36 @@ const session = await buyer.runSession(resolved, {
 // and (through the configured callback above) every normative vet closure
 const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
+```
+
+For native DEM, sellers can supply the standard read-only observer directly to
+`verifySellerPaymentIntake`:
+
+```ts
+import { createPayDemSellerObserver } from "@kynesyslabs/dacs/seller";
+
+const observer = createPayDemSellerObserver({ rpc: demosRpc });
+const deps = {
+  // ...the agreement, Listing, identity, registry and durable receipt-store
+  // resolvers required by verifySellerPaymentIntake
+  observeDemosTransfer: observer.observeDemosTransfer,
+};
+```
+
+The observer enforces DACS-4 §9.5.9 against one mutually-consistent transaction
+status, native-transfer body, and confirmed block. It derives finality time from
+the block rather than the transaction timestamp and handles the denomination
+fork correctly: post-fork string amounts are OS, while legacy numeric amounts
+are DEM and are converted at `1 DEM = 1,000,000,000 OS`. It trusts the configured
+Demos RPC's confirmed-block view; applications requiring an independent
+validator-quorum proof must inject a stronger `observeDemosTransfer` provider.
+
+The funded boundary test is disabled by default. It requires two independent
+Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), and
+`LIVE_PAY_DEM_CONFIRM=1` before it performs exactly one transfer:
+
+```sh
+npm run test:live:pay-dem
 ```
 
 `session.listingPin` is the exact DACS-1 §6.3.4 LR-1
