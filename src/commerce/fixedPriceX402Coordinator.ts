@@ -4,6 +4,11 @@ import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import {
+  captureFixedPriceOfflineProtocolBinding,
+  FIXED_PRICE_OFFLINE_COORDINATOR_DOMAIN,
+  type FixedPriceOfflineProtocolBinding,
+} from "./fixedPriceOfflineProtocol.js";
+import {
   captureFixedPriceX402ProtocolBinding,
   type FixedPriceX402ProtocolBinding,
 } from "./fixedPriceX402Protocol.js";
@@ -73,17 +78,32 @@ export type FixedPriceX402SdkJobPointers =
   | FixedPriceX402BuyerSdkJobPointers
   | FixedPriceX402SellerSdkJobPointers;
 
-export interface FixedPriceX402OrderIdentity {
+type FixedPriceCoordinatorProtocolBinding = Readonly<{ orchestrator: string }>;
+
+interface FixedPriceCoordinatorOrderIdentity<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
   jobId: string;
   buyer: string;
   seller: string;
-  protocol: Readonly<FixedPriceX402ProtocolBinding>;
+  protocol: Readonly<Protocol>;
 }
 
-export interface FixedPriceX402OrderInput extends FixedPriceX402OrderIdentity {
+interface FixedPriceCoordinatorOrderInput<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> extends FixedPriceCoordinatorOrderIdentity<Protocol> {
   /** Role-local pointers; these are deliberately excluded from the shared binding hash. */
   sdkJobs: Readonly<FixedPriceX402SdkJobPointers>;
 }
+
+export interface FixedPriceX402OrderIdentity
+  extends FixedPriceCoordinatorOrderIdentity<FixedPriceX402ProtocolBinding> {}
+export interface FixedPriceX402OrderInput
+  extends FixedPriceCoordinatorOrderInput<FixedPriceX402ProtocolBinding> {}
+export interface FixedPriceOfflineOrderIdentity
+  extends FixedPriceCoordinatorOrderIdentity<FixedPriceOfflineProtocolBinding> {}
+export interface FixedPriceOfflineOrderInput
+  extends FixedPriceCoordinatorOrderInput<FixedPriceOfflineProtocolBinding> {}
 
 export interface FixedPriceX402TrackLease {
   owner: string;
@@ -109,14 +129,16 @@ export type FixedPriceX402TrackMap = Readonly<
   Partial<Record<FixedPriceX402Track, Readonly<FixedPriceX402TrackRecord>>>
 >;
 
-export interface FixedPriceX402OrderRecord {
+interface FixedPriceCoordinatorOrderRecord<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
   storeVersion: typeof FIXED_PRICE_X402_COORDINATOR_STORE_VERSION;
   revision: number;
   role: FixedPriceX402CoordinatorRole;
   jobId: string;
   buyer: string;
   seller: string;
-  protocol: Readonly<FixedPriceX402ProtocolBinding>;
+  protocol: Readonly<Protocol>;
   bindingHash: string;
   sdkJobs: Readonly<FixedPriceX402SdkJobPointers>;
   tracks: FixedPriceX402TrackMap;
@@ -124,30 +146,47 @@ export interface FixedPriceX402OrderRecord {
   updatedAt: number;
 }
 
-export type FixedPriceX402OrderLoad =
+export interface FixedPriceX402OrderRecord
+  extends FixedPriceCoordinatorOrderRecord<FixedPriceX402ProtocolBinding> {}
+export interface FixedPriceOfflineOrderRecord
+  extends FixedPriceCoordinatorOrderRecord<FixedPriceOfflineProtocolBinding> {}
+
+type FixedPriceCoordinatorOrderLoad<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> =
   | { status: "missing" }
-  | { status: "ok"; record: Readonly<FixedPriceX402OrderRecord> }
+  | { status: "ok"; record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>> }
   | { status: "unsupported"; version: number }
   | { status: "corrupt"; reason: string };
 
-export type FixedPriceX402OrderCreate =
-  | { status: "created" | "existing"; record: Readonly<FixedPriceX402OrderRecord> }
+type FixedPriceCoordinatorOrderCreate<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> =
+  | {
+      status: "created" | "existing";
+      record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>;
+    }
   | { status: "conflict" }
   | { status: "unsupported"; version: number }
   | { status: "corrupt"; reason: string };
 
-export type FixedPriceX402TrackClaim =
+type FixedPriceCoordinatorTrackClaim<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> =
   | {
       status: "acquired";
-      record: Readonly<FixedPriceX402OrderRecord>;
+      record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>;
       lease: Readonly<FixedPriceX402TrackLease>;
     }
   | {
       status: "waiting";
-      record: Readonly<FixedPriceX402OrderRecord>;
+      record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>;
       lease: Readonly<FixedPriceX402TrackLease>;
     }
-  | { status: "not-runnable"; record: Readonly<FixedPriceX402OrderRecord> }
+  | {
+      status: "not-runnable";
+      record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>;
+    }
   | { status: "missing" | "stale" }
   | { status: "unsupported"; version: number }
   | { status: "corrupt"; reason: string };
@@ -172,36 +211,60 @@ export type FixedPriceX402TrackOperationResult =
       retryAt?: number;
     };
 
-export type FixedPriceX402TrackWrite =
-  | { status: "recorded" | "existing"; record: Readonly<FixedPriceX402OrderRecord> }
+type FixedPriceCoordinatorTrackWrite<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> =
+  | {
+      status: "recorded" | "existing";
+      record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>;
+    }
   | { status: "missing" | "stale" | "conflict" }
   | { status: "unsupported"; version: number }
   | { status: "corrupt"; reason: string };
+
+export type FixedPriceX402OrderLoad =
+  FixedPriceCoordinatorOrderLoad<FixedPriceX402ProtocolBinding>;
+export type FixedPriceX402OrderCreate =
+  FixedPriceCoordinatorOrderCreate<FixedPriceX402ProtocolBinding>;
+export type FixedPriceX402TrackClaim =
+  FixedPriceCoordinatorTrackClaim<FixedPriceX402ProtocolBinding>;
+export type FixedPriceX402TrackWrite =
+  FixedPriceCoordinatorTrackWrite<FixedPriceX402ProtocolBinding>;
+export type FixedPriceOfflineOrderLoad =
+  FixedPriceCoordinatorOrderLoad<FixedPriceOfflineProtocolBinding>;
+export type FixedPriceOfflineOrderCreate =
+  FixedPriceCoordinatorOrderCreate<FixedPriceOfflineProtocolBinding>;
+export type FixedPriceOfflineTrackClaim =
+  FixedPriceCoordinatorTrackClaim<FixedPriceOfflineProtocolBinding>;
+export type FixedPriceOfflineTrackWrite =
+  FixedPriceCoordinatorTrackWrite<FixedPriceOfflineProtocolBinding>;
 
 export interface FixedPriceX402Page<T> {
   items: readonly T[];
   nextCursor?: string;
 }
 
-export interface FixedPriceX402CoordinatorStore {
+interface FixedPriceCoordinatorStore<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
   /** Store-authoritative time, normally provided by the durable database. */
   readTime(): Promise<number>;
   create(input: Readonly<{
     role: FixedPriceX402CoordinatorRole;
-    order: Readonly<FixedPriceX402OrderInput>;
+    order: Readonly<FixedPriceCoordinatorOrderInput<Protocol>>;
     bindingHash: string;
-  }>): Promise<FixedPriceX402OrderCreate>;
+  }>): Promise<FixedPriceCoordinatorOrderCreate<Protocol>>;
   load(
     role: FixedPriceX402CoordinatorRole,
     jobId: string,
-  ): Promise<FixedPriceX402OrderLoad>;
+  ): Promise<FixedPriceCoordinatorOrderLoad<Protocol>>;
   /** Cursor-based query over only orders with runnable role-owned tracks. */
   listRunnable(input: Readonly<{
     role: FixedPriceX402CoordinatorRole;
     tracks: readonly FixedPriceX402Track[];
     cursor?: string;
     limit: number;
-  }>): Promise<FixedPriceX402Page<Readonly<FixedPriceX402OrderRecord>>>;
+  }>): Promise<FixedPriceX402Page<Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>>>;
   claim(input: Readonly<{
     role: FixedPriceX402CoordinatorRole;
     jobId: string;
@@ -209,7 +272,7 @@ export interface FixedPriceX402CoordinatorStore {
     track: FixedPriceX402Track;
     owner: string;
     leaseDurationMs: number;
-  }>): Promise<FixedPriceX402TrackClaim>;
+  }>): Promise<FixedPriceCoordinatorTrackClaim<Protocol>>;
   isCurrent(input: Readonly<{
     role: FixedPriceX402CoordinatorRole;
     jobId: string;
@@ -224,7 +287,7 @@ export interface FixedPriceX402CoordinatorStore {
     track: FixedPriceX402Track;
     lease: Readonly<FixedPriceX402TrackLease>;
     result: Readonly<FixedPriceX402TrackOperationResult>;
-  }>): Promise<FixedPriceX402TrackWrite>;
+  }>): Promise<FixedPriceCoordinatorTrackWrite<Protocol>>;
   requeue(input: Readonly<{
     role: FixedPriceX402CoordinatorRole;
     jobId: string;
@@ -232,8 +295,14 @@ export interface FixedPriceX402CoordinatorStore {
     track: FixedPriceX402Track;
     operatorReasonCode: string;
     retryAt?: number;
-  }>): Promise<FixedPriceX402TrackWrite>;
+  }>): Promise<FixedPriceCoordinatorTrackWrite<Protocol>>;
 }
+
+export interface FixedPriceX402CoordinatorStore
+  extends FixedPriceCoordinatorStore<FixedPriceX402ProtocolBinding> {}
+
+export interface FixedPriceOfflineCoordinatorStore
+  extends FixedPriceCoordinatorStore<FixedPriceOfflineProtocolBinding> {}
 
 export interface FixedPriceX402EffectFence {
   role: FixedPriceX402CoordinatorRole;
@@ -246,8 +315,10 @@ export interface FixedPriceX402EffectFence {
   assertCurrent(): Promise<void>;
 }
 
-export interface FixedPriceX402TrackOperationInput {
-  order: Readonly<FixedPriceX402OrderRecord>;
+interface FixedPriceCoordinatorTrackOperationInput<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
+  order: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>;
   fence: Readonly<FixedPriceX402EffectFence>;
   /**
    * Cooperative cancellation owned by the scheduler. Adapters must still
@@ -256,28 +327,36 @@ export interface FixedPriceX402TrackOperationInput {
   signal?: AbortSignal;
 }
 
-export type FixedPriceX402TrackOperation = (
-  input: Readonly<FixedPriceX402TrackOperationInput>,
+type FixedPriceCoordinatorTrackOperation<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> = (
+  input: Readonly<FixedPriceCoordinatorTrackOperationInput<Protocol>>,
 ) => Promise<FixedPriceX402TrackOperationResult> | FixedPriceX402TrackOperationResult;
 
-export type FixedPriceX402Operations = Readonly<
-  Partial<Record<FixedPriceX402Track, FixedPriceX402TrackOperation>>
+type FixedPriceCoordinatorOperations<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> = Readonly<
+  Partial<Record<FixedPriceX402Track, FixedPriceCoordinatorTrackOperation<Protocol>>>
 >;
 
-export interface FixedPriceX402CoordinatorOptions {
+interface FixedPriceCoordinatorOptions<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
   role: FixedPriceX402CoordinatorRole;
-  store: FixedPriceX402CoordinatorStore;
+  store: FixedPriceCoordinatorStore<Protocol>;
   workerId: string;
-  operations: FixedPriceX402Operations;
+  operations: FixedPriceCoordinatorOperations<Protocol>;
   leaseDurationMs?: number;
 }
 
-export interface FixedPriceX402OrderStatus {
+interface FixedPriceCoordinatorOrderStatus<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
   role: FixedPriceX402CoordinatorRole;
   jobId: string;
   buyer: string;
   seller: string;
-  protocol: Readonly<FixedPriceX402ProtocolBinding>;
+  protocol: Readonly<Protocol>;
   bindingHash: string;
   sdkJobs: Readonly<FixedPriceX402SdkJobPointers>;
   tracks: FixedPriceX402TrackMap;
@@ -290,15 +369,17 @@ export interface FixedPriceX402OrderStatus {
   updatedAt: number;
 }
 
-export interface FixedPriceX402CombinedOrderStatus {
+interface FixedPriceCoordinatorCombinedOrderStatus<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
   jobId: string;
   buyer: string;
   seller: string;
-  protocol: Readonly<FixedPriceX402ProtocolBinding>;
+  protocol: Readonly<Protocol>;
   bindingHash: string;
   actors: Readonly<{
-    buyer: Readonly<FixedPriceX402OrderStatus>;
-    seller: Readonly<FixedPriceX402OrderStatus>;
+    buyer: Readonly<FixedPriceCoordinatorOrderStatus<Protocol>>;
+    seller: Readonly<FixedPriceCoordinatorOrderStatus<Protocol>>;
   }>;
   milestone: FixedPriceX402Milestone;
   attention: Readonly<{
@@ -310,6 +391,32 @@ export interface FixedPriceX402CombinedOrderStatus {
   }>;
   updatedAt: number;
 }
+
+export interface FixedPriceX402TrackOperationInput
+  extends FixedPriceCoordinatorTrackOperationInput<FixedPriceX402ProtocolBinding> {}
+export type FixedPriceX402TrackOperation =
+  FixedPriceCoordinatorTrackOperation<FixedPriceX402ProtocolBinding>;
+export type FixedPriceX402Operations =
+  FixedPriceCoordinatorOperations<FixedPriceX402ProtocolBinding>;
+export interface FixedPriceX402CoordinatorOptions
+  extends FixedPriceCoordinatorOptions<FixedPriceX402ProtocolBinding> {}
+export interface FixedPriceX402OrderStatus
+  extends FixedPriceCoordinatorOrderStatus<FixedPriceX402ProtocolBinding> {}
+export interface FixedPriceX402CombinedOrderStatus
+  extends FixedPriceCoordinatorCombinedOrderStatus<FixedPriceX402ProtocolBinding> {}
+
+export interface FixedPriceOfflineTrackOperationInput
+  extends FixedPriceCoordinatorTrackOperationInput<FixedPriceOfflineProtocolBinding> {}
+export type FixedPriceOfflineTrackOperation =
+  FixedPriceCoordinatorTrackOperation<FixedPriceOfflineProtocolBinding>;
+export type FixedPriceOfflineOperations =
+  FixedPriceCoordinatorOperations<FixedPriceOfflineProtocolBinding>;
+export interface FixedPriceOfflineCoordinatorOptions
+  extends FixedPriceCoordinatorOptions<FixedPriceOfflineProtocolBinding> {}
+export interface FixedPriceOfflineOrderStatus
+  extends FixedPriceCoordinatorOrderStatus<FixedPriceOfflineProtocolBinding> {}
+export interface FixedPriceOfflineCombinedOrderStatus
+  extends FixedPriceCoordinatorCombinedOrderStatus<FixedPriceOfflineProtocolBinding> {}
 
 export interface FixedPriceX402WorkReport {
   jobId: string;
@@ -323,10 +430,16 @@ export interface FixedPriceX402WorkReport {
   reasonCode?: string;
 }
 
-export interface FixedPriceX402CommerceCoordinator {
+interface FixedPriceCommerceCoordinator<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
   readonly role: FixedPriceX402CoordinatorRole;
-  startOrder(order: Readonly<FixedPriceX402OrderInput>): Promise<FixedPriceX402OrderStatus>;
-  getOrderStatus(jobId: string): Promise<FixedPriceX402OrderStatus | null>;
+  startOrder(
+    order: Readonly<FixedPriceCoordinatorOrderInput<Protocol>>,
+  ): Promise<FixedPriceCoordinatorOrderStatus<Protocol>>;
+  getOrderStatus(
+    jobId: string,
+  ): Promise<FixedPriceCoordinatorOrderStatus<Protocol> | null>;
   runPending(options?: Readonly<{
     cursor?: string;
     limit?: number;
@@ -342,8 +455,22 @@ export interface FixedPriceX402CommerceCoordinator {
     track: FixedPriceX402Track;
     operatorReasonCode: string;
     retryAt?: number;
-  }>): Promise<FixedPriceX402OrderStatus>;
+  }>): Promise<FixedPriceCoordinatorOrderStatus<Protocol>>;
 }
+
+export interface FixedPriceX402CommerceCoordinator
+  extends FixedPriceCommerceCoordinator<FixedPriceX402ProtocolBinding> {}
+
+export interface FixedPriceOfflineCommerceCoordinator
+  extends FixedPriceCommerceCoordinator<FixedPriceOfflineProtocolBinding> {}
+
+export type FixedPriceOfflineCoordinatorRole = FixedPriceX402CoordinatorRole;
+export type FixedPriceOfflineTrack = FixedPriceX402Track;
+export type FixedPriceOfflineTrackState = FixedPriceX402TrackState;
+export type FixedPriceOfflineNormativeOutcome = FixedPriceX402NormativeOutcome;
+export type FixedPriceOfflineErrorClass = FixedPriceX402ErrorClass;
+export type FixedPriceOfflineMilestone = FixedPriceX402Milestone;
+export type FixedPriceOfflineEffectFence = FixedPriceX402EffectFence;
 
 const TRACKS = Object.freeze([
   "agreement",
@@ -385,6 +512,62 @@ const ERROR_CLASSES = new Set<FixedPriceX402ErrorClass>([
 const DEFAULT_LEASE_DURATION_MS = 30_000;
 const DEFAULT_RUN_LIMIT = 10;
 const INERT_RECEIVER = Object.freeze(Object.create(null)) as object;
+
+interface FixedPriceCoordinatorProfilePolicy<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+> {
+  readonly label: "fixed-price x402" | "fixed-price offline";
+  captureProtocol(value: unknown): Protocol;
+  bindingHash(
+    identity: Readonly<FixedPriceCoordinatorOrderIdentity<Protocol>>,
+  ): string;
+  idempotencyPayload(input: Readonly<{
+    bindingHash: string;
+    role: FixedPriceX402CoordinatorRole;
+    track: FixedPriceX402Track;
+    roleLocalJob: string;
+  }>): Readonly<Record<string, unknown>>;
+}
+
+const X402_PROFILE_POLICY: FixedPriceCoordinatorProfilePolicy<
+  FixedPriceX402ProtocolBinding
+> = Object.freeze({
+  label: "fixed-price x402",
+  captureProtocol: captureFixedPriceX402ProtocolBinding,
+  bindingHash: (identity: Readonly<FixedPriceX402OrderIdentity>) =>
+    sha256Hex(canonicalize({
+    coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+    ...identity,
+  })),
+  idempotencyPayload: (input: Readonly<{
+    bindingHash: string;
+    role: FixedPriceX402CoordinatorRole;
+    track: FixedPriceX402Track;
+    roleLocalJob: string;
+  }>) => input,
+});
+
+const OFFLINE_PROFILE_POLICY: FixedPriceCoordinatorProfilePolicy<
+  FixedPriceOfflineProtocolBinding
+> = Object.freeze({
+  label: "fixed-price offline",
+  captureProtocol: captureFixedPriceOfflineProtocolBinding,
+  bindingHash: (identity: Readonly<FixedPriceOfflineOrderIdentity>) =>
+    sha256Hex(canonicalize({
+    coordinatorDomain: FIXED_PRICE_OFFLINE_COORDINATOR_DOMAIN,
+    coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+    ...identity,
+  })),
+  idempotencyPayload: (input: Readonly<{
+    bindingHash: string;
+    role: FixedPriceX402CoordinatorRole;
+    track: FixedPriceX402Track;
+    roleLocalJob: string;
+  }>) => ({
+    coordinatorDomain: FIXED_PRICE_OFFLINE_COORDINATOR_DOMAIN,
+    ...input,
+  }),
+});
 
 const clone = <T>(value: T): T => structuredClone(value);
 const hasOwn = (value: object, key: PropertyKey): boolean =>
@@ -470,18 +653,23 @@ function capturePointers(
   return pointers as unknown as FixedPriceX402SdkJobPointers;
 }
 
-function captureIdentity(value: unknown): FixedPriceX402OrderIdentity {
-  const order = captureOwnData(value, "fixed-price x402 order identity") as unknown as
+function captureIdentity<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  value: unknown,
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
+): FixedPriceCoordinatorOrderIdentity<Protocol> {
+  const order = captureOwnData(value, `${policy.label} order identity`) as unknown as
     Record<string, unknown>;
   if (!exactKeys(order, ["jobId", "buyer", "seller", "protocol"], ["sdkJobs"]) ||
       !nonEmpty(order.jobId) || !nonEmpty(order.buyer) || !nonEmpty(order.seller) ||
       order.buyer === order.seller) {
-    throw new DacsError("fixed-price x402 order identity is malformed");
+    throw new DacsError(`${policy.label} order identity is malformed`);
   }
   requireCanonicalJobId(order.jobId);
-  const protocol = captureFixedPriceX402ProtocolBinding(order.protocol);
+  const protocol = policy.captureProtocol(order.protocol);
   if (protocol.orchestrator !== order.seller) {
-    throw new DacsError("fixed-price x402 order does not pin the seller-orchestrator topology");
+    throw new DacsError(
+      `${policy.label} order does not pin the seller-orchestrator topology`,
+    );
   }
   return {
     jobId: order.jobId,
@@ -491,11 +679,12 @@ function captureIdentity(value: unknown): FixedPriceX402OrderIdentity {
   };
 }
 
-function captureOrder(
+function captureOrder<Protocol extends FixedPriceCoordinatorProtocolBinding>(
   value: unknown,
   role: FixedPriceX402CoordinatorRole,
-): FixedPriceX402OrderInput {
-  const identity = captureIdentity(value);
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
+): FixedPriceCoordinatorOrderInput<Protocol> {
+  const identity = captureIdentity(value, policy);
   const raw = value as Record<string, unknown>;
   if (!hasOwn(raw, "sdkJobs")) throw new DacsError("coordinator SDK job pointers are required");
   return { ...identity, sdkJobs: capturePointers(raw.sdkJobs, role) };
@@ -504,11 +693,15 @@ function captureOrder(
 export function fixedPriceX402OrderBindingHash(
   order: Readonly<FixedPriceX402OrderIdentity>,
 ): string {
-  const captured = captureIdentity(order);
-  return sha256Hex(canonicalize({
-    coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
-    ...captured,
-  }));
+  const captured = captureIdentity(order, X402_PROFILE_POLICY);
+  return X402_PROFILE_POLICY.bindingHash(captured);
+}
+
+export function fixedPriceOfflineOrderBindingHash(
+  order: Readonly<FixedPriceOfflineOrderIdentity>,
+): string {
+  const captured = captureIdentity(order, OFFLINE_PROFILE_POLICY);
+  return OFFLINE_PROFILE_POLICY.bindingHash(captured);
 }
 
 function emptyTracks(
@@ -584,22 +777,22 @@ function validTrackRecord(value: unknown): value is FixedPriceX402TrackRecord {
     (value.state !== "operator-action" || value.nextAttemptAt === undefined);
 }
 
-function trackRecord(
-  record: Readonly<FixedPriceX402OrderRecord>,
+function trackRecord<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
   track: FixedPriceX402Track,
 ): Readonly<FixedPriceX402TrackRecord> | undefined {
   return record.tracks[track];
 }
 
-function final(
-  record: Readonly<FixedPriceX402OrderRecord>,
+function final<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
   track: FixedPriceX402Track,
 ): boolean {
   return trackRecord(record, track)?.state === "final";
 }
 
-function successful(
-  record: Readonly<FixedPriceX402OrderRecord>,
+function successful<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
   track: FixedPriceX402Track,
 ): boolean {
   const retained = trackRecord(record, track);
@@ -611,8 +804,8 @@ type FixedPriceX402TerminalPhaseResult = Readonly<
   | { outcome: "aborted" }
 >;
 
-function terminalPhaseResult(
-  record: Readonly<FixedPriceX402OrderRecord>,
+function terminalPhaseResult<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
 ): FixedPriceX402TerminalPhaseResult | null {
   const tracks: readonly FixedPriceX402Track[] = record.role === "buyer"
     ? ["agreement", "payment", "buyer-received"]
@@ -628,8 +821,8 @@ function terminalPhaseResult(
   return null;
 }
 
-function eligible(
-  record: Readonly<FixedPriceX402OrderRecord>,
+function eligible<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
   track: FixedPriceX402Track,
 ): boolean {
   if (!roleTracks(record.role).includes(track)) return false;
@@ -662,8 +855,8 @@ function eligible(
   }
 }
 
-function trackResultAllowed(
-  record: Readonly<FixedPriceX402OrderRecord>,
+function trackResultAllowed<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
   track: FixedPriceX402Track,
   result: Readonly<{
     outcome: FixedPriceX402NormativeOutcome;
@@ -681,7 +874,9 @@ function trackResultAllowed(
   return true;
 }
 
-function dependencyViolation(record: Readonly<FixedPriceX402OrderRecord>): string | null {
+function dependencyViolation<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
+): string | null {
   for (const track of roleTracks(record.role)) {
     const retained = record.tracks[track];
     if (!retained || retained.state === "not-started") continue;
@@ -699,7 +894,12 @@ function dependencyViolation(record: Readonly<FixedPriceX402OrderRecord>): strin
   return null;
 }
 
-export function fixedPriceX402OrderViolation(value: unknown): string | null {
+function fixedPriceCoordinatorOrderViolation<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+>(
+  value: unknown,
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
+): string | null {
   if (!plainRecord(value) || !exactKeys(value, [
     "storeVersion",
     "revision",
@@ -725,16 +925,16 @@ export function fixedPriceX402OrderViolation(value: unknown): string | null {
       value.updatedAt < value.createdAt) {
     return "coordinator order identity is malformed";
   }
-  let protocol: FixedPriceX402ProtocolBinding;
+  let protocol: Protocol;
   let sdkJobs: FixedPriceX402SdkJobPointers;
   try {
     requireCanonicalJobId(value.jobId);
-    protocol = captureFixedPriceX402ProtocolBinding(value.protocol);
+    protocol = policy.captureProtocol(value.protocol);
     sdkJobs = capturePointers(value.sdkJobs, value.role);
     if (protocol.orchestrator !== value.seller) {
       return "coordinator order has an unsupported orchestrator topology";
     }
-    const expected = fixedPriceX402OrderBindingHash({
+    const expected = policy.bindingHash({
       jobId: value.jobId,
       buyer: value.buyer,
       seller: value.seller,
@@ -754,21 +954,34 @@ export function fixedPriceX402OrderViolation(value: unknown): string | null {
       return `coordinator ${track} track is malformed`;
     }
   }
-  return dependencyViolation(value as unknown as FixedPriceX402OrderRecord);
+  return dependencyViolation(
+    value as unknown as FixedPriceCoordinatorOrderRecord<Protocol>,
+  );
 }
 
-function copyRecord(record: Readonly<FixedPriceX402OrderRecord>): FixedPriceX402OrderRecord {
+export function fixedPriceX402OrderViolation(value: unknown): string | null {
+  return fixedPriceCoordinatorOrderViolation(value, X402_PROFILE_POLICY);
+}
+
+export function fixedPriceOfflineOrderViolation(value: unknown): string | null {
+  return fixedPriceCoordinatorOrderViolation(value, OFFLINE_PROFILE_POLICY);
+}
+
+function copyRecord<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
+): FixedPriceCoordinatorOrderRecord<Protocol> {
   return clone(record);
 }
 
-function requireCoordinatorRecord(
+function requireCoordinatorRecord<Protocol extends FixedPriceCoordinatorProtocolBinding>(
   value: unknown,
   role: FixedPriceX402CoordinatorRole,
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
   expectedBindingHash?: string,
-): FixedPriceX402OrderRecord {
-  const violation = fixedPriceX402OrderViolation(value);
+): FixedPriceCoordinatorOrderRecord<Protocol> {
+  const violation = fixedPriceCoordinatorOrderViolation(value, policy);
   if (violation) throw new DacsError(violation);
-  const record = clone(value as FixedPriceX402OrderRecord);
+  const record = clone(value as FixedPriceCoordinatorOrderRecord<Protocol>);
   if (record.role !== role ||
       (expectedBindingHash !== undefined && record.bindingHash !== expectedBindingHash)) {
     throw new DacsError("coordinator store returned a different actor/order binding");
@@ -780,8 +993,8 @@ function key(role: FixedPriceX402CoordinatorRole, jobId: string): string {
   return `${role}:${jobId}`;
 }
 
-function isRunnableTrack(
-  record: Readonly<FixedPriceX402OrderRecord>,
+function isRunnableTrack<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
   track: FixedPriceX402Track,
   now: number,
 ): boolean {
@@ -792,39 +1005,45 @@ function isRunnableTrack(
   return retained.lease === undefined || retained.lease.expiresAt <= now;
 }
 
-export function createInMemoryFixedPriceX402CoordinatorStore(
+function createInMemoryFixedPriceCoordinatorStore<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+>(
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
   options: Readonly<{ now?: () => number }> = {},
-): FixedPriceX402CoordinatorStore {
+): FixedPriceCoordinatorStore<Protocol> {
   if (!plainRecord(options) || !exactKeys(options, [], ["now"]) ||
       (options.now !== undefined && typeof options.now !== "function")) {
     throw new DacsError("in-memory coordinator store options are malformed");
   }
   const clock = options.now ?? Date.now;
-  const records = new Map<string, FixedPriceX402OrderRecord>();
+  const records = new Map<string, FixedPriceCoordinatorOrderRecord<Protocol>>();
   const readTime = (): number => {
     const value = Reflect.apply(clock, INERT_RECEIVER, []);
     if (!safeUint(value)) throw new DacsError("coordinator store clock is invalid");
     return value;
   };
-  const stamp = (record: Readonly<FixedPriceX402OrderRecord>, value = readTime()): number =>
+  const stamp = (
+    record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
+    value = readTime(),
+  ): number =>
     Math.max(record.updatedAt, value);
   const loadRecord = (
     role: FixedPriceX402CoordinatorRole,
     jobId: string,
-  ): FixedPriceX402OrderLoad => {
+  ): FixedPriceCoordinatorOrderLoad<Protocol> => {
     const found = records.get(key(role, jobId));
     if (!found) return { status: "missing" };
-    const violation = fixedPriceX402OrderViolation(found);
+    const violation = fixedPriceCoordinatorOrderViolation(found, policy);
     return violation
       ? { status: "corrupt", reason: violation }
       : { status: "ok", record: copyRecord(found) };
   };
   const save = (
-    current: Readonly<FixedPriceX402OrderRecord>,
-    next: FixedPriceX402OrderRecord,
-  ): FixedPriceX402OrderRecord => {
+    current: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
+    next: FixedPriceCoordinatorOrderRecord<Protocol>,
+  ): FixedPriceCoordinatorOrderRecord<Protocol> => {
     next.revision = current.revision + 1;
-    const violation = fixedPriceX402OrderViolation(next);
+    const violation = fixedPriceCoordinatorOrderViolation(next, policy);
     if (violation) throw new DacsError(violation);
     records.set(key(next.role, next.jobId), copyRecord(next));
     return copyRecord(next);
@@ -839,21 +1058,21 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
       if (input.role !== "buyer" && input.role !== "seller") {
         return { status: "corrupt", reason: "coordinator role is malformed" };
       }
-      let order: FixedPriceX402OrderInput;
+      let order: FixedPriceCoordinatorOrderInput<Protocol>;
       try {
-        order = captureOrder(input.order, input.role);
+        order = captureOrder(input.order, input.role, policy);
       } catch (error) {
         return {
           status: "corrupt",
           reason: error instanceof DacsError ? error.message : "coordinator order is malformed",
         };
       }
-      const expected = fixedPriceX402OrderBindingHash(order);
+      const expected = policy.bindingHash(captureIdentity(order, policy));
       if (input.bindingHash !== expected) return { status: "conflict" };
       const storageKey = key(input.role, order.jobId);
       const existing = records.get(storageKey);
       if (existing) {
-        const violation = fixedPriceX402OrderViolation(existing);
+        const violation = fixedPriceCoordinatorOrderViolation(existing, policy);
         if (violation) return { status: "corrupt", reason: violation };
         return existing.bindingHash === expected &&
             canonicalize(existing.sdkJobs) === canonicalize(order.sdkJobs)
@@ -861,7 +1080,7 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
           : { status: "conflict" };
       }
       const now = readTime();
-      const record: FixedPriceX402OrderRecord = {
+      const record: FixedPriceCoordinatorOrderRecord<Protocol> = {
         storeVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
         revision: 1,
         role: input.role,
@@ -875,7 +1094,7 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
         createdAt: now,
         updatedAt: now,
       };
-      const violation = fixedPriceX402OrderViolation(record);
+      const violation = fixedPriceCoordinatorOrderViolation(record, policy);
       if (violation) return { status: "corrupt", reason: violation };
       records.set(storageKey, copyRecord(record));
       return { status: "created", record: copyRecord(record) };
@@ -946,7 +1165,7 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
         updatedAt: stamp(current, now),
         lease,
       };
-      const next: FixedPriceX402OrderRecord = {
+      const next: FixedPriceCoordinatorOrderRecord<Protocol> = {
         ...copyRecord(current),
         tracks,
         updatedAt: stamp(current, now),
@@ -1015,12 +1234,12 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
         Record<FixedPriceX402Track, FixedPriceX402TrackRecord>
       >;
       tracks[input.track] = nextTrack;
-      const next: FixedPriceX402OrderRecord = {
+      const next: FixedPriceCoordinatorOrderRecord<Protocol> = {
         ...copyRecord(current),
         tracks,
         updatedAt,
       };
-      const violation = fixedPriceX402OrderViolation(next);
+      const violation = fixedPriceCoordinatorOrderViolation(next, policy);
       if (violation) return { status: "conflict" };
       return { status: "recorded", record: save(current, next) };
     },
@@ -1053,7 +1272,7 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
         reasonCode: input.operatorReasonCode,
         ...(input.retryAt === undefined ? {} : { nextAttemptAt: input.retryAt }),
       };
-      const next: FixedPriceX402OrderRecord = {
+      const next: FixedPriceCoordinatorOrderRecord<Protocol> = {
         ...copyRecord(current),
         tracks,
         updatedAt,
@@ -1061,6 +1280,18 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
       return { status: "recorded", record: save(current, next) };
     },
   };
+}
+
+export function createInMemoryFixedPriceX402CoordinatorStore(
+  options: Readonly<{ now?: () => number }> = {},
+): FixedPriceX402CoordinatorStore {
+  return createInMemoryFixedPriceCoordinatorStore(X402_PROFILE_POLICY, options);
+}
+
+export function createInMemoryFixedPriceOfflineCoordinatorStore(
+  options: Readonly<{ now?: () => number }> = {},
+): FixedPriceOfflineCoordinatorStore {
+  return createInMemoryFixedPriceCoordinatorStore(OFFLINE_PROFILE_POLICY, options);
 }
 
 function captureOperationResult(value: unknown): FixedPriceX402TrackOperationResult {
@@ -1098,8 +1329,8 @@ function captureOperationResult(value: unknown): FixedPriceX402TrackOperationRes
   throw new DacsError("coordinator operation result is malformed");
 }
 
-function projectLocalMilestone(
-  record: Readonly<FixedPriceX402OrderRecord>,
+function projectLocalMilestone<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
 ): Exclude<FixedPriceX402Milestone, "audit-complete"> {
   const audit = trackRecord(record, "audit");
   if (audit?.state === "final") {
@@ -1123,7 +1354,15 @@ function projectLocalMilestone(
 export function projectFixedPriceX402Milestone(
   record: Readonly<FixedPriceX402OrderRecord>,
 ): Exclude<FixedPriceX402Milestone, "audit-complete"> {
-  const retained = requireCoordinatorRecord(record, record.role);
+  const retained = requireCoordinatorRecord(record, record.role, X402_PROFILE_POLICY);
+  return projectLocalMilestone(retained);
+}
+
+/** Local offline projections never claim global `audit-complete`. */
+export function projectFixedPriceOfflineMilestone(
+  record: Readonly<FixedPriceOfflineOrderRecord>,
+): Exclude<FixedPriceOfflineMilestone, "audit-complete"> {
+  const retained = requireCoordinatorRecord(record, record.role, OFFLINE_PROFILE_POLICY);
   return projectLocalMilestone(retained);
 }
 
@@ -1144,7 +1383,12 @@ function statusAsRecord(value: Readonly<Record<string, unknown>>): unknown {
   };
 }
 
-export function fixedPriceX402OrderStatusViolation(value: unknown): string | null {
+function fixedPriceCoordinatorOrderStatusViolation<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+>(
+  value: unknown,
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
+): string | null {
   if (!plainRecord(value) || !exactKeys(value, [
     "role",
     "jobId",
@@ -1159,9 +1403,9 @@ export function fixedPriceX402OrderStatusViolation(value: unknown): string | nul
     "revision",
     "updatedAt",
   ])) return "coordinator status fields are malformed";
-  const recordViolation = fixedPriceX402OrderViolation(statusAsRecord(value));
+  const recordViolation = fixedPriceCoordinatorOrderViolation(statusAsRecord(value), policy);
   if (recordViolation) return recordViolation;
-  const record = statusAsRecord(value) as FixedPriceX402OrderRecord;
+  const record = statusAsRecord(value) as FixedPriceCoordinatorOrderRecord<Protocol>;
   const projected = projectLocalMilestone(record);
   if (value.milestone !== projected || value.milestone === "audit-complete") {
     return "coordinator status milestone is inconsistent with its role-local tracks";
@@ -1183,10 +1427,19 @@ export function fixedPriceX402OrderStatusViolation(value: unknown): string | nul
   return null;
 }
 
-function projectStatus(
-  record: Readonly<FixedPriceX402OrderRecord>,
-): FixedPriceX402OrderStatus {
-  const retained = requireCoordinatorRecord(record, record.role);
+export function fixedPriceX402OrderStatusViolation(value: unknown): string | null {
+  return fixedPriceCoordinatorOrderStatusViolation(value, X402_PROFILE_POLICY);
+}
+
+export function fixedPriceOfflineOrderStatusViolation(value: unknown): string | null {
+  return fixedPriceCoordinatorOrderStatusViolation(value, OFFLINE_PROFILE_POLICY);
+}
+
+function projectStatus<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
+): FixedPriceCoordinatorOrderStatus<Protocol> {
+  const retained = requireCoordinatorRecord(record, record.role, policy);
   const attentionTracks = roleTracks(retained.role).filter(
     (track) => retained.tracks[track]?.state === "operator-action",
   );
@@ -1209,11 +1462,14 @@ function projectStatus(
   });
 }
 
-function captureOptions(value: unknown): {
+function captureOptions<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  value: unknown,
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
+): {
   role: FixedPriceX402CoordinatorRole;
-  store: FixedPriceX402CoordinatorStore;
+  store: FixedPriceCoordinatorStore<Protocol>;
   workerId: string;
-  operations: Map<FixedPriceX402Track, FixedPriceX402TrackOperation>;
+  operations: Map<FixedPriceX402Track, FixedPriceCoordinatorTrackOperation<Protocol>>;
   leaseDurationMs: number;
 } {
   if (!plainRecord(value) || !exactKeys(
@@ -1223,9 +1479,9 @@ function captureOptions(value: unknown): {
   ) || (value.role !== "buyer" && value.role !== "seller") ||
       !nonEmpty(value.workerId) || !storeObject(value.store) ||
       !plainRecord(value.operations)) {
-    throw new DacsError("fixed-price x402 coordinator options are malformed");
+    throw new DacsError(`${policy.label} coordinator options are malformed`);
   }
-  const store = value.store as unknown as FixedPriceX402CoordinatorStore;
+  const store = value.store as unknown as FixedPriceCoordinatorStore<Protocol>;
   for (const method of [
     "readTime",
     "create",
@@ -1237,26 +1493,29 @@ function captureOptions(value: unknown): {
     "requeue",
   ] as const) {
     if (typeof store[method] !== "function") {
-      throw new DacsError(`fixed-price x402 coordinator store.${method} is required`);
+      throw new DacsError(`${policy.label} coordinator store.${method} is required`);
     }
   }
-  const operations = new Map<FixedPriceX402Track, FixedPriceX402TrackOperation>();
+  const operations = new Map<
+    FixedPriceX402Track,
+    FixedPriceCoordinatorTrackOperation<Protocol>
+  >();
   for (const operationKey of Reflect.ownKeys(value.operations)) {
     if (typeof operationKey !== "string" ||
         !roleTracks(value.role).includes(operationKey as FixedPriceX402Track) ||
         typeof value.operations[operationKey] !== "function") {
       throw new DacsError(
-        `fixed-price x402 ${value.role} coordinator operation is not role-owned`,
+        `${policy.label} ${value.role} coordinator operation is not role-owned`,
       );
     }
     operations.set(
       operationKey as FixedPriceX402Track,
-      value.operations[operationKey] as FixedPriceX402TrackOperation,
+      value.operations[operationKey] as FixedPriceCoordinatorTrackOperation<Protocol>,
     );
   }
   const leaseDurationMs = value.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS;
   if (!safeUint(leaseDurationMs) || leaseDurationMs === 0) {
-    throw new DacsError("fixed-price x402 coordinator leaseDurationMs must be positive");
+    throw new DacsError(`${policy.label} coordinator leaseDurationMs must be positive`);
   }
   return {
     role: value.role,
@@ -1272,15 +1531,18 @@ function captureOptions(value: unknown): {
  * signing authority. Role-local SDK pointers are intentionally allowed to
  * differ; only the shared protocol binding must match.
  */
-export function combineFixedPriceX402OrderStatus(input: Readonly<{
-  buyer: Readonly<FixedPriceX402OrderStatus>;
-  seller: Readonly<FixedPriceX402OrderStatus>;
-}>): FixedPriceX402CombinedOrderStatus {
+function combineFixedPriceCoordinatorOrderStatus<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+>(input: Readonly<{
+  buyer: Readonly<FixedPriceCoordinatorOrderStatus<Protocol>>;
+  seller: Readonly<FixedPriceCoordinatorOrderStatus<Protocol>>;
+}>, policy: FixedPriceCoordinatorProfilePolicy<Protocol>):
+  FixedPriceCoordinatorCombinedOrderStatus<Protocol> {
   const captured = captureOwnData(input, "combined coordinator status input");
   const buyer = captureOwnData(captured.buyer, "buyer coordinator status");
   const seller = captureOwnData(captured.seller, "seller coordinator status");
-  const buyerViolation = fixedPriceX402OrderStatusViolation(buyer);
-  const sellerViolation = fixedPriceX402OrderStatusViolation(seller);
+  const buyerViolation = fixedPriceCoordinatorOrderStatusViolation(buyer, policy);
+  const sellerViolation = fixedPriceCoordinatorOrderStatusViolation(seller, policy);
   if (buyerViolation || sellerViolation) {
     throw new DacsError(buyerViolation ?? sellerViolation!);
   }
@@ -1290,7 +1552,7 @@ export function combineFixedPriceX402OrderStatus(input: Readonly<{
       canonicalize(buyer.protocol) !== canonicalize(seller.protocol)) {
     throw new DacsError("buyer and seller coordinator statuses do not bind the same order");
   }
-  const expectedBinding = fixedPriceX402OrderBindingHash({
+  const expectedBinding = policy.bindingHash({
     jobId: buyer.jobId,
     buyer: buyer.buyer,
     seller: buyer.seller,
@@ -1364,6 +1626,20 @@ export function combineFixedPriceX402OrderStatus(input: Readonly<{
   });
 }
 
+export function combineFixedPriceX402OrderStatus(input: Readonly<{
+  buyer: Readonly<FixedPriceX402OrderStatus>;
+  seller: Readonly<FixedPriceX402OrderStatus>;
+}>): FixedPriceX402CombinedOrderStatus {
+  return combineFixedPriceCoordinatorOrderStatus(input, X402_PROFILE_POLICY);
+}
+
+export function combineFixedPriceOfflineOrderStatus(input: Readonly<{
+  buyer: Readonly<FixedPriceOfflineOrderStatus>;
+  seller: Readonly<FixedPriceOfflineOrderStatus>;
+}>): FixedPriceOfflineCombinedOrderStatus {
+  return combineFixedPriceCoordinatorOrderStatus(input, OFFLINE_PROFILE_POLICY);
+}
+
 function runLimit(value: unknown): number {
   if (value === undefined) return DEFAULT_RUN_LIMIT;
   if (!safeUint(value) || value === 0) {
@@ -1403,10 +1679,10 @@ function pointerForTrack(
   }
 }
 
-function requireTrackWrite(
-  value: FixedPriceX402TrackWrite,
+function requireTrackWrite<Protocol extends FixedPriceCoordinatorProtocolBinding>(
+  value: FixedPriceCoordinatorTrackWrite<Protocol>,
   label: string,
-): FixedPriceX402OrderRecord {
+): FixedPriceCoordinatorOrderRecord<Protocol> {
   if (value.status === "corrupt") throw new DacsError(value.reason);
   if (value.status === "unsupported") {
     throw new DacsError(`coordinator store version ${value.version} is unsupported`);
@@ -1417,12 +1693,17 @@ function requireTrackWrite(
   return clone(value.record);
 }
 
-export function createFixedPriceX402CommerceCoordinator(
-  options: FixedPriceX402CoordinatorOptions,
-): FixedPriceX402CommerceCoordinator {
-  const captured = captureOptions(options);
+function createFixedPriceCommerceCoordinator<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+>(
+  options: FixedPriceCoordinatorOptions<Protocol>,
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
+): FixedPriceCommerceCoordinator<Protocol> {
+  const captured = captureOptions(options, policy);
 
-  const get = async (jobId: string): Promise<FixedPriceX402OrderRecord | null> => {
+  const get = async (
+    jobId: string,
+  ): Promise<FixedPriceCoordinatorOrderRecord<Protocol> | null> => {
     requireCanonicalJobId(jobId);
     const loaded = clone(await captured.store.load(captured.role, jobId));
     if (loaded.status === "missing") return null;
@@ -1433,7 +1714,7 @@ export function createFixedPriceX402CommerceCoordinator(
           : `coordinator store version ${loaded.version} is unsupported`,
       );
     }
-    return requireCoordinatorRecord(loaded.record, captured.role);
+    return requireCoordinatorRecord(loaded.record, captured.role, policy);
   };
 
   const run = async (
@@ -1457,7 +1738,7 @@ export function createFixedPriceX402CommerceCoordinator(
       throw new DacsError("coordinator store returned a malformed runnable page");
     }
     const runnableRecords = page.items.map((rawRecord) =>
-      requireCoordinatorRecord(rawRecord, captured.role)
+      requireCoordinatorRecord(rawRecord, captured.role, policy)
     );
     let previousJobId = cursor;
     for (const record of runnableRecords) {
@@ -1501,7 +1782,12 @@ export function createFixedPriceX402CommerceCoordinator(
             throw new DacsError(`coordinator store version ${claim.version} is unsupported`);
           }
           if (claim.status === "waiting" || claim.status === "not-runnable") {
-            record = requireCoordinatorRecord(claim.record, captured.role, record.bindingHash);
+            record = requireCoordinatorRecord(
+              claim.record,
+              captured.role,
+              policy,
+              record.bindingHash,
+            );
           }
           if (!["waiting", "not-runnable", "missing", "stale"].includes(claim.status)) {
             throw new DacsError("coordinator store returned an unknown track-claim result");
@@ -1518,7 +1804,12 @@ export function createFixedPriceX402CommerceCoordinator(
           }
           continue;
         }
-        record = requireCoordinatorRecord(claim.record, captured.role, record.bindingHash);
+        record = requireCoordinatorRecord(
+          claim.record,
+          captured.role,
+          policy,
+          record.bindingHash,
+        );
         const lease = clone(claim.lease);
         const retainedLease = record.tracks[track]?.lease;
         if (!validLease(lease) || !retainedLease ||
@@ -1533,12 +1824,12 @@ export function createFixedPriceX402CommerceCoordinator(
           track,
           owner: lease.owner,
           generation: lease.generation,
-          idempotencyKey: sha256Hex(canonicalize({
+          idempotencyKey: sha256Hex(canonicalize(policy.idempotencyPayload({
             bindingHash: record.bindingHash,
             role: captured.role,
             track,
             roleLocalJob,
-          })),
+          }))),
           assertCurrent: async () => {
             const current = await captured.store.isCurrent({
               role: captured.role,
@@ -1586,6 +1877,7 @@ export function createFixedPriceX402CommerceCoordinator(
           record = requireCoordinatorRecord(
             written.record,
             captured.role,
+            policy,
             record.bindingHash,
           );
           reports.push({
@@ -1631,11 +1923,11 @@ export function createFixedPriceX402CommerceCoordinator(
     };
   };
 
-  const coordinator: FixedPriceX402CommerceCoordinator = {
+  const coordinator: FixedPriceCommerceCoordinator<Protocol> = {
     role: captured.role,
     async startOrder(input) {
-      const order = captureOrder(input, captured.role);
-      const bindingHash = fixedPriceX402OrderBindingHash(order);
+      const order = captureOrder(input, captured.role, policy);
+      const bindingHash = policy.bindingHash(captureIdentity(order, policy));
       const created = clone(await captured.store.create({
         role: captured.role,
         order,
@@ -1654,12 +1946,13 @@ export function createFixedPriceX402CommerceCoordinator(
       return projectStatus(requireCoordinatorRecord(
         created.record,
         captured.role,
+        policy,
         bindingHash,
-      ));
+      ), policy);
     },
     async getOrderStatus(jobId) {
       const record = await get(jobId);
-      return record ? projectStatus(record) : null;
+      return record ? projectStatus(record, policy) : null;
     },
     runPending: run,
     resumePendingOrders: run,
@@ -1686,11 +1979,24 @@ export function createFixedPriceX402CommerceCoordinator(
       return projectStatus(requireCoordinatorRecord(
         repaired,
         captured.role,
+        policy,
         record.bindingHash,
-      ));
+      ), policy);
     },
   };
   return Object.freeze(coordinator);
+}
+
+export function createFixedPriceX402CommerceCoordinator(
+  options: FixedPriceX402CoordinatorOptions,
+): FixedPriceX402CommerceCoordinator {
+  return createFixedPriceCommerceCoordinator(options, X402_PROFILE_POLICY);
+}
+
+export function createFixedPriceOfflineCommerceCoordinator(
+  options: FixedPriceOfflineCoordinatorOptions,
+): FixedPriceOfflineCommerceCoordinator {
+  return createFixedPriceCommerceCoordinator(options, OFFLINE_PROFILE_POLICY);
 }
 
 export function createFixedPriceX402BuyerCoordinator(
@@ -1703,4 +2009,16 @@ export function createFixedPriceX402SellerCoordinator(
   options: Omit<FixedPriceX402CoordinatorOptions, "role">,
 ): FixedPriceX402CommerceCoordinator {
   return createFixedPriceX402CommerceCoordinator({ ...options, role: "seller" });
+}
+
+export function createFixedPriceOfflineBuyerCoordinator(
+  options: Omit<FixedPriceOfflineCoordinatorOptions, "role">,
+): FixedPriceOfflineCommerceCoordinator {
+  return createFixedPriceOfflineCommerceCoordinator({ ...options, role: "buyer" });
+}
+
+export function createFixedPriceOfflineSellerCoordinator(
+  options: Omit<FixedPriceOfflineCoordinatorOptions, "role">,
+): FixedPriceOfflineCommerceCoordinator {
+  return createFixedPriceOfflineCommerceCoordinator({ ...options, role: "seller" });
 }
