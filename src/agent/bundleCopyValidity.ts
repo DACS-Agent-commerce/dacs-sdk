@@ -1,4 +1,5 @@
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import { isCanonicalBase64Url } from "../artifacts/signatures.js";
 import { isAnyAttestationBundle } from "../artifacts/validators.js";
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
@@ -61,6 +62,22 @@ export async function verifyBundleCopy(
   const unsigned = stripSignature(bundle);
   if (isFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
     return { valid: false, reason: "faultedParty is not permitted for outcome and anchoredByRole" };
+  }
+  const encodedEntries = Array.isArray(bundle["signatures"])
+    ? bundle["signatures"]
+    : [];
+  for (const entry of encodedEntries) {
+    if (
+      isObj(entry) &&
+      typeof entry["value"] === "string" &&
+      !isCanonicalBase64Url(entry["value"])
+    ) {
+      const party = typeof entry["party"] === "string" ? entry["party"] : "unknown";
+      return {
+        valid: false,
+        reason: `signature by ${party} is not canonical unpadded base64url`,
+      };
+    }
   }
   if (!isAnyAttestationBundle(bundle)) {
     return { valid: false, reason: "not an attestation bundle" };
@@ -141,8 +158,8 @@ export async function verifyBundleCopy(
     if (!partyClaims.has(party)) {
       return { valid: false, reason: `signature party "${party}" is not a bundle party` };
     }
-    if (!/^[A-Za-z0-9_-]+$/.test(value)) {
-      return { valid: false, reason: `signature by ${party} is not unpadded base64url` };
+    if (!isCanonicalBase64Url(value)) {
+      return { valid: false, reason: `signature by ${party} is not canonical unpadded base64url` };
     }
     const key = await deps.resolvePublicKey(party);
     if (!key || key.length !== 32) {
