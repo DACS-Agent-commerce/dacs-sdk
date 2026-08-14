@@ -39,7 +39,7 @@ jobs:
           mkdir -p package-smoke/app
           npm pack --pack-destination package-smoke
           npm install --prefix package-smoke/app --omit=optional --ignore-scripts "$GITHUB_WORKSPACE"/package-smoke/*.tgz
-          (cd package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller')]).then(([root, seller]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function') process.exit(1) })")
+          (cd package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller')]).then(([root, seller]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function') process.exit(1) })")
           npm audit --prefix package-smoke/app --omit=dev --omit=optional
 
       - name: Test (unit + conformance harness)

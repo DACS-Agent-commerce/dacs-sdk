@@ -8,14 +8,20 @@ import { identityBundleHash } from "../../src/identity/index.js";
 import {
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,
+  isValidSellerReceiptClaim,
+  sellerFulfilmentCandidateHash,
+  sellerFulfilmentAuditSourceHash,
   verifySellerPaymentIntake,
   x402Eip3009Nonce,
   type CommittedAgreementResolution,
   type DemosTransferObservation,
+  type SellerFulfilmentHandoff,
+  type SellerFulfilmentHandoffV2,
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeInput,
   type SellerListingAtCommitResolution,
   type SellerPaymentEvidenceInput,
+  type SellerPaymentAuthorization,
   type SellerReceiptClaim,
   type SellerReceiptStore,
   type SellerSupportedRailDefinition,
@@ -275,10 +281,13 @@ function makeContext(
     agreementHash,
     commitment: {
       finality: "finalized",
+      ref: `dacs3:commit:${JOB_ID}`,
+      contentHash: "cd".repeat(32),
       jobId: JOB_ID,
       agreementHash,
       listingRef,
       committedAt: 1_000,
+      signer: SELLER,
     },
     railRegistryVersion: 7,
   };
@@ -394,6 +403,7 @@ function rebindJob(ctx: Context, jobId: string): void {
   ctx.input.jobId = jobId;
   ctx.agreement.jobId = jobId;
   ctx.committed.commitment.jobId = jobId;
+  ctx.committed.commitment.ref = `dacs3:commit:${jobId}`;
   refreshCommitment(ctx);
 }
 
@@ -468,18 +478,46 @@ function receiptClaim(overrides: Partial<{
   const jobId = overrides.jobId ?? JOB_ID;
   const phaseIndex = overrides.phaseIndex ?? PAYMENT_PHASE_INDEX;
   const observedAt = overrides.observedAt ?? 5_000;
-  const evidenceInput: SellerPaymentEvidenceInput = {
-    evidenceVersion: "1",
-    jobId,
-    phase: "pay-dem",
-    outcome: "success",
-    paymentTxRefs: [{ kind: "demos", txHash: `0x${"ef".repeat(32)}`, blockNumber: 1 }],
-    paymentAmount: { amount: "1", currency: "DEM" },
-    settlementFinality: { model: "bft-final", finalityObservedAt: observedAt },
-    observedAt,
-  };
+  const evm = /^evm:(\d+):([0-9a-fA-F]{64}):(\d+)$/.exec(settlementId);
+  const demos = /^demos:([0-9a-fA-F]{64})$/.exec(settlementId);
+  if (!evm && !demos) throw new TypeError("receiptClaim requires a canonical supported settlement id");
+  const chainId = evm ? Number(evm[1]) : undefined;
+  const txHash = evm ? evm[2]! : demos![1]!;
+  const logIndex = evm ? Number(evm[3]) : undefined;
+  const evidenceInput: SellerPaymentEvidenceInput = evm
+    ? {
+        evidenceVersion: "1",
+        jobId,
+        phase: "pay-x402",
+        outcome: "success",
+        paymentTxRefs: [{
+          kind: "x402",
+          httpResource: "https://seller.example/pay/store-test",
+          paymentReceiptHash: "dd".repeat(32),
+          settlementTxHash: txHash,
+          chainId: chainId!,
+          protocolVersion: "2",
+        }],
+        paymentAmount: { amount: "1", currency: "USDC" },
+        settlementFinality: {
+          model: "block-depth",
+          finalityBlocks: 1,
+          finalityObservedAt: observedAt,
+        },
+        observedAt,
+      }
+    : {
+        evidenceVersion: "1",
+        jobId,
+        phase: "pay-dem",
+        outcome: "success",
+        paymentTxRefs: [{ kind: "demos", txHash, blockNumber: 1 }],
+        paymentAmount: { amount: "1", currency: "DEM" },
+        settlementFinality: { model: "bft-final", finalityObservedAt: observedAt },
+        observedAt,
+      };
   const evidenceHash = sha256Hex(canonicalize(evidenceInput));
-  const authorization = {
+  const authorization: SellerPaymentAuthorization = {
     jobId,
     phaseIndex,
     agreementHash: "aa".repeat(32),
@@ -488,7 +526,23 @@ function receiptClaim(overrides: Partial<{
       version: 1,
       contentHash: "bb".repeat(32),
     },
-    railId: "demos-native:DEM",
+    railId: evm ? "x402:default" : "demos-native:DEM",
+    railRegistryVersion: 7,
+    commitment: {
+      ref: `dacs3:commit:${jobId}`,
+      contentHash: "cc".repeat(32),
+      finalizedAt: 0,
+      signer: SELLER,
+    },
+    settlementIdentity: evm
+      ? {
+          kind: "evm",
+          chainId: chainId!,
+          txHash,
+          logIndex: logIndex!,
+          includedAt: observedAt,
+        }
+      : { kind: "demos", txHash, blockNumber: 1, includedAt: observedAt },
     settlementId,
     evidenceHash,
     evidenceInput,
@@ -504,7 +558,166 @@ function receiptClaim(overrides: Partial<{
   };
 }
 
+function fulfilmentHandoffBase(
+  claim = receiptClaim(),
+  artifactValue = 42,
+): Omit<
+  SellerFulfilmentHandoff,
+  "handoffVersion" | "auditSource" | "auditSourceHash" | "auditSourceCommitment"
+> {
+  const artifact = {
+    kind: "deliver-storage-program",
+    cleartextPayload: { value: artifactValue },
+    anchoredValue: { value: artifactValue },
+    access: { model: "public" },
+  };
+  return {
+    fulfilmentId: `fulfilment:${claim.jobId}:${claim.phaseIndex + 1}`,
+    jobId: claim.jobId,
+    agreementRef: `agreement:${claim.jobId}`,
+    agreementHash: claim.authorization.agreementHash,
+    commitmentRef: claim.authorization.commitment.ref,
+    authorizationHash: sha256Hex(canonicalize(claim.authorization)),
+    settlementId: claim.settlementId,
+    paymentEvidenceHash: claim.evidenceHash,
+    paymentPhaseIndex: claim.phaseIndex,
+    deliveryPhaseIndex: claim.phaseIndex + 1,
+    phase: "deliver-storage-program",
+    logicalAddress: `dacs4:deliverable:${claim.jobId}`,
+    deliverableSpecHash: "dd".repeat(32),
+    candidate: {
+      status: "prepared",
+      validatedAt: claim.observedAt,
+      artifactHash: sha256Hex(canonicalize(artifact)),
+      delivery: { artifact },
+    },
+  };
+}
+
+function fulfilmentHandoff(
+  claim = receiptClaim(),
+  artifactValue = 42,
+): SellerFulfilmentHandoffV2 {
+  const base = fulfilmentHandoffBase(claim, artifactValue);
+  const pipeline = [
+    { kind: "negotiate-fixed-price" as const },
+    { kind: "commit-agreement" as const },
+    {
+      kind: claim.authorization.evidenceInput.phase,
+      parameters: { rail: claim.authorization.railId },
+    },
+    { kind: "deliver-storage-program" as const },
+  ];
+  const paymentRef = {
+    anchor: {
+      kind: "storage-program" as const,
+      locator:
+        `dacs4:payment:${claim.jobId}:${claim.authorization.railId}:${claim.phaseIndex}`,
+    },
+    contentHash: claim.evidenceHash,
+  };
+  const auditSource = {
+    sourceVersion: "1" as const,
+    session: {
+      recordVersion: "1" as const,
+      jobId: claim.jobId,
+      state: "settle-pending",
+      listingRef: structuredClone(claim.authorization.listingRef),
+      parties: [
+        { role: "buyer" as const, bundleHash: "1".repeat(64), primaryClaim: BUYER },
+        { role: "seller" as const, bundleHash: "2".repeat(64), primaryClaim: SELLER },
+        { role: "orchestrator" as const, bundleHash: "2".repeat(64), primaryClaim: SELLER },
+      ],
+      pipeline,
+      phaseResults: [
+        {
+          index: 0,
+          step: pipeline[0]!,
+          invokedAt: Math.max(0, claim.observedAt - 3),
+          result: { ok: true, contextDelta: {} },
+          contextDelta: {},
+        },
+        {
+          index: 1,
+          step: pipeline[1]!,
+          invokedAt: Math.max(0, claim.observedAt - 2),
+          result: { ok: true, contextDelta: {} },
+          contextDelta: {},
+        },
+        {
+          index: claim.phaseIndex,
+          step: pipeline[claim.phaseIndex]!,
+          invokedAt: claim.observedAt,
+          result: {
+            ok: true,
+            txRefs: structuredClone(claim.authorization.evidenceInput.paymentTxRefs),
+            attestationRef: paymentRef,
+            contextDelta: {},
+          },
+          contextDelta: {},
+        },
+      ],
+      startedAt: Math.max(0, claim.observedAt - 4),
+      lastUpdatedAt: claim.observedAt,
+      recipeRegistryVersion: 1,
+      railRegistryVersion: claim.authorization.railRegistryVersion,
+    },
+    artifacts: {
+      agreementCommitment: {
+        anchor: {
+          kind: "storage-program" as const,
+          locator: claim.authorization.commitment.ref,
+        },
+        contentHash: claim.authorization.commitment.contentHash,
+      },
+      vetRecords: [],
+      vetRequirements: [],
+      settlementEvidence: [paymentRef],
+    },
+    provenanceProfile: "dacs-sdk-operational-v1" as const,
+  };
+  return {
+    ...base,
+    handoffVersion: "2",
+    auditSource,
+    auditSourceHash: sellerFulfilmentAuditSourceHash(auditSource),
+    auditSourceCommitment: {
+      commitmentVersion: "1",
+      fulfilmentId: base.fulfilmentId,
+      jobId: base.jobId,
+      authorizationHash: base.authorizationHash,
+      auditSourceHash: sellerFulfilmentAuditSourceHash(auditSource),
+      candidateHash: sellerFulfilmentCandidateHash(base.candidate),
+      signature: { algorithm: "ed25519", signer: SELLER, value: "c2ln" },
+    },
+  };
+}
+
 describe("verifySellerPaymentIntake", () => {
+  it.each([
+    {
+      name: "an explicitly undefined optional field",
+      mutate: (claim: SellerReceiptClaim) => {
+        claim.authorization.evidenceInput.paymentAmount.unit = undefined;
+      },
+    },
+    {
+      name: "negative zero",
+      mutate: (claim: SellerReceiptClaim) => {
+        claim.authorization.commitment.finalizedAt = -0;
+      },
+    },
+  ])("rejects $name even when JCS aliases the authorization", ({ mutate }) => {
+    const canonicalClaim = receiptClaim();
+    const aliasedClaim = structuredClone(canonicalClaim);
+    mutate(aliasedClaim);
+
+    expect(canonicalize(aliasedClaim.authorization))
+      .toBe(canonicalize(canonicalClaim.authorization));
+    expect(isValidSellerReceiptClaim(canonicalClaim)).toBe(true);
+    expect(isValidSellerReceiptClaim(aliasedClaim)).toBe(false);
+  });
+
   it("verifies pay-DEM in OS, emits exact normative evidence, and claims once", async () => {
     const store = createInMemorySellerReceiptStore();
     const first = makeContext("pay-dem", store);
@@ -515,6 +728,7 @@ describe("verifySellerPaymentIntake", () => {
       fulfilment: "claim",
       settlementId: `demos:${"ab".repeat(32)}`,
       payoutBindingTier: 1,
+      commitment: { signer: SELLER },
       evidenceInput: {
         evidenceVersion: "1",
         jobId: JOB_ID,
@@ -544,6 +758,16 @@ describe("verifySellerPaymentIntake", () => {
     expect(duplicate).toMatchObject({
       disposition: "verified",
       fulfilment: "already-claimed",
+    });
+  });
+
+  it("requires the authenticated FinalityCommitmentRecord signer", async () => {
+    const ctx = makeContext("pay-dem");
+    delete (ctx.committed.commitment as { signer?: string }).signer;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "agreement-resolution-invalid-result",
     });
   });
 
@@ -697,7 +921,7 @@ describe("verifySellerPaymentIntake", () => {
         claims += 1;
         return backing.claim(candidate);
       },
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     ctx.deps.resolveListingAtCommit = async () => {
       const resolution = listingAtCommitResolution(ctx.listing);
@@ -724,7 +948,7 @@ describe("verifySellerPaymentIntake", () => {
         claims += 1;
         return backing.claim(candidate);
       },
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
 
     await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
@@ -833,7 +1057,7 @@ describe("verifySellerPaymentIntake", () => {
         claims += 1;
         return backing.claim(candidate);
       },
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     proxied.deps.resolveCommittedAgreement = async () =>
       new Proxy(proxied.committed, {});
@@ -870,7 +1094,7 @@ describe("verifySellerPaymentIntake", () => {
         claims += 1;
         return backing.claim(candidate);
       },
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     mutatedInput.deps.resolveRail = async (railInput) => {
       railInput.ref.railId = "pay-evil";
@@ -900,7 +1124,7 @@ describe("verifySellerPaymentIntake", () => {
           Object.isFrozen(candidate.authorization.evidenceInput);
         return backing.claim(candidate);
       },
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     await expect(verifySellerPaymentIntake(accepted.input, accepted.deps))
       .resolves.toMatchObject({ disposition: "verified", fulfilment: "claim" });
@@ -913,7 +1137,7 @@ describe("verifySellerPaymentIntake", () => {
         await proxiedBacking.claim(candidate),
         {},
       ),
-      consumePermit: (permitId) => proxiedBacking.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => proxiedBacking.consumePermit(permitId, handoff),
     };
     await expect(verifySellerPaymentIntake(proxied.input, proxied.deps))
       .resolves.toMatchObject({
@@ -939,7 +1163,7 @@ describe("verifySellerPaymentIntake", () => {
       claim: async (candidate) => mutate(
         await backing.claim(candidate) as unknown as Record<string, unknown>,
       ) as never,
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
 
     await expect(verifySellerPaymentIntake(ctx.input, ctx.deps))
@@ -959,7 +1183,7 @@ describe("verifySellerPaymentIntake", () => {
         claims += 1;
         return backing.claim(candidate);
       },
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     ctx.deps.resolveListingAtCommit = async () => new Proxy(
       listingAtCommitResolution(ctx.listing),
@@ -1347,7 +1571,7 @@ describe("verifySellerPaymentIntake", () => {
         if (consumed.status !== "claimed" && consumed.status !== "already-claimed") {
           throw new Error(`invalid consumed fixture: ${vector.name}`);
         }
-        await store.consumePermit(consumed.permitId);
+        await store.consumePermit(consumed.permitId, fulfilmentHandoff(consumed.claim));
       }
       const result = await store.claim(receiptClaim({
         settlementId: settlementId!,
@@ -1381,11 +1605,63 @@ describe("verifySellerPaymentIntake", () => {
       result.status === "conflict" ? [] : [result.permitId]);
     expect(new Set(permits).size).toBe(1);
     const consumptions = await Promise.all(
-      permits.map((permitId) => store.consumePermit(permitId)),
+      permits.map((permitId) => store.consumePermit(permitId, fulfilmentHandoff(request))),
     );
     expect(consumptions.filter((result) => result.status === "consumed")).toHaveLength(1);
     expect(consumptions.filter((result) => result.status === "already-consumed"))
       .toHaveLength(11);
+  });
+
+  it("atomically retains the complete handoff and never overwrites it on replay", async () => {
+    const store = createInMemorySellerReceiptStore();
+    const retained = receiptClaim();
+    const claimed = await store.claim(retained);
+    if (claimed.status === "conflict") throw new Error("fixture");
+
+    expect(await store.inspectPermit(claimed.permitId)).toMatchObject({
+      status: "available",
+      claim: {
+        authorization: {
+          agreementHash: retained.authorization.agreementHash,
+          railId: retained.authorization.railId,
+          railRegistryVersion: retained.authorization.railRegistryVersion,
+        },
+      },
+    });
+    const handoff = fulfilmentHandoff(claimed.claim);
+    expect(await store.consumePermit(claimed.permitId, handoff)).toMatchObject({
+      status: "consumed",
+      handoff,
+    });
+    expect(await store.inspectPermit(claimed.permitId)).toMatchObject({
+      status: "already-consumed",
+      claim: { authorization: { agreementHash: retained.authorization.agreementHash } },
+      handoff,
+    });
+    const replacement = fulfilmentHandoff(claimed.claim, 999);
+    const replay = await store.consumePermit(claimed.permitId, replacement);
+    expect(replay).toMatchObject({ status: "already-consumed" });
+    if (replay.status === "invalid") throw new Error("fixture");
+    expect(replay.handoff).toEqual(handoff);
+    expect(replay.handoff).not.toEqual(replacement);
+  });
+
+  it("rejects the unreleased V1 draft handoff instead of promising unsafe recovery", async () => {
+    const store = createInMemorySellerReceiptStore();
+    const claimed = await store.claim(receiptClaim());
+    if (claimed.status === "conflict") throw new Error("fixture");
+    const unsupported = {
+      ...fulfilmentHandoff(claimed.claim),
+      handoffVersion: "1",
+    };
+    delete (unsupported as { auditSource?: unknown }).auditSource;
+    delete (unsupported as { auditSourceHash?: unknown }).auditSourceHash;
+
+    await expect(store.consumePermit(claimed.permitId, unsupported as never))
+      .rejects.toThrow("seller fulfilment handoff is malformed");
+    await expect(store.inspectPermit(claimed.permitId)).resolves.toMatchObject({
+      status: "available",
+    });
   });
 
   it("returns the store-retained authorization on a same-phase retry", async () => {
@@ -1420,6 +1696,9 @@ describe("verifySellerPaymentIntake", () => {
     ctx.deps.receiptStore = {
       async claim(input) {
         return { status: "claimed", permitId: "", claim: input };
+      },
+      async inspectPermit() {
+        return { status: "invalid" };
       },
       async consumePermit() {
         return { status: "invalid" };
@@ -1492,7 +1771,7 @@ describe("verifySellerPaymentIntake", () => {
         claim.authorization.evidenceHash = evidenceHash;
         return altered;
       },
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
 
     await expect(verifySellerPaymentIntake(retry.input, retry.deps))
@@ -1521,8 +1800,9 @@ describe("verifySellerPaymentIntake", () => {
     expect(first.status).toBe("claimed");
     expect(second.status).toBe("claimed");
     if (first.status !== "claimed" || second.status !== "claimed") throw new Error("fixture");
-    expect(await store.consumePermit(first.permitId)).toEqual({ status: "invalid" });
-    expect(await store.consumePermit(second.permitId)).toMatchObject({
+    expect(await store.consumePermit(first.permitId, fulfilmentHandoff(later)))
+      .toEqual({ status: "invalid" });
+    expect(await store.consumePermit(second.permitId, fulfilmentHandoff(earlier))).toMatchObject({
       status: "consumed",
       claim: { jobId: "job-earlier", observedAt: 100 },
     });
@@ -1537,7 +1817,10 @@ describe("verifySellerPaymentIntake", () => {
     const replacement = await tieStore.claim(lower);
     expect(replacement.status).toBe("claimed");
     if (replacement.status !== "claimed") throw new Error("fixture");
-    expect(await tieStore.consumePermit(replacement.permitId)).toMatchObject({
+    expect(await tieStore.consumePermit(
+      replacement.permitId,
+      fulfilmentHandoff(lower),
+    )).toMatchObject({
       status: "consumed",
       claim: { evidenceHash: lower.evidenceHash },
     });
@@ -1552,7 +1835,10 @@ describe("verifySellerPaymentIntake", () => {
       observedAt: 200,
     }));
     if (first.status !== "claimed") throw new Error("fixture");
-    expect((await store.consumePermit(first.permitId)).status).toBe("consumed");
+    expect((await store.consumePermit(
+      first.permitId,
+      fulfilmentHandoff(first.claim),
+    )).status).toBe("consumed");
 
     const lateEarlier = await store.claim(receiptClaim({
       settlementId,
@@ -1590,7 +1876,10 @@ describe("verifySellerPaymentIntake", () => {
       permitId: first.permitId,
       claim: { jobId: "job-first", observedAt: 200 },
     });
-    expect(await store.consumePermit(first.permitId)).toMatchObject({
+    expect(await store.consumePermit(
+      first.permitId,
+      fulfilmentHandoff(first.claim, 999),
+    )).toMatchObject({
       status: "already-consumed",
       claim: { jobId: "job-first" },
     });
@@ -1608,7 +1897,14 @@ describe("verifySellerPaymentIntake", () => {
     });
     if (!originalResult.permitId) throw new Error("fixture");
     const originalPermitId = originalResult.permitId;
-    const consumed = await store.consumePermit(originalPermitId);
+    const originalInspection = await store.inspectPermit?.(originalPermitId);
+    if (!originalInspection || originalInspection.status !== "available") {
+      throw new Error("fixture");
+    }
+    const consumed = await store.consumePermit(
+      originalPermitId,
+      fulfilmentHandoff(originalInspection.claim),
+    );
     expect(consumed.status).toBe("consumed");
     if (consumed.status === "invalid") throw new Error("fixture");
     const originalAuthorization = consumed.claim.authorization;
@@ -1682,7 +1978,12 @@ describe("verifySellerPaymentIntake", () => {
     const original = makeContext("pay-dem", store);
     const originalResult = await verifySellerPaymentIntake(original.input, original.deps);
     if (!originalResult.permitId) throw new Error("fixture");
-    const consumed = await store.consumePermit(originalResult.permitId);
+    const inspection = await store.inspectPermit?.(originalResult.permitId);
+    if (!inspection || inspection.status !== "available") throw new Error("fixture");
+    const consumed = await store.consumePermit(
+      originalResult.permitId,
+      fulfilmentHandoff(inspection.claim),
+    );
     expect(consumed.status).toBe("consumed");
     if (consumed.status === "invalid") throw new Error("fixture");
 
@@ -1714,7 +2015,12 @@ describe("verifySellerPaymentIntake", () => {
     const original = makeContext("pay-dem", backing);
     const claimed = await verifySellerPaymentIntake(original.input, original.deps);
     if (!claimed.permitId) throw new Error("fixture");
-    const consumed = await backing.consumePermit(claimed.permitId);
+    const inspection = await backing.inspectPermit?.(claimed.permitId);
+    if (!inspection || inspection.status !== "available") throw new Error("fixture");
+    const consumed = await backing.consumePermit(
+      claimed.permitId,
+      fulfilmentHandoff(inspection.claim),
+    );
     if (consumed.status === "invalid") throw new Error("fixture");
 
     const foreign = makeContext("pay-dem");
@@ -1727,7 +2033,7 @@ describe("verifySellerPaymentIntake", () => {
           claim: consumed.claim,
         };
       },
-      consumePermit: (permitId) => backing.consumePermit(permitId),
+      consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
 
     const result = await verifySellerPaymentIntake(foreign.input, foreign.deps);
@@ -1743,7 +2049,12 @@ describe("verifySellerPaymentIntake", () => {
     const original = makeContext("pay-x402", store);
     const claimed = await verifySellerPaymentIntake(original.input, original.deps);
     if (!claimed.permitId) throw new Error("fixture");
-    const consumed = await store.consumePermit(claimed.permitId);
+    const inspection = await store.inspectPermit?.(claimed.permitId);
+    if (!inspection || inspection.status !== "available") throw new Error("fixture");
+    const consumed = await store.consumePermit(
+      claimed.permitId,
+      fulfilmentHandoff(inspection.claim),
+    );
     if (consumed.status === "invalid") throw new Error("fixture");
 
     const retry = makeContext("pay-x402", store);
@@ -1844,6 +2155,17 @@ describe("verifySellerPaymentIntake", () => {
       disposition: "error",
       fulfilment: "none",
       reason: "address-binding-resolution-invalid-result",
+    });
+  });
+
+  it("fails closed on a delimiter-bearing commitment job id", async () => {
+    const ctx = makeContext("pay-x402");
+    ctx.input.jobId = "job:ambiguous";
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toEqual({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "invalid-intake-input",
     });
   });
 
