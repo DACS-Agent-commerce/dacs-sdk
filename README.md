@@ -203,10 +203,14 @@ const deps = {
 
 The observer enforces DACS-4 §9.5.9 against one mutually-consistent transaction
 status, native-transfer body, and confirmed block. It derives finality time from
-the block rather than the transaction timestamp and handles the denomination
-fork correctly: post-fork string amounts are OS, while legacy numeric amounts
-are DEM and are converted at `1 DEM = 1,000,000,000 OS`. It trusts the configured
-Demos RPC's confirmed-block view; applications requiring an independent
+the block rather than the transaction timestamp. The status API's `included`
+state remains the finality authority; an `included`, `confirmed`, or `finalized`
+transaction-body label is accepted only when that status and confirmed-block
+membership agree. The native-send payload disambiguates the denomination fork:
+post-fork string amounts are OS (including an exactly matching numeric
+`content.amount` projection), while legacy numeric payload amounts are DEM and
+are converted at `1 DEM = 1,000,000,000 OS`. It trusts the configured Demos
+RPC's confirmed-block view; applications requiring an independent
 validator-quorum proof must inject a stronger `observeDemosTransfer` provider.
 
 The funded x402 two-agent integration test is disabled unless its full live

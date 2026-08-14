@@ -5,6 +5,16 @@ const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
 const OS_PER_DEM = 1_000_000_000n;
 const INCLUDED_STATE = "included";
+// `getTransactionStatus` exposes the normative Demos inclusion state. The
+// transaction projection returned by `getTxByHash` can label that same
+// included transaction `confirmed` (and future clients may use `finalized`).
+// These labels are accepted only while the independent status and confirmed
+// block checks below establish inclusion; the body label is never sufficient.
+const INCLUDED_TRANSACTION_BODY_STATES = new Set([
+  "included",
+  "confirmed",
+  "finalized",
+]);
 const FAILED_STATES = new Set(["failed", "rejected"]);
 const PENDING_STATES = new Set([
   "accepted",
@@ -46,20 +56,52 @@ function safeUint(value: unknown): number | null {
     : null;
 }
 
-function wireAmountToOs(value: unknown): string | null {
-  if (typeof value === "string") {
-    if (!INTEGER_RE.test(value)) return null;
-    try {
-      const amount = BigInt(value);
-      return amount > 0n ? amount.toString() : null;
-    } catch {
-      return null;
-    }
-  }
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+function positiveIntegerString(value: string): string | null {
+  if (!INTEGER_RE.test(value)) return null;
+  try {
+    const amount = BigInt(value);
+    return amount > 0n ? amount.toString() : null;
+  } catch {
     return null;
   }
-  return (BigInt(value) * OS_PER_DEM).toString();
+}
+
+/**
+ * Reconcile the transaction projection with the native-send payload without
+ * guessing across the Demos denomination fork.
+ *
+ * The native payload is the operation the chain executed. Its historical
+ * encoding disambiguates the unit: a legacy numeric payload is DEM, while the
+ * post-fork canonical string payload is already integer OS. Current nodes can
+ * nevertheless project post-fork `content.amount` as a JSON number. In that
+ * mixed shape the number is OS and must exactly equal the string payload; it
+ * must never be multiplied by OS_PER_DEM.
+ */
+function transactionAmountToOs(
+  projectedAmount: unknown,
+  payloadAmount: unknown,
+): string | null {
+  if (typeof payloadAmount === "string") {
+    const payloadOs = positiveIntegerString(payloadAmount);
+    if (!payloadOs) return null;
+
+    const projectedOs = typeof projectedAmount === "string"
+      ? positiveIntegerString(projectedAmount)
+      : typeof projectedAmount === "number" &&
+          Number.isSafeInteger(projectedAmount) && projectedAmount > 0
+      ? BigInt(projectedAmount).toString()
+      : null;
+    return projectedOs === payloadOs ? payloadOs : null;
+  }
+
+  if (typeof payloadAmount !== "number" ||
+      !Number.isSafeInteger(payloadAmount) || payloadAmount <= 0 ||
+      typeof projectedAmount !== "number" ||
+      !Number.isSafeInteger(projectedAmount) || projectedAmount <= 0 ||
+      projectedAmount !== payloadAmount) {
+    return null;
+  }
+  return (BigInt(payloadAmount) * OS_PER_DEM).toString();
 }
 
 function blockTimestampToMilliseconds(value: unknown): number | null {
@@ -184,8 +226,8 @@ export async function observePayDemTransferCore(
     return invalid("transaction hash does not match the requested hash");
   }
   if (typeof transaction.status !== "string" ||
-      transaction.status.toLowerCase() !== INCLUDED_STATE) {
-    return invalid("transaction body is not in an included state");
+      !INCLUDED_TRANSACTION_BODY_STATES.has(transaction.status.toLowerCase())) {
+    return invalid("transaction body does not represent included finality");
   }
   const transactionBlockNumber = safeUint(transaction.blockNumber);
   if (transactionBlockNumber !== statusBlockNumber) {
@@ -227,9 +269,8 @@ export async function observePayDemTransferCore(
     return invalid("native transfer parties are malformed or inconsistent");
   }
 
-  const amountOs = wireAmountToOs(content.amount);
-  const payloadAmountOs = wireAmountToOs(native.args[1]);
-  if (!amountOs || !payloadAmountOs || amountOs !== payloadAmountOs) {
+  const amountOs = transactionAmountToOs(content.amount, native.args[1]);
+  if (!amountOs) {
     return invalid("native transfer amounts are malformed or inconsistent");
   }
   const includedAt = blockTimestampToMilliseconds(block.content.timestamp);
