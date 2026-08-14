@@ -13,11 +13,28 @@ export const DEM_CURRENCY = "DEM";
 /** §9.5.9: 1 DEM = 10^9 OS base units. The chain moves integer OS. */
 export const DEM_DECIMALS = 9;
 
+const CLAIM_PARAMETER_COMPONENT_RE =
+  /^(?:%[0-9A-F]{2}|[^:?&=%\s#])+$/u;
+
+function hasWellFormedClaimParameters(parameters: string | undefined): boolean {
+  if (parameters === undefined) return true;
+  const pairs = parameters.split("&");
+  if (pairs.length === 0) return false;
+  return pairs.every((pair) => {
+    const separator = pair.indexOf("=");
+    if (separator <= 0 || separator !== pair.lastIndexOf("=")) return false;
+    return CLAIM_PARAMETER_COMPONENT_RE.test(pair.slice(0, separator)) &&
+      CLAIM_PARAMETER_COMPONENT_RE.test(pair.slice(separator + 1));
+  });
+}
+
 /**
  * The Demos address a DACS primary claim settles to. In the Demos model a CCI
  * *is* the ed25519 public-key hex, so a Demos claim resolves INTRINSICALLY to its
- * address — no external mapping is trusted. Accepts only the DEMOS forms: a bare
- * `<64-hex>`, `0x<64-hex>`, or a `did:demos:…:<64-hex>` DID.
+ * address — no external mapping is trusted. Accepts only the exact
+ * `did:demos:agent:<64-lowercase-hex>` profile or the DACS-1
+ * `cci-xm:demos:<subchain>:0x<64-hex>` profile. ClaimReference parameters do not
+ * contribute to identity and are ignored after the complete native address.
  *
  * STRICT (#32): a non-Demos scheme that merely *ends* in 64 hex — `did:ethr:…`,
  * `cci-xm:evm:mainnet:0x…`, `web2:…:…` — is NOT Demos-bound and returns null, so
@@ -26,11 +43,21 @@ export const DEM_DECIMALS = 9;
  */
 export function demosAddressFromClaim(claim: string): string | null {
   const c = claim.trim();
-  const bare = c.match(/^(?:0x)?([0-9a-fA-F]{64})$/);
-  if (bare) return bare[1]!.toLowerCase();
-  const did = c.match(/^did:demos:(?:[^:]+:)*(?:0x)?([0-9a-fA-F]{64})$/);
+  const did = c.match(/^[dD][iI][dD]:demos:agent:([0-9a-f]{64})$/);
   if (did) return did[1]!.toLowerCase();
+  const cci = c.match(
+    /^[cC][cC][iI]-[xX][mM]:demos:[^:?&#=\s]+:0x([0-9a-fA-F]{64})(?:\?([^#\s]*))?$/,
+  );
+  if (cci && hasWellFormedClaimParameters(cci[2])) {
+    return cci[1]!.toLowerCase();
+  }
   return null;
+}
+
+/** Strict native Demos rail-address normalisation (not a ClaimReference parser). */
+export function normalizeDemosNativeAddress(address: string): string | null {
+  const native = address.trim().match(/^(?:0x)?([0-9a-fA-F]{64})$/);
+  return native ? native[1]!.toLowerCase() : null;
 }
 
 /**
@@ -327,7 +354,9 @@ export function payDemSettle(
           `address; refusing to transfer`,
       );
     }
-    const expectedPayeeAddress = demosAddressFromClaim(expectedPayee);
+    const expectedPayeeAddress =
+      demosAddressFromClaim(expectedPayee) ??
+      normalizeDemosNativeAddress(expectedPayee);
     if (expectedPayeeAddress !== payeeAddress) {
       throw new DacsError(
         `pay-dem destination mismatch: request binds ${expectedPayee}, agreement claim resolves to ${payeeAddress}`,
@@ -337,7 +366,12 @@ export function payDemSettle(
     if (configuredRecipient) {
       const configured =
         demosAddressFromClaim(configuredRecipient) ??
-        configuredRecipient.trim().toLowerCase();
+        normalizeDemosNativeAddress(configuredRecipient);
+      if (!configured) {
+        throw new DacsError(
+          "pay-dem: configured recipient is not a Demos claim or native address (PB-2)",
+        );
+      }
       if (configured !== payeeAddress) {
         throw new DacsError(
           `pay-dem destination mismatch: configured recipient "${configuredRecipient}" is not the ` +
@@ -363,7 +397,10 @@ export function payDemSettle(
     // settlement seam must return the request-bound identifier verbatim so the
     // orchestrator can check it without applying rail-specific normalization.
     // Verify the equivalence here before restoring that identifier.
-    if (demosAddressFromClaim(result.payee) !== payeeAddress) {
+    const resultPayeeAddress =
+      demosAddressFromClaim(result.payee) ??
+      normalizeDemosNativeAddress(result.payee);
+    if (resultPayeeAddress !== payeeAddress) {
       throw new DacsError(
         `pay-dem settlement returned payee ${result.payee}, expected Demos address ${payeeAddress}`,
       );

@@ -277,4 +277,30 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     await settleWith(client, { recipient: `0x${SELLER_HEX}` })(req());
     expect(client.sent!.to).toBe(SELLER_HEX);
   });
+
+  test("the DACS-1 Demos cci-xm profile resolves intrinsically", async () => {
+    const client = fakeClient();
+    const claim = `cci-xm:demos:testnet:0x${SELLER_HEX}?region=uk`;
+    await settleWith(client, { recipient: `0x${SELLER_HEX}` })(req({ payee: claim }));
+    expect(client.sent!.to).toBe(SELLER_HEX);
+  });
+
+  test.each([
+    `cci-xm:demos::0x${SELLER_HEX}`,
+    `cci-xm:demos:testnet:${SELLER_HEX}`,
+    `cci-xm:demos:testnet:0x${SELLER_HEX.slice(2)}`,
+    `cci-xm:evm:testnet:0x${SELLER_HEX}`,
+    `cci-xm:demos:testnet:0x${SELLER_HEX}?`,
+    `cci-xm:demos:testnet:0x${SELLER_HEX}?region`,
+    `did:demos:${SELLER_HEX}`,
+    `did:demos:evil:${SELLER_HEX}`,
+    `did:demos:agent:0x${SELLER_HEX}`,
+    `did:demos:agent:${SELLER_HEX.toUpperCase()}`,
+  ])("rejects a malformed or foreign cci-xm Demos lookalike: %s", async (payee) => {
+    const client = fakeClient();
+    await expect(
+      settleWith(client, { network: "demos" })(req({ payee })),
+    ).rejects.toThrow(/does not intrinsically resolve/);
+    expect(client.sent).toBeUndefined();
+  });
 });

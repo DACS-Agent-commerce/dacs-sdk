@@ -7,14 +7,12 @@ import {
   verifyComponentSignature,
 } from "../../src/artifacts/signatures.js";
 import {
-  canonicalize,
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
-  sha256Hex,
   stripSignature,
 } from "../../src/canonical/index.js";
-import { isListing } from "../../src/artifacts/validators.js";
+import type { IdentityBundle } from "../../src/artifacts/types.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -24,6 +22,8 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
+import { identityBundleHash } from "../../src/identity/bundle.js";
+import type { ListingValidationDeps } from "../../src/agent/listingValidation.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
@@ -105,34 +105,6 @@ const TERMS = {
   deliveryFormat: "application/json",
 };
 
-const verifiedListing = (raw: Record<string, unknown>) => {
-  if (!isListing(raw)) throw new Error("fixture drift");
-  const deliverable = raw.offering.deliverable;
-  if (
-    deliverable.kind !== "attested-payload" ||
-    !deliverable.verificationMethod
-  ) {
-    throw new Error("fixture drift");
-  }
-  return {
-    disposition: "verified" as const,
-    step: 9 as const,
-    reason: "verified",
-    listing: raw,
-    listingContentHash: contentHash(raw),
-    payloadVerificationCapability: {
-      operation: "verify" as const,
-      disposition: "supported" as const,
-      reason: "supported",
-      verificationMethodKind: deliverable.verificationMethod.kind,
-      verificationMethodHash: sha256Hex(
-        canonicalize(deliverable.verificationMethod),
-      ),
-      deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
-    },
-  };
-};
-
 async function anchorListing(
   store: Map<string, Record<string, unknown>>,
   priv = sellerPriv,
@@ -153,22 +125,32 @@ async function anchorListing(
     price: "1",
   },
 ) {
+  const identity: IdentityBundle = {
+    bundleVersion: "1",
+    presentedBy: agentId,
+    presentedAt: 1_780_000_000_000,
+    claims: [{ ref: agentId }],
+    presentation: {
+      kind: "per-claim",
+      signatures: [{ ref: agentId, signature: "pending" }],
+    },
+  };
+  if (identity.presentation.kind !== "per-claim") {
+    throw new Error("fixture drift");
+  }
+  identity.presentation.signatures[0]!.signature = Buffer.from(
+    ed25519Sign(
+      signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(identity)),
+      priv,
+    ),
+  ).toString("base64url");
   const signed = await signComponentArtifact(
     {
       dacsVersion: "1",
       listingVersion: 1,
       listingId: "svc",
       seller: {
-        identity: {
-          bundleVersion: "1",
-          presentedBy: agentId,
-          presentedAt: 1_780_000_000_000,
-          claims: [{ ref: agentId }],
-          presentation: {
-            kind: "per-claim",
-            signatures: [{ ref: agentId, signature: "identity-presentation" }],
-          },
-        },
+        identity,
         displayName: "Market Data",
         publicEndpoint: "https://seller.example/dacs",
       },
@@ -213,31 +195,56 @@ async function anchorListing(
   return "stor:listing";
 }
 
-function verifiedAdmission(raw: Record<string, unknown>) {
-  if (!isListing(raw)) throw new Error("fixture drift");
-  const deliverable = raw.offering.deliverable;
-  if (
-    deliverable.kind !== "attested-payload" ||
-    !deliverable.verificationMethod
-  ) {
-    throw new Error("fixture drift");
-  }
+function listingValidationDeps(
+  nowMs: () => number = () => 1_780_000_000_000,
+): ListingValidationDeps {
   return {
-    disposition: "verified" as const,
-    step: 9 as const,
-    reason: "verified",
-    listing: raw,
-    listingContentHash: contentHash(raw),
-    payloadVerificationCapability: {
-      operation: "verify" as const,
-      disposition: "supported" as const,
-      reason: "supported",
-      verificationMethodKind: deliverable.verificationMethod.kind,
-      verificationMethodHash: sha256Hex(
-        canonicalize(deliverable.verificationMethod),
+    nowMs,
+    verifyListingSignature: ({ signedBytes: bytes, signature }) =>
+      signature.signer === sellerDid &&
+      ed25519Verify(
+        bytes,
+        Uint8Array.from(Buffer.from(signature.value, "base64url")),
+        publicKeyFromRaw(sellerPublicKey),
       ),
-      deliverableSpecHash: sha256Hex(canonicalize(deliverable)),
+    revocation: {
+      surfaces: [{
+        kind: "well-known",
+        status: "active",
+        integrity: "verified",
+      }],
+      readMarker: async () => null,
+      verifyMarkerSignature: () => false,
     },
+    verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) => {
+      if (bundle.presentation.kind !== "per-claim") return false;
+      const proof = bundle.presentation.signatures.find(
+        (candidate) => candidate.ref === bundle.presentedBy,
+      );
+      return bundle.presentedBy === sellerDid && !!proof &&
+        ed25519Verify(
+          bytes,
+          Uint8Array.from(Buffer.from(proof.signature, "base64url")),
+          publicKeyFromRaw(sellerPublicKey),
+        );
+    },
+    loadRailResolution: () => ({
+      trustPhase: "PA-1",
+      trustPolicyAcceptsPA1: true,
+      registry: { state: "not-used", entries: [], definitions: [] },
+      inCodeDefinitions: [{
+        railId: "x402:default",
+        railVersion: 1,
+        phaseHandler: "pay-x402",
+        governanceAnchoring: "in-code",
+        signatureValid: true,
+      }],
+    }),
+    resolvePayloadVerificationCapability: () => ({
+      disposition: "supported",
+    }),
+    verifySellerControl: ({ bundle, signer }) =>
+      bundle.presentedBy === sellerDid && signer === sellerDid,
   };
 }
 
@@ -265,7 +272,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
-      validateListing: verifiedListing,
+      listingValidationDeps: listingValidationDeps(),
     });
     const boundRail = makeRail();
     await expect(
@@ -288,7 +295,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
-      validateListing: verifiedListing,
+      listingValidationDeps: listingValidationDeps(),
     });
     const omittedRail = makeRail();
     await expect(
@@ -324,7 +331,25 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
-      validateListing: verifiedListing,
+      listingValidationDeps: {
+        ...listingValidationDeps(),
+        loadRailResolution: () => ({
+          trustPhase: "PA-1" as const,
+          trustPolicyAcceptsPA1: true,
+          registry: {
+            state: "not-used" as const,
+            entries: [],
+            definitions: [],
+          },
+          inCodeDefinitions: [{
+            railId: "demos:native",
+            railVersion: 1,
+            phaseHandler: "pay-dem",
+            governanceAnchoring: "in-code" as const,
+            signatureValid: true,
+          }],
+        }),
+      },
     });
     const transfer = vi.fn(
       async ({ recipient, network }: { recipient: string; network?: string }) => ({
@@ -365,12 +390,16 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
   test("a genuinely signed listing settles through the public runSession", async () => {
     const { adapter, store } = memAdapter();
     const ref = await anchorListing(store);
-    const agent = buildAgent(adapter as never, { demosRpc: "mem", wallet: "x", identity: { agentId: buyerDid } });
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+      listingValidationDeps: listingValidationDeps(),
+    });
 
     let settled = false;
     const res = await agent.runSession(ref, {
       terms: TERMS,
-      validateListing: verifiedAdmission,
       settle: async () => {
         settled = true;
         return { ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
@@ -405,7 +434,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
-      validateListing: verifiedListing,
+      listingValidationDeps: listingValidationDeps(),
     });
     let settleCalls = 0;
     const settle = async () => {
@@ -453,19 +482,23 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const { adapter, store } = memAdapter();
     // Signed by a different key than the advertised sellerDid.
     const ref = await anchorListing(store, privateKeyFromSeed(Uint8Array.from(Buffer.alloc(32, 9))));
-    const agent = buildAgent(adapter as never, { demosRpc: "mem", wallet: "x", identity: { agentId: buyerDid } });
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+      listingValidationDeps: listingValidationDeps(),
+    });
 
     let settled = false;
     await expect(
       agent.runSession(ref, {
         terms: TERMS,
-        validateListing: verifiedAdmission,
         settle: async () => {
           settled = true;
           return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
         },
       }),
-    ).rejects.toThrow(/failed signature verification/);
+    ).rejects.toThrow(/reader step 4 \(listing-signature-invalid\)/);
     expect(settled).toBe(false);
   });
 
@@ -486,7 +519,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         demosRpc: "mem",
         wallet: "x",
         identity: { agentId: buyerDid },
-        validateListing: verifiedListing,
+        listingValidationDeps: listingValidationDeps(() => Date.now()),
       });
       let settleCalls = 0;
       const settle = async () => {

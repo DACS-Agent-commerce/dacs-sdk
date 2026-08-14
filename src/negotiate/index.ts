@@ -4,6 +4,7 @@ export {
   finalityCommitmentAddress,
   commitFixedPriceAgreement,
   readLegacyFixedPriceAgreementCommitment,
+  validateFixedPriceAgreementBinding,
   type CommitmentVerificationDisposition,
   type CommitmentSignatureVerificationInput,
   type CommitmentSignatureVerifier,
