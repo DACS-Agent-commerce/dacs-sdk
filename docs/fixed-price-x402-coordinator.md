@@ -1,54 +1,117 @@
 # Fixed-price x402 coordinator
 
-The coordinator is a role-local, transport-neutral job manager for the existing
-fixed-price x402 SDK operations. It does not own wallets, start background
-workers, create DACS artifacts, or replace the durable session and Demos write
-journals used by those operations.
+This module is a role-separated, transport-neutral scheduler around the SDK's
+existing durable fixed-price x402 operations. It does not own wallets, host an
+HTTP service, invent DACS artifacts, or replace the authoritative session and
+write journals used by those operations.
 
-Buyer and seller authorities remain in separate processes:
+The supported artifact/conformance revision is
+`965df755aba4ff392f1fb37a93d287242b177ba4`, the immutable revision pinned by
+`scripts/sync-vectors.mjs`. The implementation was also checked against DACS
+Standard `next` at `86c3b3bc64d709bd23dc1ac73f5e7b153ece217c` on 14 August
+2026. A later Standard revision is not accepted merely because a peer supplies
+its hash: supporting it requires an explicit SDK update and conformance run.
+
+## Trust and authority boundaries
+
+Buyer and seller authorities remain in separate processes and retain different
+SDK job pointers:
 
 ```text
 buyer process                         seller process
 -------------                         --------------
-agreement/payment jobs                agreement/payment-intake jobs
+buyer agreement/payment jobs          seller agreement/payment-intake jobs
 buyer Demos wallet                    seller Demos wallet
 payment-evidence inbox     <------     signed-evidence request outbox
-buyer audit job             ------>    finalized anchor receipt inbox
-                                      delivery/finalisation/audit jobs
+buyer receipt/audit jobs    ------>    completion inbox
+                                      fulfilment/evidence/audit jobs
 ```
 
-The operational request and completion messages are not new normative DACS
-artifacts and are not anchored. Applications carry them over an authenticated
-transport and provide callbacks that authenticate the counterparty and verify
-the finalized anchor receipt. Message hashes, stable identifiers, durable
-outboxes, exact request binding, and replay handling are provided here.
+The request and completion envelopes are SDK transport messages, not normative
+DACS artifacts and not SR-2 records. Applications carry them over JWT, mTLS, a
+signed envelope, or another authenticated transport. The host authenticator
+returns a verified principal, audience, message ID, message hash and
+authentication hash. The SDK compares all five values with the exact request or
+completion before retaining it; an arbitrary bearer-auth hash is insufficient.
 
-## Host-controlled work
+This first production profile explicitly pins
+`seller-as-phase-orchestrator-v1`. The evidence signer is the DACS phase
+orchestrator (DACS-4 §9.7), not intrinsically “the seller.” The profile chooses
+the seller as that orchestrator and binds the exact claim. Supporting a buyer
+or third-party orchestrator requires another reviewed profile rather than a
+relaxed equality check.
 
-Create one coordinator per local authority and inject adapters around the
-existing durable SDK operations. Each adapter receives a stable idempotency key
-and a generation fence. It must assert that fence immediately before any
-irreversible effect and use the existing SDK job pointer to reconcile an
-ambiguous earlier result.
+## Exact protocol binding
+
+Every order and payment-evidence request binds:
+
+- `commerceProfile = dacs-sdk:fixed-price-x402:v1`;
+- the exact supported DACS Standard revision;
+- phase `pay-x402` and rail type `x402`;
+- the authenticated registry index reference and content hash;
+- the authenticated rail-definition reference, hash, ID and version;
+- the exact EIP-155 network and `pay-x402` handler;
+- authoritative rail availability `live`; and
+- the seller-orchestrator claim and topology.
+
+The production slice refuses `pay-dem`, other `pay-*` phases, a non-live rail,
+an unpinned Standard revision, a wrong network, and success evidence without one
+signed `x402-event` coordinate. It does not treat a discovery/catalog
+availability hint as DACS-4 RAV authority.
+
+```ts
+import {
+  FIXED_PRICE_X402_COMMERCE_PROFILE,
+  FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+  FIXED_PRICE_X402_STANDARD_REVISION,
+  type FixedPriceX402ProtocolBinding,
+} from "@kynesyslabs/dacs/commerce";
+
+const protocol: FixedPriceX402ProtocolBinding = {
+  commerceProfile: FIXED_PRICE_X402_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+  phase: "pay-x402",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: sellerClaim,
+  rail: {
+    registryIndexRef: FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+    registryIndexHash: verifiedRegistryIndexHash,
+    railDefinitionRef: verifiedRailDefinitionRef,
+    railDefinitionHash: verifiedRailDefinitionHash,
+    railId: "x402:default",
+    railVersion: 2,
+    railType: "x402",
+    phaseHandler: "pay-x402",
+    network: "eip155:8453",
+    availability: "live",
+  },
+};
+```
+
+## Host-controlled coordinator work
+
+Factories admit only role-owned operations. A buyer cannot register `delivery`
+or `delivery-evidence`; a seller cannot register `buyer-received`. Role-local
+job pointers are excluded from the shared order binding, so two actors can bind
+the same protocol order without pretending their private database identifiers
+are equal.
+
+Every effect receives a generation fence and an idempotency key derived from
+the shared binding, role, track and exact role-local job identity. The adapter
+must assert the fence immediately before an irreversible action and use the key
+in its own intent/perform/commit/reconcile journal.
 
 ```ts
 import {
   createFixedPriceX402SellerCoordinator,
-  createSellerPaymentEvidenceHandshake,
 } from "@kynesyslabs/dacs/commerce";
-
-const paymentEvidence = createSellerPaymentEvidenceHandshake({
-  store: durableSellerHandshakeStore,
-  seller: sellerClaim,
-  buyer: buyerClaim,
-  authenticateCompletion,
-  verifyAnchorReceipt,
-});
 
 const seller = createFixedPriceX402SellerCoordinator({
   store: durableSellerCoordinatorStore,
   workerId: processInstanceId,
   operations: {
+    // Agreement is required by the dependency DAG before payment intake.
+    agreement: resumeSellerAgreement,
     payment: resumeSellerPaymentIntake,
     "payment-evidence": resumeSellerPaymentEvidencePublication,
     delivery: resumeDurableDelivery,
@@ -57,70 +120,176 @@ const seller = createFixedPriceX402SellerCoordinator({
   },
 });
 
-await seller.startOrder(order);
-await seller.runPending({ limit: 10, signal });
+await seller.startOrder({
+  jobId,
+  buyer: buyerClaim,
+  seller: sellerClaim,
+  protocol,
+  sdkJobs: {
+    role: "seller",
+    agreement: sellerAgreementJob,
+    payment: sellerPaymentJob,
+    paymentEvidence: sellerPaymentEvidenceJob,
+    fulfilment: sellerFulfilmentJob,
+    deliveryEvidence: sellerDeliveryEvidenceJob,
+    audit: sellerAuditJob,
+  },
+});
+
+const page = await seller.runPending({ limit: 10, signal });
+if (page.nextCursor) {
+  await seller.runPending({ cursor: page.nextCursor, limit: 10, signal });
+}
 ```
 
-`runPending` and `resumePendingOrders` are bounded aliases. They never create a
-timer or an unobserved promise. A service supervisor, queue consumer, HTTP
-handler, or CLI owns scheduling and graceful shutdown. Buyer and seller loops
-can run concurrently because they retain independent stores and wallet nonce
-lanes.
+`runPending` and `resumePendingOrders` are bounded aliases. They create no timer
+or hidden promise. The injected store performs a cursor-based query over only
+runnable orders rather than returning all historical records. A supervisor,
+queue, request handler or CLI owns scheduling.
 
-The included in-memory stores are process-local references for tests. A
-production host must inject durable stores whose `create`/`putRequest`, `claim`,
-and `record` operations are atomic and no-overwrite. Multi-process or multi-host
-deployments need shared compare-and-swap semantics; writing independent JSON
-files without locking does not satisfy these contracts.
+## Worker status versus DACS outcome
+
+Operational worker state and normative outcome are separate:
+
+- `pending-retry`, `indeterminate`, and `operator-action` describe scheduling;
+- `final + success`, `final + failure(errorClass)`, and `final + aborted`
+  describe the retained DACS result.
+
+A failed payment therefore does not unlock delivery. Its `payment-evidence`
+track can still finalize failure evidence, after which `audit` can publish the
+mandatory failed DACS-5 bundle. An abort follows the analogous terminal-bundle
+path. Evidence tracks themselves must finish successfully; returning a
+failure-shaped evidence result cannot be used to bypass the dependency graph.
+
+Only `combineFixedPriceX402OrderStatus` may report `audit-complete`, and only
+after both role-owned audit tracks are final with consistent outcomes. A local
+status reports `actor-audit-final`. Validation rejects impossible retained
+graphs such as a lone final audit track.
+
+An operator can explicitly requeue a non-final track:
+
+```ts
+await seller.repairTrack({
+  jobId,
+  track: "delivery-evidence",
+  operatorReasonCode: "proof-provider-restored",
+});
+```
+
+Final normative results are immutable through this repair API.
 
 ## Payment-evidence handshake
 
-The seller handshake's `anchorEvidence` method is the adapter supplied to
-`publishSellerSessionSettlement`. On the first call it durably records the exact
-seller-signed evidence request and returns `indeterminate`. The host transfers
-the request to the buyer without giving the seller buyer-wallet authority.
+The seller handshake is the `anchorEvidence` adapter supplied to seller
+settlement publication. Its outbox atomically reserves the message ID, effect
+ID and canonical DACS-4 payment address. On the buyer, the same reservations
+ensure that two differently hashed requests cannot reach the wallet for one
+logical payment effect or slot.
 
-The buyer then:
+```ts
+import {
+  createSellerPaymentEvidenceHandshake,
+} from "@kynesyslabs/dacs/commerce";
 
-1. validates the message and its local buyer destination;
-2. authenticates the seller transport identity;
-3. cryptographically and semantically verifies the seller-signed evidence;
-4. claims the stable request under a generation lease;
-5. anchors with the buyer wallet through an idempotent Demos write journal;
-6. independently verifies finality, native readback, writer, address, and hash;
-7. records a replayable completion.
+const paymentEvidence = createSellerPaymentEvidenceHandshake({
+  store: durableSellerHandshakeStore,
+  seller: sellerClaim,
+  buyer: buyerClaim,
+  workerId: processInstanceId,
+  protocol,
+  authenticateCompletion: async (completion, transportContext) => {
+    const verified = await verifyCompletionTransport(completion, transportContext);
+    return {
+      disposition: "authenticated",
+      peer: {
+        principal: verified.claim,
+        audience: verified.audience,
+        messageId: completion.messageId,
+        messageHash: completion.completionHash,
+        authenticationHash: verified.authenticationHash,
+      },
+    };
+  },
+  verifyAnchorReceipt,
+});
+```
 
-After authenticating and independently verifying that completion, the seller
-records it. A resumed `publishSellerSessionSettlement` call then receives the
-same finalized evidence reference and receipt. Lost requests and completions
-are replayed; altered messages conflict or fail validation.
+Transport delivery uses durable claim/send/ack rather than repeatedly listing
+the first ten records:
 
-## Status semantics
+```ts
+let cursor: string | undefined;
+do {
+  const page = await paymentEvidence.claimOutboundRequests({ cursor, limit: 10 });
+  for (const claim of page.items) {
+    try {
+      await sendToBuyer(claim.request);
+      await paymentEvidence.acknowledgeOutboundRequest(claim);
+    } catch {
+      const now = await durableSellerHandshakeStore.readTime();
+      await paymentEvidence.releaseOutboundRequest(claim, {
+        reasonCode: "transport-ambiguous",
+        retryAt: now + 1_000,
+      });
+    }
+  }
+  cursor = page.nextCursor;
+} while (cursor);
+```
 
-Tracks are independent and retain `not-started`, `running`, `pending-retry`,
-`indeterminate`, `final`, `failed`, or `operator-action`, plus attempts,
-timestamps, references, retry information, and any authenticated receipt hash.
+The buyer applies the symmetric completion outbox API:
+`claimOutboundCompletions`, `acknowledgeOutboundCompletion`, and
+`releaseOutboundCompletion`.
 
-`combineFixedPriceX402OrderStatus` combines clone-isolated buyer and seller
-read models without joining their capabilities. Its milestones mean:
+### Ambiguous wallet effects
 
-| Milestone | Required observation |
+Every exception, indeterminate anchor response, and indeterminate receipt read
+is durably classified and releases its lease immediately. It never waits for
+the default 30-second lease merely because a callback returned badly. A
+permanent contradiction moves to `operator-action` and cannot loop forever.
+
+An ambiguous effect moves to `reconciliation-required`. The next worker must
+invoke `reconcileAnchor`; it may:
+
+- return the already-final anchor and complete it;
+- return authenticated absence with an `absenceProofHash`; or
+- remain indeterminate / declare an invalid contradiction.
+
+Authenticated absence is committed before another wallet call is permitted.
+The retry occurs in a later claimed generation, closing the crash window
+between “absence observed” and “effect repeated.” `repairRequest` is the
+explicit operator requeue path and conservatively returns work to
+reconciliation, not directly to the wallet.
+
+## Durable store requirements
+
+The included stores are process-local references. Production implementations
+must provide one shared atomic authority with:
+
+- database/server-authoritative time for lease decisions;
+- monotonic logical `revision` increments;
+- atomic message/effect/address reservations;
+- compare-and-swap claims and fenced outcome writes;
+- durable attempt classifications and retry times;
+- cursor-based runnable and outbox queries; and
+- durable claim/send/ack outbox state.
+
+Raw callback exceptions are never persisted. Records retain bounded reason
+codes such as `anchor-threw` or `operation-threw`; sensitive provider messages,
+headers, credentials and stack traces stay outside the SDK journal.
+
+## Normative traceability
+
+| Coordinator invariant | DACS Standard source |
 | --- | --- |
-| `delivery-ready` | Seller deliverable is verified and the durable finalisation handoff exists. |
-| `buyer-received` | Buyer has recorded its local transport observation. |
-| `commercial-performance-complete` | Seller delivery evidence is finalized; PC-7 payment evidence may still catch up. |
-| `audit-complete` | Both buyer- and seller-owned audit tracks are final. |
+| Authenticated registry index/definition, exact version and handler pin | DACS-1 §6.3.4 LRR-1..LRR-6; DACS-4 §9.4.3 RD-1..RD-6 |
+| Production-live authoritative availability only | DACS-4 §9.4.4 RAV-R1..RAV-R5 (including current `mocked` production refusal) |
+| x402 receipt/event/network binding | DACS-4 §9.5.7 X402-1..X402-4 |
+| Exact job/rail/phase-index payment address and event uniqueness | DACS-4 §9.5.1 PC-2; §9.5.8 SB-1..SB-3 |
+| Rail-final payment is never repeated because SR-2 evidence is catching up | DACS-4 §9.5.1 PC-7 |
+| SettlementEvidence signer is the phase orchestrator | DACS-4 §9.7 `SettlementEvidence.signature` |
+| Failed/aborted session produces a terminal bundle; success waits at audit gate | DACS-5 §10.3.1 ST-6 and ST-11; §10.4.1 |
+| Delivery cannot follow a failed payment; failure evidence remains reachable | DACS-5 §10.3.1 state transition table and state→bundle outcome mapping |
 
-`audit-complete` is deliberately not inferred from one actor's local bundle.
-The returned SDK job pointers remain the route to the authoritative DACS
-session records and write journals; the coordinator stores only scheduling and
-status projections.
-
-## External fulfilment boundary
-
-A generation lease cannot make an arbitrary external callback exactly-once.
-The delivery adapter must use its stable idempotency key with a durable
-intent/perform/commit/reconcile protocol, or call a pure deterministic
-deliverable producer. After an ambiguous response it may retry only when the
-external system proves authoritative absence. This coordinator never treats a
-timeout as proof that delivery did not happen.
+The SDK operational envelopes, leases, cursors and commerce-profile name are
+not normative DACS fields and are never added to signed DACS artifacts.
