@@ -271,6 +271,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
+      validateListing: verifiedListing,
     });
     const transfer = vi.fn(
       async ({ recipient, network }: { recipient: string; network?: string }) => ({
