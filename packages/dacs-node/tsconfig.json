@@ -3,6 +3,7 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
+      "@kynesyslabs/dacs": ["../../src/index.ts"],
       "@kynesyslabs/dacs/artifacts": ["../../src/artifacts/index.ts"],
       "@kynesyslabs/dacs/canonical": ["../../src/canonical/index.ts"],
       "@kynesyslabs/dacs/commerce": ["../../src/commerce/index.ts"],

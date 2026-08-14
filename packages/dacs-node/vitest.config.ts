@@ -8,14 +8,18 @@ function coreSource(path: string): string {
 
 export default defineConfig({
   resolve: {
-    alias: {
-      "@kynesyslabs/dacs/artifacts": coreSource("artifacts"),
-      "@kynesyslabs/dacs/canonical": coreSource("canonical"),
-      "@kynesyslabs/dacs/commerce": coreSource("commerce"),
-      "@kynesyslabs/dacs/crypto": coreSource("crypto"),
-      "@kynesyslabs/dacs/negotiate": coreSource("negotiate"),
-      "@kynesyslabs/dacs/seller": coreSource("seller"),
-    },
+    alias: [
+      {
+        find: /^@kynesyslabs\/dacs$/,
+        replacement: fileURLToPath(new URL("../../src/index.ts", import.meta.url)),
+      },
+      { find: "@kynesyslabs/dacs/artifacts", replacement: coreSource("artifacts") },
+      { find: "@kynesyslabs/dacs/canonical", replacement: coreSource("canonical") },
+      { find: "@kynesyslabs/dacs/commerce", replacement: coreSource("commerce") },
+      { find: "@kynesyslabs/dacs/crypto", replacement: coreSource("crypto") },
+      { find: "@kynesyslabs/dacs/negotiate", replacement: coreSource("negotiate") },
+      { find: "@kynesyslabs/dacs/seller", replacement: coreSource("seller") },
+    ],
   },
   test: {
     include: ["test/**/*.test.ts"],
