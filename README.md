@@ -315,6 +315,13 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
 
+The commerce coordinator is an explicit production x402 profile, not a generic
+`pay-*` dispatcher. It binds the supported Standard revision plus the verified
+registry/rail/network and seller-orchestrator topology, separates buyer and
+seller operations, and uses durable cursor/claim/ack outboxes. See
+[the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
+for the store, authentication, reconciliation and terminal-failure contracts.
+
 The Demos adapter and live rail clients are optional peers: install
 `@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus
 `viem` for the corresponding live rails. Pure artifact, verifier, canonical,

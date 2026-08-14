@@ -69,6 +69,7 @@
   "files": [
     "dist",
     "README.md",
+    "docs/fixed-price-x402-coordinator.md",
     "LICENSE"
   ],
   "scripts": {

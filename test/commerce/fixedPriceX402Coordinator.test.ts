@@ -1,12 +1,20 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  combineFixedPriceX402OrderStatus,
   createFixedPriceX402BuyerCoordinator,
   createFixedPriceX402SellerCoordinator,
   createInMemoryFixedPriceX402CoordinatorStore,
-  combineFixedPriceX402OrderStatus,
+  FIXED_PRICE_X402_COMMERCE_PROFILE,
+  FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+  FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceX402OrderBindingHash,
+  fixedPriceX402OrderViolation,
+  type FixedPriceX402CoordinatorRole,
   type FixedPriceX402OrderInput,
+  type FixedPriceX402ProtocolBinding,
   type FixedPriceX402TrackOperation,
 } from "../../src/commerce/index.js";
 import {
@@ -14,19 +22,56 @@ import {
 } from "../../src/index.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+const BUYER = "did:example:buyer";
+const SELLER = "did:example:seller";
 
-function order(overrides: Partial<FixedPriceX402OrderInput> = {}): FixedPriceX402OrderInput {
+const PROTOCOL: FixedPriceX402ProtocolBinding = {
+  commerceProfile: FIXED_PRICE_X402_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+  phase: "pay-x402",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  rail: {
+    registryIndexRef: FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+    registryIndexHash: "1".repeat(64),
+    railDefinitionRef: "dacs4:rail:x402%3Adefault:2",
+    railDefinitionHash: "2".repeat(64),
+    railId: "x402:default",
+    railVersion: 2,
+    railType: "x402",
+    phaseHandler: "pay-x402",
+    network: "eip155:8453",
+    availability: "live",
+  },
+};
+
+function order(
+  role: FixedPriceX402CoordinatorRole,
+  overrides: Partial<FixedPriceX402OrderInput> = {},
+): FixedPriceX402OrderInput {
   return {
     jobId: JOB_ID,
-    buyer: "did:example:buyer",
-    seller: "did:example:seller",
-    sdkJobs: {
-      agreement: `agreement:${JOB_ID}`,
-      payment: `payment:${JOB_ID}`,
-      fulfilment: `fulfilment:${JOB_ID}`,
-      buyerAudit: `audit:buyer:${JOB_ID}`,
-      sellerAudit: `audit:seller:${JOB_ID}`,
-    },
+    buyer: BUYER,
+    seller: SELLER,
+    protocol: PROTOCOL,
+    sdkJobs: role === "buyer"
+      ? {
+          role,
+          agreement: `buyer:agreement:${JOB_ID}`,
+          payment: `buyer:payment:${JOB_ID}`,
+          paymentEvidence: `buyer:payment-evidence:${JOB_ID}`,
+          buyerReceived: `buyer:received:${JOB_ID}`,
+          audit: `buyer:audit:${JOB_ID}`,
+        }
+      : {
+          role,
+          agreement: `seller:agreement:${JOB_ID}`,
+          payment: `seller:payment:${JOB_ID}`,
+          paymentEvidence: `seller:payment-evidence:${JOB_ID}`,
+          fulfilment: `seller:fulfilment:${JOB_ID}`,
+          deliveryEvidence: `seller:delivery-evidence:${JOB_ID}`,
+          audit: `seller:audit:${JOB_ID}`,
+        },
     ...overrides,
   };
 }
@@ -35,149 +80,112 @@ const finalOperation = (track: string, calls: string[]): FixedPriceX402TrackOper
   async ({ fence }) => {
     await fence.assertCurrent();
     calls.push(track);
-    return { status: "final", reference: `${track}:${fence.jobId}` };
+    return {
+      status: "final",
+      outcome: "success",
+      reference: `${track}:${fence.jobId}`,
+    };
   };
 
 describe("fixed-price x402 coordinator", () => {
-  it("is exported from the commerce subpath and package root", async () => {
+  it("uses the repository's exact immutable Standard vector revision", () => {
+    const syncScript = readFileSync(new URL("../../scripts/sync-vectors.mjs", import.meta.url),
+      "utf8");
+    expect(syncScript).toContain(`"${FIXED_PRICE_X402_STANDARD_REVISION}"`);
+  });
+
+  it("is exported and ships its public coordinator documentation", async () => {
     expect(rootCreateFixedPriceX402BuyerCoordinator)
       .toBe(createFixedPriceX402BuyerCoordinator);
     const packageJson = await import("../../package.json", { with: { type: "json" } });
     expect(packageJson.default.exports["./commerce"]).toBeDefined();
+    expect(packageJson.default.files).toContain("docs/fixed-price-x402-coordinator.md");
   });
 
-  it("does no invisible background work and advances bounded dependency tracks", async () => {
+  it("runs only buyer-owned tracks and reserves audit-complete for the combined view", async () => {
     const calls: string[] = [];
     const coordinator = createFixedPriceX402BuyerCoordinator({
-      store: createInMemoryFixedPriceX402CoordinatorStore(),
+      store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 1_000 }),
       workerId: "buyer-worker-1",
       operations: {
         agreement: finalOperation("agreement", calls),
         payment: finalOperation("payment", calls),
         "payment-evidence": finalOperation("payment-evidence", calls),
-        delivery: finalOperation("delivery", calls),
         "buyer-received": finalOperation("buyer-received", calls),
-        "delivery-evidence": finalOperation("delivery-evidence", calls),
         audit: finalOperation("audit", calls),
       },
-      now: () => 1_000,
     });
 
-    const started = await coordinator.startOrder(order());
-    expect(started.milestone).toBe("created");
-    expect(calls).toEqual([]);
-
-    const first = await coordinator.runPending({ limit: 2 });
-    expect(first.map((item) => item.track)).toEqual(["agreement", "payment"]);
+    expect((await coordinator.startOrder(order("buyer"))).milestone).toBe("created");
+    expect((await coordinator.runPending({ limit: 2 })).items.map((item) => item.track))
+      .toEqual(["agreement", "payment"]);
     expect((await coordinator.getOrderStatus(JOB_ID))?.milestone).toBe("payment-final");
-
-    const rest = await coordinator.resumePendingOrders({ limit: 10 });
-    expect(rest.map((item) => item.track)).toEqual([
-      "payment-evidence",
-      "delivery",
-      "buyer-received",
-      "delivery-evidence",
-      "audit",
-    ]);
-    expect((await coordinator.getOrderStatus(JOB_ID))?.milestone).toBe("audit-complete");
+    expect((await coordinator.resumePendingOrders({ limit: 10 })).items.map(
+      (item) => item.track,
+    )).toEqual(["payment-evidence", "buyer-received", "audit"]);
+    expect((await coordinator.getOrderStatus(JOB_ID))?.milestone).toBe("actor-audit-final");
     expect(calls).toEqual([
       "agreement",
       "payment",
       "payment-evidence",
-      "delivery",
       "buyer-received",
-      "delivery-evidence",
       "audit",
     ]);
   });
 
-  it("resumes unfinished work through a new coordinator instance", async () => {
-    const store = createInMemoryFixedPriceX402CoordinatorStore();
-    const calls: string[] = [];
-    const options = {
-      store,
-      operations: {
-        agreement: finalOperation("agreement", calls),
-        payment: finalOperation("payment", calls),
-      },
-      now: () => 2_000,
-    };
-    const first = createFixedPriceX402BuyerCoordinator({
-      ...options,
-      workerId: "buyer-before-restart",
-    });
-    await first.startOrder(order());
-    await first.runPending({ limit: 1 });
-
-    const resumed = createFixedPriceX402BuyerCoordinator({
-      ...options,
-      workerId: "buyer-after-restart",
-    });
-    expect((await resumed.getOrderStatus(JOB_ID))?.milestone).toBe("agreement-final");
-    await resumed.resumePendingOrders();
-    expect((await resumed.getOrderStatus(JOB_ID))?.milestone).toBe("payment-final");
-    expect(calls).toEqual(["agreement", "payment"]);
-  });
-
-  it("is idempotent for the same binding and rejects job-id rebinding", async () => {
-    const coordinator = createFixedPriceX402BuyerCoordinator({
+  it("rejects cross-role operations at construction", () => {
+    expect(() => createFixedPriceX402BuyerCoordinator({
       store: createInMemoryFixedPriceX402CoordinatorStore(),
       workerId: "buyer-worker",
-      operations: {},
-    });
-    const original = order();
-    const first = await coordinator.startOrder(original);
-    const second = await coordinator.startOrder(structuredClone(original));
-    expect(second.bindingHash).toBe(first.bindingHash);
-    expect(first.bindingHash).toBe(fixedPriceX402OrderBindingHash(original));
-
-    await expect(coordinator.startOrder(order({ seller: "did:example:substitute" })))
-      .rejects.toThrow(/conflicts with an existing binding/);
+      operations: {
+        delivery: async () => ({
+          status: "final",
+          outcome: "success",
+          reference: "unsafe",
+        }),
+      },
+    })).toThrow(/not role-owned/);
+    expect(() => createFixedPriceX402SellerCoordinator({
+      store: createInMemoryFixedPriceX402CoordinatorStore(),
+      workerId: "seller-worker",
+      operations: {
+        "buyer-received": async () => ({
+          status: "final",
+          outcome: "success",
+          reference: "unsafe",
+        }),
+      },
+    })).toThrow(/not role-owned/);
   });
 
-  it("projects global milestones only from both actor-local views", async () => {
-    const store = createInMemoryFixedPriceX402CoordinatorStore();
+  it("combines distinct role-local pointers only after both audit bundles are final", async () => {
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 5_000 });
     const buyer = createFixedPriceX402BuyerCoordinator({
       store,
       workerId: "buyer-worker",
       operations: {
-        agreement: async () => ({ status: "final", reference: "buyer-agreement" }),
-        payment: async () => ({ status: "final", reference: "buyer-payment" }),
-        "payment-evidence": async () => ({
-          status: "final",
-          reference: "buyer-payment-evidence-observation",
-        }),
-        delivery: async () => ({ status: "final", reference: "buyer-delivery-observation" }),
-        "delivery-evidence": async () => ({
-          status: "final",
-          reference: "buyer-delivery-evidence-observation",
-        }),
-        audit: async () => ({ status: "final", reference: "buyer-audit" }),
+        agreement: finalOperation("buyer-agreement", []),
+        payment: finalOperation("buyer-payment", []),
+        "payment-evidence": finalOperation("buyer-payment-evidence", []),
+        "buyer-received": finalOperation("buyer-received", []),
+        audit: finalOperation("buyer-audit", []),
       },
-      now: () => 5_000,
     });
     const seller = createFixedPriceX402SellerCoordinator({
       store,
       workerId: "seller-worker",
       operations: {
-        agreement: async () => ({ status: "final", reference: "seller-agreement" }),
-        payment: async () => ({ status: "final", reference: "seller-payment" }),
-        delivery: async () => ({ status: "final", reference: "seller-delivery" }),
-        "delivery-evidence": async () => ({
-          status: "final",
-          reference: "seller-delivery-evidence",
-        }),
-        "payment-evidence": async () => ({
-          status: "final",
-          reference: "buyer-written-payment-evidence",
-        }),
-        audit: async () => ({ status: "final", reference: "seller-audit" }),
+        agreement: finalOperation("seller-agreement", []),
+        payment: finalOperation("seller-payment", []),
+        "payment-evidence": finalOperation("seller-payment-evidence", []),
+        delivery: finalOperation("seller-delivery", []),
+        "delivery-evidence": finalOperation("seller-delivery-evidence", []),
+        audit: finalOperation("seller-audit", []),
       },
-      now: () => 5_000,
     });
-    await buyer.startOrder(order());
-    await seller.startOrder(order());
-    await buyer.runPending();
+    await buyer.startOrder(order("buyer"));
+    await seller.startOrder(order("seller"));
+    await buyer.runPending({ limit: 10 });
     await seller.runPending({ limit: 5 });
 
     const beforeSellerAudit = combineFixedPriceX402OrderStatus({
@@ -185,6 +193,9 @@ describe("fixed-price x402 coordinator", () => {
       seller: (await seller.getOrderStatus(JOB_ID))!,
     });
     expect(beforeSellerAudit.milestone).toBe("commercial-performance-complete");
+    expect(beforeSellerAudit.actors.buyer.sdkJobs).not.toEqual(
+      beforeSellerAudit.actors.seller.sdkJobs,
+    );
 
     await seller.runPending();
     const completed = combineFixedPriceX402OrderStatus({
@@ -192,84 +203,264 @@ describe("fixed-price x402 coordinator", () => {
       seller: (await seller.getOrderStatus(JOB_ID))!,
     });
     expect(completed.milestone).toBe("audit-complete");
-    expect(completed.bindingHash).toBe(fixedPriceX402OrderBindingHash(order()));
+    expect(completed.bindingHash).toBe(fixedPriceX402OrderBindingHash(order("buyer")));
   });
 
-  it("fences an operation whose lease expires before its outcome is committed", async () => {
+  it("anchors failure evidence and a failed terminal bundle without permitting delivery", async () => {
+    const delivery = vi.fn();
+    const calls: string[] = [];
+    const seller = createFixedPriceX402SellerCoordinator({
+      store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 8_000 }),
+      workerId: "seller-worker",
+      operations: {
+        agreement: finalOperation("agreement", calls),
+        payment: async () => {
+          calls.push("payment-failed");
+          return {
+            status: "final",
+            outcome: "failure",
+            errorClass: "counterparty",
+            reference: "session:payment-failed",
+          };
+        },
+        "payment-evidence": async () => {
+          calls.push("failure-evidence");
+          return {
+            status: "final",
+            outcome: "success",
+            reference: "dacs4:payment:failure-evidence",
+          };
+        },
+        delivery,
+        audit: async () => {
+          calls.push("failed-bundle");
+          return {
+            status: "final",
+            outcome: "failure",
+            errorClass: "counterparty",
+            reference: "dacs5:bundle:failed-counterparty",
+          };
+        },
+      },
+    });
+    await seller.startOrder(order("seller"));
+    expect((await seller.runPending({ limit: 10 })).items.map((item) => item.track))
+      .toEqual(["agreement", "payment", "payment-evidence", "audit"]);
+    expect(delivery).not.toHaveBeenCalled();
+    const status = await seller.getOrderStatus(JOB_ID);
+    expect(status?.milestone).toBe("terminal-failure");
+    expect(status?.tracks.audit).toMatchObject({
+      state: "final",
+      outcome: "failure",
+      errorClass: "counterparty",
+    });
+    expect(calls).toEqual(["agreement", "payment-failed", "failure-evidence", "failed-bundle"]);
+  });
+
+  it("rejects structurally valid-looking states that violate the dependency DAG", async () => {
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 10_000 });
+    const coordinator = createFixedPriceX402BuyerCoordinator({
+      store,
+      workerId: "buyer-worker",
+      operations: {},
+    });
+    await coordinator.startOrder(order("buyer"));
+    const loaded = await store.load("buyer", JOB_ID);
+    expect(loaded.status).toBe("ok");
+    const corrupt = structuredClone(loaded.status === "ok" ? loaded.record : null) as
+      NonNullable<Extract<typeof loaded, { status: "ok" }>["record"]>;
+    (corrupt.tracks as Record<string, unknown>).audit = {
+      state: "final",
+      generation: 1,
+      attempts: 1,
+      updatedAt: 10_000,
+      outcome: "success",
+      reference: "impossible-audit",
+    };
+    expect(fixedPriceX402OrderViolation(corrupt)).toMatch(/dependency DAG/);
+  });
+
+  it("uses distinct role-local idempotency keys for a shared binding", async () => {
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 11_000 });
+    const keys: string[] = [];
+    const operation: FixedPriceX402TrackOperation = ({ fence }) => {
+      keys.push(fence.idempotencyKey);
+      return { status: "final", outcome: "success", reference: fence.role };
+    };
+    const buyer = createFixedPriceX402BuyerCoordinator({
+      store,
+      workerId: "buyer-worker",
+      operations: { agreement: operation },
+    });
+    const seller = createFixedPriceX402SellerCoordinator({
+      store,
+      workerId: "seller-worker",
+      operations: { agreement: operation },
+    });
+    await buyer.startOrder(order("buyer"));
+    await seller.startOrder(order("seller"));
+    await buyer.runPending();
+    await seller.runPending();
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it("fences expired workers while keeping the role-local idempotency key stable", async () => {
     let now = 3_000;
     const effects = vi.fn();
     const coordinator = createFixedPriceX402BuyerCoordinator({
-      store: createInMemoryFixedPriceX402CoordinatorStore(),
+      store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => now }),
       workerId: "buyer-worker",
       leaseDurationMs: 10,
-      now: () => now,
       operations: {
         agreement: async ({ fence }) => {
           await fence.assertCurrent();
           effects(fence.generation, fence.idempotencyKey);
           now += 11;
-          return { status: "final", reference: "agreement:final" };
+          return { status: "final", outcome: "success", reference: "agreement:final" };
         },
       },
     });
-    await coordinator.startOrder(order());
-
-    expect(await coordinator.runPending()).toEqual([{
+    await coordinator.startOrder(order("buyer"));
+    expect((await coordinator.runPending()).items).toEqual([{
       jobId: JOB_ID,
       track: "agreement",
       status: "stale",
     }]);
-    const afterFirst = await coordinator.getOrderStatus(JOB_ID);
-    expect(afterFirst?.tracks.agreement.state).toBe("running");
-    expect(afterFirst?.tracks.agreement.generation).toBe(1);
-
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.agreement?.state).toBe("running");
     await coordinator.runPending();
-    const afterSecond = await coordinator.getOrderStatus(JOB_ID);
-    expect(afterSecond?.tracks.agreement.generation).toBe(2);
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.agreement?.generation).toBe(2);
     expect(effects.mock.calls[0]?.[1]).toBe(effects.mock.calls[1]?.[1]);
   });
 
-  it("does not leak mutable operation inputs into retained state", async () => {
+  it("sanitizes thrown errors and supports an explicit operator repair transition", async () => {
+    let now = 20_000;
+    const agreement = vi.fn()
+      .mockRejectedValueOnce(new Error("secret provider credential"))
+      .mockReturnValueOnce({
+        status: "final",
+        outcome: "success",
+        reference: "agreement:recovered",
+      });
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => now });
     const coordinator = createFixedPriceX402BuyerCoordinator({
-      store: createInMemoryFixedPriceX402CoordinatorStore(),
+      store,
       workerId: "buyer-worker",
-      now: () => 4_000,
-      operations: {
-        agreement: ({ order: retained }) => {
-          (retained.sdkJobs as { agreement: string }).agreement = "mutated";
-          return { status: "final", reference: "agreement:final" };
-        },
-      },
+      operations: { agreement },
     });
-    await coordinator.startOrder(order());
-    await coordinator.runPending();
-    expect((await coordinator.getOrderStatus(JOB_ID))?.sdkJobs.agreement)
-      .toBe(`agreement:${JOB_ID}`);
+    await coordinator.startOrder(order("buyer"));
+    expect((await coordinator.runPending()).items[0]).toMatchObject({
+      status: "indeterminate",
+      reasonCode: "operation-threw",
+    });
+    expect(JSON.stringify(await store.load("buyer", JOB_ID)))
+      .not.toContain("secret provider credential");
+
+    await coordinator.repairTrack({
+      jobId: JOB_ID,
+      track: "agreement",
+      operatorReasonCode: "operator-requeue",
+    });
+    now += 1;
+    expect((await coordinator.runPending()).items[0]).toMatchObject({
+      status: "final",
+      outcome: "success",
+    });
   });
 
-  it("fails closed when a store labels corrupt state as usable", async () => {
-    const retained = createInMemoryFixedPriceX402CoordinatorStore();
-    const setup = createFixedPriceX402BuyerCoordinator({
-      store: retained,
-      workerId: "setup-worker",
-      operations: {},
-      now: () => 6_000,
-    });
-    await setup.startOrder(order());
-    const valid = await retained.load("buyer", JOB_ID);
-    expect(valid.status).toBe("ok");
-    const corrupt = structuredClone(valid.status === "ok" ? valid.record : null) as
-      unknown as { tracks: { agreement: { attempts: number } } };
-    corrupt.tracks.agreement.attempts = 4;
-    const store = {
-      ...retained,
-      list: async () => [{ status: "ok" as const, record: corrupt }],
-    };
+  it("paginates runnable orders rather than rescanning historical records", async () => {
     const coordinator = createFixedPriceX402BuyerCoordinator({
-      store: store as unknown as typeof retained,
+      store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 30_000 }),
       workerId: "buyer-worker",
-      operations: { agreement: async () => ({ status: "final", reference: "unsafe" }) },
+      operations: { agreement: async ({ fence }) => ({
+        status: "final",
+        outcome: "success",
+        reference: `agreement:${fence.jobId}`,
+      }) },
     });
-    await expect(coordinator.runPending()).rejects.toThrow(/agreement track is malformed/);
+    const suffixes = "0123456789A";
+    for (const suffix of suffixes) {
+      const jobId = `${JOB_ID.slice(0, -1)}${suffix}`;
+      const buyerOrder = order("buyer", {
+        jobId,
+        sdkJobs: {
+          role: "buyer",
+          agreement: `buyer:agreement:${jobId}`,
+          payment: `buyer:payment:${jobId}`,
+          paymentEvidence: `buyer:payment-evidence:${jobId}`,
+          buyerReceived: `buyer:received:${jobId}`,
+          audit: `buyer:audit:${jobId}`,
+        },
+      });
+      await coordinator.startOrder(buyerOrder);
+    }
+    const first = await coordinator.runPending({ limit: 10 });
+    expect(first.items).toHaveLength(10);
+    expect(first.nextCursor).toBeDefined();
+    const second = await coordinator.runPending({ cursor: first.nextCursor, limit: 10 });
+    expect(second.items).toHaveLength(1);
+  });
+
+  it("does not advance a cursor past an order that still has runnable work", async () => {
+    const coordinator = createFixedPriceX402BuyerCoordinator({
+      store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 35_000 }),
+      workerId: "buyer-worker",
+      operations: {
+        agreement: async ({ fence }) => ({
+          status: "final",
+          outcome: "success",
+          reference: `agreement:${fence.jobId}`,
+        }),
+        payment: async ({ fence }) => ({
+          status: "final",
+          outcome: "success",
+          reference: `payment:${fence.jobId}`,
+        }),
+      },
+    });
+    for (const suffix of ["D", "E"]) {
+      const jobId = `${JOB_ID.slice(0, -1)}${suffix}`;
+      await coordinator.startOrder(order("buyer", {
+        jobId,
+        sdkJobs: {
+          role: "buyer",
+          agreement: `buyer:agreement:${jobId}`,
+          payment: `buyer:payment:${jobId}`,
+          paymentEvidence: `buyer:payment-evidence:${jobId}`,
+          buyerReceived: `buyer:received:${jobId}`,
+          audit: `buyer:audit:${jobId}`,
+        },
+      }));
+    }
+
+    const first = await coordinator.runPending({ limit: 1 });
+    expect(first.items.map((item) => item.track)).toEqual(["agreement"]);
+    expect(first.nextCursor).toBeUndefined();
+    expect((await coordinator.runPending({ limit: 1 })).items.map((item) => item.track))
+      .toEqual(["payment"]);
+  });
+
+  it("fails closed when the shared protocol pin changes between actors", async () => {
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 40_000 });
+    const buyer = createFixedPriceX402BuyerCoordinator({
+      store,
+      workerId: "buyer-worker",
+      operations: {},
+    });
+    const seller = createFixedPriceX402SellerCoordinator({
+      store,
+      workerId: "seller-worker",
+      operations: {},
+    });
+    await buyer.startOrder(order("buyer"));
+    const altered = structuredClone(PROTOCOL);
+    (altered as unknown as { rail: { network: string } }).rail.network = "eip155:1";
+    await seller.startOrder(order("seller", { protocol: altered }));
+    const buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    const sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
+    expect(() => combineFixedPriceX402OrderStatus({
+      buyer: buyerStatus,
+      seller: sellerStatus,
+    })).toThrow(/same order/);
   });
 });
