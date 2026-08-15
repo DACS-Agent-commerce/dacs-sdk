@@ -349,6 +349,92 @@ describe("fixed-price x402 coordinator", () => {
     expect(combined.milestone).toBe("terminal-failure");
   });
 
+  it("does not project commercial success over a phase failure awaiting audit", async () => {
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 9_250 });
+    const buyer = createFixedPriceX402BuyerCoordinator({
+      store,
+      workerId: "buyer-worker",
+      operations: {
+        agreement: finalOperation("buyer-agreement", []),
+        payment: async () => ({
+          status: "final",
+          outcome: "failure",
+          errorClass: "counterparty",
+          reference: "session:buyer-payment-failed",
+        }),
+      },
+    });
+    const seller = createFixedPriceX402SellerCoordinator({
+      store,
+      workerId: "seller-worker",
+      operations: {
+        agreement: finalOperation("seller-agreement", []),
+        payment: finalOperation("seller-payment", []),
+        "payment-evidence": finalOperation("seller-payment-evidence", []),
+        delivery: finalOperation("seller-delivery", []),
+        "delivery-evidence": finalOperation("seller-delivery-evidence", []),
+      },
+    });
+    await buyer.startOrder(order("buyer"));
+    await seller.startOrder(order("seller"));
+    await buyer.runPending({ limit: 10 });
+    await seller.runPending({ limit: 10 });
+
+    const buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    const sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
+    expect(buyerStatus.tracks.audit?.state).toBe("not-started");
+    expect(buyerStatus.milestone).toBe("terminal-failure");
+    expect(sellerStatus.milestone).toBe("commercial-performance-complete");
+    expect(combineFixedPriceX402OrderStatus({ buyer: buyerStatus, seller: sellerStatus }).milestone)
+      .toBe("terminal-failure");
+  });
+
+  it("surfaces contradictory actor phase terminals before either audit finalizes", async () => {
+    const statusesFor = async (
+      buyerAgreement: FixedPriceX402TrackOperation,
+      sellerAgreement: FixedPriceX402TrackOperation,
+    ) => {
+      const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 9_375 });
+      const buyer = createFixedPriceX402BuyerCoordinator({
+        store,
+        workerId: "buyer-worker",
+        operations: { agreement: buyerAgreement },
+      });
+      const seller = createFixedPriceX402SellerCoordinator({
+        store,
+        workerId: "seller-worker",
+        operations: { agreement: sellerAgreement },
+      });
+      await buyer.startOrder(order("buyer"));
+      await seller.startOrder(order("seller"));
+      await buyer.runPending();
+      await seller.runPending();
+      return {
+        buyer: (await buyer.getOrderStatus(JOB_ID))!,
+        seller: (await seller.getOrderStatus(JOB_ID))!,
+      };
+    };
+    const failed = (errorClass: "counterparty" | "substrate") => async () => ({
+      status: "final" as const,
+      outcome: "failure" as const,
+      errorClass,
+      reference: `agreement:failed:${errorClass}`,
+    });
+    const aborted = async () => ({
+      status: "final" as const,
+      outcome: "aborted" as const,
+      reference: "agreement:aborted",
+    });
+
+    const classDivergence = await statusesFor(failed("counterparty"), failed("substrate"));
+    expect(() => combineFixedPriceX402OrderStatus(classDivergence))
+      .toThrow(/terminal error classes contradict/);
+
+    const outcomeDivergence = await statusesFor(failed("counterparty"), aborted);
+    expect(() => combineFixedPriceX402OrderStatus(outcomeDivergence))
+      .toThrow(/terminal outcomes contradict/);
+  });
+
   it("rejects two failed actor audits with contradictory failure classes", async () => {
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 9_500 });
     const failureCoordinator = (

@@ -1332,6 +1332,10 @@ function captureOperationResult(value: unknown): FixedPriceX402TrackOperationRes
 function projectLocalMilestone<Protocol extends FixedPriceCoordinatorProtocolBinding>(
   record: Readonly<FixedPriceCoordinatorOrderRecord<Protocol>>,
 ): Exclude<FixedPriceX402Milestone, "audit-complete"> {
+  const terminal = terminalPhaseResult(record);
+  if (terminal) {
+    return terminal.outcome === "failure" ? "terminal-failure" : "terminal-aborted";
+  }
   const audit = trackRecord(record, "audit");
   if (audit?.state === "final") {
     if (audit.outcome === "failure") return "terminal-failure";
@@ -1561,10 +1565,30 @@ function combineFixedPriceCoordinatorOrderStatus<
   if (buyer.bindingHash !== expectedBinding) {
     throw new DacsError("combined coordinator status has an invalid order binding");
   }
+  const buyerRecord = statusAsRecord(buyer) as FixedPriceX402OrderRecord;
+  const sellerRecord = statusAsRecord(seller) as FixedPriceX402OrderRecord;
+  const buyerTerminal = terminalPhaseResult(buyerRecord);
+  const sellerTerminal = terminalPhaseResult(sellerRecord);
   const buyerAudit = buyer.tracks.audit;
   const sellerAudit = seller.tracks.audit;
   let milestone: FixedPriceX402Milestone;
-  if (buyerAudit?.state === "final" && sellerAudit?.state === "final") {
+  if (buyerTerminal && sellerTerminal && buyerTerminal.outcome !== sellerTerminal.outcome) {
+    throw new DacsError("actor terminal outcomes contradict the shared terminal session");
+  }
+  if (buyerTerminal?.outcome === "failure" && sellerTerminal?.outcome === "failure" &&
+      buyerTerminal.errorClass !== sellerTerminal.errorClass) {
+    throw new DacsError(
+      "actor terminal error classes contradict the shared terminal session",
+    );
+  }
+  if ((buyerTerminal && sellerAudit?.state === "final" && sellerAudit.outcome === "success") ||
+      (sellerTerminal && buyerAudit?.state === "final" && buyerAudit.outcome === "success")) {
+    throw new DacsError("actor terminal outcomes contradict the shared terminal session");
+  }
+  const terminal = buyerTerminal ?? sellerTerminal;
+  if (terminal) {
+    milestone = terminal.outcome === "failure" ? "terminal-failure" : "terminal-aborted";
+  } else if (buyerAudit?.state === "final" && sellerAudit?.state === "final") {
     if (buyerAudit.outcome !== sellerAudit.outcome) {
       throw new DacsError("actor audit outcomes contradict the shared terminal session");
     }

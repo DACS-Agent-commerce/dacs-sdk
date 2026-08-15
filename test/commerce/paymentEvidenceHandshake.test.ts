@@ -175,6 +175,7 @@ function buyer(input: Readonly<{
   anchor?: ReturnType<typeof vi.fn>;
   reconcile?: ReturnType<typeof vi.fn>;
   verifyReceipt?: ReturnType<typeof vi.fn>;
+  leaseDurationMs?: number;
   retryDelayMs?: number;
 }> = {}) {
   const store = input.store ?? createInMemoryPaymentEvidenceHandshakeStore();
@@ -207,6 +208,7 @@ function buyer(input: Readonly<{
       reconcileAnchor: reconcile as unknown as BuyerPaymentEvidenceHandshakeOptions["reconcileAnchor"],
       verifyAnchorReceipt: verifyReceipt as unknown as
         BuyerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"],
+      ...(input.leaseDurationMs === undefined ? {} : { leaseDurationMs: input.leaseDurationMs }),
       ...(input.retryDelayMs === undefined ? {} : { retryDelayMs: input.retryDelayMs }),
     }),
   };
@@ -413,6 +415,73 @@ describe("actor-separated payment-evidence handshake", () => {
     expect(anchor).toHaveBeenCalledTimes(2);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(verifyReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles an expired in-flight anchor lease before one durably marked reattempt", async () => {
+    let now = 1_000;
+    const store = createInMemoryPaymentEvidenceHandshakeStore({ now: () => now });
+    const candidate = request();
+    const anchored = { disposition: "anchored" as const, ...finalAnchor(candidate) };
+    let resolveFirst!: (value: typeof anchored) => void;
+    const firstAttempt = new Promise<typeof anchored>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const markedStates: string[] = [];
+    const anchor = vi.fn(async () => {
+      const loaded = await store.load("buyer", candidate.messageId);
+      if (loaded.status !== "ok") throw new Error("missing test record");
+      markedStates.push(
+        `${loaded.record.buyerWork?.state}:${loaded.record.buyerWork?.reasonCode}`,
+      );
+      return anchor.mock.calls.length === 1 ? firstAttempt : anchored;
+    });
+    const reconcile = vi.fn(() => ({
+      disposition: "absent" as const,
+      absenceProofHash: ABSENCE_HASH,
+    }));
+    const { handshake } = buyer({
+      store,
+      anchor,
+      reconcile,
+      leaseDurationMs: 5,
+    });
+    await handshake.receiveRequest(candidate, {});
+
+    const abandonedWorker = handshake.runPending();
+    await vi.waitFor(() => expect(anchor).toHaveBeenCalledTimes(1));
+    expect(await store.load("buyer", candidate.messageId)).toMatchObject({
+      status: "ok",
+      record: {
+        buyerWork: {
+          state: "reconciliation-required",
+          reasonCode: "anchor-attempt-in-flight",
+          lease: { generation: 1 },
+        },
+      },
+    });
+
+    now += 6;
+    expect((await handshake.runPending()).items).toEqual([{
+      messageId: candidate.messageId,
+      status: "reconciled-absent",
+    }]);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(anchor).toHaveBeenCalledTimes(1);
+
+    expect((await handshake.runPending()).items).toEqual([{
+      messageId: candidate.messageId,
+      status: "completed",
+    }]);
+    expect(anchor).toHaveBeenCalledTimes(2);
+    expect(markedStates).toEqual([
+      "reconciliation-required:anchor-attempt-in-flight",
+      "reconciliation-required:anchor-attempt-in-flight",
+    ]);
+
+    resolveFirst(anchored);
+    await expect(abandonedWorker).resolves.toMatchObject({
+      items: [{ status: "completed" }],
+    });
   });
 
   it("parks permanent rejection for operator action and requeues only through repair", async () => {

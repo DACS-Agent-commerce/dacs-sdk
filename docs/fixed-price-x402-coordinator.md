@@ -171,9 +171,11 @@ Only `combineFixedPriceX402OrderStatus` may report `audit-complete`, and only
 after both role-owned audit tracks are final with consistent outcomes. Failure
 audits must also agree on their DACS error class, and each local failure audit
 must reproduce the originating failed phase's class. A one-sided failed or
-aborted terminal audit blocks any combined success projection. A local status
-reports `actor-audit-final`. Validation rejects impossible retained graphs such
-as a lone final audit track.
+aborted phase blocks any combined success projection while its terminal audit
+is still pending. Contradictory actor phase terminals are reported as divergence
+immediately rather than hidden behind either actor's later audit. A local status
+reports `actor-audit-final` only for success. Validation rejects impossible
+retained graphs such as a lone final audit track.
 
 An operator can explicitly requeue a non-final track:
 
@@ -257,6 +259,12 @@ is durably classified and releases its lease immediately. It never waits for
 the default 30-second lease merely because a callback returned badly. A
 permanent contradiction moves to `operator-action` and cannot loop forever.
 
+Before invoking `anchorEvidence`, the buyer store's atomic `claimBuyer` write
+makes the leased work `reconciliation-required` with the same fence while
+returning `mode: "anchor"` for that one worker. If the worker disappears while
+the wallet callback is in flight, an expired lease can therefore be reclaimed
+only in reconciliation mode; it cannot silently repeat the irreversible call.
+
 An ambiguous effect moves to `reconciliation-required`. The next worker must
 invoke `reconcileAnchor`; it may:
 
@@ -265,9 +273,10 @@ invoke `reconcileAnchor`; it may:
 - remain indeterminate / declare an invalid contradiction.
 
 Authenticated absence is committed before another wallet call is permitted.
-The retry occurs in a later claimed generation, closing the crash window
-between “absence observed” and “effect repeated.” `repairRequest` is the
-explicit operator requeue path and conservatively returns work to
+The retry occurs in a later claimed generation and is itself durably marked
+`reconciliation-required` before the callback begins, closing both crash
+windows around “absence observed” and “effect repeated.” `repairRequest` is
+the explicit operator requeue path and conservatively returns work to
 reconciliation, not directly to the wallet.
 
 Buyer `anchorEvidence`, `reconcileAnchor`, and `verifyAnchorReceipt` callback

@@ -216,6 +216,11 @@ export interface PaymentEvidenceHandshakeStore {
     cursor?: string;
     limit: number;
   }>): Promise<PaymentEvidencePage<Readonly<PaymentEvidenceHandshakeRecord>>>;
+  /**
+   * Atomically leases work and writes its irreversible-effect intent. An
+   * `anchor` claim must already retain `reconciliation-required` with the
+   * same lease before it is returned to the caller.
+   */
   claimBuyer(input: Readonly<{
     messageId: string;
     requestHash: string;
@@ -1261,13 +1266,16 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
         expiresAt,
       };
       const nextWork: PaymentEvidenceBuyerWork = {
-        state: work.state,
+        // The claim is the write-ahead intent for the irreversible callback.
+        // A lost worker therefore leaves an expired reconciliation claim, not
+        // a pending record that another worker could anchor again directly.
+        state: "reconciliation-required",
         generation: lease.generation,
         attempts: work.attempts + 1,
         updatedAt: stamp(current, now),
         ...(work.state === "reconciliation-required"
           ? { reasonCode: work.reasonCode! }
-          : {}),
+          : { reasonCode: "anchor-attempt-in-flight" }),
         ...(work.absenceProofHash ? { absenceProofHash: work.absenceProofHash } : {}),
         lease,
       };
@@ -1903,6 +1911,13 @@ export function createBuyerPaymentEvidenceHandshake(
         if (!validLease(lease) || !claimed.buyerWork?.lease ||
             canonicalize(lease) !== canonicalize(claimed.buyerWork.lease)) {
           throw new DacsError("payment-evidence store returned an invalid buyer lease");
+        }
+        if (claimed.buyerWork.state !== "reconciliation-required" ||
+            (claim.mode === "anchor" &&
+              claimed.buyerWork.reasonCode !== "anchor-attempt-in-flight")) {
+          throw new DacsError(
+            "payment-evidence store did not durably mark the buyer anchor claim",
+          );
         }
         const fence: PaymentEvidenceAnchorFence = Object.freeze({
           messageId: retainedRequest.messageId,
