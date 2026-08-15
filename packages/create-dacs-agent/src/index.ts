@@ -11,7 +11,7 @@ export interface CreateDacsAgentOptions {
   targetDirectory: string;
   mode?: "offline" | "live-demos";
   profile?: string;
-  role?: "demo-all" | "buyer" | "seller" | "verifier";
+  role?: "demo-all";
   deployment?: "local" | "docker";
   install?: boolean;
   run?: boolean;
@@ -21,7 +21,7 @@ export interface CreatedDacsAgentProject {
   targetDirectory: string;
   mode: "offline";
   profile: typeof OFFLINE_PROFILE;
-  role: "demo-all" | "buyer" | "seller" | "verifier";
+  role: "demo-all";
   deployment: "local" | "docker";
   installed: boolean;
   ran: boolean;
@@ -121,17 +121,18 @@ export async function createDacsAgentProject(
   if (profile !== OFFLINE_PROFILE) {
     throw new Error(`offline mode requires profile ${OFFLINE_PROFILE}`);
   }
+  if (role !== "demo-all") {
+    throw new Error(
+      "this generator supports only the single-process demo-all simulation; " +
+        "independent role services are not implemented",
+    );
+  }
   if (run && !install) {
     throw new Error("--run cannot be combined with --no-install");
   }
-  if (run && role !== "demo-all") {
-    throw new Error("the offline one-command run requires role demo-all");
-  }
-
   await ensureWritableEmptyTarget(targetDirectory);
   const templates = projectTemplates({
     packageName: packageName(targetDirectory),
-    role,
     deployment,
   });
   const files = Object.keys(templates).sort();

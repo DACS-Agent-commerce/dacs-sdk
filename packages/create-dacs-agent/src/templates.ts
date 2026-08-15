@@ -1,6 +1,5 @@
 export interface ProjectTemplateOptions {
   packageName: string;
-  role: "demo-all" | "buyer" | "seller" | "verifier";
   deployment: "local" | "docker";
 }
 
@@ -34,40 +33,13 @@ function packageJson(packageName: string): string {
   ) + "\n";
 }
 
-function packageLock(packageName: string): string {
-  return JSON.stringify(
-    {
-      name: packageName,
-      version: "0.1.0",
-      lockfileVersion: 3,
-      requires: true,
-      packages: {
-        "": {
-          name: packageName,
-          version: "0.1.0",
-          dependencies: {
-            "@kynesyslabs/dacs": SDK_VERSION,
-            "@kynesyslabs/dacs-node": SDK_VERSION,
-          },
-          devDependencies: {
-            "@types/node": "20.19.1",
-            typescript: "5.9.2",
-          },
-        },
-      },
-    },
-    null,
-    2,
-  ) + "\n";
-}
-
-function dacsConfig(role: ProjectTemplateOptions["role"]): string {
+function dacsConfig(): string {
   return `import type { DacsAgentConfig } from "@kynesyslabs/dacs-node";
 
 const config = {
   mode: "offline",
   profile: "dacs-sdk:fixed-price-offline:v1",
-  role: ${JSON.stringify(role)},
+  role: "demo-all",
   dataDirectory: "./data",
   limits: {
     maxServiceAmount: { asset: "USD", amount: "1" },
@@ -107,32 +79,31 @@ const CONFIG_SOURCE = `import { validateDacsAgentConfig } from "@kynesyslabs/dac
 import fileConfig from "../dacs.config.js";
 
 export function loadConfig() {
-  const role = process.env.DACS_ROLE ?? fileConfig.role;
-  return validateDacsAgentConfig({ ...fileConfig, role });
+  return validateDacsAgentConfig(fileConfig);
 }
 `;
 
 const BUYER_SOURCE = `export const buyerComponent = Object.freeze({
   role: "buyer" as const,
-  description: "Logical offline buyer authority",
+  description: "Logical buyer fixture in the single-process simulation",
 });
 `;
 
 const SELLER_SOURCE = `export const sellerComponent = Object.freeze({
   role: "seller" as const,
-  description: "Logical offline seller authority",
+  description: "Logical seller fixture in the single-process simulation",
 });
 `;
 
 const VERIFIER_SOURCE = `export const verifierComponent = Object.freeze({
   role: "verifier" as const,
-  description: "Independent offline verifier authority",
+  description: "Logical verifier fixture in the single-process simulation",
 });
 `;
 
 const SERVICE_SOURCE = `import { resolve } from "node:path";
 
-import { runDeterministicOfflineLifecycle } from "@kynesyslabs/dacs-node";
+import { runOfflineVerifierSimulation } from "@kynesyslabs/dacs-node";
 
 import { buyerComponent } from "./buyer.js";
 import { loadConfig } from "./config.js";
@@ -151,18 +122,20 @@ if (config.role !== "demo-all") {
 
 const runId = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 const outputDirectory = resolve(config.dataDirectory, "runs", runId);
-const report = await runDeterministicOfflineLifecycle({ outputDirectory });
+const report = await runOfflineVerifierSimulation({ outputDirectory });
 
 process.stdout.write(
   JSON.stringify(
     {
-      event: "dacs.offline.complete",
+      event: "dacs.offline-simulation.complete",
       roles: [buyerComponent.role, sellerComponent.role, verifierComponent.role],
       jobId: report.jobId,
       profile: report.profile,
       paymentDisposition: report.payment.disposition,
       reportPath: report.reportPath,
-      overallSuccess: report.overallSuccess,
+      normativeConformance: report.normativeConformance,
+      commercialSuccess: report.commercialSuccess,
+      simulationPassed: report.simulationPassed,
     },
     null,
     2,
@@ -176,16 +149,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { runDeterministicOfflineLifecycle } from "@kynesyslabs/dacs-node";
+import { runOfflineVerifierSimulation } from "@kynesyslabs/dacs-node";
 
-test("offline quickstart produces a verified DACS 1-5 report", async () => {
+test("offline quickstart produces a fail-closed verifier simulation report", async () => {
   const directory = await mkdtemp(join(tmpdir(), "dacs-generated-test-"));
   try {
-    const report = await runDeterministicOfflineLifecycle({ outputDirectory: directory });
-    assert.equal(report.overallSuccess, true);
+    const report = await runOfflineVerifierSimulation({ outputDirectory: directory });
+    assert.equal(report.simulationPassed, true);
+    assert.equal(report.normativeConformance, false);
+    assert.equal(report.commercialSuccess, false);
     assert.equal(report.mode, "offline");
     assert.equal(report.profile, "dacs-sdk:fixed-price-offline:v1");
     assert.equal(report.payment.availability, "mocked");
+    assert.equal(report.assurance.substrateAuthority, "mocked-local-not-sr2");
+    assert.equal(report.assurance.providerAuthority, "mocked-self-signed-not-sr3");
+    assert.equal(report.assurance.railAuthority, "mocked-local-not-rav-r5");
+    assert.equal(report.assurance.jobIdDiscipline, "fresh-csprng-ulid-per-run");
     assert.deepEqual(report.phases.map((phase) => phase.stage), [
       "DACS-1",
       "DACS-2",
@@ -203,8 +182,10 @@ test("offline quickstart produces a verified DACS 1-5 report", async () => {
 
 const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+COPY package.json ./
+# The generator deliberately emits no fabricated lock. A normal registry-backed
+# install creates the first valid package-lock.json from published packages.
+RUN npm install --ignore-scripts
 COPY . .
 RUN npm run build
 
@@ -220,8 +201,6 @@ CMD ["node", "dist/src/service.js"]
 const COMPOSE = `services:
   offline-demo:
     build: .
-    environment:
-      DACS_ROLE: demo-all
     volumes:
       - offline-data:/app/data
     read_only: true
@@ -237,13 +216,18 @@ volumes:
 `;
 
 function readme(deployment: ProjectTemplateOptions["deployment"]): string {
-  return `# DACS offline agent quickstart
+  return `# DACS offline verifier simulation
 
-This project runs a complete, deterministic DACS 1-5 fixed-price lifecycle with
-logical buyer, seller and verifier authorities.
+This project runs a local SDK verifier exercise with logical buyer, seller and
+verifier fixtures. It is **not** a conformant DACS transaction and it does not
+assert commercial success.
 
-The payment is explicitly mocked and offline using the Standard's \`pay-ap2\`
-phase. It does not use x402, Demos, a live provider, credentials or funds.
+The payment, provider receipt, substrate anchors and finality are simulated.
+The provider fixture is self-signed test data, not the SR-3 attestation required
+by AP2-2. It does not use x402, Demos, a live provider, credentials or funds.
+The run uses fresh job and presentation identifiers, but it does not implement
+the durable CORE §B.8 SN-1..SN-4 challenge ledger. Its local rail fixture is not
+the signed, anchored DACS-4 §9.4.4 RAV-R5 authority.
 
 ## Run
 
@@ -253,8 +237,14 @@ npm test
 npm run dacs:smoke:offline
 \`\`\`
 
-The smoke command prints the absolute path to \`run-report.json\`. Every artifact
-is stored below that report's \`artifacts/\` directory.
+The smoke command prints the absolute path to \`simulation-report.json\`. Every
+persisted fixture is wrapped in a non-conformant simulation envelope below the
+report's \`simulation-artifacts/\` directory. Those files are not independently
+anchored \`AttestationRef\` targets.
+
+No lockfile is fabricated by the generator. The default install creates a valid
+lock from the published registry packages; with \`--no-install\`, run
+\`npm install --ignore-scripts\` before using \`npm ci\`.
 
 Selected deployment: **${deployment}**.
 
@@ -265,8 +255,7 @@ one-click deployment.
 `;
 }
 
-const ENV_EXAMPLE = `# Safe public defaults only. Offline mode needs no secrets.
-DACS_ROLE=demo-all
+const ENV_EXAMPLE = `# Safe public defaults only. The simulation needs no secrets.
 `;
 
 const GITIGNORE = `.env
@@ -296,9 +285,8 @@ export function projectTemplates(
 ): Readonly<Record<string, string>> {
   return Object.freeze({
     "package.json": packageJson(options.packageName),
-    "package-lock.json": packageLock(options.packageName),
     "tsconfig.json": TSCONFIG,
-    "dacs.config.ts": dacsConfig(options.role),
+    "dacs.config.ts": dacsConfig(),
     ".env.example": ENV_EXAMPLE,
     ".gitignore": GITIGNORE,
     Dockerfile: DOCKERFILE,

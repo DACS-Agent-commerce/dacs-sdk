@@ -19,11 +19,21 @@ The live profile is never inferred. `offline` and `live-demos` configurations
 are closed, non-interchangeable variants and must select their matching SDK
 commerce profile.
 
-The package also exposes `runDeterministicOfflineLifecycle`. It writes and then
-independently verifies a complete DACS 1-5 local artifact graph. Its Standard
-`pay-ap2` rail and provider receipt are explicitly marked `mocked`/`offline`;
-the function performs no network request, reads no credentials, spends no
-funds, and makes no live-x402 or live-substrate claim.
+The package also exposes `runOfflineVerifierSimulation`. It constructs a local
+fixture graph and exercises the SDK's signing, dereferencing and recursive
+verification paths. It is not a conformant DACS transaction and never claims
+commercial success. Its substrate finality and provider receipt authorities
+are mocked; in particular, its self-signed provider fixture is not the SR-3
+attestation required by DACS-4 AP2-2. Every persisted fixture is wrapped in a
+machine-readable `normativeConformance: false` simulation envelope, so it is
+not a portable SR-2 `AttestationRef` target. The function performs no network
+request, reads no credentials and moves no value.
+
+Each run uses a fresh CSPRNG-backed ULID and fresh 128-bit presentation nonces.
+That prevents fixture reuse, but the simulation does not implement the durable
+challenge issuance/consumption ledger required by CORE §B.8 SN-1..SN-4. Its
+local rail dependency is likewise not the signed, anchored authority required
+by DACS-4 §9.4.4 RAV-R5. Both limitations are explicit in the run report.
 
 `@kynesyslabs/dacs` is a required runtime peer at the same exact version as
 `@kynesyslabs/dacs-node`. Applications must install both packages; the host kit

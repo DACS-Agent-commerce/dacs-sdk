@@ -34,7 +34,7 @@ async function filesBelow(root: string, current = root): Promise<string[]> {
 }
 
 describe("create-dacs-agent", () => {
-  test("generates the bounded public-package offline project without installing", async () => {
+  test("generates the bounded public-package verifier simulation without installing", async () => {
     const parent = await temporaryDirectory();
     const target = join(parent, "my-agent");
     const result = await createDacsAgentProject({
@@ -58,7 +58,6 @@ describe("create-dacs-agent", () => {
       "compose.yaml",
       "dacs.config.ts",
       "data/.gitkeep",
-      "package-lock.json",
       "package.json",
       "secrets/README.md",
       "src/buyer.ts",
@@ -81,6 +80,12 @@ describe("create-dacs-agent", () => {
     expect(combined).not.toContain("../../src/");
     expect(combined).not.toContain("@kynesyslabs/dacs/dist");
     expect(combined).not.toMatch(/PRIVATE_KEY|SEED_PHRASE|MNEMONIC/);
+    expect(combined).toContain("normativeConformance");
+    expect(combined).toContain("commercialSuccess");
+    expect(combined).toContain("not the SR-3 attestation required");
+    await expect(
+      readFile(join(target, "package-lock.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   test("fails closed for live mode, run without install, and non-empty targets", async () => {
@@ -99,6 +104,13 @@ describe("create-dacs-agent", () => {
         run: true,
       }),
     ).rejects.toThrow(/cannot be combined/);
+    await expect(
+      createDacsAgentProject({
+        targetDirectory: join(parent, "unsupported-role"),
+        role: "buyer" as never,
+        install: false,
+      }),
+    ).rejects.toThrow(/only the single-process demo-all simulation/);
 
     const occupied = join(parent, "occupied");
     await writeFile(occupied, "occupied", "utf8");
@@ -122,5 +134,18 @@ describe("create-dacs-agent", () => {
       run: true,
       install: true,
     });
+  });
+
+  test("rejects unimplemented independent role selections", () => {
+    for (const role of ["buyer", "seller", "verifier"]) {
+      expect(() =>
+        parseCreateDacsAgentArguments([
+          "my-agent",
+          "--yes",
+          "--role",
+          role,
+        ])
+      ).toThrow(/independent role services are not implemented/);
+    }
   });
 });

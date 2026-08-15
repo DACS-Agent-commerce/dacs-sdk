@@ -6,6 +6,14 @@ Date: 2026-08-14
 Primary trackers: dacs-sdk issues #59 and #60
 Revision: 2 — architecture and transport decisions resolved
 
+> **Implementation status (2026-08-15): design target, not current capability.**
+> The credential-free package currently delivered by the stacked host/generator
+> work is an internal verifier simulation only. It has no SR-2 anchor authority,
+> no SR-3/AP2-2 provider authority, moves no value, emits no normative or
+> commercial-success claim, and does not implement independently hosted roles.
+> Its wrapped fixture output MUST NOT be described as satisfying the offline or
+> live acceptance requirements below. Those requirements remain release gates.
+
 ## 1. Executive decision
 
 DACS will ship a one-command local quickstart and a guarded, one-command live
