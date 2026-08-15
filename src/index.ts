@@ -879,6 +879,7 @@ export {
   type D402PaymentRequirement,
   type D402SettlementResult,
   createPayDemRail,
+  PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,
   type PayDemRail,
