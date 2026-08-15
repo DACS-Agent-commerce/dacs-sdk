@@ -353,9 +353,13 @@ seller operations, and uses durable cursor/claim/ack outboxes. See
 for the store, authentication, reconciliation and terminal-failure contracts.
 
 The Demos adapter and live rail clients are optional peers: install
-`@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus
-`viem` for the corresponding live rails. Pure artifact, verifier, canonical,
-and injected rail-core consumers do not install those integration trees.
+`@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,
+`@x402/fetch`, plus `viem` for the corresponding live rails. Pure artifact,
+verifier, canonical, and injected rail-core consumers do not install those
+integration trees. CI installs the packed tarball in an external strict
+NodeNext TypeScript project twice: once with every optional peer omitted, and
+again with the live peers present. Both passes keep `skipLibCheck` disabled so
+SDK or dependency declaration incompatibilities fail the build.
 
 ## Package artifacts
 
