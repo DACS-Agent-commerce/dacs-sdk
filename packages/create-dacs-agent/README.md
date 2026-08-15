@@ -24,5 +24,12 @@ The generator does not fabricate a dependency lock from unpublished packages.
 Its normal registry-backed install creates a valid lock; `--no-install` emits
 no lock and leaves dependency resolution to the operator.
 
+The project target's parent directory must already exist. The generator writes
+the complete project into a private sibling staging directory and atomically
+publishes it, so nested symlinks cannot redirect individual template writes and
+concurrent generators cannot expose a partial project. Docker output includes a
+restrictive `.dockerignore`; its runtime stage copies only the compiled output,
+package manifests and pruned production dependencies.
+
 Live generation fails closed until the durable host, doctor and guarded command
 work packages have landed and passed their acceptance tests.

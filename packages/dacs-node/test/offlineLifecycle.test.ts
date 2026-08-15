@@ -9,7 +9,10 @@ import {
 } from "@kynesyslabs/dacs/commerce";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { runOfflineVerifierSimulation } from "../src/offlineLifecycle.js";
+import {
+  runOfflineVerifierSimulation,
+  simulationBundleGraphVerificationPassed,
+} from "../src/offlineLifecycle.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -29,6 +32,21 @@ async function outputDirectory(): Promise<string> {
 }
 
 describe("offline verifier simulation", () => {
+  test("does not treat a partial recursive bundle result as verified", () => {
+    expect(simulationBundleGraphVerificationPassed({
+      ok: true,
+      fullyVerified: false,
+    })).toBe(false);
+    expect(simulationBundleGraphVerificationPassed({
+      ok: true,
+      fullyVerified: true,
+    })).toBe(true);
+    expect(simulationBundleGraphVerificationPassed({
+      ok: false,
+      fullyVerified: true,
+    })).toBe(false);
+  });
+
   test("exercises recursive checks without asserting normative or commercial success", async () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")

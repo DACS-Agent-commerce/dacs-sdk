@@ -1,5 +1,15 @@
 import { spawn } from "node:child_process";
-import { lstat, mkdir, readdir, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  rmdir,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { projectTemplates } from "./templates.js";
@@ -37,7 +47,41 @@ function packageName(targetDirectory: string): string {
   return normalized || "dacs-agent";
 }
 
-async function ensureWritableEmptyTarget(targetDirectory: string): Promise<void> {
+interface StableProjectParent {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+async function stableProjectParent(targetDirectory: string): Promise<StableProjectParent> {
+  const requestedParent = dirname(targetDirectory);
+  let stat;
+  try {
+    stat = await lstat(requestedParent);
+  } catch (cause) {
+    throw new Error("target parent must already exist", { cause });
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error("target parent must be a directory, not a symbolic link");
+  }
+  const parent = await realpath(requestedParent);
+  stat = await lstat(parent);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error("canonical target parent must be a non-symlink directory");
+  }
+  return { path: parent, dev: stat.dev, ino: stat.ino };
+}
+
+async function assertStableProjectParent(parent: StableProjectParent): Promise<void> {
+  const stat = await lstat(parent.path);
+  if (stat.isSymbolicLink() || !stat.isDirectory() ||
+      stat.dev !== parent.dev || stat.ino !== parent.ino ||
+      await realpath(parent.path) !== parent.path) {
+    throw new Error("target parent changed during project generation");
+  }
+}
+
+async function prepareFreshTarget(targetDirectory: string): Promise<void> {
   try {
     const stat = await lstat(targetDirectory);
     if (stat.isSymbolicLink()) {
@@ -49,9 +93,9 @@ async function ensureWritableEmptyTarget(targetDirectory: string): Promise<void>
     if ((await readdir(targetDirectory)).length > 0) {
       throw new Error("target directory is not empty; refusing to overwrite it");
     }
+    await rmdir(targetDirectory);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(targetDirectory, { recursive: true });
   }
 }
 
@@ -102,7 +146,7 @@ export async function createDacsAgentProject(
   if (!options || typeof options.targetDirectory !== "string") {
     throw new TypeError("targetDirectory is required");
   }
-  const targetDirectory = resolve(options.targetDirectory.trim());
+  const requestedTargetDirectory = resolve(options.targetDirectory.trim());
   if (options.targetDirectory.trim() === "") {
     throw new TypeError("targetDirectory must not be empty");
   }
@@ -130,19 +174,38 @@ export async function createDacsAgentProject(
   if (run && !install) {
     throw new Error("--run cannot be combined with --no-install");
   }
-  await ensureWritableEmptyTarget(targetDirectory);
+  const parent = await stableProjectParent(requestedTargetDirectory);
+  const targetDirectory = resolve(parent.path, basename(requestedTargetDirectory));
+  await prepareFreshTarget(targetDirectory);
   const templates = projectTemplates({
     packageName: packageName(targetDirectory),
     deployment,
   });
   const files = Object.keys(templates).sort();
-  for (const file of files) {
-    const destination = safeDestination(targetDirectory, file);
-    await mkdir(dirname(destination), { recursive: true });
-    await writeFile(destination, templates[file]!, {
-      encoding: "utf8",
-      flag: "wx",
-    });
+  const stagingDirectory = await mkdtemp(
+    `${parent.path}${sep}.${basename(targetDirectory)}.staging-`,
+  );
+  let published = false;
+  try {
+    for (const file of files) {
+      const destination = safeDestination(stagingDirectory, file);
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, templates[file]!, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+    }
+    await assertStableProjectParent(parent);
+    // All nested paths are complete before the project name becomes visible.
+    // An attacker-planted target makes this atomic publication fail; no write
+    // ever traverses a path below the caller-selected target.
+    await rename(stagingDirectory, targetDirectory);
+    published = true;
+  } finally {
+    if (!published) {
+      await rm(stagingDirectory, { recursive: true, force: true });
+    }
   }
 
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";

@@ -41,6 +41,7 @@ import {
   type ProtocolAnchorReceipt as AnchorReceipt,
   type AnchoredFinalityCommitment,
   type AttestationRef,
+  type BundleVerification,
   type CommitmentSignatureVerifier,
   type ComponentSignature,
   type CompositeBundleRequirement,
@@ -77,6 +78,13 @@ const VERIFIER_SEED = new Uint8Array(32).fill(43);
 export interface OfflineVerifierSimulationOptions {
   /** Directory that receives wrapped fixtures and `simulation-report.json`. */
   outputDirectory: string;
+}
+
+/** Internal simulation gate: recursive verification must be complete, not merely non-failing. */
+export function simulationBundleGraphVerificationPassed(
+  verification: Pick<BundleVerification, "ok" | "fullyVerified">,
+): boolean {
+  return verification.ok && verification.fullyVerified;
 }
 
 export interface OfflineSimulationArtifact {
@@ -1376,7 +1384,8 @@ async function buildAndVerifyBundles(
     verifyBundle(buyerBundleRef.anchor.locator),
     verifyBundle(sellerBundleRef.anchor.locator),
   ]);
-  if (!buyerVerification.ok || !sellerVerification.ok) {
+  if (!simulationBundleGraphVerificationPassed(buyerVerification) ||
+      !simulationBundleGraphVerificationPassed(sellerVerification)) {
     throw new Error(
       `simulation bundle graph exercise failed: buyer=${buyerVerification.reason ?? "invalid"}, ` +
         `seller=${sellerVerification.reason ?? "invalid"}`,

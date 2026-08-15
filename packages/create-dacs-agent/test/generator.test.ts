@@ -1,4 +1,13 @@
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -130,6 +139,12 @@ describe("create-dacs-agent", () => {
     expect(await readFile(join(target, "Dockerfile"), "utf8")).toContain(
       "generated .dockerignore keeps credentials",
     );
+    expect(await readFile(join(target, "Dockerfile"), "utf8")).toContain(
+      "npm prune --omit=dev --ignore-scripts",
+    );
+    expect(await readFile(join(target, "Dockerfile"), "utf8")).not.toContain(
+      "COPY --from=build --chown=dacs:dacs /app /app",
+    );
     await expect(
       readFile(join(target, "package-lock.json"), "utf8"),
     ).rejects.toMatchObject({ code: "ENOENT" });
@@ -170,6 +185,60 @@ describe("create-dacs-agent", () => {
     await expect(
       createDacsAgentProject({ targetDirectory: linked, install: false }),
     ).rejects.toThrow(/symbolic link/);
+  });
+
+  test("publishes the complete tree atomically across a nested-symlink race", async () => {
+    const parent = await temporaryDirectory();
+    const target = join(parent, "atomic-agent");
+    const outside = join(parent, "outside");
+    await mkdir(outside);
+
+    const plantDuringPartialPublication = async (): Promise<boolean> => {
+      for (let attempt = 0; attempt < 5_000; attempt += 1) {
+        try {
+          await lstat(join(target, "secrets", "README.md"));
+          try {
+            await lstat(join(target, "src", "verifier.ts"));
+            return false;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+          await symlink(outside, join(target, "src"));
+          return true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      }
+      return false;
+    };
+
+    const [result, planted] = await Promise.all([
+      createDacsAgentProject({ targetDirectory: target, install: false }),
+      plantDuringPartialPublication(),
+    ]);
+    expect(result.files).toContain("src/verifier.ts");
+    expect(planted).toBe(false);
+    expect((await readdir(outside))).toEqual([]);
+    expect((await lstat(join(target, "src"))).isDirectory()).toBe(true);
+    expect(await readdir(parent)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.staging-/)]),
+    );
+  });
+
+  test("allows only one complete publisher for a concurrent target", async () => {
+    const parent = await temporaryDirectory();
+    const target = join(parent, "contended-agent");
+    const results = await Promise.allSettled([
+      createDacsAgentProject({ targetDirectory: target, install: false }),
+      createDacsAgentProject({ targetDirectory: target, install: false }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(await filesBelow(target)).toContain("src/service.ts");
+    expect(await readdir(parent)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.staging-/)]),
+    );
   });
 
   test("parses the documented non-interactive command", () => {
