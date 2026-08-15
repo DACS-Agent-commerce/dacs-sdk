@@ -22,7 +22,7 @@ function includedFixture(amount: string | number = "2398") {
       content: {
         type: "native",
         from: `0x${PAYER}`,
-        from_ed25519_address: `0x${"33".repeat(32)}`,
+        from_ed25519_address: `0x${PAYER}`,
         to: PAYEE,
         amount,
         timestamp: BLOCK_TIMESTAMP_SECONDS * 1_000 - 5_000,
@@ -93,6 +93,28 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
       amountOs: "1",
       blockNumber: BLOCK_NUMBER,
     });
+  });
+
+  it("reports the debited ed25519 owner rather than an alternate signing key", async () => {
+    const owner = "33".repeat(32);
+    const fixture = includedFixture();
+    fixture.transaction.content.from_ed25519_address = `0x${owner}`;
+
+    await expect(
+      observePayDemTransferCore(HASH, fixtureClient(fixture)),
+    ).resolves.toMatchObject({
+      status: "included",
+      payer: owner,
+    });
+  });
+
+  it("fails closed on a malformed present ed25519 owner instead of falling back to the signer", async () => {
+    const fixture = includedFixture();
+    fixture.transaction.content.from_ed25519_address = "not-an-address";
+
+    await expect(
+      observePayDemTransferCore(HASH, fixtureClient(fixture)),
+    ).resolves.toMatchObject({ status: "invalid" });
   });
 
   it.each(["included", "confirmed", "finalized"])(
@@ -265,5 +287,24 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
       "getTxByHash",
       "getBlockByNumber",
     ]);
+  });
+
+  it("bounds response-body parsing even when an injected fetch ignores abort", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise<never>(() => undefined),
+    }) as unknown as Response);
+    const observer = createPayDemSellerObserver({
+      rpc: "https://node.example",
+      timeoutMs: 10,
+      fetchImpl,
+    });
+
+    await expect(observer.observeDemosTransfer(HASH)).resolves.toEqual({
+      status: "unavailable",
+      reason: "transaction status read failed",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

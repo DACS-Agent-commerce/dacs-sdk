@@ -209,7 +209,9 @@ transaction-body label is accepted only when that status and confirmed-block
 membership agree. The native-send payload disambiguates the denomination fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
-are converted at `1 DEM = 1,000,000,000 OS`. It trusts the configured Demos
+are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
+ed25519 owner address (the account whose nonce and balance are mutated), not an
+alternate active signing key in `content.from`. It trusts the configured Demos
 RPC's confirmed-block view; applications requiring an independent
 validator-quorum proof must inject a stronger `observeDemosTransfer` provider.
 
