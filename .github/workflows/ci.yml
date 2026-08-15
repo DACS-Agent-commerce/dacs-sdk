@@ -72,7 +72,7 @@ jobs:
           npm install --prefix host-package-smoke/app --ignore-scripts --strict-peer-deps \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
-          (cd host-package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || !require.resolve('@kynesyslabs/dacs-node/sqlite')) process.exit(1) })")
+          (cd host-package-smoke/app && node --input-type=module -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || !import.meta.resolve('@kynesyslabs/dacs-node/sqlite')) process.exit(1) })")
           node -e "const p=require('./package.json'); if ((p.dependencies && p.dependencies['@kynesyslabs/dacs-node']) || (p.optionalDependencies && p.optionalDependencies['@kynesyslabs/dacs-node']) || (p.peerDependencies && p.peerDependencies['@kynesyslabs/dacs-node'])) process.exit(1)"
 
       - name: Packed SQLite host smoke
