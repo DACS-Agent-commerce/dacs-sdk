@@ -232,6 +232,47 @@ function confirmedTransactionFeeOs(value: unknown, postFork: boolean): bigint | 
   return network + rpc + additional;
 }
 
+function confirmedWireAmountOs(value: unknown, postFork: boolean): bigint | null {
+  if (postFork) {
+    return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)
+      ? BigInt(value)
+      : null;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? BigInt(value) * OS_PER_DEM
+    : null;
+}
+
+function confirmedValidityFeeOs(value: unknown, postFork: boolean): bigint | null {
+  const data = (
+    value as {
+      response?: {
+        data?: {
+          gas_operation?: unknown;
+          transaction?: { content?: Record<string, unknown> };
+        };
+      };
+    }
+  )?.response?.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+
+  let gasFees: unknown;
+  if (data.gas_operation != null) {
+    if (typeof data.gas_operation !== "object" || Array.isArray(data.gas_operation)) {
+      return null;
+    }
+    gasFees = (data.gas_operation as Record<string, unknown>).fees;
+  }
+
+  // demosdk's programmatic runner defines `gas_operation.fees` as the
+  // authoritative post-fork fee view when present, falling back to the fee
+  // carried on the confirmed transaction for nodes that return no gas
+  // operation. Do not fall back when an authoritative fee object is present
+  // but malformed: that would let a bad response bypass the spend ceiling.
+  const fees = gasFees ?? data.transaction?.content?.transaction_fee;
+  return confirmedTransactionFeeOs(fees, postFork);
+}
+
 function normalizedDemosAccount(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const match = value.trim().match(/^(?:0[xX])?([0-9a-fA-F]{64})$/);
@@ -242,34 +283,47 @@ function confirmedDebitFromValidity(
   value: unknown,
   input: Readonly<{ payer: string; payee: string; amountOs: bigint; postFork: boolean }>,
 ): bigint | null {
-  const content = (
+  const data = (
     value as {
-      response?: { data?: { transaction?: { content?: Record<string, unknown> } } };
+      response?: {
+        data?: {
+          custom_charges?: unknown;
+          transaction?: { content?: Record<string, unknown> };
+        };
+      };
     }
-  )?.response?.data?.transaction?.content;
-  if (!content || content.type !== "native" || content.custom_charges != null) return null;
-  const payer = normalizedDemosAccount(content.from ?? content.from_ed25519_address);
-  const payee = normalizedDemosAccount(content.to);
-  if (payer !== normalizedDemosAccount(input.payer) ||
-      payee !== normalizedDemosAccount(input.payee)) return null;
+  )?.response?.data;
+  const content = data?.transaction?.content;
+  if (!content || content.type !== "native" || content.custom_charges != null ||
+      data?.custom_charges != null) return null;
 
-  const data = content.data;
-  if (!Array.isArray(data) || data.length !== 2 || data[0] !== "native" ||
-      data[1] === null || typeof data[1] !== "object" || Array.isArray(data[1])) return null;
-  const native = data[1] as Record<string, unknown>;
+  const expectedPayer = normalizedDemosAccount(input.payer);
+  const expectedPayee = normalizedDemosAccount(input.payee);
+  if (expectedPayer === null || expectedPayee === null) return null;
+  const payerFields = [content.from, content.from_ed25519_address]
+    .filter((field) => field != null);
+  if (payerFields.length === 0 ||
+      payerFields.some((field) => normalizedDemosAccount(field) !== expectedPayer)) {
+    return null;
+  }
+  const payee = normalizedDemosAccount(content.to);
+  if (payee !== expectedPayee) return null;
+
+  const contentAmountOs = confirmedWireAmountOs(content.amount, input.postFork);
+  if (contentAmountOs !== input.amountOs) return null;
+
+  const transactionData = content.data;
+  if (!Array.isArray(transactionData) || transactionData.length !== 2 ||
+      transactionData[0] !== "native" || transactionData[1] === null ||
+      typeof transactionData[1] !== "object" || Array.isArray(transactionData[1])) return null;
+  const native = transactionData[1] as Record<string, unknown>;
   const args = native.args;
   if (native.nativeOperation !== "send" || !Array.isArray(args) || args.length !== 2 ||
-      normalizedDemosAccount(args[0]) !== normalizedDemosAccount(input.payee)) return null;
-  const payloadAmountOs = input.postFork
-    ? typeof args[1] === "string" && /^(?:0|[1-9][0-9]*)$/.test(args[1])
-      ? BigInt(args[1])
-      : null
-    : typeof args[1] === "number" && Number.isSafeInteger(args[1]) && args[1] >= 0
-      ? BigInt(args[1]) * OS_PER_DEM
-      : null;
+      normalizedDemosAccount(args[0]) !== expectedPayee) return null;
+  const payloadAmountOs = confirmedWireAmountOs(args[1], input.postFork);
   if (payloadAmountOs !== input.amountOs) return null;
 
-  const feeOs = confirmedTransactionFeeOs(content.transaction_fee, input.postFork);
+  const feeOs = confirmedValidityFeeOs(value, input.postFork);
   return feeOs === null ? null : input.amountOs + feeOs;
 }
 
