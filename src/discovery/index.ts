@@ -24,6 +24,19 @@ export {
   type BoundArtifactWriteResult,
 } from "./boundArtifactRepository.js";
 export {
+  queryListingCatalog,
+  createCatalogBindingIndex,
+  type CatalogReachabilityHint,
+  type CatalogReputationHint,
+  type CatalogListingSummary,
+  type ListingCatalogQuery,
+  type ListingCatalogPage,
+  type ListingCatalogQueryResult,
+  type ListingCatalogClientConfig,
+  type ListingCatalogRequestOptions,
+  type CatalogBindingIndexConfig,
+} from "./catalog.js";
+export {
   classifyAnchor,
   scanAnchorPage,
   scanAllAnchors,
