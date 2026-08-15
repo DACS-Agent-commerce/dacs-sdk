@@ -2,6 +2,7 @@ import { constants as fsConstants, type Stats } from "node:fs";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 
@@ -9,7 +10,7 @@ const SAFE_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const MAX_DETAIL_KEYS = 32;
 const MAX_DETAIL_STRING_LENGTH = 4_096;
-const MAX_INTENT_BYTES = 65_536;
+const MAX_MARKER_BYTES = 65_536;
 const SENSITIVE_KEY_RE =
   /secret|mnemonic|private.?key|seed|password|credential|auth.?token|access.?token|wallet/i;
 const OUTCOME_STATUSES = new Set<FundedRunOutcomeStatus>([
@@ -24,9 +25,11 @@ const OUTCOME_STATUSES = new Set<FundedRunOutcomeStatus>([
 export type FundedRunPublicDetail = string | number | boolean | null;
 
 export interface FundedRunIntent {
-  /** Existing durable directory, owned by this process uid with mode 0700. */
+  /** Operator-retained POSIX directory, owned by this process uid with mode 0700. */
   directory: string;
+  /** Public identifier only; it is persisted in the intent marker. */
   operation: string;
+  /** Public identifier only; it is persisted in the intent marker. */
   runId: string;
   /** Public reconciliation facts only. Never pass wallet secrets or private keys. */
   details: Readonly<Record<string, FundedRunPublicDetail>>;
@@ -59,21 +62,53 @@ interface CapturedFundedRunIntent {
   details: Record<string, FundedRunPublicDetail>;
 }
 
+interface CapturedArmedFundedRun {
+  markerId: string;
+  markerPath: string;
+  outcomePath: string;
+}
+
+interface CapturedFundedRunOutcome {
+  status: FundedRunOutcomeStatus;
+  details: Record<string, FundedRunPublicDetail>;
+}
+
 interface SecureMarkerDirectory {
   directory: string;
   handle: FileHandle;
   stat: Stats;
 }
 
-function plainDataRecord(value: unknown): value is Record<string, unknown> {
+/**
+ * Take one shallow snapshot without invoking caller getters or retaining the
+ * caller's record. Proxies are rejected explicitly: their descriptor traps can
+ * otherwise return different values between validation and use.
+ */
+function snapshotPlainDataRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value) ||
-      Object.getPrototypeOf(value) !== Object.prototype) return false;
-  return Reflect.ownKeys(value).every((key) => {
-    if (typeof key !== "string") return false;
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return descriptor?.enumerable === true && "value" in descriptor &&
-      descriptor.value !== undefined;
-  });
+      nodeTypes.isProxy(value)) return undefined;
+  try {
+    if (Object.getPrototypeOf(value) !== Object.prototype) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key !== "string")) return undefined;
+
+    const snapshot: Record<string, unknown> = {};
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor?.enumerable || !("value" in descriptor) ||
+          descriptor.value === undefined) return undefined;
+      Object.defineProperty(snapshot, key, {
+        value: descriptor.value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return snapshot;
+  } catch {
+    return undefined;
+  }
 }
 
 function exactKeys(
@@ -87,11 +122,12 @@ function exactKeys(
 }
 
 function captureDetails(value: unknown, code: string): Record<string, FundedRunPublicDetail> {
-  if (!plainDataRecord(value) || Object.keys(value).length > MAX_DETAIL_KEYS) {
+  const snapshot = snapshotPlainDataRecord(value);
+  if (!snapshot || Object.keys(snapshot).length > MAX_DETAIL_KEYS) {
     throw new Error(`funded-e2e:${code}-not-plain`);
   }
   const captured: Record<string, FundedRunPublicDetail> = {};
-  for (const [key, item] of Object.entries(value)) {
+  for (const [key, item] of Object.entries(snapshot)) {
     if (!SAFE_ID_RE.test(key)) throw new Error(`funded-e2e:${code}-key-invalid`);
     if (["__proto__", "prototype", "constructor"].includes(key)) {
       throw new Error(`funded-e2e:${code}-key-invalid`);
@@ -113,30 +149,60 @@ function captureDetails(value: unknown, code: string): Record<string, FundedRunP
 }
 
 function captureIntent(value: unknown): CapturedFundedRunIntent {
-  if (!plainDataRecord(value) ||
-      !exactKeys(value, ["directory", "operation", "runId", "details"]) ||
-      typeof value.directory !== "string" || !isAbsolute(value.directory) ||
-      typeof value.operation !== "string" || !SAFE_ID_RE.test(value.operation) ||
-      typeof value.runId !== "string" || !SAFE_ID_RE.test(value.runId)) {
-    if (plainDataRecord(value) && typeof value.directory === "string" &&
-        !isAbsolute(value.directory)) {
+  const snapshot = snapshotPlainDataRecord(value);
+  if (!snapshot || !exactKeys(snapshot, ["directory", "operation", "runId", "details"])) {
+    throw new Error("funded-e2e:marker-intent-invalid");
+  }
+  const { directory, operation, runId, details } = snapshot;
+  if (typeof directory !== "string" || !isAbsolute(directory) ||
+      typeof operation !== "string" || !SAFE_ID_RE.test(operation) ||
+      typeof runId !== "string" || !SAFE_ID_RE.test(runId)) {
+    if (typeof directory === "string" && !isAbsolute(directory)) {
       throw new Error("funded-e2e:marker-directory-must-be-absolute");
     }
-    if (plainDataRecord(value) && typeof value.operation === "string" &&
-        !SAFE_ID_RE.test(value.operation)) {
+    if (typeof operation === "string" && !SAFE_ID_RE.test(operation)) {
       throw new Error("funded-e2e:marker-operation-invalid");
     }
-    if (plainDataRecord(value) && typeof value.runId === "string" &&
-        !SAFE_ID_RE.test(value.runId)) {
+    if (typeof runId === "string" && !SAFE_ID_RE.test(runId)) {
       throw new Error("funded-e2e:run-id-invalid");
     }
     throw new Error("funded-e2e:marker-intent-invalid");
   }
   return {
-    directory: value.directory,
-    operation: value.operation,
-    runId: value.runId,
-    details: captureDetails(value.details, "marker-details"),
+    directory,
+    operation,
+    runId,
+    details: captureDetails(details, "marker-details"),
+  };
+}
+
+function captureMarker(value: unknown): CapturedArmedFundedRun {
+  const snapshot = snapshotPlainDataRecord(value);
+  if (!snapshot || !exactKeys(snapshot, ["markerId", "markerPath", "outcomePath"]) ||
+      typeof snapshot.markerId !== "string" || !HASH_RE.test(snapshot.markerId) ||
+      typeof snapshot.markerPath !== "string" || typeof snapshot.outcomePath !== "string") {
+    throw new Error("funded-e2e:marker-invalid");
+  }
+  return {
+    markerId: snapshot.markerId,
+    markerPath: snapshot.markerPath,
+    outcomePath: snapshot.outcomePath,
+  };
+}
+
+function captureOutcome(value: unknown): CapturedFundedRunOutcome {
+  const snapshot = snapshotPlainDataRecord(value);
+  if (!snapshot || !exactKeys(snapshot, ["status"], ["details"]) ||
+      typeof snapshot.status !== "string" ||
+      !OUTCOME_STATUSES.has(snapshot.status as FundedRunOutcomeStatus)) {
+    throw new Error("funded-e2e:outcome-invalid");
+  }
+  return {
+    status: snapshot.status as FundedRunOutcomeStatus,
+    details: captureDetails(
+      Object.hasOwn(snapshot, "details") ? snapshot.details : {},
+      "outcome-details",
+    ),
   };
 }
 
@@ -273,13 +339,21 @@ async function syncAndConfirmMarkerDirectory(state: SecureMarkerDirectory): Prom
   }
 }
 
-async function writeExclusive(
-  path: string,
+function encodeMarker(
   value: Readonly<Record<string, unknown>>,
-): Promise<void> {
+  kind: "intent" | "outcome",
+): string {
+  const encoded = `${canonicalize(value)}\n`;
+  if (Buffer.byteLength(encoded, "utf8") > MAX_MARKER_BYTES) {
+    throw new Error(`funded-e2e:${kind}-marker-too-large`);
+  }
+  return encoded;
+}
+
+async function writeExclusive(path: string, encoded: string): Promise<void> {
   const handle = await open(path, "wx", 0o600);
   try {
-    await handle.writeFile(`${canonicalize(value)}\n`, "utf8");
+    await handle.writeFile(encoded, "utf8");
     await handle.sync();
     const stat = await handle.stat();
     if (!stat.isFile() || stat.uid !== requirePosixUid() || (stat.mode & 0o777) !== 0o600) {
@@ -297,7 +371,7 @@ async function verifyIntentMarker(
   const uid = requirePosixUid();
   const before = await lstat(markerPath);
   if (before.isSymbolicLink() || !before.isFile() || before.uid !== uid ||
-      (before.mode & 0o777) !== 0o600 || before.size > MAX_INTENT_BYTES) {
+      (before.mode & 0o777) !== 0o600 || before.size > MAX_MARKER_BYTES) {
     throw new Error("funded-e2e:intent-marker-unsafe");
   }
   let handle: FileHandle;
@@ -318,8 +392,9 @@ async function verifyIntentMarker(
     } catch (cause) {
       throw new Error("funded-e2e:intent-marker-corrupt", { cause });
     }
-    if (!plainDataRecord(parsed) ||
-        !exactKeys(parsed, [
+    const stored = snapshotPlainDataRecord(parsed);
+    if (!stored ||
+        !exactKeys(stored, [
           "markerVersion",
           "operation",
           "runId",
@@ -328,20 +403,20 @@ async function verifyIntentMarker(
           "state",
           "armedAt",
         ]) ||
-        parsed.markerVersion !== "1" || parsed.markerId !== markerId ||
-        parsed.state !== "armed" || typeof parsed.operation !== "string" ||
-        !SAFE_ID_RE.test(parsed.operation) || typeof parsed.runId !== "string" ||
-        !SAFE_ID_RE.test(parsed.runId) || !Number.isSafeInteger(parsed.armedAt) ||
-        (parsed.armedAt as number) < 0) {
+        stored.markerVersion !== "1" || stored.markerId !== markerId ||
+        stored.state !== "armed" || typeof stored.operation !== "string" ||
+        !SAFE_ID_RE.test(stored.operation) || typeof stored.runId !== "string" ||
+        !SAFE_ID_RE.test(stored.runId) || !Number.isSafeInteger(stored.armedAt) ||
+        (stored.armedAt as number) < 0) {
       throw new Error("funded-e2e:intent-marker-corrupt");
     }
-    captureDetails(parsed.details, "stored-marker-details");
+    captureDetails(stored.details, "stored-marker-details");
     const expectedId = sha256Hex(canonicalize({
       markerVersion: "1",
-      operation: parsed.operation,
-      runId: parsed.runId,
+      operation: stored.operation,
+      runId: stored.runId,
     }));
-    if (expectedId !== markerId || encoded !== `${canonicalize(parsed)}\n`) {
+    if (expectedId !== markerId || encoded !== `${canonicalize(stored)}\n`) {
       throw new Error("funded-e2e:intent-marker-corrupt");
     }
   } finally {
@@ -355,10 +430,12 @@ async function verifyIntentMarker(
  * The marker identity deliberately excludes wallets, amount and other mutable
  * details. Reusing an operation/run-id pair in the same directory therefore
  * fails before another write even if configuration changes after an ambiguous
- * result. The durable directory is the guard domain: it must remain on the
- * execution host, already exist, be owned by this process uid with mode 0700,
- * and contain no symlink components. A separately approved attempt needs a
- * fresh run id and, for a payment test, fresh dedicated wallets.
+ * result. The intact, operator-retained directory is the cooperative local
+ * guard domain: it must remain on the execution host, already exist, be owned
+ * by this process uid with mode 0700, and contain no symlink components. The
+ * helper cannot defend against the directory owner or root replacing its
+ * ledger. A separately approved attempt needs a fresh run id and, for a payment
+ * test, fresh dedicated wallets.
  */
 export async function armFundedRun(
   input: Readonly<FundedRunIntent>,
@@ -377,13 +454,14 @@ export async function armFundedRun(
     const markerPath = join(secureDirectory.directory, `${markerId}.intent.json`);
     const outcomePath = join(secureDirectory.directory, `${markerId}.outcome.json`);
     try {
-      await writeExclusive(markerPath, {
+      const encoded = encodeMarker({
         ...identity,
         markerId,
         details: captured.details,
         state: "armed",
         armedAt,
-      });
+      }, "intent");
+      await writeExclusive(markerPath, encoded);
       await syncAndConfirmMarkerDirectory(secureDirectory);
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException)?.code === "EEXIST") {
@@ -412,50 +490,44 @@ export async function executeFundedRun<T>(
   }
 }
 
-/** Record the first observed outcome without replacing either marker file. */
+/** Record the first observed diagnostic through this helper without replacing either file. */
 export async function recordFundedRunOutcome(
   marker: Readonly<ArmedFundedRun>,
   outcome: Readonly<FundedRunOutcome>,
   now = Date.now,
 ): Promise<void> {
-  if (!plainDataRecord(marker) ||
-      !exactKeys(marker, ["markerId", "markerPath", "outcomePath"]) ||
-      typeof marker.markerId !== "string" || !HASH_RE.test(marker.markerId) ||
-      typeof marker.markerPath !== "string" || typeof marker.outcomePath !== "string") {
-    throw new Error("funded-e2e:marker-invalid");
-  }
-  if (!plainDataRecord(outcome) ||
-      !exactKeys(outcome, ["status"], ["details"]) ||
-      typeof outcome.status !== "string" ||
-      !OUTCOME_STATUSES.has(outcome.status as FundedRunOutcomeStatus)) {
-    throw new Error("funded-e2e:outcome-invalid");
-  }
-  const details = captureDetails(outcome.details ?? {}, "outcome-details");
+  const capturedMarker = captureMarker(marker);
+  const capturedOutcome = captureOutcome(outcome);
   const recordedAt = captureNow(now);
-  const directory = dirname(marker.markerPath);
-  const expectedMarkerPath = join(directory, `${marker.markerId}.intent.json`);
-  const expectedOutcomePath = join(directory, `${marker.markerId}.outcome.json`);
+  const directory = dirname(capturedMarker.markerPath);
+  const expectedMarkerPath = join(directory, `${capturedMarker.markerId}.intent.json`);
+  const expectedOutcomePath = join(directory, `${capturedMarker.markerId}.outcome.json`);
   if (!isAbsolute(directory) || directory !== resolve(directory) ||
-      marker.markerPath !== expectedMarkerPath ||
-      marker.outcomePath !== expectedOutcomePath) {
+      capturedMarker.markerPath !== expectedMarkerPath ||
+      capturedMarker.outcomePath !== expectedOutcomePath) {
     throw new Error("funded-e2e:marker-path-invalid");
   }
 
+  const encoded = encodeMarker({
+    markerVersion: "1",
+    markerId: capturedMarker.markerId,
+    state: capturedOutcome.status,
+    details: capturedOutcome.details,
+    recordedAt,
+  }, "outcome");
+
   const secureDirectory = await openSecureMarkerDirectory(directory);
   try {
-    await verifyIntentMarker(marker.markerPath, marker.markerId);
+    await verifyIntentMarker(capturedMarker.markerPath, capturedMarker.markerId);
     try {
-      await writeExclusive(marker.outcomePath, {
-        markerVersion: "1",
-        markerId: marker.markerId,
-        state: outcome.status,
-        details,
-        recordedAt,
-      });
+      await writeExclusive(capturedMarker.outcomePath, encoded);
       await syncAndConfirmMarkerDirectory(secureDirectory);
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException)?.code === "EEXIST") {
-        throw new Error(`funded-e2e:outcome-already-recorded:${marker.markerId}`, { cause });
+        throw new Error(
+          `funded-e2e:outcome-already-recorded:${capturedMarker.markerId}`,
+          { cause },
+        );
       }
       throw cause;
     }

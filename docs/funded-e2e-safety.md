@@ -17,19 +17,33 @@ Every funded attempt must use all of the following:
 The shared `funded-run-marker` helper durably creates an exclusive intent before
 the first irreversible call. Its identity is the operation/run-id pair, so
 changing wallets, amounts, or other details cannot bypass a residue in the same
-directory. It never removes the intent, even when submission fails ambiguously,
-and it records at most one outcome. It refuses relative, temporary, symlinked,
-non-private, or replaceable marker paths and synchronizes both marker files and
-the pinned directory before continuing.
+intact directory. It never removes the intent, even when submission fails
+ambiguously, and it records at most one outcome through the helper. On supported
+POSIX filesystems it rejects relative paths, recognized operating-system
+temporary roots, symlink components, unsafe owners and unsafe mode bits. It
+synchronizes each marker file and the checked directory before continuing.
 
-The directory is the local guard domain. Copying the checkout, selecting a new
-directory, or moving to another host does not carry its history automatically.
-Operators must therefore keep one durable private ledger per execution host and
-must never retry an ambiguous wallet/run-id combination elsewhere. Reconcile the
+The intact directory is the local guard domain. The helper coordinates
+cooperating processes that run as the same uid and use that exact ledger. It does
+not defend against the directory owner or root deleting, replacing or editing
+the ledger, and pathname checks cannot prove that a mounted volume, cache,
+container layer or workspace will survive cleanup or host loss. Operators must
+therefore provision and retain one durable private ledger outside disposable
+workspaces and caches, protect it operationally, and use the same ledger for
+every attempt on that host. Copying the checkout, selecting or
+recreating a directory, or moving to another host does not carry history
+automatically.
+
+Never retry an ambiguous wallet/run-id combination elsewhere. Reconcile the
 original transaction read-only first; any separately approved attempt needs new
-wallets and a new run id.
+wallets and a new run id. Marker outcomes are write-once only through this
+helper, remain owner-editable files, and are diagnostics rather than settlement
+or DACS proof.
 
-Marker details are public reconciliation facts only. Never pass private keys,
-mnemonics, credentials, tokens, or wallet objects. The helper rejects common
-secret-shaped field names, but cannot determine whether an arbitrary string is
-sensitive.
+All persisted inputs, including operation, run id and marker details, must be
+public reconciliation facts. Never pass private keys, mnemonics, credentials,
+tokens or wallet objects. The helper rejects common secret-shaped detail keys,
+but cannot determine whether an arbitrary string is sensitive. The generic
+helper validates storage shape, not payment-rail semantics: each funded suite
+must separately require and validate its amount, total-debit cap, identities and
+outcome-specific reconciliation fields before calling it.

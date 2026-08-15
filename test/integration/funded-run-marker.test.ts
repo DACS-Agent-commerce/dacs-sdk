@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from
   "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -30,8 +30,8 @@ afterEach(async () => {
 });
 
 async function temporaryDirectory(prefix: string): Promise<string> {
-  // The production guard rejects OS-temporary storage. Test underneath the
-  // persistent checkout so fixtures exercise the same directory contract.
+  // The production guard rejects recognized OS-temporary roots. Test beneath
+  // the checkout so fixtures exercise the same ownership/mode contract.
   const directory = await mkdtemp(join(await realpath(repositoryRoot), `.${prefix}`));
   temporaryDirectories.push(directory);
   return directory;
@@ -155,6 +155,22 @@ describe("durable funded-run guard", () => {
     expect(record.details).toEqual({ amountBaseUnits: "1", network: "demos" });
   });
 
+  it("rejects proxy intent records without invoking their property traps", async () => {
+    const target = await fixture();
+    let propertyReads = 0;
+    const input = new Proxy(target, {
+      get(object, key, receiver) {
+        propertyReads += 1;
+        if (key === "operation") return "private-key-material-is-here";
+        return Reflect.get(object, key, receiver);
+      },
+    });
+
+    await expect(armFundedRun(input)).rejects.toThrow(/marker-intent-invalid/);
+    expect(propertyReads).toBe(0);
+    expect(await readdir(target.directory)).toEqual([]);
+  });
+
   it("never invokes the irreversible callback when a prior intent exists", async () => {
     const input = await fixture();
     await armFundedRun(input);
@@ -180,7 +196,7 @@ describe("durable funded-run guard", () => {
     expect(irreversibleCalls).toBe(1);
   });
 
-  it("records one immutable outcome without removing the intent", async () => {
+  it("records one write-once-through-helper outcome without removing the intent", async () => {
     const input = await fixture();
     const armed = await armFundedRun(input, () => 1);
     const outcome = {
@@ -198,6 +214,83 @@ describe("durable funded-run guard", () => {
       /outcome-already-recorded/,
     );
     await expect(readFile(armed.markerPath, "utf8")).resolves.toContain('"state":"armed"');
+  });
+
+  it("snapshots outcome state before the first asynchronous boundary", async () => {
+    const input = await fixture();
+    const armed = await armFundedRun(input, () => 1);
+    const outcome: { status: string; details: Record<string, string> } = {
+      status: "included",
+      details: { transactionHash: "12".repeat(32) },
+    };
+    const pending = recordFundedRunOutcome(
+      armed,
+      outcome as unknown as Parameters<typeof recordFundedRunOutcome>[1],
+      () => 2,
+    );
+    outcome.status = "forged-unsupported-status";
+    outcome.details.transactionHash = "34".repeat(32);
+    await pending;
+
+    expect(JSON.parse(await readFile(armed.outcomePath, "utf8"))).toMatchObject({
+      state: "included",
+      details: { transactionHash: "12".repeat(32) },
+    });
+  });
+
+  it("snapshots marker paths before asynchronous directory checks", async () => {
+    const parent = await temporaryDirectory("funded-marker-redirect-");
+    const markerDirectory = join(parent, "markers");
+    await mkdir(markerDirectory, { mode: 0o700 });
+    const base = await fixture();
+    const armed = await armFundedRun({ ...base, directory: markerDirectory }, () => 1);
+    const mutableMarker = { ...armed };
+    const redirectedPath = join(parent, "redirected.outcome.json");
+    const pending = recordFundedRunOutcome(
+      mutableMarker,
+      { status: "included", details: { transactionHash: "12".repeat(32) } },
+      () => 2,
+    );
+    mutableMarker.outcomePath = redirectedPath;
+    await pending;
+
+    await expect(readFile(armed.outcomePath, "utf8")).resolves.toContain(
+      '"state":"included"',
+    );
+    await expect(readFile(redirectedPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects proxy and accessor marker/outcome records", async () => {
+    const input = await fixture();
+    const armed = await armFundedRun(input, () => 1);
+    await expect(recordFundedRunOutcome(
+      new Proxy({ ...armed }, {}),
+      { status: "included" },
+    )).rejects.toThrow(/marker-invalid/);
+    await expect(recordFundedRunOutcome(
+      armed,
+      new Proxy({ status: "included" as const }, {}),
+    )).rejects.toThrow(/outcome-invalid/);
+
+    let accessorReads = 0;
+    const accessorOutcome: Record<string, unknown> = {};
+    Object.defineProperty(accessorOutcome, "status", {
+      enumerable: true,
+      get: () => {
+        accessorReads += 1;
+        return "included";
+      },
+    });
+    await expect(recordFundedRunOutcome(
+      armed,
+      accessorOutcome as unknown as Parameters<typeof recordFundedRunOutcome>[1],
+    )).rejects.toThrow(/outcome-invalid/);
+    expect(accessorReads).toBe(0);
+    await expect(recordFundedRunOutcome(
+      armed,
+      { status: "included", details: null } as unknown as
+        Parameters<typeof recordFundedRunOutcome>[1],
+    )).rejects.toThrow(/outcome-details-not-plain/);
   });
 
   it("refuses to attach an outcome to a forged or corrupted intent", async () => {
@@ -237,7 +330,32 @@ describe("durable funded-run guard", () => {
     })).rejects.toThrow(/key-invalid/);
   });
 
-  it("requires a pre-existing absolute private persistent directory", async () => {
+  it("rejects an oversized encoded intent before creating a marker file", async () => {
+    const input = await fixture();
+    const details = Object.fromEntries(
+      Array.from({ length: 32 }, (_, index) => [`field${index}`, "a".repeat(4_096)]),
+    );
+    await expect(armFundedRun({ ...input, details })).rejects.toThrow(
+      /intent-marker-too-large/,
+    );
+    expect(await readdir(input.directory)).toEqual([]);
+  });
+
+  it("rejects an oversized encoded outcome before creating an outcome file", async () => {
+    const input = await fixture();
+    const armed = await armFundedRun(input, () => 1);
+    const details = Object.fromEntries(
+      Array.from({ length: 32 }, (_, index) => [`field${index}`, "a".repeat(4_096)]),
+    );
+    await expect(recordFundedRunOutcome(
+      armed,
+      { status: "included", details },
+      () => 2,
+    )).rejects.toThrow(/outcome-marker-too-large/);
+    await expect(readFile(armed.outcomePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("requires a pre-existing absolute private directory outside known temp roots", async () => {
     const input = await fixture();
     await expect(armFundedRun({ ...input, directory: "relative" })).rejects.toThrow(
       /must-be-absolute/,
