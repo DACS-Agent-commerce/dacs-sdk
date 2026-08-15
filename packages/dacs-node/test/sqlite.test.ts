@@ -1,6 +1,8 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   statSync,
@@ -13,6 +15,9 @@ import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  VERSION,
+} from "@kynesyslabs/dacs";
 import {
   createFixedPriceX402BuyerCoordinator,
   FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
@@ -35,6 +40,7 @@ import {
 } from "../src/index.js";
 import {
   DACS_NODE_SQLITE_APPLICATION_ID,
+  DACS_NODE_SQLITE_MAX_PAGE_SIZE,
   DACS_NODE_SQLITE_SCHEMA_VERSION,
   DacsNodeSqliteError,
   inspectDacsNodeSqliteLocation,
@@ -48,6 +54,7 @@ const OTHER_BINDING_HASH = "b".repeat(64);
 const ABSENCE_PROOF_HASH = "c".repeat(64);
 const JOB_ID = "01J8N4YV7YVYQ4DB7M8T4C7W0A";
 const OTHER_JOB_ID = "01J8N4YV7YVYQ4DB7M8T4C7W0B";
+const THIRD_JOB_ID = "01J8N4YV7YVYQ4DB7M8T4C7W0C";
 const BUYER = "did:example:sqlite-buyer";
 const SELLER = "did:example:sqlite-seller";
 const LIVE_PROTOCOL: FixedPriceX402ProtocolBinding = {
@@ -82,19 +89,19 @@ const OFFLINE_PROTOCOL: FixedPriceOfflineProtocolBinding = {
   },
 };
 
-function liveOrder(): FixedPriceX402OrderInput {
+function liveOrder(jobId = JOB_ID): FixedPriceX402OrderInput {
   return {
-    jobId: JOB_ID,
+    jobId,
     buyer: BUYER,
     seller: SELLER,
     protocol: LIVE_PROTOCOL,
     sdkJobs: {
       role: "buyer",
-      agreement: `buyer:agreement:${JOB_ID}`,
-      payment: `buyer:payment:${JOB_ID}`,
-      paymentEvidence: `buyer:payment-evidence:${JOB_ID}`,
-      buyerReceived: `buyer:received:${JOB_ID}`,
-      audit: `buyer:audit:${JOB_ID}`,
+      agreement: `buyer:agreement:${jobId}`,
+      payment: `buyer:payment:${jobId}`,
+      paymentEvidence: `buyer:payment-evidence:${jobId}`,
+      buyerReceived: `buyer:received:${jobId}`,
+      audit: `buyer:audit:${jobId}`,
     },
   };
 }
@@ -136,8 +143,6 @@ describe("DACS Node SQLite durability foundation", () => {
       profile: DACS_NODE_OFFLINE_PROFILE,
       role: "buyer",
       authority: "claim:buyer:primary",
-      sdkVersion: "0.1.0-alpha.0",
-      standardRevision: "standard-test-revision",
       ...overrides,
     };
   }
@@ -149,6 +154,21 @@ describe("DACS Node SQLite durability foundation", () => {
     const database = await openDacsNodeSqliteDatabase(options(databasePath, overrides));
     databases.push(database);
     return database;
+  }
+
+  async function createV1Database(databasePath: string): Promise<void> {
+    const current = await open(databasePath);
+    current.close();
+    databases.splice(databases.indexOf(current), 1);
+    const raw = new BetterSqlite3(databasePath);
+    raw.exec(`
+      DROP TABLE dacs_coordinator_tracks;
+      DROP TABLE dacs_coordinator_orders;
+      DELETE FROM dacs_migrations WHERE version = 2;
+      UPDATE dacs_store_metadata SET schema_version = 1 WHERE singleton = 1;
+      PRAGMA user_version = 1;
+    `);
+    raw.close();
   }
 
   afterEach(() => {
@@ -169,6 +189,8 @@ describe("DACS Node SQLite durability foundation", () => {
       profile: DACS_NODE_OFFLINE_PROFILE,
       role: "buyer",
       authority: "claim:buyer:primary",
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_OFFLINE_STANDARD_REVISION,
       journalMode: "wal",
       synchronous: "full",
       quickCheck: "ok",
@@ -181,6 +203,29 @@ describe("DACS Node SQLite durability foundation", () => {
     databases.splice(databases.indexOf(database), 1);
     const reopened = await open(databasePath);
     expect(reopened.metadata).toEqual(database.metadata);
+  });
+
+  it("derives immutable SDK and Standard bindings and rejects caller labels", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "buyer.sqlite");
+    const database = await open(databasePath);
+    expect(database.metadata).toMatchObject({
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+    });
+
+    const rejectedPath = join(root, "arbitrary-version.sqlite");
+    await expect(openDacsNodeSqliteDatabase({
+      ...options(rejectedPath),
+      sdkVersion: "consumer-label" as typeof VERSION,
+    })).rejects.toMatchObject({ reasonCode: "configuration-malformed" });
+    expect(existsSync(rejectedPath)).toBe(false);
+
+    await expect(openDacsNodeSqliteDatabase({
+      ...options(rejectedPath),
+      standardRevision: "consumer-label" as typeof FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+    })).rejects.toMatchObject({ reasonCode: "configuration-malformed" });
+    expect(existsSync(rejectedPath)).toBe(false);
   });
 
   it("refuses profile/authority reuse, unrecognized databases, and newer schemas", async () => {
@@ -210,21 +255,130 @@ describe("DACS Node SQLite durability foundation", () => {
     });
   });
 
+  it("admits versioned files only with the exact DACS application and schema", async () => {
+    const root = temporaryRoot();
+    const zeroApplicationId = join(root, "zero-application-id.sqlite");
+    await createV1Database(zeroApplicationId);
+    const zeroRaw = new BetterSqlite3(zeroApplicationId);
+    zeroRaw.pragma("application_id = 0");
+    zeroRaw.close();
+    await expect(openDacsNodeSqliteDatabase(options(zeroApplicationId)))
+      .rejects.toMatchObject({ reasonCode: "database-application-mismatch" });
+
+    const missingIndex = join(root, "missing-index.sqlite");
+    const current = await open(missingIndex);
+    current.close();
+    databases.splice(databases.indexOf(current), 1);
+    const indexRaw = new BetterSqlite3(missingIndex);
+    indexRaw.exec("DROP INDEX dacs_effects_runnable_idx");
+    indexRaw.close();
+    await expect(openDacsNodeSqliteDatabase(options(missingIndex)))
+      .rejects.toMatchObject({ reasonCode: "database-schema-invalid" });
+
+    const renamedColumn = join(root, "renamed-column.sqlite");
+    const columnCurrent = await open(renamedColumn);
+    columnCurrent.close();
+    databases.splice(databases.indexOf(columnCurrent), 1);
+    const columnRaw = new BetterSqlite3(renamedColumn);
+    columnRaw.exec(`
+      ALTER TABLE dacs_reservations
+      RENAME COLUMN payload_hash TO payload_digest
+    `);
+    columnRaw.close();
+    await expect(openDacsNodeSqliteDatabase(options(renamedColumn)))
+      .rejects.toMatchObject({ reasonCode: "database-schema-invalid" });
+
+    const historyGap = join(root, "history-gap.sqlite");
+    const historyCurrent = await open(historyGap);
+    historyCurrent.close();
+    databases.splice(databases.indexOf(historyCurrent), 1);
+    const historyRaw = new BetterSqlite3(historyGap);
+    historyRaw.exec("DELETE FROM dacs_migrations WHERE version = 1");
+    historyRaw.close();
+    await expect(openDacsNodeSqliteDatabase(options(historyGap)))
+      .rejects.toMatchObject({ reasonCode: "database-migration-history-invalid" });
+
+    const orphanHistory = join(root, "orphan-history.sqlite");
+    const foreignCurrent = await open(orphanHistory);
+    foreignCurrent.close();
+    databases.splice(databases.indexOf(foreignCurrent), 1);
+    const foreignRaw = new BetterSqlite3(orphanHistory);
+    foreignRaw.pragma("foreign_keys = OFF");
+    foreignRaw.prepare(`
+      INSERT INTO dacs_effect_history (
+        effect_kind, effect_id, event, generation, occurred_at, detail_hash
+      ) VALUES ('payment', 'missing-effect', 'forged-event', 0, 1, ?)
+    `).run(BINDING_HASH);
+    foreignRaw.close();
+    await expect(openDacsNodeSqliteDatabase(options(orphanHistory)))
+      .rejects.toMatchObject({ reasonCode: "database-foreign-key-invalid" });
+  });
+
+  it("does not mutate or back up unauthenticated or corrupt v1 sources", async () => {
+    const root = temporaryRoot();
+    const cases = [
+      {
+        name: "wrong-authority",
+        mutate: (_database: BetterSqlite3.Database) => undefined,
+        overrides: { authority: "claim:other:primary" },
+        reasonCode: "database-binding-mismatch",
+      },
+      {
+        name: "history-gap",
+        mutate: (database: BetterSqlite3.Database) => {
+          database.exec("DELETE FROM dacs_migrations WHERE version = 1");
+        },
+        overrides: {},
+        reasonCode: "database-migration-history-invalid",
+      },
+      {
+        name: "schema-drift",
+        mutate: (database: BetterSqlite3.Database) => {
+          database.exec("DROP INDEX dacs_effects_runnable_idx");
+        },
+        overrides: {},
+        reasonCode: "database-schema-invalid",
+      },
+      {
+        name: "logical-corruption",
+        mutate: (database: BetterSqlite3.Database) => {
+          database.prepare(`
+            INSERT INTO dacs_reservations (
+              kind, identity, binding_hash, payload_hash, job_id, created_at
+            ) VALUES ('foreign-kind', 'identity', ?, NULL, NULL, 1)
+          `).run(BINDING_HASH);
+        },
+        overrides: {},
+        reasonCode: "reservation-corrupt",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const databasePath = join(root, `${testCase.name}.sqlite`);
+      await createV1Database(databasePath);
+      const raw = new BetterSqlite3(databasePath);
+      testCase.mutate(raw);
+      raw.close();
+      const before = readFileSync(databasePath);
+      const backupsBefore = readdirSync(root).filter((name) =>
+        name.startsWith(`${testCase.name}.sqlite.backup-v1-`));
+
+      await expect(openDacsNodeSqliteDatabase(options(
+        databasePath,
+        testCase.overrides,
+      ))).rejects.toMatchObject({ reasonCode: testCase.reasonCode });
+
+      expect(readFileSync(databasePath).equals(before)).toBe(true);
+      expect(readdirSync(root).filter((name) =>
+        name.startsWith(`${testCase.name}.sqlite.backup-v1-`)))
+        .toEqual(backupsBefore);
+    }
+  });
+
   it("backs up and atomically advances an older supported schema", async () => {
     const root = temporaryRoot();
     const databasePath = join(root, "buyer.sqlite");
-    const current = await open(databasePath);
-    current.close();
-    databases.splice(databases.indexOf(current), 1);
-
-    const old = new BetterSqlite3(databasePath);
-    old.exec(`
-      DROP TABLE dacs_coordinator_orders;
-      DELETE FROM dacs_migrations WHERE version = 2;
-      UPDATE dacs_store_metadata SET schema_version = 1 WHERE singleton = 1;
-      PRAGMA user_version = 1;
-    `);
-    old.close();
+    await createV1Database(databasePath);
 
     const migrated = await open(databasePath);
     expect(migrated.diagnostics().schemaVersion).toBe(DACS_NODE_SQLITE_SCHEMA_VERSION);
@@ -234,8 +388,13 @@ describe("DACS Node SQLite durability foundation", () => {
     const raw = new BetterSqlite3(databasePath, { readonly: true });
     expect(raw.prepare(`
       SELECT name FROM sqlite_schema
-      WHERE type = 'table' AND name = 'dacs_coordinator_orders'
-    `).get()).toMatchObject({ name: "dacs_coordinator_orders" });
+      WHERE type = 'table' AND name IN (
+        'dacs_coordinator_orders', 'dacs_coordinator_tracks'
+      ) ORDER BY name
+    `).all()).toEqual([
+      { name: "dacs_coordinator_orders" },
+      { name: "dacs_coordinator_tracks" },
+    ]);
     expect(raw.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
       .toEqual([{ version: 1 }, { version: 2 }]);
     raw.close();
@@ -286,6 +445,80 @@ describe("DACS Node SQLite durability foundation", () => {
     )).toEqual(["payment-evidence", "buyer-received", "audit"]);
     expect((await resumedCoordinator.getOrderStatus(JOB_ID))?.milestone)
       .toBe("actor-audit-final");
+  });
+
+  it("filters and limits runnable orders from authenticated track projections", async () => {
+    const databasePath = join(temporaryRoot(), "buyer.sqlite");
+    const database = await open(databasePath, {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const store = database.createLiveCoordinatorStore("buyer");
+    for (const jobId of [JOB_ID, OTHER_JOB_ID, THIRD_JOB_ID]) {
+      const order = liveOrder(jobId);
+      expect(await store.create({
+        role: "buyer",
+        order,
+        bindingHash: fixedPriceX402OrderBindingHash(order),
+      })).toMatchObject({ status: "created" });
+    }
+    for (const jobId of [OTHER_JOB_ID, THIRD_JOB_ID]) {
+      const order = liveOrder(jobId);
+      const bindingHash = fixedPriceX402OrderBindingHash(order);
+      const claim = await store.claim({
+        role: "buyer",
+        jobId,
+        bindingHash,
+        track: "agreement",
+        owner: `worker:${jobId}`,
+        leaseDurationMs: 10_000,
+      });
+      expect(claim).toMatchObject({ status: "acquired" });
+      if (claim.status !== "acquired") throw new Error("expected agreement claim");
+      expect(await store.record({
+        role: "buyer",
+        jobId,
+        bindingHash,
+        track: "agreement",
+        lease: claim.lease,
+        result: { status: "final", outcome: "success", reference: `agreement:${jobId}` },
+      })).toMatchObject({ status: "recorded" });
+    }
+
+    const first = await store.listRunnable({
+      role: "buyer",
+      tracks: ["payment"],
+      limit: 1,
+    });
+    expect(first.items.map((item) => item.jobId)).toEqual([OTHER_JOB_ID]);
+    expect(first.nextCursor).toBe(OTHER_JOB_ID);
+    const second = await store.listRunnable({
+      role: "buyer",
+      tracks: ["payment"],
+      cursor: first.nextCursor,
+      limit: 1,
+    });
+    expect(second.items.map((item) => item.jobId)).toEqual([THIRD_JOB_ID]);
+    expect(second.nextCursor).toBeUndefined();
+    await expect(store.listRunnable({
+      role: "buyer",
+      tracks: ["payment"],
+      limit: DACS_NODE_SQLITE_MAX_PAGE_SIZE + 1,
+    })).rejects.toMatchObject({ reasonCode: "coordinator-query-malformed" });
+
+    const raw = new BetterSqlite3(databasePath);
+    raw.prepare(`
+      UPDATE dacs_coordinator_tracks SET eligible = 0
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+        AND track = 'payment'
+    `).run(OTHER_JOB_ID);
+    raw.close();
+    expect(await store.load("buyer", OTHER_JOB_ID)).toMatchObject({
+      status: "corrupt",
+      reason: expect.stringContaining("track projection"),
+    });
   });
 
   it("fences stale coordinator workers across SQLite connections", async () => {

@@ -105,8 +105,6 @@ jobs:
               profile: DACS_NODE_OFFLINE_PROFILE,
               role: "buyer",
               authority: "claim:packed-smoke:buyer",
-              sdkVersion: "0.1.0-alpha.0",
-              standardRevision: "packed-smoke",
             });
             if (database.diagnostics().quickCheck !== "ok") process.exit(1);
             const order = {

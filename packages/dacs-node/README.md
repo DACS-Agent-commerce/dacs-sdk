@@ -23,17 +23,21 @@ disabled. Live hosts must install the package's optional SQLite dependency;
 the live doctor will fail closed when that adapter is unavailable.
 
 The SQLite database is permanently bound to one mode/profile, actor role,
-authority, SDK version, and Standard revision. It enables WAL with `FULL`
+authority, SDK version, and Standard revision. The SDK and Standard revisions
+are derived from the installed SDK and selected commerce profile; callers
+cannot attach arbitrary compatibility labels. It enables WAL with `FULL`
 synchronous durability, uses database-authoritative lease time, and rejects
 known NFS/SMB/shared or consumer-sync locations. It is a local, single-host
 store and must not be placed on a shared volume.
 
 The same explicit SQLite surface provides live-x402 and offline coordinator
 stores. Each store is fixed to the database actor role and commerce profile,
-persists the exact SDK-validated order record with an integrity hash, and uses
-transactional generation-fenced track leases. Startup makes a local backup
-before a forward schema migration; newer schemas and cross-profile reuse fail
-closed.
+persists the exact SDK-validated order record with an integrity hash plus a
+validated query projection, and uses transactional generation-fenced track
+leases. Startup authenticates the application ID, exact schema and migration
+history, actor binding, and logical records before it creates a local backup or
+runs a forward migration; newer, foreign, corrupt, and cross-profile databases
+fail closed without being modified.
 
 Irreversible effects are reserved under a stable idempotency key before work
 starts. A process loss during a perform lease never makes the effect directly

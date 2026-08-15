@@ -8,13 +8,17 @@ import {
   readFileSync,
   realpathSync,
   statfsSync,
+  unlinkSync,
 } from "node:fs";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { VERSION } from "@kynesyslabs/dacs";
 import {
   FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+  FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+  FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceOfflineOrderBindingHash,
   fixedPriceOfflineOrderViolation,
   fixedPriceX402OrderBindingHash,
@@ -41,6 +45,7 @@ import {
 export const DACS_NODE_SQLITE_SCHEMA_VERSION = 2 as const;
 export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
+export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
@@ -123,8 +128,12 @@ export interface DacsNodeSqliteDatabaseOptions {
     | typeof DACS_NODE_LIVE_PROFILE;
   role: DacsNodeSqliteActorRole;
   authority: string;
-  sdkVersion: string;
-  standardRevision: string;
+  /** Omit to use the exact SDK build version. Any supplied value must match it. */
+  sdkVersion?: typeof VERSION;
+  /** Omit to use the exact Standard revision supported by the selected profile. */
+  standardRevision?:
+    | typeof FIXED_PRICE_OFFLINE_STANDARD_REVISION
+    | typeof FIXED_PRICE_X402_STANDARD_REVISION;
   busyTimeoutMs?: number;
 }
 
@@ -402,6 +411,22 @@ interface CoordinatorRow {
   updated_at: number;
 }
 
+interface CoordinatorTrackRow {
+  profile: string;
+  role: string;
+  job_id: string;
+  track: string;
+  eligible: number;
+  state: string;
+  outcome: string | null;
+  error_class: string | null;
+  generation: number;
+  attempts: number;
+  lease_expires_at: number | null;
+  next_attempt_at: number | null;
+  updated_at: number;
+}
+
 type CoordinatorProfile = "live-x402" | "offline";
 type CoordinatorRecord = FixedPriceX402OrderRecord | FixedPriceOfflineOrderRecord;
 
@@ -521,8 +546,57 @@ CREATE TABLE dacs_coordinator_orders (
   CHECK (updated_at >= created_at)
 ) STRICT, WITHOUT ROWID;
 
-CREATE INDEX dacs_coordinator_orders_runnable_idx
-  ON dacs_coordinator_orders (profile, role, job_id);
+CREATE TABLE dacs_coordinator_tracks (
+  profile TEXT NOT NULL,
+  role TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  track TEXT NOT NULL,
+  eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+  state TEXT NOT NULL,
+  outcome TEXT,
+  error_class TEXT,
+  generation INTEGER NOT NULL,
+  attempts INTEGER NOT NULL,
+  lease_expires_at INTEGER,
+  next_attempt_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (profile, role, job_id, track),
+  FOREIGN KEY (profile, role, job_id)
+    REFERENCES dacs_coordinator_orders (profile, role, job_id)
+    ON DELETE CASCADE,
+  CHECK (profile IN ('live-x402', 'offline')),
+  CHECK (role IN ('buyer', 'seller')),
+  CHECK (track IN (
+    'agreement', 'payment', 'payment-evidence', 'delivery',
+    'buyer-received', 'delivery-evidence', 'audit'
+  )),
+  CHECK (generation >= 0),
+  CHECK (attempts >= 0),
+  CHECK (attempts = generation),
+  CHECK (lease_expires_at IS NULL OR lease_expires_at >= 0),
+  CHECK (next_attempt_at IS NULL OR next_attempt_at >= 0),
+  CHECK (updated_at >= 0),
+  CHECK (state IN (
+    'not-started', 'running', 'pending-retry', 'indeterminate',
+    'operator-action', 'final'
+  )),
+  CHECK ((state = 'running') = (lease_expires_at IS NOT NULL)),
+  CHECK ((state IN ('pending-retry', 'indeterminate')) OR next_attempt_at IS NULL),
+  CHECK ((state = 'final') = (outcome IS NOT NULL)),
+  CHECK (outcome IS NULL OR outcome IN ('success', 'failure', 'aborted')),
+  CHECK (error_class IS NULL OR error_class IN (
+    'permanent', 'transient', 'counterparty', 'substrate',
+    'settlement-atomicity'
+  )),
+  CHECK (error_class IS NULL OR outcome = 'failure'),
+  CHECK (outcome IS NULL OR outcome != 'failure' OR error_class IS NOT NULL)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX dacs_coordinator_tracks_runnable_idx
+  ON dacs_coordinator_tracks (
+    profile, role, track, eligible, state, next_attempt_at,
+    lease_expires_at, job_id
+  );
 `;
 
 function nonEmpty(value: unknown): value is string {
@@ -738,6 +812,88 @@ function coordinatorTrackRunnable(
   return retained.lease === undefined || retained.lease.expiresAt <= now;
 }
 
+function coordinatorTrackProjection(
+  profile: CoordinatorProfile,
+  record: Readonly<CoordinatorRecord>,
+): readonly CoordinatorTrackRow[] {
+  return coordinatorTracks(record.role).map((track) => {
+    const retained = record.tracks[track]!;
+    return {
+      profile,
+      role: record.role,
+      job_id: record.jobId,
+      track,
+      eligible: coordinatorTrackEligible(record, track) ? 1 : 0,
+      state: retained.state,
+      outcome: retained.outcome ?? null,
+      error_class: retained.errorClass ?? null,
+      generation: retained.generation,
+      attempts: retained.attempts,
+      lease_expires_at: retained.lease?.expiresAt ?? null,
+      next_attempt_at: retained.nextAttemptAt ?? null,
+      updated_at: retained.updatedAt,
+    };
+  });
+}
+
+function replaceCoordinatorTrackProjection(
+  database: BetterSqlite3.Database,
+  profile: CoordinatorProfile,
+  record: Readonly<CoordinatorRecord>,
+): void {
+  database.prepare(`
+    DELETE FROM dacs_coordinator_tracks
+    WHERE profile = ? AND role = ? AND job_id = ?
+  `).run(profile, record.role, record.jobId);
+  const insert = database.prepare(`
+    INSERT INTO dacs_coordinator_tracks (
+      profile, role, job_id, track, eligible, state, outcome, error_class,
+      generation, attempts, lease_expires_at, next_attempt_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of coordinatorTrackProjection(profile, record)) {
+    insert.run(
+      row.profile,
+      row.role,
+      row.job_id,
+      row.track,
+      row.eligible,
+      row.state,
+      row.outcome,
+      row.error_class,
+      row.generation,
+      row.attempts,
+      row.lease_expires_at,
+      row.next_attempt_at,
+      row.updated_at,
+    );
+  }
+}
+
+function coordinatorTrackProjectionMatches(
+  database: BetterSqlite3.Database,
+  profile: CoordinatorProfile,
+  record: Readonly<CoordinatorRecord>,
+): boolean {
+  const expected = coordinatorTrackProjection(profile, record)
+    .slice()
+    .sort((left, right) => left.track.localeCompare(right.track));
+  const retained = database.prepare(`
+    SELECT profile, role, job_id, track, eligible, state, outcome, error_class,
+      generation, attempts, lease_expires_at, next_attempt_at, updated_at
+    FROM dacs_coordinator_tracks
+    WHERE profile = ? AND role = ? AND job_id = ?
+    ORDER BY track
+    LIMIT ?
+  `).all(
+    profile,
+    record.role,
+    record.jobId,
+    expected.length + 1,
+  ) as CoordinatorTrackRow[];
+  return canonicalize(retained) === canonicalize(expected);
+}
+
 function exactDataKeys(
   value: unknown,
   required: readonly string[],
@@ -939,12 +1095,20 @@ function validateOptions(
     : options.mode === "live-demos"
       ? DACS_NODE_LIVE_PROFILE
       : undefined;
+  const expectedStandardRevision = options.mode === "offline"
+    ? FIXED_PRICE_OFFLINE_STANDARD_REVISION
+    : options.mode === "live-demos"
+      ? FIXED_PRICE_X402_STANDARD_REVISION
+      : undefined;
   const busyTimeoutMs = options.busyTimeoutMs ??
     DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS;
   if (expectedProfile === undefined || options.profile !== expectedProfile ||
       !["buyer", "seller", "verifier"].includes(options.role) ||
-      !nonEmpty(options.authority) || !nonEmpty(options.sdkVersion) ||
-      !nonEmpty(options.standardRevision) || !nonEmpty(options.databasePath) ||
+      !nonEmpty(options.authority) || !nonEmpty(options.databasePath) ||
+      expectedStandardRevision === undefined ||
+      (options.sdkVersion !== undefined && options.sdkVersion !== VERSION) ||
+      (options.standardRevision !== undefined &&
+        options.standardRevision !== expectedStandardRevision) ||
       !safeUint(busyTimeoutMs) || busyTimeoutMs === 0 || busyTimeoutMs > 60_000) {
     throw new DacsNodeSqliteError(
       "configuration-malformed",
@@ -953,6 +1117,8 @@ function validateOptions(
   }
   return {
     ...options,
+    sdkVersion: VERSION,
+    standardRevision: expectedStandardRevision,
     busyTimeoutMs,
   } as Required<Omit<DacsNodeSqliteDatabaseOptions, "busyTimeoutMs">> & {
     busyTimeoutMs: number;
@@ -1225,7 +1391,16 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       | CoordinatorDecode
     > => {
       const row = readRow(jobId);
-      return row ? coordinatorFromRow(row, profile) : { status: "missing" };
+      if (!row) return { status: "missing" };
+      const decoded = coordinatorFromRow(row, profile);
+      if (decoded.status === "ok" &&
+          !coordinatorTrackProjectionMatches(database, profile, decoded.record)) {
+        return {
+          status: "corrupt",
+          reason: "coordinator track projection differs from its authenticated record",
+        };
+      }
+      return decoded;
     };
     const saveRecord = (
       current: Readonly<CoordinatorRecord>,
@@ -1257,7 +1432,9 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         next.jobId,
         current.revision,
       );
-      return result.changes === 1 ? clone(next) : null;
+      if (result.changes !== 1) return null;
+      replaceCoordinatorTrackProjection(database, profile, next);
+      return clone(next);
     };
     const toLive = (record: Readonly<CoordinatorRecord>): FixedPriceX402OrderRecord =>
       clone(record) as FixedPriceX402OrderRecord;
@@ -1329,6 +1506,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
             record.createdAt,
             record.updatedAt,
           );
+          replaceCoordinatorTrackProjection(database, profile, record);
           return { status: "created" as const, record: toLive(record) };
         });
       },
@@ -1347,19 +1525,42 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         if (input.role !== role || !Array.isArray(input.tracks) ||
             input.tracks.some((track) => !coordinatorTracks(role).includes(track)) ||
             (input.cursor !== undefined && !nonEmpty(input.cursor)) ||
-            !safeUint(input.limit) || input.limit === 0) {
+            !safeUint(input.limit) || input.limit === 0 ||
+            input.limit > DACS_NODE_SQLITE_MAX_PAGE_SIZE) {
           throw new DacsNodeSqliteError(
             "coordinator-query-malformed",
             "Coordinator runnable query is malformed",
           );
         }
+        if (input.tracks.length === 0) return { items: [] };
         const now = databaseTime(database);
+        const trackPlaceholders = input.tracks.map(() => "?").join(", ");
         const rows = database.prepare(`
-          SELECT * FROM dacs_coordinator_orders
-          WHERE profile = ? AND role = ? AND job_id > ?
-          ORDER BY job_id
-        `).all(profile, role, input.cursor ?? "") as CoordinatorRow[];
-        const eligible = rows.flatMap((row) => {
+          SELECT orders.* FROM dacs_coordinator_orders AS orders
+          WHERE orders.profile = ? AND orders.role = ? AND orders.job_id > ?
+            AND EXISTS (
+              SELECT 1 FROM dacs_coordinator_tracks AS tracks
+              WHERE tracks.profile = orders.profile
+                AND tracks.role = orders.role
+                AND tracks.job_id = orders.job_id
+                AND tracks.track IN (${trackPlaceholders})
+                AND tracks.eligible = 1
+                AND tracks.state NOT IN ('final', 'operator-action')
+                AND (tracks.next_attempt_at IS NULL OR tracks.next_attempt_at <= ?)
+                AND (tracks.lease_expires_at IS NULL OR tracks.lease_expires_at <= ?)
+            )
+          ORDER BY orders.job_id
+          LIMIT ?
+        `).all(
+          profile,
+          role,
+          input.cursor ?? "",
+          ...input.tracks,
+          now,
+          now,
+          input.limit + 1,
+        ) as CoordinatorRow[];
+        const eligible = rows.map((row) => {
           const decoded = coordinatorFromRow(row, profile);
           if (decoded.status !== "ok") {
             throw new DacsNodeSqliteError(
@@ -1371,9 +1572,15 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                 : decoded.reason,
             );
           }
-          return input.tracks.some((track) =>
-            coordinatorTrackRunnable(decoded.record, track, now)
-          ) ? [decoded.record] : [];
+          if (!coordinatorTrackProjectionMatches(database, profile, decoded.record) ||
+              !input.tracks.some((track) =>
+                coordinatorTrackRunnable(decoded.record, track, now))) {
+            throw new DacsNodeSqliteError(
+              "coordinator-record-corrupt",
+              "Coordinator runnable projection differs from its authenticated record",
+            );
+          }
+          return decoded.record;
         });
         const selected = eligible.slice(0, input.limit);
         return {
@@ -2174,19 +2381,134 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
   }
 }
 
-async function initializeDatabase(
+interface SchemaObjectRow {
+  type: string;
+  name: string;
+  tbl_name: string;
+  sql: string | null;
+}
+
+interface MigrationRow {
+  version: number;
+  applied_at: number;
+}
+
+interface EffectHistoryValidationRow {
+  event: string;
+  generation: number;
+  occurred_at: number;
+  detail_hash: string;
+  effect_generation: number;
+}
+
+type SchemaFingerprint = Readonly<{
+  objects: readonly SchemaObjectRow[];
+  tables: Readonly<Record<string, unknown>>;
+  indexes: Readonly<Record<string, unknown>>;
+}>;
+
+const expectedSchemaFingerprints = new Map<number, SchemaFingerprint>();
+
+function schemaObjects(
   database: BetterSqlite3.Database,
-  options: ReturnType<typeof validateOptions>,
-  existedBeforeOpen: boolean,
-): Promise<void> {
-  const applicationId = Number(database.pragma("application_id", { simple: true }));
-  const version = Number(database.pragma("user_version", { simple: true }));
-  if (applicationId !== 0 && applicationId !== DACS_NODE_SQLITE_APPLICATION_ID) {
+  limit: number,
+): SchemaObjectRow[] {
+  return database.prepare(`
+    SELECT type, name, tbl_name, sql
+    FROM sqlite_schema
+    WHERE name NOT LIKE 'sqlite_%'
+    ORDER BY type, name
+    LIMIT ?
+  `).all(limit) as SchemaObjectRow[];
+}
+
+function schemaDetails(
+  database: BetterSqlite3.Database,
+  objects: readonly SchemaObjectRow[],
+): Omit<SchemaFingerprint, "objects"> {
+  const tables: Record<string, unknown> = {};
+  const indexes: Record<string, unknown> = {};
+  for (const object of objects) {
+    if (object.type === "table") {
+      tables[object.name] = {
+        definition: database.prepare(`
+          SELECT name, type, ncol, wr, strict
+          FROM pragma_table_list
+          WHERE schema = 'main' AND name = ?
+        `).all(object.name),
+        columns: database.prepare(`
+          SELECT cid, name, type, "notnull" AS not_null, dflt_value, pk, hidden
+          FROM pragma_table_xinfo(?)
+          ORDER BY cid
+        `).all(object.name),
+        foreignKeys: database.prepare(`
+          SELECT id, seq, "table", "from", "to", on_update, on_delete, match
+          FROM pragma_foreign_key_list(?)
+          ORDER BY id, seq
+        `).all(object.name),
+        indexes: database.prepare(`
+          SELECT name, "unique" AS is_unique, origin, partial
+          FROM pragma_index_list(?)
+          ORDER BY name
+        `).all(object.name),
+      };
+    } else if (object.type === "index") {
+      indexes[object.name] = database.prepare(`
+        SELECT seqno, cid, name, desc, coll, key
+        FROM pragma_index_xinfo(?)
+        ORDER BY seqno
+      `).all(object.name);
+    }
+  }
+  return { tables, indexes };
+}
+
+function expectedSchemaFingerprint(version: 1 | 2): SchemaFingerprint {
+  const retained = expectedSchemaFingerprints.get(version);
+  if (retained) return retained;
+  const reference = new BetterSqlite3(":memory:");
+  try {
+    reference.exec(MIGRATION_1);
+    if (version === 2) reference.exec(MIGRATION_2);
+    const objects = schemaObjects(reference, 64);
+    const fingerprint = Object.freeze({
+      objects,
+      ...schemaDetails(reference, objects),
+    });
+    expectedSchemaFingerprints.set(version, fingerprint);
+    return fingerprint;
+  } finally {
+    reference.close();
+  }
+}
+
+function verifySchema(
+  database: BetterSqlite3.Database,
+  version: 1 | 2,
+): void {
+  try {
+    const expected = expectedSchemaFingerprint(version);
+    const objects = schemaObjects(database, expected.objects.length + 1);
+    if (canonicalize(objects) !== canonicalize(expected.objects) ||
+        canonicalize(schemaDetails(database, objects)) !==
+          canonicalize({ tables: expected.tables, indexes: expected.indexes })) {
+      throw new DacsNodeSqliteError(
+        "database-schema-invalid",
+        "SQLite DACS schema does not exactly match the supported migration",
+      );
+    }
+  } catch (error) {
+    if (error instanceof DacsNodeSqliteError) throw error;
     throw new DacsNodeSqliteError(
-      "database-application-mismatch",
-      "SQLite file belongs to another application",
+      "database-schema-invalid",
+      "SQLite DACS schema could not be validated",
     );
   }
+}
+
+function readDatabaseVersion(database: BetterSqlite3.Database): 0 | 1 | 2 {
+  const applicationId = Number(database.pragma("application_id", { simple: true }));
+  const version = Number(database.pragma("user_version", { simple: true }));
   if (!safeUint(version) || version > DACS_NODE_SQLITE_SCHEMA_VERSION) {
     throw new DacsNodeSqliteError(
       "database-schema-newer",
@@ -2194,110 +2516,48 @@ async function initializeDatabase(
     );
   }
   if (version === 0) {
-    const tables = database.prepare(`
-      SELECT name FROM sqlite_schema
-      WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-      LIMIT 1
-    `).all();
-    if (existedBeforeOpen && tables.length > 0) {
+    const object = schemaObjects(database, 1);
+    if (applicationId !== 0 || object.length !== 0) {
       throw new DacsNodeSqliteError(
         "database-unrecognized",
-        "Existing SQLite file is not an empty DACS database",
+        "Only a genuinely empty version-zero file can omit the DACS application ID",
       );
     }
-    beginImmediate(database, () => {
-      const lockedVersion = Number(database.pragma("user_version", { simple: true }));
-      if (lockedVersion !== 0) return;
-      const now = databaseTime(database);
-      database.exec(MIGRATION_1);
-      database.exec(MIGRATION_2);
-      database.prepare(`
-        INSERT INTO dacs_store_metadata (
-          singleton, schema_version, mode, profile, role, authority,
-          sdk_version, standard_revision, created_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        DACS_NODE_SQLITE_SCHEMA_VERSION,
-        options.mode,
-        options.profile,
-        options.role,
-        options.authority,
-        options.sdkVersion,
-        options.standardRevision,
-        now,
-      );
-      database.prepare(`
-        INSERT INTO dacs_migrations (version, applied_at) VALUES (1, ?), (2, ?)
-      `).run(now, now);
-      database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
-      database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    });
-    return;
+    return 0;
   }
-  if (version === 1) {
-    const backupPath = `${options.databasePath}.backup-v1-${randomUUID()}.sqlite`;
-    await database.backup(backupPath);
-    chmodSync(backupPath, 0o600);
-    beginImmediate(database, () => {
-      const lockedVersion = Number(database.pragma("user_version", { simple: true }));
-      if (lockedVersion !== 1) return;
-      const now = databaseTime(database);
-      database.exec(MIGRATION_2);
-      database.prepare(`
-        UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
-      `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
-      database.prepare(`
-        INSERT INTO dacs_migrations (version, applied_at) VALUES (2, ?)
-      `).run(now);
-      database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    });
-  }
-}
-
-function preflightDatabaseIdentity(
-  database: BetterSqlite3.Database,
-  existedBeforeOpen: boolean,
-): void {
-  const applicationId = Number(database.pragma("application_id", { simple: true }));
-  const version = Number(database.pragma("user_version", { simple: true }));
-  if (applicationId !== 0 && applicationId !== DACS_NODE_SQLITE_APPLICATION_ID) {
+  if (applicationId !== DACS_NODE_SQLITE_APPLICATION_ID) {
     throw new DacsNodeSqliteError(
       "database-application-mismatch",
-      "SQLite file belongs to another application",
+      "Versioned SQLite file does not have the DACS application ID",
     );
   }
-  if (!safeUint(version) || version > DACS_NODE_SQLITE_SCHEMA_VERSION) {
-    throw new DacsNodeSqliteError(
-      "database-schema-newer",
-      "SQLite schema is newer than this runtime supports",
-    );
-  }
-  if (version === 0 && existedBeforeOpen) {
-    const tables = database.prepare(`
-      SELECT name FROM sqlite_schema
-      WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-      LIMIT 1
-    `).all();
-    if (tables.length > 0) {
-      throw new DacsNodeSqliteError(
-        "database-unrecognized",
-        "Existing SQLite file is not an empty DACS database",
-      );
-    }
-  }
+  return version as 1 | 2;
 }
 
 function verifyMetadata(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
+  version: 1 | 2,
 ): void {
-  const row = database.prepare(`
-    SELECT schema_version, mode, profile, role, authority, sdk_version,
-      standard_revision, created_at
-    FROM dacs_store_metadata WHERE singleton = 1
-  `).get() as MetadataRow | undefined;
-  if (!row || row.schema_version !== DACS_NODE_SQLITE_SCHEMA_VERSION ||
-      !safeUint(row.created_at)) {
+  let rows: MetadataRow[];
+  try {
+    rows = database.prepare(`
+      SELECT schema_version, mode, profile, role, authority, sdk_version,
+        standard_revision, created_at
+      FROM dacs_store_metadata
+      WHERE singleton = 1
+      LIMIT 2
+    `).all() as MetadataRow[];
+  } catch {
+    throw new DacsNodeSqliteError(
+      "database-metadata-corrupt",
+      "SQLite DACS metadata could not be read",
+    );
+  }
+  const row = rows[0];
+  if (rows.length !== 1 || !row || row.schema_version !== version ||
+      !safeUint(row.created_at) || !nonEmpty(row.sdk_version) ||
+      !nonEmpty(row.standard_revision)) {
     throw new DacsNodeSqliteError(
       "database-metadata-corrupt",
       "SQLite DACS metadata is missing or corrupt",
@@ -2309,9 +2569,292 @@ function verifyMetadata(
       row.standard_revision !== options.standardRevision) {
     throw new DacsNodeSqliteError(
       "database-binding-mismatch",
-      "SQLite database is bound to a different profile, actor, or runtime revision",
+      "SQLite database is bound to a different profile, actor, or supported revision",
     );
   }
+}
+
+function verifyMigrationHistory(
+  database: BetterSqlite3.Database,
+  version: 1 | 2,
+): void {
+  let rows: MigrationRow[];
+  try {
+    rows = database.prepare(`
+      SELECT version, applied_at
+      FROM dacs_migrations
+      ORDER BY version
+      LIMIT 3
+    `).all() as MigrationRow[];
+  } catch {
+    throw new DacsNodeSqliteError(
+      "database-migration-history-invalid",
+      "SQLite migration history could not be read",
+    );
+  }
+  if (rows.length !== version || rows.some((row, index) =>
+    row.version !== index + 1 || !safeUint(row.applied_at) ||
+    (index > 0 && row.applied_at < rows[index - 1]!.applied_at))) {
+    throw new DacsNodeSqliteError(
+      "database-migration-history-invalid",
+      "SQLite migration history is incomplete or inconsistent",
+    );
+  }
+}
+
+function verifyLogicalRows(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  version: 1 | 2,
+): void {
+  try {
+    for (const row of database.prepare("SELECT * FROM dacs_reservations").iterate()) {
+      const reservation = reservationFromRow(row as ReservationRow);
+      if (reservation.jobId !== undefined && !isCanonicalJobId(reservation.jobId)) {
+        throw new DacsNodeSqliteError(
+          "database-logical-corruption",
+          "SQLite reservation has a non-canonical job identity",
+        );
+      }
+    }
+    for (const row of database.prepare("SELECT * FROM dacs_effects").iterate()) {
+      const effect = effectFromRow(row as EffectRow);
+      if (effect.jobId !== undefined && !isCanonicalJobId(effect.jobId)) {
+        throw new DacsNodeSqliteError(
+          "database-logical-corruption",
+          "SQLite effect has a non-canonical job identity",
+        );
+      }
+    }
+    for (const row of database.prepare(`
+      SELECT history.event, history.generation, history.occurred_at,
+        history.detail_hash, effects.generation AS effect_generation
+      FROM dacs_effect_history AS history
+      JOIN dacs_effects AS effects
+        ON effects.effect_kind = history.effect_kind
+        AND effects.effect_id = history.effect_id
+    `).iterate() as IterableIterator<EffectHistoryValidationRow>) {
+      if (!nonEmpty(row.event) || !safeUint(row.generation) ||
+          !safeUint(row.occurred_at) || !hash(row.detail_hash) ||
+          !safeUint(row.effect_generation) || row.generation > row.effect_generation) {
+        throw new DacsNodeSqliteError(
+          "database-logical-corruption",
+          "SQLite effect history is inconsistent",
+        );
+      }
+    }
+    if (version === 2) {
+      const expectedProfile: CoordinatorProfile = options.mode === "offline"
+        ? "offline"
+        : "live-x402";
+      for (const row of database.prepare(
+        "SELECT * FROM dacs_coordinator_orders ORDER BY profile, role, job_id",
+      ).iterate() as IterableIterator<CoordinatorRow>) {
+        if (row.profile !== expectedProfile || row.role !== options.role ||
+            (row.role !== "buyer" && row.role !== "seller")) {
+          throw new DacsNodeSqliteError(
+            "database-logical-corruption",
+            "SQLite coordinator row is outside the bound actor profile",
+          );
+        }
+        const decoded = coordinatorFromRow(row, expectedProfile);
+        if (decoded.status !== "ok" ||
+            !coordinatorTrackProjectionMatches(database, expectedProfile, decoded.record)) {
+          throw new DacsNodeSqliteError(
+            "database-logical-corruption",
+            "SQLite coordinator record or track projection is corrupt",
+          );
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof DacsNodeSqliteError) throw error;
+    throw new DacsNodeSqliteError(
+      "database-logical-corruption",
+      "SQLite logical records could not be validated",
+    );
+  }
+}
+
+function verifyVersionedDatabase(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  version: 1 | 2,
+): void {
+  if (readDatabaseVersion(database) !== version) {
+    throw new DacsNodeSqliteError(
+      "database-version-raced",
+      "SQLite database version changed during admission",
+    );
+  }
+  const quick = database.pragma("quick_check(1)", { simple: true });
+  if (quick !== "ok") {
+    throw new DacsNodeSqliteError(
+      "database-integrity-failed",
+      "SQLite integrity check failed",
+    );
+  }
+  verifySchema(database, version);
+  verifyMetadata(database, options, version);
+  verifyMigrationHistory(database, version);
+  const foreignKeyViolation = database.prepare(`
+    SELECT 1 FROM pragma_foreign_key_check LIMIT 1
+  `).get();
+  if (foreignKeyViolation !== undefined) {
+    throw new DacsNodeSqliteError(
+      "database-foreign-key-invalid",
+      "SQLite foreign-key validation failed",
+    );
+  }
+  verifyLogicalRows(database, options, version);
+}
+
+function configureAdmissionConnection(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+): void {
+  database.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
+  database.pragma("foreign_keys = ON");
+  database.pragma("trusted_schema = OFF");
+  database.pragma("temp_store = MEMORY");
+}
+
+function validateExistingReadOnly(
+  databasePath: string,
+  options: ReturnType<typeof validateOptions>,
+): 0 | 1 | 2 {
+  let database: BetterSqlite3.Database | undefined;
+  try {
+    database = new BetterSqlite3(databasePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: options.busyTimeoutMs,
+    });
+    configureAdmissionConnection(database, options);
+    const version = readDatabaseVersion(database);
+    if (version !== 0) verifyVersionedDatabase(database, options, version);
+    return version;
+  } catch (error) {
+    if (error instanceof DacsNodeSqliteError) throw error;
+    throw new DacsNodeSqliteError(
+      "database-admission-failed",
+      "Existing SQLite database could not be safely admitted",
+    );
+  } finally {
+    database?.close();
+  }
+}
+
+function initializeEmptyDatabase(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+): void {
+  beginImmediate(database, () => {
+    if (readDatabaseVersion(database) !== 0) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite database changed before initialization",
+      );
+    }
+    const now = databaseTime(database);
+    database.exec(MIGRATION_1);
+    database.exec(MIGRATION_2);
+    database.prepare(`
+      INSERT INTO dacs_store_metadata (
+        singleton, schema_version, mode, profile, role, authority,
+        sdk_version, standard_revision, created_at
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      DACS_NODE_SQLITE_SCHEMA_VERSION,
+      options.mode,
+      options.profile,
+      options.role,
+      options.authority,
+      options.sdkVersion,
+      options.standardRevision,
+      now,
+    );
+    database.prepare(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (1, ?), (2, ?)
+    `).run(now, now);
+    database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
+    database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    verifyVersionedDatabase(database, options, 2);
+  });
+}
+
+function removeGeneratedBackup(backupPath: string): void {
+  for (const path of [backupPath, `${backupPath}-wal`, `${backupPath}-shm`]) {
+    if (existsSync(path)) unlinkSync(path);
+  }
+}
+
+async function createValidatedV1Backup(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+): Promise<Readonly<{ backupPath: string; sourceDataVersion: number }>> {
+  const backupPath = `${options.databasePath}.backup-v1-${randomUUID()}.sqlite`;
+  try {
+    const sourceDataVersion = Number(database.pragma("data_version", { simple: true }));
+    if (!safeUint(sourceDataVersion)) {
+      throw new DacsNodeSqliteError(
+        "database-backup-failed",
+        "SQLite source data version is invalid",
+      );
+    }
+    await database.backup(backupPath);
+    const backup = new BetterSqlite3(backupPath, { fileMustExist: true });
+    try {
+      configureAdmissionConnection(backup, options);
+      verifyVersionedDatabase(backup, options, 1);
+      if (backup.pragma("journal_mode = DELETE", { simple: true }) !== "delete") {
+        throw new DacsNodeSqliteError(
+          "database-backup-failed",
+          "SQLite v1 backup could not be made self-contained",
+        );
+      }
+    } finally {
+      backup.close();
+    }
+    chmodSync(backupPath, 0o600);
+    return { backupPath, sourceDataVersion };
+  } catch (error) {
+    removeGeneratedBackup(backupPath);
+    if (error instanceof DacsNodeSqliteError) throw error;
+    throw new DacsNodeSqliteError(
+      "database-backup-failed",
+      "SQLite v1 backup could not be created and validated",
+    );
+  }
+}
+
+function migrateV1Database(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  sourceDataVersion: number,
+): void {
+  beginImmediate(database, () => {
+    if (Number(database.pragma("data_version", { simple: true })) !== sourceDataVersion) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite v1 data changed while its migration backup was created",
+      );
+    }
+    verifyVersionedDatabase(database, options, 1);
+    const previous = database.prepare(`
+      SELECT applied_at FROM dacs_migrations WHERE version = 1
+    `).get() as { applied_at: number };
+    const now = Math.max(databaseTime(database), previous.applied_at);
+    database.exec(MIGRATION_2);
+    database.prepare(`
+      UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
+    `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    database.prepare(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (2, ?)
+    `).run(now);
+    database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    verifyVersionedDatabase(database, options, 2);
+  });
 }
 
 export async function openDacsNodeSqliteDatabase(
@@ -2325,24 +2868,52 @@ export async function openDacsNodeSqliteDatabase(
       `SQLite database location is blocked: ${location.reasonCode}`,
     );
   }
-  mkdirSync(dirname(location.databasePath), { recursive: true, mode: 0o700 });
+  const existedBeforeOpen = existsSync(location.databasePath);
   if (existsSync(location.databasePath) && lstatSync(location.databasePath).isSymbolicLink()) {
     throw new DacsNodeSqliteError(
       "database-path-symlink",
       "SQLite database path must not be a symbolic link",
     );
   }
-  const existedBeforeOpen = existsSync(location.databasePath);
-  const database = new BetterSqlite3(location.databasePath, {
-    timeout: options.busyTimeoutMs,
-  });
+  const admittedVersion = existedBeforeOpen
+    ? validateExistingReadOnly(location.databasePath, options)
+    : 0;
+  mkdirSync(dirname(location.databasePath), { recursive: true, mode: 0o700 });
+  let database: BetterSqlite3.Database;
   try {
+    database = new BetterSqlite3(location.databasePath, {
+      timeout: options.busyTimeoutMs,
+    });
+  } catch {
+    throw new DacsNodeSqliteError(
+      "database-open-failed",
+      "SQLite database could not be opened",
+    );
+  }
+  try {
+    configureAdmissionConnection(database, options);
+    database.pragma("synchronous = FULL");
+    if (!existedBeforeOpen && readDatabaseVersion(database) === 0) {
+      chmodSync(location.databasePath, 0o600);
+    }
+    if (admittedVersion === 0) {
+      initializeEmptyDatabase(database, options);
+    } else if (admittedVersion === 1) {
+      verifyVersionedDatabase(database, options, 1);
+      const backup = await createValidatedV1Backup(database, options);
+      try {
+        migrateV1Database(database, options, backup.sourceDataVersion);
+      } catch (error) {
+        if (error instanceof DacsNodeSqliteError &&
+            error.reasonCode === "database-version-raced") {
+          removeGeneratedBackup(backup.backupPath);
+        }
+        throw error;
+      }
+    } else {
+      beginImmediate(database, () => verifyVersionedDatabase(database, options, 2));
+    }
     chmodSync(location.databasePath, 0o600);
-    database.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
-    database.pragma("foreign_keys = ON");
-    database.pragma("trusted_schema = OFF");
-    database.pragma("temp_store = MEMORY");
-    preflightDatabaseIdentity(database, existedBeforeOpen);
     const journalMode = database.pragma("journal_mode = WAL", { simple: true });
     database.pragma("synchronous = FULL");
     if (journalMode !== "wal") {
@@ -2351,18 +2922,14 @@ export async function openDacsNodeSqliteDatabase(
         "SQLite WAL journal mode is unavailable",
       );
     }
-    await initializeDatabase(database, options, existedBeforeOpen);
-    verifyMetadata(database, options);
-    const quick = database.pragma("quick_check(1)", { simple: true });
-    if (quick !== "ok") {
-      throw new DacsNodeSqliteError(
-        "database-integrity-failed",
-        "SQLite integrity check failed",
-      );
-    }
+    verifyVersionedDatabase(database, options, 2);
     return new DacsNodeSqliteDatabaseImpl(database, options, location);
   } catch (error) {
     database.close();
-    throw error;
+    if (error instanceof DacsNodeSqliteError) throw error;
+    throw new DacsNodeSqliteError(
+      "database-admission-failed",
+      "SQLite database admission or migration failed",
+    );
   }
 }
