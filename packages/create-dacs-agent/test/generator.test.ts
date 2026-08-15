@@ -51,6 +51,7 @@ describe("create-dacs-agent", () => {
       ran: false,
     });
     expect(await filesBelow(target)).toEqual([
+      ".dockerignore",
       ".env.example",
       ".gitignore",
       "Dockerfile",
@@ -83,6 +84,27 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("normativeConformance");
     expect(combined).toContain("commercialSuccess");
     expect(combined).toContain("not the SR-3 attestation required");
+    expect(combined).toContain('randomBytes(16).toString("hex")');
+    expect(combined).not.toContain("new Date().toISOString()");
+    const dockerignore = await readFile(join(target, ".dockerignore"), "utf8");
+    for (const excluded of [
+      ".env.*",
+      "*.env",
+      ".netrc",
+      ".npmrc",
+      ".ssh",
+      "node_modules",
+      "data",
+      "secrets",
+      "*.pem",
+      "*.key",
+    ]) {
+      expect(dockerignore.split("\n"), excluded).toContain(excluded);
+    }
+    expect(dockerignore).not.toMatch(/^!/m);
+    expect(await readFile(join(target, "Dockerfile"), "utf8")).toContain(
+      "generated .dockerignore keeps credentials",
+    );
     await expect(
       readFile(join(target, "package-lock.json"), "utf8"),
     ).rejects.toMatchObject({ code: "ENOENT" });

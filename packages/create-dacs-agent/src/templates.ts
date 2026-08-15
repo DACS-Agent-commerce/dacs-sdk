@@ -186,6 +186,8 @@ COPY package.json ./
 # The generator deliberately emits no fabricated lock. A normal registry-backed
 # install creates the first valid package-lock.json from published packages.
 RUN npm install --ignore-scripts
+# The generated .dockerignore keeps credentials, local state and host
+# dependencies outside both the build context and the resulting image.
 COPY . .
 RUN npm run build
 
@@ -196,6 +198,40 @@ RUN groupadd --system dacs && useradd --system --gid dacs --home-dir /app dacs
 COPY --from=build --chown=dacs:dacs /app /app
 USER dacs
 CMD ["node", "dist/src/service.js"]
+`;
+
+const DOCKERIGNORE = `.git*
+.context
+.DS_Store
+.env
+.env.*
+*.env
+.netrc
+.npmrc
+.pnpmrc
+.yarnrc*
+.aws
+.config
+.gnupg
+.ssh
+node_modules
+dist
+coverage
+data
+artifacts
+secrets
+*.log
+*.pem
+*.key
+*.crt
+*.der
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
 `;
 
 const COMPOSE = `services:
@@ -289,6 +325,7 @@ export function projectTemplates(
     "dacs.config.ts": dacsConfig(),
     ".env.example": ENV_EXAMPLE,
     ".gitignore": GITIGNORE,
+    ".dockerignore": DOCKERIGNORE,
     Dockerfile: DOCKERFILE,
     "compose.yaml": COMPOSE,
     "README.md": readme(options.deployment),
