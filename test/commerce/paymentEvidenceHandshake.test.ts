@@ -14,6 +14,8 @@ import {
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
+  fixedPriceX402ProtocolBindingHash,
+  paymentEvidenceHandshakeScopeHash,
   type BuyerPaymentEvidenceHandshakeOptions,
   type FixedPriceX402ProtocolBinding,
   type PaymentEvidenceAnchorCompletion,
@@ -48,6 +50,11 @@ const PROTOCOL: FixedPriceX402ProtocolBinding = {
     availability: "live",
   },
 };
+const SCOPE_HASH = paymentEvidenceHandshakeScopeHash({
+  seller: SELLER,
+  buyer: BUYER,
+  protocolHash: fixedPriceX402ProtocolBindingHash(PROTOCOL),
+});
 
 function txHash(index: number): string {
   return (index + 1).toString(16).padStart(64, "0");
@@ -198,7 +205,9 @@ function buyer(input: Readonly<{
     verifyReceipt,
     handshake: createBuyerPaymentEvidenceHandshake({
       store,
+      seller: SELLER,
       buyer: BUYER,
+      protocol: PROTOCOL,
       workerId: "buyer-wallet-worker",
       authenticateRequest: (candidate) => ({
         disposition: "authenticated",
@@ -404,7 +413,7 @@ describe("actor-separated payment-evidence handshake", () => {
       reasonCode: "anchor-threw",
     }]);
     expect((await handshake.runPending()).items).toEqual([]);
-    const afterFailure = await store.load("buyer", candidate.messageId);
+    const afterFailure = await store.load("buyer", candidate.messageId, SCOPE_HASH);
     expect(afterFailure.status === "ok" ? afterFailure.record.buyerWork?.lease : "bad")
       .toBeUndefined();
     expect(JSON.stringify(afterFailure)).not.toContain("secret provider detail");
@@ -523,7 +532,7 @@ describe("actor-separated payment-evidence handshake", () => {
 
     const abandonedWorker = handshake.runPending();
     await vi.waitFor(() => expect(anchor).toHaveBeenCalledTimes(1));
-    expect(await store.load("buyer", candidate.messageId)).toMatchObject({
+    expect(await store.load("buyer", candidate.messageId, SCOPE_HASH)).toMatchObject({
       status: "ok",
       record: {
         buyerWork: {
@@ -605,11 +614,77 @@ describe("actor-separated payment-evidence handshake", () => {
     expect((await handshake.runPending({ limit: 10 })).items).toHaveLength(1);
   });
 
+  it("rejects cross-tenant list and claim results before any wallet callback", async () => {
+    const store = createInMemoryPaymentEvidenceHandshakeStore();
+    const otherBuyer = "did:example:other-buyer";
+    const otherEvidence = evidence(77);
+    const otherRequest = createPaymentEvidenceAnchorRequest({
+      seller: SELLER,
+      buyer: otherBuyer,
+      protocol: PROTOCOL,
+      effectId: `payment-evidence:${JOB_ID}:other`,
+      logicalAddress: `dacs4:payment:${JOB_ID}:x402%3Adefault:77`,
+      evidenceHash: contentHash(otherEvidence as unknown as Record<string, unknown>),
+      evidence: otherEvidence,
+      expectedWriter: { role: "buyer", primaryClaim: otherBuyer },
+    });
+    const otherScopeHash = paymentEvidenceHandshakeScopeHash({
+      seller: SELLER,
+      buyer: otherBuyer,
+      protocolHash: fixedPriceX402ProtocolBindingHash(PROTOCOL),
+    });
+    await store.putRequest({
+      role: "buyer",
+      scopeHash: otherScopeHash,
+      request: otherRequest,
+      requestAuthentication: {
+        principal: SELLER,
+        audience: otherBuyer,
+        messageId: otherRequest.messageId,
+        messageHash: otherRequest.requestHash,
+        authenticationHash: AUTH_HASH,
+      },
+    });
+
+    const walletFromList = vi.fn();
+    const hostileListStore = {
+      ...store,
+      listBuyerRunnable: (input: Parameters<typeof store.listBuyerRunnable>[0]) =>
+        store.listBuyerRunnable({ ...input, scopeHash: otherScopeHash }),
+    };
+    await expect(buyer({
+      store: hostileListStore,
+      anchor: walletFromList,
+    }).handshake.runPending()).rejects.toThrow(/actor\/pair\/protocol/);
+    expect(walletFromList).not.toHaveBeenCalled();
+
+    const local = buyer({ store });
+    const localRequest = request(78);
+    await local.handshake.receiveRequest(localRequest, {});
+    const walletFromClaim = vi.fn();
+    const hostileClaimStore = {
+      ...store,
+      claimBuyer: (input: Parameters<typeof store.claimBuyer>[0]) => store.claimBuyer({
+        ...input,
+        scopeHash: otherScopeHash,
+        messageId: otherRequest.messageId,
+        requestHash: otherRequest.requestHash,
+      }),
+    };
+    await expect(buyer({
+      store: hostileClaimStore,
+      anchor: walletFromClaim,
+    }).handshake.runPending()).rejects.toThrow(/actor\/pair\/protocol\/message/);
+    expect(walletFromClaim).not.toHaveBeenCalled();
+  });
+
   it("rejects transport authentication that is not bound to actor, audience and message", async () => {
     const candidate = request();
     const handshake = createBuyerPaymentEvidenceHandshake({
       store: createInMemoryPaymentEvidenceHandshakeStore(),
+      seller: SELLER,
       buyer: BUYER,
+      protocol: PROTOCOL,
       workerId: "buyer-worker",
       authenticateRequest: () => ({
         disposition: "authenticated",
@@ -622,6 +697,30 @@ describe("actor-separated payment-evidence handshake", () => {
     });
     await expect(handshake.receiveRequest(candidate, { jwt: "attacker" }))
       .rejects.toThrow(/request rejected/);
+  });
+
+  it("matches factory and authenticated principals by CORE B.1 CF-3 identity", async () => {
+    const candidate = request();
+    const handshake = createBuyerPaymentEvidenceHandshake({
+      store: createInMemoryPaymentEvidenceHandshakeStore(),
+      seller: `${SELLER}?channel=direct`,
+      buyer: `${BUYER}?device=one`,
+      protocol: { ...PROTOCOL, orchestrator: `${SELLER}?node=one` },
+      workerId: "buyer-worker",
+      authenticateRequest: () => ({
+        disposition: "authenticated",
+        peer: {
+          ...requestPeer(candidate),
+          principal: `${SELLER}?auth=jwt`,
+          audience: `${BUYER}?auth=jwt`,
+        },
+      }),
+      verifyEvidence: () => ({ disposition: "valid" }),
+      anchorEvidence: () => ({ disposition: "anchored", ...finalAnchor(candidate) }),
+      reconcileAnchor: () => ({ disposition: "indeterminate", reason: "unused" }),
+      verifyAnchorReceipt: () => ({ disposition: "valid" }),
+    });
+    await expect(handshake.receiveRequest(candidate, {})).resolves.toBe("accepted");
   });
 
   it("binds completion authentication to the buyer and retained message", async () => {
@@ -756,7 +855,9 @@ describe("actor-separated payment-evidence handshake", () => {
     const store = createInMemoryPaymentEvidenceHandshakeStore();
     const handshake = createBuyerPaymentEvidenceHandshake({
       store,
+      seller: SELLER,
       buyer: BUYER,
+      protocol: PROTOCOL,
       workerId: "buyer-worker",
       authenticateRequest: (message) => {
         (message as { buyer: string }).buyer = "did:example:attacker";
@@ -768,7 +869,7 @@ describe("actor-separated payment-evidence handshake", () => {
       verifyAnchorReceipt: () => ({ disposition: "valid" }),
     });
     await expect(handshake.receiveRequest(candidate, {})).resolves.toBe("accepted");
-    const loaded = await store.load("buyer", candidate.messageId);
+    const loaded = await store.load("buyer", candidate.messageId, SCOPE_HASH);
     expect(loaded.status === "ok" ? loaded.record.request.buyer : null).toBe(BUYER);
   });
 });

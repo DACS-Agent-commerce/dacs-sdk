@@ -2,6 +2,10 @@ import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import {
+  isCanonicalClaimReference,
+  parseCanonicalClaimReference,
+} from "../identity/claimReference.js";
 
 /**
  * Exact DACS-Standard revision supported by this coordinator slice. This is
@@ -84,7 +88,7 @@ export function fixedPriceX402ProtocolBindingViolation(value: unknown): string |
       value.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
       value.phase !== "pay-x402" ||
       value.orchestratorTopology !== "seller-as-phase-orchestrator-v1" ||
-      !nonEmpty(value.orchestrator)) {
+      !isCanonicalClaimReference(value.orchestrator)) {
     return "fixed-price x402 protocol profile, revision, phase, or orchestrator is unsupported";
   }
   if (!plainRecord(value.rail) || !exactKeys(value.rail, [
@@ -128,5 +132,11 @@ export function captureFixedPriceX402ProtocolBinding(
 export function fixedPriceX402ProtocolBindingHash(
   value: Readonly<FixedPriceX402ProtocolBinding>,
 ): string {
-  return sha256Hex(canonicalize(captureFixedPriceX402ProtocolBinding(value)));
+  const captured = captureFixedPriceX402ProtocolBinding(value);
+  // CORE B.1 CF-3: the orchestrator is an actor identity, so advisory
+  // ClaimReference parameters cannot split an otherwise exact rail binding.
+  return sha256Hex(canonicalize({
+    ...captured,
+    orchestrator: parseCanonicalClaimReference(captured.orchestrator)!.identity,
+  }));
 }

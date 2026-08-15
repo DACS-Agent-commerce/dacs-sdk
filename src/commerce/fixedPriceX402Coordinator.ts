@@ -2,18 +2,25 @@ import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import {
+  isCanonicalClaimReference,
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import {
   captureFixedPriceOfflineProtocolBinding,
   FIXED_PRICE_OFFLINE_COORDINATOR_DOMAIN,
+  fixedPriceOfflineProtocolBindingHash,
   type FixedPriceOfflineProtocolBinding,
 } from "./fixedPriceOfflineProtocol.js";
 import {
   captureFixedPriceX402ProtocolBinding,
+  fixedPriceX402ProtocolBindingHash,
   type FixedPriceX402ProtocolBinding,
 } from "./fixedPriceX402Protocol.js";
 
-export const FIXED_PRICE_X402_COORDINATOR_STORE_VERSION = 2 as const;
+export const FIXED_PRICE_X402_COORDINATOR_STORE_VERSION = 3 as const;
 
 export type FixedPriceX402CoordinatorRole = "buyer" | "seller";
 
@@ -35,6 +42,9 @@ export type FixedPriceX402TrackState =
   | "operator-action";
 
 export type FixedPriceX402NormativeOutcome = "success" | "failure" | "aborted";
+
+/** Absolute role attribution retained for later DACS-5 v0.3 bundle review. */
+export type FixedPriceX402FaultedParty = "buyer" | "seller" | "orchestrator" | "none";
 
 export type FixedPriceX402ErrorClass =
   | "permanent"
@@ -121,6 +131,8 @@ export interface FixedPriceX402TrackRecord {
   authenticationHash?: string;
   outcome?: FixedPriceX402NormativeOutcome;
   errorClass?: FixedPriceX402ErrorClass;
+  faultedParty?: FixedPriceX402FaultedParty;
+  withdrawnBy?: FixedPriceX402CoordinatorRole;
   reasonCode?: string;
   lease?: Readonly<FixedPriceX402TrackLease>;
 }
@@ -138,8 +150,12 @@ interface FixedPriceCoordinatorOrderRecord<
   jobId: string;
   buyer: string;
   seller: string;
+  /** Shared cross-actor protocol binding. */
   protocol: Readonly<Protocol>;
+  /** Shared cross-actor order hash; never contains role-local SDK pointers. */
   bindingHash: string;
+  /** Role-local integrity hash over role + bindingHash + the exact sdkJobs set. */
+  localBindingHash: string;
   sdkJobs: Readonly<FixedPriceX402SdkJobPointers>;
   tracks: FixedPriceX402TrackMap;
   createdAt: number;
@@ -194,7 +210,14 @@ type FixedPriceCoordinatorTrackClaim<
 export type FixedPriceX402TrackOperationResult =
   | {
       status: "final";
-      outcome: "success" | "aborted";
+      outcome: "success";
+      reference: string;
+      authenticationHash?: string;
+    }
+  | {
+      status: "final";
+      outcome: "aborted";
+      withdrawnBy: FixedPriceX402CoordinatorRole;
       reference: string;
       authenticationHash?: string;
     }
@@ -202,6 +225,7 @@ export type FixedPriceX402TrackOperationResult =
       status: "final";
       outcome: "failure";
       errorClass: FixedPriceX402ErrorClass;
+      faultedParty: FixedPriceX402FaultedParty;
       reference: string;
       authenticationHash?: string;
     }
@@ -253,6 +277,7 @@ interface FixedPriceCoordinatorStore<
     role: FixedPriceX402CoordinatorRole;
     order: Readonly<FixedPriceCoordinatorOrderInput<Protocol>>;
     bindingHash: string;
+    localBindingHash: string;
   }>): Promise<FixedPriceCoordinatorOrderCreate<Protocol>>;
   load(
     role: FixedPriceX402CoordinatorRole,
@@ -269,6 +294,7 @@ interface FixedPriceCoordinatorStore<
     role: FixedPriceX402CoordinatorRole;
     jobId: string;
     bindingHash: string;
+    localBindingHash: string;
     track: FixedPriceX402Track;
     owner: string;
     leaseDurationMs: number;
@@ -277,6 +303,7 @@ interface FixedPriceCoordinatorStore<
     role: FixedPriceX402CoordinatorRole;
     jobId: string;
     bindingHash: string;
+    localBindingHash: string;
     track: FixedPriceX402Track;
     lease: Readonly<FixedPriceX402TrackLease>;
   }>): Promise<boolean>;
@@ -284,6 +311,7 @@ interface FixedPriceCoordinatorStore<
     role: FixedPriceX402CoordinatorRole;
     jobId: string;
     bindingHash: string;
+    localBindingHash: string;
     track: FixedPriceX402Track;
     lease: Readonly<FixedPriceX402TrackLease>;
     result: Readonly<FixedPriceX402TrackOperationResult>;
@@ -292,6 +320,7 @@ interface FixedPriceCoordinatorStore<
     role: FixedPriceX402CoordinatorRole;
     jobId: string;
     bindingHash: string;
+    localBindingHash: string;
     track: FixedPriceX402Track;
     operatorReasonCode: string;
     retryAt?: number;
@@ -308,6 +337,7 @@ export interface FixedPriceX402EffectFence {
   role: FixedPriceX402CoordinatorRole;
   jobId: string;
   bindingHash: string;
+  localBindingHash: string;
   track: FixedPriceX402Track;
   owner: string;
   generation: number;
@@ -358,6 +388,7 @@ interface FixedPriceCoordinatorOrderStatus<
   seller: string;
   protocol: Readonly<Protocol>;
   bindingHash: string;
+  localBindingHash: string;
   sdkJobs: Readonly<FixedPriceX402SdkJobPointers>;
   tracks: FixedPriceX402TrackMap;
   milestone: Exclude<FixedPriceX402Milestone, "audit-complete">;
@@ -509,6 +540,12 @@ const ERROR_CLASSES = new Set<FixedPriceX402ErrorClass>([
   "substrate",
   "settlement-atomicity",
 ]);
+const FAULTED_PARTIES = new Set<FixedPriceX402FaultedParty>([
+  "buyer",
+  "seller",
+  "orchestrator",
+  "none",
+]);
 const DEFAULT_LEASE_DURATION_MS = 30_000;
 const DEFAULT_RUN_LIMIT = 10;
 const INERT_RECEIVER = Object.freeze(Object.create(null)) as object;
@@ -518,11 +555,12 @@ interface FixedPriceCoordinatorProfilePolicy<
 > {
   readonly label: "fixed-price x402" | "fixed-price offline";
   captureProtocol(value: unknown): Protocol;
+  protocolHash(protocol: Readonly<Protocol>): string;
   bindingHash(
     identity: Readonly<FixedPriceCoordinatorOrderIdentity<Protocol>>,
   ): string;
   idempotencyPayload(input: Readonly<{
-    bindingHash: string;
+    localBindingHash: string;
     role: FixedPriceX402CoordinatorRole;
     track: FixedPriceX402Track;
     roleLocalJob: string;
@@ -534,13 +572,17 @@ const X402_PROFILE_POLICY: FixedPriceCoordinatorProfilePolicy<
 > = Object.freeze({
   label: "fixed-price x402",
   captureProtocol: captureFixedPriceX402ProtocolBinding,
+  protocolHash: fixedPriceX402ProtocolBindingHash,
   bindingHash: (identity: Readonly<FixedPriceX402OrderIdentity>) =>
     sha256Hex(canonicalize({
-    coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
-    ...identity,
-  })),
+      coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+      jobId: identity.jobId,
+      buyer: parseCanonicalClaimReference(identity.buyer)!.identity,
+      seller: parseCanonicalClaimReference(identity.seller)!.identity,
+      protocolHash: fixedPriceX402ProtocolBindingHash(identity.protocol),
+    })),
   idempotencyPayload: (input: Readonly<{
-    bindingHash: string;
+    localBindingHash: string;
     role: FixedPriceX402CoordinatorRole;
     track: FixedPriceX402Track;
     roleLocalJob: string;
@@ -552,14 +594,18 @@ const OFFLINE_PROFILE_POLICY: FixedPriceCoordinatorProfilePolicy<
 > = Object.freeze({
   label: "fixed-price offline",
   captureProtocol: captureFixedPriceOfflineProtocolBinding,
+  protocolHash: fixedPriceOfflineProtocolBindingHash,
   bindingHash: (identity: Readonly<FixedPriceOfflineOrderIdentity>) =>
     sha256Hex(canonicalize({
-    coordinatorDomain: FIXED_PRICE_OFFLINE_COORDINATOR_DOMAIN,
-    coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
-    ...identity,
-  })),
+      coordinatorDomain: FIXED_PRICE_OFFLINE_COORDINATOR_DOMAIN,
+      coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+      jobId: identity.jobId,
+      buyer: parseCanonicalClaimReference(identity.buyer)!.identity,
+      seller: parseCanonicalClaimReference(identity.seller)!.identity,
+      protocolHash: fixedPriceOfflineProtocolBindingHash(identity.protocol),
+    })),
   idempotencyPayload: (input: Readonly<{
-    bindingHash: string;
+    localBindingHash: string;
     role: FixedPriceX402CoordinatorRole;
     track: FixedPriceX402Track;
     roleLocalJob: string;
@@ -660,13 +706,14 @@ function captureIdentity<Protocol extends FixedPriceCoordinatorProtocolBinding>(
   const order = captureOwnData(value, `${policy.label} order identity`) as unknown as
     Record<string, unknown>;
   if (!exactKeys(order, ["jobId", "buyer", "seller", "protocol"], ["sdkJobs"]) ||
-      !nonEmpty(order.jobId) || !nonEmpty(order.buyer) || !nonEmpty(order.seller) ||
-      order.buyer === order.seller) {
+      !nonEmpty(order.jobId) || !isCanonicalClaimReference(order.buyer) ||
+      !isCanonicalClaimReference(order.seller) ||
+      sameCanonicalClaimIdentity(order.buyer, order.seller)) {
     throw new DacsError(`${policy.label} order identity is malformed`);
   }
   requireCanonicalJobId(order.jobId);
   const protocol = policy.captureProtocol(order.protocol);
-  if (protocol.orchestrator !== order.seller) {
+  if (!sameCanonicalClaimIdentity(protocol.orchestrator, order.seller)) {
     throw new DacsError(
       `${policy.label} order does not pin the seller-orchestrator topology`,
     );
@@ -684,8 +731,9 @@ function captureOrder<Protocol extends FixedPriceCoordinatorProtocolBinding>(
   role: FixedPriceX402CoordinatorRole,
   policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
 ): FixedPriceCoordinatorOrderInput<Protocol> {
-  const identity = captureIdentity(value, policy);
-  const raw = value as Record<string, unknown>;
+  const raw = captureOwnData(value, `${policy.label} order`) as unknown as
+    Record<string, unknown>;
+  const identity = captureIdentity(raw, policy);
   if (!hasOwn(raw, "sdkJobs")) throw new DacsError("coordinator SDK job pointers are required");
   return { ...identity, sdkJobs: capturePointers(raw.sdkJobs, role) };
 }
@@ -702,6 +750,44 @@ export function fixedPriceOfflineOrderBindingHash(
 ): string {
   const captured = captureIdentity(order, OFFLINE_PROFILE_POLICY);
   return OFFLINE_PROFILE_POLICY.bindingHash(captured);
+}
+
+/**
+ * Integrity hash for one actor's private SDK pointers. It is deliberately not
+ * compared across actors and never enters the shared order binding.
+ */
+function fixedPriceCoordinatorOrderLocalBindingHash<
+  Protocol extends FixedPriceCoordinatorProtocolBinding,
+>(
+  order: Readonly<FixedPriceCoordinatorOrderInput<Protocol>>,
+  policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
+): string {
+  const raw = captureOwnData(order, `${policy.label} role-local order`) as unknown as
+    Record<string, unknown>;
+  if (!plainRecord(raw.sdkJobs) ||
+      (raw.sdkJobs.role !== "buyer" && raw.sdkJobs.role !== "seller")) {
+    throw new DacsError("coordinator SDK job pointers are malformed");
+  }
+  const captured = captureOrder(raw, raw.sdkJobs.role, policy);
+  const bindingHash = policy.bindingHash(captureIdentity(captured, policy));
+  return sha256Hex(canonicalize({
+    coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+    role: captured.sdkJobs.role,
+    bindingHash,
+    sdkJobs: captured.sdkJobs,
+  }));
+}
+
+export function fixedPriceX402OrderLocalBindingHash(
+  order: Readonly<FixedPriceX402OrderInput>,
+): string {
+  return fixedPriceCoordinatorOrderLocalBindingHash(order, X402_PROFILE_POLICY);
+}
+
+export function fixedPriceOfflineOrderLocalBindingHash(
+  order: Readonly<FixedPriceOfflineOrderInput>,
+): string {
+  return fixedPriceCoordinatorOrderLocalBindingHash(order, OFFLINE_PROFILE_POLICY);
 }
 
 function emptyTracks(
@@ -730,6 +816,8 @@ function validTrackRecord(value: unknown): value is FixedPriceX402TrackRecord {
       "authenticationHash",
       "outcome",
       "errorClass",
+      "faultedParty",
+      "withdrawnBy",
       "reasonCode",
       "lease",
     ],
@@ -750,30 +838,41 @@ function validTrackRecord(value: unknown): value is FixedPriceX402TrackRecord {
         !["success", "failure", "aborted"].includes(value.outcome as string)) ||
       (value.errorClass !== undefined &&
         !ERROR_CLASSES.has(value.errorClass as FixedPriceX402ErrorClass)) ||
+      (value.faultedParty !== undefined &&
+        !FAULTED_PARTIES.has(value.faultedParty as FixedPriceX402FaultedParty)) ||
+      (value.withdrawnBy !== undefined && value.withdrawnBy !== "buyer" &&
+        value.withdrawnBy !== "seller") ||
       (value.reasonCode !== undefined && !validReasonCode(value.reasonCode)) ||
       (value.lease !== undefined && !validLease(value.lease))) return false;
   if (value.state === "not-started") {
     return value.generation === 0 && value.lease === undefined &&
       value.nextAttemptAt === undefined && value.reference === undefined &&
       value.authenticationHash === undefined && value.outcome === undefined &&
-      value.errorClass === undefined && value.reasonCode === undefined;
+      value.errorClass === undefined && value.faultedParty === undefined &&
+      value.withdrawnBy === undefined && value.reasonCode === undefined;
   }
   if (value.state === "running") {
     return value.lease !== undefined && value.lease.generation === value.generation &&
       value.nextAttemptAt === undefined && value.reference === undefined &&
       value.authenticationHash === undefined && value.outcome === undefined &&
-      value.errorClass === undefined && value.reasonCode === undefined;
+      value.errorClass === undefined && value.faultedParty === undefined &&
+      value.withdrawnBy === undefined && value.reasonCode === undefined;
   }
   if (value.state === "final") {
     return value.lease === undefined && value.nextAttemptAt === undefined &&
       value.reasonCode === undefined && value.reference !== undefined &&
       value.outcome !== undefined &&
-      ((value.outcome === "failure" && value.errorClass !== undefined) ||
-        (value.outcome !== "failure" && value.errorClass === undefined));
+      ((value.outcome === "failure" && value.errorClass !== undefined &&
+          value.faultedParty !== undefined && value.withdrawnBy === undefined) ||
+        (value.outcome === "aborted" && value.errorClass === undefined &&
+          value.faultedParty === undefined && value.withdrawnBy !== undefined) ||
+        (value.outcome === "success" && value.errorClass === undefined &&
+          value.faultedParty === undefined && value.withdrawnBy === undefined));
   }
   return value.lease === undefined && value.reference === undefined &&
     value.authenticationHash === undefined && value.outcome === undefined &&
-    value.errorClass === undefined && value.reasonCode !== undefined &&
+    value.errorClass === undefined && value.faultedParty === undefined &&
+    value.withdrawnBy === undefined && value.reasonCode !== undefined &&
     (value.state !== "operator-action" || value.nextAttemptAt === undefined);
 }
 
@@ -800,8 +899,12 @@ function successful<Protocol extends FixedPriceCoordinatorProtocolBinding>(
 }
 
 type FixedPriceX402TerminalPhaseResult = Readonly<
-  | { outcome: "failure"; errorClass: FixedPriceX402ErrorClass }
-  | { outcome: "aborted" }
+  | {
+      outcome: "failure";
+      errorClass: FixedPriceX402ErrorClass;
+      faultedParty: FixedPriceX402FaultedParty;
+    }
+  | { outcome: "aborted"; withdrawnBy: FixedPriceX402CoordinatorRole }
 >;
 
 function terminalPhaseResult<Protocol extends FixedPriceCoordinatorProtocolBinding>(
@@ -814,8 +917,12 @@ function terminalPhaseResult<Protocol extends FixedPriceCoordinatorProtocolBindi
     const retained = trackRecord(record, track);
     if (retained?.state === "final" && retained.outcome !== "success") {
       return retained.outcome === "failure"
-        ? { outcome: "failure", errorClass: retained.errorClass! }
-        : { outcome: "aborted" };
+        ? {
+            outcome: "failure",
+            errorClass: retained.errorClass!,
+            faultedParty: retained.faultedParty!,
+          }
+        : { outcome: "aborted", withdrawnBy: retained.withdrawnBy! };
     }
   }
   return null;
@@ -861,16 +968,32 @@ function trackResultAllowed<Protocol extends FixedPriceCoordinatorProtocolBindin
   result: Readonly<{
     outcome: FixedPriceX402NormativeOutcome;
     errorClass?: FixedPriceX402ErrorClass;
+    faultedParty?: FixedPriceX402FaultedParty;
+    withdrawnBy?: FixedPriceX402CoordinatorRole;
   }>,
 ): boolean {
+  if (result.outcome === "failure" &&
+      (result.faultedParty === "orchestrator" ||
+        (result.errorClass === "substrate") !== (result.faultedParty === "none"))) {
+    // This profile has no distinct orchestrator party. DACS-5 §10.4.1 makes
+    // failed-substrate neutral and every other failure party-attributed.
+    return false;
+  }
   if (track === "payment-evidence" || track === "delivery-evidence") {
     return result.outcome === "success";
   }
   if (track === "audit") {
     const expected = terminalPhaseResult(record) ?? { outcome: "success" as const };
     return result.outcome === expected.outcome &&
-      (expected.outcome !== "failure" || result.errorClass === expected.errorClass);
+      (expected.outcome !== "failure" ||
+        (result.errorClass === expected.errorClass &&
+          result.faultedParty === expected.faultedParty)) &&
+      (expected.outcome !== "aborted" || result.withdrawnBy === expected.withdrawnBy);
   }
+  // DACS-5 §10.3.1 ST-3: a rail-final payment or irreversible delivery can
+  // never be relabelled as an abort by a later operational callback.
+  if (result.outcome === "aborted" &&
+      (successful(record, "payment") || successful(record, "delivery"))) return false;
   return true;
 }
 
@@ -887,6 +1010,10 @@ function dependencyViolation<Protocol extends FixedPriceCoordinatorProtocolBindi
         !trackResultAllowed(record, track, {
           outcome: retained.outcome,
           ...(retained.errorClass === undefined ? {} : { errorClass: retained.errorClass }),
+          ...(retained.faultedParty === undefined
+            ? {}
+            : { faultedParty: retained.faultedParty }),
+          ...(retained.withdrawnBy === undefined ? {} : { withdrawnBy: retained.withdrawnBy }),
         })) {
       return `coordinator ${track} outcome contradicts the normative terminal path`;
     }
@@ -909,6 +1036,7 @@ function fixedPriceCoordinatorOrderViolation<
     "seller",
     "protocol",
     "bindingHash",
+    "localBindingHash",
     "sdkJobs",
     "tracks",
     "createdAt",
@@ -919,8 +1047,11 @@ function fixedPriceCoordinatorOrderViolation<
   }
   if ((value.role !== "buyer" && value.role !== "seller") ||
       !safeUint(value.revision) || value.revision === 0 || !nonEmpty(value.jobId) ||
-      !nonEmpty(value.buyer) || !nonEmpty(value.seller) || value.buyer === value.seller ||
+      !isCanonicalClaimReference(value.buyer) ||
+      !isCanonicalClaimReference(value.seller) ||
+      sameCanonicalClaimIdentity(value.buyer, value.seller) ||
       typeof value.bindingHash !== "string" || !HASH_RE.test(value.bindingHash) ||
+      typeof value.localBindingHash !== "string" || !HASH_RE.test(value.localBindingHash) ||
       !safeUint(value.createdAt) || !safeUint(value.updatedAt) ||
       value.updatedAt < value.createdAt) {
     return "coordinator order identity is malformed";
@@ -931,7 +1062,7 @@ function fixedPriceCoordinatorOrderViolation<
     requireCanonicalJobId(value.jobId);
     protocol = policy.captureProtocol(value.protocol);
     sdkJobs = capturePointers(value.sdkJobs, value.role);
-    if (protocol.orchestrator !== value.seller) {
+    if (!sameCanonicalClaimIdentity(protocol.orchestrator, value.seller)) {
       return "coordinator order has an unsupported orchestrator topology";
     }
     const expected = policy.bindingHash({
@@ -941,6 +1072,16 @@ function fixedPriceCoordinatorOrderViolation<
       protocol,
     });
     if (expected !== value.bindingHash) return "coordinator order binding hash differs";
+    const expectedLocal = fixedPriceCoordinatorOrderLocalBindingHash({
+      jobId: value.jobId,
+      buyer: value.buyer,
+      seller: value.seller,
+      protocol,
+      sdkJobs,
+    }, policy);
+    if (expectedLocal !== value.localBindingHash) {
+      return "coordinator role-local binding hash differs";
+    }
   } catch (error) {
     return error instanceof DacsError ? error.message : "coordinator order identity is malformed";
   }
@@ -978,12 +1119,15 @@ function requireCoordinatorRecord<Protocol extends FixedPriceCoordinatorProtocol
   role: FixedPriceX402CoordinatorRole,
   policy: FixedPriceCoordinatorProfilePolicy<Protocol>,
   expectedBindingHash?: string,
+  expectedLocalBindingHash?: string,
 ): FixedPriceCoordinatorOrderRecord<Protocol> {
   const violation = fixedPriceCoordinatorOrderViolation(value, policy);
   if (violation) throw new DacsError(violation);
   const record = clone(value as FixedPriceCoordinatorOrderRecord<Protocol>);
   if (record.role !== role ||
-      (expectedBindingHash !== undefined && record.bindingHash !== expectedBindingHash)) {
+      (expectedBindingHash !== undefined && record.bindingHash !== expectedBindingHash) ||
+      (expectedLocalBindingHash !== undefined &&
+        record.localBindingHash !== expectedLocalBindingHash)) {
     throw new DacsError("coordinator store returned a different actor/order binding");
   }
   return record;
@@ -1068,13 +1212,16 @@ function createInMemoryFixedPriceCoordinatorStore<
         };
       }
       const expected = policy.bindingHash(captureIdentity(order, policy));
+      const expectedLocal = fixedPriceCoordinatorOrderLocalBindingHash(order, policy);
       if (input.bindingHash !== expected) return { status: "conflict" };
+      if (input.localBindingHash !== expectedLocal) return { status: "conflict" };
       const storageKey = key(input.role, order.jobId);
       const existing = records.get(storageKey);
       if (existing) {
         const violation = fixedPriceCoordinatorOrderViolation(existing, policy);
         if (violation) return { status: "corrupt", reason: violation };
         return existing.bindingHash === expected &&
+            existing.localBindingHash === expectedLocal &&
             canonicalize(existing.sdkJobs) === canonicalize(order.sdkJobs)
           ? { status: "existing", record: copyRecord(existing) }
           : { status: "conflict" };
@@ -1089,6 +1236,7 @@ function createInMemoryFixedPriceCoordinatorStore<
         seller: order.seller,
         protocol: clone(order.protocol),
         bindingHash: expected,
+        localBindingHash: expectedLocal,
         sdkJobs: clone(order.sdkJobs),
         tracks: emptyTracks(input.role, now),
         createdAt: now,
@@ -1131,7 +1279,8 @@ function createInMemoryFixedPriceCoordinatorStore<
       const loaded = loadRecord(input.role, input.jobId);
       if (loaded.status !== "ok") return loaded;
       const current = records.get(key(input.role, input.jobId))!;
-      if (current.bindingHash !== input.bindingHash) return { status: "stale" };
+      if (current.bindingHash !== input.bindingHash ||
+          current.localBindingHash !== input.localBindingHash) return { status: "stale" };
       if (!roleTracks(input.role).includes(input.track) || !nonEmpty(input.owner) ||
           !safeUint(input.leaseDurationMs) || input.leaseDurationMs === 0) {
         return { status: "corrupt", reason: "coordinator track claim is malformed" };
@@ -1175,7 +1324,8 @@ function createInMemoryFixedPriceCoordinatorStore<
 
     async isCurrent(input) {
       const loaded = loadRecord(input.role, input.jobId);
-      if (loaded.status !== "ok" || loaded.record.bindingHash !== input.bindingHash) return false;
+      if (loaded.status !== "ok" || loaded.record.bindingHash !== input.bindingHash ||
+          loaded.record.localBindingHash !== input.localBindingHash) return false;
       const retained = loaded.record.tracks[input.track];
       const now = readTime();
       return retained?.state === "running" && retained.lease !== undefined &&
@@ -1190,6 +1340,7 @@ function createInMemoryFixedPriceCoordinatorStore<
       if (loaded.status !== "ok") return loaded;
       const current = records.get(key(input.role, input.jobId))!;
       if (current.bindingHash !== input.bindingHash ||
+          current.localBindingHash !== input.localBindingHash ||
           !roleTracks(input.role).includes(input.track)) return { status: "stale" };
       const retained = current.tracks[input.track]!;
       const now = readTime();
@@ -1221,6 +1372,8 @@ function createInMemoryFixedPriceCoordinatorStore<
               ? { authenticationHash: result.authenticationHash }
               : {}),
             ...(result.outcome === "failure" ? { errorClass: result.errorClass } : {}),
+            ...(result.outcome === "failure" ? { faultedParty: result.faultedParty } : {}),
+            ...(result.outcome === "aborted" ? { withdrawnBy: result.withdrawnBy } : {}),
           }
         : {
             state: result.status,
@@ -1249,6 +1402,7 @@ function createInMemoryFixedPriceCoordinatorStore<
       if (loaded.status !== "ok") return loaded;
       const current = records.get(key(input.role, input.jobId))!;
       if (current.bindingHash !== input.bindingHash ||
+          current.localBindingHash !== input.localBindingHash ||
           !roleTracks(input.role).includes(input.track) ||
           !validReasonCode(input.operatorReasonCode) ||
           (input.retryAt !== undefined && !safeUint(input.retryAt))) {
@@ -1297,8 +1451,7 @@ export function createInMemoryFixedPriceOfflineCoordinatorStore(
 function captureOperationResult(value: unknown): FixedPriceX402TrackOperationResult {
   const result = captureOwnData(value, "coordinator operation result") as unknown as
     Record<string, unknown>;
-  if (result.status === "final" && (result.outcome === "success" ||
-      result.outcome === "aborted") && exactKeys(
+  if (result.status === "final" && result.outcome === "success" && exactKeys(
         result,
         ["status", "outcome", "reference"],
         ["authenticationHash"],
@@ -1307,11 +1460,22 @@ function captureOperationResult(value: unknown): FixedPriceX402TrackOperationRes
         (typeof result.authenticationHash === "string" && HASH_RE.test(result.authenticationHash)))) {
     return result as unknown as FixedPriceX402TrackOperationResult;
   }
+  if (result.status === "final" && result.outcome === "aborted" && exactKeys(
+    result,
+    ["status", "outcome", "withdrawnBy", "reference"],
+    ["authenticationHash"],
+  ) && (result.withdrawnBy === "buyer" || result.withdrawnBy === "seller") &&
+      nonEmpty(result.reference) &&
+      (result.authenticationHash === undefined ||
+        (typeof result.authenticationHash === "string" && HASH_RE.test(result.authenticationHash)))) {
+    return result as unknown as FixedPriceX402TrackOperationResult;
+  }
   if (result.status === "final" && result.outcome === "failure" && exactKeys(
     result,
-    ["status", "outcome", "errorClass", "reference"],
+    ["status", "outcome", "errorClass", "faultedParty", "reference"],
     ["authenticationHash"],
   ) && ERROR_CLASSES.has(result.errorClass as FixedPriceX402ErrorClass) &&
+      FAULTED_PARTIES.has(result.faultedParty as FixedPriceX402FaultedParty) &&
       nonEmpty(result.reference) &&
       (result.authenticationHash === undefined ||
         (typeof result.authenticationHash === "string" && HASH_RE.test(result.authenticationHash)))) {
@@ -1380,6 +1544,7 @@ function statusAsRecord(value: Readonly<Record<string, unknown>>): unknown {
     seller: value.seller,
     protocol: value.protocol,
     bindingHash: value.bindingHash,
+    localBindingHash: value.localBindingHash,
     sdkJobs: value.sdkJobs,
     tracks: value.tracks,
     createdAt: 0,
@@ -1400,6 +1565,7 @@ function fixedPriceCoordinatorOrderStatusViolation<
     "seller",
     "protocol",
     "bindingHash",
+    "localBindingHash",
     "sdkJobs",
     "tracks",
     "milestone",
@@ -1454,6 +1620,7 @@ function projectStatus<Protocol extends FixedPriceCoordinatorProtocolBinding>(
     seller: retained.seller,
     protocol: retained.protocol,
     bindingHash: retained.bindingHash,
+    localBindingHash: retained.localBindingHash,
     sdkJobs: retained.sdkJobs,
     tracks: retained.tracks,
     milestone: projectLocalMilestone(retained),
@@ -1551,9 +1718,11 @@ function combineFixedPriceCoordinatorOrderStatus<
     throw new DacsError(buyerViolation ?? sellerViolation!);
   }
   if (buyer.role !== "buyer" || seller.role !== "seller" ||
-      buyer.jobId !== seller.jobId || buyer.buyer !== seller.buyer ||
-      buyer.seller !== seller.seller || buyer.bindingHash !== seller.bindingHash ||
-      canonicalize(buyer.protocol) !== canonicalize(seller.protocol)) {
+      buyer.jobId !== seller.jobId ||
+      !sameCanonicalClaimIdentity(buyer.buyer, seller.buyer) ||
+      !sameCanonicalClaimIdentity(buyer.seller, seller.seller) ||
+      buyer.bindingHash !== seller.bindingHash ||
+      policy.protocolHash(buyer.protocol) !== policy.protocolHash(seller.protocol)) {
     throw new DacsError("buyer and seller coordinator statuses do not bind the same order");
   }
   const expectedBinding = policy.bindingHash({
@@ -1565,8 +1734,8 @@ function combineFixedPriceCoordinatorOrderStatus<
   if (buyer.bindingHash !== expectedBinding) {
     throw new DacsError("combined coordinator status has an invalid order binding");
   }
-  const buyerRecord = statusAsRecord(buyer) as FixedPriceX402OrderRecord;
-  const sellerRecord = statusAsRecord(seller) as FixedPriceX402OrderRecord;
+  const buyerRecord = statusAsRecord(buyer) as FixedPriceCoordinatorOrderRecord<Protocol>;
+  const sellerRecord = statusAsRecord(seller) as FixedPriceCoordinatorOrderRecord<Protocol>;
   const buyerTerminal = terminalPhaseResult(buyerRecord);
   const sellerTerminal = terminalPhaseResult(sellerRecord);
   const buyerAudit = buyer.tracks.audit;
@@ -1576,9 +1745,16 @@ function combineFixedPriceCoordinatorOrderStatus<
     throw new DacsError("actor terminal outcomes contradict the shared terminal session");
   }
   if (buyerTerminal?.outcome === "failure" && sellerTerminal?.outcome === "failure" &&
-      buyerTerminal.errorClass !== sellerTerminal.errorClass) {
+      (buyerTerminal.errorClass !== sellerTerminal.errorClass ||
+        buyerTerminal.faultedParty !== sellerTerminal.faultedParty)) {
     throw new DacsError(
-      "actor terminal error classes contradict the shared terminal session",
+      "actor terminal failure attribution contradicts the shared operational session",
+    );
+  }
+  if (buyerTerminal?.outcome === "aborted" && sellerTerminal?.outcome === "aborted" &&
+      buyerTerminal.withdrawnBy !== sellerTerminal.withdrawnBy) {
+    throw new DacsError(
+      "actor terminal withdrawal attribution contradicts the shared operational session",
     );
   }
   if ((buyerTerminal && sellerAudit?.state === "final" && sellerAudit.outcome === "success") ||
@@ -1593,16 +1769,23 @@ function combineFixedPriceCoordinatorOrderStatus<
       throw new DacsError("actor audit outcomes contradict the shared terminal session");
     }
     if (buyerAudit.outcome === "failure" &&
-        buyerAudit.errorClass !== sellerAudit.errorClass) {
+        (buyerAudit.errorClass !== sellerAudit.errorClass ||
+          buyerAudit.faultedParty !== sellerAudit.faultedParty)) {
       throw new DacsError(
-        "actor audit error classes contradict the shared terminal session",
+        "actor audit failure attribution contradicts the shared operational session",
+      );
+    }
+    if (buyerAudit.outcome === "aborted" &&
+        buyerAudit.withdrawnBy !== sellerAudit.withdrawnBy) {
+      throw new DacsError(
+        "actor audit withdrawal attribution contradicts the shared operational session",
       );
     }
     milestone = buyerAudit.outcome === "failure"
       ? "terminal-failure"
       : buyerAudit.outcome === "aborted"
         ? "terminal-aborted"
-        : "audit-complete";
+        : "actor-audit-final";
   } else if (buyerAudit?.state === "final" && buyerAudit.outcome !== "success") {
     milestone = buyerAudit.outcome === "failure" ? "terminal-failure" : "terminal-aborted";
   } else if (sellerAudit?.state === "final" && sellerAudit.outcome !== "success") {
@@ -1796,6 +1979,7 @@ function createFixedPriceCommerceCoordinator<
           role: captured.role,
           jobId: record.jobId,
           bindingHash: record.bindingHash,
+          localBindingHash: record.localBindingHash,
           track,
           owner: captured.workerId,
           leaseDurationMs: captured.leaseDurationMs,
@@ -1811,6 +1995,7 @@ function createFixedPriceCommerceCoordinator<
               captured.role,
               policy,
               record.bindingHash,
+              record.localBindingHash,
             );
           }
           if (!["waiting", "not-runnable", "missing", "stale"].includes(claim.status)) {
@@ -1833,6 +2018,7 @@ function createFixedPriceCommerceCoordinator<
           captured.role,
           policy,
           record.bindingHash,
+          record.localBindingHash,
         );
         const lease = clone(claim.lease);
         const retainedLease = record.tracks[track]?.lease;
@@ -1845,11 +2031,12 @@ function createFixedPriceCommerceCoordinator<
           role: captured.role,
           jobId: record.jobId,
           bindingHash: record.bindingHash,
+          localBindingHash: record.localBindingHash,
           track,
           owner: lease.owner,
           generation: lease.generation,
           idempotencyKey: sha256Hex(canonicalize(policy.idempotencyPayload({
-            bindingHash: record.bindingHash,
+            localBindingHash: record.localBindingHash,
             role: captured.role,
             track,
             roleLocalJob,
@@ -1859,6 +2046,7 @@ function createFixedPriceCommerceCoordinator<
               role: captured.role,
               jobId: record.jobId,
               bindingHash: record.bindingHash,
+              localBindingHash: record.localBindingHash,
               track,
               lease,
             });
@@ -1893,6 +2081,7 @@ function createFixedPriceCommerceCoordinator<
           role: captured.role,
           jobId: record.jobId,
           bindingHash: record.bindingHash,
+          localBindingHash: record.localBindingHash,
           track,
           lease,
           result,
@@ -1903,6 +2092,7 @@ function createFixedPriceCommerceCoordinator<
             captured.role,
             policy,
             record.bindingHash,
+            record.localBindingHash,
           );
           reports.push({
             jobId: record.jobId,
@@ -1952,10 +2142,12 @@ function createFixedPriceCommerceCoordinator<
     async startOrder(input) {
       const order = captureOrder(input, captured.role, policy);
       const bindingHash = policy.bindingHash(captureIdentity(order, policy));
+      const localBindingHash = fixedPriceCoordinatorOrderLocalBindingHash(order, policy);
       const created = clone(await captured.store.create({
         role: captured.role,
         order,
         bindingHash,
+        localBindingHash,
       }));
       if (created.status === "conflict") {
         throw new DacsError("coordinator order conflicts with an existing binding or local pointer set");
@@ -1972,6 +2164,7 @@ function createFixedPriceCommerceCoordinator<
         captured.role,
         policy,
         bindingHash,
+        localBindingHash,
       ), policy);
     },
     async getOrderStatus(jobId) {
@@ -1996,6 +2189,7 @@ function createFixedPriceCommerceCoordinator<
         role: captured.role,
         jobId: record.jobId,
         bindingHash: record.bindingHash,
+        localBindingHash: record.localBindingHash,
         track: input.track,
         operatorReasonCode: input.operatorReasonCode,
         ...(input.retryAt === undefined ? {} : { retryAt: input.retryAt }),
@@ -2005,6 +2199,7 @@ function createFixedPriceCommerceCoordinator<
         captured.role,
         policy,
         record.bindingHash,
+        record.localBindingHash,
       ), policy);
     },
   };
