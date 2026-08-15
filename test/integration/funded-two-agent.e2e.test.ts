@@ -33,8 +33,10 @@ import { privateKeyToAccount } from "viem/accounts";
  * `test/e2e/normativePublicTwoAgent.e2e.test.ts`. This file replaces only the
  * transport/substrate seams with real Demos, Base Sepolia and x402 adapters.
  * It is intentionally invisible to CI unless the complete live configuration
- * is supplied, and LIVE_E2E_CONFIRM=1 is checked again after the no-write
- * preflight and immediately before the first Demos write.
+ * is supplied. LIVE_E2E_CONFIRM=1 is checked again after the no-write
+ * preflight, then a permanent marker in LIVE_E2E_MARKER_DIR is atomically
+ * armed immediately before the first Demos write. That operation/run-id pair
+ * can never be submitted again after success or an ambiguous failure.
  */
 import {
   ARTIFACT_SEPARATORS,
@@ -170,6 +172,11 @@ import {
   type X402SellerPaymentPermitAuthorization,
   type X402TransferObservation,
 } from "../../src/index.js";
+import {
+  armX402FundedRun,
+  recordX402FundedRunOutcome,
+} from "./x402-funded-run.js";
+import type { ArmedFundedRun } from "./funded-run-marker.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84_532;
 const BASE_SEPOLIA_NETWORK = `eip155:${BASE_SEPOLIA_CHAIN_ID}` as const;
@@ -268,7 +275,11 @@ const READ_ONLY_ENV = [
   "X402_FACILITATOR",
   "LIVE_E2E_RUN_ID",
 ] as const;
-const FUNDED_ENV = [...READ_ONLY_ENV, "LIVE_E2E_CONFIRM"] as const;
+const FUNDED_ENV = [
+  ...READ_ONLY_ENV,
+  "LIVE_E2E_MARKER_DIR",
+  "LIVE_E2E_CONFIRM",
+] as const;
 
 type ReadOnlyEnvKey = (typeof READ_ONLY_ENV)[number];
 type FundedEnvKey = (typeof FUNDED_ENV)[number];
@@ -466,6 +477,7 @@ function completeReadOnlyEnv(): LiveEnv {
   requireCondition(missingReadOnly.length === 0, "configuration-incomplete");
   return {
     ...(rawEnv as Record<ReadOnlyEnvKey, string>),
+    LIVE_E2E_MARKER_DIR: rawEnv.LIVE_E2E_MARKER_DIR ?? "",
     LIVE_E2E_CONFIRM: rawEnv.LIVE_E2E_CONFIRM ?? "",
   };
 }
@@ -6051,6 +6063,40 @@ describe("issue #114 guarded funded two-agent spine", () => {
         const jobId = preflight.jobId;
         const selectedRail = rail(preflight.host.resourceUrl);
         let published: PublishedListing | undefined;
+        let fundedMarker: Readonly<ArmedFundedRun> | undefined;
+        const armBeforeFirstWrite = async (): Promise<void> => {
+          requireCondition(fundedMarker === undefined, "funded-run-armed-more-than-once");
+          fundedMarker = await armX402FundedRun({
+            directory: env.LIVE_E2E_MARKER_DIR,
+            runId: env.LIVE_E2E_RUN_ID,
+            jobId,
+            network: BASE_SEPOLIA_NETWORK,
+            paymentPhaseIndex: PAYMENT_PHASE_INDEX,
+            authorizationNonce: x402Eip3009Nonce(jobId, PAYMENT_PHASE_INDEX),
+            payer: preflight!.payer,
+            payee: preflight!.payee,
+            asset: preflight!.asset,
+            buyerDemosAddress: preflight!.buyer.adapter.getAddress(),
+            sellerDemosAddress: preflight!.seller.adapter.getAddress(),
+            amountBaseUnits: PAYMENT_AMOUNT.toString(),
+            maxTotalDebitBaseUnits: MAX_PAYMENT_AMOUNT.toString(),
+          });
+        };
+        const recordSettlement = async (
+          observation: Extract<X402TransferObservation, { status: "finalized" }>,
+        ): Promise<void> => {
+          requireCondition(fundedMarker !== undefined, "funded-run-marker-missing");
+          requireCondition(
+            observation.chainId === BASE_SEPOLIA_CHAIN_ID,
+            "funded-run-outcome-chain-mismatch",
+          );
+          await recordX402FundedRunOutcome(fundedMarker, {
+            status: "included",
+            chainId: observation.chainId,
+            transactionHash: observation.txHash,
+            logIndex: observation.logIndex,
+          });
+        };
 
         // The fast profile measures an honest buyer-visible session. A listing
         // is a reusable discovery artifact, so publish it before the timer with
@@ -6065,6 +6111,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
             false,
           );
           requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
+          await armBeforeFirstWrite();
           published = await stage("listing-presession", () => publishAndDiscoverListing({
             preflight: preflight!,
             jobId,
@@ -6094,16 +6141,20 @@ describe("issue #114 guarded funded two-agent spine", () => {
           temporaryDirectory("seller-agreement"),
         ]);
 
-        // This check is deliberately adjacent to the first session-bound live
-        // Demos write (or the first write in the exhaustive profile).
+        // This check remains adjacent to the first session-bound live Demos
+        // write. The exhaustive profile also arms its permanent marker here;
+        // the fast profile already armed it before its pre-session Listing.
         requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
-        published ??= await stage("listing", () => publishAndDiscoverListing({
+        if (published === undefined) {
+          await armBeforeFirstWrite();
+          published = await stage("listing", () => publishAndDiscoverListing({
             preflight: preflight!,
             jobId,
             sellerIdentity,
             selectedRail,
             now,
           }));
+        }
         requireCondition(
           published.listing.seller.publicEndpoint === preflight.host.engagementUrl,
           "advertised-endpoint-mismatch",
@@ -6180,6 +6231,15 @@ describe("issue #114 guarded funded two-agent spine", () => {
           sellerIdentity,
           vet,
         }));
+        const reconciledObservation = settlement.state.observedTransfer;
+        requireCondition(
+          reconciledObservation?.status === "finalized",
+          "completed-transfer-observation-missing",
+        );
+        // Persist the first exact settlement facts before any later evidence or
+        // bundle work can fail. The outcome is intentionally write-once; later
+        // delivery/audit completion remains visible in the test report.
+        await recordSettlement(reconciledObservation);
         if (fastProfile) {
           requireCondition(
             settlement.state.deliveryReadyAt !== undefined &&

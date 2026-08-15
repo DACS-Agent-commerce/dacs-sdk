@@ -209,6 +209,19 @@ are DEM and are converted at `1 DEM = 1,000,000,000 OS`. It trusts the configure
 Demos RPC's confirmed-block view; applications requiring an independent
 validator-quorum proof must inject a stronger `observeDemosTransfer` provider.
 
+The funded x402 two-agent integration test is disabled unless its full live
+configuration is present. In addition to fresh dedicated wallets, it requires a
+unique `LIVE_E2E_RUN_ID`, `LIVE_E2E_CONFIRM=1`, and an absolute canonical
+`LIVE_E2E_MARKER_DIR` on persistent local storage, owned by the test-process uid
+with mode `0700`. Its fixed 1-base-unit payment is also bound to the explicit
+1-base-unit `MAX_PAYMENT_AMOUNT` ceiling before the first write. Immediately
+before that write, the test atomically creates and syncs a permanent intent
+marker. It never removes the marker: an interrupted or ambiguous attempt must be
+reconciled read-only and must not be rerun under the same operation/run-id pair,
+even with changed wallets or payment details. See
+[`docs/funded-e2e-safety.md`](docs/funded-e2e-safety.md) for the complete local
+ledger trust boundary.
+
 The funded boundary test is disabled by default. It requires two independent
 Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), and
 `LIVE_PAY_DEM_CONFIRM=1` before it performs exactly one transfer:
