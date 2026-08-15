@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   VERSION,
 } from "@kynesyslabs/dacs";
+import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   createFixedPriceX402BuyerCoordinator,
   FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
@@ -106,6 +107,21 @@ function liveOrder(jobId = JOB_ID): FixedPriceX402OrderInput {
   };
 }
 
+function liveSellerOrder(jobId = JOB_ID): FixedPriceX402OrderInput {
+  return {
+    ...liveOrder(jobId),
+    sdkJobs: {
+      role: "seller",
+      agreement: `seller:agreement:${jobId}`,
+      payment: `seller:payment:${jobId}`,
+      paymentEvidence: `seller:payment-evidence:${jobId}`,
+      fulfilment: `seller:fulfilment:${jobId}`,
+      deliveryEvidence: `seller:delivery-evidence:${jobId}`,
+      audit: `seller:audit:${jobId}`,
+    },
+  };
+}
+
 function offlineOrder(): FixedPriceOfflineOrderInput {
   return {
     ...liveOrder(),
@@ -156,14 +172,63 @@ describe("DACS Node SQLite durability foundation", () => {
     return database;
   }
 
-  async function createV1Database(databasePath: string): Promise<void> {
+  async function createV1Database(
+    databasePath: string,
+    beforeDowngrade?: (database: DacsNodeSqliteDatabase) => void,
+  ): Promise<void> {
     const current = await open(databasePath);
+    beforeDowngrade?.(current);
     current.close();
     databases.splice(databases.indexOf(current), 1);
     const raw = new BetterSqlite3(databasePath);
     raw.exec(`
+      DROP TABLE dacs_effect_history;
+      DROP TABLE dacs_effects;
+      CREATE TABLE dacs_effects (
+        effect_kind TEXT NOT NULL,
+        effect_id TEXT NOT NULL,
+        job_id TEXT,
+        binding_hash TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        state TEXT NOT NULL,
+        active_mode TEXT,
+        generation INTEGER NOT NULL,
+        attempts INTEGER NOT NULL,
+        owner TEXT,
+        lease_expires_at INTEGER,
+        retry_at INTEGER,
+        reason_code TEXT,
+        absence_proof_hash TEXT,
+        result_hash TEXT,
+        result_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (effect_kind, effect_id),
+        UNIQUE (effect_kind, idempotency_key),
+        CHECK (generation >= 0),
+        CHECK (attempts >= 0),
+        CHECK (updated_at >= created_at)
+      ) STRICT, WITHOUT ROWID;
+      CREATE TABLE dacs_effect_history (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        effect_kind TEXT NOT NULL,
+        effect_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        occurred_at INTEGER NOT NULL,
+        detail_hash TEXT NOT NULL,
+        FOREIGN KEY (effect_kind, effect_id)
+          REFERENCES dacs_effects (effect_kind, effect_id)
+      ) STRICT;
+      CREATE INDEX dacs_effects_runnable_idx
+        ON dacs_effects (state, retry_at, effect_kind, effect_id);
+      CREATE INDEX dacs_effect_history_effect_idx
+        ON dacs_effect_history (effect_kind, effect_id, sequence);
       DROP TABLE dacs_coordinator_tracks;
       DROP TABLE dacs_coordinator_orders;
+      DELETE FROM dacs_migrations WHERE version = 3;
       DELETE FROM dacs_migrations WHERE version = 2;
       UPDATE dacs_store_metadata SET schema_version = 1 WHERE singleton = 1;
       PRAGMA user_version = 1;
@@ -226,6 +291,35 @@ describe("DACS Node SQLite durability foundation", () => {
       standardRevision: "consumer-label" as typeof FIXED_PRICE_OFFLINE_STANDARD_REVISION,
     })).rejects.toMatchObject({ reasonCode: "configuration-malformed" });
     expect(existsSync(rejectedPath)).toBe(false);
+  });
+
+  it("reports a busy FULL checkpoint instead of treating a partial checkpoint as success", async () => {
+    const databasePath = join(temporaryRoot(), "checkpoint.sqlite");
+    const database = await open(databasePath, { busyTimeoutMs: 10 });
+    database.reserveIdentity({
+      kind: "message",
+      identity: "before-reader",
+      bindingHash: BINDING_HASH,
+    });
+    const reader = new BetterSqlite3(databasePath);
+    try {
+      reader.pragma("journal_mode = WAL");
+      reader.exec("BEGIN");
+      reader.prepare("SELECT COUNT(*) FROM dacs_reservations").get();
+      database.reserveIdentity({
+        kind: "message",
+        identity: "after-reader",
+        bindingHash: OTHER_BINDING_HASH,
+      });
+      expect(() => database.checkpoint()).toThrowError(
+        expect.objectContaining({ reasonCode: "database-checkpoint-busy" }),
+      );
+      reader.exec("ROLLBACK");
+      database.checkpoint();
+    } finally {
+      if (reader.inTransaction) reader.exec("ROLLBACK");
+      reader.close();
+    }
   });
 
   it("refuses profile/authority reuse, unrecognized databases, and newer schemas", async () => {
@@ -306,9 +400,10 @@ describe("DACS Node SQLite durability foundation", () => {
     foreignRaw.pragma("foreign_keys = OFF");
     foreignRaw.prepare(`
       INSERT INTO dacs_effect_history (
-        effect_kind, effect_id, event, generation, occurred_at, detail_hash
-      ) VALUES ('payment', 'missing-effect', 'forged-event', 0, 1, ?)
-    `).run(BINDING_HASH);
+        effect_kind, effect_id, event, generation, occurred_at, detail_hash,
+        detail_json, previous_entry_hash, entry_hash
+      ) VALUES ('payment', 'missing-effect', 'forged-event', 0, 1, ?, '{}', NULL, ?)
+    `).run(BINDING_HASH, OTHER_BINDING_HASH);
     foreignRaw.close();
     await expect(openDacsNodeSqliteDatabase(options(orphanHistory)))
       .rejects.toMatchObject({ reasonCode: "database-foreign-key-invalid" });
@@ -355,6 +450,16 @@ describe("DACS Node SQLite durability foundation", () => {
         mutate(raw: BetterSqlite3.Database) {
           raw.exec(`
             UPDATE dacs_effects SET state = 'intent', retry_at = NULL, reason_code = NULL
+          `);
+        },
+      },
+      {
+        name: "mutated-ambiguous-idempotency-key",
+        terminal: "ambiguous" as const,
+        mutate(raw: BetterSqlite3.Database) {
+          raw.exec(`
+            UPDATE dacs_effects
+            SET idempotency_key = idempotency_key || '-forged'
           `);
         },
       },
@@ -416,6 +521,174 @@ describe("DACS Node SQLite durability foundation", () => {
       await expect(openDacsNodeSqliteDatabase(options(databasePath)))
         .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
     }
+  });
+
+  it("fails closed on an idempotency-key mutation through an already-open connection", async () => {
+    const databasePath = join(temporaryRoot(), "open-mutation.sqlite");
+    const database = await open(databasePath);
+    const effectId = "payment:open-mutation";
+    database.putEffectIntent({
+      kind: "payment",
+      effectId,
+      bindingHash: BINDING_HASH,
+      input: { amount: "1", asset: "USDC" },
+      idempotencyKey: "payment:idempotency:open-mutation",
+      jobId: JOB_ID,
+    });
+    const claim = database.claimEffect({
+      kind: "payment",
+      effectId,
+      bindingHash: BINDING_HASH,
+      owner: "buyer-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected effect claim");
+    expect(database.recordEffectAmbiguous({
+      kind: "payment",
+      effectId,
+      bindingHash: BINDING_HASH,
+      lease: claim.lease,
+      reasonCode: "settlement-unknown",
+    })).toMatchObject({ status: "recorded" });
+
+    const raw = new BetterSqlite3(databasePath);
+    raw.prepare(`
+      UPDATE dacs_effects SET idempotency_key = ?
+      WHERE effect_kind = 'payment' AND effect_id = ?
+    `).run("payment:idempotency:attacker-selected", effectId);
+    raw.close();
+
+    expect(() => database.loadEffect("payment", effectId)).toThrowError(
+      expect.objectContaining({ reasonCode: "database-logical-corruption" }),
+    );
+    expect(() => database.claimEffect({
+      kind: "payment",
+      effectId,
+      bindingHash: BINDING_HASH,
+      owner: "buyer-recovery-worker",
+      leaseDurationMs: 10_000,
+    })).toThrowError(expect.objectContaining({ reasonCode: "database-logical-corruption" }));
+  });
+
+  it("rejects a pre-fix origin proof instead of fabricating an idempotency binding", async () => {
+    const databasePath = join(temporaryRoot(), "legacy-origin.sqlite");
+    const database = await open(databasePath);
+    database.putEffectIntent({
+      kind: "payment",
+      effectId: "payment:legacy-origin",
+      bindingHash: BINDING_HASH,
+      input: { amount: "1", asset: "USDC" },
+      idempotencyKey: "payment:idempotency:legacy-origin",
+      jobId: JOB_ID,
+    });
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+
+    const raw = new BetterSqlite3(databasePath);
+    const row = raw.prepare(`
+      SELECT sequence, effect_kind, effect_id, event, generation, occurred_at
+      FROM dacs_effect_history
+    `).get() as {
+      sequence: number;
+      effect_kind: string;
+      effect_id: string;
+      event: string;
+      generation: number;
+      occurred_at: number;
+    };
+    const legacyDetailJson = canonicalize({
+      bindingHash: BINDING_HASH,
+      inputHash: sha256Hex(canonicalize({ amount: "1", asset: "USDC" })),
+    });
+    const legacyDetailHash = sha256Hex(legacyDetailJson);
+    const legacyEntryHash = sha256Hex(canonicalize({
+      effectKind: row.effect_kind,
+      effectId: row.effect_id,
+      event: row.event,
+      generation: row.generation,
+      occurredAt: row.occurred_at,
+      detailHash: legacyDetailHash,
+      previousEntryHash: null,
+    }));
+    raw.prepare(`
+      UPDATE dacs_effect_history
+      SET detail_hash = ?, detail_json = ?, entry_hash = ?
+      WHERE sequence = ?
+    `).run(legacyDetailHash, legacyDetailJson, legacyEntryHash, row.sequence);
+    raw.close();
+
+    await expect(openDacsNodeSqliteDatabase(options(databasePath)))
+      .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
+  });
+
+  it("authenticates every intermediate effect-history entry with a rolling chain", async () => {
+    const databasePath = join(temporaryRoot(), "history-chain.sqlite");
+    const database = await open(databasePath);
+    const effectId = "payment:history-chain";
+    database.putEffectIntent({
+      kind: "payment",
+      effectId,
+      bindingHash: BINDING_HASH,
+      input: { amount: "1", asset: "USDC" },
+      idempotencyKey: "payment:idempotency:history-chain",
+      jobId: JOB_ID,
+    });
+    const claim = database.claimEffect({
+      kind: "payment",
+      effectId,
+      bindingHash: BINDING_HASH,
+      owner: "buyer-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected effect claim");
+    database.recordEffectAmbiguous({
+      kind: "payment",
+      effectId,
+      bindingHash: BINDING_HASH,
+      lease: claim.lease,
+      reasonCode: "settlement-unknown",
+    });
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+
+    const raw = new BetterSqlite3(databasePath);
+    const row = raw.prepare(`
+      SELECT sequence, effect_kind, effect_id, event, generation, occurred_at,
+        previous_entry_hash
+      FROM dacs_effect_history
+      WHERE event = 'perform-claimed'
+    `).get() as {
+      sequence: number;
+      effect_kind: string;
+      effect_id: string;
+      event: string;
+      generation: number;
+      occurred_at: number;
+      previous_entry_hash: string;
+    };
+    const detailJson = canonicalize({
+      owner: "attacker-selected-worker",
+      expiresAt: row.occurred_at + 10_000,
+    });
+    const detailHash = sha256Hex(detailJson);
+    const entryHash = sha256Hex(canonicalize({
+      effectKind: row.effect_kind,
+      effectId: row.effect_id,
+      event: row.event,
+      generation: row.generation,
+      occurredAt: row.occurred_at,
+      detailHash,
+      previousEntryHash: row.previous_entry_hash,
+    }));
+    raw.prepare(`
+      UPDATE dacs_effect_history
+      SET detail_hash = ?, detail_json = ?, entry_hash = ?
+      WHERE sequence = ?
+    `).run(detailHash, detailJson, entryHash, row.sequence);
+    raw.close();
+
+    await expect(openDacsNodeSqliteDatabase(options(databasePath)))
+      .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
   });
 
   it("does not mutate or back up unauthenticated or corrupt v1 sources", async () => {
@@ -500,8 +773,121 @@ describe("DACS Node SQLite durability foundation", () => {
       { name: "dacs_coordinator_tracks" },
     ]);
     expect(raw.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
-      .toEqual([{ version: 1 }, { version: 2 }]);
+      .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
     raw.close();
+  });
+
+  it("preserves unchanged reservations through the supported migration", async () => {
+    const databasePath = join(temporaryRoot(), "reservation-v1.sqlite");
+    await createV1Database(databasePath, (database) => {
+      expect(database.reserveIdentity({
+        kind: "message",
+        identity: "message:migrated",
+        bindingHash: BINDING_HASH,
+        payloadHash: OTHER_BINDING_HASH,
+        jobId: JOB_ID,
+      })).toMatchObject({ status: "created" });
+    });
+
+    const migrated = await open(databasePath);
+    expect(migrated.loadReservation("message", "message:migrated")).toMatchObject({
+      bindingHash: BINDING_HASH,
+      payloadHash: OTHER_BINDING_HASH,
+      jobId: JOB_ID,
+    });
+  });
+
+  it("refuses to migrate a pre-proof effect row or synthesize its identity proof", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "pre-proof-v1.sqlite");
+    await createV1Database(databasePath);
+    const inputJson = canonicalize({ amount: "1", asset: "USDC" });
+    const inputHash = sha256Hex(inputJson);
+    const raw = new BetterSqlite3(databasePath);
+    raw.prepare(`
+      INSERT INTO dacs_reservations
+        (kind, identity, binding_hash, payload_hash, job_id, created_at)
+      VALUES ('payment-effect', 'payment:pre-proof', ?, ?, ?, 1)
+    `).run(BINDING_HASH, inputHash, JOB_ID);
+    raw.prepare(`
+      INSERT INTO dacs_effects (
+        effect_kind, effect_id, job_id, binding_hash, input_hash, input_json,
+        idempotency_key, state, active_mode, generation, attempts, owner,
+        lease_expires_at, retry_at, reason_code, absence_proof_hash,
+        result_hash, result_json, created_at, updated_at
+      ) VALUES ('payment', 'payment:pre-proof', ?, ?, ?, ?,
+        'payment:idempotency:pre-proof', 'intent', NULL, 0, 0, NULL,
+        NULL, NULL, NULL, NULL, NULL, NULL, 1, 1)
+    `).run(JOB_ID, BINDING_HASH, inputHash, inputJson);
+    raw.prepare(`
+      INSERT INTO dacs_effect_history
+        (effect_kind, effect_id, event, generation, occurred_at, detail_hash)
+      VALUES ('payment', 'payment:pre-proof', 'intent-created', 0, 1, ?)
+    `).run(sha256Hex(canonicalize({ bindingHash: BINDING_HASH, inputHash })));
+    raw.close();
+    const before = readFileSync(databasePath);
+
+    await expect(openDacsNodeSqliteDatabase(options(databasePath)))
+      .rejects.toMatchObject({ reasonCode: "effect-corrupt" });
+    expect(readFileSync(databasePath).equals(before)).toBe(true);
+    expect(readdirSync(root).some((name) => name.includes(".backup-v1-"))).toBe(false);
+  });
+
+  it("backs up v2 and preserves an authority-bound coordinator while adding proofs", async () => {
+    const root = temporaryRoot();
+    const schemaSourcePath = join(root, "schema-v1.sqlite");
+    await createV1Database(schemaSourcePath);
+    const schemaSource = new BetterSqlite3(schemaSourcePath, { readonly: true });
+    const preProofSql = schemaSource.prepare(`
+      SELECT sql FROM sqlite_schema
+      WHERE name IN (
+        'dacs_effects', 'dacs_effect_history',
+        'dacs_effects_runnable_idx', 'dacs_effect_history_effect_idx'
+      )
+      ORDER BY CASE name
+        WHEN 'dacs_effects' THEN 1
+        WHEN 'dacs_effect_history' THEN 2
+        WHEN 'dacs_effects_runnable_idx' THEN 3
+        ELSE 4
+      END
+    `).all() as Array<{ sql: string }>;
+    schemaSource.close();
+
+    const databasePath = join(root, "buyer-v2.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const current = await open(databasePath, liveOptions);
+    const order = liveOrder();
+    expect(await current.createLiveCoordinatorStore("buyer").create({
+      role: "buyer",
+      order,
+      bindingHash: fixedPriceX402OrderBindingHash(order),
+    })).toMatchObject({ status: "created" });
+    current.close();
+    databases.splice(databases.indexOf(current), 1);
+
+    const raw = new BetterSqlite3(databasePath);
+    raw.exec(`
+      DROP TABLE dacs_effect_history;
+      DROP TABLE dacs_effects;
+    `);
+    for (const object of preProofSql) raw.exec(object.sql);
+    raw.exec(`
+      DELETE FROM dacs_migrations WHERE version = 3;
+      UPDATE dacs_store_metadata SET schema_version = 2 WHERE singleton = 1;
+      PRAGMA user_version = 2;
+    `);
+    raw.close();
+
+    const migrated = await open(databasePath, liveOptions);
+    expect(await migrated.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
+      .toMatchObject({ status: "ok", record: { buyer: BUYER } });
+    expect(readdirSync(root).filter((name) => name.includes(".backup-v2-")))
+      .toHaveLength(1);
   });
 
   it("resumes the live coordinator DAG from durable role-local state", async () => {
@@ -827,7 +1213,9 @@ describe("DACS Node SQLite durability foundation", () => {
   });
 
   it("keeps live and offline coordinator stores profile-isolated", async () => {
-    const offline = await open(join(temporaryRoot(), "buyer.sqlite"));
+    const offline = await open(join(temporaryRoot(), "buyer.sqlite"), {
+      authority: BUYER,
+    });
     expect(() => offline.createLiveCoordinatorStore("buyer")).toThrowError(
       expect.objectContaining({ reasonCode: "coordinator-profile-mismatch" }),
     );
@@ -841,6 +1229,118 @@ describe("DACS Node SQLite durability foundation", () => {
       .toMatchObject({ status: "created", record: { protocol: OFFLINE_PROTOCOL } });
     expect(await store.load("buyer", JOB_ID))
       .toMatchObject({ status: "ok", record: { bindingHash } });
+  });
+
+  it("binds buyer and seller coordinator orders to their exact database authority", async () => {
+    const root = temporaryRoot();
+    const buyerDatabase = await open(join(root, "buyer.sqlite"), {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const buyerStore = buyerDatabase.createLiveCoordinatorStore("buyer");
+    const buyerOrder = liveOrder();
+    expect(await buyerStore.create({
+      role: "buyer",
+      order: buyerOrder,
+      bindingHash: fixedPriceX402OrderBindingHash(buyerOrder),
+    })).toMatchObject({ status: "created", record: { buyer: BUYER } });
+    const wrongBuyer = { ...liveOrder(OTHER_JOB_ID), buyer: "did:example:other-buyer" };
+    expect(await buyerStore.create({
+      role: "buyer",
+      order: wrongBuyer,
+      bindingHash: fixedPriceX402OrderBindingHash(wrongBuyer),
+    })).toMatchObject({
+      status: "corrupt",
+      reason: expect.stringContaining("database actor authority"),
+    });
+
+    const sellerDatabase = await open(join(root, "seller.sqlite"), {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "seller",
+      authority: SELLER,
+    });
+    const sellerStore = sellerDatabase.createLiveCoordinatorStore("seller");
+    const sellerOrder = liveSellerOrder();
+    expect(await sellerStore.create({
+      role: "seller",
+      order: sellerOrder,
+      bindingHash: fixedPriceX402OrderBindingHash(sellerOrder),
+    })).toMatchObject({ status: "created", record: { seller: SELLER } });
+    const otherSeller = "did:example:other-seller";
+    const wrongSeller = {
+      ...liveSellerOrder(OTHER_JOB_ID),
+      seller: otherSeller,
+      protocol: { ...LIVE_PROTOCOL, orchestrator: otherSeller },
+    };
+    expect(await sellerStore.create({
+      role: "seller",
+      order: wrongSeller,
+      bindingHash: fixedPriceX402OrderBindingHash(wrongSeller),
+    })).toMatchObject({
+      status: "corrupt",
+      reason: expect.stringContaining("database actor authority"),
+    });
+  });
+
+  it("rejects recomputed coordinator hashes that move buyer or seller ownership", async () => {
+    const root = temporaryRoot();
+    for (const role of ["buyer", "seller"] as const) {
+      const databasePath = join(root, `${role}.sqlite`);
+      const authority = role === "buyer" ? BUYER : SELLER;
+      const database = await open(databasePath, {
+        mode: "live-demos",
+        profile: DACS_NODE_LIVE_PROFILE,
+        role,
+        authority,
+      });
+      const store = database.createLiveCoordinatorStore(role);
+      const order = role === "buyer" ? liveOrder() : liveSellerOrder();
+      expect(await store.create({
+        role,
+        order,
+        bindingHash: fixedPriceX402OrderBindingHash(order),
+      })).toMatchObject({ status: "created" });
+      database.close();
+      databases.splice(databases.indexOf(database), 1);
+
+      const raw = new BetterSqlite3(databasePath);
+      const retained = raw.prepare(`
+        SELECT record_json FROM dacs_coordinator_orders
+        WHERE profile = 'live-x402' AND role = ? AND job_id = ?
+      `).get(role, JOB_ID) as { record_json: string };
+      const record = JSON.parse(retained.record_json) as FixedPriceX402OrderInput & {
+        bindingHash: string;
+      };
+      if (role === "buyer") {
+        record.buyer = "did:example:rebound-buyer";
+      } else {
+        record.seller = "did:example:rebound-seller";
+        record.protocol = { ...record.protocol, orchestrator: record.seller };
+      }
+      record.bindingHash = fixedPriceX402OrderBindingHash({
+        jobId: record.jobId,
+        buyer: record.buyer,
+        seller: record.seller,
+        protocol: record.protocol,
+      });
+      const recordJson = canonicalize(record);
+      raw.prepare(`
+        UPDATE dacs_coordinator_orders
+        SET binding_hash = ?, record_hash = ?, record_json = ?
+        WHERE profile = 'live-x402' AND role = ? AND job_id = ?
+      `).run(record.bindingHash, sha256Hex(recordJson), recordJson, role, JOB_ID);
+      raw.close();
+
+      await expect(openDacsNodeSqliteDatabase(options(databasePath, {
+        mode: "live-demos",
+        profile: DACS_NODE_LIVE_PROFILE,
+        role,
+        authority,
+      }))).rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
+    }
   });
 
   it("fails closed when persisted coordinator JSON loses its integrity binding", async () => {
@@ -936,7 +1436,11 @@ describe("DACS Node SQLite durability foundation", () => {
       owner: "buyer-worker-1",
       leaseDurationMs: 10_000,
     });
-    expect(claim).toMatchObject({ status: "acquired", mode: "perform" });
+    expect(claim).toMatchObject({
+      status: "acquired",
+      mode: "perform",
+      record: { idempotencyKey: intent.idempotencyKey },
+    });
     if (claim.status !== "acquired") throw new Error("expected effect claim");
     const completedInput = {
       kind: "payment",
@@ -1002,7 +1506,11 @@ describe("DACS Node SQLite durability foundation", () => {
       owner: "seller-worker-2",
       leaseDurationMs: 10_000,
     });
-    expect(reconcile).toMatchObject({ status: "acquired", mode: "reconcile" });
+    expect(reconcile).toMatchObject({
+      status: "acquired",
+      mode: "reconcile",
+      record: { idempotencyKey: "fulfilment:idempotency:1" },
+    });
     if (reconcile.status !== "acquired" || reconcile.mode !== "reconcile") {
       throw new Error("expected reconciliation claim");
     }

@@ -491,6 +491,15 @@ buyer and seller never share a database. Multi-host deployments MUST use a
 separately reviewed external transactional-store adapter and are outside the
 first release.
 
+The database authority MUST equal the role-owned party on every admitted
+commerce order (`order.buyer` for a buyer store and `order.seller` for a seller
+store), including after independently recomputing the order binding and record
+hashes. Effect recovery MUST authenticate the immutable tuple of effect kind,
+effect ID, optional job ID, binding hash, input hash and idempotency key before
+returning a claim. A pre-proof effect row MUST fail closed rather than receive a
+proof during migration. Canonical lifecycle details MUST form a validated
+rolling history chain so an altered intermediate transition cannot be skipped.
+
 The store MUST survive process termination at every irreversible boundary. A
 stale generation MUST NOT record an outcome after a newer worker has claimed the
 work.

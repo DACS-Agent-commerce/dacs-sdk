@@ -30,6 +30,13 @@ synchronous durability, uses database-authoritative lease time, and rejects
 known NFS/SMB/shared or consumer-sync locations. It is a local, single-host
 store and must not be placed on a shared volume.
 
+Filesystem-type inspection is implemented for Linux and macOS and additionally
+rejects Windows UNC paths and known network-filesystem magic values. This is a
+denylist safety check, not proof that an unfamiliar mount is local: operators on
+Windows or another platform must place the database on an explicitly verified
+local disk. `checkpoint()` requires a complete `FULL` WAL checkpoint and reports
+`database-checkpoint-busy` when a retained reader prevents completion.
+
 The same explicit SQLite surface provides live-x402 and offline coordinator
 stores. Each store is fixed to the database actor role and commerce profile,
 persists the exact SDK-validated order record with an integrity hash plus a
@@ -45,6 +52,13 @@ performable again: the next worker receives a reconciliation claim. An
 indeterminate reconciliation remains reconciliation-only; only an authoritative
 absence proof permits another perform attempt with the original effect and
 idempotency identities.
+
+Each effect's kind, effect ID, optional job ID, binding hash, input hash, and
+idempotency key are bound into both its row identity hash and its authenticated
+origin event. Every canonical history detail is retained behind a rolling entry
+hash, and the complete chain is checked on startup and again before load, claim,
+or recovery. A legacy or altered row without that proof fails closed; the host
+never synthesizes an idempotency proof during admission.
 
 The durable effect input and retained result are canonical operational records,
 not a secret vault. Adapters must store only the public binding and the
