@@ -17,6 +17,7 @@ import {
   type BuyerPaymentEvidenceHandshakeOptions,
   type FixedPriceX402ProtocolBinding,
   type PaymentEvidenceAnchorCompletion,
+  type PaymentEvidenceAnchorFence,
   type PaymentEvidenceAnchorRequest,
   type PaymentEvidenceAuthenticatedPeer,
 } from "../../src/commerce/index.js";
@@ -417,28 +418,101 @@ describe("actor-separated payment-evidence handshake", () => {
     expect(verifyReceipt).toHaveBeenCalledTimes(1);
   });
 
-  it("reconciles an expired in-flight anchor lease before one durably marked reattempt", async () => {
+  it("fails closed on an unknown acquired claim mode before calling the wallet", async () => {
+    const store = createInMemoryPaymentEvidenceHandshakeStore();
+    const originalClaim = store.claimBuyer;
+    store.claimBuyer = vi.fn(async (input) => {
+      const claimed = await originalClaim(input);
+      return claimed.status === "acquired"
+        ? { ...claimed, mode: "future-mode" } as never
+        : claimed;
+    });
+    const candidate = request();
+    const anchor = vi.fn(() => ({
+      disposition: "anchored" as const,
+      ...finalAnchor(candidate),
+    }));
+    const { handshake } = buyer({ store, anchor });
+    await handshake.receiveRequest(candidate, {});
+
+    await expect(handshake.runPending()).rejects.toThrow(/unknown buyer-claim mode/);
+    expect(anchor).not.toHaveBeenCalled();
+  });
+
+  it("fences an expired slow anchor before one durably marked reattempt", async () => {
     let now = 1_000;
     const store = createInMemoryPaymentEvidenceHandshakeStore({ now: () => now });
     const candidate = request();
     const anchored = { disposition: "anchored" as const, ...finalAnchor(candidate) };
-    let resolveFirst!: (value: typeof anchored) => void;
-    const firstAttempt = new Promise<typeof anchored>((resolve) => {
-      resolveFirst = resolve;
+    let releaseFirst!: () => void;
+    const firstMayContinue = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
     });
-    const markedStates: string[] = [];
-    const anchor = vi.fn(async () => {
-      const loaded = await store.load("buyer", candidate.messageId);
-      if (loaded.status !== "ok") throw new Error("missing test record");
-      markedStates.push(
-        `${loaded.record.buyerWork?.state}:${loaded.record.buyerWork?.reasonCode}`,
-      );
-      return anchor.mock.calls.length === 1 ? firstAttempt : anchored;
+    const events: string[] = [];
+    const observedKeys: string[] = [];
+    type AnchorJournal = {
+      fencedThrough: number;
+      performingGeneration?: number;
+      committedGeneration?: number;
+    };
+    const journals = new Map<string, AnchorJournal>();
+    const journalFor = (idempotencyKey: string) => {
+      const existing = journals.get(idempotencyKey);
+      if (existing) return existing;
+      const created: AnchorJournal = { fencedThrough: 0 };
+      journals.set(idempotencyKey, created);
+      return created;
+    };
+    let irreversibleEffects = 0;
+    let anchorInvocation = 0;
+    const anchor = vi.fn(async (
+      _input: unknown,
+      fence: Readonly<PaymentEvidenceAnchorFence>,
+    ) => {
+      anchorInvocation += 1;
+      const invocation = anchorInvocation;
+      observedKeys.push(fence.idempotencyKey);
+      events.push(`anchor-${fence.generation}-entered`);
+      if (invocation === 1) await firstMayContinue;
+      try {
+        await fence.assertCurrent();
+      } catch (error) {
+        events.push(`anchor-${fence.generation}-stale`);
+        throw error;
+      }
+      const journal = journalFor(fence.idempotencyKey);
+      if (fence.generation <= journal.fencedThrough ||
+          journal.performingGeneration !== undefined) {
+        throw new Error("anchor journal rejected a stale or concurrent generation");
+      }
+      journal.performingGeneration = fence.generation;
+      try {
+        irreversibleEffects += 1;
+        events.push(`effect-${fence.generation}`);
+        journal.committedGeneration = fence.generation;
+        return anchored;
+      } finally {
+        delete journal.performingGeneration;
+      }
     });
-    const reconcile = vi.fn(() => ({
-      disposition: "absent" as const,
-      absenceProofHash: ABSENCE_HASH,
-    }));
+    const reconcile = vi.fn(async (
+      _input: unknown,
+      fence: Readonly<PaymentEvidenceAnchorFence>,
+    ) => {
+      await fence.assertCurrent();
+      observedKeys.push(fence.idempotencyKey);
+      const journal = journalFor(fence.idempotencyKey);
+      if (journal.performingGeneration !== undefined) {
+        return { disposition: "indeterminate" as const, reason: "performer-active" };
+      }
+      if (journal.committedGeneration !== undefined) return anchored;
+      journal.fencedThrough = Math.max(journal.fencedThrough, fence.generation);
+      events.push(`reconcile-${fence.generation}-fenced`);
+      return {
+        disposition: "absent" as const,
+        absenceProofHash: ABSENCE_HASH,
+      };
+    });
     const { handshake } = buyer({
       store,
       anchor,
@@ -468,20 +542,29 @@ describe("actor-separated payment-evidence handshake", () => {
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(anchor).toHaveBeenCalledTimes(1);
 
+    releaseFirst();
+    await expect(abandonedWorker).resolves.toEqual({
+      items: [{ messageId: candidate.messageId, status: "stale" }],
+    });
+
     expect((await handshake.runPending()).items).toEqual([{
       messageId: candidate.messageId,
       status: "completed",
     }]);
     expect(anchor).toHaveBeenCalledTimes(2);
-    expect(markedStates).toEqual([
-      "reconciliation-required:anchor-attempt-in-flight",
-      "reconciliation-required:anchor-attempt-in-flight",
+    expect(irreversibleEffects).toBe(1);
+    expect(new Set(observedKeys)).toHaveLength(1);
+    expect([...journals.values()]).toEqual([{
+      fencedThrough: 2,
+      committedGeneration: 3,
+    }]);
+    expect(events).toEqual([
+      "anchor-1-entered",
+      "reconcile-2-fenced",
+      "anchor-1-stale",
+      "anchor-3-entered",
+      "effect-3",
     ]);
-
-    resolveFirst(anchored);
-    await expect(abandonedWorker).resolves.toMatchObject({
-      items: [{ status: "completed" }],
-    });
   });
 
   it("parks permanent rejection for operator action and requeues only through repair", async () => {

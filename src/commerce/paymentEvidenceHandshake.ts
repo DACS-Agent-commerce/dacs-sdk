@@ -301,6 +301,11 @@ export interface PaymentEvidenceHandshakeStore {
   }>): Promise<PaymentEvidenceHandshakeWrite>;
 }
 
+/**
+ * Lease generation and stable effect identity for one buyer-owned anchor.
+ * `assertCurrent` is a cooperative precondition, not an effect transaction:
+ * adapters must also fence generations durably under `idempotencyKey`.
+ */
 export interface PaymentEvidenceAnchorFence {
   messageId: string;
   requestHash: string;
@@ -322,6 +327,12 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
   verifyEvidence(
     request: Readonly<PaymentEvidenceAnchorRequest>,
   ): Promise<PaymentEvidenceAnchorVerification> | PaymentEvidenceAnchorVerification;
+  /**
+   * Perform through a durable intent/perform/commit journal keyed by
+   * `fence.idempotencyKey`. The journal must monotonically fence generations,
+   * and the adapter must call `fence.assertCurrent()` immediately before it
+   * atomically acquires permission to perform the irreversible effect.
+   */
   anchorEvidence(
     input: Readonly<{
       effectId: string;
@@ -333,7 +344,11 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
     }>,
     fence: Readonly<PaymentEvidenceAnchorFence>,
   ): Promise<SellerSessionSettlementAnchorResult> | SellerSessionSettlementAnchorResult;
-  /** Required before an ambiguous wallet effect may be attempted again. */
+  /**
+   * Required before an ambiguous wallet effect may be attempted again.
+   * `absent` is permitted only after authenticated substrate absence and after
+   * the same durable journal has fenced or quiesced every older performer.
+   */
   reconcileAnchor(
     input: Readonly<{
       effectId: string;
@@ -1904,6 +1919,9 @@ export function createBuyerPaymentEvidenceHandshake(
               : "stale",
           });
           continue;
+        }
+        if (claim.mode !== "anchor" && claim.mode !== "reconcile") {
+          throw new DacsError("payment-evidence store returned an unknown buyer-claim mode");
         }
         const claimed = requireHandshakeRecord(claim.record, "buyer", request.messageId);
         const retainedRequest = clone(claimed.request);

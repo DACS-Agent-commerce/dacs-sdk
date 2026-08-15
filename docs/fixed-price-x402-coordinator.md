@@ -259,6 +259,15 @@ is durably classified and releases its lease immediately. It never waits for
 the default 30-second lease merely because a callback returned badly. A
 permanent contradiction moves to `operator-action` and cannot loop forever.
 
+The buyer `anchorEvidence` adapter must use `fence.idempotencyKey` in a durable
+intent/perform/commit/reconcile journal, monotonically fence generations, and
+call `fence.assertCurrent()` immediately before atomically acquiring permission
+to perform the irreversible effect. `reconcileAnchor` may report authenticated
+absence only after that same journal has fenced or quiesced every older
+performer; substrate non-observation alone is not enough while an old callback
+can still submit. These adapter obligations close the slow-callback race that a
+lease and a pre-callback fence check cannot close by themselves.
+
 Before invoking `anchorEvidence`, the buyer store's atomic `claimBuyer` write
 makes the leased work `reconciliation-required` with the same fence while
 returning `mode: "anchor"` for that one worker. If the worker disappears while
