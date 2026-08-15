@@ -894,6 +894,54 @@ function coordinatorTrackProjectionMatches(
   return canonicalize(retained) === canonicalize(expected);
 }
 
+function assertCoordinatorProjectionSet(
+  database: BetterSqlite3.Database,
+  profile: CoordinatorProfile,
+  role: FixedPriceX402CoordinatorRole,
+): void {
+  for (const row of database.prepare(`
+    SELECT * FROM dacs_coordinator_orders ORDER BY profile, role, job_id
+  `).iterate() as IterableIterator<CoordinatorRow>) {
+    if (row.profile !== profile || row.role !== role) {
+      throw new DacsNodeSqliteError(
+        "coordinator-record-corrupt",
+        "Coordinator record is outside the bound actor profile",
+      );
+    }
+    const decoded = coordinatorFromRow(row, profile);
+    if (decoded.status !== "ok") {
+      throw new DacsNodeSqliteError(
+        decoded.status === "unsupported"
+          ? "coordinator-version-unsupported"
+          : "coordinator-record-corrupt",
+        decoded.status === "unsupported"
+          ? `Coordinator store version ${decoded.version} is unsupported`
+          : decoded.reason,
+      );
+    }
+    if (!coordinatorTrackProjectionMatches(database, profile, decoded.record)) {
+      throw new DacsNodeSqliteError(
+        "coordinator-record-corrupt",
+        "Coordinator track projection differs from its authenticated record",
+      );
+    }
+  }
+  const orphan = database.prepare(`
+    SELECT 1 FROM dacs_coordinator_tracks AS tracks
+    LEFT JOIN dacs_coordinator_orders AS orders
+      ON orders.profile = tracks.profile AND orders.role = tracks.role
+      AND orders.job_id = tracks.job_id
+    WHERE orders.job_id IS NULL
+    LIMIT 1
+  `).get();
+  if (orphan !== undefined) {
+    throw new DacsNodeSqliteError(
+      "coordinator-record-corrupt",
+      "Coordinator track projection has no authenticated record",
+    );
+  }
+}
+
 function exactDataKeys(
   value: unknown,
   required: readonly string[],
@@ -1138,6 +1186,20 @@ function databaseTime(database: BetterSqlite3.Database): number {
 function beginImmediate<T>(database: BetterSqlite3.Database, operation: () => T): T {
   database.exec("BEGIN IMMEDIATE");
   try {
+    const result = operation();
+    database.exec("COMMIT");
+    return result;
+  } catch (error) {
+    if (database.inTransaction) database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function readSnapshot<T>(database: BetterSqlite3.Database, operation: () => T): T {
+  if (database.inTransaction) return operation();
+  database.exec("BEGIN");
+  try {
+    database.prepare("SELECT rootpage FROM sqlite_schema LIMIT 1").get();
     const result = operation();
     database.exec("COMMIT");
     return result;
@@ -1515,10 +1577,12 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         if (inputRole !== role) {
           return { status: "corrupt", reason: "coordinator role differs from bound store" };
         }
-        const loaded = loadRecord(jobId);
-        return loaded.status === "ok"
-          ? { status: "ok", record: toLive(loaded.record) }
-          : loaded;
+        return readSnapshot(database, () => {
+          const loaded = loadRecord(jobId);
+          return loaded.status === "ok"
+            ? { status: "ok", record: toLive(loaded.record) }
+            : loaded;
+        });
       },
 
       async listRunnable(input) {
@@ -1533,62 +1597,65 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           );
         }
         if (input.tracks.length === 0) return { items: [] };
-        const now = databaseTime(database);
-        const trackPlaceholders = input.tracks.map(() => "?").join(", ");
-        const rows = database.prepare(`
-          SELECT orders.* FROM dacs_coordinator_orders AS orders
-          WHERE orders.profile = ? AND orders.role = ? AND orders.job_id > ?
-            AND EXISTS (
-              SELECT 1 FROM dacs_coordinator_tracks AS tracks
-              WHERE tracks.profile = orders.profile
-                AND tracks.role = orders.role
-                AND tracks.job_id = orders.job_id
-                AND tracks.track IN (${trackPlaceholders})
-                AND tracks.eligible = 1
-                AND tracks.state NOT IN ('final', 'operator-action')
-                AND (tracks.next_attempt_at IS NULL OR tracks.next_attempt_at <= ?)
-                AND (tracks.lease_expires_at IS NULL OR tracks.lease_expires_at <= ?)
-            )
-          ORDER BY orders.job_id
-          LIMIT ?
-        `).all(
-          profile,
-          role,
-          input.cursor ?? "",
-          ...input.tracks,
-          now,
-          now,
-          input.limit + 1,
-        ) as CoordinatorRow[];
-        const eligible = rows.map((row) => {
-          const decoded = coordinatorFromRow(row, profile);
-          if (decoded.status !== "ok") {
-            throw new DacsNodeSqliteError(
-              decoded.status === "unsupported"
-                ? "coordinator-version-unsupported"
-                : "coordinator-record-corrupt",
-              decoded.status === "unsupported"
-                ? `Coordinator store version ${decoded.version} is unsupported`
-                : decoded.reason,
-            );
-          }
-          if (!coordinatorTrackProjectionMatches(database, profile, decoded.record) ||
-              !input.tracks.some((track) =>
-                coordinatorTrackRunnable(decoded.record, track, now))) {
-            throw new DacsNodeSqliteError(
-              "coordinator-record-corrupt",
-              "Coordinator runnable projection differs from its authenticated record",
-            );
-          }
-          return decoded.record;
+        return readSnapshot(database, () => {
+          const now = databaseTime(database);
+          assertCoordinatorProjectionSet(database, profile, role);
+          const trackPlaceholders = input.tracks.map(() => "?").join(", ");
+          const rows = database.prepare(`
+            SELECT orders.* FROM dacs_coordinator_orders AS orders
+            WHERE orders.profile = ? AND orders.role = ? AND orders.job_id > ?
+              AND EXISTS (
+                SELECT 1 FROM dacs_coordinator_tracks AS tracks
+                WHERE tracks.profile = orders.profile
+                  AND tracks.role = orders.role
+                  AND tracks.job_id = orders.job_id
+                  AND tracks.track IN (${trackPlaceholders})
+                  AND tracks.eligible = 1
+                  AND tracks.state NOT IN ('final', 'operator-action')
+                  AND (tracks.next_attempt_at IS NULL OR tracks.next_attempt_at <= ?)
+                  AND (tracks.lease_expires_at IS NULL OR tracks.lease_expires_at <= ?)
+              )
+            ORDER BY orders.job_id
+            LIMIT ?
+          `).all(
+            profile,
+            role,
+            input.cursor ?? "",
+            ...input.tracks,
+            now,
+            now,
+            input.limit + 1,
+          ) as CoordinatorRow[];
+          const eligible = rows.map((row) => {
+            const decoded = coordinatorFromRow(row, profile);
+            if (decoded.status !== "ok") {
+              throw new DacsNodeSqliteError(
+                decoded.status === "unsupported"
+                  ? "coordinator-version-unsupported"
+                  : "coordinator-record-corrupt",
+                decoded.status === "unsupported"
+                  ? `Coordinator store version ${decoded.version} is unsupported`
+                  : decoded.reason,
+              );
+            }
+            if (!coordinatorTrackProjectionMatches(database, profile, decoded.record) ||
+                !input.tracks.some((track) =>
+                  coordinatorTrackRunnable(decoded.record, track, now))) {
+              throw new DacsNodeSqliteError(
+                "coordinator-record-corrupt",
+                "Coordinator runnable projection differs from its authenticated record",
+              );
+            }
+            return decoded.record;
+          });
+          const selected = eligible.slice(0, input.limit);
+          return {
+            items: selected.map(toLive),
+            ...(eligible.length > selected.length && selected.length > 0
+              ? { nextCursor: selected.at(-1)!.jobId }
+              : {}),
+          };
         });
-        const selected = eligible.slice(0, input.limit);
-        return {
-          items: selected.map(toLive),
-          ...(eligible.length > selected.length && selected.length > 0
-            ? { nextCursor: selected.at(-1)!.jobId }
-            : {}),
-        };
       },
 
       async claim(input) {
@@ -2038,11 +2105,13 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
   }>): boolean {
     this.assertOpen();
     validateEffectIdentity(input);
-    const row = this.effectRow(input.kind, input.effectId);
-    if (!row) return false;
-    const record = effectFromRow(row);
-    return record.bindingHash === input.bindingHash &&
-      exactLease(record, input.lease, databaseTime(this.database));
+    return readSnapshot(this.database, () => {
+      const row = this.effectRow(input.kind, input.effectId);
+      if (!row) return false;
+      const record = effectFromRow(row);
+      return record.bindingHash === input.bindingHash &&
+        exactLease(record, input.lease, databaseTime(this.database));
+    });
   }
 
   recordEffectCompleted(input: Readonly<{
@@ -2372,7 +2441,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     occurredAt: number,
     details: unknown,
   ): void {
-    const detailHash = sha256Hex(canonicalize(details));
+    const detailHash = effectHistoryDetailHash(details);
     this.database.prepare(`
       INSERT INTO dacs_effect_history
         (effect_kind, effect_id, event, generation, occurred_at, detail_hash)
@@ -2394,11 +2463,13 @@ interface MigrationRow {
 }
 
 interface EffectHistoryValidationRow {
+  sequence: number;
+  effect_kind: string;
+  effect_id: string;
   event: string;
   generation: number;
   occurred_at: number;
   detail_hash: string;
-  effect_generation: number;
 }
 
 type SchemaFingerprint = Readonly<{
@@ -2602,6 +2673,203 @@ function verifyMigrationHistory(
   }
 }
 
+type EffectLifecyclePhase =
+  | "intent"
+  | "active-perform"
+  | "active-reconcile"
+  | "reconciliation-required"
+  | "operator-action"
+  | "completed";
+
+function effectHistoryDetailHash(details: unknown): string {
+  return sha256Hex(canonicalize(details));
+}
+
+function effectLogicalCorruption(message: string): never {
+  throw new DacsNodeSqliteError("database-logical-corruption", message);
+}
+
+function verifyEffectReservation(
+  database: BetterSqlite3.Database,
+  effect: Readonly<DacsNodeSqliteEffectRecord>,
+): void {
+  const expectedKind = reservationKindForEffect(effect.kind);
+  const row = database.prepare(`
+    SELECT * FROM dacs_reservations WHERE kind = ? AND identity = ?
+  `).get(expectedKind, effect.effectId) as ReservationRow | undefined;
+  if (!row) {
+    effectLogicalCorruption("SQLite effect is missing its exact identity reservation");
+  }
+  const reservation = reservationFromRow(row);
+  if (reservation.kind !== expectedKind || reservation.identity !== effect.effectId ||
+      reservation.bindingHash !== effect.bindingHash ||
+      reservation.payloadHash !== effect.inputHash || reservation.jobId !== effect.jobId) {
+    effectLogicalCorruption("SQLite effect reservation differs from its effect binding");
+  }
+}
+
+function verifyEffectHistory(
+  database: BetterSqlite3.Database,
+  effect: Readonly<DacsNodeSqliteEffectRecord>,
+): void {
+  let phase: EffectLifecyclePhase = "intent";
+  let generation = 0;
+  let last: EffectHistoryValidationRow | undefined;
+  let latestAbsence: EffectHistoryValidationRow | undefined;
+  let count = 0;
+
+  for (const row of database.prepare(`
+    SELECT sequence, effect_kind, effect_id, event, generation, occurred_at, detail_hash
+    FROM dacs_effect_history
+    WHERE effect_kind = ? AND effect_id = ?
+    ORDER BY sequence
+  `).iterate(effect.kind, effect.effectId) as IterableIterator<EffectHistoryValidationRow>) {
+    count += 1;
+    if (!safeUint(row.sequence) || row.sequence === 0 ||
+        row.effect_kind !== effect.kind || row.effect_id !== effect.effectId ||
+        !nonEmpty(row.event) || !safeUint(row.generation) ||
+        !safeUint(row.occurred_at) || row.occurred_at > effect.updatedAt ||
+        !hash(row.detail_hash) || (last !== undefined && row.sequence <= last.sequence)) {
+      effectLogicalCorruption("SQLite effect history contains a malformed event");
+    }
+
+    if (count === 1) {
+      if (row.event !== "intent-created" || row.generation !== 0 ||
+          row.occurred_at !== effect.createdAt ||
+          row.detail_hash !== effectHistoryDetailHash({
+            bindingHash: effect.bindingHash,
+            inputHash: effect.inputHash,
+          })) {
+        effectLogicalCorruption("SQLite effect history has no authentic origin event");
+      }
+      last = row;
+      continue;
+    }
+
+    switch (row.event) {
+      case "perform-claimed":
+        if (phase !== "intent" || row.generation !== generation + 1) {
+          effectLogicalCorruption("SQLite effect history has an invalid perform claim");
+        }
+        generation = row.generation;
+        phase = "active-perform";
+        break;
+      case "reconcile-claimed":
+        if ((phase !== "active-perform" && phase !== "active-reconcile" &&
+            phase !== "reconciliation-required") || row.generation !== generation + 1) {
+          effectLogicalCorruption("SQLite effect history has an invalid reconciliation claim");
+        }
+        generation = row.generation;
+        phase = "active-reconcile";
+        break;
+      case "effect-completed":
+        if ((phase !== "active-perform" && phase !== "active-reconcile") ||
+            row.generation !== generation) {
+          effectLogicalCorruption("SQLite effect history has an invalid completion");
+        }
+        phase = "completed";
+        break;
+      case "reconciliation-required":
+        if ((phase !== "active-perform" && phase !== "active-reconcile") ||
+            row.generation !== generation) {
+          effectLogicalCorruption("SQLite effect history has an invalid ambiguous result");
+        }
+        phase = "reconciliation-required";
+        break;
+      case "reconciliation-performed":
+        if (phase !== "active-reconcile" || row.generation !== generation) {
+          effectLogicalCorruption("SQLite effect history has an invalid reconciled completion");
+        }
+        phase = "completed";
+        break;
+      case "reconciliation-absent":
+        if (phase !== "active-reconcile" || row.generation !== generation) {
+          effectLogicalCorruption("SQLite effect history has an invalid absence result");
+        }
+        latestAbsence = row;
+        phase = "intent";
+        break;
+      case "reconciliation-indeterminate":
+        if (phase !== "active-reconcile" || row.generation !== generation) {
+          effectLogicalCorruption("SQLite effect history has an invalid indeterminate result");
+        }
+        phase = "reconciliation-required";
+        break;
+      case "operator-action-required":
+        if ((phase !== "active-perform" && phase !== "active-reconcile") ||
+            row.generation !== generation) {
+          effectLogicalCorruption("SQLite effect history has an invalid operator transition");
+        }
+        phase = "operator-action";
+        break;
+      default:
+        effectLogicalCorruption("SQLite effect history contains an unsupported event");
+    }
+    last = row;
+  }
+
+  if (!last || effect.generation !== generation) {
+    effectLogicalCorruption("SQLite effect history is missing or has a generation gap");
+  }
+  const currentMatches =
+    (phase === "intent" && effect.state === "intent") ||
+    (phase === "active-perform" && effect.state === "active" &&
+      effect.lease?.mode === "perform") ||
+    (phase === "active-reconcile" && effect.state === "active" &&
+      effect.lease?.mode === "reconcile") ||
+    (phase === "reconciliation-required" && effect.state === "reconciliation-required") ||
+    (phase === "operator-action" && effect.state === "operator-action") ||
+    (phase === "completed" && effect.state === "completed");
+  if (!currentMatches) {
+    effectLogicalCorruption("SQLite effect state contradicts its complete history");
+  }
+
+  if (latestAbsence === undefined) {
+    if (effect.absenceProofHash !== undefined) {
+      effectLogicalCorruption("SQLite effect has an unrecorded absence proof");
+    }
+  } else if (effect.absenceProofHash === undefined ||
+      latestAbsence.detail_hash !== effectHistoryDetailHash({
+        absenceProofHash: effect.absenceProofHash,
+      })) {
+    effectLogicalCorruption("SQLite effect absence proof differs from its history");
+  }
+
+  let expectedFinalDetailHash: string;
+  switch (phase) {
+    case "intent":
+      expectedFinalDetailHash = latestAbsence === undefined
+        ? effectHistoryDetailHash({
+            bindingHash: effect.bindingHash,
+            inputHash: effect.inputHash,
+          })
+        : effectHistoryDetailHash({ absenceProofHash: effect.absenceProofHash });
+      break;
+    case "active-perform":
+    case "active-reconcile":
+      expectedFinalDetailHash = effectHistoryDetailHash({
+        owner: effect.lease!.owner,
+        expiresAt: effect.lease!.expiresAt,
+      });
+      break;
+    case "reconciliation-required":
+      expectedFinalDetailHash = effectHistoryDetailHash({
+        reasonCode: effect.reasonCode,
+        retryAt: effect.retryAt ?? null,
+      });
+      break;
+    case "operator-action":
+      expectedFinalDetailHash = effectHistoryDetailHash({ reasonCode: effect.reasonCode });
+      break;
+    case "completed":
+      expectedFinalDetailHash = effectHistoryDetailHash({ resultHash: effect.resultHash });
+      break;
+  }
+  if (last.detail_hash !== expectedFinalDetailHash) {
+    effectLogicalCorruption("SQLite effect state differs from its final history event");
+  }
+}
+
 function verifyLogicalRows(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
@@ -2625,23 +2893,8 @@ function verifyLogicalRows(
           "SQLite effect has a non-canonical job identity",
         );
       }
-    }
-    for (const row of database.prepare(`
-      SELECT history.event, history.generation, history.occurred_at,
-        history.detail_hash, effects.generation AS effect_generation
-      FROM dacs_effect_history AS history
-      JOIN dacs_effects AS effects
-        ON effects.effect_kind = history.effect_kind
-        AND effects.effect_id = history.effect_id
-    `).iterate() as IterableIterator<EffectHistoryValidationRow>) {
-      if (!nonEmpty(row.event) || !safeUint(row.generation) ||
-          !safeUint(row.occurred_at) || !hash(row.detail_hash) ||
-          !safeUint(row.effect_generation) || row.generation > row.effect_generation) {
-        throw new DacsNodeSqliteError(
-          "database-logical-corruption",
-          "SQLite effect history is inconsistent",
-        );
-      }
+      verifyEffectReservation(database, effect);
+      verifyEffectHistory(database, effect);
     }
     if (version === 2) {
       const expectedProfile: CoordinatorProfile = options.mode === "offline"
@@ -2681,32 +2934,34 @@ function verifyVersionedDatabase(
   options: ReturnType<typeof validateOptions>,
   version: 1 | 2,
 ): void {
-  if (readDatabaseVersion(database) !== version) {
-    throw new DacsNodeSqliteError(
-      "database-version-raced",
-      "SQLite database version changed during admission",
-    );
-  }
-  const quick = database.pragma("quick_check(1)", { simple: true });
-  if (quick !== "ok") {
-    throw new DacsNodeSqliteError(
-      "database-integrity-failed",
-      "SQLite integrity check failed",
-    );
-  }
-  verifySchema(database, version);
-  verifyMetadata(database, options, version);
-  verifyMigrationHistory(database, version);
-  const foreignKeyViolation = database.prepare(`
-    SELECT 1 FROM pragma_foreign_key_check LIMIT 1
-  `).get();
-  if (foreignKeyViolation !== undefined) {
-    throw new DacsNodeSqliteError(
-      "database-foreign-key-invalid",
-      "SQLite foreign-key validation failed",
-    );
-  }
-  verifyLogicalRows(database, options, version);
+  readSnapshot(database, () => {
+    if (readDatabaseVersion(database) !== version) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite database version changed during admission",
+      );
+    }
+    const quick = database.pragma("quick_check(1)", { simple: true });
+    if (quick !== "ok") {
+      throw new DacsNodeSqliteError(
+        "database-integrity-failed",
+        "SQLite integrity check failed",
+      );
+    }
+    verifySchema(database, version);
+    verifyMetadata(database, options, version);
+    verifyMigrationHistory(database, version);
+    const foreignKeyViolation = database.prepare(`
+      SELECT 1 FROM pragma_foreign_key_check LIMIT 1
+    `).get();
+    if (foreignKeyViolation !== undefined) {
+      throw new DacsNodeSqliteError(
+        "database-foreign-key-invalid",
+        "SQLite foreign-key validation failed",
+      );
+    }
+    verifyLogicalRows(database, options, version);
+  });
 }
 
 function configureAdmissionConnection(

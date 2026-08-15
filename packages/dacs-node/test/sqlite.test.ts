@@ -314,6 +314,110 @@ describe("DACS Node SQLite durability foundation", () => {
       .rejects.toMatchObject({ reasonCode: "database-foreign-key-invalid" });
   });
 
+  it("rejects incomplete, forged, or reservation-detached effect lifecycles", async () => {
+    const root = temporaryRoot();
+    const mutations = [
+      {
+        name: "missing-history",
+        terminal: "intent" as const,
+        mutate(raw: BetterSqlite3.Database) {
+          raw.exec("DELETE FROM dacs_effect_history");
+        },
+      },
+      {
+        name: "forged-terminal-history",
+        terminal: "completed" as const,
+        mutate(raw: BetterSqlite3.Database) {
+          raw.exec(`
+            UPDATE dacs_effect_history SET event = 'operator-action-required'
+            WHERE sequence = (SELECT MAX(sequence) FROM dacs_effect_history)
+          `);
+        },
+      },
+      {
+        name: "missing-reservation",
+        terminal: "intent" as const,
+        mutate(raw: BetterSqlite3.Database) {
+          raw.exec("DELETE FROM dacs_reservations");
+        },
+      },
+      {
+        name: "mismatched-reservation",
+        terminal: "intent" as const,
+        mutate(raw: BetterSqlite3.Database) {
+          raw.prepare("UPDATE dacs_reservations SET binding_hash = ?")
+            .run(OTHER_BINDING_HASH);
+        },
+      },
+      {
+        name: "demoted-ambiguous-effect",
+        terminal: "ambiguous" as const,
+        mutate(raw: BetterSqlite3.Database) {
+          raw.exec(`
+            UPDATE dacs_effects SET state = 'intent', retry_at = NULL, reason_code = NULL
+          `);
+        },
+      },
+    ];
+
+    for (const mutation of mutations) {
+      const databasePath = join(root, `${mutation.name}.sqlite`);
+      const database = await open(databasePath);
+      const effectId = `payment:${mutation.name}`;
+      database.putEffectIntent({
+        kind: "payment",
+        effectId,
+        bindingHash: BINDING_HASH,
+        input: { amount: "1", asset: "USDC" },
+        idempotencyKey: `payment:idempotency:${mutation.name}`,
+        jobId: JOB_ID,
+      });
+      if (mutation.terminal !== "intent") {
+        const claim = database.claimEffect({
+          kind: "payment",
+          effectId,
+          bindingHash: BINDING_HASH,
+          owner: "buyer-worker",
+          leaseDurationMs: 10_000,
+        });
+        if (claim.status !== "acquired") throw new Error("expected effect claim");
+        if (mutation.terminal === "completed") {
+          expect(database.recordEffectCompleted({
+            kind: "payment",
+            effectId,
+            bindingHash: BINDING_HASH,
+            lease: claim.lease,
+            result: { transaction: "confirmed" },
+          })).toMatchObject({ status: "recorded" });
+        } else {
+          expect(database.recordEffectAmbiguous({
+            kind: "payment",
+            effectId,
+            bindingHash: BINDING_HASH,
+            lease: claim.lease,
+            reasonCode: "settlement-unknown",
+          })).toMatchObject({ status: "recorded" });
+        }
+      }
+      database.close();
+      databases.splice(databases.indexOf(database), 1);
+
+      const validReopen = await open(databasePath);
+      expect(validReopen.loadEffect("payment", effectId)?.state).toBe(
+        mutation.terminal === "ambiguous" ? "reconciliation-required" : mutation.terminal,
+      );
+      validReopen.close();
+      databases.splice(databases.indexOf(validReopen), 1);
+
+      const raw = new BetterSqlite3(databasePath);
+      mutation.mutate(raw);
+      raw.close();
+
+      await expect(openDacsNodeSqliteDatabase(options(databasePath)))
+        .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
+    }
+  });
+
   it("does not mutate or back up unauthenticated or corrupt v1 sources", async () => {
     const root = temporaryRoot();
     const cases = [
@@ -515,10 +619,152 @@ describe("DACS Node SQLite durability foundation", () => {
         AND track = 'payment'
     `).run(OTHER_JOB_ID);
     raw.close();
+    await expect(store.listRunnable({
+      role: "buyer",
+      tracks: ["payment"],
+      limit: 1,
+    })).rejects.toMatchObject({ reasonCode: "coordinator-record-corrupt" });
     expect(await store.load("buyer", OTHER_JOB_ID)).toMatchObject({
       status: "corrupt",
       reason: expect.stringContaining("track projection"),
     });
+  });
+
+  it("loads each coordinator record and projection from one SQLite snapshot", async () => {
+    const databasePath = join(temporaryRoot(), "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const first = await open(databasePath, liveOptions);
+    const second = await open(databasePath, liveOptions);
+    const firstStore = first.createLiveCoordinatorStore("buyer");
+    const secondStore = second.createLiveCoordinatorStore("buyer");
+    const order = liveOrder();
+    const bindingHash = fixedPriceX402OrderBindingHash(order);
+    expect(await firstStore.create({ role: "buyer", order, bindingHash }))
+      .toMatchObject({ status: "created" });
+
+    interface InstrumentedStatement {
+      get(...parameters: unknown[]): unknown;
+    }
+    interface InstrumentedDatabase {
+      prepare(source: string): InstrumentedStatement;
+    }
+    const internal = (first as unknown as { database: InstrumentedDatabase }).database;
+    const retainedPrepare = internal.prepare.bind(internal);
+    let writerPromise: Promise<unknown> | undefined;
+    let intercepted = false;
+    internal.prepare = (source) => {
+      const statement = retainedPrepare(source);
+      if (!intercepted && source.includes("SELECT * FROM dacs_coordinator_orders") &&
+          source.includes("job_id = ?")) {
+        const retainedGet = statement.get.bind(statement);
+        statement.get = (...parameters) => {
+          const row = retainedGet(...parameters);
+          intercepted = true;
+          writerPromise = secondStore.claim({
+            role: "buyer",
+            jobId: JOB_ID,
+            bindingHash,
+            track: "agreement",
+            owner: "concurrent-worker",
+            leaseDurationMs: 10_000,
+          });
+          return row;
+        };
+      }
+      return statement;
+    };
+
+    let loaded;
+    try {
+      loaded = await firstStore.load("buyer", JOB_ID);
+    } finally {
+      internal.prepare = retainedPrepare;
+    }
+    expect(intercepted).toBe(true);
+    expect(loaded).toMatchObject({
+      status: "ok",
+      record: { tracks: { agreement: { state: "not-started" } } },
+    });
+    expect(await writerPromise).toMatchObject({ status: "acquired" });
+    expect(await firstStore.load("buyer", JOB_ID)).toMatchObject({
+      status: "ok",
+      record: { tracks: { agreement: { state: "running" } } },
+    });
+  });
+
+  it("lists runnable coordinator work from one SQLite snapshot", async () => {
+    const databasePath = join(temporaryRoot(), "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const first = await open(databasePath, liveOptions);
+    const second = await open(databasePath, liveOptions);
+    const firstStore = first.createLiveCoordinatorStore("buyer");
+    const secondStore = second.createLiveCoordinatorStore("buyer");
+    const order = liveOrder();
+    const bindingHash = fixedPriceX402OrderBindingHash(order);
+    expect(await firstStore.create({ role: "buyer", order, bindingHash }))
+      .toMatchObject({ status: "created" });
+
+    interface InstrumentedStatement {
+      get(...parameters: unknown[]): unknown;
+    }
+    interface InstrumentedDatabase {
+      prepare(source: string): InstrumentedStatement;
+    }
+    const internal = (first as unknown as { database: InstrumentedDatabase }).database;
+    const retainedPrepare = internal.prepare.bind(internal);
+    let writerPromise: Promise<unknown> | undefined;
+    let intercepted = false;
+    internal.prepare = (source) => {
+      const statement = retainedPrepare(source);
+      if (!intercepted && source.includes("julianday('now')")) {
+        const retainedGet = statement.get.bind(statement);
+        statement.get = (...parameters) => {
+          const row = retainedGet(...parameters);
+          intercepted = true;
+          writerPromise = secondStore.claim({
+            role: "buyer",
+            jobId: JOB_ID,
+            bindingHash,
+            track: "agreement",
+            owner: "concurrent-worker",
+            leaseDurationMs: 10_000,
+          });
+          return row;
+        };
+      }
+      return statement;
+    };
+
+    let listed;
+    try {
+      listed = await firstStore.listRunnable({
+        role: "buyer",
+        tracks: ["agreement"],
+        limit: 1,
+      });
+    } finally {
+      internal.prepare = retainedPrepare;
+    }
+    expect(intercepted).toBe(true);
+    expect(listed).toMatchObject({
+      items: [{ jobId: JOB_ID, tracks: { agreement: { state: "not-started" } } }],
+    });
+    expect(await writerPromise).toMatchObject({ status: "acquired" });
+    expect(await firstStore.listRunnable({
+      role: "buyer",
+      tracks: ["agreement"],
+      limit: 1,
+    })).toEqual({ items: [] });
   });
 
   it("fences stale coordinator workers across SQLite connections", async () => {
