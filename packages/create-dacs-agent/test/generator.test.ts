@@ -136,13 +136,17 @@ describe("create-dacs-agent", () => {
       expect(dockerignore.split("\n"), excluded).toContain(excluded);
     }
     expect(dockerignore).not.toMatch(/^!/m);
-    expect(await readFile(join(target, "Dockerfile"), "utf8")).toContain(
+    const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
+    expect(dockerfile).toContain(
       "generated .dockerignore keeps credentials",
     );
-    expect(await readFile(join(target, "Dockerfile"), "utf8")).toContain(
+    expect(dockerfile).toContain(
       "npm prune --omit=dev --ignore-scripts",
     );
-    expect(await readFile(join(target, "Dockerfile"), "utf8")).not.toContain(
+    expect(dockerfile).toContain(
+      "install --directory --owner=dacs --group=dacs --mode=0750 /app/data",
+    );
+    expect(dockerfile).not.toContain(
       "COPY --from=build --chown=dacs:dacs /app /app",
     );
     await expect(

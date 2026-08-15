@@ -195,7 +195,7 @@ RUN npm prune --omit=dev --ignore-scripts
 FROM node:20.19.1-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
-RUN groupadd --system dacs && useradd --system --gid dacs --home-dir /app dacs
+RUN groupadd --system dacs && useradd --system --gid dacs --home-dir /app dacs && install --directory --owner=dacs --group=dacs --mode=0750 /app/data
 COPY --from=build --chown=dacs:dacs /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=dacs:dacs /app/node_modules ./node_modules
 COPY --from=build --chown=dacs:dacs /app/dist ./dist
