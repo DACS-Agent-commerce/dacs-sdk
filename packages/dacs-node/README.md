@@ -3,17 +3,43 @@
 Production Node.js host contracts and adapters for `@kynesyslabs/dacs`.
 
 The package keeps filesystem, SQLite, HTTP, process-supervision, and deployment
-concerns outside the transport-neutral SDK. The first package unit publishes
-the stable host interfaces and the byte-exact authenticated HTTP envelope. It
-does not yet claim the SQLite or HTTP server implementations described by the
-one-click install specification.
+concerns outside the transport-neutral SDK. It publishes the stable host
+interfaces, byte-exact authenticated HTTP envelope, and the local SQLite
+durability foundation. Coordinator/handshake adapters, the HTTP server, role
+services, and live deployment remain separate stacked implementation units.
 
 ```ts
 import {
   createDacsHttpEnvelopeV1,
   validateDacsAgentConfig,
 } from "@kynesyslabs/dacs-node";
+import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
 ```
+
+SQLite is an explicit subpath so importing the offline/root host surface never
+loads a native database driver. This keeps the deterministic offline quickstart
+usable in installs where optional dependencies or lifecycle scripts are
+disabled. Live hosts must install the package's optional SQLite dependency;
+the live doctor will fail closed when that adapter is unavailable.
+
+The SQLite database is permanently bound to one mode/profile, actor role,
+authority, SDK version, and Standard revision. It enables WAL with `FULL`
+synchronous durability, uses database-authoritative lease time, and rejects
+known NFS/SMB/shared or consumer-sync locations. It is a local, single-host
+store and must not be placed on a shared volume.
+
+Irreversible effects are reserved under a stable idempotency key before work
+starts. A process loss during a perform lease never makes the effect directly
+performable again: the next worker receives a reconciliation claim. An
+indeterminate reconciliation remains reconciliation-only; only an authoritative
+absence proof permits another perform attempt with the original effect and
+idempotency identities.
+
+The durable effect input and retained result are canonical operational records,
+not a secret vault. Adapters must store only the public binding and the
+sanitized authoritative receipt required for reconciliation; raw wallet keys,
+reusable payment authorization, credentials, and private provider URLs are
+forbidden.
 
 The live profile is never inferred. `offline` and `live-demos` configurations
 are closed, non-interchangeable variants and must select their matching SDK

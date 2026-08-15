@@ -62,17 +62,55 @@ jobs:
         run: |
           mkdir -p host-package-smoke/app
           npm pack --pack-destination host-package-smoke
-           node -e "require('node:fs').rmSync('packages/dacs-node/dist', { recursive: true, force: true })"
-           npm pack --workspace @kynesyslabs/dacs-node --pack-destination host-package-smoke
-           test -f packages/dacs-node/dist/index.js
-           tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/index.js
-           tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/transport/index.js
+          node -e "require('node:fs').rmSync('packages/dacs-node/dist', { recursive: true, force: true })"
+          npm pack --workspace @kynesyslabs/dacs-node --pack-destination host-package-smoke
+          test -f packages/dacs-node/dist/index.js
+          tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/index.js
+          tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/transport/index.js
+          tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/sqlite.js
           node -e "const core=require('./package.json'); const host=require('./packages/dacs-node/package.json'); if (host.peerDependencies?.['@kynesyslabs/dacs'] !== core.version || host.peerDependenciesMeta?.['@kynesyslabs/dacs']?.optional === true) process.exit(1)"
           npm install --prefix host-package-smoke/app --ignore-scripts --strict-peer-deps \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
-          (cd host-package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function') process.exit(1) })")
+          (cd host-package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || !require.resolve('@kynesyslabs/dacs-node/sqlite')) process.exit(1) })")
           node -e "const p=require('./package.json'); if ((p.dependencies && p.dependencies['@kynesyslabs/dacs-node']) || (p.optionalDependencies && p.optionalDependencies['@kynesyslabs/dacs-node']) || (p.peerDependencies && p.peerDependencies['@kynesyslabs/dacs-node'])) process.exit(1)"
+
+      - name: Packed SQLite host smoke
+        run: |
+          mkdir -p host-sqlite-smoke/app
+          npm install --prefix host-sqlite-smoke/app \
+            "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
+            "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
+          (cd host-sqlite-smoke/app && node --input-type=module - <<'NODE'
+          import { mkdtempSync, rmSync } from "node:fs";
+          import { tmpdir } from "node:os";
+          import { join } from "node:path";
+          import {
+            DACS_NODE_OFFLINE_PROFILE,
+          } from "@kynesyslabs/dacs-node";
+          import {
+            openDacsNodeSqliteDatabase,
+          } from "@kynesyslabs/dacs-node/sqlite";
+
+          const root = mkdtempSync(join(tmpdir(), "dacs-packed-sqlite-"));
+          try {
+            const database = await openDacsNodeSqliteDatabase({
+              databasePath: join(root, "buyer.sqlite"),
+              mode: "offline",
+              profile: DACS_NODE_OFFLINE_PROFILE,
+              role: "buyer",
+              authority: "claim:packed-smoke:buyer",
+              sdkVersion: "0.1.0-alpha.0",
+              standardRevision: "packed-smoke",
+            });
+            if (database.diagnostics().quickCheck !== "ok") process.exit(1);
+            database.close();
+          } finally {
+            rmSync(root, { recursive: true, force: true });
+          }
+          NODE
+          )
+          npm audit --prefix host-sqlite-smoke/app --omit=dev
 
       - name: Packed generator clean-project acceptance
         run: |
@@ -88,15 +126,22 @@ jobs:
             generator-smoke/generated-agent --yes --no-install
           test ! -e generator-smoke/generated-agent/package-lock.json
           node -e 'const p=require("./generator-smoke/generated-agent/package.json"); const exact={"@kynesyslabs/dacs":"0.1.0-alpha.0","@kynesyslabs/dacs-node":"0.1.0-alpha.0"}; if(JSON.stringify(p.dependencies)!==JSON.stringify(exact)) process.exit(1)'
-          (cd generator-smoke/generated-agent && npm install --ignore-scripts \
+          (cd generator-smoke/generated-agent && npm install --ignore-scripts --omit=optional \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
-            typescript@5.9.2 @types/node@20.19.1 && npm ci --ignore-scripts)
+            typescript@5.9.2 @types/node@20.19.1 && npm ci --ignore-scripts --omit=optional)
           (cd generator-smoke/generated-agent && npm run typecheck && npm test && npm run dacs:smoke:offline)
           node - <<'NODE'
           const fs = require("node:fs");
           const path = require("node:path");
           const root = path.resolve("generator-smoke/generated-agent");
+          const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          const exact = {
+            "@kynesyslabs/dacs": "0.1.0-alpha.0",
+            "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
+          };
+          if (JSON.stringify(packageJson.dependencies) !== JSON.stringify(exact)) process.exit(1);
+          if (fs.existsSync(path.join(root, "node_modules", "better-sqlite3"))) process.exit(1);
           const files = [];
           const visit = (directory) => {
             for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
