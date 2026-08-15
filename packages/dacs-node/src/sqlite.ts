@@ -547,6 +547,13 @@ CREATE TABLE dacs_coordinator_orders (
   CHECK (updated_at >= created_at)
 ) STRICT, WITHOUT ROWID;
 
+CREATE INDEX dacs_coordinator_orders_runnable_idx
+  ON dacs_coordinator_orders (profile, role, job_id);
+`;
+
+const MIGRATION_3 = `
+DROP INDEX dacs_coordinator_orders_runnable_idx;
+
 CREATE TABLE dacs_coordinator_tracks (
   profile TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -598,9 +605,7 @@ CREATE INDEX dacs_coordinator_tracks_runnable_idx
     profile, role, track, eligible, state, next_attempt_at,
     lease_expires_at, job_id
   );
-`;
 
-const MIGRATION_3 = `
 DROP INDEX dacs_effect_history_effect_idx;
 DROP INDEX dacs_effects_runnable_idx;
 DROP TABLE dacs_effect_history;
@@ -958,58 +963,60 @@ function coordinatorTrackProjectionMatches(
   return canonicalize(retained) === canonicalize(expected);
 }
 
-function assertCoordinatorProjectionSet(
+function coordinatorTrackProjectionSetMatches(
   database: BetterSqlite3.Database,
   profile: CoordinatorProfile,
-  role: FixedPriceX402CoordinatorRole,
-  authority: string,
+  records: readonly Readonly<CoordinatorRecord>[],
+): boolean {
+  if (records.length === 0) return true;
+  const expected = records.flatMap((record) =>
+    coordinatorTrackProjection(profile, record)
+  ).sort((left, right) =>
+    left.job_id.localeCompare(right.job_id) || left.track.localeCompare(right.track)
+  );
+  const retained = database.prepare(`
+    SELECT profile, role, job_id, track, eligible, state, outcome, error_class,
+      generation, attempts, lease_expires_at, next_attempt_at, updated_at
+    FROM dacs_coordinator_tracks
+    WHERE profile = ?
+      AND job_id IN (SELECT value FROM json_each(?))
+    ORDER BY job_id, track
+    LIMIT ?
+  `).all(
+    profile,
+    canonicalize(records.map((record) => record.jobId)),
+    expected.length + 1,
+  ) as CoordinatorTrackRow[];
+  return canonicalize(retained) === canonicalize(expected);
+}
+
+function backfillCoordinatorTrackProjections(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
 ): void {
-  for (const row of database.prepare(`
+  const profile: CoordinatorProfile = options.mode === "offline"
+    ? "offline"
+    : "live-x402";
+  const rows = database.prepare(`
     SELECT * FROM dacs_coordinator_orders ORDER BY profile, role, job_id
-  `).iterate() as IterableIterator<CoordinatorRow>) {
-    if (row.profile !== profile || row.role !== role) {
+  `).all() as CoordinatorRow[];
+  for (const row of rows) {
+    if (row.profile !== profile || row.role !== options.role ||
+        (row.role !== "buyer" && row.role !== "seller")) {
       throw new DacsNodeSqliteError(
-        "coordinator-record-corrupt",
-        "Coordinator record is outside the bound actor profile",
+        "database-logical-corruption",
+        "SQLite coordinator row is outside the bound actor profile",
       );
     }
     const decoded = coordinatorFromRow(row, profile);
-    if (decoded.status !== "ok") {
+    if (decoded.status !== "ok" ||
+        !coordinatorAuthorityMatches(decoded.record, options.authority)) {
       throw new DacsNodeSqliteError(
-        decoded.status === "unsupported"
-          ? "coordinator-version-unsupported"
-          : "coordinator-record-corrupt",
-        decoded.status === "unsupported"
-          ? `Coordinator store version ${decoded.version} is unsupported`
-          : decoded.reason,
+        "database-logical-corruption",
+        "SQLite coordinator record cannot be authenticated for projection migration",
       );
     }
-    if (!coordinatorAuthorityMatches(decoded.record, authority)) {
-      throw new DacsNodeSqliteError(
-        "coordinator-record-corrupt",
-        "Coordinator record is not owned by the database actor authority",
-      );
-    }
-    if (!coordinatorTrackProjectionMatches(database, profile, decoded.record)) {
-      throw new DacsNodeSqliteError(
-        "coordinator-record-corrupt",
-        "Coordinator track projection differs from its authenticated record",
-      );
-    }
-  }
-  const orphan = database.prepare(`
-    SELECT 1 FROM dacs_coordinator_tracks AS tracks
-    LEFT JOIN dacs_coordinator_orders AS orders
-      ON orders.profile = tracks.profile AND orders.role = tracks.role
-      AND orders.job_id = tracks.job_id
-    WHERE orders.job_id IS NULL
-    LIMIT 1
-  `).get();
-  if (orphan !== undefined) {
-    throw new DacsNodeSqliteError(
-      "coordinator-record-corrupt",
-      "Coordinator track projection has no authenticated record",
-    );
+    replaceCoordinatorTrackProjection(database, profile, decoded.record);
   }
 }
 
@@ -1031,6 +1038,86 @@ function exactDataKeys(
       return descriptor?.enumerable === true && "value" in descriptor &&
         descriptor.value !== undefined;
     });
+}
+
+function captureExactData(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Readonly<Record<string, unknown>> | null {
+  if (!exactDataKeys(value, required, optional)) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  return Object.freeze(Object.fromEntries(
+    Reflect.ownKeys(value).map((key) => [key, descriptors[key as string]!.value]),
+  ));
+}
+
+function captureCanonicalData(
+  value: unknown,
+  seen = new WeakSet<object>(),
+  allowUndefined = false,
+): unknown {
+  if (value === undefined && allowUndefined) return undefined;
+  if (value === null || typeof value === "string" || typeof value === "boolean" ||
+      typeof value === "number") return value;
+  if (typeof value !== "object" || nodeTypes.isProxy(value) || seen.has(value)) {
+    throw new DacsNodeSqliteError(
+      "canonical-data-malformed",
+      "SQLite canonical data must be an acyclic own-data JSON value",
+    );
+  }
+  seen.add(value);
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) throw new Error();
+    if (Array.isArray(value)) {
+      if (keys.length !== value.length + 1 || keys.at(-1) !== "length") throw new Error();
+      const retained: unknown[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || descriptor.enumerable !== true || !("value" in descriptor)) {
+          throw new Error();
+        }
+        retained.push(captureCanonicalData(descriptor.value, seen, allowUndefined));
+      }
+      return Object.freeze(retained);
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw new Error();
+    const retained: Record<string, unknown> = {};
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor || descriptor.enumerable !== true || !("value" in descriptor) ||
+          (descriptor.value === undefined && !allowUndefined)) throw new Error();
+      retained[key] = captureCanonicalData(descriptor.value, seen, allowUndefined);
+    }
+    return Object.freeze(retained);
+  } catch (error) {
+    if (error instanceof DacsNodeSqliteError) throw error;
+    throw new DacsNodeSqliteError(
+      "canonical-data-malformed",
+      "SQLite canonical data must contain only enumerable own data properties",
+    );
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function captureEffectLease(value: unknown): Readonly<DacsNodeSqliteEffectLease> | null {
+  const captured = captureExactData(
+    value,
+    ["owner", "generation", "expiresAt", "mode"],
+  );
+  if (!captured || !nonEmpty(captured.owner) || !safeUint(captured.generation) ||
+      !safeUint(captured.expiresAt) ||
+      (captured.mode !== "perform" && captured.mode !== "reconcile")) return null;
+  return Object.freeze({
+    owner: captured.owner,
+    generation: captured.generation,
+    expiresAt: captured.expiresAt,
+    mode: captured.mode,
+  });
 }
 
 function captureCoordinatorResult(value: unknown): FixedPriceX402TrackOperationResult | null {
@@ -1141,7 +1228,7 @@ export function inspectDacsNodeSqliteLocation(
     };
   }
   if (databasePath === ":memory:" || databasePath.startsWith("file:") ||
-      (process.platform === "win32" && databasePath.startsWith("\\\\"))) {
+      databasePath.startsWith("\\\\") || databasePath.startsWith("//")) {
     return {
       status: "blocked",
       databasePath,
@@ -1206,40 +1293,49 @@ function validateOptions(
 ): Required<Omit<DacsNodeSqliteDatabaseOptions, "busyTimeoutMs">> & {
   busyTimeoutMs: number;
 } {
-  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+  const captured = captureExactData(
+    options,
+    ["databasePath", "mode", "profile", "role", "authority"],
+    ["sdkVersion", "standardRevision", "busyTimeoutMs"],
+  );
+  if (!captured) {
     throw new DacsNodeSqliteError("configuration-malformed", "SQLite options are malformed");
   }
-  const expectedProfile = options.mode === "offline"
+  const expectedProfile = captured.mode === "offline"
     ? DACS_NODE_OFFLINE_PROFILE
-    : options.mode === "live-demos"
+    : captured.mode === "live-demos"
       ? DACS_NODE_LIVE_PROFILE
       : undefined;
-  const expectedStandardRevision = options.mode === "offline"
+  const expectedStandardRevision = captured.mode === "offline"
     ? FIXED_PRICE_OFFLINE_STANDARD_REVISION
-    : options.mode === "live-demos"
+    : captured.mode === "live-demos"
       ? FIXED_PRICE_X402_STANDARD_REVISION
       : undefined;
-  const busyTimeoutMs = options.busyTimeoutMs ??
+  const busyTimeoutMs = captured.busyTimeoutMs ??
     DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS;
-  if (expectedProfile === undefined || options.profile !== expectedProfile ||
-      !["buyer", "seller", "verifier"].includes(options.role) ||
-      !nonEmpty(options.authority) || !nonEmpty(options.databasePath) ||
+  if (expectedProfile === undefined || captured.profile !== expectedProfile ||
+      !["buyer", "seller", "verifier"].includes(captured.role as string) ||
+      !nonEmpty(captured.authority) || !nonEmpty(captured.databasePath) ||
       expectedStandardRevision === undefined ||
-      (options.sdkVersion !== undefined && options.sdkVersion !== VERSION) ||
-      (options.standardRevision !== undefined &&
-        options.standardRevision !== expectedStandardRevision) ||
+      (captured.sdkVersion !== undefined && captured.sdkVersion !== VERSION) ||
+      (captured.standardRevision !== undefined &&
+        captured.standardRevision !== expectedStandardRevision) ||
       !safeUint(busyTimeoutMs) || busyTimeoutMs === 0 || busyTimeoutMs > 60_000) {
     throw new DacsNodeSqliteError(
       "configuration-malformed",
       "SQLite options are malformed or profile-incompatible",
     );
   }
-  return {
-    ...options,
+  return Object.freeze({
+    databasePath: captured.databasePath,
+    mode: captured.mode,
+    profile: captured.profile,
+    role: captured.role,
+    authority: captured.authority,
     sdkVersion: VERSION,
     standardRevision: expectedStandardRevision,
     busyTimeoutMs,
-  } as Required<Omit<DacsNodeSqliteDatabaseOptions, "busyTimeoutMs">> & {
+  }) as Required<Omit<DacsNodeSqliteDatabaseOptions, "busyTimeoutMs">> & {
     busyTimeoutMs: number;
   };
 }
@@ -1628,6 +1724,11 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       },
 
       async create(input) {
+        try {
+          input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+        } catch {
+          return { status: "corrupt", reason: "coordinator order is malformed" };
+        }
         if (input.role !== role) {
           return { status: "corrupt", reason: "coordinator role differs from bound store" };
         }
@@ -1714,6 +1815,14 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       },
 
       async listRunnable(input) {
+        try {
+          input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+        } catch {
+          throw new DacsNodeSqliteError(
+            "coordinator-query-malformed",
+            "Coordinator runnable query is malformed",
+          );
+        }
         if (input.role !== role || !Array.isArray(input.tracks) ||
             input.tracks.some((track) => !coordinatorTracks(role).includes(track)) ||
             (input.cursor !== undefined && !nonEmpty(input.cursor)) ||
@@ -1727,7 +1836,6 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         if (input.tracks.length === 0) return { items: [] };
         return readSnapshot(database, () => {
           const now = databaseTime(database);
-          assertCoordinatorProjectionSet(database, profile, role, authority);
           const trackPlaceholders = input.tracks.map(() => "?").join(", ");
           const rows = database.prepare(`
             SELECT orders.* FROM dacs_coordinator_orders AS orders
@@ -1766,7 +1874,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                   : decoded.reason,
               );
             }
-            if (!coordinatorTrackProjectionMatches(database, profile, decoded.record) ||
+            if (!coordinatorAuthorityMatches(decoded.record, authority) ||
                 !input.tracks.some((track) =>
                   coordinatorTrackRunnable(decoded.record, track, now))) {
               throw new DacsNodeSqliteError(
@@ -1776,6 +1884,12 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
             }
             return decoded.record;
           });
+          if (!coordinatorTrackProjectionSetMatches(database, profile, eligible)) {
+            throw new DacsNodeSqliteError(
+              "coordinator-record-corrupt",
+              "Coordinator runnable projection differs from its authenticated record",
+            );
+          }
           const selected = eligible.slice(0, input.limit);
           return {
             items: selected.map(toLive),
@@ -1787,6 +1901,11 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       },
 
       async claim(input) {
+        try {
+          input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+        } catch {
+          return { status: "corrupt", reason: "coordinator claim is malformed" };
+        }
         if (input.role !== role) return { status: "stale" };
         return beginImmediate(database, () => {
           const loaded = loadRecord(input.jobId);
@@ -1844,21 +1963,33 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       },
 
       async isCurrent(input) {
-        if (input.role !== role) return false;
-        const loaded = loadRecord(input.jobId);
-        if (loaded.status !== "ok" || loaded.record.bindingHash !== input.bindingHash) {
+        try {
+          input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+        } catch {
           return false;
         }
-        const retained = loaded.record.tracks[input.track];
-        const now = databaseTime(database);
-        return retained?.state === "running" && retained.lease !== undefined &&
-          retained.lease.owner === input.lease.owner &&
-          retained.lease.generation === input.lease.generation &&
-          retained.lease.expiresAt === input.lease.expiresAt &&
-          retained.lease.expiresAt > now;
+        if (input.role !== role) return false;
+        return readSnapshot(database, () => {
+          const loaded = loadRecord(input.jobId);
+          if (loaded.status !== "ok" || loaded.record.bindingHash !== input.bindingHash) {
+            return false;
+          }
+          const retained = loaded.record.tracks[input.track];
+          const now = databaseTime(database);
+          return retained?.state === "running" && retained.lease !== undefined &&
+            retained.lease.owner === input.lease.owner &&
+            retained.lease.generation === input.lease.generation &&
+            retained.lease.expiresAt === input.lease.expiresAt &&
+            retained.lease.expiresAt > now;
+        });
       },
 
       async record(input) {
+        try {
+          input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+        } catch {
+          return { status: "conflict" };
+        }
         if (input.role !== role) return { status: "stale" };
         return beginImmediate(database, () => {
           const loaded = loadRecord(input.jobId);
@@ -1916,6 +2047,11 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       },
 
       async requeue(input) {
+        try {
+          input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+        } catch {
+          return { status: "conflict" };
+        }
         if (input.role !== role) return { status: "stale" };
         return beginImmediate(database, () => {
           const loaded = loadRecord(input.jobId);
@@ -1970,24 +2106,37 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     reservation?: Readonly<DacsNodeSqliteReservation>;
   }> {
     this.assertOpen();
-    if (!RESERVATION_KINDS.has(input.kind) || !nonEmpty(input.identity) ||
-        !hash(input.bindingHash) ||
-        (input.payloadHash !== undefined && !hash(input.payloadHash)) ||
-        (input.jobId !== undefined && !isCanonicalJobId(input.jobId))) {
+    const captured = captureExactData(
+      input,
+      ["kind", "identity", "bindingHash"],
+      ["payloadHash", "jobId"],
+    );
+    if (!captured ||
+        !RESERVATION_KINDS.has(captured.kind as DacsNodeSqliteReservationKind) ||
+        !nonEmpty(captured.identity) || !hash(captured.bindingHash) ||
+        (captured.payloadHash !== undefined && !hash(captured.payloadHash)) ||
+        (captured.jobId !== undefined && !isCanonicalJobId(captured.jobId))) {
       throw new DacsNodeSqliteError(
         "reservation-input-malformed",
         "SQLite reservation input is malformed",
       );
     }
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteReservationKind,
+      identity: captured.identity,
+      bindingHash: captured.bindingHash,
+      ...(captured.payloadHash === undefined ? {} : { payloadHash: captured.payloadHash }),
+      ...(captured.jobId === undefined ? {} : { jobId: captured.jobId }),
+    });
     return beginImmediate(this.database, () => {
       const found = this.database.prepare(`
         SELECT * FROM dacs_reservations WHERE kind = ? AND identity = ?
-      `).get(input.kind, input.identity) as ReservationRow | undefined;
+      `).get(retained.kind, retained.identity) as ReservationRow | undefined;
       if (found) {
         const reservation = reservationFromRow(found);
-        const same = reservation.bindingHash === input.bindingHash &&
-          reservation.payloadHash === input.payloadHash &&
-          reservation.jobId === input.jobId;
+        const same = reservation.bindingHash === retained.bindingHash &&
+          reservation.payloadHash === retained.payloadHash &&
+          reservation.jobId === retained.jobId;
         return same
           ? { status: "existing" as const, reservation: clone(reservation) }
           : { status: "conflict" as const };
@@ -1998,17 +2147,17 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           (kind, identity, binding_hash, payload_hash, job_id, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(
-        input.kind,
-        input.identity,
-        input.bindingHash,
-        input.payloadHash ?? null,
-        input.jobId ?? null,
+        retained.kind,
+        retained.identity,
+        retained.bindingHash,
+        retained.payloadHash ?? null,
+        retained.jobId ?? null,
         createdAt,
       );
       return {
         status: "created" as const,
         reservation: {
-          ...clone(input),
+          ...retained,
           createdAt,
         },
       };
@@ -2044,14 +2193,29 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     record?: Readonly<DacsNodeSqliteEffectRecord>;
   }> {
     this.assertOpen();
-    validateEffectIdentity(input);
-    if (!nonEmpty(input.idempotencyKey) ||
-        (input.jobId !== undefined && !isCanonicalJobId(input.jobId))) {
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "input", "idempotencyKey"],
+      ["jobId"],
+    );
+    if (!captured) {
+      throw new DacsNodeSqliteError("effect-input-malformed", "SQLite effect input is malformed");
+    }
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      idempotencyKey: captured.idempotencyKey as string,
+      ...(captured.jobId === undefined ? {} : { jobId: captured.jobId as string }),
+    });
+    validateEffectIdentity(retained);
+    if (!nonEmpty(retained.idempotencyKey) ||
+        (retained.jobId !== undefined && !isCanonicalJobId(retained.jobId))) {
       throw new DacsNodeSqliteError("effect-input-malformed", "SQLite effect input is malformed");
     }
     let inputJson: string;
     try {
-      inputJson = canonicalize(input.input);
+      inputJson = canonicalize(captureCanonicalData(captured.input));
     } catch {
       throw new DacsNodeSqliteError(
         "effect-input-malformed",
@@ -2060,13 +2224,13 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     }
     const inputHash = sha256Hex(inputJson);
     return beginImmediate(this.database, () => {
-      const existing = this.effectRow(input.kind, input.effectId);
+      const existing = this.effectRow(retained.kind, retained.effectId);
       if (existing) {
         const record = this.validatedEffectRecord(existing);
-        const same = record.bindingHash === input.bindingHash &&
+        const same = record.bindingHash === retained.bindingHash &&
           record.inputHash === inputHash &&
-          record.idempotencyKey === input.idempotencyKey &&
-          record.jobId === input.jobId;
+          record.idempotencyKey === retained.idempotencyKey &&
+          record.jobId === retained.jobId;
         return same
           ? { status: "existing" as const, record: clone(record) }
           : { status: "conflict" as const };
@@ -2074,17 +2238,18 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       const duplicateKey = this.database.prepare(`
         SELECT effect_id FROM dacs_effects
         WHERE effect_kind = ? AND idempotency_key = ?
-      `).get(input.kind, input.idempotencyKey) as { effect_id: string } | undefined;
+      `).get(retained.kind, retained.idempotencyKey) as { effect_id: string } | undefined;
       if (duplicateKey) return { status: "conflict" as const };
 
-      const reservationKind = reservationKindForEffect(input.kind);
+      const reservationKind = reservationKindForEffect(retained.kind);
       const reservation = this.database.prepare(`
         SELECT * FROM dacs_reservations WHERE kind = ? AND identity = ?
-      `).get(reservationKind, input.effectId) as ReservationRow | undefined;
+      `).get(reservationKind, retained.effectId) as ReservationRow | undefined;
       if (reservation) {
-        const retained = reservationFromRow(reservation);
-        if (retained.bindingHash !== input.bindingHash ||
-            retained.payloadHash !== inputHash || retained.jobId !== input.jobId) {
+        const existingReservation = reservationFromRow(reservation);
+        if (existingReservation.bindingHash !== retained.bindingHash ||
+            existingReservation.payloadHash !== inputHash ||
+            existingReservation.jobId !== retained.jobId) {
           return { status: "conflict" as const };
         }
       }
@@ -2096,10 +2261,10 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           VALUES (?, ?, ?, ?, ?, ?)
         `).run(
           reservationKind,
-          input.effectId,
-          input.bindingHash,
+          retained.effectId,
+          retained.bindingHash,
           inputHash,
-          input.jobId ?? null,
+          retained.jobId ?? null,
           now,
         );
       }
@@ -2112,37 +2277,39 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intent', NULL, 0, 0, NULL, NULL, NULL,
           NULL, NULL, NULL, NULL, ?, ?)
       `).run(
-        input.kind,
-        input.effectId,
-        input.jobId ?? null,
-        input.bindingHash,
+        retained.kind,
+        retained.effectId,
+        retained.jobId ?? null,
+        retained.bindingHash,
         inputHash,
         inputJson,
-        input.idempotencyKey,
+        retained.idempotencyKey,
         effectIdentityHash({
-          kind: input.kind,
-          effectId: input.effectId,
-          ...(input.jobId === undefined ? {} : { jobId: input.jobId }),
-          bindingHash: input.bindingHash,
+          kind: retained.kind,
+          effectId: retained.effectId,
+          ...(retained.jobId === undefined ? {} : { jobId: retained.jobId }),
+          bindingHash: retained.bindingHash,
           inputHash,
-          idempotencyKey: input.idempotencyKey,
+          idempotencyKey: retained.idempotencyKey,
         }),
         now,
         now,
       );
-      this.appendEffectHistory(input.kind, input.effectId, "intent-created", 0, now, {
+      this.appendEffectHistory(retained.kind, retained.effectId, "intent-created", 0, now, {
         ...effectIdentityDetails({
-          kind: input.kind,
-          effectId: input.effectId,
-          ...(input.jobId === undefined ? {} : { jobId: input.jobId }),
-          bindingHash: input.bindingHash,
+          kind: retained.kind,
+          effectId: retained.effectId,
+          ...(retained.jobId === undefined ? {} : { jobId: retained.jobId }),
+          bindingHash: retained.bindingHash,
           inputHash,
-          idempotencyKey: input.idempotencyKey,
+          idempotencyKey: retained.idempotencyKey,
         }),
       });
       return {
         status: "created" as const,
-        record: clone(this.validatedEffectRecord(this.effectRow(input.kind, input.effectId)!)),
+        record: clone(this.validatedEffectRecord(
+          this.effectRow(retained.kind, retained.effectId)!,
+        )),
       };
     });
   }
@@ -2155,8 +2322,10 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     if (!EFFECT_KINDS.has(kind) || !nonEmpty(effectId)) {
       throw new DacsNodeSqliteError("effect-input-malformed", "SQLite effect lookup is malformed");
     }
-    const row = this.effectRow(kind, effectId);
-    return row ? clone(this.validatedEffectRecord(row)) : undefined;
+    return readSnapshot(this.database, () => {
+      const row = this.effectRow(kind, effectId);
+      return row ? clone(this.validatedEffectRecord(row)) : undefined;
+    });
   }
 
   claimEffect(input: Readonly<{
@@ -2167,16 +2336,30 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     leaseDurationMs: number;
   }>): DacsNodeSqliteEffectClaim {
     this.assertOpen();
-    validateEffectIdentity(input);
-    if (!nonEmpty(input.owner) || !safeUint(input.leaseDurationMs) ||
-        input.leaseDurationMs === 0) {
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "owner", "leaseDurationMs"],
+    );
+    if (!captured) {
+      throw new DacsNodeSqliteError("effect-claim-malformed", "SQLite effect claim is malformed");
+    }
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      owner: captured.owner as string,
+      leaseDurationMs: captured.leaseDurationMs as number,
+    });
+    validateEffectIdentity(retained);
+    if (!nonEmpty(retained.owner) || !safeUint(retained.leaseDurationMs) ||
+        retained.leaseDurationMs === 0) {
       throw new DacsNodeSqliteError("effect-claim-malformed", "SQLite effect claim is malformed");
     }
     return beginImmediate(this.database, () => {
-      const row = this.effectRow(input.kind, input.effectId);
+      const row = this.effectRow(retained.kind, retained.effectId);
       if (!row) return { status: "missing" as const };
       const current = this.validatedEffectRecord(row);
-      if (current.bindingHash !== input.bindingHash) return { status: "stale" as const };
+      if (current.bindingHash !== retained.bindingHash) return { status: "stale" as const };
       if (current.state === "completed") {
         return { status: "completed" as const, record: clone(current) };
       }
@@ -2197,7 +2380,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       const mode: "perform" | "reconcile" = current.state === "intent"
         ? "perform"
         : "reconcile";
-      const expiresAt = now + input.leaseDurationMs;
+      const expiresAt = now + retained.leaseDurationMs;
       if (!Number.isSafeInteger(expiresAt)) {
         throw new DacsNodeSqliteError("effect-claim-malformed", "SQLite lease expiry overflows");
       }
@@ -2218,18 +2401,26 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         mode,
         generation,
         current.attempts + 1,
-        input.owner,
+        retained.owner,
         expiresAt,
         Math.max(current.updatedAt, now),
-        input.kind,
-        input.effectId,
+        retained.kind,
+        retained.effectId,
         current.generation,
       );
-      this.appendEffectHistory(input.kind, input.effectId, `${mode}-claimed`, generation, now, {
-        owner: input.owner,
+      this.appendEffectHistory(
+        retained.kind,
+        retained.effectId,
+        `${mode}-claimed`,
+        generation,
+        now,
+        {
+        owner: retained.owner,
         expiresAt,
       });
-      const record = this.validatedEffectRecord(this.effectRow(input.kind, input.effectId)!);
+      const record = this.validatedEffectRecord(
+        this.effectRow(retained.kind, retained.effectId)!,
+      );
       return {
         status: "acquired" as const,
         mode,
@@ -2246,13 +2437,27 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     lease: Readonly<DacsNodeSqliteEffectLease>;
   }>): boolean {
     this.assertOpen();
-    validateEffectIdentity(input);
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "lease"],
+    );
+    const lease = captured ? captureEffectLease(captured.lease) : null;
+    if (!captured || !lease) {
+      throw new DacsNodeSqliteError("effect-input-malformed", "SQLite effect input is malformed");
+    }
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      lease,
+    });
+    validateEffectIdentity(retained);
     return readSnapshot(this.database, () => {
-      const row = this.effectRow(input.kind, input.effectId);
+      const row = this.effectRow(retained.kind, retained.effectId);
       if (!row) return false;
       const record = this.validatedEffectRecord(row);
-      return record.bindingHash === input.bindingHash &&
-        exactLease(record, input.lease, databaseTime(this.database));
+      return record.bindingHash === retained.bindingHash &&
+        exactLease(record, retained.lease, databaseTime(this.database));
     });
   }
 
@@ -2264,10 +2469,27 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     result: unknown;
   }>): DacsNodeSqliteEffectWrite {
     this.assertOpen();
-    validateEffectIdentity(input);
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "lease", "result"],
+    );
+    const lease = captured ? captureEffectLease(captured.lease) : null;
+    if (!captured || !lease) {
+      throw new DacsNodeSqliteError(
+        "effect-result-malformed",
+        "SQLite effect completion is malformed",
+      );
+    }
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      lease,
+    });
+    validateEffectIdentity(retained);
     let resultJson: string;
     try {
-      resultJson = canonicalize(input.result);
+      resultJson = canonicalize(captureCanonicalData(captured.result));
     } catch {
       throw new DacsNodeSqliteError(
         "effect-result-malformed",
@@ -2275,7 +2497,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       );
     }
     return this.completeEffect(
-      input,
+      retained,
       resultJson,
       sha256Hex(resultJson),
       "effect-completed",
@@ -2291,35 +2513,49 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     retryAt?: number;
   }>): DacsNodeSqliteEffectWrite {
     this.assertOpen();
-    validateEffectIdentity(input);
-    if (!reasonCode(input.reasonCode) ||
-        (input.retryAt !== undefined && !safeUint(input.retryAt))) {
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "lease", "reasonCode"],
+      ["retryAt"],
+    );
+    const lease = captured ? captureEffectLease(captured.lease) : null;
+    if (!captured || !lease || !reasonCode(captured.reasonCode) ||
+        (captured.retryAt !== undefined && !safeUint(captured.retryAt))) {
       throw new DacsNodeSqliteError(
         "effect-result-malformed",
         "SQLite ambiguous effect result is malformed",
       );
     }
-    return this.transitionCurrentEffect(input, ({ current, now }) => {
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      lease,
+      reasonCode: captured.reasonCode,
+      ...(captured.retryAt === undefined ? {} : { retryAt: captured.retryAt }),
+    });
+    validateEffectIdentity(retained);
+    return this.transitionCurrentEffect(retained, ({ current, now }) => {
       this.database.prepare(`
         UPDATE dacs_effects SET
           state = 'reconciliation-required', active_mode = NULL, owner = NULL,
           lease_expires_at = NULL, retry_at = ?, reason_code = ?, updated_at = ?
         WHERE effect_kind = ? AND effect_id = ? AND generation = ?
       `).run(
-        input.retryAt ?? null,
-        input.reasonCode,
+        retained.retryAt ?? null,
+        retained.reasonCode,
         Math.max(current.updatedAt, now),
-        input.kind,
-        input.effectId,
+        retained.kind,
+        retained.effectId,
         current.generation,
       );
       this.appendEffectHistory(
-        input.kind,
-        input.effectId,
+        retained.kind,
+        retained.effectId,
         "reconciliation-required",
         current.generation,
         now,
-        { reasonCode: input.reasonCode, retryAt: input.retryAt ?? null },
+        { reasonCode: retained.reasonCode, retryAt: retained.retryAt ?? null },
       );
     });
   }
@@ -2340,19 +2576,31 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     >;
   }>): DacsNodeSqliteEffectWrite {
     this.assertOpen();
-    validateEffectIdentity(input);
-    if (input.result === null || typeof input.result !== "object" ||
-        Array.isArray(input.result)) {
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "lease", "result"],
+    );
+    const lease = captured ? captureEffectLease(captured.lease) : null;
+    if (!captured || !lease) {
       throw new DacsNodeSqliteError(
         "effect-result-malformed",
         "SQLite reconciliation result is malformed",
       );
     }
-    if (input.lease.mode !== "reconcile") return { status: "conflict" };
-    if (input.result.disposition === "performed") {
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      lease,
+    });
+    validateEffectIdentity(retained);
+    if (lease.mode !== "reconcile") return { status: "conflict" };
+
+    const performed = captureExactData(captured.result, ["disposition", "result"]);
+    if (performed?.disposition === "performed") {
       let resultJson: string;
       try {
-        resultJson = canonicalize(input.result.result);
+        resultJson = canonicalize(captureCanonicalData(performed.result));
       } catch {
         throw new DacsNodeSqliteError(
           "effect-result-malformed",
@@ -2360,21 +2608,22 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         );
       }
       return this.completeEffect(
-        input,
+        retained,
         resultJson,
         sha256Hex(resultJson),
         "reconciliation-performed",
       );
     }
-    if (input.result.disposition === "absent") {
-      const absenceProofHash = input.result.absenceProofHash;
+    const absent = captureExactData(captured.result, ["disposition", "absenceProofHash"]);
+    if (absent?.disposition === "absent") {
+      const absenceProofHash = absent.absenceProofHash;
       if (!hash(absenceProofHash)) {
         throw new DacsNodeSqliteError(
           "effect-result-malformed",
           "SQLite absence proof is malformed",
         );
       }
-      return this.transitionCurrentEffect(input, ({ current, now }) => {
+      return this.transitionCurrentEffect(retained, ({ current, now }) => {
         this.database.prepare(`
           UPDATE dacs_effects SET
             state = 'intent', active_mode = NULL, owner = NULL,
@@ -2384,13 +2633,13 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         `).run(
           absenceProofHash,
           Math.max(current.updatedAt, now),
-          input.kind,
-          input.effectId,
+          retained.kind,
+          retained.effectId,
           current.generation,
         );
         this.appendEffectHistory(
-          input.kind,
-          input.effectId,
+          retained.kind,
+          retained.effectId,
           "reconciliation-absent",
           current.generation,
           now,
@@ -2398,13 +2647,17 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         );
       });
     }
-    if (input.result.disposition !== "indeterminate") {
+    const indeterminate = captureExactData(
+      captured.result,
+      ["disposition", "reasonCode"],
+      ["retryAt"],
+    );
+    if (indeterminate?.disposition !== "indeterminate") {
       throw new DacsNodeSqliteError(
         "effect-result-malformed",
         "SQLite reconciliation result is malformed",
       );
     }
-    const indeterminate = input.result;
     if (!reasonCode(indeterminate.reasonCode) ||
         (indeterminate.retryAt !== undefined && !safeUint(indeterminate.retryAt))) {
       throw new DacsNodeSqliteError(
@@ -2412,7 +2665,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         "SQLite reconciliation result is malformed",
       );
     }
-    return this.transitionCurrentEffect(input, ({ current, now }) => {
+    return this.transitionCurrentEffect(retained, ({ current, now }) => {
       this.database.prepare(`
         UPDATE dacs_effects SET
           state = 'reconciliation-required', active_mode = NULL, owner = NULL,
@@ -2422,13 +2675,13 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         indeterminate.retryAt ?? null,
         indeterminate.reasonCode,
         Math.max(current.updatedAt, now),
-        input.kind,
-        input.effectId,
+        retained.kind,
+        retained.effectId,
         current.generation,
       );
       this.appendEffectHistory(
-        input.kind,
-        input.effectId,
+        retained.kind,
+        retained.effectId,
         "reconciliation-indeterminate",
         current.generation,
         now,
@@ -2445,33 +2698,45 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     reasonCode: string;
   }>): DacsNodeSqliteEffectWrite {
     this.assertOpen();
-    validateEffectIdentity(input);
-    if (!reasonCode(input.reasonCode)) {
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "lease", "reasonCode"],
+    );
+    const lease = captured ? captureEffectLease(captured.lease) : null;
+    if (!captured || !lease || !reasonCode(captured.reasonCode)) {
       throw new DacsNodeSqliteError(
         "effect-result-malformed",
         "SQLite operator-action result is malformed",
       );
     }
-    return this.transitionCurrentEffect(input, ({ current, now }) => {
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      lease,
+      reasonCode: captured.reasonCode,
+    });
+    validateEffectIdentity(retained);
+    return this.transitionCurrentEffect(retained, ({ current, now }) => {
       this.database.prepare(`
         UPDATE dacs_effects SET
           state = 'operator-action', active_mode = NULL, owner = NULL,
           lease_expires_at = NULL, retry_at = NULL, reason_code = ?, updated_at = ?
         WHERE effect_kind = ? AND effect_id = ? AND generation = ?
       `).run(
-        input.reasonCode,
+        retained.reasonCode,
         Math.max(current.updatedAt, now),
-        input.kind,
-        input.effectId,
+        retained.kind,
+        retained.effectId,
         current.generation,
       );
       this.appendEffectHistory(
-        input.kind,
-        input.effectId,
+        retained.kind,
+        retained.effectId,
         "operator-action-required",
         current.generation,
         now,
-        { reasonCode: input.reasonCode },
+        { reasonCode: retained.reasonCode },
       );
     });
   }
@@ -2835,9 +3100,20 @@ function verifyMetadata(
     );
   }
   if (row.mode !== options.mode || row.profile !== options.profile ||
-      row.role !== options.role || row.authority !== options.authority ||
-      row.sdk_version !== options.sdkVersion ||
+      row.role !== options.role || row.authority !== options.authority) {
+    throw new DacsNodeSqliteError(
+      "database-binding-mismatch",
+      "SQLite database is bound to a different profile, actor, or supported revision",
+    );
+  }
+  if (row.sdk_version !== options.sdkVersion ||
       row.standard_revision !== options.standardRevision) {
+    if (version < DACS_NODE_SQLITE_SCHEMA_VERSION) {
+      throw new DacsNodeSqliteError(
+        "database-legacy-metadata-unsupported",
+        "Legacy SQLite metadata does not prove the exact SDK and Standard revision required for migration",
+      );
+    }
     throw new DacsNodeSqliteError(
       "database-binding-mismatch",
       "SQLite database is bound to a different profile, actor, or supported revision",
@@ -3161,10 +3437,30 @@ function verifyLogicalRows(
         const decoded = coordinatorFromRow(row, expectedProfile);
         if (decoded.status !== "ok" ||
             !coordinatorAuthorityMatches(decoded.record, options.authority) ||
-            !coordinatorTrackProjectionMatches(database, expectedProfile, decoded.record)) {
+            (version >= 3 && !coordinatorTrackProjectionMatches(
+              database,
+              expectedProfile,
+              decoded.record,
+            ))) {
           throw new DacsNodeSqliteError(
             "database-logical-corruption",
             "SQLite coordinator record or track projection is corrupt",
+          );
+        }
+      }
+      if (version >= 3) {
+        const orphan = database.prepare(`
+          SELECT 1 FROM dacs_coordinator_tracks AS tracks
+          LEFT JOIN dacs_coordinator_orders AS orders
+            ON orders.profile = tracks.profile AND orders.role = tracks.role
+            AND orders.job_id = tracks.job_id
+          WHERE orders.job_id IS NULL
+          LIMIT 1
+        `).get();
+        if (orphan !== undefined) {
+          throw new DacsNodeSqliteError(
+            "database-logical-corruption",
+            "SQLite coordinator track projection has no authenticated record",
           );
         }
       }
@@ -3264,6 +3560,7 @@ function initializeEmptyDatabase(
     database.exec(MIGRATION_1);
     database.exec(MIGRATION_2);
     database.exec(MIGRATION_3);
+    backfillCoordinatorTrackProjections(database, options);
     database.prepare(`
       INSERT INTO dacs_store_metadata (
         singleton, schema_version, mode, profile, role, authority,
@@ -3354,6 +3651,7 @@ function migrateV1Database(
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_2);
     database.exec(MIGRATION_3);
+    backfillCoordinatorTrackProjections(database, options);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
@@ -3383,6 +3681,7 @@ function migrateV2Database(
     `).get() as { applied_at: number };
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_3);
+    backfillCoordinatorTrackProjections(database, options);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);

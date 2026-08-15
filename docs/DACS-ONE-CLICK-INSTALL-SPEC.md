@@ -485,7 +485,9 @@ The initial host kit MUST provide a SQLite implementation with:
 SQLite support is local and single-host. Its database and WAL files MUST reside
 on a local filesystem supported by SQLite locking. The host kit MUST refuse or
 prominently block known network/shared mounts, including NFS, SMB/CIFS and
-consumer file-synchronization directories. Two containers on the same host MAY
+consumer file-synchronization directories. Both Windows UNC spellings
+(`\\server\share` and `//server/share`) MUST be refused on every host platform.
+Two containers on the same host MAY
 share one actor database only through a single designated database owner;
 buyer and seller never share a database. Multi-host deployments MUST use a
 separately reviewed external transactional-store adapter and are outside the
@@ -507,6 +509,10 @@ work.
 Schema migration MUST be forward-only during normal startup. The installer MUST
 back up the database before migration and MUST refuse startup if the on-disk
 schema is newer than the runtime supports.
+Historical migration definitions MUST remain immutable. A legacy store whose
+persisted SDK or Standard revision is not an exact supported runtime binding
+MUST be refused before backup or mutation; a host MUST NOT relabel or claim to
+have migrated data whose compatibility it cannot establish.
 
 ## 12. Authenticated transport requirements
 

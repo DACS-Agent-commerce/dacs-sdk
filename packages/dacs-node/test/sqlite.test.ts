@@ -236,6 +236,31 @@ describe("DACS Node SQLite durability foundation", () => {
     raw.close();
   }
 
+  function createHistoricalV2Database(
+    databasePath: string,
+    metadata: Readonly<{ sdkVersion: string; standardRevision: string }>,
+  ): void {
+    const raw = new BetterSqlite3(databasePath);
+    raw.exec(readFileSync(
+      new URL("./fixtures/sqlite-v2-811a7dac.sql", import.meta.url),
+      "utf8",
+    ));
+    raw.prepare(`
+      INSERT INTO dacs_store_metadata (
+        singleton, schema_version, mode, profile, role, authority,
+        sdk_version, standard_revision, created_at
+      ) VALUES (1, 2, 'offline', ?, 'buyer', 'claim:buyer:primary', ?, ?, 1)
+    `).run(
+      DACS_NODE_OFFLINE_PROFILE,
+      metadata.sdkVersion,
+      metadata.standardRevision,
+    );
+    raw.exec(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (1, 1), (2, 1);
+    `);
+    raw.close();
+  }
+
   afterEach(() => {
     for (const database of databases.splice(0)) database.close();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -291,6 +316,132 @@ describe("DACS Node SQLite durability foundation", () => {
       standardRevision: "consumer-label" as typeof FIXED_PRICE_OFFLINE_STANDARD_REVISION,
     })).rejects.toMatchObject({ reasonCode: "configuration-malformed" });
     expect(existsSync(rejectedPath)).toBe(false);
+  });
+
+  it("captures options and public write inputs without evaluating accessors or proxies", async () => {
+    const root = temporaryRoot();
+    let optionReads = 0;
+    const accessorOptions = {
+      get databasePath() {
+        optionReads += 1;
+        return join(root, "accessor.sqlite");
+      },
+      mode: "offline",
+      profile: DACS_NODE_OFFLINE_PROFILE,
+      role: "buyer",
+      authority: "claim:buyer:primary",
+    } as unknown as DacsNodeSqliteDatabaseOptions;
+    await expect(openDacsNodeSqliteDatabase(accessorOptions)).rejects.toMatchObject({
+      reasonCode: "configuration-malformed",
+    });
+    expect(optionReads).toBe(0);
+
+    let proxyReads = 0;
+    const proxiedOptions = new Proxy(options(join(root, "proxy.sqlite")), {
+      get(target, property, receiver) {
+        proxyReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expect(openDacsNodeSqliteDatabase(proxiedOptions)).rejects.toMatchObject({
+      reasonCode: "configuration-malformed",
+    });
+    expect(proxyReads).toBe(0);
+
+    const database = await open(join(root, "buyer.sqlite"));
+    let identityReads = 0;
+    const reservation = {
+      kind: "message",
+      get identity() {
+        identityReads += 1;
+        return "message:accessor";
+      },
+      bindingHash: BINDING_HASH,
+    } as const;
+    expect(() => database.reserveIdentity(reservation)).toThrowError(
+      expect.objectContaining({ reasonCode: "reservation-input-malformed" }),
+    );
+    expect(identityReads).toBe(0);
+
+    let amountReads = 0;
+    const effectInput = {
+      get amount() {
+        amountReads += 1;
+        return "1";
+      },
+      asset: "USDC",
+    };
+    expect(() => database.putEffectIntent({
+      kind: "payment",
+      effectId: "payment:accessor",
+      bindingHash: BINDING_HASH,
+      input: effectInput,
+      idempotencyKey: "payment:idempotency:accessor",
+    })).toThrowError(expect.objectContaining({ reasonCode: "effect-input-malformed" }));
+    expect(amountReads).toBe(0);
+
+    const intent = {
+      kind: "payment" as const,
+      effectId: "payment:write-accessor",
+      bindingHash: BINDING_HASH,
+      input: { amount: "1", asset: "USDC" },
+      idempotencyKey: "payment:idempotency:write-accessor",
+    };
+    expect(database.putEffectIntent(intent)).toMatchObject({ status: "created" });
+    const claim = database.claimEffect({
+      kind: intent.kind,
+      effectId: intent.effectId,
+      bindingHash: intent.bindingHash,
+      owner: "worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected effect claim");
+    let resultReads = 0;
+    expect(() => database.recordEffectCompleted({
+      kind: intent.kind,
+      effectId: intent.effectId,
+      bindingHash: intent.bindingHash,
+      lease: claim.lease,
+      result: {
+        get transactionHash() {
+          resultReads += 1;
+          return "transaction";
+        },
+      },
+    })).toThrowError(expect.objectContaining({ reasonCode: "effect-result-malformed" }));
+    expect(resultReads).toBe(0);
+
+    let leaseReads = 0;
+    const accessorLease = {
+      get owner() {
+        leaseReads += 1;
+        return claim.lease.owner;
+      },
+      generation: claim.lease.generation,
+      expiresAt: claim.lease.expiresAt,
+      mode: claim.lease.mode,
+    };
+    expect(() => database.recordEffectAmbiguous({
+      kind: intent.kind,
+      effectId: intent.effectId,
+      bindingHash: intent.bindingHash,
+      lease: accessorLease,
+      reasonCode: "ambiguous",
+    })).toThrowError(expect.objectContaining({ reasonCode: "effect-result-malformed" }));
+    expect(leaseReads).toBe(0);
+
+    let coordinatorReads = 0;
+    const coordinatorInput = {
+      get role() {
+        coordinatorReads += 1;
+        return "buyer" as const;
+      },
+      order: offlineOrder(),
+      bindingHash: fixedPriceOfflineOrderBindingHash(offlineOrder()),
+    };
+    await expect(database.createOfflineCoordinatorStore("buyer").create(coordinatorInput))
+      .resolves.toMatchObject({ status: "corrupt" });
+    expect(coordinatorReads).toBe(0);
   });
 
   it("reports a busy FULL checkpoint instead of treating a partial checkpoint as success", async () => {
@@ -877,6 +1028,9 @@ describe("DACS Node SQLite durability foundation", () => {
     `);
     for (const object of preProofSql) raw.exec(object.sql);
     raw.exec(`
+      DROP TABLE dacs_coordinator_tracks;
+      CREATE INDEX dacs_coordinator_orders_runnable_idx
+        ON dacs_coordinator_orders (profile, role, job_id);
       DELETE FROM dacs_migrations WHERE version = 3;
       UPDATE dacs_store_metadata SET schema_version = 2 WHERE singleton = 1;
       PRAGMA user_version = 2;
@@ -888,6 +1042,35 @@ describe("DACS Node SQLite durability foundation", () => {
       .toMatchObject({ status: "ok", record: { buyer: BUYER } });
     expect(readdirSync(root).filter((name) => name.includes(".backup-v2-")))
       .toHaveLength(1);
+  });
+
+  it("migrates the immutable public v2 schema only with exact supported metadata", async () => {
+    const root = temporaryRoot();
+    const supportedPath = join(root, "historical-supported.sqlite");
+    createHistoricalV2Database(supportedPath, {
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+    });
+    const migrated = await open(supportedPath);
+    expect(migrated.diagnostics()).toMatchObject({ schemaVersion: 3 });
+    expect(readdirSync(root).filter((name) =>
+      name.startsWith("historical-supported.sqlite.backup-v2-")
+    )).toHaveLength(1);
+
+    const unsupportedPath = join(root, "historical-unsupported.sqlite");
+    createHistoricalV2Database(unsupportedPath, {
+      sdkVersion: "0.1.0-alpha.0",
+      standardRevision: "standard-test-revision",
+    });
+    const before = readFileSync(unsupportedPath);
+    await expect(openDacsNodeSqliteDatabase(options(unsupportedPath)))
+      .rejects.toMatchObject({
+        reasonCode: "database-legacy-metadata-unsupported",
+      });
+    expect(readFileSync(unsupportedPath).equals(before)).toBe(true);
+    expect(readdirSync(root).some((name) =>
+      name.startsWith("historical-unsupported.sqlite.backup-v2-")
+    )).toBe(false);
   });
 
   it("resumes the live coordinator DAG from durable role-local state", async () => {
@@ -1009,11 +1192,23 @@ describe("DACS Node SQLite durability foundation", () => {
       role: "buyer",
       tracks: ["payment"],
       limit: 1,
-    })).rejects.toMatchObject({ reasonCode: "coordinator-record-corrupt" });
+    })).resolves.toMatchObject({ items: [{ jobId: THIRD_JOB_ID }] });
     expect(await store.load("buyer", OTHER_JOB_ID)).toMatchObject({
       status: "corrupt",
       reason: expect.stringContaining("track projection"),
     });
+    const selectedRaw = new BetterSqlite3(databasePath);
+    selectedRaw.prepare(`
+      UPDATE dacs_coordinator_tracks SET generation = 1, attempts = 1
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+        AND track = 'payment'
+    `).run(THIRD_JOB_ID);
+    selectedRaw.close();
+    await expect(store.listRunnable({
+      role: "buyer",
+      tracks: ["payment"],
+      limit: 1,
+    })).rejects.toMatchObject({ reasonCode: "coordinator-record-corrupt" });
   });
 
   it("loads each coordinator record and projection from one SQLite snapshot", async () => {
@@ -1151,6 +1346,67 @@ describe("DACS Node SQLite durability foundation", () => {
       tracks: ["agreement"],
       limit: 1,
     })).toEqual({ items: [] });
+  });
+
+  it("validates an effect row, reservation, and history from one SQLite snapshot", async () => {
+    const databasePath = join(temporaryRoot(), "effect-snapshot.sqlite");
+    const first = await open(databasePath);
+    const second = await open(databasePath);
+    const intent = {
+      kind: "payment" as const,
+      effectId: "payment:snapshot",
+      bindingHash: BINDING_HASH,
+      input: { amount: "1", asset: "USDC" },
+      idempotencyKey: "payment:idempotency:snapshot",
+      jobId: JOB_ID,
+    };
+    expect(first.putEffectIntent(intent)).toMatchObject({ status: "created" });
+
+    interface InstrumentedStatement {
+      get(...parameters: unknown[]): unknown;
+    }
+    interface InstrumentedDatabase {
+      prepare(source: string): InstrumentedStatement;
+    }
+    const internal = (first as unknown as { database: InstrumentedDatabase }).database;
+    const retainedPrepare = internal.prepare.bind(internal);
+    let claim: ReturnType<DacsNodeSqliteDatabase["claimEffect"]> | undefined;
+    let intercepted = false;
+    internal.prepare = (source) => {
+      const statement = retainedPrepare(source);
+      if (!intercepted && source.includes("SELECT * FROM dacs_effects") &&
+          source.includes("effect_kind = ?")) {
+        const retainedGet = statement.get.bind(statement);
+        statement.get = (...parameters) => {
+          const row = retainedGet(...parameters);
+          intercepted = true;
+          claim = second.claimEffect({
+            kind: intent.kind,
+            effectId: intent.effectId,
+            bindingHash: intent.bindingHash,
+            owner: "concurrent-worker",
+            leaseDurationMs: 10_000,
+          });
+          return row;
+        };
+      }
+      return statement;
+    };
+
+    let loaded;
+    try {
+      loaded = first.loadEffect(intent.kind, intent.effectId);
+    } finally {
+      internal.prepare = retainedPrepare;
+    }
+    expect(intercepted).toBe(true);
+    expect(claim).toMatchObject({ status: "acquired" });
+    expect(loaded).toMatchObject({ state: "intent", generation: 0 });
+    expect(first.loadEffect(intent.kind, intent.effectId)).toMatchObject({
+      state: "active",
+      generation: 1,
+      lease: { owner: "concurrent-worker" },
+    });
   });
 
   it("fences stale coordinator workers across SQLite connections", async () => {
@@ -1371,6 +1627,13 @@ describe("DACS Node SQLite durability foundation", () => {
       status: "blocked",
       reasonCode: "database-path-not-filesystem",
     });
+    for (const uncPath of ["\\\\server\\share\\buyer.sqlite", "//server/share/buyer.sqlite"]) {
+      expect(inspectDacsNodeSqliteLocation(uncPath)).toMatchObject({
+        status: "blocked",
+        databasePath: uncPath,
+        reasonCode: "database-path-not-filesystem",
+      });
+    }
     expect(inspectDacsNodeSqliteLocation(join(root, "Dropbox", "buyer.sqlite")))
       .toMatchObject({
         status: "blocked",

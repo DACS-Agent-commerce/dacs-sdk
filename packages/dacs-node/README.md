@@ -31,10 +31,11 @@ known NFS/SMB/shared or consumer-sync locations. It is a local, single-host
 store and must not be placed on a shared volume.
 
 Filesystem-type inspection is implemented for Linux and macOS and additionally
-rejects Windows UNC paths and known network-filesystem magic values. This is a
-denylist safety check, not proof that an unfamiliar mount is local: operators on
-Windows or another platform must place the database on an explicitly verified
-local disk. `checkpoint()` requires a complete `FULL` WAL checkpoint and reports
+rejects both Windows UNC spellings (`\\server\share` and `//server/share`) on
+every platform, plus known network-filesystem magic values. This is a denylist
+safety check, not proof that an unfamiliar mount is local: operators on Windows
+or another platform must place the database on an explicitly verified local
+disk. `checkpoint()` requires a complete `FULL` WAL checkpoint and reports
 `database-checkpoint-busy` when a retained reader prevents completion.
 
 The same explicit SQLite surface provides live-x402 and offline coordinator
@@ -45,6 +46,14 @@ leases. Startup authenticates the application ID, exact schema and migration
 history, actor binding, and logical records before it creates a local backup or
 runs a forward migration; newer, foreign, corrupt, and cross-profile databases
 fail closed without being modified.
+
+The public v2 schema is an immutable migration input. A v2 database contains
+only the coordinator order table and its runnable index; the authenticated
+track projection is created and backfilled by v3. A legacy database is migrated
+only when its persisted SDK and Standard revision exactly equal the supported
+runtime bindings. Arbitrary historical compatibility labels are refused as
+`database-legacy-metadata-unsupported` before a backup or schema write; the
+runtime does not claim that such data was safely upgraded.
 
 Irreversible effects are reserved under a stable idempotency key before work
 starts. A process loss during a perform lease never makes the effect directly
