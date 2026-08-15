@@ -53,7 +53,8 @@ jobs:
           mkdir -p host-package-smoke/app
           npm pack --pack-destination host-package-smoke
           npm pack --workspace @kynesyslabs/dacs-node --pack-destination host-package-smoke
-          npm install --prefix host-package-smoke/app --ignore-scripts \
+          node -e "const core=require('./package.json'); const host=require('./packages/dacs-node/package.json'); if (host.peerDependencies?.['@kynesyslabs/dacs'] !== core.version || host.peerDependenciesMeta?.['@kynesyslabs/dacs']?.optional === true) process.exit(1)"
+          npm install --prefix host-package-smoke/app --ignore-scripts --strict-peer-deps \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
           (cd host-package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function') process.exit(1) })")

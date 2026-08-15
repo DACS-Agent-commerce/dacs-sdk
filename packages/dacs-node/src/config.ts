@@ -96,6 +96,32 @@ function validUrl(value: unknown, protocols: ReadonlySet<string>): value is stri
   }
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase().replace(/\.$/, "");
+  const unbracketed = lower.startsWith("[") && lower.endsWith("]")
+    ? lower.slice(1, -1)
+    : lower;
+  return unbracketed === "localhost" || unbracketed.endsWith(".localhost") ||
+    unbracketed === "::1" || unbracketed === "0:0:0:0:0:0:0:1" ||
+    /^127(?:\.\d{1,3}){3}$/.test(unbracketed);
+}
+
+/** One-click install contract §12: live public HTTP is loopback-only. */
+function validLivePublicBaseUrl(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!validUrl(value, new Set(["http:", "https:"]))) return false;
+  const parsed = new URL(value);
+  return parsed.protocol === "https:" || isLoopbackHostname(parsed.hostname);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const entry of Object.values(value)) deepFreeze(entry);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 function validLimits(value: unknown): value is DacsAgentLimits {
   if (!record(value) || !keys(value, [
     "maxServiceAmount",
@@ -122,11 +148,7 @@ function validBase(value: Readonly<Record<string, unknown>>): boolean {
       validUrl(value.publicBaseUrl, new Set(["http:", "https:"])));
 }
 
-/**
- * Validate the closed one-click configuration before stores or adapters open.
- * Returns a detached snapshot so callers cannot mutate the admitted values.
- */
-export function validateDacsAgentConfig(value: unknown): Readonly<DacsAgentConfig> {
+function assertDacsAgentConfig(value: unknown): asserts value is DacsAgentConfig {
   if (!record(value) || typeof value.mode !== "string" ||
       typeof value.profile !== "string") {
     throw new TypeError("DACS agent configuration must be a closed object");
@@ -153,6 +175,7 @@ export function validateDacsAgentConfig(value: unknown): Readonly<DacsAgentConfi
       !validUrl(value.demos.rpcUrl, new Set(["http:", "https:", "ws:", "wss:"])) ||
       (value.demos.storageReadUrl !== undefined &&
         !validUrl(value.demos.storageReadUrl, new Set(["http:", "https:"]))) ||
+      !validLivePublicBaseUrl(value.publicBaseUrl) ||
       !record(value.rail) || !keys(value.rail, [
         "registryIndexRef",
         "requestedNetwork",
@@ -162,6 +185,22 @@ export function validateDacsAgentConfig(value: unknown): Readonly<DacsAgentConfi
   } else {
     throw new TypeError("unsupported DACS agent mode/profile pair");
   }
+}
 
-  return Object.freeze(structuredClone(value as unknown as DacsAgentConfig));
+/**
+ * Validate the closed one-click configuration before stores or adapters open.
+ * Returns a detached snapshot so callers cannot mutate the admitted values.
+ */
+export function validateDacsAgentConfig(value: unknown): Readonly<DacsAgentConfig> {
+  assertDacsAgentConfig(value);
+  let snapshot: unknown;
+  try {
+    snapshot = structuredClone(value);
+  } catch {
+    throw new TypeError("DACS agent configuration must be cloneable data");
+  }
+  // Validate the exact detached graph that will be retained, not only its source.
+  assertDacsAgentConfig(snapshot);
+
+  return deepFreeze(snapshot);
 }

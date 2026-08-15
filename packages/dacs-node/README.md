@@ -19,10 +19,9 @@ The live profile is never inferred. `offline` and `live-demos` configurations
 are closed, non-interchangeable variants and must select their matching SDK
 commerce profile.
 
-Until the first SDK alpha is published, the exact SDK version is declared as an
-optional peer so stacked pre-merge CI does not fetch an unpublished package.
-Applications must install both `@kynesyslabs/dacs` and
-`@kynesyslabs/dacs-node` at the same exact version.
+`@kynesyslabs/dacs` is a required runtime peer at the same exact version as
+`@kynesyslabs/dacs-node`. Applications must install both packages; the host kit
+imports the core SDK at runtime and cannot operate without it.
 
 Envelope authentication requires two host-owned, fail-closed callbacks. The
 identity resolver must use verified Demos identity material and retain its

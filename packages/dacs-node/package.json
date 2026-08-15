@@ -36,12 +36,8 @@
   "peerDependencies": {
     "@kynesyslabs/dacs": "0.1.0-alpha.0"
   },
-  "peerDependenciesMeta": {
-    "@kynesyslabs/dacs": {
-      "optional": true
-    }
-  },
   "devDependencies": {
+    "@kynesyslabs/dacs": "file:../..",
     "@types/node": "^20",
     "typescript": "^5",
     "vitest": "^4.0.18"

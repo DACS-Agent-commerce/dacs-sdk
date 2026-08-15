@@ -1,14 +1,14 @@
 {
   "vectorVersion": 1,
   "algorithm": "ed25519",
-  "warning": "The seed is public test material and must never be used for an identity.",
+  "warning": "The seed is public test material and must never be used for a production identity.",
   "envelopeIdDomain": "dacs-http-envelope-id:v1:",
   "messageDomain": "dacs-http-message:v1:",
   "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   "publicKeyHex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
   "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-  "sender": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "audience": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sender": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "audience": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396",
   "issuedAt": 1800000000000,
   "expiresAt": 1800000300000,
   "cases": [
@@ -17,8 +17,8 @@
       "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "payload": {
         "transportIdentity": {
-          "sender": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "audience": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          "sender": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "audience": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
         },
         "proposal": {
           "numericEdge": 9007199254740991,
@@ -26,12 +26,12 @@
           "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
         }
       },
-      "payloadCanonical": "{\"proposal\":{\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"label\":\"Café\",\"numericEdge\":9007199254740991},\"transportIdentity\":{\"audience\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"sender\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
-      "payloadHash": "748706ba6366338eb55f553ed3d30c60ee2c7c9277d3730f8e45c8dfae5e98eb",
-      "envelopeId": "6219e70c15e9008283e564d4bf9a7f409ea8896b54767cf1106d5c840cc68aa5",
-      "envelopeHash": "ecfa56a9d2618f34a002c2566f49cca6a18e9b6033357adc8af61a3564a33685",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aecfa56a9d2618f34a002c2566f49cca6a18e9b6033357adc8af61a3564a33685",
-      "signature": "IaTik8QZcY2wNyRFPyJf3WVLo2f39rNUMo6TFgK4EATy7LuMHV3JMbTQrr0Uo_DNVnc8-zOnG3Qbrs4mC1NJCw"
+      "payloadCanonical": "{\"proposal\":{\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"label\":\"Café\",\"numericEdge\":9007199254740991},\"transportIdentity\":{\"audience\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"sender\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}}",
+      "payloadHash": "1475e7fa9b53d986c06d5533543b57e673d07950c3181145299be76955dc447a",
+      "envelopeId": "519af08b90428f8ed9cebdc536eadfd541b102c4c8ee4bb563aca98279b27282",
+      "envelopeHash": "c8732437e71d45ac26de2af35b6f76bd52f325e1d17293009ad7dba56dd4c2c8",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313ac8732437e71d45ac26de2af35b6f76bd52f325e1d17293009ad7dba56dd4c2c8",
+      "signature": "uEtUwrbDvG_KE1byReUcnWXEd01hlT9Hs6SLX7v7Y7doFmsvxPt9RQjIyN7AYuF9mIOO_jby1zLJITxA3sd4BQ"
     },
     {
       "type": "agreement-response",
@@ -43,10 +43,10 @@
       },
       "payloadCanonical": "{\"accepted\":true,\"note\":\"键顺序\",\"responseVersion\":\"vector\"}",
       "payloadHash": "7d8f74a3a48f0551a2dff9205ee00a979d8619dfe53ee2efb8e01d347d32a255",
-      "envelopeId": "a09ac9b8d265ce4c73309a9231d2e326f322b7c698f7e3b726def03e3caf9efa",
-      "envelopeHash": "54ed4ce83c6fb8065a5d8cf7962c8fbe05c23e0f7d0ad1e482c26d2fe0899973",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a54ed4ce83c6fb8065a5d8cf7962c8fbe05c23e0f7d0ad1e482c26d2fe0899973",
-      "signature": "hFspMy5m84IiHZ3VZnevhiMLFQfSwYgT2AgDm3yEBauD3bo7phkFoBVXmITmpWxuunzr1b-BEE6GwprPJSt6AA"
+      "envelopeId": "89997fb69905238a8aa4fd1d309be42928de836b88d4aa652d9107d5a019c89a",
+      "envelopeHash": "6144aaa913a983947b1abe33766a2f734866c5e98822f87a76430a381dc08069",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a6144aaa913a983947b1abe33766a2f734866c5e98822f87a76430a381dc08069",
+      "signature": "Dh1a5u7CN4clGjbfdpkx4ox_iBg8XaO12LEgK2xzYTpucHzVKJL_sIaWAvy2rh6Np8_jNUceZsQbMf68L4bzAw"
     },
     {
       "type": "payment-evidence-request",
@@ -55,15 +55,15 @@
         "messageId": "request-vector",
         "requestHash": "1111111111111111111111111111111111111111111111111111111111111111",
         "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        "seller": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "buyer": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        "seller": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "buyer": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
       },
-      "payloadCanonical": "{\"buyer\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"request-vector\",\"requestHash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"seller\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
-      "payloadHash": "965719a948b4ce2d39450d4fabcadab816820ac9aae6ad444212a5c71ef2185f",
-      "envelopeId": "d42a455d98a0793db5a60885f94788a2f6fe62597fa14dd5e68375b0b8beded5",
-      "envelopeHash": "71c6b3f988a7632dae70e806ff80d2f27681457c3b1468fef5be7217ae3d136f",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a71c6b3f988a7632dae70e806ff80d2f27681457c3b1468fef5be7217ae3d136f",
-      "signature": "Fp281t7VMWWWYwPJCxZP2LfBl9jyMcGmTVsWWbvbYTH54J7LYtkBtgjPpd3ofe-X_vD4PZFIg4v_d0G_eY6cAA"
+      "payloadCanonical": "{\"buyer\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"request-vector\",\"requestHash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"seller\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}",
+      "payloadHash": "af9209d4a7c1aa1987c965e42c276502210fedeb1f320810f58e8cd672be05bb",
+      "envelopeId": "24b7fc52b7380ed0607b81246148212f9b9d6c6d97291d2b9a6f76aea9b3831a",
+      "envelopeHash": "782a5964af5d43ef7690be5cb0d0b0396d719e1865aa1377d6729da77f8bc36a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a782a5964af5d43ef7690be5cb0d0b0396d719e1865aa1377d6729da77f8bc36a",
+      "signature": "nkKb2REPq0ERonNqbR2bnskCedls3j2kOj3hWsXcE1-AyJIbxEXZdq6ihn-0wUE73LlaTJGOLmuTXaKwMmDhAQ"
     },
     {
       "type": "payment-evidence-completion",
@@ -72,47 +72,50 @@
         "messageId": "completion-vector",
         "completionHash": "2222222222222222222222222222222222222222222222222222222222222222",
         "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        "buyer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "buyer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
       },
-      "payloadCanonical": "{\"buyer\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"completionHash\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"completion-vector\"}",
-      "payloadHash": "3cb69297b94bf46987f34819b68702661a817e6ed2145d57208f9b16fdd9e5ef",
-      "envelopeId": "cd3ff9ffd09633bd43d2ab612d2cf21dbf7c2cfdc29d31b36640f402cda8247b",
-      "envelopeHash": "ed3ab7b1bcf86494f6d38476cf5b8e173bc967d5f23f9abe21ad401cb1e97866",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aed3ab7b1bcf86494f6d38476cf5b8e173bc967d5f23f9abe21ad401cb1e97866",
-      "signature": "PqGFF4eutxlqxFqzXba-TJMQ6AdnBsakBoJS5z-7tVqa81mDWeyGb07znNqM4-y4JC_-gRg6NBcIgNhlgp2RCA"
+      "payloadCanonical": "{\"buyer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"completionHash\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"completion-vector\"}",
+      "payloadHash": "b0210de459b24d620c09855ee898dc7b2df7ce59a3b7b009dc73466512d96d8d",
+      "envelopeId": "9f5dc5714d088e73c805a44de8de4aa6fa436874e8a7dc7443d932c52c3c2fe8",
+      "envelopeHash": "96fb2fe51c70b77bf97875f8e5a579bca43253c645cd2bbbfb1f9a653da3fc38",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a96fb2fe51c70b77bf97875f8e5a579bca43253c645cd2bbbfb1f9a653da3fc38",
+      "signature": "HEtdxNPSY6NCefuaXRswhTsl_FTVIzL_MsLO8WuCZ0pGMSSMmmvs344fRcscrJ8_8_JB2gcVtdKQQ0QD7Q3yBQ"
     },
     {
       "type": "bundle-signature-request",
       "nonce": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
       "payload": {
         "bundleContentHash": "3333333333333333333333333333333333333333333333333333333333333333",
-        "signedScope": { "z": 0, "a": "Å" },
+        "signedScope": {
+          "z": 0,
+          "a": "Å"
+        },
         "signedBytes": "AQID",
         "requiredCounterSigners": [
-          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
         ]
       },
-      "payloadCanonical": "{\"bundleContentHash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"requiredCounterSigners\":[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],\"signedBytes\":\"AQID\",\"signedScope\":{\"a\":\"Å\",\"z\":0}}",
-      "payloadHash": "0653890fd69a29bb25f416a344753d60e97e9885c32c3260a7decf88a8539b62",
-      "envelopeId": "4a8d4971a877540e0fdf3f3a8211584b32e9b0fd95abaf6caec21e592173ca2b",
-      "envelopeHash": "a5092270a6491bf19beb9037a7d8e4b3a3c7275e40c84d5a7ee583681688d813",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aa5092270a6491bf19beb9037a7d8e4b3a3c7275e40c84d5a7ee583681688d813",
-      "signature": "6C6ihEDyqL-ATNw6P5deUu4pfp1Kb7bDrkuOYdpAECSp0i4Q3GbMEViRIacwSxca2_rv4oP7AYgKQH7fcMeICA"
+      "payloadCanonical": "{\"bundleContentHash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"requiredCounterSigners\":[\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\"],\"signedBytes\":\"AQID\",\"signedScope\":{\"a\":\"Å\",\"z\":0}}",
+      "payloadHash": "9941e730ff5cee3f271b477a2f20d09e5aa0a3988b92e93b9ba6fe60386bd563",
+      "envelopeId": "516e0438b1995fe386e91f51d61fe3eceeaaeab513084a72a7a4ee995d8a0977",
+      "envelopeHash": "408ed8518fabddbbc08515f7311e41245712d51e580b6e2b4976be2f8a239ac8",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a408ed8518fabddbbc08515f7311e41245712d51e580b6e2b4976be2f8a239ac8",
+      "signature": "5d266CBR6sCSvXV72O3f33pWYko01bHGgUzLq-kzFo7lhlnsa5anhMbW-8t-eUlTLEjjiq8IBTvpErGGFollAA"
     },
     {
       "type": "bundle-signature-response",
       "nonce": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
       "payload": {
-        "party": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "party": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
         "algorithm": "ed25519",
         "signature": "vector-signature"
       },
-      "payloadCanonical": "{\"algorithm\":\"ed25519\",\"party\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"signature\":\"vector-signature\"}",
-      "payloadHash": "96b88dd552f1db63c26a0e14e782ecb942795850f6c82acaf51d97f85e9d79af",
-      "envelopeId": "a9ce1e7209d03d27143b1a06eeebde2da9d7d1eb427f670d5b29b925d589a79f",
-      "envelopeHash": "ba801fe70cee2c9593e96f5fa508860ae22a502b109ca5323bc9215456f02d7c",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aba801fe70cee2c9593e96f5fa508860ae22a502b109ca5323bc9215456f02d7c",
-      "signature": "vYi__w6WgtGwADtjq8ozqFSHgmgNuQ0H7FQSdST0n3GNzak5G5XN-JkXLqxrFLz5uIsOtKhqYgluUwclUXoVBg"
+      "payloadCanonical": "{\"algorithm\":\"ed25519\",\"party\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"signature\":\"vector-signature\"}",
+      "payloadHash": "8163c58bd137179620c4818333f59998d258ae1b503ce455cf6890b63127dc7a",
+      "envelopeId": "948986c78b0aefc26a97f0ff366c4b584b43e228be2716c584818c97dbd8e823",
+      "envelopeHash": "add81e860f5948f4b433005d1c67c3c87044bad7e54157ba4f6672137bb9e92e",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aadd81e860f5948f4b433005d1c67c3c87044bad7e54157ba4f6672137bb9e92e",
+      "signature": "WJaURF2VykNMRMlKa4E6drQPU4U76_qrlw__OITLT-aSSP0m8Ml1nSCIs9tW1Pm2XABrbuTG9rAlm3cT02lCCQ"
     },
     {
       "type": "acknowledgement",
@@ -124,10 +127,10 @@
       },
       "payloadCanonical": "{\"acknowledgedEnvelopeId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"acknowledgedPayloadHash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"disposition\":\"accepted\"}",
       "payloadHash": "4230548f3af0a9ff387d56eb08af9e4cd38fd3192d55d90138a2f3b1f212afe0",
-      "envelopeId": "6d283b529410691578c167947740c633356d461dea43d8b49ee25215d940b017",
-      "envelopeHash": "89847a6e9b6cb5612b3bac09c4da5f2fa2f2cc93e7474ed3aad1730a6d28c6e9",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a89847a6e9b6cb5612b3bac09c4da5f2fa2f2cc93e7474ed3aad1730a6d28c6e9",
-      "signature": "K3A0-W62-XRLDSE4uZU9hPCkbiNuZOTW-WNxNTQpGJwi1jdGIE3xJrV74tNC_H5U5INs0PX6ErfuQ3jVJIGjCg"
+      "envelopeId": "09846d7e8cc376d4ebc0b08a4dadd24d307d70704b22af38f19dfc71ff00bfab",
+      "envelopeHash": "771914d54236f719ff7f6e756715a3dcda6c397093c646b4afa7fbafa2a1145a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a771914d54236f719ff7f6e756715a3dcda6c397093c646b4afa7fbafa2a1145a",
+      "signature": "rgBduV18DxGXWRs5h0G2VVAoZQSRhFJAaEBL9In1VQehFddGhRKQVN8s_ffmp2N4XpEamRhc0n8G--DOMwH-CQ"
     }
   ],
   "negativeCases": [
@@ -140,7 +143,7 @@
     {
       "name": "modified-audience",
       "baseCase": "agreement-proposal",
-      "mutation": "replace audience with 64 lowercase d characters without updating derived fields",
+      "mutation": "replace audience with did:demos:agent: plus 64 lowercase d characters without updating derived fields",
       "expectedReasonCode": "envelope-id-mismatch"
     },
     {
@@ -166,6 +169,12 @@
       "baseCase": "agreement-proposal",
       "mutation": "replace expiresAt with 9007199254740992",
       "expectedReasonCode": "envelope-canonical-json-invalid"
+    },
+    {
+      "name": "non-canonical-principal",
+      "baseCase": "agreement-proposal",
+      "mutation": "replace sender with its bare 64-character lowercase public key",
+      "expectedReasonCode": "envelope-identity-fields-invalid"
     }
   ]
 }

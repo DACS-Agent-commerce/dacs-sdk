@@ -210,6 +210,11 @@ const REQUIRED_SENDER_ROLE = Object.freeze({
   "bundle-signature-response": "buyer",
 } as const);
 const HASH_RE = /^[0-9a-f]{64}$/;
+// DACS-1 §6.3.1 and CORE §B.1 (CF-2): this signed transport profile
+// admits only the canonical byte form, even though a general reader can
+// canonicalise the leading DID scheme token case-insensitively before use.
+const DEMOS_AGENT_PRINCIPAL_RE =
+  /^did:demos:agent:([0-9a-f]{64})$/;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const ENVELOPE_KEYS = Object.freeze([
@@ -271,8 +276,10 @@ function exactKeys(
     Object.keys(value).every((key) => allowed.has(key));
 }
 
-function text(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.trim() === value;
+function demosAgentPrincipalPublicKey(value: unknown): Uint8Array | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = DEMOS_AGENT_PRINCIPAL_RE.exec(value);
+  return match === null ? undefined : Buffer.from(match[1]!, "hex");
 }
 
 function safeTime(value: unknown): value is number {
@@ -358,8 +365,10 @@ function parseEnvelope(value: unknown): DacsHttpEnvelopeV1 {
   }
   if (typeof snapshot.envelopeId !== "string" || !HASH_RE.test(snapshot.envelopeId) ||
       typeof snapshot.payloadHash !== "string" || !HASH_RE.test(snapshot.payloadHash) ||
-      !isCanonicalJobId(snapshot.jobId) || !text(snapshot.sender) ||
-      !text(snapshot.audience) || snapshot.sender === snapshot.audience ||
+      !isCanonicalJobId(snapshot.jobId) ||
+      demosAgentPrincipalPublicKey(snapshot.sender) === undefined ||
+      demosAgentPrincipalPublicKey(snapshot.audience) === undefined ||
+      snapshot.sender === snapshot.audience ||
       snapshot.keyId !== snapshot.sender) {
     failure("malformed", "envelope-identity-fields-invalid");
   }
@@ -427,7 +436,9 @@ export async function createDacsHttpEnvelopeV1<
   sign: DacsHttpEnvelopeSigner,
 ): Promise<Readonly<DacsHttpEnvelopeFor<Type>>> {
   if (!TYPE_SET.has(input.type) || !isCanonicalJobId(input.jobId) ||
-      !text(input.sender) || !text(input.audience) || input.sender === input.audience) {
+      demosAgentPrincipalPublicKey(input.sender) === undefined ||
+      demosAgentPrincipalPublicKey(input.audience) === undefined ||
+      input.sender === input.audience) {
     failure("malformed", "envelope-create-input-invalid");
   }
   validateTimes(input.issuedAt, input.expiresAt);
@@ -543,9 +554,12 @@ export async function authenticateDacsHttpEnvelopeV1(
     if (identity.status === "rejected") {
       failure("authentication", identity.reasonCode);
     }
+    const senderPublicKey = demosAgentPrincipalPublicKey(envelope.sender);
     if (identity.principal !== envelope.sender || identity.jobId !== envelope.jobId ||
         (identity.role !== "buyer" && identity.role !== "seller") ||
         !(identity.publicKey instanceof Uint8Array) || identity.publicKey.byteLength !== 32 ||
+        senderPublicKey === undefined ||
+        !Buffer.from(identity.publicKey).equals(Buffer.from(senderPublicKey)) ||
         !HASH_RE.test(identity.evidenceHash)) {
       failure("authentication", "identity-resolution-mismatch");
     }
