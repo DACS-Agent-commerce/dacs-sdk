@@ -64,6 +64,15 @@ jobs:
           test ! -d "$smoke_root/app/node_modules/@x402/fetch"
           test ! -d "$smoke_root/app/node_modules/viem"
           "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.json"
+          if "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.live.json" > "$smoke_root/live-without-peers.log" 2>&1; then
+            echo "live declaration smoke unexpectedly passed without its optional peers"
+            exit 1
+          fi
+          grep -q "Cannot find module '@kynesyslabs/demosdk/websdk'" "$smoke_root/live-without-peers.log"
+          grep -q "Cannot find module '@x402/core/types'" "$smoke_root/live-without-peers.log"
+          grep -q "Cannot find module '@x402/evm/exact/client'" "$smoke_root/live-without-peers.log"
+          grep -q "Cannot find module '@x402/fetch'" "$smoke_root/live-without-peers.log"
+          grep -q "Cannot find module 'viem/accounts'" "$smoke_root/live-without-peers.log"
           (cd "$smoke_root/app" && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
           npm audit --prefix "$smoke_root/app" --omit=dev --omit=optional
           npm install --prefix "$smoke_root/app" --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.16 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.52.2
