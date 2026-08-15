@@ -182,13 +182,15 @@ test("offline quickstart produces a fail-closed verifier simulation report", asy
 
 const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
 WORKDIR /app
-COPY package.json ./
-# The generator deliberately emits no fabricated lock. A normal registry-backed
-# install creates the first valid package-lock.json from published packages.
-RUN npm install --ignore-scripts
-# The generated .dockerignore keeps credentials, local state and host
-# dependencies outside both the build context and the resulting image.
-COPY . .
+# A normal generator install creates this registry-backed lock. Docker refuses
+# to build without it and installs exactly that dependency graph.
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+# Copy only build inputs. The deny-by-default .dockerignore also keeps every
+# other host file outside the build context.
+COPY tsconfig.json dacs.config.ts ./
+COPY src ./src
+COPY test ./test
 RUN npm run build
 RUN npm prune --omit=dev --ignore-scripts
 
@@ -203,38 +205,15 @@ USER dacs
 CMD ["node", "dist/src/service.js"]
 `;
 
-const DOCKERIGNORE = `.git*
-.context
-.DS_Store
-.env
-.env.*
-*.env
-.netrc
-.npmrc
-.pnpmrc
-.yarnrc*
-.aws
-.config
-.gnupg
-.ssh
-node_modules
-dist
-coverage
-data
-artifacts
-secrets
-*.log
-*.pem
-*.key
-*.crt
-*.der
-*.p8
-*.p12
-*.pfx
-*.jks
-*.keystore
-id_rsa
-id_ed25519
+const DOCKERIGNORE = `**
+!package.json
+!package-lock.json
+!tsconfig.json
+!dacs.config.ts
+!src/
+!src/**
+!test/
+!test/**
 `;
 
 const COMPOSE = `services:
@@ -282,8 +261,14 @@ report's \`simulation-artifacts/\` directory. Those files are not independently
 anchored \`AttestationRef\` targets.
 
 No lockfile is fabricated by the generator. The default install creates a valid
-lock from the published registry packages; with \`--no-install\`, run
-\`npm install --ignore-scripts\` before using \`npm ci\`.
+lock from the published registry packages. The Docker build requires that lock
+and runs \`npm ci --ignore-scripts\`; with \`--no-install\`, run
+\`npm install --ignore-scripts\` before \`docker compose build\`.
+
+Generate only below a parent directory trusted against concurrent replacement.
+The complete staged tree is published with one rename. On POSIX, that rename can
+replace an empty target directory created concurrently; it never merges with or
+traverses the contents of such a directory.
 
 Selected deployment: **${deployment}**.
 

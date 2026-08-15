@@ -5,7 +5,6 @@ import {
   mkdtemp,
   readdir,
   realpath,
-  rename,
   rm,
   rmdir,
   writeFile,
@@ -13,6 +12,7 @@ import {
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { projectTemplates } from "./templates.js";
+import { publishCompleteStagingDirectory } from "./publication.js";
 
 export const CREATE_DACS_AGENT_VERSION = "0.1.0-alpha.0";
 export const OFFLINE_PROFILE = "dacs-sdk:fixed-price-offline:v1" as const;
@@ -139,7 +139,11 @@ async function runCommand(
   });
 }
 
-/** Generate the bounded offline quickstart and optionally install/run it. */
+/**
+ * Generate the bounded offline quickstart and optionally install/run it.
+ * The caller must select a parent directory trusted against concurrent
+ * replacement; see the generated README for the atomic-publication boundary.
+ */
 export async function createDacsAgentProject(
   options: CreateDacsAgentOptions,
 ): Promise<Readonly<CreatedDacsAgentProject>> {
@@ -198,9 +202,9 @@ export async function createDacsAgentProject(
     }
     await assertStableProjectParent(parent);
     // All nested paths are complete before the project name becomes visible.
-    // An attacker-planted target makes this atomic publication fail; no write
-    // ever traverses a path below the caller-selected target.
-    await rename(stagingDirectory, targetDirectory);
+    // Publication never merges with or traverses a concurrently created target.
+    // On POSIX an empty target may be replaced atomically; non-empty targets fail.
+    await publishCompleteStagingDirectory(stagingDirectory, targetDirectory);
     published = true;
   } finally {
     if (!published) {

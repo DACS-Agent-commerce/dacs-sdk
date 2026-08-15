@@ -15,6 +15,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { createDacsAgentProject } from "../src/index.js";
 import { parseCreateDacsAgentArguments } from "../src/cli.js";
+import { publishCompleteStagingDirectory } from "../src/publication.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -48,8 +49,9 @@ describe("create-dacs-agent", () => {
       await readFile(new URL("../package.json", import.meta.url), "utf8"),
     ) as { scripts?: Record<string, string> };
     expect(packageSource.scripts).toMatchObject({
-      prepack: "npm run build",
-      prepublishOnly: "npm run build",
+      prepack: "npm run clean && npm run build",
+      prepublishOnly: "npm run clean && npm run build",
+      clean: "rm -rf dist",
     });
   });
 
@@ -59,13 +61,15 @@ describe("create-dacs-agent", () => {
     ) as { scripts?: Record<string, string> };
     expect(hostPackage.scripts).toMatchObject({
       "build:with-core": "npm --prefix ../.. run build && npm run build",
-      prepack: "npm run build:with-core",
-      prepublishOnly: "npm run build:with-core",
+      prepack: "npm run clean && npm run build:with-core",
+      prepublishOnly: "npm run clean && npm run build:with-core",
     });
     const corePackage = JSON.parse(
       await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
     ) as { scripts?: Record<string, string> };
-    expect(corePackage.scripts).toMatchObject({ prepack: "npm run build" });
+    expect(corePackage.scripts).toMatchObject({
+      prepack: "npm run clean && npm run build",
+    });
   });
 
   test("generates the bounded public-package verifier simulation without installing", async () => {
@@ -121,28 +125,29 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain('randomBytes(16).toString("hex")');
     expect(combined).not.toContain("new Date().toISOString()");
     const dockerignore = await readFile(join(target, ".dockerignore"), "utf8");
-    for (const excluded of [
-      ".env.*",
-      "*.env",
-      ".netrc",
-      ".npmrc",
-      ".ssh",
-      "node_modules",
-      "data",
-      "secrets",
-      "*.pem",
-      "*.key",
-    ]) {
-      expect(dockerignore.split("\n"), excluded).toContain(excluded);
-    }
-    expect(dockerignore).not.toMatch(/^!/m);
+    expect(dockerignore.split("\n").filter(Boolean)).toEqual([
+      "**",
+      "!package.json",
+      "!package-lock.json",
+      "!tsconfig.json",
+      "!dacs.config.ts",
+      "!src/",
+      "!src/**",
+      "!test/",
+      "!test/**",
+    ]);
     const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
     expect(dockerfile).toContain(
-      "generated .dockerignore keeps credentials",
+      "COPY package.json package-lock.json ./",
     );
     expect(dockerfile).toContain(
       "npm prune --omit=dev --ignore-scripts",
     );
+    expect(dockerfile).toContain("RUN npm ci --ignore-scripts");
+    expect(dockerfile).not.toContain("RUN npm install");
+    expect(dockerfile).not.toContain("COPY . .");
+    expect(dockerfile.indexOf("COPY package.json package-lock.json ./"))
+      .toBeLessThan(dockerfile.indexOf("RUN npm ci --ignore-scripts"));
     expect(dockerfile).toContain(
       "install --directory --owner=dacs --group=dacs --mode=0750 /app/data",
     );
@@ -243,6 +248,27 @@ describe("create-dacs-agent", () => {
     expect(await readdir(parent)).not.toEqual(
       expect.arrayContaining([expect.stringMatching(/\.staging-/)]),
     );
+  });
+
+  test("defines the concurrent empty-target publication boundary", async () => {
+    const parent = await temporaryDirectory();
+    const staging = join(parent, ".agent.staging-test");
+    const target = join(parent, "agent");
+    await mkdir(staging);
+    await writeFile(join(staging, "complete.txt"), "complete\n", "utf8");
+
+    const publication = publishCompleteStagingDirectory(
+      staging,
+      target,
+      () => mkdir(target),
+    );
+    if (process.platform === "win32") {
+      await expect(publication).rejects.toBeDefined();
+      return;
+    }
+    await expect(publication).resolves.toBeUndefined();
+    await expect(readFile(join(target, "complete.txt"), "utf8")).resolves.toBe("complete\n");
+    await expect(lstat(staging)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   test("parses the documented non-interactive command", () => {

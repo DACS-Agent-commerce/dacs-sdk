@@ -86,7 +86,6 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "npm run build",
     "host:build": "npm run build --workspace @kynesyslabs/dacs-node",
     "generator:build": "npm run build --workspace create-dacs-agent",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json",
@@ -101,7 +100,8 @@
     "conformance:sync": "node scripts/sync-vectors.mjs",
     "clean": "rm -rf dist",
     "prepack": "npm run clean && npm run build",
-    "package:verify": "node scripts/verify-package.mjs"
+    "package:verify": "node scripts/verify-package.mjs",
+    "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs"
   },
   "publishConfig": {
     "access": "public",

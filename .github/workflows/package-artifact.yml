@@ -29,6 +29,9 @@ jobs:
         run: npm ci
 
       - name: Build, pack, and verify artifact
+        run: npm run package:lifecycle:verify
+
+      - name: Build, pack, and verify reproducible root artifact
         run: npm run package:verify -- --output-dir package-artifacts
 
       - name: Upload exact package and provenance
