@@ -5,7 +5,7 @@ Production Node.js host contracts and adapters for `@kynesyslabs/dacs`.
 The package keeps filesystem, SQLite, HTTP, process-supervision, and deployment
 concerns outside the transport-neutral SDK. It publishes the stable host
 interfaces, byte-exact authenticated HTTP envelope, and the local SQLite
-durability foundation. Coordinator/handshake adapters, the HTTP server, role
+durability foundation. Payment-handshake adapters, the HTTP server, role
 services, and live deployment remain separate stacked implementation units.
 
 ```ts
@@ -27,6 +27,13 @@ authority, SDK version, and Standard revision. It enables WAL with `FULL`
 synchronous durability, uses database-authoritative lease time, and rejects
 known NFS/SMB/shared or consumer-sync locations. It is a local, single-host
 store and must not be placed on a shared volume.
+
+The same explicit SQLite surface provides live-x402 and offline coordinator
+stores. Each store is fixed to the database actor role and commerce profile,
+persists the exact SDK-validated order record with an integrity hash, and uses
+transactional generation-fenced track leases. Startup makes a local backup
+before a forward schema migration; newer schemas and cross-profile reuse fail
+closed.
 
 Irreversible effects are reserved under a stable idempotency key before work
 starts. A process loss during a perform lease never makes the effect directly
