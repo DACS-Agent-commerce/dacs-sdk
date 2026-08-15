@@ -441,6 +441,7 @@ used without pulling in `demosdk`:
 | Import | Needs `demosdk` | Use for |
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
+| `@kynesyslabs/dacs/substrate` | yes | live Demos adapter and its typed `raw` demosdk escape hatch |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
