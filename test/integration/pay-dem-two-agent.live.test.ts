@@ -21,12 +21,15 @@ const REQUIRED_ENV = [
   "SELLER_WALLET",
   "SELLER_DID",
   "PAY_DEM_AMOUNT_OS",
+  "PAY_DEM_MAX_TOTAL_DEBIT_OS",
+  "LIVE_PAY_DEM_RUN_ID",
+  "LIVE_PAY_DEM_MARKER_DIR",
   "LIVE_PAY_DEM_CONFIRM",
 ] as const;
 
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 const MAX_TEST_TRANSFER_OS = 1_000_000_000n;
-const FEE_HEADROOM_OS = 2_000_000_000n;
+const MAX_TEST_TOTAL_DEBIT_OS = 3_000_000_000n;
 
 function requireCondition(condition: unknown, code: string): asserts condition {
   if (!condition) throw new Error(`pay-dem-live:${code}`);
@@ -80,10 +83,21 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
     requireCondition(/^[1-9][0-9]*$/.test(amountText), "amount-not-canonical-os");
     const amountOs = BigInt(amountText);
     requireCondition(amountOs <= MAX_TEST_TRANSFER_OS, "amount-exceeds-test-cap");
+    const maxTotalDebitText = process.env.PAY_DEM_MAX_TOTAL_DEBIT_OS!;
+    requireCondition(
+      /^(?:0|[1-9][0-9]*)$/.test(maxTotalDebitText),
+      "max-total-debit-not-canonical-os",
+    );
+    const maxTotalDebitOs = BigInt(maxTotalDebitText);
+    requireCondition(maxTotalDebitOs >= amountOs, "max-total-debit-below-amount");
+    requireCondition(
+      maxTotalDebitOs <= MAX_TEST_TOTAL_DEBIT_OS,
+      "max-total-debit-exceeds-test-cap",
+    );
     const buyerBalance = await balanceOs(buyer);
     requireCondition(
-      buyerBalance >= amountOs + FEE_HEADROOM_OS,
-      "buyer-balance-or-fee-headroom-insufficient",
+      buyerBalance >= maxTotalDebitOs,
+      "buyer-balance-below-max-total-debit",
     );
 
     // Explicit confirmation is checked immediately before the only write.
@@ -92,6 +106,7 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
       rpc,
       secret: process.env.BUYER_WALLET!,
       network: "demos",
+      maxTotalDebitOs,
     });
     const settlement = await rail.settle({
       recipient: sellerAddress,

@@ -189,6 +189,14 @@ export interface PayDemRailConfig {
   secret: string;
   /** Network label recorded on the evidence (default "demos"). */
   network?: string;
+  /**
+   * Optional per-settlement ceiling, in OS, for transfer amount plus the
+   * transaction fees returned by the Demos confirmation response. When set,
+   * malformed/missing fee data and a debit above the ceiling fail before
+   * broadcast. This is a safety limit, not a balance estimate or an
+   * idempotency boundary.
+   */
+  maxTotalDebitOs?: bigint;
 }
 
 export interface PayDemRail {
@@ -196,6 +204,73 @@ export interface PayDemRail {
   readonly address: string;
   /** Settle one session's payment via a native DEM transfer. */
   settle(params: PayDemSettleParams): Promise<SettleResult>;
+}
+
+const OS_PER_DEM = 1_000_000_000n;
+
+function confirmedFeeComponentOs(value: unknown, postFork: boolean): bigint | null {
+  if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)) {
+    return BigInt(value);
+  }
+  if (!postFork && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    // Pre-denomination-fork fee numbers are DEM. Post-fork fee numbers are
+    // ambiguous (the transaction query surface has projected other numeric
+    // fields in OS), so a capped write accepts only the normative decimal-
+    // string OS form after the fork.
+    return BigInt(value) * OS_PER_DEM;
+  }
+  return null;
+}
+
+function confirmedTransactionFeeOs(value: unknown, postFork: boolean): bigint | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const fee = value as Record<string, unknown>;
+  const network = confirmedFeeComponentOs(fee.network_fee, postFork);
+  const rpc = confirmedFeeComponentOs(fee.rpc_fee, postFork);
+  const additional = confirmedFeeComponentOs(fee.additional_fee, postFork);
+  if (network === null || rpc === null || additional === null) return null;
+  return network + rpc + additional;
+}
+
+function normalizedDemosAccount(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(?:0[xX])?([0-9a-fA-F]{64})$/);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+function confirmedDebitFromValidity(
+  value: unknown,
+  input: Readonly<{ payer: string; payee: string; amountOs: bigint; postFork: boolean }>,
+): bigint | null {
+  const content = (
+    value as {
+      response?: { data?: { transaction?: { content?: Record<string, unknown> } } };
+    }
+  )?.response?.data?.transaction?.content;
+  if (!content || content.type !== "native" || content.custom_charges != null) return null;
+  const payer = normalizedDemosAccount(content.from ?? content.from_ed25519_address);
+  const payee = normalizedDemosAccount(content.to);
+  if (payer !== normalizedDemosAccount(input.payer) ||
+      payee !== normalizedDemosAccount(input.payee)) return null;
+
+  const data = content.data;
+  if (!Array.isArray(data) || data.length !== 2 || data[0] !== "native" ||
+      data[1] === null || typeof data[1] !== "object" || Array.isArray(data[1])) return null;
+  const native = data[1] as Record<string, unknown>;
+  const args = native.args;
+  if (native.nativeOperation !== "send" || !Array.isArray(args) || args.length !== 2 ||
+      normalizedDemosAccount(args[0]) !== normalizedDemosAccount(input.payee)) return null;
+  const payloadAmountOs = input.postFork
+    ? typeof args[1] === "string" && /^(?:0|[1-9][0-9]*)$/.test(args[1])
+      ? BigInt(args[1])
+      : null
+    : typeof args[1] === "number" && Number.isSafeInteger(args[1]) && args[1] >= 0
+      ? BigInt(args[1]) * OS_PER_DEM
+      : null;
+  if (payloadAmountOs !== input.amountOs) return null;
+
+  const feeOs = confirmedTransactionFeeOs(content.transaction_fee, input.postFork);
+  return feeOs === null ? null : input.amountOs + feeOs;
 }
 
 /**
@@ -210,6 +285,11 @@ export interface PayDemRail {
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
   if (!config?.rpc) throw new DacsError("pay-dem rail requires an rpc URL");
   if (!config?.secret) throw new DacsError("pay-dem rail requires a wallet secret to sign transfers");
+  if (config.maxTotalDebitOs !== undefined &&
+      (typeof config.maxTotalDebitOs !== "bigint" || config.maxTotalDebitOs <= 0n)) {
+    throw new DacsError("pay-dem rail maxTotalDebitOs must be positive");
+  }
+  const maxTotalDebitOs = config.maxTotalDebitOs;
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
   const demos = new Demos();
@@ -232,6 +312,32 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       }
       const signedNonce = signedNonceValue as number;
       const validity = await demos.tx.confirm(signed, demos);
+      if (maxTotalDebitOs !== undefined) {
+        const networkInfo = await demos.getNetworkInfo();
+        const forkActive = networkInfo?.forks?.osDenomination?.activated;
+        if (typeof forkActive !== "boolean") {
+          throw new DacsError(
+            "pay-dem: denomination fork state is unavailable; refusing broadcast under maxTotalDebitOs",
+          );
+        }
+        const postFork = forkActive;
+        const confirmedDebitOs = confirmedDebitFromValidity(validity, {
+          payer: demos.getAddress(),
+          payee: to,
+          amountOs,
+          postFork,
+        });
+        if (confirmedDebitOs === null) {
+          throw new DacsError(
+            "pay-dem: confirmed transaction has no unambiguous bound OS debit; refusing broadcast under maxTotalDebitOs",
+          );
+        }
+        if (confirmedDebitOs > maxTotalDebitOs) {
+          throw new DacsError(
+            "pay-dem: confirmed transaction exceeds maxTotalDebitOs; refusing broadcast",
+          );
+        }
+      }
       const signedHash = (signed as { hash?: string }).hash;
       const confirmedHash = (
         validity as {

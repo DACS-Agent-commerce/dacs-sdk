@@ -235,8 +235,26 @@ details. See
 ledger trust boundary.
 
 The funded boundary test is disabled by default. It requires two independent
-Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), and
-`LIVE_PAY_DEM_CONFIRM=1` before it performs exactly one transfer:
+Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), an
+explicit `PAY_DEM_MAX_TOTAL_DEBIT_OS` (transfer plus confirmed fees, capped at
+3 DEM), a unique `LIVE_PAY_DEM_RUN_ID`, and `LIVE_PAY_DEM_CONFIRM=1`. The rail
+checks the node-confirmed fee against that ceiling before broadcast and fails
+closed if the fee is missing or ambiguous. Its
+`LIVE_PAY_DEM_MARKER_DIR` must be provisioned before the run on persistent local
+storage: use its canonical absolute path (no symlink components), make it owned
+by the test process user, and set mode `0700`. The test will not create or repair
+this safety directory and rejects operating-system temporary paths. Provision a
+dedicated directory and pass the result of `realpath` as the environment value.
+
+Immediately before settlement, the test atomically writes and syncs a permanent
+intent marker and never removes it. An ambiguous or merely unobserved settlement
+therefore blocks that run id from being submitted again even if its wallet or
+amount is changed. The guarantee is scoped to the same marker directory on the
+same host: changing hosts or directories, deleting the ledger, or using
+ephemeral storage bypasses it. Preserve and back up the directory with the
+funded-run records; do not use a network filesystem unless its exclusive-create
+and fsync guarantees have been independently established. Use fresh dedicated
+wallets and a new run id only for a separately reconciled and approved attempt:
 
 ```sh
 npm run test:live:pay-dem

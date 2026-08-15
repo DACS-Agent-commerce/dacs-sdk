@@ -11,6 +11,7 @@ const sdk = vi.hoisted(() => ({
   confirm: vi.fn(),
   connect: vi.fn(),
   connectWallet: vi.fn(),
+  getNetworkInfo: vi.fn(),
   transfer: vi.fn(),
   waitForNonce: vi.fn(),
 }));
@@ -21,6 +22,7 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
     readonly broadcastAndWait = sdk.broadcastAndWait;
     readonly connect = sdk.connect;
     readonly connectWallet = sdk.connectWallet;
+    readonly getNetworkInfo = sdk.getNetworkInfo;
     readonly transfer = sdk.transfer;
     readonly waitForNonce = sdk.waitForNonce;
 
@@ -44,12 +46,35 @@ beforeEach(() => {
   vi.clearAllMocks();
   sdk.connect.mockResolvedValue(undefined);
   sdk.connectWallet.mockResolvedValue(undefined);
+  sdk.getNetworkInfo.mockResolvedValue({
+    forks: { osDenomination: { activated: true } },
+  });
   sdk.transfer.mockResolvedValue({
     hash: "tx-pay-dem",
     content: { nonce: 7 },
   });
   sdk.confirm.mockResolvedValue({
-    response: { data: { transaction: { hash: "tx-pay-dem" } } },
+    response: {
+      data: {
+        transaction: {
+          hash: "tx-pay-dem",
+          content: {
+            type: "native",
+            from: WALLET,
+            to: RECIPIENT,
+            data: [
+              "native",
+              { nativeOperation: "send", args: [RECIPIENT, "1000000000"] },
+            ],
+            transaction_fee: {
+              network_fee: "400000000",
+              rpc_fee: "500000000",
+              additional_fee: "100000000",
+            },
+          },
+        },
+      },
+    },
   });
   sdk.broadcastAndWait.mockResolvedValue({
     broadcast: { response: { hash: "tx-pay-dem" } },
@@ -143,6 +168,95 @@ describe("createPayDemRail nonce coordination", () => {
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/no valid transaction nonce/);
     expect(sdk.confirm).not.toHaveBeenCalled();
+    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+  });
+
+  it("enforces the confirmed maximum total debit before broadcast", async () => {
+    const config = {
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 1_500_000_000n,
+    };
+    const rail = await createPayDemRail(config);
+    config.maxTotalDebitOs = 3_000_000_000n;
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
+    ).rejects.toThrow(/exceeds maxTotalDebitOs/);
+    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-bigint debit ceiling at the JavaScript boundary", async () => {
+    await expect(createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: "3000000000",
+    } as unknown as Parameters<typeof createPayDemRail>[0])).rejects.toThrow(
+      /maxTotalDebitOs must be positive/,
+    );
+    expect(sdk.connect).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a capped confirmation omits fee data", async () => {
+    sdk.confirm.mockResolvedValue({
+      response: { data: { transaction: { hash: "tx-pay-dem", content: {} } } },
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 3_000_000_000n,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/no unambiguous bound OS debit/);
+    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+  });
+
+  it("accepts a capped post-fork transaction within the explicit ceiling", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
+    ).resolves.toMatchObject({ ok: true, blockNumber: 42 });
+    expect(sdk.broadcastAndWait).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an altered confirmed recipient before broadcast", async () => {
+    const altered = `0x${"ef".repeat(32)}`;
+    sdk.confirm.mockResolvedValue({
+      response: {
+        data: {
+          transaction: {
+            hash: "tx-pay-dem",
+            content: {
+              type: "native",
+              from: WALLET,
+              to: altered,
+              data: ["native", { nativeOperation: "send", args: [altered, "1"] }],
+              transaction_fee: {
+                network_fee: "1",
+                rpc_fee: "1",
+                additional_fee: "0",
+              },
+            },
+          },
+        },
+      },
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 3_000_000_000n,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/no unambiguous bound OS debit/);
     expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
   });
 });
