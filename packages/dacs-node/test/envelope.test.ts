@@ -196,7 +196,11 @@ describe("DACS HTTP envelope v1", () => {
     const envelope = await createVectorEnvelope("agreement-proposal", 0);
     const cases: readonly [unknown, Readonly<Record<string, unknown>>, string][] = [
       [{ ...envelope, payload: { changed: true } }, {}, "envelope-payload-hash-mismatch"],
-      [{ ...envelope, audience: `did:demos:agent:${"d".repeat(64)}` }, { expectedAudience: undefined }, "envelope-id-mismatch"],
+      [
+        { ...envelope, audience: `did:demos:agent:${"d".repeat(64)}` },
+        { expectedAudience: `did:demos:agent:${"d".repeat(64)}` },
+        "envelope-id-mismatch",
+      ],
       [{ ...envelope, keyId: `did:demos:agent:${"e".repeat(64)}` }, {}, "envelope-identity-fields-invalid"],
       [{ ...envelope, sender: SENDER_KEY_HEX, keyId: SENDER_KEY_HEX }, {}, "envelope-identity-fields-invalid"],
       [{ ...envelope, nonce: envelope.nonce + "=" }, {}, "nonce-base64url-invalid"],
@@ -246,6 +250,110 @@ describe("DACS HTTP envelope v1", () => {
     })).resolves.toMatchObject({
       status: "rejected",
       reasonCode: "identity-resolution-mismatch",
+    });
+  });
+
+  it("requires an explicit canonical local audience before authenticating", async () => {
+    const envelope = await createVectorEnvelope("agreement-proposal", 0);
+    const resolver = vi.fn();
+    await expect(authenticate(envelope, {
+      expectedAudience: undefined,
+      resolveIdentity: resolver,
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "malformed",
+      reasonCode: "expected-audience-invalid",
+    });
+    expect(resolver).not.toHaveBeenCalled();
+
+    await expect(authenticate(envelope, {
+      expectedAudience: AUDIENCE.replace(/^did:/, "DID:"),
+      resolveIdentity: resolver,
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "malformed",
+      reasonCode: "expected-audience-invalid",
+    });
+    expect(resolver).not.toHaveBeenCalled();
+
+    await expect(authenticate(envelope, {
+      expectedAudience: `did:demos:agent:${"d".repeat(64)}`,
+      resolveIdentity: resolver,
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "authentication",
+      reasonCode: "envelope-audience-mismatch",
+    });
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "unknown authenticated status",
+      resolution: {
+        status: "authenticated-v2",
+        principal: SENDER,
+        jobId: JOB_ID,
+        role: "buyer",
+        publicKey: PUBLIC_KEY,
+        evidenceHash: IDENTITY_EVIDENCE_HASH,
+      },
+    },
+    {
+      label: "coercible non-string evidence hash",
+      resolution: {
+        status: "authenticated",
+        principal: SENDER,
+        jobId: JOB_ID,
+        role: "buyer",
+        publicKey: PUBLIC_KEY,
+        evidenceHash: Object(IDENTITY_EVIDENCE_HASH),
+      },
+    },
+    {
+      label: "unexpected authenticated-result field",
+      resolution: {
+        status: "authenticated",
+        principal: SENDER,
+        jobId: JOB_ID,
+        role: "buyer",
+        publicKey: PUBLIC_KEY,
+        evidenceHash: IDENTITY_EVIDENCE_HASH,
+        trusted: true,
+      },
+    },
+    {
+      label: "unknown rejection reason",
+      resolution: {
+        status: "rejected",
+        reasonCode: "identity-new-status",
+      },
+    },
+  ])("fails closed for a $label from the identity resolver", async ({ resolution }) => {
+    const envelope = await createVectorEnvelope("agreement-proposal", 0);
+    await expect(authenticate(envelope, {
+      resolveIdentity: async () => resolution,
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "authentication",
+      reasonCode: "identity-resolution-mismatch",
+    });
+  });
+
+  it.each([
+    "identity-unresolved",
+    "identity-expired",
+    "identity-revoked",
+    "identity-ambiguous",
+    "identity-role-incompatible",
+  ])("preserves the known resolver rejection: %s", async (reasonCode) => {
+    const envelope = await createVectorEnvelope("agreement-proposal", 0);
+    await expect(authenticate(envelope, {
+      resolveIdentity: async () => ({ status: "rejected", reasonCode }),
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "authentication",
+      reasonCode,
     });
   });
 

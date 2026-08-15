@@ -106,12 +106,15 @@ function isLoopbackHostname(hostname: string): boolean {
     /^127(?:\.\d{1,3}){3}$/.test(unbracketed);
 }
 
-/** One-click install contract §12: live public HTTP is loopback-only. */
-function validLivePublicBaseUrl(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (!validUrl(value, new Set(["http:", "https:"]))) return false;
+/** One-click install contract §12: every non-loopback live endpoint uses TLS. */
+function validLiveEndpointUrl(
+  value: unknown,
+  protocols: ReadonlySet<string>,
+): value is string {
+  if (!validUrl(value, protocols)) return false;
   const parsed = new URL(value);
-  return parsed.protocol === "https:" || isLoopbackHostname(parsed.hostname);
+  return parsed.protocol === "https:" || parsed.protocol === "wss:" ||
+    isLoopbackHostname(parsed.hostname);
 }
 
 function deepFreeze<T>(value: T): T {
@@ -172,10 +175,20 @@ function assertDacsAgentConfig(value: unknown): asserts value is DacsAgentConfig
     ], ["publicBaseUrl"]) || value.profile !== DACS_NODE_LIVE_PROFILE ||
       value.role === "demo-all" || !validBase(value) || !record(value.demos) ||
       !keys(value.demos, ["rpcUrl"], ["storageReadUrl"]) ||
-      !validUrl(value.demos.rpcUrl, new Set(["http:", "https:", "ws:", "wss:"])) ||
+      !validLiveEndpointUrl(
+        value.demos.rpcUrl,
+        new Set(["http:", "https:", "ws:", "wss:"]),
+      ) ||
       (value.demos.storageReadUrl !== undefined &&
-        !validUrl(value.demos.storageReadUrl, new Set(["http:", "https:"]))) ||
-      !validLivePublicBaseUrl(value.publicBaseUrl) ||
+        !validLiveEndpointUrl(
+          value.demos.storageReadUrl,
+          new Set(["http:", "https:"]),
+        )) ||
+      (value.publicBaseUrl !== undefined &&
+        !validLiveEndpointUrl(
+          value.publicBaseUrl,
+          new Set(["http:", "https:"]),
+        )) ||
       !record(value.rail) || !keys(value.rail, [
         "registryIndexRef",
         "requestedNetwork",

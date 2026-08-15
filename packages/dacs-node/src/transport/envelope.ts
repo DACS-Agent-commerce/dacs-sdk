@@ -175,7 +175,8 @@ export type DacsHttpPayloadValidatorV1 = (
 
 export interface DacsHttpEnvelopeAuthenticationOptionsV1 {
   storeTime: number;
-  expectedAudience?: string;
+  /** Canonical local Demos primary ClaimRef; mandatory confused-deputy boundary. */
+  expectedAudience: string;
   expectedJobId?: string;
   resolveIdentity: DacsHttpIdentityResolverV1;
   validatePayload?: DacsHttpPayloadValidatorV1;
@@ -210,6 +211,13 @@ const REQUIRED_SENDER_ROLE = Object.freeze({
   "bundle-signature-response": "buyer",
 } as const);
 const HASH_RE = /^[0-9a-f]{64}$/;
+const IDENTITY_REJECTION_CODE_SET = new Set<DacsHttpIdentityRejectionCode>([
+  "identity-unresolved",
+  "identity-expired",
+  "identity-revoked",
+  "identity-ambiguous",
+  "identity-role-incompatible",
+]);
 // DACS-1 §6.3.1 and CORE §B.1 (CF-2): this signed transport profile
 // admits only the canonical byte form, even though a general reader can
 // canonicalise the leading DID scheme token case-insensitively before use.
@@ -381,6 +389,50 @@ function parseEnvelope(value: unknown): DacsHttpEnvelopeV1 {
   return snapshot as unknown as DacsHttpEnvelopeV1;
 }
 
+function snapshotIdentityResolution(
+  value: unknown,
+): DacsHttpIdentityResolutionV1 {
+  if (!record(value)) {
+    failure("authentication", "identity-resolution-mismatch");
+  }
+  let snapshot: unknown;
+  try {
+    snapshot = structuredClone(value);
+  } catch {
+    failure("authentication", "identity-resolution-mismatch");
+  }
+  if (!record(snapshot)) {
+    failure("authentication", "identity-resolution-mismatch");
+  }
+  if (snapshot.status === "rejected") {
+    if (!exactKeys(snapshot, ["status", "reasonCode"]) ||
+        typeof snapshot.reasonCode !== "string" ||
+        !IDENTITY_REJECTION_CODE_SET.has(
+          snapshot.reasonCode as DacsHttpIdentityRejectionCode,
+        )) {
+      failure("authentication", "identity-resolution-mismatch");
+    }
+    return snapshot as unknown as DacsHttpIdentityResolutionV1;
+  }
+  if (snapshot.status !== "authenticated" || !exactKeys(snapshot, [
+    "status",
+    "principal",
+    "jobId",
+    "role",
+    "publicKey",
+    "evidenceHash",
+  ]) || typeof snapshot.principal !== "string" ||
+      typeof snapshot.jobId !== "string" ||
+      (snapshot.role !== "buyer" && snapshot.role !== "seller") ||
+      !(snapshot.publicKey instanceof Uint8Array) ||
+      snapshot.publicKey.byteLength !== 32 ||
+      typeof snapshot.evidenceHash !== "string" ||
+      !HASH_RE.test(snapshot.evidenceHash)) {
+    failure("authentication", "identity-resolution-mismatch");
+  }
+  return snapshot as unknown as DacsHttpIdentityResolutionV1;
+}
+
 export function generateDacsHttpNonceV1(): string {
   return randomBytes(DACS_HTTP_NONCE_BYTES).toString("base64url");
 }
@@ -502,9 +554,13 @@ export async function authenticateDacsHttpEnvelopeV1(
     if (!safeTime(options.storeTime)) {
       failure("malformed", "store-time-invalid");
     }
+    const expectedAudience = options.expectedAudience;
+    if (!Object.hasOwn(options, "expectedAudience") ||
+        demosAgentPrincipalPublicKey(expectedAudience) === undefined) {
+      failure("malformed", "expected-audience-invalid");
+    }
     const envelope = parseEnvelope(value);
-    if (options.expectedAudience !== undefined &&
-        envelope.audience !== options.expectedAudience) {
+    if (envelope.audience !== expectedAudience) {
       failure("authentication", "envelope-audience-mismatch");
     }
     if (options.expectedJobId !== undefined && envelope.jobId !== options.expectedJobId) {
@@ -538,9 +594,9 @@ export async function authenticateDacsHttpEnvelopeV1(
       failure("authentication", "envelope-id-mismatch");
     }
 
-    let identity: DacsHttpIdentityResolutionV1;
+    let resolvedIdentity: unknown;
     try {
-      identity = await options.resolveIdentity({
+      resolvedIdentity = await options.resolveIdentity({
         sender: envelope.sender,
         audience: envelope.audience,
         keyId: envelope.keyId,
@@ -551,15 +607,16 @@ export async function authenticateDacsHttpEnvelopeV1(
     } catch {
       failure("authentication", "identity-resolution-failed");
     }
+    const identity = snapshotIdentityResolution(resolvedIdentity);
     if (identity.status === "rejected") {
       failure("authentication", identity.reasonCode);
     }
     const senderPublicKey = demosAgentPrincipalPublicKey(envelope.sender);
     if (identity.principal !== envelope.sender || identity.jobId !== envelope.jobId ||
         (identity.role !== "buyer" && identity.role !== "seller") ||
-        !(identity.publicKey instanceof Uint8Array) || identity.publicKey.byteLength !== 32 ||
         senderPublicKey === undefined ||
         !Buffer.from(identity.publicKey).equals(Buffer.from(senderPublicKey)) ||
+        typeof identity.evidenceHash !== "string" ||
         !HASH_RE.test(identity.evidenceHash)) {
       failure("authentication", "identity-resolution-mismatch");
     }

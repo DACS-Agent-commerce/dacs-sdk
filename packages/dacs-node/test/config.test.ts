@@ -115,6 +115,64 @@ describe("DACS node configuration", () => {
 
   it.each([
     {
+      label: "remote plaintext HTTP RPC",
+      demos: { rpcUrl: "http://rpc.example" },
+    },
+    {
+      label: "remote plaintext WebSocket RPC",
+      demos: { rpcUrl: "ws://rpc.example" },
+    },
+    {
+      label: "remote plaintext storage reader",
+      demos: {
+        rpcUrl: "https://rpc.example",
+        storageReadUrl: "http://read.example",
+      },
+    },
+  ])("rejects a $label in live mode", ({ demos }) => {
+    expect(() => validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "seller",
+      dataDirectory: "./data",
+      publicBaseUrl: "https://seller.example",
+      demos,
+      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      limits,
+    })).toThrow();
+  });
+
+  it.each([
+    {
+      label: "loopback plaintext HTTP RPC",
+      demos: { rpcUrl: "http://127.0.0.1:5353" },
+    },
+    {
+      label: "loopback plaintext WebSocket RPC",
+      demos: { rpcUrl: "ws://[::1]:5353" },
+    },
+    {
+      label: "loopback plaintext storage reader",
+      demos: {
+        rpcUrl: "wss://rpc.example/ws",
+        storageReadUrl: "http://reader.localhost:3000",
+      },
+    },
+  ])("admits a $label in live mode", ({ demos }) => {
+    expect(() => validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "seller",
+      dataDirectory: "./data",
+      publicBaseUrl: "https://seller.example",
+      demos,
+      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      limits,
+    })).not.toThrow();
+  });
+
+  it.each([
+    {
       mode: "offline",
       profile: DACS_NODE_LIVE_PROFILE,
       role: "demo-all",
