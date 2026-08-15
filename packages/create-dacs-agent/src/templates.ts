@@ -101,7 +101,8 @@ const VERIFIER_SOURCE = `export const verifierComponent = Object.freeze({
 });
 `;
 
-const SERVICE_SOURCE = `import { resolve } from "node:path";
+const SERVICE_SOURCE = `import { randomBytes } from "node:crypto";
+import { resolve } from "node:path";
 
 import { runOfflineVerifierSimulation } from "@kynesyslabs/dacs-node";
 
@@ -120,7 +121,7 @@ if (config.role !== "demo-all") {
   );
 }
 
-const runId = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+const runId = randomBytes(16).toString("hex");
 const outputDirectory = resolve(config.dataDirectory, "runs", runId);
 const report = await runOfflineVerifierSimulation({ outputDirectory });
 
@@ -152,7 +153,8 @@ import test from "node:test";
 import { runOfflineVerifierSimulation } from "@kynesyslabs/dacs-node";
 
 test("offline quickstart produces a fail-closed verifier simulation report", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "dacs-generated-test-"));
+  const parent = await mkdtemp(join(tmpdir(), "dacs-generated-test-"));
+  const directory = join(parent, "run");
   try {
     const report = await runOfflineVerifierSimulation({ outputDirectory: directory });
     assert.equal(report.simulationPassed, true);
@@ -175,7 +177,7 @@ test("offline quickstart produces a fail-closed verifier simulation report", asy
     const persisted = JSON.parse(await readFile(report.reportPath, "utf8"));
     assert.deepEqual(persisted, report);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
   }
 });
 `;

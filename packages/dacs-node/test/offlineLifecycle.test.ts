@@ -1,6 +1,16 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { isAttestationRef } from "@kynesyslabs/dacs/artifacts";
 import {
@@ -26,9 +36,57 @@ afterEach(async () => {
 });
 
 async function outputDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "dacs-node-offline-"));
-  temporaryDirectories.push(directory);
-  return directory;
+  const parent = await mkdtemp(join(tmpdir(), "dacs-node-offline-"));
+  temporaryDirectories.push(parent);
+  return join(parent, "run");
+}
+
+type WriterResult =
+  | { status: "fulfilled"; jobId: string }
+  | { status: "rejected"; message: string };
+
+async function runWriterProcess(
+  directory: string,
+  resultPath: string,
+): Promise<WriterResult> {
+  const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+  const child = spawn(
+    process.execPath,
+    [
+      join(packageRoot, "../../node_modules/vitest/vitest.mjs"),
+      "run",
+      "test/fixtures/offlineLifecycleWriter.test.ts",
+      "--config",
+      "vitest.config.ts",
+      "--pool=forks",
+      "--maxWorkers=1",
+      "--reporter=dot",
+    ],
+    {
+      cwd: packageRoot,
+      env: {
+        ...process.env,
+        DACS_OFFLINE_WRITER_OUTPUT: directory,
+        DACS_OFFLINE_WRITER_RESULT: resultPath,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0 && signal === null) resolve();
+      else reject(new Error(
+        `offline writer child failed: code=${String(code)} signal=${String(signal)} ${stderr}`,
+      ));
+    });
+  });
+  return JSON.parse(await readFile(resultPath, "utf8")) as WriterResult;
 }
 
 describe("offline verifier simulation", () => {
@@ -224,4 +282,56 @@ describe("offline verifier simulation", () => {
     expect(secondNonce).toMatch(/^[0-9a-f]{32}$/);
     expect(firstNonce).not.toBe(secondNonce);
   });
+
+  test("rejects a symlink output target without writing through it", async () => {
+    const directory = await outputDirectory();
+    const outside = await mkdtemp(join(tmpdir(), "dacs-node-offline-outside-"));
+    temporaryDirectories.push(outside);
+    await writeFile(join(outside, "sentinel.txt"), "unchanged", "utf8");
+    await mkdir(directory);
+    await symlink(outside, join(directory, "simulation-artifacts"));
+
+    await expect(
+      runOfflineVerifierSimulation({ outputDirectory: directory }),
+    ).rejects.toThrow(/already exists/);
+    expect(await readdir(outside)).toEqual(["sentinel.txt"]);
+    expect(await readFile(join(outside, "sentinel.txt"), "utf8"))
+      .toBe("unchanged");
+  });
+
+  test("atomically publishes exactly one cross-process writer to a shared target", async () => {
+    const directory = await outputDirectory();
+    const parent = dirname(directory);
+    const results = await Promise.all([
+      runWriterProcess(directory, join(parent, "writer-a.json")),
+      runWriterProcess(directory, join(parent, "writer-b.json")),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      message: expect.stringMatching(/published concurrently/),
+    });
+
+    const report = JSON.parse(
+      await readFile(join(directory, "simulation-report.json"), "utf8"),
+    ) as { jobId: string; simulationPassed: boolean };
+    expect(report).toMatchObject({
+      jobId: fulfilled[0]?.status === "fulfilled"
+        ? fulfilled[0].jobId
+        : undefined,
+      simulationPassed: true,
+    });
+    const artifactDirectory = join(directory, "simulation-artifacts");
+    for (const file of await readdir(artifactDirectory)) {
+      const source = await readFile(join(artifactDirectory, file), "utf8");
+      expect(() => JSON.parse(source)).not.toThrow();
+    }
+    expect((await readdir(parent)).sort()).toEqual([
+      "run",
+      "writer-a.json",
+      "writer-b.json",
+    ].sort());
+  }, 15_000);
 });

@@ -79,7 +79,9 @@ jobs:
           mkdir -p generator-smoke/packs generator-smoke/runner
           npm pack --pack-destination generator-smoke/packs
           npm pack --workspace @kynesyslabs/dacs-node --pack-destination generator-smoke/packs
+          node -e "require('node:fs').rmSync('packages/create-dacs-agent/dist', { recursive: true, force: true })"
           npm pack --workspace create-dacs-agent --pack-destination generator-smoke/packs
+          test -f packages/create-dacs-agent/dist/bin.js
           npm install --prefix generator-smoke/runner --ignore-scripts \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/create-dacs-agent-0.1.0-alpha.0.tgz
           node generator-smoke/runner/node_modules/create-dacs-agent/dist/bin.js \

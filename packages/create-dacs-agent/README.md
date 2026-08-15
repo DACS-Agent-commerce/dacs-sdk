@@ -20,6 +20,10 @@ Runs use fresh job and presentation identifiers, but the simulation has neither
 the durable CORE §B.8 nonce ledger nor the DACS-4 §9.4.4 RAV-R5 rail authority
 required by a conformant session.
 
+Each invocation selects a CSPRNG-named run directory. The host runner stages
+the complete result privately and atomically publishes it, so concurrent runs
+cannot share or expose a partially written output tree.
+
 The generator does not fabricate a dependency lock from unpublished packages.
 Its normal registry-backed install creates a valid lock; `--no-install` emits
 no lock and leaves dependency resolution to the operator. Before building the

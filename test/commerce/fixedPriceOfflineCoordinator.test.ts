@@ -117,7 +117,7 @@ const offlineFinal = (label: string): FixedPriceOfflineTrackOperation =>
     await fence.assertCurrent();
     return {
       status: "final",
-      outcome: "success",
+      outcome: "simulated-success",
       reference: `offline:${label}:${fence.jobId}`,
     };
   };
@@ -194,17 +194,44 @@ describe("fixed-price offline coordinator", () => {
     await buyer.runPending({ limit: 10 });
     await seller.runPending({ limit: 10 });
 
+    const buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    const sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
     const combined = combineFixedPriceOfflineOrderStatus({
-      buyer: (await buyer.getOrderStatus(JOB_ID))!,
-      seller: (await seller.getOrderStatus(JOB_ID))!,
+      buyer: buyerStatus,
+      seller: sellerStatus,
     });
     // Actor-local audit completion is not ST-11 bundle completion. The
-    // authenticated completion gate is the only path to `audit-complete`.
-    expect(combined.milestone).toBe("actor-audit-final");
+    // authenticated completion gate is the only path to global audit completion.
+    expect(combined.milestone).toBe("simulation-actor-audit-exercised");
+    expect(combined).toMatchObject({
+      simulationOnly: true,
+      normativeConformance: false,
+      commercialSuccess: false,
+      authority: "none",
+    });
+    expect(combined.actors.buyer).toMatchObject({
+      simulationOnly: true,
+      normativeConformance: false,
+      commercialSuccess: false,
+      authority: "none",
+    });
+    expect(combined.actors.seller).toMatchObject({
+      simulationOnly: true,
+      normativeConformance: false,
+      commercialSuccess: false,
+      authority: "none",
+    });
     expect(combined.protocol).toEqual(OFFLINE_PROTOCOL);
     expect(combined.bindingHash).toBe(
       fixedPriceOfflineOrderBindingHash(offlineOrder("buyer")),
     );
+    expect(() => combineFixedPriceOfflineOrderStatus({
+      buyer: {
+        ...buyerStatus,
+        commercialSuccess: true,
+      } as unknown as typeof buyerStatus,
+      seller: sellerStatus,
+    })).toThrow(/authority markers/);
   });
 
   it("uses distinct binding and effect-identity domains for matching live and offline work", async () => {
@@ -212,7 +239,11 @@ describe("fixed-price offline coordinator", () => {
     const liveKeys: string[] = [];
     const offlineOperation: FixedPriceOfflineTrackOperation = ({ fence }) => {
       offlineKeys.push(fence.idempotencyKey);
-      return { status: "final", outcome: "success", reference: "offline:agreement" };
+      return {
+        status: "final",
+        outcome: "simulated-success",
+        reference: "offline:agreement",
+      };
     };
     const liveOperation: FixedPriceX402TrackOperation = ({ fence }) => {
       liveKeys.push(fence.idempotencyKey);
@@ -239,6 +270,84 @@ describe("fixed-price offline coordinator", () => {
     expect(offlineKeys).toHaveLength(1);
     expect(liveKeys).toHaveLength(1);
     expect(offlineKeys[0]).not.toBe(liveKeys[0]);
+  });
+
+  it("fails closed on live outcome vocabulary and never projects live authority", async () => {
+    const store = createInMemoryFixedPriceOfflineCoordinatorStore({ now: () => 2_500 });
+    const unsafeLiveVocabulary = (() => ({
+      status: "final",
+      outcome: "success",
+      reference: "offline:unsafe-live-vocabulary",
+    })) as unknown as FixedPriceOfflineTrackOperation;
+    const coordinator = createFixedPriceOfflineBuyerCoordinator({
+      store,
+      workerId: "offline-vocabulary-worker",
+      operations: { agreement: unsafeLiveVocabulary },
+    });
+
+    const created = await coordinator.startOrder(offlineOrder("buyer"));
+    expect(created.milestone).toBe("simulation-created");
+    const work = await coordinator.runPending();
+    expect(work.items).toEqual([
+      expect.objectContaining({
+        status: "indeterminate",
+        reasonCode: "operation-threw",
+        simulationOnly: true,
+        normativeConformance: false,
+        commercialSuccess: false,
+        authority: "none",
+      }),
+    ]);
+
+    const retained = await coordinator.getOrderStatus(JOB_ID);
+    expect(retained?.milestone).toBe("simulation-created");
+    expect(JSON.stringify({ work, retained })).not.toMatch(
+      /commercial-performance-complete|audit-complete/,
+    );
+  });
+
+  it("retains simulation-specific failure attribution through the audit track", async () => {
+    const store = createInMemoryFixedPriceOfflineCoordinatorStore({ now: () => 2_750 });
+    const coordinator = createFixedPriceOfflineBuyerCoordinator({
+      store,
+      workerId: "offline-failure-worker",
+      operations: {
+        agreement: () => ({
+          status: "final",
+          outcome: "simulated-failure",
+          errorClass: "simulated-counterparty",
+          reference: "offline:failed-agreement",
+        }),
+        audit: () => ({
+          status: "final",
+          outcome: "simulated-failure",
+          errorClass: "simulated-counterparty",
+          reference: "offline:failed-audit",
+        }),
+      },
+    });
+
+    await coordinator.startOrder(offlineOrder("buyer"));
+    const work = await coordinator.runPending();
+    expect(work.items).toEqual([
+      expect.objectContaining({
+        track: "agreement",
+        outcome: "simulated-failure",
+        commercialSuccess: false,
+      }),
+      expect.objectContaining({
+        track: "audit",
+        outcome: "simulated-failure",
+        commercialSuccess: false,
+      }),
+    ]);
+    expect(await coordinator.getOrderStatus(JOB_ID)).toMatchObject({
+      milestone: "simulation-terminal-failure",
+      tracks: {
+        agreement: { errorClass: "simulated-counterparty" },
+        audit: { errorClass: "simulated-counterparty" },
+      },
+    });
   });
 
   it("rejects records and stores when a caller tries to cross the profile boundary", async () => {

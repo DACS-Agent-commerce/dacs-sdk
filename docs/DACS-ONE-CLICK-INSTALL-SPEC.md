@@ -1095,8 +1095,9 @@ The report MUST record independent elapsed timings for:
 
 - payment finality;
 - buyer-received;
-- commerce-complete (the SDK `commercial-performance-complete` milestone); and
-- audit-complete.
+- commerce-complete (the live x402 SDK projection's
+  `commercial-performance-complete` milestone); and
+- audit-complete (the live x402 SDK projection only).
 
 The report MUST distinguish network confirmation, Demos read/index projection,
 application work and background bundle finalization rather than publishing only
@@ -1224,8 +1225,8 @@ The one-click installer is complete only when all of the following are true:
   retention rules pass interoperability tests;
 - Docker deployment passes health/readiness and restart tests;
 - a guarded generated-project testnet run completes, verifies both bundles and
-  records buyer-received, commerce-complete (`commercial-performance-complete`)
-  and audit-complete timings;
+  records buyer-received, commerce-complete (the live x402 projection's
+  `commercial-performance-complete`) and live x402 audit-complete timings;
 - package and generator releases carry provenance; and
 - documentation gives accurate setup, funding, recovery, upgrade and rollback
   instructions.

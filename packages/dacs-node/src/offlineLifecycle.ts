@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import {
@@ -76,7 +76,7 @@ const SELLER_SEED = new Uint8Array(32).fill(42);
 const VERIFIER_SEED = new Uint8Array(32).fill(43);
 
 export interface OfflineVerifierSimulationOptions {
-  /** Directory that receives wrapped fixtures and `simulation-report.json`. */
+  /** Fresh non-existent directory atomically published after all files validate. */
   outputDirectory: string;
 }
 
@@ -266,6 +266,71 @@ function createSimulationContext(): OfflineSimulationContext {
   };
 }
 
+function errorCode(error: unknown): string | undefined {
+  return error !== null && typeof error === "object" && "code" in error &&
+      typeof error.code === "string"
+    ? error.code
+    : undefined;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function withExclusiveSimulationOutput<T>(
+  requestedDirectory: string,
+  run: (directories: Readonly<{
+    stagingDirectory: string;
+    finalDirectory: string;
+  }>) => Promise<T>,
+): Promise<T> {
+  const requested = resolve(requestedDirectory);
+  const leaf = basename(requested);
+  if (leaf.length === 0 || requested === dirname(requested)) {
+    throw new TypeError(
+      "offline verifier simulation outputDirectory must name a new child directory",
+    );
+  }
+  const requestedParent = dirname(requested);
+  await mkdir(requestedParent, { recursive: true });
+  const canonicalParent = await realpath(requestedParent);
+  const finalDirectory = resolve(canonicalParent, leaf);
+  if (await pathExists(finalDirectory)) {
+    throw new Error(
+      "offline verifier simulation outputDirectory already exists; choose a fresh directory",
+    );
+  }
+
+  const stagingDirectory = resolve(
+    canonicalParent,
+    `.${leaf}.dacs-simulation-${randomBytes(16).toString("hex")}.tmp`,
+  );
+  await mkdir(stagingDirectory, { recursive: false, mode: 0o700 });
+  try {
+    const result = await run({ stagingDirectory, finalDirectory });
+    try {
+      await rename(stagingDirectory, finalDirectory);
+    } catch (error) {
+      if (["EEXIST", "ENOTEMPTY"].includes(errorCode(error) ?? "")) {
+        throw new Error(
+          "offline verifier simulation outputDirectory was published concurrently",
+        );
+      }
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    await rm(stagingDirectory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function roleIdentity(
   seed: Uint8Array,
   sessionNonce: string,
@@ -349,7 +414,7 @@ class SimulationArtifactStore {
   }
 
   async initialize(): Promise<void> {
-    await mkdir(this.#root, { recursive: true });
+    await mkdir(this.#root, { recursive: false, mode: 0o700 });
   }
 
   async put(
@@ -1480,10 +1545,21 @@ export async function runOfflineVerifierSimulation(
       "offline verifier simulation outputDirectory must be a non-empty path",
     );
   }
+  return withExclusiveSimulationOutput(
+    options.outputDirectory,
+    executeOfflineVerifierSimulation,
+  );
+}
+
+async function executeOfflineVerifierSimulation({
+  stagingDirectory: outputDirectory,
+  finalDirectory,
+}: Readonly<{
+  stagingDirectory: string;
+  finalDirectory: string;
+}>): Promise<Readonly<OfflineVerifierSimulationReport>> {
   const context = createSimulationContext();
-  const outputDirectory = resolve(options.outputDirectory);
   const artifactDirectory = resolve(outputDirectory, "simulation-artifacts");
-  await mkdir(outputDirectory, { recursive: true });
   const store = new SimulationArtifactStore(artifactDirectory, context.jobId);
   await store.initialize();
 
@@ -1669,7 +1745,7 @@ export async function runOfflineVerifierSimulation(
   );
   phases.push(dacs5.phase);
 
-  const reportPath = resolve(outputDirectory, "simulation-report.json");
+  const reportPath = resolve(finalDirectory, "simulation-report.json");
   const protocolBinding = createDacsNodeOfflineProtocolBinding(seller.claim);
   const report: OfflineVerifierSimulationReport = {
     reportKind: OFFLINE_VERIFIER_SIMULATION_REPORT_KIND,
@@ -1724,9 +1800,13 @@ export async function runOfflineVerifierSimulation(
     },
     reportPath,
   };
-  await writeFile(reportPath, `${canonicalize(report)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-  });
+  await writeFile(
+    resolve(outputDirectory, "simulation-report.json"),
+    `${canonicalize(report)}\n`,
+    {
+      encoding: "utf8",
+      flag: "wx",
+    },
+  );
   return Object.freeze(structuredClone(report));
 }

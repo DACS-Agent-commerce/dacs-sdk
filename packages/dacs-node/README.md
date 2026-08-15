@@ -35,6 +35,11 @@ challenge issuance/consumption ledger required by CORE §B.8 SN-1..SN-4. Its
 local rail dependency is likewise not the signed, anchored authority required
 by DACS-4 §9.4.4 RAV-R5. Both limitations are explicit in the run report.
 
+Callers must provide a fresh, non-existent output directory. The runner writes
+into a private CSPRNG-named sibling staging directory and atomically publishes
+the completed tree; existing files, directories, and symbolic links are
+rejected, and concurrent writers cannot expose a partial report.
+
 `@kynesyslabs/dacs` is a required runtime peer at the same exact version as
 `@kynesyslabs/dacs-node`. Applications must install both packages; the host kit
 imports the core SDK at runtime and cannot operate without it.
