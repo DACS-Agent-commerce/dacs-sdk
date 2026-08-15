@@ -60,6 +60,13 @@ hash, and the complete chain is checked on startup and again before load, claim,
 or recovery. A legacy or altered row without that proof fails closed; the host
 never synthesizes an idempotency proof during admission.
 
+These hashes detect partial/inconsistent corruption and enforce immutability at
+the store API boundary. They are not a MAC or an external transparency proof:
+an attacker with arbitrary write access to the database and runtime can rewrite
+an entire internally consistent history. Hosts must protect the database and
+its parent directory as actor-authority state; adversarial local storage needs a
+separately reviewed keyed or externally anchored adapter.
+
 The durable effect input and retained result are canonical operational records,
 not a secret vault. Adapters must store only the public binding and the
 sanitized authoritative receipt required for reconciliation; raw wallet keys,
