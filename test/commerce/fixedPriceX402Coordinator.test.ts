@@ -308,6 +308,40 @@ describe("fixed-price x402 coordinator", () => {
     });
   });
 
+  it("rejects impossible DACS-5 failure attribution before storing it", async () => {
+    const impossible = [
+      { errorClass: "substrate", faultedParty: "seller" },
+      { errorClass: "counterparty", faultedParty: "none" },
+      { errorClass: "counterparty", faultedParty: "orchestrator" },
+    ] as const;
+
+    for (const failure of impossible) {
+      const seller = createFixedPriceX402SellerCoordinator({
+        store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 8_750 }),
+        workerId: `seller-worker-${failure.faultedParty}`,
+        operations: {
+          agreement: finalOperation("agreement", []),
+          payment: async () => ({
+            status: "final",
+            outcome: "failure",
+            ...failure,
+            reference: `session:payment:${failure.errorClass}:${failure.faultedParty}`,
+          }),
+        },
+      });
+      await seller.startOrder(order("seller"));
+      expect((await seller.runPending({ limit: 10 })).items.at(-1)).toMatchObject({
+        track: "payment",
+        status: "operator-action",
+        reasonCode: "invalid-normative-outcome",
+      });
+      expect((await seller.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+        state: "operator-action",
+        reasonCode: "invalid-normative-outcome",
+      });
+    }
+  });
+
   it("does not project success over a one-sided terminal audit", async () => {
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 9_000 });
     const buyer = createFixedPriceX402BuyerCoordinator({
