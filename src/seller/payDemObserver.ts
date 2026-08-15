@@ -256,8 +256,16 @@ export async function observePayDemTransferCore(
     return invalid("native transaction is not a send operation");
   }
 
-  const payer = typeof content.from === "string"
-    ? normalizeDemosNativeAddress(content.from)
+  // Demos applies the account nonce, native debit and gas edits to the
+  // ed25519 owner address. `content.from` is the active signing key and can
+  // legitimately differ under alternate/dual-signing modes. Prefer the owner
+  // field whenever it is present; a malformed present owner fails closed
+  // instead of silently falling back to a different signer identity.
+  const payerSource = content.from_ed25519_address === undefined
+    ? content.from
+    : content.from_ed25519_address;
+  const payer = typeof payerSource === "string"
+    ? normalizeDemosNativeAddress(payerSource)
     : null;
   const payee = typeof content.to === "string"
     ? normalizeDemosNativeAddress(content.to)
@@ -313,28 +321,39 @@ export function createPayDemSellerObserver(
 
   const nodeCall = async (message: string, data: Record<string, unknown>) => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timer: ReturnType<typeof setTimeout>;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Demos RPC ${message} timed out`));
+      }, timeoutMs);
+    });
     try {
-      const response = await fetchImpl(config.rpc, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          method: "nodeCall",
-          params: [{ message, data }],
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`Demos RPC returned HTTP ${response.status}`);
-      }
-      const payload: unknown = await response.json();
-      if (!isRecord(payload) || payload.result !== 200 ||
-          !Object.prototype.hasOwnProperty.call(payload, "response")) {
-        throw new Error("Demos RPC returned a malformed response");
-      }
-      return payload.response;
+      return await Promise.race([
+        (async () => {
+          const response = await fetchImpl(config.rpc, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              method: "nodeCall",
+              params: [{ message, data }],
+            }),
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            throw new Error(`Demos RPC returned HTTP ${response.status}`);
+          }
+          const payload: unknown = await response.json();
+          if (!isRecord(payload) || payload.result !== 200 ||
+              !Object.prototype.hasOwnProperty.call(payload, "response")) {
+            throw new Error("Demos RPC returned a malformed response");
+          }
+          return payload.response;
+        })(),
+        timedOut,
+      ]);
     } finally {
-      clearTimeout(timer);
+      clearTimeout(timer!);
     }
   };
 
