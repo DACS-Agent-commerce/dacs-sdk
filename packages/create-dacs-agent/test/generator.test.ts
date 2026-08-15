@@ -34,6 +34,31 @@ async function filesBelow(root: string, current = root): Promise<string[]> {
 }
 
 describe("create-dacs-agent", () => {
+  test("builds publishable files from source during pack and publish", async () => {
+    const packageSource = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { scripts?: Record<string, string> };
+    expect(packageSource.scripts).toMatchObject({
+      prepack: "npm run build",
+      prepublishOnly: "npm run build",
+    });
+  });
+
+  test("requires the generated project's host dependency to build during pack", async () => {
+    const hostPackage = JSON.parse(
+      await readFile(new URL("../../dacs-node/package.json", import.meta.url), "utf8"),
+    ) as { scripts?: Record<string, string> };
+    expect(hostPackage.scripts).toMatchObject({
+      "build:with-core": "npm --prefix ../.. run build && npm run build",
+      prepack: "npm run build:with-core",
+      prepublishOnly: "npm run build:with-core",
+    });
+    const corePackage = JSON.parse(
+      await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
+    ) as { scripts?: Record<string, string> };
+    expect(corePackage.scripts).toMatchObject({ prepack: "npm run build" });
+  });
+
   test("generates the bounded public-package verifier simulation without installing", async () => {
     const parent = await temporaryDirectory();
     const target = join(parent, "my-agent");

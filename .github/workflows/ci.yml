@@ -49,7 +49,11 @@ jobs:
       - name: Package smoke (core install without live peers)
         run: |
           mkdir -p package-smoke/app
+          node -e "require('node:fs').rmSync('dist', { recursive: true, force: true })"
           npm pack --pack-destination package-smoke
+          test -f dist/index.js
+          tar -tf package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz | grep -Fx package/dist/index.js
+          tar -tf package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz | grep -Fx package/dist/commerce/index.js
           npm install --prefix package-smoke/app --omit=optional --ignore-scripts "$GITHUB_WORKSPACE"/package-smoke/*.tgz
           (cd package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
           npm audit --prefix package-smoke/app --omit=dev --omit=optional
@@ -58,7 +62,11 @@ jobs:
         run: |
           mkdir -p host-package-smoke/app
           npm pack --pack-destination host-package-smoke
-          npm pack --workspace @kynesyslabs/dacs-node --pack-destination host-package-smoke
+           node -e "require('node:fs').rmSync('packages/dacs-node/dist', { recursive: true, force: true })"
+           npm pack --workspace @kynesyslabs/dacs-node --pack-destination host-package-smoke
+           test -f packages/dacs-node/dist/index.js
+           tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/index.js
+           tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/transport/index.js
           node -e "const core=require('./package.json'); const host=require('./packages/dacs-node/package.json'); if (host.peerDependencies?.['@kynesyslabs/dacs'] !== core.version || host.peerDependenciesMeta?.['@kynesyslabs/dacs']?.optional === true) process.exit(1)"
           npm install --prefix host-package-smoke/app --ignore-scripts --strict-peer-deps \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \

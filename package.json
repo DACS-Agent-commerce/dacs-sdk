@@ -78,6 +78,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "host:build": "npm run build --workspace @kynesyslabs/dacs-node",
     "generator:build": "npm run build --workspace create-dacs-agent",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json",
