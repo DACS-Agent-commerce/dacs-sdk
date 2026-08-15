@@ -1,6 +1,18 @@
 import { readFileSync } from "node:fs";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const verifySellerClosure = vi.hoisted(() => vi.fn());
+
+// This suite isolates coordinator composition. The real strict verifier is
+// exercised with cryptographic Listing/agreement/composite/evidence fixtures,
+// exact commitment coverage, and recursive DPA closure in
+// test/seller/bundleFinalization.test.ts. Production imports that verifier
+// directly; there is no injectable replacement in the public API.
+vi.mock("../../src/seller/bundleFinalization.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/seller/bundleFinalization.js")>()),
+  verifyFinalizedSellerBundleReadOnly: verifySellerClosure,
+}));
 
 import type {
   AnchorReceipt,
@@ -244,11 +256,12 @@ function receipt(
   nativeAddress: string,
   hash: string,
   writer: string,
+  substrate = "test:final",
 ): AnchorReceipt {
   return {
     receiptVersion: "1",
-    substrate: "demos",
-    finalityProfile: "demos-bft",
+    substrate,
+    finalityProfile: substrate === "demos" ? "demos-bft" : "test-final",
     logicalAddress,
     nativeAddress,
     contentHash: hash,
@@ -382,39 +395,45 @@ async function fixture() {
     [buyerNative, buyerBundle as unknown as Record<string, unknown>],
     [sellerNative, sellerBundle as unknown as Record<string, unknown>],
   ]);
-  const deps: FixedPriceX402AuditCompletionDeps = {
+  const buyerReceipt = receipt(
+    bundleAddress(JOB_ID, "buyer"),
+    buyerNative,
+    attestationBundleHash(buyerBundle),
+    BUYER.did,
+  );
+  const sellerReceipt = receipt(
+    bundleAddress(JOB_ID, "seller"),
+    sellerNative,
+    attestationBundleHash(sellerBundle),
+    SELLER.did,
+  );
+  const sellerFinalizationProvider = {
+    mapping: "pure" as const,
     bundleCopyVerifier: {
-      resolvePublicKey: async (did) => publicKeys.get(did) ?? null,
-      verify: (bytes, signature, key) =>
+      resolvePublicKey: async (did: string) => publicKeys.get(did) ?? null,
+      verify: (bytes: Uint8Array, signature: Uint8Array, key: Uint8Array) =>
         ed25519Verify(bytes, signature, publicKeyFromRaw(key)),
     },
-    verifyBundle: {
-      readArtifact: async (ref) => bundles.get(ref) ?? null,
-      resolveAttestationRef: async (ref) =>
-        ref.anchor.locator === agreementRef.anchor.locator
-          ? agreement
-          : ref.anchor.locator === evidenceRef.anchor.locator
-            ? evidence
-            : null,
-      resolveListingRef: async () => listing,
-      resolvePublicKey: async (did) => publicKeys.get(did) ?? null,
-      verify: (bytes, signature, key) =>
-        ed25519Verify(bytes, signature, publicKeyFromRaw(key)),
-    },
-    resolveFinalizedDependencyReceipt: (ref) => receipt(
-      ref.anchor.locator,
-      `native:${ref.anchor.locator}`,
-      ref.contentHash,
-      SELLER.did,
-    ),
-    readFinalizedDependencyArtifact: (_nativeAddress, ref) =>
-      ref.anchor.locator === agreementRef.anchor.locator
-        ? agreement
-        : ref.anchor.locator === evidenceRef.anchor.locator
-          ? evidence
-          : null,
-    verifyAnchorReceipt: () => ({ disposition: "valid" }),
+  } as unknown as FixedPriceX402AuditCompletionDeps["sellerFinalizationProvider"];
+  const deps: FixedPriceX402AuditCompletionDeps = {
+    sellerFinalizationProvider,
+    readBundleCopy: (nativeAddress) => bundles.get(nativeAddress) ?? null,
+    verifyBundleAnchor: () => ({ disposition: "valid", mapping: "pure" }),
   };
+  const closureResult = {
+    state: "finalised" as const,
+    logicalAddress: bundleAddress(JOB_ID, "seller"),
+    nativeAddress: sellerNative,
+    bundleContentHash: attestationBundleHash(sellerBundle),
+    sellerBundle,
+    buyerBundle,
+    anchorReceipt: sellerReceipt,
+    resumedBundle: false,
+    resumedBinding: false,
+  };
+  verifySellerClosure.mockReset();
+  verifySellerClosure.mockImplementation(async (_verificationInput, suppliedResult) =>
+    structuredClone(suppliedResult));
   return {
     buyerStatus,
     sellerStatus,
@@ -422,33 +441,30 @@ async function fixture() {
     sellerNative,
     buyerBundle,
     sellerBundle,
+    buyerReceipt,
+    sellerReceipt,
+    closureResult,
+    sellerFinalizationProvider,
     deps,
     input: {
       buyer: buyerStatus,
       seller: sellerStatus,
-      mapping: "pure" as const,
+      sellerClosure: {
+        verificationInput: { durableSession: "authenticated-fixture" } as never,
+        result: closureResult,
+      },
       copies: {
         buyer: {
           role: "buyer" as const,
           nativeAddress: buyerNative,
           bundle: buyerBundle,
-          anchorReceipt: receipt(
-            bundleAddress(JOB_ID, "buyer"),
-            buyerNative,
-            attestationBundleHash(buyerBundle),
-            BUYER.did,
-          ),
+          anchorReceipt: buyerReceipt,
         },
         seller: {
           role: "seller" as const,
           nativeAddress: sellerNative,
           bundle: sellerBundle,
-          anchorReceipt: receipt(
-            bundleAddress(JOB_ID, "seller"),
-            sellerNative,
-            attestationBundleHash(sellerBundle),
-            SELLER.did,
-          ),
+          anchorReceipt: sellerReceipt,
         },
       },
     },
@@ -484,9 +500,13 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     }).milestone).toBe("actor-audit-final");
     await expect(verifyFixedPriceX402AuditCompletion(fx.input, fx.deps))
       .resolves.toMatchObject({ milestone: "audit-complete" });
+    expect(verifySellerClosure).toHaveBeenCalledOnce();
+    expect(verifySellerClosure.mock.calls[0]![0]).toEqual(
+      fx.input.sellerClosure.verificationInput,
+    );
   });
 
-  it("rejects opaque audit references and missing finalized dependency receipts", async () => {
+  it("rejects opaque audit references, missing readback, and a forged receipt writer", async () => {
     const fx = await fixture();
     const opaque = structuredClone(fx.input);
     (opaque.buyer.tracks.audit as { reference: string }).reference = "opaque-callback-string";
@@ -495,66 +515,126 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
 
     await expect(verifyFixedPriceX402AuditCompletion(fx.input, {
       ...fx.deps,
-      resolveFinalizedDependencyReceipt: () => null,
-    })).rejects.toThrow(/no finalized receipt/);
+      readBundleCopy: () => null,
+    })).rejects.toThrow(/not independently readable/);
 
-    await expect(verifyFixedPriceX402AuditCompletion(fx.input, {
-      ...fx.deps,
-      readFinalizedDependencyArtifact: () => null,
-    })).rejects.toThrow(/not readable at its finalized native address/);
-
-    await expect(verifyFixedPriceX402AuditCompletion(fx.input, {
-      ...fx.deps,
-      resolveFinalizedDependencyReceipt: (ref) => receipt(
-        ref.anchor.locator,
-        `native:${ref.anchor.locator}`,
-        ref.contentHash,
-        "did:example:unauthorized-writer",
-      ),
-    })).rejects.toThrow(/unauthorized writer/);
+    const forged = structuredClone(fx.input);
+    forged.copies.buyer.anchorReceipt.writer = "did:example:unauthorized-writer";
+    await expect(verifyFixedPriceX402AuditCompletion(forged, fx.deps))
+      .rejects.toThrow(/exact established finalized receipt/);
   });
 
-  it("rejects a recursively unresolved copy even when its local signatures are valid", async () => {
+  it("cannot promote a session rejected by the strict recursive ST-11 closure", async () => {
     const fx = await fixture();
-    await expect(verifyFixedPriceX402AuditCompletion(fx.input, {
-      ...fx.deps,
-      verifyBundle: {
-        ...fx.deps.verifyBundle,
-        resolveAttestationRef: async () => null,
-      },
-    })).rejects.toThrow(/full recursive verification/);
+    verifySellerClosure.mockRejectedValueOnce(new Error(
+      "agreement-commitment is missing from the recursive ST-11 closure",
+    ));
+    await expect(verifyFixedPriceX402AuditCompletion(fx.input, fx.deps))
+      .rejects.toThrow(/agreement-commitment.*recursive ST-11 closure/);
   });
 
-  it("requires authenticated BB-1 publication for write-input mappings", async () => {
+  it("derives write-input mapping from authenticated adapters and requires BB-1", async () => {
     const fx = await fixture();
+    const buyerBinding = binding(fx.buyerBundle, "buyer", fx.buyerNative);
+    const sellerBinding = binding(fx.sellerBundle, "seller", fx.sellerNative);
     const writeInput = {
       ...fx.input,
-      mapping: "write-input" as const,
+      sellerClosure: {
+        ...fx.input.sellerClosure,
+        result: { ...fx.closureResult, binding: sellerBinding },
+      },
       copies: {
         buyer: {
           ...fx.input.copies.buyer,
-          binding: binding(fx.buyerBundle, "buyer", fx.buyerNative),
+          binding: buyerBinding,
         },
         seller: {
           ...fx.input.copies.seller,
-          binding: binding(fx.sellerBundle, "seller", fx.sellerNative),
+          binding: sellerBinding,
         },
       },
     };
-    await expect(verifyFixedPriceX402AuditCompletion(writeInput, fx.deps))
+    const writeDeps = {
+      ...fx.deps,
+      sellerFinalizationProvider: {
+        ...fx.sellerFinalizationProvider,
+        mapping: "write-input" as const,
+      },
+      verifyBundleAnchor: () => ({
+        disposition: "valid" as const,
+        mapping: "write-input" as const,
+      }),
+    };
+    await expect(verifyFixedPriceX402AuditCompletion(writeInput, writeDeps))
       .rejects.toThrow(/requires a BundleBinding verifier/);
     await expect(verifyFixedPriceX402AuditCompletion(writeInput, {
-      ...fx.deps,
+      ...writeDeps,
+      verifyBundleBinding: () => ({ disposition: "valid" }),
+    })).rejects.toThrow(/requires a BundleBinding resolver/);
+    await expect(verifyFixedPriceX402AuditCompletion(writeInput, {
+      ...writeDeps,
+      resolveBundleBinding: () => ({
+        disposition: "present" as const,
+        binding: { ...buyerBinding, nativeAddress: "native:substituted" },
+      }),
+      verifyBundleBinding: () => ({ disposition: "valid" }),
+    })).rejects.toThrow(/not independently resolvable and exact/);
+    await expect(verifyFixedPriceX402AuditCompletion(writeInput, {
+      ...writeDeps,
+      resolveBundleBinding: (_logicalAddress, _signer, role) => ({
+        disposition: "present" as const,
+        binding: role === "buyer" ? buyerBinding : sellerBinding,
+      }),
       verifyBundleBinding: () => ({ disposition: "valid" }),
     })).resolves.toMatchObject({ milestone: "audit-complete" });
+  });
 
-    await expect(verifyFixedPriceX402AuditCompletion({
-      ...writeInput,
-      mapping: "pure",
-    }, {
+  it("never accepts caller-selected pure mapping for Demos", async () => {
+    const fx = await fixture();
+    const input = structuredClone(fx.input);
+    input.copies.buyer.anchorReceipt = receipt(
+      bundleAddress(JOB_ID, "buyer"),
+      fx.buyerNative,
+      attestationBundleHash(fx.buyerBundle),
+      BUYER.did,
+      "demos",
+    );
+    input.copies.seller.anchorReceipt = receipt(
+      bundleAddress(JOB_ID, "seller"),
+      fx.sellerNative,
+      attestationBundleHash(fx.sellerBundle),
+      SELLER.did,
+      "demos",
+    );
+    input.sellerClosure.result.anchorReceipt = input.copies.seller.anchorReceipt;
+    await expect(verifyFixedPriceX402AuditCompletion(input, {
       ...fx.deps,
-      verifyBundleBinding: () => ({ disposition: "valid" }),
-    })).rejects.toThrow(/pure .* mapping must not carry/);
+      verifyBundleAnchor: () => ({ disposition: "valid", mapping: "pure" }),
+    })).rejects.toThrow(/Demos.*write-input mapping/);
+  });
+
+  it("rejects role copies with different agreement or settlement inventories", async () => {
+    const fx = await fixture();
+    const buyerBody = structuredClone(fx.buyerBundle) as FaultAttestationBundle;
+    buyerBody.settlementEvidence = [];
+    const { anchoredByRole: _role, signatures: _signatures, ...unsigned } = buyerBody;
+    const mismatchedBuyer = signBundle(unsigned, "buyer");
+    const input = structuredClone(fx.input);
+    input.copies.buyer.bundle = mismatchedBuyer;
+    input.copies.buyer.anchorReceipt = receipt(
+      bundleAddress(JOB_ID, "buyer"),
+      fx.buyerNative,
+      attestationBundleHash(mismatchedBuyer),
+      BUYER.did,
+    );
+    input.sellerClosure.result.buyerBundle = mismatchedBuyer;
+    await expect(verifyFixedPriceX402AuditCompletion(input, {
+      ...fx.deps,
+      readBundleCopy: (nativeAddress) =>
+        nativeAddress === fx.buyerNative
+          ? mismatchedBuyer as unknown as Record<string, unknown>
+          : fx.sellerBundle as unknown as Record<string, unknown>,
+    })).rejects.toThrow(/different signed scopes/);
   });
 
   it("rejects a bundle roster that contradicts the pinned orchestrator topology", async () => {
@@ -565,7 +645,14 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       bundleHash: h("f"),
       primaryClaim: "did:example:other-orchestrator",
     });
-    await expect(verifyFixedPriceX402AuditCompletion(input, fx.deps))
-      .rejects.toThrow(/seller-as-orchestrator topology/);
+    input.sellerClosure.result.buyerBundle = input.copies.buyer.bundle;
+    await expect(verifyFixedPriceX402AuditCompletion(input, {
+      ...fx.deps,
+      readBundleCopy: (nativeAddress) =>
+        nativeAddress === fx.buyerNative
+          ? input.copies.buyer.bundle as unknown as Record<string, unknown>
+          : fx.sellerBundle as unknown as Record<string, unknown>,
+    }))
+      .rejects.toThrow(/authenticated durable session closure|seller-as-orchestrator topology/);
   });
 });

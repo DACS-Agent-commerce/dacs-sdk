@@ -178,12 +178,21 @@ has become irreversible—an operation cannot relabel the result as an abort
 both opaque audit callbacks have returned, it reports `actor-audit-final` and
 can never assert normative `audit-complete`. Only the asynchronous
 `verifyFixedPriceX402AuditCompletion` gate can make that upgrade. It requires
-both exact v0.3 `FaultAttestationBundle` copies, full signer sets, independently
-readable recursive reference graphs, authenticated finalized CORE §5.1 receipts
-for the bundles and every dependency, a hash-matched artifact read at each
-receipt's exact native address, applicable BB-1 publication, and a unified
-§10.4.3 pair verdict. That preserves role-relative bundle outcomes, absolute
-hashed `faultedParty`, exact type/version, and `phaseSummary`; none is inferred
+the retained `audit-pending` seller session and finalization result, not a
+caller-selected list of expected references. It reuses the seller finalizer's
+strict ST-11 closure verifier for the signed Listing, DACS-2 composites,
+AgreementArtifact, DACS-3 commitment, every executed DACS-4 evidence record,
+and transitive payload/method-evidence chain. It then requires both exact v0.3
+`FaultAttestationBundle` copies, full signer sets, an independent native-address
+read for each role, authenticated finalized CORE §5.1 bundle receipts,
+authenticated logical-to-native mapping, applicable BB-1 publication, exact
+binding readback after BB-4..BB-8 candidate/multiplicity handling, signed-scope
+equality, and a unified §10.4.3 pair verdict. Mapping is established by the
+substrate adapters; it is not selected in the completion input, and a Demos
+receipt can only validate as `write-input` (DEMOS-MAPPING §A.2).
+
+That preserves role-relative bundle outcomes, absolute hashed `faultedParty`,
+exact type/version, and the complete production inventory; none is inferred
 from the scheduler's coarse outcome tokens. A one-sided failed or aborted phase
 blocks any combined success projection while its terminal audit is pending.
 Contradictory actor phase terminals are rejected rather than hidden behind a

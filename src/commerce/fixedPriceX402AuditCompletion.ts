@@ -2,7 +2,6 @@ import { types as nodeTypes } from "node:util";
 
 import type {
   AnchorReceipt,
-  AttestationRef,
   BundleBinding,
   FaultAttestationBundle,
 } from "../artifacts/types.js";
@@ -26,11 +25,16 @@ import {
   type BundleCopyDeps,
 } from "../agent/bundleCopyValidity.js";
 import { bundleConsistency } from "../agent/bundleConsistency.js";
-import { attestationBundleHash } from "../agent/twoSidedBundle.js";
 import {
-  verifyBundleCore,
-  type VerifyBundleDeps,
-} from "../agent/verifyBundleCore.js";
+  attestationBundleHash,
+  bundleSignedScope,
+} from "../agent/twoSidedBundle.js";
+import {
+  verifyFinalizedSellerBundleReadOnly,
+  type FinalizedSellerBundle,
+  type SellerBundleFinalizationReadProvider,
+  type VerifyFinalizedSellerBundleInput,
+} from "../seller/bundleFinalization.js";
 import {
   combineFixedPriceX402OrderStatus,
   type FixedPriceX402CombinedOrderStatus,
@@ -42,19 +46,39 @@ export type FixedPriceX402AuditVerificationDisposition =
   | { disposition: "valid" }
   | { disposition: "invalid" | "indeterminate" | "error"; reason: string };
 
+/**
+ * Authenticated CORE §6.2 mapping classification for one independently read
+ * role-owned bundle copy. `valid` means the adapter has also authenticated the
+ * supplied receipt and, for a pure mapping, re-derived `nativeAddress` from
+ * `logicalAddress`. Demos is always the write-input case (DEMOS-MAPPING §A.2).
+ */
+export type FixedPriceX402BundleAnchorVerificationDisposition =
+  | { disposition: "valid"; mapping: "pure" | "write-input" }
+  | { disposition: "invalid" | "indeterminate" | "error"; reason: string };
+
 export interface FixedPriceX402CompletedBundleCopy {
   role: FixedPriceX402CoordinatorRole;
   nativeAddress: string;
   bundle: Readonly<FaultAttestationBundle>;
   anchorReceipt: Readonly<AnchorReceipt>;
-  /** Required only for a write-input SR-2 mapping. */
+  /** Required only when this copy's authenticated substrate mapping is write-input. */
   binding?: Readonly<BundleBinding>;
+}
+
+/**
+ * The exact durable `audit-pending` session closure and retained seller
+ * finalization result. The SDK re-authenticates both with the existing strict
+ * seller ST-11 verifier; this is not a caller-selected expected-ref list.
+ */
+export interface FixedPriceX402SellerCompletionClosure {
+  verificationInput: Readonly<VerifyFinalizedSellerBundleInput>;
+  result: Readonly<FinalizedSellerBundle>;
 }
 
 export interface FixedPriceX402AuditCompletionInput {
   buyer: Readonly<FixedPriceX402OrderStatus>;
   seller: Readonly<FixedPriceX402OrderStatus>;
-  mapping: "pure" | "write-input";
+  sellerClosure: Readonly<FixedPriceX402SellerCompletionClosure>;
   copies: Readonly<{
     buyer: Readonly<FixedPriceX402CompletedBundleCopy>;
     seller: Readonly<FixedPriceX402CompletedBundleCopy>;
@@ -62,46 +86,74 @@ export interface FixedPriceX402AuditCompletionInput {
 }
 
 export interface FixedPriceX402AuditCompletionDeps {
-  /** Recursive DACS-5 verifier for the exact independently readable bundle. */
-  verifyBundle: VerifyBundleDeps;
-  /** Exact signer-set / address-role verifier for each fetched copy. */
-  bundleCopyVerifier: BundleCopyDeps;
   /**
-   * Resolve the finalized CORE §5.1 receipt for every reference carried by the
-   * bundle. `null` is fail-closed; an artifact read is not receipt finality.
+   * Existing strict seller finalization provider. Its dependency graph is the
+   * authoritative completed-session manifest: Listing, DACS-2 composites,
+   * AgreementArtifact, DACS-3 commitment, every executed DACS-4 evidence
+   * record, and the complete transitive DPA closure are all verified here.
    */
-  resolveFinalizedDependencyReceipt(
-    ref: Readonly<AttestationRef>,
-    bundle: Readonly<FaultAttestationBundle>,
-    role: FixedPriceX402CoordinatorRole,
-  ): Promise<Readonly<AnchorReceipt> | null> | Readonly<AnchorReceipt> | null;
-  /**
-   * Independently read the referenced artifact at the authenticated receipt's
-   * exact native address (ST-11 step 2). Returning `null` is fail-closed.
-   */
-  readFinalizedDependencyArtifact(
+  sellerFinalizationProvider: SellerBundleFinalizationReadProvider;
+  /** Independently read an exact role-owned bundle at its native address. */
+  readBundleCopy(
     nativeAddress: string,
-    ref: Readonly<AttestationRef>,
-    bundle: Readonly<FaultAttestationBundle>,
     role: FixedPriceX402CoordinatorRole,
-  ): Promise<Readonly<Record<string, unknown>> | null> |
-    Readonly<Record<string, unknown>> | null;
-  /** Method-native authenticity/finality gate for dependency and bundle receipts. */
-  verifyAnchorReceipt(
-    receipt: Readonly<AnchorReceipt>,
   ):
-    | Promise<FixedPriceX402AuditVerificationDisposition>
-    | FixedPriceX402AuditVerificationDisposition;
+    | Promise<Readonly<Record<string, unknown>> | null>
+    | Readonly<Record<string, unknown>>
+    | null;
   /**
-   * Required for BB-1..BB-8 on write-input mappings. It must authenticate the
-   * binding's method-native publication/finality, not merely recheck its local
-   * signature. Ignored on pure mappings.
+   * Authenticate this exact bundle receipt and establish its mapping class.
+   * For a pure mapping the adapter MUST re-derive the native address. For a
+   * write-input mapping it MUST authenticate the receipt's native publication;
+   * BB-1..BB-8 verification is additionally required below.
+   */
+  verifyBundleAnchor(
+    copy: Readonly<FixedPriceX402CompletedBundleCopy>,
+  ):
+    | Promise<FixedPriceX402BundleAnchorVerificationDisposition>
+    | FixedPriceX402BundleAnchorVerificationDisposition;
+  /**
+   * Required for each write-input copy. The adapter must apply BB-4..BB-8,
+   * including candidate authorization, multiplicity, fetch bounds, and
+   * suppression diligence, before returning one resolved binding.
+   */
+  resolveBundleBinding?: (
+    logicalAddress: string,
+    signer: string,
+    role: FixedPriceX402CoordinatorRole,
+  ) =>
+    | Promise<
+      | { disposition: "present"; binding: unknown }
+      | { disposition: "absent" }
+      | { disposition: "indeterminate"; reason: string }
+    >
+    | { disposition: "present"; binding: unknown }
+    | { disposition: "absent" }
+    | { disposition: "indeterminate"; reason: string };
+  /**
+   * Required for each write-input copy. It authenticates method-native
+   * publication/finality after the SDK's local checks and exact resolver
+   * readback comparison.
    */
   verifyBundleBinding?: (
     binding: Readonly<BundleBinding>,
   ) =>
     | Promise<FixedPriceX402AuditVerificationDisposition>
     | FixedPriceX402AuditVerificationDisposition;
+}
+
+interface CapturedAuditCompletionDeps {
+  sellerFinalizationProvider: SellerBundleFinalizationReadProvider;
+  sellerMapping: "pure" | "write-input";
+  bundleCopyVerifier: BundleCopyDeps;
+  readBundleCopy: FixedPriceX402AuditCompletionDeps["readBundleCopy"];
+  verifyBundleAnchor: FixedPriceX402AuditCompletionDeps["verifyBundleAnchor"];
+  resolveBundleBinding?: NonNullable<
+    FixedPriceX402AuditCompletionDeps["resolveBundleBinding"]
+  >;
+  verifyBundleBinding?: NonNullable<
+    FixedPriceX402AuditCompletionDeps["verifyBundleBinding"]
+  >;
 }
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -137,6 +189,25 @@ function verificationDisposition(
       retained.disposition === "error") && exactKeys(retained, ["disposition", "reason"]) &&
       typeof retained.reason === "string" && retained.reason.length > 0) {
     return retained as unknown as FixedPriceX402AuditVerificationDisposition;
+  }
+  throw new DacsError(`${label} returned a malformed disposition`);
+}
+
+function anchorVerificationDisposition(
+  value: unknown,
+  label: string,
+): FixedPriceX402BundleAnchorVerificationDisposition {
+  const retained = snapshotCanonicalJsonRead(value, `${label} disposition`);
+  if (!isRecord(retained)) throw new DacsError(`${label} returned a malformed disposition`);
+  if (retained.disposition === "valid" &&
+      exactKeys(retained, ["disposition", "mapping"]) &&
+      (retained.mapping === "pure" || retained.mapping === "write-input")) {
+    return retained as unknown as FixedPriceX402BundleAnchorVerificationDisposition;
+  }
+  if ((retained.disposition === "invalid" || retained.disposition === "indeterminate" ||
+      retained.disposition === "error") && exactKeys(retained, ["disposition", "reason"]) &&
+      typeof retained.reason === "string" && retained.reason.length > 0) {
+    return retained as unknown as FixedPriceX402BundleAnchorVerificationDisposition;
   }
   throw new DacsError(`${label} returned a malformed disposition`);
 }
@@ -192,65 +263,6 @@ function dataProperty<T>(source: object, key: string, label: string): T {
   throw new DacsError(`${label}.${key} is required`);
 }
 
-function captureBundleVerifier(value: unknown): VerifyBundleDeps {
-  const source = objectBoundary(value, "recursive bundle verifier");
-  const readArtifact = method<VerifyBundleDeps["readArtifact"]>(
-    source,
-    "readArtifact",
-    "recursive bundle verifier",
-  )!;
-  const resolvePublicKey = method<VerifyBundleDeps["resolvePublicKey"]>(
-    source,
-    "resolvePublicKey",
-    "recursive bundle verifier",
-  )!;
-  const verify = method<VerifyBundleDeps["verify"]>(
-    source,
-    "verify",
-    "recursive bundle verifier",
-  )!;
-  const resolveAttestationRef = method<NonNullable<VerifyBundleDeps["resolveAttestationRef"]>>(
-    source,
-    "resolveAttestationRef",
-    "recursive bundle verifier",
-    true,
-  );
-  const resolveListingRef = method<NonNullable<VerifyBundleDeps["resolveListingRef"]>>(
-    source,
-    "resolveListingRef",
-    "recursive bundle verifier",
-    true,
-  );
-  const resolveRef = method<NonNullable<VerifyBundleDeps["resolveRef"]>>(
-    source,
-    "resolveRef",
-    "recursive bundle verifier",
-    true,
-  );
-  const verifyEvidence = method<NonNullable<VerifyBundleDeps["verifyEvidence"]>>(
-    source,
-    "verifyEvidence",
-    "recursive bundle verifier",
-    true,
-  );
-  const verifyCompositeRecord = method<NonNullable<VerifyBundleDeps["verifyCompositeRecord"]>>(
-    source,
-    "verifyCompositeRecord",
-    "recursive bundle verifier",
-    true,
-  );
-  return Object.freeze({
-    readArtifact,
-    resolvePublicKey,
-    verify,
-    ...(resolveAttestationRef ? { resolveAttestationRef } : {}),
-    ...(resolveListingRef ? { resolveListingRef } : {}),
-    ...(resolveRef ? { resolveRef } : {}),
-    ...(verifyEvidence ? { verifyEvidence } : {}),
-    ...(verifyCompositeRecord ? { verifyCompositeRecord } : {}),
-  });
-}
-
 function captureCopyVerifier(value: unknown): BundleCopyDeps {
   const source = objectBoundary(value, "bundle-copy verifier");
   const resolve = method<BundleCopyDeps["resolvePublicKey"]>(
@@ -263,7 +275,7 @@ function captureCopyVerifier(value: unknown): BundleCopyDeps {
     "verify",
     "bundle-copy verifier",
   )!;
-  const captured: BundleCopyDeps = {
+  return Object.freeze({
     resolvePublicKey: async (claim: string) => {
       const key = await resolve(claim);
       return key instanceof Uint8Array ? new Uint8Array(key) : null;
@@ -272,20 +284,20 @@ function captureCopyVerifier(value: unknown): BundleCopyDeps {
       message: Uint8Array,
       signature: Uint8Array,
       publicKey: Uint8Array,
-    ) =>
-      await verify(
-        new Uint8Array(message),
-        new Uint8Array(signature),
-        new Uint8Array(publicKey),
-      ) === true,
-  };
-  return Object.freeze(captured);
+    ) => await verify(
+      new Uint8Array(message),
+      new Uint8Array(signature),
+      new Uint8Array(publicKey),
+    ) === true,
+  });
 }
 
 function captureInput(value: unknown): FixedPriceX402AuditCompletionInput {
   const retained = snapshotCanonicalJsonRead(value, "fixed-price x402 audit completion input");
-  if (!isRecord(retained) || !exactKeys(retained, ["buyer", "seller", "mapping", "copies"]) ||
-      (retained.mapping !== "pure" && retained.mapping !== "write-input") ||
+  if (!isRecord(retained) ||
+      !exactKeys(retained, ["buyer", "seller", "sellerClosure", "copies"]) ||
+      !isRecord(retained.sellerClosure) ||
+      !exactKeys(retained.sellerClosure, ["verificationInput", "result"]) ||
       !isRecord(retained.copies) || !exactKeys(retained.copies, ["buyer", "seller"])) {
     throw new DacsError("fixed-price x402 audit completion input is malformed");
   }
@@ -302,67 +314,87 @@ function captureInput(value: unknown): FixedPriceX402AuditCompletionInput {
   return retained as unknown as FixedPriceX402AuditCompletionInput;
 }
 
-function captureDeps(value: unknown): FixedPriceX402AuditCompletionDeps {
+function captureDeps(value: unknown): CapturedAuditCompletionDeps {
   const source = objectBoundary(value, "fixed-price x402 audit completion dependencies");
-  const resolveReceipt = method<
-    FixedPriceX402AuditCompletionDeps["resolveFinalizedDependencyReceipt"]
-  >(source, "resolveFinalizedDependencyReceipt", "fixed-price x402 audit completion dependencies")!;
-  const verifyReceipt = method<FixedPriceX402AuditCompletionDeps["verifyAnchorReceipt"]>(
+  const readBundleCopy = method<FixedPriceX402AuditCompletionDeps["readBundleCopy"]>(
     source,
-    "verifyAnchorReceipt",
+    "readBundleCopy",
     "fixed-price x402 audit completion dependencies",
   )!;
-  const readDependency = method<
-    FixedPriceX402AuditCompletionDeps["readFinalizedDependencyArtifact"]
-  >(source, "readFinalizedDependencyArtifact", "fixed-price x402 audit completion dependencies")!;
-  const verifyBinding = method<NonNullable<FixedPriceX402AuditCompletionDeps["verifyBundleBinding"]>>(
+  const verifyBundleAnchor = method<FixedPriceX402AuditCompletionDeps["verifyBundleAnchor"]>(
+    source,
+    "verifyBundleAnchor",
+    "fixed-price x402 audit completion dependencies",
+  )!;
+  const verifyBundleBinding = method<
+    NonNullable<FixedPriceX402AuditCompletionDeps["verifyBundleBinding"]>
+  >(
     source,
     "verifyBundleBinding",
     "fixed-price x402 audit completion dependencies",
     true,
   );
-  const verifyBundle = dataProperty<VerifyBundleDeps>(
+  const resolveBundleBinding = method<
+    NonNullable<FixedPriceX402AuditCompletionDeps["resolveBundleBinding"]>
+  >(
     source,
-    "verifyBundle",
+    "resolveBundleBinding",
+    "fixed-price x402 audit completion dependencies",
+    true,
+  );
+  const sellerFinalizationProvider = dataProperty<SellerBundleFinalizationReadProvider>(
+    source,
+    "sellerFinalizationProvider",
     "fixed-price x402 audit completion dependencies",
   );
-  const bundleCopyVerifier = dataProperty<BundleCopyDeps>(
-    source,
+  const provider = objectBoundary(
+    sellerFinalizationProvider,
+    "seller finalization provider",
+  ) as SellerBundleFinalizationReadProvider;
+  const sellerMapping = dataProperty<unknown>(
+    provider,
+    "mapping",
+    "seller finalization provider",
+  );
+  if (sellerMapping !== "pure" && sellerMapping !== "write-input") {
+    throw new DacsError("seller finalization provider.mapping is malformed");
+  }
+  const bundleCopyVerifier = captureCopyVerifier(dataProperty<BundleCopyDeps>(
+    provider,
     "bundleCopyVerifier",
-    "fixed-price x402 audit completion dependencies",
-  );
-  const captured: FixedPriceX402AuditCompletionDeps = {
-    verifyBundle: captureBundleVerifier(verifyBundle),
-    bundleCopyVerifier: captureCopyVerifier(bundleCopyVerifier),
-    resolveFinalizedDependencyReceipt: async (
-      ref: Readonly<AttestationRef>,
-      bundle: Readonly<FaultAttestationBundle>,
+    "seller finalization provider",
+  ));
+  return Object.freeze({
+    sellerFinalizationProvider: provider,
+    sellerMapping,
+    bundleCopyVerifier,
+    readBundleCopy: async (
+      nativeAddress: string,
       role: FixedPriceX402CoordinatorRole,
     ) => {
-      const receipt = await resolveReceipt(clone(ref), clone(bundle), role);
-      return receipt === null
+      const bundle = await readBundleCopy(nativeAddress, role);
+      return bundle === null
         ? null
-        : snapshotCanonicalJsonRead(receipt, `${role} dependency receipt`);
+        : snapshotCanonicalJsonRead(bundle, `${role} native bundle readback`);
     },
-    readFinalizedDependencyArtifact: async (nativeAddress, ref, bundle, role) => {
-      const artifact = await readDependency(
-        nativeAddress,
-        clone(ref),
-        clone(bundle),
-        role,
-      );
-      return artifact === null
-        ? null
-        : snapshotCanonicalJsonRead(artifact, `${role} native dependency artifact`);
-    },
-    verifyAnchorReceipt: async (receipt: Readonly<AnchorReceipt>) =>
-      verifyReceipt(clone(receipt)),
-    ...(verifyBinding
-      ? { verifyBundleBinding: async (binding: Readonly<BundleBinding>) =>
-          verifyBinding(clone(binding)) }
+    verifyBundleAnchor: async (
+      copy: Readonly<FixedPriceX402CompletedBundleCopy>,
+    ) => verifyBundleAnchor(clone(copy)),
+    ...(resolveBundleBinding
+      ? { resolveBundleBinding: async (
+          logicalAddress: string,
+          signer: string,
+          role: FixedPriceX402CoordinatorRole,
+        ) => snapshotCanonicalJsonRead(
+          await resolveBundleBinding(logicalAddress, signer, role),
+          `${role} BundleBinding resolution`,
+        ) }
       : {}),
-  };
-  return Object.freeze(captured);
+    ...(verifyBundleBinding
+      ? { verifyBundleBinding: async (binding: Readonly<BundleBinding>) =>
+          verifyBundleBinding(clone(binding)) }
+      : {}),
+  });
 }
 
 function exact(left: unknown, right: unknown): boolean {
@@ -384,51 +416,29 @@ function roleParty(
   return matches[0]!.primaryClaim;
 }
 
-function referencedArtifacts(bundle: Readonly<FaultAttestationBundle>): AttestationRef[] {
-  return [
-    ...(bundle.agreementRef ? [bundle.agreementRef] : []),
-    ...bundle.vetRecords,
-    ...bundle.settlementEvidence,
-    ...(bundle.amendments ?? []),
-    ...(bundle.ratingRefs ?? []),
-  ].map(clone);
-}
-
-async function requireValidReceipt(
-  receipt: unknown,
-  expected: Readonly<{
-    logicalAddress: string;
-    nativeAddress?: string;
-    contentHash: string;
-    writer?: string;
-  }>,
-  deps: FixedPriceX402AuditCompletionDeps,
-  label: string,
-): Promise<AnchorReceipt> {
+function requireExactReceipt(
+  copy: Readonly<FixedPriceX402CompletedBundleCopy>,
+  bundleHash: string,
+): AnchorReceipt {
+  const receipt = copy.anchorReceipt;
+  const writer = roleParty(copy.bundle, copy.role);
   if (!isAnchorReceipt(receipt) || receipt.state !== "finalized" ||
       receipt.observationDisposition !== "established" ||
-      receipt.logicalAddress !== expected.logicalAddress ||
-      receipt.contentHash !== expected.contentHash ||
-      (expected.nativeAddress !== undefined && receipt.nativeAddress !== expected.nativeAddress) ||
-      (expected.writer !== undefined &&
-        !sameCanonicalClaimIdentity(receipt.writer, expected.writer))) {
-    throw new DacsError(`${label} is not the exact established finalized receipt`);
+      receipt.logicalAddress !== bundleAddress(copy.bundle.jobId, copy.role) ||
+      receipt.nativeAddress !== copy.nativeAddress ||
+      receipt.contentHash !== bundleHash ||
+      !sameCanonicalClaimIdentity(receipt.writer, writer)) {
+    throw new DacsError(
+      `${copy.role} bundle receipt is not the exact established finalized receipt`,
+    );
   }
-  const retained = clone(receipt);
-  const disposition = verificationDisposition(
-    await deps.verifyAnchorReceipt(clone(retained)),
-    `${label} verifier`,
-  );
-  if (disposition.disposition !== "valid") {
-    throw new DacsError(`${label} verification is ${disposition.disposition}`);
-  }
-  return retained;
+  return clone(receipt);
 }
 
 async function requireBinding(
   copy: Readonly<FixedPriceX402CompletedBundleCopy>,
   bundleHash: string,
-  deps: FixedPriceX402AuditCompletionDeps,
+  deps: CapturedAuditCompletionDeps,
 ): Promise<void> {
   const binding = copy.binding;
   const party = roleParty(copy.bundle, copy.role);
@@ -459,6 +469,31 @@ async function requireBinding(
   if (!deps.verifyBundleBinding) {
     throw new DacsError("write-input audit requires a BundleBinding verifier");
   }
+  if (!deps.resolveBundleBinding) {
+    throw new DacsError("write-input audit requires a BundleBinding resolver");
+  }
+  const lookup = await deps.resolveBundleBinding(
+    binding.logicalAddress,
+    binding.signer,
+    copy.role,
+  );
+  if (!isRecord(lookup) || !(
+    (lookup.disposition === "present" && exactKeys(lookup, ["disposition", "binding"])) ||
+    (lookup.disposition === "absent" && exactKeys(lookup, ["disposition"])) ||
+    (lookup.disposition === "indeterminate" &&
+      exactKeys(lookup, ["disposition", "reason"]) &&
+      typeof lookup.reason === "string" && lookup.reason.length > 0)
+  )) {
+    throw new DacsError(`${copy.role} BundleBinding resolver returned a malformed result`);
+  }
+  if (lookup.disposition !== "present" || !isBundleBinding(lookup.binding) ||
+      !exact(lookup.binding, binding)) {
+    throw new DacsError(
+      lookup.disposition === "indeterminate"
+        ? `completed ${copy.role} BundleBinding resolution is indeterminate`
+        : `completed ${copy.role} BundleBinding is not independently resolvable and exact`,
+    );
+  }
   const disposition = verificationDisposition(
     await deps.verifyBundleBinding(clone(binding)),
     `${copy.role} BundleBinding verifier`,
@@ -473,9 +508,11 @@ async function requireBinding(
 async function verifyCopy(
   copy: Readonly<FixedPriceX402CompletedBundleCopy>,
   status: Readonly<FixedPriceX402OrderStatus>,
-  mapping: "pure" | "write-input",
-  deps: FixedPriceX402AuditCompletionDeps,
-): Promise<Record<string, unknown>> {
+  deps: CapturedAuditCompletionDeps,
+): Promise<{
+  bundle: Record<string, unknown>;
+  mapping: "pure" | "write-input";
+}> {
   if (copy.role !== status.role || !isFaultAttestationBundle(copy.bundle) ||
       copy.bundle.faultBundleVersion !== "1" || copy.bundle.bundleVersion !== undefined ||
       copy.bundle.outcome !== "completed" || copy.bundle.faultedParty !== "none" ||
@@ -505,62 +542,39 @@ async function verifyCopy(
     );
   }
 
-  const recursive = await verifyBundleCore(copy.nativeAddress, deps.verifyBundle);
-  if (!recursive.ok || !recursive.fullyVerified || !recursive.bundle ||
-      !isFaultAttestationBundle(recursive.bundle) || !exact(recursive.bundle, copy.bundle)) {
+  const readback = await deps.readBundleCopy(copy.nativeAddress, copy.role);
+  if (!readback || !exact(readback, copy.bundle)) {
     throw new DacsError(
-      `completed ${copy.role} bundle is not independently resolvable with full recursive verification`,
+      `completed ${copy.role} bundle is not independently readable at its exact native address`,
     );
   }
 
   const bundleHash = attestationBundleHash(copy.bundle);
-  await requireValidReceipt(copy.anchorReceipt, {
-    logicalAddress: bundleAddress(copy.bundle.jobId, copy.role),
-    nativeAddress: copy.nativeAddress,
-    contentHash: bundleHash,
-    writer: roleParty(copy.bundle, copy.role),
-  }, deps, `${copy.role} bundle receipt`);
-
-  for (const ref of referencedArtifacts(copy.bundle)) {
-    const receipt = await deps.resolveFinalizedDependencyReceipt(
-      clone(ref),
-      clone(copy.bundle),
-      copy.role,
+  const receipt = requireExactReceipt(copy, bundleHash);
+  const anchorDisposition = anchorVerificationDisposition(
+    await deps.verifyBundleAnchor(clone(copy)),
+    `${copy.role} bundle anchor verifier`,
+  );
+  if (anchorDisposition.disposition !== "valid") {
+    throw new DacsError(
+      `completed ${copy.role} bundle anchor verification is ${anchorDisposition.disposition}`,
     );
-    if (!receipt) {
-      throw new DacsError(
-        `completed ${copy.role} bundle dependency ${ref.anchor.locator} has no finalized receipt`,
-      );
-    }
-    const retainedReceipt = await requireValidReceipt(receipt, {
-      logicalAddress: ref.anchor.locator,
-      contentHash: ref.contentHash,
-    }, deps, `${copy.role} dependency ${ref.anchor.locator}`);
-    if (!copy.bundle.parties.some((party) =>
-      sameCanonicalClaimIdentity(party.primaryClaim, retainedReceipt.writer))) {
-      throw new DacsError(
-        `completed ${copy.role} dependency ${ref.anchor.locator} has an unauthorized writer`,
-      );
-    }
-    const artifact = await deps.readFinalizedDependencyArtifact(
-      retainedReceipt.nativeAddress,
-      clone(ref),
-      clone(copy.bundle),
-      copy.role,
-    );
-    if (!artifact || contentHash(artifact) !== ref.contentHash) {
-      throw new DacsError(
-        `completed ${copy.role} dependency ${ref.anchor.locator} is not readable at its finalized native address`,
-      );
-    }
   }
-
+  const mapping = anchorDisposition.mapping;
+  if (receipt.substrate === "demos" && mapping !== "write-input") {
+    throw new DacsError("Demos bundle anchors must use the write-input mapping");
+  }
+  if (copy.role === "seller" && mapping !== deps.sellerMapping) {
+    throw new DacsError(
+      "seller bundle anchor mapping contradicts its authenticated finalization provider",
+    );
+  }
   if (mapping === "write-input") {
     await requireBinding(copy, bundleHash, deps);
   } else if (copy.binding !== undefined) {
     throw new DacsError(`pure ${copy.role} bundle mapping must not carry a BundleBinding`);
   }
-  return copyObject;
+  return { bundle: copyObject, mapping };
 }
 
 /**
@@ -568,9 +582,11 @@ async function verifyCopy(
  * 81ded2b49851d8fa17399e3fdade9e36e33a4ff7.
  *
  * The synchronous combiner is intentionally operational and can never return
- * `audit-complete`. Only this function upgrades a pair after independently
- * verifying both finalized copies, their complete recursive reference graphs,
- * every CORE §5.1 receipt, pair consistency, and applicable BB-1 publication.
+ * `audit-complete`. This function first re-authenticates the exact durable
+ * seller session with the SDK's strict finalization verifier, including its
+ * complete transitive dependency closure. It then independently reads and
+ * authenticates each role-owned bundle receipt/mapping/binding and requires
+ * both copies to carry the byte-identical signed production scope.
  */
 export async function verifyFixedPriceX402AuditCompletion(
   input: Readonly<FixedPriceX402AuditCompletionInput>,
@@ -592,13 +608,40 @@ export async function verifyFixedPriceX402AuditCompletion(
       "audit completion requires both operational audit tracks to reference their exact bundle",
     );
   }
-  const [buyerBundle, sellerBundle] = await Promise.all([
-    verifyCopy(retained.copies.buyer, retained.buyer, retained.mapping, capturedDeps),
-    verifyCopy(retained.copies.seller, retained.seller, retained.mapping, capturedDeps),
+
+  const verifiedClosure = await verifyFinalizedSellerBundleReadOnly(
+    clone(retained.sellerClosure.verificationInput),
+    clone(retained.sellerClosure.result),
+    capturedDeps.sellerFinalizationProvider,
+  );
+  if (verifiedClosure.state !== "finalised" ||
+      verifiedClosure.nativeAddress !== retained.copies.seller.nativeAddress ||
+      !exact(verifiedClosure.anchorReceipt, retained.copies.seller.anchorReceipt) ||
+      !exact(verifiedClosure.sellerBundle, retained.copies.seller.bundle) ||
+      !exact(verifiedClosure.buyerBundle, retained.copies.buyer.bundle) ||
+      ((verifiedClosure.binding !== undefined ||
+        retained.copies.seller.binding !== undefined) &&
+        !exact(verifiedClosure.binding, retained.copies.seller.binding)) ||
+      verifiedClosure.bundleContentHash !==
+        attestationBundleHash(retained.copies.seller.bundle)) {
+    throw new DacsError(
+      "completed bundle copies do not match the authenticated durable session closure",
+    );
+  }
+
+  const [buyerCopy, sellerCopy] = await Promise.all([
+    verifyCopy(retained.copies.buyer, retained.buyer, capturedDeps),
+    verifyCopy(retained.copies.seller, retained.seller, capturedDeps),
   ]);
+  if (!exact(
+    bundleSignedScope(retained.copies.buyer.bundle),
+    bundleSignedScope(retained.copies.seller.bundle),
+  )) {
+    throw new DacsError("completed buyer and seller bundles carry different signed scopes");
+  }
   const consistency = await bundleConsistency({
-    buyer: { disposition: "present", bundle: buyerBundle },
-    seller: { disposition: "present", bundle: sellerBundle },
+    buyer: { disposition: "present", bundle: buyerCopy.bundle },
+    seller: { disposition: "present", bundle: sellerCopy.bundle },
   }, {
     isValid: async (bundle, role) => {
       const verdict = await verifyBundleCopy(bundle, role, capturedDeps.bundleCopyVerifier);
