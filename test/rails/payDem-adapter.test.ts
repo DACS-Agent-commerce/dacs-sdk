@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TransientError } from "../../src/errors.js";
-import { createPayDemRail } from "../../src/rails/payDem.js";
+import {
+  PayDemIncludedNonceVisibilityError,
+  createPayDemRail,
+} from "../../src/rails/payDem.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
 const RECIPIENT = `0x${"cd".repeat(32)}`;
@@ -130,7 +133,13 @@ describe("createPayDemRail nonce coordination", () => {
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(TransientError);
+    expect(error).toBeInstanceOf(PayDemIncludedNonceVisibilityError);
     expect(error).toMatchObject({ category: "transient" });
+    expect(error).toMatchObject({
+      txHash: "tx-pay-dem",
+      blockNumber: 42,
+      nonce: 7,
+    });
     expect((error as Error).message).toMatch(
       /was included, but account nonce 7 did not become readable/,
     );
@@ -290,6 +299,44 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).rejects.toThrow(/no unambiguous bound OS debit/);
+    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { fees: null }])(
+    "does not fall back when a non-null gas operation omits authoritative fees",
+    async (gasOperation) => {
+      const confirmed = await sdk.confirm();
+      confirmed.response.data.gas_operation = gasOperation;
+      sdk.confirm.mockResolvedValue(confirmed);
+      const rail = await createPayDemRail({
+        rpc: "https://node.test",
+        secret: "test-secret",
+        maxTotalDebitOs: 3_000_000_000n,
+      });
+
+      await expect(
+        rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
+      ).rejects.toThrow(/no unambiguous bound OS debit/);
+      expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    },
+  );
+
+  it("captures the debit ceiling exactly once before asynchronous setup", async () => {
+    let reads = 0;
+    const config = {
+      rpc: "https://node.test",
+      secret: "test-secret",
+      get maxTotalDebitOs(): bigint | undefined {
+        reads += 1;
+        return reads === 1 ? 1_500_000_000n : undefined;
+      },
+    };
+    const rail = await createPayDemRail(config);
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
+    ).rejects.toThrow(/exceeds maxTotalDebitOs/);
+    expect(reads).toBe(1);
     expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
   });
 

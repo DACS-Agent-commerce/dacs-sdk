@@ -5,14 +5,19 @@ import {
   createPayDemSellerObserver,
 } from "../../src/index.js";
 import { DemosAdapter } from "../../src/substrate/index.js";
+import {
+  executePayDemFundedRun,
+  recordPayDemFundedRunOutcome,
+} from "./pay-dem-funded-run.js";
 
 /**
  * Guarded funded proof for the native DACS-4 §9.5.9 boundary.
  *
  * This test performs exactly one buyer-to-seller native transfer. It remains
  * skipped unless two independent wallets, their expected DIDs, an explicit OS
- * amount, and LIVE_PAY_DEM_CONFIRM=1 are all supplied. CI never supplies that
- * confirmation and therefore cannot spend funds.
+ * amount and total-debit ceiling, a fresh run id, a durable private marker
+ * directory, and LIVE_PAY_DEM_CONFIRM=1 are all supplied. CI never supplies
+ * that confirmation and therefore cannot spend funds.
  */
 const REQUIRED_ENV = [
   "DEMOS_RPC",
@@ -100,24 +105,54 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
       "buyer-balance-below-max-total-debit",
     );
 
-    // Explicit confirmation is checked immediately before the only write.
-    requireCondition(process.env.LIVE_PAY_DEM_CONFIRM === "1", "spend-not-confirmed");
     const rail = await createPayDemRail({
       rpc,
       secret: process.env.BUYER_WALLET!,
       network: "demos",
       maxTotalDebitOs,
     });
-    const settlement = await rail.settle({
-      recipient: sellerAddress,
-      amount: amountText,
-      network: "demos",
+    // Explicit confirmation and the durable one-shot marker are checked and
+    // armed immediately before the only irreversible call. The marker is never
+    // removed, including when the settlement response is ambiguous.
+    requireCondition(process.env.LIVE_PAY_DEM_CONFIRM === "1", "spend-not-confirmed");
+    const { marker, result: settlement } = await executePayDemFundedRun(
+      {
+        directory: process.env.LIVE_PAY_DEM_MARKER_DIR!,
+        runId: process.env.LIVE_PAY_DEM_RUN_ID!,
+        payer: buyerAddress,
+        payee: sellerAddress,
+        amountOs: amountText,
+        maxTotalDebitOs: maxTotalDebitText,
+        network: "demos",
+      },
+      () => rail.settle({
+        recipient: sellerAddress,
+        amount: amountText,
+        network: "demos",
+      }),
+    );
+
+    // `ok:false` means only that inclusion was not observed. A broadcast/wait
+    // timeout can still hide an included transfer, so preserve the signed hash
+    // for read-only reconciliation and never claim that payment did not land.
+    if (!settlement.ok || !settlement.txHash || settlement.blockNumber === undefined) {
+      await recordPayDemFundedRunOutcome(marker, {
+        status: "unresolved",
+        reason: "inclusion-not-observed",
+        ...(settlement.txHash ? { txHash: settlement.txHash } : {}),
+      });
+      throw new Error(
+        `pay-dem-live:settlement-unresolved-do-not-rerun:${marker.markerId}`,
+      );
+    }
+    await recordPayDemFundedRunOutcome(marker, {
+      status: "included",
+      txHash: settlement.txHash,
+      blockNumber: settlement.blockNumber,
     });
-    requireCondition(settlement.ok, "transfer-not-included");
-    requireCondition(!!settlement.txHash, "transfer-hash-missing");
 
     const observer = createPayDemSellerObserver({ rpc });
-    const first = await observer.observeDemosTransfer(settlement.txHash!);
+    const first = await observer.observeDemosTransfer(settlement.txHash);
     expect(first).toMatchObject({
       status: "included",
       payer: buyerAddress.replace(/^0x/i, "").toLowerCase(),
@@ -128,7 +163,7 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
 
     // Observation is read-only and replay-stable; it never resubmits payment.
     await expect(
-      observer.observeDemosTransfer(settlement.txHash!),
+      observer.observeDemosTransfer(settlement.txHash),
     ).resolves.toEqual(first);
   }, 180_000);
 });

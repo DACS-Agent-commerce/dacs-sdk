@@ -206,6 +206,37 @@ export interface PayDemRail {
   settle(params: PayDemSettleParams): Promise<SettleResult>;
 }
 
+/**
+ * Inclusion was observed, but the payer account's consumed nonce was not yet
+ * readable. The transfer must not be resubmitted; the public reconciliation
+ * fields let guarded operators persist and inspect the original payment.
+ */
+export class PayDemIncludedNonceVisibilityError extends TransientError {
+  readonly txHash: string;
+  readonly blockNumber?: number;
+  readonly nonce: number;
+
+  constructor(input: {
+    txHash: string;
+    blockNumber?: number;
+    nonce: number;
+    cause?: unknown;
+  }) {
+    super(
+      `pay-dem: transfer ${input.txHash} was included, but account nonce ${input.nonce} ` +
+        "did not become readable; refusing a follow-on anchor",
+      { cause: input.cause },
+    );
+    this.name = "PayDemIncludedNonceVisibilityError";
+    this.txHash = input.txHash;
+    if (typeof input.blockNumber === "number" &&
+        Number.isSafeInteger(input.blockNumber) && input.blockNumber >= 0) {
+      this.blockNumber = input.blockNumber;
+    }
+    this.nonce = input.nonce;
+  }
+}
+
 const OS_PER_DEM = 1_000_000_000n;
 
 function confirmedFeeComponentOs(value: unknown, postFork: boolean): bigint | null {
@@ -256,12 +287,16 @@ function confirmedValidityFeeOs(value: unknown, postFork: boolean): bigint | nul
   )?.response?.data;
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
 
-  let gasFees: unknown;
-  if (data.gas_operation != null) {
+  let fees: unknown;
+  if (data.gas_operation == null) {
+    fees = data.transaction?.content?.transaction_fee;
+  } else {
     if (typeof data.gas_operation !== "object" || Array.isArray(data.gas_operation)) {
       return null;
     }
-    gasFees = (data.gas_operation as Record<string, unknown>).fees;
+    const gasOperation = data.gas_operation as Record<string, unknown>;
+    if (!Object.hasOwn(gasOperation, "fees") || gasOperation.fees == null) return null;
+    fees = gasOperation.fees;
   }
 
   // demosdk's programmatic runner defines `gas_operation.fees` as the
@@ -269,7 +304,6 @@ function confirmedValidityFeeOs(value: unknown, postFork: boolean): bigint | nul
   // carried on the confirmed transaction for nodes that return no gas
   // operation. Do not fall back when an authoritative fee object is present
   // but malformed: that would let a bad response bypass the spend ceiling.
-  const fees = gasFees ?? data.transaction?.content?.transaction_fee;
   return confirmedTransactionFeeOs(fees, postFork);
 }
 
@@ -337,18 +371,21 @@ function confirmedDebitFromValidity(
  * session/phase-keyed settlement idempotency store (#43/#52).
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
-  if (!config?.rpc) throw new DacsError("pay-dem rail requires an rpc URL");
-  if (!config?.secret) throw new DacsError("pay-dem rail requires a wallet secret to sign transfers");
-  if (config.maxTotalDebitOs !== undefined &&
-      (typeof config.maxTotalDebitOs !== "bigint" || config.maxTotalDebitOs <= 0n)) {
+  const rpc = config?.rpc;
+  const secret = config?.secret;
+  const network = config?.network;
+  const maxTotalDebitOs = config?.maxTotalDebitOs;
+  if (!rpc) throw new DacsError("pay-dem rail requires an rpc URL");
+  if (!secret) throw new DacsError("pay-dem rail requires a wallet secret to sign transfers");
+  if (maxTotalDebitOs !== undefined &&
+      (typeof maxTotalDebitOs !== "bigint" || maxTotalDebitOs <= 0n)) {
     throw new DacsError("pay-dem rail maxTotalDebitOs must be positive");
   }
-  const maxTotalDebitOs = config.maxTotalDebitOs;
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
   const demos = new Demos();
-  await demos.connect(config.rpc);
-  await demos.connectWallet(config.secret);
+  await demos.connect(rpc);
+  await demos.connectWallet(secret);
 
   const client: DemosNativeClient = {
     address: demos.getAddress(),
@@ -436,10 +473,12 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           // from a stale value (DEMOS-MAPPING A.1/A.2).
           await demos.waitForNonce(demos.getAddress(), signedNonce);
         } catch (error) {
-          throw new TransientError(
-            `pay-dem: transfer ${txHash} was included, but account nonce ${signedNonce} did not become readable; refusing a follow-on anchor`,
-            { cause: error },
-          );
+          throw new PayDemIncludedNonceVisibilityError({
+            txHash,
+            blockNumber: status.blockNumber,
+            nonce: signedNonce,
+            cause: error,
+          });
         }
       }
 
@@ -456,7 +495,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   return {
     address: client.address,
     settle: (params) =>
-      payDemSettleCore({ ...params, network: params.network ?? config.network ?? "demos" }, client),
+      payDemSettleCore({ ...params, network: params.network ?? network ?? "demos" }, client),
   };
 }
 
