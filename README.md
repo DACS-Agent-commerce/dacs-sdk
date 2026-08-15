@@ -294,8 +294,49 @@ cursor is owner-bound and at-least-once: `historyPageSize` counts raw history
 rows, a page can contain no Listings, and `nextCursor: null` means only that the
 current traversal reached its end. Upsert results idempotently by
 `(logicalAddress, contentHash, ref)`. Restart from a null cursor to see a binding
-repaired after its history page was already consumed. Global/category discovery
-still requires a production catalog.
+repaired after its history page was already consumed.
+
+Global/category discovery uses the open DACS-1 §6.3.6 catalog surface. Catalog
+summaries are untrusted candidates: use `queryListingCatalog` to search, then
+give `createCatalogBindingIndex` to the Agent so `readListing` dereferences and
+validates the selected anchor before engagement:
+
+```ts
+import {
+  createCatalogBindingIndex,
+  listingAddress,
+  queryListingCatalog,
+} from "@kynesyslabs/dacs";
+
+const catalog = {
+  catalogUrl: "https://directory.example/api/dacs/listings",
+};
+const search = await queryListingCatalog(catalog, {
+  category: "data.weather",
+  rail: "x402:default",
+  limit: 50,
+});
+if (search.status !== "ok") throw new Error(search.reason);
+
+const candidate = search.page.listings[0];
+if (!candidate) throw new Error("no matching listing");
+const catalogIndex = createCatalogBindingIndex(catalog);
+const logicalAddress = listingAddress(
+  candidate.seller.primaryClaim,
+  candidate.listingId,
+  candidate.version,
+);
+// Configure `bindings.index: catalogIndex`, then require a normative `verified`
+// result from `readListing(logicalAddress)` before starting a session.
+```
+
+The catalog client rejects transport/malformed-page failures, pagination loops,
+bounded-scan exhaustion, conflicting exact candidates, and unsupported anchor
+kinds as `indeterminate`; it never converts those states to `absent`. HTTPS,
+redirect refusal, omitted ambient credentials, response-size limits, and finite
+timeouts are defaults. Plain HTTP requires explicit `allowInsecureHttp: true`
+for trusted development catalogs. `reachabilityHint` and `reputationHint` remain
+operational pre-filters, never validity or trust evidence.
 
 Handle enumeration results by status. A `page` may contain permanent candidate
 `diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
