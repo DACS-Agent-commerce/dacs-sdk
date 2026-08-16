@@ -7,6 +7,7 @@ import type { DemosTransferObservation } from "./paymentIntake.js";
 const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
 const OS_PER_DEM = 1_000_000_000n;
+const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const INCLUDED_STATE = "included";
 // `getTransactionStatus` exposes the normative Demos inclusion state. The
 // transaction projection returned by `getTxByHash` can label that same
@@ -208,6 +209,8 @@ export interface PayDemSellerObserverConfig {
   rpc: string;
   /** Request timeout in milliseconds (default 15 seconds). */
   timeoutMs?: number;
+  /** Maximum decoded JSON response bytes (default 64 MiB). */
+  maxResponseBytes?: number;
   /** Override fetch for tests or a caller-owned authenticated transport. */
   fetchImpl?: typeof fetch;
 }
@@ -415,6 +418,59 @@ function validTimeout(value: number | undefined): number {
   return value;
 }
 
+function validMaxResponseBytes(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MAX_RESPONSE_BYTES;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(
+      "pay-DEM observer maxResponseBytes must be a positive integer",
+    );
+  }
+  return value;
+}
+
+/** Decode JSON with a hard post-decompression byte limit. */
+async function readBoundedJson(
+  response: Response,
+  maxResponseBytes: number,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    if (!INTEGER_RE.test(contentLength) ||
+        BigInt(contentLength) > BigInt(maxResponseBytes)) {
+      throw new Error("Demos RPC response exceeds maxResponseBytes");
+    }
+  }
+  if (response.body === null) {
+    throw new Error("Demos RPC returned an empty response body");
+  }
+
+  const reader = response.body.getReader();
+  const cancelReader = () => {
+    void reader.cancel(signal.reason).catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancelReader, { once: true });
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let decoded = "";
+  let bytesRead = 0;
+  try {
+    while (true) {
+      const item = await reader.read();
+      if (item.done) break;
+      bytesRead += item.value.byteLength;
+      if (bytesRead > maxResponseBytes) {
+        throw new Error("Demos RPC response exceeds maxResponseBytes");
+      }
+      decoded += decoder.decode(item.value, { stream: true });
+    }
+    decoded += decoder.decode();
+    return JSON.parse(decoded) as unknown;
+  } finally {
+    signal.removeEventListener("abort", cancelReader);
+    reader.releaseLock();
+  }
+}
+
 /**
  * Create the standard read-only Demos RPC observer used by seller payment
  * intake. This validates one node's mutually-consistent confirmed-block view;
@@ -433,6 +489,11 @@ export function createPayDemSellerObserver(
     "timeoutMs",
     "pay-DEM seller observer timeoutMs",
   );
+  const maxResponseBytesProperty = stableDataProperty(
+    config,
+    "maxResponseBytes",
+    "pay-DEM seller observer maxResponseBytes",
+  );
   const fetchProperty = stableDataProperty(
     config,
     "fetchImpl",
@@ -444,6 +505,11 @@ export function createPayDemSellerObserver(
   }
   const timeoutMs = validTimeout(
     timeoutProperty.found ? timeoutProperty.value as number | undefined : undefined,
+  );
+  const maxResponseBytes = validMaxResponseBytes(
+    maxResponseBytesProperty.found
+      ? maxResponseBytesProperty.value as number | undefined
+      : undefined,
   );
   const fetchImpl = fetchProperty.found && fetchProperty.value !== undefined
     ? fetchProperty.value
@@ -476,7 +542,11 @@ export function createPayDemSellerObserver(
           if (!response.ok) {
             throw new Error(`Demos RPC returned HTTP ${response.status}`);
           }
-          const payload: unknown = await response.json();
+          const payload = await readBoundedJson(
+            response,
+            maxResponseBytes,
+            controller.signal,
+          );
           if (!isRecord(payload) || payload.result !== 200 ||
               !Object.prototype.hasOwnProperty.call(payload, "response")) {
             throw new Error("Demos RPC returned a malformed response");
@@ -487,6 +557,8 @@ export function createPayDemSellerObserver(
       ]);
     } finally {
       clearTimeout(timer!);
+      // Also cancel an oversized, malformed, or otherwise abandoned body.
+      controller.abort();
     }
   };
 

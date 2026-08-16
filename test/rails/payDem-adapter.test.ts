@@ -8,13 +8,16 @@ import {
 
 const WALLET = `0x${"ab".repeat(32)}`;
 const RECIPIENT = `0x${"cd".repeat(32)}`;
+const TX_HASH = "12".repeat(32);
+const OTHER_TX_HASH = "34".repeat(32);
 
 const sdk = vi.hoisted(() => ({
-  broadcastAndWait: vi.fn(),
+  broadcast: vi.fn(),
   confirm: vi.fn(),
   connect: vi.fn(),
   connectWallet: vi.fn(),
   getNetworkInfo: vi.fn(),
+  nodeCall: vi.fn(),
   transfer: vi.fn(),
   waitForNonce: vi.fn(),
 }));
@@ -22,10 +25,11 @@ const sdk = vi.hoisted(() => ({
 vi.mock("@kynesyslabs/demosdk/websdk", () => ({
   Demos: class MockDemos {
     readonly tx = { confirm: sdk.confirm };
-    readonly broadcastAndWait = sdk.broadcastAndWait;
+    readonly broadcast = sdk.broadcast;
     readonly connect = sdk.connect;
     readonly connectWallet = sdk.connectWallet;
     readonly getNetworkInfo = sdk.getNetworkInfo;
+    readonly nodeCall = sdk.nodeCall;
     readonly transfer = sdk.transfer;
     readonly waitForNonce = sdk.waitForNonce;
 
@@ -53,7 +57,7 @@ beforeEach(() => {
     forks: { osDenomination: { activated: true } },
   });
   sdk.transfer.mockImplementation(async (to: string, amountOs: bigint) => ({
-    hash: "tx-pay-dem",
+    hash: TX_HASH,
     content: {
       nonce: 7,
       type: "native",
@@ -89,10 +93,8 @@ beforeEach(() => {
       },
     };
   });
-  sdk.broadcastAndWait.mockResolvedValue({
-    broadcast: { response: { hash: "tx-pay-dem" } },
-    status: { state: "included", blockNumber: 42 },
-  });
+  sdk.broadcast.mockResolvedValue({ response: { hash: TX_HASH } });
+  sdk.nodeCall.mockResolvedValue({ state: "included", blockNumber: 42 });
   sdk.waitForNonce.mockResolvedValue(undefined);
 });
 
@@ -123,7 +125,7 @@ describe("createPayDemRail nonce coordination", () => {
     nonceVisible.resolve();
     await expect(settlement).resolves.toMatchObject({
       ok: true,
-      txHash: "tx-pay-dem",
+      txHash: TX_HASH,
       blockNumber: 42,
     });
     await sequence;
@@ -141,23 +143,19 @@ describe("createPayDemRail nonce coordination", () => {
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).resolves.toMatchObject({
       ok: true,
-      txHash: "tx-pay-dem",
+      txHash: TX_HASH,
       blockNumber: 42,
     });
-    expect(sdk.broadcastAndWait).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a confirmed transaction whose hash differs from the signed transfer", async () => {
     sdk.confirm.mockResolvedValue({
       response: {
         data: {
-          transaction: { hash: "tx-confirmed", content: { nonce: 7 } },
+          transaction: { hash: OTHER_TX_HASH, content: { nonce: 7 } },
         },
       },
-    });
-    sdk.broadcastAndWait.mockResolvedValue({
-      broadcast: { response: { hash: "tx-conflicting-response" } },
-      status: { state: "included", blockNumber: 42 },
     });
     const rail = await createPayDemRail({
       rpc: "https://node.test",
@@ -167,7 +165,67 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/confirmed transaction hash does not match/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed signed hash before confirmation, journalling, or broadcast", async () => {
+    const journalPreparedTransfer = vi.fn(async () => undefined);
+    sdk.transfer.mockResolvedValue({
+      hash: "not-a-demos-transaction-hash",
+      content: {
+        nonce: 7,
+        type: "native",
+        from: WALLET,
+        to: RECIPIENT,
+        amount: "1",
+        data: ["native", { nativeOperation: "send", args: [RECIPIENT, "1"] }],
+      },
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/hash must be a 32-byte hex value/);
+    expect(sdk.confirm).not.toHaveBeenCalled();
+    expect(journalPreparedTransfer).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+    expect(sdk.nodeCall).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes the signed transaction hash before journal and observation", async () => {
+    const uppercaseHash = `0X${TX_HASH.toUpperCase()}`;
+    sdk.transfer.mockImplementation(async (to: string, amountOs: bigint) => ({
+      hash: uppercaseHash,
+      content: {
+        nonce: 7,
+        type: "native",
+        from: WALLET,
+        to,
+        amount: amountOs.toString(),
+        data: ["native", { nativeOperation: "send", args: [to, amountOs.toString()] }],
+      },
+    }));
+    const journalPreparedTransfer = vi.fn(async () => undefined);
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(journalPreparedTransfer).toHaveBeenCalledWith(
+      expect.objectContaining({ txHash: TX_HASH }),
+    );
+    expect(sdk.nodeCall).toHaveBeenCalledWith(
+      "getTransactionStatus",
+      { hash: TX_HASH },
+    );
   });
 
   it("rejects a confirmed transaction whose body nonce differs from the signed transfer", async () => {
@@ -182,14 +240,11 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/confirmed transaction nonce does not match/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
-  it("rejects a broadcast response that switches transaction identity", async () => {
-    sdk.broadcastAndWait.mockResolvedValue({
-      broadcast: { response: { hash: "tx-conflicting-response" } },
-      status: { state: "included", blockNumber: 42 },
-    });
+  it("uses independent signed-hash inclusion even if transport metadata is unrelated", async () => {
+    sdk.broadcast.mockResolvedValue({ response: { hash: OTHER_TX_HASH } });
     const rail = await createPayDemRail({
       rpc: "https://node.test",
       secret: "test-secret",
@@ -197,12 +252,13 @@ describe("createPayDemRail nonce coordination", () => {
 
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
-    ).rejects.toThrow(/broadcast response hash does not match/);
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: 42 });
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an uncapped signed body that does not match the requested transfer", async () => {
     sdk.transfer.mockResolvedValue({
-      hash: "tx-pay-dem",
+      hash: TX_HASH,
       content: {
         nonce: 7,
         type: "native",
@@ -223,7 +279,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("rejects an uncapped confirmed owner change before broadcast", async () => {
@@ -239,7 +295,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("fails closed on unavailable fork state even without a debit ceiling", async () => {
@@ -252,12 +308,12 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/denomination fork state is unavailable/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("keeps the compatibility nonce signal non-retryable", () => {
     const error = new PayDemIncludedNonceVisibilityError({
-      txHash: "tx-pay-dem",
+      txHash: TX_HASH,
       blockNumber: 42,
       nonce: 7,
     });
@@ -267,7 +323,7 @@ describe("createPayDemRail nonce coordination", () => {
   });
 
   it("refuses to broadcast a transfer without a signed nonce", async () => {
-    sdk.transfer.mockResolvedValue({ hash: "tx-missing-nonce", content: {} });
+    sdk.transfer.mockResolvedValue({ hash: TX_HASH, content: {} });
     const rail = await createPayDemRail({
       rpc: "https://node.test",
       secret: "test-secret",
@@ -277,7 +333,130 @@ describe("createPayDemRail nonce coordination", () => {
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/no valid transaction nonce/);
     expect(sdk.confirm).not.toHaveBeenCalled();
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("journals validated immutable transfer facts immediately before broadcast", async () => {
+    const order: string[] = [];
+    const journalPreparedTransfer = vi.fn(async (prepared) => {
+      order.push("journal");
+      expect(Object.isFrozen(prepared)).toBe(true);
+      expect(prepared).toEqual({
+        txHash: TX_HASH,
+        nonce: 7,
+        payer: "ab".repeat(32),
+        payee: "cd".repeat(32),
+        amountOs: "1000000000",
+        network: "demos",
+        maxTotalDebitOs: "2000000000",
+      });
+    });
+    sdk.broadcast.mockImplementation(async () => {
+      order.push("broadcast");
+      return { response: { hash: TX_HASH } };
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      network: "demos",
+      maxTotalDebitOs: 2_000_000_000n,
+      journalPreparedTransfer,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: 42 });
+    expect(order).toEqual(["journal", "broadcast"]);
+    expect(journalPreparedTransfer).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not broadcast when the durable preparation journal fails", async () => {
+    const journalPreparedTransfer = vi.fn(async () => {
+      throw new Error("journal-fsync-failed");
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+      journalPreparedTransfer,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
+    ).rejects.toThrow(/journal-fsync-failed/);
+    expect(journalPreparedTransfer).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+    expect(sdk.nodeCall).not.toHaveBeenCalled();
+  });
+
+  it("observes inclusion by the pre-journaled hash when broadcast never resolves", async () => {
+    const never = new Promise<never>(() => undefined);
+    const journalPreparedTransfer = vi.fn(async () => undefined);
+    sdk.broadcast.mockReturnValue(never);
+    sdk.nodeCall
+      .mockResolvedValueOnce({ state: "pending" })
+      .mockResolvedValueOnce({ state: "included", blockNumber: 42 });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer,
+      inclusionTimeoutMs: 100,
+      inclusionPollIntervalMs: 1,
+      statusRequestTimeoutMs: 10,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: 42 });
+    expect(journalPreparedTransfer).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.nodeCall).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns tx-bearing ambiguity without a second submission when broadcast and status stall", async () => {
+    sdk.broadcast.mockReturnValue(new Promise<never>(() => undefined));
+    sdk.nodeCall.mockImplementation(() => new Promise<never>(() => undefined));
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer: async () => undefined,
+      inclusionTimeoutMs: 20,
+      inclusionPollIntervalMs: 1,
+      statusRequestTimeoutMs: 3,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      txHash: TX_HASH,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.nodeCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps polling not-found status without rebroadcasting and fails closed on timeout", async () => {
+    sdk.broadcast.mockReturnValue(new Promise<never>(() => undefined));
+    sdk.nodeCall.mockResolvedValue({ state: "not_found" });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer: async () => undefined,
+      inclusionTimeoutMs: 20,
+      inclusionPollIntervalMs: 1,
+      statusRequestTimeoutMs: 3,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      txHash: TX_HASH,
+    });
+    expect(sdk.nodeCall.mock.calls.length).toBeGreaterThan(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("enforces the confirmed maximum total debit before broadcast", async () => {
@@ -292,7 +471,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).rejects.toThrow(/exceeds maxTotalDebitOs/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("rejects a non-bigint debit ceiling at the JavaScript boundary", async () => {
@@ -319,7 +498,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/no unambiguous bound OS debit/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("accepts a capped post-fork transaction within the explicit ceiling", async () => {
@@ -332,7 +511,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).resolves.toMatchObject({ ok: true, blockNumber: 42 });
-    expect(sdk.broadcastAndWait).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("accepts a post-fork numeric confirmed amount bound by the canonical OS payload", async () => {
@@ -348,7 +527,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).resolves.toMatchObject({ ok: true, blockNumber: 42 });
-    expect(sdk.broadcastAndWait).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a post-fork numeric confirmed amount that disagrees with its OS payload", async () => {
@@ -364,12 +543,12 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("does not accept a numeric post-fork amount in the signed intent", async () => {
     sdk.transfer.mockResolvedValue({
-      hash: "tx-pay-dem",
+      hash: TX_HASH,
       content: {
         nonce: 7,
         type: "native",
@@ -390,7 +569,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("uses authoritative gas-operation fees for the debit ceiling", async () => {
@@ -405,7 +584,7 @@ describe("createPayDemRail nonce coordination", () => {
             },
           },
           transaction: {
-            hash: "tx-pay-dem",
+            hash: TX_HASH,
             content: {
               nonce: 7,
               type: "native",
@@ -435,7 +614,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).rejects.toThrow(/exceeds maxTotalDebitOs/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("does not fall back from malformed authoritative gas-operation fees", async () => {
@@ -457,7 +636,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).rejects.toThrow(/no unambiguous bound OS debit/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it.each([{}, { fees: null }])(
@@ -475,7 +654,7 @@ describe("createPayDemRail nonce coordination", () => {
       await expect(
         rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
       ).rejects.toThrow(/no unambiguous bound OS debit/);
-      expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+      expect(sdk.broadcast).not.toHaveBeenCalled();
     },
   );
 
@@ -491,7 +670,7 @@ describe("createPayDemRail nonce coordination", () => {
     };
     await expect(createPayDemRail(config)).rejects.toThrow(/must be stable data/);
     expect(reads).toBe(0);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("rejects a proxied rail config without invoking property traps", async () => {
@@ -524,7 +703,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("converts pre-fork numeric amounts and fees from DEM to OS", async () => {
@@ -532,7 +711,7 @@ describe("createPayDemRail nonce coordination", () => {
       forks: { osDenomination: { activated: false } },
     });
     sdk.transfer.mockResolvedValue({
-      hash: "tx-pay-dem",
+      hash: TX_HASH,
       content: {
         nonce: 7,
         type: "native",
@@ -550,7 +729,7 @@ describe("createPayDemRail nonce coordination", () => {
         data: {
           gas_operation: null,
           transaction: {
-            hash: "tx-pay-dem",
+            hash: TX_HASH,
             content: {
               nonce: 7,
               type: "native",
@@ -580,7 +759,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).rejects.toThrow(/exceeds maxTotalDebitOs/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("rejects post-fork numeric fee fields as ambiguous", async () => {
@@ -596,7 +775,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).rejects.toThrow(/no unambiguous bound OS debit/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("rejects any confirmed custom charge outside the native debit model", async () => {
@@ -615,7 +794,7 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("rejects an altered confirmed recipient before broadcast", async () => {
@@ -624,7 +803,7 @@ describe("createPayDemRail nonce coordination", () => {
       response: {
         data: {
           transaction: {
-            hash: "tx-pay-dem",
+            hash: TX_HASH,
             content: {
               nonce: 7,
               type: "native",
@@ -651,6 +830,6 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
-    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 });

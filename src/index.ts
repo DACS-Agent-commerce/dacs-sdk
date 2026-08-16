@@ -874,6 +874,7 @@ export {
   payDemSettleCore,
   type PayDemRail,
   type PayDemRailConfig,
+  type PayDemPreparedTransfer,
   type PayDemSettleParams,
   type DemosNativeClient,
   type DemosTransferResult,

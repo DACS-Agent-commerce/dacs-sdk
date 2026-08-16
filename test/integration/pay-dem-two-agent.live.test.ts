@@ -115,20 +115,11 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
       "buyer-balance-below-max-total-debit",
     );
 
-    const rail = await createPayDemRail({
-      rpc,
-      secret: buyerSecret,
-      network: "demos",
-      maxTotalDebitOs,
-    });
-    requireCondition(
-      rail.address.replace(/^0x/i, "").toLowerCase() ===
-        buyerAddress.replace(/^0x/i, "").toLowerCase(),
-      "rail-payer-mismatch",
-    );
     // Explicit confirmation and the durable one-shot marker are checked and
-    // armed immediately before the only irreversible call. The marker is never
-    // removed, including when the settlement response is ambiguous.
+    // armed before constructing the write-capable rail. The rail's preparation
+    // hook then fsyncs the canonical signed hash, nonce and immutable transfer
+    // facts immediately before its only broadcast. Neither record is removed,
+    // including when settlement is ambiguous.
     requireCondition(LIVE_ENV.LIVE_PAY_DEM_CONFIRM === "1", "spend-not-confirmed");
     const { marker, result: settlement } = await executePayDemFundedRun(
       {
@@ -140,16 +131,30 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
         maxTotalDebitOs: maxTotalDebitText,
         network: "demos",
       },
-      () => rail.settle({
-        recipient: sellerAddress,
-        amount: amountText,
-        network: "demos",
-      }),
+      async (_marker, journalPreparedTransfer) => {
+        const rail = await createPayDemRail({
+          rpc,
+          secret: buyerSecret,
+          network: "demos",
+          maxTotalDebitOs,
+          journalPreparedTransfer,
+        });
+        requireCondition(
+          rail.address.replace(/^0x/i, "").toLowerCase() ===
+            buyerAddress.replace(/^0x/i, "").toLowerCase(),
+          "rail-payer-mismatch",
+        );
+        return rail.settle({
+          recipient: sellerAddress,
+          amount: amountText,
+          network: "demos",
+        });
+      },
     );
 
-    // `ok:false` means only that inclusion was not observed. A broadcast/wait
-    // timeout can still hide an included transfer, so preserve the signed hash
-    // for read-only reconciliation and never claim that payment did not land.
+    // `ok:false` means only that inclusion was not observed. A hash-first
+    // observation timeout can still hide an included transfer, so preserve the
+    // signed hash for read-only reconciliation and never claim payment did not land.
     if (!settlement.ok || !settlement.txHash || settlement.blockNumber === undefined) {
       await recordPayDemFundedRunOutcome(marker, {
         status: "unresolved",

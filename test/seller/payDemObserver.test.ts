@@ -443,11 +443,10 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
   });
 
   it("bounds response-body parsing even when an injected fetch ignores abort", async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: () => new Promise<never>(() => undefined),
-    }) as unknown as Response);
+    const body = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<never>(() => undefined),
+    });
+    const fetchImpl = vi.fn(async () => new Response(body, { status: 200 }));
     const observer = createPayDemSellerObserver({
       rpc: "https://node.example",
       timeoutMs: 10,
@@ -459,5 +458,68 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
       reason: "transaction status read failed",
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an oversized declared response before decoding it", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ result: 200, response: { state: "pending" } }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": "1000",
+        },
+      },
+    ));
+    const observer = createPayDemSellerObserver({
+      rpc: "https://node.example",
+      maxResponseBytes: 100,
+      fetchImpl,
+    });
+
+    await expect(observer.observeDemosTransfer(HASH)).resolves.toEqual({
+      status: "unavailable",
+      reason: "transaction status read failed",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds streamed decoded bytes when content-length is absent", async () => {
+    const oversized = new TextEncoder().encode(JSON.stringify({
+      result: 200,
+      response: { state: "pending", padding: "x".repeat(200) },
+    }));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(oversized.subarray(0, 50));
+        controller.enqueue(oversized.subarray(50));
+        controller.close();
+      },
+    });
+    const fetchImpl = vi.fn(async () => new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    const observer = createPayDemSellerObserver({
+      rpc: "https://node.example",
+      maxResponseBytes: 100,
+      fetchImpl,
+    });
+
+    await expect(observer.observeDemosTransfer(HASH)).resolves.toEqual({
+      status: "unavailable",
+      reason: "transaction status read failed",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an invalid response-byte limit before making any request", () => {
+    const fetchImpl = vi.fn();
+    expect(() => createPayDemSellerObserver({
+      rpc: "https://node.example",
+      maxResponseBytes: 0,
+      fetchImpl,
+    })).toThrow(/maxResponseBytes must be a positive integer/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

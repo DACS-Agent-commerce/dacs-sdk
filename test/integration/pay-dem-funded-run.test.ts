@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PayDemIncludedNonceVisibilityError } from "../../src/rails/payDem.js";
 import {
   executePayDemFundedRun,
+  readPayDemFundedPreparedTransfer,
   recordPayDemFundedRunOutcome,
+  reopenPayDemFundedRun,
+  type PayDemFundedPreparedTransfer,
   type PayDemFundedRunIntent,
 } from "./pay-dem-funded-run.js";
 
@@ -34,6 +37,22 @@ async function fixture(): Promise<PayDemFundedRunIntent> {
   };
 }
 
+function preparedTransfer(
+  input: Readonly<PayDemFundedRunIntent>,
+  overrides: Partial<PayDemFundedPreparedTransfer> = {},
+): PayDemFundedPreparedTransfer {
+  return {
+    txHash: "ab".repeat(32),
+    nonce: 35,
+    payer: input.payer.replace(/^0x/i, "").toLowerCase(),
+    payee: input.payee.replace(/^0x/i, "").toLowerCase(),
+    amountOs: input.amountOs,
+    maxTotalDebitOs: input.maxTotalDebitOs,
+    network: "demos",
+    ...overrides,
+  };
+}
+
 describe("pay-DEM funded-run adapter", () => {
   it("persists the transfer and maximum debit in the intent before invoking the effect", async () => {
     const input = await fixture();
@@ -50,6 +69,103 @@ describe("pay-DEM funded-run adapter", () => {
       payer: "11".repeat(32),
       payee: "22".repeat(32),
     });
+  });
+
+  it("durably records canonical prepared facts before the simulated broadcast", async () => {
+    const input = await fixture();
+    const order: string[] = [];
+    const { marker } = await executePayDemFundedRun(
+      input,
+      async (_marker, journalPreparedTransfer) => {
+        await journalPreparedTransfer(preparedTransfer(input));
+        order.push("journal-returned");
+        order.push("broadcast");
+        return "submitted";
+      },
+    );
+
+    expect(order).toEqual(["journal-returned", "broadcast"]);
+    await expect(readPayDemFundedPreparedTransfer(marker)).resolves.toEqual(
+      preparedTransfer(input),
+    );
+  });
+
+  it("fails closed after a journalled crash before broadcast and never retries that run", async () => {
+    const input = await fixture();
+    let submissions = 0;
+    await expect(executePayDemFundedRun(
+      input,
+      async (_armed, journalPreparedTransfer) => {
+        await journalPreparedTransfer(preparedTransfer(input));
+        throw new Error("crash-before-broadcast");
+      },
+    )).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
+
+    const reopened = await reopenPayDemFundedRun(input);
+    expect(reopened.prepared).toEqual(preparedTransfer(input));
+    await expect(executePayDemFundedRun(input, async () => {
+      submissions += 1;
+      return "must-not-submit";
+    })).rejects.toThrow(/run-already-armed/);
+    expect(submissions).toBe(0);
+  });
+
+  it("recovers the same immutable facts after an ambiguous submission and never resubmits", async () => {
+    const input = await fixture();
+    let submissions = 0;
+    await expect(executePayDemFundedRun(
+      input,
+      async (_armed, journalPreparedTransfer) => {
+        await journalPreparedTransfer(preparedTransfer(input));
+        submissions += 1;
+        throw new Error("broadcast-response-lost");
+      },
+    )).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
+
+    const reopened = await reopenPayDemFundedRun(input);
+    expect(reopened.prepared).toEqual(preparedTransfer(input));
+    await expect(executePayDemFundedRun(input, async () => {
+      submissions += 1;
+      return "must-not-submit";
+    })).rejects.toThrow(/run-already-armed/);
+    expect(submissions).toBe(1);
+  });
+
+  it("rejects prepared facts that disagree with the funded intent before submission", async () => {
+    const cases: Array<Partial<PayDemFundedPreparedTransfer>> = [
+      { txHash: "malformed" },
+      { nonce: -1 },
+      { payer: "33".repeat(32) },
+      { payee: "44".repeat(32) },
+      { amountOs: "2" },
+      { maxTotalDebitOs: "1000000002" },
+    ];
+    for (const [index, overrides] of cases.entries()) {
+      const input = { ...(await fixture()), runId: `paydem-invalid-${index}` };
+      let submissions = 0;
+      await expect(executePayDemFundedRun(
+        input,
+        async (_marker, journalPreparedTransfer) => {
+          await journalPreparedTransfer(preparedTransfer(input, overrides));
+          submissions += 1;
+        },
+      )).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
+      expect(submissions).toBe(0);
+    }
+  });
+
+  it("allows only one prepared checkpoint for a funded attempt", async () => {
+    const input = await fixture();
+    let submissions = 0;
+    await expect(executePayDemFundedRun(
+      input,
+      async (_marker, journalPreparedTransfer) => {
+        await journalPreparedTransfer(preparedTransfer(input));
+        await journalPreparedTransfer(preparedTransfer(input));
+        submissions += 1;
+      },
+    )).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
+    expect(submissions).toBe(0);
   });
 
   it("rejects a ceiling below the transfer without arming or invoking the effect", async () => {

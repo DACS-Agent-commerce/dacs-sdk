@@ -55,6 +55,19 @@ export interface FundedRunOutcome {
   details?: Readonly<Record<string, FundedRunPublicDetail>>;
 }
 
+/** A named, write-once recovery record persisted between intent and outcome. */
+export interface FundedRunCheckpoint {
+  name: string;
+  details: Readonly<Record<string, FundedRunPublicDetail>>;
+}
+
+/** Verified immutable intent facts read back from the armed marker. */
+export interface VerifiedFundedRunIntent {
+  operation: string;
+  runId: string;
+  details: Readonly<Record<string, FundedRunPublicDetail>>;
+}
+
 interface CapturedFundedRunIntent {
   directory: string;
   operation: string;
@@ -206,12 +219,32 @@ function captureOutcome(value: unknown): CapturedFundedRunOutcome {
   };
 }
 
+function captureCheckpoint(value: unknown): FundedRunCheckpoint {
+  const snapshot = snapshotPlainDataRecord(value);
+  if (!snapshot || !exactKeys(snapshot, ["name", "details"]) ||
+      typeof snapshot.name !== "string" || !SAFE_ID_RE.test(snapshot.name)) {
+    throw new Error("funded-e2e:checkpoint-invalid");
+  }
+  return {
+    name: snapshot.name,
+    details: captureDetails(snapshot.details, "checkpoint-details"),
+  };
+}
+
 function captureNow(now: () => number): number {
   const value = now();
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error("funded-e2e:timestamp-invalid");
   }
   return value;
+}
+
+function fundedMarkerIdentity(operation: string, runId: string) {
+  return { markerVersion: "1", operation, runId } as const;
+}
+
+function fundedMarkerId(operation: string, runId: string): string {
+  return sha256Hex(canonicalize(fundedMarkerIdentity(operation, runId)));
 }
 
 function pathComponents(path: string): string[] {
@@ -341,7 +374,7 @@ async function syncAndConfirmMarkerDirectory(state: SecureMarkerDirectory): Prom
 
 function encodeMarker(
   value: Readonly<Record<string, unknown>>,
-  kind: "intent" | "outcome",
+  kind: "intent" | "outcome" | "checkpoint",
 ): string {
   const encoded = `${canonicalize(value)}\n`;
   if (Buffer.byteLength(encoded, "utf8") > MAX_MARKER_BYTES) {
@@ -367,7 +400,7 @@ async function writeExclusive(path: string, encoded: string): Promise<void> {
 async function verifyIntentMarker(
   markerPath: string,
   markerId: string,
-): Promise<void> {
+): Promise<Readonly<VerifiedFundedRunIntent>> {
   const uid = requirePosixUid();
   const before = await lstat(markerPath);
   if (before.isSymbolicLink() || !before.isFile() || before.uid !== uid ||
@@ -410,15 +443,16 @@ async function verifyIntentMarker(
         (stored.armedAt as number) < 0) {
       throw new Error("funded-e2e:intent-marker-corrupt");
     }
-    captureDetails(stored.details, "stored-marker-details");
-    const expectedId = sha256Hex(canonicalize({
-      markerVersion: "1",
-      operation: stored.operation,
-      runId: stored.runId,
-    }));
+    const details = captureDetails(stored.details, "stored-marker-details");
+    const expectedId = fundedMarkerId(stored.operation, stored.runId);
     if (expectedId !== markerId || encoded !== `${canonicalize(stored)}\n`) {
       throw new Error("funded-e2e:intent-marker-corrupt");
     }
+    return Object.freeze({
+      operation: stored.operation,
+      runId: stored.runId,
+      details: Object.freeze(details),
+    });
   } finally {
     await handle.close();
   }
@@ -445,12 +479,8 @@ export async function armFundedRun(
   const armedAt = captureNow(now);
   const secureDirectory = await openSecureMarkerDirectory(resolve(captured.directory));
   try {
-    const identity = {
-      markerVersion: "1",
-      operation: captured.operation,
-      runId: captured.runId,
-    } as const;
-    const markerId = sha256Hex(canonicalize(identity));
+    const identity = fundedMarkerIdentity(captured.operation, captured.runId);
+    const markerId = fundedMarkerId(captured.operation, captured.runId);
     const markerPath = join(secureDirectory.directory, `${markerId}.intent.json`);
     const outcomePath = join(secureDirectory.directory, `${markerId}.outcome.json`);
     try {
@@ -468,6 +498,34 @@ export async function armFundedRun(
         throw new Error(`funded-e2e:run-already-armed:${markerId}`, { cause });
       }
       throw cause;
+    }
+    return Object.freeze({ markerId, markerPath, outcomePath });
+  } finally {
+    await secureDirectory.handle.close();
+  }
+}
+
+/**
+ * Reopen and authenticate an existing armed intent without authorising an
+ * effect. Every caller-supplied public detail must match the durable marker;
+ * this is a read/reconciliation primitive and never creates or replaces files.
+ */
+export async function openFundedRun(
+  input: Readonly<FundedRunIntent>,
+): Promise<Readonly<ArmedFundedRun>> {
+  const captured = captureIntent(input);
+  const secureDirectory = await openSecureMarkerDirectory(resolve(captured.directory));
+  try {
+    const markerId = fundedMarkerId(captured.operation, captured.runId);
+    const markerPath = join(secureDirectory.directory, `${markerId}.intent.json`);
+    const outcomePath = join(secureDirectory.directory, `${markerId}.outcome.json`);
+    const stored = await verifyIntentMarker(markerPath, markerId);
+    if (
+      stored.operation !== captured.operation ||
+      stored.runId !== captured.runId ||
+      canonicalize(stored.details) !== canonicalize(captured.details)
+    ) {
+      throw new Error("funded-e2e:intent-marker-mismatch");
     }
     return Object.freeze({ markerId, markerPath, outcomePath });
   } finally {
@@ -530,6 +588,140 @@ export async function recordFundedRunOutcome(
         );
       }
       throw cause;
+    }
+  } finally {
+    await secureDirectory.handle.close();
+  }
+}
+
+/**
+ * Persist one named recovery checkpoint without replacing the armed intent or
+ * an earlier checkpoint. The intent is verified first and both the file and its
+ * containing directory are synchronised before this resolves.
+ */
+export async function recordFundedRunCheckpoint(
+  marker: Readonly<ArmedFundedRun>,
+  checkpoint: Readonly<FundedRunCheckpoint>,
+  now = Date.now,
+): Promise<string> {
+  const capturedMarker = captureMarker(marker);
+  const capturedCheckpoint = captureCheckpoint(checkpoint);
+  const recordedAt = captureNow(now);
+  const directory = dirname(capturedMarker.markerPath);
+  const expectedMarkerPath = join(directory, `${capturedMarker.markerId}.intent.json`);
+  const expectedOutcomePath = join(directory, `${capturedMarker.markerId}.outcome.json`);
+  if (!isAbsolute(directory) || directory !== resolve(directory) ||
+      capturedMarker.markerPath !== expectedMarkerPath ||
+      capturedMarker.outcomePath !== expectedOutcomePath) {
+    throw new Error("funded-e2e:marker-path-invalid");
+  }
+  const checkpointPath = join(
+    directory,
+    `${capturedMarker.markerId}.checkpoint.${capturedCheckpoint.name}.json`,
+  );
+  const encoded = encodeMarker({
+    markerVersion: "1",
+    markerId: capturedMarker.markerId,
+    state: capturedCheckpoint.name,
+    details: capturedCheckpoint.details,
+    recordedAt,
+  }, "checkpoint");
+
+  const secureDirectory = await openSecureMarkerDirectory(directory);
+  try {
+    await verifyIntentMarker(capturedMarker.markerPath, capturedMarker.markerId);
+    try {
+      await writeExclusive(checkpointPath, encoded);
+      await syncAndConfirmMarkerDirectory(secureDirectory);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException)?.code === "EEXIST") {
+        throw new Error(
+          `funded-e2e:checkpoint-already-recorded:${capturedCheckpoint.name}`,
+          { cause },
+        );
+      }
+      throw cause;
+    }
+    return checkpointPath;
+  } finally {
+    await secureDirectory.handle.close();
+  }
+}
+
+/** Read and authenticate one recovery checkpoint together with its armed intent. */
+export async function readFundedRunCheckpoint(
+  marker: Readonly<ArmedFundedRun>,
+  name: string,
+): Promise<Readonly<{
+  intent: Readonly<VerifiedFundedRunIntent>;
+  details: Readonly<Record<string, FundedRunPublicDetail>>;
+}>> {
+  const capturedMarker = captureMarker(marker);
+  if (!SAFE_ID_RE.test(name)) throw new Error("funded-e2e:checkpoint-invalid");
+  const directory = dirname(capturedMarker.markerPath);
+  const expectedMarkerPath = join(directory, `${capturedMarker.markerId}.intent.json`);
+  const expectedOutcomePath = join(directory, `${capturedMarker.markerId}.outcome.json`);
+  if (!isAbsolute(directory) || directory !== resolve(directory) ||
+      capturedMarker.markerPath !== expectedMarkerPath ||
+      capturedMarker.outcomePath !== expectedOutcomePath) {
+    throw new Error("funded-e2e:marker-path-invalid");
+  }
+  const checkpointPath = join(
+    directory,
+    `${capturedMarker.markerId}.checkpoint.${name}.json`,
+  );
+  const secureDirectory = await openSecureMarkerDirectory(directory);
+  try {
+    const intent = await verifyIntentMarker(
+      capturedMarker.markerPath,
+      capturedMarker.markerId,
+    );
+    const before = await lstat(checkpointPath);
+    if (before.isSymbolicLink() || !before.isFile() ||
+        before.uid !== requirePosixUid() || (before.mode & 0o777) !== 0o600 ||
+        before.size > MAX_MARKER_BYTES) {
+      throw new Error("funded-e2e:checkpoint-unsafe");
+    }
+    let handle: FileHandle;
+    try {
+      handle = await open(checkpointPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    } catch (cause) {
+      throw new Error("funded-e2e:checkpoint-unsafe", { cause });
+    }
+    try {
+      const opened = await handle.stat();
+      if (!sameFile(before, opened)) throw new Error("funded-e2e:checkpoint-drift");
+      const encoded = await handle.readFile("utf8");
+      const after = await lstat(checkpointPath);
+      if (!sameFile(opened, after)) throw new Error("funded-e2e:checkpoint-drift");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(encoded);
+      } catch (cause) {
+        throw new Error("funded-e2e:checkpoint-corrupt", { cause });
+      }
+      const stored = snapshotPlainDataRecord(parsed);
+      if (!stored || !exactKeys(stored, [
+        "markerVersion",
+        "markerId",
+        "state",
+        "details",
+        "recordedAt",
+      ]) || stored.markerVersion !== "1" ||
+          stored.markerId !== capturedMarker.markerId || stored.state !== name ||
+          !Number.isSafeInteger(stored.recordedAt) || (stored.recordedAt as number) < 0) {
+        throw new Error("funded-e2e:checkpoint-corrupt");
+      }
+      const details = captureDetails(stored.details, "stored-checkpoint-details");
+      if (encoded !== `${canonicalize(stored)}\n`) {
+        throw new Error("funded-e2e:checkpoint-corrupt");
+      }
+      return Object.freeze({
+        intent,
+        details: Object.freeze(details),
+      });
+    } finally {
+      await handle.close();
     }
   } finally {
     await secureDirectory.handle.close();

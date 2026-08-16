@@ -206,7 +206,10 @@ status, native-transfer body, and confirmed block. It derives finality time from
 the block rather than the transaction timestamp. The status API's `included`
 state remains the finality authority; an `included`, `confirmed`, or `finalized`
 transaction-body label is accepted only when that status and confirmed-block
-membership agree. The native-send payload disambiguates the denomination fork:
+membership agree. RPC time and decoded JSON size are bounded (15 seconds and
+64 MiB by default, both configurable), including the potentially larger
+confirmed-block response. The native-send payload disambiguates the denomination
+fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
 are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
@@ -235,7 +238,39 @@ same host: changing hosts or directories, deleting the ledger, or using
 ephemeral storage bypasses it. Preserve and back up the directory with the
 funded-run records; do not use a network filesystem unless its exclusive-create
 and fsync guarantees have been independently established. Use fresh dedicated
-wallets and a new run id only for a separately reconciled and approved attempt:
+wallets and a new run id only for a separately reconciled and approved attempt.
+
+The funded pay-DEM runner also writes and syncs a second, write-once preparation
+checkpoint after confirmation, denomination, fee and debit-cap validation and
+immediately before broadcast. It contains only public recovery facts: the
+canonical transaction hash, nonce, payer, payee, amount, cap and network. A
+crash after this checkpoint but before the broadcast call is intentionally
+treated exactly like a lost response after submission: the original run stays
+blocked and recovery may only observe that hash/nonce. The checkpoint does not
+contain the signed validity body, so it cannot reconstruct or authorize an
+exact resubmission; neither re-signing nor rebroadcasting is a permitted recovery
+action.
+
+`createPayDemRail` exposes the same boundary as the optional
+`journalPreparedTransfer` hook. Ordinary non-funded callers can omit it, but the
+low-level rail then provides only in-process hash-first observation. Across a
+process restart, at-most-once settlement still requires `payDemSettle` with a
+durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
+additionally requires an application-owned durable journal or equivalent rail
+record. With neither durable mechanism, the SDK cannot prove that a lost
+response did not move value, so applications must not automatically retry.
+
+The inclusion wait is bounded independently of the broadcast response and never
+starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
+requests used by broadcast, status, and nonce reads have no cancellation or
+request timeout. An open transport socket may therefore keep a Node process
+alive after the rail has returned an unresolved result. Terminating that process
+does not make the marked attempt retryable: retain the marker and checkpoint and
+reconcile read-only from another process. demosdk may internally retry the same
+signed transaction on selected transport errors inside that one SDK broadcast
+invocation; every such attempt retains the same canonical hash and nonce.
+
+Run the funded test only with the complete guarded environment described above:
 
 ```sh
 npm run test:live:pay-dem
