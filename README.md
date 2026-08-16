@@ -47,15 +47,23 @@ omit it.
 
 ### Demos agent ClaimReferences
 
-Use `demosAgentClaimRef`, `demosAgentPublicKey`, and
-`isDemosAgentClaimRef` from either `@kynesyslabs/dacs` or
+Use `demosAgentClaimRef`, `parseDemosAgentClaimReference`,
+`demosAgentPublicKey`, and `isDemosAgentClaimRef` from either
+`@kynesyslabs/dacs` or
 `@kynesyslabs/dacs/identity` for the DACS-1 §6.3.1 / §A.1 self-certifying
 profile. Writers emit only `did:demos:agent:<64-lowercase-hex>`. Readers accept
-case variation in the leading `did` scheme, but reject foreign DIDs, mixed-case
+case variation in the leading `did` scheme and preserve unknown canonical
+parameters for forwarding; the typed parse result exposes the parameter-free
+CF-3 identity separately. Signed-artifact authorization uses exact CF-2 bytes
+and never performs that read-time repair. Foreign DIDs, mixed-case
 `demos:agent`, uppercase key bytes, bare keys, and `demos:0x...` substrate
-address notation. `Agent.resolveIdentity()` retains bare/`0x` native-address
-lookup as an explicit convenience; those forms never authorize signed DACS
-artifacts and never alias a ClaimReference or reputation key.
+address notation are never intrinsically decoded as Demos signature authority
+or aliased to the registered profile. `Agent.resolveIdentity()` retains
+bare/`0x` native-address lookup as an explicit convenience but returns the
+canonical Demos DID, so aliases never leak into a `CciRecord` or reputation key.
+Non-intrinsic writer identities require
+`AgentConfig.resolveIdentitySigningPublicKey` and are bound to the connected
+adapter's actual key before signing.
 
 ## Public API
 

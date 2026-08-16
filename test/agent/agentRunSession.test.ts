@@ -138,15 +138,22 @@ async function anchorListing(
     currency: "USDC",
     price: "1",
   },
+  additionalClaims: string[] = [],
 ) {
   const identity: IdentityBundle = {
     bundleVersion: "1",
     presentedBy: agentId,
     presentedAt: 1_780_000_000_000,
-    claims: [{ ref: agentId }],
+    claims: [{ ref: agentId }, ...additionalClaims.map((ref) => ({ ref }))],
     presentation: {
       kind: "per-claim",
-      signatures: [{ ref: agentId, signature: "pending" }],
+      signatures: [
+        { ref: agentId, signature: "pending" },
+        ...additionalClaims.map((ref) => ({
+          ref,
+          signature: "additional-claim-proof",
+        })),
+      ],
     },
   };
   if (identity.presentation.kind !== "per-claim") {
@@ -529,6 +536,120 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     await expect(agent.discover([ref])).resolves.toEqual([]);
   });
 
+  test("a signed Listing with a non-CF-2 embedded claim never reaches settlement", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(
+      store,
+      sellerPriv,
+      sellerDid,
+      { notBefore: 1_700_000_000_000 },
+      "non-canonical embedded claim",
+      {
+        phase: "pay-x402",
+        railId: "x402:default",
+        currency: "USDC",
+        price: "1",
+      },
+      [`${sellerDid}?z=last&a=first`],
+    );
+    const settle = vi.fn();
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+      listingValidationDeps: listingValidationDeps(),
+    });
+
+    await expect(agent.runSession(ref, { terms: TERMS, settle }))
+      .rejects.toThrow(/failed signature verification/i);
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  test("fresh sessions bind the configured identity to the adapter signing key", async () => {
+    const { adapter, store, getPublicKey } = memAdapter();
+    const ref = await anchorListing(store);
+    getPublicKey.mockResolvedValue(Uint8Array.from(sellerPublicKey));
+    const settle = vi.fn(async () => ({
+      ok: true,
+      txHash: "0xmust-not-pay",
+      chainId: "c",
+      payer: buyerDid,
+      payee: sellerDid,
+    }));
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid },
+      listingValidationDeps: listingValidationDeps(),
+    });
+
+    await expect(agent.runSession(ref, { terms: TERMS, settle }))
+      .rejects.toThrow(/buyer identity does not match.*signing key/i);
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  test("non-intrinsic session identities require an explicit signing-key resolver", async () => {
+    const foreignBuyer = "did:example:buyer";
+    const unsupported = memAdapter();
+    const unsupportedRef = await anchorListing(unsupported.store);
+    const unsupportedSettle = vi.fn();
+    const unsupportedAgent = buildAgent(unsupported.adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: foreignBuyer },
+      listingValidationDeps: listingValidationDeps(),
+    });
+    await expect(unsupportedAgent.runSession(unsupportedRef, {
+      terms: TERMS,
+      settle: unsupportedSettle,
+    })).rejects.toThrow(/unsupported identity method.*resolveIdentitySigningPublicKey/i);
+    expect(unsupportedSettle).not.toHaveBeenCalled();
+
+    const supported = memAdapter();
+    const supportedRef = await anchorListing(supported.store);
+    const resolver = vi.fn(async (claim: string) =>
+      claim === foreignBuyer ? Uint8Array.from(buyerPublicKey) : null
+    );
+    const supportedAgent = buildAgent(supported.adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: foreignBuyer },
+      resolveIdentitySigningPublicKey: resolver,
+      listingValidationDeps: listingValidationDeps(),
+    });
+    await expect(supportedAgent.runSession(supportedRef, {
+      terms: TERMS,
+      settle: async () => ({
+        ok: true,
+        txHash: "0xexplicit-method-paid",
+        chainId: "c",
+        payer: foreignBuyer,
+        payee: sellerDid,
+      }),
+    })).resolves.toMatchObject({ outcome: "completed" });
+    expect(resolver).toHaveBeenCalledWith(foreignBuyer);
+  });
+
+  test("fresh sessions never emit native demos:0x notation as a ClaimReference", async () => {
+    const nativeBuyer = `demos:0x${buyerHex}`;
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const resolver = vi.fn(async () => Uint8Array.from(buyerPublicKey));
+    const settle = vi.fn();
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: nativeBuyer },
+      resolveIdentitySigningPublicKey: resolver,
+      listingValidationDeps: listingValidationDeps(),
+    });
+
+    await expect(agent.runSession(ref, { terms: TERMS, settle }))
+      .rejects.toThrow(/cannot use native demos:0x address notation/i);
+    expect(resolver).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+  });
+
   test("public recovery authenticates exact Listing, Agreement, and evidence without paying twice", async () => {
     vi.useFakeTimers();
     try {
@@ -564,8 +685,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
       ).rejects.toThrow(/simulated process failure/);
       expect(settleCalls).toBe(1);
-      // Fresh execution never acquires a recovery-only key.
-      expect(getPublicKey).not.toHaveBeenCalled();
+      // Fresh writes now bind the configured identity to the actual signer.
+      expect(getPublicKey).toHaveBeenCalledTimes(1);
 
       vi.setSystemTime(admittedAt + 2_000);
 
@@ -580,7 +701,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
       ).rejects.toThrow(/signed Listing pin/i);
       expect(settleCalls).toBe(1);
-      expect(getPublicKey).not.toHaveBeenCalled();
+      expect(getPublicKey).toHaveBeenCalledTimes(1);
       store.set(ref, originalListing);
 
       const agreementAddress = "stor:dacs3:agreement:job-expiry";
@@ -597,7 +718,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
       ).rejects.toThrow(/cryptographic Agreement authentication/i);
       expect(settleCalls).toBe(1);
-      expect(getPublicKey).toHaveBeenCalledTimes(1);
+      expect(getPublicKey).toHaveBeenCalledTimes(2);
 
       const agreementSignature = agreement.signature as string;
       store.set(agreementAddress, {
@@ -608,7 +729,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
       ).rejects.toThrow(/cryptographic Agreement authentication/i);
       expect(settleCalls).toBe(1);
-      expect(getPublicKey).toHaveBeenCalledTimes(2);
+      expect(getPublicKey).toHaveBeenCalledTimes(3);
       store.set(agreementAddress, agreement);
 
       const evidenceSignature = evidence.signature as { value: string };
@@ -624,21 +745,21 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       ).rejects.toThrow(/cryptographic SettlementEvidence authentication/i);
       expect(settleCalls).toBe(1);
       // One key lookup serves both Agreement and evidence checks in this run.
-      expect(getPublicKey).toHaveBeenCalledTimes(3);
+      expect(getPublicKey).toHaveBeenCalledTimes(4);
       store.set(evidenceAddress, evidence);
 
       await expect(
         agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
       ).resolves.toMatchObject({ outcome: "completed", jobId: "job-expiry" });
       expect(settleCalls).toBe(1);
-      expect(getPublicKey).toHaveBeenCalledTimes(4);
+      expect(getPublicKey).toHaveBeenCalledTimes(5);
 
       await expect(
         agent.runSession(ref, { jobId: "job-arbitrary", terms: TERMS, settle }),
       ).rejects.toThrow(/outside.*validity window.*no prior Agreement/i);
       expect(settleCalls).toBe(1);
       // Missing recovery state is rejected before key acquisition or Listing auth.
-      expect(getPublicKey).toHaveBeenCalledTimes(4);
+      expect(getPublicKey).toHaveBeenCalledTimes(5);
     } finally {
       vi.useRealTimers();
     }
@@ -1087,74 +1208,79 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     );
   });
 
-  test("bundle verification and reputation reject foreign signer aliases", async () => {
+  test("bundle verification and reputation reject non-canonical signer aliases", async () => {
     const { adapter, store } = memAdapter();
     const listingAddressRef = await anchorListing(store);
     const listing = store.get(listingAddressRef)!;
-    const buyerLookalike = `did:ethr:${buyerHex}`;
-    const unsigned = {
-      bundleVersion: "1" as const,
-      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
-      outcome: "aborted-by-self" as const,
-      anchoredByRole: "buyer" as const,
-      listingRef: {
-        listingId: "svc",
-        version: 1,
-        contentHash: contentHash(stripSignature(listing)),
-      },
-      cancellation: { claimedPolicy: "pre-commit" },
-      parties: [
-        {
-          role: "buyer" as const,
-          bundleHash: "a".repeat(64),
-          primaryClaim: buyerLookalike,
-        },
-        {
-          role: "seller" as const,
-          bundleHash: "b".repeat(64),
-          primaryClaim: sellerDid,
-        },
-      ],
-      phaseSummary: [],
-      vetRecords: [],
-      settlementEvidence: [],
-      recipeRegistryVersion: 1,
-      railRegistryVersion: 1,
-      finalisedAt: 1786363200000,
-    };
-    const signedScope: Record<string, unknown> = { ...unsigned };
-    delete signedScope.anchoredByRole;
-    const signature = ed25519Sign(
-      signedBytes(
-        ARTIFACT_SEPARATORS.AttestationBundle,
-        contentHash(signedScope),
-      ),
-      buyerPriv,
-    );
-    store.set("stor:foreign-signer-bundle", {
-      ...unsigned,
-      signatures: [{
-        party: buyerLookalike,
-        algorithm: "ed25519",
-        value: Buffer.from(signature).toString("base64url"),
-      }],
-    });
-
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: buyerDid },
     });
-    const verification = await agent.verifyBundle(
-      "stor:foreign-signer-bundle",
-    );
-    expect(verification.ok).toBe(false);
-    expect(verification.signatures).toContainEqual({
-      party: buyerLookalike,
-      verdict: "unverified",
-    });
-    await expect(
-      agent.getReputation(buyerLookalike, ["stor:foreign-signer-bundle"]),
-    ).resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
+    for (const [index, buyerLookalike, reputationClaim] of [
+      [0, `did:ethr:${buyerHex}`, `did:ethr:${buyerHex}`],
+      [1, `DID:demos:agent:${buyerHex}`, buyerDid],
+    ] as const) {
+      const ref = `stor:noncanonical-signer-bundle:${index}`;
+      const unsigned = {
+        bundleVersion: "1" as const,
+        jobId: index === 0
+          ? "01J8ME0SXKQ4T9V2RC5HJ6WX7F"
+          : "01J8ME0SXKQ4T9V2RC5HJ6WX7G",
+        outcome: "aborted-by-self" as const,
+        anchoredByRole: "buyer" as const,
+        listingRef: {
+          listingId: "svc",
+          version: 1,
+          contentHash: contentHash(stripSignature(listing)),
+        },
+        cancellation: { claimedPolicy: "pre-commit" },
+        parties: [
+          {
+            role: "buyer" as const,
+            bundleHash: "a".repeat(64),
+            primaryClaim: buyerLookalike,
+          },
+          {
+            role: "seller" as const,
+            bundleHash: "b".repeat(64),
+            primaryClaim: sellerDid,
+          },
+        ],
+        phaseSummary: [],
+        vetRecords: [],
+        settlementEvidence: [],
+        recipeRegistryVersion: 1,
+        railRegistryVersion: 1,
+        finalisedAt: 1786363200000,
+      };
+      const signedScope: Record<string, unknown> = { ...unsigned };
+      delete signedScope.anchoredByRole;
+      const signature = ed25519Sign(
+        signedBytes(
+          ARTIFACT_SEPARATORS.AttestationBundle,
+          contentHash(signedScope),
+        ),
+        buyerPriv,
+      );
+      store.set(ref, {
+        ...unsigned,
+        signatures: [{
+          party: buyerLookalike,
+          algorithm: "ed25519",
+          value: Buffer.from(signature).toString("base64url"),
+        }],
+      });
+
+      const verification = await agent.verifyBundle(ref);
+      expect(verification.ok).toBe(false);
+      expect(verification.fullyVerified).toBe(false);
+      expect(verification.signatures).toContainEqual({
+        party: buyerLookalike,
+        verdict: "unverified",
+      });
+      await expect(agent.getReputation(reputationClaim, [ref]))
+        .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
+    }
   });
 });

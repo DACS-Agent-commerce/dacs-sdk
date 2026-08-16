@@ -463,6 +463,15 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(client.sent!.to).toBe(SELLER_HEX);
   });
 
+  test("canonical Demos DID parameters do not change the settlement identity", async () => {
+    const client = fakeClient();
+    const claim = `${PAYEE_CLAIM}?a=left%3Aright&unknown=value`;
+    await settleWith(client, { recipient: `0x${SELLER_HEX}` })(
+      req({ payee: claim }),
+    );
+    expect(client.sent!.to).toBe(SELLER_HEX);
+  });
+
   test.each([
     `cci-xm:demos::0x${SELLER_HEX}`,
     `cci-xm:demos:testnet:${SELLER_HEX}`,
@@ -474,6 +483,11 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     `did:demos:evil:${SELLER_HEX}`,
     `did:demos:agent:0x${SELLER_HEX}`,
     `did:demos:agent:${SELLER_HEX.toUpperCase()}`,
+    `DID:demos:agent:${SELLER_HEX}`,
+    `did:demos:agent:${SELLER_HEX}?z=last&a=first`,
+    `did:demos:agent:${SELLER_HEX}?a=left%3aright`,
+    ` ${PAYEE_CLAIM}`,
+    `${PAYEE_CLAIM} `,
   ])("rejects a malformed or foreign cci-xm Demos lookalike: %s", async (payee) => {
     const client = fakeClient();
     await expect(

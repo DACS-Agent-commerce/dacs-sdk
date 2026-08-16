@@ -206,6 +206,28 @@ describe("discoverListings signature verification (#41)", () => {
     ).toBe(ALICE.did);
   });
 
+  test("the default resolver preserves canonical Demos parameters", async () => {
+    const parameterized = `${ALICE.did}?a=left%3Aright&unknown=value`;
+    const signed = await signedBy(parameterized, ALICE.priv);
+    const found = await discoverListings(["a"], async () => signed, deps);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.compatibility === "legacy-mvp"
+      ? found[0].listing.agentId
+      : null).toBe(parameterized);
+  });
+
+  test.each([
+    (key: string) => `did:ethr:${key}`,
+    (key: string) => key,
+    (key: string) => `0x${key}`,
+    (key: string) => `demos:0x${key}`,
+    (key: string) => `DID:demos:agent:${key}`,
+  ])("the default resolver never suffix-decodes a non-canonical signer", async (alias) => {
+    const signed = await signedBy(alias(ALICE.hex), ALICE.priv);
+    await expect(discoverListings(["a"], async () => signed, deps))
+      .resolves.toEqual([]);
+  });
+
   test("WRONG KEY — signed by someone other than the advertised seller is dropped", async () => {
     // Mallory signs a listing that advertises Alice as the seller.
     const forged = await signedBy(ALICE.did, MALLORY.priv);

@@ -4,7 +4,8 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { demosAgentPublicKey } from "../identity/demos.js";
+import { parseCanonicalClaimReference } from "../identity/claimReference.js";
+import { canonicalDemosAgentPublicKey } from "../identity/demos.js";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -17,8 +18,6 @@ export const DEM_CURRENCY = "DEM";
 /** §9.5.9: 1 DEM = 10^9 OS base units. The chain moves integer OS. */
 export const DEM_DECIMALS = 9;
 
-const CLAIM_PARAMETER_COMPONENT_RE =
-  /^(?:%[0-9A-F]{2}|[^:?&=%\s#])+$/u;
 const DEMOS_TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 const DEFAULT_INCLUSION_POLL_INTERVAL_MS = 500;
@@ -139,18 +138,6 @@ function canonicalDemosTxHash(value: unknown): string | null {
   return value.match(DEMOS_TX_HASH_RE)?.[1]?.toLowerCase() ?? null;
 }
 
-function hasWellFormedClaimParameters(parameters: string | undefined): boolean {
-  if (parameters === undefined) return true;
-  const pairs = parameters.split("&");
-  if (pairs.length === 0) return false;
-  return pairs.every((pair) => {
-    const separator = pair.indexOf("=");
-    if (separator <= 0 || separator !== pair.lastIndexOf("=")) return false;
-    return CLAIM_PARAMETER_COMPONENT_RE.test(pair.slice(0, separator)) &&
-      CLAIM_PARAMETER_COMPONENT_RE.test(pair.slice(separator + 1));
-  });
-}
-
 /**
  * The Demos address a DACS primary claim settles to. In the Demos model a CCI
  * *is* the ed25519 public-key hex, so a Demos claim resolves INTRINSICALLY to its
@@ -165,13 +152,19 @@ function hasWellFormedClaimParameters(parameters: string | undefined): boolean {
  * intrinsic Demos destination. A claim that embeds no Demos key returns null too.
  */
 export function demosAddressFromClaim(claim: string): string | null {
-  const c = claim.trim();
-  const did = demosAgentPublicKey(c);
+  // This is a ClaimReference boundary, not the explicit native-address config
+  // boundary below. Never trim, case-fold, reorder, or otherwise repair signed
+  // protocol bytes before applying CF-2.
+  const parsed = parseCanonicalClaimReference(claim);
+  if (!parsed) return null;
+  const did = canonicalDemosAgentPublicKey(claim);
   if (did) return Buffer.from(did).toString("hex");
-  const cci = c.match(
-    /^[cC][cC][iI]-[xX][mM]:demos:[^:?&#=\s]+:0x([0-9a-fA-F]{64})(?:\?([^#\s]*))?$/,
-  );
-  if (cci && hasWellFormedClaimParameters(cci[2])) {
+  const cci = parsed.identity.scheme === "cci-xm"
+    ? /^demos:[^:]+:0x([0-9a-fA-F]{64})$/.exec(
+        parsed.identity.identifier,
+      )
+    : null;
+  if (cci) {
     return cci[1]!.toLowerCase();
   }
   return null;

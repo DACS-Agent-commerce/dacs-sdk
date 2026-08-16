@@ -4,9 +4,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import {
+  canonicalDemosAgentPublicKey,
   demosAgentClaimRef,
   demosAgentPublicKey,
   isDemosAgentClaimRef,
+  parseDemosAgentClaimReference,
 } from "../../src/identity/demos.js";
 
 interface DemosClaimFixture {
@@ -24,7 +26,7 @@ const fixture = JSON.parse(
   readFileSync(
     fileURLToPath(
       new URL(
-        "../../vendor/DACS-Standard/conformance/fixtures/identity/demos-agent-claim-reference.json",
+        "../fixtures/standard-next/demos-agent-claim-reference.json",
         import.meta.url,
       ),
     ),
@@ -52,6 +54,40 @@ describe("DACS-1 §6.3.1 Demos agent ClaimReference", () => {
       expect(key ? demosAgentClaimRef(key) : null, entry.id)
         .toBe(entry.expected.canonical);
     }
+  });
+
+  test("preserves canonical parameters while deriving the parameter-free identity", () => {
+    const input = `DID:demos:agent:${hex}?a=left%3Aright&unknown=value`;
+    const parsed = parseDemosAgentClaimReference(input);
+    expect(parsed).toMatchObject({
+      canonicalReference:
+        `did:demos:agent:${hex}?a=left%3Aright&unknown=value`,
+      canonicalIdentity: claim,
+    });
+    expect(Buffer.from(parsed?.publicKey ?? []).toString("hex")).toBe(hex);
+    expect(Buffer.from(demosAgentPublicKey(input) ?? []).toString("hex"))
+      .toBe(hex);
+    expect(isDemosAgentClaimRef(input)).toBe(true);
+
+    // Authorization consumes already-canonical signed bytes and does not apply
+    // the standalone reader's leading-scheme repair.
+    expect(canonicalDemosAgentPublicKey(input)).toBeNull();
+    expect(Buffer.from(canonicalDemosAgentPublicKey(
+      `did:demos:agent:${hex}?a=left%3Aright&unknown=value`,
+    ) ?? []).toString("hex")).toBe(hex);
+  });
+
+  test.each([
+    `did:demos:agent:${hex}?z=last&a=first`,
+    `did:demos:agent:${hex}?a=left%3aright`,
+    `did:demos:agent:${hex}?a=one&a=two`,
+    `did:demos:agent:${hex}?a=unescaped:value`,
+    ` did:demos:agent:${hex}`,
+    `did:demos:agent:${hex} `,
+  ])("rejects non-canonical parameter or whitespace bytes: %s", (input) => {
+    expect(parseDemosAgentClaimReference(input)).toBeNull();
+    expect(demosAgentPublicKey(input)).toBeNull();
+    expect(canonicalDemosAgentPublicKey(input)).toBeNull();
   });
 
   test("rejects foreign schemes, Demos lookalikes, and native addresses", () => {

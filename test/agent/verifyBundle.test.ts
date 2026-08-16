@@ -344,6 +344,63 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.bundle?.outcome).toBe("completed");
   });
 
+  test("a custom key resolver cannot authorize non-CF-2 signer bytes", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const uppercaseBuyer = `DID:${buyerDid.slice(4)}`;
+    (fx.bundle.parties as Array<{ primaryClaim: string }>)[0]!.primaryClaim =
+      uppercaseBuyer;
+    (fx.agreement.parties as Array<{ primaryClaim: string }>)[0]!.primaryClaim =
+      uppercaseBuyer;
+    (fx.bundle.agreementRef as { contentHash: string }).contentHash =
+      contentHash(fx.agreement);
+    await resignFixture(fx, [
+      { party: uppercaseBuyer, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const resolvedClaims: string[] = [];
+
+    const res = await verifyBundleCore("ref", depsFor(fx, {
+      // Deliberately unsafe suffix resolver: the verifier must not call it for
+      // the uppercase signed bytes, even though it could return the right key.
+      resolve: (claim) => {
+        resolvedClaims.push(claim);
+        return resolveFromDid(claim);
+      },
+    }));
+
+    expect(res.ok).toBe(false);
+    expect(res.fullyVerified).toBe(false);
+    expect(res.reason).toMatch(/non-canonical ClaimReference/i);
+    expect(res.signatures).toContainEqual({
+      party: uppercaseBuyer,
+      verdict: "unverified",
+    });
+    expect(resolvedClaims).not.toContain(uppercaseBuyer);
+  });
+
+  test("non-CF-2 signer bytes hidden in a phase attestation ref fail closed", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    fx.bundle.phaseSummary = [{
+      index: 0,
+      kind: "negotiate-fixed-price",
+      outcome: "ok",
+      attestationRef: {
+        anchor: { kind: "storage-program", locator: "phase-attestation" },
+        contentHash: h("f"),
+        signer: `did:demos:agent:${buyerDid.slice("did:demos:agent:".length).toUpperCase()}`,
+      },
+    }];
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+
+    const res = await verifyBundleCore("ref", depsFor(fx));
+    expect(res.ok).toBe(false);
+    expect(res.fullyVerified).toBe(false);
+    expect(res.reason).toMatch(/non-canonical ClaimReference/i);
+  });
+
   test("normative graph rejects a hash-matched legacy MVP Listing", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     const legacyListing = buildLegacyMvpListing();

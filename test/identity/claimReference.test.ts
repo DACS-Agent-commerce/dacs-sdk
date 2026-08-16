@@ -46,6 +46,11 @@ describe("CORE B.1 canonical ClaimReference", () => {
     expect(isCanonicalClaimReference(
       `did:demos:agent:${demosKey.toUpperCase()}`,
     )).toBe(false);
+    // Generic Demos-method DIDs are resolver-backed DIDs, not aliases for the
+    // self-certifying `demos:agent:` profile. This also preserves the original
+    // bytes of the Standard's historical signed bundle vectors.
+    expect(isCanonicalClaimReference("did:demos:buyer")).toBe(true);
+    expect(isCanonicalClaimReference("did:demos:agent:abc")).toBe(false);
 
     expect(isCanonicalClaimReference("domain:example.com")).toBe(true);
     expect(isCanonicalClaimReference("domain:xn--fa-hia.example")).toBe(true);

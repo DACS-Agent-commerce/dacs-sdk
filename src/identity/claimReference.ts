@@ -107,7 +107,13 @@ function canonicalRegisteredIdentifier(
           !/^[a-z0-9]+$/.test(identifier.slice(0, methodSeparator))) {
         return false;
       }
-      if (identifier.slice(0, methodSeparator) === "demos") {
+      // DACS-1 §6.3.1 registers the self-certifying *agent* profile without
+      // claiming that every other DID under the Demos method has that shape.
+      // Historical Standard vectors use ordinary resolver-backed Demos DIDs
+      // such as `did:demos:buyer`; those remain canonical generic DIDs. Once a
+      // value opts into `demos:agent:`, however, the profile's exact lower-case
+      // 32-byte key rule applies and malformed lookalikes must fail closed.
+      if (identifier.startsWith("demos:agent:")) {
         return /^demos:agent:[0-9a-f]{64}$/.test(identifier);
       }
       return identifier.slice(methodSeparator + 1).length > 0;

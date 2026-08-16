@@ -8,6 +8,7 @@ import {
 import { signedBytes } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import { parseCanonicalClaimReference } from "../identity/claimReference.js";
 import type {
   AnyAttestationBundle,
   AttestationRef,
@@ -628,6 +629,44 @@ function requiredSignatureClaims(
   return [...new Set(claims)];
 }
 
+function bundleClaimReferencesAreCanonical(
+  bundle: Readonly<ReadableAttestationBundle>,
+): boolean {
+  const parties: unknown = bundle.parties;
+  const signatures: unknown = bundle.signatures;
+  if (!Array.isArray(parties) || parties.some((party) =>
+    party === null || typeof party !== "object" ||
+    typeof (party as { primaryClaim?: unknown }).primaryClaim !== "string"
+  ) || (signatures !== undefined &&
+    (!Array.isArray(signatures) || signatures.some((signature) =>
+      signature === null || typeof signature !== "object" ||
+      typeof (signature as { party?: unknown }).party !== "string"
+    )))) return false;
+  const references = [
+    ...parties.map(
+      (party) => (party as { primaryClaim: string }).primaryClaim,
+    ),
+    ...(signatures ?? []).map(
+      (signature) => (signature as { party: string }).party,
+    ),
+    ...[
+      bundle.agreementRef,
+      ...bundle.settlementEvidence,
+      ...bundle.vetRecords,
+      ...bundle.phaseSummary.map((phase) => phase.attestationRef),
+      ...(bundle.amendments ?? []),
+      ...(bundle.ratingRefs ?? []),
+    ].flatMap((ref) =>
+      ref && isAttestationRef(ref) && ref.signer !== undefined
+        ? [ref.signer]
+        : []
+    ),
+  ];
+  return references.every(
+    (reference) => parseCanonicalClaimReference(reference) !== null,
+  );
+}
+
 export async function verifyBundleCore(
   bundleRef: string,
   callerDeps: VerifyBundleDeps,
@@ -659,6 +698,7 @@ export async function verifyBundleCore(
     };
   }
   const bundle = raw as ReadableAttestationBundle;
+  const canonicalBundleClaims = bundleClaimReferencesAreCanonical(bundle);
   if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) && !ABORT_OUTCOMES.has(bundle.outcome)) {
     return {
       ok: false,
@@ -687,7 +727,9 @@ export async function verifyBundleCore(
   const signatures: SignatureCheck[] = [];
   for (const s of sigs) {
     const party = typeof s.party === "string" ? s.party : "";
-    const resolvedKey = await deps.resolvePublicKey(party);
+    const resolvedKey = parseCanonicalClaimReference(party) === null
+      ? null
+      : await deps.resolvePublicKey(party);
     let verdict: SignatureVerdict;
     if (!resolvedKey) {
       verdict = "unverified";
@@ -992,8 +1034,9 @@ export async function verifyBundleCore(
   const missingRequiredSignatures = requiredSignatureClaims(bundle, agreementArtifact).filter(
     (claim) => !validSignatureClaims.has(claim),
   );
-  const sigOk = anyValid && !anyInvalid && !anyError;
+  const sigOk = canonicalBundleClaims && anyValid && !anyInvalid && !anyError;
   const fullyVerified =
+    canonicalBundleClaims &&
     signatures.length > 0 &&
     signatures.every((c) => c.verdict === "valid") &&
     missingRequiredSignatures.length === 0;
@@ -1005,6 +1048,8 @@ export async function verifyBundleCore(
     reason:
       signatures.length === 0
         ? "bundle has no signatures"
+        : !canonicalBundleClaims
+          ? "bundle contains a non-canonical ClaimReference"
         : anyInvalid
           ? "one or more signatures failed verification"
           : anyError

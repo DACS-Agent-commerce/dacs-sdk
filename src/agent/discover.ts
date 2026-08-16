@@ -13,6 +13,10 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import {
+  canonicalDemosAgentPublicKey,
+} from "../identity/index.js";
+import { readableListingClaimReferencesAreCanonical } from "./listingClaimReferences.js";
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
 import {
   isVerifiedListingAdmission,
@@ -49,8 +53,8 @@ export interface DiscoverDeps {
   verify?: Verifier;
   /**
    * Resolve a seller claim to its ed25519 public key. Defaults to the intrinsic
-   * Demos form — a claim embedding a 64-hex key (`did:…:<hex>`, `0x<hex>`, bare
-   * `<hex>`). Return null for a claim whose key can't be established.
+   * registered Demos form (`did:demos:agent:<64-lowercase-hex>` in exact CF-2
+   * bytes). Return null for a claim whose key cannot be established.
    */
   resolvePublicKey?: (claim: string) => Promise<Uint8Array | null> | Uint8Array | null;
   /**
@@ -161,12 +165,6 @@ function snapshotListingArtifact(
   }
 }
 
-/** The intrinsic Demos claim→key resolution: a CCI *is* the ed25519 pubkey hex. */
-function intrinsicKey(claim: string): Uint8Array | null {
-  const hex = claim.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
-  return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
-}
-
 /**
  * Authenticate a structurally valid Listing without applying its admission
  * clock. Recovery uses this narrower gate only after runSessionCore proves an
@@ -180,6 +178,12 @@ async function authenticateListingSnapshot(
 ): Promise<ReadableListing | null> {
   const readable = readListingArtifact(raw);
   if (!readable) return null;
+  // Current signed bytes are never repaired before authorization. In
+  // particular, a case-insensitive standalone read of `DID:` cannot upgrade a
+  // signature that was created over non-CF-2 bytes.
+  if (deps.verify && !readableListingClaimReferencesAreCanonical(readable)) {
+    return null;
+  }
   if (!deps.verify && !deps.trustListings) {
     throw new DacsError(
       "Listing verification requires deps.verify or explicit trustListings: true",
@@ -201,7 +205,7 @@ async function authenticateListingSnapshot(
   }
   if (!deps.verify) return readable;
 
-  const resolveKey = deps.resolvePublicKey ?? intrinsicKey;
+  const resolveKey = deps.resolvePublicKey ?? canonicalDemosAgentPublicKey;
   if (readable.compatibility === "legacy-mvp") {
     try {
       const resolved = await resolveKey(readable.listing.agentId);
