@@ -214,11 +214,17 @@ configuration is present. In addition to fresh dedicated wallets, it requires a
 unique `LIVE_E2E_RUN_ID`, `LIVE_E2E_CONFIRM=1`, and an absolute canonical
 `LIVE_E2E_MARKER_DIR` on persistent local storage, owned by the test-process uid
 with mode `0700`. Its fixed 1-base-unit payment is also bound to the explicit
-1-base-unit `MAX_PAYMENT_AMOUNT` ceiling before the first write. Immediately
-before that write, the test atomically creates and syncs a permanent intent
-marker. It never removes the marker: an interrupted or ambiguous attempt must be
-reconciled read-only and must not be rerun under the same operation/run-id pair,
-even with changed wallets or payment details. See
+1-base-unit `MAX_PAYMENT_AMOUNT` ceiling and Circle's canonical Base Sepolia
+USDC contract (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`) before the first
+write. Immediately before that write, the test atomically creates and syncs a
+permanent intent marker. Receipt reconciliation sums every USDC `Transfer`
+debit from the payer and rejects a total above the armed ceiling. The first
+validated inclusion is written immediately with its complete session, nonce,
+transaction, block, asset, amount and debit facts; later delivery or audit
+failure cannot erase that record. The test never removes the marker: an
+interrupted or ambiguous attempt must be reconciled read-only and must not be
+rerun under the same operation/run-id pair, even with changed wallets or payment
+details. See
 [`docs/funded-e2e-safety.md`](docs/funded-e2e-safety.md) for the complete local
 ledger trust boundary.
 

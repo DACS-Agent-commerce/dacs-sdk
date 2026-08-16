@@ -40,6 +40,15 @@ wallets and a new run id. Marker outcomes are write-once only through this
 helper, remain owner-editable files, and are diagnostics rather than settlement
 or DACS proof.
 
+The x402 suite additionally pins both its authenticated configuration and armed
+intent to Circle's canonical Base Sepolia USDC contract
+`0x036CbD53842c5426634e7929541eC2318f3dCF7e`. Receipt authentication totals
+every selected-token `Transfer` debit from the payer, not only the expected
+seller transfer, and fails closed above the armed maximum-total-debit cap. At
+the first validated observation it persists the full job, phase, EIP-3009
+nonce, payer, payee, asset, amount, aggregate debit, transaction/log, canonical
+block and finality facts before allowing fulfilment to continue.
+
 All persisted inputs, including operation, run id and marker details, must be
 public reconciliation facts. Never pass private keys, mnemonics, credentials,
 tokens or wallet objects. The helper rejects common secret-shaped detail keys,

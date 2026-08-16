@@ -175,6 +175,8 @@ import {
 import {
   armX402FundedRun,
   recordX402FundedRunOutcome,
+  X402_FUNDED_BASE_SEPOLIA_USDC,
+  type X402FundedRunOutcome,
 } from "./x402-funded-run.js";
 import type { ArmedFundedRun } from "./funded-run-marker.js";
 
@@ -536,6 +538,10 @@ function validateStaticConfiguration(env: LiveEnv): void {
   requireCondition(env.PAYWALL_URL === "local", "paywall-must-be-local");
   requireCondition(env.PAY_NETWORK === BASE_SEPOLIA_NETWORK, "network-not-base-sepolia");
   requireCondition(/^0x[0-9a-fA-F]{40}$/.test(env.PAY_TOKEN), "token-address-invalid");
+  requireCondition(
+    env.PAY_TOKEN.toLowerCase() === X402_FUNDED_BASE_SEPOLIA_USDC.toLowerCase(),
+    "token-not-canonical-base-sepolia-usdc",
+  );
   requireCondition(/^0x[0-9a-fA-F]{40}$/.test(env.SELLER_EVM), "payee-address-invalid");
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(env.BUYER_EVM_KEY), "buyer-evm-key-invalid");
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(env.SELLER_EVM_KEY), "seller-evm-key-invalid");
@@ -2001,77 +2007,157 @@ function addressTopic(address: string): string {
   return `0x${address.slice(2).toLowerCase().padStart(64, "0")}`;
 }
 
-function asSafeNumber(value: bigint, code: string): number {
-  requireCondition(value <= BigInt(Number.MAX_SAFE_INTEGER), code);
-  return Number(value);
-}
-
 async function observeFundedTransfer(input: {
   preflight: Preflight;
   jobId: string;
   txHash: string;
   requireAllRpcs?: boolean;
+  onIncluded?: (outcome: Readonly<X402FundedRunOutcome>) => Promise<void>;
 }): Promise<X402TransferObservation> {
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(input.txHash), "settlement-tx-invalid");
   const transactionHash = input.txHash as `0x${string}`;
+  type FinalizedObservation = Extract<X402TransferObservation, { status: "finalized" }>;
+  type Attempt = Readonly<{
+    observation: X402TransferObservation;
+    outcome?: Readonly<X402FundedRunOutcome>;
+  }>;
   // Older deterministic fixtures construct the preflight boundary directly.
   const verificationClients = input.preflight.evmVerificationClients ?? [input.preflight.evm];
-  const observeOnce = async (client: PublicClient): Promise<X402TransferObservation> => {
+  const observeOnce = async (client: PublicClient): Promise<Attempt> => {
+    let receipt: Awaited<ReturnType<PublicClient["getTransactionReceipt"]>>;
+    let head: bigint;
     try {
-      const [receipt, head] = await Promise.all([
+      [receipt, head] = await Promise.all([
         client.getTransactionReceipt({ hash: transactionHash }),
         client.getBlockNumber(),
       ]);
-      if (receipt.status !== "success") return { status: "failed", reason: "transaction-reverted" };
-      const confirmations = head >= receipt.blockNumber
-        ? head - receipt.blockNumber + 1n
-        : 0n;
-      if (confirmations < 1n) {
-        return { status: "unavailable", reason: "settlement-not-final" };
-      }
-      const payerTopic = addressTopic(input.preflight.payer);
-      const payeeTopic = addressTopic(input.preflight.payee);
-      const nonce = x402Eip3009Nonce(input.jobId, PAYMENT_PHASE_INDEX).toLowerCase();
-      const used = receipt.logs.filter((log) =>
-        log.address.toLowerCase() === input.preflight.asset.toLowerCase() &&
-        log.topics.length === 3 &&
-        log.topics[0]?.toLowerCase() === EIP3009_AUTHORIZATION_USED_TOPIC &&
-        log.topics[1]?.toLowerCase() === payerTopic &&
-        log.topics[2]?.toLowerCase() === nonce
-      );
-      const transfers = receipt.logs.filter((log) =>
-        log.address.toLowerCase() === input.preflight.asset.toLowerCase() &&
-        log.topics.length === 3 &&
-        log.topics[0]?.toLowerCase() === ERC20_TRANSFER_TOPIC &&
-        log.topics[1]?.toLowerCase() === payerTopic &&
-        log.topics[2]?.toLowerCase() === payeeTopic &&
-        BigInt(log.data) === PAYMENT_AMOUNT
-      );
-      requireCondition(used.length === 1 && transfers.length === 1, "settlement-events-mismatch");
-      const block = await client.getBlock({ blockHash: receipt.blockHash });
-      const includedAt = asSafeNumber(block.timestamp * 1_000n, "settlement-time-unsupported");
-      return {
-        status: "finalized",
-        chainId: BASE_SEPOLIA_CHAIN_ID,
-        txHash: transactionHash,
-        logIndex: transfers[0]!.logIndex,
-        payer: input.preflight.payer,
-        payee: input.preflight.payee,
-        amountBaseUnits: PAYMENT_AMOUNT.toString(),
-        asset: {
-          contract: input.preflight.asset,
-          symbol: TOKEN_SYMBOL,
-          decimals: TOKEN_DECIMALS,
-        },
-        confirmations: asSafeNumber(confirmations, "settlement-confirmations-unsupported"),
-        includedAt,
-        finalityObservedAt: Date.now(),
-        sessionBinding: { kind: "eip3009", nonce },
-      };
     } catch {
       // A just-mined transaction may not be visible on every RPC backend yet.
-      return { status: "unavailable", reason: "settlement-rpc-unavailable" };
+      return { observation: { status: "unavailable", reason: "settlement-rpc-unavailable" } };
     }
+    if (receipt.status !== "success") {
+      return { observation: { status: "failed", reason: "transaction-reverted" } };
+    }
+    if (receipt.transactionHash.toLowerCase() !== transactionHash.toLowerCase()) {
+      return { observation: { status: "failed", reason: "settlement-transaction-mismatch" } };
+    }
+    const confirmations = head >= receipt.blockNumber
+      ? head - receipt.blockNumber + 1n
+      : 0n;
+    if (confirmations < 1n) {
+      return { observation: { status: "unavailable", reason: "settlement-not-final" } };
+    }
+    if (receipt.blockNumber < 0n || receipt.blockNumber > BigInt(Number.MAX_SAFE_INTEGER) ||
+        confirmations > BigInt(Number.MAX_SAFE_INTEGER) ||
+        !/^0x[0-9a-fA-F]{64}$/.test(receipt.blockHash)) {
+      return { observation: { status: "failed", reason: "settlement-block-unsupported" } };
+    }
+    const payerTopic = addressTopic(input.preflight.payer);
+    const payeeTopic = addressTopic(input.preflight.payee);
+    const nonce = x402Eip3009Nonce(input.jobId, PAYMENT_PHASE_INDEX).toLowerCase();
+    const asset = input.preflight.asset.toLowerCase();
+    const used = receipt.logs.filter((log) =>
+      log.address.toLowerCase() === asset && log.topics.length === 3 &&
+      log.topics[0]?.toLowerCase() === EIP3009_AUTHORIZATION_USED_TOPIC &&
+      log.topics[1]?.toLowerCase() === payerTopic &&
+      log.topics[2]?.toLowerCase() === nonce
+    );
+    const payerDebits = receipt.logs.filter((log) =>
+      log.address.toLowerCase() === asset &&
+      log.topics[0]?.toLowerCase() === ERC20_TRANSFER_TOPIC &&
+      log.topics[1]?.toLowerCase() === payerTopic
+    );
+    if (payerDebits.some((log) =>
+      log.topics.length !== 3 || !/^0x[0-9a-fA-F]{64}$/.test(log.data)
+    )) {
+      return { observation: { status: "failed", reason: "settlement-debit-log-invalid" } };
+    }
+    const exactLogs = [...used, ...payerDebits];
+    if (exactLogs.some((log) =>
+      !Number.isSafeInteger(log.logIndex) || log.logIndex < 0 || log.removed ||
+      log.transactionHash.toLowerCase() !== transactionHash.toLowerCase() ||
+      log.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+      log.blockNumber !== receipt.blockNumber
+    ) || new Set(exactLogs.map((log) => log.logIndex)).size !== exactLogs.length) {
+      return { observation: { status: "failed", reason: "settlement-log-binding-invalid" } };
+    }
+    const totalDebit = payerDebits.reduce((sum, log) => sum + BigInt(log.data), 0n);
+    if (totalDebit > MAX_PAYMENT_AMOUNT) {
+      return {
+        observation: { status: "failed", reason: "settlement-total-debit-exceeds-cap" },
+      };
+    }
+    const transfers = payerDebits.filter((log) =>
+      log.topics[2]?.toLowerCase() === payeeTopic && BigInt(log.data) === PAYMENT_AMOUNT
+    );
+    if (used.length !== 1 || transfers.length !== 1 || totalDebit < PAYMENT_AMOUNT) {
+      return { observation: { status: "failed", reason: "settlement-events-mismatch" } };
+    }
+    if (!Number.isSafeInteger(transfers[0]!.logIndex) || transfers[0]!.logIndex < 0) {
+      return { observation: { status: "failed", reason: "settlement-log-index-unsupported" } };
+    }
+    let block: Awaited<ReturnType<PublicClient["getBlock"]>>;
+    try {
+      block = await client.getBlock({ blockHash: receipt.blockHash });
+    } catch {
+      return { observation: { status: "unavailable", reason: "settlement-rpc-unavailable" } };
+    }
+    if (block.hash?.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+        block.number !== receipt.blockNumber) {
+      return { observation: { status: "failed", reason: "settlement-block-mismatch" } };
+    }
+    if (block.timestamp < 0n ||
+        block.timestamp * 1_000n > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return { observation: { status: "failed", reason: "settlement-time-unsupported" } };
+    }
+    const includedAt = Number(block.timestamp * 1_000n);
+    const finalityObservedAt = Date.now();
+    if (finalityObservedAt < includedAt) {
+      return { observation: { status: "failed", reason: "settlement-time-in-future" } };
+    }
+    const observation: FinalizedObservation = {
+      status: "finalized",
+      chainId: BASE_SEPOLIA_CHAIN_ID,
+      txHash: transactionHash,
+      logIndex: transfers[0]!.logIndex,
+      payer: input.preflight.payer,
+      payee: input.preflight.payee,
+      amountBaseUnits: PAYMENT_AMOUNT.toString(),
+      asset: {
+        contract: input.preflight.asset,
+        symbol: TOKEN_SYMBOL,
+        decimals: TOKEN_DECIMALS,
+      },
+      confirmations: Number(confirmations),
+      includedAt,
+      finalityObservedAt,
+      sessionBinding: { kind: "eip3009", nonce },
+    };
+    return {
+      observation,
+      outcome: {
+        status: "included",
+        jobId: input.jobId,
+        network: BASE_SEPOLIA_NETWORK,
+        paymentPhaseIndex: PAYMENT_PHASE_INDEX,
+        authorizationNonce: nonce,
+        chainId: BASE_SEPOLIA_CHAIN_ID,
+        transactionHash: transactionHash.toLowerCase(),
+        logIndex: observation.logIndex,
+        blockNumber: Number(receipt.blockNumber),
+        blockHash: receipt.blockHash.toLowerCase(),
+        payer: input.preflight.payer.toLowerCase(),
+        payee: input.preflight.payee.toLowerCase(),
+        asset,
+        assetSymbol: TOKEN_SYMBOL,
+        assetDecimals: TOKEN_DECIMALS,
+        amountBaseUnits: PAYMENT_AMOUNT.toString(),
+        totalDebitBaseUnits: totalDebit.toString(),
+        confirmations: observation.confirmations,
+        includedAt,
+        finalityObservedAt,
+      },
+    };
   };
   // Race independently configured RPCs, but accept only a complete receipt,
   // canonical block, exact nonce event, and exact value-transfer event.
@@ -2079,16 +2165,21 @@ async function observeFundedTransfer(input: {
     const observations = await Promise.all(
       verificationClients.map(observeOnce),
     );
-    const failed = observations.find((candidate) => candidate.status === "failed");
-    if (failed !== undefined) return failed;
+    const failed = observations.find((candidate) => candidate.observation.status === "failed");
+    if (failed !== undefined) return failed.observation;
     const finalized = observations.filter(
-      (candidate): candidate is Extract<X402TransferObservation, { status: "finalized" }> =>
-        candidate.status === "finalized",
+      (candidate): candidate is Readonly<{
+        observation: FinalizedObservation;
+        outcome: Readonly<X402FundedRunOutcome>;
+      }> => candidate.observation.status === "finalized" && candidate.outcome !== undefined,
     );
     if (finalized.length > 0 &&
         (!input.requireAllRpcs || finalized.length === observations.length)) {
       requireCondition(
-        finalized.every((candidate) => sameFinalizedTransfer(finalized[0]!, candidate)),
+        finalized.every((candidate) =>
+          sameFinalizedTransfer(finalized[0]!.observation, candidate.observation) &&
+          sameFundedOutcomeIdentity(finalized[0]!.outcome, candidate.outcome)
+        ),
         "cross-rpc-settlement-mismatch",
       );
       process.stderr.write(
@@ -2096,11 +2187,30 @@ async function observeFundedTransfer(input: {
           input.requireAllRpcs ? "all" : "first"
         }-${finalized.length}-of-${observations.length}\n`,
       );
-      return finalized[0]!;
+      await input.onIncluded?.(finalized[0]!.outcome);
+      return finalized[0]!.observation;
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   return { status: "unavailable", reason: "settlement-finality-timeout" };
+}
+
+function sameFundedOutcomeIdentity(
+  left: Readonly<X402FundedRunOutcome>,
+  right: Readonly<X402FundedRunOutcome>,
+): boolean {
+  const {
+    confirmations: _leftConfirmations,
+    finalityObservedAt: _leftObservedAt,
+    ...leftImmutable
+  } = left;
+  const {
+    confirmations: _rightConfirmations,
+    finalityObservedAt: _rightObservedAt,
+    ...rightImmutable
+  } = right;
+  return left.confirmations >= 1 && right.confirmations >= 1 &&
+    canonicalize(leftImmutable) === canonicalize(rightImmutable);
 }
 
 function fundedPaymentResponseReceipt(
@@ -2140,6 +2250,9 @@ async function recoverFundedSellerSettlement(input: {
   preflight: Preflight;
   jobId: string;
   intent: Readonly<X402PaywallSettlementIntent>;
+  recordFundedObservation?: (
+    outcome: Readonly<X402FundedRunOutcome>,
+  ) => Promise<void>;
 }): Promise<
   | { status: "settled"; settlement: X402PaywallSettlementResult & { success: true } }
   | { status: "pending" | "indeterminate"; reason: string }
@@ -2172,6 +2285,9 @@ async function recoverFundedSellerSettlement(input: {
       preflight: input.preflight,
       jobId: input.jobId,
       txHash: used[0]!.transactionHash,
+      ...(input.recordFundedObservation
+        ? { onIncluded: input.recordFundedObservation }
+        : {}),
     });
     if (observed.status !== "finalized") {
       return {
@@ -2431,6 +2547,9 @@ async function createSellerRuntime(input: {
   directories: SellerDirectories;
   state: CommerceState;
   workerId: string;
+  recordFundedObservation?: (
+    outcome: Readonly<X402FundedRunOutcome>,
+  ) => Promise<void>;
   startPaymentEvidencePublication?: (input: Readonly<{
     permit: X402SellerPaymentPermitAuthorization;
     observation: Extract<X402TransferObservation, { status: "finalized" }>;
@@ -2723,7 +2842,14 @@ async function createSellerRuntime(input: {
     observeX402Transfer: async ({ chainId, txHash }) => {
       if (chainId !== BASE_SEPOLIA_CHAIN_ID) return { status: "failed", reason: "chain-mismatch" };
       const observed = await diagnosticStep("seller-transfer-observation", () =>
-        observeFundedTransfer({ preflight, jobId, txHash })
+        observeFundedTransfer({
+          preflight,
+          jobId,
+          txHash,
+          ...(input.recordFundedObservation
+            ? { onIncluded: input.recordFundedObservation }
+            : {}),
+        })
       );
       if (observed.status === "finalized") state.observedTransfer = structuredClone(observed);
       return observed;
@@ -3258,7 +3384,14 @@ async function createSellerRuntime(input: {
         return { status: "settled", settlement: structuredClone(state.settlementResult) };
       }
       const recovered = await diagnosticStep("seller-settlement-reconciliation", () =>
-        recoverFundedSellerSettlement({ preflight, jobId, intent })
+        recoverFundedSellerSettlement({
+          preflight,
+          jobId,
+          intent,
+          ...(input.recordFundedObservation
+            ? { recordFundedObservation: input.recordFundedObservation }
+            : {}),
+        })
       );
       state.settlementReconciliationOutcome = recovered.status;
       state.settlementReconciliationReason = recovered.status === "settled"
@@ -3482,6 +3615,9 @@ async function settleAndRecover(input: {
   buyerIdentity: IdentityBundle;
   sellerIdentity: IdentityBundle;
   vet: VetArtifacts;
+  recordFundedObservation?: (
+    outcome: Readonly<X402FundedRunOutcome>,
+  ) => Promise<void>;
 }): Promise<SettlementRun> {
   const fastProfile = productionLatencyProfile();
   const sellerDirectories = {
@@ -3853,6 +3989,9 @@ async function settleAndRecover(input: {
           preflight: input.preflight,
           jobId: input.jobId,
           txHash: state.permit!.paymentAuthorization.settlementIdentity.txHash,
+          ...(input.recordFundedObservation
+            ? { onIncluded: input.recordFundedObservation }
+            : {}),
         })
       );
       requireCondition(observed.status === "finalized", "fast-seller-chain-observation-missing");
@@ -3977,6 +4116,9 @@ async function settleAndRecover(input: {
     preflight: input.preflight,
     jobId: input.jobId,
     txHash: recoveredTxHash,
+    ...(input.recordFundedObservation
+      ? { onIncluded: input.recordFundedObservation }
+      : {}),
   });
   requireCondition(recoveredObservation.status === "finalized", "seller-chain-recovery-failed");
   restartedState.observedTransfer = structuredClone(recoveredObservation);
@@ -5730,6 +5872,41 @@ describe("issue #114 guarded funded two-agent spine", () => {
     );
   });
 
+  it("pins funded x402 configuration to canonical Base Sepolia USDC", () => {
+    const configuration: LiveEnv = {
+      DEMOS_RPC: "https://demos.example",
+      SELLER_WALLET: "public-seller-fixture",
+      SELLER_DID: `did:demos:agent:${"11".repeat(20)}`,
+      BUYER_WALLET: "public-buyer-fixture",
+      BUYER_DID: `did:demos:agent:${"22".repeat(20)}`,
+      BUYER_EVM_KEY: `0x${"33".repeat(32)}`,
+      SELLER_EVM_KEY: `0x${"44".repeat(32)}`,
+      SELLER_EVM: `0x${"55".repeat(20)}`,
+      PAYWALL_URL: "local",
+      PAY_NETWORK: BASE_SEPOLIA_NETWORK,
+      PAY_RPC: "https://base-sepolia.example",
+      PAY_TOKEN: X402_FUNDED_BASE_SEPOLIA_USDC,
+      X402_FACILITATOR: "https://facilitator.example",
+      LIVE_E2E_RUN_ID: "canonical-usdc-self-check",
+      LIVE_E2E_MARKER_DIR: "/operator-retained-ledger",
+      LIVE_E2E_CONFIRM: "1",
+    };
+    validateStaticConfiguration(configuration);
+    let failure = "";
+    try {
+      validateStaticConfiguration({
+        ...configuration,
+        PAY_TOKEN: `0x${"66".repeat(20)}`,
+      });
+    } catch (error) {
+      failure = error instanceof Error ? error.message : "non-error";
+    }
+    requireCondition(
+      failure === "funded-e2e:token-not-canonical-base-sepolia-usdc",
+      "non-canonical-payment-token-not-rejected",
+    );
+  });
+
   it("durably detaches a successful facilitator result before acknowledgement loss", async () => {
     const state = commerceState();
     const bindingHash = "a".repeat(64);
@@ -5857,7 +6034,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
   it("reconstructs a seller receipt only from the exact finalized nonce transfer", async () => {
     const payer = `0x${"11".repeat(20)}` as `0x${string}`;
     const payee = `0x${"22".repeat(20)}` as `0x${string}`;
-    const asset = `0x${"33".repeat(20)}` as `0x${string}`;
+    const asset = X402_FUNDED_BASE_SEPOLIA_USDC as `0x${string}`;
     const transactionHash = `0x${"aa".repeat(32)}` as `0x${string}`;
     const blockHash = `0x${"bb".repeat(32)}` as `0x${string}`;
     const jobId = "01K2D6Y7W8Q9R0S1T2V3W4X5Y6";
@@ -5877,6 +6054,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
         },
         getTransactionReceipt: async () => ({
           status: "success",
+          transactionHash,
           blockNumber: 100n,
           blockHash,
           logs: [
@@ -5889,16 +6067,28 @@ describe("issue #114 guarded funded two-agent spine", () => {
               ],
               data: "0x",
               logIndex: 5,
+              transactionHash,
+              blockNumber: 100n,
+              blockHash,
+              removed: false,
             },
             {
               address: asset,
               topics: [ERC20_TRANSFER_TOPIC, addressTopic(payer), addressTopic(payee)],
               data: `0x${PAYMENT_AMOUNT.toString(16).padStart(64, "0")}`,
               logIndex: 7,
+              transactionHash,
+              blockNumber: 100n,
+              blockHash,
+              removed: false,
             },
           ],
         }),
-        getBlock: async () => ({ timestamp: 2_000n }),
+        getBlock: async () => ({
+          timestamp: 2_000n,
+          hash: blockHash,
+          number: 100n,
+        }),
       },
     } as unknown as Preflight;
     const requirements: X402BuyerPaymentRequirements = {
@@ -5953,13 +6143,14 @@ describe("issue #114 guarded funded two-agent spine", () => {
   it("uses the first exact RPC proof and rejects cross-RPC disagreement", async () => {
     const payer = `0x${"11".repeat(20)}` as `0x${string}`;
     const payee = `0x${"22".repeat(20)}` as `0x${string}`;
-    const asset = `0x${"33".repeat(20)}` as `0x${string}`;
+    const asset = X402_FUNDED_BASE_SEPOLIA_USDC as `0x${string}`;
     const transactionHash = `0x${"aa".repeat(32)}` as `0x${string}`;
     const blockHash = `0x${"bb".repeat(32)}` as `0x${string}`;
     const jobId = "01K2D6Y7W8Q9R0S1T2V3W4X5Y6";
     const nonce = x402Eip3009Nonce(jobId, PAYMENT_PHASE_INDEX);
     const receipt = {
       status: "success" as const,
+      transactionHash,
       blockNumber: 100n,
       blockHash,
       logs: [
@@ -5968,12 +6159,20 @@ describe("issue #114 guarded funded two-agent spine", () => {
           topics: [EIP3009_AUTHORIZATION_USED_TOPIC, addressTopic(payer), nonce],
           data: "0x",
           logIndex: 5,
+          transactionHash,
+          blockNumber: 100n,
+          blockHash,
+          removed: false,
         },
         {
           address: asset,
           topics: [ERC20_TRANSFER_TOPIC, addressTopic(payer), addressTopic(payee)],
           data: `0x${PAYMENT_AMOUNT.toString(16).padStart(64, "0")}`,
           logIndex: 7,
+          transactionHash,
+          blockNumber: 100n,
+          blockHash,
+          removed: false,
         },
       ],
     };
@@ -5988,7 +6187,11 @@ describe("issue #114 guarded funded two-agent spine", () => {
     const exact = {
       getTransactionReceipt: async () => receipt,
       getBlockNumber: async () => 110n,
-      getBlock: async () => ({ timestamp: 2_000n }),
+      getBlock: async () => ({
+        timestamp: 2_000n,
+        hash: blockHash,
+        number: 100n,
+      }),
     } as unknown as PublicClient;
     const inconsistent = {
       getTransactionReceipt: async () => ({
@@ -5997,7 +6200,11 @@ describe("issue #114 guarded funded two-agent spine", () => {
           ? { ...log, logIndex: 8 } : log),
       }),
       getBlockNumber: async () => 110n,
-      getBlock: async () => ({ timestamp: 2_000n }),
+      getBlock: async () => ({
+        timestamp: 2_000n,
+        hash: blockHash,
+        number: 100n,
+      }),
     } as unknown as PublicClient;
     const preflight = {
       payer,
@@ -6006,10 +6213,39 @@ describe("issue #114 guarded funded two-agent spine", () => {
       evm: exact,
       evmVerificationClients: [lagging, exact],
     } as unknown as Preflight;
-    const observed = await observeFundedTransfer({ preflight, jobId, txHash: transactionHash });
+    const included: X402FundedRunOutcome[] = [];
+    const observed = await observeFundedTransfer({
+      preflight,
+      jobId,
+      txHash: transactionHash,
+      onIncluded: async (outcome) => { included.push(structuredClone(outcome)); },
+    });
     requireCondition(
-      observed.status === "finalized" && observed.logIndex === 7 && laggingReads === 1,
+      observed.status === "finalized" && observed.logIndex === 7 && laggingReads === 1 &&
+        included.length === 1 && included[0]!.jobId === jobId &&
+        included[0]!.authorizationNonce === nonce.toLowerCase() &&
+        included[0]!.transactionHash === transactionHash &&
+        included[0]!.blockNumber === 100 && included[0]!.blockHash === blockHash &&
+        included[0]!.payer === payer && included[0]!.payee === payee &&
+        included[0]!.asset.toLowerCase() === asset.toLowerCase() &&
+        included[0]!.amountBaseUnits === PAYMENT_AMOUNT.toString() &&
+        included[0]!.totalDebitBaseUnits === PAYMENT_AMOUNT.toString(),
       "secondary-rpc-proof-not-used",
+    );
+    let persistenceFailure = "";
+    try {
+      await observeFundedTransfer({
+        preflight: { ...preflight, evmVerificationClients: [exact] },
+        jobId,
+        txHash: transactionHash,
+        onIncluded: async () => { throw new Error("injected-marker-write-ambiguity"); },
+      });
+    } catch (error) {
+      persistenceFailure = error instanceof Error ? error.message : "non-error";
+    }
+    requireCondition(
+      persistenceFailure === "injected-marker-write-ambiguity",
+      "marker-write-failure-did-not-block-observation",
     );
 
     let mismatch = "";
@@ -6026,6 +6262,117 @@ describe("issue #114 guarded funded two-agent spine", () => {
     requireCondition(
       mismatch === "funded-e2e:cross-rpc-settlement-mismatch",
       "cross-rpc-disagreement-not-rejected",
+    );
+
+    const duplicateLog = {
+      getTransactionReceipt: async () => ({
+        ...receipt,
+        logs: [
+          ...receipt.logs,
+          {
+            ...receipt.logs[1]!,
+            data: `0x${"0".repeat(64)}` as `0x${string}`,
+          },
+        ],
+      }),
+      getBlockNumber: exact.getBlockNumber,
+      getBlock: exact.getBlock,
+    } as unknown as PublicClient;
+    const duplicated = await observeFundedTransfer({
+      preflight: { ...preflight, evmVerificationClients: [duplicateLog] },
+      jobId,
+      txHash: transactionHash,
+    });
+    const reboundTransaction = {
+      getTransactionReceipt: async () => ({
+        ...receipt,
+        transactionHash: `0x${"cc".repeat(32)}` as `0x${string}`,
+      }),
+      getBlockNumber: exact.getBlockNumber,
+      getBlock: exact.getBlock,
+    } as unknown as PublicClient;
+    const rebound = await observeFundedTransfer({
+      preflight: { ...preflight, evmVerificationClients: [reboundTransaction] },
+      jobId,
+      txHash: transactionHash,
+    });
+    requireCondition(
+      duplicated.status === "failed" &&
+        duplicated.reason === "settlement-log-binding-invalid" &&
+        rebound.status === "failed" &&
+        rebound.reason === "settlement-transaction-mismatch",
+      "receipt-transaction-or-duplicate-log-ambiguity-not-rejected",
+    );
+  });
+
+  it("rejects a receipt whose selected token debits the payer above the exact cap", async () => {
+    const payer = `0x${"11".repeat(20)}` as `0x${string}`;
+    const payee = `0x${"22".repeat(20)}` as `0x${string}`;
+    const otherPayee = `0x${"44".repeat(20)}` as `0x${string}`;
+    const asset = X402_FUNDED_BASE_SEPOLIA_USDC as `0x${string}`;
+    const transactionHash = `0x${"aa".repeat(32)}` as `0x${string}`;
+    const blockHash = `0x${"bb".repeat(32)}` as `0x${string}`;
+    const jobId = "01K2D6Y7W8Q9R0S1T2V3W4X5Y6";
+    const nonce = x402Eip3009Nonce(jobId, PAYMENT_PHASE_INDEX);
+    const unit = `0x${PAYMENT_AMOUNT.toString(16).padStart(64, "0")}` as `0x${string}`;
+    const exact = {
+      getTransactionReceipt: async () => ({
+        status: "success" as const,
+        transactionHash,
+        blockNumber: 100n,
+        blockHash,
+        logs: [
+          {
+            address: asset,
+            topics: [EIP3009_AUTHORIZATION_USED_TOPIC, addressTopic(payer), nonce],
+            data: "0x",
+            logIndex: 5,
+            transactionHash,
+            blockNumber: 100n,
+            blockHash,
+            removed: false,
+          },
+          {
+            address: asset,
+            topics: [ERC20_TRANSFER_TOPIC, addressTopic(payer), addressTopic(payee)],
+            data: unit,
+            logIndex: 7,
+            transactionHash,
+            blockNumber: 100n,
+            blockHash,
+            removed: false,
+          },
+          {
+            address: asset,
+            topics: [ERC20_TRANSFER_TOPIC, addressTopic(payer), addressTopic(otherPayee)],
+            data: unit,
+            logIndex: 8,
+            transactionHash,
+            blockNumber: 100n,
+            blockHash,
+            removed: false,
+          },
+        ],
+      }),
+      getBlockNumber: async () => 110n,
+      getBlock: async () => ({
+        timestamp: 2_000n,
+        hash: blockHash,
+        number: 100n,
+      }),
+    } as unknown as PublicClient;
+    const preflight = { payer, payee, asset, evm: exact } as unknown as Preflight;
+    let persisted = false;
+    const observed = await observeFundedTransfer({
+      preflight,
+      jobId,
+      txHash: transactionHash,
+      onIncluded: async () => { persisted = true; },
+    });
+    requireCondition(
+      observed.status === "failed" &&
+        observed.reason === "settlement-total-debit-exceeds-cap" && !persisted,
+      "aggregate-payer-debit-cap-not-enforced",
     );
   });
 
@@ -6064,6 +6411,8 @@ describe("issue #114 guarded funded two-agent spine", () => {
         const selectedRail = rail(preflight.host.resourceUrl);
         let published: PublishedListing | undefined;
         let fundedMarker: Readonly<ArmedFundedRun> | undefined;
+        let firstFundedObservation: Readonly<X402FundedRunOutcome> | undefined;
+        let fundedObservationWrite: Promise<void> | undefined;
         const armBeforeFirstWrite = async (): Promise<void> => {
           requireCondition(fundedMarker === undefined, "funded-run-armed-more-than-once");
           fundedMarker = await armX402FundedRun({
@@ -6083,19 +6432,29 @@ describe("issue #114 guarded funded two-agent spine", () => {
           });
         };
         const recordSettlement = async (
-          observation: Extract<X402TransferObservation, { status: "finalized" }>,
+          observation: Readonly<X402FundedRunOutcome>,
         ): Promise<void> => {
+          if (firstFundedObservation !== undefined) {
+            requireCondition(
+              sameFundedOutcomeIdentity(firstFundedObservation, observation),
+              "funded-run-outcome-rebound",
+            );
+            requireCondition(
+              fundedObservationWrite !== undefined,
+              "funded-run-outcome-write-missing",
+            );
+            return fundedObservationWrite;
+          }
           requireCondition(fundedMarker !== undefined, "funded-run-marker-missing");
-          requireCondition(
-            observation.chainId === BASE_SEPOLIA_CHAIN_ID,
-            "funded-run-outcome-chain-mismatch",
+          firstFundedObservation = structuredClone(observation);
+          fundedObservationWrite = recordX402FundedRunOutcome(
+            fundedMarker,
+            firstFundedObservation,
           );
-          await recordX402FundedRunOutcome(fundedMarker, {
-            status: "included",
-            chainId: observation.chainId,
-            transactionHash: observation.txHash,
-            logIndex: observation.logIndex,
-          });
+          // Retain the exact first write promise. Any concurrent or recovery
+          // observation must join it and may not replace the persisted facts.
+          void fundedObservationWrite.catch(() => undefined);
+          return fundedObservationWrite;
         };
 
         // The fast profile measures an honest buyer-visible session. A listing
@@ -6230,16 +6589,23 @@ describe("issue #114 guarded funded two-agent spine", () => {
           buyerIdentity,
           sellerIdentity,
           vet,
+          recordFundedObservation: recordSettlement,
         }));
         const reconciledObservation = settlement.state.observedTransfer;
         requireCondition(
           reconciledObservation?.status === "finalized",
           "completed-transfer-observation-missing",
         );
-        // Persist the first exact settlement facts before any later evidence or
-        // bundle work can fail. The outcome is intentionally write-once; later
-        // delivery/audit completion remains visible in the test report.
-        await recordSettlement(reconciledObservation);
+        requireCondition(
+          firstFundedObservation !== undefined && fundedObservationWrite !== undefined,
+          "funded-run-first-observation-not-persisted",
+        );
+        await fundedObservationWrite;
+        requireCondition(
+          firstFundedObservation.transactionHash === reconciledObservation.txHash.toLowerCase() &&
+            firstFundedObservation.logIndex === reconciledObservation.logIndex,
+          "funded-run-observation-settlement-mismatch",
+        );
         if (fastProfile) {
           requireCondition(
             settlement.state.deliveryReadyAt !== undefined &&

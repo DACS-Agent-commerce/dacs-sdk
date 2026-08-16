@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   armFundedRun,
   executeFundedRun,
+  inspectArmedFundedRun,
   recordFundedRunOutcome,
   type FundedRunIntent,
 } from "./funded-run-marker.js";
@@ -214,6 +215,25 @@ describe("durable funded-run guard", () => {
       /outcome-already-recorded/,
     );
     await expect(readFile(armed.markerPath, "utf8")).resolves.toContain('"state":"armed"');
+  });
+
+  it("returns an authenticated frozen snapshot of the exact armed intent", async () => {
+    const input = await fixture();
+    const armed = await armFundedRun(input, () => 1);
+    const inspected = await inspectArmedFundedRun(armed);
+    expect(inspected).toMatchObject({
+      marker: armed,
+      operation: input.operation,
+      runId: input.runId,
+      details: input.details,
+      armedAt: 1,
+    });
+    expect(Object.isFrozen(inspected)).toBe(true);
+    expect(Object.isFrozen(inspected.marker)).toBe(true);
+    expect(Object.isFrozen(inspected.details)).toBe(true);
+
+    await writeFile(armed.markerPath, '{"state":"armed"}\n', { mode: 0o600 });
+    await expect(inspectArmedFundedRun(armed)).rejects.toThrow(/intent-marker-corrupt/);
   });
 
   it("snapshots outcome state before the first asynchronous boundary", async () => {

@@ -41,6 +41,14 @@ export interface ArmedFundedRun {
   outcomePath: string;
 }
 
+export interface InspectedArmedFundedRun {
+  marker: Readonly<ArmedFundedRun>;
+  operation: string;
+  runId: string;
+  details: Readonly<Record<string, FundedRunPublicDetail>>;
+  armedAt: number;
+}
+
 export type FundedRunOutcomeStatus =
   | "included"
   | "unresolved"
@@ -71,6 +79,13 @@ interface CapturedArmedFundedRun {
 interface CapturedFundedRunOutcome {
   status: FundedRunOutcomeStatus;
   details: Record<string, FundedRunPublicDetail>;
+}
+
+interface VerifiedIntentMarker {
+  operation: string;
+  runId: string;
+  details: Record<string, FundedRunPublicDetail>;
+  armedAt: number;
 }
 
 interface SecureMarkerDirectory {
@@ -188,6 +203,18 @@ function captureMarker(value: unknown): CapturedArmedFundedRun {
     markerPath: snapshot.markerPath,
     outcomePath: snapshot.outcomePath,
   };
+}
+
+function markerDirectory(marker: Readonly<CapturedArmedFundedRun>): string {
+  const directory = dirname(marker.markerPath);
+  const expectedMarkerPath = join(directory, `${marker.markerId}.intent.json`);
+  const expectedOutcomePath = join(directory, `${marker.markerId}.outcome.json`);
+  if (!isAbsolute(directory) || directory !== resolve(directory) ||
+      marker.markerPath !== expectedMarkerPath ||
+      marker.outcomePath !== expectedOutcomePath) {
+    throw new Error("funded-e2e:marker-path-invalid");
+  }
+  return directory;
 }
 
 function captureOutcome(value: unknown): CapturedFundedRunOutcome {
@@ -367,7 +394,7 @@ async function writeExclusive(path: string, encoded: string): Promise<void> {
 async function verifyIntentMarker(
   markerPath: string,
   markerId: string,
-): Promise<void> {
+): Promise<VerifiedIntentMarker> {
   const uid = requirePosixUid();
   const before = await lstat(markerPath);
   if (before.isSymbolicLink() || !before.isFile() || before.uid !== uid ||
@@ -410,7 +437,7 @@ async function verifyIntentMarker(
         (stored.armedAt as number) < 0) {
       throw new Error("funded-e2e:intent-marker-corrupt");
     }
-    captureDetails(stored.details, "stored-marker-details");
+    const details = captureDetails(stored.details, "stored-marker-details");
     const expectedId = sha256Hex(canonicalize({
       markerVersion: "1",
       operation: stored.operation,
@@ -419,8 +446,42 @@ async function verifyIntentMarker(
     if (expectedId !== markerId || encoded !== `${canonicalize(stored)}\n`) {
       throw new Error("funded-e2e:intent-marker-corrupt");
     }
+    return {
+      operation: stored.operation,
+      runId: stored.runId,
+      details,
+      armedAt: stored.armedAt as number,
+    };
   } finally {
     await handle.close();
+  }
+}
+
+/**
+ * Read and authenticate the exact armed intent behind a public marker handle.
+ * The returned snapshot contains only the public facts already retained in the
+ * operator-owned marker ledger.
+ */
+export async function inspectArmedFundedRun(
+  marker: Readonly<ArmedFundedRun>,
+): Promise<Readonly<InspectedArmedFundedRun>> {
+  const capturedMarker = captureMarker(marker);
+  const directory = markerDirectory(capturedMarker);
+  const secureDirectory = await openSecureMarkerDirectory(directory);
+  try {
+    const verified = await verifyIntentMarker(
+      capturedMarker.markerPath,
+      capturedMarker.markerId,
+    );
+    return Object.freeze({
+      marker: Object.freeze({ ...capturedMarker }),
+      operation: verified.operation,
+      runId: verified.runId,
+      details: Object.freeze({ ...verified.details }),
+      armedAt: verified.armedAt,
+    });
+  } finally {
+    await secureDirectory.handle.close();
   }
 }
 
@@ -499,14 +560,7 @@ export async function recordFundedRunOutcome(
   const capturedMarker = captureMarker(marker);
   const capturedOutcome = captureOutcome(outcome);
   const recordedAt = captureNow(now);
-  const directory = dirname(capturedMarker.markerPath);
-  const expectedMarkerPath = join(directory, `${capturedMarker.markerId}.intent.json`);
-  const expectedOutcomePath = join(directory, `${capturedMarker.markerId}.outcome.json`);
-  if (!isAbsolute(directory) || directory !== resolve(directory) ||
-      capturedMarker.markerPath !== expectedMarkerPath ||
-      capturedMarker.outcomePath !== expectedOutcomePath) {
-    throw new Error("funded-e2e:marker-path-invalid");
-  }
+  const directory = markerDirectory(capturedMarker);
 
   const encoded = encodeMarker({
     markerVersion: "1",
