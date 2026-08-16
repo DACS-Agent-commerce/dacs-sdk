@@ -433,20 +433,20 @@ async function readBoundedJson(
   signal: AbortSignal,
 ): Promise<unknown> {
   const rejectBeforeRead = (message: string): never => {
-    try {
-      if (response.body !== null && !response.body.locked) {
-        void response.body.cancel(message).catch(() => undefined);
-      }
-    } catch {
-      // Resource cleanup is best-effort; the validation failure stays primary.
-    }
+    cancelResponseBody(response, message);
     throw new Error(message);
   };
-  const contentType = response.headers.get("content-type");
+  let contentType: string | null = null;
+  let declaredLength: string | null = null;
+  try {
+    contentType = response.headers.get("content-type");
+    declaredLength = response.headers.get("content-length");
+  } catch {
+    rejectBeforeRead("catalog response headers could not be read");
+  }
   if (contentType !== null && !JSON_CONTENT_TYPE.test(contentType)) {
     rejectBeforeRead("catalog response content type is not JSON");
   }
-  const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     const parsed = Number(declaredLength);
     if (!Number.isSafeInteger(parsed) || parsed < 0) {
@@ -496,6 +496,16 @@ async function readBoundedJson(
     throw new Error("catalog response is not valid UTF-8 JSON");
   }
   return snapshotCanonicalJsonRead(parsed, "catalog response");
+}
+
+function cancelResponseBody(response: Response, reason: string): void {
+  try {
+    if (response.body !== null && !response.body.locked) {
+      void response.body.cancel(reason).catch(() => undefined);
+    }
+  } catch {
+    // Resource cleanup is best-effort; the validation failure stays primary.
+  }
 }
 
 function abortReason(signal: AbortSignal): Error {
@@ -577,8 +587,9 @@ async function queryCatalogPage(
   if (externalSignal?.aborted) onAbort();
   else externalSignal?.addEventListener("abort", onAbort, { once: true });
 
+  let response: Response | undefined;
   try {
-    const response = await awaitAbortable(
+    response = await awaitAbortable(
       config.fetchImpl(url, {
         method: "GET",
         headers: { Accept: "application/json" },
@@ -589,14 +600,7 @@ async function queryCatalogPage(
       controller.signal,
     );
     if (!response.ok) {
-      try {
-        if (response.body !== null && !response.body.locked) {
-          void response.body.cancel(`catalog returned HTTP ${response.status}`)
-            .catch(() => undefined);
-        }
-      } catch {
-        // Resource cleanup is best-effort; the HTTP failure stays primary.
-      }
+      cancelResponseBody(response, `catalog returned HTTP ${response.status}`);
       return {
         status: "indeterminate",
         reason: `catalog returned HTTP ${response.status}`,
@@ -616,6 +620,9 @@ async function queryCatalogPage(
           reason: "catalog returned a malformed DACS-1 §6.3.6 page",
         };
   } catch (error) {
+    if (response !== undefined) {
+      cancelResponseBody(response, "catalog response processing failed");
+    }
     if (externalSignal?.aborted) {
       return { status: "indeterminate", reason: "catalog request was aborted" };
     }

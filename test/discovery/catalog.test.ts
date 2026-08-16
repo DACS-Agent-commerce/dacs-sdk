@@ -181,6 +181,26 @@ describe("queryListingCatalog (DACS-1 §6.3.6)", () => {
       reason: expect.stringContaining("content type"),
     });
     expect(headerCancel).toHaveBeenCalledTimes(1);
+
+    const thrownHeaderCancel = vi.fn();
+    const thrownHeaderResponse = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("unread body"));
+      },
+      cancel: thrownHeaderCancel,
+    }));
+    Object.defineProperty(thrownHeaderResponse, "headers", {
+      configurable: true,
+      get() {
+        throw new Error("header surface failed");
+      },
+    });
+    await expect(queryListingCatalog(catalogConfig(async () =>
+      thrownHeaderResponse))).resolves.toMatchObject({
+        status: "indeterminate",
+        reason: expect.stringContaining("headers could not be read"),
+      });
+    expect(thrownHeaderCancel).toHaveBeenCalledTimes(1);
   });
 
   test("fails closed on RB-3 status/revocation incoherence", async () => {
