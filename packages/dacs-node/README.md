@@ -47,13 +47,24 @@ history, actor binding, and logical records before it creates a local backup or
 runs a forward migration; newer, foreign, corrupt, and cross-profile databases
 fail closed without being modified.
 
-The public v2 schema is an immutable migration input. A v2 database contains
-only the coordinator order table and its runnable index; the authenticated
-track projection is created and backfilled by v3. A legacy database is migrated
-only when its persisted SDK and Standard revision exactly equal the supported
-runtime bindings. Arbitrary historical compatibility labels are refused as
+The public v2 and v3 schemas are immutable migration inputs. A v2 database
+contains only the coordinator order table and its runnable index; the
+authenticated track projection is created and backfilled by v3. Schema v4
+authenticates the role-local SDK job pointers with `localBindingHash` in both
+the canonical order and every projection row. It also keeps live DACS-5
+terminal attribution (`faultedParty` or `withdrawnBy`) distinct from the
+offline-only `simulated-*` outcome and error vocabulary.
+
+A legacy database is migrated only when its persisted SDK and Standard
+revision exactly equal the supported runtime bindings. Compatible v3 offline
+terminal records are translated to the explicit simulation vocabulary. Live
+v3 success and non-terminal records can be upgraded, but live v3 failure or
+abort records are refused because they cannot prove the now-mandatory DACS-5
+party attribution; the migration never invents it. This refusal happens during
+read-only admission, before a backup or schema write. Arbitrary historical
+compatibility labels are likewise refused as
 `database-legacy-metadata-unsupported` before a backup or schema write; the
-runtime does not claim that such data was safely upgraded.
+runtime does not claim that unsupported data was safely upgraded.
 
 Irreversible effects are reserved under a stable idempotency key before work
 starts. A process loss during a perform lease never makes the effect directly

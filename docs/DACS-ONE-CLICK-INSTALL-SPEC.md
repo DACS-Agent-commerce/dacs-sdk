@@ -496,8 +496,22 @@ first release.
 The database authority MUST equal the role-owned party on every admitted
 commerce order (`order.buyer` for a buyer store and `order.seller` for a seller
 store), including after independently recomputing the order binding and record
-hashes. Effect recovery MUST authenticate the immutable tuple of effect kind,
-effect ID, optional job ID, binding hash, input hash and idempotency key before
+hashes. The store MUST also recompute and persist the role-local binding over
+the exact SDK job-pointer set in the canonical record and its runnable
+projection. Create, load, claim, lease-current, result-recording and operator
+requeue paths MUST fail closed on a different role-local binding.
+
+Live coordinator records MUST persist only normative `success`, `failure` or
+`aborted` terminal outcomes. Live failures MUST retain DACS-5 fault attribution;
+`substrate` failures MUST use neutral `faultedParty: "none"`, while other
+failures MUST identify a buyer or seller. Live aborts MUST retain `withdrawnBy`
+and MUST NOT be accepted after a successful irreversible payment or delivery.
+Offline coordinator records MUST instead persist only the explicit
+`simulated-*` outcome and error vocabulary and MUST NOT carry DACS-5 party
+attribution.
+
+Effect recovery MUST authenticate the immutable tuple of effect kind, effect
+ID, optional job ID, binding hash, input hash and idempotency key before
 returning a claim. A pre-proof effect row MUST fail closed rather than receive a
 proof during migration. Canonical lifecycle details MUST form a validated
 rolling history chain so an altered intermediate transition cannot be skipped.
@@ -512,7 +526,12 @@ schema is newer than the runtime supports.
 Historical migration definitions MUST remain immutable. A legacy store whose
 persisted SDK or Standard revision is not an exact supported runtime binding
 MUST be refused before backup or mutation; a host MUST NOT relabel or claim to
-have migrated data whose compatibility it cannot establish.
+have migrated data whose compatibility it cannot establish. A compatible
+legacy offline terminal record MAY be migrated only by a deterministic mapping
+to the explicit simulation vocabulary. A legacy live terminal failure or abort
+that predates mandatory fault/withdrawal attribution MUST be refused during
+read-only admission before backup or mutation; migration MUST NOT synthesize
+the missing DACS-5 attribution.
 
 ## 12. Authenticated transport requirements
 

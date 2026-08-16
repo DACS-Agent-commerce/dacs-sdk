@@ -27,7 +27,9 @@ import {
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceOfflineOrderBindingHash,
+  fixedPriceOfflineOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
+  fixedPriceX402OrderLocalBindingHash,
   type FixedPriceOfflineOrderInput,
   type FixedPriceOfflineProtocolBinding,
   type FixedPriceX402OrderInput,
@@ -122,10 +124,30 @@ function liveSellerOrder(jobId = JOB_ID): FixedPriceX402OrderInput {
   };
 }
 
-function offlineOrder(): FixedPriceOfflineOrderInput {
+function offlineOrder(jobId = JOB_ID): FixedPriceOfflineOrderInput {
   return {
-    ...liveOrder(),
+    ...liveOrder(jobId),
     protocol: OFFLINE_PROTOCOL,
+  };
+}
+
+function liveOrderBinding(order: FixedPriceX402OrderInput): Readonly<{
+  bindingHash: string;
+  localBindingHash: string;
+}> {
+  return {
+    bindingHash: fixedPriceX402OrderBindingHash(order),
+    localBindingHash: fixedPriceX402OrderLocalBindingHash(order),
+  };
+}
+
+function offlineOrderBinding(order: FixedPriceOfflineOrderInput): Readonly<{
+  bindingHash: string;
+  localBindingHash: string;
+}> {
+  return {
+    bindingHash: fixedPriceOfflineOrderBindingHash(order),
+    localBindingHash: fixedPriceOfflineOrderLocalBindingHash(order),
   };
 }
 
@@ -228,6 +250,7 @@ describe("DACS Node SQLite durability foundation", () => {
         ON dacs_effect_history (effect_kind, effect_id, sequence);
       DROP TABLE dacs_coordinator_tracks;
       DROP TABLE dacs_coordinator_orders;
+      DELETE FROM dacs_migrations WHERE version = 4;
       DELETE FROM dacs_migrations WHERE version = 3;
       DELETE FROM dacs_migrations WHERE version = 2;
       UPDATE dacs_store_metadata SET schema_version = 1 WHERE singleton = 1;
@@ -258,6 +281,224 @@ describe("DACS Node SQLite durability foundation", () => {
     raw.exec(`
       INSERT INTO dacs_migrations (version, applied_at) VALUES (1, 1), (2, 1);
     `);
+    raw.close();
+  }
+
+  function downgradeCurrentCoordinatorDatabaseToV3(databasePath: string): void {
+    const raw = new BetterSqlite3(databasePath);
+    raw.pragma("foreign_keys = OFF");
+    const metadata = raw.prepare(`
+      SELECT profile FROM dacs_store_metadata WHERE singleton = 1
+    `).get() as { profile: string };
+    const orderRows = raw.prepare(`
+      SELECT profile, role, job_id, binding_hash, record_json, revision,
+        created_at, updated_at
+      FROM dacs_coordinator_orders ORDER BY profile, role, job_id
+    `).all() as Array<{
+      profile: string;
+      role: string;
+      job_id: string;
+      binding_hash: string;
+      record_json: string;
+      revision: number;
+      created_at: number;
+      updated_at: number;
+    }>;
+    type LegacyTrackRow = {
+      profile: string;
+      role: string;
+      job_id: string;
+      track: string;
+      eligible: number;
+      state: string;
+      outcome: string | null;
+      error_class: string | null;
+      generation: number;
+      attempts: number;
+      lease_expires_at: number | null;
+      next_attempt_at: number | null;
+      updated_at: number;
+    };
+    const trackRows = raw.prepare(`
+      SELECT profile, role, job_id, track, eligible, state, outcome,
+        error_class, generation, attempts, lease_expires_at, next_attempt_at,
+        updated_at
+      FROM dacs_coordinator_tracks ORDER BY profile, role, job_id, track
+    `).all() as LegacyTrackRow[];
+    const legacyOutcome = {
+      "simulated-success": "success",
+      "simulated-failure": "failure",
+      "simulated-aborted": "aborted",
+    } as const;
+    const legacyErrorClass = {
+      "simulated-permanent": "permanent",
+      "simulated-transient": "transient",
+      "simulated-counterparty": "counterparty",
+      "simulated-substrate": "substrate",
+      "simulated-settlement-atomicity": "settlement-atomicity",
+    } as const;
+    const retainedOrders = orderRows.map((row) => {
+      const record = JSON.parse(row.record_json) as Record<string, unknown>;
+      delete record.localBindingHash;
+      const tracks = record.tracks as Record<string, Record<string, unknown>>;
+      for (const track of Object.values(tracks)) {
+        delete track.faultedParty;
+        delete track.withdrawnBy;
+        if (metadata.profile === DACS_NODE_OFFLINE_PROFILE) {
+          if (track.outcome !== undefined) {
+            track.outcome = legacyOutcome[
+              track.outcome as keyof typeof legacyOutcome
+            ];
+          }
+          if (track.errorClass !== undefined) {
+            track.errorClass = legacyErrorClass[
+              track.errorClass as keyof typeof legacyErrorClass
+            ];
+          }
+        }
+      }
+      const recordJson = canonicalize(record);
+      return { ...row, recordJson, recordHash: sha256Hex(recordJson) };
+    });
+    const retainedTracks: LegacyTrackRow[] = trackRows.map((row) => ({
+      ...row,
+      ...(metadata.profile === DACS_NODE_OFFLINE_PROFILE && row.outcome !== null
+        ? {
+            outcome: legacyOutcome[
+              row.outcome as keyof typeof legacyOutcome
+            ],
+          }
+        : {}),
+      ...(metadata.profile === DACS_NODE_OFFLINE_PROFILE && row.error_class !== null
+        ? {
+            error_class: legacyErrorClass[
+              row.error_class as keyof typeof legacyErrorClass
+            ],
+          }
+        : {}),
+    }));
+
+    const downgrade = raw.transaction(() => {
+      raw.exec(`
+        DROP TABLE dacs_coordinator_tracks;
+        ALTER TABLE dacs_coordinator_orders RENAME TO dacs_coordinator_orders_v4;
+        CREATE TABLE dacs_coordinator_orders (
+          profile TEXT NOT NULL,
+          role TEXT NOT NULL,
+          job_id TEXT NOT NULL,
+          binding_hash TEXT NOT NULL,
+          record_hash TEXT NOT NULL,
+          record_json TEXT NOT NULL,
+          revision INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (profile, role, job_id),
+          CHECK (revision > 0),
+          CHECK (updated_at >= created_at)
+        ) STRICT, WITHOUT ROWID;
+      `);
+      const insertOrder = raw.prepare(`
+        INSERT INTO dacs_coordinator_orders (
+          profile, role, job_id, binding_hash, record_hash, record_json,
+          revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of retainedOrders) {
+        insertOrder.run(
+          row.profile,
+          row.role,
+          row.job_id,
+          row.binding_hash,
+          row.recordHash,
+          row.recordJson,
+          row.revision,
+          row.created_at,
+          row.updated_at,
+        );
+      }
+      raw.exec(`
+        DROP TABLE dacs_coordinator_orders_v4;
+        CREATE TABLE dacs_coordinator_tracks (
+          profile TEXT NOT NULL,
+          role TEXT NOT NULL,
+          job_id TEXT NOT NULL,
+          track TEXT NOT NULL,
+          eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+          state TEXT NOT NULL,
+          outcome TEXT,
+          error_class TEXT,
+          generation INTEGER NOT NULL,
+          attempts INTEGER NOT NULL,
+          lease_expires_at INTEGER,
+          next_attempt_at INTEGER,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (profile, role, job_id, track),
+          FOREIGN KEY (profile, role, job_id)
+            REFERENCES dacs_coordinator_orders (profile, role, job_id)
+            ON DELETE CASCADE,
+          CHECK (profile IN ('live-x402', 'offline')),
+          CHECK (role IN ('buyer', 'seller')),
+          CHECK (track IN (
+            'agreement', 'payment', 'payment-evidence', 'delivery',
+            'buyer-received', 'delivery-evidence', 'audit'
+          )),
+          CHECK (generation >= 0),
+          CHECK (attempts >= 0),
+          CHECK (attempts = generation),
+          CHECK (lease_expires_at IS NULL OR lease_expires_at >= 0),
+          CHECK (next_attempt_at IS NULL OR next_attempt_at >= 0),
+          CHECK (updated_at >= 0),
+          CHECK (state IN (
+            'not-started', 'running', 'pending-retry', 'indeterminate',
+            'operator-action', 'final'
+          )),
+          CHECK ((state = 'running') = (lease_expires_at IS NOT NULL)),
+          CHECK ((state IN ('pending-retry', 'indeterminate')) OR next_attempt_at IS NULL),
+          CHECK ((state = 'final') = (outcome IS NOT NULL)),
+          CHECK (outcome IS NULL OR outcome IN ('success', 'failure', 'aborted')),
+          CHECK (error_class IS NULL OR error_class IN (
+            'permanent', 'transient', 'counterparty', 'substrate',
+            'settlement-atomicity'
+          )),
+          CHECK (error_class IS NULL OR outcome = 'failure'),
+          CHECK (outcome IS NULL OR outcome != 'failure' OR error_class IS NOT NULL)
+        ) STRICT, WITHOUT ROWID;
+      `);
+      const insertTrack = raw.prepare(`
+        INSERT INTO dacs_coordinator_tracks (
+          profile, role, job_id, track, eligible, state, outcome, error_class,
+          generation, attempts, lease_expires_at, next_attempt_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of retainedTracks) {
+        insertTrack.run(
+          row.profile,
+          row.role,
+          row.job_id,
+          row.track,
+          row.eligible,
+          row.state,
+          row.outcome,
+          row.error_class,
+          row.generation,
+          row.attempts,
+          row.lease_expires_at,
+          row.next_attempt_at,
+          row.updated_at,
+        );
+      }
+      raw.exec(`
+        CREATE INDEX dacs_coordinator_tracks_runnable_idx
+          ON dacs_coordinator_tracks (
+            profile, role, track, eligible, state, next_attempt_at,
+            lease_expires_at, job_id
+          );
+        DELETE FROM dacs_migrations WHERE version = 4;
+        UPDATE dacs_store_metadata SET schema_version = 3 WHERE singleton = 1;
+        PRAGMA user_version = 3;
+      `);
+    });
+    downgrade();
     raw.close();
   }
 
@@ -438,6 +679,7 @@ describe("DACS Node SQLite durability foundation", () => {
       },
       order: offlineOrder(),
       bindingHash: fixedPriceOfflineOrderBindingHash(offlineOrder()),
+      localBindingHash: fixedPriceOfflineOrderLocalBindingHash(offlineOrder()),
     };
     await expect(database.createOfflineCoordinatorStore("buyer").create(coordinatorInput))
       .resolves.toMatchObject({ status: "corrupt" });
@@ -924,7 +1166,7 @@ describe("DACS Node SQLite durability foundation", () => {
       { name: "dacs_coordinator_tracks" },
     ]);
     expect(raw.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
-      .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+      .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
     raw.close();
   });
 
@@ -1016,12 +1258,30 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(await current.createLiveCoordinatorStore("buyer").create({
       role: "buyer",
       order,
-      bindingHash: fixedPriceX402OrderBindingHash(order),
+      ...liveOrderBinding(order),
     })).toMatchObject({ status: "created" });
     current.close();
     databases.splice(databases.indexOf(current), 1);
 
     const raw = new BetterSqlite3(databasePath);
+    const retainedOrder = raw.prepare(`
+      SELECT profile, role, job_id, binding_hash, record_json, revision,
+        created_at, updated_at
+      FROM dacs_coordinator_orders
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+    `).get(JOB_ID) as {
+      profile: string;
+      role: string;
+      job_id: string;
+      binding_hash: string;
+      record_json: string;
+      revision: number;
+      created_at: number;
+      updated_at: number;
+    };
+    const legacyRecord = JSON.parse(retainedOrder.record_json) as Record<string, unknown>;
+    delete legacyRecord.localBindingHash;
+    const legacyRecordJson = canonicalize(legacyRecord);
     raw.exec(`
       DROP TABLE dacs_effect_history;
       DROP TABLE dacs_effects;
@@ -1029,8 +1289,43 @@ describe("DACS Node SQLite durability foundation", () => {
     for (const object of preProofSql) raw.exec(object.sql);
     raw.exec(`
       DROP TABLE dacs_coordinator_tracks;
+      ALTER TABLE dacs_coordinator_orders RENAME TO dacs_coordinator_orders_v4;
+      CREATE TABLE dacs_coordinator_orders (
+        profile TEXT NOT NULL,
+        role TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        binding_hash TEXT NOT NULL,
+        record_hash TEXT NOT NULL,
+        record_json TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (profile, role, job_id),
+        CHECK (revision > 0),
+        CHECK (updated_at >= created_at)
+      ) STRICT, WITHOUT ROWID;
       CREATE INDEX dacs_coordinator_orders_runnable_idx
         ON dacs_coordinator_orders (profile, role, job_id);
+      DROP TABLE dacs_coordinator_orders_v4;
+    `);
+    raw.prepare(`
+      INSERT INTO dacs_coordinator_orders (
+        profile, role, job_id, binding_hash, record_hash, record_json,
+        revision, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      retainedOrder.profile,
+      retainedOrder.role,
+      retainedOrder.job_id,
+      retainedOrder.binding_hash,
+      sha256Hex(legacyRecordJson),
+      legacyRecordJson,
+      retainedOrder.revision,
+      retainedOrder.created_at,
+      retainedOrder.updated_at,
+    );
+    raw.exec(`
+      DELETE FROM dacs_migrations WHERE version = 4;
       DELETE FROM dacs_migrations WHERE version = 3;
       UPDATE dacs_store_metadata SET schema_version = 2 WHERE singleton = 1;
       PRAGMA user_version = 2;
@@ -1052,7 +1347,7 @@ describe("DACS Node SQLite durability foundation", () => {
       standardRevision: FIXED_PRICE_OFFLINE_STANDARD_REVISION,
     });
     const migrated = await open(supportedPath);
-    expect(migrated.diagnostics()).toMatchObject({ schemaVersion: 3 });
+    expect(migrated.diagnostics()).toMatchObject({ schemaVersion: 4 });
     expect(readdirSync(root).filter((name) =>
       name.startsWith("historical-supported.sqlite.backup-v2-")
     )).toHaveLength(1);
@@ -1071,6 +1366,139 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(readdirSync(root).some((name) =>
       name.startsWith("historical-unsupported.sqlite.backup-v2-")
     )).toBe(false);
+  });
+
+  it("migrates v3 offline terminal state into authenticated simulation vocabulary", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "offline-v3.sqlite");
+    const current = await open(databasePath, { authority: BUYER });
+    const store = current.createOfflineCoordinatorStore("buyer");
+    const order = offlineOrder();
+    const { bindingHash, localBindingHash } = offlineOrderBinding(order);
+    expect(await store.create({
+      role: "buyer",
+      order,
+      bindingHash,
+      localBindingHash,
+    })).toMatchObject({ status: "created" });
+    const claim = await store.claim({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash,
+      track: "agreement",
+      owner: "offline-v3-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected offline agreement claim");
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash,
+      track: "agreement",
+      lease: claim.lease,
+      result: {
+        status: "final",
+        outcome: "simulated-failure",
+        errorClass: "simulated-counterparty",
+        reference: "offline:agreement:failed",
+      },
+    })).toMatchObject({ status: "recorded" });
+    current.close();
+    databases.splice(databases.indexOf(current), 1);
+    downgradeCurrentCoordinatorDatabaseToV3(databasePath);
+
+    const migrated = await open(databasePath, { authority: BUYER });
+    expect(migrated.diagnostics()).toMatchObject({ schemaVersion: 4 });
+    expect(await migrated.createOfflineCoordinatorStore("buyer").load("buyer", JOB_ID))
+      .toMatchObject({
+        status: "ok",
+        record: {
+          localBindingHash,
+          tracks: {
+            agreement: {
+              outcome: "simulated-failure",
+              errorClass: "simulated-counterparty",
+            },
+          },
+        },
+      });
+    expect(readdirSync(root).filter((name) => name.includes(".backup-v3-")))
+      .toHaveLength(1);
+    const raw = new BetterSqlite3(databasePath, { readonly: true });
+    expect(raw.prepare(`
+      SELECT local_binding_hash FROM dacs_coordinator_orders
+      WHERE profile = 'offline' AND role = 'buyer' AND job_id = ?
+    `).get(JOB_ID)).toEqual({ local_binding_hash: localBindingHash });
+    expect(raw.prepare(`
+      SELECT local_binding_hash, outcome, error_class, faulted_party, withdrawn_by
+      FROM dacs_coordinator_tracks
+      WHERE profile = 'offline' AND role = 'buyer' AND job_id = ?
+        AND track = 'agreement'
+    `).get(JOB_ID)).toEqual({
+      local_binding_hash: localBindingHash,
+      outcome: "simulated-failure",
+      error_class: "simulated-counterparty",
+      faulted_party: null,
+      withdrawn_by: null,
+    });
+    raw.close();
+  });
+
+  it("rejects legacy live terminal rows whose DACS-5 attribution cannot be proven", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "live-terminal-v3.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const current = await open(databasePath, liveOptions);
+    const store = current.createLiveCoordinatorStore("buyer");
+    const order = liveOrder();
+    const { bindingHash, localBindingHash } = liveOrderBinding(order);
+    expect(await store.create({
+      role: "buyer",
+      order,
+      bindingHash,
+      localBindingHash,
+    })).toMatchObject({ status: "created" });
+    const claim = await store.claim({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash,
+      track: "agreement",
+      owner: "live-v3-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected live agreement claim");
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash,
+      track: "agreement",
+      lease: claim.lease,
+      result: {
+        status: "final",
+        outcome: "failure",
+        errorClass: "counterparty",
+        faultedParty: "seller",
+        reference: "live:agreement:failed",
+      },
+    })).toMatchObject({ status: "recorded" });
+    current.close();
+    databases.splice(databases.indexOf(current), 1);
+    downgradeCurrentCoordinatorDatabaseToV3(databasePath);
+    const before = readFileSync(databasePath);
+
+    await expect(openDacsNodeSqliteDatabase(options(databasePath, liveOptions)))
+      .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
+    expect(readFileSync(databasePath).equals(before)).toBe(true);
+    expect(readdirSync(root).some((name) => name.includes(".backup-v3-"))).toBe(false);
   });
 
   it("resumes the live coordinator DAG from durable role-local state", async () => {
@@ -1134,16 +1562,17 @@ describe("DACS Node SQLite durability foundation", () => {
       expect(await store.create({
         role: "buyer",
         order,
-        bindingHash: fixedPriceX402OrderBindingHash(order),
+        ...liveOrderBinding(order),
       })).toMatchObject({ status: "created" });
     }
     for (const jobId of [OTHER_JOB_ID, THIRD_JOB_ID]) {
       const order = liveOrder(jobId);
-      const bindingHash = fixedPriceX402OrderBindingHash(order);
+      const { bindingHash, localBindingHash } = liveOrderBinding(order);
       const claim = await store.claim({
         role: "buyer",
         jobId,
         bindingHash,
+        localBindingHash,
         track: "agreement",
         owner: `worker:${jobId}`,
         leaseDurationMs: 10_000,
@@ -1154,6 +1583,7 @@ describe("DACS Node SQLite durability foundation", () => {
         role: "buyer",
         jobId,
         bindingHash,
+        localBindingHash,
         track: "agreement",
         lease: claim.lease,
         result: { status: "final", outcome: "success", reference: `agreement:${jobId}` },
@@ -1224,8 +1654,8 @@ describe("DACS Node SQLite durability foundation", () => {
     const firstStore = first.createLiveCoordinatorStore("buyer");
     const secondStore = second.createLiveCoordinatorStore("buyer");
     const order = liveOrder();
-    const bindingHash = fixedPriceX402OrderBindingHash(order);
-    expect(await firstStore.create({ role: "buyer", order, bindingHash }))
+    const { bindingHash, localBindingHash } = liveOrderBinding(order);
+    expect(await firstStore.create({ role: "buyer", order, bindingHash, localBindingHash }))
       .toMatchObject({ status: "created" });
 
     interface InstrumentedStatement {
@@ -1250,6 +1680,7 @@ describe("DACS Node SQLite durability foundation", () => {
             role: "buyer",
             jobId: JOB_ID,
             bindingHash,
+            localBindingHash,
             track: "agreement",
             owner: "concurrent-worker",
             leaseDurationMs: 10_000,
@@ -1291,8 +1722,8 @@ describe("DACS Node SQLite durability foundation", () => {
     const firstStore = first.createLiveCoordinatorStore("buyer");
     const secondStore = second.createLiveCoordinatorStore("buyer");
     const order = liveOrder();
-    const bindingHash = fixedPriceX402OrderBindingHash(order);
-    expect(await firstStore.create({ role: "buyer", order, bindingHash }))
+    const { bindingHash, localBindingHash } = liveOrderBinding(order);
+    expect(await firstStore.create({ role: "buyer", order, bindingHash, localBindingHash }))
       .toMatchObject({ status: "created" });
 
     interface InstrumentedStatement {
@@ -1316,6 +1747,7 @@ describe("DACS Node SQLite durability foundation", () => {
             role: "buyer",
             jobId: JOB_ID,
             bindingHash,
+            localBindingHash,
             track: "agreement",
             owner: "concurrent-worker",
             leaseDurationMs: 10_000,
@@ -1422,13 +1854,14 @@ describe("DACS Node SQLite durability foundation", () => {
     const firstStore = first.createLiveCoordinatorStore("buyer");
     const secondStore = second.createLiveCoordinatorStore("buyer");
     const order = liveOrder();
-    const bindingHash = fixedPriceX402OrderBindingHash(order);
-    expect(await firstStore.create({ role: "buyer", order, bindingHash }))
+    const { bindingHash, localBindingHash } = liveOrderBinding(order);
+    expect(await firstStore.create({ role: "buyer", order, bindingHash, localBindingHash }))
       .toMatchObject({ status: "created" });
     const staleClaim = await firstStore.claim({
       role: "buyer",
       jobId: JOB_ID,
       bindingHash,
+      localBindingHash,
       track: "agreement",
       owner: "worker-1",
       leaseDurationMs: 1,
@@ -1440,6 +1873,7 @@ describe("DACS Node SQLite durability foundation", () => {
       role: "buyer",
       jobId: JOB_ID,
       bindingHash,
+      localBindingHash,
       track: "agreement",
       owner: "worker-2",
       leaseDurationMs: 10_000,
@@ -1451,6 +1885,7 @@ describe("DACS Node SQLite durability foundation", () => {
       role: "buyer",
       jobId: JOB_ID,
       bindingHash,
+      localBindingHash,
       track: "agreement",
       lease: staleClaim.lease,
       result: { status: "final", outcome: "success", reference: "stale" },
@@ -1459,6 +1894,7 @@ describe("DACS Node SQLite durability foundation", () => {
       role: "buyer",
       jobId: JOB_ID,
       bindingHash,
+      localBindingHash,
       track: "agreement",
       lease: currentClaim.lease,
       result: { status: "final", outcome: "success", reference: "current" },
@@ -1466,6 +1902,153 @@ describe("DACS Node SQLite durability foundation", () => {
       status: "recorded",
       record: { tracks: { agreement: { reference: "current" } } },
     });
+  });
+
+  it("fences every durable coordinator path with the exact role-local binding", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "buyer-local-binding.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const first = await open(databasePath, liveOptions);
+    const store = first.createLiveCoordinatorStore("buyer");
+    const order = liveOrder();
+    const { bindingHash, localBindingHash } = liveOrderBinding(order);
+    const swappedOrder = {
+      ...order,
+      sdkJobs: { ...order.sdkJobs, audit: "buyer:audit:swapped-local-binding" },
+    };
+    const swappedLocalBindingHash = fixedPriceX402OrderLocalBindingHash(swappedOrder);
+    expect(swappedLocalBindingHash).not.toBe(localBindingHash);
+
+    expect(await store.create({
+      role: "buyer",
+      order,
+      bindingHash,
+      localBindingHash: swappedLocalBindingHash,
+    })).toEqual({ status: "conflict" });
+    expect(await store.create({
+      role: "buyer",
+      order,
+      bindingHash,
+      localBindingHash,
+    })).toMatchObject({
+      status: "created",
+      record: { localBindingHash },
+    });
+    expect(await store.claim({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash: swappedLocalBindingHash,
+      track: "agreement",
+      owner: "wrong-local-worker",
+      leaseDurationMs: 10_000,
+    })).toEqual({ status: "stale" });
+    const claim = await store.claim({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash,
+      track: "agreement",
+      owner: "right-local-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected local-binding claim");
+    expect(await store.isCurrent({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash: swappedLocalBindingHash,
+      track: "agreement",
+      lease: claim.lease,
+    })).toBe(false);
+    expect(await store.isCurrent({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash,
+      track: "agreement",
+      lease: claim.lease,
+    })).toBe(true);
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash: swappedLocalBindingHash,
+      track: "agreement",
+      lease: claim.lease,
+      result: { status: "operator-action", reasonCode: "wrong-local" },
+    })).toEqual({ status: "stale" });
+    expect(await store.requeue({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash: swappedLocalBindingHash,
+      track: "agreement",
+      operatorReasonCode: "wrong-local",
+    })).toEqual({ status: "conflict" });
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash,
+      track: "agreement",
+      lease: claim.lease,
+      result: {
+        status: "pending-retry",
+        reasonCode: "retry-local-binding",
+        retryAt: first.readTime(),
+      },
+    })).toMatchObject({ status: "recorded", record: { localBindingHash } });
+    expect(await store.requeue({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      localBindingHash,
+      track: "agreement",
+      operatorReasonCode: "operator-requeue",
+      retryAt: first.readTime(),
+    })).toMatchObject({ status: "recorded", record: { localBindingHash } });
+    first.close();
+    databases.splice(databases.indexOf(first), 1);
+
+    const restarted = await open(databasePath, liveOptions);
+    expect(await restarted.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
+      .toMatchObject({ status: "ok", record: { localBindingHash } });
+    const projection = new BetterSqlite3(databasePath, { readonly: true });
+    expect(projection.prepare(`
+      SELECT DISTINCT local_binding_hash FROM dacs_coordinator_tracks
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+    `).all(JOB_ID)).toEqual([{ local_binding_hash: localBindingHash }]);
+    projection.close();
+    restarted.close();
+    databases.splice(databases.indexOf(restarted), 1);
+
+    const raw = new BetterSqlite3(databasePath);
+    const retained = raw.prepare(`
+      SELECT record_json FROM dacs_coordinator_orders
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+    `).get(JOB_ID) as { record_json: string };
+    const record = JSON.parse(retained.record_json) as Record<string, unknown>;
+    record.localBindingHash = swappedLocalBindingHash;
+    const recordJson = canonicalize(record);
+    raw.prepare(`
+      UPDATE dacs_coordinator_orders
+      SET local_binding_hash = ?, record_hash = ?, record_json = ?
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+    `).run(swappedLocalBindingHash, sha256Hex(recordJson), recordJson, JOB_ID);
+    raw.prepare(`
+      UPDATE dacs_coordinator_tracks SET local_binding_hash = ?
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+    `).run(swappedLocalBindingHash, JOB_ID);
+    raw.close();
+
+    await expect(openDacsNodeSqliteDatabase(options(databasePath, liveOptions)))
+      .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
   });
 
   it("keeps live and offline coordinator stores profile-isolated", async () => {
@@ -1480,11 +2063,412 @@ describe("DACS Node SQLite durability foundation", () => {
     );
     const store = offline.createOfflineCoordinatorStore("buyer");
     const order = offlineOrder();
-    const bindingHash = fixedPriceOfflineOrderBindingHash(order);
-    expect(await store.create({ role: "buyer", order, bindingHash }))
+    const { bindingHash, localBindingHash } = offlineOrderBinding(order);
+    expect(await store.create({ role: "buyer", order, bindingHash, localBindingHash }))
       .toMatchObject({ status: "created", record: { protocol: OFFLINE_PROTOCOL } });
     expect(await store.load("buyer", JOB_ID))
       .toMatchObject({ status: "ok", record: { bindingHash } });
+  });
+
+  it("enforces live DACS-5 terminal attribution and irreversible-effect rules", async () => {
+    const databasePath = join(temporaryRoot(), "buyer-live-terminal.sqlite");
+    const database = await open(databasePath, {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const store = database.createLiveCoordinatorStore("buyer");
+
+    const failedOrder = liveOrder(JOB_ID);
+    const failedBinding = liveOrderBinding(failedOrder);
+    await store.create({ role: "buyer", order: failedOrder, ...failedBinding });
+    const failedClaim = await store.claim({
+      role: "buyer",
+      jobId: JOB_ID,
+      ...failedBinding,
+      track: "agreement",
+      owner: "live-failure-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (failedClaim.status !== "acquired") throw new Error("expected failure claim");
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      ...failedBinding,
+      track: "agreement",
+      lease: failedClaim.lease,
+      result: {
+        status: "final",
+        outcome: "failure",
+        errorClass: "counterparty",
+        reference: "missing-fault-attribution",
+      } as never,
+    })).toEqual({ status: "conflict" });
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      ...failedBinding,
+      track: "agreement",
+      lease: failedClaim.lease,
+      result: {
+        status: "final",
+        outcome: "failure",
+        errorClass: "counterparty",
+        faultedParty: "none",
+        reference: "non-neutral-counterparty-failure",
+      },
+    })).toEqual({ status: "conflict" });
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      ...failedBinding,
+      track: "agreement",
+      lease: failedClaim.lease,
+      result: {
+        status: "final",
+        outcome: "failure",
+        errorClass: "counterparty",
+        faultedParty: "seller",
+        reference: "seller-fault",
+      },
+    })).toMatchObject({ status: "recorded" });
+    const failedAudit = await store.claim({
+      role: "buyer",
+      jobId: JOB_ID,
+      ...failedBinding,
+      track: "audit",
+      owner: "live-failure-audit-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (failedAudit.status !== "acquired") throw new Error("expected failure audit claim");
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      ...failedBinding,
+      track: "audit",
+      lease: failedAudit.lease,
+      result: {
+        status: "final",
+        outcome: "failure",
+        errorClass: "counterparty",
+        faultedParty: "buyer",
+        reference: "mismatched-fault",
+      },
+    })).toEqual({ status: "conflict" });
+    expect(await store.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      ...failedBinding,
+      track: "audit",
+      lease: failedAudit.lease,
+      result: {
+        status: "final",
+        outcome: "failure",
+        errorClass: "counterparty",
+        faultedParty: "seller",
+        reference: "matching-fault",
+      },
+    })).toMatchObject({ status: "recorded" });
+
+    const abortedOrder = liveOrder(OTHER_JOB_ID);
+    const abortedBinding = liveOrderBinding(abortedOrder);
+    await store.create({ role: "buyer", order: abortedOrder, ...abortedBinding });
+    const abortedClaim = await store.claim({
+      role: "buyer",
+      jobId: OTHER_JOB_ID,
+      ...abortedBinding,
+      track: "agreement",
+      owner: "live-abort-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (abortedClaim.status !== "acquired") throw new Error("expected abort claim");
+    expect(await store.record({
+      role: "buyer",
+      jobId: OTHER_JOB_ID,
+      ...abortedBinding,
+      track: "agreement",
+      lease: abortedClaim.lease,
+      result: {
+        status: "final",
+        outcome: "aborted",
+        reference: "missing-withdrawal-attribution",
+      } as never,
+    })).toEqual({ status: "conflict" });
+    expect(await store.record({
+      role: "buyer",
+      jobId: OTHER_JOB_ID,
+      ...abortedBinding,
+      track: "agreement",
+      lease: abortedClaim.lease,
+      result: {
+        status: "final",
+        outcome: "aborted",
+        withdrawnBy: "buyer",
+        reference: "buyer-withdrew",
+      },
+    })).toMatchObject({ status: "recorded" });
+
+    const substrateOrder = liveOrder(THIRD_JOB_ID);
+    const substrateBinding = liveOrderBinding(substrateOrder);
+    await store.create({ role: "buyer", order: substrateOrder, ...substrateBinding });
+    const substrateClaim = await store.claim({
+      role: "buyer",
+      jobId: THIRD_JOB_ID,
+      ...substrateBinding,
+      track: "agreement",
+      owner: "live-substrate-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (substrateClaim.status !== "acquired") throw new Error("expected substrate claim");
+    expect(await store.record({
+      role: "buyer",
+      jobId: THIRD_JOB_ID,
+      ...substrateBinding,
+      track: "agreement",
+      lease: substrateClaim.lease,
+      result: {
+        status: "final",
+        outcome: "failure",
+        errorClass: "substrate",
+        faultedParty: "seller",
+        reference: "incorrect-substrate-attribution",
+      },
+    })).toEqual({ status: "conflict" });
+    expect(await store.record({
+      role: "buyer",
+      jobId: THIRD_JOB_ID,
+      ...substrateBinding,
+      track: "agreement",
+      lease: substrateClaim.lease,
+      result: {
+        status: "final",
+        outcome: "failure",
+        errorClass: "substrate",
+        faultedParty: "none",
+        reference: "neutral-substrate-failure",
+      },
+    })).toMatchObject({ status: "recorded" });
+
+    const irreversibleJob = "01J8N4YV7YVYQ4DB7M8T4C7W0D";
+    const irreversibleOrder = liveOrder(irreversibleJob);
+    const irreversibleBinding = liveOrderBinding(irreversibleOrder);
+    await store.create({ role: "buyer", order: irreversibleOrder, ...irreversibleBinding });
+    for (const track of ["agreement", "payment"] as const) {
+      const claim = await store.claim({
+        role: "buyer",
+        jobId: irreversibleJob,
+        ...irreversibleBinding,
+        track,
+        owner: `irreversible-${track}`,
+        leaseDurationMs: 10_000,
+      });
+      if (claim.status !== "acquired") throw new Error(`expected ${track} claim`);
+      expect(await store.record({
+        role: "buyer",
+        jobId: irreversibleJob,
+        ...irreversibleBinding,
+        track,
+        lease: claim.lease,
+        result: { status: "final", outcome: "success", reference: `${track}:final` },
+      })).toMatchObject({ status: "recorded" });
+    }
+    const receivedClaim = await store.claim({
+      role: "buyer",
+      jobId: irreversibleJob,
+      ...irreversibleBinding,
+      track: "buyer-received",
+      owner: "irreversible-received",
+      leaseDurationMs: 10_000,
+    });
+    if (receivedClaim.status !== "acquired") throw new Error("expected received claim");
+    expect(await store.record({
+      role: "buyer",
+      jobId: irreversibleJob,
+      ...irreversibleBinding,
+      track: "buyer-received",
+      lease: receivedClaim.lease,
+      result: {
+        status: "final",
+        outcome: "aborted",
+        withdrawnBy: "buyer",
+        reference: "late-abort",
+      },
+    })).toEqual({ status: "conflict" });
+
+    const raw = new BetterSqlite3(databasePath, { readonly: true });
+    expect(raw.prepare(`
+      SELECT outcome, error_class, faulted_party, withdrawn_by
+      FROM dacs_coordinator_tracks
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+        AND track = 'agreement'
+    `).get(JOB_ID)).toEqual({
+      outcome: "failure",
+      error_class: "counterparty",
+      faulted_party: "seller",
+      withdrawn_by: null,
+    });
+    expect(raw.prepare(`
+      SELECT outcome, error_class, faulted_party, withdrawn_by
+      FROM dacs_coordinator_tracks
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+        AND track = 'agreement'
+    `).get(OTHER_JOB_ID)).toEqual({
+      outcome: "aborted",
+      error_class: null,
+      faulted_party: null,
+      withdrawn_by: "buyer",
+    });
+    raw.close();
+  });
+
+  it("persists only simulation terminal outcomes in the offline profile", async () => {
+    const databasePath = join(temporaryRoot(), "offline-terminal.sqlite");
+    const first = await open(databasePath, { authority: BUYER });
+    const store = first.createOfflineCoordinatorStore("buyer");
+    const cases = [
+      {
+        jobId: JOB_ID,
+        result: {
+          status: "final" as const,
+          outcome: "simulated-success" as const,
+          reference: "offline:success",
+        },
+      },
+      {
+        jobId: OTHER_JOB_ID,
+        result: {
+          status: "final" as const,
+          outcome: "simulated-failure" as const,
+          errorClass: "simulated-counterparty" as const,
+          reference: "offline:failure",
+        },
+      },
+      {
+        jobId: THIRD_JOB_ID,
+        result: {
+          status: "final" as const,
+          outcome: "simulated-aborted" as const,
+          reference: "offline:aborted",
+        },
+      },
+    ];
+    for (const entry of cases) {
+      const order = offlineOrder(entry.jobId);
+      const binding = offlineOrderBinding(order);
+      await store.create({ role: "buyer", order, ...binding });
+      const claim = await store.claim({
+        role: "buyer",
+        jobId: entry.jobId,
+        ...binding,
+        track: "agreement",
+        owner: `offline-${entry.jobId}`,
+        leaseDurationMs: 10_000,
+      });
+      if (claim.status !== "acquired") throw new Error("expected offline claim");
+      if (entry.jobId === JOB_ID) {
+        expect(await store.record({
+          role: "buyer",
+          jobId: entry.jobId,
+          ...binding,
+          track: "agreement",
+          lease: claim.lease,
+          result: {
+            status: "final",
+            outcome: "success",
+            reference: "normative-value-in-simulation",
+          } as never,
+        })).toEqual({ status: "conflict" });
+      }
+      expect(await store.record({
+        role: "buyer",
+        jobId: entry.jobId,
+        ...binding,
+        track: "agreement",
+        lease: claim.lease,
+        result: entry.result,
+      })).toMatchObject({ status: "recorded" });
+    }
+
+    const failureOrder = offlineOrder(OTHER_JOB_ID);
+    const failureBinding = offlineOrderBinding(failureOrder);
+    const auditClaim = await store.claim({
+      role: "buyer",
+      jobId: OTHER_JOB_ID,
+      ...failureBinding,
+      track: "audit",
+      owner: "offline-failure-audit",
+      leaseDurationMs: 10_000,
+    });
+    if (auditClaim.status !== "acquired") throw new Error("expected offline audit claim");
+    expect(await store.record({
+      role: "buyer",
+      jobId: OTHER_JOB_ID,
+      ...failureBinding,
+      track: "audit",
+      lease: auditClaim.lease,
+      result: {
+        status: "final",
+        outcome: "simulated-failure",
+        errorClass: "simulated-substrate",
+        reference: "offline:mismatched-audit",
+      },
+    })).toEqual({ status: "conflict" });
+    expect(await store.record({
+      role: "buyer",
+      jobId: OTHER_JOB_ID,
+      ...failureBinding,
+      track: "audit",
+      lease: auditClaim.lease,
+      result: {
+        status: "final",
+        outcome: "simulated-failure",
+        errorClass: "simulated-counterparty",
+        reference: "offline:matching-audit",
+      },
+    })).toMatchObject({ status: "recorded" });
+    first.close();
+    databases.splice(databases.indexOf(first), 1);
+
+    const restarted = await open(databasePath, { authority: BUYER });
+    const restartedStore = restarted.createOfflineCoordinatorStore("buyer");
+    for (const entry of cases) {
+      expect(await restartedStore.load("buyer", entry.jobId)).toMatchObject({
+        status: "ok",
+        record: { tracks: { agreement: { outcome: entry.result.outcome } } },
+      });
+    }
+    const raw = new BetterSqlite3(databasePath, { readonly: true });
+    expect(raw.prepare(`
+      SELECT job_id, outcome, error_class, faulted_party, withdrawn_by
+      FROM dacs_coordinator_tracks
+      WHERE profile = 'offline' AND role = 'buyer' AND track = 'agreement'
+        AND outcome IS NOT NULL
+      ORDER BY job_id
+    `).all()).toEqual([
+      {
+        job_id: JOB_ID,
+        outcome: "simulated-success",
+        error_class: null,
+        faulted_party: null,
+        withdrawn_by: null,
+      },
+      {
+        job_id: OTHER_JOB_ID,
+        outcome: "simulated-failure",
+        error_class: "simulated-counterparty",
+        faulted_party: null,
+        withdrawn_by: null,
+      },
+      {
+        job_id: THIRD_JOB_ID,
+        outcome: "simulated-aborted",
+        error_class: null,
+        faulted_party: null,
+        withdrawn_by: null,
+      },
+    ]);
+    raw.close();
   });
 
   it("binds buyer and seller coordinator orders to their exact database authority", async () => {
@@ -1500,13 +2484,13 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(await buyerStore.create({
       role: "buyer",
       order: buyerOrder,
-      bindingHash: fixedPriceX402OrderBindingHash(buyerOrder),
+      ...liveOrderBinding(buyerOrder),
     })).toMatchObject({ status: "created", record: { buyer: BUYER } });
     const wrongBuyer = { ...liveOrder(OTHER_JOB_ID), buyer: "did:example:other-buyer" };
     expect(await buyerStore.create({
       role: "buyer",
       order: wrongBuyer,
-      bindingHash: fixedPriceX402OrderBindingHash(wrongBuyer),
+      ...liveOrderBinding(wrongBuyer),
     })).toMatchObject({
       status: "corrupt",
       reason: expect.stringContaining("database actor authority"),
@@ -1523,7 +2507,7 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(await sellerStore.create({
       role: "seller",
       order: sellerOrder,
-      bindingHash: fixedPriceX402OrderBindingHash(sellerOrder),
+      ...liveOrderBinding(sellerOrder),
     })).toMatchObject({ status: "created", record: { seller: SELLER } });
     const otherSeller = "did:example:other-seller";
     const wrongSeller = {
@@ -1534,7 +2518,7 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(await sellerStore.create({
       role: "seller",
       order: wrongSeller,
-      bindingHash: fixedPriceX402OrderBindingHash(wrongSeller),
+      ...liveOrderBinding(wrongSeller),
     })).toMatchObject({
       status: "corrupt",
       reason: expect.stringContaining("database actor authority"),
@@ -1557,7 +2541,7 @@ describe("DACS Node SQLite durability foundation", () => {
       expect(await store.create({
         role,
         order,
-        bindingHash: fixedPriceX402OrderBindingHash(order),
+        ...liveOrderBinding(order),
       })).toMatchObject({ status: "created" });
       database.close();
       databases.splice(databases.indexOf(database), 1);
@@ -1609,8 +2593,8 @@ describe("DACS Node SQLite durability foundation", () => {
     });
     const store = database.createLiveCoordinatorStore("buyer");
     const order = liveOrder();
-    const bindingHash = fixedPriceX402OrderBindingHash(order);
-    await store.create({ role: "buyer", order, bindingHash });
+    const { bindingHash, localBindingHash } = liveOrderBinding(order);
+    await store.create({ role: "buyer", order, bindingHash, localBindingHash });
 
     const raw = new BetterSqlite3(databasePath);
     raw.prepare(`

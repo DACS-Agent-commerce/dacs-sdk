@@ -20,14 +20,22 @@ import {
   FIXED_PRICE_OFFLINE_STANDARD_REVISION,
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceOfflineOrderBindingHash,
+  fixedPriceOfflineOrderLocalBindingHash,
   fixedPriceOfflineOrderViolation,
   fixedPriceX402OrderBindingHash,
+  fixedPriceX402OrderLocalBindingHash,
   fixedPriceX402OrderViolation,
   type FixedPriceOfflineCoordinatorStore,
   type FixedPriceOfflineOrderRecord,
+  type FixedPriceOfflineSimulationErrorClass,
+  type FixedPriceOfflineSimulationOutcome,
+  type FixedPriceOfflineTrackOperationResult,
+  type FixedPriceOfflineTrackRecord,
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402CoordinatorStore,
   type FixedPriceX402ErrorClass,
+  type FixedPriceX402FaultedParty,
+  type FixedPriceX402NormativeOutcome,
   type FixedPriceX402OrderRecord,
   type FixedPriceX402Track,
   type FixedPriceX402TrackLease,
@@ -42,7 +50,7 @@ import {
   DACS_NODE_OFFLINE_PROFILE,
 } from "./config.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 3 as const;
+export const DACS_NODE_SQLITE_SCHEMA_VERSION = 4 as const;
 export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
@@ -405,6 +413,7 @@ interface CoordinatorRow {
   role: string;
   job_id: string;
   binding_hash: string;
+  local_binding_hash: string;
   record_hash: string;
   record_json: string;
   revision: number;
@@ -412,15 +421,20 @@ interface CoordinatorRow {
   updated_at: number;
 }
 
+type LegacyCoordinatorRow = Omit<CoordinatorRow, "local_binding_hash">;
+
 interface CoordinatorTrackRow {
   profile: string;
   role: string;
   job_id: string;
+  local_binding_hash: string;
   track: string;
   eligible: number;
   state: string;
   outcome: string | null;
   error_class: string | null;
+  faulted_party: string | null;
+  withdrawn_by: string | null;
   generation: number;
   attempts: number;
   lease_expires_at: number | null;
@@ -430,6 +444,12 @@ interface CoordinatorTrackRow {
 
 type CoordinatorProfile = "live-x402" | "offline";
 type CoordinatorRecord = FixedPriceX402OrderRecord | FixedPriceOfflineOrderRecord;
+type CoordinatorTrackRecord = FixedPriceX402TrackRecord | FixedPriceOfflineTrackRecord;
+type CoordinatorOutcome = FixedPriceX402NormativeOutcome | FixedPriceOfflineSimulationOutcome;
+type CoordinatorErrorClass = FixedPriceX402ErrorClass | FixedPriceOfflineSimulationErrorClass;
+type CoordinatorOperationResult =
+  | FixedPriceX402TrackOperationResult
+  | FixedPriceOfflineTrackOperationResult;
 
 const COORDINATOR_TRACKS_BY_ROLE = Object.freeze({
   buyer: Object.freeze([
@@ -455,6 +475,22 @@ const COORDINATOR_ERROR_CLASSES = new Set<FixedPriceX402ErrorClass>([
   "counterparty",
   "substrate",
   "settlement-atomicity",
+]);
+
+const OFFLINE_COORDINATOR_ERROR_CLASSES =
+  new Set<FixedPriceOfflineSimulationErrorClass>([
+    "simulated-permanent",
+    "simulated-transient",
+    "simulated-counterparty",
+    "simulated-substrate",
+    "simulated-settlement-atomicity",
+  ]);
+
+const FAULTED_PARTIES = new Set<FixedPriceX402FaultedParty>([
+  "buyer",
+  "seller",
+  "orchestrator",
+  "none",
 ]);
 
 const MIGRATION_1 = `
@@ -661,6 +697,125 @@ CREATE INDEX dacs_effect_history_effect_idx
   ON dacs_effect_history (effect_kind, effect_id, sequence);
 `;
 
+const MIGRATION_4_PREPARE = `
+DROP INDEX dacs_coordinator_tracks_runnable_idx;
+
+ALTER TABLE dacs_coordinator_tracks RENAME TO dacs_coordinator_tracks_v3;
+ALTER TABLE dacs_coordinator_orders RENAME TO dacs_coordinator_orders_v3;
+
+CREATE TABLE dacs_coordinator_orders (
+  profile TEXT NOT NULL,
+  role TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  binding_hash TEXT NOT NULL,
+  local_binding_hash TEXT NOT NULL,
+  record_hash TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (profile, role, job_id),
+  CHECK (profile IN ('live-x402', 'offline')),
+  CHECK (role IN ('buyer', 'seller')),
+  CHECK (length(binding_hash) = 64 AND binding_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(local_binding_hash) = 64 AND local_binding_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(record_hash) = 64 AND record_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (revision > 0),
+  CHECK (created_at >= 0),
+  CHECK (updated_at >= created_at)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE dacs_coordinator_tracks (
+  profile TEXT NOT NULL,
+  role TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  local_binding_hash TEXT NOT NULL,
+  track TEXT NOT NULL,
+  eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+  state TEXT NOT NULL,
+  outcome TEXT,
+  error_class TEXT,
+  faulted_party TEXT,
+  withdrawn_by TEXT,
+  generation INTEGER NOT NULL,
+  attempts INTEGER NOT NULL,
+  lease_expires_at INTEGER,
+  next_attempt_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (profile, role, job_id, track),
+  FOREIGN KEY (profile, role, job_id)
+    REFERENCES dacs_coordinator_orders (profile, role, job_id)
+    ON DELETE CASCADE,
+  CHECK (profile IN ('live-x402', 'offline')),
+  CHECK (role IN ('buyer', 'seller')),
+  CHECK (length(local_binding_hash) = 64 AND
+    local_binding_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (track IN (
+    'agreement', 'payment', 'payment-evidence', 'delivery',
+    'buyer-received', 'delivery-evidence', 'audit'
+  )),
+  CHECK (generation >= 0),
+  CHECK (attempts >= 0),
+  CHECK (attempts = generation),
+  CHECK (lease_expires_at IS NULL OR lease_expires_at >= 0),
+  CHECK (next_attempt_at IS NULL OR next_attempt_at >= 0),
+  CHECK (updated_at >= 0),
+  CHECK (state IN (
+    'not-started', 'running', 'pending-retry', 'indeterminate',
+    'operator-action', 'final'
+  )),
+  CHECK ((state = 'running') = (lease_expires_at IS NOT NULL)),
+  CHECK ((state IN ('pending-retry', 'indeterminate')) OR next_attempt_at IS NULL),
+  CHECK ((state = 'final') = (outcome IS NOT NULL)),
+  CHECK (
+    (profile = 'live-x402' AND
+      (outcome IS NULL OR outcome IN ('success', 'failure', 'aborted')) AND
+      (error_class IS NULL OR error_class IN (
+        'permanent', 'transient', 'counterparty', 'substrate',
+        'settlement-atomicity'
+      )) AND
+      (faulted_party IS NULL OR faulted_party IN ('buyer', 'seller', 'none')) AND
+      (withdrawn_by IS NULL OR withdrawn_by IN ('buyer', 'seller')) AND
+      (
+        (outcome = 'failure' AND error_class IS NOT NULL AND
+          faulted_party IS NOT NULL AND withdrawn_by IS NULL AND
+          ((error_class = 'substrate') = (faulted_party = 'none'))) OR
+        (outcome = 'aborted' AND error_class IS NULL AND
+          faulted_party IS NULL AND withdrawn_by IS NOT NULL) OR
+        ((outcome IS NULL OR outcome = 'success') AND error_class IS NULL AND
+          faulted_party IS NULL AND withdrawn_by IS NULL)
+      )) OR
+    (profile = 'offline' AND
+      (outcome IS NULL OR outcome IN (
+        'simulated-success', 'simulated-failure', 'simulated-aborted'
+      )) AND
+      (error_class IS NULL OR error_class IN (
+        'simulated-permanent', 'simulated-transient',
+        'simulated-counterparty', 'simulated-substrate',
+        'simulated-settlement-atomicity'
+      )) AND
+      faulted_party IS NULL AND withdrawn_by IS NULL AND
+      (
+        (outcome = 'simulated-failure' AND error_class IS NOT NULL) OR
+        ((outcome IS NULL OR outcome IN (
+          'simulated-success', 'simulated-aborted'
+        )) AND error_class IS NULL)
+      ))
+  )
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX dacs_coordinator_tracks_runnable_idx
+  ON dacs_coordinator_tracks (
+    profile, role, track, eligible, state, next_attempt_at,
+    lease_expires_at, job_id
+  );
+`;
+
+const MIGRATION_4_FINALIZE = `
+DROP TABLE dacs_coordinator_tracks_v3;
+DROP TABLE dacs_coordinator_orders_v3;
+`;
+
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 &&
     value.trim() === value && !value.includes("\0");
@@ -725,6 +880,46 @@ function coordinatorBindingHash(
       );
 }
 
+function coordinatorLocalBindingHash(
+  profile: CoordinatorProfile,
+  value: Readonly<{
+    jobId: string;
+    buyer: string;
+    seller: string;
+    protocol: CoordinatorRecord["protocol"];
+    sdkJobs: CoordinatorRecord["sdkJobs"];
+  }>,
+): string {
+  return profile === "live-x402"
+    ? fixedPriceX402OrderLocalBindingHash(
+        value as Parameters<typeof fixedPriceX402OrderLocalBindingHash>[0],
+      )
+    : fixedPriceOfflineOrderLocalBindingHash(
+        value as Parameters<typeof fixedPriceOfflineOrderLocalBindingHash>[0],
+      );
+}
+
+function coordinatorSuccessOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
+  return profile === "live-x402" ? "success" : "simulated-success";
+}
+
+function coordinatorFailureOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
+  return profile === "live-x402" ? "failure" : "simulated-failure";
+}
+
+function coordinatorAbortedOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
+  return profile === "live-x402" ? "aborted" : "simulated-aborted";
+}
+
+function coordinatorErrorClassAllowed(
+  profile: CoordinatorProfile,
+  value: unknown,
+): value is CoordinatorErrorClass {
+  return profile === "live-x402"
+    ? COORDINATOR_ERROR_CLASSES.has(value as FixedPriceX402ErrorClass)
+    : OFFLINE_COORDINATOR_ERROR_CLASSES.has(value as FixedPriceOfflineSimulationErrorClass);
+}
+
 function coordinatorAuthorityMatches(
   record: Readonly<Pick<CoordinatorRecord, "role" | "buyer" | "seller">>,
   authority: string,
@@ -765,9 +960,24 @@ function coordinatorFromRow(
   }
   const violation = coordinatorViolation(profile, parsed);
   const record = parsed as CoordinatorRecord;
+  let expectedLocalBindingHash: string | undefined;
+  try {
+    expectedLocalBindingHash = coordinatorLocalBindingHash(profile, {
+      jobId: record.jobId,
+      buyer: record.buyer,
+      seller: record.seller,
+      protocol: record.protocol,
+      sdkJobs: record.sdkJobs,
+    });
+  } catch {
+    // The profile validator below supplies the stable corruption reason.
+  }
   if (violation || recordJson !== row.record_json || sha256Hex(recordJson) !== row.record_hash ||
       row.profile !== profile || row.role !== record.role || row.job_id !== record.jobId ||
-      row.binding_hash !== record.bindingHash || row.revision !== record.revision ||
+      row.binding_hash !== record.bindingHash ||
+      row.local_binding_hash !== record.localBindingHash ||
+      expectedLocalBindingHash !== record.localBindingHash ||
+      row.revision !== record.revision ||
       row.created_at !== record.createdAt || row.updated_at !== record.updatedAt) {
     return {
       status: "corrupt",
@@ -777,11 +987,144 @@ function coordinatorFromRow(
   return { status: "ok", record: clone(record) };
 }
 
+type LegacyCoordinatorDecode = Readonly<
+  | {
+      status: "ok";
+      record: Readonly<CoordinatorRecord>;
+      legacyRecord: Readonly<Record<string, unknown>>;
+    }
+  | { status: "unsupported"; version: number }
+  | { status: "corrupt"; reason: string }
+>;
+
+const LEGACY_OFFLINE_OUTCOMES = Object.freeze({
+  success: "simulated-success",
+  failure: "simulated-failure",
+  aborted: "simulated-aborted",
+} as const);
+
+const LEGACY_OFFLINE_ERROR_CLASSES = Object.freeze({
+  permanent: "simulated-permanent",
+  transient: "simulated-transient",
+  counterparty: "simulated-counterparty",
+  substrate: "simulated-substrate",
+  "settlement-atomicity": "simulated-settlement-atomicity",
+} as const);
+
+function legacyCoordinatorFromRow(
+  row: Readonly<LegacyCoordinatorRow>,
+  profile: CoordinatorProfile,
+): LegacyCoordinatorDecode {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.record_json) as unknown;
+  } catch {
+    return { status: "corrupt", reason: "legacy coordinator record JSON is malformed" };
+  }
+  if (parsed !== null && typeof parsed === "object" &&
+      Number.isSafeInteger((parsed as { storeVersion?: unknown }).storeVersion) &&
+      (parsed as { storeVersion: number }).storeVersion !==
+        FIXED_PRICE_X402_COORDINATOR_STORE_VERSION) {
+    return {
+      status: "unsupported",
+      version: (parsed as { storeVersion: number }).storeVersion,
+    };
+  }
+  let recordJson: string;
+  try {
+    recordJson = canonicalize(parsed);
+  } catch {
+    return { status: "corrupt", reason: "legacy coordinator record is not canonical data" };
+  }
+  if (!exactDataKeys(parsed, [
+    "storeVersion",
+    "revision",
+    "role",
+    "jobId",
+    "buyer",
+    "seller",
+    "protocol",
+    "bindingHash",
+    "sdkJobs",
+    "tracks",
+    "createdAt",
+    "updatedAt",
+  ]) || (parsed.role !== "buyer" && parsed.role !== "seller") ||
+      recordJson !== row.record_json || sha256Hex(recordJson) !== row.record_hash ||
+      row.profile !== profile || row.role !== parsed.role || row.job_id !== parsed.jobId ||
+      row.binding_hash !== parsed.bindingHash || row.revision !== parsed.revision ||
+      row.created_at !== parsed.createdAt || row.updated_at !== parsed.updatedAt ||
+      !exactDataKeys(parsed.tracks, coordinatorTracks(parsed.role as FixedPriceX402CoordinatorRole))) {
+    return { status: "corrupt", reason: "legacy coordinator record integrity binding differs" };
+  }
+
+  const legacyRecord = clone(parsed) as Record<string, unknown>;
+  const tracks = clone(parsed.tracks) as Record<string, Record<string, unknown>>;
+  for (const track of coordinatorTracks(parsed.role as FixedPriceX402CoordinatorRole)) {
+    const retained = tracks[track];
+    if (!retained) {
+      return { status: "corrupt", reason: "legacy coordinator track map is incomplete" };
+    }
+    if (profile === "live-x402" && retained.state === "final" &&
+        (retained.outcome === "failure" || retained.outcome === "aborted")) {
+      return {
+        status: "corrupt",
+        reason: "legacy live terminal record lacks mandatory DACS-5 attribution",
+      };
+    }
+    if (profile === "offline") {
+      if (retained.outcome !== undefined) {
+        const mapped = LEGACY_OFFLINE_OUTCOMES[
+          retained.outcome as keyof typeof LEGACY_OFFLINE_OUTCOMES
+        ];
+        if (!mapped) {
+          return { status: "corrupt", reason: "legacy offline outcome is unsupported" };
+        }
+        retained.outcome = mapped;
+      }
+      if (retained.errorClass !== undefined) {
+        const mapped = LEGACY_OFFLINE_ERROR_CLASSES[
+          retained.errorClass as keyof typeof LEGACY_OFFLINE_ERROR_CLASSES
+        ];
+        if (!mapped) {
+          return { status: "corrupt", reason: "legacy offline error class is unsupported" };
+        }
+        retained.errorClass = mapped;
+      }
+    }
+  }
+
+  try {
+    const upgraded = {
+      ...clone(parsed),
+      localBindingHash: coordinatorLocalBindingHash(profile, {
+        jobId: parsed.jobId as string,
+        buyer: parsed.buyer as string,
+        seller: parsed.seller as string,
+        protocol: parsed.protocol as CoordinatorRecord["protocol"],
+        sdkJobs: parsed.sdkJobs as CoordinatorRecord["sdkJobs"],
+      }),
+      tracks,
+    } as CoordinatorRecord;
+    const violation = coordinatorViolation(profile, upgraded);
+    return violation
+      ? { status: "corrupt", reason: violation }
+      : { status: "ok", record: clone(upgraded), legacyRecord };
+  } catch (error) {
+    return {
+      status: "corrupt",
+      reason: error instanceof Error
+        ? error.message
+        : "legacy coordinator local binding cannot be authenticated",
+    };
+  }
+}
+
 function coordinatorTrack(
   record: Readonly<CoordinatorRecord>,
   track: FixedPriceX402Track,
-): Readonly<FixedPriceX402TrackRecord> | undefined {
-  return record.tracks[track];
+): Readonly<CoordinatorTrackRecord> | undefined {
+  return record.tracks[track] as Readonly<CoordinatorTrackRecord> | undefined;
 }
 
 function coordinatorTrackFinal(
@@ -792,90 +1135,130 @@ function coordinatorTrackFinal(
 }
 
 function coordinatorTrackSuccessful(
+  profile: CoordinatorProfile,
   record: Readonly<CoordinatorRecord>,
   track: FixedPriceX402Track,
 ): boolean {
   const retained = coordinatorTrack(record, track);
-  return retained?.state === "final" && retained.outcome === "success";
+  return retained?.state === "final" &&
+    retained.outcome === coordinatorSuccessOutcome(profile);
 }
 
 function coordinatorTerminalResult(
+  profile: CoordinatorProfile,
   record: Readonly<CoordinatorRecord>,
-): Readonly<
-  | { outcome: "failure"; errorClass: FixedPriceX402ErrorClass }
-  | { outcome: "aborted" }
-> | null {
+): Readonly<{
+  outcome: CoordinatorOutcome;
+  errorClass?: CoordinatorErrorClass;
+  faultedParty?: FixedPriceX402FaultedParty;
+  withdrawnBy?: FixedPriceX402CoordinatorRole;
+}> | null {
   const tracks: readonly FixedPriceX402Track[] = record.role === "buyer"
     ? ["agreement", "payment", "buyer-received"]
     : ["agreement", "payment", "delivery"];
   for (const track of tracks) {
     const retained = coordinatorTrack(record, track);
-    if (retained?.state === "final" && retained.outcome !== "success") {
-      return retained.outcome === "failure"
-        ? { outcome: "failure", errorClass: retained.errorClass! }
-        : { outcome: "aborted" };
+    if (retained?.state === "final" &&
+        retained.outcome !== coordinatorSuccessOutcome(profile)) {
+      return retained.outcome === coordinatorFailureOutcome(profile)
+        ? {
+            outcome: coordinatorFailureOutcome(profile),
+            errorClass: retained.errorClass!,
+            ...(retained.faultedParty === undefined
+              ? {}
+              : { faultedParty: retained.faultedParty }),
+          }
+        : {
+            outcome: coordinatorAbortedOutcome(profile),
+            ...(retained.withdrawnBy === undefined
+              ? {}
+              : { withdrawnBy: retained.withdrawnBy }),
+          };
     }
   }
   return null;
 }
 
 function coordinatorTrackEligible(
+  profile: CoordinatorProfile,
   record: Readonly<CoordinatorRecord>,
   track: FixedPriceX402Track,
 ): boolean {
   if (!coordinatorTracks(record.role).includes(track)) return false;
   switch (track) {
     case "agreement": return true;
-    case "payment": return coordinatorTrackSuccessful(record, "agreement");
+    case "payment": return coordinatorTrackSuccessful(profile, record, "agreement");
     case "payment-evidence": return coordinatorTrackFinal(record, "payment");
     case "delivery":
-      return record.role === "seller" && coordinatorTrackSuccessful(record, "payment");
+      return record.role === "seller" &&
+        coordinatorTrackSuccessful(profile, record, "payment");
     case "buyer-received":
-      return record.role === "buyer" && coordinatorTrackSuccessful(record, "payment");
+      return record.role === "buyer" &&
+        coordinatorTrackSuccessful(profile, record, "payment");
     case "delivery-evidence":
       return record.role === "seller" && coordinatorTrackFinal(record, "delivery");
     case "audit": {
       const agreement = coordinatorTrack(record, "agreement");
-      if (agreement?.state === "final" && agreement.outcome !== "success") return true;
+      if (agreement?.state === "final" &&
+          agreement.outcome !== coordinatorSuccessOutcome(profile)) return true;
       const payment = coordinatorTrack(record, "payment");
-      if (payment?.state === "final" && payment.outcome !== "success") {
-        return coordinatorTrackSuccessful(record, "payment-evidence");
+      if (payment?.state === "final" &&
+          payment.outcome !== coordinatorSuccessOutcome(profile)) {
+        return coordinatorTrackSuccessful(profile, record, "payment-evidence");
       }
       return record.role === "buyer"
-        ? coordinatorTrackSuccessful(record, "payment-evidence") &&
+        ? coordinatorTrackSuccessful(profile, record, "payment-evidence") &&
             coordinatorTrackFinal(record, "buyer-received")
-        : coordinatorTrackSuccessful(record, "payment-evidence") &&
-            coordinatorTrackSuccessful(record, "delivery-evidence");
+        : coordinatorTrackSuccessful(profile, record, "payment-evidence") &&
+            coordinatorTrackSuccessful(profile, record, "delivery-evidence");
     }
   }
 }
 
 function coordinatorResultAllowed(
+  profile: CoordinatorProfile,
   record: Readonly<CoordinatorRecord>,
   track: FixedPriceX402Track,
   result: Readonly<{
-    outcome: "success" | "failure" | "aborted";
-    errorClass?: FixedPriceX402ErrorClass;
+    outcome: CoordinatorOutcome;
+    errorClass?: CoordinatorErrorClass;
+    faultedParty?: FixedPriceX402FaultedParty;
+    withdrawnBy?: FixedPriceX402CoordinatorRole;
   }>,
 ): boolean {
+  if (profile === "live-x402" && result.outcome === "failure" &&
+      (result.faultedParty === "orchestrator" ||
+        (result.errorClass === "substrate") !== (result.faultedParty === "none"))) {
+    return false;
+  }
   if (track === "payment-evidence" || track === "delivery-evidence") {
-    return result.outcome === "success";
+    return result.outcome === coordinatorSuccessOutcome(profile);
   }
   if (track === "audit") {
-    const expected = coordinatorTerminalResult(record) ?? { outcome: "success" as const };
+    const expected = coordinatorTerminalResult(profile, record) ?? {
+      outcome: coordinatorSuccessOutcome(profile),
+    };
     return result.outcome === expected.outcome &&
-      (expected.outcome !== "failure" || result.errorClass === expected.errorClass);
+      (expected.outcome !== coordinatorFailureOutcome(profile) ||
+        (result.errorClass === expected.errorClass &&
+          (profile !== "live-x402" || result.faultedParty === expected.faultedParty))) &&
+      (expected.outcome !== coordinatorAbortedOutcome(profile) ||
+        profile !== "live-x402" || result.withdrawnBy === expected.withdrawnBy);
   }
+  if (result.outcome === coordinatorAbortedOutcome(profile) &&
+      (coordinatorTrackSuccessful(profile, record, "payment") ||
+        coordinatorTrackSuccessful(profile, record, "delivery"))) return false;
   return true;
 }
 
 function coordinatorTrackRunnable(
+  profile: CoordinatorProfile,
   record: Readonly<CoordinatorRecord>,
   track: FixedPriceX402Track,
   now: number,
 ): boolean {
   const retained = coordinatorTrack(record, track);
-  if (!retained || !coordinatorTrackEligible(record, track) ||
+  if (!retained || !coordinatorTrackEligible(profile, record, track) ||
       retained.state === "final" || retained.state === "operator-action") return false;
   if (retained.nextAttemptAt !== undefined && retained.nextAttemptAt > now) return false;
   return retained.lease === undefined || retained.lease.expiresAt <= now;
@@ -891,11 +1274,14 @@ function coordinatorTrackProjection(
       profile,
       role: record.role,
       job_id: record.jobId,
+      local_binding_hash: record.localBindingHash,
       track,
-      eligible: coordinatorTrackEligible(record, track) ? 1 : 0,
+      eligible: coordinatorTrackEligible(profile, record, track) ? 1 : 0,
       state: retained.state,
       outcome: retained.outcome ?? null,
       error_class: retained.errorClass ?? null,
+      faulted_party: retained.faultedParty ?? null,
+      withdrawn_by: retained.withdrawnBy ?? null,
       generation: retained.generation,
       attempts: retained.attempts,
       lease_expires_at: retained.lease?.expiresAt ?? null,
@@ -916,20 +1302,24 @@ function replaceCoordinatorTrackProjection(
   `).run(profile, record.role, record.jobId);
   const insert = database.prepare(`
     INSERT INTO dacs_coordinator_tracks (
-      profile, role, job_id, track, eligible, state, outcome, error_class,
-      generation, attempts, lease_expires_at, next_attempt_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      profile, role, job_id, local_binding_hash, track, eligible, state,
+      outcome, error_class, faulted_party, withdrawn_by, generation, attempts,
+      lease_expires_at, next_attempt_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const row of coordinatorTrackProjection(profile, record)) {
     insert.run(
       row.profile,
       row.role,
       row.job_id,
+      row.local_binding_hash,
       row.track,
       row.eligible,
       row.state,
       row.outcome,
       row.error_class,
+      row.faulted_party,
+      row.withdrawn_by,
       row.generation,
       row.attempts,
       row.lease_expires_at,
@@ -948,8 +1338,9 @@ function coordinatorTrackProjectionMatches(
     .slice()
     .sort((left, right) => left.track.localeCompare(right.track));
   const retained = database.prepare(`
-    SELECT profile, role, job_id, track, eligible, state, outcome, error_class,
-      generation, attempts, lease_expires_at, next_attempt_at, updated_at
+    SELECT profile, role, job_id, local_binding_hash, track, eligible, state,
+      outcome, error_class, faulted_party, withdrawn_by, generation, attempts,
+      lease_expires_at, next_attempt_at, updated_at
     FROM dacs_coordinator_tracks
     WHERE profile = ? AND role = ? AND job_id = ?
     ORDER BY track
@@ -975,8 +1366,9 @@ function coordinatorTrackProjectionSetMatches(
     left.job_id.localeCompare(right.job_id) || left.track.localeCompare(right.track)
   );
   const retained = database.prepare(`
-    SELECT profile, role, job_id, track, eligible, state, outcome, error_class,
-      generation, attempts, lease_expires_at, next_attempt_at, updated_at
+    SELECT profile, role, job_id, local_binding_hash, track, eligible, state,
+      outcome, error_class, faulted_party, withdrawn_by, generation, attempts,
+      lease_expires_at, next_attempt_at, updated_at
     FROM dacs_coordinator_tracks
     WHERE profile = ?
       AND job_id IN (SELECT value FROM json_each(?))
@@ -990,7 +1382,125 @@ function coordinatorTrackProjectionSetMatches(
   return canonicalize(retained) === canonicalize(expected);
 }
 
-function backfillCoordinatorTrackProjections(
+type LegacyCoordinatorTrackRow = Omit<
+  CoordinatorTrackRow,
+  "local_binding_hash" | "faulted_party" | "withdrawn_by"
+>;
+
+type LegacyCoordinatorTrackRecord = Readonly<{
+  state: string;
+  generation: number;
+  attempts: number;
+  updatedAt: number;
+  outcome?: "success" | "failure" | "aborted";
+  errorClass?: FixedPriceX402ErrorClass;
+  nextAttemptAt?: number;
+  lease?: Readonly<{ expiresAt: number }>;
+}>;
+
+function legacyTrack(
+  record: Readonly<Record<string, unknown>>,
+  track: FixedPriceX402Track,
+): LegacyCoordinatorTrackRecord | undefined {
+  return (record.tracks as Readonly<Record<string, LegacyCoordinatorTrackRecord>>)[track];
+}
+
+function legacyTrackFinal(
+  record: Readonly<Record<string, unknown>>,
+  track: FixedPriceX402Track,
+): boolean {
+  return legacyTrack(record, track)?.state === "final";
+}
+
+function legacyTrackSuccessful(
+  record: Readonly<Record<string, unknown>>,
+  track: FixedPriceX402Track,
+): boolean {
+  const retained = legacyTrack(record, track);
+  return retained?.state === "final" && retained.outcome === "success";
+}
+
+function legacyTrackEligible(
+  record: Readonly<Record<string, unknown>>,
+  track: FixedPriceX402Track,
+): boolean {
+  const role = record.role as FixedPriceX402CoordinatorRole;
+  if (!coordinatorTracks(role).includes(track)) return false;
+  switch (track) {
+    case "agreement": return true;
+    case "payment": return legacyTrackSuccessful(record, "agreement");
+    case "payment-evidence": return legacyTrackFinal(record, "payment");
+    case "delivery": return role === "seller" && legacyTrackSuccessful(record, "payment");
+    case "buyer-received":
+      return role === "buyer" && legacyTrackSuccessful(record, "payment");
+    case "delivery-evidence":
+      return role === "seller" && legacyTrackFinal(record, "delivery");
+    case "audit": {
+      const agreement = legacyTrack(record, "agreement");
+      if (agreement?.state === "final" && agreement.outcome !== "success") return true;
+      const payment = legacyTrack(record, "payment");
+      if (payment?.state === "final" && payment.outcome !== "success") {
+        return legacyTrackSuccessful(record, "payment-evidence");
+      }
+      return role === "buyer"
+        ? legacyTrackSuccessful(record, "payment-evidence") &&
+            legacyTrackFinal(record, "buyer-received")
+        : legacyTrackSuccessful(record, "payment-evidence") &&
+            legacyTrackSuccessful(record, "delivery-evidence");
+    }
+  }
+}
+
+function legacyCoordinatorTrackProjection(
+  profile: CoordinatorProfile,
+  record: Readonly<Record<string, unknown>>,
+): readonly LegacyCoordinatorTrackRow[] {
+  const role = record.role as FixedPriceX402CoordinatorRole;
+  return coordinatorTracks(role).map((track) => {
+    const retained = legacyTrack(record, track)!;
+    return {
+      profile,
+      role,
+      job_id: record.jobId as string,
+      track,
+      eligible: legacyTrackEligible(record, track) ? 1 : 0,
+      state: retained.state,
+      outcome: retained.outcome ?? null,
+      error_class: retained.errorClass ?? null,
+      generation: retained.generation,
+      attempts: retained.attempts,
+      lease_expires_at: retained.lease?.expiresAt ?? null,
+      next_attempt_at: retained.nextAttemptAt ?? null,
+      updated_at: retained.updatedAt,
+    };
+  });
+}
+
+function legacyCoordinatorTrackProjectionMatches(
+  database: BetterSqlite3.Database,
+  profile: CoordinatorProfile,
+  record: Readonly<Record<string, unknown>>,
+): boolean {
+  const expected = legacyCoordinatorTrackProjection(profile, record)
+    .slice()
+    .sort((left, right) => left.track.localeCompare(right.track));
+  const retained = database.prepare(`
+    SELECT profile, role, job_id, track, eligible, state, outcome, error_class,
+      generation, attempts, lease_expires_at, next_attempt_at, updated_at
+    FROM dacs_coordinator_tracks
+    WHERE profile = ? AND role = ? AND job_id = ?
+    ORDER BY track
+    LIMIT ?
+  `).all(
+    profile,
+    record.role,
+    record.jobId,
+    expected.length + 1,
+  ) as LegacyCoordinatorTrackRow[];
+  return canonicalize(retained) === canonicalize(expected);
+}
+
+function migrateCoordinatorV4Rows(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
 ): void {
@@ -998,24 +1508,45 @@ function backfillCoordinatorTrackProjections(
     ? "offline"
     : "live-x402";
   const rows = database.prepare(`
-    SELECT * FROM dacs_coordinator_orders ORDER BY profile, role, job_id
-  `).all() as CoordinatorRow[];
+    SELECT * FROM dacs_coordinator_orders_v3 ORDER BY profile, role, job_id
+  `).all() as LegacyCoordinatorRow[];
+  const insert = database.prepare(`
+    INSERT INTO dacs_coordinator_orders (
+      profile, role, job_id, binding_hash, local_binding_hash, record_hash,
+      record_json, revision, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
   for (const row of rows) {
     if (row.profile !== profile || row.role !== options.role ||
         (row.role !== "buyer" && row.role !== "seller")) {
       throw new DacsNodeSqliteError(
         "database-logical-corruption",
-        "SQLite coordinator row is outside the bound actor profile",
+        "Legacy SQLite coordinator row is outside the bound actor profile",
       );
     }
-    const decoded = coordinatorFromRow(row, profile);
+    const decoded = legacyCoordinatorFromRow(row, profile);
     if (decoded.status !== "ok" ||
         !coordinatorAuthorityMatches(decoded.record, options.authority)) {
       throw new DacsNodeSqliteError(
         "database-logical-corruption",
-        "SQLite coordinator record cannot be authenticated for projection migration",
+        decoded.status === "corrupt"
+          ? decoded.reason
+          : "Legacy SQLite coordinator record cannot be authenticated for migration",
       );
     }
+    const recordJson = canonicalize(decoded.record);
+    insert.run(
+      profile,
+      decoded.record.role,
+      decoded.record.jobId,
+      decoded.record.bindingHash,
+      decoded.record.localBindingHash,
+      sha256Hex(recordJson),
+      recordJson,
+      decoded.record.revision,
+      decoded.record.createdAt,
+      decoded.record.updatedAt,
+    );
     replaceCoordinatorTrackProjection(database, profile, decoded.record);
   }
 }
@@ -1120,31 +1651,50 @@ function captureEffectLease(value: unknown): Readonly<DacsNodeSqliteEffectLease>
   });
 }
 
-function captureCoordinatorResult(value: unknown): FixedPriceX402TrackOperationResult | null {
+function captureCoordinatorResult(
+  profile: CoordinatorProfile,
+  value: unknown,
+): CoordinatorOperationResult | null {
   if (exactDataKeys(value, ["status", "outcome", "reference"], ["authenticationHash"]) &&
-      value.status === "final" && (value.outcome === "success" || value.outcome === "aborted") &&
+      value.status === "final" && value.outcome === coordinatorSuccessOutcome(profile) &&
       nonEmpty(value.reference) &&
       (value.authenticationHash === undefined || hash(value.authenticationHash))) {
-    return clone(value) as unknown as FixedPriceX402TrackOperationResult;
+    return clone(value) as unknown as CoordinatorOperationResult;
   }
+  const abortedKeys = profile === "live-x402"
+    ? ["status", "outcome", "withdrawnBy", "reference"]
+    : ["status", "outcome", "reference"];
+  if (exactDataKeys(value, abortedKeys, ["authenticationHash"]) &&
+      value.status === "final" && value.outcome === coordinatorAbortedOutcome(profile) &&
+      (profile !== "live-x402" || value.withdrawnBy === "buyer" ||
+        value.withdrawnBy === "seller") &&
+      nonEmpty(value.reference) &&
+      (value.authenticationHash === undefined || hash(value.authenticationHash))) {
+    return clone(value) as unknown as CoordinatorOperationResult;
+  }
+  const failureKeys = profile === "live-x402"
+    ? ["status", "outcome", "errorClass", "faultedParty", "reference"]
+    : ["status", "outcome", "errorClass", "reference"];
   if (exactDataKeys(
     value,
-    ["status", "outcome", "errorClass", "reference"],
+    failureKeys,
     ["authenticationHash"],
-  ) && value.status === "final" && value.outcome === "failure" &&
-      COORDINATOR_ERROR_CLASSES.has(value.errorClass as FixedPriceX402ErrorClass) &&
+  ) && value.status === "final" && value.outcome === coordinatorFailureOutcome(profile) &&
+      coordinatorErrorClassAllowed(profile, value.errorClass) &&
+      (profile !== "live-x402" ||
+        FAULTED_PARTIES.has(value.faultedParty as FixedPriceX402FaultedParty)) &&
       nonEmpty(value.reference) &&
       (value.authenticationHash === undefined || hash(value.authenticationHash))) {
-    return clone(value) as unknown as FixedPriceX402TrackOperationResult;
+    return clone(value) as unknown as CoordinatorOperationResult;
   }
   if (exactDataKeys(value, ["status", "reasonCode", "retryAt"]) &&
       (value.status === "pending-retry" || value.status === "indeterminate") &&
       reasonCode(value.reasonCode) && safeUint(value.retryAt)) {
-    return clone(value) as unknown as FixedPriceX402TrackOperationResult;
+    return clone(value) as unknown as CoordinatorOperationResult;
   }
   if (exactDataKeys(value, ["status", "reasonCode"]) &&
       value.status === "operator-action" && reasonCode(value.reasonCode)) {
-    return clone(value) as unknown as FixedPriceX402TrackOperationResult;
+    return clone(value) as unknown as CoordinatorOperationResult;
   }
   return null;
 }
@@ -1696,11 +2246,12 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       const recordJson = canonicalize(next);
       const result = database.prepare(`
         UPDATE dacs_coordinator_orders SET
-          binding_hash = ?, record_hash = ?, record_json = ?, revision = ?,
-          created_at = ?, updated_at = ?
+          binding_hash = ?, local_binding_hash = ?, record_hash = ?,
+          record_json = ?, revision = ?, created_at = ?, updated_at = ?
         WHERE profile = ? AND role = ? AND job_id = ? AND revision = ?
       `).run(
         next.bindingHash,
+        next.localBindingHash,
         sha256Hex(recordJson),
         recordJson,
         next.revision,
@@ -1740,8 +2291,10 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           };
         }
         let expectedBindingHash: string;
+        let expectedLocalBindingHash: string;
         try {
           expectedBindingHash = coordinatorBindingHash(profile, input.order);
+          expectedLocalBindingHash = coordinatorLocalBindingHash(profile, input.order);
         } catch (error) {
           return {
             status: "corrupt",
@@ -1749,6 +2302,9 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           };
         }
         if (input.bindingHash !== expectedBindingHash) return { status: "conflict" };
+        if (input.localBindingHash !== expectedLocalBindingHash) {
+          return { status: "conflict" };
+        }
         return beginImmediate(database, () => {
           const now = databaseTime(database);
           let record: CoordinatorRecord;
@@ -1762,6 +2318,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
               seller: input.order.seller,
               protocol: clone(input.order.protocol),
               bindingHash: expectedBindingHash,
+              localBindingHash: expectedLocalBindingHash,
               sdkJobs: clone(input.order.sdkJobs),
               tracks: emptyCoordinatorTracks(role, now),
               createdAt: now,
@@ -1776,6 +2333,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           if (existing.status !== "missing") {
             if (existing.status !== "ok") return existing;
             return existing.record.bindingHash === expectedBindingHash &&
+                existing.record.localBindingHash === expectedLocalBindingHash &&
                 canonicalize(existing.record.sdkJobs) === canonicalize(record.sdkJobs)
               ? { status: "existing" as const, record: toLive(existing.record) }
               : { status: "conflict" as const };
@@ -1783,14 +2341,15 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           const recordJson = canonicalize(record);
           database.prepare(`
             INSERT INTO dacs_coordinator_orders (
-              profile, role, job_id, binding_hash, record_hash, record_json,
-              revision, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              profile, role, job_id, binding_hash, local_binding_hash,
+              record_hash, record_json, revision, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             profile,
             role,
             record.jobId,
             record.bindingHash,
+            record.localBindingHash,
             sha256Hex(recordJson),
             recordJson,
             record.revision,
@@ -1876,7 +2435,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
             }
             if (!coordinatorAuthorityMatches(decoded.record, authority) ||
                 !input.tracks.some((track) =>
-                  coordinatorTrackRunnable(decoded.record, track, now))) {
+                  coordinatorTrackRunnable(profile, decoded.record, track, now))) {
               throw new DacsNodeSqliteError(
                 "coordinator-record-corrupt",
                 "Coordinator runnable projection differs from its authenticated record",
@@ -1911,14 +2470,18 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           const loaded = loadRecord(input.jobId);
           if (loaded.status !== "ok") return loaded;
           const current = loaded.record;
-          if (current.bindingHash !== input.bindingHash) return { status: "stale" as const };
+          if (current.bindingHash !== input.bindingHash ||
+              current.localBindingHash !== input.localBindingHash) {
+            return { status: "stale" as const };
+          }
           if (!coordinatorTracks(role).includes(input.track) || !nonEmpty(input.owner) ||
               !safeUint(input.leaseDurationMs) || input.leaseDurationMs === 0) {
             return { status: "corrupt" as const, reason: "coordinator claim is malformed" };
           }
           const now = databaseTime(database);
           const retained = current.tracks[input.track]!;
-          if (!coordinatorTrackEligible(current, input.track) || retained.state === "final" ||
+          if (!coordinatorTrackEligible(profile, current, input.track) ||
+              retained.state === "final" ||
               retained.state === "operator-action" ||
               (retained.nextAttemptAt !== undefined && retained.nextAttemptAt > now)) {
             return { status: "not-runnable" as const, record: toLive(current) };
@@ -1942,7 +2505,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           };
           const updatedAt = Math.max(current.updatedAt, now);
           const tracks = clone(current.tracks) as Partial<
-            Record<FixedPriceX402Track, FixedPriceX402TrackRecord>
+            Record<FixedPriceX402Track, CoordinatorTrackRecord>
           >;
           tracks[input.track] = {
             state: "running",
@@ -1955,7 +2518,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
             ...clone(current),
             tracks,
             updatedAt,
-          });
+          } as CoordinatorRecord);
           return next
             ? { status: "acquired" as const, record: toLive(next), lease: clone(lease) }
             : { status: "stale" as const };
@@ -1971,7 +2534,8 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         if (input.role !== role) return false;
         return readSnapshot(database, () => {
           const loaded = loadRecord(input.jobId);
-          if (loaded.status !== "ok" || loaded.record.bindingHash !== input.bindingHash) {
+          if (loaded.status !== "ok" || loaded.record.bindingHash !== input.bindingHash ||
+              loaded.record.localBindingHash !== input.localBindingHash) {
             return false;
           }
           const retained = loaded.record.tracks[input.track];
@@ -1996,6 +2560,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           if (loaded.status !== "ok") return loaded;
           const current = loaded.record;
           if (current.bindingHash !== input.bindingHash ||
+              current.localBindingHash !== input.localBindingHash ||
               !coordinatorTracks(role).includes(input.track)) return { status: "stale" as const };
           const retained = current.tracks[input.track]!;
           const now = databaseTime(database);
@@ -2004,13 +2569,13 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
               retained.lease.generation !== input.lease.generation ||
               retained.lease.expiresAt !== input.lease.expiresAt ||
               retained.lease.expiresAt <= now) return { status: "stale" as const };
-          const result = captureCoordinatorResult(input.result);
+          const result = captureCoordinatorResult(profile, input.result);
           if (!result || (result.status === "final" &&
-              !coordinatorResultAllowed(current, input.track, result))) {
+              !coordinatorResultAllowed(profile, current, input.track, result))) {
             return { status: "conflict" as const };
           }
           const updatedAt = Math.max(current.updatedAt, now);
-          const nextTrack: FixedPriceX402TrackRecord = result.status === "final"
+          const nextTrack = (result.status === "final"
             ? {
                 state: "final",
                 generation: retained.generation,
@@ -2021,7 +2586,27 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                 ...(result.authenticationHash
                   ? { authenticationHash: result.authenticationHash }
                   : {}),
-                ...(result.outcome === "failure" ? { errorClass: result.errorClass } : {}),
+                ...(result.outcome === coordinatorFailureOutcome(profile)
+                  ? {
+                      errorClass: (result as Readonly<{
+                        errorClass: CoordinatorErrorClass;
+                      }>).errorClass,
+                    }
+                  : {}),
+                ...(profile === "live-x402" && result.outcome === "failure"
+                  ? {
+                      faultedParty: (result as Readonly<{
+                        faultedParty: FixedPriceX402FaultedParty;
+                      }>).faultedParty,
+                    }
+                  : {}),
+                ...(profile === "live-x402" && result.outcome === "aborted"
+                  ? {
+                      withdrawnBy: (result as Readonly<{
+                        withdrawnBy: FixedPriceX402CoordinatorRole;
+                      }>).withdrawnBy,
+                    }
+                  : {}),
               }
             : {
                 state: result.status,
@@ -2030,16 +2615,16 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                 updatedAt,
                 reasonCode: result.reasonCode,
                 ...(result.retryAt === undefined ? {} : { nextAttemptAt: result.retryAt }),
-              };
+              }) as CoordinatorTrackRecord;
           const tracks = clone(current.tracks) as Partial<
-            Record<FixedPriceX402Track, FixedPriceX402TrackRecord>
+            Record<FixedPriceX402Track, CoordinatorTrackRecord>
           >;
           tracks[input.track] = nextTrack;
           const next = saveRecord(current, {
             ...clone(current),
             tracks,
             updatedAt,
-          });
+          } as CoordinatorRecord);
           return next
             ? { status: "recorded" as const, record: toLive(next) }
             : { status: "stale" as const };
@@ -2058,6 +2643,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           if (loaded.status !== "ok") return loaded;
           const current = loaded.record;
           if (current.bindingHash !== input.bindingHash ||
+              current.localBindingHash !== input.localBindingHash ||
               !coordinatorTracks(role).includes(input.track) ||
               !reasonCode(input.operatorReasonCode) ||
               (input.retryAt !== undefined && !safeUint(input.retryAt))) {
@@ -2071,7 +2657,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           }
           const updatedAt = Math.max(current.updatedAt, now);
           const tracks = clone(current.tracks) as Partial<
-            Record<FixedPriceX402Track, FixedPriceX402TrackRecord>
+            Record<FixedPriceX402Track, CoordinatorTrackRecord>
           >;
           tracks[input.track] = {
             state: "pending-retry",
@@ -2085,7 +2671,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
             ...clone(current),
             tracks,
             updatedAt,
-          });
+          } as CoordinatorRecord);
           return next
             ? { status: "recorded" as const, record: toLive(next) }
             : { status: "stale" as const };
@@ -2938,6 +3524,8 @@ type SchemaFingerprint = Readonly<{
   indexes: Readonly<Record<string, unknown>>;
 }>;
 
+type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4;
+
 const expectedSchemaFingerprints = new Map<number, SchemaFingerprint>();
 
 function schemaObjects(
@@ -2998,14 +3586,18 @@ function schemaDetails(
   return { tables, indexes };
 }
 
-function expectedSchemaFingerprint(version: 1 | 2 | 3): SchemaFingerprint {
+function expectedSchemaFingerprint(version: DacsNodeSqliteSchemaVersion): SchemaFingerprint {
   const retained = expectedSchemaFingerprints.get(version);
   if (retained) return retained;
   const reference = new BetterSqlite3(":memory:");
   try {
     reference.exec(MIGRATION_1);
     if (version >= 2) reference.exec(MIGRATION_2);
-    if (version === 3) reference.exec(MIGRATION_3);
+    if (version >= 3) reference.exec(MIGRATION_3);
+    if (version >= 4) {
+      reference.exec(MIGRATION_4_PREPARE);
+      reference.exec(MIGRATION_4_FINALIZE);
+    }
     const objects = schemaObjects(reference, 64);
     const fingerprint = Object.freeze({
       objects,
@@ -3020,7 +3612,7 @@ function expectedSchemaFingerprint(version: 1 | 2 | 3): SchemaFingerprint {
 
 function verifySchema(
   database: BetterSqlite3.Database,
-  version: 1 | 2 | 3,
+  version: DacsNodeSqliteSchemaVersion,
 ): void {
   try {
     const expected = expectedSchemaFingerprint(version);
@@ -3042,7 +3634,7 @@ function verifySchema(
   }
 }
 
-function readDatabaseVersion(database: BetterSqlite3.Database): 0 | 1 | 2 | 3 {
+function readDatabaseVersion(database: BetterSqlite3.Database): 0 | DacsNodeSqliteSchemaVersion {
   const applicationId = Number(database.pragma("application_id", { simple: true }));
   const version = Number(database.pragma("user_version", { simple: true }));
   if (!safeUint(version) || version > DACS_NODE_SQLITE_SCHEMA_VERSION) {
@@ -3067,13 +3659,13 @@ function readDatabaseVersion(database: BetterSqlite3.Database): 0 | 1 | 2 | 3 {
       "Versioned SQLite file does not have the DACS application ID",
     );
   }
-  return version as 1 | 2 | 3;
+  return version as DacsNodeSqliteSchemaVersion;
 }
 
 function verifyMetadata(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2 | 3,
+  version: DacsNodeSqliteSchemaVersion,
 ): void {
   let rows: MetadataRow[];
   try {
@@ -3123,7 +3715,7 @@ function verifyMetadata(
 
 function verifyMigrationHistory(
   database: BetterSqlite3.Database,
-  version: 1 | 2 | 3,
+  version: DacsNodeSqliteSchemaVersion,
 ): void {
   let rows: MigrationRow[];
   try {
@@ -3131,7 +3723,7 @@ function verifyMigrationHistory(
       SELECT version, applied_at
       FROM dacs_migrations
       ORDER BY version
-      LIMIT 4
+      LIMIT 5
     `).all() as MigrationRow[];
   } catch {
     throw new DacsNodeSqliteError(
@@ -3397,7 +3989,7 @@ function verifyEffectHistory(
 function verifyLogicalRows(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2 | 3,
+  version: DacsNodeSqliteSchemaVersion,
 ): void {
   try {
     for (const row of database.prepare("SELECT * FROM dacs_reservations").iterate()) {
@@ -3426,7 +4018,7 @@ function verifyLogicalRows(
         : "live-x402";
       for (const row of database.prepare(
         "SELECT * FROM dacs_coordinator_orders ORDER BY profile, role, job_id",
-      ).iterate() as IterableIterator<CoordinatorRow>) {
+      ).iterate() as IterableIterator<CoordinatorRow | LegacyCoordinatorRow>) {
         if (row.profile !== expectedProfile || row.role !== options.role ||
             (row.role !== "buyer" && row.role !== "seller")) {
           throw new DacsNodeSqliteError(
@@ -3434,14 +4026,35 @@ function verifyLogicalRows(
             "SQLite coordinator row is outside the bound actor profile",
           );
         }
-        const decoded = coordinatorFromRow(row, expectedProfile);
-        if (decoded.status !== "ok" ||
-            !coordinatorAuthorityMatches(decoded.record, options.authority) ||
-            (version >= 3 && !coordinatorTrackProjectionMatches(
+        let authenticatedRecord: Readonly<CoordinatorRecord> | undefined;
+        let projectionMatches = false;
+        if (version >= 4) {
+          const decoded = coordinatorFromRow(row as CoordinatorRow, expectedProfile);
+          if (decoded.status === "ok") {
+            authenticatedRecord = decoded.record;
+            projectionMatches = coordinatorTrackProjectionMatches(
               database,
               expectedProfile,
               decoded.record,
-            ))) {
+            );
+          }
+        } else {
+          const decoded = legacyCoordinatorFromRow(
+            row as LegacyCoordinatorRow,
+            expectedProfile,
+          );
+          if (decoded.status === "ok") {
+            authenticatedRecord = decoded.record;
+            projectionMatches = version < 3 || legacyCoordinatorTrackProjectionMatches(
+              database,
+              expectedProfile,
+              decoded.legacyRecord,
+            );
+          }
+        }
+        if (!authenticatedRecord ||
+            !coordinatorAuthorityMatches(authenticatedRecord, options.authority) ||
+            !projectionMatches) {
           throw new DacsNodeSqliteError(
             "database-logical-corruption",
             "SQLite coordinator record or track projection is corrupt",
@@ -3477,7 +4090,7 @@ function verifyLogicalRows(
 function verifyVersionedDatabase(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2 | 3,
+  version: DacsNodeSqliteSchemaVersion,
 ): void {
   readSnapshot(database, () => {
     if (readDatabaseVersion(database) !== version) {
@@ -3522,7 +4135,7 @@ function configureAdmissionConnection(
 function validateExistingReadOnly(
   databasePath: string,
   options: ReturnType<typeof validateOptions>,
-): 0 | 1 | 2 | 3 {
+): 0 | DacsNodeSqliteSchemaVersion {
   let database: BetterSqlite3.Database | undefined;
   try {
     database = new BetterSqlite3(databasePath, {
@@ -3560,7 +4173,9 @@ function initializeEmptyDatabase(
     database.exec(MIGRATION_1);
     database.exec(MIGRATION_2);
     database.exec(MIGRATION_3);
-    backfillCoordinatorTrackProjections(database, options);
+    database.exec(MIGRATION_4_PREPARE);
+    migrateCoordinatorV4Rows(database, options);
+    database.exec(MIGRATION_4_FINALIZE);
     database.prepare(`
       INSERT INTO dacs_store_metadata (
         singleton, schema_version, mode, profile, role, authority,
@@ -3578,11 +4193,11 @@ function initializeEmptyDatabase(
     );
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (1, ?), (2, ?), (3, ?)
-    `).run(now, now, now);
+      VALUES (1, ?), (2, ?), (3, ?), (4, ?)
+    `).run(now, now, now, now);
     database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 3);
+    verifyVersionedDatabase(database, options, 4);
   });
 }
 
@@ -3595,7 +4210,7 @@ function removeGeneratedBackup(backupPath: string): void {
 async function createValidatedBackup(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2,
+  version: 1 | 2 | 3,
 ): Promise<Readonly<{ backupPath: string; sourceDataVersion: number }>> {
   const backupPath = `${options.databasePath}.backup-v${version}-${randomUUID()}.sqlite`;
   try {
@@ -3651,15 +4266,18 @@ function migrateV1Database(
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_2);
     database.exec(MIGRATION_3);
-    backfillCoordinatorTrackProjections(database, options);
+    database.exec(MIGRATION_4_PREPARE);
+    migrateCoordinatorV4Rows(database, options);
+    database.exec(MIGRATION_4_FINALIZE);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (2, ?), (3, ?)
-    `).run(now, now);
+      INSERT INTO dacs_migrations (version, applied_at)
+      VALUES (2, ?), (3, ?), (4, ?)
+    `).run(now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 3);
+    verifyVersionedDatabase(database, options, 4);
   });
 }
 
@@ -3681,15 +4299,48 @@ function migrateV2Database(
     `).get() as { applied_at: number };
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_3);
-    backfillCoordinatorTrackProjections(database, options);
+    database.exec(MIGRATION_4_PREPARE);
+    migrateCoordinatorV4Rows(database, options);
+    database.exec(MIGRATION_4_FINALIZE);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (3, ?)
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (3, ?), (4, ?)
+    `).run(now, now);
+    database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    verifyVersionedDatabase(database, options, 4);
+  });
+}
+
+function migrateV3Database(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  sourceDataVersion: number,
+): void {
+  beginImmediate(database, () => {
+    if (Number(database.pragma("data_version", { simple: true })) !== sourceDataVersion) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite v3 data changed while its migration backup was created",
+      );
+    }
+    verifyVersionedDatabase(database, options, 3);
+    const previous = database.prepare(`
+      SELECT applied_at FROM dacs_migrations WHERE version = 3
+    `).get() as { applied_at: number };
+    const now = Math.max(databaseTime(database), previous.applied_at);
+    database.exec(MIGRATION_4_PREPARE);
+    migrateCoordinatorV4Rows(database, options);
+    database.exec(MIGRATION_4_FINALIZE);
+    database.prepare(`
+      UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
+    `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    database.prepare(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (4, ?)
     `).run(now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 3);
+    verifyVersionedDatabase(database, options, 4);
   });
 }
 
@@ -3758,8 +4409,20 @@ export async function openDacsNodeSqliteDatabase(
         }
         throw error;
       }
+    } else if (admittedVersion === 3) {
+      verifyVersionedDatabase(database, options, 3);
+      const backup = await createValidatedBackup(database, options, 3);
+      try {
+        migrateV3Database(database, options, backup.sourceDataVersion);
+      } catch (error) {
+        if (error instanceof DacsNodeSqliteError &&
+            error.reasonCode === "database-version-raced") {
+          removeGeneratedBackup(backup.backupPath);
+        }
+        throw error;
+      }
     } else {
-      beginImmediate(database, () => verifyVersionedDatabase(database, options, 3));
+      beginImmediate(database, () => verifyVersionedDatabase(database, options, 4));
     }
     chmodSync(location.databasePath, 0o600);
     const journalMode = database.pragma("journal_mode = WAL", { simple: true });
@@ -3770,7 +4433,7 @@ export async function openDacsNodeSqliteDatabase(
         "SQLite WAL journal mode is unavailable",
       );
     }
-    verifyVersionedDatabase(database, options, 3);
+    verifyVersionedDatabase(database, options, 4);
     return new DacsNodeSqliteDatabaseImpl(database, options, location);
   } catch (error) {
     database.close();
