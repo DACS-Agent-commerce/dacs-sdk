@@ -380,6 +380,11 @@ function outboxStored(
       (value.lease !== undefined && (!nonEmpty(value.lease.owner) ||
         value.lease.generation !== value.generation || !safeUint(value.lease.expiresAt))) ||
       ((value.state === "acknowledged") !== (value.acknowledgement !== undefined)) ||
+      ((value.acknowledgement !== undefined) !==
+        (value.acknowledgementRetentionMs !== undefined)) ||
+      (value.acknowledgementRetentionMs !== undefined &&
+        (!safeUint(value.acknowledgementRetentionMs) ||
+          value.acknowledgementRetentionMs < DACS_HTTP_MINIMUM_RETENTION_MS)) ||
       (value.reasonCode !== undefined && !reasonCode(value.reasonCode))) {
     throw context.error("http-outbox-record-corrupt", "HTTP outbox record is invalid");
   }
@@ -389,7 +394,7 @@ function outboxStored(
     const binding = verifyDacsHttpAcknowledgementBindingV1(acknowledgement, value.envelope);
     const requiredRetainUntil = retentionDeadline(
       acknowledgement.receivedAt,
-      DACS_HTTP_MINIMUM_RETENTION_MS,
+      value.acknowledgementRetentionMs!,
     );
     if (binding.status !== "valid" ||
         !sameDemosAgentIdentity(acknowledgement.envelope.audience, context.authority) ||
@@ -544,7 +549,7 @@ function verifyOutboxTransitions(
     if (!exactKeys(unknownRecord, [
       "envelope", "envelopeHash", "state", "generation", "attempts",
       "nextAttemptAt", "retainUntil", "revision", "createdAt", "updatedAt",
-    ], ["lease", "acknowledgement", "reasonCode"])) {
+    ], ["lease", "acknowledgement", "acknowledgementRetentionMs", "reasonCode"])) {
       throw context.error("http-store-history-corrupt", "HTTP outbox history record is malformed");
     }
     const record = unknownRecord as unknown as StoredOutbox;
@@ -554,7 +559,12 @@ function verifyOutboxTransitions(
         !safeUint(record.createdAt) || !safeUint(record.updatedAt) ||
         !["pending", "sending", "acknowledged", "operator-action"].includes(record.state) ||
         ((record.state === "sending") !== (record.lease !== undefined)) ||
-        ((record.state === "acknowledged") !== (record.acknowledgement !== undefined))) {
+        ((record.state === "acknowledged") !== (record.acknowledgement !== undefined)) ||
+        ((record.acknowledgement !== undefined) !==
+          (record.acknowledgementRetentionMs !== undefined)) ||
+        (record.acknowledgementRetentionMs !== undefined &&
+          (!safeUint(record.acknowledgementRetentionMs) ||
+            record.acknowledgementRetentionMs < DACS_HTTP_MINIMUM_RETENTION_MS))) {
       throw context.error("http-store-history-corrupt", "HTTP outbox history state is invalid");
     }
     if (record.acknowledgement !== undefined) {
@@ -563,7 +573,7 @@ function verifyOutboxTransitions(
         const binding = verifyDacsHttpAcknowledgementBindingV1(acknowledgement, record.envelope);
         const requiredRetainUntil = retentionDeadline(
           acknowledgement.receivedAt,
-          DACS_HTTP_MINIMUM_RETENTION_MS,
+          record.acknowledgementRetentionMs!,
         );
         if (binding.status !== "valid" ||
             !sameDemosAgentIdentity(acknowledgement.envelope.audience, context.authority) ||
@@ -591,16 +601,23 @@ function verifyOutboxTransitions(
           record.retainUntil < previous.retainUntil ||
           record.generation < previous.generation ||
           (previous.acknowledgement !== undefined &&
-            canonicalize(record.acknowledgement) !== canonicalize(previous.acknowledgement))) {
+            canonicalize(record.acknowledgement) !== canonicalize(previous.acknowledgement)) ||
+          (previous.acknowledgementRetentionMs !== undefined &&
+            (record.acknowledgementRetentionMs === undefined ||
+              record.acknowledgementRetentionMs < previous.acknowledgementRetentionMs))) {
         throw context.error("http-store-history-corrupt", "HTTP outbox immutable history changed");
       }
-      const retentionOnly = canonicalize(withoutKeys(
+      const retentionStateUnchanged = canonicalize(withoutKeys(
         record as unknown as Readonly<Record<string, unknown>>,
-        ["retainUntil", "revision", "updatedAt"],
+        ["retainUntil", "acknowledgementRetentionMs", "revision", "updatedAt"],
       )) === canonicalize(withoutKeys(
         previous as unknown as Readonly<Record<string, unknown>>,
-        ["retainUntil", "revision", "updatedAt"],
-      )) && record.retainUntil > previous.retainUntil;
+        ["retainUntil", "acknowledgementRetentionMs", "revision", "updatedAt"],
+      ));
+      const retentionOnly = retentionStateUnchanged &&
+        (record.retainUntil > previous.retainUntil ||
+          (record.acknowledgementRetentionMs ?? 0) >
+            (previous.acknowledgementRetentionMs ?? 0));
       const claimed = (previous.state === "pending" || previous.state === "sending") &&
         record.state === "sending" && record.generation === previous.generation + 1 &&
         record.attempts === previous.attempts + 1;
@@ -1460,16 +1477,6 @@ export function createDacsHttpOutboxSqliteStore(
           return { status: "conflict" };
         }
         if (acknowledgement.receivedAt > now) return { status: "conflict" };
-        const requiredRetainUntil = retentionDeadline(
-          acknowledgement.receivedAt,
-          options.retentionMs,
-        );
-        if (requiredRetainUntil === undefined) {
-          throw context.error(
-            "http-retention-overflow",
-            "HTTP acknowledgement retention deadline overflows",
-          );
-        }
         const binding = verifyDacsHttpAcknowledgementBindingV1(
           acknowledgement,
           loaded.stored.envelope,
@@ -1489,12 +1496,28 @@ export function createDacsHttpOutboxSqliteStore(
               retainedBinding.disposition !== binding.disposition) {
             return { status: "conflict" };
           }
-          if (loaded.stored.retainUntil >= requiredRetainUntil) {
+          const acknowledgementRetentionMs = Math.max(
+            loaded.stored.acknowledgementRetentionMs!,
+            options.retentionMs,
+          );
+          const requiredRetainUntil = retentionDeadline(
+            Math.max(retained.receivedAt, acknowledgement.receivedAt),
+            acknowledgementRetentionMs,
+          );
+          if (requiredRetainUntil === undefined) {
+            throw context.error(
+              "http-retention-overflow",
+              "HTTP acknowledgement retention deadline overflows",
+            );
+          }
+          if (loaded.stored.retainUntil >= requiredRetainUntil &&
+              loaded.stored.acknowledgementRetentionMs === acknowledgementRetentionMs) {
             return { status: "existing", record: loaded.record };
           }
           const stored: StoredOutbox = {
             ...snapshot(loaded.stored),
-            retainUntil: requiredRetainUntil,
+            acknowledgementRetentionMs,
+            retainUntil: Math.max(loaded.stored.retainUntil, requiredRetainUntil),
             revision: loaded.stored.revision + 1,
             updatedAt: Math.max(now, loaded.stored.updatedAt),
           };
@@ -1503,10 +1526,21 @@ export function createDacsHttpOutboxSqliteStore(
             ? { status: "recorded", record: publicOutbox(row, stored) }
             : { status: "conflict" };
         }
+        const requiredRetainUntil = retentionDeadline(
+          acknowledgement.receivedAt,
+          options.retentionMs,
+        );
+        if (requiredRetainUntil === undefined) {
+          throw context.error(
+            "http-retention-overflow",
+            "HTTP acknowledgement retention deadline overflows",
+          );
+        }
         const stored: StoredOutbox = {
           ...snapshot(loaded.stored),
           state: "acknowledged",
           acknowledgement,
+          acknowledgementRetentionMs: options.retentionMs,
           retainUntil: Math.max(loaded.stored.retainUntil, requiredRetainUntil),
           revision: loaded.stored.revision + 1,
           updatedAt: Math.max(now, loaded.stored.updatedAt),

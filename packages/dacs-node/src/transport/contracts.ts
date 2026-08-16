@@ -104,6 +104,12 @@ export interface DacsHttpOutboxItemV1 {
   retainUntil: number;
   lease?: Readonly<DacsHttpOutboxLeaseV1>;
   acknowledgement?: Readonly<DacsHttpAuthenticatedEnvelopeV1>;
+  /**
+   * Section 12.4 retention period applied when the acknowledgement was
+   * admitted. It is persisted with the canonical record and can only increase,
+   * so reopening a store with a shorter option cannot weaken prior evidence.
+   */
+  acknowledgementRetentionMs?: number;
   reasonCode?: string;
   revision: number;
   createdAt: number;
