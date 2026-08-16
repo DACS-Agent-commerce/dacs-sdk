@@ -77,6 +77,7 @@ async function authenticate(
   value: Readonly<DacsHttpEnvelopeV1>,
   audience: string,
   receivedAt: number,
+  evidenceHash = IDENTITY_EVIDENCE_HASH,
 ): Promise<Readonly<DacsHttpAuthenticatedEnvelopeV1>> {
   const senderIsBuyer = value.sender === BUYER || value.sender.startsWith(`${BUYER}?`);
   const result = await authenticateDacsHttpEnvelopeV1(value, {
@@ -88,7 +89,7 @@ async function authenticate(
       jobId: value.jobId,
       role: senderIsBuyer ? "buyer" : "seller",
       publicKey: senderIsBuyer ? BUYER_PUBLIC : SELLER_PUBLIC,
-      evidenceHash: IDENTITY_EVIDENCE_HASH,
+      evidenceHash,
     }),
     validatePayload: async () => ({ status: "valid" }),
   });
@@ -154,11 +155,22 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       status: "pending",
       record: { state: "pending", revision: 1 },
     });
-    const refreshedAuthentication = await authenticate(signed, SELLER, now + 1);
+    const refreshedAuthentication = await authenticate(
+      signed,
+      SELLER,
+      now,
+      "b".repeat(64),
+    );
     expect(await store.reserve({
       authenticated: refreshedAuthentication,
       retainUntil,
-    })).toMatchObject({ status: "pending" });
+    })).toMatchObject({
+      status: "pending",
+      record: {
+        revision: 1,
+        authenticated: { identityEvidenceHash: IDENTITY_EVIDENCE_HASH },
+      },
+    });
 
     database.checkpoint();
     close(database);
@@ -166,6 +178,10 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     store = database.createHttpInboxStore();
     expect(await store.reserve({ authenticated, retainUntil })).toMatchObject({
       status: "pending",
+      record: {
+        revision: 1,
+        authenticated: { identityEvidenceHash: IDENTITY_EVIDENCE_HASH },
+      },
     });
     expect(await store.recordDisposition({
       sender: BUYER,
@@ -242,7 +258,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     });
   });
 
-  it("fails closed for replay conflicts, invalid disposition facts and short retention", async () => {
+  it("fails closed for invalid authentication, disposition facts and short retention", async () => {
     const database = await open(join(root(), "seller.sqlite"));
     const store = database.createHttpInboxStore();
     const now = await store.readTime();
@@ -258,10 +274,10 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS - 1,
     })).rejects.toMatchObject({ reasonCode: "http-retention-too-short" });
     await store.reserve({ authenticated, retainUntil });
-    expect(await store.reserve({
-      authenticated: { ...authenticated, identityEvidenceHash: "b".repeat(64) },
+    await expect(store.reserve({
+      authenticated: { ...authenticated, authenticationHash: "b".repeat(64) },
       retainUntil,
-    })).toEqual({ status: "conflict" });
+    })).rejects.toMatchObject({ reasonCode: "http-authentication-record-invalid" });
     expect(await store.recordDisposition({
       sender: BUYER,
       audience: SELLER,
@@ -416,6 +432,147 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       acknowledgement: otherAck,
     })).toEqual({ status: "conflict" });
     expect((await store.load(signed.envelopeId))?.state).toBe("acknowledged");
+  });
+
+  it("rejects an acknowledgement receipt time beyond database-authoritative transport time", async () => {
+    const databasePath = join(root(), "buyer.sqlite");
+    let database = await open(databasePath, BUYER, "buyer");
+    let store = database.createHttpOutboxStore();
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 15, now);
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const acknowledgementEnvelope = await createDacsHttpAcknowledgementEnvelopeV1(
+      signed,
+      {
+        disposition: "accepted",
+        issuedAt: now,
+        expiresAt: now + 300_000,
+        nonce: nonce(46),
+      },
+      (bytes) => ed25519Sign(bytes, SELLER_KEY),
+    );
+    const futureAuthentication = await authenticate(
+      acknowledgementEnvelope,
+      BUYER,
+      now + 120_000,
+    );
+    const before = await store.load(signed.envelopeId);
+
+    expect(await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement: futureAuthentication,
+    })).toEqual({ status: "conflict" });
+    expect(await store.load(signed.envelopeId)).toEqual(before);
+
+    database.checkpoint();
+    close(database);
+    database = await open(databasePath, BUYER, "buyer");
+    store = database.createHttpOutboxStore();
+    expect(await store.load(signed.envelopeId)).toEqual(before);
+  });
+
+  it("extends acknowledgement retention from receipt time and preserves it across restart", async () => {
+    const databasePath = join(root(), "buyer.sqlite");
+    const configuredRetentionMs = DACS_HTTP_MINIMUM_RETENTION_MS + 60_000;
+    let database = await open(databasePath, BUYER, "buyer");
+    let store = database.createHttpOutboxStore({ retentionMs: configuredRetentionMs });
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 16, now);
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + configuredRetentionMs + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const receivedAt = now + 120_000;
+    const acknowledgementEnvelope = await createDacsHttpAcknowledgementEnvelopeV1(
+      signed,
+      {
+        disposition: "accepted",
+        issuedAt: receivedAt - 1_000,
+        expiresAt: receivedAt + 299_000,
+        nonce: nonce(47),
+      },
+      (bytes) => ed25519Sign(bytes, SELLER_KEY),
+    );
+    const acknowledgement = await authenticate(acknowledgementEnvelope, BUYER, receivedAt);
+    advanceStoreClock(databasePath, receivedAt);
+    const retainUntil = receivedAt + configuredRetentionMs;
+
+    expect(await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement,
+    })).toMatchObject({
+      status: "recorded",
+      record: {
+        state: "acknowledged",
+        retainUntil,
+        revision: 2,
+        acknowledgement: { receivedAt },
+      },
+    });
+
+    database.checkpoint();
+    close(database);
+    database = await open(databasePath, BUYER, "buyer");
+    store = database.createHttpOutboxStore({ retentionMs: configuredRetentionMs });
+    expect(await store.load(signed.envelopeId)).toMatchObject({
+      state: "acknowledged",
+      retainUntil,
+      revision: 2,
+      acknowledgement: { receivedAt },
+    });
+    expect(await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement,
+    })).toMatchObject({
+      status: "existing",
+      record: { retainUntil, revision: 2 },
+    });
+  });
+
+  it("fails closed when acknowledgement retention would overflow", async () => {
+    const databasePath = join(root(), "buyer.sqlite");
+    const database = await open(databasePath, BUYER, "buyer");
+    const store = database.createHttpOutboxStore();
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 17, now);
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const receivedAt = Number.MAX_SAFE_INTEGER - 100_000;
+    const acknowledgementEnvelope = await createDacsHttpAcknowledgementEnvelopeV1(
+      signed,
+      {
+        disposition: "accepted",
+        issuedAt: receivedAt - 1_000,
+        expiresAt: Number.MAX_SAFE_INTEGER - 1,
+        nonce: nonce(48),
+      },
+      (bytes) => ed25519Sign(bytes, SELLER_KEY),
+    );
+    const acknowledgement = await authenticate(acknowledgementEnvelope, BUYER, receivedAt);
+    advanceStoreClock(databasePath, receivedAt);
+
+    await expect(store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement,
+    })).rejects.toMatchObject({ reasonCode: "http-retention-overflow" });
+    const retained = await store.load(signed.envelopeId);
+    expect(retained).toMatchObject({
+      state: "pending",
+      revision: 1,
+    });
+    expect(retained?.acknowledgement).toBeUndefined();
   });
 
   it("uses monotonic exponential backoff, caps it at 60 seconds and stops at expiry", async () => {

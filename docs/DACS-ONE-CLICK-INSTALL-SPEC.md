@@ -720,7 +720,11 @@ Before invoking an action-bearing handler, the receiver MUST atomically reserve
 `(sender, audience, envelopeId)` with `nonce`, `payloadHash`, authentication
 hash and disposition. An exact replay returns the retained disposition and
 creates no new action. The same identity with different nonce, payload hash or
-envelope facts is a permanent conflict.
+envelope facts is a permanent conflict. Re-resolving an otherwise exact replay
+MAY produce a different current identity-evidence hash; that is not an envelope
+conflict when the resolution is valid and role-compatible. The receiver MUST
+preserve the identity evidence from the original reservation rather than
+silently replacing its audit basis during replay.
 
 Inbox replay reservations MUST be retained until at least seven days after the
 session becomes terminal and never for less than seven days after receipt.
@@ -757,7 +761,10 @@ The receiver MUST durably reserve and process the inbound message before
 creating the acknowledgement. The sender MUST durably authenticate and record
 the acknowledgement before marking its outbox item acknowledged. An HTTP 2xx
 without a valid signed acknowledgement is transport-ambiguous and MUST NOT
-clear the outbox.
+clear the outbox. Store time governs acknowledgement admission as it does other
+inbound envelopes, and the retained outbox record MUST extend through at least
+the acknowledgement receipt time plus the configured section 12.4 retention
+period.
 
 Retries MUST resend the exact signed envelope and envelope ID with exponential
 backoff starting at one second, capped at 60 seconds, with jitter. A retry MUST
