@@ -438,7 +438,15 @@ async function readBoundedJson(
   if (contentLength !== null) {
     if (!INTEGER_RE.test(contentLength) ||
         BigInt(contentLength) > BigInt(maxResponseBytes)) {
-      throw new Error("Demos RPC response exceeds maxResponseBytes");
+      const error = new Error("Demos RPC response exceeds maxResponseBytes");
+      // A response can already be available even when an injected fetch does
+      // not associate its body with the request AbortSignal. Cancel it here,
+      // before a reader is acquired, so a rejected declaration cannot leave
+      // an unbounded producer running in the background.
+      if (response.body !== null) {
+        void response.body.cancel(error).catch(() => undefined);
+      }
+      throw error;
     }
   }
   if (response.body === null) {
@@ -465,6 +473,13 @@ async function readBoundedJson(
     }
     decoded += decoder.decode();
     return JSON.parse(decoded) as unknown;
+  } catch (cause) {
+    // Do not rely on nodeCall's later controller.abort(): this reader removes
+    // its abort listener and releases its lock in finally. Cancel while the
+    // reader still owns the stream so size, UTF-8, and JSON failures cannot
+    // leak a late body producer.
+    void reader.cancel(cause).catch(() => undefined);
+    throw cause;
   } finally {
     signal.removeEventListener("abort", cancelReader);
     reader.releaseLock();

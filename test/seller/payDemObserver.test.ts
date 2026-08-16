@@ -461,16 +461,20 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
   });
 
   it("rejects an oversized declared response before decoding it", async () => {
-    const fetchImpl = vi.fn(async () => new Response(
-      JSON.stringify({ result: 200, response: { state: "pending" } }),
-      {
-        status: 200,
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": "1000",
-        },
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<never>(() => undefined),
+      cancel() {
+        cancelled = true;
       },
-    ));
+    });
+    const fetchImpl = vi.fn(async () => new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": "1000",
+      },
+    }));
     const observer = createPayDemSellerObserver({
       rpc: "https://node.example",
       maxResponseBytes: 100,
@@ -482,6 +486,7 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
       reason: "transaction status read failed",
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(cancelled).toBe(true);
   });
 
   it("bounds streamed decoded bytes when content-length is absent", async () => {
@@ -489,11 +494,14 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
       result: 200,
       response: { state: "pending", padding: "x".repeat(200) },
     }));
+    let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(oversized.subarray(0, 50));
         controller.enqueue(oversized.subarray(50));
-        controller.close();
+      },
+      cancel() {
+        cancelled = true;
       },
     });
     const fetchImpl = vi.fn(async () => new Response(body, {
@@ -511,6 +519,7 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
       reason: "transaction status read failed",
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(cancelled).toBe(true);
   });
 
   it("rejects an invalid response-byte limit before making any request", () => {
