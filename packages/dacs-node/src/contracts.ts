@@ -20,6 +20,11 @@ import type {
   DacsHttpAuthenticatedEnvelopeV1,
   DacsHttpEnvelopeV1,
 } from "./transport/envelope.js";
+import type {
+  DacsHttpInboxStoreV1,
+  DacsHttpOutboxStoreV1,
+  DacsHttpTransportStoreOptionsV1,
+} from "./transport/contracts.js";
 
 /** Stable boundary implemented by the later SQLite adapter package unit. */
 export interface DacsNodeStoreFactory {
@@ -30,6 +35,12 @@ export interface DacsNodeStoreFactory {
     role: FixedPriceX402CoordinatorRole,
   ): Promise<FixedPriceX402CoordinatorStore>;
   createPaymentEvidenceHandshakeStore(): Promise<PaymentEvidenceHandshakeStore>;
+  createHttpInboxStore(
+    options?: Readonly<DacsHttpTransportStoreOptionsV1>,
+  ): Promise<DacsHttpInboxStoreV1>;
+  createHttpOutboxStore(
+    options?: Readonly<DacsHttpTransportStoreOptionsV1>,
+  ): Promise<DacsHttpOutboxStoreV1>;
   migrate(): Promise<void>;
   close(): Promise<void>;
 }

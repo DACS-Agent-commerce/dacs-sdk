@@ -694,6 +694,9 @@ canonical Demos primary `ClaimRef`, and the receiver MUST obtain its exact
 Ed25519 public key through the public SDK Demos identity resolver. The resolver
 MUST verify the relevant DACS identity material, expiry and revocation state and
 establish that `sender` holds the envelope's buyer or seller role for `jobId`.
+Canonical CF-2 parameters, when present, remain in the signed and forwarded
+`sender`, `audience` and `keyId` bytes. Principal ownership, local-audience and
+same-party checks use the parameter-free CF-3 identity.
 
 An unresolved, expired, revoked, ambiguous or role-incompatible key is an
 authentication failure. A locally configured public key, alternate key ID or

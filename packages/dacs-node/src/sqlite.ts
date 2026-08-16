@@ -67,8 +67,19 @@ import {
   DACS_NODE_LIVE_PROFILE,
   DACS_NODE_OFFLINE_PROFILE,
 } from "./config.js";
+import type {
+  DacsHttpInboxStoreV1,
+  DacsHttpOutboxStoreV1,
+  DacsHttpTransportStoreOptionsV1,
+} from "./transport/contracts.js";
+import {
+  createDacsHttpInboxSqliteStore,
+  createDacsHttpOutboxSqliteStore,
+  verifyDacsHttpSqliteRows,
+  type DacsHttpSqliteContext,
+} from "./sqliteTransport.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 5 as const;
+export const DACS_NODE_SQLITE_SCHEMA_VERSION = 6 as const;
 export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
@@ -288,6 +299,16 @@ export interface DacsNodeSqliteDatabase {
    * single buyer or seller authority. Verifier and offline databases reject it.
    */
   createPaymentEvidenceHandshakeStore(): PaymentEvidenceHandshakeStore;
+  /**
+   * Creates actor-local durable HTTP replay and delivery stores. Operational
+   * envelopes remain outside DACS signed artifacts.
+   */
+  createHttpInboxStore(
+    options?: Readonly<DacsHttpTransportStoreOptionsV1>,
+  ): DacsHttpInboxStoreV1;
+  createHttpOutboxStore(
+    options?: Readonly<DacsHttpTransportStoreOptionsV1>,
+  ): DacsHttpOutboxStoreV1;
   reserveIdentity(input: Readonly<{
     kind: DacsNodeSqliteReservationKind;
     identity: string;
@@ -1037,6 +1058,157 @@ CREATE INDEX dacs_payment_evidence_completion_outbox_idx
   );
 CREATE INDEX dacs_payment_evidence_history_record_idx
   ON dacs_payment_evidence_history (role, message_id, revision);
+`;
+
+/**
+ * DACS One-Click Install Specification §§12.4–12.6: authenticated HTTP replay
+ * reservations, exact-envelope outboxes, acknowledgement evidence and fenced
+ * retry history. These are operational host records, never DACS artifacts.
+ */
+const MIGRATION_6 = `
+CREATE TABLE dacs_http_clock (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  last_time INTEGER NOT NULL CHECK (last_time >= 0)
+) STRICT;
+
+INSERT INTO dacs_http_clock (singleton, last_time) VALUES (1, 0);
+
+CREATE TABLE dacs_http_inbox (
+  sender TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  envelope_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  authentication_hash TEXT NOT NULL,
+  identity_evidence_hash TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  disposition TEXT,
+  reason_code TEXT,
+  received_at INTEGER NOT NULL,
+  retain_until INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  record_hash TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (sender, audience, envelope_id),
+  CHECK (state IN ('pending', 'disposed')),
+  CHECK (length(authentication_hash) = 64 AND
+    authentication_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(identity_evidence_hash) = 64 AND
+    identity_evidence_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(envelope_id) = 64 AND envelope_id NOT GLOB '*[^0-9a-f]*'),
+  CHECK (disposition IS NULL OR disposition IN ('accepted', 'existing', 'rejected')),
+  CHECK ((state = 'disposed') = (disposition IS NOT NULL)),
+  CHECK ((disposition = 'rejected') = (reason_code IS NOT NULL)),
+  CHECK (revision > 0),
+  CHECK (received_at >= 0),
+  CHECK (retain_until >= received_at),
+  CHECK (updated_at >= received_at)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE dacs_http_inbox_history (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  sender TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  envelope_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  record_hash TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  previous_entry_hash TEXT,
+  entry_hash TEXT NOT NULL,
+  UNIQUE (sender, audience, envelope_id, revision),
+  FOREIGN KEY (sender, audience, envelope_id)
+    REFERENCES dacs_http_inbox (sender, audience, envelope_id)
+    ON DELETE RESTRICT,
+  CHECK (revision > 0),
+  CHECK (occurred_at >= 0),
+  CHECK (length(record_hash) = 64 AND record_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (previous_entry_hash IS NULL OR
+    (length(previous_entry_hash) = 64 AND
+      previous_entry_hash NOT GLOB '*[^0-9a-f]*')),
+  CHECK (length(entry_hash) = 64 AND entry_hash NOT GLOB '*[^0-9a-f]*')
+) STRICT;
+
+CREATE TABLE dacs_http_outbox (
+  envelope_id TEXT PRIMARY KEY,
+  envelope_hash TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  sender TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  state TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  attempts INTEGER NOT NULL,
+  owner TEXT,
+  lease_expires_at INTEGER,
+  next_attempt_at INTEGER NOT NULL,
+  acknowledgement_hash TEXT,
+  reason_code TEXT,
+  retain_until INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  record_hash TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (length(envelope_id) = 64 AND envelope_id NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(envelope_hash) = 64 AND envelope_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (state IN ('pending', 'sending', 'acknowledged', 'operator-action')),
+  CHECK (generation >= 0),
+  CHECK (attempts >= 0),
+  CHECK (attempts = generation),
+  CHECK ((state = 'sending') = (owner IS NOT NULL AND lease_expires_at IS NOT NULL)),
+  CHECK (lease_expires_at IS NULL OR lease_expires_at >= 0),
+  CHECK (next_attempt_at >= 0),
+  CHECK (acknowledgement_hash IS NULL OR
+    (length(acknowledgement_hash) = 64 AND
+      acknowledgement_hash NOT GLOB '*[^0-9a-f]*')),
+  CHECK ((state = 'acknowledged') = (acknowledgement_hash IS NOT NULL)),
+  CHECK (revision > 0),
+  CHECK (created_at >= 0),
+  CHECK (retain_until >= created_at),
+  CHECK (updated_at >= created_at)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE dacs_http_outbox_history (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  envelope_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  record_hash TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  previous_entry_hash TEXT,
+  entry_hash TEXT NOT NULL,
+  UNIQUE (envelope_id, revision),
+  FOREIGN KEY (envelope_id)
+    REFERENCES dacs_http_outbox (envelope_id)
+    ON DELETE RESTRICT,
+  CHECK (revision > 0),
+  CHECK (occurred_at >= 0),
+  CHECK (length(record_hash) = 64 AND record_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (previous_entry_hash IS NULL OR
+    (length(previous_entry_hash) = 64 AND
+      previous_entry_hash NOT GLOB '*[^0-9a-f]*')),
+  CHECK (length(entry_hash) = 64 AND entry_hash NOT GLOB '*[^0-9a-f]*')
+) STRICT;
+
+CREATE INDEX dacs_http_inbox_page_idx
+  ON dacs_http_inbox (state, envelope_id, sender, audience);
+CREATE INDEX dacs_http_inbox_job_idx
+  ON dacs_http_inbox (job_id, envelope_id, sender, audience);
+CREATE INDEX dacs_http_inbox_history_record_idx
+  ON dacs_http_inbox_history (sender, audience, envelope_id, revision);
+CREATE INDEX dacs_http_outbox_page_idx
+  ON dacs_http_outbox (state, envelope_id);
+CREATE INDEX dacs_http_outbox_runnable_idx
+  ON dacs_http_outbox (state, next_attempt_at, lease_expires_at, envelope_id);
+CREATE INDEX dacs_http_outbox_job_idx
+  ON dacs_http_outbox (job_id, envelope_id);
+CREATE INDEX dacs_http_outbox_history_record_idx
+  ON dacs_http_outbox_history (envelope_id, revision);
 `;
 
 function nonEmpty(value: unknown): value is string {
@@ -3910,6 +4082,48 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     );
   }
 
+  createHttpInboxStore(
+    options?: Readonly<DacsHttpTransportStoreOptionsV1>,
+  ): DacsHttpInboxStoreV1 {
+    this.assertOpen();
+    if (this.metadata.mode !== "live-demos" ||
+        (this.metadata.role !== "buyer" && this.metadata.role !== "seller")) {
+      throw new DacsNodeSqliteError(
+        "http-transport-profile-mismatch",
+        "An HTTP inbox store requires one live buyer or seller actor database",
+      );
+    }
+    return createDacsHttpInboxSqliteStore(
+      dacsHttpSqliteContext(
+        this.database,
+        this.metadata.authority,
+        this.metadata.role,
+      ),
+      options,
+    );
+  }
+
+  createHttpOutboxStore(
+    options?: Readonly<DacsHttpTransportStoreOptionsV1>,
+  ): DacsHttpOutboxStoreV1 {
+    this.assertOpen();
+    if (this.metadata.mode !== "live-demos" ||
+        (this.metadata.role !== "buyer" && this.metadata.role !== "seller")) {
+      throw new DacsNodeSqliteError(
+        "http-transport-profile-mismatch",
+        "An HTTP outbox store requires one live buyer or seller actor database",
+      );
+    }
+    return createDacsHttpOutboxSqliteStore(
+      dacsHttpSqliteContext(
+        this.database,
+        this.metadata.authority,
+        this.metadata.role,
+      ),
+      options,
+    );
+  }
+
   private createCoordinatorStore(
     profile: CoordinatorProfile,
     role: FixedPriceX402CoordinatorRole,
@@ -5244,7 +5458,7 @@ type SchemaFingerprint = Readonly<{
   indexes: Readonly<Record<string, unknown>>;
 }>;
 
-type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5;
+type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6;
 
 const expectedSchemaFingerprints = new Map<number, SchemaFingerprint>();
 
@@ -5319,6 +5533,7 @@ function expectedSchemaFingerprint(version: DacsNodeSqliteSchemaVersion): Schema
       reference.exec(MIGRATION_4_FINALIZE);
     }
     if (version >= 5) reference.exec(MIGRATION_5);
+    if (version >= 6) reference.exec(MIGRATION_6);
     const objects = schemaObjects(reference, 64);
     const fingerprint = Object.freeze({
       objects,
@@ -5707,6 +5922,22 @@ function verifyEffectHistory(
   }
 }
 
+function dacsHttpSqliteContext(
+  database: BetterSqlite3.Database,
+  authority: string,
+  role: DacsNodeSqliteActorRole,
+): DacsHttpSqliteContext {
+  return {
+    database,
+    authority,
+    role,
+    systemTime: () => databaseTime(database),
+    beginImmediate: <T>(operation: () => T) => beginImmediate(database, operation),
+    readSnapshot: <T>(operation: () => T) => readSnapshot(database, operation),
+    error: (reasonCode, message) => new DacsNodeSqliteError(reasonCode, message),
+  };
+}
+
 function verifyLogicalRows(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
@@ -5849,6 +6080,13 @@ function verifyLogicalRows(
         );
       }
     }
+    if (version >= 6) {
+      verifyDacsHttpSqliteRows(dacsHttpSqliteContext(
+        database,
+        options.authority,
+        options.role,
+      ));
+    }
   } catch (error) {
     if (error instanceof DacsNodeSqliteError) throw error;
     throw new DacsNodeSqliteError(
@@ -5948,6 +6186,7 @@ function initializeEmptyDatabase(
     migrateCoordinatorV4Rows(database, options);
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
+    database.exec(MIGRATION_6);
     database.prepare(`
       INSERT INTO dacs_store_metadata (
         singleton, schema_version, mode, profile, role, authority,
@@ -5965,11 +6204,11 @@ function initializeEmptyDatabase(
     );
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?)
-    `).run(now, now, now, now, now);
+      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?), (6, ?)
+    `).run(now, now, now, now, now, now);
     database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 5);
+    verifyVersionedDatabase(database, options, 6);
   });
 }
 
@@ -5982,7 +6221,7 @@ function removeGeneratedBackup(backupPath: string): void {
 async function createValidatedBackup(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2 | 3 | 4,
+  version: 1 | 2 | 3 | 4 | 5,
 ): Promise<Readonly<{ backupPath: string; sourceDataVersion: number }>> {
   const backupPath = `${options.databasePath}.backup-v${version}-${randomUUID()}.sqlite`;
   try {
@@ -6042,15 +6281,16 @@ function migrateV1Database(
     migrateCoordinatorV4Rows(database, options);
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
+    database.exec(MIGRATION_6);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (2, ?), (3, ?), (4, ?), (5, ?)
-    `).run(now, now, now, now);
+      VALUES (2, ?), (3, ?), (4, ?), (5, ?), (6, ?)
+    `).run(now, now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 5);
+    verifyVersionedDatabase(database, options, 6);
   });
 }
 
@@ -6076,14 +6316,16 @@ function migrateV2Database(
     migrateCoordinatorV4Rows(database, options);
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
+    database.exec(MIGRATION_6);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (3, ?), (4, ?), (5, ?)
-    `).run(now, now, now);
+      INSERT INTO dacs_migrations (version, applied_at)
+      VALUES (3, ?), (4, ?), (5, ?), (6, ?)
+    `).run(now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 5);
+    verifyVersionedDatabase(database, options, 6);
   });
 }
 
@@ -6108,14 +6350,15 @@ function migrateV3Database(
     migrateCoordinatorV4Rows(database, options);
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
+    database.exec(MIGRATION_6);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (4, ?), (5, ?)
-    `).run(now, now);
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (4, ?), (5, ?), (6, ?)
+    `).run(now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 5);
+    verifyVersionedDatabase(database, options, 6);
   });
 }
 
@@ -6137,14 +6380,44 @@ function migrateV4Database(
     `).get() as { applied_at: number };
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_5);
+    database.exec(MIGRATION_6);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (5, ?)
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (5, ?), (6, ?)
+    `).run(now, now);
+    database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    verifyVersionedDatabase(database, options, 6);
+  });
+}
+
+function migrateV5Database(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  sourceDataVersion: number,
+): void {
+  beginImmediate(database, () => {
+    if (Number(database.pragma("data_version", { simple: true })) !== sourceDataVersion) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite v5 data changed while its migration backup was created",
+      );
+    }
+    verifyVersionedDatabase(database, options, 5);
+    const previous = database.prepare(`
+      SELECT applied_at FROM dacs_migrations WHERE version = 5
+    `).get() as { applied_at: number };
+    const now = Math.max(databaseTime(database), previous.applied_at);
+    database.exec(MIGRATION_6);
+    database.prepare(`
+      UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
+    `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    database.prepare(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (6, ?)
     `).run(now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 5);
+    verifyVersionedDatabase(database, options, 6);
   });
 }
 
@@ -6237,8 +6510,20 @@ export async function openDacsNodeSqliteDatabase(
         }
         throw error;
       }
+    } else if (admittedVersion === 5) {
+      verifyVersionedDatabase(database, options, 5);
+      const backup = await createValidatedBackup(database, options, 5);
+      try {
+        migrateV5Database(database, options, backup.sourceDataVersion);
+      } catch (error) {
+        if (error instanceof DacsNodeSqliteError &&
+            error.reasonCode === "database-version-raced") {
+          removeGeneratedBackup(backup.backupPath);
+        }
+        throw error;
+      }
     } else {
-      beginImmediate(database, () => verifyVersionedDatabase(database, options, 5));
+      beginImmediate(database, () => verifyVersionedDatabase(database, options, 6));
     }
     chmodSync(location.databasePath, 0o600);
     const journalMode = database.pragma("journal_mode = WAL", { simple: true });
@@ -6249,7 +6534,7 @@ export async function openDacsNodeSqliteDatabase(
         "SQLite WAL journal mode is unavailable",
       );
     }
-    verifyVersionedDatabase(database, options, 5);
+    verifyVersionedDatabase(database, options, 6);
     return new DacsNodeSqliteDatabaseImpl(database, options, location);
   } catch (error) {
     database.close();

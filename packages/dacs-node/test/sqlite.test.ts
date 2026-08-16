@@ -204,6 +204,11 @@ describe("DACS Node SQLite durability foundation", () => {
     databases.splice(databases.indexOf(current), 1);
     const raw = new BetterSqlite3(databasePath);
     raw.exec(`
+      DROP TABLE dacs_http_inbox_history;
+      DROP TABLE dacs_http_outbox_history;
+      DROP TABLE dacs_http_inbox;
+      DROP TABLE dacs_http_outbox;
+      DROP TABLE dacs_http_clock;
       DROP TABLE dacs_payment_evidence_history;
       DROP TABLE dacs_payment_evidence_reservations;
       DROP TABLE dacs_payment_evidence_handshakes;
@@ -253,6 +258,7 @@ describe("DACS Node SQLite durability foundation", () => {
         ON dacs_effect_history (effect_kind, effect_id, sequence);
       DROP TABLE dacs_coordinator_tracks;
       DROP TABLE dacs_coordinator_orders;
+      DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
       DELETE FROM dacs_migrations WHERE version = 4;
       DELETE FROM dacs_migrations WHERE version = 3;
@@ -384,6 +390,11 @@ describe("DACS Node SQLite durability foundation", () => {
 
     const downgrade = raw.transaction(() => {
       raw.exec(`
+        DROP TABLE dacs_http_inbox_history;
+        DROP TABLE dacs_http_outbox_history;
+        DROP TABLE dacs_http_inbox;
+        DROP TABLE dacs_http_outbox;
+        DROP TABLE dacs_http_clock;
         DROP TABLE dacs_payment_evidence_history;
         DROP TABLE dacs_payment_evidence_reservations;
         DROP TABLE dacs_payment_evidence_handshakes;
@@ -500,6 +511,7 @@ describe("DACS Node SQLite durability foundation", () => {
             profile, role, track, eligible, state, next_attempt_at,
             lease_expires_at, job_id
           );
+        DELETE FROM dacs_migrations WHERE version = 6;
         DELETE FROM dacs_migrations WHERE version = 5;
         DELETE FROM dacs_migrations WHERE version = 4;
         UPDATE dacs_store_metadata SET schema_version = 3 WHERE singleton = 1;
@@ -1176,6 +1188,7 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(raw.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
       .toEqual([
         { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 },
+        { version: 6 },
       ]);
     raw.close();
   });
@@ -1335,9 +1348,15 @@ describe("DACS Node SQLite durability foundation", () => {
       retainedOrder.updated_at,
     );
     raw.exec(`
+      DROP TABLE dacs_http_inbox_history;
+      DROP TABLE dacs_http_outbox_history;
+      DROP TABLE dacs_http_inbox;
+      DROP TABLE dacs_http_outbox;
+      DROP TABLE dacs_http_clock;
       DROP TABLE dacs_payment_evidence_history;
       DROP TABLE dacs_payment_evidence_reservations;
       DROP TABLE dacs_payment_evidence_handshakes;
+      DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
       DELETE FROM dacs_migrations WHERE version = 4;
       DELETE FROM dacs_migrations WHERE version = 3;
