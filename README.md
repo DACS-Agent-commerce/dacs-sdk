@@ -441,7 +441,7 @@ used without pulling in `demosdk`:
 | Import | Needs `demosdk` | Use for |
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
-| `@kynesyslabs/dacs/substrate` | yes | live Demos adapter and its typed `raw` demosdk escape hatch |
+| `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
@@ -463,8 +463,10 @@ The Demos adapter and live rail clients are optional peers: install
 verifier, canonical, and injected rail-core consumers do not install those
 integration trees. CI installs the packed tarball in an external strict
 NodeNext TypeScript project twice: once with every optional peer omitted, and
-again with the live peers present. Both passes keep `skipLibCheck` disabled so
-SDK or dependency declaration incompatibilities fail the build.
+again with the live peers present. Both passes keep `skipLibCheck` disabled.
+The SDK-owned `DemosRawClient` boundary prevents demosdk's internal declaration
+graph from leaking into consumers; applications can explicitly narrow the
+unstable `raw` escape hatch when they intentionally depend on demosdk types.
 
 ## Package artifacts
 
