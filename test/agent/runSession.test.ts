@@ -9,6 +9,7 @@ import type {
   CompositeVerificationRecord,
   Listing,
   ListingPin,
+  SettlementFinalityParameters,
   VerificationDecision,
 } from "../../src/artifacts/types.js";
 import {
@@ -40,6 +41,31 @@ const TERMS: SessionTerms = {
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
+
+const VALID_FINALITIES = [
+  { name: "block-depth without echo", finality: { model: "block-depth" } },
+  {
+    name: "block-depth with echo",
+    finality: { model: "block-depth", finalityBlocks: 12 },
+  },
+  {
+    name: "commitment-level without echo",
+    finality: { model: "commitment-level" },
+  },
+  ...(["processed", "confirmed", "finalized"] as const).map(
+    (finalityCommitmentLevel) => ({
+      name: `commitment-level ${finalityCommitmentLevel}`,
+      finality: { model: "commitment-level" as const, finalityCommitmentLevel },
+    }),
+  ),
+  { name: "provider-receipt", finality: { model: "provider-receipt" } },
+  { name: "htlc-reveal", finality: { model: "htlc-reveal" } },
+  { name: "liquidity-tank", finality: { model: "liquidity-tank" } },
+  { name: "bft-final", finality: { model: "bft-final" } },
+] satisfies ReadonlyArray<{
+  name: string;
+  finality: SettlementFinalityParameters;
+}>;
 
 function currentVet(
   evaluatedParty: string,
@@ -942,31 +968,95 @@ describe("runSession orchestration (T4)", () => {
     ).toBeUndefined();
   });
 
-  test("block-depth success requires and records finalityBlocks", async () => {
-    const anchored: Record<string, unknown> = {};
-    await runSessionCore(
-      "stor-listing",
-      TERMS,
-      makeDeps({
-        settle: async () => ({
-          ok: true,
-          txHash: "0xdepth",
-          chainId: "eip155:1",
-          payer: "0xbob",
-          payee: "0xalice",
-          finality: { model: "block-depth", finalityBlocks: 12 },
+  test.each(VALID_FINALITIES)(
+    "preserves $name finality through settlement and evidence production",
+    async ({ finality }) => {
+      const anchored: Record<string, unknown> = {};
+      await runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          settle: async () => ({
+            ok: true,
+            txHash: "0xfinality",
+            chainId: "test:1",
+            payer: "0xbob",
+            payee: "0xalice",
+            finality,
+          }),
+          anchor: async (name: string, value: object) => {
+            if (name.includes("evidence")) anchored.evidence = value;
+            return `stor-${name}`;
+          },
         }),
-        anchor: async (name: string, value: object) => {
-          if (name.includes("evidence")) anchored.evidence = value;
-          return `stor-${name}`;
-        },
-      }),
-    );
-    expect(
-      (anchored.evidence as {
-        settlementFinality: { model: string; finalityBlocks: number };
-      }).settlementFinality,
-    ).toMatchObject({ model: "block-depth", finalityBlocks: 12 });
+      );
+      expect(
+        (anchored.evidence as {
+          settlementFinality: Record<string, unknown>;
+        }).settlementFinality,
+      ).toEqual({ ...finality, finalityObservedAt: 1780000000000 });
+    },
+  );
+
+  test.each([
+    { name: "unsupported model", finality: { model: "trust-me" } },
+    {
+      name: "negative block depth",
+      finality: { model: "block-depth", finalityBlocks: -1 },
+    },
+    {
+      name: "fractional block depth",
+      finality: { model: "block-depth", finalityBlocks: 1.5 },
+    },
+    {
+      name: "invalid commitment",
+      finality: { model: "commitment-level", finalityCommitmentLevel: "kinda" },
+    },
+    {
+      name: "block echo on commitment model",
+      finality: { model: "commitment-level", finalityBlocks: 2 },
+    },
+    {
+      name: "commitment echo on block model",
+      finality: { model: "block-depth", finalityCommitmentLevel: "confirmed" },
+    },
+    {
+      name: "parameter on provider-receipt",
+      finality: { model: "provider-receipt", finalityBlocks: 2 },
+    },
+    {
+      name: "parameter on htlc-reveal",
+      finality: { model: "htlc-reveal", finalityBlocks: 2 },
+    },
+    {
+      name: "parameter on liquidity-tank",
+      finality: { model: "liquidity-tank", finalityBlocks: 2 },
+    },
+    {
+      name: "parameter on bft-final",
+      finality: { model: "bft-final", finalityBlocks: 2 },
+    },
+    {
+      name: "extra finality field",
+      finality: { model: "bft-final", extra: true },
+    },
+  ])("rejects $name from a settlement rail", async ({ finality }) => {
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          settle: async () => ({
+            ok: true,
+            txHash: "0xbad-finality",
+            chainId: "test:1",
+            payer: "0xbob",
+            payee: "0xalice",
+            finality: finality as never,
+          }),
+        }),
+      ),
+    ).rejects.toThrow(/finality/);
   });
 
   test("rejects a rail the listing doesn't offer", async () => {

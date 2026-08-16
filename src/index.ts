@@ -1136,6 +1136,8 @@ export {
   type ChainTxRef,
   type TxRef,
   type PaymentAmount,
+  type SettlementCommitmentLevel,
+  type SettlementFinalityParameters,
   type SettlementFinality,
   type ComponentSignatureAlgorithm,
   type ComponentSignature,
