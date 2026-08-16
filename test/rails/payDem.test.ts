@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  TERMINAL_INCLUDED,
   payDemSettleCore,
   payDemSettle,
   type DemosNativeClient,
@@ -154,13 +155,42 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     expect(res.finality).toBeUndefined();
   });
 
-  test("confirmed/finalized also count as observed inclusion", async () => {
-    for (const state of ["confirmed", "finalized"]) {
-      const client = fakeClient({ result: { ok: true, state, hash: TX_HASH, blockNumber: 7 } });
+  test("accepts the exact DACS-4 §9.5.9 terminal included state", async () => {
+    expect([...TERMINAL_INCLUDED]).toEqual(["included"]);
+    const client = fakeClient({
+      result: { ok: true, state: "included", hash: TX_HASH, blockNumber: 7 },
+    });
+    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
+      ok: true,
+      finality: { model: "bft-final" },
+      blockNumber: 7,
+    });
+  });
+
+  test.each(["confirmed", "finalized", "INCLUDED", "accepted"])(
+    "fails closed for non-normative terminal state %s",
+    async (state) => {
+      const client = fakeClient({
+        result: { ok: true, state, hash: TX_HASH, blockNumber: 7 },
+      });
       const res = await payDemSettleCore(params(), client);
-      expect(res.ok).toBe(true);
-      expect(res.finality).toEqual({ model: "bft-final" });
-      expect(res.blockNumber).toBe(7);
+      expect(res.ok).toBe(false);
+      expect(res.finality).toBeUndefined();
+      expect(res.blockNumber).toBeUndefined();
+    },
+  );
+
+  test("does not let the compatibility set widen normative acceptance", async () => {
+    TERMINAL_INCLUDED.add("confirmed");
+    try {
+      const client = fakeClient({
+        result: { ok: true, state: "confirmed", hash: TX_HASH, blockNumber: 7 },
+      });
+      const res = await payDemSettleCore(params(), client);
+      expect(res.ok).toBe(false);
+      expect(res.finality).toBeUndefined();
+    } finally {
+      TERMINAL_INCLUDED.delete("confirmed");
     }
   });
 

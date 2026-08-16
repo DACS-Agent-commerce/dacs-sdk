@@ -23,6 +23,7 @@ const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 const DEFAULT_INCLUSION_POLL_INTERVAL_MS = 500;
 const DEFAULT_STATUS_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS = 60_000;
+const DACS_DEMOS_INCLUDED_STATE = "included";
 
 type AnyMethod = (...args: never[]) => unknown;
 
@@ -191,14 +192,13 @@ export function normalizeDemosNativeAddress(address: string): string | null {
  * BFT *inclusion IS finality*, so the evidence carries `settlementFinality.model:
  * "bft-final"` and a `demos` txRef (hash + block height).
  *
- * INCLUSION-GATED (§9.5.9): `bft-final` is emitted ONLY on observed inclusion —
- * a terminal `included`/`confirmed`/`finalized` state AND the finality-witness
- * block height. Broadcast *acceptance* (the node took the tx for submission) is
- * NOT finality: a merely-accepted tx can still be rejected in consensus, dropped,
- * or never included, so minting evidence on acceptance would attest an unobserved
- * payment. A transfer that doesn't reach observed inclusion settles `ok: false`
- * and no finality is stamped — evidence is never minted for a payment we didn't
- * see land.
+ * INCLUSION-GATED (§9.5.9): `bft-final` is emitted ONLY on the exact terminal
+ * Demos `included` state AND the finality-witness block height. Broadcast
+ * *acceptance* (the node took the tx for submission) is NOT finality: a
+ * merely-accepted tx can still be rejected in consensus, dropped, or never
+ * included, so minting evidence on acceptance would attest an unobserved payment.
+ * A transfer that doesn't reach observed inclusion settles `ok: false` and no
+ * finality is stamped — evidence is never minted for a payment we didn't see land.
  *
  * Amount units (§9.5.9 step 2): the agreement's DACS `Price.amount` is a canonical
  * DECIMAL DEM string; the chain moves integer OS base units (1 DEM = 10^9 OS). The
@@ -224,9 +224,10 @@ export interface DemosTransferResult {
   ok: boolean;
   hash: string;
   /**
-   * The terminal transaction state the client observed. `bft-final` is emitted
-   * only for an inclusion state ({@link TERMINAL_INCLUDED}); any other state
-   * (`failed`, `timeout`, a nonterminal poll, …) is not observed finality.
+   * The terminal transaction state the client observed. DACS-4 §9.5.9 permits
+   * `bft-final` only for the exact Demos `included` state; every other token
+   * (`confirmed`, `finalized`, `failed`, `timeout`, a nonterminal poll, …)
+   * fails closed.
    */
   state?: string;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
@@ -235,11 +236,12 @@ export interface DemosTransferResult {
 }
 
 /**
- * Terminal states that count as observed inclusion for `bft-final`. The Demos
- * node reports `included`; `confirmed`/`finalized` are accepted for forward
- * compatibility with substrates that name the terminal inclusion state differently.
+ * DACS-4 §9.5.9 procedure step 5 and Finality define `included` as the sole
+ * terminal Demos state that authorizes `bft-final`. The set-shaped export is
+ * retained for API compatibility; normative settlement acceptance below uses an
+ * exact token comparison and cannot be widened by mutating the exported set.
  */
-export const TERMINAL_INCLUDED = new Set(["included", "confirmed", "finalized"]);
+export const TERMINAL_INCLUDED = new Set([DACS_DEMOS_INCLUDED_STATE]);
 
 /** Minimal structural view of the native-transfer client this rail depends on. */
 export interface DemosNativeClient {
@@ -313,15 +315,14 @@ export async function payDemSettleCore(
   const blockNumber = blockProperty.value;
   const chainId = network ?? "demos";
 
-  // Observed inclusion (§9.5.9): a verifiable tx id AND a terminal inclusion
-  // state AND the finality-witness block height. Broadcast acceptance alone is
-  // NOT finality — without these three, we do not stamp bft-final, because the
-  // tx may never have landed.
+  // Observed inclusion (§9.5.9): a verifiable tx id AND the exact terminal
+  // `included` state AND the finality-witness block height. Broadcast acceptance
+  // or an unregistered status alias is NOT finality — without these three, we do
+  // not stamp bft-final, because the tx may never have landed.
   const observedFinal =
     okProperty.value === true &&
     txHash.length > 0 &&
-    state !== undefined &&
-    TERMINAL_INCLUDED.has(state) &&
+    state === DACS_DEMOS_INCLUDED_STATE &&
     Number.isSafeInteger(blockNumber) &&
     (blockNumber as number) >= 0;
 
