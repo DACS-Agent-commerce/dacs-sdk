@@ -1,3 +1,6 @@
+import { types as nodeTypes } from "node:util";
+
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { normalizeDemosNativeAddress } from "../rails/payDem.js";
 import type { DemosTransferObservation } from "./paymentIntake.js";
 
@@ -27,6 +30,76 @@ const NOT_FOUND_STATES = new Set(["not-found", "not_found", "unknown"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+type AnyMethod = (...args: never[]) => unknown;
+
+/**
+ * Capture one method without invoking caller-owned getters or proxy traps.
+ * Class instances are supported: the first data property on the prototype
+ * chain is bound to the original receiver. The capture happens before any
+ * asynchronous observation so one transfer can never mix RPC authorities.
+ */
+function stableMethod<T extends AnyMethod>(
+  source: unknown,
+  key: string,
+  label: string,
+): T {
+  if (
+    (typeof source !== "object" && typeof source !== "function") ||
+    source === null ||
+    nodeTypes.isProxy(source)
+  ) {
+    throw new TypeError(`${label} must be a stable method`);
+  }
+  let cursor: object | null = source;
+  while (cursor !== null) {
+    if (nodeTypes.isProxy(cursor)) {
+      throw new TypeError(`${label} must be a stable method`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+    if (descriptor) {
+      if (
+        !("value" in descriptor) ||
+        typeof descriptor.value !== "function" ||
+        nodeTypes.isProxy(descriptor.value)
+      ) {
+        throw new TypeError(`${label} must be a stable method`);
+      }
+      return descriptor.value.bind(source) as T;
+    }
+    cursor = Object.getPrototypeOf(cursor) as object | null;
+  }
+  throw new TypeError(`${label} must be a stable method`);
+}
+
+function stableDataProperty(
+  source: unknown,
+  key: string,
+  label: string,
+): { found: boolean; value?: unknown } {
+  if (
+    (typeof source !== "object" && typeof source !== "function") ||
+    source === null ||
+    nodeTypes.isProxy(source)
+  ) {
+    throw new TypeError(`${label} must be stable data`);
+  }
+  let cursor: object | null = source;
+  while (cursor !== null) {
+    if (nodeTypes.isProxy(cursor)) {
+      throw new TypeError(`${label} must be stable data`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+    if (descriptor) {
+      if (!("value" in descriptor)) {
+        throw new TypeError(`${label} must be stable data`);
+      }
+      return { found: true, value: descriptor.value };
+    }
+    cursor = Object.getPrototypeOf(cursor) as object | null;
+  }
+  return { found: false };
 }
 
 function unwrapNodeResponse(value: unknown):
@@ -158,9 +231,38 @@ export async function observePayDemTransferCore(
   const requestedHash = canonicalTxHash(txHash);
   if (!requestedHash) return invalid("transaction hash is not 32-byte hex");
 
+  let getTransactionStatus: PayDemObservationClient["getTransactionStatus"];
+  let getTxByHash: PayDemObservationClient["getTxByHash"];
+  let getBlockByNumber: PayDemObservationClient["getBlockByNumber"];
+  try {
+    // Capture every authority method together, before the first await. Reading
+    // methods after the status response would allow a mutable client to splice
+    // a fabricated transaction/body view into an otherwise trusted status read.
+    getTransactionStatus = stableMethod(
+      client,
+      "getTransactionStatus",
+      "pay-DEM observation getTransactionStatus",
+    );
+    getTxByHash = stableMethod(
+      client,
+      "getTxByHash",
+      "pay-DEM observation getTxByHash",
+    );
+    getBlockByNumber = stableMethod(
+      client,
+      "getBlockByNumber",
+      "pay-DEM observation getBlockByNumber",
+    );
+  } catch {
+    return { status: "unavailable", reason: "transaction observation client is unstable" };
+  }
+
   let statusValue: unknown;
   try {
-    statusValue = await client.getTransactionStatus(requestedHash);
+    statusValue = snapshotCanonicalJsonRead(
+      await getTransactionStatus(requestedHash),
+      "pay-DEM transaction status",
+    );
   } catch {
     return { status: "unavailable", reason: "transaction status read failed" };
   }
@@ -196,10 +298,18 @@ export async function observePayDemTransferCore(
   let transactionValue: unknown;
   let blockValue: unknown;
   try {
-    [transactionValue, blockValue] = await Promise.all([
-      client.getTxByHash(requestedHash),
-      client.getBlockByNumber(statusBlockNumber),
+    const [rawTransaction, rawBlock] = await Promise.all([
+      getTxByHash(requestedHash),
+      getBlockByNumber(statusBlockNumber),
     ]);
+    transactionValue = snapshotCanonicalJsonRead(
+      rawTransaction,
+      "pay-DEM transaction body",
+    );
+    blockValue = snapshotCanonicalJsonRead(
+      rawBlock,
+      "pay-DEM inclusion block",
+    );
   } catch {
     return { status: "unavailable", reason: "included transaction facts are unavailable" };
   }
@@ -313,11 +423,34 @@ function validTimeout(value: number | undefined): number {
 export function createPayDemSellerObserver(
   config: PayDemSellerObserverConfig,
 ): PayDemSellerObserver {
-  if (!config?.rpc || typeof config.rpc !== "string") {
+  const rpcProperty = stableDataProperty(
+    config,
+    "rpc",
+    "pay-DEM seller observer rpc",
+  );
+  const timeoutProperty = stableDataProperty(
+    config,
+    "timeoutMs",
+    "pay-DEM seller observer timeoutMs",
+  );
+  const fetchProperty = stableDataProperty(
+    config,
+    "fetchImpl",
+    "pay-DEM seller observer fetchImpl",
+  );
+  const rpc = rpcProperty.value;
+  if (!rpcProperty.found || !rpc || typeof rpc !== "string") {
     throw new TypeError("pay-DEM seller observer requires an RPC URL");
   }
-  const timeoutMs = validTimeout(config.timeoutMs);
-  const fetchImpl = config.fetchImpl ?? fetch;
+  const timeoutMs = validTimeout(
+    timeoutProperty.found ? timeoutProperty.value as number | undefined : undefined,
+  );
+  const fetchImpl = fetchProperty.found && fetchProperty.value !== undefined
+    ? fetchProperty.value
+    : fetch;
+  if (typeof fetchImpl !== "function" || nodeTypes.isProxy(fetchImpl)) {
+    throw new TypeError("pay-DEM seller observer fetchImpl must be a stable function");
+  }
 
   const nodeCall = async (message: string, data: Record<string, unknown>) => {
     const controller = new AbortController();
@@ -331,7 +464,7 @@ export function createPayDemSellerObserver(
     try {
       return await Promise.race([
         (async () => {
-          const response = await fetchImpl(config.rpc, {
+          const response = await fetchImpl(rpc, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

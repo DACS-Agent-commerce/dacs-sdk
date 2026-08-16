@@ -38,6 +38,14 @@ const params = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("happy path: transfers OS base units and reports a bft-final demos txRef", async () => {
     const client = fakeClient();
@@ -120,6 +128,90 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       expect(res.finality).toEqual({ model: "bft-final" });
       expect(res.blockNumber).toBe(7);
     }
+  });
+
+  test("pins payer, payee, network and transfer method before the effect await", async () => {
+    const response = deferred<DemosTransferResult>();
+    const originalTransfer = async (_args: { to: string; amountOs: bigint }) =>
+      response.promise;
+    const client: DemosNativeClient = {
+      address: PAYER,
+      transfer: originalTransfer,
+    };
+    const input = params();
+    const settlement = payDemSettleCore(input, client);
+
+    input.recipient = "substituted-payee";
+    input.network = "substituted-network";
+    client.address = "substituted-payer";
+    client.transfer = async () => ({
+      ok: true,
+      state: "included",
+      hash: "substituted-hash",
+      blockNumber: 99,
+    });
+    response.resolve({
+      ok: true,
+      state: "included",
+      hash: "demos:0xpinned",
+      blockNumber: 12,
+    });
+
+    await expect(settlement).resolves.toMatchObject({
+      payer: PAYER,
+      payee: RECIPIENT,
+      chainId: "demos:testnet",
+      txHash: "demos:0xpinned",
+    });
+  });
+
+  test("rejects accessor/proxy parameters without invoking caller traps", async () => {
+    let reads = 0;
+    const accessorParams = {
+      get recipient() {
+        reads += 1;
+        return RECIPIENT;
+      },
+      amount: "1",
+      network: "demos",
+    } as unknown as Parameters<typeof payDemSettleCore>[0];
+    await expect(payDemSettleCore(accessorParams, fakeClient())).rejects.toThrow(
+      /must be stable data/,
+    );
+    expect(reads).toBe(0);
+
+    const proxiedClient = new Proxy(fakeClient(), {
+      get(target, property, receiver) {
+        reads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expect(payDemSettleCore(params(), proxiedClient)).rejects.toThrow(
+      /must be stable data/,
+    );
+    expect(reads).toBe(0);
+  });
+
+  test("rejects an accessor transfer result without invoking its getters", async () => {
+    let reads = 0;
+    const client: DemosNativeClient = {
+      address: PAYER,
+      async transfer() {
+        return {
+          get ok() {
+            reads += 1;
+            return true;
+          },
+          hash: "demos:0xunsafe",
+          state: "included",
+          blockNumber: 1,
+        } as DemosTransferResult;
+      },
+    };
+    await expect(payDemSettleCore(params(), client)).rejects.toThrow(
+      /must be stable data/,
+    );
+    expect(reads).toBe(0);
   });
 });
 

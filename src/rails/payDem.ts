@@ -1,6 +1,9 @@
+import { types as nodeTypes } from "node:util";
+
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
-import { DacsError, TransientError } from "../errors.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
+import { DacsError } from "../errors.js";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -15,6 +18,100 @@ export const DEM_DECIMALS = 9;
 
 const CLAIM_PARAMETER_COMPONENT_RE =
   /^(?:%[0-9A-F]{2}|[^:?&=%\s#])+$/u;
+
+type AnyMethod = (...args: never[]) => unknown;
+
+function stableDataProperty(
+  source: unknown,
+  key: string,
+  label: string,
+): { found: boolean; value?: unknown } {
+  if (
+    (typeof source !== "object" && typeof source !== "function") ||
+    source === null ||
+    nodeTypes.isProxy(source)
+  ) {
+    throw new DacsError(`${label} must be stable data`);
+  }
+  let cursor: object | null = source;
+  while (cursor !== null) {
+    if (nodeTypes.isProxy(cursor)) {
+      throw new DacsError(`${label} must be stable data`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+    if (descriptor) {
+      if (!("value" in descriptor)) {
+        throw new DacsError(`${label} must be stable data`);
+      }
+      return { found: true, value: descriptor.value };
+    }
+    cursor = Object.getPrototypeOf(cursor) as object | null;
+  }
+  return { found: false };
+}
+
+function stableMethod<T extends AnyMethod>(
+  source: unknown,
+  key: string,
+  label: string,
+): T {
+  if (
+    (typeof source !== "object" && typeof source !== "function") ||
+    source === null ||
+    nodeTypes.isProxy(source)
+  ) {
+    throw new DacsError(`${label} must be a stable method`);
+  }
+  let cursor: object | null = source;
+  while (cursor !== null) {
+    if (nodeTypes.isProxy(cursor)) {
+      throw new DacsError(`${label} must be a stable method`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+    if (descriptor) {
+      if (
+        !("value" in descriptor) ||
+        typeof descriptor.value !== "function" ||
+        nodeTypes.isProxy(descriptor.value)
+      ) {
+        throw new DacsError(`${label} must be a stable method`);
+      }
+      return descriptor.value.bind(source) as T;
+    }
+    cursor = Object.getPrototypeOf(cursor) as object | null;
+  }
+  throw new DacsError(`${label} must be a stable method`);
+}
+
+function requiredStableString(source: unknown, key: string, label: string): string {
+  const property = stableDataProperty(source, key, label);
+  if (
+    !property.found ||
+    typeof property.value !== "string" ||
+    property.value.length === 0 ||
+    property.value.trim() !== property.value
+  ) {
+    throw new DacsError(`${label} must be a non-empty stable string`);
+  }
+  return property.value;
+}
+
+function optionalStableString(
+  source: unknown,
+  key: string,
+  label: string,
+): string | undefined {
+  const property = stableDataProperty(source, key, label);
+  if (!property.found || property.value === undefined) return undefined;
+  if (
+    typeof property.value !== "string" ||
+    property.value.length === 0 ||
+    property.value.trim() !== property.value
+  ) {
+    throw new DacsError(`${label} must be a non-empty stable string`);
+  }
+  return property.value;
+}
 
 function hasWellFormedClaimParameters(parameters: string | undefined): boolean {
   if (parameters === undefined) return true;
@@ -131,38 +228,80 @@ export async function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
 ): Promise<SettleResult> {
+  // Capture all caller-controlled values and the effect method before the first
+  // await. A mutable parameter/client object must not be able to change the
+  // transfer destination and then make the returned evidence attest a different
+  // payer or payee.
+  const recipient = requiredStableString(
+    params,
+    "recipient",
+    "pay-dem recipient",
+  );
+  const amount = requiredStableString(params, "amount", "pay-dem amount");
+  const network = optionalStableString(params, "network", "pay-dem network");
+  const payer = requiredStableString(client, "address", "pay-dem payer");
+  const transfer = stableMethod<DemosNativeClient["transfer"]>(
+    client,
+    "transfer",
+    "pay-dem transfer",
+  );
+
   let amountOs: bigint;
   try {
-    amountOs = BigInt(params.amount);
+    amountOs = BigInt(amount);
   } catch {
-    throw new DacsError(`pay-dem: invalid OS base-unit amount ${params.amount}`);
+    throw new DacsError(`pay-dem: invalid OS base-unit amount ${amount}`);
   }
   if (amountOs <= 0n) {
-    throw new DacsError(`pay-dem: amount must be > 0 (got ${params.amount})`);
+    throw new DacsError(`pay-dem: amount must be > 0 (got ${amount})`);
   }
 
-  const res = await client.transfer({ to: params.recipient, amountOs });
-  const txHash = (res?.hash ?? "").trim();
-  const chainId = params.network ?? "demos";
+  const response = await transfer({ to: recipient, amountOs });
+  const okProperty = stableDataProperty(response, "ok", "pay-dem transfer result ok");
+  const hashProperty = stableDataProperty(
+    response,
+    "hash",
+    "pay-dem transfer result hash",
+  );
+  const stateProperty = stableDataProperty(
+    response,
+    "state",
+    "pay-dem transfer result state",
+  );
+  const blockProperty = stableDataProperty(
+    response,
+    "blockNumber",
+    "pay-dem transfer result blockNumber",
+  );
+  const txHash = typeof hashProperty.value === "string" &&
+      hashProperty.value.trim() === hashProperty.value
+    ? hashProperty.value
+    : "";
+  const state = typeof stateProperty.value === "string"
+    ? stateProperty.value
+    : undefined;
+  const blockNumber = blockProperty.value;
+  const chainId = network ?? "demos";
 
   // Observed inclusion (§9.5.9): a verifiable tx id AND a terminal inclusion
   // state AND the finality-witness block height. Broadcast acceptance alone is
   // NOT finality — without these three, we do not stamp bft-final, because the
   // tx may never have landed.
   const observedFinal =
-    res?.ok === true &&
+    okProperty.value === true &&
     txHash.length > 0 &&
-    res?.state !== undefined &&
-    TERMINAL_INCLUDED.has(res.state) &&
-    typeof res?.blockNumber === "number";
+    state !== undefined &&
+    TERMINAL_INCLUDED.has(state) &&
+    Number.isSafeInteger(blockNumber) &&
+    (blockNumber as number) >= 0;
 
   if (!observedFinal) {
     return {
       ok: false,
       txHash,
       chainId,
-      payer: client.address,
-      payee: params.recipient,
+      payer,
+      payee: recipient,
       // No finality / blockNumber: inclusion was not observed, so no bft-final
       // evidence is minted for a possibly-unincluded payment.
     };
@@ -172,12 +311,12 @@ export async function payDemSettleCore(
     ok: true,
     txHash,
     chainId,
-    payer: client.address,
-    payee: params.recipient,
+    payer,
+    payee: recipient,
     // §9.5.9: inclusion IS finality on Demos; the tx is a `demos` ref carrying
     // the block height that witnesses it.
     finality: { model: "bft-final" },
-    blockNumber: res.blockNumber,
+    blockNumber: blockNumber as number,
     txRefKind: "demos",
   };
 }
@@ -207,11 +346,13 @@ export interface PayDemRail {
 }
 
 /**
- * Inclusion was observed, but the payer account's consumed nonce was not yet
- * readable. The transfer must not be resubmitted; the public reconciliation
- * fields let guarded operators persist and inspect the original payment.
+ * Compatibility signal for integrations that separately wait for the payer's
+ * account projection after finality. It is deliberately permanent: the payment
+ * is already final and only idempotent SettlementEvidence catch-up may retry
+ * (DACS-4 §9.5.1 PC-7). `createPayDemRail` now returns the successful payment
+ * result in this case instead of throwing this signal.
  */
-export class PayDemIncludedNonceVisibilityError extends TransientError {
+export class PayDemIncludedNonceVisibilityError extends DacsError {
   readonly txHash: string;
   readonly blockNumber?: number;
   readonly nonce: number;
@@ -224,7 +365,7 @@ export class PayDemIncludedNonceVisibilityError extends TransientError {
   }) {
     super(
       `pay-dem: transfer ${input.txHash} was included, but account nonce ${input.nonce} ` +
-        "did not become readable; refusing a follow-on anchor",
+        "did not become readable; payment is final and only evidence catch-up may be retried",
       { cause: input.cause },
     );
     this.name = "PayDemIncludedNonceVisibilityError";
@@ -313,9 +454,130 @@ function normalizedDemosAccount(value: unknown): string | null {
   return match?.[1]?.toLowerCase() ?? null;
 }
 
+function confirmedNonce(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
+      ? value
+      : null;
+  }
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    return null;
+  }
+  try {
+    const parsed = BigInt(value);
+    return parsed <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+function confirmedTransactionBinding(
+  value: unknown,
+  input: Readonly<{ signedHash: string; signedNonce: number }>,
+): Record<string, unknown> {
+  const data = (
+    value as {
+      response?: {
+        data?: {
+          transaction?: unknown;
+        };
+      };
+    }
+  )?.response?.data;
+  const transaction = data?.transaction;
+  if (transaction === null || typeof transaction !== "object" ||
+      Array.isArray(transaction)) {
+    throw new DacsError(
+      "pay-dem: confirmation has no stable transaction body; refusing broadcast",
+    );
+  }
+  const confirmed = transaction as Record<string, unknown>;
+  if (
+    typeof confirmed.hash !== "string" ||
+    confirmed.hash.length === 0 ||
+    confirmed.hash.trim() !== confirmed.hash ||
+    confirmed.hash !== input.signedHash
+  ) {
+    throw new DacsError(
+      "pay-dem: confirmed transaction hash does not match the signed transfer; refusing broadcast",
+    );
+  }
+  const content = confirmed.content;
+  if (content === null || typeof content !== "object" || Array.isArray(content) ||
+      confirmedNonce((content as Record<string, unknown>).nonce) !== input.signedNonce) {
+    throw new DacsError(
+      "pay-dem: confirmed transaction nonce does not match the signed transfer; refusing broadcast",
+    );
+  }
+  return confirmed;
+}
+
+function nativeTransferBodyMatches(
+  transaction: Record<string, unknown>,
+  input: Readonly<{
+    payer: string;
+    payee: string;
+    amountOs: bigint;
+    nonce: number;
+    postFork: boolean;
+  }>,
+): boolean {
+  const content = transaction.content;
+  if (content === null || typeof content !== "object" || Array.isArray(content)) {
+    return false;
+  }
+  const body = content as Record<string, unknown>;
+  if (
+    body.type !== "native" ||
+    body.custom_charges != null ||
+    confirmedNonce(body.nonce) !== input.nonce
+  ) {
+    return false;
+  }
+
+  const expectedPayer = normalizedDemosAccount(input.payer);
+  const expectedPayee = normalizedDemosAccount(input.payee);
+  if (expectedPayer === null || expectedPayee === null) return false;
+  const payerFields = [body.from, body.from_ed25519_address]
+    .filter((field) => field != null);
+  if (
+    payerFields.length === 0 ||
+    payerFields.some((field) => normalizedDemosAccount(field) !== expectedPayer) ||
+    normalizedDemosAccount(body.to) !== expectedPayee ||
+    confirmedWireAmountOs(body.amount, input.postFork) !== input.amountOs
+  ) {
+    return false;
+  }
+
+  const transactionData = body.data;
+  if (
+    !Array.isArray(transactionData) ||
+    transactionData.length !== 2 ||
+    transactionData[0] !== "native" ||
+    transactionData[1] === null ||
+    typeof transactionData[1] !== "object" ||
+    Array.isArray(transactionData[1])
+  ) {
+    return false;
+  }
+  const native = transactionData[1] as Record<string, unknown>;
+  const args = native.args;
+  return native.nativeOperation === "send" &&
+    Array.isArray(args) &&
+    args.length === 2 &&
+    normalizedDemosAccount(args[0]) === expectedPayee &&
+    confirmedWireAmountOs(args[1], input.postFork) === input.amountOs;
+}
+
 function confirmedDebitFromValidity(
   value: unknown,
-  input: Readonly<{ payer: string; payee: string; amountOs: bigint; postFork: boolean }>,
+  input: Readonly<{
+    payer: string;
+    payee: string;
+    amountOs: bigint;
+    nonce: number;
+    postFork: boolean;
+  }>,
 ): bigint | null {
   const data = (
     value as {
@@ -327,35 +589,12 @@ function confirmedDebitFromValidity(
       };
     }
   )?.response?.data;
-  const content = data?.transaction?.content;
-  if (!content || content.type !== "native" || content.custom_charges != null ||
-      data?.custom_charges != null) return null;
-
-  const expectedPayer = normalizedDemosAccount(input.payer);
-  const expectedPayee = normalizedDemosAccount(input.payee);
-  if (expectedPayer === null || expectedPayee === null) return null;
-  const payerFields = [content.from, content.from_ed25519_address]
-    .filter((field) => field != null);
-  if (payerFields.length === 0 ||
-      payerFields.some((field) => normalizedDemosAccount(field) !== expectedPayer)) {
-    return null;
-  }
-  const payee = normalizedDemosAccount(content.to);
-  if (payee !== expectedPayee) return null;
-
-  const contentAmountOs = confirmedWireAmountOs(content.amount, input.postFork);
-  if (contentAmountOs !== input.amountOs) return null;
-
-  const transactionData = content.data;
-  if (!Array.isArray(transactionData) || transactionData.length !== 2 ||
-      transactionData[0] !== "native" || transactionData[1] === null ||
-      typeof transactionData[1] !== "object" || Array.isArray(transactionData[1])) return null;
-  const native = transactionData[1] as Record<string, unknown>;
-  const args = native.args;
-  if (native.nativeOperation !== "send" || !Array.isArray(args) || args.length !== 2 ||
-      normalizedDemosAccount(args[0]) !== expectedPayee) return null;
-  const payloadAmountOs = confirmedWireAmountOs(args[1], input.postFork);
-  if (payloadAmountOs !== input.amountOs) return null;
+  const transaction = data?.transaction;
+  if (
+    !transaction ||
+    data?.custom_charges != null ||
+    !nativeTransferBodyMatches(transaction as Record<string, unknown>, input)
+  ) return null;
 
   const feeOs = confirmedValidityFeeOs(value, input.postFork);
   return feeOs === null ? null : input.amountOs + feeOs;
@@ -371,12 +610,17 @@ function confirmedDebitFromValidity(
  * session/phase-keyed settlement idempotency store (#43/#52).
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
-  const rpc = config?.rpc;
-  const secret = config?.secret;
-  const network = config?.network;
-  const maxTotalDebitOs = config?.maxTotalDebitOs;
-  if (!rpc) throw new DacsError("pay-dem rail requires an rpc URL");
-  if (!secret) throw new DacsError("pay-dem rail requires a wallet secret to sign transfers");
+  const rpc = requiredStableString(config, "rpc", "pay-dem rail rpc");
+  const secret = requiredStableString(config, "secret", "pay-dem rail secret");
+  const network = optionalStableString(config, "network", "pay-dem rail network");
+  const maxTotalDebitProperty = stableDataProperty(
+    config,
+    "maxTotalDebitOs",
+    "pay-dem rail maxTotalDebitOs",
+  );
+  const maxTotalDebitOs = maxTotalDebitProperty.found
+    ? maxTotalDebitProperty.value
+    : undefined;
   if (maxTotalDebitOs !== undefined &&
       (typeof maxTotalDebitOs !== "bigint" || maxTotalDebitOs <= 0n)) {
     throw new DacsError("pay-dem rail maxTotalDebitOs must be positive");
@@ -384,15 +628,95 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
   const demos = new Demos();
-  await demos.connect(rpc);
-  await demos.connectWallet(secret);
+  // Capture the complete Demos authority before its first asynchronous call.
+  // This supports ordinary class instances while rejecting accessors/proxies
+  // that could swap the signer, confirmer, broadcaster, or nonce authority at
+  // an await boundary.
+  const connect = stableMethod<(rpcUrl: string) => Promise<unknown>>(
+    demos,
+    "connect",
+    "pay-dem Demos.connect",
+  );
+  const connectWallet = stableMethod<(walletSecret: string) => Promise<unknown>>(
+    demos,
+    "connectWallet",
+    "pay-dem Demos.connectWallet",
+  );
+  const getAddress = stableMethod<() => string>(
+    demos,
+    "getAddress",
+    "pay-dem Demos.getAddress",
+  );
+  const transfer = stableMethod<(
+    to: string,
+    amountOs: bigint,
+  ) => Promise<unknown>>(
+    demos,
+    "transfer",
+    "pay-dem Demos.transfer",
+  );
+  const getNetworkInfo = stableMethod<() => Promise<unknown>>(
+    demos,
+    "getNetworkInfo",
+    "pay-dem Demos.getNetworkInfo",
+  );
+  const broadcastAndWait = stableMethod<(validity: unknown) => Promise<unknown>>(
+    demos,
+    "broadcastAndWait",
+    "pay-dem Demos.broadcastAndWait",
+  );
+  const waitForNonce = stableMethod<(
+    address: string,
+    nonce: number,
+  ) => Promise<unknown>>(
+    demos,
+    "waitForNonce",
+    "pay-dem Demos.waitForNonce",
+  );
+  const txProperty = stableDataProperty(demos, "tx", "pay-dem Demos.tx");
+  const confirm = stableMethod<(
+    signed: unknown,
+    client: unknown,
+  ) => Promise<unknown>>(
+    txProperty.value,
+    "confirm",
+    "pay-dem Demos.tx.confirm",
+  );
+
+  await connect(rpc);
+  await connectWallet(secret);
+  const address = getAddress();
+  if (
+    typeof address !== "string" ||
+    address.length === 0 ||
+    address.trim() !== address ||
+    normalizedDemosAccount(address) === null
+  ) {
+    throw new DacsError("pay-dem wallet returned an invalid payer address");
+  }
 
   const client: DemosNativeClient = {
-    address: demos.getAddress(),
+    address,
     transfer: async ({ to, amountOs }) => {
-      const signed = await demos.transfer(to, amountOs);
-      const signedNonceValue = (signed as { content?: { nonce?: unknown } })
-        .content?.nonce;
+      const signed = snapshotCanonicalJsonRead(
+        await transfer(to, amountOs),
+        "pay-dem signed transfer",
+      ) as unknown;
+      const signedHash = requiredStableString(
+        signed,
+        "hash",
+        "pay-dem signed transfer hash",
+      );
+      const signedContent = stableDataProperty(
+        signed,
+        "content",
+        "pay-dem signed transfer content",
+      ).value;
+      const signedNonceValue = stableDataProperty(
+        signedContent,
+        "nonce",
+        "pay-dem signed transfer nonce",
+      ).value;
       if (
         !Number.isSafeInteger(signedNonceValue) ||
         (signedNonceValue as number) < 0
@@ -402,21 +726,51 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         );
       }
       const signedNonce = signedNonceValue as number;
-      const validity = await demos.tx.confirm(signed, demos);
-      if (maxTotalDebitOs !== undefined) {
-        const networkInfo = await demos.getNetworkInfo();
-        const forkActive = networkInfo?.forks?.osDenomination?.activated;
-        if (typeof forkActive !== "boolean") {
-          throw new DacsError(
-            "pay-dem: denomination fork state is unavailable; refusing broadcast under maxTotalDebitOs",
-          );
+      const validity = snapshotCanonicalJsonRead(
+        await confirm(signed, demos),
+        "pay-dem confirmation",
+      ) as unknown;
+      const confirmedTransaction = confirmedTransactionBinding(
+        validity,
+        { signedHash, signedNonce },
+      );
+      const networkInfo = snapshotCanonicalJsonRead(
+        await getNetworkInfo(),
+        "pay-dem network information",
+      ) as {
+        forks?: { osDenomination?: { activated?: unknown } };
+      };
+      const forkActive = networkInfo?.forks?.osDenomination?.activated;
+      if (typeof forkActive !== "boolean") {
+        throw new DacsError(
+          "pay-dem: denomination fork state is unavailable; refusing broadcast",
+        );
+      }
+      const postFork = forkActive;
+      const transferBinding = {
+        payer: address,
+        payee: to,
+        amountOs,
+        nonce: signedNonce,
+        postFork,
+      } as const;
+      const confirmedData = (
+        validity as {
+          response?: { data?: { custom_charges?: unknown } };
         }
-        const postFork = forkActive;
+      )?.response?.data;
+      if (
+        !nativeTransferBodyMatches(signed as Record<string, unknown>, transferBinding) ||
+        confirmedData?.custom_charges != null ||
+        !nativeTransferBodyMatches(confirmedTransaction, transferBinding)
+      ) {
+        throw new DacsError(
+          "pay-dem: signed and confirmed transaction bodies do not bind the requested native transfer; refusing broadcast",
+        );
+      }
+      if (maxTotalDebitOs !== undefined) {
         const confirmedDebitOs = confirmedDebitFromValidity(validity, {
-          payer: demos.getAddress(),
-          payee: to,
-          amountOs,
-          postFork,
+          ...transferBinding,
         });
         if (confirmedDebitOs === null) {
           throw new DacsError(
@@ -429,31 +783,27 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           );
         }
       }
-      const signedHash = (signed as { hash?: string }).hash;
-      const confirmedHash = (
-        validity as {
-          response?: { data?: { transaction?: { hash?: string } } };
-        }
-      ).response?.data?.transaction?.hash;
-      // broadcastAndWait polls the confirmed transaction hash. Keep that same
-      // identity authoritative for timeout and success receipts; a broadcast
-      // response is transport metadata and must not substitute another hash.
-      const txHash = confirmedHash ?? signedHash ?? "";
-      if (!txHash) {
-        throw new DacsError(
-          "pay-dem: confirmed transfer has no transaction hash",
-        );
-      }
-      let broadcast: { response?: { hash?: string; message?: string } };
-      let status: { state: "included" | "failed"; blockNumber?: number };
+      // The node-confirmed body has already been required to retain the signed
+      // hash and nonce, so this one identity is authoritative throughout
+      // broadcast, finality observation, marker reconciliation and evidence.
+      const txHash = signedHash;
+      let broadcastValue: unknown;
+      let statusValue: unknown;
       try {
         // broadcastAndWait POLLS to a terminal state (included|failed) instead
         // of returning on broadcast acceptance — so `ok`/`bft-final` reflect
         // observed inclusion, and `status.blockNumber` gives the finality witness.
-        ({ broadcast, status } = (await demos.broadcastAndWait(validity)) as {
-          broadcast: { response?: { hash?: string; message?: string } };
-          status: { state: "included" | "failed"; blockNumber?: number };
-        });
+        const outcome = await broadcastAndWait(validity);
+        broadcastValue = stableDataProperty(
+          outcome,
+          "broadcast",
+          "pay-dem broadcast result",
+        ).value;
+        statusValue = stableDataProperty(
+          outcome,
+          "status",
+          "pay-dem terminal status",
+        ).value;
       } catch (err) {
         // Timeout / broadcast failure → no terminal inclusion observed. Report a
         // non-final result (ok:false) rather than throwing, so the settle seam
@@ -466,28 +816,76 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         };
       }
 
-      if (status.state === "included") {
+      const state = stableDataProperty(
+        statusValue,
+        "state",
+        "pay-dem terminal status state",
+      ).value;
+      if (state !== "included" && state !== "failed") {
+        throw new DacsError("pay-dem: broadcast returned an unsupported terminal state");
+      }
+      const blockNumberValue = stableDataProperty(
+        statusValue,
+        "blockNumber",
+        "pay-dem terminal status blockNumber",
+      ).value;
+      const blockNumber = blockNumberValue === undefined
+        ? undefined
+        : Number.isSafeInteger(blockNumberValue) && (blockNumberValue as number) >= 0
+        ? blockNumberValue as number
+        : null;
+      if (blockNumber === null || (state === "included" && blockNumber === undefined)) {
+        throw new DacsError("pay-dem: included transfer has no valid block number");
+      }
+      const broadcastResponse = stableDataProperty(
+        broadcastValue,
+        "response",
+        "pay-dem broadcast response",
+      ).value;
+      const responseHash = broadcastResponse === undefined
+        ? undefined
+        : stableDataProperty(
+          broadcastResponse,
+          "hash",
+          "pay-dem broadcast response hash",
+        ).value;
+      if (responseHash !== undefined && responseHash !== txHash) {
+        throw new DacsError(
+          "pay-dem: broadcast response hash does not match the signed transfer",
+        );
+      }
+      const responseMessage = broadcastResponse === undefined
+        ? undefined
+        : stableDataProperty(
+          broadcastResponse,
+          "message",
+          "pay-dem broadcast response message",
+        ).value;
+      if (responseMessage !== undefined && typeof responseMessage !== "string") {
+        throw new DacsError("pay-dem: broadcast response message is malformed");
+      }
+
+      if (state === "included") {
         try {
           // Inclusion can precede the account read reflecting the consumed
           // nonce. Do not let runSession sign its follow-on evidence anchor
           // from a stale value (DEMOS-MAPPING A.1/A.2).
-          await demos.waitForNonce(demos.getAddress(), signedNonce);
-        } catch (error) {
-          throw new PayDemIncludedNonceVisibilityError({
-            txHash,
-            blockNumber: status.blockNumber,
-            nonce: signedNonce,
-            cause: error,
-          });
+          await waitForNonce(address, signedNonce);
+        } catch {
+          // DACS-4 §9.5.1 PC-7: BFT inclusion is already final. A lagging
+          // account projection can delay the follow-on SettlementEvidence
+          // anchor, but it cannot demote payment or authorize resubmission.
+          // Return the final rail result so the session stores it durably and
+          // retries only the idempotent evidence-anchor bookkeeping.
         }
       }
 
       return {
-        ok: status.state === "included",
-        state: status.state,
+        ok: state === "included",
+        state,
         hash: txHash,
-        blockNumber: status.blockNumber,
-        message: broadcast?.response?.message,
+        blockNumber,
+        ...(responseMessage === undefined ? {} : { message: responseMessage }),
       };
     },
   };

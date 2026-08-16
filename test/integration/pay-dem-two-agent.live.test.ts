@@ -32,7 +32,15 @@ const REQUIRED_ENV = [
   "LIVE_PAY_DEM_CONFIRM",
 ] as const;
 
-const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
+type RequiredEnvKey = typeof REQUIRED_ENV[number];
+const LIVE_ENV = Object.freeze(REQUIRED_ENV.reduce<Record<
+  RequiredEnvKey,
+  string | undefined
+>>((snapshot, key) => {
+  snapshot[key] = process.env[key];
+  return snapshot;
+}, {} as Record<RequiredEnvKey, string | undefined>));
+const missing = REQUIRED_ENV.filter((key) => !LIVE_ENV[key]);
 const MAX_TEST_TRANSFER_OS = 1_000_000_000n;
 const MAX_TEST_TOTAL_DEBIT_OS = 3_000_000_000n;
 
@@ -58,7 +66,7 @@ async function balanceOs(adapter: DemosAdapter): Promise<bigint> {
 }
 
 describe("guarded funded two-agent pay-DEM settlement", () => {
-  if (missing.length > 0 || process.env.LIVE_PAY_DEM_CONFIRM !== "1") {
+  if (missing.length > 0 || LIVE_ENV.LIVE_PAY_DEM_CONFIRM !== "1") {
     it.skip(
       `requires ${missing.length > 0 ? missing.join(", ") : "LIVE_PAY_DEM_CONFIRM=1"}`,
       () => undefined,
@@ -67,28 +75,30 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
   }
 
   it("transfers once and resolves the same confirmed facts at the seller", async () => {
-    const rpc = process.env.DEMOS_RPC!;
-    const buyer = new DemosAdapter({ rpc, secret: process.env.BUYER_WALLET! });
-    const seller = new DemosAdapter({ rpc, secret: process.env.SELLER_WALLET! });
+    const rpc = LIVE_ENV.DEMOS_RPC!;
+    const buyerSecret = LIVE_ENV.BUYER_WALLET!;
+    const sellerSecret = LIVE_ENV.SELLER_WALLET!;
+    const buyer = new DemosAdapter({ rpc, secret: buyerSecret });
+    const seller = new DemosAdapter({ rpc, secret: sellerSecret });
     await Promise.all([buyer.connect(), seller.connect()]);
 
     const buyerAddress = buyer.getAddress();
     const sellerAddress = seller.getAddress();
     requireCondition(buyerAddress !== sellerAddress, "wallets-must-be-independent");
     requireCondition(
-      didForAddress(buyerAddress) === process.env.BUYER_DID!.toLowerCase(),
+      didForAddress(buyerAddress) === LIVE_ENV.BUYER_DID!.toLowerCase(),
       "buyer-wallet-did-mismatch",
     );
     requireCondition(
-      didForAddress(sellerAddress) === process.env.SELLER_DID!.toLowerCase(),
+      didForAddress(sellerAddress) === LIVE_ENV.SELLER_DID!.toLowerCase(),
       "seller-wallet-did-mismatch",
     );
 
-    const amountText = process.env.PAY_DEM_AMOUNT_OS!;
+    const amountText = LIVE_ENV.PAY_DEM_AMOUNT_OS!;
     requireCondition(/^[1-9][0-9]*$/.test(amountText), "amount-not-canonical-os");
     const amountOs = BigInt(amountText);
     requireCondition(amountOs <= MAX_TEST_TRANSFER_OS, "amount-exceeds-test-cap");
-    const maxTotalDebitText = process.env.PAY_DEM_MAX_TOTAL_DEBIT_OS!;
+    const maxTotalDebitText = LIVE_ENV.PAY_DEM_MAX_TOTAL_DEBIT_OS!;
     requireCondition(
       /^(?:0|[1-9][0-9]*)$/.test(maxTotalDebitText),
       "max-total-debit-not-canonical-os",
@@ -107,18 +117,23 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
 
     const rail = await createPayDemRail({
       rpc,
-      secret: process.env.BUYER_WALLET!,
+      secret: buyerSecret,
       network: "demos",
       maxTotalDebitOs,
     });
+    requireCondition(
+      rail.address.replace(/^0x/i, "").toLowerCase() ===
+        buyerAddress.replace(/^0x/i, "").toLowerCase(),
+      "rail-payer-mismatch",
+    );
     // Explicit confirmation and the durable one-shot marker are checked and
     // armed immediately before the only irreversible call. The marker is never
     // removed, including when the settlement response is ambiguous.
-    requireCondition(process.env.LIVE_PAY_DEM_CONFIRM === "1", "spend-not-confirmed");
+    requireCondition(LIVE_ENV.LIVE_PAY_DEM_CONFIRM === "1", "spend-not-confirmed");
     const { marker, result: settlement } = await executePayDemFundedRun(
       {
-        directory: process.env.LIVE_PAY_DEM_MARKER_DIR!,
-        runId: process.env.LIVE_PAY_DEM_RUN_ID!,
+        directory: LIVE_ENV.LIVE_PAY_DEM_MARKER_DIR!,
+        runId: LIVE_ENV.LIVE_PAY_DEM_RUN_ID!,
         payer: buyerAddress,
         payee: sellerAddress,
         amountOs: amountText,
