@@ -112,6 +112,7 @@ jobs:
             FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
             FIXED_PRICE_OFFLINE_STANDARD_REVISION,
             fixedPriceOfflineOrderBindingHash,
+            fixedPriceOfflineOrderLocalBindingHash,
           } from "@kynesyslabs/dacs/commerce";
           import {
             openDacsNodeSqliteDatabase,
@@ -154,10 +155,17 @@ jobs:
             };
             const store = database.createOfflineCoordinatorStore("buyer");
             const bindingHash = fixedPriceOfflineOrderBindingHash(order);
-            const created = await store.create({ role: "buyer", order, bindingHash });
+            const localBindingHash = fixedPriceOfflineOrderLocalBindingHash(order);
+            const created = await store.create({
+              role: "buyer",
+              order,
+              bindingHash,
+              localBindingHash,
+            });
             const loaded = await store.load("buyer", order.jobId);
             if (created.status !== "created" || loaded.status !== "ok" ||
-                loaded.record.bindingHash !== bindingHash) process.exit(1);
+                loaded.record.bindingHash !== bindingHash ||
+                loaded.record.localBindingHash !== localBindingHash) process.exit(1);
             database.close();
           } finally {
             rmSync(root, { recursive: true, force: true });
