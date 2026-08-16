@@ -45,6 +45,18 @@ process termination; multi-host writers need a shared journal backend with the
 same exclusive lease and generation-fencing guarantees. Read-only agents may
 omit it.
 
+### Demos agent ClaimReferences
+
+Use `demosAgentClaimRef`, `demosAgentPublicKey`, and
+`isDemosAgentClaimRef` from either `@kynesyslabs/dacs` or
+`@kynesyslabs/dacs/identity` for the DACS-1 §6.3.1 / §A.1 self-certifying
+profile. Writers emit only `did:demos:agent:<64-lowercase-hex>`. Readers accept
+case variation in the leading `did` scheme, but reject foreign DIDs, mixed-case
+`demos:agent`, uppercase key bytes, bare keys, and `demos:0x...` substrate
+address notation. `Agent.resolveIdentity()` retains bare/`0x` native-address
+lookup as an explicit convenience; those forms never authorize signed DACS
+artifacts and never alias a ClaimReference or reputation key.
+
 ## Public API
 
 ```ts
@@ -464,6 +476,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
+| `@kynesyslabs/dacs/identity` | no | CCI parsing + canonical Demos agent ClaimReference helpers |
 
 The commerce coordinator is an explicit production x402 profile, not a generic
 `pay-*` dispatcher. It binds the supported Standard revision plus the verified

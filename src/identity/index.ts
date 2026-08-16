@@ -25,3 +25,8 @@ export {
   type ClaimReferenceSchemeStatus,
 } from "./claimReference.js";
 export { identityBundleHash } from "./bundle.js";
+export {
+  demosAgentClaimRef,
+  demosAgentPublicKey,
+  isDemosAgentClaimRef,
+} from "./demos.js";

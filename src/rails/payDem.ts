@@ -4,6 +4,7 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { demosAgentPublicKey } from "../identity/demos.js";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -165,8 +166,8 @@ function hasWellFormedClaimParameters(parameters: string | undefined): boolean {
  */
 export function demosAddressFromClaim(claim: string): string | null {
   const c = claim.trim();
-  const did = c.match(/^[dD][iI][dD]:demos:agent:([0-9a-f]{64})$/);
-  if (did) return did[1]!.toLowerCase();
+  const did = demosAgentPublicKey(c);
+  if (did) return Buffer.from(did).toString("hex");
   const cci = c.match(
     /^[cC][cC][iI]-[xX][mM]:demos:[^:?&#=\s]+:0x([0-9a-fA-F]{64})(?:\?([^#\s]*))?$/,
   );

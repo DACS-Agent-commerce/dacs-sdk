@@ -115,7 +115,11 @@ async function assertPureSubpaths(extractedRoot) {
     "/substrate/",
     "/rails/",
   ];
-  const roots = [join(extractedRoot, "dist", "canonical"), join(extractedRoot, "dist", "artifacts")];
+  const roots = [
+    join(extractedRoot, "dist", "canonical"),
+    join(extractedRoot, "dist", "artifacts"),
+    join(extractedRoot, "dist", "identity"),
+  ];
   for (const root of roots) {
     for (const relative of await listFiles(root)) {
       const supported = [".js", ".d.ts", ".js.map", ".d.ts.map"];
@@ -205,11 +209,14 @@ try {
     [
       'import { canonicalize, contentHash } from "@kynesyslabs/dacs/canonical";',
       'import { isAttestationRef } from "@kynesyslabs/dacs/artifacts";',
+      'import { demosAgentClaimRef, demosAgentPublicKey } from "@kynesyslabs/dacs/identity";',
       "const canonical = canonicalize({ z: 2, a: 1.5 });",
       'if (canonical !== \'{"a":1.5,"z":2}\') throw new Error(`unexpected canonical bytes: ${canonical}`);',
       'if (contentHash({ z: 2, a: 1.5 }) !== contentHash({ a: 1.5, z: 2 })) throw new Error("hash drift");',
       'if (!isAttestationRef({ anchor: { kind: "storage-program", locator: "demos:test" }, contentHash: "a".repeat(64) })) throw new Error("artifact import failed");',
-      'console.log(JSON.stringify({ canonical, artifactSubpath: "ok" }));',
+      'const demosClaim = demosAgentClaimRef("ab".repeat(32));',
+      'if (Buffer.from(demosAgentPublicKey(demosClaim) ?? []).toString("hex") !== "ab".repeat(32)) throw new Error("identity import failed");',
+      'console.log(JSON.stringify({ canonical, artifactSubpath: "ok", identitySubpath: "ok" }));',
       "",
     ].join("\n"),
   );
@@ -280,7 +287,11 @@ try {
       declaredTargets: targets,
     },
     consumer: {
-      imports: ["@kynesyslabs/dacs/canonical", "@kynesyslabs/dacs/artifacts"],
+      imports: [
+        "@kynesyslabs/dacs/canonical",
+        "@kynesyslabs/dacs/artifacts",
+        "@kynesyslabs/dacs/identity",
+      ],
       optionalPeersAbsent: optionalPeers,
       onlineInstall: "pass",
       offlineFrozenRematerialization: "pass",
