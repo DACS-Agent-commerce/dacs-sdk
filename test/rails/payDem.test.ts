@@ -21,8 +21,10 @@ const OTHER_TX_HASH = "34".repeat(32);
 /** A fake native client recording the transfer it was asked to submit. */
 function fakeClient(
   over: Partial<{ result: DemosTransferResult }> = {},
-): DemosNativeClient & { sent?: { to: string; amountOs: bigint } } {
-  const self: DemosNativeClient & { sent?: { to: string; amountOs: bigint } } = {
+): DemosNativeClient & { sent?: Parameters<DemosNativeClient["transfer"]>[0] } {
+  const self: DemosNativeClient & {
+    sent?: Parameters<DemosNativeClient["transfer"]>[0];
+  } = {
     address: PAYER,
     async transfer(args) {
       self.sent = args;
@@ -372,6 +374,42 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const resumed = await payDemSettle(rail, { network: "demos" }, { store })(req());
     expect(transfers).toBe(1);
     expect(resumed.txHash).toBe(TX_HASH);
+  });
+
+  test("binds the prepared transfer to the exact PC-7 rail/session/phase key", async () => {
+    const client = fakeClient();
+    let captured: Parameters<PayDemRail["settle"]>[0] | undefined;
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: async (input) => {
+        captured = input;
+        return payDemSettleCore(input, client);
+      },
+    };
+    const settle = payDemSettle(rail, { network: "demos" });
+
+    await settle(req({ rail: "demos-native:DEM", jobId: "job-7", phaseIndex: 2 }));
+
+    expect(captured?.recovery).toEqual({
+      railId: "demos-native:DEM",
+      jobId: "job-7",
+      phaseIndex: 2,
+      settlementKey: "demos-native:DEM:job-7:2",
+    });
+    expect(client.sent?.recovery).toEqual(captured?.recovery);
+  });
+
+  test("rejects a contradictory recovery key before submitting", async () => {
+    const client = fakeClient();
+    await expect(payDemSettleCore(params({
+      recovery: {
+        railId: "demos-native:DEM",
+        jobId: "job-7",
+        phaseIndex: 2,
+        settlementKey: "demos-native:DEM:job-7:3",
+      },
+    }), client)).rejects.toThrow(/settlementKey does not match/);
+    expect(client.sent).toBeUndefined();
   });
 
   test("rejects a non-DEM asset (pay-dem settles DEM only)", async () => {

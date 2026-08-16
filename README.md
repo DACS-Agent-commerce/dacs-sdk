@@ -278,6 +278,13 @@ durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
 additionally requires an application-owned durable journal or equivalent rail
 record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
+When the rail is selected through `settleFromRail`, supply these dependencies
+under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
+`settlementStore`, and `reconcile`. The bridge adds the exact
+`(railId, jobId, phaseIndex)` and settlement key to every prepared-transfer
+record, allowing the journal and durable settlement log to authenticate the
+same PC-7 effect. The compatibility defaults remain process-local and must not
+be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios

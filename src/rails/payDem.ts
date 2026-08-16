@@ -217,6 +217,20 @@ export interface PayDemSettleParams {
   amount: string;
   /** Network label recorded on the evidence (default "demos"). */
   network?: string;
+  /**
+   * Optional PC-7 recovery identity supplied by the runSession bridge. When
+   * present it is persisted with the prepared transaction before broadcast so
+   * a durable journal can bind the signed hash to the exact rail/session/phase
+   * idempotency key instead of relying on transaction identity alone.
+   */
+  recovery?: Readonly<PayDemSettlementRecoveryContext>;
+}
+
+export interface PayDemSettlementRecoveryContext {
+  railId: string;
+  jobId: string;
+  phaseIndex: number;
+  settlementKey: string;
 }
 
 /** The result of submitting a native transfer and independently observing finality. */
@@ -248,7 +262,47 @@ export interface DemosNativeClient {
   /** The payer's Demos address. */
   address: string;
   /** Sign, confirm, and broadcast a native DEM transfer; resolve its receipt. */
-  transfer(args: { to: string; amountOs: bigint }): Promise<DemosTransferResult>;
+  transfer(args: {
+    to: string;
+    amountOs: bigint;
+    recovery?: Readonly<PayDemSettlementRecoveryContext>;
+  }): Promise<DemosTransferResult>;
+}
+
+function captureRecoveryContext(
+  value: unknown,
+): Readonly<PayDemSettlementRecoveryContext> | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) {
+    throw new DacsError("pay-dem recovery context must be stable data");
+  }
+  const railId = requiredStableString(value, "railId", "pay-dem recovery railId");
+  const jobId = requiredStableString(value, "jobId", "pay-dem recovery jobId");
+  const phaseIndexProperty = stableDataProperty(
+    value,
+    "phaseIndex",
+    "pay-dem recovery phaseIndex",
+  );
+  if (!phaseIndexProperty.found ||
+      !Number.isSafeInteger(phaseIndexProperty.value) ||
+      (phaseIndexProperty.value as number) < 0) {
+    throw new DacsError(
+      "pay-dem recovery phaseIndex must be a non-negative safe integer",
+    );
+  }
+  const phaseIndex = phaseIndexProperty.value as number;
+  const key = requiredStableString(
+    value,
+    "settlementKey",
+    "pay-dem recovery settlementKey",
+  );
+  if (key !== settlementKey(railId, jobId, phaseIndex)) {
+    throw new DacsError(
+      "pay-dem recovery settlementKey does not match railId, jobId, and phaseIndex",
+    );
+  }
+  return Object.freeze({ railId, jobId, phaseIndex, settlementKey: key });
 }
 
 export async function payDemSettleCore(
@@ -266,6 +320,14 @@ export async function payDemSettleCore(
   );
   const amount = requiredStableString(params, "amount", "pay-dem amount");
   const network = optionalStableString(params, "network", "pay-dem network");
+  const recoveryProperty = stableDataProperty(
+    params,
+    "recovery",
+    "pay-dem recovery context",
+  );
+  const recovery = captureRecoveryContext(
+    recoveryProperty.found ? recoveryProperty.value : undefined,
+  );
   const payer = requiredStableString(client, "address", "pay-dem payer");
   const transfer = stableMethod<DemosNativeClient["transfer"]>(
     client,
@@ -283,7 +345,11 @@ export async function payDemSettleCore(
     throw new DacsError(`pay-dem: amount must be > 0 (got ${amount})`);
   }
 
-  const response = await transfer({ to: recipient, amountOs });
+  const response = await transfer({
+    to: recipient,
+    amountOs,
+    ...(recovery === undefined ? {} : { recovery }),
+  });
   const okProperty = stableDataProperty(response, "ok", "pay-dem transfer result ok");
   const hashProperty = stableDataProperty(
     response,
@@ -397,6 +463,8 @@ export interface PayDemPreparedTransfer {
   amountOs: string;
   network: string;
   maxTotalDebitOs?: string;
+  /** Exact PC-7 session/phase identity when invoked through payDemSettle. */
+  recovery?: Readonly<PayDemSettlementRecoveryContext>;
 }
 
 export interface PayDemRail {
@@ -930,7 +998,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 
   const client: DemosNativeClient = {
     address,
-    transfer: async ({ to, amountOs }) => {
+    transfer: async ({ to, amountOs, recovery }) => {
       const signed = snapshotCanonicalJsonRead(
         await transfer(to, amountOs),
         "pay-dem signed transfer",
@@ -1046,6 +1114,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         ...(maxTotalDebitOs === undefined
           ? {}
           : { maxTotalDebitOs: maxTotalDebitOs.toString() }),
+        ...(recovery === undefined ? {} : { recovery }),
       }) satisfies Readonly<PayDemPreparedTransfer>;
 
       // This is the last operation before the only irreversible call. A funded
@@ -1196,14 +1265,21 @@ export function payDemSettle(
     // Decimal DEM → integer OS base units (string/integer math, no float).
     // baseUnits also rejects sub-OS precision (> 9 fractional digits).
     const amountOs = baseUnits(amount, DEM_DECIMALS);
+    const key = settlementKey(railId, jobId, phaseIndex);
     const submit = () =>
       rail.settle({
         recipient: payeeAddress,
         amount: amountOs,
         network,
+        recovery: {
+          railId,
+          jobId,
+          phaseIndex,
+          settlementKey: key,
+        },
       });
     const result = await store.once(
-      settlementKey(railId, jobId, phaseIndex),
+      key,
       submit,
       reconcile,
     );

@@ -3,7 +3,15 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
 import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
 import { createPayD402Rail, payD402Settle } from "../rails/payD402.js";
-import { createPayDemRail, payDemSettle } from "../rails/payDem.js";
+import {
+  createPayDemRail,
+  payDemSettle,
+  type PayDemPreparedTransfer,
+} from "../rails/payDem.js";
+import type {
+  SettlementIdempotencyStore,
+  SettlementReconcile,
+} from "../rails/idempotency.js";
 import type { RailDescriptor } from "./types.js";
 
 /**
@@ -40,6 +48,28 @@ export interface RailDispatchOptions {
   demosRpc?: string;
   /** Demos wallet secret used by pay-dem and pay-d402 to sign payments. */
   demosSecret?: string;
+  /**
+   * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
+   * restart recovery should supply all three of `settlementStore`,
+   * `reconcile`, and `journalPreparedTransfer`; omitting them preserves the
+   * low-level process-local compatibility behavior but is not restart-safe.
+   */
+  payDem?: {
+    /** Maximum transfer amount plus confirmed Demos fees, in OS base units. */
+    maxTotalDebitOs?: bigint;
+    /** Durable pre-broadcast record of the signed hash and exact phase key. */
+    journalPreparedTransfer?: (
+      transfer: Readonly<PayDemPreparedTransfer>,
+    ) => Promise<void>;
+    /** Durable atomic settlement intent/outcome store. */
+    settlementStore?: SettlementIdempotencyStore;
+    /** Authoritative reconciliation for an unresolved retained intent. */
+    reconcile?: SettlementReconcile;
+    inclusionTimeoutMs?: number;
+    inclusionPollIntervalMs?: number;
+    statusRequestTimeoutMs?: number;
+    nonceVisibilityTimeoutMs?: number;
+  };
   /**
    * Explicit opt-in to dispatch EXPERIMENTAL / non-`live` rails (currently
    * pay-d402, which isn't node-enabled). Off by default so a registry can't wire
@@ -212,16 +242,55 @@ export async function settleFromRail(
       if (!opts.demosSecret) {
         throw new DacsError("pay-dem rail requires opts.demosSecret");
       }
+      const payDem = opts.payDem;
+      // Capture every recovery authority before the first await. A caller that
+      // mutates its options while the optional peer connects must not be able
+      // to swap the debit cap, preparation journal, durable log, or reconciler.
+      const maxTotalDebitOs = payDem?.maxTotalDebitOs;
+      const journalPreparedTransfer = payDem?.journalPreparedTransfer;
+      const settlementStore = payDem?.settlementStore;
+      const reconcile = payDem?.reconcile;
+      const inclusionTimeoutMs = payDem?.inclusionTimeoutMs;
+      const inclusionPollIntervalMs = payDem?.inclusionPollIntervalMs;
+      const statusRequestTimeoutMs = payDem?.statusRequestTimeoutMs;
+      const nonceVisibilityTimeoutMs = payDem?.nonceVisibilityTimeoutMs;
+      const demNetwork = payment.network ?? "demos";
+      const demRecipient = payment.recipient;
       const rail = await createPayDemRail({
         rpc: opts.demosRpc,
         secret: opts.demosSecret,
-        network: payment.network ?? "demos",
+        network: demNetwork,
+        ...(maxTotalDebitOs === undefined
+          ? {}
+          : { maxTotalDebitOs }),
+        ...(journalPreparedTransfer === undefined
+          ? {}
+          : { journalPreparedTransfer }),
+        ...(inclusionTimeoutMs === undefined
+          ? {}
+          : { inclusionTimeoutMs }),
+        ...(inclusionPollIntervalMs === undefined
+          ? {}
+          : { inclusionPollIntervalMs }),
+        ...(statusRequestTimeoutMs === undefined
+          ? {}
+          : { statusRequestTimeoutMs }),
+        ...(nonceVisibilityTimeoutMs === undefined
+          ? {}
+          : { nonceVisibilityTimeoutMs }),
       });
       return payDemSettle(rail, {
-        ...(payment.recipient === undefined
+        ...(demRecipient === undefined
           ? {}
-          : { recipient: payment.recipient }),
-        network: payment.network ?? "demos",
+          : { recipient: demRecipient }),
+        network: demNetwork,
+      }, {
+        ...(settlementStore === undefined
+          ? {}
+          : { store: settlementStore }),
+        ...(reconcile === undefined
+          ? {}
+          : { reconcile }),
       });
     }
     default:
