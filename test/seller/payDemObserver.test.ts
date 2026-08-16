@@ -53,6 +53,14 @@ function fixtureClient(
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
   it("returns post-fork OS facts from one mutually-consistent confirmed block", async () => {
     await expect(
@@ -252,6 +260,107 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
     });
   });
 
+  it("binds every observation method before the first RPC await", async () => {
+    const fixture = includedFixture();
+    const status = deferred<typeof fixture.status>();
+    const originalTx = vi.fn(async () => fixture.transaction);
+    const originalBlock = vi.fn(async () => fixture.block);
+    const client: PayDemObservationClient = {
+      getTransactionStatus: vi.fn(() => status.promise),
+      getTxByHash: originalTx,
+      getBlockByNumber: originalBlock,
+    };
+
+    const observation = observePayDemTransferCore(HASH, client);
+    client.getTxByHash = vi.fn(async () => ({
+      ...fixture.transaction,
+      content: { ...fixture.transaction.content, to: PAYER },
+    }));
+    client.getBlockByNumber = vi.fn(async () => ({
+      ...fixture.block,
+      content: { ...fixture.block.content, ordered_transactions: [] },
+    }));
+    status.resolve(fixture.status);
+
+    await expect(observation).resolves.toMatchObject({
+      status: "included",
+      payer: PAYER,
+      payee: PAYEE,
+    });
+    expect(originalTx).toHaveBeenCalledTimes(1);
+    expect(originalBlock).toHaveBeenCalledTimes(1);
+    expect(client.getTxByHash).not.toHaveBeenCalled();
+    expect(client.getBlockByNumber).not.toHaveBeenCalled();
+  });
+
+  it("rejects accessor/proxy observation clients without invoking their traps", async () => {
+    let getterReads = 0;
+    const accessorClient = {
+      get getTransactionStatus() {
+        getterReads += 1;
+        return async () => includedFixture().status;
+      },
+      getTxByHash: async () => includedFixture().transaction,
+      getBlockByNumber: async () => includedFixture().block,
+    } as unknown as PayDemObservationClient;
+    await expect(observePayDemTransferCore(HASH, accessorClient)).resolves.toEqual({
+      status: "unavailable",
+      reason: "transaction observation client is unstable",
+    });
+    expect(getterReads).toBe(0);
+
+    let proxyReads = 0;
+    const proxyClient = new Proxy(fixtureClient(), {
+      get(target, property, receiver) {
+        proxyReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expect(observePayDemTransferCore(HASH, proxyClient)).resolves.toEqual({
+      status: "unavailable",
+      reason: "transaction observation client is unstable",
+    });
+    expect(proxyReads).toBe(0);
+  });
+
+  it("rejects accessor/proxy RPC results without invoking their traps", async () => {
+    let reads = 0;
+    const accessorStatus = {
+      get state() {
+        reads += 1;
+        return "included";
+      },
+      blockNumber: BLOCK_NUMBER,
+    };
+    await expect(observePayDemTransferCore(HASH, {
+      getTransactionStatus: async () => accessorStatus,
+      getTxByHash: async () => includedFixture().transaction,
+      getBlockByNumber: async () => includedFixture().block,
+    })).resolves.toEqual({
+      status: "unavailable",
+      reason: "transaction status read failed",
+    });
+    expect(reads).toBe(0);
+
+    const proxyTransaction = new Proxy(includedFixture().transaction, {
+      get(target, property, receiver) {
+        // Promise resolution performs the language-level thenable probe. Count
+        // only application field reads; the observer must perform none.
+        if (property !== "then") reads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expect(observePayDemTransferCore(HASH, {
+      getTransactionStatus: async () => includedFixture().status,
+      getTxByHash: async () => proxyTransaction,
+      getBlockByNumber: async () => includedFixture().block,
+    })).resolves.toEqual({
+      status: "unavailable",
+      reason: "included transaction facts are unavailable",
+    });
+    expect(reads).toBe(0);
+  });
+
   it("uses the public Demos nodeCall protocol without loading demosdk", async () => {
     const fixture = includedFixture();
     const responses = new Map<string, unknown>([
@@ -287,6 +396,50 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
       "getTxByHash",
       "getBlockByNumber",
     ]);
+  });
+
+  it("captures the RPC URL once when the observer is constructed", async () => {
+    const requestedUrls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({
+        result: 200,
+        response: { state: "pending" },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const config = { rpc: "https://trusted.example", fetchImpl };
+    const observer = createPayDemSellerObserver(config);
+    config.rpc = "https://substituted.example";
+
+    await expect(observer.observeDemosTransfer(HASH)).resolves.toMatchObject({
+      status: "pending",
+    });
+    expect(requestedUrls).toEqual(["https://trusted.example"]);
+  });
+
+  it("rejects accessor/proxy observer config without invoking traps", () => {
+    let reads = 0;
+    const accessorConfig = {
+      get rpc() {
+        reads += 1;
+        return "https://node.example";
+      },
+    };
+    expect(() => createPayDemSellerObserver(accessorConfig)).toThrow(
+      /must be stable data/,
+    );
+    expect(reads).toBe(0);
+
+    const proxyConfig = new Proxy({ rpc: "https://node.example" }, {
+      get(target, property, receiver) {
+        reads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    expect(() => createPayDemSellerObserver(proxyConfig)).toThrow(
+      /must be stable data/,
+    );
+    expect(reads).toBe(0);
   });
 
   it("bounds response-body parsing even when an injected fetch ignores abort", async () => {

@@ -84,15 +84,17 @@ describe("pay-DEM funded-run adapter", () => {
   it("persists the original included transaction when nonce visibility fails", async () => {
     let markerPath = "";
     let outcomePath = "";
+    const catchUp = new PayDemIncludedNonceVisibilityError({
+      txHash: "cd".repeat(32),
+      blockNumber: 95563,
+      nonce: 35,
+      cause: new Error("nonce projection delayed"),
+    });
+    expect(catchUp.category).toBe("permanent");
     await expect(executePayDemFundedRun(await fixture(), async (marker) => {
       markerPath = marker.markerPath;
       outcomePath = marker.outcomePath;
-      throw new PayDemIncludedNonceVisibilityError({
-        txHash: "cd".repeat(32),
-        blockNumber: 95563,
-        nonce: 35,
-        cause: new Error("nonce projection delayed"),
-      });
+      throw catchUp;
     })).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
 
     expect(JSON.parse(await readFile(markerPath, "utf8"))).toMatchObject({
