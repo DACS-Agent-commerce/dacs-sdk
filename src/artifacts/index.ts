@@ -58,6 +58,7 @@ export type {
   ChainTxRef,
   TxRef,
   PaymentAmount,
+  SettlementFinalityModel,
   SettlementCommitmentLevel,
   SettlementFinalityParameters,
   SettlementFinality,

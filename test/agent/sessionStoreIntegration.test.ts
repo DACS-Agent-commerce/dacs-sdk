@@ -59,6 +59,15 @@ const CHECKPOINT_FINALITIES = [
   finality: SettlementFinalityParameters;
 }>;
 
+const FAILED_CHECKPOINT_FINALITY_FIELDS = [
+  { name: "model", fields: { finalityModel: "bft-final" } },
+  { name: "block-depth parameter", fields: { finalityBlocks: 12 } },
+  {
+    name: "commitment-level parameter",
+    fields: { finalityCommitmentLevel: "finalized" },
+  },
+] as const;
+
 interface DepOverrides {
   kv?: Map<string, Record<string, unknown>>;
   settle?: SessionDeps["settle"];
@@ -312,6 +321,117 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     ).rejects.toThrow(/invalid|malformed/);
     expect(settleCalls).toBe(1);
   });
+
+  test.each(FAILED_CHECKPOINT_FINALITY_FIELDS)(
+    "restart rejects a failed current rail checkpoint carrying a finality $name",
+    async ({ fields }) => {
+      const store = createInMemorySessionStore();
+      const kv = new Map<string, Record<string, unknown>>();
+      let settleCalls = 0;
+      const settle: SessionDeps["settle"] = async (req) => {
+        settleCalls += 1;
+        return {
+          ok: false,
+          txHash: "",
+          chainId: "test:checkpoint",
+          payer: "buyer",
+          payee: req.expectedPayee,
+        };
+      };
+      const interrupted = await makeDeps(store, {
+        kv,
+        settle,
+        anchor: async (name, value) => {
+          if (name === sessionAnchorName.evidence("job-1")) {
+            throw new Error("crash after failed settlement checkpoint");
+          }
+          kv.set(`stor:${name}`, value as Record<string, unknown>);
+          return `stor:${name}`;
+        },
+      });
+      await expect(
+        runSessionCore(interrupted.listingRef, terms, interrupted.deps),
+      ).rejects.toThrow(/failed settlement checkpoint/);
+
+      const malformedStore: NonNullable<SessionDeps["sessionStore"]> = {
+        ...store,
+        load: async (jobId) => {
+          const loaded = await store.load(jobId);
+          if (loaded.status !== "ok") return loaded;
+          const record = structuredClone(loaded.record);
+          const outcome = record.checkpoints.find(
+            (checkpoint) =>
+              checkpoint.key === "settle:0" &&
+              checkpoint.stage === "outcome" &&
+              checkpoint.data?.outcomeSource === "rail-result",
+          );
+          if (outcome?.data) Object.assign(outcome.data, fields);
+          return { status: "ok" as const, record };
+        },
+      };
+      const resumed = await makeDeps(malformedStore, { kv, settle });
+      await expect(
+        runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      ).rejects.toThrow(/invalid|finality/);
+      expect(settleCalls).toBe(1);
+    },
+  );
+
+  test.each(FAILED_CHECKPOINT_FINALITY_FIELDS)(
+    "restart rejects a failed legacy checkpoint carrying a finality $name",
+    async ({ fields }) => {
+      const store = createInMemorySessionStore();
+      const kv = new Map<string, Record<string, unknown>>();
+      const interrupted = await makeDeps(store, {
+        kv,
+        settle: async () => {
+          throw new Error("interrupted after durable intent");
+        },
+      });
+      await expect(
+        runSessionCore(interrupted.listingRef, terms, interrupted.deps),
+      ).rejects.toThrow(/durable intent/);
+
+      const before = await store.load("job-1");
+      if (before.status !== "ok") throw new Error("missing fixture session");
+      const legacyWrite = await store.transition({
+        jobId: "job-1",
+        expectedRevision: before.record.revision,
+        checkpoint: {
+          key: "settle:0",
+          stage: "outcome",
+          data: {
+            txHash: "",
+            chainId: "test:legacy",
+            ok: false,
+            ...fields,
+          },
+        },
+        phase: "failed",
+        now: 1_780_000_000_001,
+      });
+      expect(legacyWrite.ok).toBe(true);
+
+      let recoveries = 0;
+      const resumed = await makeDeps(store, {
+        kv,
+        resumeSettlement: async (req) => {
+          recoveries += 1;
+          return {
+            ok: false,
+            txHash: "",
+            chainId: "test:legacy",
+            payer: "buyer",
+            payee: req.expectedPayee,
+          };
+        },
+      });
+      await expect(
+        runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      ).rejects.toThrow(/invalid|finality/);
+      expect(recoveries).toBe(0);
+    },
+  );
 
   test("fail-closed: untrustworthy (corrupt) durable state refuses to settle (#67)", async () => {
     // A store whose load reports `corrupt` for this session — payment must be
@@ -1101,6 +1221,64 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     ).rejects.toThrow(/evidence is no longer present|refusing to rebuild/i);
     expect(afterDeletion.settleCalls.n).toBe(0);
   });
+
+  test.each(FAILED_CHECKPOINT_FINALITY_FIELDS)(
+    "restart rejects failed authenticated-evidence state carrying a finality $name",
+    async ({ fields }) => {
+      const jobId = "job-failed-evidence-finality";
+      const kv = new Map<string, Record<string, unknown>>();
+      const original = await makeDeps(undefined, {
+        kv,
+        settle: async (req) => ({
+          ok: false,
+          txHash: "",
+          chainId: "test:evidence",
+          payer: "buyer",
+          payee: req.expectedPayee,
+        }),
+      });
+      await expect(
+        runSessionCore(original.listingRef, terms, original.deps, jobId),
+      ).resolves.toMatchObject({ outcome: "failed" });
+
+      const store = createInMemorySessionStore();
+      const migration = await makeDeps(store, { kv });
+      await expect(
+        runSessionCore(migration.listingRef, terms, migration.deps, jobId),
+      ).resolves.toMatchObject({ outcome: "failed" });
+      expect(migration.settleCalls.n).toBe(0);
+
+      const loaded = await store.load(jobId);
+      if (loaded.status !== "ok") throw new Error("missing migrated session");
+      expect(
+        loaded.record.checkpoints.some(
+          (checkpoint) =>
+            checkpoint.data?.outcomeSource === "authenticated-evidence" &&
+            checkpoint.data.ok === false,
+        ),
+      ).toBe(true);
+
+      const malformedStore: NonNullable<SessionDeps["sessionStore"]> = {
+        ...store,
+        load: async (loadedJobId) => {
+          const current = await store.load(loadedJobId);
+          if (current.status !== "ok") return current;
+          const record = structuredClone(current.record);
+          const outcome = record.checkpoints.find(
+            (checkpoint) =>
+              checkpoint.data?.outcomeSource === "authenticated-evidence",
+          );
+          if (outcome?.data) Object.assign(outcome.data, fields);
+          return { status: "ok" as const, record };
+        },
+      };
+      const resumed = await makeDeps(malformedStore, { kv });
+      await expect(
+        runSessionCore(resumed.listingRef, terms, resumed.deps, jobId),
+      ).rejects.toThrow(/invalid|finality/);
+      expect(resumed.settleCalls.n).toBe(0);
+    },
+  );
 
   test("preserves a migrated authenticated failure outcome across another restart", async () => {
     const kv = new Map<string, Record<string, unknown>>();

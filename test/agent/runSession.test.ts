@@ -968,6 +968,25 @@ describe("runSession orchestration (T4)", () => {
     ).toBeUndefined();
   });
 
+  test("failed settlement rail results cannot assert success-only finality", async () => {
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          settle: async () => ({
+            ok: false,
+            txHash: "",
+            chainId: "test:1",
+            payer: "0xbob",
+            payee: "0xalice",
+            finality: { model: "bft-final" },
+          }),
+        }),
+      ),
+    ).rejects.toThrow(/finality/);
+  });
+
   test.each(VALID_FINALITIES)(
     "preserves $name finality through settlement and evidence production",
     async ({ finality }) => {

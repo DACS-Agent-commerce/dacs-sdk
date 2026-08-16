@@ -1873,6 +1873,22 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         reason: "settlement outcome has malformed txHash/chainId/ok fields",
       };
     }
+    // DACS-4 §9.7 makes settlementFinality success-only. Apply that rule at
+    // the shared durable reader before classifying current, authenticated, or
+    // legacy checkpoint shapes so no recovery path can silently discard a
+    // finality assertion attached to a failed settlement.
+    const carriesFinality = [
+      "finalityModel",
+      "finalityBlocks",
+      "finalityCommitmentLevel",
+    ].some((key) => Object.prototype.hasOwnProperty.call(data, key));
+    if (!ok && carriesFinality) {
+      return {
+        status: "invalid",
+        reason: "failed settlement outcome must omit finality fields",
+      };
+    }
+    const finality = parseDurableFinality(data);
     const bindingFields = [
       "settlementBindingVersion",
       "rail",
@@ -1909,7 +1925,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
       if (
         hasPartialCurrentDiscriminator ||
         Object.keys(data).some((key) => !legacyAllowed.has(key)) ||
-        parseDurableFinality(data) === null ||
+        finality === null ||
         (data.blockNumber !== undefined &&
           (!Number.isSafeInteger(data.blockNumber) ||
             (data.blockNumber as number) < 0)) ||
@@ -1998,7 +2014,6 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         "supersedesTxHash",
         "supersedesChainId",
       ]);
-      const finality = parseDurableFinality(data);
       if (
         Object.keys(data).some((key) => !allowed.has(key)) ||
         typeof payer !== "string" ||
