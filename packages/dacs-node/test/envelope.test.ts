@@ -175,6 +175,60 @@ describe("DACS HTTP envelope v1", () => {
     }
   });
 
+  it("preserves canonical ClaimReference parameters while authenticating the CF-3 principal", async () => {
+    const parameterizedSender = `${SENDER}?region=uk`;
+    const parameterizedAudience = `${AUDIENCE}?region=us`;
+    const envelope = await createDacsHttpEnvelopeV1({
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      sender: parameterizedSender,
+      audience: parameterizedAudience,
+      issuedAt: ISSUED_AT,
+      expiresAt: EXPIRES_AT,
+      nonce: nonce(19),
+      payload: PAYLOADS["agreement-proposal"] as never,
+    }, (bytes) => ed25519Sign(bytes, PRIVATE_KEY));
+
+    expect(envelope).toMatchObject({
+      sender: parameterizedSender,
+      audience: parameterizedAudience,
+      keyId: parameterizedSender,
+    });
+    await expect(authenticateDacsHttpEnvelopeV1(envelope, {
+      storeTime: ISSUED_AT,
+      // CF-3 comparison deliberately ignores the advisory audience parameter.
+      expectedAudience: AUDIENCE,
+      resolveIdentity: async () => ({
+        status: "authenticated",
+        principal: SENDER,
+        jobId: JOB_ID,
+        role: "buyer",
+        publicKey: PUBLIC_KEY,
+        evidenceHash: IDENTITY_EVIDENCE_HASH,
+      }),
+      validatePayload: async () => ({ status: "valid" }),
+    })).resolves.toMatchObject({
+      status: "authenticated",
+      envelope: {
+        sender: parameterizedSender,
+        audience: parameterizedAudience,
+      },
+    });
+
+    await expect(createDacsHttpEnvelopeV1({
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      sender: `${SENDER}?role=buyer`,
+      audience: `${SENDER}?role=seller`,
+      issuedAt: ISSUED_AT,
+      expiresAt: EXPIRES_AT,
+      nonce: nonce(18),
+      payload: PAYLOADS["agreement-proposal"] as never,
+    }, (bytes) => ed25519Sign(bytes, PRIVATE_KEY))).rejects.toThrow(
+      "envelope-create-input-invalid",
+    );
+  });
+
   it("detaches and freezes the signed payload graph", async () => {
     const payload = { nested: { label: "before" } };
     const envelope = await createDacsHttpEnvelopeV1({
@@ -220,6 +274,7 @@ describe("DACS HTTP envelope v1", () => {
     ["foreign DID", `did:example:${SENDER_KEY_HEX}`],
     ["uppercase key", `did:demos:agent:${SENDER_KEY_HEX.toUpperCase()}`],
     ["non-canonical leading scheme", SENDER.replace(/^did:/, "DID:")],
+    ["non-canonical parameter order", `${SENDER}?z=1&a=2`],
     ["native address notation", `demos:0x${SENDER_KEY_HEX}`],
   ])("rejects a %s as a signed transport principal", async (_label, sender) => {
     await expect(createDacsHttpEnvelopeV1({

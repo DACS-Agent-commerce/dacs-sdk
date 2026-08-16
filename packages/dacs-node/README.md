@@ -6,8 +6,9 @@ The package keeps filesystem, SQLite, HTTP, process-supervision, and deployment
 concerns outside the transport-neutral SDK. It publishes the stable host
 interfaces, byte-exact authenticated HTTP envelope, and the local SQLite
 durability foundation. The SQLite surface includes the actor-bound coordinator
-and payment-evidence handshake stores. The HTTP server, role services, and live
-deployment remain separate stacked implementation units.
+and payment-evidence handshake stores plus durable authenticated HTTP inbox and
+outbox records. The HTTP listener/client, role services, and live deployment
+remain separate stacked implementation units.
 
 ```ts
 import {
@@ -59,6 +60,26 @@ this store, and every admitted request must name the database's canonical actor
 authority in its role. This is the durable store only: it does not provide an
 HTTP transport, wallet, secret loader, or role service.
 
+Live buyer and seller databases also expose `createHttpInboxStore()` and
+`createHttpOutboxStore()`. The inbox atomically retains the complete canonical
+signed envelope, authentication and identity-evidence hashes before an action
+is invoked. An exact replay is distinguished from a still-pending crash window;
+only a durably recorded disposition may be projected into an acknowledgement.
+The outbox retains the exact signed envelope across retries, claims work with a
+generation-fenced lease, applies one-second exponential backoff capped at sixty
+seconds, and never manufactures a replacement after envelope expiry. A valid
+authenticated and exactly bound late acknowledgement is monotonic and may
+complete an item after its send lease expires. HTTP status alone never clears
+the outbox.
+
+Both transport stores reject retention shorter than seven days, support a
+terminal-session retention extension, use stable bounded cursors, and keep a
+complete hash-chained canonical transition history. Their durable monotonic
+clock prevents a backwards host clock from reviving a lease. These stores do
+not open a socket or perform a request; admission, bounded HTTP parsing, TLS,
+rate limiting, payload validation and role dispatch belong to the next host
+unit.
+
 The public v2, v3, and v4 schemas are immutable migration inputs. A v2 database
 contains only the coordinator order table and its runnable index; the
 authenticated track projection is created and backfilled by v3. Schema v4
@@ -69,7 +90,9 @@ offline-only `simulated-*` outcome and error vocabulary.
 Schema v5 adds payment-evidence handshake records, authenticated runnable
 projections, and their scope-local replay reservations. Migration from v4 is
 preceded by a validated, self-contained backup just like every older supported
-schema transition.
+schema transition. Schema v6 adds the HTTP inbox, outbox, monotonic clock and
+their authenticated transition histories; migration from v5 likewise requires
+a validated pre-write backup.
 
 A legacy database is migrated only when its persisted SDK and Standard
 revision exactly equal the supported runtime bindings. Compatible v3 offline
