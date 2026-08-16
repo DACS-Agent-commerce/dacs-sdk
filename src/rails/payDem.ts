@@ -415,6 +415,27 @@ function confirmedWireAmountOs(value: unknown, postFork: boolean): bigint | null
     : null;
 }
 
+function confirmedProjectedBodyAmountOs(
+  value: unknown,
+  postFork: boolean,
+): bigint | null {
+  if (
+    postFork &&
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    !Object.is(value, -0)
+  ) {
+    // After the denomination fork the transaction-query projection has been
+    // observed returning `content.amount` as a numeric OS value, while the
+    // signed payload retains the canonical decimal-string OS amount. Accept
+    // that projection only for this outer confirmed field; the payload below
+    // must still retain and independently bind the canonical string amount.
+    return BigInt(value);
+  }
+  return confirmedWireAmountOs(value, postFork);
+}
+
 function confirmedValidityFeeOs(value: unknown, postFork: boolean): bigint | null {
   const data = (
     value as {
@@ -521,6 +542,7 @@ function nativeTransferBodyMatches(
     nonce: number;
     postFork: boolean;
   }>,
+  source: "signed" | "confirmed",
 ): boolean {
   const content = transaction.content;
   if (content === null || typeof content !== "object" || Array.isArray(content)) {
@@ -544,7 +566,11 @@ function nativeTransferBodyMatches(
     payerFields.length === 0 ||
     payerFields.some((field) => normalizedDemosAccount(field) !== expectedPayer) ||
     normalizedDemosAccount(body.to) !== expectedPayee ||
-    confirmedWireAmountOs(body.amount, input.postFork) !== input.amountOs
+    (
+      source === "confirmed"
+        ? confirmedProjectedBodyAmountOs(body.amount, input.postFork)
+        : confirmedWireAmountOs(body.amount, input.postFork)
+    ) !== input.amountOs
   ) {
     return false;
   }
@@ -593,7 +619,11 @@ function confirmedDebitFromValidity(
   if (
     !transaction ||
     data?.custom_charges != null ||
-    !nativeTransferBodyMatches(transaction as Record<string, unknown>, input)
+    !nativeTransferBodyMatches(
+      transaction as Record<string, unknown>,
+      input,
+      "confirmed",
+    )
   ) return null;
 
   const feeOs = confirmedValidityFeeOs(value, input.postFork);
@@ -760,9 +790,17 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         }
       )?.response?.data;
       if (
-        !nativeTransferBodyMatches(signed as Record<string, unknown>, transferBinding) ||
+        !nativeTransferBodyMatches(
+          signed as Record<string, unknown>,
+          transferBinding,
+          "signed",
+        ) ||
         confirmedData?.custom_charges != null ||
-        !nativeTransferBodyMatches(confirmedTransaction, transferBinding)
+        !nativeTransferBodyMatches(
+          confirmedTransaction,
+          transferBinding,
+          "confirmed",
+        )
       ) {
         throw new DacsError(
           "pay-dem: signed and confirmed transaction bodies do not bind the requested native transfer; refusing broadcast",
