@@ -152,6 +152,37 @@ describe("queryListingCatalog (DACS-1 §6.3.6)", () => {
     });
   });
 
+  test("cancels response bodies rejected before they are read", async () => {
+    const httpCancel = vi.fn();
+    const httpBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("untrusted error body"));
+      },
+      cancel: httpCancel,
+    });
+    await expect(queryListingCatalog(catalogConfig(async () => new Response(
+      httpBody,
+      { status: 503, headers: { "content-type": "application/json" } },
+    )))).resolves.toMatchObject({ status: "indeterminate" });
+    expect(httpCancel).toHaveBeenCalledTimes(1);
+
+    const headerCancel = vi.fn();
+    const invalidTypeBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not catalog json"));
+      },
+      cancel: headerCancel,
+    });
+    await expect(queryListingCatalog(catalogConfig(async () => new Response(
+      invalidTypeBody,
+      { headers: { "content-type": "text/plain" } },
+    )))).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("content type"),
+    });
+    expect(headerCancel).toHaveBeenCalledTimes(1);
+  });
+
   test("fails closed on RB-3 status/revocation incoherence", async () => {
     const invalidActive = summary({
       revocation: {
@@ -245,24 +276,69 @@ describe("queryListingCatalog (DACS-1 §6.3.6)", () => {
       status: "indeterminate",
       reason: expect.stringContaining("malformed"),
     });
+
+    const parameterizedDemosProfile = await queryListingCatalog(catalogConfig(async () =>
+      jsonResponse({
+        listings: [summary({
+          seller: {
+            primaryClaim: `${SELLER}?jurisdiction=GB`,
+            displayName: "Weather Seller",
+          },
+        })],
+      })));
+    expect(parameterizedDemosProfile).toMatchObject({ status: "ok" });
   });
 
-  test("rejects impossible DACS-5 reputation hints", async () => {
-    const invalidHint = {
+  test("enforces DACS-5 rating boundaries independently", async () => {
+    const hint = {
       categoryScope: "data.weather",
       completionRate: 1,
-      averageSellerRating: 6,
+      averageSellerRating: 1,
+      bundleCount: 1,
+      windowStart: 1,
+      windowEnd: 2,
+      computedAt: 3,
+    };
+    for (const averageSellerRating of [1, 5]) {
+      await expect(queryListingCatalog(catalogConfig(async () => jsonResponse({
+        listings: [summary({ reputationHint: { ...hint, averageSellerRating } })],
+      })))).resolves.toMatchObject({ status: "ok" });
+    }
+    for (const averageSellerRating of [0.999, 5.001]) {
+      await expect(queryListingCatalog(catalogConfig(async () => jsonResponse({
+        listings: [summary({ reputationHint: { ...hint, averageSellerRating } })],
+      })))).resolves.toMatchObject({
+        status: "indeterminate",
+        reason: expect.stringContaining("malformed"),
+      });
+    }
+  });
+
+  test("requires null aggregate metrics independently when bundleCount is zero", async () => {
+    const empty = {
+      categoryScope: "data.weather",
+      completionRate: null,
+      averageSellerRating: null,
       bundleCount: 0,
       windowStart: 1,
       windowEnd: 2,
       computedAt: 3,
     };
-    await expect(queryListingCatalog(catalogConfig(async () =>
-      jsonResponse({ listings: [summary({ reputationHint: invalidHint })] }))))
-      .resolves.toMatchObject({
+    await expect(queryListingCatalog(catalogConfig(async () => jsonResponse({
+      listings: [summary({ reputationHint: empty })],
+    })))).resolves.toMatchObject({ status: "ok" });
+
+    for (const reputationHint of [
+      { ...empty, completionRate: 0 },
+      { ...empty, averageSellerRating: 1 },
+    ]) {
+      await expect(queryListingCatalog(catalogConfig(async () => jsonResponse({
+        listings: [summary({ reputationHint })],
+      })))).resolves.toMatchObject({
         status: "indeterminate",
         reason: expect.stringContaining("malformed"),
       });
+    }
   });
 
   test("rejects insecure or ambiguous client configuration and invalid filters before fetching", async () => {
@@ -304,10 +380,30 @@ describe("createCatalogBindingIndex (DACS-1 §6.3.6 catalog client)", () => {
       status: "present",
       binding: {
         logicalAddress: LOGICAL_ADDRESS,
+        anchorKind: "storage-program",
         nativeAddress: "stor-listing",
         owner: OWNER,
         contentHash: HASH,
         version: 1,
+      },
+    });
+  });
+
+  test("maps a parameterized Demos ClaimReference by its CF-3 owner identity", async () => {
+    const primaryClaim = `${SELLER}?jurisdiction=GB`;
+    const logicalAddress = listingAddress(primaryClaim, LISTING_ID, 1);
+    const index = createCatalogBindingIndex(catalogConfig(async () => jsonResponse({
+      listings: [summary({
+        seller: { primaryClaim, displayName: "Weather Seller" },
+      })],
+    })));
+
+    await expect(index.resolve(logicalAddress, OWNER)).resolves.toMatchObject({
+      status: "present",
+      binding: {
+        logicalAddress,
+        anchorKind: "storage-program",
+        owner: OWNER,
       },
     });
   });
@@ -373,7 +469,7 @@ describe("createCatalogBindingIndex (DACS-1 §6.3.6 catalog client)", () => {
     });
     await expect(index.resolve(LOGICAL_ADDRESS, OWNER)).resolves.toMatchObject({
       status: "present",
-      binding: { nativeAddress: "cid" },
+      binding: { anchorKind: "ipfs", nativeAddress: "cid" },
     });
   });
 
@@ -455,6 +551,28 @@ describe("createCatalogBindingIndex (DACS-1 §6.3.6 catalog client)", () => {
         })],
       });
     }));
+    await expect(index.resolve(LOGICAL_ADDRESS, OWNER)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "catalog binding changed between bounded validation scans",
+    });
+  });
+
+  test("does not erase an anchor-kind change when the locator stays the same", async () => {
+    let request = 0;
+    const index = createCatalogBindingIndex({
+      ...catalogConfig(async () => {
+        request += 1;
+        return jsonResponse({
+          listings: [summary({
+            anchor: {
+              kind: request === 1 ? "storage-program" : "ipfs",
+              locator: "same-locator",
+            },
+          })],
+        });
+      }),
+      supportedAnchorKinds: ["storage-program", "ipfs"],
+    });
     await expect(index.resolve(LOGICAL_ADDRESS, OWNER)).resolves.toEqual({
       status: "indeterminate",
       reason: "catalog binding changed between bounded validation scans",

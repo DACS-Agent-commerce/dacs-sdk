@@ -6,7 +6,10 @@ import {
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { isRevocationBinding } from "../artifacts/validators.js";
 import type { ClaimRef, RevocationBinding } from "../artifacts/types.js";
-import { isCanonicalClaimReference } from "../identity/claimReference.js";
+import {
+  isCanonicalClaimReference,
+  parseCanonicalClaimReference,
+} from "../identity/claimReference.js";
 import {
   resolveBinding,
   type AnchorBinding,
@@ -15,7 +18,6 @@ import {
 } from "./binding.js";
 
 const CONTENT_HASH = /^[0-9a-f]{64}$/;
-const DEMOS_AGENT_CLAIM = /^did:demos:agent:([0-9a-f]{64})$/;
 const JSON_CONTENT_TYPE = /^(?:application\/json|application\/[a-z0-9!#$&^_.+-]+\+json)(?:\s*;|$)/i;
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -163,8 +165,6 @@ function isSeller(
   return (
     isRecord(value) &&
     isCanonicalClaimReference(primaryClaim) &&
-    (!primaryClaim.startsWith("did:demos:agent:") ||
-      DEMOS_AGENT_CLAIM.test(primaryClaim)) &&
     isCanonicalString(value.displayName) &&
     value.displayName.length <= 200
   );
@@ -432,17 +432,29 @@ async function readBoundedJson(
   maxBytes: number,
   signal: AbortSignal,
 ): Promise<unknown> {
+  const rejectBeforeRead = (message: string): never => {
+    try {
+      if (response.body !== null && !response.body.locked) {
+        void response.body.cancel(message).catch(() => undefined);
+      }
+    } catch {
+      // Resource cleanup is best-effort; the validation failure stays primary.
+    }
+    throw new Error(message);
+  };
   const contentType = response.headers.get("content-type");
   if (contentType !== null && !JSON_CONTENT_TYPE.test(contentType)) {
-    throw new Error("catalog response content type is not JSON");
+    rejectBeforeRead("catalog response content type is not JSON");
   }
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     const parsed = Number(declaredLength);
     if (!Number.isSafeInteger(parsed) || parsed < 0) {
-      throw new Error("catalog response has an invalid Content-Length");
+      rejectBeforeRead("catalog response has an invalid Content-Length");
     }
-    if (parsed > maxBytes) throw new Error("catalog response exceeds maxResponseBytes");
+    if (parsed > maxBytes) {
+      rejectBeforeRead("catalog response exceeds maxResponseBytes");
+    }
   }
 
   if (response.body === null) throw new Error("catalog response has no body");
@@ -577,6 +589,14 @@ async function queryCatalogPage(
       controller.signal,
     );
     if (!response.ok) {
+      try {
+        if (response.body !== null && !response.body.locked) {
+          void response.body.cancel(`catalog returned HTTP ${response.status}`)
+            .catch(() => undefined);
+        }
+      } catch {
+        // Resource cleanup is best-effort; the HTTP failure stays primary.
+      }
       return {
         status: "indeterminate",
         reason: `catalog returned HTTP ${response.status}`,
@@ -630,7 +650,11 @@ export async function queryListingCatalog(
 }
 
 function bindingOwner(primaryClaim: string): string {
-  return DEMOS_AGENT_CLAIM.exec(primaryClaim)?.[1] ?? primaryClaim;
+  const parsed = parseCanonicalClaimReference(primaryClaim);
+  const demos = parsed?.identity.scheme === "did"
+    ? /^demos:agent:([0-9a-f]{64})$/.exec(parsed.identity.identifier)
+    : null;
+  return demos?.[1] ?? primaryClaim;
 }
 
 function candidateBinding(
@@ -639,6 +663,7 @@ function candidateBinding(
 ): AnchorBinding {
   return {
     logicalAddress,
+    anchorKind: summary.anchor.kind,
     nativeAddress: summary.anchor.locator,
     owner: bindingOwner(summary.seller.primaryClaim),
     contentHash: summary.contentHash,
@@ -668,6 +693,7 @@ function sameStableResolution(
   if (left.status !== "present" || right.status !== "present") return false;
   return (
     left.binding.logicalAddress === right.binding.logicalAddress &&
+    left.binding.anchorKind === right.binding.anchorKind &&
     left.binding.nativeAddress === right.binding.nativeAddress &&
     left.binding.owner === right.binding.owner &&
     left.binding.contentHash === right.binding.contentHash &&

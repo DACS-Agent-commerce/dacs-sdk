@@ -1,3 +1,6 @@
+import { isIP } from "node:net";
+import { domainToASCII } from "node:url";
+
 import { DacsError } from "../errors.js";
 
 /** CORE B.1 CF-3 identity. Parameters deliberately do not participate. */
@@ -24,6 +27,83 @@ function compareCodePoints(left: string, right: string): number {
 }
 
 const RESERVED_PARAMETER_CHARACTERS = new Set([":", "?", "&", "=", "%"]);
+const UINT256_MAX = (1n << 256n) - 1n;
+
+function canonicalDomainIdentifier(identifier: string): boolean {
+  let ascii: string;
+  try {
+    ascii = domainToASCII(identifier);
+  } catch {
+    return false;
+  }
+  if (identifier.length > 253 || identifier.endsWith(".") ||
+      isIP(identifier) !== 0 || ascii !== identifier) {
+    return false;
+  }
+  const labels = identifier.split(".");
+  return labels.every((label) =>
+    label.length >= 1 &&
+    label.length <= 63 &&
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
+  );
+}
+
+function canonicalRegisteredIdentifier(
+  scheme: string,
+  identifier: string,
+  hasParameters: boolean,
+): boolean {
+  switch (scheme) {
+    case "did": {
+      const methodSeparator = identifier.indexOf(":");
+      if (methodSeparator <= 0 ||
+          !/^[a-z0-9]+$/.test(identifier.slice(0, methodSeparator))) {
+        return false;
+      }
+      if (identifier.slice(0, methodSeparator) === "demos") {
+        return /^demos:agent:[0-9a-f]{64}$/.test(identifier);
+      }
+      return identifier.slice(methodSeparator + 1).length > 0;
+    }
+    case "domain":
+      // DACS-1 DCR-2 deliberately excludes URL query syntax from the
+      // hostname-only profile, even though other ClaimReference schemes may
+      // carry advisory parameters.
+      return !hasParameters && canonicalDomainIdentifier(identifier);
+    case "key":
+      return /^[0-9a-f]+$/.test(identifier);
+    case "erc8004": {
+      const match = /^([1-9][0-9]*):(0x[0-9a-f]{40}):(0|[1-9][0-9]*)$/.exec(
+        identifier,
+      );
+      if (!match) return false;
+      try {
+        return BigInt(match[3]!) <= UINT256_MAX;
+      } catch {
+        return false;
+      }
+    }
+    case "cci-xm": {
+      const separator = identifier.indexOf(":");
+      const family = separator < 0 ? identifier : identifier.slice(0, separator);
+      if (family.toLowerCase() !== "evm") return true;
+      return /^evm:[1-9][0-9]*:.+$/.test(identifier);
+    }
+    case "cci-lei":
+      return /^[0-9A-Z]{20}$/.test(identifier);
+    case "cci-finra-crd":
+      return /^(?:0|[1-9][0-9]*)$/.test(identifier);
+    case "cci-sam-uei":
+      return /^[0-9A-Z]{12}$/.test(identifier);
+    case "cci-naics":
+      return /^[0-9]{6}$/.test(identifier);
+    default:
+      // CF-2 permits experimental/unknown schemes to be forwarded verbatim.
+      // They remain unverified for requirement evaluation under DACS-1
+      // unknown-scheme handling; only their generic NFC byte form is known.
+      return true;
+  }
+}
 
 function decodeCanonicalParameterSegment(value: string): string | null {
   let decoded = "";
@@ -67,7 +147,13 @@ export function parseCanonicalClaimReference(
   const remainder = value.slice(colon + 1);
   const question = remainder.indexOf("?");
   const identifier = question < 0 ? remainder : remainder.slice(0, question);
-  if (!identifier || identifier.normalize("NFC") !== identifier) return null;
+  if (
+    !identifier ||
+    identifier.normalize("NFC") !== identifier ||
+    !canonicalRegisteredIdentifier(scheme, identifier, question >= 0)
+  ) {
+    return null;
+  }
   if (question >= 0) {
     const query = remainder.slice(question + 1);
     if (!query) return null;

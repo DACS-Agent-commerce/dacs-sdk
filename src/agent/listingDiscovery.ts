@@ -228,6 +228,7 @@ export interface ListingDiscoveryDeps {
   index: BindingIndex;
   readAnchor: (
     nativeAddress: string,
+    anchorKind?: string,
   ) => Promise<Record<string, unknown> | null>;
   verify: Verifier;
   /** Required for normative reads; the SDK executes the ordered algorithm. */
@@ -374,7 +375,11 @@ export async function readListingByLogicalAddress(
   if (
     typeof candidate.logicalAddress !== "string" ||
     typeof candidate.nativeAddress !== "string" ||
-    typeof candidate.owner !== "string"
+    typeof candidate.owner !== "string" ||
+    (candidate.anchorKind !== undefined &&
+      (typeof candidate.anchorKind !== "string" ||
+        candidate.anchorKind.length === 0 ||
+        candidate.anchorKind !== candidate.anchorKind.trim()))
   ) {
     return rejected(
       logicalAddress,
@@ -481,7 +486,7 @@ export async function readListingByLogicalAddress(
 
   let readValue: unknown;
   try {
-    readValue = await readAnchor(binding.nativeAddress);
+    readValue = await readAnchor(binding.nativeAddress, binding.anchorKind);
   } catch (error) {
     return {
       status: "indeterminate",
