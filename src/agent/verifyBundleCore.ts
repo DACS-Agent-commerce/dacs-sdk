@@ -8,7 +8,11 @@ import {
 import { signedBytes } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { parseCanonicalClaimReference } from "../identity/claimReference.js";
+import { isCanonicalBase64Url } from "../artifacts/signatures.js";
+import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import type {
   AnyAttestationBundle,
   AttestationRef,
@@ -586,9 +590,15 @@ function agreementIsCoherentWithBundle(
       agreementBuyers.length === 1 &&
       agreementSellers.length === 1 &&
       bundleSellers.length === 1 &&
-      agreementBuyers[0]!.primaryClaim === bundleBuyers[0]!.primaryClaim &&
+      sameCanonicalClaimIdentity(
+        agreementBuyers[0]!.primaryClaim,
+        bundleBuyers[0]!.primaryClaim,
+      ) &&
       agreementBuyers[0]!.bundleHash === bundleBuyers[0]!.bundleHash &&
-      agreementSellers[0]!.primaryClaim === bundleSellers[0]!.primaryClaim &&
+      sameCanonicalClaimIdentity(
+        agreementSellers[0]!.primaryClaim,
+        bundleSellers[0]!.primaryClaim,
+      ) &&
       agreementSellers[0]!.bundleHash === bundleSellers[0]!.bundleHash
     );
   }
@@ -602,14 +612,14 @@ function agreementIsCoherentWithBundle(
     return (
       isLegacyMvpAgreementDocument(scope) &&
       scope.jobId === bundle.jobId &&
-      scope.buyer === bundleBuyers[0]!.primaryClaim
+      sameCanonicalClaimIdentity(scope.buyer, bundleBuyers[0]!.primaryClaim)
     );
   }
   return (
     isLegacyMvpAgreementDocument(scope) &&
     scope.jobId === bundle.jobId &&
-    scope.buyer === bundleBuyers[0]!.primaryClaim &&
-    scope.seller === bundleSellers[0]!.primaryClaim
+    sameCanonicalClaimIdentity(scope.buyer, bundleBuyers[0]!.primaryClaim) &&
+    sameCanonicalClaimIdentity(scope.seller, bundleSellers[0]!.primaryClaim)
   );
 }
 
@@ -625,8 +635,17 @@ function requiredSignatureClaims(
     agreementClaim(agreement, "seller") ?? seller ?? "role:seller",
   ];
   const orchestrator = bundle.parties.find((party) => party.role === "orchestrator")?.primaryClaim;
-  if (orchestrator && orchestrator !== buyer && orchestrator !== seller) claims.push(orchestrator);
-  return [...new Set(claims)];
+  if (
+    orchestrator &&
+    !sameCanonicalClaimIdentity(orchestrator, buyer) &&
+    !sameCanonicalClaimIdentity(orchestrator, seller)
+  ) claims.push(orchestrator);
+  return claims.filter(
+    (claim, index) =>
+      claims.findIndex((candidate) =>
+        sameCanonicalClaimIdentity(candidate, claim)
+      ) === index,
+  );
 }
 
 function bundleClaimReferencesAreCanonical(
@@ -721,35 +740,58 @@ export async function verifyBundleCore(
   );
 
   const sigs = Array.isArray(raw["signatures"])
-    ? (raw["signatures"] as Array<{ party?: unknown; value?: unknown }>)
+    ? (raw["signatures"] as Array<{
+        party?: unknown;
+        algorithm?: unknown;
+        value?: unknown;
+      }>)
     : [];
 
   const signatures: SignatureCheck[] = [];
   for (const s of sigs) {
     const party = typeof s.party === "string" ? s.party : "";
-    const resolvedKey = parseCanonicalClaimReference(party) === null
-      ? null
-      : await deps.resolvePublicKey(party);
+    const canonicalParty = parseCanonicalClaimReference(party) !== null;
+    const authorizedParty = canonicalParty && bundle.parties.some(
+      (candidate) =>
+        sameCanonicalClaimIdentity(candidate.primaryClaim, party),
+    );
+    const encodedSignature = typeof s.value === "string" ? s.value : "";
+    const signatureBytes = isCanonicalBase64Url(encodedSignature)
+      ? Uint8Array.from(Buffer.from(encodedSignature, "base64url"))
+      : null;
     let verdict: SignatureVerdict;
-    if (!resolvedKey) {
+    if (!canonicalParty) {
       verdict = "unverified";
     } else if (
-      !(resolvedKey instanceof Uint8Array) ||
-      resolvedKey.length !== 32
+      !authorizedParty ||
+      s.algorithm !== "ed25519" ||
+      signatureBytes === null ||
+      signatureBytes.length !== 64
     ) {
-      // Malformed resolved key — can't evaluate; ERROR, not a false FAIL.
-      verdict = "error";
+      // §10.4.1 / CORE §B.7: every carried signature must name a session
+      // party, dispatch by its declared algorithm, and use exact SIG-6 bytes.
+      // Unsupported algorithms are never reinterpreted as Ed25519.
+      verdict = "invalid";
     } else {
-      const key = Uint8Array.from(resolvedKey);
-      const sigBytes = Uint8Array.from(
-        Buffer.from(typeof s.value === "string" ? s.value : "", "base64url"),
-      );
-      const verified = await deps.verify(
-        Uint8Array.from(message),
-        Uint8Array.from(sigBytes),
-        Uint8Array.from(key),
-      );
-      verdict = verified === true ? "valid" : "invalid";
+      // Resolve once. The branch above deliberately avoids exposing an
+      // unauthorized or algorithm-confused signature to caller callbacks.
+      const resolvedKey = await deps.resolvePublicKey(party);
+      if (!resolvedKey) {
+        verdict = "unverified";
+      } else if (
+        !(resolvedKey instanceof Uint8Array) ||
+        resolvedKey.length !== 32
+      ) {
+        // Malformed resolved key — can't evaluate; ERROR, not a false FAIL.
+        verdict = "error";
+      } else {
+        const verified = await deps.verify(
+          Uint8Array.from(message),
+          Uint8Array.from(signatureBytes),
+          Uint8Array.from(resolvedKey),
+        );
+        verdict = verified === true ? "valid" : "invalid";
+      }
     }
     signatures.push({ party, verdict });
   }
@@ -910,7 +952,10 @@ export async function verifyBundleCore(
             composite.value as unknown as CompositeVerificationRecord;
           const boundParty = bundle.parties.find(
             (party) =>
-              party.primaryClaim === candidate.evaluatedParty &&
+              sameCanonicalClaimIdentity(
+                party.primaryClaim,
+                candidate.evaluatedParty,
+              ) &&
               party.bundleHash === candidate.bundleHash,
           );
           if (candidate.jobId !== bundle.jobId || !boundParty) {
@@ -1028,11 +1073,13 @@ export async function verifyBundleCore(
   const anyInvalid = signatures.some((c) => c.verdict === "invalid");
   const anyError = signatures.some((c) => c.verdict === "error");
   const anyValid = signatures.some((c) => c.verdict === "valid");
-  const validSignatureClaims = new Set(
-    signatures.filter((c) => c.verdict === "valid").map((c) => c.party),
-  );
+  const validSignatureClaims = signatures
+    .filter((c) => c.verdict === "valid")
+    .map((c) => c.party);
   const missingRequiredSignatures = requiredSignatureClaims(bundle, agreementArtifact).filter(
-    (claim) => !validSignatureClaims.has(claim),
+    (claim) => !validSignatureClaims.some((candidate) =>
+      sameCanonicalClaimIdentity(candidate, claim)
+    ),
   );
   const sigOk = canonicalBundleClaims && anyValid && !anyInvalid && !anyError;
   const fullyVerified =

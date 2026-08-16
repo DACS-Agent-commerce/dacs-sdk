@@ -344,6 +344,70 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.bundle?.outcome).toBe("completed");
   });
 
+  test("does not reinterpret Ed25519 bytes under another algorithm label", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const signatures = fx.bundle.signatures as Array<Record<string, unknown>>;
+    signatures[0]!.algorithm = "ecdsa-secp256k1";
+    const resolved: string[] = [];
+
+    const res = await verifyBundleCore("ref", depsFor(fx, {
+      resolve: (claim) => {
+        resolved.push(claim);
+        return resolveFromDid(claim);
+      },
+    }));
+
+    expect(res.ok).toBe(false);
+    expect(res.fullyVerified).toBe(false);
+    expect(res.signatures).toContainEqual({ party: buyerDid, verdict: "invalid" });
+    expect(resolved).not.toContain(buyerDid);
+  });
+
+  test("rejects a cryptographically valid abort signed by a non-party", async () => {
+    const outsiderSeed = Uint8Array.from(Buffer.alloc(32, 44));
+    const outsiderDid = didFor(outsiderSeed);
+    const fx = await buildFixture(buyerDid, signBuyer);
+    fx.bundle.outcome = "aborted-by-other";
+    delete fx.bundle.agreementRef;
+    fx.bundle.settlementEvidence = [];
+    await resignFixture(fx, [{ party: outsiderDid, sign: signerFor(outsiderSeed) }]);
+
+    const res = await verifyBundleCore("ref", depsFor(fx));
+
+    expect(res.ok).toBe(false);
+    expect(res.fullyVerified).toBe(false);
+    expect(res.signatures).toEqual([{ party: outsiderDid, verdict: "invalid" }]);
+    expect(res.reason).toMatch(/signature/i);
+  });
+
+  test("matches agreement and bundle signers by CF-3 identity", async () => {
+    const qualifiedBuyer = `${buyerDid}?region=GB`;
+    const qualifiedSignature = `${buyerDid}?session=checkout`;
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const agreementParties = fx.agreement.parties as Array<Record<string, unknown>>;
+    const agreementSignatures = fx.agreement.signatures as Array<Record<string, unknown>>;
+    agreementParties[0]!.primaryClaim = qualifiedBuyer;
+    agreementSignatures[0]!.party = qualifiedBuyer;
+    (fx.bundle.agreementRef as { contentHash: string }).contentHash =
+      contentHash(fx.agreement);
+    await resignFixture(fx, [
+      { party: qualifiedSignature, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+
+    const res = await verifyBundleCore("ref", depsFor(fx, {
+      resolve: (claim) =>
+        claim.startsWith(buyerDid) ? resolveFromDid(buyerDid) : resolveFromDid(claim),
+    }));
+
+    expect(res.ok).toBe(true);
+    expect(res.fullyVerified).toBe(true);
+    expect(res.signatures).toContainEqual({
+      party: qualifiedSignature,
+      verdict: "valid",
+    });
+  });
+
   test("a custom key resolver cannot authorize non-CF-2 signer bytes", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     const uppercaseBuyer = `DID:${buyerDid.slice(4)}`;

@@ -128,6 +128,23 @@ describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
     }
   });
 
+  test("matches a qualified signer to its bundle party by CF-3 identity", async () => {
+    const qualifiedBuyer = { ...BUYER, did: `${BUYER.did}?region=GB` };
+    const copy = sign(body(), [qualifiedBuyer, SELLER], "buyer");
+    const result = await verifyBundleCopy(copy, "buyer", {
+      ...deps,
+      resolvePublicKey: async (claim) =>
+        claim.startsWith(BUYER.did)
+          ? Uint8Array.from(BUYER.raw)
+          : claim === SELLER.did
+            ? Uint8Array.from(SELLER.raw)
+            : null,
+    });
+
+    expect(result.valid).toBe(true);
+    if (result.valid) expect(result.fullySigned).toBe(true);
+  });
+
   test("a v0.3 copy verifies only with a permissible absolute fault", async () => {
     const faultBody = body({
       bundleVersion: undefined,

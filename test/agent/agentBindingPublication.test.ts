@@ -256,6 +256,47 @@ describe("Agent.publishListing binding publication (#54)", () => {
     }
   });
 
+  test("rejects a resolver-backed foreign DID before creating a Demos publication", async () => {
+    const foreignSeller = "did:example:seller";
+    const { adapter, state } = fakeAdapter();
+    const bindings = createInMemoryBindingStore();
+    const agent = buildAgent(adapter, {
+      demosRpc: "mem",
+      wallet: "secret",
+      ...PUBLICATION_CAPABILITIES,
+      bindings: { index: bindings, publisher: bindings },
+      // A portable lower-level Listing may use a resolver-backed identity, but
+      // this high-level Agent writes a Demos owner-bound logical slot.
+      resolveIdentitySigningPublicKey: (claim: string) =>
+        claim === foreignSeller ? Uint8Array.from(SELLER_PUBLIC_KEY) : null,
+    });
+    const foreignListing: ListingDraft = {
+      ...LISTING,
+      seller: {
+        ...LISTING.seller,
+        identity: {
+          ...LISTING.seller.identity,
+          presentedBy: foreignSeller,
+          claims: [{ ref: foreignSeller }],
+          presentation: {
+            kind: "per-claim",
+            signatures: [{
+              ref: foreignSeller,
+              signature: "identity-presentation",
+            }],
+          },
+        },
+      },
+    };
+
+    await expect(agent.publishListing(foreignListing)).rejects.toThrow(
+      /unsupported identity method for native Demos publication/i,
+    );
+    expect(state.scans).toBe(0);
+    expect(state.creates).toBe(0);
+    expect(bindings.snapshot()).toEqual([]);
+  });
+
   test("anchors once and automatically publishes the exact logical-to-native binding", async () => {
     const { adapter, state } = fakeAdapter();
     const bindings = createInMemoryBindingStore();

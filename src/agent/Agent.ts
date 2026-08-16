@@ -825,16 +825,35 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           "publishListing ClaimReferences must use exact, current-producer-valid CORE B.1 CF-2 bytes",
         );
       }
-      await requireConnectedSigner(
+      // This high-level Agent publishes through the native Demos
+      // logical-to-storage binding. A resolver-backed foreign DID can be a
+      // valid portable Listing signer, but it cannot identify the owner of
+      // this Demos publication slot. Refuse it before any scan or write so a
+      // fresh publication is always readable through this Agent's own Demos
+      // discovery profile (DACS-1 §6.3.1 / §6.3.4 SR-1).
+      const sellerKey = canonicalDemosAgentPublicKey(
         listing.seller.identity.presentedBy,
-        "listing seller identity",
       );
       const walletKey = normalizedDemosPublicKey(adapter.getAddress());
+      if (sellerKey === null) {
+        throw new DacsError(
+          "publishListing seller uses an unsupported identity method for native Demos publication; expected canonical did:demos:agent identity",
+        );
+      }
       if (walletKey === null) {
         throw new DacsError(
           "publishListing requires a canonical native Demos adapter address",
         );
       }
+      if (!Buffer.from(sellerKey).equals(Buffer.from(walletKey, "hex"))) {
+        throw new DacsError(
+          "listing seller identity does not match the connected adapter signing key",
+        );
+      }
+      await requireConnectedSigner(
+        listing.seller.identity.presentedBy,
+        "listing seller identity",
+      );
       if (bindingIndex === null) {
         throw new DacsError("publishListing has no configured binding index");
       }

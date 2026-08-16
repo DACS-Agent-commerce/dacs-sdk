@@ -3,6 +3,7 @@ import { isCanonicalBase64Url } from "../artifacts/signatures.js";
 import { isAnyAttestationBundle } from "../artifacts/validators.js";
 import { contentHash, stripSignature } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import type { BundleRole } from "./bundleConsistency.js";
 import type { Verifier } from "./signedArtifact.js";
 import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
@@ -121,30 +122,30 @@ export async function verifyBundleCopy(
       reason: `anchor role "${role}" has no canonical party claim`,
     };
   }
-  const partyClaims = new Set(
-    parties
-      .map((party) => party["primaryClaim"])
-      .filter((claim): claim is string => typeof claim === "string" && claim.length > 0),
-  );
+  const partyClaims = parties
+    .map((party) => party["primaryClaim"])
+    .filter((claim): claim is string =>
+      typeof claim === "string" && claim.length > 0
+    );
   const buyer = parties.find((party) => party["role"] === "buyer")?.["primaryClaim"];
   const seller = parties.find((party) => party["role"] === "seller")?.["primaryClaim"];
   if (typeof buyer !== "string" || typeof seller !== "string") {
     return { valid: false, reason: "bundle does not identify both required party signers" };
   }
-  const requiredSigners = new Set([buyer, seller]);
+  const requiredSigners = [buyer, seller];
   for (const party of parties) {
     const claim = party["primaryClaim"];
     if (
       party["role"] === "orchestrator" &&
       typeof claim === "string" &&
-      claim !== buyer &&
-      claim !== seller
+      !sameCanonicalClaimIdentity(claim, buyer) &&
+      !sameCanonicalClaimIdentity(claim, seller)
     ) {
-      requiredSigners.add(claim);
+      requiredSigners.push(claim);
     }
   }
 
-  const signers = new Set<string>();
+  const signers: string[] = [];
   for (const entry of entries) {
     if (!isObj(entry)) {
       return { valid: false, reason: "malformed bundle signature entry" };
@@ -164,7 +165,9 @@ export async function verifyBundleCopy(
     if (algorithm !== "ed25519") {
       return { valid: false, reason: `unsupported bundle signature algorithm "${algorithm}"` };
     }
-    if (!partyClaims.has(party)) {
+    if (!partyClaims.some((claim) =>
+      sameCanonicalClaimIdentity(claim, party)
+    )) {
       return { valid: false, reason: `signature party "${party}" is not a bundle party` };
     }
     if (!isCanonicalBase64Url(value)) {
@@ -182,17 +185,23 @@ export async function verifyBundleCopy(
       // A signature that resolves but does NOT verify taints the copy (§10.4.1).
       return { valid: false, reason: `signature by ${party} failed verification` };
     }
-    signers.add(party);
+    if (!signers.some((claim) => sameCanonicalClaimIdentity(claim, party))) {
+      signers.push(party);
+    }
   }
 
   // (4) signer set + the §10.11 single-signed-abort exception.
-  const fullySigned = [...requiredSigners].every((party) => signers.has(party));
+  const fullySigned = requiredSigners.every((party) =>
+    signers.some((signer) => sameCanonicalClaimIdentity(signer, party))
+  );
   const outcome = typeof bundle["outcome"] === "string" ? bundle["outcome"] : "";
   const isAbort = ABORT_OUTCOMES.has(outcome);
   const singleSignedAbort =
     entries.length === 1 &&
-    signers.size === 1 &&
-    signers.has(anchorRoleClaim) &&
+    signers.length === 1 &&
+    signers.some((signer) =>
+      sameCanonicalClaimIdentity(signer, anchorRoleClaim)
+    ) &&
     isAbort;
   if (!fullySigned && !singleSignedAbort) {
     return {

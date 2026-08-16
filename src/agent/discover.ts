@@ -15,6 +15,7 @@ import {
 import { DacsError } from "../errors.js";
 import {
   canonicalDemosAgentPublicKey,
+  sameCanonicalClaimIdentity,
 } from "../identity/index.js";
 import { readableListingClaimReferencesAreCanonical } from "./listingClaimReferences.js";
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
@@ -197,8 +198,10 @@ async function authenticateListingSnapshot(
     // that same fail-closed profile before exposing a Listing that can steer the
     // downstream payee. `isListing` remains the normative structural predicate.
     if (
-      readable.listing.signature.signer !==
-      readable.listing.seller.identity.presentedBy
+      !sameCanonicalClaimIdentity(
+        readable.listing.signature.signer,
+        readable.listing.seller.identity.presentedBy,
+      )
     ) {
       return null;
     }
@@ -235,7 +238,8 @@ async function authenticateListingSnapshot(
       // DACS-1 §6.3.4: signer MUST occur in seller.identity.claims.
       isSignerAuthorized: (_artifact, signature) =>
         readable.listing.seller.identity.claims.some(
-          (claim) => claim.ref === signature.signer,
+          (claim) =>
+            sameCanonicalClaimIdentity(claim.ref, signature.signer),
         ),
       resolvePublicKey: async (signature) => {
         const resolved = await resolveKey(signature.signer);
