@@ -9,9 +9,13 @@ export interface CanonicalClaimIdentity {
   identifier: string;
 }
 
+export type ClaimReferenceSchemeStatus = "registered" | "unknown";
+
 export interface CanonicalClaimReferenceParts {
   reference: string;
   identity: CanonicalClaimIdentity;
+  /** DACS-1 §6.3.1 registry classification; unknown references remain verbatim. */
+  schemeStatus: ClaimReferenceSchemeStatus;
 }
 
 function compareCodePoints(left: string, right: string): number {
@@ -28,6 +32,49 @@ function compareCodePoints(left: string, right: string): number {
 
 const RESERVED_PARAMETER_CHARACTERS = new Set([":", "?", "&", "=", "%"]);
 const UINT256_MAX = (1n << 256n) - 1n;
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
+const CCI_WEB2_PLATFORMS = new Set([
+  "twitter",
+  "github",
+  "discord",
+  "telegram",
+]);
+const CCI_PQC_ALGORITHMS = new Set(["falcon", "ml-dsa"]);
+// DACS-1 §6.3.1 closes this registry for v0.1. The cci-lei/finra/sam/
+// fedramp/naics/cmmc contexts are deliberately absent: their native CCI
+// variants are deferred, while the corresponding unprefixed schemes are live.
+const REGISTERED_CLAIM_REFERENCE_SCHEMES = new Set([
+  "cci-xm",
+  "cci-web2",
+  "cci-pqc",
+  "cci-ud",
+  "cci-nomis",
+  "cci-humanpassport",
+  "cci-ethos",
+  "cci-tlsn",
+  "lei",
+  "finra-crd",
+  "sam-uei",
+  "fedramp",
+  "naics",
+  "cmmc",
+  "stor-cred",
+  "did",
+  "erc8004",
+  "domain",
+  "key",
+  "substrate-validator-set",
+]);
+
+function hasNonEmptyComponents(identifier: string, count: number): boolean {
+  let start = 0;
+  for (let component = 1; component < count; component += 1) {
+    const separator = identifier.indexOf(":", start);
+    if (separator <= start) return false;
+    start = separator + 1;
+  }
+  return start < identifier.length;
+}
 
 function canonicalDomainIdentifier(identifier: string): boolean {
   let ascii: string;
@@ -84,19 +131,55 @@ function canonicalRegisteredIdentifier(
       }
     }
     case "cci-xm": {
+      if (!hasNonEmptyComponents(identifier, 3)) return false;
       const separator = identifier.indexOf(":");
-      const family = separator < 0 ? identifier : identifier.slice(0, separator);
-      if (family.toLowerCase() !== "evm") return true;
-      return /^evm:[1-9][0-9]*:.+$/.test(identifier);
+      const family = identifier.slice(0, separator);
+      if (family.toLowerCase() === "evm") {
+        return /^evm:[1-9][0-9]*:.+$/.test(identifier);
+      }
+      if (family.toLowerCase() === "solana") {
+        const match = /^solana:([^:]+):([^:]+)$/.exec(identifier);
+        return match !== null && BASE58.test(match[2]!);
+      }
+      return true;
     }
-    case "cci-lei":
+    case "cci-web2": {
+      const separator = identifier.indexOf(":");
+      return separator > 0 &&
+        CCI_WEB2_PLATFORMS.has(identifier.slice(0, separator)) &&
+        separator + 1 < identifier.length;
+    }
+    case "cci-pqc": {
+      const separator = identifier.indexOf(":");
+      return separator > 0 &&
+        CCI_PQC_ALGORITHMS.has(identifier.slice(0, separator)) &&
+        separator + 1 < identifier.length;
+    }
+    case "stor-cred":
+      return hasNonEmptyComponents(identifier, 2);
+    case "substrate-validator-set":
+      // DACS-2 §7.5 closes the v0.1 substrate registry to these Demos
+      // networks, whose set identifiers are canonical decimal epochs.
+      return /^(?:demos-mainnet|demos-testnet):(0|[1-9][0-9]*)$/
+        .test(identifier);
+    case "lei":
       return /^[0-9A-Z]{20}$/.test(identifier);
-    case "cci-finra-crd":
+    case "finra-crd":
       return /^(?:0|[1-9][0-9]*)$/.test(identifier);
-    case "cci-sam-uei":
+    case "sam-uei":
       return /^[0-9A-Z]{12}$/.test(identifier);
-    case "cci-naics":
+    case "naics":
       return /^[0-9]{6}$/.test(identifier);
+    case "cci-ud":
+    case "cci-nomis":
+    case "cci-humanpassport":
+    case "cci-ethos":
+    case "cci-tlsn":
+    case "fedramp":
+    case "cmmc":
+      // These registered profiles are explicitly opaque or as-issued beyond
+      // the generic non-empty, NFC ClaimReference identifier rule.
+      return true;
     default:
       // CF-2 permits experimental/unknown schemes to be forwarded verbatim.
       // They remain unverified for requirement evaluation under DACS-1
@@ -176,6 +259,9 @@ export function parseCanonicalClaimReference(
   return Object.freeze({
     reference: value,
     identity: Object.freeze({ scheme, identifier }),
+    schemeStatus: REGISTERED_CLAIM_REFERENCE_SCHEMES.has(scheme)
+      ? "registered"
+      : "unknown",
   });
 }
 

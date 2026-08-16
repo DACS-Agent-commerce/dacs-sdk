@@ -519,12 +519,22 @@ function awaitAbortable<T>(
   operation: Promise<T>,
   signal: AbortSignal,
   onAbort?: () => void,
+  onLateValue?: (value: T) => void,
 ): Promise<T> {
   if (signal.aborted) {
-    // The operation may already have observed the signal and rejected. Attach a
-    // sink before returning the deterministic abort result so it cannot surface
-    // as an unhandled late rejection.
-    void operation.catch(() => undefined);
+    // The operation may ignore the signal and settle later. Consume either
+    // outcome and dispose a late resource value before returning the
+    // deterministic abort result.
+    void operation.then(
+      (value) => {
+        try {
+          onLateValue?.(value);
+        } catch {
+          // Resource cleanup is best-effort; the abort result stays primary.
+        }
+      },
+      () => undefined,
+    );
     try {
       onAbort?.();
     } catch {
@@ -550,7 +560,17 @@ function awaitAbortable<T>(
     };
     signal.addEventListener("abort", onSignalAbort, { once: true });
     operation.then(
-      (value) => finish(() => resolve(value)),
+      (value) => {
+        if (settled) {
+          try {
+            onLateValue?.(value);
+          } catch {
+            // Resource cleanup is best-effort; the abort result stays primary.
+          }
+          return;
+        }
+        finish(() => resolve(value));
+      },
       (error: unknown) => finish(() => reject(error)),
     );
   });
@@ -598,6 +618,11 @@ async function queryCatalogPage(
         signal: controller.signal,
       }),
       controller.signal,
+      undefined,
+      (lateResponse) => cancelResponseBody(
+        lateResponse,
+        "catalog response arrived after cancellation",
+      ),
     );
     if (!response.ok) {
       cancelResponseBody(response, `catalog returned HTTP ${response.status}`);

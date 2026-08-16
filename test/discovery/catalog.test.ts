@@ -268,6 +268,32 @@ describe("queryListingCatalog (DACS-1 §6.3.6)", () => {
     });
   });
 
+  test("cancels a response body that arrives after the request timed out", async () => {
+    let resolveFetch!: (response: Response) => void;
+    const lateFetch: typeof fetch = async () => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const pending = queryListingCatalog({
+      ...catalogConfig(lateFetch),
+      timeoutMs: 5,
+    });
+
+    await expect(pending).resolves.toEqual({
+      status: "indeterminate",
+      reason: "catalog request timed out",
+    });
+
+    const cancel = vi.fn();
+    resolveFetch(new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("late response"));
+      },
+      cancel,
+    }), { headers: { "content-type": "application/json" } }));
+
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+  });
+
   test("rejects non-canonical ClaimReference bytes in catalog summaries", async () => {
     const unsortedParameters = await queryListingCatalog(catalogConfig(async () =>
       jsonResponse({

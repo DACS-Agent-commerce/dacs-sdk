@@ -13,6 +13,7 @@ describe("CORE B.1 canonical ClaimReference", () => {
     expect(parseCanonicalClaimReference(reference)).toEqual({
       reference,
       identity: { scheme: "cci-xm", identifier: "evm:8453:0xAbC" },
+      schemeStatus: "registered",
     });
     expect(sameCanonicalClaimIdentity(reference, "cci-xm:evm:8453:0xAbC")).toBe(true);
     expect(sameCanonicalClaimIdentity(reference, "cci-xm:evm:8453:0xabc")).toBe(false);
@@ -62,6 +63,66 @@ describe("CORE B.1 canonical ClaimReference", () => {
     expect(isCanonicalClaimReference(
       `erc8004:1:0x${"ab".repeat(20)}:${1n << 256n}`,
     )).toBe(false);
+  });
+
+  it.each([
+    "cci-xm:solana:mainnet:123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz",
+    "cci-web2:twitter:alice",
+    "cci-pqc:falcon:abcdef",
+    "cci-ud:alice.crypto",
+    "cci-nomis:subject",
+    "cci-humanpassport:subject",
+    "cci-ethos:subject",
+    "cci-tlsn:abcdef",
+    "lei:984500ABCDEF12345678",
+    "finra-crd:123456",
+    "sam-uei:ABCDEFGHIJKL",
+    "fedramp:FR123456",
+    "naics:123456",
+    "cmmc:CERT-123",
+    "stor-cred:ofac-clear:subject",
+    "did:web:example.com",
+    `erc8004:1:0x${"ab".repeat(20)}:0`,
+    "domain:example.com",
+    "key:abcdef0123456789",
+    "substrate-validator-set:demos-mainnet:42",
+    "substrate-validator-set:demos-testnet:0",
+  ])("classifies the registered v0.1 profile %s", (reference) => {
+    expect(parseCanonicalClaimReference(reference)?.schemeStatus).toBe("registered");
+  });
+
+  it.each([
+    "cci-xm:solana",
+    "cci-xm:solana::address",
+    "cci-xm:solana:mainnet:0OIl",
+    "cci-web2:twitter",
+    "cci-web2:unknown:alice",
+    "cci-pqc:falcon",
+    "cci-pqc:unknown:abcdef",
+    "stor-cred:typeonly",
+    "substrate-validator-set:demos-mainnet",
+    "substrate-validator-set:evil:42",
+    "substrate-validator-set:demos-mainnet:01",
+    "substrate-validator-set:demos-mainnet:epoch-42",
+    "lei:lowercase1234567890",
+    "finra-crd:0123",
+    "sam-uei:abcdefgh1234",
+    "naics:12345",
+  ])("rejects malformed registered-profile bytes %s", (reference) => {
+    expect(isCanonicalClaimReference(reference)).toBe(false);
+  });
+
+  it("preserves and explicitly classifies unknown schemes", () => {
+    const reference = "x-example:opaque:id?note=a%3Ab";
+    expect(parseCanonicalClaimReference(reference)).toEqual({
+      reference,
+      identity: { scheme: "x-example", identifier: "opaque:id" },
+      schemeStatus: "unknown",
+    });
+    // The CCI-native regulatory contexts are explicitly deferred beyond v0.1;
+    // their unprefixed equivalents above remain the registered v0.1 schemes.
+    expect(parseCanonicalClaimReference("cci-lei:future")?.schemeStatus)
+      .toBe("unknown");
   });
 
   it("fails closed through the throwing boundary", () => {
