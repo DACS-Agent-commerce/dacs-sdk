@@ -35,7 +35,7 @@ const VERIFIER =
 const STEWARD_SEED = new Uint8Array(32).fill(8);
 const STEWARD_PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
 const STEWARD =
-  `did:demos:steward:${Buffer.from(STEWARD_PUBLIC_KEY).toString("hex")}`;
+  `did:demos:agent:${Buffer.from(STEWARD_PUBLIC_KEY).toString("hex")}`;
 const BUNDLE_HASH = "b".repeat(64);
 const NOW = 1_780_000_000_000;
 

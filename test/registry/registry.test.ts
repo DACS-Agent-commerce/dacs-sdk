@@ -2,6 +2,8 @@ import { describe, expect, test, vi } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
+import type { AnchorReceipt } from "../../src/artifacts/types.js";
+import { contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -11,10 +13,15 @@ import {
   rawPublicKey,
 } from "../../src/crypto/index.js";
 import {
+  RAIL_REGISTRY_INDEX_ADDRESS,
+  getAuthenticatedRailProvenance,
   resolveRail,
   resolveRecipe,
   settleFromRail,
   type RailDefinition,
+  type RailRegistryDefinitionRef,
+  type RailRegistryIndexDocument,
+  type RailRegistrySelectionProvider,
   type RecipeDescriptor,
   type RegistryResolveDeps,
 } from "../../src/registry/index.js";
@@ -30,7 +37,7 @@ function signerFor(seed: Uint8Array): Signer {
   return (bytes) => ed25519Sign(bytes, priv);
 }
 const stewardPublicKey = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
-const stewardSigner = `did:demos:steward:${Buffer.from(stewardPublicKey).toString("hex")}`;
+const stewardSigner = `did:demos:agent:${Buffer.from(stewardPublicKey).toString("hex")}`;
 const verify = (b: Uint8Array, s: Uint8Array, p: Uint8Array) =>
   ed25519Verify(b, s, publicKeyFromRaw(p));
 
@@ -48,12 +55,10 @@ async function railRegistry() {
     railId: "x402:old",
     availability: "disabled",
   }));
-  // Signed by an impostor, not the steward — must be rejected.
-  const forged = await signedRail(evmDefinition(), IMPOSTOR_SEED);
   return {
-    registryId: "dacs4:registry:v0.1",
+    registryId: RAIL_REGISTRY_INDEX_ADDRESS,
     version: "0.1",
-    entries: [x402, deprecated, forged],
+    entries: [x402, deprecated],
   } as Record<string, unknown>;
 }
 
@@ -247,20 +252,142 @@ async function expectRailDefinitionRejected(
     },
   );
   await expect(
-    resolveRail("anchor", railId, depsFor({ entries: [entry] })),
+    resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, railId, depsFor({ entries: [entry] })),
   ).rejects.toThrow();
 }
 
 async function authenticatedRail(descriptor: UnsignedRailDefinition) {
   const entry = await signedRail(descriptor);
-  return resolveRail("anchor", {
+  return resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, {
     railId: descriptor.railId,
     railVersion: descriptor.railVersion,
   }, depsFor({ entries: [entry] }));
 }
 
-function depsFor(doc: Record<string, unknown> | null): RegistryResolveDeps {
+function railRef(
+  locator: string,
+  value: Record<string, unknown>,
+  logicalAddress = locator,
+): RailRegistryDefinitionRef {
   return {
+    logicalAddress,
+    anchor: { kind: "storage-program", locator },
+    contentHash: contentHash(value),
+  };
+}
+
+function railReceipt(
+  ref: RailRegistryDefinitionRef,
+  patch: Partial<AnchorReceipt> = {},
+): AnchorReceipt {
+  return {
+    receiptVersion: "1",
+    substrate: "test-substrate",
+    finalityProfile: "instant-finality",
+    logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
+    nativeAddress: ref.anchor.locator,
+    contentHash: ref.contentHash,
+    transactionRef: { kind: "test", value: `tx:${ref.contentHash}` },
+    writer: stewardSigner,
+    state: "finalized",
+    observationDisposition: "established",
+    observedAt: 1_780_000_100_000,
+    blockRef: { id: "block:1", height: "1" },
+    evidence: { kind: "test-proof", value: `proof:${ref.contentHash}` },
+    ...patch,
+  };
+}
+
+interface RailProviderFixture {
+  provider: RailRegistrySelectionProvider;
+  index: RailRegistryIndexDocument;
+  indexRef: RailRegistryDefinitionRef;
+  current: {
+    registryVersion: number;
+    indexRef: RailRegistryDefinitionRef;
+    receipt: AnchorReceipt;
+  };
+  documents: Map<string, Record<string, unknown>>;
+  definitionReceipts: Map<string, AnchorReceipt>;
+}
+
+function railProviderFixture(
+  doc: Record<string, unknown> | null,
+): RailProviderFixture {
+  const entries = doc?.entries;
+  const definitions = Array.isArray(entries)
+    ? entries as Record<string, unknown>[]
+    : [];
+  const documents = new Map<string, Record<string, unknown>>();
+  const definitionReceipts = new Map<string, AnchorReceipt>();
+  const refs = definitions.map((definition, index) => {
+    const logicalAddress = `dacs4:rail:${index}`;
+    const ref = railRef(
+      `rail:${index}:${contentHash(definition)}`,
+      definition,
+      logicalAddress,
+    );
+    documents.set(ref.anchor.locator, definition);
+    definitionReceipts.set(ref.anchor.locator, railReceipt(ref, {
+      logicalAddress,
+    }));
+    return ref;
+  });
+  const index: RailRegistryIndexDocument = {
+    registryId: RAIL_REGISTRY_INDEX_ADDRESS,
+    entries: refs,
+  };
+  const indexRef = railRef(
+    `rail:index:${contentHash(index as unknown as Record<string, unknown>)}`,
+    index as unknown as Record<string, unknown>,
+    RAIL_REGISTRY_INDEX_ADDRESS,
+  );
+  documents.set(indexRef.anchor.locator, index as unknown as Record<string, unknown>);
+  const current = {
+    registryVersion: 7,
+    indexRef,
+    receipt: railReceipt(indexRef),
+  };
+  return {
+    index,
+    indexRef,
+    current,
+    documents,
+    definitionReceipts,
+    provider: {
+      resolveCurrentIndex: async () => doc === null ? null : current,
+      authenticateCurrentIndex: () => "valid",
+      readAnchoredJson: async (ref) =>
+        documents.get(ref.anchor.locator) ?? null,
+      resolveDefinitionReceipt: async (ref) =>
+        definitionReceipts.get(ref.anchor.locator) ?? null,
+      authenticateDefinition: () => "valid",
+      stewardWriter: stewardSigner,
+      stewardPublicKey,
+      stewardSigner,
+      verify,
+    },
+  };
+}
+
+function depsFor(
+  doc: Record<string, unknown> | null,
+): RegistryResolveDeps & RailRegistrySelectionProvider {
+  let railFixture: RailProviderFixture | undefined;
+  const currentRailFixture = () =>
+    railFixture ??= railProviderFixture(doc);
+  return {
+    resolveCurrentIndex: (address) =>
+      currentRailFixture().provider.resolveCurrentIndex(address),
+    authenticateCurrentIndex: (input) =>
+      currentRailFixture().provider.authenticateCurrentIndex(input),
+    readAnchoredJson: (ref) =>
+      currentRailFixture().provider.readAnchoredJson(ref),
+    resolveDefinitionReceipt: (ref) =>
+      currentRailFixture().provider.resolveDefinitionReceipt(ref),
+    authenticateDefinition: (input) =>
+      currentRailFixture().provider.authenticateDefinition(input),
+    stewardWriter: stewardSigner,
     readRegistry: async () => doc,
     stewardPublicKey,
     stewardSigner,
@@ -319,7 +446,7 @@ async function expectRecipeEntryRejected(
 
 describe("registry resolution (T12/T13)", () => {
   test("resolves a live, steward-signed rail by id", async () => {
-    const desc = await resolveRail("anchor", "x402:default", depsFor(await railRegistry()));
+    const desc = await resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", depsFor(await railRegistry()));
     expect(desc).toMatchObject({
       railId: "x402:default",
       railType: "x402",
@@ -329,9 +456,278 @@ describe("registry resolution (T12/T13)", () => {
     expect(desc.parameters).toEqual({ authorization: "eip-3009" });
   });
 
+  test("retains exact canonical index and definition provenance out of band", async () => {
+    const entry = await signedRail(x402Definition());
+    const fixture = railProviderFixture({ entries: [entry] });
+    let authorityInput: Parameters<
+      RailRegistrySelectionProvider["authenticateCurrentIndex"]
+    >[0] | undefined;
+    fixture.provider.authenticateCurrentIndex = (input) => {
+      authorityInput = input;
+      return "valid";
+    };
+    const descriptor = await resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      fixture.provider,
+    );
+    const provenance = getAuthenticatedRailProvenance(descriptor);
+
+    expect(provenance).toMatchObject({
+      logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
+      registryVersion: fixture.current.registryVersion,
+      indexRef: fixture.indexRef,
+      indexContentHash: fixture.indexRef.contentHash,
+      definitionRef: fixture.index.entries[0],
+      definitionContentHash: fixture.index.entries[0]!.contentHash,
+      writer: stewardSigner,
+      indexReceipt: {
+        state: "finalized",
+        observationDisposition: "established",
+      },
+      definitionReceipt: {
+        state: "finalized",
+        observationDisposition: "established",
+      },
+    });
+    expect(Object.isFrozen(provenance)).toBe(true);
+    expect(Object.isFrozen(provenance!.indexReceipt)).toBe(true);
+    expect(Object.isFrozen(provenance!.definitionReceipt)).toBe(true);
+    expect(authorityInput).toMatchObject({
+      logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
+      registryVersion: fixture.current.registryVersion,
+      indexRef: fixture.indexRef,
+      receipt: fixture.current.receipt,
+      index: fixture.index,
+    });
+    expect(Object.isFrozen(authorityInput)).toBe(true);
+    expect(Object.isFrozen(authorityInput!.index)).toBe(true);
+    expect(getAuthenticatedRailProvenance(structuredClone(descriptor))).toBeNull();
+  });
+
+  test("rejects a validly signed finalized stale cache as non-current authority", async () => {
+    const staleEntry = await signedRail(x402Definition());
+    const currentV2 = await signedRail(x402Definition({
+      railVersion: 2,
+      governance: {
+        ...RAIL_GOVERNANCE,
+        acceptedAt: RAIL_GOVERNANCE.acceptedAt + 1,
+        supersedes: 1,
+      },
+    }));
+    const stale = railProviderFixture({ entries: [staleEntry] });
+    const authoritative = railProviderFixture({
+      entries: [staleEntry, currentV2],
+    });
+    stale.provider.authenticateCurrentIndex = (input) =>
+      input.registryVersion === authoritative.current.registryVersion &&
+      input.indexRef.contentHash === authoritative.indexRef.contentHash
+        ? "valid"
+        : "invalid";
+
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      stale.provider,
+    )).rejects.toThrow(/authority is invalid or unauthenticated/);
+  });
+
+  test("requires an exact finalized established SR-2 index receipt", async () => {
+    const entry = await signedRail(x402Definition());
+    const included = railProviderFixture({ entries: [entry] });
+    included.current.receipt.state = "included";
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      included.provider,
+    )).rejects.toMatchObject({
+      category: "substrate",
+      message: expect.stringMatching(/does not yet have an established finalized/),
+    });
+
+    const indeterminate = railProviderFixture({ entries: [entry] });
+    indeterminate.provider.authenticateCurrentIndex = () => "indeterminate";
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      indeterminate.provider,
+    )).rejects.toThrow(/authority is indeterminate/);
+  });
+
+  test("requires independently resolved finalized definition anchoring", async () => {
+    const entry = await signedRail(x402Definition());
+
+    for (const state of ["included", "reorged"] as const) {
+      const fixture = railProviderFixture({ entries: [entry] });
+      fixture.definitionReceipts.get(
+        fixture.index.entries[0]!.anchor.locator,
+      )!.state = state;
+      await expect(resolveRail(
+        RAIL_REGISTRY_INDEX_ADDRESS,
+        "x402:default",
+        fixture.provider,
+      )).rejects.toMatchObject({
+        category: "substrate",
+        message: expect.stringMatching(/does not yet have an established finalized/),
+      });
+    }
+
+    const indeterminate = railProviderFixture({ entries: [entry] });
+    const indeterminateReceipt = indeterminate.definitionReceipts.get(
+      indeterminate.index.entries[0]!.anchor.locator,
+    )!;
+    indeterminateReceipt.observationDisposition = "indeterminate";
+    indeterminateReceipt.preservedReceiptHash = "ab".repeat(32);
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      indeterminate.provider,
+    )).rejects.toMatchObject({
+      category: "substrate",
+      message: expect.stringMatching(/does not yet have an established finalized/),
+    });
+
+    const cacheOnly = railProviderFixture({ entries: [entry] });
+    cacheOnly.definitionReceipts.clear();
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      cacheOnly.provider,
+    )).rejects.toThrow(/receipt resolution is unresolved/);
+  });
+
+  test("rejects mismatched or unauthenticated definition receipt bindings", async () => {
+    const entry = await signedRail(x402Definition());
+    const mutations: Array<(receipt: AnchorReceipt) => void> = [
+      (receipt) => { receipt.logicalAddress = "dacs4:rail:attacker"; },
+      (receipt) => { receipt.nativeAddress = "rail:attacker"; },
+      (receipt) => { receipt.contentHash = "cd".repeat(32); },
+      (receipt) => {
+        receipt.writer = `did:demos:agent:${"dd".repeat(32)}`;
+      },
+    ];
+    for (const mutate of mutations) {
+      const fixture = railProviderFixture({ entries: [entry] });
+      mutate(fixture.definitionReceipts.get(
+        fixture.index.entries[0]!.anchor.locator,
+      )!);
+      await expect(resolveRail(
+        RAIL_REGISTRY_INDEX_ADDRESS,
+        "x402:default",
+        fixture.provider,
+      )).rejects.toMatchObject({
+        category: "permanent",
+        message: expect.stringMatching(/contradicts its canonical/),
+      });
+    }
+
+    const unauthenticated = railProviderFixture({ entries: [entry] });
+    unauthenticated.provider.authenticateDefinition = () => "invalid";
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      unauthenticated.provider,
+    )).rejects.toThrow(/definition authority is invalid or unauthenticated/);
+
+    const unavailableProof = railProviderFixture({ entries: [entry] });
+    unavailableProof.provider.authenticateDefinition = () => "indeterminate";
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      unavailableProof.provider,
+    )).rejects.toThrow(/definition authority is indeterminate/);
+
+    for (const mutate of [
+      (receipt: AnchorReceipt) => {
+        receipt.transactionRef = { kind: "test", value: "tx:attacker" };
+      },
+      (receipt: AnchorReceipt) => { receipt.nonce = "attacker-nonce"; },
+    ]) {
+      const authenticatedTuple = railProviderFixture({ entries: [entry] });
+      const receipt = authenticatedTuple.definitionReceipts.get(
+        authenticatedTuple.index.entries[0]!.anchor.locator,
+      )!;
+      const expectedTransaction = structuredClone(receipt.transactionRef);
+      const expectedNonce = receipt.nonce;
+      authenticatedTuple.provider.authenticateDefinition = (input) =>
+        input.receipt.transactionRef.kind === expectedTransaction.kind &&
+        input.receipt.transactionRef.value === expectedTransaction.value &&
+        input.receipt.nonce === expectedNonce
+          ? "valid"
+          : "invalid";
+      mutate(receipt);
+      await expect(resolveRail(
+        RAIL_REGISTRY_INDEX_ADDRESS,
+        "x402:default",
+        authenticatedTuple.provider,
+      )).rejects.toThrow(/definition authority is invalid or unauthenticated/);
+    }
+  });
+
+  test("retains authenticated additive v0.x definition receipt fields", async () => {
+    const entry = await signedRail(x402Definition());
+    const fixture = railProviderFixture({ entries: [entry] });
+    const receipt = fixture.definitionReceipts.get(
+      fixture.index.entries[0]!.anchor.locator,
+    )! as AnchorReceipt & { bindingExtension?: { quorum: number } };
+    receipt.bindingExtension = { quorum: 3 };
+
+    const descriptor = await resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      fixture.provider,
+    );
+    expect(getAuthenticatedRailProvenance(descriptor)?.definitionReceipt)
+      .toMatchObject({ bindingExtension: { quorum: 3 } });
+  });
+
+  test("refuses non-canonical registry addresses before invoking the provider", async () => {
+    const entry = await signedRail(x402Definition());
+    const fixture = railProviderFixture({ entries: [entry] });
+    const resolveCurrentIndex = vi.spyOn(
+      fixture.provider,
+      "resolveCurrentIndex",
+    );
+    await expect(resolveRail(
+      "cache:dacs4:registry:v0.1",
+      "x402:default",
+      fixture.provider,
+    )).rejects.toThrow(/requires canonical index dacs4:registry:v0.1/);
+    expect(resolveCurrentIndex).not.toHaveBeenCalled();
+  });
+
+  test("ignores poisoned bind properties on registry authority callbacks", async () => {
+    const entry = await signedRail(x402Definition());
+    const fixture = railProviderFixture({ entries: [entry] });
+    const poisons = [
+      fixture.provider.resolveCurrentIndex,
+      fixture.provider.authenticateCurrentIndex,
+      fixture.provider.readAnchoredJson,
+      fixture.provider.resolveDefinitionReceipt,
+      fixture.provider.authenticateDefinition,
+      fixture.provider.verify,
+    ].map((callback) => {
+      const poison = vi.fn(() => vi.fn(() => {
+        throw new Error("poisoned bind callback executed");
+      }));
+      Object.defineProperty(callback, "bind", {
+        configurable: true,
+        value: poison,
+      });
+      return poison;
+    });
+
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      fixture.provider,
+    )).resolves.toMatchObject({ railId: "x402:default" });
+    for (const poison of poisons) expect(poison).not.toHaveBeenCalled();
+  });
+
   test("authenticates non-live entries so RAV policy can run at point of use", async () => {
     await expect(
-      resolveRail("anchor", "x402:old", depsFor(await railRegistry())),
+      resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:old", depsFor(await railRegistry())),
     ).resolves.toMatchObject({
       railId: "x402:old",
       availability: "disabled",
@@ -339,20 +735,25 @@ describe("registry resolution (T12/T13)", () => {
   });
 
   test("rejects an entry not signed by the steward (recipe-poisoning)", async () => {
+    const forged = await signedRail(evmDefinition(), IMPOSTOR_SEED);
     await expect(
-      resolveRail("anchor", "evm-erc20:84532:USDC", depsFor(await railRegistry())),
+      resolveRail(
+        RAIL_REGISTRY_INDEX_ADDRESS,
+        "evm-erc20:84532:USDC",
+        depsFor({ entries: [forged] }),
+      ),
     ).rejects.toThrow(/steward key/);
   });
 
   test("rejects an unknown id", async () => {
     await expect(
-      resolveRail("anchor", "nope", depsFor(await railRegistry())),
-    ).rejects.toThrow(/not found in registry/);
+      resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "nope", depsFor(await railRegistry())),
+    ).rejects.toThrow(/not found in canonical rail registry/);
   });
 
   test("rejects a missing registry", async () => {
-    await expect(resolveRail("anchor", "x402:default", depsFor(null))).rejects.toThrow(
-      /registry not found/,
+    await expect(resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", depsFor(null))).rejects.toThrow(
+      /current-index lookup is unresolved/,
     );
   });
 
@@ -360,7 +761,7 @@ describe("registry resolution (T12/T13)", () => {
     const doc = await railRegistry();
     const entries = doc["entries"] as Array<Record<string, unknown>>;
     entries[0]!.parameters = { authorization: "tampered" }; // mutate after signing
-    await expect(resolveRail("anchor", "x402:default", depsFor(doc))).rejects.toThrow(
+    await expect(resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", depsFor(doc))).rejects.toThrow(
       /steward key/,
     );
   });
@@ -379,14 +780,14 @@ describe("registry resolution (T12/T13)", () => {
     const doc = { entries: [v2, v1] } as Record<string, unknown>;
 
     await expect(
-      resolveRail("anchor", "x402:default", depsFor(doc)),
+      resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", depsFor(doc)),
     ).resolves.toMatchObject({
       railVersion: 2,
       parameters: { authorization: "permit2" },
     });
     await expect(
       resolveRail(
-        "anchor",
+        RAIL_REGISTRY_INDEX_ADDRESS,
         { railId: "x402:default", railVersion: 1 },
         depsFor(doc),
       ),
@@ -396,7 +797,7 @@ describe("registry resolution (T12/T13)", () => {
     });
     await expect(
       resolveRail(
-        "anchor",
+        RAIL_REGISTRY_INDEX_ADDRESS,
         { railId: "x402:default", railVersion: 3 },
         depsFor(doc),
       ),
@@ -417,7 +818,7 @@ describe("registry resolution (T12/T13)", () => {
 
     await expect(
       resolveRail(
-        "anchor",
+        RAIL_REGISTRY_INDEX_ADDRESS,
         { railId: "x402:default", railVersion: 1 },
         depsFor(doc),
       ),
@@ -434,16 +835,16 @@ describe("registry resolution (T12/T13)", () => {
     );
 
     await expect(
-      resolveRail("anchor", selector, depsFor(doc)),
-    ).rejects.toThrow(/selector must carry an exact railId/);
+      resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, selector, depsFor(doc)),
+    ).rejects.toThrow(/selector must carry an exact canonical railId/);
     expect(getPrototypeOf).not.toHaveBeenCalled();
     await expect(
       resolveRail(
-        "anchor",
+        RAIL_REGISTRY_INDEX_ADDRESS,
         { railId: "x402:default", railVersion: 1, trusted: true } as never,
         depsFor(doc),
       ),
-    ).rejects.toThrow(/selector must carry an exact railId/);
+    ).rejects.toThrow(/selector must carry an exact canonical railId/);
   });
 
   test.each([
@@ -505,7 +906,7 @@ describe("registry resolution (T12/T13)", () => {
   ])("rejects a rail family with $label", async ({ entries, pattern }) => {
     await expect(
       resolveRail(
-        "anchor",
+        RAIL_REGISTRY_INDEX_ADDRESS,
         "x402:default",
         depsFor({ entries: await entries() }),
       ),
@@ -1112,10 +1513,10 @@ describe("registry resolution (T12/T13)", () => {
     );
     const doc = { entries: [legacy] } as Record<string, unknown>;
 
-    await expect(resolveRail("anchor", "legacy", depsFor(doc))).rejects.toThrow(
+    await expect(resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "legacy", depsFor(doc))).rejects.toThrow(
       /legacy signature is rejected/,
     );
-    const resolved = await resolveRail("anchor", "legacy", {
+    const resolved = await resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "legacy", {
       ...depsFor(doc),
       legacySignatures: "verify-with-pinned-key",
     });
@@ -1138,7 +1539,7 @@ describe("registry resolution (T12/T13)", () => {
     };
 
     const resolved = await resolveRail(
-      "anchor",
+      RAIL_REGISTRY_INDEX_ADDRESS,
       "x402:default",
       resolutionDeps,
     );
@@ -1156,45 +1557,59 @@ describe("registry resolution (T12/T13)", () => {
   test("pins trust-root dependencies and key bytes before a delayed registry read", async () => {
     const doc = await railRegistry();
     const gate = deferred();
-    const resolutionDeps: RegistryResolveDeps = {
-      ...depsFor(doc),
-      stewardPublicKey: Uint8Array.from(stewardPublicKey),
-      readRegistry: async () => {
-        await gate.promise;
-        return doc;
-      },
+    const resolutionDeps = depsFor(doc);
+    resolutionDeps.stewardPublicKey = Uint8Array.from(stewardPublicKey);
+    const resolveCurrentIndex = resolutionDeps.resolveCurrentIndex;
+    resolutionDeps.resolveCurrentIndex = async (address) => {
+      await gate.promise;
+      return resolveCurrentIndex(address);
     };
-    const pending = resolveRail("anchor", "x402:default", resolutionDeps);
+    const pending = resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", resolutionDeps);
 
     resolutionDeps.stewardPublicKey.fill(0);
     resolutionDeps.stewardSigner = "did:demos:attacker";
     resolutionDeps.verify = () => false;
+    resolutionDeps.authenticateCurrentIndex = () => "invalid";
+    resolutionDeps.readAnchoredJson = async () => ({ attacker: true });
+    resolutionDeps.resolveDefinitionReceipt = async () => null;
+    resolutionDeps.authenticateDefinition = () => "invalid";
     resolutionDeps.legacySignatures = "reject";
     gate.resolve();
 
     await expect(pending).resolves.toMatchObject({ railId: "x402:default" });
   });
 
-  test("normalises the configured steward signer under CF-1", async () => {
-    const nfdSigner = "did:demos:steward:cafe\u0301";
-    const nfcSigner = "did:demos:steward:caf\u00e9";
+  test("uses the shared CF-3 identity comparator for steward authority", async () => {
+    const signerWithRole = `${stewardSigner}?role=rail-steward`;
     const entry = await signComponentArtifact(
-      x402Definition({ railId: "x402:nfc-steward" }),
+      x402Definition({ railId: "x402:parameterized-steward" }),
       "dacs-rail:v1:",
       {
         algorithm: "ed25519",
-        signer: nfcSigner,
+        signer: signerWithRole,
         sign: signerFor(STEWARD_SEED),
       },
     );
     const doc = { entries: [entry] } as Record<string, unknown>;
 
     await expect(
-      resolveRail("anchor", "x402:nfc-steward", {
+      resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:parameterized-steward", {
         ...depsFor(doc),
-        stewardSigner: nfdSigner,
+        stewardSigner,
       }),
-    ).resolves.toMatchObject({ railId: "x402:nfc-steward" });
+    ).resolves.toMatchObject({ railId: "x402:parameterized-steward" });
+  });
+
+  test("rejects non-canonical steward ClaimReferences through the shared parser", async () => {
+    const entry = await signedRail(x402Definition());
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      {
+        ...depsFor({ entries: [entry] }),
+        stewardSigner: `did:demos:steward:${"11".repeat(32)}`,
+      },
+    )).rejects.toThrow(/trust material is malformed/);
   });
 
   test("rejects a non-ASCII rail id even when the requested id normalises under CF-1", async () => {
@@ -1212,11 +1627,12 @@ describe("registry resolution (T12/T13)", () => {
     const doc = { entries: [entry] } as Record<string, unknown>;
 
     await expect(
-      resolveRail("anchor", nfdId, depsFor(doc)),
-    ).rejects.toThrow(/invalid descriptor shape/);
+      resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, nfdId, depsFor(doc)),
+    ).rejects.toThrow(/canonical non-empty railId/);
   });
 
   test("rejects accessor and proxy registry views without invoking their traps", async () => {
+    const entry = await signedRail(x402Definition());
     const accessor = vi.fn(() => []);
     const accessorDoc = {} as Record<string, unknown>;
     Object.defineProperty(accessorDoc, "entries", {
@@ -1224,16 +1640,32 @@ describe("registry resolution (T12/T13)", () => {
       enumerable: true,
       get: accessor,
     });
-    await expect(
-      resolveRail("anchor", "x402:default", depsFor(accessorDoc)),
-    ).rejects.toThrow("not stable canonical JSON");
+    const accessorFixture = railProviderFixture({ entries: [entry] });
+    const accessorRead = accessorFixture.provider.readAnchoredJson;
+    accessorFixture.provider.readAnchoredJson = async (ref) =>
+      ref.anchor.locator === accessorFixture.indexRef.anchor.locator
+        ? accessorDoc
+        : accessorRead(ref);
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      accessorFixture.provider,
+    )).rejects.toThrow(/not exact canonical JSON/);
     expect(accessor).not.toHaveBeenCalled();
 
     const ownKeys = vi.fn(() => ["entries"]);
     const proxyDoc = new Proxy({ entries: [] }, { ownKeys });
-    await expect(
-      resolveRail("anchor", "x402:default", depsFor(proxyDoc)),
-    ).rejects.toThrow("not stable canonical JSON");
+    const proxyFixture = railProviderFixture({ entries: [entry] });
+    const proxyRead = proxyFixture.provider.readAnchoredJson;
+    proxyFixture.provider.readAnchoredJson = async (ref) =>
+      ref.anchor.locator === proxyFixture.indexRef.anchor.locator
+        ? proxyDoc
+        : proxyRead(ref);
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      proxyFixture.provider,
+    )).rejects.toThrow(/not exact canonical JSON/);
     expect(ownKeys).not.toHaveBeenCalled();
   });
 });

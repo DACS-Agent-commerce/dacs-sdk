@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { DacsError } from "../errors.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
@@ -214,6 +216,82 @@ interface CapturedRailDispatchOptions {
   fetchImpl?: typeof fetch;
 }
 
+type DispatchMethod = (...args: never[]) => unknown;
+
+function stableDispatchProperty(
+  source: unknown,
+  key: string,
+  label: string,
+): { found: boolean; value?: unknown } {
+  if (
+    (typeof source !== "object" && typeof source !== "function") ||
+    source === null ||
+    nodeTypes.isProxy(source)
+  ) {
+    throw new DacsError(`${label} must be stable data`);
+  }
+  let cursor: object | null = source;
+  while (cursor !== null) {
+    if (nodeTypes.isProxy(cursor)) {
+      throw new DacsError(`${label} must be stable data`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+    if (descriptor !== undefined) {
+      if (!("value" in descriptor)) {
+        throw new DacsError(`${label} must be stable data`);
+      }
+      return { found: true, value: descriptor.value };
+    }
+    cursor = Object.getPrototypeOf(cursor) as object | null;
+  }
+  return { found: false };
+}
+
+function stableDispatchMethod<T extends DispatchMethod>(
+  source: unknown,
+  key: string,
+  label: string,
+): T {
+  const property = stableDispatchProperty(source, key, label);
+  if (
+    !property.found ||
+    typeof property.value !== "function" ||
+    nodeTypes.isProxy(property.value)
+  ) {
+    throw new DacsError(`${label} must be a stable method`);
+  }
+  return Function.prototype.bind.call(property.value, source) as T;
+}
+
+function optionalDispatchMethod<T extends DispatchMethod>(
+  source: unknown,
+  key: string,
+  label: string,
+): T | undefined {
+  const property = stableDispatchProperty(source, key, label);
+  if (!property.found || property.value === undefined) return undefined;
+  return stableDispatchMethod<T>(source, key, label);
+}
+
+function captureSettlementStore(
+  source: SettlementIdempotencyStore | undefined,
+): SettlementIdempotencyStore | undefined {
+  if (source === undefined) return undefined;
+  // Bind the selected operation to its original receiver now. Passing only
+  // this frozen wrapper onward means an await-time mutation of `source.once`
+  // cannot replace the write-ahead authority, while class private state keeps
+  // working because the captured method still receives `source` as `this`.
+  const once = stableDispatchMethod<SettlementIdempotencyStore["once"]>(
+    source,
+    "once",
+    "pay-dem settlement store once",
+  );
+  const wrapper: SettlementIdempotencyStore = {
+    once: (key, submit, reconcile) => once(key, submit, reconcile),
+  };
+  return Object.freeze(wrapper);
+}
+
 function capturePaymentCoordinates(
   opts: RailDispatchOptions,
 ): Readonly<ResolvedPaymentCoordinates> {
@@ -243,12 +321,16 @@ function captureAvailabilityPolicy(
 ): CapturedAvailabilityPolicy | undefined {
   const policy = opts.availabilityPolicy;
   if (policy === undefined) return undefined;
-  const authorizeCandidate = policy.authorize;
+  const authorizeCandidate = optionalDispatchMethod<AvailabilityAuthorize>(
+    policy,
+    "authorize",
+    "rail availability policy authorize",
+  );
   return Object.freeze({
     environment: policy.environment,
-    ...(typeof authorizeCandidate === "function"
-      ? { authorize: authorizeCandidate }
-      : {}),
+    ...(authorizeCandidate === undefined
+      ? {}
+      : { authorize: authorizeCandidate }),
   });
 }
 
@@ -270,10 +352,15 @@ function captureDispatchOptions(
   };
 
   if (railType === "x402") {
+    const fetchImpl = optionalDispatchMethod<typeof fetch>(
+      opts,
+      "fetchImpl",
+      "x402 fetch implementation",
+    );
     return Object.freeze({
       ...common,
       evmPrivateKey: opts.evmPrivateKey,
-      fetchImpl: opts.fetchImpl,
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
   }
   if (railType === "evm-erc20") {
@@ -289,9 +376,17 @@ function captureDispatchOptions(
       ? undefined
       : Object.freeze({
         maxTotalDebitOs: payDem.maxTotalDebitOs,
-        journalPreparedTransfer: payDem.journalPreparedTransfer,
-        settlementStore: payDem.settlementStore,
-        reconcile: payDem.reconcile,
+        journalPreparedTransfer: optionalDispatchMethod<
+          NonNullable<CapturedPayDemOptions["journalPreparedTransfer"]>
+        >(
+          payDem,
+          "journalPreparedTransfer",
+          "pay-dem prepared-transfer journal",
+        ),
+        settlementStore: captureSettlementStore(payDem.settlementStore),
+        reconcile: optionalDispatchMethod<
+          NonNullable<CapturedPayDemOptions["reconcile"]>
+        >(payDem, "reconcile", "pay-dem reconciliation"),
         inclusionTimeoutMs: payDem.inclusionTimeoutMs,
         inclusionPollIntervalMs: payDem.inclusionPollIntervalMs,
         statusRequestTimeoutMs: payDem.statusRequestTimeoutMs,

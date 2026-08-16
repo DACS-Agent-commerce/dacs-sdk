@@ -1068,6 +1068,8 @@ export {
 // Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
 // dispatch the money path by rail kind.
 export {
+  RAIL_REGISTRY_INDEX_ADDRESS,
+  getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
   resolveRail,
   resolveRecipe,
@@ -1080,6 +1082,14 @@ export {
   isHistoricalRecipeResolution,
   type AuthenticatedRecipeDescriptor,
   type AuthenticatedRailDefinition,
+  type CurrentRailRegistryIndex,
+  type RailRegistryAuthorityInput,
+  type RailRegistryDefinitionAuthorityInput,
+  type RailRegistryAuthorityVerification,
+  type RailRegistryDefinitionRef,
+  type RailRegistryIndexDocument,
+  type RailRegistryProvenance,
+  type RailRegistrySelectionProvider,
   type RegistryResolveDeps,
   type RecipeRegistryRecipeRef,
   type RecipeRegistryIndexDocument,
