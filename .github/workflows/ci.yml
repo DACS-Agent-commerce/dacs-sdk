@@ -188,10 +188,16 @@ jobs:
             generator-smoke/generated-agent --yes --no-install
           test ! -e generator-smoke/generated-agent/package-lock.json
           node -e 'const p=require("./generator-smoke/generated-agent/package.json"); const exact={"@kynesyslabs/dacs":"0.1.0-alpha.0","@kynesyslabs/dacs-node":"0.1.0-alpha.0"}; if(JSON.stringify(p.dependencies)!==JSON.stringify(exact)) process.exit(1)'
+          # Installing local tarballs rewrites dependency specs to file: paths.
+          # Preserve the generator's exact public output while retaining the
+          # lockfile that makes the following clean install use these packs.
+          cp generator-smoke/generated-agent/package.json generator-smoke/generated-package.json
           (cd generator-smoke/generated-agent && npm install --ignore-scripts --omit=optional \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
-            typescript@5.9.2 @types/node@20.19.1 && npm ci --ignore-scripts --omit=optional)
+            typescript@5.9.2 @types/node@20.19.1)
+          cp generator-smoke/generated-package.json generator-smoke/generated-agent/package.json
+          (cd generator-smoke/generated-agent && npm ci --ignore-scripts --omit=optional)
           (cd generator-smoke/generated-agent && npm run typecheck && npm test && npm run dacs:smoke:offline)
           node - <<'NODE'
           const fs = require("node:fs");
