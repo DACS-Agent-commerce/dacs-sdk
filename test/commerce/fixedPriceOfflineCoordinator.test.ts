@@ -145,7 +145,7 @@ describe("fixed-price offline coordinator", () => {
     expect(documentation).toContain("not resumable or upgradeable as live sessions");
   });
 
-  it("preserves the exact pre-refactor live x402 binding hash", () => {
+  it("preserves the hardened live x402 binding hash across profile generalisation", () => {
     expect(fixedPriceX402OrderBindingHash({
       jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       buyer: "did:example:buyer",
@@ -160,7 +160,7 @@ describe("fixed-price offline coordinator", () => {
           railVersion: 2,
         },
       },
-    })).toBe("b144a008ec824469029477d4c8765ff39a6cdd0cdbb615d37ccd10eb2ddef5f2");
+    })).toBe("0c58b9d65f67e8c36e8379db8d80af074470e2834f40a148fce609461ecad17c");
   });
 
   it("runs the shared role-separated lifecycle and combines only verified actor state", async () => {
@@ -198,7 +198,9 @@ describe("fixed-price offline coordinator", () => {
       buyer: (await buyer.getOrderStatus(JOB_ID))!,
       seller: (await seller.getOrderStatus(JOB_ID))!,
     });
-    expect(combined.milestone).toBe("audit-complete");
+    // Actor-local audit completion is not ST-11 bundle completion. The
+    // authenticated completion gate is the only path to `audit-complete`.
+    expect(combined.milestone).toBe("actor-audit-final");
     expect(combined.protocol).toEqual(OFFLINE_PROTOCOL);
     expect(combined.bindingHash).toBe(
       fixedPriceOfflineOrderBindingHash(offlineOrder("buyer")),
