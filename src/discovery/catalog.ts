@@ -6,6 +6,7 @@ import {
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { isRevocationBinding } from "../artifacts/validators.js";
 import type { ClaimRef, RevocationBinding } from "../artifacts/types.js";
+import { isCanonicalClaimReference } from "../identity/claimReference.js";
 import {
   resolveBinding,
   type AnchorBinding,
@@ -14,7 +15,6 @@ import {
 } from "./binding.js";
 
 const CONTENT_HASH = /^[0-9a-f]{64}$/;
-const CLAIM_REFERENCE = /^[a-z][a-z0-9-]*:.+$/;
 const DEMOS_AGENT_CLAIM = /^did:demos:agent:([0-9a-f]{64})$/;
 const JSON_CONTENT_TYPE = /^(?:application\/json|application\/[a-z0-9!#$&^_.+-]+\+json)(?:\s*;|$)/i;
 
@@ -148,10 +148,6 @@ function isCanonicalString(value: unknown, allowEmpty = false): value is string 
   );
 }
 
-function isClaimReference(value: unknown): value is string {
-  return isCanonicalString(value) && CLAIM_REFERENCE.test(value);
-}
-
 function isAnchor(value: unknown): value is { kind: string; locator: string } {
   return (
     isRecord(value) &&
@@ -163,9 +159,12 @@ function isAnchor(value: unknown): value is { kind: string; locator: string } {
 function isSeller(
   value: unknown,
 ): value is { primaryClaim: string; displayName: string } {
+  const primaryClaim = isRecord(value) ? value.primaryClaim : undefined;
   return (
     isRecord(value) &&
-    isClaimReference(value.primaryClaim) &&
+    isCanonicalClaimReference(primaryClaim) &&
+    (!primaryClaim.startsWith("did:demos:agent:") ||
+      DEMOS_AGENT_CLAIM.test(primaryClaim)) &&
     isCanonicalString(value.displayName) &&
     value.displayName.length <= 200
   );
@@ -232,13 +231,20 @@ function isReputationHint(
     !(
       value.averageSellerRating === null ||
       (isFiniteNumber(value.averageSellerRating) &&
-        value.averageSellerRating >= 0)
+        value.averageSellerRating >= 1 &&
+        value.averageSellerRating <= 5)
     ) ||
     !isSafeUint(value.bundleCount) ||
     !isSafeUint(value.windowStart) ||
     !isSafeUint(value.windowEnd) ||
     value.windowStart > value.windowEnd ||
     !isSafeUint(value.computedAt)
+  ) {
+    return false;
+  }
+  if (
+    value.bundleCount === 0 &&
+    (value.completionRate !== null || value.averageSellerRating !== null)
   ) {
     return false;
   }
@@ -424,6 +430,7 @@ function buildCatalogUrl(
 async function readBoundedJson(
   response: Response,
   maxBytes: number,
+  signal: AbortSignal,
 ): Promise<unknown> {
   const contentType = response.headers.get("content-type");
   if (contentType !== null && !JSON_CONTENT_TYPE.test(contentType)) {
@@ -444,17 +451,25 @@ async function readBoundedJson(
   let total = 0;
   try {
     while (true) {
-      const next = await reader.read();
+      const next = await awaitAbortable(reader.read(), signal, () => {
+        void reader.cancel(signal.reason).catch(() => undefined);
+      });
       if (next.done) break;
       total += next.value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel();
+        void reader.cancel("catalog response exceeds maxResponseBytes")
+          .catch(() => undefined);
         throw new Error("catalog response exceeds maxResponseBytes");
       }
       chunks.push(next.value);
     }
   } finally {
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // A non-cooperative custom stream may retain a pending read after abort.
+      // The request timeout still returns promptly and the reader is discarded.
+    }
   }
   const bytes = new Uint8Array(total);
   let offset = 0;
@@ -469,6 +484,54 @@ async function readBoundedJson(
     throw new Error("catalog response is not valid UTF-8 JSON");
   }
   return snapshotCanonicalJsonRead(parsed, "catalog response");
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("catalog request was aborted");
+}
+
+/** Bound even custom fetch/body promises that ignore AbortSignal. */
+function awaitAbortable<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  onAbort?: () => void,
+): Promise<T> {
+  if (signal.aborted) {
+    // The operation may already have observed the signal and rejected. Attach a
+    // sink before returning the deterministic abort result so it cannot surface
+    // as an unhandled late rejection.
+    void operation.catch(() => undefined);
+    try {
+      onAbort?.();
+    } catch {
+      // Cancellation is best-effort; the timeout/abort result remains primary.
+    }
+    return Promise.reject(abortReason(signal));
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onSignalAbort);
+      callback();
+    };
+    const onSignalAbort = (): void => {
+      try {
+        onAbort?.();
+      } catch {
+        // Cancellation is best-effort; the timeout/abort result remains primary.
+      }
+      finish(() => reject(abortReason(signal)));
+    };
+    signal.addEventListener("abort", onSignalAbort, { once: true });
+    operation.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
 }
 
 function validateCatalogPage(value: unknown): ListingCatalogPage | null {
@@ -503,13 +566,16 @@ async function queryCatalogPage(
   else externalSignal?.addEventListener("abort", onAbort, { once: true });
 
   try {
-    const response = await config.fetchImpl(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      credentials: "omit",
-      redirect: "error",
-      signal: controller.signal,
-    });
+    const response = await awaitAbortable(
+      config.fetchImpl(url, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        credentials: "omit",
+        redirect: "error",
+        signal: controller.signal,
+      }),
+      controller.signal,
+    );
     if (!response.ok) {
       return {
         status: "indeterminate",
@@ -517,7 +583,11 @@ async function queryCatalogPage(
       };
     }
     const page = validateCatalogPage(
-      await readBoundedJson(response, config.maxResponseBytes),
+      await readBoundedJson(
+        response,
+        config.maxResponseBytes,
+        controller.signal,
+      ),
     );
     return page
       ? { status: "ok", page }
@@ -589,10 +659,28 @@ function supportedKinds(config: CatalogBindingIndexConfig): Set<string> {
   return result;
 }
 
+function sameStableResolution(
+  left: BindingResolution,
+  right: BindingResolution,
+): boolean {
+  if (left.status !== right.status) return false;
+  if (left.status === "absent" && right.status === "absent") return true;
+  if (left.status !== "present" || right.status !== "present") return false;
+  return (
+    left.binding.logicalAddress === right.binding.logicalAddress &&
+    left.binding.nativeAddress === right.binding.nativeAddress &&
+    left.binding.owner === right.binding.owner &&
+    left.binding.contentHash === right.binding.contentHash &&
+    left.binding.version === right.binding.version &&
+    (left.binding.revoked === true) === (right.binding.revoked === true)
+  );
+}
+
 /**
  * Adapt a DACS-1 §6.3.6 catalog to the SDK's discovery-only BindingIndex.
  *
- * Resolution scans bounded catalog pages for the exact CF-4 logical address.
+ * Resolution performs two bounded catalog traversals for the exact CF-4
+ * logical address and requires the resulting binding to remain stable.
  * It never guesses through conflicting results, unsupported anchor kinds,
  * transport failure, malformed pages, or incomplete pagination. The resulting
  * binding is still only a pointer: `Agent.readListing` must dereference it and
@@ -630,13 +718,13 @@ export function createCatalogBindingIndex(
         () => resolutionController.abort(new Error("catalog resolution timed out")),
         resolutionTimeoutMs,
       );
-      const candidates: AnchorBinding[] = [];
-      const seenCursors = new Set<string>();
-      let expectedTotal: number | undefined;
-      let observedCount = 0;
-      let cursor: string | undefined;
+      const scanOnce = async (): Promise<BindingResolution> => {
+        const candidates: AnchorBinding[] = [];
+        const seenCursors = new Set<string>();
+        let expectedTotal: number | undefined;
+        let observedCount = 0;
+        let cursor: string | undefined;
 
-      try {
         for (let pageNumber = 0; pageNumber < maxPages; pageNumber += 1) {
           const result = await queryCatalogPage(
             client,
@@ -713,6 +801,20 @@ export function createCatalogBindingIndex(
           status: "indeterminate",
           reason: `catalog pagination exceeded the configured ${maxPages}-page bound`,
         };
+      };
+
+      try {
+        const first = await scanOnce();
+        if (first.status === "indeterminate") return first;
+        const second = await scanOnce();
+        if (second.status === "indeterminate") return second;
+        if (!sameStableResolution(first, second)) {
+          return {
+            status: "indeterminate",
+            reason: "catalog binding changed between bounded validation scans",
+          };
+        }
+        return second;
       } finally {
         clearTimeout(resolutionTimeout);
       }

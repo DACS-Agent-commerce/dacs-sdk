@@ -191,6 +191,80 @@ describe("queryListingCatalog (DACS-1 §6.3.6)", () => {
     ).resolves.toEqual({ status: "indeterminate", reason: "catalog request was aborted" });
   });
 
+  test("bounds non-cooperative fetches and stalled response bodies", async () => {
+    const ignoredSignal: typeof fetch = async () =>
+      new Promise<Response>(() => undefined);
+    await expect(
+      queryListingCatalog({ ...catalogConfig(ignoredSignal), timeoutMs: 5 }),
+    ).resolves.toEqual({
+      status: "indeterminate",
+      reason: "catalog request timed out",
+    });
+
+    const never = new Promise<void>(() => undefined);
+    const stalledBody: typeof fetch = async () => new Response(
+      new ReadableStream<Uint8Array>({
+        pull: () => never,
+        cancel: () => never,
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+    await expect(
+      queryListingCatalog({ ...catalogConfig(stalledBody), timeoutMs: 5 }),
+    ).resolves.toEqual({
+      status: "indeterminate",
+      reason: "catalog request timed out",
+    });
+  });
+
+  test("rejects non-canonical ClaimReference bytes in catalog summaries", async () => {
+    const unsortedParameters = await queryListingCatalog(catalogConfig(async () =>
+      jsonResponse({
+        listings: [summary({
+          seller: {
+            primaryClaim: `${SELLER}?z=last&a=first`,
+            displayName: "Weather Seller",
+          },
+        })],
+      })));
+    expect(unsortedParameters).toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("malformed"),
+    });
+
+    const malformedDemosProfile = await queryListingCatalog(catalogConfig(async () =>
+      jsonResponse({
+        listings: [summary({
+          seller: {
+            primaryClaim: `did:demos:agent:${OWNER.toUpperCase()}`,
+            displayName: "Weather Seller",
+          },
+        })],
+      })));
+    expect(malformedDemosProfile).toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("malformed"),
+    });
+  });
+
+  test("rejects impossible DACS-5 reputation hints", async () => {
+    const invalidHint = {
+      categoryScope: "data.weather",
+      completionRate: 1,
+      averageSellerRating: 6,
+      bundleCount: 0,
+      windowStart: 1,
+      windowEnd: 2,
+      computedAt: 3,
+    };
+    await expect(queryListingCatalog(catalogConfig(async () =>
+      jsonResponse({ listings: [summary({ reputationHint: invalidHint })] }))))
+      .resolves.toMatchObject({
+        status: "indeterminate",
+        reason: expect.stringContaining("malformed"),
+      });
+  });
+
   test("rejects insecure or ambiguous client configuration and invalid filters before fetching", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ listings: [] })) as unknown as typeof fetch;
     await expect(
@@ -365,6 +439,25 @@ describe("createCatalogBindingIndex (DACS-1 §6.3.6 catalog client)", () => {
     await expect(index.resolve(LOGICAL_ADDRESS, OWNER)).resolves.toEqual({
       status: "indeterminate",
       reason: "catalog resolution timed out",
+    });
+  });
+
+  test("does not return a binding that changes between validation scans", async () => {
+    let request = 0;
+    const index = createCatalogBindingIndex(catalogConfig(async () => {
+      request += 1;
+      return jsonResponse({
+        listings: [summary({
+          anchor: {
+            kind: "storage-program",
+            locator: request === 1 ? "stor-before" : "stor-after",
+          },
+        })],
+      });
+    }));
+    await expect(index.resolve(LOGICAL_ADDRESS, OWNER)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "catalog binding changed between bounded validation scans",
     });
   });
 });
