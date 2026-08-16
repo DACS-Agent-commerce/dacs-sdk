@@ -13,7 +13,7 @@ import {
 } from "../../src/crypto/index.js";
 
 const LISTING = {
-  agentId: "did:demos:agent:alice",
+  agentId: "did:demos:alice",
   serviceId: "svc",
   name: "Market Data",
   description: "d",
@@ -27,7 +27,7 @@ const LISTING = {
 const store: Record<string, Record<string, unknown>> = {
   "ref:1": LISTING,
   "ref:2": { not: "a listing" },
-  "ref:3": { ...LISTING, agentId: "did:demos:agent:bob" },
+  "ref:3": { ...LISTING, agentId: "did:demos:bob" },
 };
 const read = async (ref: string) => store[ref] ?? null;
 
@@ -43,7 +43,7 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
       found[0]!.compatibility === "legacy-mvp"
         ? found[0]!.listing.agentId
         : undefined,
-    ).toBe("did:demos:agent:alice");
+    ).toBe("did:demos:alice");
     // returned listing is the signed scope (signature omitted)
     expect("signature" in found[0]!.listing).toBe(false);
   });
@@ -125,13 +125,13 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
       seller: {
         identity: {
           bundleVersion: "1",
-          presentedBy: "did:demos:agent:seller",
+          presentedBy: "did:demos:seller",
           presentedAt: 1,
-          claims: [{ ref: "did:demos:agent:seller" }],
+          claims: [{ ref: "did:demos:seller" }],
           presentation: {
             kind: "per-claim",
             signatures: [{
-              ref: "did:demos:agent:seller",
+              ref: "did:demos:seller",
               signature: "presentation",
             }],
           },
@@ -161,7 +161,7 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
       validity: { notBefore: 0 },
       signature: {
         algorithm: "ed25519",
-        signer: "did:demos:agent:seller",
+        signer: "did:demos:seller",
         value: "AA",
       },
     } as unknown as Record<string, unknown>;

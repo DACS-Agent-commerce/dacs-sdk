@@ -508,7 +508,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
 
     const wrongSeller = input();
     wrongSeller.seller = {
-      identityBundle: identity("did:demos:agent:substitute"),
+      identityBundle: identity("did:demos:substitute"),
       vetRecordRef: vetRef("stor:wrong-seller-vet"),
     };
     expect(() => deriveFixedPriceAgreement(wrongSeller)).toThrow(/does not match/);

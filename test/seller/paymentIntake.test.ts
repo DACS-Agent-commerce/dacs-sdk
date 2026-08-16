@@ -895,18 +895,33 @@ describe("verifySellerPaymentIntake", () => {
   });
 
   it.each([
-    `cci-xm:demos::0x${"11".repeat(32)}`,
-    `cci-xm:demos:testnet:${"11".repeat(32)}`,
-    `cci-xm:demos:testnet:0x${"11".repeat(31)}`,
-    `cci-xm:evm:testnet:0x${"11".repeat(32)}`,
-  ])("rejects a malformed or foreign pay-DEM seller claim: %s", async (claim) => {
+    [
+      `cci-xm:demos::0x${"11".repeat(32)}`,
+      "unsupported-or-malformed-agreement",
+    ],
+    [
+      `cci-xm:demos:testnet:${"11".repeat(32)}`,
+      "payee-destination-binding-mismatch",
+    ],
+    [
+      `cci-xm:demos:testnet:0x${"11".repeat(31)}`,
+      "payee-destination-binding-mismatch",
+    ],
+    [
+      `cci-xm:evm:testnet:0x${"11".repeat(32)}`,
+      "unsupported-or-malformed-agreement",
+    ],
+  ])("rejects a malformed or foreign pay-DEM seller claim: %s", async (
+    claim,
+    reason,
+  ) => {
     const ctx = makeContext("pay-dem");
     rebindDemosSellerClaim(ctx, claim, `0x${"11".repeat(32)}`);
 
     await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
       disposition: "rejected",
       fulfilment: "none",
-      reason: "payee-destination-binding-mismatch",
+      reason,
     });
   });
 
