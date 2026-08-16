@@ -1,6 +1,8 @@
 export {
+  isAuthenticatedRailDefinition,
   resolveRail,
   resolveRecipe,
+  type AuthenticatedRailDefinition,
   type AuthenticatedRecipeDescriptor,
   type RegistryResolveDeps,
 } from "./resolve.js";
@@ -28,8 +30,15 @@ export {
 } from "./recipeSelection.js";
 export { settleFromRail, type RailDispatchOptions } from "./dispatch.js";
 export type {
+  AssetSpec,
   Availability,
+  CrossChainRoute,
+  NetworkSpec,
+  RailDefinition,
   RailDescriptor,
+  RailGovernance,
+  RailSelector,
+  RailType,
   RecipeDescriptor,
   RecipeGovernance,
   RecipeSelector,

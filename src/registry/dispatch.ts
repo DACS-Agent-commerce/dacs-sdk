@@ -3,7 +3,6 @@ import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
 import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
-import { createPayD402Rail, payD402Settle } from "../rails/payD402.js";
 import {
   createPayDemRail,
   payDemSettle,
@@ -13,14 +12,16 @@ import {
 import type {
   SettlementIdempotencyStore,
 } from "../rails/idempotency.js";
-import type { RailDescriptor } from "./types.js";
+import {
+  isAuthenticatedRailDefinition,
+  type AuthenticatedRailDefinition,
+} from "./resolve.js";
 
 /**
- * Dispatch a resolved rail descriptor to a concrete settle executor by `kind`.
- * This is what makes the money path registry-driven (T6): switching a listing's
- * rail id between already-supported kinds needs no SDK change — the resolved
- * descriptor's `kind` selects the implementation. A brand-new kind is one new
- * case here plus its registry entry.
+ * Dispatch an authenticated DACS-4 RailDefinition to a concrete executor by
+ * `railType`. This makes the money path registry-driven (T6) while RAV-R5's
+ * private resolver provenance prevents a caller-created structural object from
+ * becoming payment authority.
  */
 
 export interface RailDispatchOptions {
@@ -72,33 +73,32 @@ export interface RailDispatchOptions {
     nonceVisibilityTimeoutMs?: number;
   };
   /**
-   * Additional opt-in for the preview-only pay-d402 implementation. This flag
-   * never overrides the RAV-R1 `availability === "live"` gate above: an
-   * authenticated non-live registry entry remains non-dispatchable.
+   * Trusted local RAV-R3 preflight. Required for operator_gated, closed_data,
+   * bilateral, and mocked definitions. Mocked rails additionally require an
+   * explicit non-production environment and can never run in production.
    */
-  allowExperimentalRails?: boolean;
+  availabilityPolicy?: {
+    environment: "production" | "non-production";
+    authorize: (
+      rail: Readonly<{
+        railId: string;
+        railVersion: number;
+        railType: string;
+        availability: string;
+      }>,
+    ) => boolean | Promise<boolean>;
+  };
   /** Override fetch (tests / custom transport). */
   fetchImpl?: typeof fetch;
 }
 
-const PHASE_BY_RAIL_KIND: Readonly<Record<string, string>> = Object.freeze({
-  x402: "pay-x402",
-  "evm-erc20": "pay-evm-erc20",
-  dem: "pay-dem",
-  // Preview-only and outside the Standard's closed PhaseType set. Retained only
-  // for the existing explicit experimental surface; a non-live descriptor is
-  // rejected before construction below.
-  d402: "pay-d402",
-});
-
 function bindDescriptorRequest(
-  descriptor: Readonly<Pick<RailDescriptor, "id" | "kind">>,
+  descriptor: Readonly<
+    Pick<AuthenticatedRailDefinition, "railId" | "railType" | "phaseHandler">
+  >,
   executor: (req: SettleRequest) => Promise<SettleResult>,
 ): (req: SettleRequest) => Promise<SettleResult> {
-  const expectedPhase = PHASE_BY_RAIL_KIND[descriptor.kind];
-  if (expectedPhase === undefined) {
-    throw new DacsError(`unknown rail kind: ${descriptor.kind}`);
-  }
+  const expectedPhase = descriptor.phaseHandler;
   return async (req) => {
     // Capture the two authority-bearing request fields once, then overwrite any
     // accessor/proxy values copied by the compatibility spread below. The rail
@@ -106,14 +106,14 @@ function bindDescriptorRequest(
     // checked, even if a hostile request view changes between reads.
     const requestRail = req.rail;
     const requestPhase = req.phase;
-    if (requestRail !== descriptor.id) {
+    if (requestRail !== descriptor.railId) {
       throw new DacsError(
-        `settlement request rail "${requestRail}" does not match authenticated descriptor "${descriptor.id}"`,
+        `settlement request rail "${requestRail}" does not match authenticated definition "${descriptor.railId}"`,
       );
     }
     if (requestPhase !== expectedPhase) {
       throw new DacsError(
-        `settlement request phase "${requestPhase}" does not match descriptor kind "${descriptor.kind}" (${expectedPhase})`,
+        `settlement request phase "${requestPhase}" does not match definition railType "${descriptor.railType}" (${expectedPhase})`,
       );
     }
     return executor({
@@ -124,6 +124,56 @@ function bindDescriptorRequest(
   };
 }
 
+async function enforceAvailability(
+  descriptor: Readonly<AuthenticatedRailDefinition>,
+  policy: CapturedAvailabilityPolicy | undefined,
+): Promise<void> {
+  const availability = descriptor.availability;
+  if (availability === "live") return;
+  if (availability === "disabled" || availability === "failed") {
+    throw new DacsError(
+      `rail "${descriptor.railId}" availability=${availability}; RAV-R2 forbids settlement dispatch`,
+    );
+  }
+
+  const environment = policy?.environment;
+  const authorize = policy?.authorize;
+  if (
+    (environment !== "production" && environment !== "non-production") ||
+    authorize === undefined
+  ) {
+    throw new DacsError(
+      `rail "${descriptor.railId}" availability=${availability} requires a trusted local RAV-R3 preflight`,
+    );
+  }
+  if (availability === "mocked" && environment !== "non-production") {
+    throw new DacsError(
+      `mocked rail "${descriptor.railId}" is forbidden in production`,
+    );
+  }
+
+  const input = Object.freeze({
+    railId: descriptor.railId,
+    railVersion: descriptor.railVersion,
+    railType: descriptor.railType,
+    availability,
+  });
+  let approved: unknown;
+  try {
+    approved = await authorize(input);
+  } catch (cause) {
+    throw new DacsError(
+      `rail "${descriptor.railId}" local availability preflight failed`,
+      { cause },
+    );
+  }
+  if (approved !== true) {
+    throw new DacsError(
+      `rail "${descriptor.railId}" local availability preflight did not authorize ${availability}`,
+    );
+  }
+}
+
 interface ResolvedPaymentCoordinates {
   url?: string;
   network?: string;
@@ -131,17 +181,130 @@ interface ResolvedPaymentCoordinates {
   phaseIndex?: number;
 }
 
-function paymentCoordinates(opts: RailDispatchOptions): ResolvedPaymentCoordinates {
-  if (opts.payment) return opts.payment;
-  if (!opts.paywall) return {};
-  return {
-    url: opts.paywall.url,
-    network: opts.paywall.network,
-    recipient: opts.paywall.recipientEvm,
-    ...(opts.paywall.phaseIndex === undefined
+type AvailabilityAuthorize = NonNullable<
+  RailDispatchOptions["availabilityPolicy"]
+>["authorize"];
+
+interface CapturedAvailabilityPolicy {
+  environment: "production" | "non-production";
+  authorize?: AvailabilityAuthorize;
+}
+
+interface CapturedPayDemOptions {
+  maxTotalDebitOs?: bigint;
+  journalPreparedTransfer?: (
+    transfer: Readonly<PayDemPreparedTransfer>,
+  ) => Promise<void>;
+  settlementStore?: SettlementIdempotencyStore;
+  reconcile?: PayDemSettlementReconcile;
+  inclusionTimeoutMs?: number;
+  inclusionPollIntervalMs?: number;
+  statusRequestTimeoutMs?: number;
+  nonceVisibilityTimeoutMs?: number;
+}
+
+interface CapturedRailDispatchOptions {
+  availabilityPolicy?: CapturedAvailabilityPolicy;
+  payment: Readonly<ResolvedPaymentCoordinates>;
+  evmPrivateKey?: string;
+  rpcUrl?: string;
+  demosRpc?: string;
+  demosSecret?: string;
+  payDem?: Readonly<CapturedPayDemOptions>;
+  fetchImpl?: typeof fetch;
+}
+
+function capturePaymentCoordinates(
+  opts: RailDispatchOptions,
+): Readonly<ResolvedPaymentCoordinates> {
+  const payment = opts.payment;
+  if (payment !== undefined) {
+    return Object.freeze({
+      url: payment.url,
+      network: payment.network,
+      recipient: payment.recipient,
+      phaseIndex: payment.phaseIndex,
+    });
+  }
+  const paywall = opts.paywall;
+  if (paywall === undefined) return Object.freeze({});
+  return Object.freeze({
+    url: paywall.url,
+    network: paywall.network,
+    recipient: paywall.recipientEvm,
+    ...(paywall.phaseIndex === undefined
       ? {}
-      : { phaseIndex: opts.paywall.phaseIndex }),
+      : { phaseIndex: paywall.phaseIndex }),
+  });
+}
+
+function captureAvailabilityPolicy(
+  opts: RailDispatchOptions,
+): CapturedAvailabilityPolicy | undefined {
+  const policy = opts.availabilityPolicy;
+  if (policy === undefined) return undefined;
+  const authorizeCandidate = policy.authorize;
+  return Object.freeze({
+    environment: policy.environment,
+    ...(typeof authorizeCandidate === "function"
+      ? { authorize: authorizeCandidate }
+      : {}),
+  });
+}
+
+/**
+ * Capture every caller-controlled authority needed by the selected rail before
+ * the first asynchronous boundary. Optional peer loading and RAV-R3 callbacks
+ * must not let a caller swap a destination, key, debit cap, or recovery store
+ * after dispatch has begun.
+ */
+function captureDispatchOptions(
+  opts: RailDispatchOptions,
+  railType: string,
+): Readonly<CapturedRailDispatchOptions> {
+  const availabilityPolicy = captureAvailabilityPolicy(opts);
+  const payment = capturePaymentCoordinates(opts);
+  const common = {
+    ...(availabilityPolicy === undefined ? {} : { availabilityPolicy }),
+    payment,
   };
+
+  if (railType === "x402") {
+    return Object.freeze({
+      ...common,
+      evmPrivateKey: opts.evmPrivateKey,
+      fetchImpl: opts.fetchImpl,
+    });
+  }
+  if (railType === "evm-erc20") {
+    return Object.freeze({
+      ...common,
+      evmPrivateKey: opts.evmPrivateKey,
+      rpcUrl: opts.rpcUrl,
+    });
+  }
+  if (railType === "demos-native") {
+    const payDem = opts.payDem;
+    const capturedPayDem = payDem === undefined
+      ? undefined
+      : Object.freeze({
+        maxTotalDebitOs: payDem.maxTotalDebitOs,
+        journalPreparedTransfer: payDem.journalPreparedTransfer,
+        settlementStore: payDem.settlementStore,
+        reconcile: payDem.reconcile,
+        inclusionTimeoutMs: payDem.inclusionTimeoutMs,
+        inclusionPollIntervalMs: payDem.inclusionPollIntervalMs,
+        statusRequestTimeoutMs: payDem.statusRequestTimeoutMs,
+        nonceVisibilityTimeoutMs: payDem.nonceVisibilityTimeoutMs,
+      });
+    return Object.freeze({
+      ...common,
+      demosRpc: opts.demosRpc,
+      demosSecret: opts.demosSecret,
+      ...(capturedPayDem === undefined ? {} : { payDem: capturedPayDem }),
+    });
+  }
+  return Object.freeze(common);
 }
 
 function requiredCoordinate(
@@ -153,71 +316,122 @@ function requiredCoordinate(
   return value;
 }
 
+function requireMatchingNetwork(
+  configured: string | undefined,
+  expected: string,
+  railType: string,
+): string {
+  if (configured !== undefined && configured !== expected) {
+    throw new DacsError(
+      `${railType} payment network "${configured}" does not match authenticated rail network "${expected}"`,
+    );
+  }
+  return expected;
+}
+
+function resourceIsWithinBase(resource: string, base: string): boolean {
+  try {
+    const actual = new URL(resource);
+    const allowed = new URL(base);
+    if (actual.origin !== allowed.origin) return false;
+    const prefix = allowed.pathname.endsWith("/")
+      ? allowed.pathname
+      : `${allowed.pathname}/`;
+    return actual.pathname === allowed.pathname || actual.pathname.startsWith(prefix);
+  } catch {
+    return false;
+  }
+}
+
 function requiredEvmPrivateKey(
-  opts: RailDispatchOptions,
+  value: string | undefined,
   railKind: string,
 ): string {
-  if (!opts.evmPrivateKey) {
+  if (!value) {
     throw new DacsError(`${railKind} rail requires opts.evmPrivateKey`);
   }
-  return opts.evmPrivateKey;
+  return value;
 }
 
 export async function settleFromRail(
-  descriptor: RailDescriptor,
+  descriptor: AuthenticatedRailDefinition,
   opts: RailDispatchOptions,
 ): Promise<(req: SettleRequest) => Promise<SettleResult>> {
+  if (!isAuthenticatedRailDefinition(descriptor)) {
+    throw new DacsError(
+      "settlement dispatch requires a rail returned by resolveRail (RAV-R5)",
+    );
+  }
   const capturedDescriptor = snapshotCanonicalJsonRead(
     descriptor,
     "authenticated rail descriptor",
   );
   if (
-    typeof capturedDescriptor.id !== "string" ||
-    capturedDescriptor.id.length === 0 ||
-    capturedDescriptor.id.trim() !== capturedDescriptor.id ||
-    typeof capturedDescriptor.kind !== "string" ||
-    capturedDescriptor.kind.length === 0 ||
-    capturedDescriptor.kind.trim() !== capturedDescriptor.kind ||
-    capturedDescriptor.params === null ||
-    typeof capturedDescriptor.params !== "object" ||
-    Array.isArray(capturedDescriptor.params)
+    typeof capturedDescriptor.railId !== "string" ||
+    typeof capturedDescriptor.railVersion !== "number" ||
+    typeof capturedDescriptor.railType !== "string" ||
+    typeof capturedDescriptor.phaseHandler !== "string" ||
+    capturedDescriptor.parameters === null ||
+    typeof capturedDescriptor.parameters !== "object" ||
+    Array.isArray(capturedDescriptor.parameters) ||
+    capturedDescriptor.asset === null ||
+    typeof capturedDescriptor.asset !== "object" ||
+    Array.isArray(capturedDescriptor.asset) ||
+    capturedDescriptor.network === null ||
+    typeof capturedDescriptor.network !== "object" ||
+    Array.isArray(capturedDescriptor.network)
   ) {
     throw new DacsError("authenticated rail descriptor has an invalid shape");
   }
-  // resolveRail already performs steward-signature verification and rejects a
-  // non-live entry. Preserve that RAV-R1 gate here as defense in depth because
-  // this public bridge is also callable with a structural descriptor.
-  if (capturedDescriptor.availability !== "live") {
-    throw new DacsError(
-      `rail "${capturedDescriptor.id}" is not live (availability=${capturedDescriptor.availability}); refusing settlement dispatch`,
-    );
-  }
+  const capturedOptions = captureDispatchOptions(
+    opts,
+    capturedDescriptor.railType,
+  );
+  await enforceAvailability(
+    descriptor,
+    capturedOptions.availabilityPolicy,
+  );
   const descriptorIdentity = Object.freeze({
-    id: capturedDescriptor.id,
-    kind: capturedDescriptor.kind,
+    railId: capturedDescriptor.railId,
+    railType: capturedDescriptor.railType,
+    phaseHandler: capturedDescriptor.phaseHandler,
   });
-  const payment = paymentCoordinates(opts);
-  switch (capturedDescriptor.kind) {
+  const payment = capturedOptions.payment;
+  switch (capturedDescriptor.railType) {
     case "x402": {
-      // The expected token is rail config (steward-signed descriptor params) —
-      // exactly like evm-erc20 — so the §4.1 asset guard compares the 402's
-      // token against a canonical on-chain id, not the Price.asset symbol.
-      const tokenAddress = capturedDescriptor.params["tokenAddress"];
-      if (typeof tokenAddress !== "string") {
+      if (
+        capturedDescriptor.asset.kind !== "erc20" ||
+        capturedDescriptor.network.kind !== "x402-resource"
+      ) {
         throw new DacsError(
-          `x402 rail "${capturedDescriptor.id}" descriptor missing params.tokenAddress`,
+          `x402 rail "${capturedDescriptor.railId}" is not an implemented ERC-20 x402 definition`,
         );
       }
       const url = requiredCoordinate(payment.url, "x402", "url");
-      const network = requiredCoordinate(payment.network, "x402", "network");
+      if (!resourceIsWithinBase(
+        url,
+        capturedDescriptor.network.resourceBaseUrl,
+      )) {
+        throw new DacsError(
+          `x402 resource "${url}" is outside authenticated base "${capturedDescriptor.network.resourceBaseUrl}"`,
+        );
+      }
+      const network = requireMatchingNetwork(
+        payment.network,
+        `eip155:${capturedDescriptor.asset.chainId}`,
+        "x402",
+      );
       const recipientEvm = requiredCoordinate(
         payment.recipient,
         "x402",
         "recipient",
       );
       const rail = await createX402Rail({
-        evmPrivateKey: requiredEvmPrivateKey(opts, "x402"),
-        fetchImpl: opts.fetchImpl,
+        evmPrivateKey: requiredEvmPrivateKey(
+          capturedOptions.evmPrivateKey,
+          "x402",
+        ),
+        fetchImpl: capturedOptions.fetchImpl,
         requireSessionBinding: true,
       });
       return bindDescriptorRequest(descriptorIdentity, x402Settle(rail, {
@@ -227,25 +441,25 @@ export async function settleFromRail(
         ...(payment.phaseIndex === undefined
           ? {}
           : { phaseIndex: payment.phaseIndex }),
-        asset: tokenAddress,
+        asset: capturedDescriptor.asset.contract,
       }));
     }
     case "evm-erc20": {
-      // The token contract is rail config (registry params); the recipient +
-      // network are per-deal (paywall); the RPC is a caller secret.
-      const tokenAddress = capturedDescriptor.params["tokenAddress"];
-      if (typeof tokenAddress !== "string") {
+      if (
+        capturedDescriptor.asset.kind !== "erc20" ||
+        capturedDescriptor.network.kind !== "evm"
+      ) {
         throw new DacsError(
-          `evm-erc20 rail "${capturedDescriptor.id}" descriptor missing params.tokenAddress`,
+          `evm-erc20 rail "${capturedDescriptor.railId}" has incompatible asset or network`,
         );
       }
-      if (!opts.rpcUrl) {
+      if (!capturedOptions.rpcUrl) {
         throw new DacsError("evm-erc20 rail requires opts.rpcUrl");
       }
-      const network = requiredCoordinate(
+      const network = requireMatchingNetwork(
         payment.network,
+        `eip155:${capturedDescriptor.network.chainId}`,
         "evm-erc20",
-        "network",
       );
       const recipientEvm = requiredCoordinate(
         payment.recipient,
@@ -253,72 +467,39 @@ export async function settleFromRail(
         "recipient",
       );
       const rail = await createEvmErc20Rail({
-        evmPrivateKey: requiredEvmPrivateKey(opts, "evm-erc20"),
-        rpcUrl: opts.rpcUrl,
+        evmPrivateKey: requiredEvmPrivateKey(
+          capturedOptions.evmPrivateKey,
+          "evm-erc20",
+        ),
+        rpcUrl: capturedOptions.rpcUrl,
         network,
       });
       return bindDescriptorRequest(descriptorIdentity, evmErc20Settle(rail, {
-        tokenAddress,
+        tokenAddress: capturedDescriptor.asset.contract,
         network,
         recipientEvm,
       }));
     }
-    case "d402": {
-      // EXPERIMENTAL D402 rail (§9.4.4 non-`live`, not node-enabled). The
-      // recipient + network are per-deal (paywall); the Demos RPC + wallet secret
-      // are caller secrets. `payTo` carries the Demos recipient address (reusing
-      // the paywall's recipient field). This second explicit opt-in is retained
-      // for preview compatibility; it cannot bypass the earlier live gate.
-      if (!opts.allowExperimentalRails) {
+    case "demos-native": {
+      if (
+        capturedDescriptor.asset.kind !== "native-dem" ||
+        capturedDescriptor.network.kind !== "demos" ||
+        capturedDescriptor.phaseHandler !== "pay-dem"
+      ) {
         throw new DacsError(
-          "pay-d402 is EXPERIMENTAL and not node-enabled (RAV-R1: MUST NOT be selected as a live rail); " +
-            "set opts.allowExperimentalRails: true to dispatch it for preview use",
+          `pay-dem rail "${capturedDescriptor.railId}" must bind native-dem, demos, and pay-dem (§9.5.9 step 1)`,
         );
       }
-      if (!opts.demosRpc) {
-        throw new DacsError("pay-d402 rail requires opts.demosRpc");
-      }
-      if (!opts.demosSecret) {
-        throw new DacsError("pay-d402 rail requires opts.demosSecret");
-      }
-      const url = requiredCoordinate(payment.url, "pay-d402", "url");
-      const network = requiredCoordinate(
-        payment.network,
-        "pay-d402",
-        "network",
-      );
-      const recipient = requiredCoordinate(
-        payment.recipient,
-        "pay-d402",
-        "recipient",
-      );
-      const rail = await createPayD402Rail({
-        rpc: opts.demosRpc,
-        secret: opts.demosSecret,
-        network,
-        fetchImpl: opts.fetchImpl,
-        acknowledgeExperimental: true,
-      });
-      return bindDescriptorRequest(descriptorIdentity, payD402Settle(rail, {
-        url,
-        recipient,
-        network,
-      }));
-    }
-    case "dem": {
       // Native DEM transfer rail (§9.5.9, live). The recipient + network are
       // derived from the agreement; the Demos RPC + wallet secret are caller
       // secrets. A supplied recipient can only cross-check that destination.
-      if (!opts.demosRpc) {
+      if (!capturedOptions.demosRpc) {
         throw new DacsError("pay-dem rail requires opts.demosRpc");
       }
-      if (!opts.demosSecret) {
+      if (!capturedOptions.demosSecret) {
         throw new DacsError("pay-dem rail requires opts.demosSecret");
       }
-      const payDem = opts.payDem;
-      // Capture every recovery authority before the first await. A caller that
-      // mutates its options while the optional peer connects must not be able
-      // to swap the debit cap, preparation journal, durable log, or reconciler.
+      const payDem = capturedOptions.payDem;
       const maxTotalDebitOs = payDem?.maxTotalDebitOs;
       const journalPreparedTransfer = payDem?.journalPreparedTransfer;
       const settlementStore = payDem?.settlementStore;
@@ -327,12 +508,16 @@ export async function settleFromRail(
       const inclusionPollIntervalMs = payDem?.inclusionPollIntervalMs;
       const statusRequestTimeoutMs = payDem?.statusRequestTimeoutMs;
       const nonceVisibilityTimeoutMs = payDem?.nonceVisibilityTimeoutMs;
-      const demNetwork = payment.network ?? "demos";
+      const demNetwork = requireMatchingNetwork(
+        payment.network,
+        "demos",
+        "pay-dem",
+      );
       const demRecipient = payment.recipient;
       const demPhaseIndex = payment.phaseIndex;
       const rail = await createPayDemRail({
-        rpc: opts.demosRpc,
-        secret: opts.demosSecret,
+        rpc: capturedOptions.demosRpc,
+        secret: capturedOptions.demosSecret,
         network: demNetwork,
         ...(maxTotalDebitOs === undefined
           ? {}
@@ -358,7 +543,7 @@ export async function settleFromRail(
           ? {}
           : { recipient: demRecipient }),
         network: demNetwork,
-        railId: descriptorIdentity.id,
+        railId: descriptorIdentity.railId,
         ...(demPhaseIndex === undefined
           ? {}
           : { phaseIndex: demPhaseIndex }),
@@ -372,6 +557,8 @@ export async function settleFromRail(
       }));
     }
     default:
-      throw new DacsError(`unknown rail kind: ${capturedDescriptor.kind}`);
+      throw new DacsError(
+        `rail type "${capturedDescriptor.railType}" is valid but not implemented by this SDK dispatch surface`,
+      );
   }
 }

@@ -13,8 +13,13 @@ import {
   snapshotCanonicalJsonObject,
 } from "../canonical/snapshot.js";
 import type {
+  AssetSpec,
   Availability,
-  RailDescriptor,
+  NetworkSpec,
+  RailDefinition,
+  RailGovernance,
+  RailSelector,
+  RailType,
   RecipeDescriptor,
   RecipeGovernance,
   RecipeSelector,
@@ -125,18 +130,20 @@ async function verifyWithCapturedDeps(
   return result === true;
 }
 
-function hasId(e: unknown): e is { id: string; availability: string } {
+function hasRailId(
+  e: unknown,
+): e is { railId: string } {
   if (typeof e !== "object" || e === null) return false;
   const r = e as Record<string, unknown>;
-  return (
-    typeof r["id"] === "string" &&
-    typeof r["availability"] === "string"
-  );
+  return typeof r["railId"] === "string";
 }
 
-async function resolveEntry<T extends { id: string; availability: Availability }>(
+async function resolveEntry<
+  T extends { railId: string; availability: Availability },
+>(
   anchor: string,
   id: string,
+  version: number | undefined,
   separator: DomainSeparator,
   deps: RegistryResolveDeps,
   validate: (e: Record<string, unknown>) => boolean,
@@ -172,89 +179,178 @@ async function resolveEntry<T extends { id: string; availability: Availability }
     throw new DacsError(`registry at ${pinnedAnchor} has no entries array`);
   }
 
-  const entry = entries.find((e) => hasId(e) && e.id === pinnedId);
-  if (!entry) {
+  const family = entries.filter(
+    (entry) => hasRailId(entry) && entry.railId === pinnedId,
+  );
+  if (family.length === 0) {
     throw new DacsError(
       `entry "${pinnedId}" not found in registry ${pinnedAnchor}`,
     );
   }
+  if (
+    family.some((candidate) => {
+      const railVersion = (candidate as Record<string, unknown>)["railVersion"];
+      return !isPositiveSafeInt(railVersion);
+    })
+  ) {
+    throw new DacsError(
+      `entry family "${pinnedId}" contains an invalid railVersion`,
+    );
+  }
+  const authenticate = async (
+    candidate: unknown,
+  ): Promise<T & { signature: ComponentSignature }> => {
+    // Trust root: a role-bound ComponentSignature must verify against the
+    // pinned steward claim and key. Legacy hex strings are rejected by
+    // default; the opt-in path authenticates and normalises them first.
+    let verifiedEntry = candidate as Record<string, unknown>;
+    if (typeof verifiedEntry.signature === "string") {
+      if (
+        captured.legacySignatures !== "verify-with-pinned-key" ||
+        !(await verifySignedArtifact(
+          verifiedEntry,
+          separator,
+          Uint8Array.from(captured.stewardPublicKey),
+          (bytes, signature, publicKey) =>
+            verifyWithCapturedDeps(
+              captured.verify,
+              bytes,
+              signature,
+              publicKey,
+            ),
+        ))
+      ) {
+        throw new DacsError(
+          `entry "${pinnedId}" legacy signature is rejected or invalid under the steward key`,
+        );
+      }
+      const legacyValue = verifiedEntry.signature;
+      verifiedEntry = {
+        ...verifiedEntry,
+        signature: {
+          algorithm: "ed25519",
+          signer: captured.stewardSigner,
+          value: Buffer.from(legacyValue, "hex").toString("base64url"),
+        },
+      };
+    }
 
-  // Trust root: a role-bound ComponentSignature must verify against the pinned
-  // steward claim and key. Legacy hex strings are rejected by default; the
-  // opt-in path authenticates and normalises them before returning.
-  let verifiedEntry = entry as Record<string, unknown>;
-  if (typeof verifiedEntry.signature === "string") {
-    if (
-      captured.legacySignatures !== "verify-with-pinned-key" ||
-      !(await verifySignedArtifact(
-        verifiedEntry,
-        separator,
-        Uint8Array.from(captured.stewardPublicKey),
-        (bytes, signature, publicKey) =>
-          verifyWithCapturedDeps(
-            captured.verify,
-            bytes,
-            signature,
-            publicKey,
-          ),
-      ))
-    ) {
+    const signed = await verifyComponentSignature(verifiedEntry, separator, {
+      isSignerAuthorized: (_artifact, signature) =>
+        signature.signer === captured.stewardSigner,
+      resolvePublicKey: (signature) =>
+        signature.algorithm === "ed25519"
+          ? Uint8Array.from(captured.stewardPublicKey)
+          : null,
+      verify: ({ signedBytes, signature, publicKey }) =>
+        verifyWithCapturedDeps(
+          captured.verify,
+          signedBytes,
+          Uint8Array.from(Buffer.from(signature.value, "base64url")),
+          publicKey,
+        ),
+    });
+    if (signed.status !== "valid") {
       throw new DacsError(
-        `entry "${pinnedId}" legacy signature is rejected or invalid under the steward key`,
+        `entry "${pinnedId}" signature is not valid under the steward key`,
       );
     }
-    const legacyValue = verifiedEntry.signature;
-    verifiedEntry = {
-      ...verifiedEntry,
-      signature: {
-        algorithm: "ed25519",
-        signer: captured.stewardSigner,
-        value: Buffer.from(legacyValue, "hex").toString("base64url"),
-      },
-    };
+    if (!validate(verifiedEntry)) {
+      throw new DacsError(`entry "${pinnedId}" has an invalid descriptor shape`);
+    }
+    const definition = verifiedEntry as unknown as RailDefinition;
+    if (definition.governance.anchoring !== "single-signer") {
+      // This resolver's explicit trust root is the pinned PA-2 steward key.
+      // It has no in-code provenance or multisig quorum proof to authenticate
+      // PA-1/PA-3, so those otherwise normative variants fail closed.
+      throw new DacsError(
+        `entry "${pinnedId}" uses unsupported anchoring phase ${definition.governance.anchoring}; this resolver operates PA-2 single-signer`,
+      );
+    }
+    return verifiedEntry as T & { signature: ComponentSignature };
+  };
+
+  // RD-3, RD-4 and RD-6 are family invariants, not selected-entry invariants.
+  // Authenticate every same-id version before it can influence latest-version
+  // selection, then require one monotonic, unbranched supersession chain whose
+  // phase handler never changes.
+  const authenticatedFamily: Array<T & { signature: ComponentSignature }> = [];
+  for (const candidate of family) {
+    authenticatedFamily.push(await authenticate(candidate));
+  }
+  authenticatedFamily.sort((left, right) =>
+    (left as unknown as RailDefinition).railVersion -
+    (right as unknown as RailDefinition).railVersion);
+  for (let index = 0; index < authenticatedFamily.length; index += 1) {
+    const current = authenticatedFamily[index] as unknown as RailDefinition;
+    const prior = index === 0
+      ? undefined
+      : authenticatedFamily[index - 1] as unknown as RailDefinition;
+    if (
+      prior !== undefined &&
+      current.railVersion === prior.railVersion
+    ) {
+      throw new DacsError(
+        `entry family "${pinnedId}" has duplicate version ${current.railVersion}`,
+      );
+    }
+    const first = authenticatedFamily[0] as unknown as RailDefinition;
+    if (current.phaseHandler !== first.phaseHandler) {
+      throw new DacsError(
+        `entry family "${pinnedId}" changes phaseHandler across versions (RD-6)`,
+      );
+    }
+    if (prior === undefined) {
+      if (current.governance.supersedes !== undefined) {
+        throw new DacsError(
+          `entry family "${pinnedId}" starts by superseding a missing version`,
+        );
+      }
+      continue;
+    }
+    if (current.governance.supersedes !== prior.railVersion) {
+      throw new DacsError(
+        `entry family "${pinnedId}" does not form one monotonic supersession chain (RD-3/RD-4)`,
+      );
+    }
+    if (current.governance.acceptedAt < prior.governance.acceptedAt) {
+      throw new DacsError(
+        `entry family "${pinnedId}" reverses signed acceptedAt ordering`,
+      );
+    }
   }
 
-  const signed = await verifyComponentSignature(verifiedEntry, separator, {
-    isSignerAuthorized: (_artifact, signature) =>
-      signature.signer === captured.stewardSigner,
-    resolvePublicKey: (signature) =>
-      signature.algorithm === "ed25519"
-        ? Uint8Array.from(captured.stewardPublicKey)
-        : null,
-    verify: ({ signedBytes, signature, publicKey }) =>
-      verifyWithCapturedDeps(
-        captured.verify,
-        signedBytes,
-        Uint8Array.from(Buffer.from(signature.value, "base64url")),
-        publicKey,
-      ),
-  });
-  if (signed.status !== "valid") {
+  const selectedVersion = version ??
+    (authenticatedFamily.at(-1) as unknown as RailDefinition).railVersion;
+  const selected = authenticatedFamily.filter(
+    (candidate) =>
+      (candidate as unknown as RailDefinition).railVersion === selectedVersion,
+  );
+  if (selected.length !== 1) {
     throw new DacsError(
-      `entry "${pinnedId}" signature is not valid under the steward key`,
+      `entry family "${pinnedId}" resolved ${selected.length} definitions at version ${selectedVersion}; exactly one is required`,
     );
   }
-
-  if (!validate(verifiedEntry)) {
-    throw new DacsError(`entry "${pinnedId}" has an invalid descriptor shape`);
-  }
-  const descriptor = verifiedEntry as T & { signature: ComponentSignature };
-  if (descriptor.availability !== "live") {
-    throw new DacsError(
-      `entry "${pinnedId}" is not live (availability=${descriptor.availability})`,
-    );
-  }
-  return descriptor;
+  return selected[0]!;
 }
 
-function isRailDescriptor(e: Record<string, unknown>): boolean {
-  return (
-    typeof e["id"] === "string" &&
-    typeof e["kind"] === "string" &&
-    typeof e["availability"] === "string" &&
-    typeof e["params"] === "object" &&
-    e["params"] !== null
-  );
+const authenticatedRails = new WeakSet<object>();
+declare const authenticatedRailDefinitionBrand: unique symbol;
+
+/**
+ * A DACS-4 §9.4.1 definition whose exact wire shape and steward signature were
+ * checked by {@link resolveRail}. The private brand prevents structural caller
+ * data from reaching the money path; the WeakSet enforces RAV-R5 at runtime.
+ */
+export type AuthenticatedRailDefinition = RailDefinition & {
+  readonly [authenticatedRailDefinitionBrand]: true;
+};
+
+/** Runtime RAV-R5 provenance check for a resolved rail definition. */
+export function isAuthenticatedRailDefinition(
+  value: unknown,
+): value is AuthenticatedRailDefinition {
+  return isRecord(value) && authenticatedRails.has(value);
 }
 
 const authenticatedRecipes = new WeakSet<object>();
@@ -284,7 +380,10 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
+  value !== null &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  !nodeTypes.isProxy(value);
 const isSafeUint = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const isPositiveSafeInt = (value: unknown): value is number =>
@@ -368,7 +467,7 @@ function isExactWireArray(
   value: unknown,
   validate: (entry: unknown) => boolean,
 ): value is unknown[] {
-  if (!Array.isArray(value)) return false;
+  if (!Array.isArray(value) || nodeTypes.isProxy(value)) return false;
   try {
     if (Object.getPrototypeOf(value) !== Array.prototype) return false;
     const ownKeys = Reflect.ownKeys(value);
@@ -661,6 +760,270 @@ function isExactComponentSignature(value: unknown): boolean {
   );
 }
 
+const RAIL_TYPES: ReadonlySet<string> = new Set([
+  "evm-erc20",
+  "solana-spl",
+  "cross-chain-htlc",
+  "cross-chain-liquidity-tank",
+  "ap2",
+  "x402",
+  "demos-native",
+]);
+
+const RAIL_PHASE_BY_TYPE: Readonly<Record<RailType, string>> = Object.freeze({
+  "evm-erc20": "pay-evm-erc20",
+  "solana-spl": "pay-solana-spl",
+  "cross-chain-htlc": "pay-cross-chain-htlc",
+  "cross-chain-liquidity-tank": "pay-cross-chain-liquidity-tank",
+  ap2: "pay-ap2",
+  x402: "pay-x402",
+  "demos-native": "pay-dem",
+});
+
+const isNonEmptyWireString = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.normalize("NFC") === value &&
+  isSafeJsonString(value);
+
+const isCluster = (
+  value: unknown,
+): value is "mainnet" | "devnet" | "testnet" =>
+  value === "mainnet" || value === "devnet" || value === "testnet";
+
+function isChainIdentifier(value: unknown): value is number | string {
+  return isPositiveSafeInt(value) || isNonEmptyWireString(value);
+}
+
+function isCrossChainRoute(value: unknown): value is {
+  sourceChainId: number | string;
+  destChainId: number | string;
+  htlcContracts?: { source: string; dest: string };
+  liquidityTankIds?: string[];
+} {
+  if (
+    !hasExactWireKeys(
+      value,
+      ["sourceChainId", "destChainId"],
+      ["htlcContracts", "liquidityTankIds"],
+    ) ||
+    !isChainIdentifier(value.sourceChainId) ||
+    !isChainIdentifier(value.destChainId)
+  ) {
+    return false;
+  }
+  if (
+    value.htlcContracts !== undefined &&
+    (!hasExactWireKeys(value.htlcContracts, ["source", "dest"]) ||
+      !isNonEmptyWireString(value.htlcContracts.source) ||
+      !isNonEmptyWireString(value.htlcContracts.dest))
+  ) {
+    return false;
+  }
+  return (
+    value.liquidityTankIds === undefined ||
+    isExactWireArray(value.liquidityTankIds, isNonEmptyWireString)
+  );
+}
+
+function isAssetSpec(value: unknown): value is AssetSpec {
+  if (!isRecord(value)) return false;
+  const kind = value.kind;
+  switch (kind) {
+    case "erc20":
+      return (
+        hasExactWireKeys(value, [
+          "kind",
+          "chainId",
+          "contract",
+          "symbol",
+          "decimals",
+        ]) &&
+        isPositiveSafeInt(value.chainId) &&
+        isNonEmptyWireString(value.contract) &&
+        isNonEmptyWireString(value.symbol) &&
+        isSafeUint(value.decimals)
+      );
+    case "spl":
+      return (
+        hasExactWireKeys(value, [
+          "kind",
+          "cluster",
+          "mint",
+          "symbol",
+          "decimals",
+        ]) &&
+        isCluster(value.cluster) &&
+        isNonEmptyWireString(value.mint) &&
+        isNonEmptyWireString(value.symbol) &&
+        isSafeUint(value.decimals)
+      );
+    case "native-evm":
+      return (
+        hasExactWireKeys(value, ["kind", "chainId", "symbol", "decimals"]) &&
+        isPositiveSafeInt(value.chainId) &&
+        isNonEmptyWireString(value.symbol) &&
+        isSafeUint(value.decimals)
+      );
+    case "native-solana":
+      return (
+        hasExactWireKeys(value, ["kind", "cluster", "symbol", "decimals"]) &&
+        isCluster(value.cluster) &&
+        value.symbol === "SOL" &&
+        value.decimals === 9
+      );
+    case "native-dem":
+      return (
+        hasExactWireKeys(value, ["kind", "symbol", "decimals"]) &&
+        value.symbol === "DEM" &&
+        value.decimals === 9
+      );
+    case "fiat-via-ap2":
+      return (
+        hasExactWireKeys(value, ["kind", "isoCurrency", "provider"]) &&
+        isNonEmptyWireString(value.isoCurrency) &&
+        isNonEmptyWireString(value.provider)
+      );
+    case "stablecoin-cross-chain":
+      return (
+        hasExactWireKeys(value, ["kind", "canonicalSymbol", "routes"]) &&
+        isNonEmptyWireString(value.canonicalSymbol) &&
+        isExactWireArray(value.routes, isCrossChainRoute)
+      );
+    default:
+      return false;
+  }
+}
+
+function isNetworkSpec(value: unknown): value is NetworkSpec {
+  if (!isRecord(value)) return false;
+  switch (value.kind) {
+    case "evm":
+      return (
+        hasExactWireKeys(value, ["kind", "chainId", "rpcAttestation"]) &&
+        isPositiveSafeInt(value.chainId) &&
+        (value.rpcAttestation === "consensus-backed-proxy" ||
+          value.rpcAttestation === "evm-rpc")
+      );
+    case "solana":
+      return (
+        hasExactWireKeys(value, ["kind", "cluster"]) &&
+        isCluster(value.cluster)
+      );
+    case "demos":
+      return hasExactWireKeys(value, ["kind"]);
+    case "ap2-provider":
+      return (
+        hasExactWireKeys(value, ["kind", "providerEndpoint"]) &&
+        isNonEmptyWireString(value.providerEndpoint)
+      );
+    case "x402-resource":
+      return (
+        hasExactWireKeys(value, ["kind", "resourceBaseUrl"]) &&
+        isNonEmptyWireString(value.resourceBaseUrl)
+      );
+    case "cross-chain":
+      return (
+        hasExactWireKeys(value, ["kind", "mechanism"]) &&
+        (value.mechanism === "htlc" ||
+          value.mechanism === "liquidity-tank" ||
+          value.mechanism === "substrate-native")
+      );
+    default:
+      return false;
+  }
+}
+
+function railTypeMatchesAssetAndNetwork(
+  railType: RailType,
+  asset: AssetSpec,
+  network: NetworkSpec,
+): boolean {
+  switch (railType) {
+    case "evm-erc20":
+      return (
+        asset.kind === "erc20" &&
+        network.kind === "evm" &&
+        asset.chainId === network.chainId
+      );
+    case "solana-spl":
+      return (
+        asset.kind === "spl" &&
+        network.kind === "solana" &&
+        asset.cluster === network.cluster
+      );
+    case "cross-chain-htlc":
+      return (
+        asset.kind === "stablecoin-cross-chain" &&
+        network.kind === "cross-chain" &&
+        network.mechanism === "htlc"
+      );
+    case "cross-chain-liquidity-tank":
+      return (
+        asset.kind === "stablecoin-cross-chain" &&
+        network.kind === "cross-chain" &&
+        (network.mechanism === "liquidity-tank" ||
+          network.mechanism === "substrate-native")
+      );
+    case "ap2":
+      return asset.kind === "fiat-via-ap2" && network.kind === "ap2-provider";
+    case "x402":
+      return asset.kind === "erc20" && network.kind === "x402-resource";
+    case "demos-native":
+      return asset.kind === "native-dem" && network.kind === "demos";
+  }
+}
+
+function isRailDefinition(
+  e: Record<string, unknown>,
+): e is Record<string, unknown> & RailDefinition {
+  if (
+    !hasExactWireKeys(e, [
+      "railVersion",
+      "railId",
+      "railType",
+      "asset",
+      "network",
+      "phaseHandler",
+      "parameters",
+      "availability",
+      "governance",
+      "signature",
+    ]) ||
+    !isPositiveSafeInt(e.railVersion) ||
+    typeof e.railId !== "string" ||
+    // §9.4.1 says lowercase, but its normative v0.1 registry identifiers use
+    // uppercase asset symbols (for example `evm-erc20:8453:USDC`). Preserve
+    // those canonical ASCII identifiers byte-for-byte while rejecting every
+    // non-ASCII or whitespace form.
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(e.railId) ||
+    typeof e.railType !== "string" ||
+    !RAIL_TYPES.has(e.railType) ||
+    !isAssetSpec(e.asset) ||
+    !isNetworkSpec(e.network) ||
+    !isRecord(e.parameters) ||
+    !isJsonWireValue(e.parameters) ||
+    typeof e.availability !== "string" ||
+    !AVAILABILITIES.has(e.availability) ||
+    !isGovernance(e.governance) ||
+    !isExactComponentSignature(e.signature)
+  ) {
+    return false;
+  }
+  const railType = e.railType as RailType;
+  const governance = e.governance as RailGovernance;
+  return (
+    e.phaseHandler === RAIL_PHASE_BY_TYPE[railType] &&
+    railTypeMatchesAssetAndNetwork(
+      railType,
+      e.asset as AssetSpec,
+      e.network as NetworkSpec,
+    ) &&
+    (governance.supersedes === undefined ||
+      governance.supersedes < (e.railVersion as number))
+  );
+}
+
 export function isRecipeDescriptor(
   e: Record<string, unknown>,
 ): e is Record<string, unknown> & RecipeDescriptor & {
@@ -728,13 +1091,45 @@ export function isAuthenticatedRecipeDescriptor(
   return isRecord(value) && authenticatedRecipes.has(value);
 }
 
-/** Resolve + pin a live, steward-signed rail descriptor from the rail registry. */
-export function resolveRail(
+/**
+ * Resolve and pin one exact steward-signed DACS-4 §9.4.1 rail definition.
+ * Availability is deliberately preserved: RAV-R1..RAV-R3 are point-of-use
+ * policy, while RAV-R5 requires this authenticated definition as their source.
+ */
+export async function resolveRail(
   anchor: string,
-  id: string,
+  selector: string | Readonly<RailSelector>,
   deps: RegistryResolveDeps,
-): Promise<RailDescriptor & { signature: ComponentSignature }> {
-  return resolveEntry(anchor, id, "dacs-rail:v1:", deps, isRailDescriptor);
+): Promise<AuthenticatedRailDefinition> {
+  let railId: string;
+  let railVersion: number | undefined;
+  if (typeof selector === "string") {
+    railId = selector;
+  } else {
+    if (
+      !hasExactWireKeys(selector, ["railId"], ["railVersion"]) ||
+      typeof selector.railId !== "string" ||
+      (selector.railVersion !== undefined &&
+        !isPositiveSafeInt(selector.railVersion))
+    ) {
+      throw new DacsError(
+        "rail selector must carry an exact railId and optional positive railVersion",
+      );
+    }
+    railId = selector.railId;
+    railVersion = selector.railVersion;
+  }
+  const descriptor = await resolveEntry<RailDefinition>(
+    anchor,
+    railId,
+    railVersion,
+    "dacs-rail:v1:",
+    deps,
+    isRailDefinition,
+  );
+  const pinned = deepFreeze(descriptor);
+  authenticatedRails.add(pinned);
+  return pinned as AuthenticatedRailDefinition;
 }
 
 /**
