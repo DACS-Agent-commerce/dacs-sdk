@@ -1,4 +1,5 @@
 import { DacsError } from "../errors.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
 import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
@@ -7,10 +8,10 @@ import {
   createPayDemRail,
   payDemSettle,
   type PayDemPreparedTransfer,
+  type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
 import type {
   SettlementIdempotencyStore,
-  SettlementReconcile,
 } from "../rails/idempotency.js";
 import type { RailDescriptor } from "./types.js";
 
@@ -64,20 +65,63 @@ export interface RailDispatchOptions {
     /** Durable atomic settlement intent/outcome store. */
     settlementStore?: SettlementIdempotencyStore;
     /** Authoritative reconciliation for an unresolved retained intent. */
-    reconcile?: SettlementReconcile;
+    reconcile?: PayDemSettlementReconcile;
     inclusionTimeoutMs?: number;
     inclusionPollIntervalMs?: number;
     statusRequestTimeoutMs?: number;
     nonceVisibilityTimeoutMs?: number;
   };
   /**
-   * Explicit opt-in to dispatch EXPERIMENTAL / non-`live` rails (currently
-   * pay-d402, which isn't node-enabled). Off by default so a registry can't wire
-   * a non-live rail as a production settlement path (RAV-R1).
+   * Additional opt-in for the preview-only pay-d402 implementation. This flag
+   * never overrides the RAV-R1 `availability === "live"` gate above: an
+   * authenticated non-live registry entry remains non-dispatchable.
    */
   allowExperimentalRails?: boolean;
   /** Override fetch (tests / custom transport). */
   fetchImpl?: typeof fetch;
+}
+
+const PHASE_BY_RAIL_KIND: Readonly<Record<string, string>> = Object.freeze({
+  x402: "pay-x402",
+  "evm-erc20": "pay-evm-erc20",
+  dem: "pay-dem",
+  // Preview-only and outside the Standard's closed PhaseType set. Retained only
+  // for the existing explicit experimental surface; a non-live descriptor is
+  // rejected before construction below.
+  d402: "pay-d402",
+});
+
+function bindDescriptorRequest(
+  descriptor: Readonly<Pick<RailDescriptor, "id" | "kind">>,
+  executor: (req: SettleRequest) => Promise<SettleResult>,
+): (req: SettleRequest) => Promise<SettleResult> {
+  const expectedPhase = PHASE_BY_RAIL_KIND[descriptor.kind];
+  if (expectedPhase === undefined) {
+    throw new DacsError(`unknown rail kind: ${descriptor.kind}`);
+  }
+  return async (req) => {
+    // Capture the two authority-bearing request fields once, then overwrite any
+    // accessor/proxy values copied by the compatibility spread below. The rail
+    // executor must receive the same descriptor id and phase that this gate
+    // checked, even if a hostile request view changes between reads.
+    const requestRail = req.rail;
+    const requestPhase = req.phase;
+    if (requestRail !== descriptor.id) {
+      throw new DacsError(
+        `settlement request rail "${requestRail}" does not match authenticated descriptor "${descriptor.id}"`,
+      );
+    }
+    if (requestPhase !== expectedPhase) {
+      throw new DacsError(
+        `settlement request phase "${requestPhase}" does not match descriptor kind "${descriptor.kind}" (${expectedPhase})`,
+      );
+    }
+    return executor({
+      ...req,
+      rail: requestRail,
+      phase: requestPhase,
+    });
+  };
 }
 
 interface ResolvedPaymentCoordinates {
@@ -123,16 +167,45 @@ export async function settleFromRail(
   descriptor: RailDescriptor,
   opts: RailDispatchOptions,
 ): Promise<(req: SettleRequest) => Promise<SettleResult>> {
+  const capturedDescriptor = snapshotCanonicalJsonRead(
+    descriptor,
+    "authenticated rail descriptor",
+  );
+  if (
+    typeof capturedDescriptor.id !== "string" ||
+    capturedDescriptor.id.length === 0 ||
+    capturedDescriptor.id.trim() !== capturedDescriptor.id ||
+    typeof capturedDescriptor.kind !== "string" ||
+    capturedDescriptor.kind.length === 0 ||
+    capturedDescriptor.kind.trim() !== capturedDescriptor.kind ||
+    capturedDescriptor.params === null ||
+    typeof capturedDescriptor.params !== "object" ||
+    Array.isArray(capturedDescriptor.params)
+  ) {
+    throw new DacsError("authenticated rail descriptor has an invalid shape");
+  }
+  // resolveRail already performs steward-signature verification and rejects a
+  // non-live entry. Preserve that RAV-R1 gate here as defense in depth because
+  // this public bridge is also callable with a structural descriptor.
+  if (capturedDescriptor.availability !== "live") {
+    throw new DacsError(
+      `rail "${capturedDescriptor.id}" is not live (availability=${capturedDescriptor.availability}); refusing settlement dispatch`,
+    );
+  }
+  const descriptorIdentity = Object.freeze({
+    id: capturedDescriptor.id,
+    kind: capturedDescriptor.kind,
+  });
   const payment = paymentCoordinates(opts);
-  switch (descriptor.kind) {
+  switch (capturedDescriptor.kind) {
     case "x402": {
       // The expected token is rail config (steward-signed descriptor params) —
       // exactly like evm-erc20 — so the §4.1 asset guard compares the 402's
       // token against a canonical on-chain id, not the Price.asset symbol.
-      const tokenAddress = descriptor.params["tokenAddress"];
+      const tokenAddress = capturedDescriptor.params["tokenAddress"];
       if (typeof tokenAddress !== "string") {
         throw new DacsError(
-          `x402 rail "${descriptor.id}" descriptor missing params.tokenAddress`,
+          `x402 rail "${capturedDescriptor.id}" descriptor missing params.tokenAddress`,
         );
       }
       const url = requiredCoordinate(payment.url, "x402", "url");
@@ -147,7 +220,7 @@ export async function settleFromRail(
         fetchImpl: opts.fetchImpl,
         requireSessionBinding: true,
       });
-      return x402Settle(rail, {
+      return bindDescriptorRequest(descriptorIdentity, x402Settle(rail, {
         url,
         network,
         recipientEvm,
@@ -155,15 +228,15 @@ export async function settleFromRail(
           ? {}
           : { phaseIndex: payment.phaseIndex }),
         asset: tokenAddress,
-      });
+      }));
     }
     case "evm-erc20": {
       // The token contract is rail config (registry params); the recipient +
       // network are per-deal (paywall); the RPC is a caller secret.
-      const tokenAddress = descriptor.params["tokenAddress"];
+      const tokenAddress = capturedDescriptor.params["tokenAddress"];
       if (typeof tokenAddress !== "string") {
         throw new DacsError(
-          `evm-erc20 rail "${descriptor.id}" descriptor missing params.tokenAddress`,
+          `evm-erc20 rail "${capturedDescriptor.id}" descriptor missing params.tokenAddress`,
         );
       }
       if (!opts.rpcUrl) {
@@ -184,18 +257,18 @@ export async function settleFromRail(
         rpcUrl: opts.rpcUrl,
         network,
       });
-      return evmErc20Settle(rail, {
+      return bindDescriptorRequest(descriptorIdentity, evmErc20Settle(rail, {
         tokenAddress,
         network,
         recipientEvm,
-      });
+      }));
     }
     case "d402": {
       // EXPERIMENTAL D402 rail (§9.4.4 non-`live`, not node-enabled). The
       // recipient + network are per-deal (paywall); the Demos RPC + wallet secret
       // are caller secrets. `payTo` carries the Demos recipient address (reusing
-      // the paywall's recipient field). RAV-R1: refuse to dispatch it unless the
-      // caller explicitly opts into experimental rails.
+      // the paywall's recipient field). This second explicit opt-in is retained
+      // for preview compatibility; it cannot bypass the earlier live gate.
       if (!opts.allowExperimentalRails) {
         throw new DacsError(
           "pay-d402 is EXPERIMENTAL and not node-enabled (RAV-R1: MUST NOT be selected as a live rail); " +
@@ -226,11 +299,11 @@ export async function settleFromRail(
         fetchImpl: opts.fetchImpl,
         acknowledgeExperimental: true,
       });
-      return payD402Settle(rail, {
+      return bindDescriptorRequest(descriptorIdentity, payD402Settle(rail, {
         url,
         recipient,
         network,
-      });
+      }));
     }
     case "dem": {
       // Native DEM transfer rail (§9.5.9, live). The recipient + network are
@@ -256,6 +329,7 @@ export async function settleFromRail(
       const nonceVisibilityTimeoutMs = payDem?.nonceVisibilityTimeoutMs;
       const demNetwork = payment.network ?? "demos";
       const demRecipient = payment.recipient;
+      const demPhaseIndex = payment.phaseIndex;
       const rail = await createPayDemRail({
         rpc: opts.demosRpc,
         secret: opts.demosSecret,
@@ -279,11 +353,15 @@ export async function settleFromRail(
           ? {}
           : { nonceVisibilityTimeoutMs }),
       });
-      return payDemSettle(rail, {
+      return bindDescriptorRequest(descriptorIdentity, payDemSettle(rail, {
         ...(demRecipient === undefined
           ? {}
           : { recipient: demRecipient }),
         network: demNetwork,
+        railId: descriptorIdentity.id,
+        ...(demPhaseIndex === undefined
+          ? {}
+          : { phaseIndex: demPhaseIndex }),
       }, {
         ...(settlementStore === undefined
           ? {}
@@ -291,9 +369,9 @@ export async function settleFromRail(
         ...(reconcile === undefined
           ? {}
           : { reconcile }),
-      });
+      }));
     }
     default:
-      throw new DacsError(`unknown rail kind: ${descriptor.kind}`);
+      throw new DacsError(`unknown rail kind: ${capturedDescriptor.kind}`);
   }
 }

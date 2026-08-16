@@ -281,10 +281,19 @@ response did not move value, so applications must not automatically retry.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
 `settlementStore`, and `reconcile`. The bridge adds the exact
-`(railId, jobId, phaseIndex)` and settlement key to every prepared-transfer
-record, allowing the journal and durable settlement log to authenticate the
-same PC-7 effect. The compatibility defaults remain process-local and must not
-be described as restart-safe.
+`(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
+amount to every prepared-transfer record, allowing the journal and durable
+settlement log to authenticate the same PC-7 effect. `reconcile` receives that
+`PayDemSettlementRecoveryContext` and must return either an exact
+`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
+when authoritative observation proves no transfer for that tuple landed. A
+non-final observation must throw. Cached durable success is reauthenticated
+after every process restart before reuse; missing or contradictory recovery
+fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
+the two values must match rather than silently defaulting or dropping the
+configured discriminator. The compatibility defaults remain process-local and
+must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
