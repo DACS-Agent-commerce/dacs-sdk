@@ -1,8 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "skipLibCheck": true
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
   "include": ["live.ts"]
 }

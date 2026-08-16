@@ -17,7 +17,7 @@ export type {
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
 export { AnchorWaitError } from "./AnchorWaitError.js";
-export { DemosAdapter } from "./DemosAdapter.js";
+export { DemosAdapter, type DemosRawClient } from "./DemosAdapter.js";
 export {
   DEMOS_WRITE_JOURNAL_VERSION,
   createInMemoryDemosWriteJournal,
