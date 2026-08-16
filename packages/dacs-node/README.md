@@ -5,8 +5,9 @@ Production Node.js host contracts and adapters for `@kynesyslabs/dacs`.
 The package keeps filesystem, SQLite, HTTP, process-supervision, and deployment
 concerns outside the transport-neutral SDK. It publishes the stable host
 interfaces, byte-exact authenticated HTTP envelope, and the local SQLite
-durability foundation. Payment-handshake adapters, the HTTP server, role
-services, and live deployment remain separate stacked implementation units.
+durability foundation. The SQLite surface includes the actor-bound coordinator
+and payment-evidence handshake stores. The HTTP server, role services, and live
+deployment remain separate stacked implementation units.
 
 ```ts
 import {
@@ -47,13 +48,28 @@ history, actor binding, and logical records before it creates a local backup or
 runs a forward migration; newer, foreign, corrupt, and cross-profile databases
 fail closed without being modified.
 
-The public v2 and v3 schemas are immutable migration inputs. A v2 database
+Live buyer and seller databases expose
+`createPaymentEvidenceHandshakeStore()`. It atomically reserves each request's
+message, effect, and logical-address identities within the exact actor-pair and
+rail scope; retains canonical request/completion hashes; and persists buyer
+work plus both role-owned outboxes behind generation-fenced leases. Runnable
+and outbox scans use stable message-ID cursors and reject pages above
+`DACS_NODE_SQLITE_MAX_PAGE_SIZE`. Offline and verifier databases cannot create
+this store, and every admitted request must name the database's canonical actor
+authority in its role. This is the durable store only: it does not provide an
+HTTP transport, wallet, secret loader, or role service.
+
+The public v2, v3, and v4 schemas are immutable migration inputs. A v2 database
 contains only the coordinator order table and its runnable index; the
 authenticated track projection is created and backfilled by v3. Schema v4
 authenticates the role-local SDK job pointers with `localBindingHash` in both
 the canonical order and every projection row. It also keeps live DACS-5
 terminal attribution (`faultedParty` or `withdrawnBy`) distinct from the
 offline-only `simulated-*` outcome and error vocabulary.
+Schema v5 adds payment-evidence handshake records, authenticated runnable
+projections, and their scope-local replay reservations. Migration from v4 is
+preceded by a validated, self-contained backup just like every older supported
+schema transition.
 
 A legacy database is migrated only when its persisted SDK and Standard
 revision exactly equal the supported runtime bindings. Compatible v3 offline
