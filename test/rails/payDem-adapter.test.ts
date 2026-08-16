@@ -335,6 +335,64 @@ describe("createPayDemRail nonce coordination", () => {
     expect(sdk.broadcastAndWait).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts a post-fork numeric confirmed amount bound by the canonical OS payload", async () => {
+    const confirmed = await sdk.confirm(await sdk.transfer(RECIPIENT, 1n));
+    confirmed.response.data.transaction.content.amount = 1;
+    sdk.confirm.mockResolvedValue(confirmed);
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 1_000_000_001n,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).resolves.toMatchObject({ ok: true, blockNumber: 42 });
+    expect(sdk.broadcastAndWait).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a post-fork numeric confirmed amount that disagrees with its OS payload", async () => {
+    const confirmed = await sdk.confirm(await sdk.transfer(RECIPIENT, 1n));
+    confirmed.response.data.transaction.content.amount = 2;
+    sdk.confirm.mockResolvedValue(confirmed);
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 3_000_000_000n,
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/do not bind the requested native transfer/);
+    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a numeric post-fork amount in the signed intent", async () => {
+    sdk.transfer.mockResolvedValue({
+      hash: "tx-pay-dem",
+      content: {
+        nonce: 7,
+        type: "native",
+        from: WALLET,
+        to: RECIPIENT,
+        amount: 1,
+        data: [
+          "native",
+          { nativeOperation: "send", args: [RECIPIENT, "1"] },
+        ],
+      },
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/do not bind the requested native transfer/);
+    expect(sdk.broadcastAndWait).not.toHaveBeenCalled();
+  });
+
   it("uses authoritative gas-operation fees for the debit ceiling", async () => {
     sdk.confirm.mockResolvedValue({
       response: {
