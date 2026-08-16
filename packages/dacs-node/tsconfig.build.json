@@ -13,6 +13,7 @@
       "@kynesyslabs/dacs/canonical": ["../../dist/canonical/index.d.ts"],
       "@kynesyslabs/dacs/commerce": ["../../dist/commerce/index.d.ts"],
       "@kynesyslabs/dacs/crypto": ["../../dist/crypto/index.d.ts"],
+      "@kynesyslabs/dacs/identity": ["../../dist/identity/index.d.ts"],
       "@kynesyslabs/dacs/negotiate": ["../../dist/negotiate/index.d.ts"],
       "@kynesyslabs/dacs/seller": ["../../dist/seller/index.d.ts"]
     }
