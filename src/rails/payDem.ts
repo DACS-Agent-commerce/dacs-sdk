@@ -18,6 +18,11 @@ export const DEM_DECIMALS = 9;
 
 const CLAIM_PARAMETER_COMPONENT_RE =
   /^(?:%[0-9A-F]{2}|[^:?&=%\s#])+$/u;
+const DEMOS_TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
+const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
+const DEFAULT_INCLUSION_POLL_INTERVAL_MS = 500;
+const DEFAULT_STATUS_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS = 60_000;
 
 type AnyMethod = (...args: never[]) => unknown;
 
@@ -113,6 +118,25 @@ function optionalStableString(
   return property.value;
 }
 
+function optionalPositiveInteger(
+  source: unknown,
+  key: string,
+  label: string,
+  fallback: number,
+): number {
+  const property = stableDataProperty(source, key, label);
+  if (!property.found || property.value === undefined) return fallback;
+  if (!Number.isSafeInteger(property.value) || (property.value as number) <= 0) {
+    throw new DacsError(`${label} must be a positive safe integer`);
+  }
+  return property.value as number;
+}
+
+function canonicalDemosTxHash(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() !== value) return null;
+  return value.match(DEMOS_TX_HASH_RE)?.[1]?.toLowerCase() ?? null;
+}
+
 function hasWellFormedClaimParameters(parameters: string | undefined): boolean {
   if (parameters === undefined) return true;
   const pairs = parameters.split("&");
@@ -182,7 +206,8 @@ export function normalizeDemosNativeAddress(address: string): string | null {
  * decimal DEM → OS. `payDemSettleCore` then works purely in integer OS base units
  * (never floats). The core is pure over an injected native client, so it's tested
  * without a Demos node; createPayDemRail is the thin demosdk wiring
- * (transfer → confirm → broadcastAndWait, gated on the terminal inclusion state).
+ * (transfer → confirm → write-ahead journal → one broadcast, with finality
+ * independently observed by the canonical signed hash).
  */
 
 export interface PayDemSettleParams {
@@ -194,7 +219,7 @@ export interface PayDemSettleParams {
   network?: string;
 }
 
-/** The result of submitting a native transfer (sign → confirm → broadcastAndWait). */
+/** The result of submitting a native transfer and independently observing finality. */
 export interface DemosTransferResult {
   ok: boolean;
   hash: string;
@@ -273,10 +298,15 @@ export async function payDemSettleCore(
     "blockNumber",
     "pay-dem transfer result blockNumber",
   );
-  const txHash = typeof hashProperty.value === "string" &&
-      hashProperty.value.trim() === hashProperty.value
-    ? hashProperty.value
-    : "";
+  const txHash = hashProperty.found
+    ? canonicalDemosTxHash(hashProperty.value)
+    : null;
+  if (txHash === null) {
+    // A returned transfer result is already past the rail's submission seam.
+    // Missing or malformed identity can never be treated as a clean no-submit
+    // result: throw so the write-ahead intent remains held for reconciliation.
+    throw new DacsError("pay-dem transfer result hash must be a 32-byte hex value");
+  }
   const state = typeof stateProperty.value === "string"
     ? stateProperty.value
     : undefined;
@@ -336,6 +366,36 @@ export interface PayDemRailConfig {
    * idempotency boundary.
    */
   maxTotalDebitOs?: bigint;
+  /**
+   * Durable write-ahead hook invoked after the signed and confirmed transfer,
+   * denomination and maximum debit have all been validated, and before the one
+   * broadcast call. A rejection prevents broadcast. Funded operators use this
+   * to persist the canonical hash and nonce needed for ambiguous-response
+   * recovery. Callers may omit it, but then cross-process hash/nonce recovery
+   * requires an equivalent application-owned durable rail record.
+   */
+  journalPreparedTransfer?: (
+    transfer: Readonly<PayDemPreparedTransfer>,
+  ) => Promise<void>;
+  /** Overall hash-first inclusion observation budget (default 60 seconds). */
+  inclusionTimeoutMs?: number;
+  /** Delay between independent transaction-status observations (default 500 ms). */
+  inclusionPollIntervalMs?: number;
+  /** Bound for each possibly non-cooperative status RPC (default 5 seconds). */
+  statusRequestTimeoutMs?: number;
+  /** Bound for the post-inclusion account-nonce projection (default 60 seconds). */
+  nonceVisibilityTimeoutMs?: number;
+}
+
+/** Immutable public recovery facts persisted before a pay-DEM broadcast. */
+export interface PayDemPreparedTransfer {
+  txHash: string;
+  nonce: number;
+  payer: string;
+  payee: string;
+  amountOs: string;
+  network: string;
+  maxTotalDebitOs?: string;
 }
 
 export interface PayDemRail {
@@ -492,6 +552,104 @@ function confirmedNonce(value: unknown): number | null {
   }
 }
 
+type BoundedPromiseResult<T> =
+  | Readonly<{ status: "fulfilled"; value: T }>
+  | Readonly<{ status: "rejected"; reason: unknown }>
+  | Readonly<{ status: "timeout" }>;
+
+/**
+ * Bound a promise even when the underlying dependency ignores cancellation.
+ * Both fulfilment and rejection handlers remain attached after a timeout, so a
+ * late transport result cannot become an unhandled rejection. This deliberately
+ * does not retry or duplicate the underlying operation.
+ */
+function boundedPromise<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+): Promise<BoundedPromiseResult<T>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: BoundedPromiseResult<T>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ status: "timeout" }), timeoutMs);
+    operation.then(
+      (value) => finish({ status: "fulfilled", value }),
+      (reason: unknown) => finish({ status: "rejected", reason }),
+    );
+  });
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type ObservedDemosTerminal =
+  | Readonly<{ state: "included"; blockNumber: number }>
+  | Readonly<{ state: "failed"; blockNumber?: number }>
+  | Readonly<{ state: "timeout" }>;
+
+async function observeDemosTerminalByHash(
+  txHash: string,
+  nodeCall: (message: string, args: Record<string, unknown>) => Promise<unknown>,
+  options: Readonly<{
+    inclusionTimeoutMs: number;
+    inclusionPollIntervalMs: number;
+    statusRequestTimeoutMs: number;
+  }>,
+): Promise<ObservedDemosTerminal> {
+  const deadline = Date.now() + options.inclusionTimeoutMs;
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { state: "timeout" };
+
+    const request = Promise.resolve().then(() =>
+      nodeCall("getTransactionStatus", { hash: txHash }));
+    const result = await boundedPromise(
+      request,
+      Math.max(1, Math.min(options.statusRequestTimeoutMs, remaining)),
+    );
+    // Do not stack another status request on top of a transport that ignored
+    // its bound. One unresolved RPC is already enough to make finality
+    // indeterminate; additional reads would only accumulate live sockets.
+    if (result.status === "timeout") return { state: "timeout" };
+    if (result.status === "fulfilled") {
+      let status: unknown;
+      try {
+        status = snapshotCanonicalJsonRead(
+          result.value,
+          "pay-dem independent transaction status",
+        );
+      } catch {
+        status = undefined;
+      }
+      if (status !== null && typeof status === "object" && !Array.isArray(status)) {
+        const record = status as Record<string, unknown>;
+        if (record.state === "included") {
+          const blockNumber = confirmedNonce(record.blockNumber);
+          if (blockNumber !== null) return { state: "included", blockNumber };
+        } else if (record.state === "failed") {
+          const blockNumber = record.blockNumber === undefined
+            ? undefined
+            : confirmedNonce(record.blockNumber);
+          if (blockNumber !== null) {
+            return blockNumber === undefined
+              ? { state: "failed" }
+              : { state: "failed", blockNumber };
+          }
+        }
+      }
+    }
+
+    const afterRead = deadline - Date.now();
+    if (afterRead <= 0) return { state: "timeout" };
+    await wait(Math.min(options.inclusionPollIntervalMs, afterRead));
+  }
+}
+
 function confirmedTransactionBinding(
   value: unknown,
   input: Readonly<{ signedHash: string; signedNonce: number }>,
@@ -513,12 +671,8 @@ function confirmedTransactionBinding(
     );
   }
   const confirmed = transaction as Record<string, unknown>;
-  if (
-    typeof confirmed.hash !== "string" ||
-    confirmed.hash.length === 0 ||
-    confirmed.hash.trim() !== confirmed.hash ||
-    confirmed.hash !== input.signedHash
-  ) {
+  const confirmedHash = canonicalDemosTxHash(confirmed.hash);
+  if (confirmedHash === null || confirmedHash !== input.signedHash) {
     throw new DacsError(
       "pay-dem: confirmed transaction hash does not match the signed transfer; refusing broadcast",
     );
@@ -633,7 +787,8 @@ function confirmedDebitFromValidity(
 /**
  * Construct a pay-dem rail from a Demos RPC + wallet secret. Lazily imports
  * demosdk so the SDK core stays importable without the chain deps installed.
- * Submits via the proven sign → confirm → broadcastAndWait flow.
+ * Submits via sign → confirm → durable preparation journal → one broadcast,
+ * while independently observing inclusion by the signed hash.
  *
  * The low-level rail signs a fresh transaction on every call. The exported
  * runSession bridge, {@link payDemSettle}, therefore wraps it in the shared
@@ -655,6 +810,45 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       (typeof maxTotalDebitOs !== "bigint" || maxTotalDebitOs <= 0n)) {
     throw new DacsError("pay-dem rail maxTotalDebitOs must be positive");
   }
+  const journalProperty = stableDataProperty(
+    config,
+    "journalPreparedTransfer",
+    "pay-dem prepared-transfer journal",
+  );
+  const journalPreparedTransfer = !journalProperty.found ||
+      journalProperty.value === undefined
+    ? undefined
+    : stableMethod<(
+        transfer: Readonly<PayDemPreparedTransfer>,
+      ) => Promise<void>>(
+        config,
+        "journalPreparedTransfer",
+        "pay-dem prepared-transfer journal",
+      );
+  const inclusionTimeoutMs = optionalPositiveInteger(
+    config,
+    "inclusionTimeoutMs",
+    "pay-dem inclusionTimeoutMs",
+    DEFAULT_INCLUSION_TIMEOUT_MS,
+  );
+  const inclusionPollIntervalMs = optionalPositiveInteger(
+    config,
+    "inclusionPollIntervalMs",
+    "pay-dem inclusionPollIntervalMs",
+    DEFAULT_INCLUSION_POLL_INTERVAL_MS,
+  );
+  const statusRequestTimeoutMs = optionalPositiveInteger(
+    config,
+    "statusRequestTimeoutMs",
+    "pay-dem statusRequestTimeoutMs",
+    DEFAULT_STATUS_REQUEST_TIMEOUT_MS,
+  );
+  const nonceVisibilityTimeoutMs = optionalPositiveInteger(
+    config,
+    "nonceVisibilityTimeoutMs",
+    "pay-dem nonceVisibilityTimeoutMs",
+    DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS,
+  );
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
   const demos = new Demos();
@@ -690,10 +884,18 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     "getNetworkInfo",
     "pay-dem Demos.getNetworkInfo",
   );
-  const broadcastAndWait = stableMethod<(validity: unknown) => Promise<unknown>>(
+  const broadcast = stableMethod<(validity: unknown) => Promise<unknown>>(
     demos,
-    "broadcastAndWait",
-    "pay-dem Demos.broadcastAndWait",
+    "broadcast",
+    "pay-dem Demos.broadcast",
+  );
+  const nodeCall = stableMethod<(
+    message: string,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>>(
+    demos,
+    "nodeCall",
+    "pay-dem Demos.nodeCall",
   );
   const waitForNonce = stableMethod<(
     address: string,
@@ -732,11 +934,17 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         await transfer(to, amountOs),
         "pay-dem signed transfer",
       ) as unknown;
-      const signedHash = requiredStableString(
+      const signedHashValue = requiredStableString(
         signed,
         "hash",
         "pay-dem signed transfer hash",
       );
+      const signedHash = canonicalDemosTxHash(signedHashValue);
+      if (signedHash === null) {
+        throw new DacsError(
+          "pay-dem: signed transfer hash must be a 32-byte hex value; refusing confirmation and broadcast",
+        );
+      }
       const signedContent = stableDataProperty(
         signed,
         "content",
@@ -823,107 +1031,77 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       }
       // The node-confirmed body has already been required to retain the signed
       // hash and nonce, so this one identity is authoritative throughout
-      // broadcast, finality observation, marker reconciliation and evidence.
+      // journalling, broadcast, finality observation, recovery and evidence.
       const txHash = signedHash;
-      let broadcastValue: unknown;
-      let statusValue: unknown;
-      try {
-        // broadcastAndWait POLLS to a terminal state (included|failed) instead
-        // of returning on broadcast acceptance — so `ok`/`bft-final` reflect
-        // observed inclusion, and `status.blockNumber` gives the finality witness.
-        const outcome = await broadcastAndWait(validity);
-        broadcastValue = stableDataProperty(
-          outcome,
-          "broadcast",
-          "pay-dem broadcast result",
-        ).value;
-        statusValue = stableDataProperty(
-          outcome,
-          "status",
-          "pay-dem terminal status",
-        ).value;
-      } catch (err) {
-        // Timeout / broadcast failure → no terminal inclusion observed. Report a
-        // non-final result (ok:false) rather than throwing, so the settle seam
-        // records a failed payment and never mints bft-final for an unseen tx.
+      const canonicalPayer = normalizedDemosAccount(address)!;
+      const canonicalPayee = normalizedDemosAccount(to)!;
+      const prepared = Object.freeze({
+        txHash,
+        nonce: signedNonce,
+        payer: canonicalPayer,
+        payee: canonicalPayee,
+        amountOs: amountOs.toString(),
+        network: network ?? "demos",
+        ...(maxTotalDebitOs === undefined
+          ? {}
+          : { maxTotalDebitOs: maxTotalDebitOs.toString() }),
+      }) satisfies Readonly<PayDemPreparedTransfer>;
+
+      // This is the last operation before the only irreversible call. A funded
+      // runner's hook fsyncs hash + nonce and the already-validated immutable
+      // transfer facts. Any journal failure aborts before broadcast.
+      if (journalPreparedTransfer) await journalPreparedTransfer(prepared);
+
+      // Start exactly one submission. Do not await the HTTP response: demosdk's
+      // transport has no request timeout, so the response can remain pending
+      // after the transaction has already landed. The attached handlers absorb a
+      // late fulfilment/rejection; inclusion is established independently below
+      // from the pre-journaled signed hash, and ambiguity never authorises a
+      // second submission.
+      const broadcastAttempt = Promise.resolve().then(() => broadcast(validity));
+      void broadcastAttempt.then(
+        () => undefined,
+        () => undefined,
+      );
+
+      const terminal = await observeDemosTerminalByHash(txHash, nodeCall, {
+        inclusionTimeoutMs,
+        inclusionPollIntervalMs,
+        statusRequestTimeoutMs,
+      });
+      if (terminal.state === "timeout") {
         return {
           ok: false,
           state: "timeout",
           hash: txHash,
-          message: err instanceof Error ? err.message : String(err),
+          message: "pay-dem inclusion was not observed before the hash-first timeout",
+        };
+      }
+      if (terminal.state === "failed") {
+        return {
+          ok: false,
+          state: "failed",
+          hash: txHash,
+          ...(terminal.blockNumber === undefined
+            ? {}
+            : { blockNumber: terminal.blockNumber }),
         };
       }
 
-      const state = stableDataProperty(
-        statusValue,
-        "state",
-        "pay-dem terminal status state",
-      ).value;
-      if (state !== "included" && state !== "failed") {
-        throw new DacsError("pay-dem: broadcast returned an unsupported terminal state");
-      }
-      const blockNumberValue = stableDataProperty(
-        statusValue,
-        "blockNumber",
-        "pay-dem terminal status blockNumber",
-      ).value;
-      const blockNumber = blockNumberValue === undefined
-        ? undefined
-        : Number.isSafeInteger(blockNumberValue) && (blockNumberValue as number) >= 0
-        ? blockNumberValue as number
-        : null;
-      if (blockNumber === null || (state === "included" && blockNumber === undefined)) {
-        throw new DacsError("pay-dem: included transfer has no valid block number");
-      }
-      const broadcastResponse = stableDataProperty(
-        broadcastValue,
-        "response",
-        "pay-dem broadcast response",
-      ).value;
-      const responseHash = broadcastResponse === undefined
-        ? undefined
-        : stableDataProperty(
-          broadcastResponse,
-          "hash",
-          "pay-dem broadcast response hash",
-        ).value;
-      if (responseHash !== undefined && responseHash !== txHash) {
-        throw new DacsError(
-          "pay-dem: broadcast response hash does not match the signed transfer",
-        );
-      }
-      const responseMessage = broadcastResponse === undefined
-        ? undefined
-        : stableDataProperty(
-          broadcastResponse,
-          "message",
-          "pay-dem broadcast response message",
-        ).value;
-      if (responseMessage !== undefined && typeof responseMessage !== "string") {
-        throw new DacsError("pay-dem: broadcast response message is malformed");
-      }
-
-      if (state === "included") {
-        try {
-          // Inclusion can precede the account read reflecting the consumed
-          // nonce. Do not let runSession sign its follow-on evidence anchor
-          // from a stale value (DEMOS-MAPPING A.1/A.2).
-          await waitForNonce(address, signedNonce);
-        } catch {
-          // DACS-4 §9.5.1 PC-7: BFT inclusion is already final. A lagging
-          // account projection can delay the follow-on SettlementEvidence
-          // anchor, but it cannot demote payment or authorize resubmission.
-          // Return the final rail result so the session stores it durably and
-          // retries only the idempotent evidence-anchor bookkeeping.
-        }
-      }
+      // Inclusion can precede the account read reflecting the consumed nonce.
+      // Bound even a non-cooperative projection read. DACS-4 §9.5.1 PC-7 makes
+      // the included payment final regardless: a lag may delay only idempotent
+      // evidence-anchor bookkeeping and can never authorise resubmission.
+      await boundedPromise(
+        Promise.resolve().then(() => waitForNonce(address, signedNonce)),
+        nonceVisibilityTimeoutMs,
+      );
 
       return {
-        ok: state === "included",
-        state,
+        ok: true,
+        state: "included",
         hash: txHash,
-        blockNumber,
-        ...(responseMessage === undefined ? {} : { message: responseMessage }),
+        blockNumber: terminal.blockNumber,
       };
     },
   };

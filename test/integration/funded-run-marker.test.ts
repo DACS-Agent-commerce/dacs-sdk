@@ -12,6 +12,9 @@ import {
   armFundedRun,
   executeFundedRun,
   inspectArmedFundedRun,
+  openFundedRun,
+  readFundedRunCheckpoint,
+  recordFundedRunCheckpoint,
   recordFundedRunOutcome,
   type FundedRunIntent,
 } from "./funded-run-marker.js";
@@ -145,6 +148,18 @@ describe("durable funded-run guard", () => {
     })).rejects.toThrow(`run-already-armed:${armed.markerId}`);
   });
 
+  it("reopens an exact durable intent read-only and rejects changed details", async () => {
+    const input = await fixture();
+    const armed = await armFundedRun(input);
+
+    await expect(openFundedRun(input)).resolves.toEqual(armed);
+    await expect(openFundedRun({
+      ...input,
+      details: { ...input.details, amountBaseUnits: "2" },
+    })).rejects.toThrow(/intent-marker-mismatch/);
+    await expect(readFile(armed.markerPath, "utf8")).resolves.toContain('"state":"armed"');
+  });
+
   it("snapshots caller-owned details before the first asynchronous boundary", async () => {
     const details: Record<string, string> = { amountBaseUnits: "1", network: "demos" };
     const input = { ...(await fixture()), details };
@@ -234,6 +249,33 @@ describe("durable funded-run guard", () => {
 
     await writeFile(armed.markerPath, '{"state":"armed"}\n', { mode: 0o600 });
     await expect(inspectArmedFundedRun(armed)).rejects.toThrow(/intent-marker-corrupt/);
+  });
+
+  it("records and authenticates one write-once recovery checkpoint", async () => {
+    const input = await fixture();
+    const armed = await armFundedRun(input, () => 1);
+    const checkpoint = {
+      name: "prepared-transfer",
+      details: { txHash: "12".repeat(32), nonce: 35 },
+    };
+    const checkpointPath = await recordFundedRunCheckpoint(armed, checkpoint, () => 2);
+
+    await expect(readFundedRunCheckpoint(armed, checkpoint.name)).resolves.toEqual({
+      intent: {
+        operation: input.operation,
+        runId: input.runId,
+        details: input.details,
+      },
+      details: checkpoint.details,
+    });
+    await expect(recordFundedRunCheckpoint(armed, checkpoint)).rejects.toThrow(
+      /checkpoint-already-recorded/,
+    );
+
+    await writeFile(checkpointPath, '{"state":"prepared-transfer"}\n', { mode: 0o600 });
+    await expect(readFundedRunCheckpoint(armed, checkpoint.name)).rejects.toThrow(
+      /checkpoint-corrupt/,
+    );
   });
 
   it("snapshots outcome state before the first asynchronous boundary", async () => {
