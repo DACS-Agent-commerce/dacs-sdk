@@ -32,6 +32,8 @@ import {
   createFixedPriceX402BuyerCoordinator,
   createFixedPriceX402SellerCoordinator,
   createInMemoryFixedPriceX402CoordinatorStore,
+  fixedPriceX402OrderBindingHash,
+  fixedPriceX402OrderLocalBindingHash,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
@@ -68,6 +70,13 @@ function party(seedByte: number) {
 const BUYER = party(71);
 const SELLER = party(72);
 const h = (character: string): string => character.repeat(64);
+
+type MutableProtocol = Omit<FixedPriceX402ProtocolBinding, "rail"> & {
+  rail: {
+    -readonly [Key in keyof FixedPriceX402ProtocolBinding["rail"]]:
+      FixedPriceX402ProtocolBinding["rail"][Key];
+  };
+};
 
 const PROTOCOL: FixedPriceX402ProtocolBinding = {
   commerceProfile: FIXED_PRICE_X402_COMMERCE_PROFILE,
@@ -214,7 +223,7 @@ function artifacts() {
       httpResource: "https://seller.example/pay",
       paymentReceiptHash: h("e"),
       settlementTxHash: "0xabc",
-      chainId: 84532,
+      chainId: 8453,
       protocolVersion: "1",
     }],
     paymentAmount: { amount: "1", currency: "USDC" },
@@ -417,6 +426,10 @@ async function fixture() {
   } as unknown as FixedPriceX402AuditCompletionDeps["sellerFinalizationProvider"];
   const deps: FixedPriceX402AuditCompletionDeps = {
     sellerFinalizationProvider,
+    resolveAuthenticatedSellerClosureProtocol: () => ({
+      disposition: "valid",
+      protocol: PROTOCOL,
+    }),
     readBundleCopy: (nativeAddress) => bundles.get(nativeAddress) ?? null,
     verifyBundleAnchor: () => ({ disposition: "valid", mapping: "pure" }),
   };
@@ -504,6 +517,76 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     expect(verifySellerClosure.mock.calls[0]![0]).toEqual(
       fx.input.sellerClosure.verificationInput,
     );
+  });
+
+  it.each([
+    ["network", (protocol: MutableProtocol) => {
+      protocol.rail.network = "eip155:84532";
+    }],
+    ["registry index hash", (protocol: MutableProtocol) => {
+      protocol.rail.registryIndexHash = h("8");
+    }],
+    ["rail definition ref", (protocol: MutableProtocol) => {
+      protocol.rail.railDefinitionRef = "dacs4:rail:x402%3Aother:2";
+    }],
+    ["rail definition hash", (protocol: MutableProtocol) => {
+      protocol.rail.railDefinitionHash = h("9");
+    }],
+    ["rail version", (protocol: MutableProtocol) => {
+      protocol.rail.railVersion = 3;
+    }],
+  ] as const)(
+    "rejects a consistently repinned coordinator %s when the authenticated closure is unchanged",
+    async (_label, mutate) => {
+      const fx = await fixture();
+      const input = structuredClone(fx.input);
+      const protocol = structuredClone(PROTOCOL) as MutableProtocol;
+      mutate(protocol);
+      const bindingHash = fixedPriceX402OrderBindingHash({
+        jobId: JOB_ID,
+        buyer: BUYER.did,
+        seller: SELLER.did,
+        protocol,
+      });
+      for (const status of [input.buyer, input.seller]) {
+        status.protocol = structuredClone(protocol);
+        status.bindingHash = bindingHash;
+        status.localBindingHash = fixedPriceX402OrderLocalBindingHash({
+          jobId: status.jobId,
+          buyer: status.buyer,
+          seller: status.seller,
+          protocol,
+          sdkJobs: status.sdkJobs,
+        });
+      }
+
+      await expect(verifyFixedPriceX402AuditCompletion(input, fx.deps))
+        .rejects.toThrow(/authenticated seller closure protocol contradicts/);
+    },
+  );
+
+  it.each(["invalid", "indeterminate", "error"] as const)(
+    "fails closed when authenticated closure protocol resolution is %s",
+    async (disposition) => {
+      const fx = await fixture();
+      await expect(verifyFixedPriceX402AuditCompletion(fx.input, {
+        ...fx.deps,
+        resolveAuthenticatedSellerClosureProtocol: () => ({
+          disposition,
+          reason: "authenticated closure provenance could not establish the protocol",
+        }),
+      })).rejects.toThrow(new RegExp(`closure protocol is ${disposition}`));
+    },
+  );
+
+  it("fails closed on an unsupported authenticated closure protocol disposition", async () => {
+    const fx = await fixture();
+    await expect(verifyFixedPriceX402AuditCompletion(fx.input, {
+      ...fx.deps,
+      resolveAuthenticatedSellerClosureProtocol: () => ({
+        disposition: "unsupported",
+      }) as never,
+    })).rejects.toThrow(/protocol resolver returned a malformed disposition/);
   });
 
   it("rejects opaque audit references, missing readback, and a forged receipt writer", async () => {

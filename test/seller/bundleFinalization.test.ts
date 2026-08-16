@@ -36,6 +36,21 @@ import {
   attestationBundleHash,
 } from "../../src/agent/twoSidedBundle.js";
 import {
+  fixedPriceX402OrderBindingHash,
+  fixedPriceX402OrderLocalBindingHash,
+  FIXED_PRICE_X402_COMMERCE_PROFILE,
+  FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+  FIXED_PRICE_X402_STANDARD_REVISION,
+  verifyFixedPriceX402AuditCompletion,
+  type FixedPriceX402AuditCompletionDeps,
+  type FixedPriceX402CoordinatorRole,
+  type FixedPriceX402OrderStatus,
+  type FixedPriceX402ProtocolBinding,
+  type FixedPriceX402SdkJobPointers,
+  type FixedPriceX402Track,
+  type FixedPriceX402TrackRecord,
+} from "../../src/commerce/index.js";
+import {
   sellerFulfilmentId,
   type SellerFulfilmentAgreement,
   type SellerFulfilmentResult,
@@ -111,6 +126,7 @@ function receipt(
   contentHashValue: string,
   logicalAddress = `dacs-test:${contentHashValue.slice(0, 12)}`,
   nativeAddress = `stor-${contentHashValue.slice(0, 40)}`,
+  writer = "test-writer",
 ): AnchorReceipt {
   return {
     receiptVersion: "1",
@@ -120,7 +136,7 @@ function receipt(
     nativeAddress,
     contentHash: contentHashValue,
     transactionRef: { kind: "test", value: `tx-${contentHashValue.slice(0, 16)}` },
-    writer: "test-writer",
+    writer,
     state: "finalized",
     observationDisposition: "established",
     observedAt: NOW,
@@ -1101,7 +1117,7 @@ function fixture(
       bundle,
       nativeAddress,
       anchorTx: "test:bundle-anchor-tx",
-      anchorReceipt: receipt(hash, logicalAddress, nativeAddress),
+      anchorReceipt: receipt(hash, logicalAddress, nativeAddress, SELLER),
     };
   };
 
@@ -2522,6 +2538,100 @@ function terminalReadProvider(
   return provider;
 }
 
+const TERMINAL_AUDIT_PROTOCOL: FixedPriceX402ProtocolBinding = {
+  commerceProfile: FIXED_PRICE_X402_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+  phase: "pay-x402",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  rail: {
+    registryIndexRef: FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+    registryIndexHash: "8".repeat(64),
+    railDefinitionRef: "dacs4:rail:x402%3Adefault:1",
+    railDefinitionHash: "9".repeat(64),
+    railId: "x402:default",
+    railVersion: 1,
+    railType: "x402",
+    phaseHandler: "pay-x402",
+    network: "eip155:8453",
+    availability: "live",
+  },
+};
+
+type MutableAuditProtocol = Omit<FixedPriceX402ProtocolBinding, "rail"> & {
+  rail: {
+    -readonly [Key in keyof FixedPriceX402ProtocolBinding["rail"]]:
+      FixedPriceX402ProtocolBinding["rail"][Key];
+  };
+};
+
+function terminalAuditSdkJobs(
+  role: FixedPriceX402CoordinatorRole,
+): FixedPriceX402SdkJobPointers {
+  return role === "buyer"
+    ? {
+        role,
+        agreement: "buyer:agreement",
+        payment: "buyer:payment",
+        paymentEvidence: "buyer:payment-evidence",
+        buyerReceived: "buyer:received",
+        audit: "buyer:audit",
+      }
+    : {
+        role,
+        agreement: "seller:agreement",
+        payment: "seller:payment",
+        paymentEvidence: "seller:payment-evidence",
+        fulfilment: "seller:fulfilment",
+        deliveryEvidence: "seller:delivery-evidence",
+        audit: "seller:audit",
+      };
+}
+
+function terminalAuditStatus(
+  role: FixedPriceX402CoordinatorRole,
+  nativeAddress: string,
+  protocol: Readonly<FixedPriceX402ProtocolBinding> = TERMINAL_AUDIT_PROTOCOL,
+): FixedPriceX402OrderStatus {
+  const sdkJobs = terminalAuditSdkJobs(role);
+  const tracks: readonly FixedPriceX402Track[] = role === "buyer"
+    ? ["agreement", "payment", "payment-evidence", "buyer-received", "audit"]
+    : ["agreement", "payment", "payment-evidence", "delivery", "delivery-evidence", "audit"];
+  const retainedTracks = Object.fromEntries(tracks.map((track) => [
+    track,
+    {
+      state: "final" as const,
+      generation: 1,
+      attempts: 1,
+      updatedAt: NOW,
+      reference: track === "audit" ? nativeAddress : `${role}:${track}`,
+      outcome: "success" as const,
+    },
+  ])) as Partial<Record<FixedPriceX402Track, FixedPriceX402TrackRecord>>;
+  const order = {
+    jobId: JOB_ID,
+    buyer: BUYER,
+    seller: SELLER,
+    protocol,
+    sdkJobs,
+  };
+  return {
+    role,
+    jobId: JOB_ID,
+    buyer: BUYER,
+    seller: SELLER,
+    protocol: structuredClone(protocol),
+    bindingHash: fixedPriceX402OrderBindingHash(order),
+    localBindingHash: fixedPriceX402OrderLocalBindingHash(order),
+    sdkJobs,
+    tracks: retainedTracks,
+    milestone: "actor-audit-final",
+    attention: { required: false, tracks: [] },
+    revision: 8,
+    updatedAt: NOW,
+  };
+}
+
 async function finalizedForReadVerification(
   mapping: "pure" | "write-input",
 ): Promise<{
@@ -2572,6 +2682,93 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       expect(providerWriteCounts(retained.fixture)).toEqual(writesBefore);
     },
   );
+
+  test("binds the real strict closure to every coordinator registry and network pin", async () => {
+    const retained = await finalizedForReadVerification("pure");
+    const sellerNative = retained.result.nativeAddress;
+    const buyerNative = "stor-authenticated-buyer-role-copy";
+    const buyerReceipt = receipt(
+      attestationBundleHash(retained.result.buyerBundle),
+      bundleAddress(JOB_ID, "buyer"),
+      buyerNative,
+      BUYER,
+    );
+    const copies = new Map<string, Record<string, unknown>>([
+      [
+        buyerNative,
+        retained.result.buyerBundle as unknown as Record<string, unknown>,
+      ],
+      [
+        sellerNative,
+        retained.result.sellerBundle as unknown as Record<string, unknown>,
+      ],
+    ]);
+    const buyer = terminalAuditStatus("buyer", buyerNative);
+    const seller = terminalAuditStatus("seller", sellerNative);
+    const input = {
+      buyer,
+      seller,
+      sellerClosure: {
+        verificationInput: retained.input,
+        result: retained.result,
+      },
+      copies: {
+        buyer: {
+          role: "buyer" as const,
+          nativeAddress: buyerNative,
+          bundle: retained.result.buyerBundle,
+          anchorReceipt: buyerReceipt,
+        },
+        seller: {
+          role: "seller" as const,
+          nativeAddress: sellerNative,
+          bundle: retained.result.sellerBundle,
+          anchorReceipt: retained.result.anchorReceipt,
+        },
+      },
+    };
+    const deps: FixedPriceX402AuditCompletionDeps = {
+      sellerFinalizationProvider: retained.provider,
+      resolveAuthenticatedSellerClosureProtocol: (closure) =>
+        canonicalize(closure.verificationInput) === canonicalize(retained.input) &&
+          closure.result.bundleContentHash === retained.result.bundleContentHash
+          ? { disposition: "valid", protocol: TERMINAL_AUDIT_PROTOCOL }
+          : { disposition: "invalid", reason: "closure-provenance-mismatch" },
+      readBundleCopy: (nativeAddress) => copies.get(nativeAddress) ?? null,
+      verifyBundleAnchor: () => ({ disposition: "valid", mapping: "pure" }),
+    };
+    await expect(verifyFixedPriceX402AuditCompletion(input, deps))
+      .resolves.toMatchObject({ milestone: "audit-complete" });
+
+    const mutations: Array<(protocol: MutableAuditProtocol) => void> = [
+      (protocol) => { protocol.rail.network = "eip155:84532"; },
+      (protocol) => { protocol.rail.registryIndexHash = "a".repeat(64); },
+      (protocol) => {
+        protocol.rail.railDefinitionRef = "dacs4:rail:x402%3Aalternate:1";
+      },
+      (protocol) => { protocol.rail.railDefinitionHash = "b".repeat(64); },
+      (protocol) => { protocol.rail.railVersion = 2; },
+    ];
+    for (const mutate of mutations) {
+      const repinned = structuredClone(input);
+      const protocol = structuredClone(TERMINAL_AUDIT_PROTOCOL) as MutableAuditProtocol;
+      mutate(protocol);
+      for (const status of [repinned.buyer, repinned.seller]) {
+        status.protocol = structuredClone(protocol);
+        const order = {
+          jobId: status.jobId,
+          buyer: status.buyer,
+          seller: status.seller,
+          protocol,
+          sdkJobs: status.sdkJobs,
+        };
+        status.bindingHash = fixedPriceX402OrderBindingHash(order);
+        status.localBindingHash = fixedPriceX402OrderLocalBindingHash(order);
+      }
+      await expect(verifyFixedPriceX402AuditCompletion(repinned, deps))
+        .rejects.toThrow(/authenticated seller closure protocol contradicts/);
+    }
+  });
 
   test("captures caller data and binds a prototype-based read provider before the first await", async () => {
     const retained = await finalizedForReadVerification("pure");

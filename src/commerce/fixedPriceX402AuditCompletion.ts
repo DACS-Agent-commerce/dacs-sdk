@@ -41,6 +41,11 @@ import {
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402OrderStatus,
 } from "./fixedPriceX402Coordinator.js";
+import {
+  captureFixedPriceX402ProtocolBinding,
+  fixedPriceX402ProtocolBindingHash,
+  type FixedPriceX402ProtocolBinding,
+} from "./fixedPriceX402Protocol.js";
 
 export type FixedPriceX402AuditVerificationDisposition =
   | { disposition: "valid" }
@@ -75,6 +80,23 @@ export interface FixedPriceX402SellerCompletionClosure {
   result: Readonly<FinalizedSellerBundle>;
 }
 
+/**
+ * Authenticated session-start rail selection recovered independently from the
+ * completed seller closure. `protocol` is an operational SDK binding, not a
+ * new DACS wire field: a resolver establishes it from the exact signed Listing,
+ * executed payment evidence, and authoritative registry index/definition.
+ */
+export type FixedPriceX402SellerClosureProtocolResolution = Readonly<
+  | {
+      disposition: "valid";
+      protocol: Readonly<FixedPriceX402ProtocolBinding>;
+    }
+  | {
+      disposition: "invalid" | "indeterminate" | "error";
+      reason: string;
+    }
+>;
+
 export interface FixedPriceX402AuditCompletionInput {
   buyer: Readonly<FixedPriceX402OrderStatus>;
   seller: Readonly<FixedPriceX402OrderStatus>;
@@ -93,6 +115,23 @@ export interface FixedPriceX402AuditCompletionDeps {
    * record, and the complete transitive DPA closure are all verified here.
    */
   sellerFinalizationProvider: SellerBundleFinalizationReadProvider;
+  /**
+   * Recover the protocol from authenticated closure provenance without using
+   * either caller-owned coordinator status as authority. A `valid` resolver
+   * MUST authenticate the exact signed Listing rail selection under DACS-1
+   * LRR-1..LRR-6, the pinned finalized registry index and steward-signed rail
+   * definition under DACS-4 RD-1..RD-6/RAV-R5, and the executed pay-x402
+   * evidence network under X402-1..X402-4. It must return the exact selected
+   * index/definition references, hashes, rail version, handler, availability,
+   * and canonical `eip155:<chainId>` network. Merely echoing a coordinator
+   * status or an unauthenticated closure-side assertion does not satisfy this
+   * contract.
+   */
+  resolveAuthenticatedSellerClosureProtocol(
+    closure: Readonly<FixedPriceX402SellerCompletionClosure>,
+  ):
+    | Promise<FixedPriceX402SellerClosureProtocolResolution>
+    | FixedPriceX402SellerClosureProtocolResolution;
   /** Independently read an exact role-owned bundle at its native address. */
   readBundleCopy(
     nativeAddress: string,
@@ -146,6 +185,8 @@ interface CapturedAuditCompletionDeps {
   sellerFinalizationProvider: SellerBundleFinalizationReadProvider;
   sellerMapping: "pure" | "write-input";
   bundleCopyVerifier: BundleCopyDeps;
+  resolveAuthenticatedSellerClosureProtocol:
+    FixedPriceX402AuditCompletionDeps["resolveAuthenticatedSellerClosureProtocol"];
   readBundleCopy: FixedPriceX402AuditCompletionDeps["readBundleCopy"];
   verifyBundleAnchor: FixedPriceX402AuditCompletionDeps["verifyBundleAnchor"];
   resolveBundleBinding?: NonNullable<
@@ -210,6 +251,39 @@ function anchorVerificationDisposition(
     return retained as unknown as FixedPriceX402BundleAnchorVerificationDisposition;
   }
   throw new DacsError(`${label} returned a malformed disposition`);
+}
+
+function sellerClosureProtocolResolution(
+  value: unknown,
+): FixedPriceX402SellerClosureProtocolResolution {
+  const retained = snapshotCanonicalJsonRead(
+    value,
+    "authenticated seller closure protocol resolution",
+  );
+  if (!isRecord(retained)) {
+    throw new DacsError("seller closure protocol resolver returned a malformed disposition");
+  }
+  if (retained.disposition === "valid" &&
+      exactKeys(retained, ["disposition", "protocol"])) {
+    try {
+      return {
+        disposition: "valid",
+        protocol: captureFixedPriceX402ProtocolBinding(retained.protocol),
+      };
+    } catch (cause) {
+      throw new DacsError(
+        "seller closure protocol resolver returned an unsupported protocol",
+        { cause },
+      );
+    }
+  }
+  if ((retained.disposition === "invalid" || retained.disposition === "indeterminate" ||
+      retained.disposition === "error") &&
+      exactKeys(retained, ["disposition", "reason"]) &&
+      typeof retained.reason === "string" && retained.reason.length > 0) {
+    return retained as unknown as FixedPriceX402SellerClosureProtocolResolution;
+  }
+  throw new DacsError("seller closure protocol resolver returned a malformed disposition");
 }
 
 function objectBoundary(value: unknown, label: string): object {
@@ -326,6 +400,13 @@ function captureDeps(value: unknown): CapturedAuditCompletionDeps {
     "verifyBundleAnchor",
     "fixed-price x402 audit completion dependencies",
   )!;
+  const resolveAuthenticatedSellerClosureProtocol = method<
+    FixedPriceX402AuditCompletionDeps["resolveAuthenticatedSellerClosureProtocol"]
+  >(
+    source,
+    "resolveAuthenticatedSellerClosureProtocol",
+    "fixed-price x402 audit completion dependencies",
+  )!;
   const verifyBundleBinding = method<
     NonNullable<FixedPriceX402AuditCompletionDeps["verifyBundleBinding"]>
   >(
@@ -368,6 +449,10 @@ function captureDeps(value: unknown): CapturedAuditCompletionDeps {
     sellerFinalizationProvider: provider,
     sellerMapping,
     bundleCopyVerifier,
+    resolveAuthenticatedSellerClosureProtocol: async (
+      closure: Readonly<FixedPriceX402SellerCompletionClosure>,
+    ) =>
+      resolveAuthenticatedSellerClosureProtocol(clone(closure)),
     readBundleCopy: async (
       nativeAddress: string,
       role: FixedPriceX402CoordinatorRole,
@@ -626,6 +711,26 @@ export async function verifyFixedPriceX402AuditCompletion(
         attestationBundleHash(retained.copies.seller.bundle)) {
     throw new DacsError(
       "completed bundle copies do not match the authenticated durable session closure",
+    );
+  }
+
+  const closureProtocol = sellerClosureProtocolResolution(
+    await capturedDeps.resolveAuthenticatedSellerClosureProtocol({
+      verificationInput: clone(retained.sellerClosure.verificationInput),
+      result: clone(verifiedClosure),
+    }),
+  );
+  if (closureProtocol.disposition !== "valid") {
+    throw new DacsError(
+      `authenticated seller closure protocol is ${closureProtocol.disposition}: ${
+        closureProtocol.reason
+      }`,
+    );
+  }
+  if (fixedPriceX402ProtocolBindingHash(closureProtocol.protocol) !==
+      fixedPriceX402ProtocolBindingHash(retained.buyer.protocol)) {
+    throw new DacsError(
+      "authenticated seller closure protocol contradicts the coordinator order",
     );
   }
 

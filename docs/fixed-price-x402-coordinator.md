@@ -191,6 +191,18 @@ equality, and a unified §10.4.3 pair verdict. Mapping is established by the
 substrate adapters; it is not selected in the completion input, and a Demos
 receipt can only validate as `write-input` (DEMOS-MAPPING §A.2).
 
+The completion dependencies must also provide
+`resolveAuthenticatedSellerClosureProtocol`. This resolver derives the full
+session-start protocol from the authenticated closure rather than copying the
+coordinator status: it authenticates the signed Listing selection, finalized
+registry index, steward-signed rail definition, and executed x402 evidence,
+then returns the exact index/definition refs and hashes, rail version/handler,
+availability, and `eip155:<chainId>` network. The gate compares that recovered
+binding with the coordinator order and fails closed on `invalid`,
+`indeterminate`, `error`, or any mismatch. This prevents a valid closure for
+one rail/network from closing an order pinned to another (DACS-1 LRR-1..LRR-6;
+DACS-4 RD-1..RD-6, RAV-R5, X402-1..X402-4).
+
 That preserves role-relative bundle outcomes, absolute hashed `faultedParty`,
 exact type/version, and the complete production inventory; none is inferred
 from the scheduler's coarse outcome tokens. A one-sided failed or aborted phase
