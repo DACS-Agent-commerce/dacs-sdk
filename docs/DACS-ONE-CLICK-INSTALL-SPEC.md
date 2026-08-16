@@ -730,7 +730,12 @@ Inbox replay reservations MUST be retained until at least seven days after the
 session becomes terminal and never for less than seven days after receipt.
 Outbox messages and acknowledgements MUST be retained for the same period.
 Deployments needing a longer dispute/recovery window MUST configure a longer
-retention period; shortening below this minimum is invalid.
+retention period; shortening below this minimum is invalid. The configured
+period applied to admitted acknowledgement evidence MUST be retained in its
+canonical durable record and history. Reopening with a shorter period MUST NOT
+weaken that recorded policy. Re-admitting the acknowledgement with a longer
+period MUST monotonically upgrade both the recorded policy and its required
+deadline, and a later shorter reopen MUST preserve that upgrade.
 
 ### 12.5 Acknowledgement and retry
 

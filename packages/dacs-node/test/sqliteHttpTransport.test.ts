@@ -7,6 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  canonicalize,
+  sha256Hex,
+} from "@kynesyslabs/dacs/canonical";
+import {
   ed25519Sign,
   privateKeyFromSeed,
   publicKeyFromSeed,
@@ -47,6 +51,16 @@ const IDENTITY_EVIDENCE_HASH = "a".repeat(64);
 
 function nonce(byte: number): string {
   return Buffer.alloc(32, byte).toString("base64url");
+}
+
+function outboxHistoryEntryHash(input: Readonly<{
+  identity: string;
+  revision: number;
+  occurredAt: number;
+  recordHash: string;
+  previousEntryHash: string | null;
+}>): string {
+  return sha256Hex(canonicalize({ direction: "outbox", ...input }));
 }
 
 async function envelope(
@@ -511,6 +525,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       status: "recorded",
       record: {
         state: "acknowledged",
+        acknowledgementRetentionMs: configuredRetentionMs,
         retainUntil,
         revision: 2,
         acknowledgement: { receivedAt },
@@ -520,20 +535,289 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     database.checkpoint();
     close(database);
     database = await open(databasePath, BUYER, "buyer");
-    store = database.createHttpOutboxStore({ retentionMs: configuredRetentionMs });
+    // A shorter option after restart must not weaken the authenticated policy
+    // that admitted this acknowledgement.
+    store = database.createHttpOutboxStore();
     expect(await store.load(signed.envelopeId)).toMatchObject({
       state: "acknowledged",
+      acknowledgementRetentionMs: configuredRetentionMs,
       retainUntil,
       revision: 2,
       acknowledgement: { receivedAt },
     });
+    const replayedReceivedAt = receivedAt + 30_000;
+    const replayedAcknowledgement = await authenticate(
+      acknowledgementEnvelope,
+      BUYER,
+      replayedReceivedAt,
+    );
+    advanceStoreClock(databasePath, replayedReceivedAt);
+    expect(await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement: replayedAcknowledgement,
+    })).toMatchObject({
+      status: "recorded",
+      record: {
+        acknowledgementRetentionMs: configuredRetentionMs,
+        retainUntil: replayedReceivedAt + configuredRetentionMs,
+        revision: 3,
+      },
+    });
+    expect(await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement: replayedAcknowledgement,
+    })).toMatchObject({
+      status: "existing",
+      record: {
+        acknowledgementRetentionMs: configuredRetentionMs,
+        retainUntil: replayedReceivedAt + configuredRetentionMs,
+        revision: 3,
+      },
+    });
+  });
+
+  it("upgrades acknowledgement retention under a longer option and keeps it after a shorter restart", async () => {
+    const databasePath = join(root(), "buyer.sqlite");
+    const longerRetentionMs = DACS_HTTP_MINIMUM_RETENTION_MS + 120_000;
+    let database = await open(databasePath, BUYER, "buyer");
+    let store = database.createHttpOutboxStore();
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 18, now);
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const receivedAt = now + 120_000;
+    const acknowledgementEnvelope = await createDacsHttpAcknowledgementEnvelopeV1(
+      signed,
+      {
+        disposition: "accepted",
+        issuedAt: receivedAt - 1_000,
+        expiresAt: receivedAt + 299_000,
+        nonce: nonce(49),
+      },
+      (bytes) => ed25519Sign(bytes, SELLER_KEY),
+    );
+    const acknowledgement = await authenticate(acknowledgementEnvelope, BUYER, receivedAt);
+    advanceStoreClock(databasePath, receivedAt);
+
+    expect(await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement,
+    })).toMatchObject({
+      status: "recorded",
+      record: {
+        acknowledgementRetentionMs: DACS_HTTP_MINIMUM_RETENTION_MS,
+        retainUntil: receivedAt + DACS_HTTP_MINIMUM_RETENTION_MS,
+        revision: 2,
+      },
+    });
+
+    database.checkpoint();
+    close(database);
+    database = await open(databasePath, BUYER, "buyer");
+    store = database.createHttpOutboxStore({ retentionMs: longerRetentionMs });
+    expect(await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement,
+    })).toMatchObject({
+      status: "recorded",
+      record: {
+        acknowledgementRetentionMs: longerRetentionMs,
+        retainUntil: receivedAt + longerRetentionMs,
+        revision: 3,
+      },
+    });
+
+    database.checkpoint();
+    close(database);
+    database = await open(databasePath, BUYER, "buyer");
+    store = database.createHttpOutboxStore();
     expect(await store.acknowledge({
       envelopeId: signed.envelopeId,
       envelopeHash: put.record.envelopeHash,
       acknowledgement,
     })).toMatchObject({
       status: "existing",
-      record: { retainUntil, revision: 2 },
+      record: {
+        acknowledgementRetentionMs: longerRetentionMs,
+        retainUntil: receivedAt + longerRetentionMs,
+        revision: 3,
+      },
+    });
+  });
+
+  it("rejects a fully rehashed final record shortened below its persisted acknowledgement policy", async () => {
+    const databasePath = join(root(), "buyer.sqlite");
+    const configuredRetentionMs = 2 * DACS_HTTP_MINIMUM_RETENTION_MS;
+    const database = await open(databasePath, BUYER, "buyer");
+    const store = database.createHttpOutboxStore({ retentionMs: configuredRetentionMs });
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 19, now);
+    const initialRetainUntil = now + configuredRetentionMs + 10_000;
+    const put = await store.put({ envelope: signed, retainUntil: initialRetainUntil });
+    if (!put.record) throw new Error("expected outbox record");
+    const receivedAt = now + 120_000;
+    const acknowledgementEnvelope = await createDacsHttpAcknowledgementEnvelopeV1(
+      signed,
+      {
+        disposition: "accepted",
+        issuedAt: receivedAt - 1_000,
+        expiresAt: receivedAt + 299_000,
+        nonce: nonce(50),
+      },
+      (bytes) => ed25519Sign(bytes, SELLER_KEY),
+    );
+    const acknowledgement = await authenticate(acknowledgementEnvelope, BUYER, receivedAt);
+    advanceStoreClock(databasePath, receivedAt);
+    await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement,
+    });
+    database.checkpoint();
+    close(database);
+
+    const raw = new BetterSqlite3(databasePath);
+    const row = raw.prepare(`
+      SELECT record_json FROM dacs_http_outbox WHERE envelope_id = ?
+    `).get(signed.envelopeId) as { record_json: string };
+    const historyRow = raw.prepare(`
+      SELECT revision, occurred_at, previous_entry_hash
+      FROM dacs_http_outbox_history
+      WHERE envelope_id = ? AND revision = 2
+    `).get(signed.envelopeId) as {
+      revision: number;
+      occurred_at: number;
+      previous_entry_hash: string | null;
+    };
+    const record = JSON.parse(row.record_json) as Record<string, unknown>;
+    // This remains monotonic and exceeds seven days after ACK receipt, but is
+    // one millisecond short of the authenticated fourteen-day policy.
+    const shortenedRetainUntil = receivedAt + configuredRetentionMs - 1;
+    record.retainUntil = shortenedRetainUntil;
+    const shortenedJson = canonicalize(record);
+    const shortenedHash = sha256Hex(shortenedJson);
+    const shortenedEntryHash = outboxHistoryEntryHash({
+      identity: signed.envelopeId,
+      revision: historyRow.revision,
+      occurredAt: historyRow.occurred_at,
+      recordHash: shortenedHash,
+      previousEntryHash: historyRow.previous_entry_hash,
+    });
+    raw.transaction(() => {
+      raw.prepare(`
+        UPDATE dacs_http_outbox
+        SET retain_until = ?, record_hash = ?, record_json = ?
+        WHERE envelope_id = ?
+      `).run(shortenedRetainUntil, shortenedHash, shortenedJson, signed.envelopeId);
+      raw.prepare(`
+        UPDATE dacs_http_outbox_history
+        SET record_hash = ?, record_json = ?, entry_hash = ?
+        WHERE envelope_id = ? AND revision = 2
+      `).run(shortenedHash, shortenedJson, shortenedEntryHash, signed.envelopeId);
+    })();
+    raw.close();
+
+    await expect(open(databasePath, BUYER, "buyer")).rejects.toMatchObject({
+      reasonCode: "http-outbox-record-corrupt",
+    });
+  });
+
+  it("rejects a fully rehashed history transition shortened below its persisted acknowledgement policy", async () => {
+    const databasePath = join(root(), "buyer.sqlite");
+    const configuredRetentionMs = 2 * DACS_HTTP_MINIMUM_RETENTION_MS;
+    const database = await open(databasePath, BUYER, "buyer");
+    const store = database.createHttpOutboxStore({ retentionMs: configuredRetentionMs });
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 20, now);
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + configuredRetentionMs + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const receivedAt = now + 120_000;
+    const acknowledgementEnvelope = await createDacsHttpAcknowledgementEnvelopeV1(
+      signed,
+      {
+        disposition: "accepted",
+        issuedAt: receivedAt - 1_000,
+        expiresAt: receivedAt + 299_000,
+        nonce: nonce(51),
+      },
+      (bytes) => ed25519Sign(bytes, SELLER_KEY),
+    );
+    const acknowledgement = await authenticate(acknowledgementEnvelope, BUYER, receivedAt);
+    advanceStoreClock(databasePath, receivedAt);
+    await store.acknowledge({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      acknowledgement,
+    });
+    await store.extendRetention({
+      jobId: JOB_ID,
+      retainUntil: receivedAt + configuredRetentionMs + 10_000,
+    });
+    database.checkpoint();
+    close(database);
+
+    const raw = new BetterSqlite3(databasePath);
+    const rows = raw.prepare(`
+      SELECT revision, occurred_at, record_hash, record_json,
+        previous_entry_hash, entry_hash
+      FROM dacs_http_outbox_history
+      WHERE envelope_id = ? ORDER BY revision
+    `).all(signed.envelopeId) as Array<{
+      revision: number;
+      occurred_at: number;
+      record_hash: string;
+      record_json: string;
+      previous_entry_hash: string | null;
+      entry_hash: string;
+    }>;
+    const acknowledgementRow = rows[1]!;
+    const finalRow = rows[2]!;
+    const acknowledgementRecord = JSON.parse(acknowledgementRow.record_json) as
+      Record<string, unknown>;
+    acknowledgementRecord.retainUntil = receivedAt + configuredRetentionMs - 1;
+    const shortenedJson = canonicalize(acknowledgementRecord);
+    const shortenedHash = sha256Hex(shortenedJson);
+    const shortenedEntryHash = outboxHistoryEntryHash({
+      identity: signed.envelopeId,
+      revision: acknowledgementRow.revision,
+      occurredAt: acknowledgementRow.occurred_at,
+      recordHash: shortenedHash,
+      previousEntryHash: acknowledgementRow.previous_entry_hash,
+    });
+    raw.prepare(`
+      UPDATE dacs_http_outbox_history
+      SET record_hash = ?, record_json = ?, entry_hash = ?
+      WHERE envelope_id = ? AND revision = 2
+    `).run(shortenedHash, shortenedJson, shortenedEntryHash, signed.envelopeId);
+    raw.prepare(`
+      UPDATE dacs_http_outbox_history
+      SET previous_entry_hash = ?, entry_hash = ?
+      WHERE envelope_id = ? AND revision = 3
+    `).run(
+      shortenedEntryHash,
+      outboxHistoryEntryHash({
+        identity: signed.envelopeId,
+        revision: finalRow.revision,
+        occurredAt: finalRow.occurred_at,
+        recordHash: finalRow.record_hash,
+        previousEntryHash: shortenedEntryHash,
+      }),
+      signed.envelopeId,
+    );
+    raw.close();
+
+    await expect(open(databasePath, BUYER, "buyer")).rejects.toMatchObject({
+      reasonCode: "http-store-history-corrupt",
     });
   });
 
