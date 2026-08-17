@@ -59,7 +59,11 @@ export interface EvidenceRailContext {
   railType?: string;
   /** The rail's settlement asset id/symbol the amount MUST resolve to (PC-5). */
   asset?: string;
-  /** CAIP-2-ish network prefix the txRefs MUST live on (e.g. "polygon-amoy"). */
+  /**
+   * Canonical pinned settlement network: `eip155:<chainId>`,
+   * `solana:<mainnet|devnet|testnet>`, or `demos`. When supplied, explicit
+   * ChainTxRef network fields MUST match it.
+   */
   network?: string;
   /**
    * The phase handler the rail declares it settles through. MUST be coherent
