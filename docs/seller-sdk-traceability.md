@@ -1,11 +1,11 @@
 # Seller SDK traceability
 
 This audit uses the DACS Standard [`next` branch at commit
-`c2ecd9fa658776f5511f2414d7b4c3e23b847463`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/c2ecd9fa658776f5511f2414d7b4c3e23b847463)
+`965df755aba4ff392f1fb37a93d287242b177ba4`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/965df755aba4ff392f1fb37a93d287242b177ba4)
 as the current normative source.
 The SDK conformance runner remains reproducibly pinned by
 `scripts/sync-vectors.mjs` to [Standard commit
-`c2ecd9fa658776f5511f2414d7b4c3e23b847463`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/c2ecd9fa658776f5511f2414d7b4c3e23b847463).
+`965df755aba4ff392f1fb37a93d287242b177ba4`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/965df755aba4ff392f1fb37a93d287242b177ba4).
 
 This document describes only public DACS behavior. The SDK core must not depend
 on a private service, deployment, transport, repository, or URL.
@@ -83,7 +83,7 @@ out of the artifact-fidelity PR:
 | --- | --- | --- |
 | `validateListingArtifact` / `ListingValidationDisposition` | DACS-1 §6.3.4 reader steps 1–9, LR-2/LR-3 | Ordered positive/negative tests, including LRR-indeterminate followed by signer rejection |
 | `RevocationMarker`, `RevocationBinding`, `checkListingRevocation` | DACS-1 §6.3.4 RB-1..RB-6; CORE §B.7 | All 14 `revocation-binding-v0.3` Standard vectors |
-| `resolveListingRails` | DACS-1 §6.3.4 LRR-1..LRR-6; DACS-4 §9.4.3 RD-1..RD-6 | All 29 `listing-rail-registry-resolution-v0.4` vectors from Standard `next` commit `c2ecd9fa658776f5511f2414d7b4c3e23b847463` |
+| `resolveListingRails` | DACS-1 §6.3.4 LRR-1..LRR-6; DACS-4 §9.4.3 RD-1..RD-6 | All 29 `listing-rail-registry-resolution-v0.4` vectors from Standard `next` commit `965df755aba4ff392f1fb37a93d287242b177ba4` |
 | pay-bearing publication gate | DACS-1 §6.3.4 LP-6 | Rejects missing, rejected, and indeterminate authority before signing/anchoring |
 | normative discovery/session-admission gates | DACS-1 §6.3.4 LRR-5, LR-2/LR-3 | Discovery returns only exact-hash `verified` Listings; `runSessionCore` rejects `rejected`, `revoked`, and `indeterminate` before Vet/payment |
 | `assessListingReachability` | DACS-1 §6.3.4 LP-5; §6.3.6 | Separate operational evidence with private-address, DNS, redirect, timeout, size, and no-credential controls |
@@ -110,6 +110,7 @@ not new signed DACS records.
 | `verifyX402ReceiptClaim` | DACS-4 §9.5.7 X402-1..X402-4; CORE §B.2 CF-1 | Selects the versioned response header, strictly decodes Base64/UTF-8/JSON, preserves all response members, recursively NFC/JCS canonicalizes, recomputes `paymentReceiptHash`, and checks receipt transaction/network consistency. All 12 Standard `x402-receipt-hash-v0.1` vectors run directly. |
 | `canonicalSellerSettlementId`, `x402Eip3009Nonce`, and `SellerReceiptStore` | DACS-4 §9.5.8 SB-1..SB-3; §9.5.9; CORE §B.8 SN-4 | Uses event-level EVM and Demos settlement identities, byte-exact EIP-3009 session nonces, and one atomic durable claim. Applicable Standard `sb2-settlement-uniqueness-v0.1` cases plus concurrent and simulated-restart tests prove one fulfilment permit. pay-DEM defines no rail-native SB-3 job field and therefore relies on SB-1/SB-2 plus its intrinsic amount/payee check. Missing/unverifiable x402 SB-3 binding is disclosed and uses the same normative fallback; mismatch rejects. |
 | `SellerPaymentEvidenceInput` | DACS-4 §9.7, PC-2, PC-6, X402-2 | Returns the exact unsigned success-record fields with rail-specific `ChainTxRef` and actual finality. It deliberately omits `phaseIndex` (recovered from the PC-2 anchor), raw x402 receipt/header bytes, and `signature`; later evidence production signs and anchors this input without inventing fields. |
+| `createPayDemSellerObserver` | DACS-4 §9.5.1 PC-1..PC-7; §9.5.9; §9.7 (`observedAt`, `finalityObservedAt`) | Reads status, transaction, and confirmed block through the public Demos RPC; requires one matching hash/block/native-send body at the terminal `included` state; normalizes legacy numeric DEM and post-fork string OS without floating-point arithmetic; and uses the consensus block timestamp for deadline/finality checks. Contradictory included facts reject, while unavailable reads remain retryable. This is a configured-node trust boundary, not an independent validator-quorum proof. |
 
 Ambiguous or unavailable chain observations return `indeterminate` before the
 receipt store is claimed. A later retry re-observes the same deterministic
