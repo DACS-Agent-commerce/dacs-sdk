@@ -92,6 +92,7 @@ jobs:
             FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
             FIXED_PRICE_OFFLINE_STANDARD_REVISION,
             fixedPriceOfflineOrderBindingHash,
+            fixedPriceOfflineOrderLocalBindingHash,
           } from "@kynesyslabs/dacs/commerce";
           import {
             openDacsNodeSqliteDatabase,
@@ -134,10 +135,17 @@ jobs:
             };
             const store = database.createOfflineCoordinatorStore("buyer");
             const bindingHash = fixedPriceOfflineOrderBindingHash(order);
-            const created = await store.create({ role: "buyer", order, bindingHash });
+            const localBindingHash = fixedPriceOfflineOrderLocalBindingHash(order);
+            const created = await store.create({
+              role: "buyer",
+              order,
+              bindingHash,
+              localBindingHash,
+            });
             const loaded = await store.load("buyer", order.jobId);
             if (created.status !== "created" || loaded.status !== "ok" ||
-                loaded.record.bindingHash !== bindingHash) process.exit(1);
+                loaded.record.bindingHash !== bindingHash ||
+                loaded.record.localBindingHash !== localBindingHash) process.exit(1);
             database.close();
           } finally {
             rmSync(root, { recursive: true, force: true });
@@ -160,10 +168,13 @@ jobs:
             generator-smoke/generated-agent --yes --no-install
           test ! -e generator-smoke/generated-agent/package-lock.json
           node -e 'const p=require("./generator-smoke/generated-agent/package.json"); const exact={"@kynesyslabs/dacs":"0.1.0-alpha.0","@kynesyslabs/dacs-node":"0.1.0-alpha.0"}; if(JSON.stringify(p.dependencies)!==JSON.stringify(exact)) process.exit(1)'
-          (cd generator-smoke/generated-agent && npm install --ignore-scripts --omit=optional \
+          # The prerelease packages are intentionally installed from the local
+          # tarballs. --no-save preserves the generator's registry-ready exact
+          # manifest; npm ci cannot validate it until those versions publish.
+          (cd generator-smoke/generated-agent && npm install --no-save --ignore-scripts --omit=optional \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
-            typescript@5.9.2 @types/node@20.19.1 && npm ci --ignore-scripts --omit=optional)
+            typescript@5.9.2 @types/node@20.19.1)
           (cd generator-smoke/generated-agent && npm run typecheck && npm test && npm run dacs:smoke:offline)
           node - <<'NODE'
           const fs = require("node:fs");
