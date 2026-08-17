@@ -23,17 +23,48 @@ disabled. Live hosts must install the package's optional SQLite dependency;
 the live doctor will fail closed when that adapter is unavailable.
 
 The SQLite database is permanently bound to one mode/profile, actor role,
-authority, SDK version, and Standard revision. It enables WAL with `FULL`
+authority, SDK version, and Standard revision. The SDK and Standard revisions
+are derived from the installed SDK and selected commerce profile; callers
+cannot attach arbitrary compatibility labels. It enables WAL with `FULL`
 synchronous durability, uses database-authoritative lease time, and rejects
 known NFS/SMB/shared or consumer-sync locations. It is a local, single-host
 store and must not be placed on a shared volume.
 
+Filesystem-type inspection is implemented for Linux and macOS and additionally
+rejects both Windows UNC spellings (`\\server\share` and `//server/share`) on
+every platform, plus known network-filesystem magic values. This is a denylist
+safety check, not proof that an unfamiliar mount is local: operators on Windows
+or another platform must place the database on an explicitly verified local
+disk. `checkpoint()` requires a complete `FULL` WAL checkpoint and reports
+`database-checkpoint-busy` when a retained reader prevents completion.
+
 The same explicit SQLite surface provides live-x402 and offline coordinator
 stores. Each store is fixed to the database actor role and commerce profile,
-persists the exact SDK-validated order record with an integrity hash, and uses
-transactional generation-fenced track leases. Startup makes a local backup
-before a forward schema migration; newer schemas and cross-profile reuse fail
-closed.
+persists the exact SDK-validated order record with an integrity hash plus a
+validated query projection, and uses transactional generation-fenced track
+leases. Startup authenticates the application ID, exact schema and migration
+history, actor binding, and logical records before it creates a local backup or
+runs a forward migration; newer, foreign, corrupt, and cross-profile databases
+fail closed without being modified.
+
+The public v2 and v3 schemas are immutable migration inputs. A v2 database
+contains only the coordinator order table and its runnable index; the
+authenticated track projection is created and backfilled by v3. Schema v4
+authenticates the role-local SDK job pointers with `localBindingHash` in both
+the canonical order and every projection row. It also keeps live DACS-5
+terminal attribution (`faultedParty` or `withdrawnBy`) distinct from the
+offline-only `simulated-*` outcome and error vocabulary.
+
+A legacy database is migrated only when its persisted SDK and Standard
+revision exactly equal the supported runtime bindings. Compatible v3 offline
+terminal records are translated to the explicit simulation vocabulary. Live
+v3 success and non-terminal records can be upgraded, but live v3 failure or
+abort records are refused because they cannot prove the now-mandatory DACS-5
+party attribution; the migration never invents it. This refusal happens during
+read-only admission, before a backup or schema write. Arbitrary historical
+compatibility labels are likewise refused as
+`database-legacy-metadata-unsupported` before a backup or schema write; the
+runtime does not claim that unsupported data was safely upgraded.
 
 Irreversible effects are reserved under a stable idempotency key before work
 starts. A process loss during a perform lease never makes the effect directly
@@ -41,6 +72,20 @@ performable again: the next worker receives a reconciliation claim. An
 indeterminate reconciliation remains reconciliation-only; only an authoritative
 absence proof permits another perform attempt with the original effect and
 idempotency identities.
+
+Each effect's kind, effect ID, optional job ID, binding hash, input hash, and
+idempotency key are bound into both its row identity hash and its authenticated
+origin event. Every canonical history detail is retained behind a rolling entry
+hash, and the complete chain is checked on startup and again before load, claim,
+or recovery. A legacy or altered row without that proof fails closed; the host
+never synthesizes an idempotency proof during admission.
+
+These hashes detect partial/inconsistent corruption and enforce immutability at
+the store API boundary. They are not a MAC or an external transparency proof:
+an attacker with arbitrary write access to the database and runtime can rewrite
+an entire internally consistent history. Hosts must protect the database and
+its parent directory as actor-authority state; adversarial local storage needs a
+separately reviewed keyed or externally anchored adapter.
 
 The durable effect input and retained result are canonical operational records,
 not a secret vault. Adapters must store only the public binding and the
@@ -52,16 +97,30 @@ The live profile is never inferred. `offline` and `live-demos` configurations
 are closed, non-interchangeable variants and must select their matching SDK
 commerce profile.
 
-The package also exposes `runDeterministicOfflineLifecycle`. It writes and then
-independently verifies a complete DACS 1-5 local artifact graph. Its Standard
-`pay-ap2` rail and provider receipt are explicitly marked `mocked`/`offline`;
-the function performs no network request, reads no credentials, spends no
-funds, and makes no live-x402 or live-substrate claim.
+The package also exposes `runOfflineVerifierSimulation`. It constructs a local
+fixture graph and exercises the SDK's signing, dereferencing and recursive
+verification paths. It is not a conformant DACS transaction and never claims
+commercial success. Its substrate finality and provider receipt authorities
+are mocked; in particular, its self-signed provider fixture is not the SR-3
+attestation required by DACS-4 AP2-2. Every persisted fixture is wrapped in a
+machine-readable `normativeConformance: false` simulation envelope, so it is
+not a portable SR-2 `AttestationRef` target. The function performs no network
+request, reads no credentials and moves no value.
 
-Until the first SDK alpha is published, the exact SDK version is declared as an
-optional peer so stacked pre-merge CI does not fetch an unpublished package.
-Applications must install both `@kynesyslabs/dacs` and
-`@kynesyslabs/dacs-node` at the same exact version.
+Each run uses a fresh CSPRNG-backed ULID and fresh 128-bit presentation nonces.
+That prevents fixture reuse, but the simulation does not implement the durable
+challenge issuance/consumption ledger required by CORE §B.8 SN-1..SN-4. Its
+local rail dependency is likewise not the signed, anchored authority required
+by DACS-4 §9.4.4 RAV-R5. Both limitations are explicit in the run report.
+
+Callers must provide a fresh, non-existent output directory. The runner writes
+into a private CSPRNG-named sibling staging directory and atomically publishes
+the completed tree; existing files, directories, and symbolic links are
+rejected, and concurrent writers cannot expose a partial report.
+
+`@kynesyslabs/dacs` is a required runtime peer at the same exact version as
+`@kynesyslabs/dacs-node`. Applications must install both packages; the host kit
+imports the core SDK at runtime and cannot operate without it.
 
 Envelope authentication requires two host-owned, fail-closed callbacks. The
 identity resolver must use verified Demos identity material and retain its

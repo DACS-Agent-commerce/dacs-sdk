@@ -1,7 +1,7 @@
 {
   "name": "create-dacs-agent",
   "version": "0.1.0-alpha.0",
-  "description": "Create a safe DACS agent quickstart project.",
+  "description": "Create a bounded offline DACS verifier simulation project.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -25,6 +25,9 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run clean && npm run build",
+    "prepublishOnly": "npm run clean && npm run build",
+    "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts"
   },

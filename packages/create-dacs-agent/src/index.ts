@@ -1,8 +1,18 @@
 import { spawn } from "node:child_process";
-import { lstat, mkdir, readdir, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rm,
+  rmdir,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { projectTemplates } from "./templates.js";
+import { publishCompleteStagingDirectory } from "./publication.js";
 
 export const CREATE_DACS_AGENT_VERSION = "0.1.0-alpha.0";
 export const OFFLINE_PROFILE = "dacs-sdk:fixed-price-offline:v1" as const;
@@ -11,7 +21,7 @@ export interface CreateDacsAgentOptions {
   targetDirectory: string;
   mode?: "offline" | "live-demos";
   profile?: string;
-  role?: "demo-all" | "buyer" | "seller" | "verifier";
+  role?: "demo-all";
   deployment?: "local" | "docker";
   install?: boolean;
   run?: boolean;
@@ -21,7 +31,7 @@ export interface CreatedDacsAgentProject {
   targetDirectory: string;
   mode: "offline";
   profile: typeof OFFLINE_PROFILE;
-  role: "demo-all" | "buyer" | "seller" | "verifier";
+  role: "demo-all";
   deployment: "local" | "docker";
   installed: boolean;
   ran: boolean;
@@ -37,7 +47,41 @@ function packageName(targetDirectory: string): string {
   return normalized || "dacs-agent";
 }
 
-async function ensureWritableEmptyTarget(targetDirectory: string): Promise<void> {
+interface StableProjectParent {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+async function stableProjectParent(targetDirectory: string): Promise<StableProjectParent> {
+  const requestedParent = dirname(targetDirectory);
+  let stat;
+  try {
+    stat = await lstat(requestedParent);
+  } catch (cause) {
+    throw new Error("target parent must already exist", { cause });
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error("target parent must be a directory, not a symbolic link");
+  }
+  const parent = await realpath(requestedParent);
+  stat = await lstat(parent);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error("canonical target parent must be a non-symlink directory");
+  }
+  return { path: parent, dev: stat.dev, ino: stat.ino };
+}
+
+async function assertStableProjectParent(parent: StableProjectParent): Promise<void> {
+  const stat = await lstat(parent.path);
+  if (stat.isSymbolicLink() || !stat.isDirectory() ||
+      stat.dev !== parent.dev || stat.ino !== parent.ino ||
+      await realpath(parent.path) !== parent.path) {
+    throw new Error("target parent changed during project generation");
+  }
+}
+
+async function prepareFreshTarget(targetDirectory: string): Promise<void> {
   try {
     const stat = await lstat(targetDirectory);
     if (stat.isSymbolicLink()) {
@@ -49,9 +93,9 @@ async function ensureWritableEmptyTarget(targetDirectory: string): Promise<void>
     if ((await readdir(targetDirectory)).length > 0) {
       throw new Error("target directory is not empty; refusing to overwrite it");
     }
+    await rmdir(targetDirectory);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(targetDirectory, { recursive: true });
   }
 }
 
@@ -95,14 +139,18 @@ async function runCommand(
   });
 }
 
-/** Generate the bounded offline quickstart and optionally install/run it. */
+/**
+ * Generate the bounded offline quickstart and optionally install/run it.
+ * The caller must select a parent directory trusted against concurrent
+ * replacement; see the generated README for the atomic-publication boundary.
+ */
 export async function createDacsAgentProject(
   options: CreateDacsAgentOptions,
 ): Promise<Readonly<CreatedDacsAgentProject>> {
   if (!options || typeof options.targetDirectory !== "string") {
     throw new TypeError("targetDirectory is required");
   }
-  const targetDirectory = resolve(options.targetDirectory.trim());
+  const requestedTargetDirectory = resolve(options.targetDirectory.trim());
   if (options.targetDirectory.trim() === "") {
     throw new TypeError("targetDirectory must not be empty");
   }
@@ -121,27 +169,47 @@ export async function createDacsAgentProject(
   if (profile !== OFFLINE_PROFILE) {
     throw new Error(`offline mode requires profile ${OFFLINE_PROFILE}`);
   }
+  if (role !== "demo-all") {
+    throw new Error(
+      "this generator supports only the single-process demo-all simulation; " +
+        "independent role services are not implemented",
+    );
+  }
   if (run && !install) {
     throw new Error("--run cannot be combined with --no-install");
   }
-  if (run && role !== "demo-all") {
-    throw new Error("the offline one-command run requires role demo-all");
-  }
-
-  await ensureWritableEmptyTarget(targetDirectory);
+  const parent = await stableProjectParent(requestedTargetDirectory);
+  const targetDirectory = resolve(parent.path, basename(requestedTargetDirectory));
+  await prepareFreshTarget(targetDirectory);
   const templates = projectTemplates({
     packageName: packageName(targetDirectory),
-    role,
     deployment,
   });
   const files = Object.keys(templates).sort();
-  for (const file of files) {
-    const destination = safeDestination(targetDirectory, file);
-    await mkdir(dirname(destination), { recursive: true });
-    await writeFile(destination, templates[file]!, {
-      encoding: "utf8",
-      flag: "wx",
-    });
+  const stagingDirectory = await mkdtemp(
+    `${parent.path}${sep}.${basename(targetDirectory)}.staging-`,
+  );
+  let published = false;
+  try {
+    for (const file of files) {
+      const destination = safeDestination(stagingDirectory, file);
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, templates[file]!, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+    }
+    await assertStableProjectParent(parent);
+    // All nested paths are complete before the project name becomes visible.
+    // Publication never merges with or traverses a concurrently created target.
+    // On POSIX an empty target may be replaced atomically; non-empty targets fail.
+    await publishCompleteStagingDirectory(stagingDirectory, targetDirectory);
+    published = true;
+  } finally {
+    if (!published) {
+      await rm(stagingDirectory, { recursive: true, force: true });
+    }
   }
 
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";

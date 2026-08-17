@@ -24,14 +24,18 @@ import {
 } from "../src/transport/index.js";
 
 const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const SENDER = "a".repeat(64);
-const AUDIENCE = "b".repeat(64);
 const ISSUED_AT = 1_800_000_000_000;
 const EXPIRES_AT = ISSUED_AT + 300_000;
 const IDENTITY_EVIDENCE_HASH = "c".repeat(64);
 const SEED = Uint8Array.from({ length: 32 }, (_, index) => index);
 const PRIVATE_KEY = privateKeyFromSeed(SEED);
 const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
+const AUDIENCE_SEED = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
+const AUDIENCE_PRIVATE_KEY = privateKeyFromSeed(AUDIENCE_SEED);
+const AUDIENCE_PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(AUDIENCE_SEED));
+const SENDER_KEY_HEX = Buffer.from(PUBLIC_KEY).toString("hex");
+const SENDER = `did:demos:agent:${SENDER_KEY_HEX}`;
+const AUDIENCE = `did:demos:agent:${Buffer.from(AUDIENCE_PUBLIC_KEY).toString("hex")}`;
 
 const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
   "agreement-proposal": {
@@ -155,6 +159,7 @@ describe("DACS HTTP envelope v1", () => {
       "padded-nonce",
       "padded-signature",
       "unsafe-time",
+      "non-canonical-principal",
     ]);
   });
 
@@ -191,8 +196,13 @@ describe("DACS HTTP envelope v1", () => {
     const envelope = await createVectorEnvelope("agreement-proposal", 0);
     const cases: readonly [unknown, Readonly<Record<string, unknown>>, string][] = [
       [{ ...envelope, payload: { changed: true } }, {}, "envelope-payload-hash-mismatch"],
-      [{ ...envelope, audience: "d".repeat(64) }, { expectedAudience: undefined }, "envelope-id-mismatch"],
-      [{ ...envelope, keyId: "e".repeat(64) }, {}, "envelope-identity-fields-invalid"],
+      [
+        { ...envelope, audience: `did:demos:agent:${"d".repeat(64)}` },
+        { expectedAudience: `did:demos:agent:${"d".repeat(64)}` },
+        "envelope-id-mismatch",
+      ],
+      [{ ...envelope, keyId: `did:demos:agent:${"e".repeat(64)}` }, {}, "envelope-identity-fields-invalid"],
+      [{ ...envelope, sender: SENDER_KEY_HEX, keyId: SENDER_KEY_HEX }, {}, "envelope-identity-fields-invalid"],
       [{ ...envelope, nonce: envelope.nonce + "=" }, {}, "nonce-base64url-invalid"],
       [{ ...envelope, signature: envelope.signature + "=" }, {}, "signature-base64url-invalid"],
       [{ ...envelope, expiresAt: Number.MAX_SAFE_INTEGER + 1 }, {}, "envelope-canonical-json-invalid"],
@@ -203,6 +213,148 @@ describe("DACS HTTP envelope v1", () => {
         reasonCode,
       });
     }
+  });
+
+  it.each([
+    ["bare Demos key", SENDER_KEY_HEX],
+    ["foreign DID", `did:example:${SENDER_KEY_HEX}`],
+    ["uppercase key", `did:demos:agent:${SENDER_KEY_HEX.toUpperCase()}`],
+    ["non-canonical leading scheme", SENDER.replace(/^did:/, "DID:")],
+    ["native address notation", `demos:0x${SENDER_KEY_HEX}`],
+  ])("rejects a %s as a signed transport principal", async (_label, sender) => {
+    await expect(createDacsHttpEnvelopeV1({
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      sender,
+      audience: AUDIENCE,
+      issuedAt: ISSUED_AT,
+      expiresAt: EXPIRES_AT,
+      nonce: nonce(21),
+      payload: PAYLOADS["agreement-proposal"] as never,
+    }, (bytes) => ed25519Sign(bytes, PRIVATE_KEY))).rejects.toThrow(
+      "envelope-create-input-invalid",
+    );
+  });
+
+  it("rejects identity resolution whose key does not match the self-certifying sender", async () => {
+    const envelope = await createVectorEnvelope("agreement-proposal", 0);
+    await expect(authenticate(envelope, {
+      resolveIdentity: async () => ({
+        status: "authenticated",
+        principal: SENDER,
+        jobId: JOB_ID,
+        role: "buyer",
+        publicKey: AUDIENCE_PUBLIC_KEY,
+        evidenceHash: IDENTITY_EVIDENCE_HASH,
+      }),
+    })).resolves.toMatchObject({
+      status: "rejected",
+      reasonCode: "identity-resolution-mismatch",
+    });
+  });
+
+  it("requires an explicit canonical local audience before authenticating", async () => {
+    const envelope = await createVectorEnvelope("agreement-proposal", 0);
+    const resolver = vi.fn();
+    await expect(authenticate(envelope, {
+      expectedAudience: undefined,
+      resolveIdentity: resolver,
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "malformed",
+      reasonCode: "expected-audience-invalid",
+    });
+    expect(resolver).not.toHaveBeenCalled();
+
+    await expect(authenticate(envelope, {
+      expectedAudience: AUDIENCE.replace(/^did:/, "DID:"),
+      resolveIdentity: resolver,
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "malformed",
+      reasonCode: "expected-audience-invalid",
+    });
+    expect(resolver).not.toHaveBeenCalled();
+
+    await expect(authenticate(envelope, {
+      expectedAudience: `did:demos:agent:${"d".repeat(64)}`,
+      resolveIdentity: resolver,
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "authentication",
+      reasonCode: "envelope-audience-mismatch",
+    });
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "unknown authenticated status",
+      resolution: {
+        status: "authenticated-v2",
+        principal: SENDER,
+        jobId: JOB_ID,
+        role: "buyer",
+        publicKey: PUBLIC_KEY,
+        evidenceHash: IDENTITY_EVIDENCE_HASH,
+      },
+    },
+    {
+      label: "coercible non-string evidence hash",
+      resolution: {
+        status: "authenticated",
+        principal: SENDER,
+        jobId: JOB_ID,
+        role: "buyer",
+        publicKey: PUBLIC_KEY,
+        evidenceHash: Object(IDENTITY_EVIDENCE_HASH),
+      },
+    },
+    {
+      label: "unexpected authenticated-result field",
+      resolution: {
+        status: "authenticated",
+        principal: SENDER,
+        jobId: JOB_ID,
+        role: "buyer",
+        publicKey: PUBLIC_KEY,
+        evidenceHash: IDENTITY_EVIDENCE_HASH,
+        trusted: true,
+      },
+    },
+    {
+      label: "unknown rejection reason",
+      resolution: {
+        status: "rejected",
+        reasonCode: "identity-new-status",
+      },
+    },
+  ])("fails closed for a $label from the identity resolver", async ({ resolution }) => {
+    const envelope = await createVectorEnvelope("agreement-proposal", 0);
+    await expect(authenticate(envelope, {
+      resolveIdentity: async () => resolution,
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "authentication",
+      reasonCode: "identity-resolution-mismatch",
+    });
+  });
+
+  it.each([
+    "identity-unresolved",
+    "identity-expired",
+    "identity-revoked",
+    "identity-ambiguous",
+    "identity-role-incompatible",
+  ])("preserves the known resolver rejection: %s", async (reasonCode) => {
+    const envelope = await createVectorEnvelope("agreement-proposal", 0);
+    await expect(authenticate(envelope, {
+      resolveIdentity: async () => ({ status: "rejected", reasonCode }),
+    })).resolves.toEqual({
+      status: "rejected",
+      category: "authentication",
+      reasonCode,
+    });
   });
 
   it("rejects a valid Ed25519 signature made under the wrong domain", async () => {
@@ -254,7 +406,7 @@ describe("DACS HTTP envelope v1", () => {
       issuedAt: ISSUED_AT,
       expiresAt: EXPIRES_AT,
       nonce: nonce(30),
-    }, (bytes) => ed25519Sign(bytes, PRIVATE_KEY));
+    }, (bytes) => ed25519Sign(bytes, AUDIENCE_PRIVATE_KEY));
     const authenticated = await authenticateDacsHttpEnvelopeV1(acknowledgement, {
       storeTime: ISSUED_AT,
       expectedAudience: original.sender,
@@ -263,7 +415,7 @@ describe("DACS HTTP envelope v1", () => {
         principal: original.audience,
         jobId: JOB_ID,
         role: "seller",
-        publicKey: PUBLIC_KEY,
+        publicKey: AUDIENCE_PUBLIC_KEY,
         evidenceHash: IDENTITY_EVIDENCE_HASH,
       }),
     });

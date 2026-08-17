@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import {
@@ -20,6 +21,7 @@ import {
   ed25519Verify,
   finalityCommitmentAddress,
   finalizeFixedPriceAgreementContributions,
+  generateCanonicalJobId,
   identityBundleHash,
   privateKeyFromSeed,
   publicKeyFromRaw,
@@ -39,6 +41,7 @@ import {
   type ProtocolAnchorReceipt as AnchorReceipt,
   type AnchoredFinalityCommitment,
   type AttestationRef,
+  type BundleVerification,
   type CommitmentSignatureVerifier,
   type ComponentSignature,
   type CompositeBundleRequirement,
@@ -59,40 +62,52 @@ import {
 
 import { createDacsNodeOfflineProtocolBinding } from "./offline.js";
 
-const FIXTURE_NOW = 1_790_000_000_000;
-const JOB_ID = "01K00000000000000000000059";
-const LISTING_ID = "dacs-one-click-offline";
 const PAYMENT_PHASE_INDEX = 2;
 const DELIVERY_PHASE_INDEX = 3;
 const IDENTITY_SEPARATOR = "dacs-bundle-presentation:v1:";
-const OFFLINE_RECEIPT_SEPARATOR = "dacs-offline-ap2-provider-receipt:v1:";
+const SIMULATION_RECEIPT_SEPARATOR =
+  "dacs-x-simulation-ap2-provider-receipt:v1:";
+const SIMULATION_ARTIFACT_VERSION = "1" as const;
+export const OFFLINE_VERIFIER_SIMULATION_REPORT_KIND =
+  "dacs-sdk-offline-verifier-simulation" as const;
 
 const BUYER_SEED = new Uint8Array(32).fill(41);
 const SELLER_SEED = new Uint8Array(32).fill(42);
 const VERIFIER_SEED = new Uint8Array(32).fill(43);
 
-export interface OfflineLifecycleOptions {
-  /** Directory that receives `artifacts/` and `run-report.json`. */
+export interface OfflineVerifierSimulationOptions {
+  /** Fresh non-existent directory atomically published after all files validate. */
   outputDirectory: string;
 }
 
-export interface OfflineRunArtifact {
-  type: string;
-  contentHash: string;
+/** Internal simulation gate: recursive verification must be complete, not merely non-failing. */
+export function simulationBundleGraphVerificationPassed(
+  verification: Pick<BundleVerification, "ok" | "fullyVerified">,
+): boolean {
+  return verification.ok && verification.fullyVerified;
+}
+
+export interface OfflineSimulationArtifact {
+  simulatedType: string;
+  simulatedContentHash: string;
   localReference: string;
 }
 
-export interface OfflineRunPhase {
+export interface OfflineSimulationPhase {
   stage: "DACS-1" | "DACS-2" | "DACS-3" | "DACS-4" | "DACS-5";
   startedAt: number;
   endedAt: number;
   durationMs: number;
-  outcome: "ok";
-  artifactTypes: string[];
+  outcome: "simulated-pass";
+  simulatedArtifactTypes: string[];
 }
 
-export interface OfflineRunReport {
-  reportVersion: "1";
+export interface OfflineVerifierSimulationReport {
+  reportKind: typeof OFFLINE_VERIFIER_SIMULATION_REPORT_KIND;
+  reportVersion: "2";
+  normativeConformance: false;
+  commercialSuccess: false;
+  simulationPassed: true;
   sdkVersion: string;
   standardRevision: string;
   profile: typeof FIXED_PRICE_OFFLINE_COMMERCE_PROFILE;
@@ -104,35 +119,67 @@ export interface OfflineRunReport {
     seller: string;
     verifier: string;
   };
-  phases: OfflineRunPhase[];
-  artifacts: OfflineRunArtifact[];
+  phases: OfflineSimulationPhase[];
+  artifacts: OfflineSimulationArtifact[];
   payment: {
     amount: string;
     currency: string;
     railId: string;
     availability: "mocked";
-    disposition: "offline";
+    disposition: "simulation-only";
   };
-  verification: {
+  assurance: {
+    purpose: "internal-verifier-exercise";
+    persistedArtifacts: "wrapped-simulation-fixtures";
+    substrateAuthority: "mocked-local-not-sr2";
+    providerAuthority: "mocked-self-signed-not-sr3";
+    railAuthority: "mocked-local-not-rav-r5";
+    jobIdDiscipline: "fresh-csprng-ulid-per-run";
+    sessionNonceDiscipline: "fresh-per-run-no-normative-challenge-ledger";
+    paymentValueMoved: false;
+    fixtureKeys: "public-deterministic-test-keys";
+  };
+  internalChecks: {
     listing: boolean;
     buyerVet: boolean;
     sellerVet: boolean;
     commitment: boolean;
     paymentEvidence: boolean;
     deliveryEvidence: boolean;
-    providerReceipt: boolean;
+    providerFixtureSignature: boolean;
     buyerBundle: boolean;
     sellerBundle: boolean;
     bundleConsistency: "unified";
   };
-  overallSuccess: boolean;
   reportPath: string;
+}
+
+interface OfflineSimulationContext {
+  jobId: string;
+  listingId: string;
+  nowMs: number;
+  sessionNonces: {
+    buyer: string;
+    seller: string;
+    verifier: string;
+  };
 }
 
 interface StoredArtifact {
   type: string;
   hash: string;
   locator: string;
+  value: Record<string, unknown>;
+}
+
+interface SimulationArtifactEnvelope {
+  simulationArtifactVersion: typeof SIMULATION_ARTIFACT_VERSION;
+  normativeConformance: false;
+  commercialAuthority: "none";
+  anchorAuthority: "none";
+  portableAttestationRef: false;
+  simulatedType: string;
+  simulatedContentHash: string;
   value: Record<string, unknown>;
 }
 
@@ -177,12 +224,13 @@ const KEY_REQUIREMENT: CompositeBundleRequirement = {
 };
 
 const RAIL: PaymentRailRef = {
-  railId: "ap2:offline-mocked",
+  railId: "x-simulation-ap2",
   railVersion: 1,
   parameters: {
-    providerEndpoint: "https://offline.invalid/ap2",
+    providerEndpoint: "https://simulation.invalid/not-ap2",
     availability: "mocked",
-    mode: "offline",
+    mode: "simulation",
+    authority: "none",
   },
 };
 
@@ -200,7 +248,94 @@ function claimFor(seed: Uint8Array): string {
   ).toString("hex")}`;
 }
 
-function roleIdentity(seed: Uint8Array, nonce: string): RoleIdentity {
+function freshSessionNonce(): string {
+  return Buffer.from(randomBytes(16)).toString("hex");
+}
+
+function createSimulationContext(): OfflineSimulationContext {
+  const jobId = generateCanonicalJobId();
+  return {
+    jobId,
+    listingId: `offline-simulation-${jobId.toLowerCase()}`,
+    nowMs: Date.now(),
+    sessionNonces: {
+      buyer: freshSessionNonce(),
+      seller: freshSessionNonce(),
+      verifier: freshSessionNonce(),
+    },
+  };
+}
+
+function errorCode(error: unknown): string | undefined {
+  return error !== null && typeof error === "object" && "code" in error &&
+      typeof error.code === "string"
+    ? error.code
+    : undefined;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function withExclusiveSimulationOutput<T>(
+  requestedDirectory: string,
+  run: (directories: Readonly<{
+    stagingDirectory: string;
+    finalDirectory: string;
+  }>) => Promise<T>,
+): Promise<T> {
+  const requested = resolve(requestedDirectory);
+  const leaf = basename(requested);
+  if (leaf.length === 0 || requested === dirname(requested)) {
+    throw new TypeError(
+      "offline verifier simulation outputDirectory must name a new child directory",
+    );
+  }
+  const requestedParent = dirname(requested);
+  await mkdir(requestedParent, { recursive: true });
+  const canonicalParent = await realpath(requestedParent);
+  const finalDirectory = resolve(canonicalParent, leaf);
+  if (await pathExists(finalDirectory)) {
+    throw new Error(
+      "offline verifier simulation outputDirectory already exists; choose a fresh directory",
+    );
+  }
+
+  const stagingDirectory = resolve(
+    canonicalParent,
+    `.${leaf}.dacs-simulation-${randomBytes(16).toString("hex")}.tmp`,
+  );
+  await mkdir(stagingDirectory, { recursive: false, mode: 0o700 });
+  try {
+    const result = await run({ stagingDirectory, finalDirectory });
+    try {
+      await rename(stagingDirectory, finalDirectory);
+    } catch (error) {
+      if (["EEXIST", "ENOTEMPTY"].includes(errorCode(error) ?? "")) {
+        throw new Error(
+          "offline verifier simulation outputDirectory was published concurrently",
+        );
+      }
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    await rm(stagingDirectory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function roleIdentity(
+  seed: Uint8Array,
+  sessionNonce: string,
+  nowMs: number,
+): RoleIdentity {
   const claim = claimFor(seed);
   const keyClaim = `key:${Buffer.from(
     rawPublicKey(publicKeyFromSeed(seed)),
@@ -208,8 +343,8 @@ function roleIdentity(seed: Uint8Array, nonce: string): RoleIdentity {
   const bundle: IdentityBundle = {
     bundleVersion: "1",
     presentedBy: claim,
-    presentedAt: FIXTURE_NOW - 10_000,
-    sessionNonce: `${JOB_ID}:${nonce}`,
+    presentedAt: nowMs - 10_000,
+    sessionNonce,
     claims: [{ ref: claim }, { ref: keyClaim }],
     presentation: {
       kind: "per-claim",
@@ -267,17 +402,19 @@ function verifyIdentity(identity: Readonly<RoleIdentity>): boolean {
   });
 }
 
-class OfflineArtifactStore {
+class SimulationArtifactStore {
   readonly #root: string;
+  readonly #runId: string;
   readonly #records = new Map<string, StoredArtifact>();
-  readonly #reportArtifacts: OfflineRunArtifact[] = [];
+  readonly #reportArtifacts: OfflineSimulationArtifact[] = [];
 
-  constructor(root: string) {
+  constructor(root: string, runId: string) {
     this.#root = root;
+    this.#runId = runId;
   }
 
   async initialize(): Promise<void> {
-    await mkdir(this.#root, { recursive: true });
+    await mkdir(this.#root, { recursive: false, mode: 0o700 });
   }
 
   async put(
@@ -288,18 +425,19 @@ class OfflineArtifactStore {
   ): Promise<AttestationRef> {
     const snapshot = structuredClone(value);
     const hash = options.hash ?? contentHash(snapshot);
-    const locator = `offline:stor:${fileName}`;
-    await writeFile(
-      resolve(this.#root, `${fileName}.json`),
-      `${canonicalize(snapshot)}\n`,
-      { encoding: "utf8", flag: "wx" },
-    );
+    const locator = `x-simulation-internal:${this.#runId}:${fileName}`;
+    await this.#writeFixture(fileName, type, snapshot, hash);
     this.#records.set(locator, { type, hash, locator, value: snapshot });
     this.#reportArtifacts.push({
-      type,
-      contentHash: hash,
-      localReference: `artifacts/${fileName}.json`,
+      simulatedType: type,
+      simulatedContentHash: hash,
+      localReference: `simulation-artifacts/${fileName}.simulation.json`,
     });
+    // The current recursive verifier consumes the Standard's closed
+    // AttestationRef union. This reference exists only inside this process and
+    // is resolved only by the map above. The bare value is never persisted:
+    // #writeFixture wraps it in a fail-closed simulation envelope so no file is
+    // a portable SR-2 target.
     return {
       anchor: { kind: "storage-program", locator },
       contentHash: hash,
@@ -315,17 +453,39 @@ class OfflineArtifactStore {
     hash: string,
   ): Promise<void> {
     const snapshot = structuredClone(value);
-    await writeFile(
-      resolve(this.#root, `${fileName}.json`),
-      `${canonicalize(snapshot)}\n`,
-      { encoding: "utf8", flag: "wx" },
-    );
+    if (!locator.startsWith(`x-simulation-internal:${this.#runId}:`)) {
+      throw new Error("simulation store refuses a non-simulation locator");
+    }
+    await this.#writeFixture(fileName, type, snapshot, hash);
     this.#records.set(locator, { type, hash, locator, value: snapshot });
     this.#reportArtifacts.push({
-      type,
-      contentHash: hash,
-      localReference: `artifacts/${fileName}.json`,
+      simulatedType: type,
+      simulatedContentHash: hash,
+      localReference: `simulation-artifacts/${fileName}.simulation.json`,
     });
+  }
+
+  async #writeFixture(
+    fileName: string,
+    type: string,
+    value: Record<string, unknown>,
+    hash: string,
+  ): Promise<void> {
+    const envelope: SimulationArtifactEnvelope = {
+      simulationArtifactVersion: SIMULATION_ARTIFACT_VERSION,
+      normativeConformance: false,
+      commercialAuthority: "none",
+      anchorAuthority: "none",
+      portableAttestationRef: false,
+      simulatedType: type,
+      simulatedContentHash: hash,
+      value,
+    };
+    await writeFile(
+      resolve(this.#root, `${fileName}.simulation.json`),
+      `${canonicalize(envelope)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
   }
 
   read(locator: string): Record<string, unknown> | null {
@@ -333,12 +493,16 @@ class OfflineArtifactStore {
     return value ? structuredClone(value) : null;
   }
 
-  get reportArtifacts(): OfflineRunArtifact[] {
+  get reportArtifacts(): OfflineSimulationArtifact[] {
     return structuredClone(this.#reportArtifacts);
   }
 }
 
 function railAuthority() {
+  // DACS-4 §9.4.4 RAV-R5 requires a signed, anchored, independently resolved
+  // rail definition. This local dependency is only an input to the simulation's
+  // internal verifier exercise and is disclosed as non-authoritative in the
+  // report; it must never be reused for production rail selection.
   return {
     trustPhase: "PA-1" as const,
     trustPolicyAcceptsPA1: true,
@@ -355,21 +519,25 @@ function railAuthority() {
   };
 }
 
-function listingDraft(seller: RoleIdentity): ListingDraft {
+function listingDraft(
+  seller: RoleIdentity,
+  context: Readonly<OfflineSimulationContext>,
+): ListingDraft {
   return {
     dacsVersion: "1",
     listingVersion: 1,
-    listingId: LISTING_ID,
+    listingId: context.listingId,
     seller: {
       identity: structuredClone(seller.bundle),
-      displayName: "DACS offline demo seller",
-      publicEndpoint: "https://offline.invalid/dacs/engage",
+      displayName: "DACS verifier simulation seller fixture",
+      publicEndpoint: "https://simulation.invalid/not-a-live-endpoint",
     },
     offering: {
-      title: "Deterministic offline DACS result",
-      description: "A complete local DACS 1-5 quickstart artifact graph",
+      title: "Offline SDK verifier simulation fixture",
+      description:
+        "A local simulation fixture for exercising DACS SDK verifiers",
       category: "software.demo",
-      tags: ["dacs", "offline", "deterministic"],
+      tags: ["dacs", "simulation", "non-production"],
       deliverable: { kind: "storage-program", accessModel: "public" },
     },
     buyerRequirement: structuredClone(KEY_REQUIREMENT),
@@ -383,15 +551,18 @@ function listingDraft(seller: RoleIdentity): ListingDraft {
     acceptedRails: [structuredClone(RAIL)],
     terms: { deadlineSecAfterCommit: 3_600 },
     validity: {
-      notBefore: FIXTURE_NOW - 60_000,
-      notAfter: FIXTURE_NOW + 60_000,
+      notBefore: context.nowMs - 60_000,
+      notAfter: context.nowMs + 60_000,
     },
   };
 }
 
-function listingValidationDeps(seller: RoleIdentity): ListingValidationDeps {
+function listingValidationDeps(
+  seller: RoleIdentity,
+  context: Readonly<OfflineSimulationContext>,
+): ListingValidationDeps {
   return {
-    nowMs: () => FIXTURE_NOW,
+    nowMs: () => context.nowMs,
     verifyListingSignature: ({ signedBytes: bytes, signature }) =>
       signature.signer === seller.claim &&
       signature.algorithm === "ed25519" &&
@@ -438,15 +609,16 @@ function listingValidationDeps(seller: RoleIdentity): ListingValidationDeps {
 }
 
 async function publishAndDiscoverListing(
-  store: OfflineArtifactStore,
+  store: SimulationArtifactStore,
   seller: RoleIdentity,
+  context: Readonly<OfflineSimulationContext>,
 ): Promise<PublishedListing> {
   let publishedListing: Record<string, unknown> | undefined;
-  const published = await publishListingCore(listingDraft(seller), {
+  const published = await publishListingCore(listingDraft(seller, context), {
     sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(seller.seed)),
     scanOwnAnchorsByNamePrefix: async () => ({ status: "ok", anchors: [] }),
     writeArtifact: async (_logicalAddress, value, options) => {
-      const ref = `offline:stor:${options.storageName}`;
+      const ref = `x-simulation-internal:${context.jobId}:${options.storageName}`;
       publishedListing = structuredClone(value);
       await store.putAtLocator(
         "dacs-1-listing",
@@ -455,12 +627,14 @@ async function publishAndDiscoverListing(
         value,
         contentHash(value),
       );
-      return { address: ref, txRef: "offline:listing-publication" };
+      return { address: ref, txRef: "x-simulation:listing-publication" };
     },
     loadRailResolution: () => railAuthority(),
     resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
   });
-  if (!publishedListing) throw new Error("offline Listing publication was not retained");
+  if (!publishedListing) {
+    throw new Error("simulation Listing fixture was not retained");
+  }
 
   const discovered = await discoverListings(
     [published.ref],
@@ -471,13 +645,15 @@ async function publishAndDiscoverListing(
       resolvePublicKey: (claim) =>
         claim === seller.claim ? Uint8Array.from(seller.rawPublicKey) : null,
       validateListing: (raw) =>
-        validateListingArtifact(raw, listingValidationDeps(seller)),
-      nowMs: () => FIXTURE_NOW,
+        validateListingArtifact(raw, listingValidationDeps(seller, context)),
+      nowMs: () => context.nowMs,
     },
   );
   const selected = discovered[0];
   if (!selected || selected.compatibility !== "normative") {
-    throw new Error("offline Listing did not pass normative discovery");
+    throw new Error(
+      "simulation Listing did not pass the SDK normative-shape discovery exercise",
+    );
   }
   return {
     listing: selected.listing,
@@ -488,6 +664,7 @@ async function publishAndDiscoverListing(
 
 async function selfSignedRecipe(
   verifier: RoleIdentity,
+  context: Readonly<OfflineSimulationContext>,
 ): Promise<RecipeDescriptor & { signature: ComponentSignature }> {
   return (await signComponentArtifact(
     {
@@ -500,7 +677,7 @@ async function selfSignedRecipe(
       availability: "bilateral",
       governance: {
         proposedBy: verifier.claim,
-        acceptedAt: FIXTURE_NOW - 20_000,
+        acceptedAt: context.nowMs - 20_000,
         anchoring: "single-signer",
       },
     },
@@ -514,11 +691,12 @@ async function selfSignedRecipe(
 }
 
 async function produceVetClosure(
-  store: OfflineArtifactStore,
+  store: SimulationArtifactStore,
   role: "buyer" | "seller",
   party: RoleIdentity,
   verifier: RoleIdentity,
   recipe: RecipeDescriptor & { signature: ComponentSignature },
+  context: Readonly<OfflineSimulationContext>,
 ): Promise<VetClosure> {
   const assertion: Record<string, unknown> = {
     assertionVersion: "1",
@@ -546,12 +724,12 @@ async function produceVetClosure(
       recipeVersion: 1,
       method: "self-signed",
       decision: "pass",
-      reason: "offline key-possession assertion verified",
+      reason: "simulation key-possession fixture signature verified",
       attestation: assertionRef,
-      data: { keyPossession: true, mode: "offline" },
-      fetchedAt: FIXTURE_NOW - 4_000,
-      verifiedAt: FIXTURE_NOW - 3_000,
-      validUntil: FIXTURE_NOW + 3_596_000,
+      data: { keyPossession: true, mode: "simulation" },
+      fetchedAt: context.nowMs - 4_000,
+      verifiedAt: context.nowMs - 3_000,
+      validUntil: context.nowMs + 3_596_000,
     },
     "dacs-verifyresult:v1:",
     {
@@ -574,7 +752,7 @@ async function produceVetClosure(
   const record = (await signComponentArtifact(
     {
       recordVersion: "1",
-      jobId: JOB_ID,
+      jobId: context.jobId,
       evaluatedParty: party.claim,
       bundleHash: identityBundleHash(party.bundle),
       requirementHash: sha256Hex(canonicalize(KEY_REQUIREMENT)),
@@ -582,7 +760,7 @@ async function produceVetClosure(
       supplementary: [],
       dealSpecific: [resultRef],
       overallDecision: "pass",
-      generatedAt: FIXTURE_NOW - 2_000,
+      generatedAt: context.nowMs - 2_000,
     },
     ARTIFACT_SEPARATORS.CompositeVerificationRecord,
     {
@@ -596,14 +774,15 @@ async function produceVetClosure(
 
 async function verifyVet(
   closure: VetClosure,
-  store: OfflineArtifactStore,
+  store: SimulationArtifactStore,
   party: RoleIdentity,
   verifier: RoleIdentity,
+  context: Readonly<OfflineSimulationContext>,
 ): Promise<StrictCompositeVerification> {
   return verifyCompositeVerificationRecord(
     closure.record,
     {
-      jobId: JOB_ID,
+      jobId: context.jobId,
       evaluatedParty: party.claim,
       bundleHash: identityBundleHash(party.bundle),
       requirement: KEY_REQUIREMENT,
@@ -620,7 +799,7 @@ async function verifyVet(
       ],
     },
     {
-      nowMs: () => FIXTURE_NOW,
+      nowMs: () => context.nowMs,
       resolve: async (ref) => {
         const value = store.read(ref.anchor.locator);
         return value ? { encoding: "canonical-json", value } : null;
@@ -723,15 +902,16 @@ function verifyLocalReceipt(
 }
 
 async function negotiateAndCommit(
-  store: OfflineArtifactStore,
+  store: SimulationArtifactStore,
   published: PublishedListing,
   buyer: RoleIdentity,
   seller: RoleIdentity,
   buyerVetRef: AttestationRef,
   sellerVetRef: AttestationRef,
+  context: Readonly<OfflineSimulationContext>,
 ): Promise<AgreementResult> {
   const draft = deriveFixedPriceAgreement({
-    jobId: JOB_ID,
+    jobId: context.jobId,
     verifiedListing: {
       disposition: "verified",
       listing: published.listing,
@@ -750,10 +930,10 @@ async function negotiateAndCommit(
       {
         railId: RAIL.railId,
         phaseIndex: PAYMENT_PHASE_INDEX,
-        payeeAddress: "offline:mocked-ap2-provider",
+        payeeAddress: "x-simulation:mocked-provider",
       },
     ],
-    generatedAt: FIXTURE_NOW,
+    generatedAt: context.nowMs,
   });
   const plan = createFixedPriceAgreementSigningPlan(draft);
   const buyerContribution = await createFixedPriceAgreementSignatureContribution(
@@ -808,26 +988,27 @@ async function negotiateAndCommit(
         : { disposition: "absent" },
     submit: async (logicalAddress, record) => {
       const recordHash = contentHash(asRecord(record));
-      const nativeAddress = `offline-stor-commitment-${recordHash.slice(0, 20)}`;
+      const nativeAddress =
+        `x-simulation-not-sr2-${recordHash.slice(0, 20)}`;
       const receipt = localReceipt(seller, {
         receiptVersion: "1",
-        substrate: "test:offline",
-        finalityProfile: "test-final",
+        substrate: "x-simulation-not-a-substrate",
+        finalityProfile: "x-simulation-fixture-finality",
         logicalAddress,
         nativeAddress,
         contentHash: recordHash,
         transactionRef: {
-          kind: "test:offline",
-          value: `offline:tx:${recordHash.slice(0, 24)}`,
+          kind: "x-simulation",
+          value: `x-simulation:tx:${recordHash.slice(0, 24)}`,
         },
         writer: seller.claim,
         state: "finalized",
         observationDisposition: "established",
-        observedAt: FIXTURE_NOW + 2_000,
+        observedAt: context.nowMs + 2_000,
         blockRef: {
-          id: "offline:block:commitment",
+          id: `x-simulation:block:${context.jobId}:commitment`,
           height: "1",
-          timestamp: FIXTURE_NOW + 1_000,
+          timestamp: context.nowMs + 1_000,
         },
       });
       retained = {
@@ -836,7 +1017,7 @@ async function negotiateAndCommit(
         anchorTxRef: {
           kind: "storage-program",
           address: nativeAddress,
-          writeTxHash: sha256Hex(`offline:${recordHash}`),
+          writeTxHash: sha256Hex(`x-simulation:${recordHash}`),
         },
         anchorReceipt: receipt,
       };
@@ -844,7 +1025,7 @@ async function negotiateAndCommit(
     },
     verifyAnchorReceipt: (anchored) =>
       anchored.anchorReceipt.logicalAddress ===
-          finalityCommitmentAddress(JOB_ID) &&
+          finalityCommitmentAddress(context.jobId) &&
         anchored.anchorReceipt.nativeAddress === anchored.nativeAddress &&
         anchored.anchorReceipt.writer === seller.claim &&
         verifyLocalReceipt(anchored.anchorReceipt, [buyer, seller])
@@ -871,7 +1052,7 @@ async function negotiateAndCommit(
         pin: structuredClone(published.pin),
       },
       session: {
-        jobId: JOB_ID,
+        jobId: context.jobId,
         listingRef: structuredClone(published.pin),
         phaseKind: "commit-payee-bound-agreement",
         orchestrator: seller.claim,
@@ -886,7 +1067,7 @@ async function negotiateAndCommit(
           vetRecordRef: structuredClone(sellerVetRef),
         },
       },
-      createdAt: FIXTURE_NOW + 500,
+      createdAt: context.nowMs + 500,
       commitmentSigner: {
         algorithm: "ed25519",
         signer: seller.claim,
@@ -933,22 +1114,23 @@ function signSettlementEvidence(
   } as SettlementEvidence;
 }
 
-function signOfflineProviderReceipt(
+function signSimulationProviderFixture(
   verifier: RoleIdentity,
   agreement: AgreementArtifact,
+  context: Readonly<OfflineSimulationContext>,
 ): Record<string, unknown> {
   const unsigned = {
-    receiptVersion: "offline-ap2-v1",
-    mode: "offline",
+    receiptVersion: "x-simulation-ap2-v1",
+    mode: "simulation",
     availability: "mocked",
-    provider: "deterministic-local-ap2",
-    jobId: JOB_ID,
+    provider: "self-signed-fixture-not-sr3",
+    jobId: context.jobId,
     agreementHash: contentHash(asRecord(agreement)),
-    mandateId: `offline-mandate:${JOB_ID}`,
-    status: "captured",
+    mandateId: `simulation-mandate:${context.jobId}`,
+    status: "simulated-captured",
     amount: "1",
     currency: "USD",
-    observedAt: FIXTURE_NOW + 3_000,
+    observedAt: context.nowMs + 3_000,
   };
   return {
     ...unsigned,
@@ -957,7 +1139,7 @@ function signOfflineProviderReceipt(
       signer: verifier.claim,
       value: signatureValue(
         ed25519Sign(
-          signedBytes(OFFLINE_RECEIPT_SEPARATOR, contentHash(unsigned)),
+          signedBytes(SIMULATION_RECEIPT_SEPARATOR, contentHash(unsigned)),
           privateKeyFromSeed(verifier.seed),
         ),
       ),
@@ -965,16 +1147,16 @@ function signOfflineProviderReceipt(
   };
 }
 
-function verifyOfflineProviderReceipt(
+function verifySimulationProviderFixture(
   value: Record<string, unknown>,
   verifier: RoleIdentity,
 ): boolean {
   const signature = value["signature"];
   if (
-    value["receiptVersion"] !== "offline-ap2-v1" ||
-    value["mode"] !== "offline" ||
+    value["receiptVersion"] !== "x-simulation-ap2-v1" ||
+    value["mode"] !== "simulation" ||
     value["availability"] !== "mocked" ||
-    value["status"] !== "captured" ||
+    value["status"] !== "simulated-captured" ||
     signature === null ||
     typeof signature !== "object" ||
     Array.isArray(signature)
@@ -995,7 +1177,7 @@ function verifyOfflineProviderReceipt(
     decoded.length === 64 &&
     decoded.toString("base64url") === encoded &&
     ed25519Verify(
-      signedBytes(OFFLINE_RECEIPT_SEPARATOR, contentHash(value)),
+      signedBytes(SIMULATION_RECEIPT_SEPARATOR, contentHash(value)),
       Uint8Array.from(decoded),
       publicKeyFromSeed(verifier.seed),
     )
@@ -1003,52 +1185,59 @@ function verifyOfflineProviderReceipt(
 }
 
 async function settleAndDeliver(
-  store: OfflineArtifactStore,
+  store: SimulationArtifactStore,
   agreement: AgreementArtifact,
   seller: RoleIdentity,
   verifier: RoleIdentity,
+  context: Readonly<OfflineSimulationContext>,
 ): Promise<{
   paymentEvidence: SettlementEvidence;
   paymentRef: AttestationRef;
   deliveryEvidence: SettlementEvidence;
   deliveryRef: AttestationRef;
-  providerReceiptValid: boolean;
+  providerFixtureSignatureValid: boolean;
 }> {
-  const providerReceipt = signOfflineProviderReceipt(verifier, agreement);
-  const providerReceiptRef = await store.put(
-    "dacs-4-offline-ap2-provider-receipt",
-    "OfflineAp2ProviderReceipt",
-    providerReceipt,
+  const providerFixture = signSimulationProviderFixture(
+    verifier,
+    agreement,
+    context,
+  );
+  const providerFixtureRef = await store.put(
+    "dacs-4-simulation-provider-fixture",
+    "SimulationProviderReceipt:not-AP2-2",
+    providerFixture,
     { signer: verifier.claim },
   );
-  const providerReceiptValid = verifyOfflineProviderReceipt(
-    providerReceipt,
+  const providerFixtureSignatureValid = verifySimulationProviderFixture(
+    providerFixture,
     verifier,
   );
-  if (!providerReceiptValid) {
-    throw new Error("offline AP2 provider receipt failed cryptographic verification");
+  if (!providerFixtureSignatureValid) {
+    throw new Error(
+      "simulation provider fixture failed its internal signature check",
+    );
   }
 
   const paymentEvidence = signSettlementEvidence(
     {
       evidenceVersion: "1",
-      jobId: JOB_ID,
+      jobId: context.jobId,
       phase: "pay-ap2",
       outcome: "success",
-      observedAt: FIXTURE_NOW + 4_000,
+      observedAt: context.nowMs + 4_000,
       paymentTxRefs: [
         {
           kind: "ap2",
-          mandateId: `offline-mandate:${JOB_ID}`,
-          providerRef: providerReceiptRef.anchor.locator,
-          protocolVersion: "offline-mocked-v1",
-          receiptAttestation: providerReceiptRef,
+          mandateId: `simulation-mandate:${context.jobId}`,
+          providerRef: providerFixtureRef.anchor.locator,
+          protocolVersion: "x-simulation-not-ap2-v1",
+          receiptAttestation: providerFixtureRef,
         },
       ],
       paymentAmount: { amount: "1", currency: "USD" },
       settlementFinality: {
         model: "provider-receipt",
-        finalityObservedAt: FIXTURE_NOW + 3_000,
+        finalityObservedAt: context.nowMs + 3_000,
       },
     },
     seller,
@@ -1061,11 +1250,11 @@ async function settleAndDeliver(
   );
 
   const deliverable = {
-    deliverableVersion: "offline-v1",
-    mode: "offline",
-    jobId: JOB_ID,
-    result: "Hello from a complete deterministic DACS lifecycle.",
-    generatedAt: FIXTURE_NOW + 5_000,
+    deliverableVersion: "x-simulation-v1",
+    mode: "simulation",
+    jobId: context.jobId,
+    result: "Hello from a non-conformant SDK verifier simulation.",
+    generatedAt: context.nowMs + 5_000,
   };
   const deliverableRef = await store.put(
     "dacs-4-deliverable",
@@ -1076,10 +1265,10 @@ async function settleAndDeliver(
   const deliveryEvidence = signSettlementEvidence(
     {
       evidenceVersion: "1",
-      jobId: JOB_ID,
+      jobId: context.jobId,
       phase: "deliver-storage-program",
       outcome: "success",
-      observedAt: FIXTURE_NOW + 6_000,
+      observedAt: context.nowMs + 6_000,
       deliverableContentHash: deliverableRef.contentHash,
       deliverableAnchor: {
         kind: "storage-program",
@@ -1099,7 +1288,7 @@ async function settleAndDeliver(
     paymentRef,
     deliveryEvidence,
     deliveryRef,
-    providerReceiptValid,
+    providerFixtureSignatureValid,
   };
 }
 
@@ -1144,7 +1333,7 @@ async function verifyEvidence(
 }
 
 async function buildAndVerifyBundles(
-  store: OfflineArtifactStore,
+  store: SimulationArtifactStore,
   published: PublishedListing,
   agreement: AgreementResult,
   buyer: RoleIdentity,
@@ -1158,13 +1347,14 @@ async function buildAndVerifyBundles(
   paymentRef: AttestationRef,
   deliveryEvidence: SettlementEvidence,
   deliveryRef: AttestationRef,
+  context: Readonly<OfflineSimulationContext>,
 ): Promise<{
   buyerValid: boolean;
   sellerValid: boolean;
   consistency: "unified";
 }> {
   const bundles = await buildTwoSidedBundle({
-    jobId: JOB_ID,
+    jobId: context.jobId,
     outcome: "completed",
     listingRef: published.pin,
     agreementRef: agreement.ref,
@@ -1177,7 +1367,7 @@ async function buildAndVerifyBundles(
     settlementEvidence: [paymentRef, deliveryRef],
     recipeRegistryVersion: 1,
     railRegistryVersion: 1,
-    finalisedAt: FIXTURE_NOW + 7_000,
+    finalisedAt: context.nowMs + 7_000,
     buyer: {
       primaryClaim: buyer.claim,
       bundleHash: identityBundleHash(buyer.bundle),
@@ -1190,7 +1380,9 @@ async function buildAndVerifyBundles(
     },
   });
   if (!bundles.buyerCopy || !bundles.sellerCopy) {
-    throw new Error("completed offline session did not produce both role copies");
+    throw new Error(
+      "completed simulation fixture did not produce both role copies",
+    );
   }
   const buyerBundleRef = await store.put(
     "dacs-5-buyer-bundle",
@@ -1214,6 +1406,7 @@ async function buildAndVerifyBundles(
         store,
         buyer,
         verifier,
+        context,
       );
     }
     if (record.evaluatedParty === seller.claim) {
@@ -1222,6 +1415,7 @@ async function buildAndVerifyBundles(
         store,
         seller,
         verifier,
+        context,
       );
     }
     return { status: "invalid", code: "evaluated-party-mismatch" };
@@ -1255,9 +1449,10 @@ async function buildAndVerifyBundles(
     verifyBundle(buyerBundleRef.anchor.locator),
     verifyBundle(sellerBundleRef.anchor.locator),
   ]);
-  if (!buyerVerification.ok || !sellerVerification.ok) {
+  if (!simulationBundleGraphVerificationPassed(buyerVerification) ||
+      !simulationBundleGraphVerificationPassed(sellerVerification)) {
     throw new Error(
-      `offline bundle graph verification failed: buyer=${buyerVerification.reason ?? "invalid"}, ` +
+      `simulation bundle graph exercise failed: buyer=${buyerVerification.reason ?? "invalid"}, ` +
         `seller=${sellerVerification.reason ?? "invalid"}`,
     );
   }
@@ -1272,7 +1467,7 @@ async function buildAndVerifyBundles(
     verifyBundleCopy(asRecord(bundles.sellerCopy), "seller", copyDeps),
   ]);
   if (!buyerCopy.valid || !sellerCopy.valid) {
-    throw new Error("offline role-owned bundle copy verification failed");
+    throw new Error("simulation role-owned bundle copy verification failed");
   }
   const consistency = await bundleConsistency(
     {
@@ -1285,7 +1480,9 @@ async function buildAndVerifyBundles(
     },
   );
   if (consistency !== "unified") {
-    throw new Error(`offline bundle copies are ${consistency}, expected unified`);
+    throw new Error(
+      `simulation bundle copies are ${consistency}, expected unified`,
+    );
   }
 
   // The bundle verifier dereferenced these exact values. Keep these explicit
@@ -1298,16 +1495,18 @@ async function buildAndVerifyBundles(
     store.read(paymentRef.anchor.locator)?.["phase"] !== paymentEvidence.phase ||
     store.read(deliveryRef.anchor.locator)?.["phase"] !== deliveryEvidence.phase
   ) {
-    throw new Error("offline referenced artifact identity changed after closure");
+    throw new Error(
+      "simulation referenced artifact identity changed after closure",
+    );
   }
   return { buyerValid: true, sellerValid: true, consistency };
 }
 
 async function timedPhase<T>(
-  stage: OfflineRunPhase["stage"],
+  stage: OfflineSimulationPhase["stage"],
   artifactTypes: string[],
   operation: () => Promise<T>,
-): Promise<{ result: T; phase: OfflineRunPhase }> {
+): Promise<{ result: T; phase: OfflineSimulationPhase }> {
   const startedAt = Date.now();
   const started = performance.now();
   const result = await operation();
@@ -1319,42 +1518,70 @@ async function timedPhase<T>(
       startedAt,
       endedAt,
       durationMs: Number((performance.now() - started).toFixed(3)),
-      outcome: "ok",
-      artifactTypes,
+      outcome: "simulated-pass",
+      simulatedArtifactTypes: artifactTypes,
     },
   };
 }
 
 /**
- * Run the credential-free, zero-network, zero-spend quickstart lifecycle.
+ * Run a credential-free, zero-network, zero-spend internal verifier exercise.
  *
- * The payment phase is the Standard's `pay-ap2` handler under an explicitly
- * mocked rail definition. Its local provider receipt is cryptographically
- * authenticated, but it is not represented as a live AP2 or substrate result.
+ * This function deliberately does not claim DACS conformance or commercial
+ * success. It wraps every persisted fixture in a simulation-only envelope and
+ * uses neither SR-2 anchor authority nor the SR-3/AP2-2 provider authority
+ * required for normative success. The generated graph exists only to exercise
+ * SDK construction, signing, dereferencing, and recursive verification code.
  */
-export async function runDeterministicOfflineLifecycle(
-  options: OfflineLifecycleOptions,
-): Promise<Readonly<OfflineRunReport>> {
+export async function runOfflineVerifierSimulation(
+  options: OfflineVerifierSimulationOptions,
+): Promise<Readonly<OfflineVerifierSimulationReport>> {
   if (
     !options ||
     typeof options.outputDirectory !== "string" ||
     options.outputDirectory.trim() === ""
   ) {
-    throw new TypeError("offline lifecycle outputDirectory must be a non-empty path");
+    throw new TypeError(
+      "offline verifier simulation outputDirectory must be a non-empty path",
+    );
   }
-  const outputDirectory = resolve(options.outputDirectory);
-  const artifactDirectory = resolve(outputDirectory, "artifacts");
-  await mkdir(outputDirectory, { recursive: true });
-  const store = new OfflineArtifactStore(artifactDirectory);
+  return withExclusiveSimulationOutput(
+    options.outputDirectory,
+    executeOfflineVerifierSimulation,
+  );
+}
+
+async function executeOfflineVerifierSimulation({
+  stagingDirectory: outputDirectory,
+  finalDirectory,
+}: Readonly<{
+  stagingDirectory: string;
+  finalDirectory: string;
+}>): Promise<Readonly<OfflineVerifierSimulationReport>> {
+  const context = createSimulationContext();
+  const artifactDirectory = resolve(outputDirectory, "simulation-artifacts");
+  const store = new SimulationArtifactStore(artifactDirectory, context.jobId);
   await store.initialize();
 
-  const buyer = roleIdentity(BUYER_SEED, "buyer");
-  const seller = roleIdentity(SELLER_SEED, "seller");
-  const verifier = roleIdentity(VERIFIER_SEED, "verifier");
+  const buyer = roleIdentity(
+    BUYER_SEED,
+    context.sessionNonces.buyer,
+    context.nowMs,
+  );
+  const seller = roleIdentity(
+    SELLER_SEED,
+    context.sessionNonces.seller,
+    context.nowMs,
+  );
+  const verifier = roleIdentity(
+    VERIFIER_SEED,
+    context.sessionNonces.verifier,
+    context.nowMs,
+  );
   if (![buyer, seller, verifier].every(verifyIdentity)) {
-    throw new Error("offline identity presentation verification failed");
+    throw new Error("simulation identity presentation exercise failed");
   }
-  const phases: OfflineRunPhase[] = [];
+  const phases: OfflineSimulationPhase[] = [];
 
   const dacs1 = await timedPhase(
     "DACS-1",
@@ -1380,7 +1607,7 @@ export async function runDeterministicOfflineLifecycle(
           { hash: identityBundleHash(verifier.bundle), signer: verifier.claim },
         ),
       ]);
-      return publishAndDiscoverListing(store, seller);
+      return publishAndDiscoverListing(store, seller, context);
     },
   );
   phases.push(dacs1.phase);
@@ -1397,7 +1624,7 @@ export async function runDeterministicOfflineLifecycle(
       "CompositeVerificationRecord:seller",
     ],
     async () => {
-      const recipe = await selfSignedRecipe(verifier);
+      const recipe = await selfSignedRecipe(verifier, context);
       await store.put(
         "dacs-2-self-signed-recipe",
         "RecipeDescriptor:self-signed",
@@ -1405,15 +1632,15 @@ export async function runDeterministicOfflineLifecycle(
         { signer: verifier.claim },
       );
       const [buyerVet, sellerVet] = await Promise.all([
-        produceVetClosure(store, "buyer", buyer, verifier, recipe),
-        produceVetClosure(store, "seller", seller, verifier, recipe),
+        produceVetClosure(store, "buyer", buyer, verifier, recipe, context),
+        produceVetClosure(store, "seller", seller, verifier, recipe, context),
       ]);
       const [buyerVerification, sellerVerification] = await Promise.all([
-        verifyVet(buyerVet, store, buyer, verifier),
-        verifyVet(sellerVet, store, seller, verifier),
+        verifyVet(buyerVet, store, buyer, verifier, context),
+        verifyVet(sellerVet, store, seller, verifier, context),
       ]);
       if (buyerVerification.status !== "valid" || sellerVerification.status !== "valid") {
-        throw new Error("offline Vet closure verification failed");
+        throw new Error("simulation Vet closure exercise failed");
       }
       const [buyerRef, sellerRef] = await Promise.all([
         store.put(
@@ -1445,6 +1672,7 @@ export async function runDeterministicOfflineLifecycle(
         seller,
         dacs2.result.buyerRef,
         dacs2.result.sellerRef,
+        context,
       ),
   );
   phases.push(dacs3.phase);
@@ -1452,12 +1680,19 @@ export async function runDeterministicOfflineLifecycle(
   const dacs4 = await timedPhase(
     "DACS-4",
     [
-      "OfflineAp2ProviderReceipt",
+      "SimulationProviderReceipt:not-AP2-2",
       "SettlementEvidence:pay-ap2",
       "OfflineDeliverable",
       "SettlementEvidence:deliver-storage-program",
     ],
-    () => settleAndDeliver(store, dacs3.result.agreement, seller, verifier),
+    () =>
+      settleAndDeliver(
+        store,
+        dacs3.result.agreement,
+        seller,
+        verifier,
+        context,
+      ),
   );
   phases.push(dacs4.phase);
 
@@ -1481,7 +1716,7 @@ export async function runDeterministicOfflineLifecycle(
     deliveryVerification.decision !== "pass"
   ) {
     throw new Error(
-      `offline DACS-4 verification failed: payment=${paymentVerification.decision}, ` +
+      `simulation DACS-4 verifier exercise failed: payment=${paymentVerification.decision}, ` +
         `delivery=${deliveryVerification.decision}`,
     );
   }
@@ -1505,19 +1740,24 @@ export async function runDeterministicOfflineLifecycle(
         dacs4.result.paymentRef,
         dacs4.result.deliveryEvidence,
         dacs4.result.deliveryRef,
+        context,
       ),
   );
   phases.push(dacs5.phase);
 
-  const reportPath = resolve(outputDirectory, "run-report.json");
+  const reportPath = resolve(finalDirectory, "simulation-report.json");
   const protocolBinding = createDacsNodeOfflineProtocolBinding(seller.claim);
-  const report: OfflineRunReport = {
-    reportVersion: "1",
+  const report: OfflineVerifierSimulationReport = {
+    reportKind: OFFLINE_VERIFIER_SIMULATION_REPORT_KIND,
+    reportVersion: "2",
+    normativeConformance: false,
+    commercialSuccess: false,
+    simulationPassed: true,
     sdkVersion: VERSION,
     standardRevision: FIXED_PRICE_OFFLINE_STANDARD_REVISION,
     profile: FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
     mode: "offline",
-    jobId: JOB_ID,
+    jobId: context.jobId,
     protocolBinding,
     parties: {
       buyer: buyer.claim,
@@ -1531,26 +1771,42 @@ export async function runDeterministicOfflineLifecycle(
       currency: "USD",
       railId: RAIL.railId,
       availability: "mocked",
-      disposition: "offline",
+      disposition: "simulation-only",
     },
-    verification: {
+    assurance: {
+      purpose: "internal-verifier-exercise",
+      persistedArtifacts: "wrapped-simulation-fixtures",
+      substrateAuthority: "mocked-local-not-sr2",
+      providerAuthority: "mocked-self-signed-not-sr3",
+      railAuthority: "mocked-local-not-rav-r5",
+      jobIdDiscipline: "fresh-csprng-ulid-per-run",
+      sessionNonceDiscipline:
+        "fresh-per-run-no-normative-challenge-ledger",
+      paymentValueMoved: false,
+      fixtureKeys: "public-deterministic-test-keys",
+    },
+    internalChecks: {
       listing: true,
       buyerVet: true,
       sellerVet: true,
       commitment: dacs3.result.committed.recordKind === "finality",
       paymentEvidence: true,
       deliveryEvidence: true,
-      providerReceipt: dacs4.result.providerReceiptValid,
+      providerFixtureSignature:
+        dacs4.result.providerFixtureSignatureValid,
       buyerBundle: dacs5.result.buyerValid,
       sellerBundle: dacs5.result.sellerValid,
       bundleConsistency: dacs5.result.consistency,
     },
-    overallSuccess: true,
     reportPath,
   };
-  await writeFile(reportPath, `${canonicalize(report)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-  });
+  await writeFile(
+    resolve(outputDirectory, "simulation-report.json"),
+    `${canonicalize(report)}\n`,
+    {
+      encoding: "utf8",
+      flag: "wx",
+    },
+  );
   return Object.freeze(structuredClone(report));
 }
