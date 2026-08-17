@@ -15,15 +15,30 @@ import type { RailDescriptor } from "./types.js";
  */
 
 export interface RailDispatchOptions {
-  /** Buyer EVM private key used by EVM rails to sign payment. */
-  evmPrivateKey: string;
-  /** Per-deal paywall coordinates (from the listing/agreement, not the registry). */
-  paywall: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
+  /** Buyer EVM private key used only by EVM-backed rails. */
+  evmPrivateKey?: string;
+  /**
+   * Rail-neutral per-deal payment coordinates from the committed agreement.
+   * `url` is required only for HTTP payment protocols; pay-DEM derives its
+   * authoritative destination from the agreement and treats `recipient` only
+   * as an optional PB-2 cross-check.
+   */
+  payment?: {
+    url?: string;
+    network?: string;
+    recipient?: string;
+    phaseIndex?: number;
+  };
+  /**
+   * @deprecated Compatibility alias for pre-pay-DEM callers. New callers
+   * should use `payment`; this EVM-shaped projection is not required by DEM.
+   */
+  paywall?: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
   /** JSON-RPC URL — required by the direct-transfer (evm-erc20) rail. */
   rpcUrl?: string;
-  /** Demos node RPC URL — required by the D402 (pay-d402) rail. */
+  /** Demos node RPC URL — required by pay-dem and pay-d402. */
   demosRpc?: string;
-  /** Demos wallet secret (mnemonic/private key) — required by the pay-d402 rail to sign payments. */
+  /** Demos wallet secret used by pay-dem and pay-d402 to sign payments. */
   demosSecret?: string;
   /**
    * Explicit opt-in to dispatch EXPERIMENTAL / non-`live` rails (currently
@@ -35,10 +50,50 @@ export interface RailDispatchOptions {
   fetchImpl?: typeof fetch;
 }
 
+interface ResolvedPaymentCoordinates {
+  url?: string;
+  network?: string;
+  recipient?: string;
+  phaseIndex?: number;
+}
+
+function paymentCoordinates(opts: RailDispatchOptions): ResolvedPaymentCoordinates {
+  if (opts.payment) return opts.payment;
+  if (!opts.paywall) return {};
+  return {
+    url: opts.paywall.url,
+    network: opts.paywall.network,
+    recipient: opts.paywall.recipientEvm,
+    ...(opts.paywall.phaseIndex === undefined
+      ? {}
+      : { phaseIndex: opts.paywall.phaseIndex }),
+  };
+}
+
+function requiredCoordinate(
+  value: string | undefined,
+  railKind: string,
+  name: string,
+): string {
+  if (!value) throw new DacsError(`${railKind} rail requires opts.payment.${name}`);
+  return value;
+}
+
+function requiredEvmPrivateKey(
+  opts: RailDispatchOptions,
+  railKind: string,
+): string {
+  if (!opts.evmPrivateKey) {
+    throw new DacsError(`${railKind} rail requires opts.evmPrivateKey`);
+  }
+  return opts.evmPrivateKey;
+}
+
 export async function settleFromRail(
   descriptor: RailDescriptor,
   opts: RailDispatchOptions,
 ): Promise<(req: SettleRequest) => Promise<SettleResult>> {
+  const payment = paymentCoordinates(opts);
   switch (descriptor.kind) {
     case "x402": {
       // The expected token is rail config (steward-signed descriptor params) —
@@ -50,12 +105,27 @@ export async function settleFromRail(
           `x402 rail "${descriptor.id}" descriptor missing params.tokenAddress`,
         );
       }
+      const url = requiredCoordinate(payment.url, "x402", "url");
+      const network = requiredCoordinate(payment.network, "x402", "network");
+      const recipientEvm = requiredCoordinate(
+        payment.recipient,
+        "x402",
+        "recipient",
+      );
       const rail = await createX402Rail({
-        evmPrivateKey: opts.evmPrivateKey,
+        evmPrivateKey: requiredEvmPrivateKey(opts, "x402"),
         fetchImpl: opts.fetchImpl,
         requireSessionBinding: true,
       });
-      return x402Settle(rail, { ...opts.paywall, asset: tokenAddress });
+      return x402Settle(rail, {
+        url,
+        network,
+        recipientEvm,
+        ...(payment.phaseIndex === undefined
+          ? {}
+          : { phaseIndex: payment.phaseIndex }),
+        asset: tokenAddress,
+      });
     }
     case "evm-erc20": {
       // The token contract is rail config (registry params); the recipient +
@@ -69,15 +139,25 @@ export async function settleFromRail(
       if (!opts.rpcUrl) {
         throw new DacsError("evm-erc20 rail requires opts.rpcUrl");
       }
+      const network = requiredCoordinate(
+        payment.network,
+        "evm-erc20",
+        "network",
+      );
+      const recipientEvm = requiredCoordinate(
+        payment.recipient,
+        "evm-erc20",
+        "recipient",
+      );
       const rail = await createEvmErc20Rail({
-        evmPrivateKey: opts.evmPrivateKey,
+        evmPrivateKey: requiredEvmPrivateKey(opts, "evm-erc20"),
         rpcUrl: opts.rpcUrl,
-        network: opts.paywall.network,
+        network,
       });
       return evmErc20Settle(rail, {
         tokenAddress,
-        network: opts.paywall.network,
-        recipientEvm: opts.paywall.recipientEvm,
+        network,
+        recipientEvm,
       });
     }
     case "d402": {
@@ -98,23 +178,34 @@ export async function settleFromRail(
       if (!opts.demosSecret) {
         throw new DacsError("pay-d402 rail requires opts.demosSecret");
       }
+      const url = requiredCoordinate(payment.url, "pay-d402", "url");
+      const network = requiredCoordinate(
+        payment.network,
+        "pay-d402",
+        "network",
+      );
+      const recipient = requiredCoordinate(
+        payment.recipient,
+        "pay-d402",
+        "recipient",
+      );
       const rail = await createPayD402Rail({
         rpc: opts.demosRpc,
         secret: opts.demosSecret,
-        network: opts.paywall.network,
+        network,
         fetchImpl: opts.fetchImpl,
         acknowledgeExperimental: true,
       });
       return payD402Settle(rail, {
-        url: opts.paywall.url,
-        recipient: opts.paywall.recipientEvm,
-        network: opts.paywall.network,
+        url,
+        recipient,
+        network,
       });
     }
     case "dem": {
       // Native DEM transfer rail (§9.5.9, live). The recipient + network are
-      // per-deal (paywall); the Demos RPC + wallet secret are caller secrets.
-      // `payTo` (paywall.recipientEvm) carries the Demos recipient address.
+      // derived from the agreement; the Demos RPC + wallet secret are caller
+      // secrets. A supplied recipient can only cross-check that destination.
       if (!opts.demosRpc) {
         throw new DacsError("pay-dem rail requires opts.demosRpc");
       }
@@ -124,11 +215,13 @@ export async function settleFromRail(
       const rail = await createPayDemRail({
         rpc: opts.demosRpc,
         secret: opts.demosSecret,
-        network: opts.paywall.network,
+        network: payment.network ?? "demos",
       });
       return payDemSettle(rail, {
-        recipient: opts.paywall.recipientEvm,
-        network: opts.paywall.network,
+        ...(payment.recipient === undefined
+          ? {}
+          : { recipient: payment.recipient }),
+        network: payment.network ?? "demos",
       });
     }
     default:
