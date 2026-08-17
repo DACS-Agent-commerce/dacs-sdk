@@ -1,0 +1,311 @@
+import { normalizeDemosNativeAddress } from "../rails/payDem.js";
+import type { DemosTransferObservation } from "./paymentIntake.js";
+
+const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
+const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
+const OS_PER_DEM = 1_000_000_000n;
+const INCLUDED_STATE = "included";
+const FAILED_STATES = new Set(["failed", "rejected"]);
+const PENDING_STATES = new Set([
+  "accepted",
+  "broadcast",
+  "pending",
+  "processing",
+  "queued",
+]);
+const NOT_FOUND_STATES = new Set(["not-found", "not_found", "unknown"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function unwrapNodeResponse(value: unknown):
+  | { status: "ok"; value: unknown }
+  | { status: "unavailable" } {
+  if (!isRecord(value) ||
+      !Object.prototype.hasOwnProperty.call(value, "response")) {
+    return { status: "ok", value };
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "result") &&
+      value.result !== 200) {
+    return { status: "unavailable" };
+  }
+  return { status: "ok", value: value.response };
+}
+
+function canonicalTxHash(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(TX_HASH_RE);
+  return match ? match[1]!.toLowerCase() : null;
+}
+
+function safeUint(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+      !Object.is(value, -0)
+    ? value
+    : null;
+}
+
+function wireAmountToOs(value: unknown): string | null {
+  if (typeof value === "string") {
+    if (!INTEGER_RE.test(value)) return null;
+    try {
+      const amount = BigInt(value);
+      return amount > 0n ? amount.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    return null;
+  }
+  return (BigInt(value) * OS_PER_DEM).toString();
+}
+
+function blockTimestampToMilliseconds(value: unknown): number | null {
+  const timestamp = safeUint(value);
+  if (timestamp === null) return null;
+  // Current Demos blocks use Unix seconds. Accept an already-millisecond
+  // timestamp for forward compatibility, while keeping all DACS time values in
+  // Unix milliseconds, matching DACS-4 §9.7 observedAt/finalityObservedAt.
+  const milliseconds = timestamp < 1_000_000_000_000
+    ? timestamp * 1_000
+    : timestamp;
+  return Number.isSafeInteger(milliseconds) ? milliseconds : null;
+}
+
+/**
+ * Read-only Demos facts required by the DACS-4 §9.5.9 seller payment gate.
+ * Implementations MUST return authenticated node responses or fail closed.
+ */
+export interface PayDemObservationClient {
+  getTransactionStatus(txHash: string): Promise<unknown>;
+  getTxByHash(txHash: string): Promise<unknown>;
+  getBlockByNumber(blockNumber: number): Promise<unknown>;
+}
+
+export interface PayDemSellerObserver {
+  observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
+}
+
+export interface PayDemSellerObserverConfig {
+  /** Demos node RPC URL used for read-only settlement observation. */
+  rpc: string;
+  /** Request timeout in milliseconds (default 15 seconds). */
+  timeoutMs?: number;
+  /** Override fetch for tests or a caller-owned authenticated transport. */
+  fetchImpl?: typeof fetch;
+}
+
+function invalid(reason: string): DemosTransferObservation {
+  return { status: "invalid", reason };
+}
+
+/**
+ * Resolve a native DEM transfer into the exact operational facts consumed by
+ * the DACS-4 §9.5.9 seller intake gate.
+ *
+ * The transaction status, transaction body, and confirmed block must agree on
+ * one hash and block height. The consensus block timestamp is authoritative;
+ * the transaction's caller-selected timestamp is never used for deadlines.
+ */
+export async function observePayDemTransferCore(
+  txHash: string,
+  client: PayDemObservationClient,
+): Promise<DemosTransferObservation> {
+  const requestedHash = canonicalTxHash(txHash);
+  if (!requestedHash) return invalid("transaction hash is not 32-byte hex");
+
+  let statusValue: unknown;
+  try {
+    statusValue = await client.getTransactionStatus(requestedHash);
+  } catch {
+    return { status: "unavailable", reason: "transaction status read failed" };
+  }
+  const statusResponse = unwrapNodeResponse(statusValue);
+  if (statusResponse.status === "unavailable") {
+    return { status: "unavailable", reason: "transaction status read failed" };
+  }
+  const status = statusResponse.value;
+  if (!isRecord(status) || typeof status.state !== "string") {
+    return { status: "unavailable", reason: "transaction status response is malformed" };
+  }
+  const state = status.state.toLowerCase();
+  if (FAILED_STATES.has(state)) {
+    return { status: "failed", reason: `transaction state is ${state}` };
+  }
+  if (NOT_FOUND_STATES.has(state)) {
+    return { status: "not-found", reason: `transaction state is ${state}` };
+  }
+  if (PENDING_STATES.has(state)) {
+    return { status: "pending", reason: `transaction state is ${state}` };
+  }
+  if (state !== INCLUDED_STATE) {
+    return { status: "unavailable", reason: `unsupported transaction state ${state}` };
+  }
+  const statusBlockNumber = safeUint(status.blockNumber);
+  if (statusBlockNumber === null) {
+    return {
+      status: "unavailable",
+      reason: "included transaction status has no valid block number",
+    };
+  }
+
+  let transactionValue: unknown;
+  let blockValue: unknown;
+  try {
+    [transactionValue, blockValue] = await Promise.all([
+      client.getTxByHash(requestedHash),
+      client.getBlockByNumber(statusBlockNumber),
+    ]);
+  } catch {
+    return { status: "unavailable", reason: "included transaction facts are unavailable" };
+  }
+  const transactionResponse = unwrapNodeResponse(transactionValue);
+  const blockResponse = unwrapNodeResponse(blockValue);
+  if (transactionResponse.status === "unavailable" ||
+      blockResponse.status === "unavailable") {
+    return { status: "unavailable", reason: "included transaction facts are unavailable" };
+  }
+  const transaction = transactionResponse.value;
+  const block = blockResponse.value;
+  if (transaction === null || transaction === undefined ||
+      block === null || block === undefined) {
+    return { status: "unavailable", reason: "included transaction facts are unavailable" };
+  }
+  if (!isRecord(transaction) || !isRecord(transaction.content)) {
+    return invalid("included transaction body is malformed");
+  }
+  if (!isRecord(block) || !isRecord(block.content)) {
+    return invalid("inclusion block is malformed");
+  }
+
+  if (canonicalTxHash(transaction.hash) !== requestedHash) {
+    return invalid("transaction hash does not match the requested hash");
+  }
+  if (typeof transaction.status !== "string" ||
+      transaction.status.toLowerCase() !== INCLUDED_STATE) {
+    return invalid("transaction body is not in an included state");
+  }
+  const transactionBlockNumber = safeUint(transaction.blockNumber);
+  if (transactionBlockNumber !== statusBlockNumber) {
+    return invalid("transaction and status block numbers do not match");
+  }
+  const blockNumber = safeUint(block.number);
+  if (blockNumber !== statusBlockNumber || block.status !== "confirmed") {
+    return invalid("transaction is not present in the expected confirmed block");
+  }
+  if (!Array.isArray(block.content.ordered_transactions) ||
+      !block.content.ordered_transactions.some(
+        (value) => canonicalTxHash(value) === requestedHash,
+      )) {
+    return invalid("confirmed block does not contain the transaction hash");
+  }
+
+  const content = transaction.content;
+  if (content.type !== "native" || !Array.isArray(content.data) ||
+      content.data.length !== 2 || content.data[0] !== "native" ||
+      !isRecord(content.data[1])) {
+    return invalid("transaction is not a native DEM transfer");
+  }
+  const native = content.data[1];
+  if (native.nativeOperation !== "send" || !Array.isArray(native.args) ||
+      native.args.length !== 2) {
+    return invalid("native transaction is not a send operation");
+  }
+
+  const payer = typeof content.from === "string"
+    ? normalizeDemosNativeAddress(content.from)
+    : null;
+  const payee = typeof content.to === "string"
+    ? normalizeDemosNativeAddress(content.to)
+    : null;
+  const payloadPayee = typeof native.args[0] === "string"
+    ? normalizeDemosNativeAddress(native.args[0])
+    : null;
+  if (!payer || !payee || !payloadPayee || payloadPayee !== payee) {
+    return invalid("native transfer parties are malformed or inconsistent");
+  }
+
+  const amountOs = wireAmountToOs(content.amount);
+  const payloadAmountOs = wireAmountToOs(native.args[1]);
+  if (!amountOs || !payloadAmountOs || amountOs !== payloadAmountOs) {
+    return invalid("native transfer amounts are malformed or inconsistent");
+  }
+  const includedAt = blockTimestampToMilliseconds(block.content.timestamp);
+  if (includedAt === null) {
+    return invalid("confirmed block timestamp is malformed");
+  }
+
+  return {
+    status: "included",
+    txHash: requestedHash,
+    payer,
+    payee,
+    amountOs,
+    blockNumber: statusBlockNumber,
+    includedAt,
+  };
+}
+
+function validTimeout(value: number | undefined): number {
+  if (value === undefined) return 15_000;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError("pay-DEM observer timeoutMs must be a positive integer");
+  }
+  return value;
+}
+
+/**
+ * Create the standard read-only Demos RPC observer used by seller payment
+ * intake. This validates one node's mutually-consistent confirmed-block view;
+ * it is not an independent validator-quorum proof verifier.
+ */
+export function createPayDemSellerObserver(
+  config: PayDemSellerObserverConfig,
+): PayDemSellerObserver {
+  if (!config?.rpc || typeof config.rpc !== "string") {
+    throw new TypeError("pay-DEM seller observer requires an RPC URL");
+  }
+  const timeoutMs = validTimeout(config.timeoutMs);
+  const fetchImpl = config.fetchImpl ?? fetch;
+
+  const nodeCall = async (message: string, data: Record<string, unknown>) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(config.rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          method: "nodeCall",
+          params: [{ message, data }],
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Demos RPC returned HTTP ${response.status}`);
+      }
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || payload.result !== 200 ||
+          !Object.prototype.hasOwnProperty.call(payload, "response")) {
+        throw new Error("Demos RPC returned a malformed response");
+      }
+      return payload.response;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const client: PayDemObservationClient = {
+    getTransactionStatus: (hash) =>
+      nodeCall("getTransactionStatus", { hash }),
+    getTxByHash: (hash) => nodeCall("getTxByHash", { hash }),
+    getBlockByNumber: (blockNumber) =>
+      nodeCall("getBlockByNumber", { blockNumber }),
+  };
+
+  return {
+    observeDemosTransfer: (hash) => observePayDemTransferCore(hash, client),
+  };
+}

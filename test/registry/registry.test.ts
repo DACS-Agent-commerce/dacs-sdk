@@ -863,6 +863,39 @@ describe("rail dispatch by kind (T6)", () => {
     ).rejects.toThrow(/rpcUrl/);
   });
 
+  test("pay-DEM dispatch does not require EVM credentials or HTTP paywall coordinates", async () => {
+    const descriptor = {
+      id: "demos-native:DEM",
+      kind: "dem" as const,
+      availability: "live" as const,
+      params: {},
+    };
+    await expect(settleFromRail(descriptor, {})).rejects.toThrow(/demosRpc/);
+    await expect(
+      settleFromRail(descriptor, { demosRpc: "https://node.example" }),
+    ).rejects.toThrow(/demosSecret/);
+  });
+
+  test("rail-neutral payment coordinates work for EVM rails", async () => {
+    const settle = await settleFromRail(
+      {
+        id: "evm-erc20:usdc",
+        kind: "evm-erc20",
+        availability: "live",
+        params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+      },
+      {
+        evmPrivateKey: HARDHAT_KEY,
+        payment: {
+          network: paywall.network,
+          recipient: paywall.recipientEvm,
+        },
+        rpcUrl: "https://sepolia.base.org",
+      },
+    );
+    expect(typeof settle).toBe("function");
+  });
+
   test("unknown kind is rejected", async () => {
     await expect(
       settleFromRail(
