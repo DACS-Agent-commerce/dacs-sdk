@@ -245,7 +245,7 @@ export type DestinationBindingResolution =
 
 export type DemosTransferObservation =
   | { status: "pending" | "not-found" | "unavailable"; reason?: string }
-  | { status: "failed"; reason?: string }
+  | { status: "failed" | "invalid"; reason?: string }
   | {
       status: "included";
       txHash: string;
@@ -1359,7 +1359,8 @@ function isDemosTransferObservationValue(
 ): value is DemosTransferObservation {
   if (!isRecord(value) || typeof value.status !== "string") return false;
   if (value.status === "pending" || value.status === "not-found" ||
-      value.status === "unavailable" || value.status === "failed") {
+      value.status === "unavailable" || value.status === "failed" ||
+      value.status === "invalid") {
     return hasOnlyKeys(value, ["status", "reason"]) &&
       (value.reason === undefined || typeof value.reason === "string");
   }
@@ -2547,9 +2548,9 @@ export async function verifySellerPaymentIntake(
     }
     const observed = observation.value;
     if (observed.status !== "included") {
-      return observed.status === "failed"
-        ? reject("demos-transfer-failed")
-        : indeterminate(`demos-${observed.status}`);
+      if (observed.status === "failed") return reject("demos-transfer-failed");
+      if (observed.status === "invalid") return reject("demos-transfer-invalid");
+      return indeterminate(`demos-${observed.status}`);
     }
     const observedPayer = normalizeDemosNativeAddress(observed.payer);
     const observedPayee = normalizeDemosNativeAddress(observed.payee);

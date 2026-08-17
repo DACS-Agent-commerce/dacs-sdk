@@ -852,6 +852,20 @@ describe("verifySellerPaymentIntake", () => {
     });
   });
 
+  it("rejects a contradictory Demos observation before claiming fulfilment", async () => {
+    const ctx = makeContext("pay-dem");
+    ctx.demosObservation = {
+      status: "invalid",
+      reason: "confirmed block does not contain the transaction hash",
+    };
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toEqual({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "demos-transfer-invalid",
+    });
+  });
+
   it("requires the authenticated FinalityCommitmentRecord signer", async () => {
     const ctx = makeContext("pay-dem");
     delete (ctx.committed.commitment as { signer?: string }).signer;
