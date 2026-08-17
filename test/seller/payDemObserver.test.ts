@@ -78,6 +78,45 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
     });
   });
 
+  it("accepts the observed post-fork numeric projection as OS when the payload and confirmed block establish it", async () => {
+    const fixture = includedFixture(1);
+    fixture.transaction.status = "confirmed";
+    fixture.transaction.content.data[1] = {
+      nativeOperation: "send",
+      args: [`0x${PAYEE}`, "1"],
+    };
+
+    await expect(
+      observePayDemTransferCore(HASH, fixtureClient(fixture)),
+    ).resolves.toMatchObject({
+      status: "included",
+      amountOs: "1",
+      blockNumber: BLOCK_NUMBER,
+    });
+  });
+
+  it.each(["included", "confirmed", "finalized"])(
+    "accepts transaction-body state %s only behind included status and confirmed-block proof",
+    async (transactionState) => {
+      const fixture = includedFixture();
+      fixture.transaction.status = transactionState;
+      await expect(
+        observePayDemTransferCore(HASH, fixtureClient(fixture)),
+      ).resolves.toMatchObject({ status: "included" });
+    },
+  );
+
+  it("rejects a projected numeric amount that does not exactly match the post-fork OS payload", async () => {
+    const fixture = includedFixture(1);
+    fixture.transaction.content.data[1] = {
+      nativeOperation: "send",
+      args: [`0x${PAYEE}`, "1000000000"],
+    };
+    await expect(
+      observePayDemTransferCore(HASH, fixtureClient(fixture)),
+    ).resolves.toMatchObject({ status: "invalid" });
+  });
+
   it.each([
     ["pending", "pending"],
     ["accepted", "pending"],
