@@ -58,10 +58,13 @@ import type {
  */
 const ANCHOR_SALT = "";
 const DEFAULT_ANCHOR_TIMEOUT_MS = 120_000;
-const DEFAULT_ANCHOR_POLL_MS = 1_000;
+// 500ms matches demosdk's own broadcastAndWait default and halves the whole-
+// second rounding waste on every inclusion/nonce/read-back poll without
+// hammering the node any harder than the underlying SDK already does.
+const DEFAULT_ANCHOR_POLL_MS = 500;
 const AMBIGUOUS_WRITE_RECOVERY_MS = 120_000;
 const WRITE_ONCE_VISIBILITY_TIMEOUT_MS = 120_000;
-const WRITE_ONCE_VISIBILITY_POLL_MS = 1_000;
+const WRITE_ONCE_VISIBILITY_POLL_MS = 500;
 const STORAGE_SEARCH_PAGE_SIZE = 100;
 const STORAGE_SEARCH_MAX_PAGES = 100;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
