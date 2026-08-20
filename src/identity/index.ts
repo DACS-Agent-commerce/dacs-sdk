@@ -14,4 +14,13 @@ export {
   type CciPqcClaim,
   type ParsedClaimRef,
 } from "./cci.js";
+
+export {
+  isCanonicalClaimReference,
+  parseCanonicalClaimReference,
+  requireCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+  type CanonicalClaimIdentity,
+  type CanonicalClaimReferenceParts,
+} from "./claimReference.js";
 export { identityBundleHash } from "./bundle.js";

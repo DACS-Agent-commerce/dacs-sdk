@@ -14,9 +14,12 @@ import {
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
+  fixedPriceX402ProtocolBindingHash,
+  paymentEvidenceHandshakeScopeHash,
   type BuyerPaymentEvidenceHandshakeOptions,
   type FixedPriceX402ProtocolBinding,
   type PaymentEvidenceAnchorCompletion,
+  type PaymentEvidenceAnchorFence,
   type PaymentEvidenceAnchorRequest,
   type PaymentEvidenceAuthenticatedPeer,
 } from "../../src/commerce/index.js";
@@ -47,6 +50,11 @@ const PROTOCOL: FixedPriceX402ProtocolBinding = {
     availability: "live",
   },
 };
+const SCOPE_HASH = paymentEvidenceHandshakeScopeHash({
+  seller: SELLER,
+  buyer: BUYER,
+  protocolHash: fixedPriceX402ProtocolBindingHash(PROTOCOL),
+});
 
 function txHash(index: number): string {
   return (index + 1).toString(16).padStart(64, "0");
@@ -175,6 +183,7 @@ function buyer(input: Readonly<{
   anchor?: ReturnType<typeof vi.fn>;
   reconcile?: ReturnType<typeof vi.fn>;
   verifyReceipt?: ReturnType<typeof vi.fn>;
+  leaseDurationMs?: number;
   retryDelayMs?: number;
 }> = {}) {
   const store = input.store ?? createInMemoryPaymentEvidenceHandshakeStore();
@@ -196,7 +205,9 @@ function buyer(input: Readonly<{
     verifyReceipt,
     handshake: createBuyerPaymentEvidenceHandshake({
       store,
+      seller: SELLER,
       buyer: BUYER,
+      protocol: PROTOCOL,
       workerId: "buyer-wallet-worker",
       authenticateRequest: (candidate) => ({
         disposition: "authenticated",
@@ -207,6 +218,7 @@ function buyer(input: Readonly<{
       reconcileAnchor: reconcile as unknown as BuyerPaymentEvidenceHandshakeOptions["reconcileAnchor"],
       verifyAnchorReceipt: verifyReceipt as unknown as
         BuyerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"],
+      ...(input.leaseDurationMs === undefined ? {} : { leaseDurationMs: input.leaseDurationMs }),
       ...(input.retryDelayMs === undefined ? {} : { retryDelayMs: input.retryDelayMs }),
     }),
   };
@@ -401,7 +413,7 @@ describe("actor-separated payment-evidence handshake", () => {
       reasonCode: "anchor-threw",
     }]);
     expect((await handshake.runPending()).items).toEqual([]);
-    const afterFailure = await store.load("buyer", candidate.messageId);
+    const afterFailure = await store.load("buyer", candidate.messageId, SCOPE_HASH);
     expect(afterFailure.status === "ok" ? afterFailure.record.buyerWork?.lease : "bad")
       .toBeUndefined();
     expect(JSON.stringify(afterFailure)).not.toContain("secret provider detail");
@@ -413,6 +425,155 @@ describe("actor-separated payment-evidence handshake", () => {
     expect(anchor).toHaveBeenCalledTimes(2);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(verifyReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed on an unknown acquired claim mode before calling the wallet", async () => {
+    const store = createInMemoryPaymentEvidenceHandshakeStore();
+    const originalClaim = store.claimBuyer;
+    store.claimBuyer = vi.fn(async (input) => {
+      const claimed = await originalClaim(input);
+      return claimed.status === "acquired"
+        ? { ...claimed, mode: "future-mode" } as never
+        : claimed;
+    });
+    const candidate = request();
+    const anchor = vi.fn(() => ({
+      disposition: "anchored" as const,
+      ...finalAnchor(candidate),
+    }));
+    const { handshake } = buyer({ store, anchor });
+    await handshake.receiveRequest(candidate, {});
+
+    await expect(handshake.runPending()).rejects.toThrow(/unknown buyer-claim mode/);
+    expect(anchor).not.toHaveBeenCalled();
+  });
+
+  it("fences an expired slow anchor before one durably marked reattempt", async () => {
+    let now = 1_000;
+    const store = createInMemoryPaymentEvidenceHandshakeStore({ now: () => now });
+    const candidate = request();
+    const anchored = { disposition: "anchored" as const, ...finalAnchor(candidate) };
+    let releaseFirst!: () => void;
+    const firstMayContinue = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const events: string[] = [];
+    const observedKeys: string[] = [];
+    type AnchorJournal = {
+      fencedThrough: number;
+      performingGeneration?: number;
+      committedGeneration?: number;
+    };
+    const journals = new Map<string, AnchorJournal>();
+    const journalFor = (idempotencyKey: string) => {
+      const existing = journals.get(idempotencyKey);
+      if (existing) return existing;
+      const created: AnchorJournal = { fencedThrough: 0 };
+      journals.set(idempotencyKey, created);
+      return created;
+    };
+    let irreversibleEffects = 0;
+    let anchorInvocation = 0;
+    const anchor = vi.fn(async (
+      _input: unknown,
+      fence: Readonly<PaymentEvidenceAnchorFence>,
+    ) => {
+      anchorInvocation += 1;
+      const invocation = anchorInvocation;
+      observedKeys.push(fence.idempotencyKey);
+      events.push(`anchor-${fence.generation}-entered`);
+      if (invocation === 1) await firstMayContinue;
+      try {
+        await fence.assertCurrent();
+      } catch (error) {
+        events.push(`anchor-${fence.generation}-stale`);
+        throw error;
+      }
+      const journal = journalFor(fence.idempotencyKey);
+      if (fence.generation <= journal.fencedThrough ||
+          journal.performingGeneration !== undefined) {
+        throw new Error("anchor journal rejected a stale or concurrent generation");
+      }
+      journal.performingGeneration = fence.generation;
+      try {
+        irreversibleEffects += 1;
+        events.push(`effect-${fence.generation}`);
+        journal.committedGeneration = fence.generation;
+        return anchored;
+      } finally {
+        delete journal.performingGeneration;
+      }
+    });
+    const reconcile = vi.fn(async (
+      _input: unknown,
+      fence: Readonly<PaymentEvidenceAnchorFence>,
+    ) => {
+      await fence.assertCurrent();
+      observedKeys.push(fence.idempotencyKey);
+      const journal = journalFor(fence.idempotencyKey);
+      if (journal.performingGeneration !== undefined) {
+        return { disposition: "indeterminate" as const, reason: "performer-active" };
+      }
+      if (journal.committedGeneration !== undefined) return anchored;
+      journal.fencedThrough = Math.max(journal.fencedThrough, fence.generation);
+      events.push(`reconcile-${fence.generation}-fenced`);
+      return {
+        disposition: "absent" as const,
+        absenceProofHash: ABSENCE_HASH,
+      };
+    });
+    const { handshake } = buyer({
+      store,
+      anchor,
+      reconcile,
+      leaseDurationMs: 5,
+    });
+    await handshake.receiveRequest(candidate, {});
+
+    const abandonedWorker = handshake.runPending();
+    await vi.waitFor(() => expect(anchor).toHaveBeenCalledTimes(1));
+    expect(await store.load("buyer", candidate.messageId, SCOPE_HASH)).toMatchObject({
+      status: "ok",
+      record: {
+        buyerWork: {
+          state: "reconciliation-required",
+          reasonCode: "anchor-attempt-in-flight",
+          lease: { generation: 1 },
+        },
+      },
+    });
+
+    now += 6;
+    expect((await handshake.runPending()).items).toEqual([{
+      messageId: candidate.messageId,
+      status: "reconciled-absent",
+    }]);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(anchor).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await expect(abandonedWorker).resolves.toEqual({
+      items: [{ messageId: candidate.messageId, status: "stale" }],
+    });
+
+    expect((await handshake.runPending()).items).toEqual([{
+      messageId: candidate.messageId,
+      status: "completed",
+    }]);
+    expect(anchor).toHaveBeenCalledTimes(2);
+    expect(irreversibleEffects).toBe(1);
+    expect(new Set(observedKeys)).toHaveLength(1);
+    expect([...journals.values()]).toEqual([{
+      fencedThrough: 2,
+      committedGeneration: 3,
+    }]);
+    expect(events).toEqual([
+      "anchor-1-entered",
+      "reconcile-2-fenced",
+      "anchor-1-stale",
+      "anchor-3-entered",
+      "effect-3",
+    ]);
   });
 
   it("parks permanent rejection for operator action and requeues only through repair", async () => {
@@ -453,11 +614,77 @@ describe("actor-separated payment-evidence handshake", () => {
     expect((await handshake.runPending({ limit: 10 })).items).toHaveLength(1);
   });
 
+  it("rejects cross-tenant list and claim results before any wallet callback", async () => {
+    const store = createInMemoryPaymentEvidenceHandshakeStore();
+    const otherBuyer = "did:example:other-buyer";
+    const otherEvidence = evidence(77);
+    const otherRequest = createPaymentEvidenceAnchorRequest({
+      seller: SELLER,
+      buyer: otherBuyer,
+      protocol: PROTOCOL,
+      effectId: `payment-evidence:${JOB_ID}:other`,
+      logicalAddress: `dacs4:payment:${JOB_ID}:x402%3Adefault:77`,
+      evidenceHash: contentHash(otherEvidence as unknown as Record<string, unknown>),
+      evidence: otherEvidence,
+      expectedWriter: { role: "buyer", primaryClaim: otherBuyer },
+    });
+    const otherScopeHash = paymentEvidenceHandshakeScopeHash({
+      seller: SELLER,
+      buyer: otherBuyer,
+      protocolHash: fixedPriceX402ProtocolBindingHash(PROTOCOL),
+    });
+    await store.putRequest({
+      role: "buyer",
+      scopeHash: otherScopeHash,
+      request: otherRequest,
+      requestAuthentication: {
+        principal: SELLER,
+        audience: otherBuyer,
+        messageId: otherRequest.messageId,
+        messageHash: otherRequest.requestHash,
+        authenticationHash: AUTH_HASH,
+      },
+    });
+
+    const walletFromList = vi.fn();
+    const hostileListStore = {
+      ...store,
+      listBuyerRunnable: (input: Parameters<typeof store.listBuyerRunnable>[0]) =>
+        store.listBuyerRunnable({ ...input, scopeHash: otherScopeHash }),
+    };
+    await expect(buyer({
+      store: hostileListStore,
+      anchor: walletFromList,
+    }).handshake.runPending()).rejects.toThrow(/actor\/pair\/protocol/);
+    expect(walletFromList).not.toHaveBeenCalled();
+
+    const local = buyer({ store });
+    const localRequest = request(78);
+    await local.handshake.receiveRequest(localRequest, {});
+    const walletFromClaim = vi.fn();
+    const hostileClaimStore = {
+      ...store,
+      claimBuyer: (input: Parameters<typeof store.claimBuyer>[0]) => store.claimBuyer({
+        ...input,
+        scopeHash: otherScopeHash,
+        messageId: otherRequest.messageId,
+        requestHash: otherRequest.requestHash,
+      }),
+    };
+    await expect(buyer({
+      store: hostileClaimStore,
+      anchor: walletFromClaim,
+    }).handshake.runPending()).rejects.toThrow(/actor\/pair\/protocol\/message/);
+    expect(walletFromClaim).not.toHaveBeenCalled();
+  });
+
   it("rejects transport authentication that is not bound to actor, audience and message", async () => {
     const candidate = request();
     const handshake = createBuyerPaymentEvidenceHandshake({
       store: createInMemoryPaymentEvidenceHandshakeStore(),
+      seller: SELLER,
       buyer: BUYER,
+      protocol: PROTOCOL,
       workerId: "buyer-worker",
       authenticateRequest: () => ({
         disposition: "authenticated",
@@ -470,6 +697,30 @@ describe("actor-separated payment-evidence handshake", () => {
     });
     await expect(handshake.receiveRequest(candidate, { jwt: "attacker" }))
       .rejects.toThrow(/request rejected/);
+  });
+
+  it("matches factory and authenticated principals by CORE B.1 CF-3 identity", async () => {
+    const candidate = request();
+    const handshake = createBuyerPaymentEvidenceHandshake({
+      store: createInMemoryPaymentEvidenceHandshakeStore(),
+      seller: `${SELLER}?channel=direct`,
+      buyer: `${BUYER}?device=one`,
+      protocol: { ...PROTOCOL, orchestrator: `${SELLER}?node=one` },
+      workerId: "buyer-worker",
+      authenticateRequest: () => ({
+        disposition: "authenticated",
+        peer: {
+          ...requestPeer(candidate),
+          principal: `${SELLER}?auth=jwt`,
+          audience: `${BUYER}?auth=jwt`,
+        },
+      }),
+      verifyEvidence: () => ({ disposition: "valid" }),
+      anchorEvidence: () => ({ disposition: "anchored", ...finalAnchor(candidate) }),
+      reconcileAnchor: () => ({ disposition: "indeterminate", reason: "unused" }),
+      verifyAnchorReceipt: () => ({ disposition: "valid" }),
+    });
+    await expect(handshake.receiveRequest(candidate, {})).resolves.toBe("accepted");
   });
 
   it("binds completion authentication to the buyer and retained message", async () => {
@@ -604,7 +855,9 @@ describe("actor-separated payment-evidence handshake", () => {
     const store = createInMemoryPaymentEvidenceHandshakeStore();
     const handshake = createBuyerPaymentEvidenceHandshake({
       store,
+      seller: SELLER,
       buyer: BUYER,
+      protocol: PROTOCOL,
       workerId: "buyer-worker",
       authenticateRequest: (message) => {
         (message as { buyer: string }).buyer = "did:example:attacker";
@@ -616,7 +869,7 @@ describe("actor-separated payment-evidence handshake", () => {
       verifyAnchorReceipt: () => ({ disposition: "valid" }),
     });
     await expect(handshake.receiveRequest(candidate, {})).resolves.toBe("accepted");
-    const loaded = await store.load("buyer", candidate.messageId);
+    const loaded = await store.load("buyer", candidate.messageId, SCOPE_HASH);
     expect(loaded.status === "ok" ? loaded.record.request.buyer : null).toBe(BUYER);
   });
 });

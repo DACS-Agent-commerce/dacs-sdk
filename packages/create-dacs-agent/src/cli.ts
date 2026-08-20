@@ -12,7 +12,7 @@ interface ParsedArguments extends CreateDacsAgentOptions {
   yes: boolean;
 }
 
-const ROLES = new Set(["demo-all", "buyer", "seller", "verifier"]);
+const ROLES = new Set(["demo-all"]);
 const DEPLOYMENTS = new Set(["local", "docker"]);
 
 function valueAfter(args: string[], index: number, flag: string): string {
@@ -51,7 +51,9 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
     } else if (argument === "--role") {
       const value = valueAfter(args, index, argument);
       if (!ROLES.has(value)) {
-        throw new Error("--role must be demo-all, buyer, seller or verifier");
+        throw new Error(
+          "--role must be demo-all; independent role services are not implemented",
+        );
       }
       role = value as CreateDacsAgentOptions["role"];
       index += 1;
@@ -116,12 +118,7 @@ async function interactive(parsed: ParsedArguments): Promise<ParsedArguments> {
   const mode = (parsed.mode ??
     (await boundedAnswer("Mode [offline]: ", new Set(["offline"]), "offline"))) as
     | "offline";
-  const role = (parsed.role ??
-    (await boundedAnswer(
-      "Role [demo-all] (demo-all/buyer/seller/verifier): ",
-      ROLES,
-      "demo-all",
-    ))) as CreateDacsAgentOptions["role"];
+  const role = parsed.role ?? "demo-all";
   const deployment = (parsed.deployment ??
     (await boundedAnswer(
       "Deployment [local] (local/docker): ",
@@ -153,6 +150,6 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     `\nCreated ${created.targetDirectory}\n` +
       `Profile: ${created.profile}\n` +
       `Installed: ${created.installed ? "yes" : "no"}\n` +
-      `Ran offline lifecycle: ${created.ran ? "yes" : "no"}\n`,
+      `Ran verifier simulation: ${created.ran ? "yes" : "no"}\n`,
   );
 }

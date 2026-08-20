@@ -32,23 +32,21 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:with-core": "npm --prefix ../.. run build && npm run build",
+    "prepack": "npm run clean && npm run build:with-core",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run clean && npm run build:with-core"
   },
   "peerDependencies": {
     "@kynesyslabs/dacs": "0.1.0-alpha.0"
-  },
-  "peerDependenciesMeta": {
-    "@kynesyslabs/dacs": {
-      "optional": true
-    }
   },
   "optionalDependencies": {
     "better-sqlite3": "12.6.2"
   },
   "devDependencies": {
+    "@kynesyslabs/dacs": "file:../..",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "^20",
     "typescript": "^5",

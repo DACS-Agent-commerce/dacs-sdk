@@ -39,6 +39,138 @@ describe("DACS node configuration", () => {
     })).toMatchObject({ mode: "live-demos", role: "buyer" });
   });
 
+  it("deeply detaches and freezes every admitted configuration branch", () => {
+    const input = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "seller" as const,
+      dataDirectory: "/var/lib/dacs/seller",
+      publicBaseUrl: "https://seller.example",
+      demos: { rpcUrl: "wss://rpc.example/ws", storageReadUrl: "https://read.example" },
+      rail: { registryIndexRef: "dacs-rail-index:v1", requestedNetwork: "eip155:8453" },
+      limits: {
+        maxServiceAmount: { asset: "USDC", amount: "1.25" },
+        maxSetupSpendDem: "2",
+        maxDemosNetworkFeeDem: "0.1",
+        maxEvmNetworkFeeEth: "0.001",
+      },
+    };
+    const admitted = validateDacsAgentConfig(input);
+
+    input.demos.rpcUrl = "https://attacker.example";
+    input.rail.requestedNetwork = "eip155:1";
+    input.limits.maxServiceAmount.amount = "999";
+
+    expect(admitted).toMatchObject({
+      demos: { rpcUrl: "wss://rpc.example/ws" },
+      rail: { requestedNetwork: "eip155:8453" },
+      limits: { maxServiceAmount: { amount: "1.25" } },
+    });
+    expect(admitted.mode).toBe("live-demos");
+    if (admitted.mode !== "live-demos") throw new Error("expected live configuration");
+    expect(Object.isFrozen(admitted)).toBe(true);
+    expect(Object.isFrozen(admitted.demos)).toBe(true);
+    expect(Object.isFrozen(admitted.rail)).toBe(true);
+    expect(Object.isFrozen(admitted.limits)).toBe(true);
+    expect(Object.isFrozen(admitted.limits.maxServiceAmount)).toBe(true);
+  });
+
+  it.each([
+    "http://localhost:3000",
+    "http://worker.localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://127.42.0.9:3000",
+    "http://[::1]:3000",
+    "https://seller.example",
+  ])("admits a live HTTPS or loopback public base URL: %s", (publicBaseUrl) => {
+    expect(() => validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "seller",
+      dataDirectory: "./data",
+      publicBaseUrl,
+      demos: { rpcUrl: "https://rpc.example" },
+      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      limits,
+    })).not.toThrow();
+  });
+
+  it.each([
+    "http://seller.example",
+    "http://localhost.example",
+    "http://192.168.1.10",
+    "ftp://seller.example",
+  ])("rejects an insecure non-loopback live public base URL: %s", (publicBaseUrl) => {
+    expect(() => validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "seller",
+      dataDirectory: "./data",
+      publicBaseUrl,
+      demos: { rpcUrl: "https://rpc.example" },
+      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      limits,
+    })).toThrow();
+  });
+
+  it.each([
+    {
+      label: "remote plaintext HTTP RPC",
+      demos: { rpcUrl: "http://rpc.example" },
+    },
+    {
+      label: "remote plaintext WebSocket RPC",
+      demos: { rpcUrl: "ws://rpc.example" },
+    },
+    {
+      label: "remote plaintext storage reader",
+      demos: {
+        rpcUrl: "https://rpc.example",
+        storageReadUrl: "http://read.example",
+      },
+    },
+  ])("rejects a $label in live mode", ({ demos }) => {
+    expect(() => validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "seller",
+      dataDirectory: "./data",
+      publicBaseUrl: "https://seller.example",
+      demos,
+      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      limits,
+    })).toThrow();
+  });
+
+  it.each([
+    {
+      label: "loopback plaintext HTTP RPC",
+      demos: { rpcUrl: "http://127.0.0.1:5353" },
+    },
+    {
+      label: "loopback plaintext WebSocket RPC",
+      demos: { rpcUrl: "ws://[::1]:5353" },
+    },
+    {
+      label: "loopback plaintext storage reader",
+      demos: {
+        rpcUrl: "wss://rpc.example/ws",
+        storageReadUrl: "http://reader.localhost:3000",
+      },
+    },
+  ])("admits a $label in live mode", ({ demos }) => {
+    expect(() => validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "seller",
+      dataDirectory: "./data",
+      publicBaseUrl: "https://seller.example",
+      demos,
+      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      limits,
+    })).not.toThrow();
+  });
+
   it.each([
     {
       mode: "offline",

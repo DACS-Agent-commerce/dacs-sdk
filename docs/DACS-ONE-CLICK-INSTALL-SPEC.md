@@ -6,6 +6,14 @@ Date: 2026-08-14
 Primary trackers: dacs-sdk issues #59 and #60
 Revision: 2 — architecture and transport decisions resolved
 
+> **Implementation status (2026-08-15): design target, not current capability.**
+> The credential-free package currently delivered by the stacked host/generator
+> work is an internal verifier simulation only. It has no SR-2 anchor authority,
+> no SR-3/AP2-2 provider authority, moves no value, emits no normative or
+> commercial-success claim, and does not implement independently hosted roles.
+> Its wrapped fixture output MUST NOT be described as satisfying the offline or
+> live acceptance requirements below. Those requirements remain release gates.
+
 ## 1. Executive decision
 
 DACS will ship a one-command local quickstart and a guarded, one-command live
@@ -477,11 +485,36 @@ The initial host kit MUST provide a SQLite implementation with:
 SQLite support is local and single-host. Its database and WAL files MUST reside
 on a local filesystem supported by SQLite locking. The host kit MUST refuse or
 prominently block known network/shared mounts, including NFS, SMB/CIFS and
-consumer file-synchronization directories. Two containers on the same host MAY
+consumer file-synchronization directories. Both Windows UNC spellings
+(`\\server\share` and `//server/share`) MUST be refused on every host platform.
+Two containers on the same host MAY
 share one actor database only through a single designated database owner;
 buyer and seller never share a database. Multi-host deployments MUST use a
 separately reviewed external transactional-store adapter and are outside the
 first release.
+
+The database authority MUST equal the role-owned party on every admitted
+commerce order (`order.buyer` for a buyer store and `order.seller` for a seller
+store), including after independently recomputing the order binding and record
+hashes. The store MUST also recompute and persist the role-local binding over
+the exact SDK job-pointer set in the canonical record and its runnable
+projection. Create, load, claim, lease-current, result-recording and operator
+requeue paths MUST fail closed on a different role-local binding.
+
+Live coordinator records MUST persist only normative `success`, `failure` or
+`aborted` terminal outcomes. Live failures MUST retain DACS-5 fault attribution;
+`substrate` failures MUST use neutral `faultedParty: "none"`, while other
+failures MUST identify a buyer or seller. Live aborts MUST retain `withdrawnBy`
+and MUST NOT be accepted after a successful irreversible payment or delivery.
+Offline coordinator records MUST instead persist only the explicit
+`simulated-*` outcome and error vocabulary and MUST NOT carry DACS-5 party
+attribution.
+
+Effect recovery MUST authenticate the immutable tuple of effect kind, effect
+ID, optional job ID, binding hash, input hash and idempotency key before
+returning a claim. A pre-proof effect row MUST fail closed rather than receive a
+proof during migration. Canonical lifecycle details MUST form a validated
+rolling history chain so an altered intermediate transition cannot be skipped.
 
 The store MUST survive process termination at every irreversible boundary. A
 stale generation MUST NOT record an outcome after a newer worker has claimed the
@@ -490,6 +523,15 @@ work.
 Schema migration MUST be forward-only during normal startup. The installer MUST
 back up the database before migration and MUST refuse startup if the on-disk
 schema is newer than the runtime supports.
+Historical migration definitions MUST remain immutable. A legacy store whose
+persisted SDK or Standard revision is not an exact supported runtime binding
+MUST be refused before backup or mutation; a host MUST NOT relabel or claim to
+have migrated data whose compatibility it cannot establish. A compatible
+legacy offline terminal record MAY be migrated only by a deterministic mapping
+to the explicit simulation vocabulary. A legacy live terminal failure or abort
+that predates mandatory fault/withdrawal attribution MUST be refused during
+read-only admission before backup or mutation; migration MUST NOT synthesize
+the missing DACS-5 attribution.
 
 ## 12. Authenticated transport requirements
 
@@ -1087,8 +1129,9 @@ The report MUST record independent elapsed timings for:
 
 - payment finality;
 - buyer-received;
-- commerce-complete (the SDK `commercial-performance-complete` milestone); and
-- audit-complete.
+- commerce-complete (the live x402 SDK projection's
+  `commercial-performance-complete` milestone); and
+- audit-complete (the live x402 SDK projection only).
 
 The report MUST distinguish network confirmation, Demos read/index projection,
 application work and background bundle finalization rather than publishing only
@@ -1216,8 +1259,8 @@ The one-click installer is complete only when all of the following are true:
   retention rules pass interoperability tests;
 - Docker deployment passes health/readiness and restart tests;
 - a guarded generated-project testnet run completes, verifies both bundles and
-  records buyer-received, commerce-complete (`commercial-performance-complete`)
-  and audit-complete timings;
+  records buyer-received, commerce-complete (the live x402 projection's
+  `commercial-performance-complete`) and live x402 audit-complete timings;
 - package and generator releases carry provenance; and
 - documentation gives accurate setup, funding, recovery, upgrade and rollback
   instructions.

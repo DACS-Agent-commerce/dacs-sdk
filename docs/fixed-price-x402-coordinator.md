@@ -8,7 +8,7 @@ write journals used by those operations.
 The supported artifact/conformance revision is
 `965df755aba4ff392f1fb37a93d287242b177ba4`, the immutable revision pinned by
 `scripts/sync-vectors.mjs`. The implementation was also checked against DACS
-Standard `next` at `86c3b3bc64d709bd23dc1ac73f5e7b153ece217c` on 14 August
+Standard `next` at `81ded2b49851d8fa17399e3fdade9e36e33a4ff7` on 15 August
 2026. A later Standard revision is not accepted merely because a peer supplies
 its hash: supporting it requires an explicit SDK update and conformance run.
 
@@ -91,13 +91,15 @@ const protocol: FixedPriceX402ProtocolBinding = {
 ## Host-controlled coordinator work
 
 Factories admit only role-owned operations. A buyer cannot register `delivery`
-or `delivery-evidence`; a seller cannot register `buyer-received`. Role-local
-job pointers are excluded from the shared order binding, so two actors can bind
-the same protocol order without pretending their private database identifiers
-are equal.
+or `delivery-evidence`; a seller cannot register `buyer-received`. The v3 store
+record has two deliberately different integrity domains: `bindingHash` covers
+the shared job, canonical actor identities, and protocol; `localBindingHash`
+covers that shared hash plus the exact role and role-local `sdkJobs`. Private
+job pointers therefore never cross the actor boundary, but a store cannot
+silently substitute them inside one actor's retained order.
 
 Every effect receives a generation fence and an idempotency key derived from
-the shared binding, role, track and exact role-local job identity. The adapter
+the role-local binding, role, track and exact role-local job identity. The adapter
 must assert the fence immediately before an irreversible action and use the key
 in its own intent/perform/commit/reconcile journal.
 
@@ -166,14 +168,35 @@ track can still finalize failure evidence, after which `audit` can publish the
 mandatory failed DACS-5 bundle. An abort follows the analogous terminal-bundle
 path. Evidence tracks themselves must finish successfully; returning a
 failure-shaped evidence result cannot be used to bypass the dependency graph.
+Every failure retains its absolute `faultedParty`; every abort retains its
+absolute `withdrawnBy`. A role-local audit callback must reproduce that exact
+originating classification. Once payment has reached rail finality—or delivery
+has become irreversible—an operation cannot relabel the result as an abort
+(DACS-5 §10.3.1 ST-3).
 
-Only `combineFixedPriceX402OrderStatus` may report `audit-complete`, and only
-after both role-owned audit tracks are final with consistent outcomes. Failure
-audits must also agree on their DACS error class, and each local failure audit
-must reproduce the originating failed phase's class. A one-sided failed or
-aborted terminal audit blocks any combined success projection. A local status
-reports `actor-audit-final`. Validation rejects impossible retained graphs such
-as a lone final audit track.
+`combineFixedPriceX402OrderStatus` is an operational projection only. Even when
+both opaque audit callbacks have returned, it reports `actor-audit-final` and
+can never assert normative `audit-complete`. Only the asynchronous
+`verifyFixedPriceX402AuditCompletion` gate can make that upgrade. It requires
+the retained `audit-pending` seller session and finalization result, not a
+caller-selected list of expected references. It reuses the seller finalizer's
+strict ST-11 closure verifier for the signed Listing, DACS-2 composites,
+AgreementArtifact, DACS-3 commitment, every executed DACS-4 evidence record,
+and transitive payload/method-evidence chain. It then requires both exact v0.3
+`FaultAttestationBundle` copies, full signer sets, an independent native-address
+read for each role, authenticated finalized CORE §5.1 bundle receipts,
+authenticated logical-to-native mapping, applicable BB-1 publication, exact
+binding readback after BB-4..BB-8 candidate/multiplicity handling, signed-scope
+equality, and a unified §10.4.3 pair verdict. Mapping is established by the
+substrate adapters; it is not selected in the completion input, and a Demos
+receipt can only validate as `write-input` (DEMOS-MAPPING §A.2).
+
+That preserves role-relative bundle outcomes, absolute hashed `faultedParty`,
+exact type/version, and the complete production inventory; none is inferred
+from the scheduler's coarse outcome tokens. A one-sided failed or aborted phase
+blocks any combined success projection while its terminal audit is pending.
+Contradictory actor phase terminals are rejected rather than hidden behind a
+later audit.
 
 An operator can explicitly requeue a non-final track:
 
@@ -250,12 +273,39 @@ The buyer applies the symmetric completion outbox API:
 `claimOutboundCompletions`, `acknowledgeOutboundCompletion`, and
 `releaseOutboundCompletion`.
 
+Both buyer and seller handshake factories are fixed to one canonical actor pair
+and one exact protocol/rail binding. Every store query, claim, mutation,
+reservation, and outbox transition carries the resulting non-normative
+`scopeHash`; every record or claim returned by a store is independently checked
+against it before an authenticator, wallet, anchor, or transport callback can
+run. CORE §B.1 CF-2 governs accepted ClaimReference bytes and CF-3 governs actor
+matching, so advisory parameters cannot create a second tenant for the same
+party. This pair-scoped record contract is handshake-store v3, and the
+completion envelope's explicit seller binding is completion-envelope v3;
+retained v2 state requires an explicit host migration and is otherwise rejected
+as unsupported.
+
 ### Ambiguous wallet effects
 
 Every exception, indeterminate anchor response, and indeterminate receipt read
 is durably classified and releases its lease immediately. It never waits for
 the default 30-second lease merely because a callback returned badly. A
 permanent contradiction moves to `operator-action` and cannot loop forever.
+
+The buyer `anchorEvidence` adapter must use `fence.idempotencyKey` in a durable
+intent/perform/commit/reconcile journal, monotonically fence generations, and
+call `fence.assertCurrent()` immediately before atomically acquiring permission
+to perform the irreversible effect. `reconcileAnchor` may report authenticated
+absence only after that same journal has fenced or quiesced every older
+performer; substrate non-observation alone is not enough while an old callback
+can still submit. These adapter obligations close the slow-callback race that a
+lease and a pre-callback fence check cannot close by themselves.
+
+Before invoking `anchorEvidence`, the buyer store's atomic `claimBuyer` write
+makes the leased work `reconciliation-required` with the same fence while
+returning `mode: "anchor"` for that one worker. If the worker disappears while
+the wallet callback is in flight, an expired lease can therefore be reclaimed
+only in reconciliation mode; it cannot silently repeat the irreversible call.
 
 An ambiguous effect moves to `reconciliation-required`. The next worker must
 invoke `reconcileAnchor`; it may:
@@ -265,9 +315,10 @@ invoke `reconcileAnchor`; it may:
 - remain indeterminate / declare an invalid contradiction.
 
 Authenticated absence is committed before another wallet call is permitted.
-The retry occurs in a later claimed generation, closing the crash window
-between “absence observed” and “effect repeated.” `repairRequest` is the
-explicit operator requeue path and conservatively returns work to
+The retry occurs in a later claimed generation and is itself durably marked
+`reconciliation-required` before the callback begins, closing both crash
+windows around “absence observed” and “effect repeated.” `repairRequest` is
+the explicit operator requeue path and conservatively returns work to
 reconciliation, not directly to the wallet.
 
 Buyer `anchorEvidence`, `reconcileAnchor`, and `verifyAnchorReceipt` callback
@@ -298,13 +349,15 @@ headers, credentials and stack traces stay outside the SDK journal.
 
 | Coordinator invariant | DACS Standard source |
 | --- | --- |
+| Canonical actor bytes and identity matching | CORE §B.1 CF-2/CF-3 |
 | Authenticated registry index/definition, exact version and handler pin | DACS-1 §6.3.4 LRR-1..LRR-6; DACS-4 §9.4.3 RD-1..RD-6 |
 | Production-live authoritative availability only | DACS-4 §9.4.4 RAV-R1..RAV-R5 (including current `mocked` production refusal) |
 | x402 receipt/event/network binding | DACS-4 §9.5.7 X402-1..X402-4 |
 | Exact job/rail/phase-index payment address and event uniqueness | DACS-4 §9.5.1 PC-2; §9.5.8 SB-1..SB-3 |
 | Rail-final payment is never repeated because SR-2 evidence is catching up | DACS-4 §9.5.1 PC-7 |
 | SettlementEvidence signer is the phase orchestrator | DACS-4 §9.7 `SettlementEvidence.signature` |
-| Failed/aborted session produces a terminal bundle; success waits at audit gate | DACS-5 §10.3.1 ST-6 and ST-11; §10.4.1 |
+| Abort forbidden after irreversible value; failed/aborted session produces a terminal bundle | DACS-5 §10.3.1 ST-3/ST-6; §10.4.1 |
+| Completed status requires recursive finalized bundle/dependency audit | DACS-5 §10.3.1 ST-11; §10.4.1–§10.4.3 |
 | Delivery cannot follow a failed payment; failure evidence remains reachable | DACS-5 §10.3.1 state transition table and state→bundle outcome mapping |
 
 The SDK operational envelopes, leases, cursors and commerce-profile name are

@@ -13,6 +13,11 @@ import {
 import { encodeAddressSegment } from "../canonical/addressing.js";
 import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import {
+  isCanonicalClaimReference,
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import type {
   SellerSessionSettlementAnchorResult,
   SellerSessionSettlementAnchorWriter,
@@ -23,9 +28,15 @@ import {
   type FixedPriceX402ProtocolBinding,
 } from "./fixedPriceX402Protocol.js";
 
-export const PAYMENT_EVIDENCE_HANDSHAKE_STORE_VERSION = 2 as const;
+export const PAYMENT_EVIDENCE_HANDSHAKE_STORE_VERSION = 3 as const;
 
 export type PaymentEvidenceHandshakeRole = "seller" | "buyer";
+
+export interface PaymentEvidenceHandshakeScope {
+  seller: string;
+  buyer: string;
+  protocolHash: string;
+}
 
 export interface PaymentEvidenceAnchorRequest {
   requestVersion: "2";
@@ -44,13 +55,14 @@ export interface PaymentEvidenceAnchorRequest {
 }
 
 export interface PaymentEvidenceAnchorCompletion {
-  completionVersion: "2";
+  completionVersion: "3";
   messageId: string;
   completionHash: string;
   requestMessageId: string;
   requestHash: string;
   jobId: string;
   effectId: string;
+  seller: string;
   buyer: string;
   protocolHash: string;
   evidenceHash: string;
@@ -205,29 +217,40 @@ export interface PaymentEvidenceHandshakeStore {
    */
   putRequest(input: Readonly<{
     role: PaymentEvidenceHandshakeRole;
+    scopeHash: string;
     request: Readonly<PaymentEvidenceAnchorRequest>;
     requestAuthentication?: Readonly<PaymentEvidenceAuthenticatedPeer>;
   }>): Promise<PaymentEvidenceHandshakePut>;
   load(
     role: PaymentEvidenceHandshakeRole,
     messageId: string,
+    scopeHash: string,
   ): Promise<PaymentEvidenceHandshakeLoad>;
   listBuyerRunnable(input: Readonly<{
+    scopeHash: string;
     cursor?: string;
     limit: number;
   }>): Promise<PaymentEvidencePage<Readonly<PaymentEvidenceHandshakeRecord>>>;
+  /**
+   * Atomically leases work and writes its irreversible-effect intent. An
+   * `anchor` claim must already retain `reconciliation-required` with the
+   * same lease before it is returned to the caller.
+   */
   claimBuyer(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     owner: string;
     leaseDurationMs: number;
   }>): Promise<PaymentEvidenceHandshakeClaim>;
   isCurrentBuyer(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     lease: Readonly<PaymentEvidenceHandshakeLease>;
   }>): Promise<boolean>;
   recordBuyerAttempt(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     lease: Readonly<PaymentEvidenceHandshakeLease>;
@@ -236,40 +259,47 @@ export interface PaymentEvidenceHandshakeStore {
     retryAt?: number;
   }>): Promise<PaymentEvidenceHandshakeWrite>;
   recordBuyerAbsence(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     lease: Readonly<PaymentEvidenceHandshakeLease>;
     absenceProofHash: string;
   }>): Promise<PaymentEvidenceHandshakeWrite>;
   recordBuyerCompletion(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     lease: Readonly<PaymentEvidenceHandshakeLease>;
     completion: Readonly<PaymentEvidenceAnchorCompletion>;
   }>): Promise<PaymentEvidenceHandshakeWrite>;
   requeueBuyer(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     operatorReasonCode: string;
   }>): Promise<PaymentEvidenceHandshakeWrite>;
   recordSellerCompletion(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     completion: Readonly<PaymentEvidenceAnchorCompletion>;
     completionAuthentication: Readonly<PaymentEvidenceAuthenticatedPeer>;
   }>): Promise<PaymentEvidenceHandshakeWrite>;
   claimSellerRequests(input: Readonly<{
+    scopeHash: string;
     owner: string;
     cursor?: string;
     limit: number;
     leaseDurationMs: number;
   }>): Promise<PaymentEvidencePage<PaymentEvidenceOutboundRequestClaim>>;
   acknowledgeSellerRequest(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     lease: Readonly<PaymentEvidenceHandshakeLease>;
   }>): Promise<PaymentEvidenceHandshakeWrite>;
   releaseSellerRequest(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     requestHash: string;
     lease: Readonly<PaymentEvidenceHandshakeLease>;
@@ -277,17 +307,20 @@ export interface PaymentEvidenceHandshakeStore {
     retryAt?: number;
   }>): Promise<PaymentEvidenceHandshakeWrite>;
   claimBuyerCompletions(input: Readonly<{
+    scopeHash: string;
     owner: string;
     cursor?: string;
     limit: number;
     leaseDurationMs: number;
   }>): Promise<PaymentEvidencePage<PaymentEvidenceOutboundCompletionClaim>>;
   acknowledgeBuyerCompletion(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     completionHash: string;
     lease: Readonly<PaymentEvidenceHandshakeLease>;
   }>): Promise<PaymentEvidenceHandshakeWrite>;
   releaseBuyerCompletion(input: Readonly<{
+    scopeHash: string;
     messageId: string;
     completionHash: string;
     lease: Readonly<PaymentEvidenceHandshakeLease>;
@@ -296,6 +329,11 @@ export interface PaymentEvidenceHandshakeStore {
   }>): Promise<PaymentEvidenceHandshakeWrite>;
 }
 
+/**
+ * Lease generation and stable effect identity for one buyer-owned anchor.
+ * `assertCurrent` is a cooperative precondition, not an effect transaction:
+ * adapters must also fence generations durably under `idempotencyKey`.
+ */
 export interface PaymentEvidenceAnchorFence {
   messageId: string;
   requestHash: string;
@@ -308,7 +346,9 @@ export interface PaymentEvidenceAnchorFence {
 
 export interface BuyerPaymentEvidenceHandshakeOptions {
   store: PaymentEvidenceHandshakeStore;
+  seller: string;
   buyer: string;
+  protocol: Readonly<FixedPriceX402ProtocolBinding>;
   workerId: string;
   authenticateRequest(
     request: Readonly<PaymentEvidenceAnchorRequest>,
@@ -317,6 +357,12 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
   verifyEvidence(
     request: Readonly<PaymentEvidenceAnchorRequest>,
   ): Promise<PaymentEvidenceAnchorVerification> | PaymentEvidenceAnchorVerification;
+  /**
+   * Perform through a durable intent/perform/commit journal keyed by
+   * `fence.idempotencyKey`. The journal must monotonically fence generations,
+   * and the adapter must call `fence.assertCurrent()` immediately before it
+   * atomically acquires permission to perform the irreversible effect.
+   */
   anchorEvidence(
     input: Readonly<{
       effectId: string;
@@ -328,7 +374,11 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
     }>,
     fence: Readonly<PaymentEvidenceAnchorFence>,
   ): Promise<SellerSessionSettlementAnchorResult> | SellerSessionSettlementAnchorResult;
-  /** Required before an ambiguous wallet effect may be attempted again. */
+  /**
+   * Required before an ambiguous wallet effect may be attempted again.
+   * `absent` is permitted only after authenticated substrate absence and after
+   * the same durable journal has fenced or quiesced every older performer.
+   */
   reconcileAnchor(
     input: Readonly<{
       effectId: string;
@@ -449,6 +499,26 @@ const safeUint = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
   !Object.is(value, -0);
 
+/**
+ * Pair/rail tenant key. CORE B.1 CF-3 identities deliberately exclude advisory
+ * ClaimReference parameters, preventing qualifier aliases from creating a
+ * second handshake tenant for the same actor.
+ */
+export function paymentEvidenceHandshakeScopeHash(
+  input: Readonly<PaymentEvidenceHandshakeScope>,
+): string {
+  if (!plainRecord(input) || !exactKeys(input, ["seller", "buyer", "protocolHash"]) ||
+      !isCanonicalClaimReference(input.seller) ||
+      !isCanonicalClaimReference(input.buyer) ||
+      sameCanonicalClaimIdentity(input.seller, input.buyer) ||
+      typeof input.protocolHash !== "string" || !HASH_RE.test(input.protocolHash)) {
+    throw new DacsError("payment-evidence handshake scope is malformed");
+  }
+  const seller = parseCanonicalClaimReference(input.seller)!.identity;
+  const buyer = parseCanonicalClaimReference(input.buyer)!.identity;
+  return sha256Hex(canonicalize({ scopeVersion: "1", seller, buyer, protocolHash: input.protocolHash }));
+}
+
 function plainRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value) ||
       nodeTypes.isProxy(value)) return false;
@@ -539,6 +609,7 @@ function completionPayload(completion: Readonly<PaymentEvidenceAnchorCompletion>
     requestHash: completion.requestHash,
     jobId: completion.jobId,
     effectId: completion.effectId,
+    seller: completion.seller,
     buyer: completion.buyer,
     protocolHash: completion.protocolHash,
     evidenceHash: completion.evidenceHash,
@@ -559,6 +630,31 @@ export function paymentEvidenceAnchorCompletionHash(
   return sha256Hex(canonicalize(completionPayload(completion)));
 }
 
+function requestScopeHash(request: Readonly<PaymentEvidenceAnchorRequest>): string {
+  return paymentEvidenceHandshakeScopeHash({
+    seller: request.seller,
+    buyer: request.buyer,
+    protocolHash: request.protocolHash,
+  });
+}
+
+function completionScopeHash(completion: Readonly<PaymentEvidenceAnchorCompletion>): string {
+  return paymentEvidenceHandshakeScopeHash({
+    seller: completion.seller,
+    buyer: completion.buyer,
+    protocolHash: completion.protocolHash,
+  });
+}
+
+function requestMatchesScope(
+  request: Readonly<PaymentEvidenceAnchorRequest>,
+  scope: Readonly<PaymentEvidenceHandshakeScope>,
+): boolean {
+  return sameCanonicalClaimIdentity(request.seller, scope.seller) &&
+    sameCanonicalClaimIdentity(request.buyer, scope.buyer) &&
+    request.protocolHash === scope.protocolHash;
+}
+
 function x402ChainId(protocol: Readonly<FixedPriceX402ProtocolBinding>): number {
   return Number(protocol.rail.network.slice("eip155:".length));
 }
@@ -567,7 +663,8 @@ function supportedX402Evidence(
   value: SettlementEvidence,
   protocol: Readonly<FixedPriceX402ProtocolBinding>,
 ): boolean {
-  if (value.phase !== "pay-x402" || value.signature.signer !== protocol.orchestrator) return false;
+  if (value.phase !== "pay-x402" ||
+      !sameCanonicalClaimIdentity(value.signature.signer, protocol.orchestrator)) return false;
   const refs = value.paymentTxRefs ?? [];
   if (value.outcome === "success") {
     return refs.length === 1 && refs[0]?.kind === "x402-event" &&
@@ -608,8 +705,10 @@ export function isPaymentEvidenceAnchorRequest(
     "expectedWriter",
   ]) || value.requestVersion !== "2" || !nonEmpty(value.messageId) ||
       typeof value.requestHash !== "string" || !HASH_RE.test(value.requestHash) ||
-      !nonEmpty(value.jobId) || !nonEmpty(value.effectId) || !nonEmpty(value.seller) ||
-      !nonEmpty(value.buyer) || value.seller === value.buyer ||
+      !nonEmpty(value.jobId) || !nonEmpty(value.effectId) ||
+      !isCanonicalClaimReference(value.seller) ||
+      !isCanonicalClaimReference(value.buyer) ||
+      sameCanonicalClaimIdentity(value.seller, value.buyer) ||
       typeof value.protocolHash !== "string" || !HASH_RE.test(value.protocolHash) ||
       !nonEmpty(value.logicalAddress) || typeof value.evidenceHash !== "string" ||
       !HASH_RE.test(value.evidenceHash) || !isSettlementEvidence(value.evidence) ||
@@ -619,14 +718,15 @@ export function isPaymentEvidenceAnchorRequest(
         value.expectedWriter,
         ["role", "primaryClaim"],
       ) || value.expectedWriter.role !== "buyer" ||
-      value.expectedWriter.primaryClaim !== value.buyer) return false;
+      !isCanonicalClaimReference(value.expectedWriter.primaryClaim) ||
+      !sameCanonicalClaimIdentity(value.expectedWriter.primaryClaim, value.buyer)) return false;
   let protocol: FixedPriceX402ProtocolBinding;
   try {
     protocol = captureFixedPriceX402ProtocolBinding(value.protocol);
   } catch {
     return false;
   }
-  if (protocol.orchestrator !== value.seller ||
+  if (!sameCanonicalClaimIdentity(protocol.orchestrator, value.seller) ||
       fixedPriceX402ProtocolBindingHash(protocol) !== value.protocolHash ||
       !supportedX402Evidence(value.evidence, protocol) ||
       !exactPaymentEvidenceAddress(value.logicalAddress, value.jobId, protocol.rail.railId)) {
@@ -655,8 +755,10 @@ export function createPaymentEvidenceAnchorRequest(input: Readonly<{
   } catch {
     throw new DacsError("payment-evidence anchor request protocol is unsupported");
   }
-  if (!nonEmpty(captured.seller) || !nonEmpty(captured.buyer) ||
-      captured.seller === captured.buyer || protocol.orchestrator !== captured.seller ||
+  if (!isCanonicalClaimReference(captured.seller) ||
+      !isCanonicalClaimReference(captured.buyer) ||
+      sameCanonicalClaimIdentity(captured.seller, captured.buyer) ||
+      !sameCanonicalClaimIdentity(protocol.orchestrator, captured.seller) ||
       !nonEmpty(captured.effectId) || !nonEmpty(captured.logicalAddress) ||
       typeof captured.evidenceHash !== "string" || !HASH_RE.test(captured.evidenceHash) ||
       !isSettlementEvidence(captured.evidence) ||
@@ -666,7 +768,8 @@ export function createPaymentEvidenceAnchorRequest(input: Readonly<{
         ["role", "primaryClaim"],
       ) ||
       captured.expectedWriter.role !== "buyer" ||
-      captured.expectedWriter.primaryClaim !== captured.buyer) {
+      !isCanonicalClaimReference(captured.expectedWriter.primaryClaim) ||
+      !sameCanonicalClaimIdentity(captured.expectedWriter.primaryClaim, captured.buyer)) {
     throw new DacsError("payment-evidence anchor request input is malformed");
   }
   const payload = {
@@ -708,16 +811,19 @@ export function isPaymentEvidenceAnchorCompletion(
     "requestHash",
     "jobId",
     "effectId",
+    "seller",
     "buyer",
     "protocolHash",
     "evidenceHash",
     "evidenceRef",
     "anchorReceipt",
-  ]) || value.completionVersion !== "2" || !nonEmpty(value.messageId) ||
+  ]) || value.completionVersion !== "3" || !nonEmpty(value.messageId) ||
       typeof value.completionHash !== "string" || !HASH_RE.test(value.completionHash) ||
       !nonEmpty(value.requestMessageId) || typeof value.requestHash !== "string" ||
       !HASH_RE.test(value.requestHash) || !nonEmpty(value.jobId) ||
-      !nonEmpty(value.effectId) || !nonEmpty(value.buyer) ||
+      !nonEmpty(value.effectId) || !isCanonicalClaimReference(value.seller) ||
+      !isCanonicalClaimReference(value.buyer) ||
+      sameCanonicalClaimIdentity(value.seller, value.buyer) ||
       typeof value.protocolHash !== "string" || !HASH_RE.test(value.protocolHash) ||
       typeof value.evidenceHash !== "string" || !HASH_RE.test(value.evidenceHash) ||
       !isAttestationRef(value.evidenceRef) || !isAnchorReceipt(value.anchorReceipt)) return false;
@@ -735,6 +841,7 @@ function completionMatchesRequest(
     completion.requestHash === request.requestHash &&
     completion.jobId === request.jobId &&
     completion.effectId === request.effectId &&
+    completion.seller === request.seller &&
     completion.buyer === request.buyer &&
     completion.protocolHash === request.protocolHash &&
     completion.evidenceHash === request.evidenceHash &&
@@ -742,10 +849,13 @@ function completionMatchesRequest(
     completion.evidenceRef.anchor.locator === request.logicalAddress &&
     completion.evidenceRef.contentHash === request.evidenceHash &&
     (completion.evidenceRef.signer === undefined ||
-      completion.evidenceRef.signer === request.protocol.orchestrator) &&
+      sameCanonicalClaimIdentity(
+        completion.evidenceRef.signer,
+        request.protocol.orchestrator,
+      )) &&
     completion.anchorReceipt.logicalAddress === request.logicalAddress &&
     completion.anchorReceipt.contentHash === request.evidenceHash &&
-    completion.anchorReceipt.writer === request.buyer &&
+    sameCanonicalClaimIdentity(completion.anchorReceipt.writer, request.buyer) &&
     completion.anchorReceipt.state === "finalized" &&
     completion.anchorReceipt.observationDisposition === "established";
 }
@@ -761,11 +871,12 @@ export function createPaymentEvidenceAnchorCompletion(input: Readonly<{
     throw new DacsError("payment-evidence anchor completion input is malformed");
   }
   const payload = {
-    completionVersion: "2" as const,
+    completionVersion: "3" as const,
     requestMessageId: captured.request.messageId,
     requestHash: captured.request.requestHash,
     jobId: captured.request.jobId,
     effectId: captured.request.effectId,
+    seller: captured.request.seller,
     buyer: captured.request.buyer,
     protocolHash: captured.request.protocolHash,
     evidenceHash: captured.request.evidenceHash,
@@ -798,7 +909,8 @@ function validPeer(value: unknown): value is PaymentEvidenceAuthenticatedPeer {
     "messageId",
     "messageHash",
     "authenticationHash",
-  ]) && nonEmpty(value.principal) && nonEmpty(value.audience) &&
+  ]) && isCanonicalClaimReference(value.principal) &&
+    isCanonicalClaimReference(value.audience) &&
     nonEmpty(value.messageId) && typeof value.messageHash === "string" &&
     HASH_RE.test(value.messageHash) && typeof value.authenticationHash === "string" &&
     HASH_RE.test(value.authenticationHash);
@@ -900,8 +1012,8 @@ export function paymentEvidenceHandshakeViolation(value: unknown): string | null
         value.completionAuthentication) {
       return "buyer handshake record has invalid role-local state";
     }
-    if (value.requestAuthentication.principal !== request.seller ||
-        value.requestAuthentication.audience !== request.buyer ||
+    if (!sameCanonicalClaimIdentity(value.requestAuthentication.principal, request.seller) ||
+        !sameCanonicalClaimIdentity(value.requestAuthentication.audience, request.buyer) ||
         value.requestAuthentication.messageId !== request.messageId ||
         value.requestAuthentication.messageHash !== request.requestHash) {
       return "buyer handshake request authentication is not actor/message bound";
@@ -919,8 +1031,8 @@ export function paymentEvidenceHandshakeViolation(value: unknown): string | null
       return "seller handshake completion authentication is inconsistent";
     }
     if (value.completionAuthentication &&
-        (value.completionAuthentication.principal !== request.buyer ||
-          value.completionAuthentication.audience !== request.seller ||
+        (!sameCanonicalClaimIdentity(value.completionAuthentication.principal, request.buyer) ||
+          !sameCanonicalClaimIdentity(value.completionAuthentication.audience, request.seller) ||
           value.completionAuthentication.messageId !== value.completion!.messageId ||
           value.completionAuthentication.messageHash !== value.completion!.completionHash)) {
       return "seller handshake completion authentication is not actor/message bound";
@@ -942,13 +1054,17 @@ function requireHandshakeRecord(
   value: unknown,
   role: PaymentEvidenceHandshakeRole,
   messageId?: string,
+  expectedScopeHash?: string,
 ): PaymentEvidenceHandshakeRecord {
   const violation = paymentEvidenceHandshakeViolation(value);
   if (violation) throw new DacsError(violation);
   const record = clone(value as PaymentEvidenceHandshakeRecord);
   if (record.role !== role ||
-      (messageId !== undefined && record.messageId !== messageId)) {
-    throw new DacsError("payment-evidence store returned a different actor/message binding");
+      (messageId !== undefined && record.messageId !== messageId) ||
+      (expectedScopeHash !== undefined && requestScopeHash(record.request) !== expectedScopeHash)) {
+    throw new DacsError(
+      "payment-evidence store returned a different actor/pair/protocol/message binding",
+    );
   }
   return record;
 }
@@ -1001,9 +1117,12 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
   const loadRecord = (
     role: PaymentEvidenceHandshakeRole,
     messageId: string,
+    scopeHash: string,
   ): PaymentEvidenceHandshakeLoad => {
     const found = records.get(recordKey(role, messageId));
-    if (!found) return { status: "missing" };
+    if (!found || requestScopeHash(found.request) !== scopeHash) {
+      return { status: "missing" };
+    }
     const violation = paymentEvidenceHandshakeViolation(found);
     return violation
       ? { status: "corrupt", reason: violation }
@@ -1011,19 +1130,21 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
   };
   const reservation = (
     role: PaymentEvidenceHandshakeRole,
-    buyer: string,
+    scopeHash: string,
     identity: string,
-  ): string => `${role}:${buyer}:${identity}`;
+  ): string => `${role}:${scopeHash}:${identity}`;
 
   const claimOutbox = (
     role: PaymentEvidenceHandshakeRole,
     field: "requestOutbox" | "completionOutbox",
+    scopeHash: string,
     owner: string,
     cursor: string | undefined,
     limit: number,
     leaseDurationMs: number,
   ): PaymentEvidencePage<PaymentEvidenceOutboundRequestClaim | PaymentEvidenceOutboundCompletionClaim> => {
-    if (!nonEmpty(owner) || (cursor !== undefined && !nonEmpty(cursor)) ||
+    if (typeof scopeHash !== "string" || !HASH_RE.test(scopeHash) ||
+        !nonEmpty(owner) || (cursor !== undefined && !nonEmpty(cursor)) ||
         !safeUint(limit) || limit === 0 || !safeUint(leaseDurationMs) ||
         leaseDurationMs === 0) {
       throw new DacsError("payment-evidence outbox claim is malformed");
@@ -1031,7 +1152,8 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
     const now = readTime();
     const eligible = [...records.values()]
       .filter((record) => {
-        if (record.role !== role || (cursor !== undefined && record.messageId <= cursor)) {
+        if (record.role !== role || requestScopeHash(record.request) !== scopeHash ||
+            (cursor !== undefined && record.messageId <= cursor)) {
           return false;
         }
         const outbox = record[field];
@@ -1082,6 +1204,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
   const writeOutbox = (
     role: PaymentEvidenceHandshakeRole,
     field: "requestOutbox" | "completionOutbox",
+    scopeHash: string,
     messageId: string,
     messageHash: string,
     lease: Readonly<PaymentEvidenceHandshakeLease>,
@@ -1090,7 +1213,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
       | { state: "pending"; reasonCode: string; retryAt?: number }
     >,
   ): PaymentEvidenceHandshakeWrite => {
-    const loaded = loadRecord(role, messageId);
+    const loaded = loadRecord(role, messageId, scopeHash);
     if (loaded.status !== "ok") return loaded;
     const current = records.get(recordKey(role, messageId))!;
     const expectedHash = field === "requestOutbox"
@@ -1140,14 +1263,16 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
 
     async putRequest(input) {
       if ((input.role !== "seller" && input.role !== "buyer") ||
+          typeof input.scopeHash !== "string" || !HASH_RE.test(input.scopeHash) ||
           !isPaymentEvidenceAnchorRequest(input.request) ||
+          requestScopeHash(input.request) !== input.scopeHash ||
           (input.role === "buyer" && !validPeer(input.requestAuthentication)) ||
           (input.role === "seller" && input.requestAuthentication !== undefined)) {
         return { status: "corrupt", reason: "payment-evidence request put is malformed" };
       }
       const key = recordKey(input.role, input.request.messageId);
-      const effectKey = reservation(input.role, input.request.buyer, input.request.effectId);
-      const addressKey = reservation(input.role, input.request.buyer, input.request.logicalAddress);
+      const effectKey = reservation(input.role, input.scopeHash, input.request.effectId);
+      const addressKey = reservation(input.role, input.scopeHash, input.request.logicalAddress);
       const reservedEffect = effectReservations.get(effectKey);
       const reservedAddress = addressReservations.get(addressKey);
       if ((reservedEffect !== undefined && reservedEffect !== input.request.messageId) ||
@@ -1201,19 +1326,21 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
       return { status: "created", record: clone(record) };
     },
 
-    async load(role, messageId) {
-      return loadRecord(role, messageId);
+    async load(role, messageId, scopeHash) {
+      return loadRecord(role, messageId, scopeHash);
     },
 
     async listBuyerRunnable(input) {
       if (!safeUint(input.limit) || input.limit === 0 ||
+          typeof input.scopeHash !== "string" || !HASH_RE.test(input.scopeHash) ||
           (input.cursor !== undefined && !nonEmpty(input.cursor))) {
         throw new DacsError("payment-evidence runnable query is malformed");
       }
       const now = readTime();
       const eligible = [...records.values()]
         .filter((record) => {
-          if (record.role !== "buyer" || record.completion ||
+          if (record.role !== "buyer" || requestScopeHash(record.request) !== input.scopeHash ||
+              record.completion ||
               (input.cursor !== undefined && record.messageId <= input.cursor)) return false;
           const work = record.buyerWork!;
           return (work.state === "pending" || work.state === "reconciliation-required") &&
@@ -1231,7 +1358,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
     },
 
     async claimBuyer(input) {
-      const loaded = loadRecord("buyer", input.messageId);
+      const loaded = loadRecord("buyer", input.messageId, input.scopeHash);
       if (loaded.status !== "ok") return loaded;
       const current = records.get(recordKey("buyer", input.messageId))!;
       if (current.request.requestHash !== input.requestHash) return { status: "stale" };
@@ -1261,13 +1388,16 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
         expiresAt,
       };
       const nextWork: PaymentEvidenceBuyerWork = {
-        state: work.state,
+        // The claim is the write-ahead intent for the irreversible callback.
+        // A lost worker therefore leaves an expired reconciliation claim, not
+        // a pending record that another worker could anchor again directly.
+        state: "reconciliation-required",
         generation: lease.generation,
         attempts: work.attempts + 1,
         updatedAt: stamp(current, now),
         ...(work.state === "reconciliation-required"
           ? { reasonCode: work.reasonCode! }
-          : {}),
+          : { reasonCode: "anchor-attempt-in-flight" }),
         ...(work.absenceProofHash ? { absenceProofHash: work.absenceProofHash } : {}),
         lease,
       };
@@ -1286,7 +1416,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
     },
 
     async isCurrentBuyer(input) {
-      const loaded = loadRecord("buyer", input.messageId);
+      const loaded = loadRecord("buyer", input.messageId, input.scopeHash);
       if (loaded.status !== "ok" || loaded.record.request.requestHash !== input.requestHash ||
           loaded.record.completion || !loaded.record.buyerWork?.lease) return false;
       const now = readTime();
@@ -1295,7 +1425,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
     },
 
     async recordBuyerAttempt(input) {
-      const loaded = loadRecord("buyer", input.messageId);
+      const loaded = loadRecord("buyer", input.messageId, input.scopeHash);
       if (loaded.status !== "ok") return loaded;
       const current = records.get(recordKey("buyer", input.messageId))!;
       if (current.request.requestHash !== input.requestHash || current.completion ||
@@ -1324,7 +1454,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
     },
 
     async recordBuyerAbsence(input) {
-      const loaded = loadRecord("buyer", input.messageId);
+      const loaded = loadRecord("buyer", input.messageId, input.scopeHash);
       if (loaded.status !== "ok") return loaded;
       const current = records.get(recordKey("buyer", input.messageId))!;
       const work = current.buyerWork!;
@@ -1348,7 +1478,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
     },
 
     async recordBuyerCompletion(input) {
-      const loaded = loadRecord("buyer", input.messageId);
+      const loaded = loadRecord("buyer", input.messageId, input.scopeHash);
       if (loaded.status !== "ok") return loaded;
       const current = records.get(recordKey("buyer", input.messageId))!;
       if (current.request.requestHash !== input.requestHash) return { status: "stale" };
@@ -1387,7 +1517,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
     },
 
     async requeueBuyer(input) {
-      const loaded = loadRecord("buyer", input.messageId);
+      const loaded = loadRecord("buyer", input.messageId, input.scopeHash);
       if (loaded.status !== "ok") return loaded;
       const current = records.get(recordKey("buyer", input.messageId))!;
       if (current.request.requestHash !== input.requestHash || current.completion ||
@@ -1411,15 +1541,21 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
     },
 
     async recordSellerCompletion(input) {
-      const loaded = loadRecord("seller", input.messageId);
+      const loaded = loadRecord("seller", input.messageId, input.scopeHash);
       if (loaded.status !== "ok") return loaded;
       const current = records.get(recordKey("seller", input.messageId))!;
       if (current.request.requestHash !== input.requestHash ||
           !isPaymentEvidenceAnchorCompletion(input.completion) ||
           !completionMatchesRequest(current.request, input.completion) ||
           !validPeer(input.completionAuthentication) ||
-          input.completionAuthentication.principal !== current.request.buyer ||
-          input.completionAuthentication.audience !== current.request.seller ||
+          !sameCanonicalClaimIdentity(
+            input.completionAuthentication.principal,
+            current.request.buyer,
+          ) ||
+          !sameCanonicalClaimIdentity(
+            input.completionAuthentication.audience,
+            current.request.seller,
+          ) ||
           input.completionAuthentication.messageId !== input.completion.messageId ||
           input.completionAuthentication.messageHash !== input.completion.completionHash) {
         return { status: "conflict" };
@@ -1452,6 +1588,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
       return claimOutbox(
         "seller",
         "requestOutbox",
+        input.scopeHash,
         input.owner,
         input.cursor,
         input.limit,
@@ -1463,6 +1600,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
       return writeOutbox(
         "seller",
         "requestOutbox",
+        input.scopeHash,
         input.messageId,
         input.requestHash,
         input.lease,
@@ -1474,6 +1612,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
       return writeOutbox(
         "seller",
         "requestOutbox",
+        input.scopeHash,
         input.messageId,
         input.requestHash,
         input.lease,
@@ -1489,6 +1628,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
       return claimOutbox(
         "buyer",
         "completionOutbox",
+        input.scopeHash,
         input.owner,
         input.cursor,
         input.limit,
@@ -1500,6 +1640,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
       return writeOutbox(
         "buyer",
         "completionOutbox",
+        input.scopeHash,
         input.messageId,
         input.completionHash,
         input.lease,
@@ -1511,6 +1652,7 @@ export function createInMemoryPaymentEvidenceHandshakeStore(
       return writeOutbox(
         "buyer",
         "completionOutbox",
+        input.scopeHash,
         input.messageId,
         input.completionHash,
         input.lease,
@@ -1533,7 +1675,8 @@ function captureAuthentication(
   if (result.disposition === "authenticated" &&
       exactKeys(result, ["disposition", "peer"]) && validPeer(result.peer)) {
     const peer = result.peer;
-    if (peer.principal !== expected.principal || peer.audience !== expected.audience ||
+    if (!sameCanonicalClaimIdentity(peer.principal, expected.principal) ||
+        !sameCanonicalClaimIdentity(peer.audience, expected.audience) ||
         peer.messageId !== expected.messageId || peer.messageHash !== expected.messageHash) {
       return { disposition: "rejected", reason: "authenticated peer binding mismatch" };
     }
@@ -1651,16 +1794,38 @@ function requireWrite(
   return value.status;
 }
 
+function requireScopedWrite(
+  value: PaymentEvidenceHandshakeWrite,
+  label: string,
+  role: PaymentEvidenceHandshakeRole,
+  messageId: string,
+  scopeHash: string,
+): "recorded" | "existing" {
+  const status = requireWrite(value, label);
+  const retained = value as Extract<
+    PaymentEvidenceHandshakeWrite,
+    { status: "recorded" | "existing" }
+  >;
+  requireHandshakeRecord(retained.record, role, messageId, scopeHash);
+  return status;
+}
+
 function claimInput(
   input: unknown,
   kind: "request" | "completion",
+  expectedScopeHash: string,
 ): PaymentEvidenceOutboundRequestClaim | PaymentEvidenceOutboundCompletionClaim {
   const value = ownClone(input, `payment-evidence outbound ${kind} claim`) as unknown as
     Record<string, unknown>;
   const messageKey = kind === "request" ? "request" : "completion";
   if (!exactKeys(value, [messageKey, "lease"]) || !validLease(value.lease) ||
       (kind === "request" && !isPaymentEvidenceAnchorRequest(value.request)) ||
-      (kind === "completion" && !isPaymentEvidenceAnchorCompletion(value.completion))) {
+      (kind === "completion" && !isPaymentEvidenceAnchorCompletion(value.completion)) ||
+      (kind === "request" &&
+        requestScopeHash(value.request as PaymentEvidenceAnchorRequest) !== expectedScopeHash) ||
+      (kind === "completion" &&
+        completionScopeHash(value.completion as PaymentEvidenceAnchorCompletion) !==
+          expectedScopeHash)) {
     throw new DacsError(`payment-evidence outbound ${kind} claim is malformed`);
   }
   return value as unknown as
@@ -1672,6 +1837,7 @@ function claimPage(
   kind: "request" | "completion",
   cursor: string | undefined,
   limit: number,
+  expectedScopeHash: string,
 ): PaymentEvidencePage<
   PaymentEvidenceOutboundRequestClaim | PaymentEvidenceOutboundCompletionClaim
 > {
@@ -1682,7 +1848,7 @@ function claimPage(
       (value.nextCursor !== undefined && !nonEmpty(value.nextCursor))) {
     throw new DacsError(`payment-evidence outbound ${kind} page is malformed`);
   }
-  const items = value.items.map((item) => claimInput(item, kind));
+  const items = value.items.map((item) => claimInput(item, kind, expectedScopeHash));
   const messageIds = items.map((item) => kind === "request"
     ? (item as PaymentEvidenceOutboundRequestClaim).request.messageId
     : (item as PaymentEvidenceOutboundCompletionClaim).completion.requestMessageId);
@@ -1708,14 +1874,19 @@ export function createBuyerPaymentEvidenceHandshake(
 ): BuyerPaymentEvidenceHandshake {
   if (!plainRecord(options) || !exactKeys(options, [
     "store",
+    "seller",
     "buyer",
+    "protocol",
     "workerId",
     "authenticateRequest",
     "verifyEvidence",
     "anchorEvidence",
     "reconcileAnchor",
     "verifyAnchorReceipt",
-  ], ["leaseDurationMs", "retryDelayMs"]) || !nonEmpty(options.buyer) ||
+  ], ["leaseDurationMs", "retryDelayMs"]) ||
+      !isCanonicalClaimReference(options.seller) ||
+      !isCanonicalClaimReference(options.buyer) ||
+      sameCanonicalClaimIdentity(options.seller, options.buyer) ||
       !nonEmpty(options.workerId) || typeof options.authenticateRequest !== "function" ||
       typeof options.verifyEvidence !== "function" ||
       typeof options.anchorEvidence !== "function" ||
@@ -1724,7 +1895,18 @@ export function createBuyerPaymentEvidenceHandshake(
     throw new DacsError("buyer payment-evidence handshake options are malformed");
   }
   const store = requireStore(options.store);
+  const seller = options.seller;
   const buyer = options.buyer;
+  const protocol = captureFixedPriceX402ProtocolBinding(options.protocol);
+  if (!sameCanonicalClaimIdentity(protocol.orchestrator, seller)) {
+    throw new DacsError("buyer handshake requires the pinned seller-orchestrator topology");
+  }
+  const scope: PaymentEvidenceHandshakeScope = {
+    seller,
+    buyer,
+    protocolHash: fixedPriceX402ProtocolBindingHash(protocol),
+  };
+  const scopeHash = paymentEvidenceHandshakeScopeHash(scope);
   const workerId = options.workerId;
   const authenticateRequest = options.authenticateRequest;
   const verifyEvidence = options.verifyEvidence;
@@ -1749,6 +1931,7 @@ export function createBuyerPaymentEvidenceHandshake(
     reasonCode: string,
   ): Promise<PaymentEvidenceHandshakeRunResult> => {
     const written = clone(await store.recordBuyerAttempt({
+      scopeHash,
       messageId: request.messageId,
       requestHash: request.requestHash,
       lease,
@@ -1761,6 +1944,9 @@ export function createBuyerPaymentEvidenceHandshake(
     if (written.status === "corrupt") throw new DacsError(written.reason);
     if (written.status === "unsupported") {
       throw new DacsError(`payment-evidence store version ${written.version} is unsupported`);
+    }
+    if (written.status === "recorded" || written.status === "existing") {
+      requireHandshakeRecord(written.record, "buyer", request.messageId, scopeHash);
     }
     return {
       messageId: request.messageId,
@@ -1779,8 +1965,11 @@ export function createBuyerPaymentEvidenceHandshake(
       if (!isPaymentEvidenceAnchorRequest(request)) {
         throw new DacsError("payment-evidence anchor request is malformed");
       }
-      if (request.buyer !== buyer || request.expectedWriter.primaryClaim !== buyer) {
-        throw new DacsError("payment-evidence anchor request targets a different buyer");
+      if (!requestMatchesScope(request, scope) ||
+          !sameCanonicalClaimIdentity(request.expectedWriter.primaryClaim, buyer)) {
+        throw new DacsError(
+          "payment-evidence anchor request targets a different actor pair or protocol",
+        );
       }
       const before = canonicalize(request);
       const authentication = captureAuthentication(
@@ -1814,6 +2003,7 @@ export function createBuyerPaymentEvidenceHandshake(
       }
       const stored = clone(await store.putRequest({
         role: "buyer",
+        scopeHash,
         request,
         requestAuthentication: authentication.peer,
       }));
@@ -1829,7 +2019,7 @@ export function createBuyerPaymentEvidenceHandshake(
       if (stored.status !== "created" && stored.status !== "existing") {
         throw new DacsError("payment-evidence store returned an unknown request-put result");
       }
-      requireHandshakeRecord(stored.record, "buyer", request.messageId);
+      requireHandshakeRecord(stored.record, "buyer", request.messageId, scopeHash);
       return stored.status === "created" ? "accepted" : "existing";
     },
 
@@ -1840,14 +2030,14 @@ export function createBuyerPaymentEvidenceHandshake(
       }
       const cursor = captureCursor(input.cursor);
       const limit = captureLimit(input.limit);
-      const page = clone(await store.listBuyerRunnable({ cursor, limit }));
+      const page = clone(await store.listBuyerRunnable({ scopeHash, cursor, limit }));
       if (!plainRecord(page) || !exactKeys(page, ["items"], ["nextCursor"]) ||
           !Array.isArray(page.items) || page.items.length > limit ||
           (page.nextCursor !== undefined && !nonEmpty(page.nextCursor))) {
         throw new DacsError("payment-evidence store returned a malformed runnable page");
       }
       const listedRecords = page.items.map((rawRecord) =>
-        requireHandshakeRecord(rawRecord, "buyer")
+        requireHandshakeRecord(rawRecord, "buyer", undefined, scopeHash)
       );
       let previousMessageId = cursor;
       for (const listed of listedRecords) {
@@ -1869,6 +2059,7 @@ export function createBuyerPaymentEvidenceHandshake(
         lastVisitedMessageId = listed.messageId;
         const request = clone(listed.request);
         const claim = clone(await store.claimBuyer({
+          scopeHash,
           messageId: request.messageId,
           requestHash: request.requestHash,
           owner: workerId,
@@ -1881,7 +2072,7 @@ export function createBuyerPaymentEvidenceHandshake(
           }
           if (claim.status === "waiting" || claim.status === "complete" ||
               claim.status === "not-runnable") {
-            requireHandshakeRecord(claim.record, "buyer", request.messageId);
+            requireHandshakeRecord(claim.record, "buyer", request.messageId, scopeHash);
           }
           if (!["waiting", "complete", "not-runnable", "missing", "stale"].includes(
             claim.status,
@@ -1897,12 +2088,27 @@ export function createBuyerPaymentEvidenceHandshake(
           });
           continue;
         }
-        const claimed = requireHandshakeRecord(claim.record, "buyer", request.messageId);
+        if (claim.mode !== "anchor" && claim.mode !== "reconcile") {
+          throw new DacsError("payment-evidence store returned an unknown buyer-claim mode");
+        }
+        const claimed = requireHandshakeRecord(
+          claim.record,
+          "buyer",
+          request.messageId,
+          scopeHash,
+        );
         const retainedRequest = clone(claimed.request);
         const lease = clone(claim.lease);
         if (!validLease(lease) || !claimed.buyerWork?.lease ||
             canonicalize(lease) !== canonicalize(claimed.buyerWork.lease)) {
           throw new DacsError("payment-evidence store returned an invalid buyer lease");
+        }
+        if (claimed.buyerWork.state !== "reconciliation-required" ||
+            (claim.mode === "anchor" &&
+              claimed.buyerWork.reasonCode !== "anchor-attempt-in-flight")) {
+          throw new DacsError(
+            "payment-evidence store did not durably mark the buyer anchor claim",
+          );
         }
         const fence: PaymentEvidenceAnchorFence = Object.freeze({
           messageId: retainedRequest.messageId,
@@ -1918,6 +2124,7 @@ export function createBuyerPaymentEvidenceHandshake(
           })),
           assertCurrent: async () => {
             if (!await store.isCurrentBuyer({
+              scopeHash,
               messageId: retainedRequest.messageId,
               requestHash: retainedRequest.requestHash,
               lease,
@@ -1952,6 +2159,7 @@ export function createBuyerPaymentEvidenceHandshake(
           }
           if (reconciled.disposition === "absent") {
             const written = clone(await store.recordBuyerAbsence({
+              scopeHash,
               messageId: retainedRequest.messageId,
               requestHash: retainedRequest.requestHash,
               lease,
@@ -1960,6 +2168,14 @@ export function createBuyerPaymentEvidenceHandshake(
             if (written.status === "corrupt") throw new DacsError(written.reason);
             if (written.status === "unsupported") {
               throw new DacsError(`payment-evidence store version ${written.version} is unsupported`);
+            }
+            if (written.status === "recorded" || written.status === "existing") {
+              requireHandshakeRecord(
+                written.record,
+                "buyer",
+                retainedRequest.messageId,
+                scopeHash,
+              );
             }
             if (!["recorded", "existing", "missing", "stale", "conflict"].includes(
               written.status,
@@ -2065,6 +2281,7 @@ export function createBuyerPaymentEvidenceHandshake(
           continue;
         }
         const written = clone(await store.recordBuyerCompletion({
+          scopeHash,
           messageId: retainedRequest.messageId,
           requestHash: retainedRequest.requestHash,
           lease,
@@ -2075,7 +2292,12 @@ export function createBuyerPaymentEvidenceHandshake(
           throw new DacsError(`payment-evidence store version ${written.version} is unsupported`);
         }
         if (written.status === "recorded" || written.status === "existing") {
-          requireHandshakeRecord(written.record, "buyer", retainedRequest.messageId);
+          requireHandshakeRecord(
+            written.record,
+            "buyer",
+            retainedRequest.messageId,
+            scopeHash,
+          );
         }
         if (!["recorded", "existing", "missing", "stale", "conflict"].includes(
           written.status,
@@ -2105,39 +2327,57 @@ export function createBuyerPaymentEvidenceHandshake(
       const cursor = captureCursor(input.cursor);
       const limit = captureLimit(input.limit);
       return claimPage(await store.claimBuyerCompletions({
+        scopeHash,
         owner: workerId,
         cursor,
         limit,
         leaseDurationMs,
-      }), "completion", cursor, limit) as
+      }), "completion", cursor, limit, scopeHash) as
         PaymentEvidencePage<PaymentEvidenceOutboundCompletionClaim>;
     },
 
     async acknowledgeOutboundCompletion(input) {
-      const claim = claimInput(input, "completion") as PaymentEvidenceOutboundCompletionClaim;
+      const claim = claimInput(
+        input,
+        "completion",
+        scopeHash,
+      ) as PaymentEvidenceOutboundCompletionClaim;
       const written = clone(await store.acknowledgeBuyerCompletion({
+        scopeHash,
         messageId: claim.completion.requestMessageId,
         completionHash: claim.completion.completionHash,
         lease: claim.lease,
       }));
-      const status = requireWrite(written, "payment-evidence completion acknowledgement");
+      const status = requireScopedWrite(
+        written,
+        "payment-evidence completion acknowledgement",
+        "buyer",
+        claim.completion.requestMessageId,
+        scopeHash,
+      );
       return status === "recorded" ? "acknowledged" : "existing";
     },
 
     async releaseOutboundCompletion(input, release) {
-      const claim = claimInput(input, "completion") as PaymentEvidenceOutboundCompletionClaim;
+      const claim = claimInput(
+        input,
+        "completion",
+        scopeHash,
+      ) as PaymentEvidenceOutboundCompletionClaim;
       if (!plainRecord(release) || !exactKeys(release, ["reasonCode"], ["retryAt"]) ||
           !validReasonCode(release.reasonCode) ||
           (release.retryAt !== undefined && !safeUint(release.retryAt))) {
         throw new DacsError("payment-evidence completion release is malformed");
       }
-      requireWrite(clone(await store.releaseBuyerCompletion({
+      requireScopedWrite(clone(await store.releaseBuyerCompletion({
+        scopeHash,
         messageId: claim.completion.requestMessageId,
         completionHash: claim.completion.completionHash,
         lease: claim.lease,
         reasonCode: release.reasonCode,
         ...(release.retryAt === undefined ? {} : { retryAt: release.retryAt }),
-      })), "payment-evidence completion release");
+      })), "payment-evidence completion release", "buyer",
+      claim.completion.requestMessageId, scopeHash);
     },
 
     async repairRequest(messageId, requestHash, operatorReasonCode) {
@@ -2145,11 +2385,12 @@ export function createBuyerPaymentEvidenceHandshake(
           !validReasonCode(operatorReasonCode)) {
         throw new DacsError("payment-evidence repair request is malformed");
       }
-      requireWrite(clone(await store.requeueBuyer({
+      requireScopedWrite(clone(await store.requeueBuyer({
+        scopeHash,
         messageId,
         requestHash,
         operatorReasonCode,
-      })), "payment-evidence repair request");
+      })), "payment-evidence repair request", "buyer", messageId, scopeHash);
     },
   };
   return Object.freeze(handshake);
@@ -2166,8 +2407,9 @@ export function createSellerPaymentEvidenceHandshake(
     "protocol",
     "authenticateCompletion",
     "verifyAnchorReceipt",
-  ], ["leaseDurationMs"]) || !nonEmpty(options.seller) || !nonEmpty(options.buyer) ||
-      options.seller === options.buyer || !nonEmpty(options.workerId) ||
+  ], ["leaseDurationMs"]) || !isCanonicalClaimReference(options.seller) ||
+      !isCanonicalClaimReference(options.buyer) ||
+      sameCanonicalClaimIdentity(options.seller, options.buyer) || !nonEmpty(options.workerId) ||
       typeof options.authenticateCompletion !== "function" ||
       typeof options.verifyAnchorReceipt !== "function") {
     throw new DacsError("seller payment-evidence handshake options are malformed");
@@ -2177,9 +2419,15 @@ export function createSellerPaymentEvidenceHandshake(
   const buyer = options.buyer;
   const workerId = options.workerId;
   const protocol = captureFixedPriceX402ProtocolBinding(options.protocol);
-  if (protocol.orchestrator !== seller) {
+  if (!sameCanonicalClaimIdentity(protocol.orchestrator, seller)) {
     throw new DacsError("seller handshake requires the pinned seller-orchestrator topology");
   }
+  const scope: PaymentEvidenceHandshakeScope = {
+    seller,
+    buyer,
+    protocolHash: fixedPriceX402ProtocolBindingHash(protocol),
+  };
+  const scopeHash = paymentEvidenceHandshakeScopeHash(scope);
   const authenticateCompletion = options.authenticateCompletion;
   const verifyAnchorReceipt = options.verifyAnchorReceipt;
   const leaseDurationMs = captureDuration(
@@ -2204,7 +2452,11 @@ export function createSellerPaymentEvidenceHandshake(
           reason: "seller payment-evidence request is malformed or unsupported",
         };
       }
-      const stored = clone(await store.putRequest({ role: "seller", request }));
+      const stored = clone(await store.putRequest({
+        role: "seller",
+        scopeHash,
+        request,
+      }));
       if (stored.status !== "created" && stored.status !== "existing") {
         return {
           disposition: stored.status === "conflict" ? "rejected" : "indeterminate",
@@ -2213,7 +2465,12 @@ export function createSellerPaymentEvidenceHandshake(
             : "payment-evidence request conflicts with retained outbox state",
         };
       }
-      const record = requireHandshakeRecord(stored.record, "seller", request.messageId);
+      const record = requireHandshakeRecord(
+        stored.record,
+        "seller",
+        request.messageId,
+        scopeHash,
+      );
       if (record.completion) {
         return {
           disposition: "anchored",
@@ -2234,38 +2491,51 @@ export function createSellerPaymentEvidenceHandshake(
       const cursor = captureCursor(input.cursor);
       const limit = captureLimit(input.limit);
       return claimPage(await store.claimSellerRequests({
+        scopeHash,
         owner: workerId,
         cursor,
         limit,
         leaseDurationMs,
-      }), "request", cursor, limit) as PaymentEvidencePage<PaymentEvidenceOutboundRequestClaim>;
+      }), "request", cursor, limit, scopeHash) as
+        PaymentEvidencePage<PaymentEvidenceOutboundRequestClaim>;
     },
 
     async acknowledgeOutboundRequest(input) {
-      const claim = claimInput(input, "request") as PaymentEvidenceOutboundRequestClaim;
+      const claim = claimInput(input, "request", scopeHash) as
+        PaymentEvidenceOutboundRequestClaim;
       const written = clone(await store.acknowledgeSellerRequest({
+        scopeHash,
         messageId: claim.request.messageId,
         requestHash: claim.request.requestHash,
         lease: claim.lease,
       }));
-      const status = requireWrite(written, "payment-evidence request acknowledgement");
+      const status = requireScopedWrite(
+        written,
+        "payment-evidence request acknowledgement",
+        "seller",
+        claim.request.messageId,
+        scopeHash,
+      );
       return status === "recorded" ? "acknowledged" : "existing";
     },
 
     async releaseOutboundRequest(input, release) {
-      const claim = claimInput(input, "request") as PaymentEvidenceOutboundRequestClaim;
+      const claim = claimInput(input, "request", scopeHash) as
+        PaymentEvidenceOutboundRequestClaim;
       if (!plainRecord(release) || !exactKeys(release, ["reasonCode"], ["retryAt"]) ||
           !validReasonCode(release.reasonCode) ||
           (release.retryAt !== undefined && !safeUint(release.retryAt))) {
         throw new DacsError("payment-evidence request release is malformed");
       }
-      requireWrite(clone(await store.releaseSellerRequest({
+      requireScopedWrite(clone(await store.releaseSellerRequest({
+        scopeHash,
         messageId: claim.request.messageId,
         requestHash: claim.request.requestHash,
         lease: claim.lease,
         reasonCode: release.reasonCode,
         ...(release.retryAt === undefined ? {} : { retryAt: release.retryAt }),
-      })), "payment-evidence request release");
+      })), "payment-evidence request release", "seller",
+      claim.request.messageId, scopeHash);
     },
 
     async receiveCompletion(input, transportContext) {
@@ -2273,7 +2543,16 @@ export function createSellerPaymentEvidenceHandshake(
       if (!isPaymentEvidenceAnchorCompletion(completion)) {
         throw new DacsError("payment-evidence anchor completion is malformed");
       }
-      const loaded = clone(await store.load("seller", completion.requestMessageId));
+      if (completionScopeHash(completion) !== scopeHash) {
+        throw new DacsError(
+          "payment-evidence completion targets a different actor pair or protocol",
+        );
+      }
+      const loaded = clone(await store.load(
+        "seller",
+        completion.requestMessageId,
+        scopeHash,
+      ));
       if (loaded.status === "corrupt") throw new DacsError(loaded.reason);
       if (loaded.status === "unsupported") {
         throw new DacsError(`payment-evidence store version ${loaded.version} is unsupported`);
@@ -2285,6 +2564,7 @@ export function createSellerPaymentEvidenceHandshake(
         loaded.record,
         "seller",
         completion.requestMessageId,
+        scopeHash,
       );
       if (!completionMatchesRequest(record.request, completion)) {
         throw new DacsError("payment-evidence completion does not bind the retained request");
@@ -2311,6 +2591,7 @@ export function createSellerPaymentEvidenceHandshake(
         throw new DacsError(`payment-evidence completion ${verification.disposition}`);
       }
       const written = clone(await store.recordSellerCompletion({
+        scopeHash,
         messageId: record.messageId,
         requestHash: record.request.requestHash,
         completion,
@@ -2323,7 +2604,7 @@ export function createSellerPaymentEvidenceHandshake(
         }
         throw new DacsError("payment-evidence completion conflicts with retained seller state");
       }
-      requireHandshakeRecord(written.record, "seller", record.messageId);
+      requireHandshakeRecord(written.record, "seller", record.messageId, scopeHash);
       return written.status === "recorded" ? "accepted" : "existing";
     },
   };

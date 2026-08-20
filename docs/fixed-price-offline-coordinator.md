@@ -17,6 +17,24 @@ a separate binding/effect-identity domain. Live x402 validators reject offline
 bindings and offline validators reject live x402 bindings. Offline records are
 not resumable or upgradeable as live sessions.
 
+The public offline API also uses a deliberately separate result vocabulary:
+`simulated-success`, `simulated-failure`, and `simulated-aborted`. Its projected
+milestones are all prefixed with `simulation-`; it never emits the live
+`commercial-performance-complete` or `audit-complete` milestones. Every offline
+status and work report carries these machine-readable authority markers:
+
+```json
+{
+  "simulationOnly": true,
+  "normativeConformance": false,
+  "commercialSuccess": false,
+  "authority": "none"
+}
+```
+
+Callbacks that return the live outcome vocabulary fail closed and cannot
+advance the simulated lifecycle.
+
 ```ts
 import {
   createFixedPriceOfflineBuyerCoordinator,
