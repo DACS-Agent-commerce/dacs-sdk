@@ -32,6 +32,12 @@ import {
 const VERIFIER_SEED = new Uint8Array(32).fill(7);
 const VERIFIER =
   `key:${Buffer.from(rawPublicKey(publicKeyFromSeed(VERIFIER_SEED))).toString("hex")}`;
+const SELF_SIGNED_SEED = new Uint8Array(32).fill(9);
+const OTHER_SELF_SIGNED_SEED = new Uint8Array(32).fill(10);
+const SELF_SIGNED_SUBJECT =
+  `key:${Buffer.from(rawPublicKey(publicKeyFromSeed(SELF_SIGNED_SEED))).toString("hex")}`;
+const OTHER_SELF_SIGNED_SUBJECT =
+  `key:${Buffer.from(rawPublicKey(publicKeyFromSeed(OTHER_SELF_SIGNED_SEED))).toString("hex")}`;
 const STEWARD_SEED = new Uint8Array(32).fill(8);
 const STEWARD_PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
 const STEWARD =
@@ -393,6 +399,38 @@ function storedVerifyResult(store: FinalizedStore) {
   const result = storedArtifacts(store).find(isVerifyResult);
   expect(result).toBeDefined();
   return result!;
+}
+
+function selfSignedSignature(
+  assertion: string,
+  seed = SELF_SIGNED_SEED,
+): string {
+  return Buffer.from(
+    ed25519Sign(
+      selfSignedAssertionBytes(assertion),
+      privateKeyFromSeed(seed),
+    ),
+  ).toString("hex");
+}
+
+async function selfSignedRequest(
+  over: Partial<VetRequest> = {},
+): Promise<VetRequest> {
+  return {
+    jobId: "job-self-negative",
+    subject: SELF_SIGNED_SUBJECT,
+    bundleHash: BUNDLE_HASH,
+    requirement: requirement("key"),
+    recipe: await authenticatedRecipe({
+      scheme: "key",
+      defaultMethod: { kind: "self-signed" },
+    }),
+    selfSigned: {
+      assertion: SELF_SIGNED_SUBJECT,
+      signature: selfSignedSignature(SELF_SIGNED_SUBJECT),
+    },
+    ...over,
+  };
 }
 
 describe("vetCore current DACS-2 producer", () => {
@@ -1724,5 +1762,164 @@ describe("vetCore current DACS-2 producer", () => {
       (artifact) => artifact.assertionVersion === "1",
     );
     expect(assertion).toMatchObject({ subject, assertion: subject });
+  });
+
+  test("self-signed missing or malformed proof input never passes", async () => {
+    const missing = await selfSignedRequest();
+    delete missing.selfSigned;
+    const requests = [
+      missing,
+      await selfSignedRequest({
+        selfSigned: {
+          assertion: SELF_SIGNED_SUBJECT,
+          signature: "not-a-signature",
+        },
+      }),
+    ];
+    for (const request of requests) {
+      const store: FinalizedStore = new Map();
+      await expect(
+        vetCore(request, baseDeps(store)),
+      ).rejects.toThrow(/canonical proof and SR-2 anchor/);
+      expect(storedArtifacts(store)).toEqual([]);
+    }
+  });
+
+  test("self-signed rejects malformed and non-canonical key ClaimReferences", async () => {
+    for (const subject of [
+      `did:demos:agent:${"a".repeat(64)}`,
+      `key:0x${"a".repeat(64)}`,
+      `key:${"A".repeat(64)}`,
+      "key:abcd",
+    ]) {
+      const store: FinalizedStore = new Map();
+      await expect(
+        vetCore(
+          await selfSignedRequest({ subject }),
+          baseDeps(store),
+        ),
+      ).rejects.toThrow(/cannot verify|canonical proof and SR-2 anchor/);
+      expect(storedArtifacts(store)).toEqual([]);
+    }
+    expect(() =>
+      selfSignedAssertionBytes(`${SELF_SIGNED_SUBJECT}?z=last&a=first`),
+    ).toThrow(/canonical key/);
+    expect(() =>
+      selfSignedAssertionBytes(`${SELF_SIGNED_SUBJECT}?purpose=bad%3avalue`),
+    ).toThrow(/canonical key/);
+  });
+
+  test("self-signed signature from the wrong key is a durable failure", async () => {
+    const store: FinalizedStore = new Map();
+    const production = await vetCore(
+      await selfSignedRequest({
+        selfSigned: {
+          assertion: SELF_SIGNED_SUBJECT,
+          signature: selfSignedSignature(
+            SELF_SIGNED_SUBJECT,
+            OTHER_SELF_SIGNED_SEED,
+          ),
+        },
+      }),
+      baseDeps(store),
+    );
+
+    expect(production.record.overallDecision).toBe("fail");
+    expect(storedVerifyResult(store).decision).toBe("fail");
+    expect(
+      storedArtifacts(store).some(
+        (artifact) => artifact.assertionVersion === "1",
+      ),
+    ).toBe(true);
+  });
+
+  test("self-signed assertion replayed for another claim is a durable failure", async () => {
+    const store: FinalizedStore = new Map();
+    const production = await vetCore(
+      await selfSignedRequest({
+        subject: OTHER_SELF_SIGNED_SUBJECT,
+        selfSigned: {
+          assertion: SELF_SIGNED_SUBJECT,
+          signature: selfSignedSignature(SELF_SIGNED_SUBJECT),
+        },
+      }),
+      baseDeps(store),
+    );
+
+    expect(production.record.overallDecision).toBe("fail");
+    expect(storedVerifyResult(store).decision).toBe("fail");
+  });
+
+  test("self-signed comparison preserves the signed CF-3 parameters", async () => {
+    const assertion = `${SELF_SIGNED_SUBJECT}?purpose=vet&region=GB`;
+    const store: FinalizedStore = new Map();
+    const production = await vetCore(
+      await selfSignedRequest({
+        selfSigned: {
+          assertion,
+          signature: selfSignedSignature(assertion),
+        },
+      }),
+      baseDeps(store),
+    );
+
+    expect(production.record.overallDecision).toBe("pass");
+    expect(storedVerifyResult(store).decision).toBe("pass");
+  });
+
+  test("self-signed raw or cross-domain signatures do not verify", async () => {
+    const rawSignature = Buffer.from(
+      ed25519Sign(
+        Buffer.from(SELF_SIGNED_SUBJECT),
+        privateKeyFromSeed(SELF_SIGNED_SEED),
+      ),
+    ).toString("hex");
+    const store: FinalizedStore = new Map();
+    const production = await vetCore(
+      await selfSignedRequest({
+        selfSigned: {
+          assertion: SELF_SIGNED_SUBJECT,
+          signature: rawSignature,
+        },
+      }),
+      baseDeps(store),
+    );
+
+    expect(production.record.overallDecision).toBe("fail");
+    expect(storedVerifyResult(store).decision).toBe("fail");
+  });
+
+  test("self-signed SR-2 failure or a mismatched proof signer is an error", async () => {
+    const unavailableStore: FinalizedStore = new Map();
+    const unavailableDeps = baseDeps(unavailableStore);
+    unavailableDeps.anchorFinalizedArtifact = async () => {
+      throw new Error("substrate unavailable");
+    };
+    await expect(
+      vetCore(await selfSignedRequest(), unavailableDeps),
+    ).rejects.toThrow(/indeterminate; refusing to resubmit/);
+
+    const mismatchedStore: FinalizedStore = new Map();
+    const mismatchedDeps = baseDeps(mismatchedStore);
+    const anchorFinalizedArtifact = mismatchedDeps.anchorFinalizedArtifact;
+    mismatchedDeps.anchorFinalizedArtifact = async (input) => {
+      const anchored = await anchorFinalizedArtifact(input);
+      if (
+        (input.artifact as unknown as Record<string, unknown>)
+          .assertionVersion === "1"
+      ) {
+        return {
+          ...anchored,
+          ref: { ...anchored.ref, signer: OTHER_SELF_SIGNED_SUBJECT },
+        };
+      }
+      return anchored;
+    };
+    await expect(
+      vetCore(
+        await selfSignedRequest({ jobId: "job-self-mismatched-signer" }),
+        mismatchedDeps,
+      ),
+    ).rejects.toThrow(/does not bind the exact proof and signer/);
   });
 });
