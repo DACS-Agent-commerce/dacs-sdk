@@ -39,9 +39,17 @@ export interface AnchoredCommit {
   bidderClaim: string;
   /** lowercase-hex bidHash. */
   bidHash: string;
-  /** Objective SR-2 anchor timestamp (unix ms) — authoritative for SE-2/SE-5. */
-  anchorTs: number;
+  /**
+   * Objective SR-2 anchor timestamp (unix ms) — authoritative for SE-2/SE-5.
+   * `null` means the anchor exists but its authoritative timestamp could not be
+   * resolved yet; SE-9 requires the orchestrator to pause rather than choose a
+   * different same-bidder commit.
+   */
+  anchorTs: number | null;
 }
+
+/** Commit whose SR-2 timestamp has been resolved and validated. */
+export type ResolvedAnchoredCommit = AnchoredCommit & { anchorTs: number };
 
 /** A bidder's SR-2-anchored reveal (the openable {bid, salt}). */
 export interface AnchoredReveal {
@@ -137,6 +145,11 @@ export interface SealedEnvelopeParams {
   /** seconds after commitDeadline; MUST be ≥ 60. */
   revealWindow: number;
   selectionRule: SelectionRule;
+  /**
+   * Listing-bound criteria for `first-acceptable`, using the same SE-6
+   * content-hash binding as a `rule-ref` selection rule.
+   */
+  acceptanceRule?: `rule-ref:${string}`;
 }
 
 /** Validate session parameters (SE-1 + reveal-window floor). Throws on violation. */
@@ -158,8 +171,58 @@ export function validateSealedParams(
 export function commitsInWindow(
   commits: AnchoredCommit[],
   commitDeadline: number,
-): AnchoredCommit[] {
-  return commits.filter((c) => c.anchorTs <= commitDeadline);
+): ResolvedAnchoredCommit[] {
+  return commits.filter(
+    (c): c is ResolvedAnchoredCommit =>
+      typeof c.anchorTs === "number" &&
+      Number.isSafeInteger(c.anchorTs) &&
+      c.anchorTs >= 0 &&
+      c.anchorTs <= commitDeadline,
+  );
+}
+
+export interface CommitWindowResolution {
+  /** Structurally valid commits with resolved, in-window SR-2 timestamps. */
+  commits: ResolvedAnchoredCommit[];
+  /** Bidders whose otherwise-valid commit has an unresolved timestamp. */
+  unresolvedBidders: string[];
+}
+
+const structurallyValidCommit = (
+  commit: AnchoredCommit,
+): boolean =>
+  typeof commit.bidderClaim === "string" &&
+  commit.bidderClaim.length > 0 &&
+  /^[0-9a-f]{64}$/.test(commit.bidHash);
+
+/**
+ * Resolve the SE-2 window without hiding SE-9 uncertainty. A structurally valid
+ * commit whose anchor time is unavailable can be earlier than a resolved
+ * same-bidder commit, so authority is indeterminate until it resolves.
+ */
+export function resolveCommitWindow(
+  commits: AnchoredCommit[],
+  commitDeadline: number,
+): CommitWindowResolution {
+  const unresolved = new Set<string>();
+  const resolved: ResolvedAnchoredCommit[] = [];
+  for (const commit of commits) {
+    if (!structurallyValidCommit(commit)) continue;
+    if (commit.anchorTs === null) {
+      unresolved.add(commit.bidderClaim);
+      continue;
+    }
+    // Other timestamp shapes are structurally malformed, not unresolved SR-2
+    // state, and therefore cannot participate in authority selection.
+    if (!Number.isSafeInteger(commit.anchorTs) || commit.anchorTs < 0) continue;
+    if (commit.anchorTs <= commitDeadline) {
+      resolved.push(commit as ResolvedAnchoredCommit);
+    }
+  }
+  return {
+    commits: resolved,
+    unresolvedBidders: [...unresolved].sort(),
+  };
 }
 
 /** §8.4.3 / SE-3: reveal window is inclusive from commitDeadline through expiry. */
@@ -181,15 +244,41 @@ export function revealsInWindow(
 export function matchRevealsToCommits(
   commits: AnchoredCommit[],
   reveals: AnchoredReveal[],
-): Array<{ reveal: AnchoredReveal; commit: AnchoredCommit }> {
-  const byBidder = new Map<string, AnchoredCommit>();
-  for (const c of commits) {
-    // If a bidder somehow has multiple in-window commits, the earliest-anchored
-    // one is authoritative (matches the SE-5 tie-break clock).
-    const prev = byBidder.get(c.bidderClaim);
-    if (!prev || c.anchorTs < prev.anchorTs) byBidder.set(c.bidderClaim, c);
+): Array<{ reveal: AnchoredReveal; commit: ResolvedAnchoredCommit }> {
+  const resolved = commits
+    .filter(
+      (commit): commit is ResolvedAnchoredCommit =>
+        structurallyValidCommit(commit) &&
+        typeof commit.anchorTs === "number" &&
+        Number.isSafeInteger(commit.anchorTs) &&
+        commit.anchorTs >= 0,
+    )
+    .sort((a, b) =>
+      a.anchorTs !== b.anchorTs
+        ? a.anchorTs - b.anchorTs
+        : a.bidHash < b.bidHash
+          ? -1
+          : a.bidHash > b.bidHash
+            ? 1
+            : 0,
+    );
+
+  const byBidder = new Map<string, ResolvedAnchoredCommit>();
+  const exactDuplicates = new Set<string>();
+  for (const commit of resolved) {
+    // SE-9: exact duplicates collapse, then the ascending
+    // (anchorTimestamp, bidHash) order makes the first record authoritative.
+    const tuple = `${commit.bidderClaim}\u0000${commit.anchorTs}\u0000${commit.bidHash}`;
+    if (exactDuplicates.has(tuple)) continue;
+    exactDuplicates.add(tuple);
+    if (!byBidder.has(commit.bidderClaim)) {
+      byBidder.set(commit.bidderClaim, commit);
+    }
   }
-  const out: Array<{ reveal: AnchoredReveal; commit: AnchoredCommit }> = [];
+  const out: Array<{
+    reveal: AnchoredReveal;
+    commit: ResolvedAnchoredCommit;
+  }> = [];
   for (const r of reveals) {
     const commit = byBidder.get(r.bidderClaim);
     if (!commit) continue; // no matching in-window commit → excluded
@@ -284,7 +373,10 @@ export interface SelectionResult {
  * {@link matchRevealsToCommits} so each reveal carries its authoritative commit.
  */
 export function selectSealedWinner(
-  candidates: Array<{ reveal: AnchoredReveal; commit: AnchoredCommit }>,
+  candidates: Array<{
+    reveal: AnchoredReveal;
+    commit: ResolvedAnchoredCommit;
+  }>,
   opts: SelectionOptions,
 ): SelectionResult {
   const excluded: Array<{ bidderClaim: string; reason: string }> = [];
@@ -333,8 +425,8 @@ export function selectSealedWinner(
   const bidHashOf = (c: { reveal: AnchoredReveal }) =>
     computeBidHash(c.reveal.bid, c.reveal.salt);
   const tieBreak = (
-    a: { reveal: AnchoredReveal; commit: AnchoredCommit },
-    b: { reveal: AnchoredReveal; commit: AnchoredCommit },
+    a: { reveal: AnchoredReveal; commit: ResolvedAnchoredCommit },
+    b: { reveal: AnchoredReveal; commit: ResolvedAnchoredCommit },
   ): number => {
     if (a.commit.anchorTs !== b.commit.anchorTs)
       return a.commit.anchorTs - b.commit.anchorTs;

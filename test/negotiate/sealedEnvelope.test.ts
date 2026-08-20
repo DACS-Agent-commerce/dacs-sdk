@@ -11,10 +11,13 @@ import {
 import { isLegacyMvpAgreementDocument as isAgreementDocument } from "../../src/artifacts/legacyMvp.js";
 import {
   makeCommitment,
+  compareDecimal,
   type AnchoredCommit,
   type AnchoredReveal,
   type SealedBid,
 } from "../../src/negotiate/sealedBid.js";
+import { canonicalize } from "../../src/canonical/jcs.js";
+import { sha256Hex } from "../../src/canonical/hash.js";
 
 const NOW = 1_000_000_000_000;
 const DEADLINE = NOW + 120_000;
@@ -133,6 +136,233 @@ describe("runSealedEnvelopeCore", () => {
     expect(res.winningBidderClaim).toBe("a");
   });
 
+  test("SE-9: commit/reveal input permutations produce the same authority and winner", async () => {
+    const aOne = makeCommitment(bid("10"));
+    const aTwo = makeCommitment(bid("20"));
+    const authoritative = aOne.bidHash < aTwo.bidHash ? aOne : aTwo;
+    const inert = authoritative === aOne ? aTwo : aOne;
+    const aCommit = (value: typeof aOne): AnchoredCommit => ({
+      bidderClaim: "a",
+      bidHash: value.bidHash,
+      anchorTs: DEADLINE - 100,
+    });
+    const aReveal = (value: typeof aOne): AnchoredReveal => ({
+      bidderClaim: "a",
+      bid: value.bid,
+      salt: value.salt,
+      anchorTs: DEADLINE + 100,
+    });
+    const b = bidder("b", "1000", DEADLINE - 50, DEADLINE + 100);
+    const commits = [aCommit(inert), aCommit(authoritative), b.commit];
+    const reveals = [aReveal(inert), aReveal(authoritative), b.reveal];
+
+    for (const orderedCommits of permutations(commits)) {
+      for (const orderedReveals of permutations(reveals)) {
+        const res = await runSealedEnvelopeCore(
+          input(),
+          deps(orderedCommits, orderedReveals),
+        );
+        expect(res.ok).toBe(true);
+        expect(res.winningBidderClaim).toBe("a");
+        expect(res.losingBidderClaims).toEqual(["b"]);
+      }
+    }
+  });
+
+  test("SE-9: unresolved authoritative anchor time pauses instead of selecting another commit", async () => {
+    const uncertain = makeCommitment(bid("10"));
+    const resolved = makeCommitment(bid("20"));
+    const b = bidder("b", "100", DEADLINE - 50, DEADLINE + 100);
+    let committed = false;
+    const res = await runSealedEnvelopeCore(
+      input(),
+      deps(
+        [
+          { bidderClaim: "a", bidHash: uncertain.bidHash, anchorTs: null },
+          { bidderClaim: "a", bidHash: resolved.bidHash, anchorTs: DEADLINE - 100 },
+          b.commit,
+        ],
+        [b.reveal],
+        {
+          commitAgreement: async () => {
+            committed = true;
+            return { agreementRef: "unexpected", agreementHash: "unexpected" };
+          },
+        },
+      ),
+    );
+    expect(res).toMatchObject({ ok: false, errorClass: "substrate" });
+    expect(res.reason).toMatch(/timestamp unresolved.*a/);
+    expect(committed).toBe(false);
+  });
+
+  describe("SE-6 verified rule execution", () => {
+    const ruleContent = { kind: "max-price", maxPrice: "60" };
+    const ruleRef = `rule-ref:${sha256Hex(canonicalize(ruleContent))}:https://rules.example/max-60` as const;
+    const evaluator: NonNullable<SealedEnvelopeDeps["evaluateVerifiedRule"]> = ({
+      rule,
+      bid: candidate,
+    }) => {
+      const content = rule.content as typeof ruleContent;
+      return (
+        content.kind === "max-price" &&
+        compareDecimal(candidate.price.amount, content.maxPrice) <= 0
+      );
+    };
+
+    test("rule-ref is resolved, canonical-hash-verified, and evaluated by a typed capability", async () => {
+      const early = bidder("early", "100", DEADLINE - 100, DEADLINE + 100);
+      const acceptable = bidder("acceptable", "50", DEADLINE - 50, DEADLINE + 100);
+      const res = await runSealedEnvelopeCore(
+        input({
+          params: {
+            commitDeadline: DEADLINE,
+            revealWindow: REVEAL_WINDOW,
+            selectionRule: ruleRef,
+          },
+        }),
+        deps(
+          [early.commit, acceptable.commit],
+          [early.reveal, acceptable.reveal],
+          {
+            resolveRuleContent: async (ref) => {
+              expect(ref).toEqual({
+                contentHash: sha256Hex(canonicalize(ruleContent)),
+                uri: "https://rules.example/max-60",
+              });
+              return ruleContent;
+            },
+            evaluateVerifiedRule: evaluator,
+          },
+        ),
+      );
+      expect(res.ok).toBe(true);
+      expect(res.winningBidderClaim).toBe("acceptable");
+    });
+
+    test("first-acceptable requires and enforces listing-bound acceptance criteria", async () => {
+      const early = bidder("early", "100", DEADLINE - 100, DEADLINE + 100);
+      const acceptable = bidder("acceptable", "50", DEADLINE - 50, DEADLINE + 100);
+      const params = {
+        commitDeadline: DEADLINE,
+        revealWindow: REVEAL_WINDOW,
+        selectionRule: "first-acceptable" as const,
+      };
+
+      const missing = await runSealedEnvelopeCore(
+        input({ params }),
+        deps([early.commit], [early.reveal]),
+      );
+      expect(missing).toMatchObject({ ok: false, errorClass: "permanent" });
+      expect(missing.reason).toMatch(/listing-bound acceptance rule/);
+
+      const bound = await runSealedEnvelopeCore(
+        input({ params: { ...params, acceptanceRule: ruleRef } }),
+        deps(
+          [early.commit, acceptable.commit],
+          [early.reveal, acceptable.reveal],
+          {
+            resolveRuleContent: async () => ruleContent,
+            evaluateVerifiedRule: evaluator,
+          },
+        ),
+      );
+      expect(bound.ok).toBe(true);
+      expect(bound.winningBidderClaim).toBe("acceptable");
+    });
+
+    test("missing, unresolvable, malformed, or hash-mismatched rules fail permanent", async () => {
+      const a = bidder("a", "50", DEADLINE - 100, DEADLINE + 100);
+      const ruleInput = input({
+        params: {
+          commitDeadline: DEADLINE,
+          revealWindow: REVEAL_WINDOW,
+          selectionRule: ruleRef,
+        },
+      });
+
+      const missingCapability = await runSealedEnvelopeCore(
+        ruleInput,
+        deps([a.commit], [a.reveal]),
+      );
+      expect(missingCapability).toMatchObject({ ok: false, errorClass: "permanent" });
+
+      const unresolvable = await runSealedEnvelopeCore(
+        ruleInput,
+        deps([a.commit], [a.reveal], {
+          resolveRuleContent: async () => {
+            throw new Error("not found");
+          },
+          evaluateVerifiedRule: evaluator,
+        }),
+      );
+      expect(unresolvable).toMatchObject({ ok: false, errorClass: "permanent" });
+
+      const mismatch = await runSealedEnvelopeCore(
+        ruleInput,
+        deps([a.commit], [a.reveal], {
+          resolveRuleContent: async () => ({ ...ruleContent, maxPrice: "999" }),
+          evaluateVerifiedRule: evaluator,
+        }),
+      );
+      expect(mismatch).toMatchObject({ ok: false, errorClass: "permanent" });
+      expect(mismatch.reason).toMatch(/hash mismatch/);
+
+      const malformedRef = await runSealedEnvelopeCore(
+        input({
+          params: {
+            commitDeadline: DEADLINE,
+            revealWindow: REVEAL_WINDOW,
+            selectionRule: "rule-ref:not-a-hash:https://rules.example",
+          },
+        }),
+        deps([a.commit], [a.reveal], {
+          resolveRuleContent: async () => ruleContent,
+          evaluateVerifiedRule: evaluator,
+        }),
+      );
+      expect(malformedRef).toMatchObject({ ok: false, errorClass: "permanent" });
+    });
+
+    test("throwing or observably non-deterministic evaluators fail permanent", async () => {
+      const a = bidder("a", "50", DEADLINE - 100, DEADLINE + 100);
+      const ruleInput = input({
+        params: {
+          commitDeadline: DEADLINE,
+          revealWindow: REVEAL_WINDOW,
+          selectionRule: ruleRef,
+        },
+      });
+      const throwing = await runSealedEnvelopeCore(
+        ruleInput,
+        deps([a.commit], [a.reveal], {
+          resolveRuleContent: async () => ruleContent,
+          evaluateVerifiedRule: () => {
+            throw new Error("bad interpreter");
+          },
+        }),
+      );
+      expect(throwing).toMatchObject({ ok: false, errorClass: "permanent" });
+
+      let flip = false;
+      const nonDeterministic = await runSealedEnvelopeCore(
+        ruleInput,
+        deps([a.commit], [a.reveal], {
+          resolveRuleContent: async () => ruleContent,
+          evaluateVerifiedRule: () => {
+            flip = !flip;
+            return flip;
+          },
+        }),
+      );
+      expect(nonDeterministic).toMatchObject({
+        ok: false,
+        errorClass: "permanent",
+      });
+      expect(nonDeterministic.reason).toMatch(/non-deterministic/);
+    });
+  });
+
   test("no winner: all bids wrong currency → failed phase, counterparty fault", async () => {
     const a = bidder("a", "100", DEADLINE - 100, DEADLINE + 1000, "DAI");
     const res = await runSealedEnvelopeCore(input(), deps([a.commit], [a.reveal]));
@@ -241,3 +471,12 @@ describe("runSealedEnvelopeCore", () => {
     expect(res.ok).toBe(true);
   });
 });
+
+function permutations<T>(values: T[]): T[][] {
+  if (values.length <= 1) return [values];
+  return values.flatMap((value, index) =>
+    permutations(values.filter((_, candidate) => candidate !== index)).map(
+      (rest) => [value, ...rest],
+    ),
+  );
+}

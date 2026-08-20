@@ -301,6 +301,7 @@ export {
   verifyReveal,
   validateSealedParams,
   commitsInWindow,
+  resolveCommitWindow,
   revealsInWindow,
   matchRevealsToCommits,
   parseRuleRef,
@@ -313,10 +314,12 @@ export {
   MIN_REVEAL_WINDOW_SECONDS,
   type SealedBid,
   type AnchoredCommit,
+  type ResolvedAnchoredCommit,
   type AnchoredReveal,
   type SelectionRule,
   type SealedCommitment,
   type SealedEnvelopeParams,
+  type CommitWindowResolution,
   type SelectionOptions,
   type SelectionResult,
   type RuleRef,
@@ -330,6 +333,8 @@ export {
   type SealedEnvelopeDeps,
   type SealedEnvelopeInput,
   type SealedEnvelopeResult,
+  type VerifiedSelectionRule,
+  type SealedRuleEvaluationInput,
 } from "./negotiate/index.js";
 
 // Public agent API (T4) — the headline surface a dApp dev uses.
