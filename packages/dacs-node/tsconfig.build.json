@@ -8,6 +8,7 @@
     "rootDir": "src",
     "noEmit": false,
     "paths": {
+      "@kynesyslabs/dacs": ["../../dist/index.d.ts"],
       "@kynesyslabs/dacs/artifacts": ["../../dist/artifacts/index.d.ts"],
       "@kynesyslabs/dacs/canonical": ["../../dist/canonical/index.d.ts"],
       "@kynesyslabs/dacs/commerce": ["../../dist/commerce/index.d.ts"],

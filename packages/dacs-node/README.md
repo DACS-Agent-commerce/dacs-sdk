@@ -19,6 +19,12 @@ The live profile is never inferred. `offline` and `live-demos` configurations
 are closed, non-interchangeable variants and must select their matching SDK
 commerce profile.
 
+The package also exposes `runDeterministicOfflineLifecycle`. It writes and then
+independently verifies a complete DACS 1-5 local artifact graph. Its Standard
+`pay-ap2` rail and provider receipt are explicitly marked `mocked`/`offline`;
+the function performs no network request, reads no credentials, spends no
+funds, and makes no live-x402 or live-substrate claim.
+
 Until the first SDK alpha is published, the exact SDK version is declared as an
 optional peer so stacked pre-merge CI does not fetch an unpublished package.
 Applications must install both `@kynesyslabs/dacs` and
