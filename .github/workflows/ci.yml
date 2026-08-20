@@ -31,8 +31,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Typecheck Node host kit
+        run: npm run host:typecheck
+
       - name: Build
         run: npm run build
+
+      - name: Build Node host kit
+        run: npm run host:build
 
       - name: Package smoke (core install without live peers)
         run: |
@@ -42,8 +48,22 @@ jobs:
           (cd package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
           npm audit --prefix package-smoke/app --omit=dev --omit=optional
 
+      - name: Package smoke (Node host kit boundary)
+        run: |
+          mkdir -p host-package-smoke/app
+          npm pack --pack-destination host-package-smoke
+          npm pack --workspace @kynesyslabs/dacs-node --pack-destination host-package-smoke
+          npm install --prefix host-package-smoke/app --ignore-scripts \
+            "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
+            "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
+          (cd host-package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function') process.exit(1) })")
+          node -e "const p=require('./package.json'); if ((p.dependencies && p.dependencies['@kynesyslabs/dacs-node']) || (p.optionalDependencies && p.optionalDependencies['@kynesyslabs/dacs-node']) || (p.peerDependencies && p.peerDependencies['@kynesyslabs/dacs-node'])) process.exit(1)"
+
       - name: Test (unit + conformance harness)
         run: npm test
+
+      - name: Test Node host kit
+        run: npm run host:test
 
       # Informational (non-blocking): surface production-tree advisories per the
       # SECURITY.md audit policy (#40). continue-on-error keeps the JOB green, but

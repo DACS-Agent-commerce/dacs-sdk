@@ -1,0 +1,171 @@
+{
+  "vectorVersion": 1,
+  "algorithm": "ed25519",
+  "warning": "The seed is public test material and must never be used for an identity.",
+  "envelopeIdDomain": "dacs-http-envelope-id:v1:",
+  "messageDomain": "dacs-http-message:v1:",
+  "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "publicKeyHex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "sender": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "audience": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "issuedAt": 1800000000000,
+  "expiresAt": 1800000300000,
+  "cases": [
+    {
+      "type": "agreement-proposal",
+      "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "payload": {
+        "transportIdentity": {
+          "sender": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "audience": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "proposal": {
+          "numericEdge": 9007199254740991,
+          "label": "Café",
+          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        }
+      },
+      "payloadCanonical": "{\"proposal\":{\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"label\":\"Café\",\"numericEdge\":9007199254740991},\"transportIdentity\":{\"audience\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"sender\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
+      "payloadHash": "748706ba6366338eb55f553ed3d30c60ee2c7c9277d3730f8e45c8dfae5e98eb",
+      "envelopeId": "6219e70c15e9008283e564d4bf9a7f409ea8896b54767cf1106d5c840cc68aa5",
+      "envelopeHash": "ecfa56a9d2618f34a002c2566f49cca6a18e9b6033357adc8af61a3564a33685",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aecfa56a9d2618f34a002c2566f49cca6a18e9b6033357adc8af61a3564a33685",
+      "signature": "IaTik8QZcY2wNyRFPyJf3WVLo2f39rNUMo6TFgK4EATy7LuMHV3JMbTQrr0Uo_DNVnc8-zOnG3Qbrs4mC1NJCw"
+    },
+    {
+      "type": "agreement-response",
+      "nonce": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "payload": {
+        "responseVersion": "vector",
+        "accepted": true,
+        "note": "键顺序"
+      },
+      "payloadCanonical": "{\"accepted\":true,\"note\":\"键顺序\",\"responseVersion\":\"vector\"}",
+      "payloadHash": "7d8f74a3a48f0551a2dff9205ee00a979d8619dfe53ee2efb8e01d347d32a255",
+      "envelopeId": "a09ac9b8d265ce4c73309a9231d2e326f322b7c698f7e3b726def03e3caf9efa",
+      "envelopeHash": "54ed4ce83c6fb8065a5d8cf7962c8fbe05c23e0f7d0ad1e482c26d2fe0899973",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a54ed4ce83c6fb8065a5d8cf7962c8fbe05c23e0f7d0ad1e482c26d2fe0899973",
+      "signature": "hFspMy5m84IiHZ3VZnevhiMLFQfSwYgT2AgDm3yEBauD3bo7phkFoBVXmITmpWxuunzr1b-BEE6GwprPJSt6AA"
+    },
+    {
+      "type": "payment-evidence-request",
+      "nonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "payload": {
+        "messageId": "request-vector",
+        "requestHash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "seller": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "buyer": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "payloadCanonical": "{\"buyer\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"request-vector\",\"requestHash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"seller\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "payloadHash": "965719a948b4ce2d39450d4fabcadab816820ac9aae6ad444212a5c71ef2185f",
+      "envelopeId": "d42a455d98a0793db5a60885f94788a2f6fe62597fa14dd5e68375b0b8beded5",
+      "envelopeHash": "71c6b3f988a7632dae70e806ff80d2f27681457c3b1468fef5be7217ae3d136f",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a71c6b3f988a7632dae70e806ff80d2f27681457c3b1468fef5be7217ae3d136f",
+      "signature": "Fp281t7VMWWWYwPJCxZP2LfBl9jyMcGmTVsWWbvbYTH54J7LYtkBtgjPpd3ofe-X_vD4PZFIg4v_d0G_eY6cAA"
+    },
+    {
+      "type": "payment-evidence-completion",
+      "nonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+      "payload": {
+        "messageId": "completion-vector",
+        "completionHash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "buyer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "payloadCanonical": "{\"buyer\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"completionHash\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"completion-vector\"}",
+      "payloadHash": "3cb69297b94bf46987f34819b68702661a817e6ed2145d57208f9b16fdd9e5ef",
+      "envelopeId": "cd3ff9ffd09633bd43d2ab612d2cf21dbf7c2cfdc29d31b36640f402cda8247b",
+      "envelopeHash": "ed3ab7b1bcf86494f6d38476cf5b8e173bc967d5f23f9abe21ad401cb1e97866",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aed3ab7b1bcf86494f6d38476cf5b8e173bc967d5f23f9abe21ad401cb1e97866",
+      "signature": "PqGFF4eutxlqxFqzXba-TJMQ6AdnBsakBoJS5z-7tVqa81mDWeyGb07znNqM4-y4JC_-gRg6NBcIgNhlgp2RCA"
+    },
+    {
+      "type": "bundle-signature-request",
+      "nonce": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "payload": {
+        "bundleContentHash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "signedScope": { "z": 0, "a": "Å" },
+        "signedBytes": "AQID",
+        "requiredCounterSigners": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "payloadCanonical": "{\"bundleContentHash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"requiredCounterSigners\":[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],\"signedBytes\":\"AQID\",\"signedScope\":{\"a\":\"Å\",\"z\":0}}",
+      "payloadHash": "0653890fd69a29bb25f416a344753d60e97e9885c32c3260a7decf88a8539b62",
+      "envelopeId": "4a8d4971a877540e0fdf3f3a8211584b32e9b0fd95abaf6caec21e592173ca2b",
+      "envelopeHash": "a5092270a6491bf19beb9037a7d8e4b3a3c7275e40c84d5a7ee583681688d813",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aa5092270a6491bf19beb9037a7d8e4b3a3c7275e40c84d5a7ee583681688d813",
+      "signature": "6C6ihEDyqL-ATNw6P5deUu4pfp1Kb7bDrkuOYdpAECSp0i4Q3GbMEViRIacwSxca2_rv4oP7AYgKQH7fcMeICA"
+    },
+    {
+      "type": "bundle-signature-response",
+      "nonce": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "payload": {
+        "party": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "algorithm": "ed25519",
+        "signature": "vector-signature"
+      },
+      "payloadCanonical": "{\"algorithm\":\"ed25519\",\"party\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"signature\":\"vector-signature\"}",
+      "payloadHash": "96b88dd552f1db63c26a0e14e782ecb942795850f6c82acaf51d97f85e9d79af",
+      "envelopeId": "a9ce1e7209d03d27143b1a06eeebde2da9d7d1eb427f670d5b29b925d589a79f",
+      "envelopeHash": "ba801fe70cee2c9593e96f5fa508860ae22a502b109ca5323bc9215456f02d7c",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aba801fe70cee2c9593e96f5fa508860ae22a502b109ca5323bc9215456f02d7c",
+      "signature": "vYi__w6WgtGwADtjq8ozqFSHgmgNuQ0H7FQSdST0n3GNzak5G5XN-JkXLqxrFLz5uIsOtKhqYgluUwclUXoVBg"
+    },
+    {
+      "type": "acknowledgement",
+      "nonce": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "payload": {
+        "acknowledgedEnvelopeId": "4444444444444444444444444444444444444444444444444444444444444444",
+        "acknowledgedPayloadHash": "5555555555555555555555555555555555555555555555555555555555555555",
+        "disposition": "accepted"
+      },
+      "payloadCanonical": "{\"acknowledgedEnvelopeId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"acknowledgedPayloadHash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"disposition\":\"accepted\"}",
+      "payloadHash": "4230548f3af0a9ff387d56eb08af9e4cd38fd3192d55d90138a2f3b1f212afe0",
+      "envelopeId": "6d283b529410691578c167947740c633356d461dea43d8b49ee25215d940b017",
+      "envelopeHash": "89847a6e9b6cb5612b3bac09c4da5f2fa2f2cc93e7474ed3aad1730a6d28c6e9",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a89847a6e9b6cb5612b3bac09c4da5f2fa2f2cc93e7474ed3aad1730a6d28c6e9",
+      "signature": "K3A0-W62-XRLDSE4uZU9hPCkbiNuZOTW-WNxNTQpGJwi1jdGIE3xJrV74tNC_H5U5INs0PX6ErfuQ3jVJIGjCg"
+    }
+  ],
+  "negativeCases": [
+    {
+      "name": "modified-payload",
+      "baseCase": "agreement-proposal",
+      "mutation": "replace payload with {\"changed\":true} without updating derived fields",
+      "expectedReasonCode": "envelope-payload-hash-mismatch"
+    },
+    {
+      "name": "modified-audience",
+      "baseCase": "agreement-proposal",
+      "mutation": "replace audience with 64 lowercase d characters without updating derived fields",
+      "expectedReasonCode": "envelope-id-mismatch"
+    },
+    {
+      "name": "wrong-signature-domain",
+      "baseCase": "agreement-proposal",
+      "mutation": "sign dacs-artifact:v1: || raw envelopeHash instead of the message-domain bytes",
+      "expectedReasonCode": "envelope-signature-invalid"
+    },
+    {
+      "name": "padded-nonce",
+      "baseCase": "agreement-proposal",
+      "mutation": "append = to nonce",
+      "expectedReasonCode": "nonce-base64url-invalid"
+    },
+    {
+      "name": "padded-signature",
+      "baseCase": "agreement-proposal",
+      "mutation": "append = to signature",
+      "expectedReasonCode": "signature-base64url-invalid"
+    },
+    {
+      "name": "unsafe-time",
+      "baseCase": "agreement-proposal",
+      "mutation": "replace expiresAt with 9007199254740992",
+      "expectedReasonCode": "envelope-canonical-json-invalid"
+    }
+  ]
+}
