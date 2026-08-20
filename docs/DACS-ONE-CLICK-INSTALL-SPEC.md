@@ -694,6 +694,9 @@ canonical Demos primary `ClaimRef`, and the receiver MUST obtain its exact
 Ed25519 public key through the public SDK Demos identity resolver. The resolver
 MUST verify the relevant DACS identity material, expiry and revocation state and
 establish that `sender` holds the envelope's buyer or seller role for `jobId`.
+Canonical CF-2 parameters, when present, remain in the signed and forwarded
+`sender`, `audience` and `keyId` bytes. Principal ownership, local-audience and
+same-party checks use the parameter-free CF-3 identity.
 
 An unresolved, expired, revoked, ambiguous or role-incompatible key is an
 authentication failure. A locally configured public key, alternate key ID or
@@ -717,13 +720,22 @@ Before invoking an action-bearing handler, the receiver MUST atomically reserve
 `(sender, audience, envelopeId)` with `nonce`, `payloadHash`, authentication
 hash and disposition. An exact replay returns the retained disposition and
 creates no new action. The same identity with different nonce, payload hash or
-envelope facts is a permanent conflict.
+envelope facts is a permanent conflict. Re-resolving an otherwise exact replay
+MAY produce a different current identity-evidence hash; that is not an envelope
+conflict when the resolution is valid and role-compatible. The receiver MUST
+preserve the identity evidence from the original reservation rather than
+silently replacing its audit basis during replay.
 
 Inbox replay reservations MUST be retained until at least seven days after the
 session becomes terminal and never for less than seven days after receipt.
 Outbox messages and acknowledgements MUST be retained for the same period.
 Deployments needing a longer dispute/recovery window MUST configure a longer
-retention period; shortening below this minimum is invalid.
+retention period; shortening below this minimum is invalid. The configured
+period applied to admitted acknowledgement evidence MUST be retained in its
+canonical durable record and history. Reopening with a shorter period MUST NOT
+weaken that recorded policy. Re-admitting the acknowledgement with a longer
+period MUST monotonically upgrade both the recorded policy and its required
+deadline, and a later shorter reopen MUST preserve that upgrade.
 
 ### 12.5 Acknowledgement and retry
 
@@ -754,7 +766,10 @@ The receiver MUST durably reserve and process the inbound message before
 creating the acknowledgement. The sender MUST durably authenticate and record
 the acknowledgement before marking its outbox item acknowledged. An HTTP 2xx
 without a valid signed acknowledgement is transport-ambiguous and MUST NOT
-clear the outbox.
+clear the outbox. Store time governs acknowledgement admission as it does other
+inbound envelopes, and the retained outbox record MUST extend through at least
+the acknowledgement receipt time plus the configured section 12.4 retention
+period.
 
 Retries MUST resend the exact signed envelope and envelope ID with exponential
 backoff starting at one second, capped at 60 seconds, with jitter. A retry MUST

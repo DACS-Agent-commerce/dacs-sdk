@@ -9,6 +9,10 @@ import type {
 } from "@kynesyslabs/dacs/commerce";
 import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
 import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "@kynesyslabs/dacs/identity";
+import {
   isCanonicalJobId,
   type FixedPriceAgreementProposal,
   type FixedPriceAgreementTransportIdentity,
@@ -201,6 +205,15 @@ export type DacsHttpEnvelopeAuthenticationResultV1 =
   | DacsHttpAuthenticatedEnvelopeV1
   | DacsHttpEnvelopeRejectionV1;
 
+export type DacsHttpEnvelopeSelfVerificationV1 = Readonly<
+  | {
+      status: "valid";
+      envelope: Readonly<DacsHttpEnvelopeV1>;
+      authenticationHash: string;
+    }
+  | DacsHttpEnvelopeRejectionV1
+>;
+
 const TYPE_SET = new Set<string>(DACS_HTTP_MESSAGE_TYPES);
 const REQUIRED_SENDER_ROLE = Object.freeze({
   "agreement-proposal": "buyer",
@@ -218,11 +231,7 @@ const IDENTITY_REJECTION_CODE_SET = new Set<DacsHttpIdentityRejectionCode>([
   "identity-ambiguous",
   "identity-role-incompatible",
 ]);
-// DACS-1 §6.3.1 and CORE §B.1 (CF-2): this signed transport profile
-// admits only the canonical byte form, even though a general reader can
-// canonicalise the leading DID scheme token case-insensitively before use.
-const DEMOS_AGENT_PRINCIPAL_RE =
-  /^did:demos:agent:([0-9a-f]{64})$/;
+const DEMOS_AGENT_IDENTIFIER_RE = /^demos:agent:([0-9a-f]{64})$/;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const ENVELOPE_KEYS = Object.freeze([
@@ -285,9 +294,18 @@ function exactKeys(
 }
 
 function demosAgentPrincipalPublicKey(value: unknown): Uint8Array | undefined {
-  if (typeof value !== "string") return undefined;
-  const match = DEMOS_AGENT_PRINCIPAL_RE.exec(value);
+  const parsed = parseCanonicalClaimReference(value);
+  if (parsed === null || parsed.identity.scheme !== "did") return undefined;
+  const match = DEMOS_AGENT_IDENTIFIER_RE.exec(parsed.identity.identifier);
   return match === null ? undefined : Buffer.from(match[1]!, "hex");
+}
+
+// CORE §B.1 CF-2 preserves canonical parameters in signed/forwarded bytes;
+// CF-3 excludes them only from principal comparison and key ownership.
+function sameDemosAgentIdentity(left: unknown, right: unknown): boolean {
+  return demosAgentPrincipalPublicKey(left) !== undefined &&
+    demosAgentPrincipalPublicKey(right) !== undefined &&
+    sameCanonicalClaimIdentity(left, right);
 }
 
 function safeTime(value: unknown): value is number {
@@ -376,7 +394,7 @@ function parseEnvelope(value: unknown): DacsHttpEnvelopeV1 {
       !isCanonicalJobId(snapshot.jobId) ||
       demosAgentPrincipalPublicKey(snapshot.sender) === undefined ||
       demosAgentPrincipalPublicKey(snapshot.audience) === undefined ||
-      snapshot.sender === snapshot.audience ||
+      sameDemosAgentIdentity(snapshot.sender, snapshot.audience) ||
       snapshot.keyId !== snapshot.sender) {
     failure("malformed", "envelope-identity-fields-invalid");
   }
@@ -490,7 +508,7 @@ export async function createDacsHttpEnvelopeV1<
   if (!TYPE_SET.has(input.type) || !isCanonicalJobId(input.jobId) ||
       demosAgentPrincipalPublicKey(input.sender) === undefined ||
       demosAgentPrincipalPublicKey(input.audience) === undefined ||
-      input.sender === input.audience) {
+      sameDemosAgentIdentity(input.sender, input.audience)) {
     failure("malformed", "envelope-create-input-invalid");
   }
   validateTimes(input.issuedAt, input.expiresAt);
@@ -560,7 +578,7 @@ export async function authenticateDacsHttpEnvelopeV1(
       failure("malformed", "expected-audience-invalid");
     }
     const envelope = parseEnvelope(value);
-    if (envelope.audience !== expectedAudience) {
+    if (!sameDemosAgentIdentity(envelope.audience, expectedAudience)) {
       failure("authentication", "envelope-audience-mismatch");
     }
     if (options.expectedJobId !== undefined && envelope.jobId !== options.expectedJobId) {
@@ -612,7 +630,8 @@ export async function authenticateDacsHttpEnvelopeV1(
       failure("authentication", identity.reasonCode);
     }
     const senderPublicKey = demosAgentPrincipalPublicKey(envelope.sender);
-    if (identity.principal !== envelope.sender || identity.jobId !== envelope.jobId ||
+    if (!sameDemosAgentIdentity(identity.principal, envelope.sender) ||
+        identity.jobId !== envelope.jobId ||
         (identity.role !== "buyer" && identity.role !== "seller") ||
         senderPublicKey === undefined ||
         !Buffer.from(identity.publicKey).equals(Buffer.from(senderPublicKey)) ||
@@ -672,6 +691,70 @@ export async function authenticateDacsHttpEnvelopeV1(
       identityEvidenceHash: identity.evidenceHash,
       identityRole: identity.role,
       receivedAt: options.storeTime,
+    });
+  } catch (error) {
+    if (error instanceof EnvelopeFailure) {
+      return Object.freeze({
+        status: "rejected" as const,
+        category: error.category,
+        reasonCode: error.reasonCode,
+      });
+    }
+    return Object.freeze({
+      status: "rejected" as const,
+      category: "malformed" as const,
+      reasonCode: "envelope-processing-failed",
+    });
+  }
+}
+
+/**
+ * Revalidates canonical envelope bytes, identifiers and the self-certifying
+ * Demos sender signature without performing network identity resolution. This
+ * is the durable-store admission primitive; action admission must still use
+ * `authenticateDacsHttpEnvelopeV1` and retain its identity evidence.
+ */
+export function verifyDacsHttpEnvelopeSelfSignatureV1(
+  value: unknown,
+): DacsHttpEnvelopeSelfVerificationV1 {
+  try {
+    const envelope = parseEnvelope(value);
+    let payloadHash: string;
+    try {
+      payloadHash = dacsHttpPayloadHashV1(envelope.payload);
+    } catch {
+      failure("malformed", "envelope-payload-canonical-json-invalid");
+    }
+    if (payloadHash !== envelope.payloadHash) {
+      failure("authentication", "envelope-payload-hash-mismatch");
+    }
+    const envelopeId = dacsHttpEnvelopeIdV1({
+      type: envelope.type,
+      jobId: envelope.jobId,
+      sender: envelope.sender,
+      audience: envelope.audience,
+      nonce: envelope.nonce,
+      payloadHash,
+    });
+    if (envelopeId !== envelope.envelopeId) {
+      failure("authentication", "envelope-id-mismatch");
+    }
+    const publicKey = demosAgentPrincipalPublicKey(envelope.sender);
+    let signatureValid = false;
+    try {
+      signatureValid = publicKey !== undefined && ed25519Verify(
+        dacsHttpEnvelopeSignedBytesV1(envelope),
+        decodeBase64Url(envelope.signature, DACS_HTTP_SIGNATURE_BYTES, "signature"),
+        publicKeyFromRaw(publicKey),
+      );
+    } catch {
+      signatureValid = false;
+    }
+    if (!signatureValid) failure("authentication", "envelope-signature-invalid");
+    return Object.freeze({
+      status: "valid" as const,
+      envelope,
+      authenticationHash: dacsHttpEnvelopeHashV1(envelope),
     });
   } catch (error) {
     if (error instanceof EnvelopeFailure) {

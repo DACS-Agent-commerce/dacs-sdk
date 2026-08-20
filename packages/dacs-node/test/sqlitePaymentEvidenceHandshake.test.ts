@@ -932,9 +932,15 @@ describe("SQLite payment-evidence handshake store", () => {
     close(database);
     const raw = new BetterSqlite3(databasePath);
     raw.exec(`
+      DROP TABLE dacs_http_inbox_history;
+      DROP TABLE dacs_http_outbox_history;
+      DROP TABLE dacs_http_inbox;
+      DROP TABLE dacs_http_outbox;
+      DROP TABLE dacs_http_clock;
       DROP TABLE dacs_payment_evidence_history;
       DROP TABLE dacs_payment_evidence_reservations;
       DROP TABLE dacs_payment_evidence_handshakes;
+      DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
       UPDATE dacs_store_metadata SET schema_version = 4 WHERE singleton = 1;
       PRAGMA user_version = 4;
