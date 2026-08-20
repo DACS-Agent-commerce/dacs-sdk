@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -13,6 +14,23 @@ import BetterSqlite3 from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  createFixedPriceX402BuyerCoordinator,
+  FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
+  FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+  FIXED_PRICE_X402_COMMERCE_PROFILE,
+  FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+  FIXED_PRICE_X402_STANDARD_REVISION,
+  fixedPriceOfflineOrderBindingHash,
+  fixedPriceX402OrderBindingHash,
+  type FixedPriceOfflineOrderInput,
+  type FixedPriceOfflineProtocolBinding,
+  type FixedPriceX402OrderInput,
+  type FixedPriceX402ProtocolBinding,
+  type FixedPriceX402TrackOperation,
+} from "@kynesyslabs/dacs/commerce";
+
+import {
+  DACS_NODE_LIVE_PROFILE,
   DACS_NODE_OFFLINE_PROFILE,
 } from "../src/index.js";
 import {
@@ -30,6 +48,73 @@ const OTHER_BINDING_HASH = "b".repeat(64);
 const ABSENCE_PROOF_HASH = "c".repeat(64);
 const JOB_ID = "01J8N4YV7YVYQ4DB7M8T4C7W0A";
 const OTHER_JOB_ID = "01J8N4YV7YVYQ4DB7M8T4C7W0B";
+const BUYER = "did:example:sqlite-buyer";
+const SELLER = "did:example:sqlite-seller";
+const LIVE_PROTOCOL: FixedPriceX402ProtocolBinding = {
+  commerceProfile: FIXED_PRICE_X402_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+  phase: "pay-x402",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  rail: {
+    registryIndexRef: FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+    registryIndexHash: "1".repeat(64),
+    railDefinitionRef: "dacs4:rail:x402%3Asqlite:1",
+    railDefinitionHash: "2".repeat(64),
+    railId: "x402:sqlite",
+    railVersion: 1,
+    railType: "x402",
+    phaseHandler: "pay-x402",
+    network: "eip155:8453",
+    availability: "live",
+  },
+};
+const OFFLINE_PROTOCOL: FixedPriceOfflineProtocolBinding = {
+  commerceProfile: FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+  mode: "offline",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  settlement: {
+    adapter: "deterministic-offline",
+    version: 1,
+    disposition: "mocked",
+  },
+};
+
+function liveOrder(): FixedPriceX402OrderInput {
+  return {
+    jobId: JOB_ID,
+    buyer: BUYER,
+    seller: SELLER,
+    protocol: LIVE_PROTOCOL,
+    sdkJobs: {
+      role: "buyer",
+      agreement: `buyer:agreement:${JOB_ID}`,
+      payment: `buyer:payment:${JOB_ID}`,
+      paymentEvidence: `buyer:payment-evidence:${JOB_ID}`,
+      buyerReceived: `buyer:received:${JOB_ID}`,
+      audit: `buyer:audit:${JOB_ID}`,
+    },
+  };
+}
+
+function offlineOrder(): FixedPriceOfflineOrderInput {
+  return {
+    ...liveOrder(),
+    protocol: OFFLINE_PROTOCOL,
+  };
+}
+
+const finalCoordinatorOperation = (label: string): FixedPriceX402TrackOperation =>
+  async ({ fence }) => {
+    await fence.assertCurrent();
+    return {
+      status: "final",
+      outcome: "success",
+      reference: `${label}:${fence.jobId}`,
+    };
+  };
 
 describe("DACS Node SQLite durability foundation", () => {
   const roots: string[] = [];
@@ -123,6 +208,182 @@ describe("DACS Node SQLite durability foundation", () => {
     await expect(openDacsNodeSqliteDatabase(options(foreignPath))).rejects.toMatchObject({
       reasonCode: "database-unrecognized",
     });
+  });
+
+  it("backs up and atomically advances an older supported schema", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "buyer.sqlite");
+    const current = await open(databasePath);
+    current.close();
+    databases.splice(databases.indexOf(current), 1);
+
+    const old = new BetterSqlite3(databasePath);
+    old.exec(`
+      DROP TABLE dacs_coordinator_orders;
+      DELETE FROM dacs_migrations WHERE version = 2;
+      UPDATE dacs_store_metadata SET schema_version = 1 WHERE singleton = 1;
+      PRAGMA user_version = 1;
+    `);
+    old.close();
+
+    const migrated = await open(databasePath);
+    expect(migrated.diagnostics().schemaVersion).toBe(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    expect(readdirSync(root).filter((name) => name.includes(".backup-v1-")))
+      .toHaveLength(1);
+
+    const raw = new BetterSqlite3(databasePath, { readonly: true });
+    expect(raw.prepare(`
+      SELECT name FROM sqlite_schema
+      WHERE type = 'table' AND name = 'dacs_coordinator_orders'
+    `).get()).toMatchObject({ name: "dacs_coordinator_orders" });
+    expect(raw.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
+      .toEqual([{ version: 1 }, { version: 2 }]);
+    raw.close();
+  });
+
+  it("resumes the live coordinator DAG from durable role-local state", async () => {
+    const databasePath = join(temporaryRoot(), "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const first = await open(databasePath, liveOptions);
+    const initialCoordinator = createFixedPriceX402BuyerCoordinator({
+      store: first.createLiveCoordinatorStore("buyer"),
+      workerId: "buyer-worker-before-restart",
+      operations: {
+        agreement: finalCoordinatorOperation("agreement"),
+        payment: finalCoordinatorOperation("payment"),
+        "payment-evidence": finalCoordinatorOperation("payment-evidence"),
+        "buyer-received": finalCoordinatorOperation("buyer-received"),
+        audit: finalCoordinatorOperation("audit"),
+      },
+    });
+
+    expect((await initialCoordinator.startOrder(liveOrder())).milestone).toBe("created");
+    expect((await initialCoordinator.runPending({ limit: 2 })).items.map(
+      (item) => item.track,
+    )).toEqual(["agreement", "payment"]);
+    first.close();
+    databases.splice(databases.indexOf(first), 1);
+
+    const restarted = await open(databasePath, liveOptions);
+    const resumedCoordinator = createFixedPriceX402BuyerCoordinator({
+      store: restarted.createLiveCoordinatorStore("buyer"),
+      workerId: "buyer-worker-after-restart",
+      operations: {
+        agreement: finalCoordinatorOperation("agreement"),
+        payment: finalCoordinatorOperation("payment"),
+        "payment-evidence": finalCoordinatorOperation("payment-evidence"),
+        "buyer-received": finalCoordinatorOperation("buyer-received"),
+        audit: finalCoordinatorOperation("audit"),
+      },
+    });
+    expect((await resumedCoordinator.resumePendingOrders({ limit: 10 })).items.map(
+      (item) => item.track,
+    )).toEqual(["payment-evidence", "buyer-received", "audit"]);
+    expect((await resumedCoordinator.getOrderStatus(JOB_ID))?.milestone)
+      .toBe("actor-audit-final");
+  });
+
+  it("fences stale coordinator workers across SQLite connections", async () => {
+    const databasePath = join(temporaryRoot(), "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const first = await open(databasePath, liveOptions);
+    const second = await open(databasePath, liveOptions);
+    const firstStore = first.createLiveCoordinatorStore("buyer");
+    const secondStore = second.createLiveCoordinatorStore("buyer");
+    const order = liveOrder();
+    const bindingHash = fixedPriceX402OrderBindingHash(order);
+    expect(await firstStore.create({ role: "buyer", order, bindingHash }))
+      .toMatchObject({ status: "created" });
+    const staleClaim = await firstStore.claim({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      track: "agreement",
+      owner: "worker-1",
+      leaseDurationMs: 1,
+    });
+    expect(staleClaim).toMatchObject({ status: "acquired" });
+    if (staleClaim.status !== "acquired") throw new Error("expected first claim");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    const currentClaim = await secondStore.claim({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      track: "agreement",
+      owner: "worker-2",
+      leaseDurationMs: 10_000,
+    });
+    expect(currentClaim).toMatchObject({ status: "acquired" });
+    if (currentClaim.status !== "acquired") throw new Error("expected replacement claim");
+
+    expect(await firstStore.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      track: "agreement",
+      lease: staleClaim.lease,
+      result: { status: "final", outcome: "success", reference: "stale" },
+    })).toEqual({ status: "stale" });
+    expect(await secondStore.record({
+      role: "buyer",
+      jobId: JOB_ID,
+      bindingHash,
+      track: "agreement",
+      lease: currentClaim.lease,
+      result: { status: "final", outcome: "success", reference: "current" },
+    })).toMatchObject({
+      status: "recorded",
+      record: { tracks: { agreement: { reference: "current" } } },
+    });
+  });
+
+  it("keeps live and offline coordinator stores profile-isolated", async () => {
+    const offline = await open(join(temporaryRoot(), "buyer.sqlite"));
+    expect(() => offline.createLiveCoordinatorStore("buyer")).toThrowError(
+      expect.objectContaining({ reasonCode: "coordinator-profile-mismatch" }),
+    );
+    expect(() => offline.createOfflineCoordinatorStore("seller")).toThrowError(
+      expect.objectContaining({ reasonCode: "coordinator-role-mismatch" }),
+    );
+    const store = offline.createOfflineCoordinatorStore("buyer");
+    const order = offlineOrder();
+    const bindingHash = fixedPriceOfflineOrderBindingHash(order);
+    expect(await store.create({ role: "buyer", order, bindingHash }))
+      .toMatchObject({ status: "created", record: { protocol: OFFLINE_PROTOCOL } });
+    expect(await store.load("buyer", JOB_ID))
+      .toMatchObject({ status: "ok", record: { bindingHash } });
+  });
+
+  it("fails closed when persisted coordinator JSON loses its integrity binding", async () => {
+    const databasePath = join(temporaryRoot(), "buyer.sqlite");
+    const database = await open(databasePath, {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const store = database.createLiveCoordinatorStore("buyer");
+    const order = liveOrder();
+    const bindingHash = fixedPriceX402OrderBindingHash(order);
+    await store.create({ role: "buyer", order, bindingHash });
+
+    const raw = new BetterSqlite3(databasePath);
+    raw.prepare(`
+      UPDATE dacs_coordinator_orders SET record_json = ?
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+    `).run("{}", JOB_ID);
+    raw.close();
+    expect(await store.load("buyer", JOB_ID)).toMatchObject({ status: "corrupt" });
   });
 
   it("blocks non-filesystem, symlinked, and consumer-sync locations", () => {

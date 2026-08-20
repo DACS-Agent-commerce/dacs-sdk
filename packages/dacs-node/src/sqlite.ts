@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -9,8 +10,26 @@ import {
   statfsSync,
 } from "node:fs";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import {
+  FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+  fixedPriceOfflineOrderBindingHash,
+  fixedPriceOfflineOrderViolation,
+  fixedPriceX402OrderBindingHash,
+  fixedPriceX402OrderViolation,
+  type FixedPriceOfflineCoordinatorStore,
+  type FixedPriceOfflineOrderRecord,
+  type FixedPriceX402CoordinatorRole,
+  type FixedPriceX402CoordinatorStore,
+  type FixedPriceX402ErrorClass,
+  type FixedPriceX402OrderRecord,
+  type FixedPriceX402Track,
+  type FixedPriceX402TrackLease,
+  type FixedPriceX402TrackOperationResult,
+  type FixedPriceX402TrackRecord,
+} from "@kynesyslabs/dacs/commerce";
 import { isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 import BetterSqlite3 from "better-sqlite3";
 
@@ -19,7 +38,7 @@ import {
   DACS_NODE_OFFLINE_PROFILE,
 } from "./config.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 1 as const;
+export const DACS_NODE_SQLITE_SCHEMA_VERSION = 2 as const;
 export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 
@@ -223,6 +242,12 @@ export interface DacsNodeSqliteDatabase {
   }>;
   readTime(): number;
   diagnostics(): Readonly<DacsNodeSqliteDiagnostics>;
+  createLiveCoordinatorStore(
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPriceX402CoordinatorStore;
+  createOfflineCoordinatorStore(
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPriceOfflineCoordinatorStore;
   reserveIdentity(input: Readonly<{
     kind: DacsNodeSqliteReservationKind;
     identity: string;
@@ -365,6 +390,47 @@ interface EffectRow {
   updated_at: number;
 }
 
+interface CoordinatorRow {
+  profile: string;
+  role: string;
+  job_id: string;
+  binding_hash: string;
+  record_hash: string;
+  record_json: string;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+}
+
+type CoordinatorProfile = "live-x402" | "offline";
+type CoordinatorRecord = FixedPriceX402OrderRecord | FixedPriceOfflineOrderRecord;
+
+const COORDINATOR_TRACKS_BY_ROLE = Object.freeze({
+  buyer: Object.freeze([
+    "agreement",
+    "payment",
+    "payment-evidence",
+    "buyer-received",
+    "audit",
+  ] as const satisfies readonly FixedPriceX402Track[]),
+  seller: Object.freeze([
+    "agreement",
+    "payment",
+    "payment-evidence",
+    "delivery",
+    "delivery-evidence",
+    "audit",
+  ] as const satisfies readonly FixedPriceX402Track[]),
+});
+
+const COORDINATOR_ERROR_CLASSES = new Set<FixedPriceX402ErrorClass>([
+  "permanent",
+  "transient",
+  "counterparty",
+  "substrate",
+  "settlement-atomicity",
+]);
+
 const MIGRATION_1 = `
 CREATE TABLE dacs_store_metadata (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -439,6 +505,26 @@ CREATE INDEX dacs_effect_history_effect_idx
   ON dacs_effect_history (effect_kind, effect_id, sequence);
 `;
 
+const MIGRATION_2 = `
+CREATE TABLE dacs_coordinator_orders (
+  profile TEXT NOT NULL,
+  role TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  binding_hash TEXT NOT NULL,
+  record_hash TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (profile, role, job_id),
+  CHECK (revision > 0),
+  CHECK (updated_at >= created_at)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX dacs_coordinator_orders_runnable_idx
+  ON dacs_coordinator_orders (profile, role, job_id);
+`;
+
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 &&
     value.trim() === value && !value.includes("\0");
@@ -458,6 +544,247 @@ function safeUint(value: unknown): value is number {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function coordinatorTracks(
+  role: FixedPriceX402CoordinatorRole,
+): readonly FixedPriceX402Track[] {
+  return COORDINATOR_TRACKS_BY_ROLE[role];
+}
+
+function emptyCoordinatorTracks(
+  role: FixedPriceX402CoordinatorRole,
+  now: number,
+): Partial<Record<FixedPriceX402Track, FixedPriceX402TrackRecord>> {
+  return Object.fromEntries(coordinatorTracks(role).map((track) => [
+    track,
+    { state: "not-started", generation: 0, attempts: 0, updatedAt: now },
+  ])) as Partial<Record<FixedPriceX402Track, FixedPriceX402TrackRecord>>;
+}
+
+function coordinatorViolation(
+  profile: CoordinatorProfile,
+  value: unknown,
+): string | null {
+  return profile === "live-x402"
+    ? fixedPriceX402OrderViolation(value)
+    : fixedPriceOfflineOrderViolation(value);
+}
+
+function coordinatorBindingHash(
+  profile: CoordinatorProfile,
+  value: Readonly<{
+    jobId: string;
+    buyer: string;
+    seller: string;
+    protocol: CoordinatorRecord["protocol"];
+  }>,
+): string {
+  return profile === "live-x402"
+    ? fixedPriceX402OrderBindingHash(
+        value as Parameters<typeof fixedPriceX402OrderBindingHash>[0],
+      )
+    : fixedPriceOfflineOrderBindingHash(
+        value as Parameters<typeof fixedPriceOfflineOrderBindingHash>[0],
+      );
+}
+
+type CoordinatorDecode = Readonly<
+  | { status: "ok"; record: Readonly<CoordinatorRecord> }
+  | { status: "unsupported"; version: number }
+  | { status: "corrupt"; reason: string }
+>;
+
+function coordinatorFromRow(
+  row: Readonly<CoordinatorRow>,
+  profile: CoordinatorProfile,
+): CoordinatorDecode {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.record_json) as unknown;
+  } catch {
+    return { status: "corrupt", reason: "coordinator record JSON is malformed" };
+  }
+  if (parsed !== null && typeof parsed === "object" &&
+      Number.isSafeInteger((parsed as { storeVersion?: unknown }).storeVersion) &&
+      (parsed as { storeVersion: number }).storeVersion !==
+        FIXED_PRICE_X402_COORDINATOR_STORE_VERSION) {
+    return {
+      status: "unsupported",
+      version: (parsed as { storeVersion: number }).storeVersion,
+    };
+  }
+  let recordJson: string;
+  try {
+    recordJson = canonicalize(parsed);
+  } catch {
+    return { status: "corrupt", reason: "coordinator record is not canonical data" };
+  }
+  const violation = coordinatorViolation(profile, parsed);
+  const record = parsed as CoordinatorRecord;
+  if (violation || recordJson !== row.record_json || sha256Hex(recordJson) !== row.record_hash ||
+      row.profile !== profile || row.role !== record.role || row.job_id !== record.jobId ||
+      row.binding_hash !== record.bindingHash || row.revision !== record.revision ||
+      row.created_at !== record.createdAt || row.updated_at !== record.updatedAt) {
+    return {
+      status: "corrupt",
+      reason: violation ?? "coordinator record integrity binding differs",
+    };
+  }
+  return { status: "ok", record: clone(record) };
+}
+
+function coordinatorTrack(
+  record: Readonly<CoordinatorRecord>,
+  track: FixedPriceX402Track,
+): Readonly<FixedPriceX402TrackRecord> | undefined {
+  return record.tracks[track];
+}
+
+function coordinatorTrackFinal(
+  record: Readonly<CoordinatorRecord>,
+  track: FixedPriceX402Track,
+): boolean {
+  return coordinatorTrack(record, track)?.state === "final";
+}
+
+function coordinatorTrackSuccessful(
+  record: Readonly<CoordinatorRecord>,
+  track: FixedPriceX402Track,
+): boolean {
+  const retained = coordinatorTrack(record, track);
+  return retained?.state === "final" && retained.outcome === "success";
+}
+
+function coordinatorTerminalResult(
+  record: Readonly<CoordinatorRecord>,
+): Readonly<
+  | { outcome: "failure"; errorClass: FixedPriceX402ErrorClass }
+  | { outcome: "aborted" }
+> | null {
+  const tracks: readonly FixedPriceX402Track[] = record.role === "buyer"
+    ? ["agreement", "payment", "buyer-received"]
+    : ["agreement", "payment", "delivery"];
+  for (const track of tracks) {
+    const retained = coordinatorTrack(record, track);
+    if (retained?.state === "final" && retained.outcome !== "success") {
+      return retained.outcome === "failure"
+        ? { outcome: "failure", errorClass: retained.errorClass! }
+        : { outcome: "aborted" };
+    }
+  }
+  return null;
+}
+
+function coordinatorTrackEligible(
+  record: Readonly<CoordinatorRecord>,
+  track: FixedPriceX402Track,
+): boolean {
+  if (!coordinatorTracks(record.role).includes(track)) return false;
+  switch (track) {
+    case "agreement": return true;
+    case "payment": return coordinatorTrackSuccessful(record, "agreement");
+    case "payment-evidence": return coordinatorTrackFinal(record, "payment");
+    case "delivery":
+      return record.role === "seller" && coordinatorTrackSuccessful(record, "payment");
+    case "buyer-received":
+      return record.role === "buyer" && coordinatorTrackSuccessful(record, "payment");
+    case "delivery-evidence":
+      return record.role === "seller" && coordinatorTrackFinal(record, "delivery");
+    case "audit": {
+      const agreement = coordinatorTrack(record, "agreement");
+      if (agreement?.state === "final" && agreement.outcome !== "success") return true;
+      const payment = coordinatorTrack(record, "payment");
+      if (payment?.state === "final" && payment.outcome !== "success") {
+        return coordinatorTrackSuccessful(record, "payment-evidence");
+      }
+      return record.role === "buyer"
+        ? coordinatorTrackSuccessful(record, "payment-evidence") &&
+            coordinatorTrackFinal(record, "buyer-received")
+        : coordinatorTrackSuccessful(record, "payment-evidence") &&
+            coordinatorTrackSuccessful(record, "delivery-evidence");
+    }
+  }
+}
+
+function coordinatorResultAllowed(
+  record: Readonly<CoordinatorRecord>,
+  track: FixedPriceX402Track,
+  result: Readonly<{
+    outcome: "success" | "failure" | "aborted";
+    errorClass?: FixedPriceX402ErrorClass;
+  }>,
+): boolean {
+  if (track === "payment-evidence" || track === "delivery-evidence") {
+    return result.outcome === "success";
+  }
+  if (track === "audit") {
+    const expected = coordinatorTerminalResult(record) ?? { outcome: "success" as const };
+    return result.outcome === expected.outcome &&
+      (expected.outcome !== "failure" || result.errorClass === expected.errorClass);
+  }
+  return true;
+}
+
+function coordinatorTrackRunnable(
+  record: Readonly<CoordinatorRecord>,
+  track: FixedPriceX402Track,
+  now: number,
+): boolean {
+  const retained = coordinatorTrack(record, track);
+  if (!retained || !coordinatorTrackEligible(record, track) ||
+      retained.state === "final" || retained.state === "operator-action") return false;
+  if (retained.nextAttemptAt !== undefined && retained.nextAttemptAt > now) return false;
+  return retained.lease === undefined || retained.lease.expiresAt <= now;
+}
+
+function exactDataKeys(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string")) return false;
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key)) &&
+    keys.every((key) => allowed.has(key as string)) &&
+    keys.every((key) => {
+      const descriptor = descriptors[key as string];
+      return descriptor?.enumerable === true && "value" in descriptor &&
+        descriptor.value !== undefined;
+    });
+}
+
+function captureCoordinatorResult(value: unknown): FixedPriceX402TrackOperationResult | null {
+  if (exactDataKeys(value, ["status", "outcome", "reference"], ["authenticationHash"]) &&
+      value.status === "final" && (value.outcome === "success" || value.outcome === "aborted") &&
+      nonEmpty(value.reference) &&
+      (value.authenticationHash === undefined || hash(value.authenticationHash))) {
+    return clone(value) as unknown as FixedPriceX402TrackOperationResult;
+  }
+  if (exactDataKeys(
+    value,
+    ["status", "outcome", "errorClass", "reference"],
+    ["authenticationHash"],
+  ) && value.status === "final" && value.outcome === "failure" &&
+      COORDINATOR_ERROR_CLASSES.has(value.errorClass as FixedPriceX402ErrorClass) &&
+      nonEmpty(value.reference) &&
+      (value.authenticationHash === undefined || hash(value.authenticationHash))) {
+    return clone(value) as unknown as FixedPriceX402TrackOperationResult;
+  }
+  if (exactDataKeys(value, ["status", "reasonCode", "retryAt"]) &&
+      (value.status === "pending-retry" || value.status === "indeterminate") &&
+      reasonCode(value.reasonCode) && safeUint(value.retryAt)) {
+    return clone(value) as unknown as FixedPriceX402TrackOperationResult;
+  }
+  if (exactDataKeys(value, ["status", "reasonCode"]) &&
+      value.status === "operator-action" && reasonCode(value.reasonCode)) {
+    return clone(value) as unknown as FixedPriceX402TrackOperationResult;
+  }
+  return null;
 }
 
 function decodeMountPath(value: string): string {
@@ -849,6 +1176,385 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         : { filesystemType: this.location.filesystemType }),
       filesystemMagic: this.location.filesystemMagic,
     };
+  }
+
+  createLiveCoordinatorStore(
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPriceX402CoordinatorStore {
+    if (this.metadata.mode !== "live-demos") {
+      throw new DacsNodeSqliteError(
+        "coordinator-profile-mismatch",
+        "A live coordinator store requires a live Demos actor database",
+      );
+    }
+    return this.createCoordinatorStore("live-x402", role);
+  }
+
+  createOfflineCoordinatorStore(
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPriceOfflineCoordinatorStore {
+    if (this.metadata.mode !== "offline") {
+      throw new DacsNodeSqliteError(
+        "coordinator-profile-mismatch",
+        "An offline coordinator store requires an offline actor database",
+      );
+    }
+    return this.createCoordinatorStore("offline", role) as unknown as
+      FixedPriceOfflineCoordinatorStore;
+  }
+
+  private createCoordinatorStore(
+    profile: CoordinatorProfile,
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPriceX402CoordinatorStore {
+    this.assertOpen();
+    if ((role !== "buyer" && role !== "seller") || role !== this.metadata.role) {
+      throw new DacsNodeSqliteError(
+        "coordinator-role-mismatch",
+        "Coordinator role must equal the SQLite actor authority role",
+      );
+    }
+    const database = this.database;
+    const readRow = (jobId: string): CoordinatorRow | undefined =>
+      database.prepare(`
+        SELECT * FROM dacs_coordinator_orders
+        WHERE profile = ? AND role = ? AND job_id = ?
+      `).get(profile, role, jobId) as CoordinatorRow | undefined;
+    const loadRecord = (jobId: string): Readonly<
+      | { status: "missing" }
+      | CoordinatorDecode
+    > => {
+      const row = readRow(jobId);
+      return row ? coordinatorFromRow(row, profile) : { status: "missing" };
+    };
+    const saveRecord = (
+      current: Readonly<CoordinatorRecord>,
+      nextValue: Readonly<CoordinatorRecord>,
+    ): Readonly<CoordinatorRecord> | null => {
+      const next = {
+        ...clone(nextValue),
+        revision: current.revision + 1,
+      } as CoordinatorRecord;
+      const violation = coordinatorViolation(profile, next);
+      if (violation) {
+        throw new DacsNodeSqliteError("coordinator-record-invalid", violation);
+      }
+      const recordJson = canonicalize(next);
+      const result = database.prepare(`
+        UPDATE dacs_coordinator_orders SET
+          binding_hash = ?, record_hash = ?, record_json = ?, revision = ?,
+          created_at = ?, updated_at = ?
+        WHERE profile = ? AND role = ? AND job_id = ? AND revision = ?
+      `).run(
+        next.bindingHash,
+        sha256Hex(recordJson),
+        recordJson,
+        next.revision,
+        next.createdAt,
+        next.updatedAt,
+        profile,
+        role,
+        next.jobId,
+        current.revision,
+      );
+      return result.changes === 1 ? clone(next) : null;
+    };
+    const toLive = (record: Readonly<CoordinatorRecord>): FixedPriceX402OrderRecord =>
+      clone(record) as FixedPriceX402OrderRecord;
+
+    const store: FixedPriceX402CoordinatorStore = {
+      async readTime() {
+        return databaseTime(database);
+      },
+
+      async create(input) {
+        if (input.role !== role) {
+          return { status: "corrupt", reason: "coordinator role differs from bound store" };
+        }
+        let expectedBindingHash: string;
+        try {
+          expectedBindingHash = coordinatorBindingHash(profile, input.order);
+        } catch (error) {
+          return {
+            status: "corrupt",
+            reason: error instanceof Error ? error.message : "coordinator order is malformed",
+          };
+        }
+        if (input.bindingHash !== expectedBindingHash) return { status: "conflict" };
+        return beginImmediate(database, () => {
+          const now = databaseTime(database);
+          let record: CoordinatorRecord;
+          try {
+            record = {
+              storeVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+              revision: 1,
+              role,
+              jobId: input.order.jobId,
+              buyer: input.order.buyer,
+              seller: input.order.seller,
+              protocol: clone(input.order.protocol),
+              bindingHash: expectedBindingHash,
+              sdkJobs: clone(input.order.sdkJobs),
+              tracks: emptyCoordinatorTracks(role, now),
+              createdAt: now,
+              updatedAt: now,
+            } as CoordinatorRecord;
+          } catch {
+            return { status: "corrupt" as const, reason: "coordinator order is malformed" };
+          }
+          const violation = coordinatorViolation(profile, record);
+          if (violation) return { status: "corrupt" as const, reason: violation };
+          const existing = loadRecord(input.order.jobId);
+          if (existing.status !== "missing") {
+            if (existing.status !== "ok") return existing;
+            return existing.record.bindingHash === expectedBindingHash &&
+                canonicalize(existing.record.sdkJobs) === canonicalize(record.sdkJobs)
+              ? { status: "existing" as const, record: toLive(existing.record) }
+              : { status: "conflict" as const };
+          }
+          const recordJson = canonicalize(record);
+          database.prepare(`
+            INSERT INTO dacs_coordinator_orders (
+              profile, role, job_id, binding_hash, record_hash, record_json,
+              revision, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            profile,
+            role,
+            record.jobId,
+            record.bindingHash,
+            sha256Hex(recordJson),
+            recordJson,
+            record.revision,
+            record.createdAt,
+            record.updatedAt,
+          );
+          return { status: "created" as const, record: toLive(record) };
+        });
+      },
+
+      async load(inputRole, jobId) {
+        if (inputRole !== role) {
+          return { status: "corrupt", reason: "coordinator role differs from bound store" };
+        }
+        const loaded = loadRecord(jobId);
+        return loaded.status === "ok"
+          ? { status: "ok", record: toLive(loaded.record) }
+          : loaded;
+      },
+
+      async listRunnable(input) {
+        if (input.role !== role || !Array.isArray(input.tracks) ||
+            input.tracks.some((track) => !coordinatorTracks(role).includes(track)) ||
+            (input.cursor !== undefined && !nonEmpty(input.cursor)) ||
+            !safeUint(input.limit) || input.limit === 0) {
+          throw new DacsNodeSqliteError(
+            "coordinator-query-malformed",
+            "Coordinator runnable query is malformed",
+          );
+        }
+        const now = databaseTime(database);
+        const rows = database.prepare(`
+          SELECT * FROM dacs_coordinator_orders
+          WHERE profile = ? AND role = ? AND job_id > ?
+          ORDER BY job_id
+        `).all(profile, role, input.cursor ?? "") as CoordinatorRow[];
+        const eligible = rows.flatMap((row) => {
+          const decoded = coordinatorFromRow(row, profile);
+          if (decoded.status !== "ok") {
+            throw new DacsNodeSqliteError(
+              decoded.status === "unsupported"
+                ? "coordinator-version-unsupported"
+                : "coordinator-record-corrupt",
+              decoded.status === "unsupported"
+                ? `Coordinator store version ${decoded.version} is unsupported`
+                : decoded.reason,
+            );
+          }
+          return input.tracks.some((track) =>
+            coordinatorTrackRunnable(decoded.record, track, now)
+          ) ? [decoded.record] : [];
+        });
+        const selected = eligible.slice(0, input.limit);
+        return {
+          items: selected.map(toLive),
+          ...(eligible.length > selected.length && selected.length > 0
+            ? { nextCursor: selected.at(-1)!.jobId }
+            : {}),
+        };
+      },
+
+      async claim(input) {
+        if (input.role !== role) return { status: "stale" };
+        return beginImmediate(database, () => {
+          const loaded = loadRecord(input.jobId);
+          if (loaded.status !== "ok") return loaded;
+          const current = loaded.record;
+          if (current.bindingHash !== input.bindingHash) return { status: "stale" as const };
+          if (!coordinatorTracks(role).includes(input.track) || !nonEmpty(input.owner) ||
+              !safeUint(input.leaseDurationMs) || input.leaseDurationMs === 0) {
+            return { status: "corrupt" as const, reason: "coordinator claim is malformed" };
+          }
+          const now = databaseTime(database);
+          const retained = current.tracks[input.track]!;
+          if (!coordinatorTrackEligible(current, input.track) || retained.state === "final" ||
+              retained.state === "operator-action" ||
+              (retained.nextAttemptAt !== undefined && retained.nextAttemptAt > now)) {
+            return { status: "not-runnable" as const, record: toLive(current) };
+          }
+          if (retained.lease && retained.lease.expiresAt > now) {
+            return {
+              status: "waiting" as const,
+              record: toLive(current),
+              lease: clone(retained.lease),
+            };
+          }
+          const expiresAt = now + input.leaseDurationMs;
+          const generation = retained.generation + 1;
+          if (!Number.isSafeInteger(expiresAt) || !Number.isSafeInteger(generation)) {
+            return { status: "corrupt" as const, reason: "coordinator lease overflows" };
+          }
+          const lease: FixedPriceX402TrackLease = {
+            owner: input.owner,
+            generation,
+            expiresAt,
+          };
+          const updatedAt = Math.max(current.updatedAt, now);
+          const tracks = clone(current.tracks) as Partial<
+            Record<FixedPriceX402Track, FixedPriceX402TrackRecord>
+          >;
+          tracks[input.track] = {
+            state: "running",
+            generation,
+            attempts: retained.attempts + 1,
+            updatedAt,
+            lease,
+          };
+          const next = saveRecord(current, {
+            ...clone(current),
+            tracks,
+            updatedAt,
+          });
+          return next
+            ? { status: "acquired" as const, record: toLive(next), lease: clone(lease) }
+            : { status: "stale" as const };
+        });
+      },
+
+      async isCurrent(input) {
+        if (input.role !== role) return false;
+        const loaded = loadRecord(input.jobId);
+        if (loaded.status !== "ok" || loaded.record.bindingHash !== input.bindingHash) {
+          return false;
+        }
+        const retained = loaded.record.tracks[input.track];
+        const now = databaseTime(database);
+        return retained?.state === "running" && retained.lease !== undefined &&
+          retained.lease.owner === input.lease.owner &&
+          retained.lease.generation === input.lease.generation &&
+          retained.lease.expiresAt === input.lease.expiresAt &&
+          retained.lease.expiresAt > now;
+      },
+
+      async record(input) {
+        if (input.role !== role) return { status: "stale" };
+        return beginImmediate(database, () => {
+          const loaded = loadRecord(input.jobId);
+          if (loaded.status !== "ok") return loaded;
+          const current = loaded.record;
+          if (current.bindingHash !== input.bindingHash ||
+              !coordinatorTracks(role).includes(input.track)) return { status: "stale" as const };
+          const retained = current.tracks[input.track]!;
+          const now = databaseTime(database);
+          if (retained.state !== "running" || !retained.lease ||
+              retained.lease.owner !== input.lease.owner ||
+              retained.lease.generation !== input.lease.generation ||
+              retained.lease.expiresAt !== input.lease.expiresAt ||
+              retained.lease.expiresAt <= now) return { status: "stale" as const };
+          const result = captureCoordinatorResult(input.result);
+          if (!result || (result.status === "final" &&
+              !coordinatorResultAllowed(current, input.track, result))) {
+            return { status: "conflict" as const };
+          }
+          const updatedAt = Math.max(current.updatedAt, now);
+          const nextTrack: FixedPriceX402TrackRecord = result.status === "final"
+            ? {
+                state: "final",
+                generation: retained.generation,
+                attempts: retained.attempts,
+                updatedAt,
+                reference: result.reference,
+                outcome: result.outcome,
+                ...(result.authenticationHash
+                  ? { authenticationHash: result.authenticationHash }
+                  : {}),
+                ...(result.outcome === "failure" ? { errorClass: result.errorClass } : {}),
+              }
+            : {
+                state: result.status,
+                generation: retained.generation,
+                attempts: retained.attempts,
+                updatedAt,
+                reasonCode: result.reasonCode,
+                ...(result.retryAt === undefined ? {} : { nextAttemptAt: result.retryAt }),
+              };
+          const tracks = clone(current.tracks) as Partial<
+            Record<FixedPriceX402Track, FixedPriceX402TrackRecord>
+          >;
+          tracks[input.track] = nextTrack;
+          const next = saveRecord(current, {
+            ...clone(current),
+            tracks,
+            updatedAt,
+          });
+          return next
+            ? { status: "recorded" as const, record: toLive(next) }
+            : { status: "stale" as const };
+        });
+      },
+
+      async requeue(input) {
+        if (input.role !== role) return { status: "stale" };
+        return beginImmediate(database, () => {
+          const loaded = loadRecord(input.jobId);
+          if (loaded.status !== "ok") return loaded;
+          const current = loaded.record;
+          if (current.bindingHash !== input.bindingHash ||
+              !coordinatorTracks(role).includes(input.track) ||
+              !reasonCode(input.operatorReasonCode) ||
+              (input.retryAt !== undefined && !safeUint(input.retryAt))) {
+            return { status: "conflict" as const };
+          }
+          const retained = current.tracks[input.track]!;
+          const now = databaseTime(database);
+          if (retained.state === "final" ||
+              (retained.lease !== undefined && retained.lease.expiresAt > now)) {
+            return { status: "stale" as const };
+          }
+          const updatedAt = Math.max(current.updatedAt, now);
+          const tracks = clone(current.tracks) as Partial<
+            Record<FixedPriceX402Track, FixedPriceX402TrackRecord>
+          >;
+          tracks[input.track] = {
+            state: "pending-retry",
+            generation: retained.generation,
+            attempts: retained.attempts,
+            updatedAt,
+            reasonCode: input.operatorReasonCode,
+            ...(input.retryAt === undefined ? {} : { nextAttemptAt: input.retryAt }),
+          };
+          const next = saveRecord(current, {
+            ...clone(current),
+            tracks,
+            updatedAt,
+          });
+          return next
+            ? { status: "recorded" as const, record: toLive(next) }
+            : { status: "stale" as const };
+        });
+      },
+    };
+    return store;
   }
 
   reserveIdentity(input: Readonly<{
@@ -1468,11 +2174,11 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
   }
 }
 
-function initializeDatabase(
+async function initializeDatabase(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
   existedBeforeOpen: boolean,
-): void {
+): Promise<void> {
   const applicationId = Number(database.pragma("application_id", { simple: true }));
   const version = Number(database.pragma("user_version", { simple: true }));
   if (applicationId !== 0 && applicationId !== DACS_NODE_SQLITE_APPLICATION_ID) {
@@ -1500,8 +2206,11 @@ function initializeDatabase(
       );
     }
     beginImmediate(database, () => {
+      const lockedVersion = Number(database.pragma("user_version", { simple: true }));
+      if (lockedVersion !== 0) return;
       const now = databaseTime(database);
       database.exec(MIGRATION_1);
+      database.exec(MIGRATION_2);
       database.prepare(`
         INSERT INTO dacs_store_metadata (
           singleton, schema_version, mode, profile, role, authority,
@@ -1518,9 +2227,28 @@ function initializeDatabase(
         now,
       );
       database.prepare(`
-        INSERT INTO dacs_migrations (version, applied_at) VALUES (?, ?)
-      `).run(DACS_NODE_SQLITE_SCHEMA_VERSION, now);
+        INSERT INTO dacs_migrations (version, applied_at) VALUES (1, ?), (2, ?)
+      `).run(now, now);
       database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
+      database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    });
+    return;
+  }
+  if (version === 1) {
+    const backupPath = `${options.databasePath}.backup-v1-${randomUUID()}.sqlite`;
+    await database.backup(backupPath);
+    chmodSync(backupPath, 0o600);
+    beginImmediate(database, () => {
+      const lockedVersion = Number(database.pragma("user_version", { simple: true }));
+      if (lockedVersion !== 1) return;
+      const now = databaseTime(database);
+      database.exec(MIGRATION_2);
+      database.prepare(`
+        UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
+      `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
+      database.prepare(`
+        INSERT INTO dacs_migrations (version, applied_at) VALUES (2, ?)
+      `).run(now);
       database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
     });
   }
@@ -1623,7 +2351,7 @@ export async function openDacsNodeSqliteDatabase(
         "SQLite WAL journal mode is unavailable",
       );
     }
-    initializeDatabase(database, options, existedBeforeOpen);
+    await initializeDatabase(database, options, existedBeforeOpen);
     verifyMetadata(database, options);
     const quick = database.pragma("quick_check(1)", { simple: true });
     if (quick !== "ok") {
