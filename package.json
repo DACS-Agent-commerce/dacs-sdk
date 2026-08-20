@@ -44,6 +44,10 @@
       "types": "./dist/seller/index.d.ts",
       "import": "./dist/seller/index.js"
     },
+    "./commerce": {
+      "types": "./dist/commerce/index.d.ts",
+      "import": "./dist/commerce/index.js"
+    },
     "./registry": {
       "types": "./dist/registry/index.d.ts",
       "import": "./dist/registry/index.js"
@@ -65,6 +69,7 @@
   "files": [
     "dist",
     "README.md",
+    "docs/fixed-price-x402-coordinator.md",
     "LICENSE"
   ],
   "scripts": {

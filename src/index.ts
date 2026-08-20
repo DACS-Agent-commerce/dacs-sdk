@@ -11,6 +11,7 @@
  */
 
 export { VERSION, DACS_SPEC_VERSION } from "./version.js";
+export * from "./commerce/index.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
   LEGACY_COMMITMENT_SEPARATOR,
