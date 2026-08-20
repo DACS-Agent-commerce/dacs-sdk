@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  TERMINAL_INCLUDED,
   payDemSettleCore,
   payDemSettle,
   type DemosNativeClient,
@@ -14,6 +15,8 @@ import {
 
 const RECIPIENT = "demos1recipientaddress0000000000000000000000";
 const PAYER = "demos1payeraddress00000000000000000000000000";
+const TX_HASH = "12".repeat(32);
+const OTHER_TX_HASH = "34".repeat(32);
 
 /** A fake native client recording the transfer it was asked to submit. */
 function fakeClient(
@@ -24,7 +27,7 @@ function fakeClient(
     async transfer(args) {
       self.sent = args;
       return (
-        over.result ?? { ok: true, state: "included", hash: "demos:0xabc", blockNumber: 4242 }
+        over.result ?? { ok: true, state: "included", hash: TX_HASH, blockNumber: 4242 }
       );
     },
   };
@@ -38,12 +41,20 @@ const params = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("happy path: transfers OS base units and reports a bft-final demos txRef", async () => {
     const client = fakeClient();
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(true);
-    expect(res.txHash).toBe("demos:0xabc");
+    expect(res.txHash).toBe(TX_HASH);
     expect(res.payer).toBe(PAYER);
     expect(res.payee).toBe(RECIPIENT);
     expect(res.chainId).toBe("demos:testnet");
@@ -74,24 +85,56 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
 
   test("a broadcast that fails is reported ok:false (hash preserved)", async () => {
     const client = fakeClient({
-      result: { ok: false, state: "failed", hash: "demos:0xtried", message: "rejected" },
+      result: { ok: false, state: "failed", hash: OTHER_TX_HASH, message: "rejected" },
     });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
-    expect(res.txHash).toBe("demos:0xtried");
+    expect(res.txHash).toBe(OTHER_TX_HASH);
     expect(res.finality).toBeUndefined();
   });
 
-  test("ok:true but no hash → ok:false (no unverifiable receipt)", async () => {
-    const client = fakeClient({ result: { ok: true, state: "included", hash: "", blockNumber: 1 } });
-    const res = await payDemSettleCore(params(), client);
-    expect(res.ok).toBe(false);
+  test("rejects a malformed tx-bearing result so its intent remains held", async () => {
+    const client = fakeClient({
+      result: { ok: true, state: "included", hash: "not-a-hash", blockNumber: 1 },
+    });
+    await expect(payDemSettleCore(params(), client)).rejects.toThrow(
+      /hash must be a 32-byte hex value/,
+    );
+  });
+
+  test.each(["", undefined])(
+    "rejects a missing/empty transfer identity (%s) so it cannot authorize retry",
+    async (hash) => {
+      const result = {
+        ok: false,
+        state: "failed",
+        ...(hash === undefined ? {} : { hash }),
+      } as DemosTransferResult;
+      await expect(
+        payDemSettleCore(params(), fakeClient({ result })),
+      ).rejects.toThrow(/hash must be a 32-byte hex value/);
+    },
+  );
+
+  test("canonicalizes an optional 0x-prefixed uppercase Demos hash", async () => {
+    const client = fakeClient({
+      result: {
+        ok: true,
+        state: "included",
+        hash: `0x${TX_HASH.toUpperCase()}`,
+        blockNumber: 1,
+      },
+    });
+    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
+      ok: true,
+      txHash: TX_HASH,
+    });
   });
 
   test("broadcast ACCEPTANCE without observed inclusion → ok:false, no bft-final (steward finding)", async () => {
     // ok:true + a hash but NO terminal inclusion state: the node accepted the tx
     // for submission, it hasn't been observed to land. Must not mint bft-final.
-    const client = fakeClient({ result: { ok: true, hash: "demos:0xaccepted", blockNumber: 9 } });
+    const client = fakeClient({ result: { ok: true, hash: TX_HASH, blockNumber: 9 } });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
@@ -99,27 +142,140 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   });
 
   test("terminal inclusion state but NO block height → ok:false (finality witness missing)", async () => {
-    const client = fakeClient({ result: { ok: true, state: "included", hash: "demos:0xabc" } });
+    const client = fakeClient({ result: { ok: true, state: "included", hash: TX_HASH } });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
   });
 
   test("a poll that timed out (nonterminal) → ok:false, no evidence", async () => {
-    const client = fakeClient({ result: { ok: false, state: "timeout", hash: "demos:0xpending" } });
+    const client = fakeClient({ result: { ok: false, state: "timeout", hash: TX_HASH } });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
   });
 
-  test("confirmed/finalized also count as observed inclusion", async () => {
-    for (const state of ["confirmed", "finalized"]) {
-      const client = fakeClient({ result: { ok: true, state, hash: "demos:0xok", blockNumber: 7 } });
+  test("accepts the exact DACS-4 §9.5.9 terminal included state", async () => {
+    expect([...TERMINAL_INCLUDED]).toEqual(["included"]);
+    const client = fakeClient({
+      result: { ok: true, state: "included", hash: TX_HASH, blockNumber: 7 },
+    });
+    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
+      ok: true,
+      finality: { model: "bft-final" },
+      blockNumber: 7,
+    });
+  });
+
+  test.each(["confirmed", "finalized", "INCLUDED", "accepted"])(
+    "fails closed for non-normative terminal state %s",
+    async (state) => {
+      const client = fakeClient({
+        result: { ok: true, state, hash: TX_HASH, blockNumber: 7 },
+      });
       const res = await payDemSettleCore(params(), client);
-      expect(res.ok).toBe(true);
-      expect(res.finality).toEqual({ model: "bft-final" });
-      expect(res.blockNumber).toBe(7);
+      expect(res.ok).toBe(false);
+      expect(res.finality).toBeUndefined();
+      expect(res.blockNumber).toBeUndefined();
+    },
+  );
+
+  test("does not let the compatibility set widen normative acceptance", async () => {
+    TERMINAL_INCLUDED.add("confirmed");
+    try {
+      const client = fakeClient({
+        result: { ok: true, state: "confirmed", hash: TX_HASH, blockNumber: 7 },
+      });
+      const res = await payDemSettleCore(params(), client);
+      expect(res.ok).toBe(false);
+      expect(res.finality).toBeUndefined();
+    } finally {
+      TERMINAL_INCLUDED.delete("confirmed");
     }
+  });
+
+  test("pins payer, payee, network and transfer method before the effect await", async () => {
+    const response = deferred<DemosTransferResult>();
+    const originalTransfer = async (_args: { to: string; amountOs: bigint }) =>
+      response.promise;
+    const client: DemosNativeClient = {
+      address: PAYER,
+      transfer: originalTransfer,
+    };
+    const input = params();
+    const settlement = payDemSettleCore(input, client);
+
+    input.recipient = "substituted-payee";
+    input.network = "substituted-network";
+    client.address = "substituted-payer";
+    client.transfer = async () => ({
+      ok: true,
+      state: "included",
+      hash: "substituted-hash",
+      blockNumber: 99,
+    });
+    response.resolve({
+      ok: true,
+      state: "included",
+      hash: TX_HASH,
+      blockNumber: 12,
+    });
+
+    await expect(settlement).resolves.toMatchObject({
+      payer: PAYER,
+      payee: RECIPIENT,
+      chainId: "demos:testnet",
+      txHash: TX_HASH,
+    });
+  });
+
+  test("rejects accessor/proxy parameters without invoking caller traps", async () => {
+    let reads = 0;
+    const accessorParams = {
+      get recipient() {
+        reads += 1;
+        return RECIPIENT;
+      },
+      amount: "1",
+      network: "demos",
+    } as unknown as Parameters<typeof payDemSettleCore>[0];
+    await expect(payDemSettleCore(accessorParams, fakeClient())).rejects.toThrow(
+      /must be stable data/,
+    );
+    expect(reads).toBe(0);
+
+    const proxiedClient = new Proxy(fakeClient(), {
+      get(target, property, receiver) {
+        reads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expect(payDemSettleCore(params(), proxiedClient)).rejects.toThrow(
+      /must be stable data/,
+    );
+    expect(reads).toBe(0);
+  });
+
+  test("rejects an accessor transfer result without invoking its getters", async () => {
+    let reads = 0;
+    const client: DemosNativeClient = {
+      address: PAYER,
+      async transfer() {
+        return {
+          get ok() {
+            reads += 1;
+            return true;
+          },
+          hash: "demos:0xunsafe",
+          state: "included",
+          blockNumber: 1,
+        } as DemosTransferResult;
+      },
+    };
+    await expect(payDemSettleCore(params(), client)).rejects.toThrow(
+      /must be stable data/,
+    );
+    expect(reads).toBe(0);
   });
 });
 
@@ -179,6 +335,28 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(second).toEqual(first);
   });
 
+  test("a tx-bearing timeout holds the intent and never submits a second payment", async () => {
+    let transfers = 0;
+    const client = fakeClient({
+      result: { ok: false, state: "timeout", hash: TX_HASH },
+    });
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: async (params) => {
+        transfers += 1;
+        return payDemSettleCore(params, client);
+      },
+    };
+    const settle = payDemSettle(rail, { network: "demos" });
+
+    await expect(settle(req())).resolves.toMatchObject({
+      ok: false,
+      txHash: TX_HASH,
+    });
+    await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
+    expect(transfers).toBe(1);
+  });
+
   test("an injected durable store dedupes across bridge instances after restart", async () => {
     const client = fakeClient();
     let transfers = 0;
@@ -193,7 +371,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     await payDemSettle(rail, { network: "demos" }, { store })(req());
     const resumed = await payDemSettle(rail, { network: "demos" }, { store })(req());
     expect(transfers).toBe(1);
-    expect(resumed.txHash).toBe("demos:0xabc");
+    expect(resumed.txHash).toBe(TX_HASH);
   });
 
   test("rejects a non-DEM asset (pay-dem settles DEM only)", async () => {

@@ -172,10 +172,12 @@ export {
 } from "./payD402.js";
 export {
   createPayDemRail,
+  PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,
   type PayDemRail,
   type PayDemRailConfig,
+  type PayDemPreparedTransfer,
   type PayDemSettleParams,
   type DemosNativeClient,
   type DemosTransferResult,
