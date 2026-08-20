@@ -14,7 +14,7 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
-import { VERSION } from "@kynesyslabs/dacs";
+import { sameCanonicalClaimIdentity, VERSION } from "@kynesyslabs/dacs";
 import {
   FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
   FIXED_PRICE_OFFLINE_STANDARD_REVISION,
@@ -25,6 +25,11 @@ import {
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
   fixedPriceX402OrderViolation,
+  isPaymentEvidenceAnchorCompletion,
+  isPaymentEvidenceAnchorRequest,
+  PAYMENT_EVIDENCE_HANDSHAKE_STORE_VERSION,
+  paymentEvidenceHandshakeScopeHash,
+  paymentEvidenceHandshakeViolation,
   type FixedPriceOfflineCoordinatorStore,
   type FixedPriceOfflineOrderRecord,
   type FixedPriceOfflineSimulationErrorClass,
@@ -41,6 +46,19 @@ import {
   type FixedPriceX402TrackLease,
   type FixedPriceX402TrackOperationResult,
   type FixedPriceX402TrackRecord,
+  type PaymentEvidenceAnchorCompletion,
+  type PaymentEvidenceAnchorRequest,
+  type PaymentEvidenceBuyerWork,
+  type PaymentEvidenceHandshakeLease,
+  type PaymentEvidenceHandshakeLoad,
+  type PaymentEvidenceHandshakeRecord,
+  type PaymentEvidenceHandshakeRole,
+  type PaymentEvidenceHandshakeStore,
+  type PaymentEvidenceHandshakeWrite,
+  type PaymentEvidenceOutboundCompletionClaim,
+  type PaymentEvidenceOutboundRequestClaim,
+  type PaymentEvidenceOutbox,
+  type PaymentEvidencePage,
 } from "@kynesyslabs/dacs/commerce";
 import { isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 import BetterSqlite3 from "better-sqlite3";
@@ -50,7 +68,7 @@ import {
   DACS_NODE_OFFLINE_PROFILE,
 } from "./config.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 4 as const;
+export const DACS_NODE_SQLITE_SCHEMA_VERSION = 5 as const;
 export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
@@ -265,6 +283,11 @@ export interface DacsNodeSqliteDatabase {
   createOfflineCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceOfflineCoordinatorStore;
+  /**
+   * Creates the live x402 payment-evidence store bound to this database's
+   * single buyer or seller authority. Verifier and offline databases reject it.
+   */
+  createPaymentEvidenceHandshakeStore(): PaymentEvidenceHandshakeStore;
   reserveIdentity(input: Readonly<{
     kind: DacsNodeSqliteReservationKind;
     identity: string;
@@ -440,6 +463,59 @@ interface CoordinatorTrackRow {
   lease_expires_at: number | null;
   next_attempt_at: number | null;
   updated_at: number;
+}
+
+interface PaymentEvidenceHandshakeRow {
+  role: string;
+  message_id: string;
+  scope_hash: string;
+  request_hash: string;
+  effect_id: string;
+  logical_address: string;
+  store_version: number;
+  revision: number;
+  record_hash: string;
+  record_json: string;
+  buyer_state: string | null;
+  buyer_generation: number | null;
+  buyer_attempts: number | null;
+  buyer_lease_expires_at: number | null;
+  buyer_retry_at: number | null;
+  request_outbox_state: string | null;
+  request_outbox_generation: number | null;
+  request_outbox_attempts: number | null;
+  request_outbox_lease_expires_at: number | null;
+  request_outbox_retry_at: number | null;
+  completion_hash: string | null;
+  completion_outbox_state: string | null;
+  completion_outbox_generation: number | null;
+  completion_outbox_attempts: number | null;
+  completion_outbox_lease_expires_at: number | null;
+  completion_outbox_retry_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface PaymentEvidenceReservationRow {
+  role: string;
+  scope_hash: string;
+  reservation_kind: string;
+  identity: string;
+  message_id: string;
+  request_hash: string;
+  created_at: number;
+}
+
+interface PaymentEvidenceHistoryRow {
+  sequence: number;
+  role: string;
+  message_id: string;
+  revision: number;
+  occurred_at: number;
+  record_hash: string;
+  record_json: string;
+  previous_entry_hash: string | null;
+  entry_hash: string;
 }
 
 type CoordinatorProfile = "live-x402" | "offline";
@@ -814,6 +890,153 @@ CREATE INDEX dacs_coordinator_tracks_runnable_idx
 const MIGRATION_4_FINALIZE = `
 DROP TABLE dacs_coordinator_tracks_v3;
 DROP TABLE dacs_coordinator_orders_v3;
+`;
+
+/**
+ * DACS One-Click Install Specification §§11–12: actor-local durable
+ * payment-evidence handshakes, runnable projections, and replay reservations.
+ * Keep this historical migration immutable after release.
+ */
+const MIGRATION_5 = `
+CREATE TABLE dacs_payment_evidence_handshakes (
+  role TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  scope_hash TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  effect_id TEXT NOT NULL,
+  logical_address TEXT NOT NULL,
+  store_version INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  record_hash TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  buyer_state TEXT,
+  buyer_generation INTEGER,
+  buyer_attempts INTEGER,
+  buyer_lease_expires_at INTEGER,
+  buyer_retry_at INTEGER,
+  request_outbox_state TEXT,
+  request_outbox_generation INTEGER,
+  request_outbox_attempts INTEGER,
+  request_outbox_lease_expires_at INTEGER,
+  request_outbox_retry_at INTEGER,
+  completion_hash TEXT,
+  completion_outbox_state TEXT,
+  completion_outbox_generation INTEGER,
+  completion_outbox_attempts INTEGER,
+  completion_outbox_lease_expires_at INTEGER,
+  completion_outbox_retry_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (role, message_id),
+  CHECK (role IN ('buyer', 'seller')),
+  CHECK (length(scope_hash) = 64 AND scope_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(record_hash) = 64 AND record_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (store_version > 0),
+  CHECK (revision > 0),
+  CHECK (created_at >= 0),
+  CHECK (updated_at >= created_at),
+  CHECK (buyer_state IS NULL OR buyer_state IN (
+    'pending', 'reconciliation-required', 'operator-action', 'complete'
+  )),
+  CHECK (request_outbox_state IS NULL OR request_outbox_state IN (
+    'pending', 'sending', 'acknowledged', 'operator-action'
+  )),
+  CHECK (completion_outbox_state IS NULL OR completion_outbox_state IN (
+    'pending', 'sending', 'acknowledged', 'operator-action'
+  )),
+  CHECK ((buyer_generation IS NULL) = (buyer_state IS NULL)),
+  CHECK ((buyer_attempts IS NULL) = (buyer_state IS NULL)),
+  CHECK (buyer_generation IS NULL OR
+    (buyer_generation >= 0 AND buyer_attempts = buyer_generation)),
+  CHECK (buyer_lease_expires_at IS NULL OR buyer_lease_expires_at >= 0),
+  CHECK (buyer_retry_at IS NULL OR buyer_retry_at >= 0),
+  CHECK ((request_outbox_generation IS NULL) = (request_outbox_state IS NULL)),
+  CHECK ((request_outbox_attempts IS NULL) = (request_outbox_state IS NULL)),
+  CHECK (request_outbox_generation IS NULL OR
+    (request_outbox_generation >= 0 AND
+      request_outbox_attempts = request_outbox_generation)),
+  CHECK (request_outbox_lease_expires_at IS NULL OR
+    request_outbox_lease_expires_at >= 0),
+  CHECK (request_outbox_retry_at IS NULL OR request_outbox_retry_at >= 0),
+  CHECK ((completion_outbox_generation IS NULL) =
+    (completion_outbox_state IS NULL)),
+  CHECK ((completion_outbox_attempts IS NULL) =
+    (completion_outbox_state IS NULL)),
+  CHECK (completion_outbox_generation IS NULL OR
+    (completion_outbox_generation >= 0 AND
+      completion_outbox_attempts = completion_outbox_generation)),
+  CHECK (completion_outbox_lease_expires_at IS NULL OR
+    completion_outbox_lease_expires_at >= 0),
+  CHECK (completion_outbox_retry_at IS NULL OR completion_outbox_retry_at >= 0),
+  CHECK (
+    (role = 'buyer' AND buyer_state IS NOT NULL AND
+      request_outbox_state IS NULL) OR
+    (role = 'seller' AND buyer_state IS NULL AND
+      request_outbox_state IS NOT NULL AND completion_outbox_state IS NULL)
+  )
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE dacs_payment_evidence_reservations (
+  role TEXT NOT NULL,
+  scope_hash TEXT NOT NULL,
+  reservation_kind TEXT NOT NULL,
+  identity TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (role, scope_hash, reservation_kind, identity),
+  FOREIGN KEY (role, message_id)
+    REFERENCES dacs_payment_evidence_handshakes (role, message_id)
+    ON DELETE RESTRICT,
+  CHECK (role IN ('buyer', 'seller')),
+  CHECK (reservation_kind IN ('message', 'effect', 'logical-address')),
+  CHECK (length(scope_hash) = 64 AND scope_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (created_at >= 0)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE dacs_payment_evidence_history (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  role TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  record_hash TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  previous_entry_hash TEXT,
+  entry_hash TEXT NOT NULL,
+  UNIQUE (role, message_id, revision),
+  FOREIGN KEY (role, message_id)
+    REFERENCES dacs_payment_evidence_handshakes (role, message_id)
+    ON DELETE RESTRICT,
+  CHECK (role IN ('buyer', 'seller')),
+  CHECK (revision > 0),
+  CHECK (occurred_at >= 0),
+  CHECK (length(record_hash) = 64 AND record_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK (previous_entry_hash IS NULL OR
+    (length(previous_entry_hash) = 64 AND
+      previous_entry_hash NOT GLOB '*[^0-9a-f]*')),
+  CHECK (length(entry_hash) = 64 AND entry_hash NOT GLOB '*[^0-9a-f]*')
+) STRICT;
+
+CREATE INDEX dacs_payment_evidence_buyer_runnable_idx
+  ON dacs_payment_evidence_handshakes (
+    role, scope_hash, buyer_state, buyer_retry_at,
+    buyer_lease_expires_at, message_id
+  );
+CREATE INDEX dacs_payment_evidence_request_outbox_idx
+  ON dacs_payment_evidence_handshakes (
+    role, scope_hash, request_outbox_state, request_outbox_retry_at,
+    request_outbox_lease_expires_at, message_id
+  );
+CREATE INDEX dacs_payment_evidence_completion_outbox_idx
+  ON dacs_payment_evidence_handshakes (
+    role, scope_hash, completion_outbox_state, completion_outbox_retry_at,
+    completion_outbox_lease_expires_at, message_id
+  );
+CREATE INDEX dacs_payment_evidence_history_record_idx
+  ON dacs_payment_evidence_history (role, message_id, revision);
 `;
 
 function nonEmpty(value: unknown): value is string {
@@ -2104,6 +2327,1487 @@ function validateEffectIdentity(input: Readonly<{
   }
 }
 
+type PaymentEvidenceDecode = Readonly<
+  | { status: "ok"; record: Readonly<PaymentEvidenceHandshakeRecord> }
+  | { status: "unsupported"; version: number }
+  | { status: "corrupt"; reason: string }
+>;
+
+function paymentEvidenceScopeHash(
+  request: Readonly<PaymentEvidenceAnchorRequest>,
+): string {
+  return paymentEvidenceHandshakeScopeHash({
+    seller: request.seller,
+    buyer: request.buyer,
+    protocolHash: request.protocolHash,
+  });
+}
+
+function paymentEvidenceAuthorityMatches(
+  record: Readonly<PaymentEvidenceHandshakeRecord>,
+  authority: string,
+): boolean {
+  const owner = record.role === "buyer" ? record.request.buyer : record.request.seller;
+  try {
+    return sameCanonicalClaimIdentity(owner, authority);
+  } catch {
+    return false;
+  }
+}
+
+function paymentEvidenceProjection(
+  record: Readonly<PaymentEvidenceHandshakeRecord>,
+): PaymentEvidenceHandshakeRow {
+  const recordJson = canonicalize(record);
+  return {
+    role: record.role,
+    message_id: record.messageId,
+    scope_hash: paymentEvidenceScopeHash(record.request),
+    request_hash: record.request.requestHash,
+    effect_id: record.request.effectId,
+    logical_address: record.request.logicalAddress,
+    store_version: record.storeVersion,
+    revision: record.revision,
+    record_hash: sha256Hex(recordJson),
+    record_json: recordJson,
+    buyer_state: record.buyerWork?.state ?? null,
+    buyer_generation: record.buyerWork?.generation ?? null,
+    buyer_attempts: record.buyerWork?.attempts ?? null,
+    buyer_lease_expires_at: record.buyerWork?.lease?.expiresAt ?? null,
+    buyer_retry_at: record.buyerWork?.retryAt ?? null,
+    request_outbox_state: record.requestOutbox?.state ?? null,
+    request_outbox_generation: record.requestOutbox?.generation ?? null,
+    request_outbox_attempts: record.requestOutbox?.attempts ?? null,
+    request_outbox_lease_expires_at: record.requestOutbox?.lease?.expiresAt ?? null,
+    request_outbox_retry_at: record.requestOutbox?.retryAt ?? null,
+    completion_hash: record.completion?.completionHash ?? null,
+    completion_outbox_state: record.completionOutbox?.state ?? null,
+    completion_outbox_generation: record.completionOutbox?.generation ?? null,
+    completion_outbox_attempts: record.completionOutbox?.attempts ?? null,
+    completion_outbox_lease_expires_at: record.completionOutbox?.lease?.expiresAt ?? null,
+    completion_outbox_retry_at: record.completionOutbox?.retryAt ?? null,
+    created_at: record.createdAt,
+    updated_at: record.updatedAt,
+  };
+}
+
+function paymentEvidenceFromRow(
+  row: Readonly<PaymentEvidenceHandshakeRow>,
+): PaymentEvidenceDecode {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.record_json) as unknown;
+  } catch {
+    return { status: "corrupt", reason: "payment-evidence record JSON is malformed" };
+  }
+  if (parsed !== null && typeof parsed === "object" &&
+      Number.isSafeInteger((parsed as { storeVersion?: unknown }).storeVersion) &&
+      (parsed as { storeVersion: number }).storeVersion !==
+        PAYMENT_EVIDENCE_HANDSHAKE_STORE_VERSION) {
+    return {
+      status: "unsupported",
+      version: (parsed as { storeVersion: number }).storeVersion,
+    };
+  }
+  const violation = paymentEvidenceHandshakeViolation(parsed);
+  if (violation) return { status: "corrupt", reason: violation };
+  const record = parsed as PaymentEvidenceHandshakeRecord;
+  let expected: PaymentEvidenceHandshakeRow;
+  try {
+    expected = paymentEvidenceProjection(record);
+  } catch {
+    return { status: "corrupt", reason: "payment-evidence record binding is malformed" };
+  }
+  if (canonicalize(expected) !== canonicalize(row)) {
+    return {
+      status: "corrupt",
+      reason: "payment-evidence record integrity projection differs",
+    };
+  }
+  return { status: "ok", record: clone(record) };
+}
+
+function paymentEvidenceReservationProjection(
+  record: Readonly<PaymentEvidenceHandshakeRecord>,
+): readonly PaymentEvidenceReservationRow[] {
+  const scopeHash = paymentEvidenceScopeHash(record.request);
+  const identities: readonly (readonly [string, string])[] = [
+    ["message", record.messageId],
+    ["effect", record.request.effectId],
+    ["logical-address", record.request.logicalAddress],
+  ];
+  return identities.map(([reservationKind, identity]) => ({
+    role: record.role,
+    scope_hash: scopeHash,
+    reservation_kind: reservationKind,
+    identity,
+    message_id: record.messageId,
+    request_hash: record.request.requestHash,
+    created_at: record.createdAt,
+  }));
+}
+
+function paymentEvidenceReservationsMatch(
+  database: BetterSqlite3.Database,
+  record: Readonly<PaymentEvidenceHandshakeRecord>,
+): boolean {
+  const expected = paymentEvidenceReservationProjection(record)
+    .slice()
+    .sort((left, right) => left.reservation_kind.localeCompare(right.reservation_kind));
+  const retained = database.prepare(`
+    SELECT role, scope_hash, reservation_kind, identity, message_id,
+      request_hash, created_at
+    FROM dacs_payment_evidence_reservations
+    WHERE role = ? AND message_id = ?
+    ORDER BY scope_hash, reservation_kind
+    LIMIT 4
+  `).all(record.role, record.messageId) as
+    PaymentEvidenceReservationRow[];
+  return canonicalize(retained) === canonicalize(expected);
+}
+
+function paymentEvidenceHistoryEntryHash(input: Readonly<{
+  role: string;
+  messageId: string;
+  revision: number;
+  occurredAt: number;
+  recordHash: string;
+  previousEntryHash: string | null;
+}>): string {
+  return sha256Hex(canonicalize({ historyVersion: "1", ...input }));
+}
+
+function appendPaymentEvidenceHistory(
+  database: BetterSqlite3.Database,
+  record: Readonly<PaymentEvidenceHandshakeRecord>,
+): void {
+  const previous = database.prepare(`
+    SELECT revision, entry_hash FROM dacs_payment_evidence_history
+    WHERE role = ? AND message_id = ?
+    ORDER BY revision DESC
+    LIMIT 1
+  `).get(record.role, record.messageId) as
+    { revision: number; entry_hash: string } | undefined;
+  if ((previous === undefined && record.revision !== 1) ||
+      (previous !== undefined && previous.revision + 1 !== record.revision)) {
+    throw new DacsNodeSqliteError(
+      "payment-evidence-history-invalid",
+      "Payment-evidence history revision is not contiguous",
+    );
+  }
+  const recordJson = canonicalize(record);
+  const recordHash = sha256Hex(recordJson);
+  const previousEntryHash = previous?.entry_hash ?? null;
+  database.prepare(`
+    INSERT INTO dacs_payment_evidence_history (
+      role, message_id, revision, occurred_at, record_hash, record_json,
+      previous_entry_hash, entry_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.role,
+    record.messageId,
+    record.revision,
+    record.updatedAt,
+    recordHash,
+    recordJson,
+    previousEntryHash,
+    paymentEvidenceHistoryEntryHash({
+      role: record.role,
+      messageId: record.messageId,
+      revision: record.revision,
+      occurredAt: record.updatedAt,
+      recordHash,
+      previousEntryHash,
+    }),
+  );
+}
+
+function samePaymentEvidenceRecord(
+  left: Readonly<PaymentEvidenceHandshakeRecord>,
+  right: Readonly<PaymentEvidenceHandshakeRecord>,
+): boolean {
+  return canonicalize(left) === canonicalize(right);
+}
+
+function paymentEvidenceOriginMatches(
+  record: Readonly<PaymentEvidenceHandshakeRecord>,
+): boolean {
+  if (record.revision !== 1 || record.createdAt !== record.updatedAt || record.completion) {
+    return false;
+  }
+  const expected: PaymentEvidenceHandshakeRecord = {
+    storeVersion: PAYMENT_EVIDENCE_HANDSHAKE_STORE_VERSION,
+    revision: 1,
+    role: record.role,
+    messageId: record.messageId,
+    request: clone(record.request),
+    ...(record.role === "buyer"
+      ? {
+          requestAuthentication: clone(record.requestAuthentication!),
+          buyerWork: {
+            state: "pending" as const,
+            generation: 0,
+            attempts: 0,
+            updatedAt: record.createdAt,
+          },
+        }
+      : {
+          requestOutbox: {
+            state: "pending" as const,
+            generation: 0,
+            attempts: 0,
+            updatedAt: record.createdAt,
+          },
+        }),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+  return samePaymentEvidenceRecord(record, expected);
+}
+
+function paymentEvidenceRecordBase(
+  previous: Readonly<PaymentEvidenceHandshakeRecord>,
+  next: Readonly<PaymentEvidenceHandshakeRecord>,
+): PaymentEvidenceHandshakeRecord {
+  return {
+    ...clone(previous),
+    revision: next.revision,
+    updatedAt: next.updatedAt,
+  };
+}
+
+function paymentEvidenceOutboxTransitionMatches(
+  previous: Readonly<PaymentEvidenceHandshakeRecord>,
+  next: Readonly<PaymentEvidenceHandshakeRecord>,
+  field: "requestOutbox" | "completionOutbox",
+): boolean {
+  const before = previous[field];
+  const after = next[field];
+  if (!before || !after) return false;
+  const base = paymentEvidenceRecordBase(previous, next);
+  if (after.state === "sending" && after.lease &&
+      after.generation === before.generation + 1 &&
+      after.attempts === before.attempts + 1 &&
+      after.updatedAt === next.updatedAt &&
+      after.lease.generation === after.generation &&
+      after.lease.expiresAt > next.updatedAt &&
+      (((before.state === "pending") &&
+        (before.retryAt === undefined || before.retryAt <= next.updatedAt)) ||
+       (before.state === "sending" && before.lease !== undefined &&
+        before.lease.expiresAt <= next.updatedAt))) {
+    const expected = {
+      ...base,
+      [field]: {
+        state: "sending",
+        generation: before.generation + 1,
+        attempts: before.attempts + 1,
+        updatedAt: next.updatedAt,
+        lease: clone(after.lease),
+      },
+    } as PaymentEvidenceHandshakeRecord;
+    if (samePaymentEvidenceRecord(next, expected)) return true;
+  }
+  if (before.state !== "sending" || !before.lease ||
+      after.generation !== before.generation || after.attempts !== before.attempts ||
+      after.updatedAt !== next.updatedAt) return false;
+  if (after.state === "acknowledged") {
+    const expected = {
+      ...base,
+      [field]: {
+        state: "acknowledged",
+        generation: before.generation,
+        attempts: before.attempts,
+        updatedAt: next.updatedAt,
+      },
+    } as PaymentEvidenceHandshakeRecord;
+    return samePaymentEvidenceRecord(next, expected);
+  }
+  if (after.state === "pending" && after.reasonCode !== undefined) {
+    const expected = {
+      ...base,
+      [field]: {
+        state: "pending",
+        generation: before.generation,
+        attempts: before.attempts,
+        updatedAt: next.updatedAt,
+        reasonCode: after.reasonCode,
+        ...(after.retryAt === undefined ? {} : { retryAt: after.retryAt }),
+      },
+    } as PaymentEvidenceHandshakeRecord;
+    return samePaymentEvidenceRecord(next, expected);
+  }
+  return false;
+}
+
+function paymentEvidenceBuyerTransitionMatches(
+  previous: Readonly<PaymentEvidenceHandshakeRecord>,
+  next: Readonly<PaymentEvidenceHandshakeRecord>,
+): boolean {
+  const before = previous.buyerWork!;
+  const after = next.buyerWork!;
+  const base = paymentEvidenceRecordBase(previous, next);
+  if (!previous.completion && after.state === "reconciliation-required" && after.lease &&
+      after.generation === before.generation + 1 &&
+      after.attempts === before.attempts + 1 && after.updatedAt === next.updatedAt &&
+      after.lease.generation === after.generation &&
+      after.lease.expiresAt > next.updatedAt && before.state !== "operator-action" &&
+      before.state !== "complete" &&
+      (before.retryAt === undefined || before.retryAt <= next.updatedAt) &&
+      (before.lease === undefined || before.lease.expiresAt <= next.updatedAt)) {
+    const expected = {
+      ...base,
+      buyerWork: {
+        state: "reconciliation-required",
+        generation: before.generation + 1,
+        attempts: before.attempts + 1,
+        updatedAt: next.updatedAt,
+        reasonCode: before.state === "reconciliation-required"
+          ? before.reasonCode!
+          : "anchor-attempt-in-flight",
+        ...(before.absenceProofHash === undefined
+          ? {}
+          : { absenceProofHash: before.absenceProofHash }),
+        lease: clone(after.lease),
+      },
+    } as PaymentEvidenceHandshakeRecord;
+    if (samePaymentEvidenceRecord(next, expected)) return true;
+  }
+  if (!previous.completion && before.lease && before.lease.expiresAt > next.updatedAt &&
+      after.generation === before.generation && after.attempts === before.attempts &&
+      after.updatedAt === next.updatedAt) {
+    if ((after.state === "reconciliation-required" || after.state === "operator-action") &&
+        after.reasonCode !== undefined &&
+        (after.state !== "operator-action" || after.retryAt === undefined)) {
+      const expected = {
+        ...base,
+        buyerWork: {
+          state: after.state,
+          generation: before.generation,
+          attempts: before.attempts,
+          updatedAt: next.updatedAt,
+          reasonCode: after.reasonCode,
+          ...(after.retryAt === undefined ? {} : { retryAt: after.retryAt }),
+          ...(before.absenceProofHash === undefined
+            ? {}
+            : { absenceProofHash: before.absenceProofHash }),
+        },
+      } as PaymentEvidenceHandshakeRecord;
+      if (samePaymentEvidenceRecord(next, expected)) return true;
+    }
+    if (before.state === "reconciliation-required" && after.state === "pending" &&
+        after.absenceProofHash !== undefined) {
+      const expected = {
+        ...base,
+        buyerWork: {
+          state: "pending",
+          generation: before.generation,
+          attempts: before.attempts,
+          updatedAt: next.updatedAt,
+          absenceProofHash: after.absenceProofHash,
+        },
+      } as PaymentEvidenceHandshakeRecord;
+      if (samePaymentEvidenceRecord(next, expected)) return true;
+    }
+    if (after.state === "complete" && next.completion && next.completionOutbox) {
+      const expected = {
+        ...base,
+        buyerWork: {
+          state: "complete",
+          generation: before.generation,
+          attempts: before.attempts,
+          updatedAt: next.updatedAt,
+          ...(before.absenceProofHash === undefined
+            ? {}
+            : { absenceProofHash: before.absenceProofHash }),
+        },
+        completion: clone(next.completion),
+        completionOutbox: {
+          state: "pending",
+          generation: 0,
+          attempts: 0,
+          updatedAt: next.updatedAt,
+        },
+      } as PaymentEvidenceHandshakeRecord;
+      if (samePaymentEvidenceRecord(next, expected)) return true;
+    }
+  }
+  if (!previous.completion && before.lease === undefined &&
+      after.state === "reconciliation-required" && after.lease === undefined &&
+      after.reasonCode !== undefined && after.generation === before.generation &&
+      after.attempts === before.attempts && after.updatedAt === next.updatedAt) {
+    const expected = {
+      ...base,
+      buyerWork: {
+        state: "reconciliation-required",
+        generation: before.generation,
+        attempts: before.attempts,
+        updatedAt: next.updatedAt,
+        reasonCode: after.reasonCode,
+        ...(before.absenceProofHash === undefined
+          ? {}
+          : { absenceProofHash: before.absenceProofHash }),
+      },
+    } as PaymentEvidenceHandshakeRecord;
+    if (samePaymentEvidenceRecord(next, expected)) return true;
+  }
+  return paymentEvidenceOutboxTransitionMatches(
+    previous,
+    next,
+    "completionOutbox",
+  );
+}
+
+function paymentEvidenceSellerTransitionMatches(
+  previous: Readonly<PaymentEvidenceHandshakeRecord>,
+  next: Readonly<PaymentEvidenceHandshakeRecord>,
+): boolean {
+  if (!previous.completion && next.completion && next.completionAuthentication) {
+    const before = previous.requestOutbox!;
+    const expected = {
+      ...paymentEvidenceRecordBase(previous, next),
+      requestOutbox: {
+        state: "acknowledged",
+        generation: before.generation,
+        attempts: before.attempts,
+        updatedAt: next.updatedAt,
+      },
+      completion: clone(next.completion),
+      completionAuthentication: clone(next.completionAuthentication),
+    } as PaymentEvidenceHandshakeRecord;
+    if (samePaymentEvidenceRecord(next, expected)) return true;
+  }
+  return paymentEvidenceOutboxTransitionMatches(previous, next, "requestOutbox");
+}
+
+function paymentEvidenceTransitionMatches(
+  previous: Readonly<PaymentEvidenceHandshakeRecord>,
+  next: Readonly<PaymentEvidenceHandshakeRecord>,
+): boolean {
+  if (previous.role !== next.role || previous.messageId !== next.messageId ||
+      next.revision !== previous.revision + 1 || next.createdAt !== previous.createdAt ||
+      next.updatedAt < previous.updatedAt ||
+      canonicalize(next.request) !== canonicalize(previous.request) ||
+      canonicalize(next.requestAuthentication ?? null) !==
+        canonicalize(previous.requestAuthentication ?? null)) return false;
+  return next.role === "buyer"
+    ? paymentEvidenceBuyerTransitionMatches(previous, next)
+    : paymentEvidenceSellerTransitionMatches(previous, next);
+}
+
+function paymentEvidenceHistoryMatches(
+  database: BetterSqlite3.Database,
+  current: Readonly<PaymentEvidenceHandshakeRecord>,
+): boolean {
+  let previous: PaymentEvidenceHistoryRow | undefined;
+  let origin: PaymentEvidenceHandshakeRecord | undefined;
+  let final: PaymentEvidenceHandshakeRecord | undefined;
+  let previousRecord: PaymentEvidenceHandshakeRecord | undefined;
+  let count = 0;
+  for (const row of database.prepare(`
+    SELECT sequence, role, message_id, revision, occurred_at, record_hash,
+      record_json, previous_entry_hash, entry_hash
+    FROM dacs_payment_evidence_history
+    WHERE role = ? AND message_id = ?
+    ORDER BY revision
+  `).iterate(current.role, current.messageId) as IterableIterator<PaymentEvidenceHistoryRow>) {
+    count += 1;
+    if (!safeUint(row.sequence) || row.sequence === 0 || row.role !== current.role ||
+        row.message_id !== current.messageId || row.revision !== count ||
+        !safeUint(row.occurred_at) || !hash(row.record_hash) ||
+        !nonEmpty(row.record_json) ||
+        (row.previous_entry_hash !== null && !hash(row.previous_entry_hash)) ||
+        !hash(row.entry_hash) || row.previous_entry_hash !== (previous?.entry_hash ?? null) ||
+        (previous !== undefined && row.occurred_at < previous.occurred_at) ||
+        row.entry_hash !== paymentEvidenceHistoryEntryHash({
+          role: row.role,
+          messageId: row.message_id,
+          revision: row.revision,
+          occurredAt: row.occurred_at,
+          recordHash: row.record_hash,
+          previousEntryHash: row.previous_entry_hash,
+        })) return false;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.record_json) as unknown;
+      if (canonicalize(parsed) !== row.record_json ||
+          sha256Hex(row.record_json) !== row.record_hash ||
+          paymentEvidenceHandshakeViolation(parsed)) return false;
+    } catch {
+      return false;
+    }
+    const record = parsed as PaymentEvidenceHandshakeRecord;
+    if (record.role !== current.role || record.messageId !== current.messageId ||
+        record.revision !== row.revision || record.updatedAt !== row.occurred_at ||
+        record.createdAt !== current.createdAt ||
+        canonicalize(record.request) !== canonicalize(current.request) ||
+        canonicalize(record.requestAuthentication ?? null) !==
+          canonicalize(current.requestAuthentication ?? null)) return false;
+    if (previousRecord === undefined
+      ? !paymentEvidenceOriginMatches(record)
+      : !paymentEvidenceTransitionMatches(previousRecord, record)) return false;
+    origin ??= record;
+    final = record;
+    previousRecord = record;
+    previous = row;
+  }
+  return count === current.revision && origin?.revision === 1 &&
+    origin.createdAt === origin.updatedAt && final !== undefined &&
+    canonicalize(final) === canonicalize(current);
+}
+
+function insertPaymentEvidenceRecord(
+  database: BetterSqlite3.Database,
+  record: Readonly<PaymentEvidenceHandshakeRecord>,
+): void {
+  const row = paymentEvidenceProjection(record);
+  database.prepare(`
+    INSERT INTO dacs_payment_evidence_handshakes (
+      role, message_id, scope_hash, request_hash, effect_id, logical_address,
+      store_version, revision, record_hash, record_json,
+      buyer_state, buyer_generation, buyer_attempts, buyer_lease_expires_at,
+      buyer_retry_at, request_outbox_state, request_outbox_generation,
+      request_outbox_attempts, request_outbox_lease_expires_at,
+      request_outbox_retry_at, completion_hash, completion_outbox_state,
+      completion_outbox_generation, completion_outbox_attempts,
+      completion_outbox_lease_expires_at, completion_outbox_retry_at,
+      created_at, updated_at
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?
+    )
+  `).run(
+    row.role,
+    row.message_id,
+    row.scope_hash,
+    row.request_hash,
+    row.effect_id,
+    row.logical_address,
+    row.store_version,
+    row.revision,
+    row.record_hash,
+    row.record_json,
+    row.buyer_state,
+    row.buyer_generation,
+    row.buyer_attempts,
+    row.buyer_lease_expires_at,
+    row.buyer_retry_at,
+    row.request_outbox_state,
+    row.request_outbox_generation,
+    row.request_outbox_attempts,
+    row.request_outbox_lease_expires_at,
+    row.request_outbox_retry_at,
+    row.completion_hash,
+    row.completion_outbox_state,
+    row.completion_outbox_generation,
+    row.completion_outbox_attempts,
+    row.completion_outbox_lease_expires_at,
+    row.completion_outbox_retry_at,
+    row.created_at,
+    row.updated_at,
+  );
+  const insert = database.prepare(`
+    INSERT INTO dacs_payment_evidence_reservations (
+      role, scope_hash, reservation_kind, identity, message_id,
+      request_hash, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const reservation of paymentEvidenceReservationProjection(record)) {
+    insert.run(
+      reservation.role,
+      reservation.scope_hash,
+      reservation.reservation_kind,
+      reservation.identity,
+      reservation.message_id,
+      reservation.request_hash,
+      reservation.created_at,
+    );
+  }
+  appendPaymentEvidenceHistory(database, record);
+}
+
+function updatePaymentEvidenceRecord(
+  database: BetterSqlite3.Database,
+  current: Readonly<PaymentEvidenceHandshakeRecord>,
+  next: Readonly<PaymentEvidenceHandshakeRecord>,
+): boolean {
+  const row = paymentEvidenceProjection(next);
+  const result = database.prepare(`
+    UPDATE dacs_payment_evidence_handshakes SET
+      scope_hash = ?, request_hash = ?, effect_id = ?, logical_address = ?,
+      store_version = ?, revision = ?, record_hash = ?, record_json = ?,
+      buyer_state = ?, buyer_generation = ?, buyer_attempts = ?,
+      buyer_lease_expires_at = ?, buyer_retry_at = ?, request_outbox_state = ?,
+      request_outbox_generation = ?, request_outbox_attempts = ?,
+      request_outbox_lease_expires_at = ?, request_outbox_retry_at = ?,
+      completion_hash = ?, completion_outbox_state = ?,
+      completion_outbox_generation = ?, completion_outbox_attempts = ?,
+      completion_outbox_lease_expires_at = ?, completion_outbox_retry_at = ?,
+      created_at = ?, updated_at = ?
+    WHERE role = ? AND message_id = ? AND revision = ?
+  `).run(
+    row.scope_hash,
+    row.request_hash,
+    row.effect_id,
+    row.logical_address,
+    row.store_version,
+    row.revision,
+    row.record_hash,
+    row.record_json,
+    row.buyer_state,
+    row.buyer_generation,
+    row.buyer_attempts,
+    row.buyer_lease_expires_at,
+    row.buyer_retry_at,
+    row.request_outbox_state,
+    row.request_outbox_generation,
+    row.request_outbox_attempts,
+    row.request_outbox_lease_expires_at,
+    row.request_outbox_retry_at,
+    row.completion_hash,
+    row.completion_outbox_state,
+    row.completion_outbox_generation,
+    row.completion_outbox_attempts,
+    row.completion_outbox_lease_expires_at,
+    row.completion_outbox_retry_at,
+    row.created_at,
+    row.updated_at,
+    current.role,
+    current.messageId,
+    current.revision,
+  );
+  if (result.changes !== 1) return false;
+  appendPaymentEvidenceHistory(database, next);
+  return true;
+}
+
+function createSqlitePaymentEvidenceHandshakeStore(
+  database: BetterSqlite3.Database,
+  role: PaymentEvidenceHandshakeRole,
+  authority: string,
+): PaymentEvidenceHandshakeStore {
+  const readRow = (messageId: string): PaymentEvidenceHandshakeRow | undefined =>
+    database.prepare(`
+      SELECT * FROM dacs_payment_evidence_handshakes
+      WHERE role = ? AND message_id = ?
+    `).get(role, messageId) as PaymentEvidenceHandshakeRow | undefined;
+
+  const decodeRow = (row: Readonly<PaymentEvidenceHandshakeRow>): PaymentEvidenceDecode => {
+    const decoded = paymentEvidenceFromRow(row);
+    if (decoded.status === "ok" &&
+        (!paymentEvidenceAuthorityMatches(decoded.record, authority) ||
+          !paymentEvidenceReservationsMatch(database, decoded.record) ||
+          !paymentEvidenceHistoryMatches(database, decoded.record))) {
+      return {
+        status: "corrupt",
+        reason: "payment-evidence record is outside its actor authority or reservations",
+      };
+    }
+    return decoded;
+  };
+
+  const loadRecord = (
+    messageId: string,
+    scopeHash: string,
+  ): PaymentEvidenceHandshakeLoad => {
+    const row = readRow(messageId);
+    if (!row || row.scope_hash !== scopeHash) return { status: "missing" };
+    return decodeRow(row);
+  };
+
+  const save = (
+    current: Readonly<PaymentEvidenceHandshakeRecord>,
+    value: Readonly<PaymentEvidenceHandshakeRecord>,
+  ): Readonly<PaymentEvidenceHandshakeRecord> | null => {
+    const next = { ...clone(value), revision: current.revision + 1 };
+    const violation = paymentEvidenceHandshakeViolation(next);
+    if (violation || !paymentEvidenceAuthorityMatches(next, authority) ||
+        canonicalize(next.request) !== canonicalize(current.request) ||
+        canonicalize(next.requestAuthentication ?? null) !==
+          canonicalize(current.requestAuthentication ?? null) ||
+        next.role !== current.role || next.messageId !== current.messageId ||
+        next.createdAt !== current.createdAt || next.updatedAt < current.updatedAt) {
+      throw new DacsNodeSqliteError(
+        "payment-evidence-record-invalid",
+        violation ?? "Payment-evidence immutable binding or time changed",
+      );
+    }
+    return updatePaymentEvidenceRecord(database, current, next) ? clone(next) : null;
+  };
+
+  const stamp = (record: Readonly<PaymentEvidenceHandshakeRecord>, now?: number): number =>
+    Math.max(record.updatedAt, now ?? databaseTime(database));
+
+  const leaseMatches = (
+    retained: Readonly<PaymentEvidenceHandshakeLease> | undefined,
+    supplied: Readonly<PaymentEvidenceHandshakeLease>,
+  ): boolean => retained !== undefined && retained.owner === supplied.owner &&
+    retained.generation === supplied.generation && retained.expiresAt === supplied.expiresAt;
+
+  const captureLease = (value: unknown): PaymentEvidenceHandshakeLease | null => {
+    const captured = captureExactData(value, ["owner", "generation", "expiresAt"]);
+    if (!captured || !nonEmpty(captured.owner) || !safeUint(captured.generation) ||
+        captured.generation === 0 || !safeUint(captured.expiresAt)) return null;
+    return {
+      owner: captured.owner,
+      generation: captured.generation,
+      expiresAt: captured.expiresAt,
+    };
+  };
+
+  const validateQuery = (input: Readonly<{
+    scopeHash: string;
+    cursor?: string;
+    limit: number;
+  }>, label: string): void => {
+    if (!hash(input.scopeHash) ||
+        (input.cursor !== undefined && !nonEmpty(input.cursor)) ||
+        !safeUint(input.limit) || input.limit === 0 ||
+        input.limit > DACS_NODE_SQLITE_MAX_PAGE_SIZE) {
+      throw new DacsNodeSqliteError(
+        "payment-evidence-query-malformed",
+        `${label} is malformed or exceeds the bounded page size`,
+      );
+    }
+  };
+
+  const claimOutbox = (
+    field: "requestOutbox" | "completionOutbox",
+    input: Readonly<{
+      scopeHash: string;
+      owner: string;
+      cursor?: string;
+      limit: number;
+      leaseDurationMs: number;
+    }>,
+  ): PaymentEvidencePage<
+    PaymentEvidenceOutboundRequestClaim | PaymentEvidenceOutboundCompletionClaim
+  > => {
+    try {
+      input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+    } catch {
+      throw new DacsNodeSqliteError(
+        "payment-evidence-claim-malformed",
+        "Payment-evidence outbox claim must contain only own canonical data",
+      );
+    }
+    validateQuery(input, "Payment-evidence outbox claim");
+    if (!nonEmpty(input.owner) || !safeUint(input.leaseDurationMs) ||
+        input.leaseDurationMs === 0) {
+      throw new DacsNodeSqliteError(
+        "payment-evidence-claim-malformed",
+        "Payment-evidence outbox claim is malformed",
+      );
+    }
+    return beginImmediate(database, () => {
+      const now = databaseTime(database);
+      const stateColumn = field === "requestOutbox"
+        ? "request_outbox_state"
+        : "completion_outbox_state";
+      const retryColumn = field === "requestOutbox"
+        ? "request_outbox_retry_at"
+        : "completion_outbox_retry_at";
+      const leaseColumn = field === "requestOutbox"
+        ? "request_outbox_lease_expires_at"
+        : "completion_outbox_lease_expires_at";
+      const completionGuard = field === "requestOutbox" ? "AND completion_hash IS NULL" : "";
+      const rows = database.prepare(`
+        SELECT * FROM dacs_payment_evidence_handshakes
+        WHERE role = ? AND scope_hash = ? AND message_id > ?
+          ${completionGuard}
+          AND (
+            (${stateColumn} = 'pending' AND
+              (${retryColumn} IS NULL OR ${retryColumn} <= ?)) OR
+            (${stateColumn} = 'sending' AND ${leaseColumn} <= ?)
+          )
+        ORDER BY message_id
+        LIMIT ?
+      `).all(role, input.scopeHash, input.cursor ?? "", now, now, input.limit + 1) as
+        PaymentEvidenceHandshakeRow[];
+      const eligible = rows.map((row) => {
+        const decoded = decodeRow(row);
+        if (decoded.status !== "ok") {
+          throw new DacsNodeSqliteError(
+            decoded.status === "unsupported"
+              ? "payment-evidence-version-unsupported"
+              : "payment-evidence-record-corrupt",
+            decoded.status === "unsupported"
+              ? `Payment-evidence store version ${decoded.version} is unsupported`
+              : decoded.reason,
+          );
+        }
+        const outbox = decoded.record[field];
+        const runnable = outbox !== undefined &&
+          ((outbox.state === "pending" &&
+            (outbox.retryAt === undefined || outbox.retryAt <= now)) ||
+           (outbox.state === "sending" && outbox.lease!.expiresAt <= now));
+        if (!runnable || (field === "requestOutbox" && decoded.record.completion)) {
+          throw new DacsNodeSqliteError(
+            "payment-evidence-record-corrupt",
+            "Payment-evidence outbox projection differs from its record",
+          );
+        }
+        return decoded.record;
+      });
+      const selected = eligible.slice(0, input.limit);
+      const items = selected.map((current) => {
+        const outbox = current[field]!;
+        const updatedAt = stamp(current, now);
+        const expiresAt = updatedAt + input.leaseDurationMs;
+        const generation = outbox.generation + 1;
+        if (!Number.isSafeInteger(expiresAt) || !Number.isSafeInteger(generation)) {
+          throw new DacsNodeSqliteError(
+            "payment-evidence-claim-overflow",
+            "Payment-evidence outbox lease or generation overflows",
+          );
+        }
+        const lease: PaymentEvidenceHandshakeLease = {
+          owner: input.owner,
+          generation,
+          expiresAt,
+        };
+        const nextOutbox: PaymentEvidenceOutbox = {
+          state: "sending",
+          generation,
+          attempts: outbox.attempts + 1,
+          updatedAt,
+          lease,
+        };
+        const next = {
+          ...clone(current),
+          [field]: nextOutbox,
+          updatedAt,
+        } as PaymentEvidenceHandshakeRecord;
+        if (!save(current, next)) {
+          throw new DacsNodeSqliteError(
+            "payment-evidence-write-raced",
+            "Payment-evidence outbox changed during its claim",
+          );
+        }
+        return field === "requestOutbox"
+          ? { request: clone(current.request), lease: clone(lease) }
+          : { completion: clone(current.completion!), lease: clone(lease) };
+      });
+      return {
+        items,
+        ...(eligible.length > selected.length && selected.length > 0
+          ? { nextCursor: selected.at(-1)!.messageId }
+          : {}),
+      };
+    });
+  };
+
+  const writeOutbox = (
+    field: "requestOutbox" | "completionOutbox",
+    input: Readonly<{
+      scopeHash: string;
+      messageId: string;
+      messageHash: string;
+      lease: Readonly<PaymentEvidenceHandshakeLease>;
+      reasonCode?: string;
+      retryAt?: number;
+    }>,
+    acknowledge: boolean,
+  ): PaymentEvidenceHandshakeWrite => beginImmediate(database, () => {
+    const loaded = loadRecord(input.messageId, input.scopeHash);
+    if (loaded.status !== "ok") return loaded;
+    const current = loaded.record;
+    const expectedHash = field === "requestOutbox"
+      ? current.request.requestHash
+      : current.completion?.completionHash;
+    if (expectedHash !== input.messageHash) return { status: "stale" };
+    const lease = captureLease(input.lease);
+    if (!lease || (!acknowledge && (!reasonCode(input.reasonCode) ||
+        (input.retryAt !== undefined && !safeUint(input.retryAt))))) {
+      return { status: "corrupt", reason: "payment-evidence outbox write is malformed" };
+    }
+    const outbox = current[field];
+    if (!outbox) return { status: "conflict" };
+    if (acknowledge && outbox.state === "acknowledged") {
+      return { status: "existing", record: clone(current) };
+    }
+    const now = databaseTime(database);
+    if (outbox.state !== "sending" || !leaseMatches(outbox.lease, lease)) {
+      return { status: "stale" };
+    }
+    const updatedAt = stamp(current, now);
+    const nextOutbox: PaymentEvidenceOutbox = acknowledge
+      ? {
+          state: "acknowledged",
+          generation: outbox.generation,
+          attempts: outbox.attempts,
+          updatedAt,
+        }
+      : {
+          state: "pending",
+          generation: outbox.generation,
+          attempts: outbox.attempts,
+          updatedAt,
+          reasonCode: input.reasonCode!,
+          ...(input.retryAt === undefined ? {} : { retryAt: input.retryAt }),
+        };
+    const saved = save(current, {
+      ...clone(current),
+      [field]: nextOutbox,
+      updatedAt,
+    } as PaymentEvidenceHandshakeRecord);
+    return saved
+      ? { status: "recorded", record: saved }
+      : { status: "stale" };
+  });
+
+  return {
+    async readTime() {
+      return databaseTime(database);
+    },
+
+    async putRequest(rawInput) {
+      let input: typeof rawInput;
+      try {
+        input = captureCanonicalData(rawInput, new WeakSet(), true) as typeof rawInput;
+      } catch {
+        return { status: "corrupt", reason: "payment-evidence request put is malformed" };
+      }
+      if (input.role !== role || !hash(input.scopeHash) ||
+          !isPaymentEvidenceAnchorRequest(input.request) ||
+          paymentEvidenceScopeHash(input.request) !== input.scopeHash ||
+          (role === "buyer" && input.requestAuthentication === undefined) ||
+          (role === "seller" && input.requestAuthentication !== undefined)) {
+        return { status: "corrupt", reason: "payment-evidence request put is malformed" };
+      }
+      return beginImmediate(database, () => {
+        const existingRow = readRow(input.request.messageId);
+        if (existingRow) {
+          const decoded = decodeRow(existingRow);
+          if (decoded.status !== "ok") return decoded;
+          const same = canonicalize(decoded.record.request) === canonicalize(input.request) &&
+            canonicalize(decoded.record.requestAuthentication ?? null) ===
+              canonicalize(input.requestAuthentication ?? null);
+          return same
+            ? { status: "existing" as const, record: clone(decoded.record) }
+            : { status: "conflict" as const };
+        }
+        const reservations = [
+          ["message", input.request.messageId],
+          ["effect", input.request.effectId],
+          ["logical-address", input.request.logicalAddress],
+        ] as const;
+        const lookup = database.prepare(`
+          SELECT 1 FROM dacs_payment_evidence_reservations
+          WHERE role = ? AND scope_hash = ? AND reservation_kind = ? AND identity = ?
+        `);
+        if (reservations.some(([kind, identity]) =>
+          lookup.get(role, input.scopeHash, kind, identity) !== undefined)) {
+          return { status: "conflict" as const };
+        }
+        const now = databaseTime(database);
+        const record: PaymentEvidenceHandshakeRecord = {
+          storeVersion: PAYMENT_EVIDENCE_HANDSHAKE_STORE_VERSION,
+          revision: 1,
+          role,
+          messageId: input.request.messageId,
+          request: clone(input.request),
+          ...(role === "buyer"
+            ? {
+                requestAuthentication: clone(input.requestAuthentication!),
+                buyerWork: {
+                  state: "pending" as const,
+                  generation: 0,
+                  attempts: 0,
+                  updatedAt: now,
+                },
+              }
+            : {
+                requestOutbox: {
+                  state: "pending" as const,
+                  generation: 0,
+                  attempts: 0,
+                  updatedAt: now,
+                },
+              }),
+          createdAt: now,
+          updatedAt: now,
+        };
+        const violation = paymentEvidenceHandshakeViolation(record);
+        if (violation || !paymentEvidenceAuthorityMatches(record, authority)) {
+          return {
+            status: "corrupt" as const,
+            reason: violation ?? "payment-evidence request is not owned by this actor database",
+          };
+        }
+        insertPaymentEvidenceRecord(database, record);
+        return { status: "created" as const, record: clone(record) };
+      });
+    },
+
+    async load(inputRole, messageId, scopeHash) {
+      if (inputRole !== role) {
+        return { status: "corrupt", reason: "payment-evidence role differs from bound store" };
+      }
+      if (!nonEmpty(messageId) || !hash(scopeHash)) {
+        return { status: "corrupt", reason: "payment-evidence lookup is malformed" };
+      }
+      return readSnapshot(database, () => loadRecord(messageId, scopeHash));
+    },
+
+    async listBuyerRunnable(input) {
+      try {
+        input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+      } catch {
+        throw new DacsNodeSqliteError(
+          "payment-evidence-query-malformed",
+          "Payment-evidence runnable query must contain only own canonical data",
+        );
+      }
+      validateQuery(input, "Payment-evidence runnable query");
+      if (role !== "buyer") {
+        throw new DacsNodeSqliteError(
+          "payment-evidence-role-mismatch",
+          "Only a buyer actor database can list buyer work",
+        );
+      }
+      return readSnapshot(database, () => {
+        const now = databaseTime(database);
+        const rows = database.prepare(`
+          SELECT * FROM dacs_payment_evidence_handshakes
+          WHERE role = 'buyer' AND scope_hash = ? AND message_id > ?
+            AND completion_hash IS NULL
+            AND buyer_state IN ('pending', 'reconciliation-required')
+            AND (buyer_retry_at IS NULL OR buyer_retry_at <= ?)
+            AND (buyer_lease_expires_at IS NULL OR buyer_lease_expires_at <= ?)
+          ORDER BY message_id
+          LIMIT ?
+        `).all(input.scopeHash, input.cursor ?? "", now, now, input.limit + 1) as
+          PaymentEvidenceHandshakeRow[];
+        const records = rows.map((row) => {
+          const decoded = decodeRow(row);
+          if (decoded.status !== "ok") {
+            throw new DacsNodeSqliteError(
+              decoded.status === "unsupported"
+                ? "payment-evidence-version-unsupported"
+                : "payment-evidence-record-corrupt",
+              decoded.status === "unsupported"
+                ? `Payment-evidence store version ${decoded.version} is unsupported`
+                : decoded.reason,
+            );
+          }
+          const work = decoded.record.buyerWork!;
+          if (decoded.record.completion ||
+              !["pending", "reconciliation-required"].includes(work.state) ||
+              (work.retryAt !== undefined && work.retryAt > now) ||
+              (work.lease !== undefined && work.lease.expiresAt > now)) {
+            throw new DacsNodeSqliteError(
+              "payment-evidence-record-corrupt",
+              "Payment-evidence runnable projection differs from its record",
+            );
+          }
+          return decoded.record;
+        });
+        const selected = records.slice(0, input.limit);
+        return {
+          items: selected.map(clone),
+          ...(records.length > selected.length && selected.length > 0
+            ? { nextCursor: selected.at(-1)!.messageId }
+            : {}),
+        };
+      });
+    },
+
+    async claimBuyer(rawInput) {
+      let input: typeof rawInput;
+      try {
+        input = captureCanonicalData(rawInput, new WeakSet(), true) as typeof rawInput;
+      } catch {
+        return { status: "corrupt", reason: "buyer handshake claim is malformed" };
+      }
+      if (role !== "buyer") return { status: "stale" };
+      return beginImmediate(database, () => {
+        const loaded = loadRecord(input.messageId, input.scopeHash);
+        if (loaded.status !== "ok") return loaded;
+        const current = loaded.record;
+        if (current.request.requestHash !== input.requestHash) return { status: "stale" };
+        if (current.completion) return { status: "complete", record: clone(current) };
+        if (!nonEmpty(input.owner) || !safeUint(input.leaseDurationMs) ||
+            input.leaseDurationMs === 0) {
+          return { status: "corrupt", reason: "buyer handshake claim is malformed" };
+        }
+        const work = current.buyerWork!;
+        if (work.state === "operator-action") {
+          return { status: "not-runnable", record: clone(current) };
+        }
+        const now = databaseTime(database);
+        if (work.retryAt !== undefined && work.retryAt > now) {
+          return { status: "not-runnable", record: clone(current) };
+        }
+        if (work.lease && work.lease.expiresAt > now) {
+          return { status: "waiting", record: clone(current), lease: clone(work.lease) };
+        }
+        const updatedAt = stamp(current, now);
+        const expiresAt = updatedAt + input.leaseDurationMs;
+        const generation = work.generation + 1;
+        if (!Number.isSafeInteger(expiresAt) || !Number.isSafeInteger(generation)) {
+          return { status: "corrupt", reason: "buyer handshake lease overflows" };
+        }
+        const lease: PaymentEvidenceHandshakeLease = {
+          owner: input.owner,
+          generation,
+          expiresAt,
+        };
+        const next: PaymentEvidenceHandshakeRecord = {
+          ...clone(current),
+          buyerWork: {
+            state: "reconciliation-required",
+            generation,
+            attempts: work.attempts + 1,
+            updatedAt,
+            reasonCode: work.state === "reconciliation-required"
+              ? work.reasonCode!
+              : "anchor-attempt-in-flight",
+            ...(work.absenceProofHash === undefined
+              ? {}
+              : { absenceProofHash: work.absenceProofHash }),
+            lease,
+          },
+          updatedAt,
+        };
+        const saved = save(current, next);
+        return saved
+          ? {
+              status: "acquired" as const,
+              mode: work.state === "reconciliation-required" ? "reconcile" as const : "anchor" as const,
+              record: saved,
+              lease: clone(lease),
+            }
+          : { status: "stale" as const };
+      });
+    },
+
+    async isCurrentBuyer(rawInput) {
+      if (role !== "buyer") return false;
+      let input: typeof rawInput;
+      try {
+        input = captureCanonicalData(rawInput, new WeakSet(), true) as typeof rawInput;
+      } catch {
+        return false;
+      }
+      const lease = captureLease(input.lease);
+      if (!lease) return false;
+      return readSnapshot(database, () => {
+        const loaded = loadRecord(input.messageId, input.scopeHash);
+        if (loaded.status !== "ok" || loaded.record.request.requestHash !== input.requestHash ||
+            loaded.record.completion || !loaded.record.buyerWork?.lease) return false;
+        return leaseMatches(loaded.record.buyerWork.lease, lease) &&
+          lease.expiresAt > databaseTime(database);
+      });
+    },
+
+    async recordBuyerAttempt(rawInput) {
+      if (role !== "buyer") return { status: "stale" };
+      let input: typeof rawInput;
+      try {
+        input = captureCanonicalData(rawInput, new WeakSet(), true) as typeof rawInput;
+      } catch {
+        return { status: "conflict" };
+      }
+      return beginImmediate(database, () => {
+        const loaded = loadRecord(input.messageId, input.scopeHash);
+        if (loaded.status !== "ok") return loaded;
+        const current = loaded.record;
+        const lease = captureLease(input.lease);
+        if (!lease || current.request.requestHash !== input.requestHash || current.completion ||
+            !reasonCode(input.reasonCode) ||
+            (input.state !== "reconciliation-required" && input.state !== "operator-action") ||
+            (input.retryAt !== undefined && !safeUint(input.retryAt)) ||
+            (input.state === "operator-action" && input.retryAt !== undefined)) {
+          return { status: "conflict" };
+        }
+        const now = databaseTime(database);
+        const work = current.buyerWork!;
+        if (!leaseMatches(work.lease, lease) || lease.expiresAt <= now) {
+          return { status: "stale" };
+        }
+        const updatedAt = stamp(current, now);
+        const nextWork: PaymentEvidenceBuyerWork = {
+          state: input.state,
+          generation: work.generation,
+          attempts: work.attempts,
+          updatedAt,
+          reasonCode: input.reasonCode,
+          ...(input.retryAt === undefined ? {} : { retryAt: input.retryAt }),
+          ...(work.absenceProofHash === undefined
+            ? {}
+            : { absenceProofHash: work.absenceProofHash }),
+        };
+        const saved = save(current, {
+          ...clone(current),
+          buyerWork: nextWork,
+          updatedAt,
+        });
+        return saved
+          ? { status: "recorded", record: saved }
+          : { status: "stale" };
+      });
+    },
+
+    async recordBuyerAbsence(rawInput) {
+      if (role !== "buyer") return { status: "stale" };
+      let input: typeof rawInput;
+      try {
+        input = captureCanonicalData(rawInput, new WeakSet(), true) as typeof rawInput;
+      } catch {
+        return { status: "stale" };
+      }
+      return beginImmediate(database, () => {
+        const loaded = loadRecord(input.messageId, input.scopeHash);
+        if (loaded.status !== "ok") return loaded;
+        const current = loaded.record;
+        const work = current.buyerWork!;
+        const lease = captureLease(input.lease);
+        const now = databaseTime(database);
+        if (!lease || current.request.requestHash !== input.requestHash || current.completion ||
+            !hash(input.absenceProofHash) || work.state !== "reconciliation-required" ||
+            !leaseMatches(work.lease, lease) || lease.expiresAt <= now) {
+          return { status: "stale" };
+        }
+        const updatedAt = stamp(current, now);
+        const saved = save(current, {
+          ...clone(current),
+          buyerWork: {
+            state: "pending",
+            generation: work.generation,
+            attempts: work.attempts,
+            updatedAt,
+            absenceProofHash: input.absenceProofHash,
+          },
+          updatedAt,
+        });
+        return saved
+          ? { status: "recorded", record: saved }
+          : { status: "stale" };
+      });
+    },
+
+    async recordBuyerCompletion(rawInput) {
+      if (role !== "buyer") return { status: "stale" };
+      let input: typeof rawInput;
+      try {
+        input = captureCanonicalData(rawInput, new WeakSet(), true) as typeof rawInput;
+      } catch {
+        return { status: "stale" };
+      }
+      return beginImmediate(database, () => {
+        const loaded = loadRecord(input.messageId, input.scopeHash);
+        if (loaded.status !== "ok") return loaded;
+        const current = loaded.record;
+        if (current.request.requestHash !== input.requestHash) return { status: "stale" };
+        if (current.completion) {
+          return canonicalize(current.completion) === canonicalize(input.completion)
+            ? { status: "existing", record: clone(current) }
+            : { status: "conflict" };
+        }
+        const lease = captureLease(input.lease);
+        const now = databaseTime(database);
+        const work = current.buyerWork!;
+        if (!lease || !leaseMatches(work.lease, lease) || lease.expiresAt <= now ||
+            !isPaymentEvidenceAnchorCompletion(input.completion)) return { status: "stale" };
+        const updatedAt = stamp(current, now);
+        const candidate: PaymentEvidenceHandshakeRecord = {
+          ...clone(current),
+          buyerWork: {
+            state: "complete",
+            generation: work.generation,
+            attempts: work.attempts,
+            updatedAt,
+            ...(work.absenceProofHash === undefined
+              ? {}
+              : { absenceProofHash: work.absenceProofHash }),
+          },
+          completion: clone(input.completion),
+          completionOutbox: {
+            state: "pending",
+            generation: 0,
+            attempts: 0,
+            updatedAt,
+          },
+          updatedAt,
+        };
+        if (paymentEvidenceHandshakeViolation(candidate)) return { status: "stale" };
+        const saved = save(current, candidate);
+        return saved
+          ? { status: "recorded", record: saved }
+          : { status: "stale" };
+      });
+    },
+
+    async requeueBuyer(rawInput) {
+      if (role !== "buyer") return { status: "stale" };
+      let input: typeof rawInput;
+      try {
+        input = captureCanonicalData(rawInput, new WeakSet(), true) as typeof rawInput;
+      } catch {
+        return { status: "conflict" };
+      }
+      return beginImmediate(database, () => {
+        const loaded = loadRecord(input.messageId, input.scopeHash);
+        if (loaded.status !== "ok") return loaded;
+        const current = loaded.record;
+        const work = current.buyerWork!;
+        if (current.request.requestHash !== input.requestHash || current.completion ||
+            !reasonCode(input.operatorReasonCode)) return { status: "conflict" };
+        if (work.lease) return { status: "stale" };
+        const updatedAt = stamp(current);
+        const saved = save(current, {
+          ...clone(current),
+          buyerWork: {
+            state: "reconciliation-required",
+            generation: work.generation,
+            attempts: work.attempts,
+            updatedAt,
+            reasonCode: input.operatorReasonCode,
+            ...(work.absenceProofHash === undefined
+              ? {}
+              : { absenceProofHash: work.absenceProofHash }),
+          },
+          updatedAt,
+        });
+        return saved
+          ? { status: "recorded", record: saved }
+          : { status: "stale" };
+      });
+    },
+
+    async recordSellerCompletion(rawInput) {
+      if (role !== "seller") return { status: "stale" };
+      let input: typeof rawInput;
+      try {
+        input = captureCanonicalData(rawInput, new WeakSet(), true) as typeof rawInput;
+      } catch {
+        return { status: "conflict" };
+      }
+      return beginImmediate(database, () => {
+        const loaded = loadRecord(input.messageId, input.scopeHash);
+        if (loaded.status !== "ok") return loaded;
+        const current = loaded.record;
+        if (current.request.requestHash !== input.requestHash ||
+            !isPaymentEvidenceAnchorCompletion(input.completion)) {
+          return { status: "conflict" };
+        }
+        if (current.completion) {
+          const same = canonicalize(current.completion) === canonicalize(input.completion) &&
+            canonicalize(current.completionAuthentication) ===
+              canonicalize(input.completionAuthentication);
+          return same
+            ? { status: "existing", record: clone(current) }
+            : { status: "conflict" };
+        }
+        const updatedAt = stamp(current);
+        const candidate: PaymentEvidenceHandshakeRecord = {
+          ...clone(current),
+          requestOutbox: {
+            state: "acknowledged",
+            generation: current.requestOutbox!.generation,
+            attempts: current.requestOutbox!.attempts,
+            updatedAt,
+          },
+          completion: clone(input.completion),
+          completionAuthentication: clone(input.completionAuthentication),
+          updatedAt,
+        };
+        if (paymentEvidenceHandshakeViolation(candidate)) return { status: "conflict" };
+        const saved = save(current, candidate);
+        return saved
+          ? { status: "recorded", record: saved }
+          : { status: "stale" };
+      });
+    },
+
+    async claimSellerRequests(input) {
+      if (role !== "seller") {
+        throw new DacsNodeSqliteError(
+          "payment-evidence-role-mismatch",
+          "Only a seller actor database can claim request outbox messages",
+        );
+      }
+      return claimOutbox("requestOutbox", input) as
+        PaymentEvidencePage<PaymentEvidenceOutboundRequestClaim>;
+    },
+
+    async acknowledgeSellerRequest(input) {
+      if (role !== "seller") return { status: "stale" };
+      try {
+        input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+      } catch {
+        return { status: "corrupt", reason: "payment-evidence outbox write is malformed" };
+      }
+      return writeOutbox("requestOutbox", {
+        scopeHash: input.scopeHash,
+        messageId: input.messageId,
+        messageHash: input.requestHash,
+        lease: input.lease,
+      }, true);
+    },
+
+    async releaseSellerRequest(input) {
+      if (role !== "seller") return { status: "stale" };
+      try {
+        input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+      } catch {
+        return { status: "corrupt", reason: "payment-evidence outbox write is malformed" };
+      }
+      return writeOutbox("requestOutbox", {
+        scopeHash: input.scopeHash,
+        messageId: input.messageId,
+        messageHash: input.requestHash,
+        lease: input.lease,
+        reasonCode: input.reasonCode,
+        ...(input.retryAt === undefined ? {} : { retryAt: input.retryAt }),
+      }, false);
+    },
+
+    async claimBuyerCompletions(input) {
+      if (role !== "buyer") {
+        throw new DacsNodeSqliteError(
+          "payment-evidence-role-mismatch",
+          "Only a buyer actor database can claim completion outbox messages",
+        );
+      }
+      return claimOutbox("completionOutbox", input) as
+        PaymentEvidencePage<PaymentEvidenceOutboundCompletionClaim>;
+    },
+
+    async acknowledgeBuyerCompletion(input) {
+      if (role !== "buyer") return { status: "stale" };
+      try {
+        input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+      } catch {
+        return { status: "corrupt", reason: "payment-evidence outbox write is malformed" };
+      }
+      return writeOutbox("completionOutbox", {
+        scopeHash: input.scopeHash,
+        messageId: input.messageId,
+        messageHash: input.completionHash,
+        lease: input.lease,
+      }, true);
+    },
+
+    async releaseBuyerCompletion(input) {
+      if (role !== "buyer") return { status: "stale" };
+      try {
+        input = captureCanonicalData(input, new WeakSet(), true) as typeof input;
+      } catch {
+        return { status: "corrupt", reason: "payment-evidence outbox write is malformed" };
+      }
+      return writeOutbox("completionOutbox", {
+        scopeHash: input.scopeHash,
+        messageId: input.messageId,
+        messageHash: input.completionHash,
+        lease: input.lease,
+        reasonCode: input.reasonCode,
+        ...(input.retryAt === undefined ? {} : { retryAt: input.retryAt }),
+      }, false);
+    },
+  };
+}
+
 class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
   readonly databasePath: string;
   readonly metadata: DacsNodeSqliteDatabase["metadata"];
@@ -2188,6 +3892,22 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     }
     return this.createCoordinatorStore("offline", role) as unknown as
       FixedPriceOfflineCoordinatorStore;
+  }
+
+  createPaymentEvidenceHandshakeStore(): PaymentEvidenceHandshakeStore {
+    this.assertOpen();
+    if (this.metadata.mode !== "live-demos" ||
+        (this.metadata.role !== "buyer" && this.metadata.role !== "seller")) {
+      throw new DacsNodeSqliteError(
+        "payment-evidence-profile-mismatch",
+        "A payment-evidence handshake store requires one live buyer or seller actor database",
+      );
+    }
+    return createSqlitePaymentEvidenceHandshakeStore(
+      this.database,
+      this.metadata.role,
+      this.metadata.authority,
+    );
   }
 
   private createCoordinatorStore(
@@ -3524,7 +5244,7 @@ type SchemaFingerprint = Readonly<{
   indexes: Readonly<Record<string, unknown>>;
 }>;
 
-type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4;
+type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5;
 
 const expectedSchemaFingerprints = new Map<number, SchemaFingerprint>();
 
@@ -3598,6 +5318,7 @@ function expectedSchemaFingerprint(version: DacsNodeSqliteSchemaVersion): Schema
       reference.exec(MIGRATION_4_PREPARE);
       reference.exec(MIGRATION_4_FINALIZE);
     }
+    if (version >= 5) reference.exec(MIGRATION_5);
     const objects = schemaObjects(reference, 64);
     const fingerprint = Object.freeze({
       objects,
@@ -3723,7 +5444,7 @@ function verifyMigrationHistory(
       SELECT version, applied_at
       FROM dacs_migrations
       ORDER BY version
-      LIMIT 5
+      LIMIT 6
     `).all() as MigrationRow[];
   } catch {
     throw new DacsNodeSqliteError(
@@ -4078,6 +5799,56 @@ function verifyLogicalRows(
         }
       }
     }
+    if (version >= 5) {
+      for (const row of database.prepare(`
+        SELECT * FROM dacs_payment_evidence_handshakes
+        ORDER BY role, message_id
+      `).iterate() as IterableIterator<PaymentEvidenceHandshakeRow>) {
+        const decoded = paymentEvidenceFromRow(row);
+        if (options.mode !== "live-demos" || row.role !== options.role ||
+            (row.role !== "buyer" && row.role !== "seller") ||
+            decoded.status !== "ok" ||
+            !paymentEvidenceAuthorityMatches(decoded.record, options.authority) ||
+            !paymentEvidenceReservationsMatch(database, decoded.record) ||
+            !paymentEvidenceHistoryMatches(database, decoded.record)) {
+          throw new DacsNodeSqliteError(
+            decoded.status === "unsupported"
+              ? "payment-evidence-version-unsupported"
+              : "database-logical-corruption",
+            decoded.status === "unsupported"
+              ? `Payment-evidence store version ${decoded.version} is unsupported`
+              : "SQLite payment-evidence record is corrupt or outside its actor authority",
+          );
+        }
+      }
+      const orphan = database.prepare(`
+        SELECT 1 FROM dacs_payment_evidence_reservations AS reservations
+        LEFT JOIN dacs_payment_evidence_handshakes AS records
+          ON records.role = reservations.role
+          AND records.message_id = reservations.message_id
+        WHERE records.message_id IS NULL
+        LIMIT 1
+      `).get();
+      if (orphan !== undefined) {
+        throw new DacsNodeSqliteError(
+          "database-logical-corruption",
+          "SQLite payment-evidence reservation has no authenticated record",
+        );
+      }
+      const orphanHistory = database.prepare(`
+        SELECT 1 FROM dacs_payment_evidence_history AS history
+        LEFT JOIN dacs_payment_evidence_handshakes AS records
+          ON records.role = history.role AND records.message_id = history.message_id
+        WHERE records.message_id IS NULL
+        LIMIT 1
+      `).get();
+      if (orphanHistory !== undefined) {
+        throw new DacsNodeSqliteError(
+          "database-logical-corruption",
+          "SQLite payment-evidence history has no authenticated record",
+        );
+      }
+    }
   } catch (error) {
     if (error instanceof DacsNodeSqliteError) throw error;
     throw new DacsNodeSqliteError(
@@ -4176,6 +5947,7 @@ function initializeEmptyDatabase(
     database.exec(MIGRATION_4_PREPARE);
     migrateCoordinatorV4Rows(database, options);
     database.exec(MIGRATION_4_FINALIZE);
+    database.exec(MIGRATION_5);
     database.prepare(`
       INSERT INTO dacs_store_metadata (
         singleton, schema_version, mode, profile, role, authority,
@@ -4193,11 +5965,11 @@ function initializeEmptyDatabase(
     );
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (1, ?), (2, ?), (3, ?), (4, ?)
-    `).run(now, now, now, now);
+      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?)
+    `).run(now, now, now, now, now);
     database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 4);
+    verifyVersionedDatabase(database, options, 5);
   });
 }
 
@@ -4210,7 +5982,7 @@ function removeGeneratedBackup(backupPath: string): void {
 async function createValidatedBackup(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2 | 3,
+  version: 1 | 2 | 3 | 4,
 ): Promise<Readonly<{ backupPath: string; sourceDataVersion: number }>> {
   const backupPath = `${options.databasePath}.backup-v${version}-${randomUUID()}.sqlite`;
   try {
@@ -4269,15 +6041,16 @@ function migrateV1Database(
     database.exec(MIGRATION_4_PREPARE);
     migrateCoordinatorV4Rows(database, options);
     database.exec(MIGRATION_4_FINALIZE);
+    database.exec(MIGRATION_5);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (2, ?), (3, ?), (4, ?)
-    `).run(now, now, now);
+      VALUES (2, ?), (3, ?), (4, ?), (5, ?)
+    `).run(now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 4);
+    verifyVersionedDatabase(database, options, 5);
   });
 }
 
@@ -4302,14 +6075,15 @@ function migrateV2Database(
     database.exec(MIGRATION_4_PREPARE);
     migrateCoordinatorV4Rows(database, options);
     database.exec(MIGRATION_4_FINALIZE);
+    database.exec(MIGRATION_5);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (3, ?), (4, ?)
-    `).run(now, now);
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (3, ?), (4, ?), (5, ?)
+    `).run(now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 4);
+    verifyVersionedDatabase(database, options, 5);
   });
 }
 
@@ -4333,14 +6107,44 @@ function migrateV3Database(
     database.exec(MIGRATION_4_PREPARE);
     migrateCoordinatorV4Rows(database, options);
     database.exec(MIGRATION_4_FINALIZE);
+    database.exec(MIGRATION_5);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (4, ?)
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (4, ?), (5, ?)
+    `).run(now, now);
+    database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    verifyVersionedDatabase(database, options, 5);
+  });
+}
+
+function migrateV4Database(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  sourceDataVersion: number,
+): void {
+  beginImmediate(database, () => {
+    if (Number(database.pragma("data_version", { simple: true })) !== sourceDataVersion) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite v4 data changed while its migration backup was created",
+      );
+    }
+    verifyVersionedDatabase(database, options, 4);
+    const previous = database.prepare(`
+      SELECT applied_at FROM dacs_migrations WHERE version = 4
+    `).get() as { applied_at: number };
+    const now = Math.max(databaseTime(database), previous.applied_at);
+    database.exec(MIGRATION_5);
+    database.prepare(`
+      UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
+    `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    database.prepare(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (5, ?)
     `).run(now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 4);
+    verifyVersionedDatabase(database, options, 5);
   });
 }
 
@@ -4421,8 +6225,20 @@ export async function openDacsNodeSqliteDatabase(
         }
         throw error;
       }
+    } else if (admittedVersion === 4) {
+      verifyVersionedDatabase(database, options, 4);
+      const backup = await createValidatedBackup(database, options, 4);
+      try {
+        migrateV4Database(database, options, backup.sourceDataVersion);
+      } catch (error) {
+        if (error instanceof DacsNodeSqliteError &&
+            error.reasonCode === "database-version-raced") {
+          removeGeneratedBackup(backup.backupPath);
+        }
+        throw error;
+      }
     } else {
-      beginImmediate(database, () => verifyVersionedDatabase(database, options, 4));
+      beginImmediate(database, () => verifyVersionedDatabase(database, options, 5));
     }
     chmodSync(location.databasePath, 0o600);
     const journalMode = database.pragma("journal_mode = WAL", { simple: true });
@@ -4433,7 +6249,7 @@ export async function openDacsNodeSqliteDatabase(
         "SQLite WAL journal mode is unavailable",
       );
     }
-    verifyVersionedDatabase(database, options, 4);
+    verifyVersionedDatabase(database, options, 5);
     return new DacsNodeSqliteDatabaseImpl(database, options, location);
   } catch (error) {
     database.close();
