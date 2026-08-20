@@ -828,7 +828,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const buyerPriv = privateKeyFromSeed(buyerSeed);
     const buyerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(buyerSeed))).toString("hex");
     const normativeBuyerDid = `did:demos:agent:${buyerHex}`;
-    const agreement = {
+    const agreementScope = {
       agreementVersion: "1",
       jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
       listingRef: {
@@ -864,16 +864,27 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       },
       derivedFromPattern: "fixed-price",
       generatedAt: 1786363200000,
+    };
+    const agreementPayload = signedBytes(
+      ARTIFACT_SEPARATORS.AgreementDocument,
+      contentHash(agreementScope),
+    );
+    const agreement = {
+      ...agreementScope,
       signatures: [
         {
           party: normativeBuyerDid,
           algorithm: "ed25519",
-          value: Buffer.alloc(64, 7).toString("base64url"),
+          value: Buffer.from(
+            ed25519Sign(agreementPayload, buyerPriv),
+          ).toString("base64url"),
         },
         {
           party: sellerDid,
           algorithm: "ed25519",
-          value: Buffer.alloc(64, 8).toString("base64url"),
+          value: Buffer.from(
+            ed25519Sign(agreementPayload, sellerPriv),
+          ).toString("base64url"),
         },
       ],
     };
