@@ -311,7 +311,9 @@ describe("offline verifier simulation", () => {
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
     expect(rejected[0]).toMatchObject({
-      message: expect.stringMatching(/published concurrently/),
+      message: expect.stringMatching(
+        /^offline verifier simulation outputDirectory (?:was published concurrently|already exists; choose a fresh directory)$/,
+      ),
     });
 
     const report = JSON.parse(
