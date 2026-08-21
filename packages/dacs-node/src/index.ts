@@ -11,6 +11,7 @@ export * from "./offline.js";
 export * from "./offlineLifecycle.js";
 export * from "./railRegistry.js";
 export * from "./readiness.js";
+export * from "./roleRuntime.js";
 export * from "./secrets.js";
 export * from "./service.js";
 export * from "./serviceDoctor.js";
