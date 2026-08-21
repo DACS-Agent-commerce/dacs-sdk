@@ -236,12 +236,16 @@ const OUTBOUND_BY_ROLE: Readonly<
   Record<DacsLiveRole, ReadonlySet<DacsLiveOutboundMessageType>>
 > = Object.freeze({
   buyer: new Set<DacsLiveOutboundMessageType>([
+    "session-init",
+    "session-presentation",
     "agreement-proposal",
     "payment-evidence-completion",
     "bundle-signature-response",
     "diagnostic-probe-buyer",
   ]),
   seller: new Set<DacsLiveOutboundMessageType>([
+    "session-challenge",
+    "session-admission",
     "agreement-response",
     "payment-evidence-request",
     "bundle-signature-request",

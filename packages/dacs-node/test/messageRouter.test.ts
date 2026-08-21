@@ -30,6 +30,8 @@ describe("closed live role message router", () => {
     const router = createDacsLiveRoleMessageRouterV1({
       role: "buyer",
       routes: {
+        "session-challenge": route(),
+        "session-admission": route(),
         "agreement-response": agreement,
         "payment-evidence-request": payment,
         "bundle-signature-request": bundle,
@@ -78,6 +80,8 @@ describe("closed live role message router", () => {
 
     const accessed = vi.fn(() => route());
     const routes = {
+      "session-init": route(),
+      "session-presentation": route(),
       "agreement-proposal": route(),
       "payment-evidence-completion": route(),
     } as Record<string, unknown>;
@@ -103,6 +107,8 @@ describe("closed live role message router", () => {
     const router = createDacsLiveRoleMessageRouterV1({
       role: "seller",
       routes: {
+        "session-init": route(),
+        "session-presentation": route(),
         "agreement-proposal": unavailable,
         "payment-evidence-completion": route(),
         "bundle-signature-response": route(),
@@ -126,6 +132,8 @@ describe("closed live role message router", () => {
 
   it("publishes the immutable role direction catalog", () => {
     expect(dacsLiveRoleInboundMessageTypesV1("buyer")).toEqual([
+      "session-challenge",
+      "session-admission",
       "agreement-response",
       "payment-evidence-request",
       "bundle-signature-request",

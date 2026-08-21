@@ -35,6 +35,10 @@ const MAX_IDENTITY_EVIDENCE_BYTES = 1_048_576;
 const ROLE_BY_MESSAGE: Readonly<
   Record<Exclude<DacsHttpMessageType, "acknowledgement">, "buyer" | "seller">
 > = Object.freeze({
+  "session-init": "buyer",
+  "session-challenge": "seller",
+  "session-presentation": "buyer",
+  "session-admission": "seller",
   "agreement-proposal": "buyer",
   "agreement-response": "seller",
   "payment-evidence-request": "seller",

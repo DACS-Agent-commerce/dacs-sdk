@@ -22,6 +22,7 @@ function route() {
 describe("closed live commerce graphs", () => {
   it("wires every buyer track and only the buyer-directed message routes", async () => {
     const agreement = operation();
+    const sessionBootstrap = route();
     const payment = operation();
     const paymentEvidence = { operation: operation(), ...route() };
     const buyerReceived = operation();
@@ -29,6 +30,7 @@ describe("closed live commerce graphs", () => {
     const agreementTransport = route();
     const bundleTransport = route();
     const graph = createDacsBuyerLiveCommerceGraphV1({
+      sessionBootstrap: sessionBootstrap as never,
       agreement,
       payment,
       paymentEvidence: paymentEvidence as never,
@@ -71,6 +73,7 @@ describe("closed live commerce graphs", () => {
     const paymentEvidenceTransport = route();
     const bundleTransport = route();
     const graph = createDacsSellerLiveCommerceGraphV1({
+      sessionBootstrap: route() as never,
       agreement: operation(),
       x402: x402 as never,
       paymentEvidence,
@@ -94,10 +97,12 @@ describe("closed live commerce graphs", () => {
 
   it("rejects partial graphs before a role service can start", () => {
     expect(() => createDacsBuyerLiveCommerceGraphV1({
+      sessionBootstrap: route(),
       agreement: operation(),
       payment: operation(),
     } as never)).toThrow("buyer live commerce graph options are invalid");
     expect(() => createDacsSellerLiveCommerceGraphV1({
+      sessionBootstrap: route(),
       agreement: operation(),
       paymentEvidence: operation(),
     } as never)).toThrow("seller live commerce graph options are invalid");

@@ -36,6 +36,7 @@
     "prepack": "npm run clean && npm run build:with-core",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
+    "vectors:generate": "npm run build:with-core && node scripts/generate-envelope-vectors.mjs",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build:with-core"
   },

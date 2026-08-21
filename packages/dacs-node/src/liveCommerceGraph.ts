@@ -24,6 +24,10 @@ import type {
   DacsBuyerPaymentEvidenceRuntimeV1,
   DacsSellerPaymentEvidenceRuntimeV1,
 } from "./paymentEvidenceRuntime.js";
+import type {
+  DacsBuyerSessionBootstrapTransportRuntimeV1,
+  DacsSellerSessionBootstrapTransportRuntimeV1,
+} from "./sessionBootstrapTransportRuntime.js";
 import type { DacsLiveRoleInboundOperationContextV1 } from "./roleRuntime.js";
 import type {
   DacsLiveRoleApplicationRequestHandlerV1,
@@ -36,6 +40,7 @@ import type {
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
 
 export interface DacsBuyerLiveCommerceGraphOptionsV1 {
+  sessionBootstrap: Readonly<DacsBuyerSessionBootstrapTransportRuntimeV1>;
   agreement: FixedPriceX402TrackOperation;
   payment: FixedPriceX402TrackOperation;
   paymentEvidence: Readonly<DacsBuyerPaymentEvidenceRuntimeV1>;
@@ -46,6 +51,7 @@ export interface DacsBuyerLiveCommerceGraphOptionsV1 {
 }
 
 export interface DacsSellerLiveCommerceGraphOptionsV1<T = unknown> {
+  sessionBootstrap: Readonly<DacsSellerSessionBootstrapTransportRuntimeV1>;
   agreement: FixedPriceX402TrackOperation;
   x402: Readonly<DacsSellerX402RuntimeV1<T>>;
   paymentEvidence: FixedPriceX402TrackOperation;
@@ -145,6 +151,7 @@ export function createDacsUnavailableLiveCommerceGraphV1(
   const runtime = Object.freeze({ validatePayload, handleMessage });
   if (options.role === "buyer") {
     const graph = createDacsBuyerLiveCommerceGraphV1({
+      sessionBootstrap: runtime as unknown as DacsBuyerSessionBootstrapTransportRuntimeV1,
       agreement: unavailableOperation,
       payment: unavailableOperation,
       paymentEvidence: Object.freeze({ ...runtime, operation: unavailableOperation }),
@@ -176,6 +183,7 @@ export function createDacsUnavailableLiveCommerceGraphV1(
     handleApplicationRequest,
   }) as unknown as Readonly<DacsSellerX402RuntimeV1>;
   const graph = createDacsSellerLiveCommerceGraphV1({
+    sessionBootstrap: runtime as unknown as DacsSellerSessionBootstrapTransportRuntimeV1,
     agreement: unavailableOperation,
     x402,
     paymentEvidence: unavailableOperation,
@@ -210,6 +218,7 @@ export function createDacsBuyerLiveCommerceGraphV1(
   options: Readonly<DacsBuyerLiveCommerceGraphOptionsV1>,
 ): Readonly<DacsBuyerLiveCommerceGraphV1> {
   const fields = [
+    "sessionBootstrap",
     "agreement", "payment", "paymentEvidence", "buyerReceived", "audit",
     "agreementTransport", "bundleTransport",
   ] as const;
@@ -218,6 +227,7 @@ export function createDacsBuyerLiveCommerceGraphV1(
       !plainObject(options.paymentEvidence) ||
       !operation(options.paymentEvidence.operation) ||
       !operation(options.buyerReceived) || !operation(options.audit) ||
+      !transportRuntime(options.sessionBootstrap) ||
       !transportRuntime(options.agreementTransport) ||
       !transportRuntime(options.paymentEvidence) ||
       !transportRuntime(options.bundleTransport)) {
@@ -237,6 +247,16 @@ export function createDacsBuyerLiveCommerceGraphV1(
   const router = createDacsLiveRoleMessageRouterV1({
     role: "buyer",
     routes: {
+      "session-challenge": {
+        validate: options.sessionBootstrap.validatePayload,
+        handle: (authenticated, context) =>
+          options.sessionBootstrap.handleMessage(authenticated, context),
+      },
+      "session-admission": {
+        validate: options.sessionBootstrap.validatePayload,
+        handle: (authenticated, context) =>
+          options.sessionBootstrap.handleMessage(authenticated, context),
+      },
       "agreement-response": {
         validate: options.agreementTransport.validatePayload,
         handle: (authenticated, context) =>
@@ -278,6 +298,7 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
   options: Readonly<DacsSellerLiveCommerceGraphOptionsV1<T>>,
 ): Readonly<DacsSellerLiveCommerceGraphV1> {
   const fields = [
+    "sessionBootstrap",
     "agreement", "x402", "paymentEvidence", "audit", "agreementTransport",
     "paymentEvidenceTransport", "bundleTransport",
   ] as const;
@@ -287,6 +308,7 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
       !operation(options.x402.deliveryEvidence) ||
       typeof options.x402.handleApplicationRequest !== "function" ||
       !operation(options.paymentEvidence) || !operation(options.audit) ||
+      !transportRuntime(options.sessionBootstrap) ||
       !transportRuntime(options.agreementTransport) ||
       !transportRuntime(options.paymentEvidenceTransport) ||
       !transportRuntime(options.bundleTransport)) {
@@ -307,6 +329,16 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
   const router = createDacsLiveRoleMessageRouterV1({
     role: "seller",
     routes: {
+      "session-init": {
+        validate: options.sessionBootstrap.validatePayload,
+        handle: (authenticated, context) =>
+          options.sessionBootstrap.handleMessage(authenticated, context),
+      },
+      "session-presentation": {
+        validate: options.sessionBootstrap.validatePayload,
+        handle: (authenticated, context) =>
+          options.sessionBootstrap.handleMessage(authenticated, context),
+      },
       "agreement-proposal": {
         validate: options.agreementTransport.validatePayload,
         handle: (authenticated, context) =>

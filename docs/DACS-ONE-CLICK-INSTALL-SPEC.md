@@ -577,12 +577,18 @@ Every message uses this closed envelope:
 type DacsHttpEnvelopeV1 = {
   version: "1";
   type:
+    | "session-init"
+    | "session-challenge"
+    | "session-presentation"
+    | "session-admission"
     | "agreement-proposal"
     | "agreement-response"
     | "payment-evidence-request"
     | "payment-evidence-completion"
     | "bundle-signature-request"
     | "bundle-signature-response"
+    | "diagnostic-probe-buyer"
+    | "diagnostic-probe-seller"
     | "acknowledgement";
   envelopeId: string;         // lowercase 64-hex transport identifier
   jobId: string;              // canonical DACS job ID
@@ -608,12 +614,18 @@ The `type` field fixes the exact payload shape. The initial mappings are:
 
 | Envelope type | Exact payload |
 | --- | --- |
+| `session-init` | `DacsSessionInitPayloadV1`: the buyer role order and public application plus the buyer-generated challenge for the seller |
+| `session-challenge` | `DacsSessionChallengePayloadV1`: exact init hash, both verifier challenges and the seller's seller-challenge-bound session identity |
+| `session-presentation` | `DacsSessionPresentationPayloadV1`: exact challenge hash and the buyer's buyer-challenge-bound session identity |
+| `session-admission` | `DacsSessionAdmissionPayloadV1`: exact presentation and identity hashes plus the seller-produced buyer Vet record and reference |
 | `agreement-proposal` | `{ proposal: FixedPriceAgreementProposal; transportIdentity: FixedPriceAgreementTransportIdentity }`, the data-only portion of the public SDK `DurableSellerFixedPriceAgreementInput` |
 | `agreement-response` | public SDK `DurableSellerFixedPriceAgreementResponse` |
 | `payment-evidence-request` | public SDK `PaymentEvidenceAnchorRequest` |
 | `payment-evidence-completion` | public SDK `PaymentEvidenceAnchorCompletion` |
 | `bundle-signature-request` | `DacsBundleSignatureRequestV1` below, a JSON projection of public SDK `CompletedSellerBundleCounterSignatureRequest` |
 | `bundle-signature-response` | public SDK `BundleSignature` for exactly one required counter-signer |
+| `diagnostic-probe-buyer` | `{ purpose: "transport-readiness"; challenge: string }`, with a canonical random 32-byte Base64URL challenge |
+| `diagnostic-probe-seller` | the same no-effect diagnostic DTO in the opposite role direction |
 | `acknowledgement` | `DacsHttpAcknowledgementV1` from section 12.5 |
 
 ```ts
@@ -624,6 +636,18 @@ type DacsBundleSignatureRequestV1 = {
   requiredCounterSigners: string[];
 };
 ```
+
+The four `session-*` messages form a no-payment, pre-agreement bootstrap. The
+buyer first challenges the seller; the seller presents its session-bound
+identity and independently challenges the buyer; the buyer presents its own
+session-bound identity; and the seller returns its completed Vet of the buyer.
+This permits the buyer's Vet of the seller and the seller's Vet of the buyer to
+run concurrently under separate actor wallets. Each challenge is fresh,
+single-session and durably reserved, and every later message hashes the exact
+preceding payload. The buyer MUST authenticate finality and exact native
+readback of the returned buyer Vet before including its reference in an
+agreement proposal. The bootstrap itself authorizes no payment, fulfilment or
+agreement.
 
 The host kit MUST validate each payload with the corresponding public SDK
 validator or verifier before invoking a coordinator. For a bundle request it

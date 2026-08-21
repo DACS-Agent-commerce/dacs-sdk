@@ -110,6 +110,15 @@ terminal-session retention extension, use stable bounded cursors, and keep a
 complete hash-chained canonical transition history. Their durable monotonic
 clock prevents a backwards host clock from reviving a lease.
 
+Before agreement, the live graph uses a four-message `session-init` →
+`session-challenge` → `session-presentation` → `session-admission` exchange.
+It binds fresh verifier-issued challenges to each role's signed session
+identity, links every step by its canonical payload hash, reserves challenges
+durably against reuse, and carries the seller-produced buyer Vet back to the
+buyer. This is an operational transport transcript, not a DACS artifact or an
+authorization to pay. The agreement track must still authenticate the Vet's
+Demos finality and exact native readback before using its reference.
+
 `startDacsHttpMessageServerV1()` serves only
 `POST /dacs-transport/v1/messages`. It bounds decoded JSON bodies to 256 KiB,
 rate-limits a bounded set of peers, authenticates the envelope and independently

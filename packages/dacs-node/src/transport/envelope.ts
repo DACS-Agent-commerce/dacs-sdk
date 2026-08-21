@@ -1,8 +1,17 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import type { BundleSignature } from "@kynesyslabs/dacs/artifacts";
+import {
+  isAttestationRef,
+  isCompositeVerificationRecord,
+  isIdentityBundle,
+  type AttestationRef,
+  type BundleSignature,
+  type CompositeVerificationRecord,
+  type IdentityBundle,
+} from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
+  FixedPriceX402OrderInput,
   PaymentEvidenceAnchorCompletion,
   PaymentEvidenceAnchorRequest,
   PaymentEvidenceAuthenticatedPeer,
@@ -31,6 +40,10 @@ export const DACS_HTTP_SIGNATURE_BYTES = 64 as const;
 export const DACS_HTTP_MAX_BODY_BYTES = 262_144 as const;
 
 export const DACS_HTTP_MESSAGE_TYPES = Object.freeze([
+  "session-init",
+  "session-challenge",
+  "session-presentation",
+  "session-admission",
   "agreement-proposal",
   "agreement-response",
   "payment-evidence-request",
@@ -47,6 +60,37 @@ export type DacsHttpMessageType = typeof DACS_HTTP_MESSAGE_TYPES[number];
 export interface DacsAgreementProposalPayloadV1 {
   proposal: Readonly<FixedPriceAgreementProposal>;
   transportIdentity: Readonly<FixedPriceAgreementTransportIdentity>;
+}
+
+export interface DacsSessionInitPayloadV1 {
+  bootstrapVersion: "1";
+  order: Readonly<FixedPriceX402OrderInput>;
+  application: Readonly<Record<string, unknown>>;
+  sellerChallenge: string;
+}
+
+export interface DacsSessionChallengePayloadV1 {
+  bootstrapVersion: "1";
+  initPayloadHash: string;
+  sellerChallenge: string;
+  buyerChallenge: string;
+  sellerIdentity: Readonly<IdentityBundle>;
+}
+
+export interface DacsSessionPresentationPayloadV1 {
+  bootstrapVersion: "1";
+  challengePayloadHash: string;
+  buyerChallenge: string;
+  buyerIdentity: Readonly<IdentityBundle>;
+}
+
+export interface DacsSessionAdmissionPayloadV1 {
+  bootstrapVersion: "1";
+  presentationPayloadHash: string;
+  buyerIdentityHash: string;
+  sellerIdentityHash: string;
+  buyerVetRecord: Readonly<CompositeVerificationRecord>;
+  buyerVetRef: Readonly<AttestationRef>;
 }
 
 export interface DacsBundleSignatureRequestV1 {
@@ -69,6 +113,10 @@ export interface DacsHttpDiagnosticProbePayloadV1 {
 }
 
 export interface DacsHttpPayloadByType {
+  "session-init": DacsSessionInitPayloadV1;
+  "session-challenge": DacsSessionChallengePayloadV1;
+  "session-presentation": DacsSessionPresentationPayloadV1;
+  "session-admission": DacsSessionAdmissionPayloadV1;
   "agreement-proposal": DacsAgreementProposalPayloadV1;
   "agreement-response": DurableSellerFixedPriceAgreementResponse;
   "payment-evidence-request": PaymentEvidenceAnchorRequest;
@@ -225,6 +273,10 @@ export type DacsHttpEnvelopeSelfVerificationV1 = Readonly<
 
 const TYPE_SET = new Set<string>(DACS_HTTP_MESSAGE_TYPES);
 const REQUIRED_SENDER_ROLE = Object.freeze({
+  "session-init": "buyer",
+  "session-challenge": "seller",
+  "session-presentation": "buyer",
+  "session-admission": "seller",
   "agreement-proposal": "buyer",
   "agreement-response": "seller",
   "payment-evidence-request": "seller",
@@ -308,6 +360,57 @@ export function validateDacsHttpDiagnosticProbePayloadV1(
   } catch {
     return false;
   }
+}
+
+function sessionChallenge(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function hash(value: unknown): value is string {
+  return typeof value === "string" && HASH_RE.test(value);
+}
+
+export function validateDacsHttpSessionInitPayloadV1(
+  value: unknown,
+): value is Readonly<DacsSessionInitPayloadV1> {
+  return record(value) && exactKeys(value, [
+    "bootstrapVersion", "order", "application", "sellerChallenge",
+  ]) && value.bootstrapVersion === "1" && record(value.order) &&
+    record(value.application) && sessionChallenge(value.sellerChallenge);
+}
+
+export function validateDacsHttpSessionChallengePayloadV1(
+  value: unknown,
+): value is Readonly<DacsSessionChallengePayloadV1> {
+  return record(value) && exactKeys(value, [
+    "bootstrapVersion", "initPayloadHash", "sellerChallenge", "buyerChallenge",
+    "sellerIdentity",
+  ]) && value.bootstrapVersion === "1" && hash(value.initPayloadHash) &&
+    sessionChallenge(value.sellerChallenge) && sessionChallenge(value.buyerChallenge) &&
+    value.sellerChallenge !== value.buyerChallenge && isIdentityBundle(value.sellerIdentity) &&
+    value.sellerIdentity.sessionNonce === value.sellerChallenge;
+}
+
+export function validateDacsHttpSessionPresentationPayloadV1(
+  value: unknown,
+): value is Readonly<DacsSessionPresentationPayloadV1> {
+  return record(value) && exactKeys(value, [
+    "bootstrapVersion", "challengePayloadHash", "buyerChallenge", "buyerIdentity",
+  ]) && value.bootstrapVersion === "1" && hash(value.challengePayloadHash) &&
+    sessionChallenge(value.buyerChallenge) && isIdentityBundle(value.buyerIdentity) &&
+    value.buyerIdentity.sessionNonce === value.buyerChallenge;
+}
+
+export function validateDacsHttpSessionAdmissionPayloadV1(
+  value: unknown,
+): value is Readonly<DacsSessionAdmissionPayloadV1> {
+  return record(value) && exactKeys(value, [
+    "bootstrapVersion", "presentationPayloadHash", "buyerIdentityHash",
+    "sellerIdentityHash", "buyerVetRecord", "buyerVetRef",
+  ]) && value.bootstrapVersion === "1" && hash(value.presentationPayloadHash) &&
+    hash(value.buyerIdentityHash) && hash(value.sellerIdentityHash) &&
+    isCompositeVerificationRecord(value.buyerVetRecord) &&
+    isAttestationRef(value.buyerVetRef);
 }
 
 function exactKeys(

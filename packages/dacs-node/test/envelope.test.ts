@@ -40,6 +40,70 @@ const SENDER = `did:demos:agent:${SENDER_KEY_HEX}`;
 const AUDIENCE = `did:demos:agent:${Buffer.from(AUDIENCE_PUBLIC_KEY).toString("hex")}`;
 
 const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
+  "session-init": {
+    bootstrapVersion: "1",
+    order: { jobId: JOB_ID, buyer: SENDER, seller: AUDIENCE },
+    application: { requestVersion: "1", query: "session vector" },
+    sellerChallenge: "6".repeat(64),
+  },
+  "session-challenge": {
+    bootstrapVersion: "1",
+    initPayloadHash: "7".repeat(64),
+    sellerChallenge: "6".repeat(64),
+    buyerChallenge: "8".repeat(64),
+    sellerIdentity: {
+      bundleVersion: "1",
+      presentedBy: AUDIENCE,
+      presentedAt: ISSUED_AT,
+      sessionNonce: "6".repeat(64),
+      claims: [{ ref: AUDIENCE }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: AUDIENCE, signature: "seller-vector-signature" }],
+      },
+    },
+  },
+  "session-presentation": {
+    bootstrapVersion: "1",
+    challengePayloadHash: "9".repeat(64),
+    buyerChallenge: "8".repeat(64),
+    buyerIdentity: {
+      bundleVersion: "1",
+      presentedBy: SENDER,
+      presentedAt: ISSUED_AT,
+      sessionNonce: "8".repeat(64),
+      claims: [{ ref: SENDER }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: SENDER, signature: "buyer-vector-signature" }],
+      },
+    },
+  },
+  "session-admission": {
+    bootstrapVersion: "1",
+    presentationPayloadHash: "a".repeat(64),
+    buyerIdentityHash: "b".repeat(64),
+    sellerIdentityHash: "c".repeat(64),
+    buyerVetRecord: {
+      recordVersion: "1",
+      jobId: JOB_ID,
+      evaluatedParty: SENDER,
+      bundleHash: "b".repeat(64),
+      requirementHash: "d".repeat(64),
+      freshness: [],
+      supplementary: [],
+      dealSpecific: [],
+      overallDecision: "pass",
+      generatedAt: ISSUED_AT,
+      signature: { algorithm: "ed25519", signer: AUDIENCE,
+        value: "seller-vet-vector-signature" },
+    },
+    buyerVetRef: {
+      anchor: { kind: "storage-program", locator: "dacs2:vector:buyer-vet" },
+      contentHash: "e".repeat(64),
+      signer: AUDIENCE,
+    },
+  },
   "agreement-proposal": {
     transportIdentity: { sender: SENDER, audience: AUDIENCE },
     proposal: { jobId: JOB_ID, label: "Café", numericEdge: Number.MAX_SAFE_INTEGER },
@@ -89,7 +153,8 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
 });
 
 function roleFor(type: DacsHttpMessageType): "buyer" | "seller" {
-  return type === "agreement-response" || type === "payment-evidence-request" ||
+  return type === "session-challenge" || type === "session-admission" ||
+      type === "agreement-response" || type === "payment-evidence-request" ||
       type === "bundle-signature-request" || type === "diagnostic-probe-seller"
     ? "seller" : "buyer";
 }

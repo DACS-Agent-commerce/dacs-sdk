@@ -33,6 +33,7 @@ export * from "./roleRuntime.js";
 export * from "./secrets.js";
 export * from "./sellerSettlementRuntime.js";
 export * from "./sellerX402Runtime.js";
+export * from "./sessionBootstrapTransportRuntime.js";
 export * from "./service.js";
 export * from "./serviceDoctor.js";
 export * from "./supervision.js";

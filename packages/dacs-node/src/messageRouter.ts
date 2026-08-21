@@ -9,11 +9,15 @@ import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
 
 const INBOUND_TYPES = Object.freeze({
   buyer: Object.freeze([
+    "session-challenge",
+    "session-admission",
     "agreement-response",
     "payment-evidence-request",
     "bundle-signature-request",
   ] as const),
   seller: Object.freeze([
+    "session-init",
+    "session-presentation",
     "agreement-proposal",
     "payment-evidence-completion",
     "bundle-signature-response",

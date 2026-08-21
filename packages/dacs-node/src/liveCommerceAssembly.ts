@@ -46,6 +46,11 @@ import {
   type DacsSellerX402RuntimeOptionsV1,
 } from "./sellerX402Runtime.js";
 import {
+  createDacsBuyerSessionBootstrapTransportRuntimeV1,
+  createDacsSellerSessionBootstrapTransportRuntimeV1,
+  type DacsSellerSessionBootstrapTransportOptionsV1,
+} from "./sessionBootstrapTransportRuntime.js";
+import {
   createDacsX402BuyerRuntimePaymentTrackV1,
   type DacsX402BuyerRuntimePaymentTrackOptionsV1,
 } from "./x402RuntimePayment.js";
@@ -79,6 +84,10 @@ export interface DacsBuyerLiveCommerceAssemblyOptionsV1 {
 export interface DacsSellerLiveCommerceAssemblyOptionsV1<T = unknown> {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   workerId: string;
+  sessionBootstrap: Readonly<Omit<
+    DacsSellerSessionBootstrapTransportOptionsV1,
+    "context"
+  >>;
   agreementTransport: Readonly<Omit<
     DacsSellerAgreementTransportRuntimeOptionsV1,
     "context"
@@ -140,6 +149,7 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
 ): Promise<Readonly<DacsBuyerLiveCommerceGraphV1>> {
   common(options, "buyer");
   const context = options.context;
+  const sessionBootstrap = createDacsBuyerSessionBootstrapTransportRuntimeV1(context);
   const agreementTransport = createDacsBuyerAgreementTransportRuntimeV1(context);
   const paymentEvidence = createDacsBuyerDemosPaymentEvidenceRuntimeV1({
     ...options.paymentEvidence,
@@ -151,6 +161,7 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
     context,
   });
   return createDacsBuyerLiveCommerceGraphV1({
+    sessionBootstrap,
     agreement: createDacsBuyerAgreementTrackV1({
       ...options.agreement,
       context,
@@ -189,6 +200,10 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
 ): Promise<Readonly<DacsSellerLiveCommerceGraphV1>> {
   common(options, "seller");
   const context = options.context;
+  const sessionBootstrap = createDacsSellerSessionBootstrapTransportRuntimeV1({
+    ...options.sessionBootstrap,
+    context,
+  });
   const agreementTransport = createDacsSellerAgreementTransportRuntimeV1({
     ...options.agreementTransport,
     context,
@@ -205,6 +220,7 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
     workerId: options.workerId,
   });
   return createDacsSellerLiveCommerceGraphV1({
+    sessionBootstrap,
     agreement: createDacsSellerAgreementTrackV1({
       ...options.agreement,
       context,
