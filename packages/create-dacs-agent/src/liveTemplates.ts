@@ -252,6 +252,7 @@ import {
   createDacsRoleServiceDoctorProbesV1,
   deriveDacsEvmRoleIdentityV1,
   establishDacsRoleServiceReadinessV1,
+  inspectDacsDemosBalanceHeadroomV1,
   inspectDacsNodePackageIntegrityV1,
   loadDacsSecretV1,
   runDacsRoleTransportDiagnosticV1,
@@ -611,7 +612,17 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
         return pass({ actorCount: 2 });
       } catch { return fail("demos-nonce-unavailable"); }
     },
-    "demos.balance-fees": unavailable,
+    "demos.balance-fees": actors === undefined ? actorUnavailable : (probeContext) => {
+      const buyer = loadRoleConfig("buyer");
+      const seller = loadRoleConfig("seller");
+      const minimumDem = probeContext.scope === "setup"
+        ? { buyer: "0", seller: seller.limits.maxSetupSpendDem }
+        : {
+            buyer: buyer.limits.maxDemosNetworkFeeDem,
+            seller: seller.limits.maxDemosNetworkFeeDem,
+          };
+      return inspectDacsDemosBalanceHeadroomV1({ actors, minimumDem });
+    },
     "demos.wallet-identity": actors === undefined ? actorUnavailable : () =>
       actors.buyer.runtime.authority === actors.buyer.authority &&
         actors.seller.runtime.authority === actors.seller.authority

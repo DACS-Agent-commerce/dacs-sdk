@@ -10,6 +10,7 @@ export * from "./doctor.js";
 export * from "./demosRuntime.js";
 export * from "./demosPublication.js";
 export * from "./events.js";
+export * from "./fundingDoctor.js";
 export * from "./guardedCommands.js";
 export * from "./localDoctor.js";
 export * from "./orderInput.js";

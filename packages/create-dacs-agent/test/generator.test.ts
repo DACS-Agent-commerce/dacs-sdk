@@ -281,6 +281,7 @@ describe("create-dacs-agent", () => {
     expect(combined).not.toContain("../../src/");
     expect(JSON.stringify(packageSource)).not.toContain("file:");
     expect(combined).toContain("reviewed-live-adapter-not-configured");
+    expect(combined).toContain("inspectDacsDemosBalanceHeadroomV1");
     expect(combined).toContain("createDacsLiveRoleRuntimeV1");
     expect(combined).toContain("createDacsUnavailableLiveCommerceGraphV1");
     expect(combined).toContain("createCommerceGraph: async");
