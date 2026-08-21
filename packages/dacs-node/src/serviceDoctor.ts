@@ -2,6 +2,9 @@ import type {
   DacsLiveDoctorProbeV1,
   DacsLiveDoctorProbesV1,
 } from "./doctor.js";
+import type { DacsTransportDiagnosticResultV1 } from "./transportDiagnostic.js";
+
+export type { DacsTransportDiagnosticResultV1 } from "./transportDiagnostic.js";
 
 const MAX_RESPONSE_BYTES = 65_536;
 
@@ -9,13 +12,6 @@ export interface DacsRoleServiceDoctorTargetV1 {
   role: "buyer" | "seller";
   endpoint: string;
   publicEndpoint?: string;
-}
-
-export interface DacsTransportDiagnosticResultV1 {
-  authenticated: boolean;
-  durable: boolean;
-  acknowledged: boolean;
-  noAction: boolean;
 }
 
 export interface DacsRoleServiceDoctorOptionsV1 {
