@@ -45,6 +45,14 @@ export class DacsX402BuyerEvmRuntimeError extends Error {
   }
 }
 
+export interface DacsEvmRoleIdentityV1 {
+  readonly role: "buyer" | "seller";
+  readonly network: `eip155:${string}`;
+  readonly chainId: number;
+  readonly address: string;
+  readonly warningCodes: readonly string[];
+}
+
 function plainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   try {
@@ -72,6 +80,57 @@ function capturePrivateKey(secret: Readonly<DacsLoadedSecretV1>): `0x${string}` 
     throw new DacsX402BuyerEvmRuntimeError("evm-secret-invalid");
   }
   return value as `0x${string}`;
+}
+
+/**
+ * Derive a role's public EVM address without retaining signing authority. This
+ * is the doctor/setup boundary for proving payer/payee configuration; payment
+ * signing remains confined to the buyer runtime below.
+ */
+export async function deriveDacsEvmRoleIdentityV1(rawOptions: Readonly<{
+  config: unknown;
+  role: "buyer" | "seller";
+  evmPrivateKey: Readonly<DacsLoadedSecretV1>;
+}>): Promise<Readonly<DacsEvmRoleIdentityV1>> {
+  if (!plainObject(rawOptions) ||
+      (rawOptions.role !== "buyer" && rawOptions.role !== "seller") ||
+      rawOptions.evmPrivateKey === null || typeof rawOptions.evmPrivateKey !== "object" ||
+      typeof rawOptions.evmPrivateKey.text !== "function" ||
+      typeof rawOptions.evmPrivateKey.destroy !== "function" ||
+      typeof rawOptions.evmPrivateKey.destroyed !== "boolean") {
+    throw new TypeError("EVM role identity options are invalid");
+  }
+  const config = validateDacsAgentConfig(rawOptions.config);
+  if (config.mode !== "live-demos" || config.profile !== DACS_NODE_LIVE_PROFILE ||
+      config.role !== rawOptions.role) {
+    throw new TypeError("EVM role identity configuration is incompatible");
+  }
+  const match = NETWORK_RE.exec(config.rail.requestedNetwork);
+  if (match === null) throw new TypeError("EVM role identity requires an eip155 network");
+  const chainId = Number(match[1]);
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+    throw new TypeError("EVM role identity chain is invalid");
+  }
+  const warnings = Object.freeze([...rawOptions.evmPrivateKey.warningCodes]);
+  let privateKey: `0x${string}`;
+  try {
+    privateKey = capturePrivateKey(rawOptions.evmPrivateKey);
+    const accounts = await import("viem/accounts").catch(() => {
+      throw new DacsX402BuyerEvmRuntimeError("viem-accounts-unavailable");
+    });
+    const address = accounts.privateKeyToAccount(privateKey).address;
+    privateKey = "" as `0x${string}`;
+    return Object.freeze({
+      role: rawOptions.role,
+      network: config.rail.requestedNetwork as `eip155:${string}`,
+      chainId,
+      address,
+      warningCodes: warnings,
+    });
+  } finally {
+    privateKey = "" as `0x${string}`;
+    rawOptions.evmPrivateKey.destroy();
+  }
 }
 
 /**

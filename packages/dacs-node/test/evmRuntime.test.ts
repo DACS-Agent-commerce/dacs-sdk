@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DACS_NODE_LIVE_PROFILE,
   createDacsX402BuyerEvmRuntimeV1,
+  deriveDacsEvmRoleIdentityV1,
   type DacsLoadedSecretV1,
 } from "../src/index.js";
 
@@ -106,5 +107,22 @@ describe("buyer EVM runtime", () => {
       rpcUrl: "http://127.0.0.1:8545",
     })).rejects.toMatchObject({ reasonCode: "evm-secret-invalid" });
     expect(loaded.destroyed).toBe(true);
+  });
+
+  it("derives a seller payee identity without retaining signing authority", async () => {
+    const loaded = secret(`0x${"44".repeat(32)}`);
+    const identity = await deriveDacsEvmRoleIdentityV1({
+      config: { ...config(), role: "seller" as const },
+      role: "seller",
+      evmPrivateKey: loaded,
+    });
+    expect(identity).toMatchObject({
+      role: "seller",
+      network: NETWORK,
+      chainId: 84532,
+    });
+    expect(identity.address).toMatch(/^0x[0-9A-Fa-f]{40}$/);
+    expect(loaded.destroyed).toBe(true);
+    expect(JSON.stringify(identity)).not.toContain("44".repeat(32));
   });
 });
