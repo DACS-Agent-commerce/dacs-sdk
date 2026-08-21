@@ -4,7 +4,7 @@ This checklist makes repository visibility a controlled release operation. It
 does not itself authorize changing visibility, deleting branches, rewriting Git
 history, publishing packages, or merging pull requests.
 
-## Exit criteria before the visibility change
+## Original exit criteria
 
 - [ ] Merge the public-readiness hardening only after maintainer review.
 - [ ] Confirm CI, package-artifact verification, and the secret scan are green
@@ -30,14 +30,16 @@ history, publishing packages, or merging pull requests.
       release notes.
 - [x] `info@kynesys.xyz` was confirmed as the correct private security contact
       by the repository owner on 2026-08-21.
-- [ ] Obtain the repository owner's explicit approval to change visibility.
+- [x] The repository owner explicitly approved public visibility on 2026-08-21.
 
-## Change visibility
+## Visibility status
 
-Change the repository from private to public only after the exit criteria are
-complete. Treat the following controls as part of the same maintenance window;
-the repository currently cannot enforce all of them on a private GitHub Free
-repository.
+The repository became public on 2026-08-21 so public GitHub Actions runners
+could validate this hardening change. The history and GitHub-record audits,
+branch cleanup, security-contact decision, and owner authorization were complete
+before that change. The remaining unchecked criteria and controls are explicit
+post-cutover work and must be completed promptly; public visibility does not mark
+them complete.
 
 ## Protect `main` immediately
 
