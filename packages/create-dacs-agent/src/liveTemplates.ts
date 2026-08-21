@@ -33,6 +33,11 @@ function packageJson(packageName: string): string {
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
       "@kynesyslabs/dacs-node": SDK_VERSION,
+      "@kynesyslabs/demosdk": "4.0.16",
+      "@x402/core": "2.15.0",
+      "@x402/evm": "2.15.0",
+      "@x402/fetch": "2.15.0",
+      "viem": "2.52.2",
     },
     devDependencies: {
       "@types/node": "20.19.1",
