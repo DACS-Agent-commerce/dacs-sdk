@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createDacsRoleServiceDoctorProbesV1,
+  readDacsRoleServiceStatusesV1,
   runDacsLiveDoctorV1,
 } from "../src/index.js";
 
@@ -110,5 +111,63 @@ describe("role service doctor probes", () => {
     });
     await expect(probes["service.health"]!({ signal: new AbortController().signal } as never))
       .resolves.toMatchObject({ status: "fail", reasonCode: "role-service-unhealthy" });
+  });
+});
+
+describe("role service status projection", () => {
+  function status(role: "buyer" | "seller") {
+    return {
+      version: 1,
+      sdkVersion: "sdk-v1",
+      standardRevision: "standard-v1",
+      profile: "profile-v1",
+      role,
+      lifecycle: "running",
+      checkedAt: 50,
+      queues: { inboxPending: false, outboxPending: true, outboxOperatorAction: false },
+      sessions: { runnable: 2, truncated: false },
+      worker: { running: true, lastCycleAt: 49, lastSuccessAt: 48 },
+    };
+  }
+
+  it("returns a bounded two-role operational status", async () => {
+    const fetcher = vi.fn(async (input: string | URL) =>
+      response(status(new URL(input).port === "3101" ? "buyer" : "seller")));
+    await expect(readDacsRoleServiceStatusesV1({
+      targets: TARGETS,
+      sdkVersion: "sdk-v1",
+      standardRevision: "standard-v1",
+      profile: "profile-v1",
+      fetch: fetcher as typeof fetch,
+      now: () => 100,
+    })).resolves.toMatchObject({
+      schema: "dacs-role-service-status-report/v1",
+      observedAt: 100,
+      status: "available",
+      roles: [
+        { role: "buyer", queues: { outboxPending: true }, sessions: { runnable: 2 } },
+        { role: "seller", queues: { outboxPending: true }, sessions: { runnable: 2 } },
+      ],
+    });
+  });
+
+  it("blocks version drift, malformed bodies, and unavailable roles", async () => {
+    const fetcher = vi.fn(async (input: string | URL) => {
+      const role = new URL(input).port === "3101" ? "buyer" : "seller";
+      return role === "buyer" ? response(status(role)) : response({ ...status(role), sdkVersion: "old" });
+    });
+    await expect(readDacsRoleServiceStatusesV1({
+      targets: TARGETS,
+      sdkVersion: "sdk-v1",
+      standardRevision: "standard-v1",
+      profile: "profile-v1",
+      fetch: fetcher as typeof fetch,
+      now: () => 100,
+    })).resolves.toEqual({
+      schema: "dacs-role-service-status-report/v1",
+      observedAt: 100,
+      status: "blocked",
+      reasonCode: "role-service-status-unavailable",
+    });
   });
 });

@@ -2,11 +2,62 @@ import type {
   DacsLiveDoctorProbeV1,
   DacsLiveDoctorProbesV1,
 } from "./doctor.js";
+import type {
+  DacsLiveRole,
+  DacsLiveRoleServiceLifecycle,
+} from "./service.js";
 import type { DacsTransportDiagnosticResultV1 } from "./transportDiagnostic.js";
 
 export type { DacsTransportDiagnosticResultV1 } from "./transportDiagnostic.js";
 
 const MAX_RESPONSE_BYTES = 65_536;
+const DEFAULT_STATUS_TIMEOUT_MS = 5_000;
+
+export const DACS_ROLE_SERVICE_STATUS_REPORT_SCHEMA =
+  "dacs-role-service-status-report/v1" as const;
+
+export interface DacsRoleServiceStatusSummaryV1 {
+  role: DacsLiveRole;
+  lifecycle: DacsLiveRoleServiceLifecycle;
+  checkedAt: number;
+  queues: Readonly<{
+    inboxPending: boolean;
+    outboxPending: boolean;
+    outboxOperatorAction: boolean;
+  }>;
+  sessions: Readonly<{ runnable: number; truncated: boolean }>;
+  worker: Readonly<{
+    running: boolean;
+    lastCycleAt?: number;
+    lastSuccessAt?: number;
+    reasonCode?: string;
+  }>;
+}
+
+export type DacsRoleServiceStatusReportV1 = Readonly<{
+  schema: typeof DACS_ROLE_SERVICE_STATUS_REPORT_SCHEMA;
+  observedAt: number;
+  status: "available";
+  sdkVersion: string;
+  standardRevision: string;
+  profile: string;
+  roles: readonly Readonly<DacsRoleServiceStatusSummaryV1>[];
+} | {
+  schema: typeof DACS_ROLE_SERVICE_STATUS_REPORT_SCHEMA;
+  observedAt: number;
+  status: "blocked";
+  reasonCode: "role-service-status-unavailable";
+}>;
+
+export interface DacsRoleServiceStatusReadOptionsV1 {
+  targets: readonly Readonly<DacsRoleServiceDoctorTargetV1>[];
+  sdkVersion: string;
+  standardRevision: string;
+  profile: string;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+  now?: () => number;
+}
 
 export interface DacsRoleServiceDoctorTargetV1 {
   role: "buyer" | "seller";
@@ -90,6 +141,128 @@ function targetsByRole(
     return undefined;
   }
   return Object.freeze({ buyer, seller });
+}
+
+function nonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function queueSummary(value: unknown): DacsRoleServiceStatusSummaryV1["queues"] | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<string, unknown>;
+  if (typeof item.inboxPending !== "boolean" || typeof item.outboxPending !== "boolean" ||
+      typeof item.outboxOperatorAction !== "boolean") return undefined;
+  return Object.freeze({
+    inboxPending: item.inboxPending,
+    outboxPending: item.outboxPending,
+    outboxOperatorAction: item.outboxOperatorAction,
+  });
+}
+
+function sessionSummary(value: unknown): DacsRoleServiceStatusSummaryV1["sessions"] | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<string, unknown>;
+  if (!nonNegativeInteger(item.runnable) || typeof item.truncated !== "boolean") return undefined;
+  return Object.freeze({ runnable: item.runnable, truncated: item.truncated });
+}
+
+function workerSummary(value: unknown): DacsRoleServiceStatusSummaryV1["worker"] | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<string, unknown>;
+  if (typeof item.running !== "boolean" ||
+      (item.lastCycleAt !== undefined && !nonNegativeInteger(item.lastCycleAt)) ||
+      (item.lastSuccessAt !== undefined && !nonNegativeInteger(item.lastSuccessAt)) ||
+      (item.reasonCode !== undefined &&
+        (typeof item.reasonCode !== "string" ||
+          !/^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/.test(item.reasonCode)))) return undefined;
+  return Object.freeze({
+    running: item.running,
+    ...(item.lastCycleAt === undefined ? {} : { lastCycleAt: item.lastCycleAt as number }),
+    ...(item.lastSuccessAt === undefined ? {} : { lastSuccessAt: item.lastSuccessAt as number }),
+    ...(item.reasonCode === undefined ? {} : { reasonCode: item.reasonCode as string }),
+  });
+}
+
+function statusSummary(
+  value: Record<string, unknown>,
+  role: DacsLiveRole,
+  expected: Readonly<{ sdkVersion: string; standardRevision: string; profile: string }>,
+): Readonly<DacsRoleServiceStatusSummaryV1> | undefined {
+  const lifecycles = new Set(["stopped", "starting", "running", "stopping"]);
+  const queues = queueSummary(value.queues);
+  const sessions = sessionSummary(value.sessions);
+  const worker = workerSummary(value.worker);
+  if (value.version !== 1 || value.role !== role ||
+      typeof value.lifecycle !== "string" || !lifecycles.has(value.lifecycle) ||
+      value.sdkVersion !== expected.sdkVersion ||
+      value.standardRevision !== expected.standardRevision ||
+      value.profile !== expected.profile || !nonNegativeInteger(value.checkedAt) ||
+      queues === undefined || sessions === undefined || worker === undefined) return undefined;
+  return Object.freeze({
+    role,
+    lifecycle: value.lifecycle as DacsLiveRoleServiceLifecycle,
+    checkedAt: value.checkedAt,
+    queues,
+    sessions,
+    worker,
+  });
+}
+
+/** Read and validate the two sanitized role status endpoints without side effects. */
+export async function readDacsRoleServiceStatusesV1(
+  options: Readonly<DacsRoleServiceStatusReadOptionsV1>,
+): Promise<Readonly<DacsRoleServiceStatusReportV1>> {
+  if (options === null || typeof options !== "object" ||
+      typeof options.sdkVersion !== "string" ||
+      typeof options.standardRevision !== "string" || typeof options.profile !== "string" ||
+      (options.fetch !== undefined && typeof options.fetch !== "function") ||
+      (options.now !== undefined && typeof options.now !== "function") ||
+      (options.timeoutMs !== undefined &&
+        (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0 ||
+          options.timeoutMs > 60_000))) {
+    throw new TypeError("role service status read options are invalid");
+  }
+  const targets = targetsByRole(options.targets);
+  if (targets === undefined) throw new TypeError("role service status targets are invalid");
+  const observedAt = (options.now ?? Date.now)();
+  if (!nonNegativeInteger(observedAt)) throw new TypeError("role service status clock is invalid");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    const entries = await Promise.all([
+      jsonGet(options.fetch ?? fetch, targets.buyer.endpoint, "/status", controller.signal),
+      jsonGet(options.fetch ?? fetch, targets.seller.endpoint, "/status", controller.signal),
+    ]);
+    const expected = {
+      sdkVersion: options.sdkVersion,
+      standardRevision: options.standardRevision,
+      profile: options.profile,
+    };
+    const buyer = entries[0]?.status === 200
+      ? statusSummary(entries[0].body, "buyer", expected) : undefined;
+    const seller = entries[1]?.status === 200
+      ? statusSummary(entries[1].body, "seller", expected) : undefined;
+    if (buyer === undefined || seller === undefined) {
+      return Object.freeze({
+        schema: DACS_ROLE_SERVICE_STATUS_REPORT_SCHEMA,
+        observedAt,
+        status: "blocked",
+        reasonCode: "role-service-status-unavailable",
+      });
+    }
+    return Object.freeze({
+      schema: DACS_ROLE_SERVICE_STATUS_REPORT_SCHEMA,
+      observedAt,
+      status: "available",
+      sdkVersion: options.sdkVersion,
+      standardRevision: options.standardRevision,
+      profile: options.profile,
+      roles: Object.freeze([buyer, seller]),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function createDacsRoleServiceDoctorProbesV1(

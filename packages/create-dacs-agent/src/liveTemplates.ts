@@ -838,10 +838,13 @@ const CLI_SOURCE = `import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open } from "node:fs/promises";
 
+import { VERSION } from "@kynesyslabs/dacs";
 import { canonicalize, canonicalizeDecimal, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
 import {
   DACS_NODE_LIVE_PROFILE,
   formatDacsLiveDoctorTextV1,
+  readDacsRoleServiceStatusesV1,
   type DacsLiveDoctorReportV1,
 } from "@kynesyslabs/dacs-node";
 import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
@@ -850,6 +853,7 @@ import {
   actorDatabasePath,
   configuredAuthority,
   loadRoleConfig,
+  serviceEndpoint,
 } from "./config.js";
 import { runGeneratedDoctor } from "./doctor.js";
 
@@ -944,6 +948,20 @@ async function command(executable: string, args: readonly string[]): Promise<num
     child.once("error", reject);
     child.once("exit", (code) => resolve(code ?? 1));
   });
+}
+
+async function serviceStatus(): Promise<number> {
+  const report = await readDacsRoleServiceStatusesV1({
+    targets: [
+      { role: "buyer", endpoint: serviceEndpoint("buyer") },
+      { role: "seller", endpoint: serviceEndpoint("seller") },
+    ],
+    sdkVersion: VERSION,
+    standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+    profile: DACS_NODE_LIVE_PROFILE,
+  });
+  process.stdout.write(JSON.stringify(report) + "\\n");
+  return report.status === "available" ? 0 : 5;
 }
 
 function decimalWithin(value: string, ceiling: string): string {
@@ -1054,7 +1072,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   } else if (operation === "down") {
     process.exitCode = await command("docker", ["compose", "down"]);
   } else if (operation === "status") {
-    process.exitCode = await command("docker", ["compose", "ps"]);
+    process.exitCode = await serviceStatus();
   } else if (operation === "setup") process.exitCode = await guardedUnavailable("setup", rest);
   else if (operation === "buy") process.exitCode = await guardedUnavailable("buy", rest);
   else if (operation === "doctor-funded") {
