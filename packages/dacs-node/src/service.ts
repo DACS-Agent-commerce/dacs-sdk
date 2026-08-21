@@ -131,6 +131,12 @@ export interface DacsLiveRoleInboundContextV1
   readonly coordinator: FixedPriceX402CommerceCoordinator;
 }
 
+export type DacsLiveRoleApplicationRequestHandlerV1 = (
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: Readonly<DacsLiveRoleInboundContextV1>,
+) => Promise<boolean> | boolean;
+
 export interface DacsLiveRoleServiceOptionsV1 {
   config: unknown;
   database: DacsNodeSqliteDatabase;
@@ -147,6 +153,12 @@ export interface DacsLiveRoleServiceOptionsV1 {
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundContextV1>,
   ): Promise<DacsHttpInboundDispositionV1> | DacsHttpInboundDispositionV1;
+  /**
+   * Optional role-owned application HTTP surface, such as the seller's x402
+   * resource. It is invoked only for non-reserved paths while the service's
+   * freshness-bounded readiness result is true. Return true after handling.
+   */
+  handleApplicationRequest?: DacsLiveRoleApplicationRequestHandlerV1;
   events?: DacsNodeEventSink;
   readiness?: () => Promise<Readonly<DacsNodeReadinessStatus>> |
     Readonly<DacsNodeReadinessStatus>;
@@ -296,6 +308,7 @@ function captureServiceOptions(
     "createOperations",
     "handleMessage",
   ], [
+    "handleApplicationRequest",
     "events",
     "readiness",
     "readinessMaxAgeMs",
@@ -450,6 +463,8 @@ export function createDacsLiveRoleServiceV1(
       typeof options.signTransportEnvelope !== "function" ||
       typeof options.createOperations !== "function" ||
       typeof options.handleMessage !== "function" ||
+      (options.handleApplicationRequest !== undefined &&
+        typeof options.handleApplicationRequest !== "function") ||
       (options.events !== undefined &&
         (options.events === null || typeof options.events !== "object" ||
           typeof options.events.emit !== "function")) ||
@@ -483,6 +498,9 @@ export function createDacsLiveRoleServiceV1(
   const signTransportEnvelope = bindCallback(options.signTransportEnvelope, options);
   const createOperations = bindCallback(options.createOperations, options);
   const handleMessage = bindCallback(options.handleMessage, options);
+  const handleApplicationRequest = options.handleApplicationRequest === undefined
+    ? undefined
+    : bindCallback(options.handleApplicationRequest, options);
   const eventSink = options.events === undefined
     ? undefined
     : bindCallback(options.events.emit, options.events);
@@ -887,6 +905,15 @@ export function createDacsLiveRoleServiceV1(
       if (request.url === "/status") {
         writePublicJson(response, 200, await status());
         return;
+      }
+      if (handleApplicationRequest !== undefined) {
+        const ready = await readiness();
+        if (!ready.ready) {
+          writePublicJson(response, 503, { error: "service-not-ready" });
+          return;
+        }
+        if (await handleApplicationRequest(request, response, inboundContext)) return;
+        if (response.headersSent || response.writableEnded) return;
       }
       writePublicJson(response, 404, { error: "service-route-not-found" });
     })().catch(() => {

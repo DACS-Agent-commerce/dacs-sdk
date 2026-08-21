@@ -24,6 +24,7 @@ import {
   DACS_NODE_LIVE_PROFILE,
   createDacsBuyerServiceV1,
   createDacsSellerServiceV1,
+  createDacsX402ApplicationRequestHandlerV1,
   type DacsAgentConfig,
 } from "../src/index.js";
 import {
@@ -301,6 +302,91 @@ describe("authority-separated live role services", () => {
       ready: false,
       reasonCodes: ["service-readiness-not-latched"],
     });
+  });
+
+  it("gates a seller application route on the live readiness latch", async () => {
+    const database = await open(root(), "seller");
+    let ready = false;
+    const handled = vi.fn(async (_request, response) => {
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      response.end('{"paidResource":"test"}');
+      return true;
+    });
+    const service = remember(createDacsSellerServiceV1(options("seller", database,
+      undefined, {
+        readiness: () => ({ ready, checkedAt: Date.now(),
+          reasonCodes: ready ? [] : ["live-adapter-not-ready"] }),
+        handleApplicationRequest: handled,
+      })));
+    await service.start();
+
+    const blocked = await fetch(new URL("/deliver/test", service.endpoint));
+    expect(blocked.status).toBe(503);
+    await expect(blocked.json()).resolves.toEqual({ error: "service-not-ready" });
+    expect(handled).not.toHaveBeenCalled();
+
+    ready = true;
+    const delivered = await fetch(new URL("/deliver/test", service.endpoint));
+    expect(delivered.status).toBe(200);
+    await expect(delivered.json()).resolves.toEqual({ paidResource: "test" });
+    expect(handled).toHaveBeenCalledTimes(1);
+  });
+
+  it("adapts an advertised seller resource to the framework-neutral x402 paywall", async () => {
+    const database = await open(root(), "seller");
+    const paywallHandle = vi.fn(async (input) => {
+      expect(input.jobId).toBe(JOB_ID);
+      expect(input.phaseIndex).toBe(2);
+      expect(input.request.getMethod()).toBe("GET");
+      expect(input.request.getPath()).toBe(`/deliver/${JOB_ID}/2`);
+      expect(input.request.getUrl()).toBe(
+        `http://localhost/deliver/${JOB_ID}/2?format=json`,
+      );
+      expect(input.request.getHeader("PAYMENT-SIGNATURE")).toBe("retained-bearer");
+      return {
+        disposition: "payment-required" as const,
+        settled: false as const,
+        reason: "payment-required",
+        response: {
+          status: 402,
+          headers: { "PAYMENT-REQUIRED": "challenge" },
+          body: { payment: "required" },
+        },
+      };
+    });
+    const application = createDacsX402ApplicationRequestHandlerV1({
+      publicBaseUrl: "http://localhost",
+      paywall: {
+        terms: {
+          network: "eip155:8453",
+          payTo: `0x${"22".repeat(20)}`,
+          amount: "1",
+          asset: `0x${"33".repeat(20)}`,
+          eip712: { name: "USDC", version: "2" },
+        },
+        handle: paywallHandle,
+      },
+      resolveRequest: ({ method, pathname }) => method === "GET" &&
+          pathname === `/deliver/${JOB_ID}/2`
+        ? { status: "matched", jobId: JOB_ID, phaseIndex: 2 }
+        : { status: "not-matched" },
+    });
+    const service = remember(createDacsSellerServiceV1(options("seller", database,
+      undefined, {
+        readiness: () => ({ ready: true, checkedAt: Date.now(), reasonCodes: [] }),
+        handleApplicationRequest: application,
+      })));
+    await service.start();
+
+    const response = await fetch(
+      new URL(`/deliver/${JOB_ID}/2?format=json`, service.endpoint),
+      { headers: { "PAYMENT-SIGNATURE": "retained-bearer" } },
+    );
+    expect(response.status).toBe(402);
+    expect(response.headers.get("payment-required")).toBe("challenge");
+    await expect(response.json()).resolves.toEqual({ payment: "required" });
+    expect(paywallHandle).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a stale successful readiness latch", async () => {
