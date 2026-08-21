@@ -18,6 +18,7 @@ import {
   logicalToStorageProgramName,
   publicKeyFromRaw,
   signedBytes,
+  SubstrateError,
   x402Settle,
   type IdentityBundle,
   type ListingDraft,
@@ -97,6 +98,27 @@ async function retryDefinitiveDemosFailure<T>(input: {
     }
   }
   throw new Error(`${input.label} exhausted its bounded Demos retries`);
+}
+
+async function retryListingHistoryRead<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const preWriteReadFailure =
+        error instanceof SubstrateError &&
+        error.message.startsWith(
+          "listing version history lookup was indeterminate (name-prefix lookup failed:",
+        );
+      if (!preWriteReadFailure || attempt === 3) throw error;
+      console.warn("LIVE E2E retrying read-only listing history preflight", {
+        attempt,
+        message: error.message,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error("listing history preflight exhausted its bounded retries");
 }
 
 function railAuthority(selectedRail: PaymentRailRef) {
@@ -410,11 +432,13 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         const listingStorageName = logicalToStorageProgramName(
           listingAddress(env.SELLER_DID!, listingId, 1),
         );
-        const published = await retryDefinitiveDemosFailure({
-          label: "listing publication",
-          expectedNames: new Set([listingStorageName]),
-          operation: () => seller.publishListing(listing),
-        });
+        const published = await retryListingHistoryRead(() =>
+          retryDefinitiveDemosFailure({
+            label: "listing publication",
+            expectedNames: new Set([listingStorageName]),
+            operation: () => seller.publishListing(listing),
+          }),
+        );
         expect(published.status).toBe("published");
         if (published.status !== "published") {
           throw new Error("live listing binding publication failed");
