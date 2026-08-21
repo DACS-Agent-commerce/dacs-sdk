@@ -131,6 +131,34 @@
       "envelopeHash": "771914d54236f719ff7f6e756715a3dcda6c397093c646b4afa7fbafa2a1145a",
       "signedBytesHex": "646163732d687474702d6d6573736167653a76313a771914d54236f719ff7f6e756715a3dcda6c397093c646b4afa7fbafa2a1145a",
       "signature": "rgBduV18DxGXWRs5h0G2VVAoZQSRhFJAaEBL9In1VQehFddGhRKQVN8s_ffmp2N4XpEamRhc0n8G--DOMwH-CQ"
+    },
+    {
+      "type": "diagnostic-probe-buyer",
+      "nonce": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "payload": {
+        "purpose": "transport-readiness",
+        "challenge": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+      },
+      "payloadCanonical": "{\"challenge\":\"CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg\",\"purpose\":\"transport-readiness\"}",
+      "payloadHash": "587ceb7cee37db60c4951c73b72cc4fcf0c990f71b75b3120de5ed7309b8d36b",
+      "envelopeId": "41acbaf016e5ccfc909aa1d75e05c63524063cef79ee6bdde4028e052998ba41",
+      "envelopeHash": "9e78e03631ba3a85cc0d4532d8a24a8bf7b389529972b841fe4729428bb0abf1",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a9e78e03631ba3a85cc0d4532d8a24a8bf7b389529972b841fe4729428bb0abf1",
+      "signature": "rJb2krrExDKuOQ-cVPITsqb6_2qQpI1GBY46P7XDFWJt-Z6ySXgodBV6qw29JUcAoKo_BHxHvQk-jPEeYqRiBw"
+    },
+    {
+      "type": "diagnostic-probe-seller",
+      "nonce": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+      "payload": {
+        "purpose": "transport-readiness",
+        "challenge": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+      },
+      "payloadCanonical": "{\"challenge\":\"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\",\"purpose\":\"transport-readiness\"}",
+      "payloadHash": "d267f94b64a2a942708fec783eaee38bde318e74da21cbcebf6aed42cdc64b94",
+      "envelopeId": "06b8cc3cd0d110c20d0636826831eba027eb5efc11845d7ad2300b9179695d47",
+      "envelopeHash": "87bc7042403e2579cf0617c1a1b4ce01a704d2382267d064b22cc849f6fb484a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a87bc7042403e2579cf0617c1a1b4ce01a704d2382267d064b22cc849f6fb484a",
+      "signature": "V2vjFKKRCjH-2jUaexnp40zNLaqisTaEHJ__KXRzS1G8F1xiQuXDAprzjGm_PSsPjlk-rdIwLU0fwSh4I3uYBg"
     }
   ],
   "negativeCases": [

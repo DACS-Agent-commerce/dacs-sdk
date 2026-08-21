@@ -351,6 +351,30 @@ describe("authority-separated live role services", () => {
     expect(handled).toHaveBeenCalledTimes(1);
   });
 
+  it("handles reserved transport diagnostics without invoking application work", async () => {
+    const directory = root();
+    const sellerDatabase = await open(directory, "seller");
+    const buyerDatabase = await open(directory, "buyer");
+    const handled = vi.fn(async () => ({ disposition: "accepted" as const }));
+    const seller = remember(createDacsSellerServiceV1(options("seller", sellerDatabase,
+      undefined, { handleMessage: handled })));
+    await seller.start();
+    const buyer = remember(createDacsBuyerServiceV1(options("buyer", buyerDatabase,
+      seller.endpoint)));
+    await buyer.start();
+    await expect(buyer.sendMessage({
+      type: "diagnostic-probe-buyer",
+      jobId: JOB_ID,
+      payload: {
+        purpose: "transport-readiness",
+        challenge: Buffer.alloc(32, 7).toString("base64url"),
+      },
+    })).resolves.toMatchObject({
+      envelope: { payload: { disposition: "accepted" } },
+    });
+    expect(handled).not.toHaveBeenCalled();
+  });
+
   it("rejects an authenticated but unconfigured peer before durable handling", async () => {
     const database = await open(root(), "seller");
     const handled = vi.fn(async () => ({ disposition: "accepted" as const }));

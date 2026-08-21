@@ -52,10 +52,12 @@ function requiredSenderRole(
     case "agreement-proposal":
     case "payment-evidence-completion":
     case "bundle-signature-response":
+    case "diagnostic-probe-buyer":
       return "buyer";
     case "agreement-response":
     case "payment-evidence-request":
     case "bundle-signature-request":
+    case "diagnostic-probe-seller":
       return "seller";
     case "acknowledgement":
       return undefined;

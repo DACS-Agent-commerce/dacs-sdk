@@ -39,6 +39,7 @@ import {
   type DacsHttpMessageType,
   type DacsHttpPayloadByType,
   type DacsHttpPayloadValidatorV1,
+  validateDacsHttpDiagnosticProbePayloadV1,
 } from "./transport/envelope.js";
 import {
   createDacsHttpMessageClientV1,
@@ -54,6 +55,7 @@ const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const DEFAULT_WORKER_INTERVAL_MS = 1_000;
 const DEFAULT_WORKER_BATCH_SIZE = 100;
 const DEFAULT_READINESS_MAX_AGE_MS = 30_000;
+const READINESS_CLOCK_SKEW_MS = 1_000;
 
 export type DacsLiveRole = "buyer" | "seller";
 export type DacsLiveRoleServiceLifecycle =
@@ -92,6 +94,7 @@ export interface DacsLiveRoleServiceStatusV1 {
   version: 1;
   sdkVersion: string;
   standardRevision: string;
+  profile: typeof DACS_NODE_LIVE_PROFILE;
   role: DacsLiveRole;
   lifecycle: DacsLiveRoleServiceLifecycle;
   checkedAt: number;
@@ -204,11 +207,13 @@ const OUTBOUND_BY_ROLE: Readonly<
     "agreement-proposal",
     "payment-evidence-completion",
     "bundle-signature-response",
+    "diagnostic-probe-buyer",
   ]),
   seller: new Set<DacsLiveOutboundMessageType>([
     "agreement-response",
     "payment-evidence-request",
     "bundle-signature-request",
+    "diagnostic-probe-seller",
   ]),
 });
 
@@ -463,6 +468,18 @@ export function createDacsLiveRoleServiceV1(
     return resolveIdentity(input);
   };
   const validatePayload = bindCallback(options.validatePayload, options);
+  const validateServicePayload: DacsHttpPayloadValidatorV1 = async (input) => {
+    if (input.type === "diagnostic-probe-buyer" ||
+        input.type === "diagnostic-probe-seller") {
+      return validateDacsHttpDiagnosticProbePayloadV1(input.payload)
+        ? Object.freeze({ status: "valid" as const })
+        : Object.freeze({
+            status: "invalid" as const,
+            reasonCode: "diagnostic-probe-payload-invalid",
+          });
+    }
+    return validatePayload(input);
+  };
   const signTransportEnvelope = bindCallback(options.signTransportEnvelope, options);
   const createOperations = bindCallback(options.createOperations, options);
   const handleMessage = bindCallback(options.handleMessage, options);
@@ -621,8 +638,14 @@ export function createDacsLiveRoleServiceV1(
     authority,
     inbox,
     resolveIdentity: resolveConfiguredPeer,
-    validatePayload,
-    handleMessage: (authenticated) => handleMessage(authenticated, inboundContext),
+    validatePayload: validateServicePayload,
+    handleMessage: (authenticated) => {
+      if (authenticated.envelope.type === "diagnostic-probe-buyer" ||
+          authenticated.envelope.type === "diagnostic-probe-seller") {
+        return Object.freeze({ disposition: "accepted" as const });
+      }
+      return handleMessage(authenticated, inboundContext);
+    },
     signAcknowledgement: signTransportEnvelope,
     ...(options.transport?.retentionMs === undefined
       ? {} : { retentionMs: options.transport.retentionMs }),
@@ -736,7 +759,7 @@ export function createDacsLiveRoleServiceV1(
       if (captured !== undefined) {
         const observedAt = readTime();
         if (captured.ready &&
-            (captured.checkedAt > observedAt ||
+            (captured.checkedAt > observedAt + READINESS_CLOCK_SKEW_MS ||
               observedAt - captured.checkedAt > readinessMaxAgeMs)) {
           return Object.freeze({
             ready: false,
@@ -826,6 +849,7 @@ export function createDacsLiveRoleServiceV1(
       version: 1,
       sdkVersion: database.metadata.sdkVersion,
       standardRevision: database.metadata.standardRevision,
+      profile: DACS_NODE_LIVE_PROFILE,
       role,
       lifecycle,
       checkedAt: readTime(),

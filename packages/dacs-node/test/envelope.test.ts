@@ -10,12 +10,14 @@ import { describe, expect, it, vi } from "vitest";
 import vectorDocument from "../vectors/dacs-http-envelope-v1.json" with { type: "json" };
 
 import {
+  DACS_HTTP_MESSAGE_TYPES,
   authenticateDacsHttpEnvelopeV1,
   createDacsHttpAcknowledgementEnvelopeV1,
   createDacsHttpEnvelopeV1,
   dacsHttpEnvelopeHashV1,
   dacsHttpEnvelopeSignedBytesV1,
   paymentEvidencePeerFromDacsHttpEnvelopeV1,
+  validateDacsHttpDiagnosticProbePayloadV1,
   verifyDacsHttpAcknowledgementBindingV1,
   type DacsHttpAuthenticatedEnvelopeV1,
   type DacsHttpEnvelopeCreateInput,
@@ -71,6 +73,14 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
     algorithm: "ed25519",
     signature: "vector-signature",
   },
+  "diagnostic-probe-buyer": {
+    purpose: "transport-readiness",
+    challenge: Buffer.alloc(32, 8).toString("base64url"),
+  },
+  "diagnostic-probe-seller": {
+    purpose: "transport-readiness",
+    challenge: Buffer.alloc(32, 9).toString("base64url"),
+  },
   acknowledgement: {
     acknowledgedEnvelopeId: "4".repeat(64),
     acknowledgedPayloadHash: "5".repeat(64),
@@ -80,7 +90,8 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
 
 function roleFor(type: DacsHttpMessageType): "buyer" | "seller" {
   return type === "agreement-response" || type === "payment-evidence-request" ||
-      type === "bundle-signature-request" ? "seller" : "buyer";
+      type === "bundle-signature-request" || type === "diagnostic-probe-seller"
+    ? "seller" : "buyer";
 }
 
 function nonce(index: number): string {
@@ -126,9 +137,12 @@ async function authenticate(
 }
 
 describe("DACS HTTP envelope v1", () => {
-  it("matches the published byte-exact vector for every message type", async () => {
+  it("matches every published byte-exact conformance-vector case", async () => {
     expect(vectorDocument.publicKeyHex).toBe(Buffer.from(PUBLIC_KEY).toString("hex"));
-    expect(vectorDocument.cases).toHaveLength(7);
+    expect(vectorDocument.cases).toHaveLength(DACS_HTTP_MESSAGE_TYPES.length);
+    expect(new Set(vectorDocument.cases.map((item) => item.type))).toEqual(
+      new Set(DACS_HTTP_MESSAGE_TYPES),
+    );
     for (const vectorCase of vectorDocument.cases) {
       const envelope = await createDacsHttpEnvelopeV1({
         type: vectorCase.type as DacsHttpMessageType,
@@ -173,6 +187,18 @@ describe("DACS HTTP envelope v1", () => {
         identityEvidenceHash: IDENTITY_EVIDENCE_HASH,
       });
     }
+  });
+
+  it("requires canonical Base64URL for no-effect diagnostic challenges", () => {
+    const challenge = Buffer.alloc(32, 7).toString("base64url");
+    expect(validateDacsHttpDiagnosticProbePayloadV1({
+      purpose: "transport-readiness",
+      challenge,
+    })).toBe(true);
+    expect(validateDacsHttpDiagnosticProbePayloadV1({
+      purpose: "transport-readiness",
+      challenge: `${challenge.slice(0, -1)}d`,
+    })).toBe(false);
   });
 
   it("preserves canonical ClaimReference parameters while authenticating the CF-3 principal", async () => {

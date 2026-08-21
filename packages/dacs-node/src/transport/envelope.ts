@@ -37,6 +37,8 @@ export const DACS_HTTP_MESSAGE_TYPES = Object.freeze([
   "payment-evidence-completion",
   "bundle-signature-request",
   "bundle-signature-response",
+  "diagnostic-probe-buyer",
+  "diagnostic-probe-seller",
   "acknowledgement",
 ] as const);
 
@@ -61,6 +63,11 @@ export interface DacsHttpAcknowledgementV1 {
   reasonCode?: string;
 }
 
+export interface DacsHttpDiagnosticProbePayloadV1 {
+  purpose: "transport-readiness";
+  challenge: string;
+}
+
 export interface DacsHttpPayloadByType {
   "agreement-proposal": DacsAgreementProposalPayloadV1;
   "agreement-response": DurableSellerFixedPriceAgreementResponse;
@@ -68,6 +75,8 @@ export interface DacsHttpPayloadByType {
   "payment-evidence-completion": PaymentEvidenceAnchorCompletion;
   "bundle-signature-request": DacsBundleSignatureRequestV1;
   "bundle-signature-response": BundleSignature;
+  "diagnostic-probe-buyer": DacsHttpDiagnosticProbePayloadV1;
+  "diagnostic-probe-seller": DacsHttpDiagnosticProbePayloadV1;
   acknowledgement: DacsHttpAcknowledgementV1;
 }
 
@@ -222,6 +231,8 @@ const REQUIRED_SENDER_ROLE = Object.freeze({
   "payment-evidence-completion": "buyer",
   "bundle-signature-request": "seller",
   "bundle-signature-response": "buyer",
+  "diagnostic-probe-buyer": "buyer",
+  "diagnostic-probe-seller": "seller",
 } as const);
 const HASH_RE = /^[0-9a-f]{64}$/;
 const IDENTITY_REJECTION_CODE_SET = new Set<DacsHttpIdentityRejectionCode>([
@@ -281,6 +292,22 @@ function record(value: unknown): value is Record<string, unknown> {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor !== undefined && descriptor.enumerable && "value" in descriptor;
   });
+}
+
+export function validateDacsHttpDiagnosticProbePayloadV1(
+  value: unknown,
+): value is Readonly<DacsHttpDiagnosticProbePayloadV1> {
+  if (!record(value) || Object.keys(value).length !== 2 ||
+      value.purpose !== "transport-readiness" ||
+      typeof value.challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.challenge)) {
+    return false;
+  }
+  try {
+    const decoded = Buffer.from(value.challenge, "base64url");
+    return decoded.byteLength === 32 && decoded.toString("base64url") === value.challenge;
+  } catch {
+    return false;
+  }
 }
 
 function exactKeys(

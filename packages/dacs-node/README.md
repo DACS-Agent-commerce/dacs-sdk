@@ -164,6 +164,56 @@ returns only a bounded stopped/failed result. It deliberately does not call
 `process.exit()` or make restart-policy decisions; Docker/systemd remains the
 process supervisor.
 
+`runDacsLiveDoctorV1()` is the live release gate used by generated deployments.
+It reports the complete local, Demos, x402 and post-start service catalog as
+`pass`, `fail` or `blocked`, and marks which checks gate `start`, `setup` or
+`buy`. Pre-start never requires service-only probes; post-start reruns every
+pre-start probe and additionally requires health, readiness, authenticated
+no-effect transport, public reachability when configured, and cross-process
+version agreement. Missing adapters are `blocked`, never silently successful.
+Probes receive only check identity, phase, scope and an abort signal—no write or
+spend capability. Reports state `readOnly: true`, `funded: false`, use stable
+exit codes 0/1/5, and include a canonical integrity hash.
+
+`createDacsNodeLocalDoctorProbesV1()` implements the package/version/config,
+private data-directory, disk, SQLite, secret and actor-separation checks.
+`createDacsRoleServiceDoctorProbesV1()` implements bounded GET-only service
+checks and accepts an explicit independent public probe. The transport check
+uses the reserved `diagnostic-probe-buyer` and `diagnostic-probe-seller`
+messages. Role services validate those canonical 32-byte challenges and durably
+acknowledge them without invoking the application message handler, coordinator,
+publication, payment or fulfilment callback.
+
+`createDacsGuardedSetupPlanV1()`, `createDacsGuardedPurchasePlanV1()` and
+`createDacsFundedDoctorPlanV1()` produce immutable domain-hashed plans. Setup
+caps the sum of every Demos write plus its safety margin. Purchase binds the
+exact job, Listing, request hash, actors, payer/payee, x402 rail/network,
+service ceiling and Base fee ceiling, and rejects mainnet in this initial
+profile. Funded doctor has its own consent domain and per-asset total-debit caps,
+including DEM fees; it authorizes neither setup nor purchase.
+
+`runDacsGuardedCommandV1()` remains plan-only unless execution is explicit. An
+executing setup requires fresh passing post-start/start and pre-start/setup
+doctor reports; purchase requires a fresh passing post-start/buy report; funded
+doctor requires post-start/start. Each also requires its command-specific
+environment confirmation plus interactive confirmation, unless explicit
+non-interactive mode is paired with the confirmation and complete ceilings.
+The plan is retained in the actor SQLite effect journal before execution.
+Ambiguous or thrown effects become reconciliation-only, a verified performed
+result completes monotonically, and only an authoritative absence proof returns
+the same effect identity to performable state. The executor must call the
+generation fence immediately before any irreversible adapter call.
+Purchase requires the fresh buy doctor even for its plan-only projection, so an
+unresolved Listing, stale readiness latch or insufficient balance cannot be
+presented as a purchasable plan. Setup and funded-doctor plans remain safely
+inspectable before their execution-only prerequisites.
+
+The report hash detects accidental or partial mutation; it is not a signature
+or MAC. Generated commands must rerun doctor in the same invocation, as this
+package supports, or store a cached report behind a separately authenticated
+freshness latch. They must never trust a user-supplied report solely because its
+unkeyed hash recomputes.
+
 The transport callbacks are intentionally host-owned. The identity resolver
 must dereference and verify Demos identity material; the payload validator must
 use public SDK validators plus independently retained session facts. Returning
