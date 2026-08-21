@@ -57,6 +57,10 @@ vi.mock("../src/purchaseQueue.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/purchaseQueue.js")>()),
   createDacsFixedPriceX402ProtocolBindingV1: dependencies.protocolBinding,
 }));
+vi.mock("../src/sessionBootstrapTransportRuntime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/sessionBootstrapTransportRuntime.js")>()),
+  authenticateDacsX402SessionIdentityV1: vi.fn(async () => true),
+}));
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import {
@@ -72,6 +76,8 @@ import {
   loadDacsFixedPriceX402SellerAdmissionV1,
   resolveDacsFixedPriceX402BuyerRequirementsV1,
 } from "../src/fixedPriceX402Profile.js";
+import { createDacsFixedPriceX402SellerAuthorityV1 } from
+  "../src/fixedPriceX402SellerAuthority.js";
 import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import {
@@ -221,6 +227,7 @@ function authenticatedRail() {
     },
   });
   dependencies.railProvenance.set(rail, Object.freeze({
+    registryVersion: 1,
     indexContentHash: "1".repeat(64),
     definitionContentHash: "2".repeat(64),
   }));
@@ -288,12 +295,13 @@ async function fixture() {
     protocol: protocol(),
   });
   const app = application();
+  const rail = authenticatedRail();
   const admission = {
     listingRef: app.listingRef,
     logicalAddress: app.listingLogicalAddress,
     listingContentHash: app.listingContentHash,
     listing: app.listing,
-    rail: { authenticated: true },
+    rail,
     facts: {},
   };
   dependencies.resolveListing.mockResolvedValue({ status: "verified", admission });
@@ -304,6 +312,17 @@ async function fixture() {
     authority: SELLER,
     peerAuthority: BUYER,
     config: { rail: { requestedNetwork: "eip155:84532" } },
+    evm: {
+      role: "seller",
+      address: `0x${"33".repeat(20)}`,
+      identity: {
+        role: "seller",
+        network: "eip155:84532",
+        chainId: 84532,
+        address: `0x${"33".repeat(20)}`,
+        warningCodes: [],
+      },
+    },
     database,
     demos: {
       role: "seller",
@@ -358,7 +377,7 @@ async function fixture() {
     now: () => clock++,
     readJson: vi.fn(),
   });
-  return { database, pair, app, admission, context, policy };
+  return { database, pair, app, admission, rail, context, policy };
 }
 
 async function buyerFixture() {
@@ -905,7 +924,7 @@ describe("fixed-price x402 generated profile policy", () => {
         payee: `0x${"33".repeat(20)}`,
         asset: `0x${"44".repeat(20)}`,
         amount: "1000000",
-        httpResource: "https://seller.example/dacs/x402",
+        httpResource: `https://seller.example/dacs/x402/${JOB_ID}`,
         method: "GET",
       },
       expectedRequirements: {
@@ -1030,7 +1049,51 @@ describe("fixed-price x402 generated profile policy", () => {
     });
     const loaded = await store.load("seller", JOB_ID);
     if (loaded.status !== "ok") throw new Error("seller order missing");
-    const buyerVetRef = vetRef("buyer", SELLER);
+    const buyerIdentity = identity(BUYER, `cci-xm:evm:84532:${PAYER}`);
+    const sellerIdentity = identity(SELLER);
+    const buyerRequirementHash = sha256Hex(canonicalize(
+      value.app.listing.buyerRequirement,
+    ));
+    const buyerVetRecord = {
+      recordVersion: "1" as const,
+      jobId: JOB_ID,
+      evaluatedParty: BUYER,
+      bundleHash: identityBundleHash(buyerIdentity),
+      requirementHash: buyerRequirementHash,
+      freshness: [],
+      supplementary: [],
+      dealSpecific: [],
+      overallDecision: "pass" as const,
+      generatedAt: NOW,
+      signature: {
+        algorithm: "ed25519" as const,
+        signer: SELLER,
+        value: Buffer.alloc(64, 6).toString("base64url"),
+      },
+    };
+    const buyerVetRef = {
+      anchor: {
+        kind: "storage-program" as const,
+        locator: `dacs2:composite:${JOB_ID}:${BUYER}`,
+      },
+      contentHash: contentHash(buyerVetRecord),
+      signer: SELLER,
+    };
+    const buyerVetReceipt = {
+      receiptVersion: "1" as const,
+      substrate: "demos" as const,
+      finalityProfile: "demos-bft-confirmed-native-read",
+      logicalAddress: buyerVetRef.anchor.locator,
+      nativeAddress: `stor-${sha256Hex("seller-buyer-vet").slice(0, 40)}`,
+      contentHash: buyerVetRef.contentHash,
+      transactionRef: { kind: "demos-storage-program" as const, value: "tx:buyer-vet" },
+      writer: SELLER,
+      state: "finalized" as const,
+      observationDisposition: "established" as const,
+      observedAt: NOW,
+      blockRef: { id: "block:buyer-vet", height: "41", timestamp: NOW },
+      evidence: { kind: "demos-bft-write-proof-v1", value: "proof" },
+    };
     const sellerVetRecord = { record: "buyer-produced seller Vet" };
     const sellerVetRef = {
       ...vetRef("seller", BUYER),
@@ -1047,8 +1110,8 @@ describe("fixed-price x402 generated profile policy", () => {
           contentHash: value.app.listingContentHash,
         },
       },
-      buyer: { identityBundle: identity(BUYER), vetRecordRef: buyerVetRef },
-      seller: { identityBundle: identity(SELLER), vetRecordRef: sellerVetRef },
+      buyer: { identityBundle: buyerIdentity, vetRecordRef: buyerVetRef },
+      seller: { identityBundle: sellerIdentity, vetRecordRef: sellerVetRef },
       selectedRail: value.app.listing.acceptedRails![0],
       payoutBindings: [{
         railId: "x402:test",
@@ -1077,12 +1140,12 @@ describe("fixed-price x402 generated profile policy", () => {
         role: "seller",
         jobId: JOB_ID,
         localBindingHash: loaded.record.localBindingHash,
-        buyerIdentity: identity(BUYER),
-        sellerIdentity: identity(SELLER),
-        buyerRequirementHash: sha256Hex(canonicalize(value.app.listing.buyerRequirement)),
-        buyerVetRecord: {},
+        buyerIdentity,
+        sellerIdentity,
+        buyerRequirementHash,
+        buyerVetRecord,
         buyerVetRef,
-        buyerVetReceipt: {},
+        buyerVetReceipt,
       },
       sellerVet: { record: sellerVetRecord, recordRef: sellerVetRef, anchorReceipt: {} },
       sellerRequirement: DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
@@ -1155,5 +1218,85 @@ describe("fixed-price x402 generated profile policy", () => {
     expect(committed.commitment.recordKind).toBe("finality");
     expect(committed.commitment.logicalAddress).toBe(`dacs3:commit:${JOB_ID}`);
     await expect(policy.authorizeComplete(authorization)).resolves.toBe(true);
+
+    const facts = base.session;
+    const factsId = sha256Hex(`dacs-live-session-agreement-facts:v1:${canonicalize({
+      role: "seller",
+      jobId: JOB_ID,
+    })}`);
+    const factsPut = value.database.putEffectIntent({
+      kind: "session",
+      effectId: factsId,
+      bindingHash: loaded.record.localBindingHash,
+      input: facts,
+      idempotencyKey: factsId,
+      jobId: JOB_ID,
+    });
+    expect(factsPut.status).toBe("created");
+
+    const sellerAuthority = createDacsFixedPriceX402SellerAuthorityV1({
+      context: value.context,
+      rail: value.rail as never,
+      tokenDomain: { name: "USD Coin", version: "2" },
+    });
+    await expect(sellerAuthority.resolveOrderScope({
+      operation: operation(loaded.record, "payment"),
+      retained: retainedPut.record,
+    })).resolves.toEqual({ paymentPhaseIndex: 2, deliveryPhaseIndex: 3 });
+    const expected = {
+      network: "eip155:84532" as const,
+      payTo: `0x${"33".repeat(20)}`,
+      amount: "1000000",
+      asset: `0x${"44".repeat(20)}`,
+      eip712: { name: "USD Coin", version: "2" },
+    };
+    await expect(sellerAuthority.resolveCommittedSession({
+      jobId: JOB_ID,
+      phaseIndex: 2,
+      payer: PAYER,
+      request: {
+        getMethod: () => "GET",
+        getUrl: () => `https://seller.example/dacs/x402/${JOB_ID}`,
+      },
+      expected,
+    } as never)).resolves.toMatchObject({
+      disposition: "verified",
+      session: {
+        jobId: JOB_ID,
+        payer: PAYER,
+        payerPayingKey: `cci-xm:evm:84532:${PAYER}`,
+        httpResource: `https://seller.example/dacs/x402/${JOB_ID}`,
+        railRegistryVersion: 1,
+        expected,
+      },
+    });
+    await expect(sellerAuthority.resolveCommittedSession({
+      jobId: JOB_ID,
+      phaseIndex: 2,
+      payer: PAYER,
+      request: {
+        getMethod: () => "GET",
+        getUrl: () => "https://seller.example/dacs/x402/wrong",
+      },
+      expected,
+    } as never)).resolves.toMatchObject({ disposition: "rejected" });
+    await expect(sellerAuthority.resolveCommittedAgreement(JOB_ID)).resolves.toMatchObject({
+      disposition: "verified",
+      agreementHash: contentHash(committed.agreement as unknown as Record<string, unknown>),
+      railRegistryVersion: 1,
+    });
+    await expect(sellerAuthority.resolveListingAtCommit(
+      candidateDraft.listingRef,
+    )).resolves.toMatchObject({
+      validation: { disposition: "verified", step: 9 },
+      payloadVerificationProducerAdmission: { operation: "produce" },
+    });
+    await expect(sellerAuthority.resolveRail({
+      ref: candidateDraft.terms.rail,
+      railRegistryVersion: 1,
+    })).resolves.toMatchObject({ disposition: "verified", railRegistryVersion: 1 });
+    await expect(sellerAuthority.resolveIdentityBundle(
+      identityBundleHash(buyerIdentity),
+    )).resolves.toMatchObject({ disposition: "verified", bundle: buyerIdentity });
   });
 });

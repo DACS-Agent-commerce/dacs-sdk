@@ -354,7 +354,7 @@ function signatureBytes(value: unknown): Uint8Array | undefined {
   }
 }
 
-async function sessionIdentityValid(
+export async function authenticateDacsX402SessionIdentityV1(
   value: DacsSessionChallengePayloadV1["sellerIdentity"] |
     DacsSessionPresentationPayloadV1["buyerIdentity"],
   authority: string,
@@ -441,7 +441,7 @@ async function outboundSemantics(
     if (init === undefined || !validateDacsHttpSessionChallengePayloadV1(challenge) ||
         challenge.initPayloadHash !== dacsHttpPayloadHashV1(init) ||
         challenge.sellerChallenge !== init.sellerChallenge ||
-        !await sessionIdentityValid(challenge.sellerIdentity, order.seller,
+        !await authenticateDacsX402SessionIdentityV1(challenge.sellerIdentity, order.seller,
           challenge.sellerChallenge, "seller", order.protocol.rail.network)) {
       throw new DacsSessionBootstrapTransportError("session-challenge-binding-mismatch");
     }
@@ -455,7 +455,7 @@ async function outboundSemantics(
     if (challenge === undefined || !validateDacsHttpSessionPresentationPayloadV1(presentation) ||
         presentation.challengePayloadHash !== dacsHttpPayloadHashV1(challenge) ||
         presentation.buyerChallenge !== challenge.buyerChallenge ||
-        !await sessionIdentityValid(presentation.buyerIdentity, order.buyer,
+        !await authenticateDacsX402SessionIdentityV1(presentation.buyerIdentity, order.buyer,
           presentation.buyerChallenge, "buyer", order.protocol.rail.network)) {
       throw new DacsSessionBootstrapTransportError("session-presentation-binding-mismatch");
     }

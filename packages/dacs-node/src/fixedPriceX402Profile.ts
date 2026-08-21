@@ -118,6 +118,33 @@ const STORAGE_RE = /^stor-[0-9a-f]{40}$/;
 export const DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1: Readonly<BundleRequirement> =
   Object.freeze({ requirementVersion: "1", required: [] });
 
+/**
+ * Turn the Listing-bound x402 base URL into one unambiguous paid resource.
+ * The canonical job id is path data, never caller-selected routing authority.
+ */
+export function dacsFixedPriceX402DeliveryResourceV1(
+  resourceBaseUrl: string,
+  jobId: string,
+): string {
+  if (typeof resourceBaseUrl !== "string" || resourceBaseUrl.length === 0 ||
+      resourceBaseUrl.trim() !== resourceBaseUrl ||
+      !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(jobId)) {
+    throw new TypeError("fixed-price x402 delivery resource is invalid");
+  }
+  let base: URL;
+  try {
+    base = new URL(resourceBaseUrl);
+  } catch {
+    throw new TypeError("fixed-price x402 delivery resource is invalid");
+  }
+  if (base.protocol !== "https:" || base.username || base.password || base.search ||
+      base.hash) {
+    throw new TypeError("fixed-price x402 delivery resource is invalid");
+  }
+  base.pathname = `${base.pathname.replace(/\/+$/, "")}/${jobId}`;
+  return base.toString();
+}
+
 export interface DacsFixedPriceX402ApplicationV1 {
   applicationVersion: typeof APPLICATION_VERSION;
   listingRef: string;
@@ -1377,6 +1404,10 @@ function paymentPreparation(
       assetTransferMethod: "eip3009",
     },
   };
+  const httpResource = dacsFixedPriceX402DeliveryResourceV1(
+    parameters.httpResource,
+    input.operation.order.jobId,
+  );
   return deepFreeze(copy({
     authority: {
       jobId: input.operation.order.jobId,
@@ -1396,7 +1427,7 @@ function paymentPreparation(
       payee: selected.payeeAddress,
       asset: rail.asset.contract,
       amount,
-      httpResource: parameters.httpResource,
+      httpResource,
       method: "GET",
     },
     expectedRequirements,

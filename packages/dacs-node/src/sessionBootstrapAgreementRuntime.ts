@@ -317,6 +317,21 @@ export function loadDacsBuyerSessionAgreementFactsForOrderV1(
   return facts;
 }
 
+/** Resolve the seller's immutable bootstrap facts from a loaded coordinator order. */
+export function loadDacsSellerSessionAgreementFactsForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPriceX402OrderRecord>,
+): Readonly<DacsSellerSessionAgreementFactsV1> {
+  if (context.role !== "seller" || order.role !== "seller") {
+    throw new DacsSessionBootstrapAgreementRuntimeError("seller-session-order-mismatch");
+  }
+  const facts = loadFacts(context, order);
+  if (facts.role !== "seller") {
+    throw new DacsSessionBootstrapAgreementRuntimeError("seller-session-facts-missing");
+  }
+  return facts;
+}
+
 function requirements(value: unknown): value is Readonly<DacsSessionBootstrapRequirementsV1> {
   return plainObject(value) && exactKeys(value, ["buyer", "seller"]) &&
     isBundleRequirement(value.buyer) && isBundleRequirement(value.seller);
