@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { SettleResponse } from "@x402/core/types";
+import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
 import {
@@ -18,8 +19,7 @@ import {
 const NETWORK = "eip155:84532";
 const RECIPIENT = "0x1111111111111111111111111111111111111111";
 const PAYER = "0x2222222222222222222222222222222222222222";
-const HARDHAT_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784e7bf4f2ff80";
+const TEST_EVM_KEY = keccak256(stringToHex("dacs-sdk:test:x402-rail"));
 
 describe("DACS EIP-3009 session binding", () => {
   test("reproduces the normative SB-3 live, phase, job and ULID vectors", async () => {
@@ -87,7 +87,7 @@ describe("DACS EIP-3009 session binding", () => {
 
   test("fails closed when a production rail is asked to settle without a session binding", async () => {
     const rail = await createX402Rail({
-      evmPrivateKey: HARDHAT_KEY,
+      evmPrivateKey: TEST_EVM_KEY,
       requireSessionBinding: true,
       fetchImpl: fakeFetch(),
     });

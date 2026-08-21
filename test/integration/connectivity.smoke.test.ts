@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-// Throwaway mnemonic — local key derivation only, no funds needed. We're just
-// checking the SDK can reach a live Demos node and do a read round-trip.
-const MNEMONIC =
-  "polar scale globe beauty stock employ rail exercise goat into sample embark";
 const RPC = process.env.DEMOS_RPC;
+const MNEMONIC = process.env.DEMOS_CONNECTIVITY_MNEMONIC?.trim();
 
 describe("live node connectivity (SDK <-> Demos node)", () => {
-  // Gated on DEMOS_RPC so the default offline `npm test`/CI stays offline.
-  // Run with: DEMOS_RPC=https://node2.demos.sh npx vitest run test/integration/connectivity.smoke.test.ts
-  if (!RPC) {
-    it.skip("set DEMOS_RPC to run the live connectivity smoke", () => {});
+  // Both values are required so the default offline test run stays offline and
+  // no account material needs to be committed to source control.
+  if (!RPC || !MNEMONIC) {
+    it.skip(
+      "set DEMOS_RPC and DEMOS_CONNECTIVITY_MNEMONIC to run the live connectivity smoke",
+      () => {},
+    );
     return;
   }
 
