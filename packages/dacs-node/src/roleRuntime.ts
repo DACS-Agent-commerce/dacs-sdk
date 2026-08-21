@@ -12,6 +12,7 @@ import {
 } from "@kynesyslabs/dacs";
 import type { FixedPriceX402Operations } from "@kynesyslabs/dacs/commerce";
 
+import { createDacsFixedPriceX402OperationSetV1 } from "./commerceRuntime.js";
 import {
   DACS_NODE_LIVE_PROFILE,
   validateDacsAgentConfig,
@@ -49,6 +50,10 @@ import {
 } from "./sqlite.js";
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
 import type {
+  DacsBuyerLiveCommerceGraphV1,
+  DacsSellerLiveCommerceGraphV1,
+} from "./liveCommerceGraph.js";
+import type {
   DacsHttpAuthenticatedEnvelopeV1,
   DacsHttpMessageType,
   DacsHttpPayloadValidatorV1,
@@ -71,11 +76,20 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
     role: "buyer" | "seller";
     messageType: DacsHttpMessageType;
   }>) => Promise<boolean> | boolean;
-  createOperations(
+  /**
+   * Preferred production boundary. It may asynchronously assemble the x402
+   * paywall and returns one role-closed operation/message/application graph.
+   */
+  createCommerceGraph?(
+    context: Readonly<DacsLiveRoleOperationContextV1>,
+  ): Promise<Readonly<DacsLiveRoleCommerceGraphV1>> |
+    Readonly<DacsLiveRoleCommerceGraphV1>;
+  /** Legacy/custom-host seam; supply all three callbacks or none of them. */
+  createOperations?(
     context: Readonly<DacsLiveRoleOperationContextV1>,
   ): Readonly<FixedPriceX402Operations>;
-  validatePayload: DacsLiveRoleRuntimePayloadValidatorV1;
-  handleMessage(
+  validatePayload?: DacsLiveRoleRuntimePayloadValidatorV1;
+  handleMessage?(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
   ): Promise<DacsHttpInboundDispositionV1> | DacsHttpInboundDispositionV1;
@@ -96,6 +110,10 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
     input: Parameters<typeof openDacsNodeSqliteDatabase>[0],
   ) => Promise<DacsNodeSqliteDatabase>;
 }
+
+export type DacsLiveRoleCommerceGraphV1 =
+  | DacsBuyerLiveCommerceGraphV1
+  | DacsSellerLiveCommerceGraphV1;
 
 /**
  * Complete actor-local authority available while composing production tracks.
@@ -201,16 +219,24 @@ function nonEmpty(value: unknown): value is string {
 export async function createDacsLiveRoleRuntimeV1(
   rawOptions: Readonly<DacsLiveRoleRuntimeOptionsV1>,
 ): Promise<Readonly<DacsLiveRoleRuntimeV1>> {
-  if (!plainObject(rawOptions) ||
-      (rawOptions.role !== "buyer" && rawOptions.role !== "seller") ||
+  if (!plainObject(rawOptions)) {
+    throw new TypeError("live role runtime options are invalid");
+  }
+  const graphMode = typeof rawOptions.createCommerceGraph === "function";
+  const anyLegacyCommerce = rawOptions.createOperations !== undefined ||
+    rawOptions.validatePayload !== undefined || rawOptions.handleMessage !== undefined ||
+    rawOptions.handleApplicationRequest !== undefined;
+  const completeLegacyCommerce = typeof rawOptions.createOperations === "function" &&
+    typeof rawOptions.validatePayload === "function" &&
+    typeof rawOptions.handleMessage === "function";
+  if ((rawOptions.role !== "buyer" && rawOptions.role !== "seller") ||
       !nonEmpty(rawOptions.authority) || !nonEmpty(rawOptions.peerAuthority) ||
       !nonEmpty(rawOptions.peerEndpoint) || !nonEmpty(rawOptions.workerId) ||
       !nonEmpty(rawOptions.demosIdentityFilePath) ||
       !nonEmpty(rawOptions.evmPrivateKeyFilePath) || !nonEmpty(rawOptions.evmRpcUrl) ||
       (rawOptions.databasePath !== undefined && !nonEmpty(rawOptions.databasePath)) ||
-      typeof rawOptions.createOperations !== "function" ||
-      typeof rawOptions.validatePayload !== "function" ||
-      typeof rawOptions.handleMessage !== "function" ||
+      (graphMode ? anyLegacyCommerce : !completeLegacyCommerce) ||
+      (rawOptions.createCommerceGraph !== undefined && !graphMode) ||
       (rawOptions.handleApplicationRequest !== undefined &&
         typeof rawOptions.handleApplicationRequest !== "function") ||
       (rawOptions.authorizeJob !== undefined && typeof rawOptions.authorizeJob !== "function") ||
@@ -362,6 +388,44 @@ export async function createDacsLiveRoleRuntimeV1(
       evm,
     });
     let establishedOperationContext: Readonly<DacsLiveRoleOperationContextV1> | undefined;
+    let commerceGraph: Readonly<DacsLiveRoleCommerceGraphV1> | undefined;
+    let commerceOperations: Readonly<FixedPriceX402Operations> | undefined;
+    if (graphMode) {
+      const deferredSendMessage: DacsLiveRoleRuntimeContextV1["sendMessage"] =
+        (input, sendOptions) => {
+          if (service === undefined) {
+            return Promise.reject(new DacsLiveRoleRuntimeError(
+              "role-service-send-before-initialization",
+            ));
+          }
+          return service.sendMessage(input, sendOptions);
+        };
+      establishedOperationContext = operationContext(Object.freeze({
+        role,
+        authority: rawOptions.authority,
+        peerAuthority: rawOptions.peerAuthority,
+        sendMessage: deferredSendMessage,
+      }));
+      const created = await rawOptions.createCommerceGraph!(establishedOperationContext);
+      if (!plainObject(created) || created.role !== role ||
+          !plainObject(created.operations) ||
+          typeof created.validatePayload !== "function" ||
+          typeof created.handleMessage !== "function" ||
+          (role === "seller" &&
+            (created.role !== "seller" ||
+              typeof created.handleApplicationRequest !== "function"))) {
+        throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+      }
+      try {
+        commerceOperations = createDacsFixedPriceX402OperationSetV1({
+          role,
+          operations: created.operations as Readonly<Record<string, unknown>>,
+        });
+      } catch {
+        throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+      }
+      commerceGraph = created;
+    }
     const serviceOptions: DacsLiveRoleServiceOptionsV1 = {
       config,
       database,
@@ -376,24 +440,32 @@ export async function createDacsLiveRoleRuntimeV1(
             reasonCode: "role-operation-context-unavailable",
           });
         }
-        return rawOptions.validatePayload(input, establishedOperationContext);
+        return commerceGraph === undefined
+          ? rawOptions.validatePayload!(input, establishedOperationContext)
+          : commerceGraph.validatePayload(input);
       },
       signTransportEnvelope: demos.signTransportEnvelope,
       createOperations: (context) => {
+        if (commerceOperations !== undefined) return commerceOperations;
         establishedOperationContext = operationContext(context);
-        return rawOptions.createOperations(establishedOperationContext);
+        return rawOptions.createOperations!(establishedOperationContext);
       },
-      handleMessage: (authenticated, context) =>
-        rawOptions.handleMessage(authenticated, inboundOperationContext(context)),
+      handleMessage: (authenticated, context) => {
+        const inbound = inboundOperationContext(context);
+        return commerceGraph === undefined
+          ? rawOptions.handleMessage!(authenticated, inbound)
+          : commerceGraph.handleMessage(authenticated, inbound);
+      },
       readiness: readinessLatch.readiness,
-      ...(rawOptions.handleApplicationRequest === undefined
+      ...((rawOptions.handleApplicationRequest === undefined &&
+          !(commerceGraph?.role === "seller"))
         ? {} : {
-            handleApplicationRequest: (request, response, context) =>
-              rawOptions.handleApplicationRequest!(
-                request,
-                response,
-                inboundOperationContext(context),
-              ),
+            handleApplicationRequest: (request, response, context) => {
+              const inbound = inboundOperationContext(context);
+              return commerceGraph?.role === "seller"
+                ? commerceGraph.handleApplicationRequest(request, response, inbound)
+                : rawOptions.handleApplicationRequest!(request, response, inbound);
+            },
           }),
       ...(rawOptions.events === undefined ? {} : { events: rawOptions.events }),
       ...(rawOptions.workerIntervalMs === undefined
@@ -410,9 +482,10 @@ export async function createDacsLiveRoleRuntimeV1(
     service = role === "buyer"
       ? createDacsBuyerServiceV1(serviceOptions)
       : createDacsSellerServiceV1(serviceOptions);
-  } catch {
+  } catch (error) {
     if (evm.role === "buyer") evm.runtime.destroy();
     database.close();
+    if (error instanceof DacsLiveRoleRuntimeError) throw error;
     throw new DacsLiveRoleRuntimeError("role-service-create-failed");
   }
 

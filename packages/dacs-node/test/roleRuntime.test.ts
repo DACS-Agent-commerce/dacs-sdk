@@ -86,6 +86,89 @@ describe("complete role-owned live runtime", () => {
     }
   });
 
+  it("awaits one complete async commerce graph before creating the role service", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    const evmSecretPath = join(directory, "evm.secret");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    writeFileSync(evmSecretPath, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
+    const graphContexts: unknown[] = [];
+    const pending = vi.fn(async () => ({
+      status: "pending-retry" as const,
+      reasonCode: "fixture-pending",
+      retryAt: 1,
+    }));
+    const validatePayload = vi.fn(() => Object.freeze({ status: "valid" as const }));
+    const handleMessage = vi.fn(() => Object.freeze({ disposition: "accepted" as const }));
+    const runtime = await createDacsLiveRoleRuntimeV1({
+      config: config(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-graph-worker",
+      demosIdentityFilePath: secretPath,
+      evmPrivateKeyFilePath: evmSecretPath,
+      evmRpcUrl: "http://127.0.0.1:8545",
+      createDemosAdapter: async () => adapter(),
+      async createCommerceGraph(context) {
+        await Promise.resolve();
+        graphContexts.push(context);
+        return Object.freeze({
+          role: "buyer" as const,
+          operations: Object.freeze({
+            agreement: pending,
+            payment: pending,
+            "payment-evidence": pending,
+            "buyer-received": pending,
+            audit: pending,
+          }),
+          router: Object.freeze({}),
+          validatePayload,
+          handleMessage,
+        }) as never;
+      },
+      server: { hostname: "127.0.0.1", port: 0 },
+    });
+    expect(graphContexts).toHaveLength(1);
+    expect(graphContexts[0]).toMatchObject({
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      database: runtime.database,
+      demos: runtime.demos,
+    });
+    expect(typeof (graphContexts[0] as { sendMessage?: unknown }).sendMessage).toBe("function");
+    await runtime.start();
+    await runtime.stop();
+  });
+
+  it("rejects a partial async commerce graph before service creation", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    const evmSecretPath = join(directory, "evm.secret");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    writeFileSync(evmSecretPath, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
+    await expect(createDacsLiveRoleRuntimeV1({
+      config: config(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-partial-graph-worker",
+      demosIdentityFilePath: secretPath,
+      evmPrivateKeyFilePath: evmSecretPath,
+      evmRpcUrl: "http://127.0.0.1:8545",
+      createDemosAdapter: async () => adapter(),
+      createCommerceGraph: async () => ({
+        role: "buyer",
+        operations: { agreement: vi.fn() },
+        validatePayload: vi.fn(),
+        handleMessage: vi.fn(),
+      }) as never,
+    })).rejects.toMatchObject({ reasonCode: "role-commerce-graph-invalid" });
+  });
+
   it("opens one wallet/store/service authority and gates HTTP on its signed latch", async () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");
