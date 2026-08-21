@@ -89,6 +89,8 @@ describe("complete role-owned live runtime", () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");
     writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    const operationContexts: unknown[] = [];
+    const applicationContexts: unknown[] = [];
     const runtime = await createDacsLiveRoleRuntimeV1({
       config: config(directory),
       role: "buyer",
@@ -98,7 +100,10 @@ describe("complete role-owned live runtime", () => {
       workerId: "buyer-test-worker",
       demosIdentityFilePath: secretPath,
       createDemosAdapter: async () => adapter(),
-      createOperations: () => Object.freeze({}),
+      createOperations: (context) => {
+        operationContexts.push(context);
+        return Object.freeze({});
+      },
       validatePayload: () => Object.freeze({
         status: "invalid" as const,
         reasonCode: "application-payload-not-configured",
@@ -107,7 +112,21 @@ describe("complete role-owned live runtime", () => {
         disposition: "rejected" as const,
         reasonCode: "application-handler-not-configured",
       }),
+      handleApplicationRequest: (_request, response, context) => {
+        applicationContexts.push(context);
+        response.statusCode = 204;
+        response.end();
+        return true;
+      },
       server: { hostname: "127.0.0.1", port: 0 },
+    });
+    expect(operationContexts).toHaveLength(1);
+    expect(operationContexts[0]).toMatchObject({
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      database: runtime.database,
+      demos: runtime.demos,
     });
     await runtime.start();
     const endpoint = runtime.service.endpoint!;
@@ -120,6 +139,14 @@ describe("complete role-owned live runtime", () => {
       runtime.demos.signTransportEnvelope,
     );
     await expect(fetch(new URL("/ready", endpoint))).resolves.toMatchObject({ status: 200 });
+    await expect(fetch(new URL("/application", endpoint))).resolves.toMatchObject({ status: 204 });
+    expect(applicationContexts).toHaveLength(1);
+    expect(applicationContexts[0]).toMatchObject({
+      role: "buyer",
+      database: runtime.database,
+      demos: runtime.demos,
+      coordinator: runtime.service.coordinator,
+    });
     await runtime.stop();
     await expect(runtime.start()).rejects.toMatchObject({ reasonCode: "role-runtime-closed" });
 

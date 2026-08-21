@@ -54,14 +54,14 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
     messageType: DacsHttpMessageType;
   }>) => Promise<boolean> | boolean;
   createOperations(
-    context: Readonly<DacsLiveRoleRuntimeContextV1>,
+    context: Readonly<DacsLiveRoleOperationContextV1>,
   ): Readonly<FixedPriceX402Operations>;
-  validatePayload: DacsHttpPayloadValidatorV1;
+  validatePayload: DacsLiveRoleRuntimePayloadValidatorV1;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
-    context: Readonly<DacsLiveRoleInboundContextV1>,
+    context: Readonly<DacsLiveRoleInboundOperationContextV1>,
   ): Promise<DacsHttpInboundDispositionV1> | DacsHttpInboundDispositionV1;
-  handleApplicationRequest?: DacsLiveRoleApplicationRequestHandlerV1;
+  handleApplicationRequest?: DacsLiveRoleRuntimeApplicationRequestHandlerV1;
   events?: DacsLiveRoleServiceOptionsV1["events"];
   workerIntervalMs?: number;
   workerBatchSize?: number;
@@ -77,6 +77,35 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
     input: Parameters<typeof openDacsNodeSqliteDatabase>[0],
   ) => Promise<DacsNodeSqliteDatabase>;
 }
+
+/**
+ * Complete actor-local authority available while composing production tracks.
+ * The lower HTTP service deliberately exposes neither storage nor a Demos
+ * signer; the role runtime adds those capabilities only inside this actor's
+ * process after their profile/role/authority bindings have been checked.
+ */
+export interface DacsLiveRoleOperationContextV1
+  extends DacsLiveRoleRuntimeContextV1 {
+  readonly database: DacsNodeSqliteDatabase;
+  readonly demos: Readonly<DacsDemosActorRuntimeV1>;
+}
+
+export interface DacsLiveRoleInboundOperationContextV1
+  extends DacsLiveRoleInboundContextV1 {
+  readonly database: DacsNodeSqliteDatabase;
+  readonly demos: Readonly<DacsDemosActorRuntimeV1>;
+}
+
+export type DacsLiveRoleRuntimeApplicationRequestHandlerV1 = (
+  request: Parameters<DacsLiveRoleApplicationRequestHandlerV1>[0],
+  response: Parameters<DacsLiveRoleApplicationRequestHandlerV1>[1],
+  context: Readonly<DacsLiveRoleInboundOperationContextV1>,
+) => ReturnType<DacsLiveRoleApplicationRequestHandlerV1>;
+
+export type DacsLiveRoleRuntimePayloadValidatorV1 = (
+  input: Parameters<DacsHttpPayloadValidatorV1>[0],
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+) => ReturnType<DacsHttpPayloadValidatorV1>;
 
 export interface DacsLiveRoleRuntimeV1 {
   readonly role: "buyer" | "seller";
@@ -205,6 +234,21 @@ export async function createDacsLiveRoleRuntimeV1(
       ...(rawOptions.authorizeJob === undefined
         ? {} : { authorizeJob: rawOptions.authorizeJob }),
     });
+    const operationContext = (
+      context: Readonly<DacsLiveRoleRuntimeContextV1>,
+    ): Readonly<DacsLiveRoleOperationContextV1> => Object.freeze({
+      ...context,
+      database: database!,
+      demos,
+    });
+    const inboundOperationContext = (
+      context: Readonly<DacsLiveRoleInboundContextV1>,
+    ): Readonly<DacsLiveRoleInboundOperationContextV1> => Object.freeze({
+      ...context,
+      database: database!,
+      demos,
+    });
+    let establishedOperationContext: Readonly<DacsLiveRoleOperationContextV1> | undefined;
     const serviceOptions: DacsLiveRoleServiceOptionsV1 = {
       config,
       database,
@@ -212,13 +256,32 @@ export async function createDacsLiveRoleRuntimeV1(
       peerAuthority: rawOptions.peerAuthority,
       peerEndpoint: rawOptions.peerEndpoint,
       resolveIdentity,
-      validatePayload: rawOptions.validatePayload,
+      validatePayload: (input) => {
+        if (establishedOperationContext === undefined) {
+          return Object.freeze({
+            status: "authentication-failure" as const,
+            reasonCode: "role-operation-context-unavailable",
+          });
+        }
+        return rawOptions.validatePayload(input, establishedOperationContext);
+      },
       signTransportEnvelope: demos.signTransportEnvelope,
-      createOperations: rawOptions.createOperations,
-      handleMessage: rawOptions.handleMessage,
+      createOperations: (context) => {
+        establishedOperationContext = operationContext(context);
+        return rawOptions.createOperations(establishedOperationContext);
+      },
+      handleMessage: (authenticated, context) =>
+        rawOptions.handleMessage(authenticated, inboundOperationContext(context)),
       readiness: readinessLatch.readiness,
       ...(rawOptions.handleApplicationRequest === undefined
-        ? {} : { handleApplicationRequest: rawOptions.handleApplicationRequest }),
+        ? {} : {
+            handleApplicationRequest: (request, response, context) =>
+              rawOptions.handleApplicationRequest!(
+                request,
+                response,
+                inboundOperationContext(context),
+              ),
+          }),
       ...(rawOptions.events === undefined ? {} : { events: rawOptions.events }),
       ...(rawOptions.workerIntervalMs === undefined
         ? {} : { workerIntervalMs: rawOptions.workerIntervalMs }),
