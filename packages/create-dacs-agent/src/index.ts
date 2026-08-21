@@ -16,12 +16,13 @@ import { publishCompleteStagingDirectory } from "./publication.js";
 
 export const CREATE_DACS_AGENT_VERSION = "0.1.0-alpha.0";
 export const OFFLINE_PROFILE = "dacs-sdk:fixed-price-offline:v1" as const;
+export const LIVE_PROFILE = "dacs-sdk:fixed-price-x402:v1" as const;
 
 export interface CreateDacsAgentOptions {
   targetDirectory: string;
   mode?: "offline" | "live-demos";
   profile?: string;
-  role?: "demo-all";
+  role?: "demo-all" | "buyer" | "seller" | "verifier";
   deployment?: "local" | "docker";
   install?: boolean;
   run?: boolean;
@@ -29,12 +30,13 @@ export interface CreateDacsAgentOptions {
 
 export interface CreatedDacsAgentProject {
   targetDirectory: string;
-  mode: "offline";
-  profile: typeof OFFLINE_PROFILE;
-  role: "demo-all";
+  mode: "offline" | "live-demos";
+  profile: typeof OFFLINE_PROFILE | typeof LIVE_PROFILE;
+  role: "demo-all" | "buyer" | "seller" | "verifier";
   deployment: "local" | "docker";
   installed: boolean;
   ran: boolean;
+  doctor: "not-run" | "pass" | "blocked";
   files: string[];
 }
 
@@ -117,8 +119,9 @@ async function runCommand(
   executable: string,
   args: string[],
   cwd: string,
-): Promise<void> {
-  await new Promise<void>((resolvePromise, reject) => {
+  allowedExitCodes: ReadonlySet<number> = new Set([0]),
+): Promise<number> {
+  return new Promise<number>((resolvePromise, reject) => {
     const child = spawn(executable, args, {
       cwd,
       stdio: "inherit",
@@ -127,7 +130,7 @@ async function runCommand(
     });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
-      if (code === 0) resolvePromise();
+      if (code !== null && allowedExitCodes.has(code)) resolvePromise(code);
       else {
         reject(
           new Error(
@@ -155,25 +158,44 @@ export async function createDacsAgentProject(
     throw new TypeError("targetDirectory must not be empty");
   }
   const mode = options.mode ?? "offline";
-  const profile = options.profile ?? OFFLINE_PROFILE;
-  const role = options.role ?? "demo-all";
+  const profile = (options.profile ??
+    (mode === "offline" ? OFFLINE_PROFILE : LIVE_PROFILE)) as
+      | typeof OFFLINE_PROFILE
+      | typeof LIVE_PROFILE;
+  const role = options.role ?? (mode === "offline" ? "demo-all" : "buyer");
   const deployment = options.deployment ?? "local";
   const install = options.install ?? true;
   const run = options.run ?? false;
 
-  if (mode !== "offline") {
-    throw new Error(
-      "live-demos is not implemented in this work package; generation fails closed",
-    );
+  if (mode !== "offline" && mode !== "live-demos") {
+    throw new Error("mode must be offline or live-demos");
   }
-  if (profile !== OFFLINE_PROFILE) {
+  if (role !== "demo-all" && role !== "buyer" && role !== "seller" && role !== "verifier") {
+    throw new Error("role must be demo-all, buyer, seller or verifier");
+  }
+  if (deployment !== "local" && deployment !== "docker") {
+    throw new Error("deployment must be local or docker");
+  }
+  if (typeof install !== "boolean" || typeof run !== "boolean") {
+    throw new Error("install and run options must be boolean");
+  }
+  if (mode === "offline" && profile !== OFFLINE_PROFILE) {
     throw new Error(`offline mode requires profile ${OFFLINE_PROFILE}`);
   }
-  if (role !== "demo-all") {
+  if (mode === "live-demos" && profile !== LIVE_PROFILE) {
+    throw new Error(`live-demos mode requires profile ${LIVE_PROFILE}`);
+  }
+  if (mode === "offline" && role !== "demo-all") {
     throw new Error(
       "this generator supports only the single-process demo-all simulation; " +
-        "independent role services are not implemented",
+        "use live-demos for independent role services",
     );
+  }
+  if (mode === "live-demos" && role === "demo-all") {
+    throw new Error("live-demos requires buyer, seller or verifier role separation");
+  }
+  if (mode === "live-demos" && run) {
+    throw new Error("--run is the offline smoke flag and is not valid for live-demos");
   }
   if (run && !install) {
     throw new Error("--run cannot be combined with --no-install");
@@ -184,6 +206,12 @@ export async function createDacsAgentProject(
   const templates = projectTemplates({
     packageName: packageName(targetDirectory),
     deployment,
+    mode,
+    role,
+    runtimeUid: typeof process.getuid === "function" && process.getuid() > 0
+      ? process.getuid() : 10001,
+    runtimeGid: typeof process.getgid === "function" && process.getgid() > 0
+      ? process.getgid() : 10001,
   });
   const files = Object.keys(templates).sort();
   const stagingDirectory = await mkdtemp(
@@ -215,20 +243,33 @@ export async function createDacsAgentProject(
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   if (install) {
     await runCommand(npm, ["install", "--ignore-scripts"], targetDirectory);
+    if (mode === "live-demos") {
+      // The host kit's reviewed SQLite adapter is the only dependency allowed
+      // to run a native install lifecycle in the generated live project.
+      await runCommand(npm, ["rebuild", "better-sqlite3"], targetDirectory);
+    }
   }
+  let doctor: CreatedDacsAgentProject["doctor"] = "not-run";
   if (run) {
     await runCommand(npm, ["run", "typecheck"], targetDirectory);
     await runCommand(npm, ["run", "dacs:smoke:offline"], targetDirectory);
   }
+  if (mode === "live-demos" && install) {
+    const code = await runCommand(npm, [
+      "run", "dacs:doctor", "--", "--phase", "pre-start", "--for", "start",
+    ], targetDirectory, new Set([0, 5]));
+    doctor = code === 0 ? "pass" : "blocked";
+  }
 
   return Object.freeze({
     targetDirectory,
-    mode: "offline",
-    profile: OFFLINE_PROFILE,
+    mode,
+    profile,
     role,
     deployment,
     installed: install,
     ran: run,
+    doctor,
     files,
   });
 }

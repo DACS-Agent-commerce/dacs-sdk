@@ -276,6 +276,18 @@ export interface DacsNodeSqliteDiagnostics {
   filesystemMagic: number;
 }
 
+export type DacsNodeSqliteReadOnlyInspection = Readonly<
+  | {
+      status: "pass";
+      diagnostics: Readonly<DacsNodeSqliteDiagnostics>;
+    }
+  | {
+      status: "blocked" | "fail";
+      reasonCode: string;
+      databasePath: string;
+    }
+>;
+
 export interface DacsNodeSqliteDatabase {
   readonly databasePath: string;
   readonly metadata: Readonly<{
@@ -6419,6 +6431,94 @@ function migrateV5Database(
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
     verifyVersionedDatabase(database, options, 6);
   });
+}
+
+/**
+ * Validate an existing actor database without creating, migrating or writing
+ * it. This is the pre-start doctor seam; initialization and migration remain
+ * explicit lifecycle actions owned by the generated supervisor.
+ */
+export function inspectExistingDacsNodeSqliteDatabaseV1(
+  rawOptions: Readonly<DacsNodeSqliteDatabaseOptions>,
+): Readonly<DacsNodeSqliteReadOnlyInspection> {
+  const options = validateOptions(rawOptions);
+  const location = inspectDacsNodeSqliteLocation(options.databasePath);
+  if (location.status === "blocked") {
+    return Object.freeze({
+      status: "blocked" as const,
+      reasonCode: location.reasonCode,
+      databasePath: location.databasePath,
+    });
+  }
+  if (!existsSync(location.databasePath)) {
+    return Object.freeze({
+      status: "blocked" as const,
+      reasonCode: "database-missing",
+      databasePath: location.databasePath,
+    });
+  }
+  try {
+    const version = validateExistingReadOnly(location.databasePath, options);
+    if (version === 0) {
+      return Object.freeze({
+        status: "fail" as const,
+        reasonCode: "database-uninitialized",
+        databasePath: location.databasePath,
+      });
+    }
+    if (version < DACS_NODE_SQLITE_SCHEMA_VERSION) {
+      return Object.freeze({
+        status: "blocked" as const,
+        reasonCode: "database-migration-required",
+        databasePath: location.databasePath,
+      });
+    }
+    const database = new BetterSqlite3(location.databasePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: options.busyTimeoutMs,
+    });
+    try {
+      configureAdmissionConnection(database, options);
+      const journal = database.pragma("journal_mode", { simple: true });
+      if (journal !== "wal") {
+        return Object.freeze({
+          status: "fail" as const,
+          reasonCode: "database-durability-mismatch",
+          databasePath: location.databasePath,
+        });
+      }
+    } finally {
+      database.close();
+    }
+    return Object.freeze({
+      status: "pass" as const,
+      diagnostics: Object.freeze({
+        databasePath: location.databasePath,
+        schemaVersion: version,
+        applicationId: DACS_NODE_SQLITE_APPLICATION_ID,
+        mode: options.mode,
+        profile: options.profile,
+        role: options.role,
+        authority: options.authority,
+        sdkVersion: options.sdkVersion,
+        standardRevision: options.standardRevision,
+        journalMode: "wal" as const,
+        synchronous: "full" as const,
+        quickCheck: "ok" as const,
+        ...(location.filesystemType === undefined
+          ? {} : { filesystemType: location.filesystemType }),
+        filesystemMagic: location.filesystemMagic,
+      }),
+    });
+  } catch (error) {
+    return Object.freeze({
+      status: "fail" as const,
+      reasonCode: error instanceof DacsNodeSqliteError
+        ? error.reasonCode : "database-admission-failed",
+      databasePath: location.databasePath,
+    });
+  }
 }
 
 export async function openDacsNodeSqliteDatabase(

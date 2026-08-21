@@ -1,7 +1,7 @@
 {
   "name": "create-dacs-agent",
   "version": "0.1.0-alpha.0",
-  "description": "Create a bounded offline DACS verifier simulation project.",
+  "description": "Create bounded offline or guarded live DACS agent projects.",
   "license": "MIT",
   "type": "module",
   "engines": {

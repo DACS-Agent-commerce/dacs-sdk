@@ -46,6 +46,7 @@ import {
   DACS_NODE_SQLITE_MAX_PAGE_SIZE,
   DACS_NODE_SQLITE_SCHEMA_VERSION,
   DacsNodeSqliteError,
+  inspectExistingDacsNodeSqliteDatabaseV1,
   inspectDacsNodeSqliteLocation,
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -554,6 +555,35 @@ describe("DACS Node SQLite durability foundation", () => {
     databases.splice(databases.indexOf(database), 1);
     const reopened = await open(databasePath);
     expect(reopened.metadata).toEqual(database.metadata);
+  });
+
+  it("inspects an existing actor store without creating or mutating it", async () => {
+    const root = temporaryRoot();
+    const missingPath = join(root, "missing.sqlite");
+    expect(inspectExistingDacsNodeSqliteDatabaseV1(options(missingPath))).toEqual({
+      status: "blocked",
+      reasonCode: "database-missing",
+      databasePath: missingPath,
+    });
+    expect(existsSync(missingPath)).toBe(false);
+
+    const databasePath = join(root, "buyer.sqlite");
+    const database = await open(databasePath);
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const before = statSync(databasePath);
+    expect(inspectExistingDacsNodeSqliteDatabaseV1(options(databasePath))).toMatchObject({
+      status: "pass",
+      diagnostics: {
+        databasePath,
+        schemaVersion: DACS_NODE_SQLITE_SCHEMA_VERSION,
+        applicationId: DACS_NODE_SQLITE_APPLICATION_ID,
+        quickCheck: "ok",
+      },
+    });
+    const after = statSync(databasePath);
+    expect(after.size).toBe(before.size);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
   });
 
   it("derives immutable SDK and Standard bindings and rejects caller labels", async () => {

@@ -75,7 +75,7 @@ jobs:
           npm install --prefix host-package-smoke/app --ignore-scripts --strict-peer-deps \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
-          (cd host-package-smoke/app && node --input-type=module -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof host.createDacsBuyerServiceV1 !== 'function' || typeof host.createDacsSellerServiceV1 !== 'function' || typeof host.loadDacsSecretV1 !== 'function' || typeof host.installDacsRoleServiceProcessHooksV1 !== 'function' || typeof host.runDacsLiveDoctorV1 !== 'function' || typeof host.createDacsNodeLocalDoctorProbesV1 !== 'function' || typeof host.createDacsRoleServiceDoctorProbesV1 !== 'function' || typeof host.createDacsGuardedSetupPlanV1 !== 'function' || typeof host.createDacsGuardedPurchasePlanV1 !== 'function' || typeof host.createDacsFundedDoctorPlanV1 !== 'function' || typeof host.runDacsGuardedCommandV1 !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || typeof transport.createDacsHttpMessageClientV1 !== 'function' || typeof transport.startDacsHttpMessageServerV1 !== 'function' || !import.meta.resolve('@kynesyslabs/dacs-node/sqlite')) process.exit(1) })")
+          (cd host-package-smoke/app && node --input-type=module -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport'), import('@kynesyslabs/dacs-node/sqlite')]).then(([core, host, transport, sqlite]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof host.createDacsBuyerServiceV1 !== 'function' || typeof host.createDacsSellerServiceV1 !== 'function' || typeof host.loadDacsSecretV1 !== 'function' || typeof host.installDacsRoleServiceProcessHooksV1 !== 'function' || typeof host.runDacsLiveDoctorV1 !== 'function' || typeof host.createDacsNodeLocalDoctorProbesV1 !== 'function' || typeof host.inspectDacsNodePackageIntegrityV1 !== 'function' || typeof host.createDacsRoleServiceDoctorProbesV1 !== 'function' || typeof host.createDacsGuardedSetupPlanV1 !== 'function' || typeof host.createDacsGuardedPurchasePlanV1 !== 'function' || typeof host.createDacsFundedDoctorPlanV1 !== 'function' || typeof host.runDacsGuardedCommandV1 !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || typeof transport.createDacsHttpMessageClientV1 !== 'function' || typeof transport.startDacsHttpMessageServerV1 !== 'function' || typeof sqlite.inspectExistingDacsNodeSqliteDatabaseV1 !== 'function') process.exit(1) })")
           node -e "const p=require('./package.json'); if ((p.dependencies && p.dependencies['@kynesyslabs/dacs-node']) || (p.optionalDependencies && p.optionalDependencies['@kynesyslabs/dacs-node']) || (p.peerDependencies && p.peerDependencies['@kynesyslabs/dacs-node'])) process.exit(1)"
 
       - name: Packed SQLite host smoke
@@ -238,6 +238,54 @@ jobs:
               process.exit(1);
             }
           }
+          NODE
+
+          node generator-smoke/runner/node_modules/create-dacs-agent/dist/bin.js \
+            generator-smoke/generated-live --yes --mode live-demos \
+            --profile dacs-sdk:fixed-price-x402:v1 --deploy docker --no-install
+          (cd generator-smoke/generated-live && npm install --no-save --ignore-scripts \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
+            typescript@5.9.2 @types/node@20.19.1)
+          (cd generator-smoke/generated-live && npm rebuild better-sqlite3)
+          (cd generator-smoke/generated-live && npm run typecheck && npm test)
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { spawnSync } = require("node:child_process");
+          const root = path.resolve("generator-smoke/generated-live");
+          const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          if (Object.values(packageJson.dependencies).some(value =>
+              value.startsWith("file:") || value.startsWith("git+"))) process.exit(1);
+          const doctor = spawnSync("npm", [
+            "run", "dacs:doctor", "--", "--phase", "pre-start", "--for", "start", "--json",
+          ], { cwd: root, encoding: "utf8", env: { ...process.env, DACS_DEPLOYMENT: "local" } });
+          if (doctor.status !== 5) process.exit(1);
+          const reportLine = doctor.stdout.trim().split("\n").at(-1);
+          const report = JSON.parse(reportLine);
+          if (report.safety.readOnly !== true || report.safety.funded !== false ||
+              report.gate.status !== "blocked" || report.checks.length !== 34 ||
+              fs.existsSync(path.join(root, "data", "buyer", "actor.sqlite"))) process.exit(1);
+          const setup = spawnSync("npm", [
+            "run", "dacs:setup", "--", "--max-spend-dem", "1.00",
+          ], { cwd: root, encoding: "utf8" });
+          const setupPlan = JSON.parse(setup.stdout.trim().split("\n").at(-1));
+          if (setup.status !== 0 || setupPlan.execute !== false ||
+              setupPlan.maximumSpendDem !== "1" ||
+              fs.existsSync(path.join(root, "data", "buyer", "actor.sqlite"))) process.exit(1);
+          fs.writeFileSync(path.join(root, ".env"), "DACS_SETUP_WRITE_CONFIRM=1\n", { mode: 0o600 });
+          const persistedConsent = spawnSync("npm", [
+            "run", "dacs:doctor", "--", "--phase", "pre-start", "--for", "start", "--json",
+          ], { cwd: root, encoding: "utf8" });
+          if (persistedConsent.status !== 1 ||
+              persistedConsent.stderr.includes("write confirmation") ||
+              persistedConsent.stderr.includes("at file:")) process.exit(1);
+          const compose = fs.readFileSync(path.join(root, "compose.yaml"), "utf8");
+          for (const required of [
+            "DACS_BUYER_DATA_DIRECTORY", "DACS_SELLER_DATA_DIRECTORY",
+            "DACS_BUYER_DEMOS_SECRET_FILE", "DACS_SELLER_DEMOS_SECRET_FILE", "read_only: true",
+            "DACS_RUNTIME_UID", "DACS_RUNTIME_GID", "no-new-privileges:true", "healthcheck:",
+          ]) if (!compose.includes(required)) process.exit(1);
           NODE
 
       - name: Test (unit + conformance harness)

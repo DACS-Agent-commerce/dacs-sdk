@@ -177,6 +177,10 @@ exit codes 0/1/5, and include a canonical integrity hash.
 
 `createDacsNodeLocalDoctorProbesV1()` implements the package/version/config,
 private data-directory, disk, SQLite, secret and actor-separation checks.
+`inspectExistingDacsNodeSqliteDatabaseV1()` supplies pre-start admission for an
+existing actor store through a read-only connection: it never creates or
+migrates a file, and returns blocked when initialization or migration is still
+required.
 `createDacsRoleServiceDoctorProbesV1()` implements bounded GET-only service
 checks and accepts an explicit independent public probe. The transport check
 uses the reserved `diagnostic-probe-buyer` and `diagnostic-probe-seller`

@@ -144,7 +144,7 @@ async function inspectDisk(
   }
 }
 
-async function packageIntegrity() {
+export async function inspectDacsNodePackageIntegrityV1() {
   try {
     const parsed = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
       name?: unknown;
@@ -202,7 +202,7 @@ export function createDacsNodeLocalDoctorProbesV1(
   return Object.freeze({
     "local.node-version": () => supportedNode(nodeVersion)
       ? pass({ nodeVersion }) : fail("node-version-unsupported"),
-    "local.package-integrity": packageIntegrity,
+    "local.package-integrity": inspectDacsNodePackageIntegrityV1,
     "local.version-bindings": () => {
       for (const actor of [actors.buyer, actors.seller]) {
         const config = configFor(actor);
