@@ -167,6 +167,16 @@ canonical public application/session facts before the first track can run;
 exact role, job and local binding hash. Payment bearers and private material do
 not belong in that order-input record.
 
+`createDacsBuyerAgreementTrackV1()` and
+`createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange
+and responder to the role-owned fenced-session store and Demos signer. Every
+proposal/contribution publication and agreement anchor callback rechecks the
+outer coordinator generation immediately before invoking its adapter. A
+terminal readback becomes a successful coordinator track only after the host's
+independent order authorization callback accepts it; ambiguous progress stays
+retry/reconciliation state, while an authenticated rejection needs an explicit
+fault-classification decision before it can become a normative failure.
+
 `createDacsX402BuyerRuntimePaymentTrackV1()` composes those retained order facts
 with the buyer's role-local signer, chain-finality read client, durable x402
 settlement store and paid-request transport. Challenge acquisition is a
