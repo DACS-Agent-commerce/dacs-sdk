@@ -6,7 +6,7 @@ import {
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { authorizationTypes } from "@x402/evm";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
-import { recoverTypedDataAddress } from "viem";
+import { keccak256, recoverTypedDataAddress, stringToHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, test } from "vitest";
 
@@ -18,10 +18,14 @@ import {
 } from "../../src/rails/index.js";
 import { x402Eip3009Nonce } from "../../src/seller/paymentIntake.js";
 
-const PRIVATE_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784e7bf4f2ff80";
-const OTHER_PRIVATE_KEY =
-  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+// Derive deterministic, test-only accounts at runtime so the repository never
+// contains text that can be mistaken for deployable wallet material.
+const PRIVATE_KEY = keccak256(
+  stringToHex("dacs-sdk:test:x402-buyer:primary"),
+);
+const OTHER_PRIVATE_KEY = keccak256(
+  stringToHex("dacs-sdk:test:x402-buyer:other"),
+);
 const ACCOUNT = privateKeyToAccount(PRIVATE_KEY);
 const JOB_ID = "job-real-x402-dacs-nonce";
 const PHASE_INDEX = 4;
