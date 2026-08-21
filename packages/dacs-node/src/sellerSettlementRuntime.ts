@@ -40,6 +40,14 @@ export interface DacsSellerSettlementPublicationTrackOptionsV1 {
     evidenceHash: string;
     reference: string;
   }>): Promise<boolean> | boolean;
+  /**
+   * Persist the exact signed evidence synchronously before the buyer-owned
+   * publication handshake can begin. This closes the signer-to-outbox crash
+   * window and lets `resolveRetainedSignedEvidence` recover exact bytes.
+   */
+  retainSignedEvidence?(input: Parameters<
+    SellerSessionSettlementPublicationDeps["anchorEvidence"]
+  >[0]): Promise<void> | void;
   retryDelayMs?: number;
 }
 
@@ -117,7 +125,9 @@ export function createDacsSellerSettlementPublicationTrackV1(
       typeof options.paymentEvidence.anchorEvidence !== "function" ||
       typeof options.paymentEvidence.flushOutboundRequests !== "function" ||
       typeof options.resolvePublication !== "function" ||
-      typeof options.authorizePublished !== "function") {
+      typeof options.authorizePublished !== "function" ||
+      (options.retainSignedEvidence !== undefined &&
+        typeof options.retainSignedEvidence !== "function")) {
     throw new TypeError("seller settlement publication track options are invalid");
   }
   const context = options.context;
@@ -171,7 +181,12 @@ export function createDacsSellerSettlementPublicationTrackV1(
           ]);
         },
       },
-      anchorEvidence: (input) => paymentEvidence.anchorEvidence(operation, input),
+      anchorEvidence: async (input) => {
+        if (options.retainSignedEvidence !== undefined) {
+          await options.retainSignedEvidence(input);
+        }
+        return paymentEvidence.anchorEvidence(operation, input);
+      },
     };
 
     let result: Awaited<ReturnType<typeof publishSellerSessionSettlement>>;

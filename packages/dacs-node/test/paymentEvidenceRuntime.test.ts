@@ -7,7 +7,11 @@ import type {
   AttestationRef,
   SettlementEvidence,
 } from "@kynesyslabs/dacs/artifacts";
-import { contentHash } from "@kynesyslabs/dacs/canonical";
+import {
+  x402Eip3009Nonce,
+  x402PaywallSettlementKey,
+} from "@kynesyslabs/dacs";
+import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
@@ -21,6 +25,8 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
+import { createDacsFixedPriceX402SellerPaymentEvidenceV1 } from
+  "../src/fixedPriceX402SellerPaymentEvidence.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import {
   createDacsBuyerPaymentEvidenceRuntimeV1,
@@ -386,5 +392,201 @@ describe("live payment-evidence runtime", () => {
     });
     expect(flushOutboundRequests).toHaveBeenCalledOnce();
     expect(inspectPermit).not.toHaveBeenCalled();
+  });
+
+  it("retains seller-authored evidence before the buyer publication handoff", async () => {
+    const database = await open("seller");
+    const context = {
+      role: "seller",
+      authority: SELLER,
+      peerAuthority: BUYER,
+      database,
+      demos: { adapter: {} },
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const composed = createDacsFixedPriceX402SellerPaymentEvidenceV1({
+      context,
+      settlement: {
+        observer: {},
+        resolveOrderScope: vi.fn(),
+      } as never,
+    });
+    const artifact = evidence();
+    const evidenceHash = contentHash(artifact as unknown as Record<string, unknown>);
+    const input = {
+      effectId: `seller-settlement:${JOB_ID}`,
+      logicalAddress: `dacs4:payment:${JOB_ID}:x402%3Aruntime:0`,
+      evidenceHash,
+      evidence: artifact,
+      expectedWriter: { role: "buyer" as const, primaryClaim: BUYER },
+    };
+    await expect(composed.settlement.retainSignedEvidence!(input)).resolves.toBeUndefined();
+    await expect(composed.settlement.retainSignedEvidence!(input)).resolves.toBeUndefined();
+    await expect(composed.settlement.retainSignedEvidence!({
+      ...input,
+      evidence: {
+        ...artifact,
+        signature: { ...artifact.signature, value: "b3RoZXI" },
+      },
+    })).rejects.toMatchObject({
+      reasonCode: "seller-payment-evidence-retention-conflict",
+    });
+  });
+
+  it("accepts a later authenticated observation of the exact finalized event", async () => {
+    const database = await open("seller");
+    const buyerPayingKey = `0x${"3".repeat(40)}`;
+    const sellerPayee = `0x${"4".repeat(40)}`;
+    const asset = `0x${"5".repeat(40)}`;
+    const txHash = `0x${"6".repeat(64)}`;
+    const evidenceHash = "7".repeat(64);
+    const paymentAuthorization = {
+      jobId: JOB_ID,
+      phaseIndex: 0,
+      agreementHash: "8".repeat(64),
+      listingRef: {
+        listingId: "listing-runtime",
+        version: 1,
+        contentHash: "9".repeat(64),
+      },
+      railId: PROTOCOL.rail.railId,
+      railRegistryVersion: 2,
+      commitment: {
+        ref: `dacs3:commitment:${JOB_ID}`,
+        contentHash: "a".repeat(64),
+        finalizedAt: 6_000,
+        signer: SELLER,
+      },
+      settlementIdentity: {
+        kind: "evm",
+        chainId: 8453,
+        txHash,
+        logIndex: 1,
+        includedAt: 6_500,
+      },
+      settlementId: `evm:8453:${txHash}:1`,
+      evidenceHash,
+      evidenceInput: {
+        evidenceVersion: "1",
+        jobId: JOB_ID,
+        phase: "pay-x402",
+        outcome: "success",
+        paymentTxRefs: [{
+          kind: "x402-event",
+          httpResource: "https://seller.example/orders/runtime",
+          paymentReceiptHash: "b".repeat(64),
+          settlementTxHash: txHash,
+          chainId: 8453,
+          logIndex: 1,
+          protocolVersion: "2",
+        }],
+        paymentAmount: { amount: "1000000", currency: "USDC" },
+        settlementFinality: {
+          model: "block-depth",
+          finalityBlocks: 3,
+          finalityObservedAt: 7_000,
+        },
+        observedAt: 7_000,
+      },
+      payoutBindingTier: 3,
+      sessionBinding: "established",
+    } as const;
+    const authorization = {
+      authorizationVersion: "1",
+      sessionAuthorization: {
+        scopeVersion: "1",
+        jobId: JOB_ID,
+        paymentPhaseIndex: 0,
+        deliveryPhaseIndex: 1,
+        payer: BUYER,
+        payerPayingKey: buyerPayingKey,
+        httpResource: "https://seller.example/orders/runtime",
+        railId: PROTOCOL.rail.railId,
+        railRegistryVersion: 2,
+        agreementRef: `dacs3:agreement:${JOB_ID}`,
+        agreementHash: paymentAuthorization.agreementHash,
+        listingRef: paymentAuthorization.listingRef,
+        commitmentRef: paymentAuthorization.commitment.ref,
+        commitmentContentHash: paymentAuthorization.commitment.contentHash,
+        commitmentFinalizedAt: paymentAuthorization.commitment.finalizedAt,
+        expected: {
+          network: "eip155:8453",
+          payTo: sellerPayee,
+          amount: "1000000",
+          asset,
+          eip712: { name: "USDC", version: "2" },
+        },
+      },
+      paymentPermitId: "permit-runtime",
+      paymentAuthorization,
+    } as const;
+    const localBindingHash = fixedPriceX402OrderLocalBindingHash(order("seller"));
+    const authorizationId = sha256Hex(
+      `dacs-live-seller-x402-authorization:v1:${canonicalize({
+        jobId: JOB_ID,
+        paymentPhaseIndex: 0,
+      })}`,
+    );
+    const authorizationHash = sha256Hex(canonicalize(authorization));
+    expect(database.putEffectIntent({
+      kind: "session",
+      effectId: authorizationId,
+      bindingHash: localBindingHash,
+      input: {
+        authorizationBindingVersion: "1",
+        localBindingHash,
+        authorizationHash,
+        settlementKey: x402PaywallSettlementKey({ jobId: JOB_ID, phaseIndex: 0 }),
+        authorization,
+      },
+      idempotencyKey: authorizationId,
+      jobId: JOB_ID,
+    }).status).toBe("created");
+    const observeX402Transfer = vi.fn(async () => ({
+      status: "finalized" as const,
+      chainId: 8453,
+      txHash,
+      logIndex: 1,
+      payer: buyerPayingKey,
+      payee: sellerPayee,
+      amountBaseUnits: "1000000",
+      asset: { contract: asset, symbol: "USDC", decimals: 6 },
+      confirmations: 5,
+      includedAt: 6_500,
+      finalityObservedAt: 9_000,
+      sessionBinding: {
+        kind: "eip3009" as const,
+        nonce: x402Eip3009Nonce(JOB_ID, 0),
+      },
+    }));
+    const context = {
+      role: "seller",
+      authority: SELLER,
+      peerAuthority: BUYER,
+      database,
+      demos: { adapter: {} },
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const composed = createDacsFixedPriceX402SellerPaymentEvidenceV1({
+      context,
+      settlement: {
+        observer: { observeX402Transfer },
+        resolveOrderScope: () => ({ paymentPhaseIndex: 0, deliveryPhaseIndex: 1 }),
+      } as never,
+    });
+    const resolved = await composed.settlement.resolvePublication({
+      operation: operation(order("seller")),
+      retained: {} as never,
+    });
+    await expect(resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: paymentAuthorization,
+    })).resolves.toMatchObject({
+      disposition: "authenticated",
+      binding: {
+        settlementFinality: {
+          finalityObservedAt: 7_000,
+          finalityBlocks: 3,
+        },
+      },
+      proof: { artifact: { finalityObservedAt: 9_000, confirmations: 5 } },
+    });
   });
 });
