@@ -937,6 +937,47 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(
       adapter.verifyDemosAnchorReceipt(portableReceipt),
     ).resolves.toBe(true);
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
+      data: value,
+      createdByTx: anchored.txRef,
+      lastModifiedByTx: anchored.txRef,
+      interactionTxs: [anchored.txRef],
+    });
+    await expect(adapter.resolveDemosAnchorReceipt({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+    })).resolves.toMatchObject({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      transactionRef: { value: anchored.txRef },
+      state: "finalized",
+      observationDisposition: "established",
+    });
+    raw.getTxByHash.mockClear();
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
+      data: value,
+      createdByTx: anchored.txRef,
+      lastModifiedByTx: "tx-untrusted-latest",
+      interactionTxs: [anchored.txRef, "tx-untrusted-latest"],
+    });
+    await expect(adapter.resolveDemosAnchorReceipt({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+    })).rejects.toThrow(/provenance could not be authenticated/);
+    expect(raw.getTxByHash).toHaveBeenCalledTimes(1);
+    expect(raw.getTxByHash).toHaveBeenCalledWith("tx-untrusted-latest");
     await expect(
       adapter.verifyDemosAnchorReceipt({
         ...portableReceipt,

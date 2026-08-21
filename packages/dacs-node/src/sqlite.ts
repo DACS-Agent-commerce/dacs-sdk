@@ -360,6 +360,15 @@ export interface DacsNodeSqliteDatabase {
     kind: DacsNodeSqliteEffectKind,
     effectId: string,
   ): Readonly<DacsNodeSqliteEffectRecord> | undefined;
+  /**
+   * Load the exact authenticated intent payload for local effect recovery.
+   * This may contain a retained one-use authorization and must never be logged
+   * or exposed through diagnostics/status APIs.
+   */
+  loadEffectInput(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+  ): unknown | undefined;
   claimEffect(input: Readonly<{
     kind: DacsNodeSqliteEffectKind;
     effectId: string;
@@ -4902,6 +4911,22 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     return readSnapshot(this.database, () => {
       const row = this.effectRow(kind, effectId);
       return row ? clone(this.validatedEffectRecord(row)) : undefined;
+    });
+  }
+
+  loadEffectInput(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+  ): unknown | undefined {
+    this.assertOpen();
+    if (!EFFECT_KINDS.has(kind) || !nonEmpty(effectId)) {
+      throw new DacsNodeSqliteError("effect-input-malformed", "SQLite effect lookup is malformed");
+    }
+    return readSnapshot(this.database, () => {
+      const row = this.effectRow(kind, effectId);
+      if (!row) return undefined;
+      this.validatedEffectRecord(row);
+      return clone(JSON.parse(row.input_json) as unknown);
     });
   }
 

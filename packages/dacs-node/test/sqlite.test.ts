@@ -2983,6 +2983,13 @@ describe("DACS Node SQLite durability foundation", () => {
     });
 
     const loaded = database.loadEffect("payment", "payment-effect-1")!;
+    const loadedInput = database.loadEffectInput("payment", "payment-effect-1") as {
+      amount: string;
+    };
+    loadedInput.amount = "mutated";
+    expect(database.loadEffectInput("payment", "payment-effect-1")).toEqual({
+      amount: "1",
+    });
     (loaded.result as { receipt: { reference: string } }).receipt.reference = "mutated";
     expect(database.loadEffect("payment", "payment-effect-1")?.result).toEqual({
       receipt: { reference: "receipt-1" },

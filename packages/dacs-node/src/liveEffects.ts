@@ -47,6 +47,20 @@ export type DacsLiveEffectReconciliationV1<Result> = Readonly<
   | { status: "operator-action"; reasonCode: string }
 >;
 
+export type DacsLiveEffectExecutionControlV1 = Readonly<
+  | {
+      effectControlVersion: "1";
+      status: "indeterminate";
+      reasonCode: string;
+      retryAt?: number;
+    }
+  | {
+      effectControlVersion: "1";
+      status: "operator-action";
+      reasonCode: string;
+    }
+>;
+
 /**
  * Capability required by a live irreversible coordinator track. `execute`
  * must use the supplied idempotency key at the external provider whenever the
@@ -60,7 +74,8 @@ export interface DacsLiveEffectAdapterV1<Input, Result> {
     Readonly<DacsLiveEffectReconciliationV1<Result>>;
   execute(
     invocation: Readonly<DacsLiveEffectInvocationV1<Input>>,
-  ): Promise<Readonly<Result>> | Readonly<Result>;
+  ): Promise<Readonly<Result> | DacsLiveEffectExecutionControlV1> |
+    Readonly<Result> | DacsLiveEffectExecutionControlV1;
 }
 
 export interface DacsLiveEffectResultProjectionV1 {
@@ -76,7 +91,7 @@ export interface DacsLiveEffectTrackOptionsV1<Input, Result> {
   workerId: string;
   buildInput(
     input: Readonly<FixedPriceX402TrackOperationInput>,
-  ): Readonly<Input>;
+  ): Promise<Readonly<Input>> | Readonly<Input>;
   adapter: Readonly<DacsLiveEffectAdapterV1<Input, Result>>;
   projectResult(
     result: Readonly<Result>,
@@ -245,6 +260,39 @@ function capturedReconciliation<Result>(
   throw new DacsLiveEffectError("effect-reconciliation-invalid");
 }
 
+function capturedExecutionControl(
+  value: unknown,
+): DacsLiveEffectExecutionControlV1 | undefined {
+  if (!plainDataObject(value) || value.effectControlVersion === undefined) {
+    return undefined;
+  }
+  if (value.effectControlVersion !== "1" || !reasonCode(value.reasonCode)) {
+    throw new DacsLiveEffectError("effect-execution-control-invalid");
+  }
+  if (value.status === "operator-action" && Object.keys(value).length === 3) {
+    return Object.freeze({
+      effectControlVersion: "1",
+      status: "operator-action",
+      reasonCode: value.reasonCode,
+    });
+  }
+  if (value.status === "indeterminate" &&
+      Object.keys(value).every((key) =>
+        key === "effectControlVersion" || key === "status" ||
+        key === "reasonCode" || key === "retryAt") &&
+      (value.retryAt === undefined ||
+        (typeof value.retryAt === "number" && Number.isSafeInteger(value.retryAt) &&
+          value.retryAt >= 0))) {
+    return Object.freeze({
+      effectControlVersion: "1",
+      status: "indeterminate",
+      reasonCode: value.reasonCode,
+      ...(value.retryAt === undefined ? {} : { retryAt: value.retryAt }),
+    });
+  }
+  throw new DacsLiveEffectError("effect-execution-control-invalid");
+}
+
 /**
  * Turn one live coordinator track into a durable SQLite-backed irreversible
  * effect. A thrown/ambiguous execute is never retried directly: the next claim
@@ -299,7 +347,11 @@ export function createDacsLiveEffectTrackV1<Input, Result>(
     const bindingHash = operationInput.fence.localBindingHash;
     let effectInput: Readonly<Input>;
     try {
-      effectInput = canonicalSnapshot(buildInput(operationInput), "effect-input");
+      const retained = database.loadEffectInput(kind, effectId);
+      effectInput = canonicalSnapshot(
+        retained === undefined ? await buildInput(operationInput) : retained,
+        "effect-input",
+      ) as Readonly<Input>;
     } catch {
       return Object.freeze({
         status: "operator-action" as const,
@@ -448,7 +500,34 @@ export function createDacsLiveEffectTrackV1<Input, Result>(
     let write: ReturnType<DacsNodeSqliteDatabase["recordEffectCompleted"]>;
     try {
       await fence.assertCurrent();
-      result = canonicalSnapshot(await execute(invocation), "effect-result") as Result;
+      const rawResult = await execute(invocation);
+      const control = capturedExecutionControl(rawResult);
+      if (control?.status === "operator-action") {
+        database.requireEffectOperatorAction({
+          kind,
+          effectId,
+          bindingHash,
+          lease: claim.lease,
+          reasonCode: control.reasonCode,
+        });
+        return Object.freeze({
+          status: "operator-action" as const,
+          reasonCode: control.reasonCode,
+        });
+      }
+      if (control?.status === "indeterminate") {
+        const at = control.retryAt ?? retryAt(database, retryDelayMs);
+        database.recordEffectAmbiguous({
+          kind,
+          effectId,
+          bindingHash,
+          lease: claim.lease,
+          reasonCode: control.reasonCode,
+          retryAt: at,
+        });
+        return pending("indeterminate", control.reasonCode, at);
+      }
+      result = canonicalSnapshot(rawResult, "effect-result") as Result;
       write = database.recordEffectCompleted({
         kind,
         effectId,

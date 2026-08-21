@@ -145,6 +145,7 @@ describe("durable live irreversible-effect track", () => {
 
   it("performs once and replays the retained completion without executing again", async () => {
     const opened = await database();
+    const buildInput = vi.fn(async () => ({ jobId: JOB_ID, amount: "1" }));
     const execute = vi.fn(async ({ fence }) => {
       await fence.assertCurrent();
       return {
@@ -153,7 +154,17 @@ describe("durable live irreversible-effect track", () => {
       };
     });
     const reconcile = vi.fn();
-    const operation = track(opened, { execute, reconcile });
+    const operation = createDacsLiveEffectTrackV1({
+      database: opened,
+      kind: "payment",
+      role: "buyer",
+      track: "payment",
+      workerId: "effect-worker",
+      retryDelayMs: 1,
+      buildInput,
+      adapter: { execute, reconcile },
+      projectResult: (result) => result,
+    });
 
     await expect(operation(operationInput())).resolves.toEqual({
       status: "final",
@@ -167,6 +178,7 @@ describe("durable live irreversible-effect track", () => {
     });
     expect(execute).toHaveBeenCalledTimes(1);
     expect(reconcile).not.toHaveBeenCalled();
+    expect(buildInput).toHaveBeenCalledTimes(1);
     expect(opened.loadEffect("payment", EFFECT_ID)).toMatchObject({
       state: "completed",
       idempotencyKey: EFFECT_ID,

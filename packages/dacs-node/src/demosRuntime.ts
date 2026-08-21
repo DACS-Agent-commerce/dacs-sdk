@@ -67,6 +67,12 @@ export interface DacsDemosAdapterV1 {
   verifyDemosAnchorReceipt(
     receipt: Readonly<ProtocolAnchorReceipt>,
   ): Promise<boolean>;
+  resolveDemosAnchorReceipt(input: Readonly<{
+    logicalAddress: string;
+    nativeAddress: string;
+    contentHash: string;
+    writer: string;
+  }>): Promise<ProtocolAnchorReceipt | null>;
 }
 
 export interface DacsDemosActorRuntimeOptionsV1 {

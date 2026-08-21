@@ -78,6 +78,7 @@ describe("role-owned Demos runtime", () => {
       resolveAnchorByName: vi.fn(async () => ({ status: "absent" as const })),
       anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
       verifyDemosAnchorReceipt: vi.fn(async () => true),
+      resolveDemosAnchorReceipt: vi.fn(async () => null),
       ...overrides,
     };
   }
