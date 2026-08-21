@@ -266,6 +266,8 @@ describe("create-dacs-agent", () => {
     expect(environmentExample).not.toContain("DACS_DOCTOR_FUNDED_CONFIRM");
     const generatedConfig = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(generatedConfig).toContain("write confirmation must not be persisted in .env");
+    expect(generatedConfig).toContain("dacs4:registry:v0.1");
+    expect(generatedConfig).not.toContain("dacs4:registry:x402");
     const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
     expect(dockerfile).toContain("RUN npm ci --ignore-scripts");
     expect(dockerfile).toContain("RUN npm rebuild better-sqlite3");

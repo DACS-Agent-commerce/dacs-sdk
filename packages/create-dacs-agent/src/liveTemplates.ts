@@ -113,7 +113,7 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
         ? {} : { storageReadUrl: publicUrl("DACS_DEMOS_STORAGE_READ_URL")! }),
     },
     rail: {
-      registryIndexRef: process.env.DACS_RAIL_REGISTRY_INDEX_REF ?? "dacs4:registry:x402",
+      registryIndexRef: process.env.DACS_RAIL_REGISTRY_INDEX_REF ?? "dacs4:registry:v0.1",
       requestedNetwork: process.env.DACS_X402_NETWORK ?? "eip155:84532",
     },
     limits: {
@@ -180,6 +180,20 @@ export function configuredAuthority(role: GeneratedLiveRole): string | undefined
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
+export function configuredRailStewardAuthority(): string | undefined {
+  const value = process.env.DACS_RAIL_STEWARD_AUTHORITY;
+  return value === undefined || value.trim() === "" ? undefined : value;
+}
+
+export function configuredX402RailId(): string {
+  return process.env.DACS_X402_RAIL_ID ?? "x402:default";
+}
+
+export function configuredX402FacilitatorUrl(): string | undefined {
+  const value = process.env.DACS_X402_FACILITATOR_URL;
+  return value === undefined || value.trim() === "" ? undefined : value;
+}
+
 export function actorDatabasePath(role: GeneratedLiveRole): string {
   return resolve(loadRoleConfig(role).dataDirectory, "actor.sqlite");
 }
@@ -212,13 +226,22 @@ const DOCTOR_SOURCE = `import { constants } from "node:fs";
 import { access, lstat, readFile, statfs } from "node:fs/promises";
 import { spawn } from "node:child_process";
 
-import { VERSION } from "@kynesyslabs/dacs";
+import {
+  RAIL_REGISTRY_INDEX_ADDRESS,
+  VERSION,
+  resolveRail,
+} from "@kynesyslabs/dacs";
 import { sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
+import {
+  canonicalDemosAgentPublicKey,
+  sameCanonicalClaimIdentity,
+} from "@kynesyslabs/dacs/identity";
 import {
   DACS_LIVE_DOCTOR_CHECK_IDS,
   DACS_NODE_LIVE_PROFILE,
   createDacsDemosActorRuntimeV1,
+  createDacsDemosRailRegistryProviderV1,
   createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
   establishDacsRoleServiceReadinessV1,
@@ -244,6 +267,9 @@ import {
   actorSecretPath,
   actorSecretPaths,
   configuredAuthority,
+  configuredRailStewardAuthority,
+  configuredX402FacilitatorUrl,
+  configuredX402RailId,
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
@@ -457,6 +483,25 @@ async function dockerRuntime(
 function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
   const unavailable = () => blocked("reviewed-live-adapter-not-configured");
   const actorUnavailable = () => blocked("role-demos-runtime-unavailable");
+  const stewardAuthority = configuredRailStewardAuthority();
+  const stewardPublicKey = stewardAuthority === undefined
+    ? null : canonicalDemosAgentPublicKey(stewardAuthority);
+  let railTask: ReturnType<typeof resolveRail> | undefined;
+  const selectedRail = () => {
+    if (actors === undefined || stewardAuthority === undefined || stewardPublicKey === null) {
+      throw new Error("rail authority prerequisite unavailable");
+    }
+    railTask ??= resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      configuredX402RailId(),
+      createDacsDemosRailRegistryProviderV1({
+        runtime: actors.buyer.runtime,
+        stewardAuthority,
+        stewardPublicKey,
+      }),
+    );
+    return railTask;
+  };
   return Object.freeze({
     "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
       : fail("node-version-unsupported"),
@@ -464,7 +509,12 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
     "local.version-bindings": () => pass({ sdkVersion: VERSION,
       standardRevision: FIXED_PRICE_X402_STANDARD_REVISION, profile: DACS_NODE_LIVE_PROFILE }),
     "local.configuration": () => {
-      try { ROLES.forEach((role) => loadRoleConfig(role)); return pass(); }
+      try {
+        const configs = ROLES.map((role) => loadRoleConfig(role));
+        return configs.every((config) =>
+          config.rail.registryIndexRef === RAIL_REGISTRY_INDEX_ADDRESS)
+          ? pass() : fail("rail-registry-index-incompatible");
+      }
       catch { return fail("configuration-invalid"); }
     },
     "local.data-directory": async () => {
@@ -478,11 +528,25 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
     "local.authority-separation": authorities,
     "local.transport-identities": actors === undefined ? actorUnavailable : async () => {
       try {
-        await Promise.all([
+        const [sellerFromBuyer, buyerFromSeller] = await Promise.all([
           actors.buyer.runtime.adapter.resolveIdentity(actors.seller.authority),
           actors.seller.runtime.adapter.resolveIdentity(actors.buyer.authority),
         ]);
-        return pass({ directionCount: 2 });
+        const valid = sameCanonicalClaimIdentity(
+          sellerFromBuyer.ref,
+          actors.seller.authority,
+        ) && (sellerFromBuyer.boundTo === undefined || sameCanonicalClaimIdentity(
+          sellerFromBuyer.boundTo,
+          actors.seller.authority,
+        )) && sameCanonicalClaimIdentity(
+          buyerFromSeller.ref,
+          actors.buyer.authority,
+        ) && (buyerFromSeller.boundTo === undefined || sameCanonicalClaimIdentity(
+          buyerFromSeller.boundTo,
+          actors.buyer.authority,
+        ));
+        return valid ? pass({ directionCount: 2 })
+          : fail("transport-identity-resolution-mismatch");
       } catch { return fail("transport-identity-resolution-failed"); }
     },
     "local.deployment-runtime": dockerRuntime,
@@ -492,8 +556,23 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
         return pass({ actorCount: 2 });
       } catch { return fail("demos-rpc-unavailable"); }
     },
-    "demos.storage-read": unavailable,
-    "demos.binding-resolution": unavailable,
+    "demos.storage-read": actors === undefined ? actorUnavailable
+      : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
+      : async () => {
+          try { await selectedRail(); return pass(); }
+          catch { return fail("demos-storage-read-or-proof-failed"); }
+        },
+    "demos.binding-resolution": actors === undefined ? actorUnavailable : async () => {
+      try {
+        const [seller, buyer] = await Promise.all([
+          actors.buyer.runtime.adapter.resolveIdentity(actors.seller.authority),
+          actors.seller.runtime.adapter.resolveIdentity(actors.buyer.authority),
+        ]);
+        return sameCanonicalClaimIdentity(seller.ref, actors.seller.authority) &&
+            sameCanonicalClaimIdentity(buyer.ref, actors.buyer.authority)
+          ? pass({ directionCount: 2 }) : fail("demos-binding-resolution-mismatch");
+      } catch { return fail("demos-binding-resolution-failed"); }
+    },
     "demos.nonce": actors === undefined ? actorUnavailable : async () => {
       try {
         await Promise.all([actors.buyer.runtime.addressNonce(), actors.seller.runtime.addressNonce()]);
@@ -511,10 +590,36 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
       try { new URL(serviceEndpoint("buyer")); new URL(serviceEndpoint("seller")); return pass(); }
       catch { return fail("engagement-endpoint-invalid"); }
     },
-    "x402.rail-authority": unavailable,
+    "x402.rail-authority": actors === undefined ? actorUnavailable
+      : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
+      : async () => {
+          try {
+            const rail = await selectedRail();
+            return rail.railType === "x402" && rail.phaseHandler === "pay-x402"
+              ? pass({ railId: rail.railId, railVersion: rail.railVersion })
+              : fail("x402-rail-incompatible");
+          } catch { return fail("x402-rail-authority-invalid"); }
+        },
     "x402.testnet-policy": () => loadRoleConfig("buyer").rail.requestedNetwork === "eip155:84532"
       ? pass() : fail("x402-mainnet-or-unsupported-network"),
-    "x402.endpoints": unavailable,
+    "x402.endpoints": actors === undefined ? actorUnavailable
+      : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
+      : async () => {
+          const facilitatorUrl = configuredX402FacilitatorUrl();
+          if (facilitatorUrl === undefined) return blocked("x402-facilitator-url-missing");
+          try {
+            const rail = await selectedRail();
+            const resource = rail.network.kind === "x402-resource"
+              ? new URL(rail.network.resourceBaseUrl) : undefined;
+            const facilitator = new URL(facilitatorUrl);
+            return resource !== undefined && resource.protocol === "https:" &&
+                facilitator.protocol === "https:" && facilitator.username === "" &&
+                facilitator.password === "" && facilitator.search === "" &&
+                facilitator.hash === ""
+              ? pass({ resourceOrigin: resource.origin, facilitatorOrigin: facilitator.origin })
+              : fail("x402-endpoint-policy-invalid");
+          } catch { return fail("x402-endpoint-resolution-failed"); }
+        },
     "x402.payer-binding": unavailable,
     "x402.payee-binding": unavailable,
     "x402.asset-balance": unavailable,
@@ -1037,7 +1142,10 @@ const DOCKERIGNORE = `**
 const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_DEMOS_RPC_URL: \${DACS_DEMOS_RPC_URL:-https://node2.demos.sh}
   DACS_DEMOS_STORAGE_READ_URL: \${DACS_DEMOS_STORAGE_READ_URL:-}
-  DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:x402}
+  DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:v0.1}
+  DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
+  DACS_X402_RAIL_ID: \${DACS_X402_RAIL_ID:-x402:default}
+  DACS_X402_FACILITATOR_URL: \${DACS_X402_FACILITATOR_URL:-}
   DACS_X402_NETWORK: \${DACS_X402_NETWORK:-eip155:84532}
   DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-USDC}
   DACS_MAX_SERVICE_AMOUNT: \${DACS_MAX_SERVICE_AMOUNT:-1}
@@ -1117,7 +1225,10 @@ DACS_RUNTIME_GID=${options.runtimeGid}
 DACS_BUYER_DATA_DIRECTORY=./data/buyer
 DACS_SELLER_DATA_DIRECTORY=./data/seller
 DACS_DEMOS_RPC_URL=https://node2.demos.sh
-DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:x402
+DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
+DACS_RAIL_STEWARD_AUTHORITY=
+DACS_X402_RAIL_ID=x402:default
+DACS_X402_FACILITATOR_URL=
 DACS_X402_NETWORK=eip155:84532
 DACS_MAX_SERVICE_ASSET=USDC
 DACS_MAX_SERVICE_AMOUNT=1
