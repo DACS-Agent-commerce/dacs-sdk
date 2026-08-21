@@ -194,6 +194,11 @@ export function configuredX402FacilitatorUrl(): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
+export function configuredEvmRpcUrl(): string | undefined {
+  const value = process.env.DACS_EVM_RPC_URL;
+  return value === undefined || value.trim() === "" ? undefined : value;
+}
+
 export function actorDatabasePath(role: GeneratedLiveRole): string {
   return resolve(loadRoleConfig(role).dataDirectory, "actor.sqlite");
 }
@@ -229,6 +234,7 @@ import { spawn } from "node:child_process";
 import {
   RAIL_REGISTRY_INDEX_ADDRESS,
   VERSION,
+  createViemX402BuyerEvmReadClient,
   resolveRail,
 } from "@kynesyslabs/dacs";
 import { sha256Hex } from "@kynesyslabs/dacs/canonical";
@@ -244,6 +250,7 @@ import {
   createDacsDemosRailRegistryProviderV1,
   createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
+  deriveDacsEvmRoleIdentityV1,
   establishDacsRoleServiceReadinessV1,
   inspectDacsNodePackageIntegrityV1,
   loadDacsSecretV1,
@@ -261,12 +268,14 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "@kynesyslabs/dacs-node/sqlite";
+import { HTTPFacilitatorClient } from "@x402/core/http";
 
 import {
   actorDatabasePath,
   actorSecretPath,
   actorSecretPaths,
   configuredAuthority,
+  configuredEvmRpcUrl,
   configuredRailStewardAuthority,
   configuredX402FacilitatorUrl,
   configuredX402RailId,
@@ -281,6 +290,11 @@ interface DoctorActor {
   role: "buyer" | "seller";
   authority: string;
   runtime: Readonly<DacsDemosActorRuntimeV1>;
+  evmIdentity: Readonly<{
+    network: string;
+    chainId: number;
+    address: string;
+  }>;
   database?: DacsNodeSqliteDatabase;
 }
 
@@ -318,6 +332,18 @@ async function openDoctorActors(
         authority,
         demosIdentity: secret,
       });
+      const evmSecretPath = actorSecretPath(role, "evm-wallet");
+      if (evmSecretPath === undefined) throw new Error("doctor EVM secret unavailable");
+      const evmSecret = await loadDacsSecretV1({
+        name: role + "-doctor-evm-wallet",
+        mode: "live-demos",
+        filePath: evmSecretPath,
+      });
+      const evmIdentity = await deriveDacsEvmRoleIdentityV1({
+        config: loadRoleConfig(role),
+        role,
+        evmPrivateKey: evmSecret,
+      });
       const database = phase === "post-start"
         ? await openDacsNodeSqliteDatabase({
             databasePath: actorDatabasePath(role),
@@ -327,7 +353,13 @@ async function openDoctorActors(
             authority,
           })
         : undefined;
-      opened.push({ role, authority, runtime, ...(database === undefined ? {} : { database }) });
+      opened.push({
+        role,
+        authority,
+        runtime,
+        evmIdentity,
+        ...(database === undefined ? {} : { database }),
+      });
     }
     const buyer = opened.find((actor) => actor.role === "buyer");
     const seller = opened.find((actor) => actor.role === "seller");
@@ -606,22 +638,53 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
       : async () => {
           const facilitatorUrl = configuredX402FacilitatorUrl();
+          const evmRpcUrl = configuredEvmRpcUrl();
           if (facilitatorUrl === undefined) return blocked("x402-facilitator-url-missing");
+          if (evmRpcUrl === undefined) return blocked("x402-evm-rpc-url-missing");
           try {
             const rail = await selectedRail();
             const resource = rail.network.kind === "x402-resource"
               ? new URL(rail.network.resourceBaseUrl) : undefined;
             const facilitator = new URL(facilitatorUrl);
-            return resource !== undefined && resource.protocol === "https:" &&
-                facilitator.protocol === "https:" && facilitator.username === "" &&
-                facilitator.password === "" && facilitator.search === "" &&
-                facilitator.hash === ""
-              ? pass({ resourceOrigin: resource.origin, facilitatorOrigin: facilitator.origin })
-              : fail("x402-endpoint-policy-invalid");
+            const rpc = new URL(evmRpcUrl);
+            if (resource === undefined || resource.protocol !== "https:" ||
+                facilitator.protocol !== "https:" || facilitator.username !== "" ||
+                facilitator.password !== "" || facilitator.search !== "" ||
+                facilitator.hash !== "" ||
+                rpc.protocol !== "https:" || rpc.username !== "" || rpc.password !== "") {
+              return fail("x402-endpoint-policy-invalid");
+            }
+            const reader = await createViemX402BuyerEvmReadClient({
+              rpcUrl: evmRpcUrl,
+              chainId: actors.buyer.evmIdentity.chainId,
+            });
+            const [head, supported] = await Promise.all([
+              reader.getFinalityHead(),
+              new HTTPFacilitatorClient({ url: facilitatorUrl }).getSupported(),
+            ]);
+            const finality = head as { chainId?: unknown };
+            return finality !== null && typeof finality === "object" &&
+                finality.chainId === actors.buyer.evmIdentity.chainId && supported !== null
+              ? pass({
+                  resourceOrigin: resource.origin,
+                  facilitatorOrigin: facilitator.origin,
+                  chainId: actors.buyer.evmIdentity.chainId,
+                })
+              : fail("x402-endpoint-capability-mismatch");
           } catch { return fail("x402-endpoint-resolution-failed"); }
         },
-    "x402.payer-binding": unavailable,
-    "x402.payee-binding": unavailable,
+    "x402.payer-binding": actors === undefined ? actorUnavailable : () =>
+      actors.buyer.evmIdentity.network === loadRoleConfig("buyer").rail.requestedNetwork &&
+        /^0x[0-9A-Fa-f]{40}$/.test(actors.buyer.evmIdentity.address)
+        ? pass({ payer: actors.buyer.evmIdentity.address.toLowerCase() })
+        : fail("x402-payer-binding-mismatch"),
+    "x402.payee-binding": actors === undefined ? actorUnavailable : () =>
+      actors.seller.evmIdentity.network === loadRoleConfig("seller").rail.requestedNetwork &&
+        /^0x[0-9A-Fa-f]{40}$/.test(actors.seller.evmIdentity.address) &&
+        actors.seller.evmIdentity.address.toLowerCase() !==
+          actors.buyer.evmIdentity.address.toLowerCase()
+        ? pass({ payee: actors.seller.evmIdentity.address.toLowerCase() })
+        : fail("x402-payee-binding-mismatch"),
     "x402.asset-balance": unavailable,
     "x402.gas-balance": unavailable,
     "x402.service-limit": () => pass({
@@ -1146,6 +1209,7 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
   DACS_X402_RAIL_ID: \${DACS_X402_RAIL_ID:-x402:default}
   DACS_X402_FACILITATOR_URL: \${DACS_X402_FACILITATOR_URL:-}
+  DACS_EVM_RPC_URL: \${DACS_EVM_RPC_URL:-}
   DACS_X402_NETWORK: \${DACS_X402_NETWORK:-eip155:84532}
   DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-USDC}
   DACS_MAX_SERVICE_AMOUNT: \${DACS_MAX_SERVICE_AMOUNT:-1}
@@ -1229,6 +1293,7 @@ DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
 DACS_RAIL_STEWARD_AUTHORITY=
 DACS_X402_RAIL_ID=x402:default
 DACS_X402_FACILITATOR_URL=
+DACS_EVM_RPC_URL=
 DACS_X402_NETWORK=eip155:84532
 DACS_MAX_SERVICE_ASSET=USDC
 DACS_MAX_SERVICE_AMOUNT=1
