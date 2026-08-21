@@ -14,6 +14,7 @@ import type {
   AnchorResolution,
   AnchorWriteOnceOptions,
   DemosWriteJournal,
+  OwnedAnchorScan,
   ResolvedIdentity,
 } from "@kynesyslabs/dacs/substrate";
 
@@ -60,6 +61,7 @@ export interface DacsDemosAdapterV1 {
     name: string,
     expectedOwner: string,
   ): Promise<AnchorResolution>;
+  scanOwnAnchorsByNamePrefix(prefix: string): Promise<OwnedAnchorScan>;
   anchorWriteOnce(
     name: string,
     value: object,

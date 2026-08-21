@@ -21,6 +21,8 @@ export * from "./liveCommerceGraph.js";
 export * from "./liveCommerceAssembly.js";
 export * from "./liveOrder.js";
 export * from "./listingDoctor.js";
+export * from "./listingSetup.js";
+export * from "./listingDiscovery.js";
 export * from "./messageRouter.js";
 export * from "./offline.js";
 export * from "./offlineLifecycle.js";
