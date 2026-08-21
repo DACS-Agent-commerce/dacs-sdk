@@ -65,6 +65,17 @@ this store, and every admitted request must name the database's canonical actor
 authority in its role. This is the durable store only: it does not provide an
 HTTP transport, wallet, secret loader, or role service.
 
+`createDacsBuyerPaymentEvidenceRuntimeV1()` and
+`createDacsSellerPaymentEvidenceRuntimeV1()` bind that store to an existing
+fixed-price x402 order and the authenticated role transport. The seller
+durably queues the exact SDK request, the buyer runs only the request owned by
+its current coordinator fence, and both handshake outboxes advance only after
+an authenticated `accepted` or `existing` acknowledgement. The buyer operation
+becomes final only after its Demos anchor is verified and the completion is
+acknowledged. Evidence verification, native publication and receipt
+verification remain explicit SDK adapter callbacks; the host does not replace
+those security boundaries.
+
 Live buyer and seller databases also expose `createHttpInboxStore()` and
 `createHttpOutboxStore()`. The inbox atomically retains the complete canonical
 signed envelope, authentication and identity-evidence hashes before an action
