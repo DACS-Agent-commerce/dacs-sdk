@@ -265,6 +265,68 @@ export async function createDacsSingleClaimSessionIdentityV1(input: Readonly<{
   return Object.freeze(structuredClone(bundle));
 }
 
+/**
+ * Create the role-owned live x402 identity presentation. The paying EVM key is
+ * a DACS-4 action-bearing claim, so buyer sessions carry and independently
+ * sign it; seller sessions deliberately remain single-claim and rely on the
+ * co-signed payee-bound Agreement's tier-3 destination assertion.
+ */
+export async function createDacsX402SessionIdentityV1(input: Readonly<{
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  challenge: string;
+}>): Promise<Readonly<IdentityBundle>> {
+  if (!plainObject(input) || !plainObject(input.context) ||
+      (input.context.role !== "buyer" && input.context.role !== "seller") ||
+      typeof input.challenge !== "string" || !HASH_RE.test(input.challenge)) {
+    throw new TypeError("x402 session identity input is invalid");
+  }
+  if (input.context.role === "seller") {
+    return createDacsSingleClaimSessionIdentityV1(input);
+  }
+  if (input.context.evm.role !== "buyer" ||
+      input.context.evm.runtime.network !== input.context.config.rail.requestedNetwork ||
+      input.context.evm.runtime.payerAddress.toLowerCase() !==
+        input.context.evm.address.toLowerCase()) {
+    throw new DacsSessionIdentityVetRuntimeError("session-identity-evm-authority-invalid");
+  }
+  const authority = input.context.authority;
+  if (canonicalDemosAgentPublicKey(authority) === null) {
+    throw new DacsSessionIdentityVetRuntimeError("session-identity-authority-invalid");
+  }
+  const evmClaim = `cci-xm:evm:${input.context.evm.runtime.chainId}:` +
+    input.context.evm.address;
+  const bundle: IdentityBundle = {
+    bundleVersion: "1",
+    presentedBy: authority,
+    presentedAt: input.context.database.readTime(),
+    sessionNonce: input.challenge,
+    claims: [{ ref: authority }, { ref: evmClaim }],
+    presentation: {
+      kind: "per-claim",
+      signatures: [
+        { ref: authority, signature: "pending" },
+        { ref: evmClaim, signature: "pending" },
+      ],
+    },
+  };
+  const bundleHash = identityBundleHash(bundle);
+  const [demosSignature, evmSignature] = await Promise.all([
+    input.context.demos.signComponent(
+      signedBytes("dacs-bundle-presentation:v1:", bundleHash),
+      { algorithm: "ed25519", signer: authority },
+    ),
+    input.context.evm.runtime.signIdentityPresentation(bundleHash),
+  ]);
+  if (bundle.presentation.kind !== "per-claim") throw new Error();
+  bundle.presentation.signatures[0]!.signature = demosSignature instanceof Uint8Array
+    ? Buffer.from(demosSignature).toString("base64url") : String(demosSignature);
+  bundle.presentation.signatures[1]!.signature = evmSignature;
+  if (!isIdentityBundle(bundle) || !/^0x[0-9a-fA-F]{130}$/.test(evmSignature)) {
+    throw new DacsSessionIdentityVetRuntimeError("session-identity-signature-invalid");
+  }
+  return Object.freeze(structuredClone(bundle));
+}
+
 export async function authenticateDacsSessionVetProductionV1(input: Readonly<{
   context: Readonly<DacsLiveRoleOperationContextV1>;
   jobId: string;

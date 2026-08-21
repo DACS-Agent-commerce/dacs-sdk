@@ -6,6 +6,7 @@ import {
   type X402BuyerPaymentRequirements,
   type X402BuyerPreparationAuthority,
 } from "@kynesyslabs/dacs";
+import { signedBytes } from "@kynesyslabs/dacs/crypto";
 
 import {
   DACS_NODE_LIVE_PROFILE,
@@ -34,6 +35,8 @@ export interface DacsX402BuyerEvmRuntimeV1 {
     authority: Readonly<X402BuyerPreparationAuthority>;
     expectedRequirements: Readonly<X402BuyerPaymentRequirements>;
   }>): Promise<Readonly<DacsX402BuyerEvmChallengeClient>>;
+  /** Sign only the DACS-1 presentation domain for the supplied bundle hash. */
+  signIdentityPresentation(bundleHash: string): Promise<string>;
   destroy(): void;
 }
 
@@ -220,6 +223,26 @@ export async function createDacsX402BuyerEvmRuntimeV1(
         evmPrivateKey: privateKey,
         authority: input.authority,
         expectedRequirements: input.expectedRequirements,
+      });
+    },
+    async signIdentityPresentation(bundleHash) {
+      if (destroyed || privateKey.length === 0) {
+        throw new DacsX402BuyerEvmRuntimeError("evm-runtime-destroyed");
+      }
+      if (!/^[0-9a-f]{64}$/.test(bundleHash)) {
+        throw new DacsX402BuyerEvmRuntimeError("evm-identity-hash-invalid");
+      }
+      const accounts = await import("viem/accounts").catch(() => {
+        throw new DacsX402BuyerEvmRuntimeError("viem-accounts-unavailable");
+      });
+      const account = accounts.privateKeyToAccount(privateKey);
+      if (account.address.toLowerCase() !== payerAddress.toLowerCase()) {
+        throw new DacsX402BuyerEvmRuntimeError("evm-identity-authority-mismatch");
+      }
+      return account.signMessage({
+        message: {
+          raw: signedBytes("dacs-bundle-presentation:v1:", bundleHash),
+        },
       });
     },
     destroy() {

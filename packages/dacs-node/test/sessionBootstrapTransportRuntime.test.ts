@@ -23,6 +23,7 @@ import {
   identityBundleHash,
 } from "@kynesyslabs/dacs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
@@ -99,6 +100,38 @@ function sessionIdentity(
     signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(bundle)),
     privateKey,
   ).toString("base64url");
+  return Object.freeze(structuredClone(bundle));
+}
+
+async function buyerSessionIdentity(
+  authority: string,
+  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
+  challenge: string,
+  evmPrivateKey: `0x${string}`,
+): Promise<Readonly<IdentityBundle>> {
+  const account = privateKeyToAccount(evmPrivateKey);
+  const evmClaim = `cci-xm:evm:84532:${account.address}`;
+  const bundle: IdentityBundle = {
+    bundleVersion: "1",
+    presentedBy: authority,
+    presentedAt: 1_800_000_000_000,
+    sessionNonce: challenge,
+    claims: [{ ref: authority }, { ref: evmClaim }],
+    presentation: {
+      kind: "per-claim",
+      signatures: [
+        { ref: authority, signature: "pending" },
+        { ref: evmClaim, signature: "pending" },
+      ],
+    },
+  };
+  if (bundle.presentation.kind !== "per-claim") throw new Error("identity fixture invalid");
+  const bytes = signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(bundle));
+  bundle.presentation.signatures[0]!.signature = sign(null, bytes, privateKey)
+    .toString("base64url");
+  bundle.presentation.signatures[1]!.signature = await account.signMessage({
+    message: { raw: bytes },
+  });
   return Object.freeze(structuredClone(bundle));
 }
 
@@ -191,6 +224,7 @@ function acknowledgement() {
 async function fixture() {
   const buyerKeys = generateKeyPairSync("ed25519");
   const sellerKeys = generateKeyPairSync("ed25519");
+  const buyerEvmPrivateKey = `0x${"33".repeat(32)}` as const;
   const buyer = demosAgentClaimRef(rawPublicKey(buyerKeys.publicKey));
   const seller = demosAgentClaimRef(rawPublicKey(sellerKeys.publicKey));
   const pair = createDacsFixedPriceX402OrderPairV1({
@@ -255,7 +289,7 @@ async function fixture() {
   });
   return { buyerKeys, sellerKeys, buyer, seller, pair, buyerDatabase, sellerDatabase,
     buyerRuntime, sellerRuntime, buyerOperation: operation(loadedBuyer.record),
-    sellerStore, startOrder, admitInit };
+    sellerStore, startOrder, admitInit, buyerEvmPrivateKey };
 }
 
 describe("pre-agreement session bootstrap transport", () => {
@@ -319,12 +353,41 @@ describe("pre-agreement session bootstrap transport", () => {
       bootstrapVersion: "1" as const,
       challengePayloadHash: dacsHttpPayloadHashV1(challenge),
       buyerChallenge,
-      buyerIdentity: sessionIdentity(
+      buyerIdentity: await buyerSessionIdentity(
         value.buyer, value.buyerKeys.privateKey, buyerChallenge,
+        value.buyerEvmPrivateKey,
       ),
     });
     await expect(value.buyerRuntime.publishPresentation(value.buyerOperation, presentation))
       .resolves.toBe("acknowledged");
+    const forgedBuyerIdentity = structuredClone(presentation.buyerIdentity);
+    if (forgedBuyerIdentity.presentation.kind !== "per-claim") throw new Error();
+    const evmProof = forgedBuyerIdentity.presentation.signatures[1]!;
+    evmProof.signature = `${evmProof.signature.slice(0, -1)}${
+      evmProof.signature.endsWith("0") ? "1" : "0"
+    }`;
+    const forgedPresentation = Object.freeze({
+      ...presentation,
+      buyerIdentity: forgedBuyerIdentity,
+    });
+    const forgedPresentationEnvelope = await authenticated(
+      "session-presentation",
+      forgedPresentation,
+      {
+        sender: value.buyer,
+        audience: value.seller,
+        privateKey: value.buyerKeys.privateKey,
+        role: "buyer",
+        nonceByte: 30,
+      },
+    );
+    await expect(value.sellerRuntime.handleMessage(
+      forgedPresentationEnvelope,
+      sellerInbound,
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reasonCode: "session-message-binding-invalid",
+    });
     const presentationEnvelope = await authenticated("session-presentation", presentation, {
       sender: value.buyer,
       audience: value.seller,

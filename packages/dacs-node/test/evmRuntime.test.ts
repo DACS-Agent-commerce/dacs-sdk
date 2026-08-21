@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { verifyMessage } from "viem";
+import { signedBytes } from "@kynesyslabs/dacs/crypto";
 
 import {
   DACS_NODE_LIVE_PROFILE,
@@ -92,10 +94,23 @@ describe("buyer EVM runtime", () => {
       expectedRequirements,
     });
     expect(client.address.toLowerCase()).toBe(runtime.payerAddress.toLowerCase());
+    const bundleHash = "e".repeat(64);
+    const identitySignature = await runtime.signIdentityPresentation(bundleHash);
+    await expect(verifyMessage({
+      address: runtime.payerAddress as `0x${string}`,
+      message: {
+        raw: signedBytes("dacs-bundle-presentation:v1:", bundleHash),
+      },
+      signature: identitySignature as `0x${string}`,
+    })).resolves.toBe(true);
+    await expect(runtime.signIdentityPresentation("not-a-hash"))
+      .rejects.toMatchObject({ reasonCode: "evm-identity-hash-invalid" });
 
     runtime.destroy();
     expect(runtime.destroyed).toBe(true);
     await expect(runtime.createChallengeClient({ authority, expectedRequirements }))
+      .rejects.toMatchObject({ reasonCode: "evm-runtime-destroyed" });
+    await expect(runtime.signIdentityPresentation(bundleHash))
       .rejects.toMatchObject({ reasonCode: "evm-runtime-destroyed" });
   });
 

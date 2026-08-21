@@ -11,9 +11,11 @@ import {
   type FixedPriceX402TrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
 import { rawPublicKey } from "@kynesyslabs/dacs/crypto";
+import { signedBytes } from "@kynesyslabs/dacs/crypto";
 import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
 import { sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
@@ -219,12 +221,29 @@ async function fixture() {
   }
   const buyerSend = vi.fn(async () => acknowledgement());
   const sellerSend = vi.fn(async () => acknowledgement());
+  const buyerEvm = privateKeyToAccount(`0x${"33".repeat(32)}`);
   const buyerContext = {
     role: "buyer",
     authority: buyer,
     peerAuthority: seller,
     database: buyerDatabase,
     demos: demos("buyer", buyer, buyerKeys.privateKey),
+    config: { rail: { requestedNetwork: "eip155:84532" } },
+    evm: {
+      role: "buyer",
+      address: buyerEvm.address,
+      runtime: {
+        network: "eip155:84532",
+        chainId: 84532,
+        payerAddress: buyerEvm.address,
+        signIdentityPresentation: vi.fn(async (bundleHash: string) =>
+          buyerEvm.signMessage({
+            message: {
+              raw: signedBytes("dacs-bundle-presentation:v1:", bundleHash),
+            },
+          })),
+      },
+    },
     sendMessage: buyerSend,
   } as never;
   const sellerContext = {
@@ -233,6 +252,7 @@ async function fixture() {
     peerAuthority: buyer,
     database: sellerDatabase,
     demos: demos("seller", seller, sellerKeys.privateKey),
+    config: { rail: { requestedNetwork: "eip155:84532" } },
     sendMessage: sellerSend,
   } as never;
   const buyerTransport = createDacsBuyerSessionBootstrapTransportRuntimeV1(buyerContext);
@@ -365,6 +385,17 @@ describe("session bootstrap agreement tracks", () => {
       value.buyerContext,
       value.buyerOperation,
     );
+    expect(buyerFacts.buyerIdentity.claims).toEqual([
+      { ref: value.buyer },
+      { ref: expect.stringMatching(/^cci-xm:evm:84532:0x[0-9a-fA-F]{40}$/) },
+    ]);
+    expect(buyerFacts.buyerIdentity.presentation).toMatchObject({
+      kind: "per-claim",
+      signatures: [{ ref: value.buyer }, {
+        ref: expect.stringMatching(/^cci-xm:evm:84532:/),
+        signature: expect.stringMatching(/^0x[0-9a-fA-F]{130}$/),
+      }],
+    });
     expect(buyerFacts.buyerVetRecord.signature.signer).toBe(value.seller);
     expect(buyerFacts.sellerVetRecord.signature.signer).toBe(value.buyer);
     expect(buyerFacts.buyerVetReceipt.nativeAddress)

@@ -354,26 +354,49 @@ function signatureBytes(value: unknown): Uint8Array | undefined {
   }
 }
 
-function sessionIdentityValid(
+async function sessionIdentityValid(
   value: DacsSessionChallengePayloadV1["sellerIdentity"] |
     DacsSessionPresentationPayloadV1["buyerIdentity"],
   authority: string,
   challenge: string,
-): boolean {
+  partyRole: "buyer" | "seller",
+  network: string,
+): Promise<boolean> {
   const key = canonicalDemosAgentPublicKey(authority);
   if (key === null || value.sessionNonce !== challenge ||
       !sameCanonicalClaimIdentity(value.presentedBy, authority) ||
-      value.claims.length !== 1 ||
+      value.claims.length !== (partyRole === "buyer" ? 2 : 1) ||
       !sameCanonicalClaimIdentity(value.claims[0]?.ref, authority) ||
       value.presentation.kind !== "per-claim" ||
-      value.presentation.signatures.length !== 1 ||
+      value.presentation.signatures.length !== value.claims.length ||
       !sameCanonicalClaimIdentity(value.presentation.signatures[0]?.ref, authority)) return false;
   const signature = signatureBytes(value.presentation.signatures[0]?.signature);
-  return signature !== undefined && ed25519Verify(
-    signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(value)),
+  const bytes = signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(value));
+  if (signature === undefined || !ed25519Verify(
+    bytes,
     signature,
     publicKeyFromRaw(key),
-  );
+  )) return false;
+  if (partyRole === "seller") return true;
+  const chain = /^eip155:([1-9][0-9]*)$/.exec(network)?.[1];
+  const claim = value.claims[1]?.ref;
+  const proof = value.presentation.signatures[1];
+  const match = typeof claim === "string"
+    ? /^cci-xm:evm:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/.exec(claim)
+    : null;
+  if (chain === undefined || match === null || match[1] !== chain ||
+      proof === undefined || proof.ref !== claim ||
+      !/^0x[0-9a-fA-F]{130}$/.test(proof.signature)) return false;
+  try {
+    const { verifyMessage } = await import("viem");
+    return await verifyMessage({
+      address: match[2] as `0x${string}`,
+      message: { raw: bytes },
+      signature: proof.signature as `0x${string}`,
+    });
+  } catch {
+    return false;
+  }
 }
 
 function vetSignatureValid(
@@ -393,12 +416,12 @@ function vetSignatureValid(
   );
 }
 
-function outboundSemantics(
+async function outboundSemantics(
   kind: BootstrapKind,
   payload: Readonly<BootstrapPayload>,
   context: Readonly<DacsLiveRoleOperationContextV1>,
   operation: Readonly<FixedPriceX402TrackOperationInput>,
-): void {
+): Promise<void> {
   const order = operation.order;
   if (kind === "init") {
     const init = payload as DacsSessionInitPayloadV1;
@@ -418,8 +441,8 @@ function outboundSemantics(
     if (init === undefined || !validateDacsHttpSessionChallengePayloadV1(challenge) ||
         challenge.initPayloadHash !== dacsHttpPayloadHashV1(init) ||
         challenge.sellerChallenge !== init.sellerChallenge ||
-        !sessionIdentityValid(challenge.sellerIdentity, order.seller,
-          challenge.sellerChallenge)) {
+        !await sessionIdentityValid(challenge.sellerIdentity, order.seller,
+          challenge.sellerChallenge, "seller", order.protocol.rail.network)) {
       throw new DacsSessionBootstrapTransportError("session-challenge-binding-mismatch");
     }
     reserveChallenge(context, order, challenge.buyerChallenge);
@@ -432,8 +455,8 @@ function outboundSemantics(
     if (challenge === undefined || !validateDacsHttpSessionPresentationPayloadV1(presentation) ||
         presentation.challengePayloadHash !== dacsHttpPayloadHashV1(challenge) ||
         presentation.buyerChallenge !== challenge.buyerChallenge ||
-        !sessionIdentityValid(presentation.buyerIdentity, order.buyer,
-          presentation.buyerChallenge)) {
+        !await sessionIdentityValid(presentation.buyerIdentity, order.buyer,
+          presentation.buyerChallenge, "buyer", order.protocol.rail.network)) {
       throw new DacsSessionBootstrapTransportError("session-presentation-binding-mismatch");
     }
     return;
@@ -476,7 +499,7 @@ async function publish(
   if (!operationBound(operation, context.role)) {
     throw new DacsSessionBootstrapTransportError("session-operation-binding-mismatch");
   }
-  outboundSemantics(kind, payload, context, operation);
+  await outboundSemantics(kind, payload, context, operation);
   retain(context, operation.order, kind, payload);
   await operation.fence.assertCurrent();
   try {
@@ -539,7 +562,7 @@ export function createDacsBuyerSessionBootstrapTransportRuntimeV1(
         bindingHash: order.bindingHash, localBindingHash: order.localBindingHash,
       }) }) as unknown as FixedPriceX402TrackOperationInput;
       try {
-        outboundSemantics(kind, authenticated.envelope.payload, context, operation);
+        await outboundSemantics(kind, authenticated.envelope.payload, context, operation);
         const retained = retain(context, order, kind, authenticated.envelope.payload,
           authenticated);
         return Object.freeze({ disposition: "accepted" as const });
@@ -649,7 +672,7 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1(
         bindingHash: order.bindingHash, localBindingHash: order.localBindingHash,
       }) }) as unknown as FixedPriceX402TrackOperationInput;
       try {
-        outboundSemantics("presentation", authenticated.envelope.payload, context, operation);
+        await outboundSemantics("presentation", authenticated.envelope.payload, context, operation);
         const retained = retain(context, order, "presentation",
           authenticated.envelope.payload, authenticated);
         return Object.freeze({ disposition: "accepted" as const });
