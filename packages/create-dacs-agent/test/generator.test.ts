@@ -284,6 +284,7 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("inspectDacsDemosBalanceHeadroomV1");
     expect(combined).toContain("inspectDacsX402AssetBalanceV1");
     expect(combined).toContain("inspectDacsX402GasBalanceV1");
+    expect(combined).toContain("inspectDacsX402ListingDraftV1");
     expect(combined).toContain("readDacsRoleServiceStatusesV1");
     expect(combined).toContain("createDacsLiveRoleRuntimeV1");
     expect(combined).toContain("createDacsUnavailableLiveCommerceGraphV1");

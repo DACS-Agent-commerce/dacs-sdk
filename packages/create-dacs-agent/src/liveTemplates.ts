@@ -199,6 +199,11 @@ export function configuredEvmRpcUrl(): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
+export function configuredListingDraftFile(): string | undefined {
+  const value = process.env.DACS_LISTING_DRAFT_FILE;
+  return value === undefined || value.trim() === "" ? undefined : resolve(value);
+}
+
 export function actorDatabasePath(role: GeneratedLiveRole): string {
   return resolve(loadRoleConfig(role).dataDirectory, "actor.sqlite");
 }
@@ -228,7 +233,7 @@ export function serviceEndpoint(role: "buyer" | "seller"): string {
 `;
 
 const DOCTOR_SOURCE = `import { constants } from "node:fs";
-import { access, lstat, readFile, statfs } from "node:fs/promises";
+import { access, lstat, open, readFile, statfs } from "node:fs/promises";
 import { spawn } from "node:child_process";
 
 import {
@@ -257,6 +262,7 @@ import {
   inspectDacsNodePackageIntegrityV1,
   inspectDacsX402AssetBalanceV1,
   inspectDacsX402GasBalanceV1,
+  inspectDacsX402ListingDraftV1,
   loadDacsSecretV1,
   runDacsRoleTransportDiagnosticV1,
   runDacsLiveDoctorV1,
@@ -280,6 +286,7 @@ import {
   actorSecretPaths,
   configuredAuthority,
   configuredEvmRpcUrl,
+  configuredListingDraftFile,
   configuredRailStewardAuthority,
   configuredX402FacilitatorUrl,
   configuredX402RailId,
@@ -312,6 +319,24 @@ function fail(reasonCode: string) {
 }
 function blocked(reasonCode: string) {
   return Object.freeze({ status: "blocked" as const, reasonCode });
+}
+
+async function readPublicJsonFile(path: string): Promise<unknown> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const observed = await file.stat();
+    if (!observed.isFile() || observed.size <= 0 || observed.size > 1_048_576) {
+      throw new Error("public JSON file is unsafe");
+    }
+    const bytes = await file.readFile();
+    try {
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } finally {
+      bytes.fill(0);
+    }
+  } finally {
+    await file.close();
+  }
 }
 
 async function openDoctorActors(
@@ -672,7 +697,27 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
       actors.buyer.runtime.authority === actors.buyer.authority &&
         actors.seller.runtime.authority === actors.seller.authority
         ? pass({ actorCount: 2 }) : fail("demos-wallet-identity-mismatch"),
-    "demos.listing-candidate": unavailable,
+    "demos.listing-candidate": actors === undefined ? actorUnavailable : async () => {
+      const path = configuredListingDraftFile();
+      const endpoint = loadRoleConfig("seller").publicBaseUrl;
+      if (path === undefined) return blocked("listing-candidate-file-missing");
+      if (endpoint === undefined) return blocked("seller-public-endpoint-missing");
+      try {
+        const draft = await readPublicJsonFile(path);
+        const rail = await selectedRail();
+        return inspectDacsX402ListingDraftV1({
+          draft,
+          sellerAuthority: actors.seller.authority,
+          sellerPublicKey: actors.seller.runtime.publicKey,
+          sellerPublicEndpoint: endpoint,
+          sellerPayee: actors.seller.evmIdentity.address,
+          network: loadRoleConfig("seller").rail.requestedNetwork as \`eip155:\${number}\`,
+          rail,
+          maximumServiceAmount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
+          now: Date.now(),
+        });
+      } catch { return fail("listing-candidate-read-or-authority-invalid"); }
+    },
     "demos.listing-existing": unavailable,
     "demos.engagement-endpoint-shape": () => {
       try { new URL(serviceEndpoint("buyer")); new URL(serviceEndpoint("seller")); return pass(); }
@@ -1341,12 +1386,14 @@ services:
       DACS_BUYER_DATA_DIRECTORY: /var/lib/dacs
       DACS_BUYER_DEMOS_SECRET_FILE: /run/secrets/demos-identity
       DACS_BUYER_EVM_SECRET_FILE: /run/secrets/evm-wallet
+      DACS_LISTING_DRAFT_FILE: /run/dacs/listing-draft.json
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
     volumes:
       - \${DACS_BUYER_DATA_DIRECTORY:?set DACS_BUYER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_BUYER_DEMOS_SECRET_FILE:?set DACS_BUYER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_BUYER_EVM_SECRET_FILE:?set DACS_BUYER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
+      - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro
   seller:
     <<: *dacs-role
     environment:
@@ -1356,12 +1403,14 @@ services:
       DACS_SELLER_DATA_DIRECTORY: /var/lib/dacs
       DACS_SELLER_DEMOS_SECRET_FILE: /run/secrets/demos-identity
       DACS_SELLER_EVM_SECRET_FILE: /run/secrets/evm-wallet
+      DACS_LISTING_DRAFT_FILE: /run/dacs/listing-draft.json
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
     volumes:
       - \${DACS_SELLER_DATA_DIRECTORY:?set DACS_SELLER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_SELLER_DEMOS_SECRET_FILE:?set DACS_SELLER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_SELLER_EVM_SECRET_FILE:?set DACS_SELLER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
+      - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro
 `;
 
 function envExample(options: LiveProjectTemplateOptions): string {
@@ -1377,6 +1426,7 @@ DACS_RAIL_STEWARD_AUTHORITY=
 DACS_X402_RAIL_ID=x402:default
 DACS_X402_FACILITATOR_URL=
 DACS_EVM_RPC_URL=
+DACS_LISTING_DRAFT_FILE=./listing-draft.json
 DACS_X402_NETWORK=eip155:84532
 DACS_MAX_SERVICE_ASSET=USDC
 DACS_MAX_SERVICE_AMOUNT=1
