@@ -24,6 +24,12 @@ import {
   type DacsDemosAdapterV1,
 } from "./demosRuntime.js";
 import {
+  createDacsX402BuyerEvmRuntimeV1,
+  deriveDacsEvmRoleIdentityV1,
+  type DacsEvmRoleIdentityV1,
+  type DacsX402BuyerEvmRuntimeV1,
+} from "./evmRuntime.js";
+import {
   createDacsRoleReadinessLatchV1,
   type DacsRoleReadinessLatchV1,
 } from "./readiness.js";
@@ -56,6 +62,8 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   peerEndpoint: string;
   workerId: string;
   demosIdentityFilePath: string;
+  evmPrivateKeyFilePath: string;
+  evmRpcUrl: string;
   databasePath?: string;
   authorizeJob?: (input: Readonly<{
     jobId: string;
@@ -101,6 +109,7 @@ export interface DacsLiveRoleOperationContextV1
   readonly demos: Readonly<DacsDemosActorRuntimeV1>;
   readonly sessionStore: FencedSessionStoreV2;
   readonly commerceStores: Readonly<DacsLiveRoleCommerceStoresV1>;
+  readonly evm: Readonly<DacsLiveRoleEvmRuntimeV1>;
 }
 
 export type DacsLiveRoleCommerceStoresV1 =
@@ -114,11 +123,20 @@ export type DacsLiveRoleCommerceStoresV1 =
       sellerReceipts: SellerReceiptStore;
     }>;
 
+export type DacsLiveRoleEvmRuntimeV1 =
+  | Readonly<{
+      role: "buyer";
+      runtime: Readonly<DacsX402BuyerEvmRuntimeV1>;
+      address: string;
+    }>
+  | Readonly<{
+      role: "seller";
+      identity: Readonly<DacsEvmRoleIdentityV1>;
+      address: string;
+    }>;
+
 export interface DacsLiveRoleInboundOperationContextV1
-  extends DacsLiveRoleInboundContextV1 {
-  readonly database: DacsNodeSqliteDatabase;
-  readonly demos: Readonly<DacsDemosActorRuntimeV1>;
-}
+  extends DacsLiveRoleInboundContextV1, DacsLiveRoleOperationContextV1 {}
 
 export type DacsLiveRoleRuntimeApplicationRequestHandlerV1 = (
   request: Parameters<DacsLiveRoleApplicationRequestHandlerV1>[0],
@@ -138,6 +156,7 @@ export interface DacsLiveRoleRuntimeV1 {
   readonly demos: Readonly<DacsDemosActorRuntimeV1>;
   readonly sessionStore: FencedSessionStoreV2;
   readonly commerceStores: Readonly<DacsLiveRoleCommerceStoresV1>;
+  readonly evm: Readonly<DacsLiveRoleEvmRuntimeV1>;
   readonly readinessLatch: Readonly<DacsRoleReadinessLatchV1>;
   readonly service: Readonly<DacsLiveRoleServiceV1>;
   start(): Promise<void>;
@@ -186,6 +205,7 @@ export async function createDacsLiveRoleRuntimeV1(
       !nonEmpty(rawOptions.authority) || !nonEmpty(rawOptions.peerAuthority) ||
       !nonEmpty(rawOptions.peerEndpoint) || !nonEmpty(rawOptions.workerId) ||
       !nonEmpty(rawOptions.demosIdentityFilePath) ||
+      !nonEmpty(rawOptions.evmPrivateKeyFilePath) || !nonEmpty(rawOptions.evmRpcUrl) ||
       (rawOptions.databasePath !== undefined && !nonEmpty(rawOptions.databasePath)) ||
       typeof rawOptions.createOperations !== "function" ||
       typeof rawOptions.validatePayload !== "function" ||
@@ -282,6 +302,33 @@ export async function createDacsLiveRoleRuntimeV1(
     database.close();
     throw new DacsLiveRoleRuntimeError("role-commerce-stores-open-failed");
   }
+  let evm: Readonly<DacsLiveRoleEvmRuntimeV1>;
+  try {
+    const evmPrivateKey = await loadDacsSecretV1({
+      name: `${role}-evm-private-key`,
+      mode: "live-demos",
+      filePath: resolve(rawOptions.evmPrivateKeyFilePath),
+    });
+    if (role === "buyer") {
+      const runtime = await createDacsX402BuyerEvmRuntimeV1({
+        config,
+        evmPrivateKey,
+        rpcUrl: rawOptions.evmRpcUrl,
+        finalityTag: "finalized",
+      });
+      evm = Object.freeze({ role, runtime, address: runtime.payerAddress });
+    } else {
+      const identity = await deriveDacsEvmRoleIdentityV1({
+        config,
+        role,
+        evmPrivateKey,
+      });
+      evm = Object.freeze({ role, identity, address: identity.address });
+    }
+  } catch {
+    database.close();
+    throw new DacsLiveRoleRuntimeError("role-evm-runtime-open-failed");
+  }
   let service: Readonly<DacsLiveRoleServiceV1>;
   try {
     const resolveIdentity = createDacsDemosIdentityResolverV1({
@@ -300,6 +347,7 @@ export async function createDacsLiveRoleRuntimeV1(
       demos,
       sessionStore,
       commerceStores,
+      evm,
     });
     const inboundOperationContext = (
       context: Readonly<DacsLiveRoleInboundContextV1>,
@@ -310,6 +358,7 @@ export async function createDacsLiveRoleRuntimeV1(
       demos,
       sessionStore,
       commerceStores,
+      evm,
     });
     let establishedOperationContext: Readonly<DacsLiveRoleOperationContextV1> | undefined;
     const serviceOptions: DacsLiveRoleServiceOptionsV1 = {
@@ -359,6 +408,7 @@ export async function createDacsLiveRoleRuntimeV1(
       ? createDacsBuyerServiceV1(serviceOptions)
       : createDacsSellerServiceV1(serviceOptions);
   } catch {
+    if (evm.role === "buyer") evm.runtime.destroy();
     database.close();
     throw new DacsLiveRoleRuntimeError("role-service-create-failed");
   }
@@ -376,6 +426,7 @@ export async function createDacsLiveRoleRuntimeV1(
         failed = true;
       } finally {
         closed = true;
+        if (evm.role === "buyer") evm.runtime.destroy();
         try {
           database!.close();
         } catch {
@@ -396,6 +447,7 @@ export async function createDacsLiveRoleRuntimeV1(
     demos,
     sessionStore,
     commerceStores,
+    evm,
     readinessLatch,
     service,
     async start() {

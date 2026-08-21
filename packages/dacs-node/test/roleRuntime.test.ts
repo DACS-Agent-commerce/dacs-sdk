@@ -26,6 +26,7 @@ const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
 const PEER_PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(PEER_SEED));
 const AUTHORITY = demosAgentClaimRef(PUBLIC_KEY);
 const PEER_AUTHORITY = demosAgentClaimRef(PEER_PUBLIC_KEY);
+const EVM_PRIVATE_KEY = `0x${"33".repeat(32)}`;
 
 describe("complete role-owned live runtime", () => {
   const roots: string[] = [];
@@ -88,7 +89,9 @@ describe("complete role-owned live runtime", () => {
   it("opens one wallet/store/service authority and gates HTTP on its signed latch", async () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");
+    const evmSecretPath = join(directory, "evm.secret");
     writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    writeFileSync(evmSecretPath, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
     const operationContexts: unknown[] = [];
     const applicationContexts: unknown[] = [];
     const runtime = await createDacsLiveRoleRuntimeV1({
@@ -99,6 +102,8 @@ describe("complete role-owned live runtime", () => {
       peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
       workerId: "buyer-test-worker",
       demosIdentityFilePath: secretPath,
+      evmPrivateKeyFilePath: evmSecretPath,
+      evmRpcUrl: "http://127.0.0.1:8545",
       createDemosAdapter: async () => adapter(),
       createOperations: (context) => {
         operationContexts.push(context);
@@ -130,8 +135,14 @@ describe("complete role-owned live runtime", () => {
       demos: runtime.demos,
       sessionStore: runtime.sessionStore,
       commerceStores: runtime.commerceStores,
+      evm: runtime.evm,
     });
     expect(runtime.commerceStores).toMatchObject({ role: "buyer" });
+    expect(runtime.evm).toMatchObject({
+      role: "buyer",
+      address: expect.stringMatching(/^0x[0-9A-Fa-f]{40}$/),
+    });
+    expect(runtime.evm.role === "buyer" && runtime.evm.runtime.destroyed).toBe(false);
     if (runtime.commerceStores.role === "buyer") {
       await expect(runtime.commerceStores.x402Settlement.load("missing"))
         .resolves.toMatchObject({ status: "absent" });
@@ -156,6 +167,7 @@ describe("complete role-owned live runtime", () => {
       coordinator: runtime.service.coordinator,
     });
     await runtime.stop();
+    expect(runtime.evm.role === "buyer" && runtime.evm.runtime.destroyed).toBe(true);
     await expect(runtime.start()).rejects.toMatchObject({ reasonCode: "role-runtime-closed" });
 
     const restarted = await createDacsLiveRoleRuntimeV1({
@@ -166,6 +178,8 @@ describe("complete role-owned live runtime", () => {
       peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
       workerId: "buyer-restarted-worker",
       demosIdentityFilePath: secretPath,
+      evmPrivateKeyFilePath: evmSecretPath,
+      evmRpcUrl: "http://127.0.0.1:8545",
       createDemosAdapter: async () => adapter(),
       createOperations: () => Object.freeze({}),
       validatePayload: () => Object.freeze({
@@ -188,7 +202,9 @@ describe("complete role-owned live runtime", () => {
   it("destroys loaded identity material and closes the database on adapter failure", async () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");
+    const evmSecretPath = join(directory, "evm.secret");
     writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    writeFileSync(evmSecretPath, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
     const close = vi.fn();
     await expect(createDacsLiveRoleRuntimeV1({
       config: config(directory),
@@ -198,6 +214,8 @@ describe("complete role-owned live runtime", () => {
       peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
       workerId: "buyer-test-worker",
       demosIdentityFilePath: secretPath,
+      evmPrivateKeyFilePath: evmSecretPath,
+      evmRpcUrl: "http://127.0.0.1:8545",
       openDatabase: async () => ({ close } as never),
       createDemosAdapter: async () => { throw new Error("private provider failure"); },
       createOperations: () => Object.freeze({}),
@@ -212,8 +230,12 @@ describe("complete role-owned live runtime", () => {
     const sellerDirectory = root();
     const buyerSecret = join(buyerDirectory, "demos.secret");
     const sellerSecret = join(sellerDirectory, "demos.secret");
+    const buyerEvmSecret = join(buyerDirectory, "evm.secret");
+    const sellerEvmSecret = join(sellerDirectory, "evm.secret");
     writeFileSync(buyerSecret, "buyer-test-secret\n", { mode: 0o600 });
     writeFileSync(sellerSecret, "seller-test-secret\n", { mode: 0o600 });
+    writeFileSync(buyerEvmSecret, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
+    writeFileSync(sellerEvmSecret, `0x${"44".repeat(32)}\n`, { mode: 0o600 });
     const buyerApplication = vi.fn(() => Object.freeze({ disposition: "accepted" as const }));
     const sellerApplication = vi.fn(() => Object.freeze({ disposition: "accepted" as const }));
     const buyer = await createDacsLiveRoleRuntimeV1({
@@ -224,6 +246,8 @@ describe("complete role-owned live runtime", () => {
       peerEndpoint: "http://127.0.0.1:39998/dacs-transport/v1/messages",
       workerId: "buyer-service-worker",
       demosIdentityFilePath: buyerSecret,
+      evmPrivateKeyFilePath: buyerEvmSecret,
+      evmRpcUrl: "http://127.0.0.1:8545",
       createDemosAdapter: async () => adapter(PUBLIC_KEY, PRIVATE_KEY),
       createOperations: () => Object.freeze({}),
       validatePayload: () => Object.freeze({ status: "valid" as const }),
@@ -238,6 +262,8 @@ describe("complete role-owned live runtime", () => {
       peerEndpoint: "http://127.0.0.1:39997/dacs-transport/v1/messages",
       workerId: "seller-service-worker",
       demosIdentityFilePath: sellerSecret,
+      evmPrivateKeyFilePath: sellerEvmSecret,
+      evmRpcUrl: "http://127.0.0.1:8545",
       createDemosAdapter: async () => adapter(PEER_PUBLIC_KEY, PEER_PRIVATE_KEY),
       createOperations: () => Object.freeze({}),
       validatePayload: () => Object.freeze({ status: "valid" as const }),

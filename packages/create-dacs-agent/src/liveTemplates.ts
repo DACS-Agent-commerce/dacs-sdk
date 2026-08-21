@@ -1021,6 +1021,7 @@ const SERVICE_SOURCE = `import {
 
 import {
   actorSecretPath,
+  configuredEvmRpcUrl,
   configuredAuthority,
   loadRoleConfig,
   serviceEndpoint,
@@ -1046,9 +1047,12 @@ async function main(): Promise<void> {
   const authority = configuredAuthority(role);
   const peerAuthority = configuredAuthority(peerRole);
   const demosIdentityFilePath = actorSecretPath(role, "demos-identity");
+  const evmPrivateKeyFilePath = actorSecretPath(role, "evm-wallet");
+  const evmRpcUrl = configuredEvmRpcUrl();
   if (authority === undefined || peerAuthority === undefined ||
-      demosIdentityFilePath === undefined) {
-    throw new Error("role authority or Demos identity file is unavailable");
+      demosIdentityFilePath === undefined || evmPrivateKeyFilePath === undefined ||
+      evmRpcUrl === undefined) {
+    throw new Error("role authority, Demos identity, EVM identity or RPC is unavailable");
   }
   const ownEndpoint = new URL(serviceEndpoint(role));
   const peerEndpoint = new URL("/dacs-transport/v1/messages", serviceEndpoint(peerRole));
@@ -1070,6 +1074,8 @@ async function main(): Promise<void> {
     peerEndpoint: peerEndpoint.toString(),
     workerId: role + "-" + String(process.pid),
     demosIdentityFilePath,
+    evmPrivateKeyFilePath,
+    evmRpcUrl,
     // Commerce operations remain fail-closed until setup/buy has resolved the
     // exact Listing, rail authority and role-owned SDK operation graph.
     createOperations: () => Object.freeze({}),
