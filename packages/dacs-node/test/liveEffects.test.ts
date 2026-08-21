@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DACS_NODE_LIVE_PROFILE,
   createDacsLiveEffectTrackV1,
+  DacsLiveEffectInputControlError,
   type DacsLiveEffectAdapterV1,
 } from "../src/index.js";
 import {
@@ -141,6 +142,41 @@ describe("durable live irreversible-effect track", () => {
     for (const directory of roots.splice(0)) {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("retries read-only preparation without admitting an irreversible intent", async () => {
+    const opened = await database();
+    const buildInput = vi.fn()
+      .mockRejectedValueOnce(new DacsLiveEffectInputControlError(
+        "pending-retry",
+        "x402-challenge-unavailable",
+      ))
+      .mockResolvedValueOnce({ jobId: JOB_ID, amount: "1" });
+    const execute = vi.fn(async () => ({
+      reference: "evm:payment:prepared",
+      authenticationHash: "9".repeat(64),
+    }));
+    const operation = createDacsLiveEffectTrackV1({
+      database: opened,
+      kind: "payment",
+      role: "buyer",
+      track: "payment",
+      workerId: "effect-worker",
+      retryDelayMs: 1,
+      buildInput,
+      adapter: { execute, reconcile: vi.fn() },
+      projectResult: (result) => result,
+    });
+
+    await expect(operation(operationInput())).resolves.toMatchObject({
+      status: "pending-retry",
+      reasonCode: "x402-challenge-unavailable",
+    });
+    expect(opened.loadEffect("payment", EFFECT_ID)).toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 3));
+    await expect(operation(operationInput())).resolves.toMatchObject({ status: "final" });
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it("performs once and replays the retained completion without executing again", async () => {

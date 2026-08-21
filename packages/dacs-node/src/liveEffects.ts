@@ -108,6 +108,30 @@ export class DacsLiveEffectError extends Error {
   }
 }
 
+/**
+ * A safe pre-intent outcome. It may be used only while resolving read-only
+ * prerequisites or preparing deterministic bytes, before an effect intent is
+ * admitted. Once submission might have happened, adapters must use the normal
+ * reconciliation path instead.
+ */
+export class DacsLiveEffectInputControlError extends Error {
+  override readonly name = "DacsLiveEffectInputControlError";
+
+  constructor(
+    readonly status: "pending-retry" | "indeterminate" | "operator-action",
+    readonly reasonCode: string,
+    readonly retryAt?: number,
+  ) {
+    super(reasonCode);
+    if (!reasonCode || !REASON_CODE_RE.test(reasonCode) ||
+        (status === "operator-action" && retryAt !== undefined) ||
+        (retryAt !== undefined &&
+          (!Number.isSafeInteger(retryAt) || retryAt < 0))) {
+      throw new TypeError("live effect input control is invalid");
+    }
+  }
+}
+
 function plainDataObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   try {
@@ -352,7 +376,20 @@ export function createDacsLiveEffectTrackV1<Input, Result>(
         retained === undefined ? await buildInput(operationInput) : retained,
         "effect-input",
       ) as Readonly<Input>;
-    } catch {
+    } catch (error) {
+      if (error instanceof DacsLiveEffectInputControlError) {
+        if (error.status === "operator-action") {
+          return Object.freeze({
+            status: "operator-action" as const,
+            reasonCode: error.reasonCode,
+          });
+        }
+        return pending(
+          error.status,
+          error.reasonCode,
+          error.retryAt ?? retryAt(database, retryDelayMs),
+        );
+      }
       return Object.freeze({
         status: "operator-action" as const,
         reasonCode: "effect-input-invalid",
