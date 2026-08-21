@@ -6,6 +6,10 @@ import {
   type SettlementIdempotencyStore,
   type SettlementReconcile,
 } from "./idempotency.js";
+import {
+  verifyEvmTransferFinality,
+  type EvmTransferFinalityClient,
+} from "./evmTransferFinality.js";
 
 /**
  * Direct ERC-20 transfer rail (the second reference rail). Where x402 couples
@@ -27,6 +31,8 @@ export interface EvmErc20SettleParams {
   recipientEvm: string;
   /** Amount in integer base units (string). */
   amount: string;
+  /** Signed rail-descriptor confirmation requirement. */
+  finalityBlocks: number;
 }
 
 export interface EvmTransferClient {
@@ -34,8 +40,8 @@ export interface EvmTransferClient {
   address: string;
   /** Submit an ERC-20 transfer; resolves with the tx hash. */
   transfer(args: { token: string; to: string; amount: bigint }): Promise<string>;
-  /** Resolve true iff the tx mined successfully. */
-  waitForSuccess(txHash: string): Promise<boolean>;
+  /** Authenticate the exact finalized Transfer log on the negotiated chain. */
+  finalityClient: EvmTransferFinalityClient;
 }
 
 export async function evmErc20SettleCore(
@@ -51,20 +57,46 @@ export async function evmErc20SettleCore(
   if (amount <= 0n) {
     throw new DacsError(`evm-erc20: amount must be > 0 (got ${params.amount})`);
   }
+  if (!Number.isSafeInteger(params.finalityBlocks) || params.finalityBlocks <= 0) {
+    throw new DacsError("evm-erc20: finalityBlocks must be a positive safe integer");
+  }
+  const chainId = chainIdFromCaip2(params.network);
+  if (await client.finalityClient.getChainId() !== chainId) {
+    throw new DacsError(
+      "evm-erc20: RPC chain id does not match the negotiated network",
+    );
+  }
 
   const txHash = await client.transfer({
     token: params.tokenAddress,
     to: params.recipientEvm,
     amount,
   });
-  const ok = await client.waitForSuccess(txHash);
+  const observed = await verifyEvmTransferFinality({
+    chainId,
+    transactionHash: txHash,
+    tokenAddress: params.tokenAddress,
+    payerAddress: client.address,
+    payeeAddress: params.recipientEvm,
+    amount,
+    minimumConfirmations: params.finalityBlocks,
+  }, client.finalityClient);
 
   return {
-    ok,
-    txHash,
+    ok: true,
+    txHash: `0x${observed.transactionHash}`,
     chainId: params.network,
     payer: client.address,
     payee: params.recipientEvm,
+    finality: { model: "block-depth", finalityBlocks: params.finalityBlocks },
+    finalityObservedAt: observed.finalityObservedAt,
+    blockNumber: observed.blockNumber,
+    txRef: {
+      kind: "evm-event",
+      chainId: observed.chainId,
+      txHash: observed.transactionHash,
+      logIndex: observed.logIndex,
+    },
   };
 }
 
@@ -95,15 +127,17 @@ function chainIdFromCaip2(network: string): number {
 export interface EvmErc20RailConfig {
   /** Buyer EVM private key (`0x…`). */
   evmPrivateKey: string;
-  /** JSON-RPC URL for the target chain. */
+  /** Trusted JSON-RPC URL for the independent target-chain read. */
   rpcUrl: string;
   /** CAIP-2 network, used to derive the chain id. */
   network: string;
+  /** Signed descriptor confirmation depth; must be positive. */
+  finalityBlocks: number;
 }
 
 export interface EvmErc20Rail {
   readonly address: string;
-  settle(params: EvmErc20SettleParams): Promise<SettleResult>;
+  settle(params: Omit<EvmErc20SettleParams, "finalityBlocks">): Promise<SettleResult>;
 }
 
 /**
@@ -113,6 +147,20 @@ export interface EvmErc20Rail {
 export async function createEvmErc20Rail(
   config: EvmErc20RailConfig,
 ): Promise<EvmErc20Rail> {
+  if (!Number.isSafeInteger(config.finalityBlocks) || config.finalityBlocks <= 0) {
+    throw new DacsError(
+      "createEvmErc20Rail requires a positive finalityBlocks value",
+    );
+  }
+  let rpcUrl: URL;
+  try {
+    rpcUrl = new URL(config.rpcUrl);
+  } catch {
+    throw new DacsError("createEvmErc20Rail requires an absolute RPC URL");
+  }
+  if (rpcUrl.protocol !== "https:" && rpcUrl.protocol !== "http:") {
+    throw new DacsError("createEvmErc20Rail RPC URL must use HTTP(S)");
+  }
   const viem = await import("viem").catch(() => {
     throw new DacsError(
       "createEvmErc20Rail requires the optional peer viem",
@@ -146,17 +194,26 @@ export async function createEvmErc20Rail(
         functionName: "transfer",
         args: [to as `0x${string}`, amount],
       }),
-    waitForSuccess: async (txHash) => {
-      const receipt = await pub.waitForTransactionReceipt({
-        hash: txHash as `0x${string}`,
-      });
-      return receipt.status === "success";
+    finalityClient: {
+      getChainId: () => pub.getChainId(),
+      waitForTransactionReceipt: ({ hash, confirmations }) =>
+        pub.waitForTransactionReceipt({
+          hash: hash as `0x${string}`,
+          confirmations,
+        }),
+      getTransactionReceipt: ({ hash }) => pub.getTransactionReceipt({
+        hash: hash as `0x${string}`,
+      }),
+      getBlock: ({ blockNumber }) => pub.getBlock({ blockNumber }),
     },
   };
 
   return {
     address: account.address,
-    settle: (params) => evmErc20SettleCore(params, client),
+    settle: (params) => evmErc20SettleCore({
+      ...params,
+      finalityBlocks: config.finalityBlocks,
+    }, client),
   };
 }
 

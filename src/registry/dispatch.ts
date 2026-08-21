@@ -46,7 +46,7 @@ export interface RailDispatchOptions {
    * should use `payment`; this EVM-shaped projection is not required by DEM.
    */
   paywall?: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
-  /** JSON-RPC URL — required by the direct-transfer (evm-erc20) rail. */
+  /** Trusted EVM JSON-RPC URL — required by x402 and evm-erc20 finality. */
   rpcUrl?: string;
   /** Demos node RPC URL — required by pay-dem and pay-d402. */
   demosRpc?: string;
@@ -419,6 +419,11 @@ function captureDispatchOptions(
         "evmPrivateKey",
         "x402 EVM private key",
       ),
+      rpcUrl: optionalDispatchValue<string>(
+        opts,
+        "rpcUrl",
+        "x402 EVM RPC URL",
+      ),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
   }
@@ -553,6 +558,20 @@ function requiredEvmPrivateKey(
   return value;
 }
 
+function requiredFinalityBlocks(descriptor: Readonly<{
+  railId: string;
+  railType: string;
+  parameters: Record<string, unknown>;
+}>): number {
+  const value = descriptor.parameters["finalityBlocks"];
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new DacsError(
+      `${descriptor.railType} rail "${descriptor.railId}" descriptor requires a positive parameters.finalityBlocks`,
+    );
+  }
+  return value as number;
+}
+
 export async function settleFromRail(
   descriptor: AuthenticatedRailDefinition,
   opts: RailDispatchOptions,
@@ -626,6 +645,9 @@ export async function settleFromRail(
         "x402",
         "recipient",
       );
+      if (!capturedOptions.rpcUrl) {
+        throw new DacsError("x402 rail requires opts.rpcUrl for independent finality");
+      }
       const rail = await createX402Rail({
         evmPrivateKey: requiredEvmPrivateKey(
           capturedOptions.evmPrivateKey,
@@ -633,6 +655,8 @@ export async function settleFromRail(
         ),
         fetchImpl: capturedOptions.fetchImpl,
         requireSessionBinding: true,
+        rpcUrl: capturedOptions.rpcUrl,
+        finalityBlocks: requiredFinalityBlocks(capturedDescriptor),
       });
       return bindDescriptorRequest(descriptorIdentity, x402Settle(rail, {
         url,
@@ -673,6 +697,7 @@ export async function settleFromRail(
         ),
         rpcUrl: capturedOptions.rpcUrl,
         network,
+        finalityBlocks: requiredFinalityBlocks(capturedDescriptor),
       });
       return bindDescriptorRequest(descriptorIdentity, evmErc20Settle(rail, {
         tokenAddress: capturedDescriptor.asset.contract,

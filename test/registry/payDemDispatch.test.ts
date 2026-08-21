@@ -94,7 +94,7 @@ function x402Definition(): UnsignedRailDefinition {
       resourceBaseUrl: "https://seller.example",
     },
     phaseHandler: "pay-x402",
-    parameters: { authorization: "eip-3009" },
+    parameters: { authorization: "eip-3009", finalityBlocks: 1 },
     availability: "live",
     governance: demDefinition().governance,
   };
@@ -632,6 +632,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         network: "eip155:84532",
         recipient: "0x2222222222222222222222222222222222222222",
       },
+      rpcUrl: "https://rpc.example",
       fetchImpl: firstFetch,
     };
 
@@ -794,6 +795,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
           network: "eip155:84532",
           recipient: "0x2222222222222222222222222222222222222222",
         },
+        rpcUrl: "https://rpc.example",
       },
       create: mocks.createX402Rail,
       bridge: mocks.x402Settle,

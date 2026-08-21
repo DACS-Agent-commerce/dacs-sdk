@@ -952,6 +952,45 @@ function isLegacyMvpListingScope(v: Record<string, unknown>): boolean {
   return isLegacyMvpListing(scope);
 }
 
+function exactListingPin(value: unknown): ListingPin | null {
+  if (!isExactJsonRecord(value)) return null;
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 3 ||
+    !Object.prototype.hasOwnProperty.call(value, "listingId") ||
+    !Object.prototype.hasOwnProperty.call(value, "version") ||
+    !Object.prototype.hasOwnProperty.call(value, "contentHash") ||
+    typeof value.listingId !== "string" ||
+    value.listingId.length === 0 ||
+    !Number.isSafeInteger(value.version) ||
+    (value.version as number) < 1 ||
+    typeof value.contentHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.contentHash)
+  ) {
+    return null;
+  }
+  return {
+    listingId: value.listingId,
+    version: value.version as number,
+    contentHash: value.contentHash,
+  };
+}
+
+/**
+ * Current runSession compatibility bundles still use legacy artifact refs, but
+ * their buyer-signed Agreement pins the normative Listing tuple explicitly.
+ * Recognize that narrow bridge without allowing an unpinned legacy bundle to
+ * upgrade a legacy Listing read into a normative one.
+ */
+function legacyAgreementNormativeListingPin(
+  agreement: Record<string, unknown> | null,
+): ListingPin | null {
+  if (!agreement) return null;
+  const scope = stripSignature(agreement);
+  if (!isLegacyMvpAgreementDocument(scope)) return null;
+  return exactListingPin(scope.dacsSdkListingPin);
+}
+
 function isAgreementCommitPhase(kind: string): boolean {
   return kind === "commit" || kind.startsWith("commit-");
 }
@@ -1450,8 +1489,10 @@ export async function verifyBundleCore(
       "dacs-4-evidence",
       ev,
       isLegacyMvpAttestationRef(ev)
-        ? isLegacyMvpSettlementEvidence
-        : isSettlementEvidenceScope,
+        ? (value) =>
+             isLegacyMvpSettlementEvidence(value) ||
+             isSettlementEvidenceScope(value)
+         : isSettlementEvidenceScope,
     );
     if (
       evidence.check.verdict === "ok" &&
@@ -1600,16 +1641,18 @@ export async function verifyBundleCore(
     if (checked.check.verdict === "ok" && checked.value) {
       const scope = stripSignature(checked.value) as Record<string, unknown>;
       const rater = bundle.parties.find(
-        (party) => party.primaryClaim === scope.rater,
+        (party) => typeof scope.rater === "string" &&
+          sameCanonicalClaimIdentity(party.primaryClaim, scope.rater),
       );
       const target = bundle.parties.find(
-        (party) => party.primaryClaim === scope.target,
+        (party) => typeof scope.target === "string" &&
+          sameCanonicalClaimIdentity(party.primaryClaim, scope.target),
       );
       if (
         scope.jobId !== bundle.jobId ||
         !rater ||
         !target ||
-        rater.primaryClaim === target.primaryClaim ||
+        sameCanonicalClaimIdentity(rater.primaryClaim, target.primaryClaim) ||
         target.role !== scope.targetRole ||
         (target.role !== "buyer" && target.role !== "seller")
       ) {
@@ -1624,10 +1667,13 @@ export async function verifyBundleCore(
   // pre-commit abort with no Agreement. Only an explicit early-MVP bundle may
   // follow the historical Agreement address / kind+job resolver.
   const listingId = String(bundle.listingRef.listingId);
+  const legacyNormativeListingPin = isNormativeGraph
+    ? null
+    : legacyAgreementNormativeListingPin(agreementArtifact);
   const agreementListingPin =
     agreementArtifact && isAgreementArtifact(agreementArtifact)
       ? agreementArtifact.listingRef
-      : null;
+      : legacyNormativeListingPin;
   const legacyListingAddr =
     !isNormativeGraph &&
     agreementArtifact &&
@@ -1640,6 +1686,8 @@ export async function verifyBundleCore(
     (agreementListingPin.listingId === bundle.listingRef.listingId &&
       agreementListingPin.version === bundle.listingRef.version &&
       agreementListingPin.contentHash === bundle.listingRef.contentHash);
+  const listingUsesNormativeScope =
+    isNormativeGraph || legacyNormativeListingPin !== null;
   const canResolveListing = isNormativeGraph
     ? Boolean(deps.resolveListingRef)
     : Boolean(legacyListingAddr || deps.resolveRef);
@@ -1685,12 +1733,12 @@ export async function verifyBundleCore(
       "dacs-1-listing",
       listingId,
       bundle.listingRef.contentHash,
-      isNormativeGraph
+      listingUsesNormativeScope
         ? isNormativeListingScope
         : isLegacyMvpListingScope,
       listing,
     );
-    if (listingCheck.verdict === "ok" && listing && isNormativeGraph) {
+    if (listingCheck.verdict === "ok" && listing && listingUsesNormativeScope) {
       const listingScope = stripSignature(listing) as {
         listingId?: unknown;
         seller?: { identity?: { presentedBy?: unknown } };
@@ -1701,7 +1749,10 @@ export async function verifyBundleCore(
       if (
         listingScope.listingId !== listingId ||
         (sellerClaim !== undefined &&
-          listingScope.seller?.identity?.presentedBy !== sellerClaim)
+          !sameCanonicalClaimIdentity(
+            listingScope.seller?.identity?.presentedBy,
+            sellerClaim,
+          ))
       ) {
         listingCheck.verdict = "invalid-binding";
       }
