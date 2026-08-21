@@ -3,6 +3,7 @@ import { resolve, sep } from "node:path";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type { ProtocolAnchorReceipt } from "@kynesyslabs/dacs";
+import type { ComponentSigner } from "@kynesyslabs/dacs/artifacts";
 import {
   canonicalDemosAgentPublicKey,
   demosAgentClaimRef,
@@ -96,6 +97,8 @@ export interface DacsDemosActorRuntimeV1 {
   readonly publicKey: Uint8Array;
   readonly adapter: DacsDemosAdapterV1;
   readonly signTransportEnvelope: DacsHttpEnvelopeSigner;
+  /** Role-bound component signer; rejects substituted signer or algorithm context. */
+  readonly signComponent: ComponentSigner;
   networkInfo(): Promise<unknown>;
   addressNonce(): Promise<number>;
   addressInfo(): Promise<unknown>;
@@ -276,6 +279,17 @@ export async function createDacsDemosActorRuntimeV1(
     }
     return Uint8Array.from(signature);
   };
+  const signComponent: ComponentSigner = async (bytes, context) => {
+    if (context.algorithm !== "ed25519" ||
+        !sameCanonicalClaimIdentity(context.signer, authority)) {
+      throw new DacsDemosRuntimeError("demos-component-signature-authority-mismatch");
+    }
+    const signature = await adapter.sign(Uint8Array.from(bytes));
+    if (!(signature instanceof Uint8Array) || signature.byteLength !== 64) {
+      throw new DacsDemosRuntimeError("demos-component-signature-invalid");
+    }
+    return Uint8Array.from(signature);
+  };
   return Object.freeze({
     role: rawOptions.role,
     authority,
@@ -285,6 +299,7 @@ export async function createDacsDemosActorRuntimeV1(
     },
     adapter,
     signTransportEnvelope,
+    signComponent,
     networkInfo: () => adapter.raw.getNetworkInfo(),
     addressNonce: () => adapter.raw.getAddressNonce(walletAddress),
     addressInfo: () => adapter.raw.getAddressInfo(walletAddress),

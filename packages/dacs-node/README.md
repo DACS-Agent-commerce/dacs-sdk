@@ -185,6 +185,10 @@ private to the buyer process and is destroyed on shutdown; the seller runtime
 retains only its derived public EVM identity. Production operation and payload
 callbacks receive these already-admitted actor-local resources, so generated
 projects do not reopen stores or copy host implementation code.
+The admitted Demos runtime also exposes a role-bound component signer. It signs
+only `ed25519` contexts naming the runtime's exact canonical authority, so
+agreement, evidence, delivery and bundle builders can share the wallet without
+receiving its secret or substituting another signer identity.
 
 `createDacsFixedPriceX402OperationSetV1()` admits only the complete set of
 role-owned coordinator tracks. Core coordinators continue to support partial

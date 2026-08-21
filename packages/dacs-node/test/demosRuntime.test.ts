@@ -123,6 +123,16 @@ describe("role-owned Demos runtime", () => {
     await expect(opened.addressNonce()).resolves.toBe(7);
     await expect(opened.signTransportEnvelope(new Uint8Array([1, 2, 3])))
       .resolves.toHaveLength(64);
+    await expect(opened.signComponent(new Uint8Array([4, 5, 6]), {
+      algorithm: "ed25519",
+      signer: AUTHORITY,
+    })).resolves.toHaveLength(64);
+    await expect(opened.signComponent(new Uint8Array([4, 5, 6]), {
+      algorithm: "ed25519",
+      signer: PEER,
+    })).rejects.toMatchObject({
+      reasonCode: "demos-component-signature-authority-mismatch",
+    });
     expect(mock.connect).toHaveBeenCalledTimes(1);
   });
 
