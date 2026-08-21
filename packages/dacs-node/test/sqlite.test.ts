@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1064,7 +1065,7 @@ describe("DACS Node SQLite durability foundation", () => {
       .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
   });
 
-  it("authenticates every intermediate effect-history entry with a rolling chain", async () => {
+  it("integrity-checks every intermediate effect-history entry with a rolling chain", async () => {
     const databasePath = join(temporaryRoot(), "history-chain.sqlite");
     const database = await open(databasePath);
     const effectId = "payment:history-chain";
@@ -1615,7 +1616,7 @@ describe("DACS Node SQLite durability foundation", () => {
       .toBe("actor-audit-final");
   });
 
-  it("filters and limits runnable orders from authenticated track projections", async () => {
+  it("filters and limits runnable orders from integrity-checked track projections", async () => {
     const databasePath = join(temporaryRoot(), "buyer.sqlite");
     const database = await open(databasePath, {
       mode: "live-demos",
@@ -2699,6 +2700,34 @@ describe("DACS Node SQLite durability foundation", () => {
       status: "blocked",
       reasonCode: "database-path-symlink",
     });
+  });
+
+  it("rejects unsafe pre-existing POSIX write permissions without repair", async () => {
+    if (process.platform === "win32" || typeof process.getuid !== "function") return;
+    const root = temporaryRoot();
+    const databasePath = join(root, "buyer.sqlite");
+    writeFileSync(databasePath, "");
+    chmodSync(databasePath, 0o622);
+
+    expect(inspectDacsNodeSqliteLocation(databasePath)).toMatchObject({
+      status: "blocked",
+      reasonCode: "database-path-permissions-unsafe",
+    });
+    await expect(openDacsNodeSqliteDatabase(options(databasePath))).rejects.toMatchObject({
+      reasonCode: "database-path-permissions-unsafe",
+    });
+    expect(statSync(databasePath).mode & 0o777).toBe(0o622);
+
+    chmodSync(databasePath, 0o600);
+    chmodSync(root, 0o722);
+    expect(inspectDacsNodeSqliteLocation(databasePath)).toMatchObject({
+      status: "blocked",
+      reasonCode: "database-directory-permissions-unsafe",
+    });
+    await expect(openDacsNodeSqliteDatabase(options(databasePath))).rejects.toMatchObject({
+      reasonCode: "database-directory-permissions-unsafe",
+    });
+    expect(statSync(root).mode & 0o777).toBe(0o722);
   });
 
   it("atomically reserves identities and detects cross-connection conflicts", async () => {

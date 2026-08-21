@@ -188,6 +188,10 @@ export type DacsNodeSqliteLocationInspection = Readonly<
         | "database-path-malformed"
         | "database-path-not-filesystem"
         | "database-path-symlink"
+        | "database-path-owner-mismatch"
+        | "database-path-permissions-unsafe"
+        | "database-directory-owner-mismatch"
+        | "database-directory-permissions-unsafe"
         | "network-filesystem"
         | "consumer-sync-directory"
         | "filesystem-inspection-failed";
@@ -195,6 +199,11 @@ export type DacsNodeSqliteLocationInspection = Readonly<
       filesystemMagic?: number;
     }
 >;
+
+type DacsNodeSqliteLocationBlockReason = Extract<
+  DacsNodeSqliteLocationInspection,
+  { status: "blocked" }
+>["reasonCode"];
 
 export interface DacsNodeSqliteReservation {
   kind: DacsNodeSqliteReservationKind;
@@ -1938,7 +1947,7 @@ function migrateCoordinatorV4Rows(
         "database-logical-corruption",
         decoded.status === "corrupt"
           ? decoded.reason
-          : "Legacy SQLite coordinator record cannot be authenticated for migration",
+          : "Legacy SQLite coordinator record cannot be integrity-validated for migration",
       );
     }
     const recordJson = canonicalize(decoded.record);
@@ -2174,6 +2183,27 @@ function containsSyncDirectory(value: string): boolean {
       /^(?:dropbox|google ?drive|icloud drive|onedrive)(?:[ (\-]|$)/u.test(component));
 }
 
+function unsafeLocalPathReason(
+  path: string,
+  kind: "database" | "directory",
+): DacsNodeSqliteLocationBlockReason | undefined {
+  if (process.platform === "win32" || typeof process.getuid !== "function") {
+    return undefined;
+  }
+  const retained = lstatSync(path);
+  if (retained.uid !== process.getuid()) {
+    return kind === "database"
+      ? "database-path-owner-mismatch"
+      : "database-directory-owner-mismatch";
+  }
+  if ((retained.mode & 0o022) !== 0) {
+    return kind === "database"
+      ? "database-path-permissions-unsafe"
+      : "database-directory-permissions-unsafe";
+  }
+  return undefined;
+}
+
 export function inspectDacsNodeSqliteLocation(
   databasePath: string,
 ): DacsNodeSqliteLocationInspection {
@@ -2201,14 +2231,29 @@ export function inspectDacsNodeSqliteLocation(
     };
   }
   try {
-    if (existsSync(absolutePath) && lstatSync(absolutePath).isSymbolicLink()) {
+    if (existsSync(absolutePath)) {
+      const databaseStat = lstatSync(absolutePath);
+      if (databaseStat.isSymbolicLink()) {
+        return {
+          status: "blocked",
+          databasePath: absolutePath,
+          reasonCode: "database-path-symlink",
+        };
+      }
+      const reasonCode = unsafeLocalPathReason(absolutePath, "database");
+      if (reasonCode !== undefined) {
+        return { status: "blocked", databasePath: absolutePath, reasonCode };
+      }
+    }
+    const existing = nearestExistingPath(dirname(absolutePath));
+    const directoryReason = unsafeLocalPathReason(existing, "directory");
+    if (directoryReason !== undefined) {
       return {
         status: "blocked",
         databasePath: absolutePath,
-        reasonCode: "database-path-symlink",
+        reasonCode: directoryReason,
       };
     }
-    const existing = nearestExistingPath(dirname(absolutePath));
     const physicalDirectory = realpathSync(existing);
     if (containsSyncDirectory(physicalDirectory)) {
       return {
@@ -2412,7 +2457,7 @@ function effectFromRow(row: EffectRow): DacsNodeSqliteEffectRecord {
   if (row.identity_hash !== effectIdentityHash(identity)) {
     throw new DacsNodeSqliteError(
       "database-logical-corruption",
-      "SQLite effect identity differs from its authenticated binding",
+      "SQLite effect identity differs from its integrity binding",
     );
   }
   const active = row.state === "active";
@@ -4171,7 +4216,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         if (!coordinatorTrackProjectionMatches(database, profile, decoded.record)) {
           return {
             status: "corrupt",
-            reason: "coordinator track projection differs from its authenticated record",
+            reason: "coordinator track projection differs from its integrity-checked record",
           };
         }
       }
@@ -4384,7 +4429,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                   coordinatorTrackRunnable(profile, decoded.record, track, now))) {
               throw new DacsNodeSqliteError(
                 "coordinator-record-corrupt",
-                "Coordinator runnable projection differs from its authenticated record",
+                "Coordinator runnable projection differs from its integrity-checked record",
               );
             }
             return decoded.record;
@@ -4392,7 +4437,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           if (!coordinatorTrackProjectionSetMatches(database, profile, eligible)) {
             throw new DacsNodeSqliteError(
               "coordinator-record-corrupt",
-              "Coordinator runnable projection differs from its authenticated record",
+              "Coordinator runnable projection differs from its integrity-checked record",
             );
           }
           const selected = eligible.slice(0, input.limit);
@@ -5770,7 +5815,9 @@ function verifyEffectHistory(
       if (canonicalize(details) !== row.detail_json ||
           sha256Hex(row.detail_json) !== row.detail_hash) throw new Error();
     } catch {
-      effectLogicalCorruption("SQLite effect history detail is not canonical authenticated data");
+      effectLogicalCorruption(
+        "SQLite effect history detail is not canonical integrity-checked data",
+      );
     }
     const expectedPrevious = last?.entry_hash ?? null;
     if (row.previous_entry_hash !== expectedPrevious ||
@@ -5790,7 +5837,7 @@ function verifyEffectHistory(
       if (row.event !== "intent-created" || row.generation !== 0 ||
           row.occurred_at !== effect.createdAt ||
           canonicalize(details) !== canonicalize(effectIdentityDetails(effect))) {
-        effectLogicalCorruption("SQLite effect history has no authentic origin event");
+        effectLogicalCorruption("SQLite effect history has no integrity-bound origin event");
       }
       last = row;
       continue;
@@ -6037,7 +6084,7 @@ function verifyLogicalRows(
         if (orphan !== undefined) {
           throw new DacsNodeSqliteError(
             "database-logical-corruption",
-            "SQLite coordinator track projection has no authenticated record",
+            "SQLite coordinator track projection has no integrity-checked record",
           );
         }
       }
@@ -6075,7 +6122,7 @@ function verifyLogicalRows(
       if (orphan !== undefined) {
         throw new DacsNodeSqliteError(
           "database-logical-corruption",
-          "SQLite payment-evidence reservation has no authenticated record",
+          "SQLite payment-evidence reservation has no integrity-checked record",
         );
       }
       const orphanHistory = database.prepare(`
@@ -6088,7 +6135,7 @@ function verifyLogicalRows(
       if (orphanHistory !== undefined) {
         throw new DacsNodeSqliteError(
           "database-logical-corruption",
-          "SQLite payment-evidence history has no authenticated record",
+          "SQLite payment-evidence history has no integrity-checked record",
         );
       }
     }

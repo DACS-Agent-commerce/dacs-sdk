@@ -31,8 +31,11 @@ authority, SDK version, and Standard revision. The SDK and Standard revisions
 are derived from the installed SDK and selected commerce profile; callers
 cannot attach arbitrary compatibility labels. It enables WAL with `FULL`
 synchronous durability, uses database-authoritative lease time, and rejects
-known NFS/SMB/shared or consumer-sync locations. It is a local, single-host
-store and must not be placed on a shared volume.
+known NFS/SMB/shared or consumer-sync locations. Before opening an existing
+database, it also rejects a different POSIX owner or group/world-writable mode
+on either the file or its nearest existing parent directory. It never silently
+repairs unsafe pre-existing permissions. It is a local, single-host store and
+must not be placed on a shared volume.
 
 Filesystem-type inspection is implemented for Linux and macOS and additionally
 rejects both Windows UNC spellings (`\\server\share` and `//server/share`) on
@@ -46,7 +49,7 @@ The same explicit SQLite surface provides live-x402 and offline coordinator
 stores. Each store is fixed to the database actor role and commerce profile,
 persists the exact SDK-validated order record with an integrity hash plus a
 validated query projection, and uses transactional generation-fenced track
-leases. Startup authenticates the application ID, exact schema and migration
+leases. Startup validates the application ID, exact schema and migration
 history, actor binding, and logical records before it creates a local backup or
 runs a forward migration; newer, foreign, corrupt, and cross-profile databases
 fail closed without being modified.
@@ -225,17 +228,17 @@ use public SDK validators plus independently retained session facts. Returning
 
 The public v2, v3, and v4 schemas are immutable migration inputs. A v2 database
 contains only the coordinator order table and its runnable index; the
-authenticated track projection is created and backfilled by v3. Schema v4
-authenticates the role-local SDK job pointers with `localBindingHash` in both
+integrity-checked track projection is created and backfilled by v3. Schema v4
+integrity-binds the role-local SDK job pointers with `localBindingHash` in both
 the canonical order and every projection row. It also keeps live DACS-5
 terminal attribution (`faultedParty` or `withdrawnBy`) distinct from the
 offline-only `simulated-*` outcome and error vocabulary.
-Schema v5 adds payment-evidence handshake records, authenticated runnable
+Schema v5 adds payment-evidence handshake records, integrity-checked runnable
 projections, and their scope-local replay reservations. Migration from v4 is
 preceded by a validated, self-contained backup just like every older supported
 schema transition. Schema v6 adds the HTTP inbox, outbox, monotonic clock and
-their authenticated transition histories; migration from v5 likewise requires
-a validated pre-write backup.
+their integrity-checked transition histories; migration from v5 likewise
+requires a validated pre-write backup.
 
 A legacy database is migrated only when its persisted SDK and Standard
 revision exactly equal the supported runtime bindings. Compatible v3 offline
@@ -256,7 +259,7 @@ absence proof permits another perform attempt with the original effect and
 idempotency identities.
 
 Each effect's kind, effect ID, optional job ID, binding hash, input hash, and
-idempotency key are bound into both its row identity hash and its authenticated
+idempotency key are bound into both its row identity hash and its integrity-bound
 origin event. Every canonical history detail is retained behind a rolling entry
 hash, and the complete chain is checked on startup and again before load, claim,
 or recovery. A legacy or altered row without that proof fails closed; the host

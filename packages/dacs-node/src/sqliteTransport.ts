@@ -323,7 +323,10 @@ function inboxStored(
       throw new Error();
     }
   } catch {
-    throw context.error("http-inbox-record-corrupt", "HTTP inbox record is not canonical authenticated data");
+    throw context.error(
+      "http-inbox-record-corrupt",
+      "HTTP inbox record is not canonical integrity-checked data",
+    );
   }
   const authenticated = authenticatedEnvelope(context, value.authenticated, context.authority);
   const envelope = authenticated.envelope;
@@ -364,7 +367,10 @@ function outboxStored(
       throw new Error();
     }
   } catch {
-    throw context.error("http-outbox-record-corrupt", "HTTP outbox record is not canonical authenticated data");
+    throw context.error(
+      "http-outbox-record-corrupt",
+      "HTTP outbox record is not canonical integrity-checked data",
+    );
   }
   const verified = verifyDacsHttpEnvelopeSelfSignatureV1(value.envelope);
   const senderRole = requiredSenderRole(value.envelope);
