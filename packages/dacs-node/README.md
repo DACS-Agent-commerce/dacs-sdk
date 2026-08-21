@@ -8,8 +8,9 @@ interfaces, byte-exact authenticated HTTP envelope, and the local SQLite
 durability foundation. The SQLite surface includes the actor-bound coordinator
 and payment-evidence handshake stores plus durable authenticated HTTP inbox and
 outbox records. It also provides the bounded HTTP listener and durable client
-that operate those stores. Role services and live deployment remain separate
-stacked implementation units.
+that operate those stores, authority-separated live role services, and strict
+role-local secret loading. Generated deployment remains a separate stacked
+implementation unit.
 
 ```ts
 import {
@@ -126,6 +127,42 @@ const client = createDacsHttpMessageClientV1({
   workerId: processWorkerId,
 });
 ```
+
+`createDacsBuyerServiceV1()` and `createDacsSellerServiceV1()` compose the
+public fixed-price x402 coordinator with one actor-bound SQLite database, one
+configured peer authority, the authenticated HTTP transport, and a bounded
+restart worker. They reject cross-role databases and same-authority peers,
+resume pending inbox and coordinator work at startup, and never overlap worker
+cycles. The host supplies the verified Demos identity resolver, typed SDK
+payload validator, actor signer, coordinator operations, durable inbound
+handler, and a freshness-bounded readiness provider.
+
+Each service exposes the message endpoint plus `GET /health`, `GET /ready`, and
+`GET /status`. Liveness is process-local. Readiness fails closed until the host
+provider has latched all live dependencies. Status contains only role, installed
+SDK/Standard versions, queue state, a bounded runnable-session count, and worker
+state; it does not expose actor authorities, balances, nonces, secrets, raw
+authorization, or private provider URLs. Coordinator operation callbacks still
+own public-SDK validation and adapter reconciliation. The service does not turn
+an unsafe irreversible-effect adapter into an exactly-once adapter.
+
+`loadDacsSecretV1()` applies file, injected OS-secret-manager, then explicit
+environment-variable precedence. Live files must be absolute, regular,
+non-symlink, owned by the process user, and mode `0600`; opening uses
+`O_NOFOLLOW` plus an inode/device recheck. Environment fallback is returned with
+the `secret-environment-source` warning and is intended only for controlled CI.
+Loaded secrets serialize only as redacted metadata, return detached byte copies,
+support bounded text redaction, and can zero their retained byte buffer with
+`destroy()`. JavaScript strings and copies previously returned to the caller
+cannot be reliably zeroed, so callers must keep their lifetime short and never
+log them.
+
+`installDacsRoleServiceProcessHooksV1()` provides idempotent SIGINT/SIGTERM
+shutdown wiring for generated entrypoints. It removes both listeners when the
+first shutdown starts, awaits the service's durable stop path exactly once, and
+returns only a bounded stopped/failed result. It deliberately does not call
+`process.exit()` or make restart-policy decisions; Docker/systemd remains the
+process supervisor.
 
 The transport callbacks are intentionally host-owned. The identity resolver
 must dereference and verify Demos identity material; the payload validator must

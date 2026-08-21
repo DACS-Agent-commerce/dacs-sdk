@@ -1,0 +1,478 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import {
+  ed25519Sign,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  rawPublicKey,
+} from "@kynesyslabs/dacs/crypto";
+import {
+  FIXED_PRICE_X402_COMMERCE_PROFILE,
+  FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+  FIXED_PRICE_X402_STANDARD_REVISION,
+  type FixedPriceX402CoordinatorRole,
+  type FixedPriceX402Operations,
+  type FixedPriceX402OrderInput,
+  type FixedPriceX402ProtocolBinding,
+  type FixedPriceX402TrackOperation,
+} from "@kynesyslabs/dacs/commerce";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  DACS_NODE_LIVE_PROFILE,
+  createDacsBuyerServiceV1,
+  createDacsSellerServiceV1,
+  type DacsAgentConfig,
+} from "../src/index.js";
+import {
+  DacsLiveRoleServiceError,
+  type DacsLiveRoleServiceOptionsV1,
+  type DacsLiveRoleServiceV1,
+} from "../src/service.js";
+import {
+  openDacsNodeSqliteDatabase,
+  type DacsNodeSqliteDatabase,
+} from "../src/sqlite.js";
+import {
+  createDacsHttpEnvelopeV1,
+  type DacsHttpIdentityResolverV1,
+} from "../src/transport/envelope.js";
+
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+const BUYER_SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+const SELLER_SEED = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
+const OTHER_SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 33);
+const BUYER_KEY = privateKeyFromSeed(BUYER_SEED);
+const SELLER_KEY = privateKeyFromSeed(SELLER_SEED);
+const OTHER_KEY = privateKeyFromSeed(OTHER_SEED);
+const BUYER_PUBLIC = rawPublicKey(publicKeyFromSeed(BUYER_SEED));
+const SELLER_PUBLIC = rawPublicKey(publicKeyFromSeed(SELLER_SEED));
+const OTHER_PUBLIC = rawPublicKey(publicKeyFromSeed(OTHER_SEED));
+const BUYER = `did:demos:agent:${Buffer.from(BUYER_PUBLIC).toString("hex")}`;
+const SELLER = `did:demos:agent:${Buffer.from(SELLER_PUBLIC).toString("hex")}`;
+const OTHER = `did:demos:agent:${Buffer.from(OTHER_PUBLIC).toString("hex")}`;
+
+const PROTOCOL: FixedPriceX402ProtocolBinding = {
+  commerceProfile: FIXED_PRICE_X402_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+  phase: "pay-x402",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  rail: {
+    registryIndexRef: FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+    registryIndexHash: "1".repeat(64),
+    railDefinitionRef: "dacs4:rail:x402%3Adefault:2",
+    railDefinitionHash: "2".repeat(64),
+    railId: "x402:default",
+    railVersion: 2,
+    railType: "x402",
+    phaseHandler: "pay-x402",
+    network: "eip155:8453",
+    availability: "live",
+  },
+};
+
+function config(role: "buyer" | "seller"): DacsAgentConfig {
+  return {
+    mode: "live-demos",
+    profile: DACS_NODE_LIVE_PROFILE,
+    role,
+    dataDirectory: `/tmp/dacs-service-${role}`,
+    demos: { rpcUrl: "http://127.0.0.1:5350" },
+    rail: {
+      registryIndexRef: FIXED_PRICE_X402_REGISTRY_INDEX_REF,
+      requestedNetwork: "eip155:8453",
+    },
+    limits: {
+      maxServiceAmount: { asset: "USDC", amount: "1" },
+      maxSetupSpendDem: "1",
+      maxDemosNetworkFeeDem: "1",
+      maxEvmNetworkFeeEth: "0.01",
+    },
+  };
+}
+
+function identityResolver(): DacsHttpIdentityResolverV1 {
+  return async (input) => {
+    const identities = [
+      { authority: BUYER, role: "buyer" as const, publicKey: BUYER_PUBLIC, hash: "a" },
+      { authority: SELLER, role: "seller" as const, publicKey: SELLER_PUBLIC, hash: "b" },
+      { authority: OTHER, role: "buyer" as const, publicKey: OTHER_PUBLIC, hash: "c" },
+    ];
+    const identity = identities.find(({ authority }) =>
+      input.sender === authority || input.sender.startsWith(`${authority}?`));
+    if (identity === undefined) {
+      return { status: "rejected", reasonCode: "identity-unresolved" };
+    }
+    return {
+      status: "authenticated",
+      principal: identity.authority,
+      jobId: input.jobId,
+      role: identity.role,
+      publicKey: identity.publicKey,
+      evidenceHash: identity.hash.repeat(64),
+    };
+  };
+}
+
+function order(role: FixedPriceX402CoordinatorRole): FixedPriceX402OrderInput {
+  return {
+    jobId: JOB_ID,
+    buyer: BUYER,
+    seller: SELLER,
+    protocol: PROTOCOL,
+    sdkJobs: role === "buyer"
+      ? {
+          role,
+          agreement: `buyer:agreement:${JOB_ID}`,
+          payment: `buyer:payment:${JOB_ID}`,
+          paymentEvidence: `buyer:payment-evidence:${JOB_ID}`,
+          buyerReceived: `buyer:received:${JOB_ID}`,
+          audit: `buyer:audit:${JOB_ID}`,
+        }
+      : {
+          role,
+          agreement: `seller:agreement:${JOB_ID}`,
+          payment: `seller:payment:${JOB_ID}`,
+          paymentEvidence: `seller:payment-evidence:${JOB_ID}`,
+          fulfilment: `seller:fulfilment:${JOB_ID}`,
+          deliveryEvidence: `seller:delivery-evidence:${JOB_ID}`,
+          audit: `seller:audit:${JOB_ID}`,
+        },
+  };
+}
+
+const finalOperation = (track: string): FixedPriceX402TrackOperation =>
+  async ({ fence }) => {
+    await fence.assertCurrent();
+    return {
+      status: "final",
+      outcome: "success",
+      reference: `${track}:${fence.jobId}`,
+    };
+  };
+
+function operations(role: "buyer" | "seller"): FixedPriceX402Operations {
+  const common: FixedPriceX402Operations = {
+    agreement: finalOperation("agreement"),
+    payment: finalOperation("payment"),
+    "payment-evidence": finalOperation("payment-evidence"),
+    audit: finalOperation("audit"),
+  };
+  return role === "buyer"
+    ? { ...common, "buyer-received": finalOperation("buyer-received") }
+    : {
+        ...common,
+        delivery: finalOperation("delivery"),
+        "delivery-evidence": finalOperation("delivery-evidence"),
+      };
+}
+
+describe("authority-separated live role services", () => {
+  const roots: string[] = [];
+  const databases: DacsNodeSqliteDatabase[] = [];
+  const services: DacsLiveRoleServiceV1[] = [];
+
+  function root(): string {
+    const value = mkdtempSync(join(tmpdir(), "dacs-role-service-"));
+    roots.push(value);
+    return value;
+  }
+
+  async function open(
+    directory: string,
+    role: "buyer" | "seller",
+  ): Promise<DacsNodeSqliteDatabase> {
+    const database = await openDacsNodeSqliteDatabase({
+      databasePath: join(directory, `${role}.sqlite`),
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role,
+      authority: role === "buyer" ? BUYER : SELLER,
+    });
+    databases.push(database);
+    return database;
+  }
+
+  function options(
+    role: "buyer" | "seller",
+    database: DacsNodeSqliteDatabase,
+    peerEndpoint = "http://127.0.0.1:1/dacs-transport/v1/messages",
+    overrides: Partial<DacsLiveRoleServiceOptionsV1> = {},
+  ): DacsLiveRoleServiceOptionsV1 {
+    return {
+      config: config(role),
+      database,
+      workerId: `${role}-worker`,
+      peerAuthority: role === "buyer" ? SELLER : BUYER,
+      peerEndpoint,
+      resolveIdentity: identityResolver(),
+      validatePayload: async () => ({ status: "valid" }),
+      signTransportEnvelope: (bytes) =>
+        ed25519Sign(bytes, role === "buyer" ? BUYER_KEY : SELLER_KEY),
+      createOperations: () => operations(role),
+      handleMessage: async () => ({ disposition: "accepted" }),
+      workerIntervalMs: 60_000,
+      server: { hostname: "127.0.0.1", port: 0 },
+      ...overrides,
+    };
+  }
+
+  function remember(service: Readonly<DacsLiveRoleServiceV1>): DacsLiveRoleServiceV1 {
+    services.push(service);
+    return service;
+  }
+
+  afterEach(async () => {
+    for (const service of services.splice(0).reverse()) await service.stop();
+    for (const database of databases.splice(0).reverse()) database.close();
+    for (const directory of roots.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on role, database, and authority separation mismatches", async () => {
+    const buyerDatabase = await open(root(), "buyer");
+    expect(() => createDacsSellerServiceV1(options("buyer", buyerDatabase)))
+      .toThrow(/seller configuration/);
+    expect(() => createDacsBuyerServiceV1({
+      ...options("buyer", buyerDatabase),
+      peerAuthority: BUYER,
+    })).toThrow(/options are invalid/);
+    const sellerDatabase = await open(root(), "seller");
+    expect(() => createDacsBuyerServiceV1({
+      ...options("buyer", buyerDatabase),
+      database: sellerDatabase,
+    })).toThrow(/database binding/);
+  });
+
+  it("captures only closed data options without invoking accessors", async () => {
+    const database = await open(root(), "buyer");
+    const accessor = options("buyer", database) as DacsLiveRoleServiceOptionsV1;
+    const invoked = vi.fn(() => "http://127.0.0.1:1/dacs-transport/v1/messages");
+    Object.defineProperty(accessor, "peerEndpoint", {
+      enumerable: true,
+      get: invoked,
+    });
+    expect(() => createDacsBuyerServiceV1(accessor)).toThrow(/closed data objects/);
+    expect(invoked).not.toHaveBeenCalled();
+    expect(() => createDacsBuyerServiceV1({
+      ...options("buyer", database),
+      unexpectedAuthorityOverride: SELLER,
+    } as DacsLiveRoleServiceOptionsV1)).toThrow(/closed data objects/);
+  });
+
+  it("exposes sanitized liveness, readiness, and status without actor authority", async () => {
+    const database = await open(root(), "seller");
+    const service = remember(createDacsSellerServiceV1(options("seller", database, undefined, {
+      readiness: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { ready: true, checkedAt: Date.now(), reasonCodes: [] };
+      },
+    })));
+    await service.start();
+
+    const health = await fetch(new URL("/health", service.endpoint));
+    const ready = await fetch(new URL("/ready", service.endpoint));
+    const status = await fetch(new URL("/status", service.endpoint));
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ status: "healthy" });
+    expect(ready.status).toBe(200);
+    expect(await ready.json()).toMatchObject({ ready: true, reasonCodes: [] });
+    expect(status.status).toBe(200);
+    const projected = await status.json();
+    expect(projected).toMatchObject({ role: "seller", lifecycle: "running" });
+    expect(JSON.stringify(projected)).not.toContain(BUYER);
+    expect(JSON.stringify(projected)).not.toContain(SELLER);
+
+    await service.stop();
+    await expect(service.health()).resolves.toMatchObject({ status: "unhealthy" });
+  });
+
+  it("defaults readiness to fail-closed until the live adapter latches", async () => {
+    const database = await open(root(), "seller");
+    const service = remember(createDacsSellerServiceV1(options("seller", database)));
+    await service.start();
+    const response = await fetch(new URL("/ready", service.endpoint));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ready: false,
+      reasonCodes: ["service-readiness-not-latched"],
+    });
+  });
+
+  it("rejects a stale successful readiness latch", async () => {
+    const database = await open(root(), "seller");
+    const service = remember(createDacsSellerServiceV1(options("seller", database,
+      undefined, {
+        readiness: () => ({ ready: true, checkedAt: 1, reasonCodes: [] }),
+        readinessMaxAgeMs: 1_000,
+      })));
+    await service.start();
+    const response = await fetch(new URL("/ready", service.endpoint));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ready: false,
+      reasonCodes: ["service-readiness-stale"],
+    });
+  });
+
+  it("authenticates buyer-to-seller messages and admits each envelope once", async () => {
+    const directory = root();
+    const sellerDatabase = await open(directory, "seller");
+    const buyerDatabase = await open(directory, "buyer");
+    const handled = vi.fn(async () => ({ disposition: "accepted" as const }));
+    const seller = remember(createDacsSellerServiceV1(options("seller", sellerDatabase,
+      undefined, { handleMessage: handled })));
+    await seller.start();
+    const buyer = remember(createDacsBuyerServiceV1(options(
+      "buyer",
+      buyerDatabase,
+      seller.endpoint,
+    )));
+    await buyer.start();
+
+    const acknowledgement = await buyer.sendMessage({
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      payload: {
+        proposal: { jobId: JOB_ID, label: "role-service-test" },
+        transportIdentity: { sender: BUYER, audience: SELLER },
+      } as never,
+    });
+
+    expect(acknowledgement.envelope.payload).toMatchObject({
+      disposition: "accepted",
+    });
+    expect(handled).toHaveBeenCalledTimes(1);
+    await buyer.runOnce();
+    expect(handled).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an authenticated but unconfigured peer before durable handling", async () => {
+    const database = await open(root(), "seller");
+    const handled = vi.fn(async () => ({ disposition: "accepted" as const }));
+    const seller = remember(createDacsSellerServiceV1(options("seller", database,
+      undefined, { handleMessage: handled })));
+    await seller.start();
+    const now = database.readTime();
+    const envelope = await createDacsHttpEnvelopeV1({
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      sender: OTHER,
+      audience: SELLER,
+      issuedAt: now,
+      expiresAt: now + 60_000,
+      nonce: Buffer.alloc(32, 9).toString("base64url"),
+      payload: {
+        proposal: { jobId: JOB_ID, label: "wrong-peer" },
+        transportIdentity: { sender: OTHER, audience: SELLER },
+      } as never,
+    }, (bytes) => ed25519Sign(bytes, OTHER_KEY));
+
+    const response = await fetch(seller.endpoint!, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    });
+    expect(response.status).toBe(401);
+    expect(handled).not.toHaveBeenCalled();
+  });
+
+  it("runs role-owned coordinator tracks and emits only bounded progress", async () => {
+    const database = await open(root(), "buyer");
+    const events: unknown[] = [];
+    const service = remember(createDacsBuyerServiceV1(options("buyer", database,
+      undefined, { events: { emit: (event) => void events.push(event) } })));
+    await service.start();
+    await service.startOrder(order("buyer"));
+    await service.runOnce();
+
+    await expect(service.getOrderStatus(JOB_ID)).resolves.toMatchObject({
+      milestone: "actor-audit-final",
+    });
+    const serialized = JSON.stringify(events);
+    expect(serialized).toContain(JOB_ID);
+    expect(serialized).not.toContain(BUYER);
+    expect(serialized).not.toContain(SELLER);
+  });
+
+  it("resumes an unfinished order from the actor database after service restart", async () => {
+    const directory = root();
+    const databasePath = join(directory, "buyer.sqlite");
+    let database = await open(directory, "buyer");
+    const pendingAgreement: FixedPriceX402TrackOperation = async ({ fence }) => {
+      await fence.assertCurrent();
+      return {
+        status: "pending-retry",
+        reasonCode: "simulated-restart",
+        retryAt: Date.now() + 50,
+      };
+    };
+    const first = remember(createDacsBuyerServiceV1(options("buyer", database,
+      undefined, {
+        createOperations: () => ({
+          ...operations("buyer"),
+          agreement: pendingAgreement,
+        }),
+      })));
+    await first.start();
+    await first.startOrder(order("buyer"));
+    await first.runOnce();
+    await expect(first.getOrderStatus(JOB_ID)).resolves.toMatchObject({
+      milestone: "created",
+      attention: { required: false },
+    });
+    await first.stop();
+    services.splice(services.indexOf(first), 1);
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+
+    database = await openDacsNodeSqliteDatabase({
+      databasePath,
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    databases.push(database);
+    const recovered = remember(createDacsBuyerServiceV1(options("buyer", database)));
+    await recovered.start();
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    await recovered.runOnce();
+    await expect(recovered.getOrderStatus(JOB_ID)).resolves.toMatchObject({
+      milestone: "actor-audit-final",
+    });
+  });
+
+  it("degrades health when the event sink fails without stopping commerce work", async () => {
+    const database = await open(root(), "buyer");
+    const service = remember(createDacsBuyerServiceV1(options("buyer", database,
+      undefined, { events: { emit: () => { throw new Error("sink-down"); } } })));
+    await service.start();
+    await service.startOrder(order("buyer"));
+    await service.runOnce();
+    await expect(service.getOrderStatus(JOB_ID)).resolves.toMatchObject({
+      milestone: "actor-audit-final",
+    });
+    await expect(service.health()).resolves.toMatchObject({
+      status: "degraded",
+      components: { events: { reasonCode: "service-event-sink-unavailable" } },
+    });
+  });
+
+  it("rejects commerce and transport calls while stopped", async () => {
+    const database = await open(root(), "buyer");
+    const service = remember(createDacsBuyerServiceV1(options("buyer", database)));
+    await expect(service.runOnce()).rejects.toEqual(
+      new DacsLiveRoleServiceError("service-not-running"),
+    );
+    await expect(service.sendMessage({
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      payload: {} as never,
+    })).rejects.toEqual(new DacsLiveRoleServiceError("service-not-running"));
+  });
+});

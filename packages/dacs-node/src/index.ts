@@ -3,4 +3,7 @@ export * from "./contracts.js";
 export * from "./events.js";
 export * from "./offline.js";
 export * from "./offlineLifecycle.js";
+export * from "./secrets.js";
+export * from "./service.js";
+export * from "./supervision.js";
 export * from "./transport/index.js";

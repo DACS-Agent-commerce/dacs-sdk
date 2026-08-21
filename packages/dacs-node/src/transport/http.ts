@@ -91,6 +91,8 @@ export interface DacsHttpMessageServerOptionsV1
     cert: string | Buffer;
   }>;
   requestTimeoutMs?: number;
+  /** Optional bounded host routes such as `/health`; never handles the message path. */
+  handleNonTransportRequest?: RequestListener;
 }
 
 export interface DacsHttpMessageServerV1 {
@@ -628,10 +630,30 @@ export async function startDacsHttpMessageServerV1(
   if (typeof hostname !== "string" || hostname.length === 0 ||
       typeof port !== "number" || !Number.isInteger(port) || port < 0 || port > 65_535 ||
       !safePositiveInteger(requestTimeoutMs) ||
+      (options.handleNonTransportRequest !== undefined &&
+        typeof options.handleNonTransportRequest !== "function") ||
       (!isLoopbackHostname(hostname) && options.tls === undefined)) {
     throw new TypeError("HTTP message server binding is invalid or requires TLS");
   }
-  const listener = createDacsHttpMessageRequestHandlerV1(options);
+  const transportListener = createDacsHttpMessageRequestHandlerV1(options);
+  const auxiliaryListener = options.handleNonTransportRequest === undefined
+    ? undefined
+    : bindMethod(options.handleNonTransportRequest, options);
+  const listener: RequestListener = (request, response) => {
+    if (request.url === DACS_HTTP_TRANSPORT_PATH || auxiliaryListener === undefined) {
+      transportListener(request, response);
+      return;
+    }
+    try {
+      auxiliaryListener(request, response);
+    } catch {
+      if (!response.headersSent) {
+        writeJson(response, 503, { error: "host-route-unavailable" }, 1);
+      } else if (!response.writableEnded) {
+        response.end();
+      }
+    }
+  };
   const server = options.tls === undefined
     ? createHttpServer(listener)
     : createHttpsServer({ key: options.tls.key, cert: options.tls.cert }, listener);
