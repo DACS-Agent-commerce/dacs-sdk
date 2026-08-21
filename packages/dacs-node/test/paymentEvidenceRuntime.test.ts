@@ -272,6 +272,10 @@ describe("live payment-evidence runtime", () => {
       authority: SELLER,
       peerAuthority: BUYER,
       database: sellerDatabase,
+      demos: {
+        role: "seller",
+        signComponent: vi.fn(),
+      },
       sendMessage: async (message: { type: string; payload: unknown }) => {
         const handled = await buyerRuntime.handleMessage(
           authenticated(message.type as "payment-evidence-request", message.payload, SELLER, BUYER),
@@ -343,6 +347,10 @@ describe("live payment-evidence runtime", () => {
       authority: SELLER,
       peerAuthority: BUYER,
       database: sellerDatabase,
+      demos: {
+        role: "seller",
+        signComponent: vi.fn(),
+      },
       commerceStores: {
         role: "seller",
         x402Settlement: {},
@@ -351,13 +359,7 @@ describe("live payment-evidence runtime", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     const resolvePublication = vi.fn(async () => ({
       request: {},
-      dependencies: {
-        evidenceSigner: {
-          algorithm: "ed25519" as const,
-          signer: SELLER,
-          sign: vi.fn(),
-        },
-      },
+      dependencies: {},
     })) as unknown as Parameters<
       typeof createDacsSellerSettlementPublicationTrackV1
     >[0]["resolvePublication"];

@@ -18,7 +18,7 @@ const INERT_RECEIVER = Object.freeze(Object.create(null)) as object;
 
 export type DacsSellerSettlementPublicationDependenciesV1 = Omit<
   SellerSessionSettlementPublicationDeps,
-  "receiptStore" | "anchorEvidence"
+  "receiptStore" | "evidenceSigner" | "anchorEvidence"
 >;
 
 export interface DacsSellerSettlementPublicationTrackOptionsV1 {
@@ -110,6 +110,7 @@ export function createDacsSellerSettlementPublicationTrackV1(
 ): FixedPriceX402TrackOperation {
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" ||
+      options.context.demos.role !== "seller" ||
       options.context.commerceStores.role !== "seller" ||
       !plainObject(options.paymentEvidence) ||
       typeof options.paymentEvidence.anchorEvidence !== "function" ||
@@ -153,25 +154,20 @@ export function createDacsSellerSettlementPublicationTrackV1(
     }
 
     const dependencies = resolved.dependencies;
-    const evidenceSigner = dependencies.evidenceSigner;
-    if (!plainObject(evidenceSigner) || typeof evidenceSigner.sign !== "function") {
-      return Object.freeze({
-        status: "operator-action" as const,
-        reasonCode: "seller-settlement-evidence-signer-invalid",
-      });
-    }
-    const signEvidence = evidenceSigner.sign;
     const publicationDependencies: SellerSessionSettlementPublicationDeps = {
       ...dependencies,
       receiptStore: {
         inspectPermit: (permitId) => receiptStore.inspectPermit!(permitId),
       },
       evidenceSigner: {
-        algorithm: evidenceSigner.algorithm,
-        signer: evidenceSigner.signer,
+        algorithm: "ed25519",
+        signer: context.authority,
         sign: async (bytes, signatureContext) => {
           await operation.fence.assertCurrent();
-          return Reflect.apply(signEvidence, INERT_RECEIVER, [bytes, signatureContext]);
+          return Reflect.apply(context.demos.signComponent, INERT_RECEIVER, [
+            bytes,
+            signatureContext,
+          ]);
         },
       },
       anchorEvidence: (input) => paymentEvidence.anchorEvidence(operation, input),
