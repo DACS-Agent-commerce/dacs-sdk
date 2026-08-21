@@ -3118,6 +3118,10 @@ function createFixedPriceCommerceCoordinator<
         });
         let result: OperationResult;
         try {
+          // Reject work that lost its lease after claim but before callback entry.
+          // The adapter must still assert the same fence immediately beside its
+          // irreversible effect because a lease can expire while the callback runs.
+          await fence.assertCurrent();
           const raw = await Reflect.apply(captured.operations.get(track)!, INERT_RECEIVER, [{
             order: copyRecord(record),
             fence,
