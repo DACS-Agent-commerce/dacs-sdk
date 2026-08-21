@@ -62,6 +62,15 @@ export type DacsHttpMessageType = typeof DACS_HTTP_MESSAGE_TYPES[number];
 export interface DacsAgreementProposalPayloadV1 {
   proposal: Readonly<FixedPriceAgreementProposal>;
   transportIdentity: Readonly<FixedPriceAgreementTransportIdentity>;
+  /**
+   * Buyer-produced DACS-2 Vet of the seller. This rides with the proposal so
+   * both role-owned Vets can be produced concurrently during bootstrap while
+   * the seller can still reconstruct the Agreement from authenticated local
+   * inputs without waiting for the logical-name index.
+   */
+  sellerVetRecord: Readonly<CompositeVerificationRecord>;
+  sellerVetRef: Readonly<AttestationRef>;
+  sellerVetReceipt: Readonly<ProtocolAnchorReceipt>;
 }
 
 export interface DacsSessionInitPayloadV1 {

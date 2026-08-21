@@ -2,7 +2,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { AttestationRef, IdentityBundle, Listing, PaymentRailRef } from
+import { compositeVerificationAddress, type ProtocolAnchorReceipt } from
+  "@kynesyslabs/dacs";
+import type {
+  AttestationRef,
+  CompositeVerificationRecord,
+  IdentityBundle,
+  Listing,
+  PaymentRailRef,
+} from
   "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
@@ -67,6 +75,55 @@ function vet(role: "buyer" | "seller"): AttestationRef {
     anchor: { kind: "storage-program", locator: `stor:${role}-vet` },
     contentHash: role === "buyer" ? "a".repeat(64) : "b".repeat(64),
   };
+}
+
+function sellerVetProduction(): Readonly<{
+  record: CompositeVerificationRecord;
+  recordRef: AttestationRef;
+  anchorReceipt: ProtocolAnchorReceipt;
+}> {
+  const record: CompositeVerificationRecord = {
+    recordVersion: "1",
+    jobId: JOB_ID,
+    evaluatedParty: SELLER,
+    bundleHash: "6".repeat(64),
+    requirementHash: "7".repeat(64),
+    freshness: [],
+    supplementary: [],
+    dealSpecific: [],
+    overallDecision: "pass",
+    generatedAt: NOW,
+    signature: {
+      algorithm: "ed25519",
+      signer: BUYER,
+      value: Buffer.alloc(64, 6).toString("base64url"),
+    },
+  };
+  const logicalAddress = compositeVerificationAddress(JOB_ID, SELLER);
+  const recordRef: AttestationRef = {
+    anchor: { kind: "storage-program", locator: logicalAddress },
+    contentHash: contentHash(record as unknown as Record<string, unknown>),
+    signer: BUYER,
+  };
+  return Object.freeze({
+    record,
+    recordRef,
+    anchorReceipt: {
+      receiptVersion: "1",
+      substrate: "demos",
+      finalityProfile: "demos-bft-confirmed-native-read",
+      logicalAddress,
+      nativeAddress: `stor-${"6".repeat(40)}`,
+      contentHash: recordRef.contentHash,
+      transactionRef: { kind: "demos-storage-program", value: "tx:seller-vet" },
+      writer: BUYER,
+      state: "finalized",
+      observationDisposition: "established",
+      observedAt: NOW,
+      blockRef: { id: "block:seller-vet", height: "42" },
+      evidence: { kind: "demos-bft-write-proof-v1", value: "proof" },
+    },
+  });
 }
 
 function listing(): Listing {
@@ -321,7 +378,11 @@ describe("live agreement HTTP transport runtime", () => {
         } as unknown as DacsHttpAuthenticatedEnvelopeV1;
       },
     } as unknown as DacsLiveRoleOperationContextV1;
-    buyerRuntime = createDacsBuyerAgreementTransportRuntimeV1(buyerContext);
+    const sellerVet = sellerVetProduction();
+    buyerRuntime = createDacsBuyerAgreementTransportRuntimeV1({
+      context: buyerContext,
+      resolveSellerVetProduction: () => sellerVet,
+    });
     sellerRuntime = createDacsSellerAgreementTransportRuntimeV1({
       context: sellerContext,
       admitProposal: () => ({ order: sellerOrder, application: { product: "weather" } }),
@@ -350,6 +411,13 @@ describe("live agreement HTTP transport runtime", () => {
       proposal: request.proposal,
       transportIdentity: request.transportIdentity,
     }));
+    await expect(sellerRuntime.resolveSellerVetProduction({
+      operation: {
+        order: (await sellerDatabase.createLiveCoordinatorStore("seller")
+          .load("seller", JOB_ID) as { status: "ok"; record: never }).record,
+        fence: { role: "seller", track: "agreement" },
+      } as never,
+    })).resolves.toEqual(sellerVet);
 
     const sellerContribution = await createFixedPriceAgreementSignatureContribution(
       request.plan,

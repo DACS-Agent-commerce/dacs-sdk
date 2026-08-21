@@ -1,4 +1,12 @@
-import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { compositeVerificationAddress, type ProtocolAnchorReceipt } from "@kynesyslabs/dacs";
+import {
+  isAttestationRef,
+  isCompositeVerificationRecord,
+  isReadableAnchorReceipt,
+  type AttestationRef,
+  type CompositeVerificationRecord,
+} from "@kynesyslabs/dacs/artifacts";
+import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   isFixedPriceAgreementProposalEnvelope,
   type FixedPriceAgreementEffectFence,
@@ -20,6 +28,7 @@ import {
   type DurableSellerFixedPriceAgreementResponse,
   type SellerFixedPriceAgreementContributionTransport,
 } from "@kynesyslabs/dacs/seller";
+import { sameCanonicalClaimIdentity } from "@kynesyslabs/dacs/identity";
 
 import { putDacsLiveOrderInputV1 } from "./orderInput.js";
 import type {
@@ -75,6 +84,20 @@ export interface DacsBuyerAgreementTransportRuntimeV1 {
   ): Promise<DacsHttpInboundDispositionV1>;
 }
 
+export interface DacsAgreementSellerVetProductionV1 {
+  record: Readonly<CompositeVerificationRecord>;
+  recordRef: Readonly<AttestationRef>;
+  anchorReceipt: Readonly<ProtocolAnchorReceipt>;
+}
+
+export interface DacsBuyerAgreementTransportRuntimeOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  resolveSellerVetProduction(input: Readonly<{
+    order: Readonly<FixedPriceX402OrderRecord>;
+  }>): Promise<Readonly<DacsAgreementSellerVetProductionV1>> |
+    Readonly<DacsAgreementSellerVetProductionV1>;
+}
+
 export interface DacsSellerAgreementAdmissionV1 {
   order: Readonly<FixedPriceX402OrderInput>;
   /** Public, durable application facts required by the seller's later tracks. */
@@ -98,6 +121,11 @@ export interface DacsSellerAgreementTransportRuntimeV1 {
       operation: Readonly<FixedPriceX402TrackOperationInput>;
     }>,
   ): Promise<Readonly<FixedPriceAgreementProposalEnvelope>>;
+  resolveSellerVetProduction(
+    input: Readonly<{
+      operation: Readonly<FixedPriceX402TrackOperationInput>;
+    }>,
+  ): Promise<Readonly<DacsAgreementSellerVetProductionV1>>;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
@@ -192,6 +220,36 @@ function agreementPayloadHash(value: unknown): string {
   return sha256Hex(canonicalize(value));
 }
 
+function coreProposalEnvelope(
+  payload: Readonly<DacsAgreementProposalPayloadV1>,
+): Readonly<FixedPriceAgreementProposalEnvelope> {
+  return Object.freeze({
+    proposal: payload.proposal,
+    transportIdentity: payload.transportIdentity,
+  });
+}
+
+function sellerVetProductionValid(
+  payload: Readonly<DacsAgreementProposalPayloadV1>,
+): boolean {
+  const identity = payload.transportIdentity;
+  const record = payload.sellerVetRecord;
+  const ref = payload.sellerVetRef;
+  const receipt = payload.sellerVetReceipt;
+  return isCompositeVerificationRecord(record) && isAttestationRef(ref) &&
+    isReadableAnchorReceipt(receipt) && record.jobId === identity.jobId &&
+    sameCanonicalClaimIdentity(record.evaluatedParty, identity.seller) &&
+    record.overallDecision === "pass" &&
+    sameCanonicalClaimIdentity(record.signature.signer, identity.buyer) &&
+    ref.anchor.kind === "storage-program" &&
+    ref.anchor.locator === compositeVerificationAddress(identity.jobId, identity.seller) &&
+    ref.contentHash === contentHash(record as unknown as Record<string, unknown>) &&
+    sameCanonicalClaimIdentity(ref.signer, identity.buyer) &&
+    receipt.logicalAddress === ref.anchor.locator &&
+    receipt.contentHash === ref.contentHash &&
+    sameCanonicalClaimIdentity(receipt.writer, identity.buyer);
+}
+
 function captureTransportAuthentication(
   value: unknown,
 ): Readonly<DacsAgreementTransportAuthenticationV1> {
@@ -228,7 +286,16 @@ function captureProposalBinding(value: unknown): Readonly<DacsAgreementProposalB
       value.bindingVersion !== AGREEMENT_BINDING_VERSION ||
       typeof value.localBindingHash !== "string" || !HASH_RE.test(value.localBindingHash) ||
       typeof value.payloadHash !== "string" || !HASH_RE.test(value.payloadHash) ||
-      !isFixedPriceAgreementProposalEnvelope(value.payload) ||
+      !plainObject(value.payload) || !exactFields(value.payload, [
+        "proposal", "transportIdentity", "sellerVetRecord", "sellerVetRef",
+        "sellerVetReceipt",
+      ]) ||
+      !isFixedPriceAgreementProposalEnvelope(coreProposalEnvelope(
+        value.payload as unknown as DacsAgreementProposalPayloadV1,
+      )) ||
+      !sellerVetProductionValid(
+        value.payload as unknown as DacsAgreementProposalPayloadV1,
+      ) ||
       agreementPayloadHash(value.payload) !== value.payloadHash ||
       (value.transportAuthentication !== undefined &&
         (captureTransportAuthentication(value.transportAuthentication).payloadHash !==
@@ -261,7 +328,8 @@ function retainProposal(
   payload: Readonly<DacsAgreementProposalPayloadV1>,
   authenticated?: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
 ): Readonly<DacsAgreementProposalBindingV1> {
-  if (!isFixedPriceAgreementProposalEnvelope(payload) ||
+  if (!isFixedPriceAgreementProposalEnvelope(coreProposalEnvelope(payload)) ||
+      !sellerVetProductionValid(payload) ||
       !identityMatchesOrder(payload.transportIdentity, order, context.role)) {
     throw new DacsAgreementTransportRuntimeError("agreement-proposal-order-mismatch");
   }
@@ -427,11 +495,14 @@ async function sendResponse(
 }
 
 export function createDacsBuyerAgreementTransportRuntimeV1(
-  context: Readonly<DacsLiveRoleOperationContextV1>,
+  options: Readonly<DacsBuyerAgreementTransportRuntimeOptionsV1>,
 ): Readonly<DacsBuyerAgreementTransportRuntimeV1> {
-  if (!plainObject(context) || context.role !== "buyer") {
-    throw new TypeError("buyer agreement transport runtime context is invalid");
+  if (!plainObject(options) || !plainObject(options.context) ||
+      options.context.role !== "buyer" ||
+      typeof options.resolveSellerVetProduction !== "function") {
+    throw new TypeError("buyer agreement transport runtime options are invalid");
   }
+  const context = options.context;
 
   const validatePayload: DacsHttpPayloadValidatorV1 = async (input) => {
     if (input.type !== "agreement-response" ||
@@ -468,9 +539,13 @@ export function createDacsBuyerAgreementTransportRuntimeV1(
         return { disposition: "rejected" as const, reason: "buyer-order-missing" };
       }
       try {
+        const sellerVet = await options.resolveSellerVetProduction({ order });
         const binding = retainProposal(context, order, {
           proposal,
           transportIdentity: identity,
+          sellerVetRecord: sellerVet.record,
+          sellerVetRef: sellerVet.recordRef,
+          sellerVetReceipt: sellerVet.anchorReceipt,
         });
         return sendProposal(context, binding);
       } catch {
@@ -568,15 +643,23 @@ export function createDacsSellerAgreementTransportRuntimeV1(
   }
   const context = options.context;
 
-  const validatePayload: DacsHttpPayloadValidatorV1 = (input) => payloadResult(
-    input.type === "agreement-proposal" &&
-      isFixedPriceAgreementProposalEnvelope(input.payload) &&
-      input.sender === context.peerAuthority && input.audience === context.authority &&
-      input.payload.transportIdentity.jobId === input.jobId &&
-      input.payload.transportIdentity.buyer === context.peerAuthority &&
-      input.payload.transportIdentity.seller === context.authority,
-    "agreement-proposal-invalid",
-  );
+  const validatePayload: DacsHttpPayloadValidatorV1 = (input) => {
+    if (input.type !== "agreement-proposal" || !plainObject(input.payload) ||
+        !exactFields(input.payload, [
+        "proposal", "transportIdentity", "sellerVetRecord", "sellerVetRef",
+        "sellerVetReceipt",
+      ])) return payloadResult(false, "agreement-proposal-invalid");
+    const payload = input.payload as unknown as DacsAgreementProposalPayloadV1;
+    return payloadResult(
+      isFixedPriceAgreementProposalEnvelope(coreProposalEnvelope(payload)) &&
+        sellerVetProductionValid(payload) && input.sender === context.peerAuthority &&
+        input.audience === context.authority &&
+        payload.transportIdentity.jobId === input.jobId &&
+        payload.transportIdentity.buyer === context.peerAuthority &&
+        payload.transportIdentity.seller === context.authority,
+      "agreement-proposal-invalid",
+    );
+  };
 
   const transport: SellerFixedPriceAgreementContributionTransport = {
     async publishSellerContribution(
@@ -642,7 +725,24 @@ export function createDacsSellerAgreementTransportRuntimeV1(
       if (binding === undefined) {
         throw new DacsAgreementTransportRuntimeError("agreement-proposal-pending");
       }
-      return Object.freeze(structuredClone(binding.payload));
+      return Object.freeze(structuredClone(coreProposalEnvelope(binding.payload)));
+    },
+    async resolveSellerVetProduction(
+      { operation }: Readonly<{ operation: Readonly<FixedPriceX402TrackOperationInput> }>,
+    ) {
+      if (operation.fence.role !== "seller" || operation.fence.track !== "agreement") {
+        throw new DacsAgreementTransportRuntimeError("agreement-proposal-track-mismatch");
+      }
+      const order = await loadOrder(context, operation.order.jobId);
+      const binding = order === undefined ? undefined : loadProposalBinding(context, order);
+      if (binding === undefined) {
+        throw new DacsAgreementTransportRuntimeError("agreement-proposal-pending");
+      }
+      return Object.freeze({
+        record: structuredClone(binding.payload.sellerVetRecord),
+        recordRef: structuredClone(binding.payload.sellerVetRef),
+        anchorReceipt: structuredClone(binding.payload.sellerVetReceipt),
+      });
     },
     async handleMessage(
       authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,

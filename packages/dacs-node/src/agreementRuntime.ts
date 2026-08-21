@@ -84,8 +84,15 @@ export interface DacsSellerAgreementTrackOptionsV1
     proposal: Readonly<FixedPriceAgreementProposal>;
     transportIdentity: Readonly<FixedPriceAgreementTransportIdentity>;
   }>;
-  resolveAuthenticatedAgreementContext:
-    DurableSellerFixedPriceAgreementDurability["resolveAuthenticatedAgreementContext"];
+  resolveAuthenticatedAgreementContext(input:
+    Parameters<DurableSellerFixedPriceAgreementDurability[
+      "resolveAuthenticatedAgreementContext"
+    ]>[0] & Readonly<{
+      operation: Readonly<FixedPriceX402TrackOperationInput>;
+      retained: Readonly<DacsLiveOrderInputV1>;
+    }>): ReturnType<DurableSellerFixedPriceAgreementDurability[
+      "resolveAuthenticatedAgreementContext"
+    ]>;
   verifyContribution: FixedPriceAgreementContributionVerifier;
   reconcileSellerSignature:
     DurableSellerFixedPriceAgreementDurability["reconcileSellerSignature"];
@@ -451,7 +458,12 @@ export function createDacsSellerAgreementTrackV1(
         store: common.context.sessionStore,
         workerId: common.workerId,
         leaseTtlMs: common.leaseTtlMs,
-        resolveAuthenticatedAgreementContext: options.resolveAuthenticatedAgreementContext,
+        resolveAuthenticatedAgreementContext: (query) =>
+          options.resolveAuthenticatedAgreementContext({
+            ...query,
+            operation,
+            retained,
+          }),
         verifyContribution: options.verifyContribution,
         reconcileSellerSignature: async (input, fence) => {
           await operation.fence.assertCurrent();

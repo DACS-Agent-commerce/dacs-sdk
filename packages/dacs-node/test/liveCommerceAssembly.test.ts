@@ -21,6 +21,7 @@ const factories = vi.hoisted(() => ({
   sellerSessionBootstrap: vi.fn(),
   buyerSessionAgreement: vi.fn(),
   sellerSessionAgreement: vi.fn(),
+  authenticateSellerVet: vi.fn(),
 }));
 
 vi.mock("../src/agreementRuntime.js", async (importOriginal) => ({
@@ -79,6 +80,19 @@ vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => 
   createDacsBuyerSessionBootstrapAgreementTrackV1: factories.buyerSessionAgreement,
   createDacsSellerSessionBootstrapAgreementTrackV1: factories.sellerSessionAgreement,
   loadDacsBuyerSessionAgreementFactsV1: vi.fn(() => ({ session: true })),
+  loadDacsBuyerSessionAgreementFactsForOrderV1: vi.fn(() => ({
+    sellerVetRecord: "seller-vet-record",
+    sellerVetRef: "seller-vet-ref",
+    sellerVetReceipt: "seller-vet-receipt",
+  })),
+  loadDacsSellerSessionAgreementFactsV1: vi.fn(() => ({
+    sellerIdentity: { presentedBy: "seller" },
+    session: true,
+  })),
+}));
+vi.mock("../src/sessionIdentityVetRuntime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/sessionIdentityVetRuntime.js")>()),
+  authenticateDacsSessionVetProductionV1: factories.authenticateSellerVet,
 }));
 
 import {
@@ -101,6 +115,11 @@ describe("one-factory live commerce assembly", () => {
       validatePayload: vi.fn(),
       handleMessage: vi.fn(),
       resolveProposal: vi.fn(async () => ({ proposal: true })),
+      resolveSellerVetProduction: vi.fn(async () => ({
+        record: { vet: true },
+        recordRef: { ref: true },
+        anchorReceipt: { receipt: true },
+      })),
     });
     factories.buyerAudit.mockReturnValue("buyer-audit");
     factories.sellerAudit.mockReturnValue("seller-audit");
@@ -137,6 +156,7 @@ describe("one-factory live commerce assembly", () => {
     factories.sellerSessionBootstrap.mockReturnValue("seller-session-bootstrap");
     factories.buyerSessionAgreement.mockReturnValue("buyer-session-agreement");
     factories.sellerSessionAgreement.mockReturnValue("seller-session-agreement");
+    factories.authenticateSellerVet.mockResolvedValue("valid");
     factories.buyerGraph.mockImplementation((value) => ({ role: "buyer", value }));
     factories.sellerGraph.mockImplementation((value) => ({ role: "seller", value }));
   });
@@ -184,12 +204,21 @@ describe("one-factory live commerce assembly", () => {
 
   it("uses one seller x402 and handshake runtime across HTTP and every projection", async () => {
     const context = { role: "seller" };
+    const resolveSellerRequirement = vi.fn(() => ({ requirementVersion: "1", required: [] }));
+    const resolveAuthenticatedAgreementContext = vi.fn(async () => ({
+      disposition: "present",
+      value: { agreement: true },
+    }));
     const result = await createDacsSellerLiveCommerceAssemblyV1({
       context,
       workerId: "seller-worker",
-      sessionBootstrap: { admitInit: vi.fn(), resolveBuyerRequirement: vi.fn() },
+      sessionBootstrap: {
+        admitInit: vi.fn(),
+        resolveBuyerRequirement: vi.fn(),
+        resolveSellerRequirement,
+      },
       agreementTransport: { admitProposal: vi.fn() },
-      agreement: { authorizeComplete: vi.fn() },
+      agreement: { authorizeComplete: vi.fn(), resolveAuthenticatedAgreementContext },
       x402: { publicBaseUrl: "https://seller.example" },
       paymentEvidence: {},
       settlement: { resolvePublication: vi.fn() },
@@ -214,5 +243,19 @@ describe("one-factory live commerce assembly", () => {
     await agreementOptions.resolveProposal({ operation: { fence: true } });
     expect(factories.sellerAgreementTransport.mock.results[0]!.value.resolveProposal)
       .toHaveBeenCalledWith({ operation: { fence: true } });
+    await expect(agreementOptions.resolveAuthenticatedAgreementContext({
+      operation: { order: { jobId: "job", buyer: "buyer" } },
+      retained: { application: true },
+      queryVersion: "1",
+    })).resolves.toMatchObject({ disposition: "present" });
+    expect(factories.authenticateSellerVet).toHaveBeenCalledOnce();
+    expect(resolveSellerRequirement).toHaveBeenCalledOnce();
+    expect(resolveAuthenticatedAgreementContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session: expect.objectContaining({ session: true }),
+        sellerVet: expect.anything(),
+        sellerRequirement: { requirementVersion: "1", required: [] },
+      }),
+    );
   });
 });

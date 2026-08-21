@@ -24,14 +24,63 @@
           "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
           "label": "Café",
           "numericEdge": 9007199254740991
+        },
+        "sellerVetRecord": {
+          "recordVersion": "1",
+          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "evaluatedParty": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396",
+          "bundleHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "requirementHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "freshness": [],
+          "supplementary": [],
+          "dealSpecific": [],
+          "overallDecision": "pass",
+          "generatedAt": 1800000000000,
+          "signature": {
+            "algorithm": "ed25519",
+            "signer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "value": "buyer-vet-vector-signature"
+          }
+        },
+        "sellerVetRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "dacs2:vector:seller-vet"
+          },
+          "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "signer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+        },
+        "sellerVetReceipt": {
+          "receiptVersion": "1",
+          "substrate": "demos",
+          "finalityProfile": "demos-bft-confirmed-native-read",
+          "logicalAddress": "dacs2:vector:seller-vet",
+          "nativeAddress": "stor-dddddddddddddddddddddddddddddddddddddddd",
+          "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "transactionRef": {
+            "kind": "demos-storage-program",
+            "value": "tx-vector-seller-vet"
+          },
+          "writer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "state": "finalized",
+          "observationDisposition": "established",
+          "observedAt": 1800000000000,
+          "blockRef": {
+            "id": "block-vector-seller-vet",
+            "height": "41"
+          },
+          "evidence": {
+            "kind": "demos-bft-write-proof-v1",
+            "value": "vector-proof"
+          }
         }
       },
-      "payloadCanonical": "{\"proposal\":{\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"label\":\"Café\",\"numericEdge\":9007199254740991},\"transportIdentity\":{\"audience\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"sender\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}}",
-      "payloadHash": "1475e7fa9b53d986c06d5533543b57e673d07950c3181145299be76955dc447a",
-      "envelopeId": "519af08b90428f8ed9cebdc536eadfd541b102c4c8ee4bb563aca98279b27282",
-      "envelopeHash": "c8732437e71d45ac26de2af35b6f76bd52f325e1d17293009ad7dba56dd4c2c8",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313ac8732437e71d45ac26de2af35b6f76bd52f325e1d17293009ad7dba56dd4c2c8",
-      "signature": "uEtUwrbDvG_KE1byReUcnWXEd01hlT9Hs6SLX7v7Y7doFmsvxPt9RQjIyN7AYuF9mIOO_jby1zLJITxA3sd4BQ"
+      "payloadCanonical": "{\"proposal\":{\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"label\":\"Café\",\"numericEdge\":9007199254740991},\"sellerVetReceipt\":{\"blockRef\":{\"height\":\"41\",\"id\":\"block-vector-seller-vet\"},\"contentHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"evidence\":{\"kind\":\"demos-bft-write-proof-v1\",\"value\":\"vector-proof\"},\"finalityProfile\":\"demos-bft-confirmed-native-read\",\"logicalAddress\":\"dacs2:vector:seller-vet\",\"nativeAddress\":\"stor-dddddddddddddddddddddddddddddddddddddddd\",\"observationDisposition\":\"established\",\"observedAt\":1800000000000,\"receiptVersion\":\"1\",\"state\":\"finalized\",\"substrate\":\"demos\",\"transactionRef\":{\"kind\":\"demos-storage-program\",\"value\":\"tx-vector-seller-vet\"},\"writer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"},\"sellerVetRecord\":{\"bundleHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"dealSpecific\":[],\"evaluatedParty\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"freshness\":[],\"generatedAt\":1800000000000,\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"overallDecision\":\"pass\",\"recordVersion\":\"1\",\"requirementHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"signature\":{\"algorithm\":\"ed25519\",\"signer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"value\":\"buyer-vet-vector-signature\"},\"supplementary\":[]},\"sellerVetRef\":{\"anchor\":{\"kind\":\"storage-program\",\"locator\":\"dacs2:vector:seller-vet\"},\"contentHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"signer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"},\"transportIdentity\":{\"audience\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"sender\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}}",
+      "payloadHash": "247cfc1790e388013989c48ce6486016f56a5e0bca54f0b81109042c3989d680",
+      "envelopeId": "0d3276544a4082c9af9e6681b30e52a1c172fede1cfcf0056f126c6e3eb382e6",
+      "envelopeHash": "61979c61b8fd9f890b8e765509097c865cda6e8ca37d81e25e3670d1d6eef61a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a61979c61b8fd9f890b8e765509097c865cda6e8ca37d81e25e3670d1d6eef61a",
+      "signature": "petst9_3i4iRgcAwnnGx9CuKrmWLsdKPbbYLk-qI1LChpy2vBzA9x_t_9TVkBUkJEVQBaUR7OF58U3eWHNtICg"
     },
     {
       "type": "agreement-response",

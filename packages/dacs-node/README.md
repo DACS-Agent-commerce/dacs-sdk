@@ -124,6 +124,15 @@ not a DACS artifact or an authorization to pay. The agreement track
 authenticates the receipt and exact native-address readback before using the
 Vet reference; it does not wait for logical-name index visibility.
 
+The buyer-produced Vet of the seller is created concurrently with that
+exchange and is attached to the authenticated agreement proposal with its
+exact reference and finality receipt. The seller transport retains those bytes,
+and the one-factory assembly authenticates their receipt plus native-address
+readback against the seller identity and the host's explicit complementary
+requirement before exposing them to the seller agreement policy. This keeps the
+two role-owned Vet writes parallel without letting an unverified proposal
+define the seller's local Agreement context.
+
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement
 tracks. The generated profile's built-in Vet producer is deliberately limited

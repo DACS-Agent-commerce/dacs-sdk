@@ -7,6 +7,7 @@ import {
 import {
   createDacsBuyerAgreementTransportRuntimeV1,
   createDacsSellerAgreementTransportRuntimeV1,
+  type DacsAgreementSellerVetProductionV1,
   type DacsSellerAgreementTransportRuntimeOptionsV1,
 } from "./agreementTransportRuntime.js";
 import {
@@ -48,7 +49,9 @@ import {
 import {
   createDacsBuyerSessionBootstrapAgreementTrackV1,
   createDacsSellerSessionBootstrapAgreementTrackV1,
+  loadDacsBuyerSessionAgreementFactsForOrderV1,
   loadDacsBuyerSessionAgreementFactsV1,
+  loadDacsSellerSessionAgreementFactsV1,
   type DacsBuyerSessionBootstrapAgreementTrackOptionsV1,
   type DacsSellerSessionBootstrapAgreementTrackOptionsV1,
 } from "./sessionBootstrapAgreementRuntime.js";
@@ -61,6 +64,8 @@ import {
   createDacsX402BuyerRuntimePaymentTrackV1,
   type DacsX402BuyerRuntimePaymentTrackOptionsV1,
 } from "./x402RuntimePayment.js";
+import type { BundleRequirement } from "@kynesyslabs/dacs/artifacts";
+import { authenticateDacsSessionVetProductionV1 } from "./sessionIdentityVetRuntime.js";
 
 export interface DacsBuyerLiveCommerceAssemblyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -105,15 +110,38 @@ export interface DacsSellerLiveCommerceAssemblyOptionsV1<T = unknown> {
   > & Pick<
     DacsSellerSessionBootstrapAgreementTrackOptionsV1,
     "resolveBuyerRequirement"
-  >>;
+  > & {
+    /** Explicit local policy for the buyer-produced Vet of this seller. */
+    resolveSellerRequirement(input: Readonly<{
+      operation: Parameters<DacsSellerAgreementTrackOptionsV1[
+        "resolveAuthenticatedAgreementContext"
+      ]>[0]["operation"];
+      retained: Parameters<DacsSellerAgreementTrackOptionsV1[
+        "resolveAuthenticatedAgreementContext"
+      ]>[0]["retained"];
+      session: ReturnType<typeof loadDacsSellerSessionAgreementFactsV1>;
+    }>): Promise<Readonly<BundleRequirement>> | Readonly<BundleRequirement>;
+  }>;
   agreementTransport: Readonly<Omit<
     DacsSellerAgreementTransportRuntimeOptionsV1,
     "context"
   >>;
   agreement: Readonly<Omit<
     DacsSellerAgreementTrackOptionsV1,
-    "context" | "workerId" | "resolveProposal" | "transport"
-  >>;
+    "context" | "workerId" | "resolveProposal" | "transport" |
+      "resolveAuthenticatedAgreementContext"
+  > & {
+    resolveAuthenticatedAgreementContext(input:
+      Parameters<DacsSellerAgreementTrackOptionsV1[
+        "resolveAuthenticatedAgreementContext"
+      ]>[0] & Readonly<{
+        session: ReturnType<typeof loadDacsSellerSessionAgreementFactsV1>;
+        sellerVet: Readonly<DacsAgreementSellerVetProductionV1>;
+        sellerRequirement: Readonly<BundleRequirement>;
+      }>): ReturnType<DacsSellerAgreementTrackOptionsV1[
+        "resolveAuthenticatedAgreementContext"
+      ]>;
+  }>;
   x402: Readonly<Omit<
     DacsSellerX402RuntimeOptionsV1<T>,
     "context" | "workerId"
@@ -168,7 +196,17 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
   common(options, "buyer");
   const context = options.context;
   const sessionBootstrap = createDacsBuyerSessionBootstrapTransportRuntimeV1(context);
-  const agreementTransport = createDacsBuyerAgreementTransportRuntimeV1(context);
+  const agreementTransport = createDacsBuyerAgreementTransportRuntimeV1({
+    context,
+    resolveSellerVetProduction: ({ order }) => {
+      const facts = loadDacsBuyerSessionAgreementFactsForOrderV1(context, order);
+      return Object.freeze({
+        record: facts.sellerVetRecord,
+        recordRef: facts.sellerVetRef,
+        anchorReceipt: facts.sellerVetReceipt,
+      });
+    },
+  });
   const paymentEvidence = createDacsBuyerDemosPaymentEvidenceRuntimeV1({
     ...options.paymentEvidence,
     context,
@@ -253,6 +291,38 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
     workerId: options.workerId,
     resolveProposal: ({ operation }) =>
       agreementTransport.resolveProposal({ operation }),
+    resolveAuthenticatedAgreementContext: async (input) => {
+      const session = loadDacsSellerSessionAgreementFactsV1(context, input.operation);
+      const sellerVet = await agreementTransport.resolveSellerVetProduction({
+        operation: input.operation,
+      });
+      const sellerRequirement = await options.sessionBootstrap.resolveSellerRequirement({
+        operation: input.operation,
+        retained: input.retained,
+        session,
+      });
+      const authentication = await authenticateDacsSessionVetProductionV1({
+        context,
+        jobId: input.operation.order.jobId,
+        evaluatedIdentity: session.sellerIdentity,
+        requirement: sellerRequirement,
+        verifier: input.operation.order.buyer,
+        production: sellerVet,
+      });
+      if (authentication !== "valid") {
+        return authentication === "invalid"
+          ? Object.freeze({ disposition: "rejected" as const,
+              reason: "seller-vet-production-invalid" })
+          : Object.freeze({ disposition: "indeterminate" as const,
+              reason: "seller-vet-production-unavailable" });
+      }
+      return options.agreement.resolveAuthenticatedAgreementContext({
+        ...input,
+        session,
+        sellerVet,
+        sellerRequirement,
+      });
+    },
     transport: agreementTransport.transport,
   });
   return createDacsSellerLiveCommerceGraphV1({

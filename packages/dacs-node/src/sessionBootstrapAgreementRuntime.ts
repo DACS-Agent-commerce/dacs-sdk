@@ -12,6 +12,7 @@ import {
 } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
+  FixedPriceX402OrderRecord,
   FixedPriceX402TrackOperation,
   FixedPriceX402TrackOperationInput,
   FixedPriceX402TrackOperationResult,
@@ -254,23 +255,20 @@ function retainFacts(
 
 function loadFacts(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  order: Readonly<FixedPriceX402OrderRecord>,
 ): Readonly<DacsBuyerSessionAgreementFactsV1 | DacsSellerSessionAgreementFactsV1> {
-  if (!operationBound(context, operation)) {
-    throw new DacsSessionBootstrapAgreementRuntimeError("session-agreement-track-mismatch");
-  }
   const value = context.database.loadEffectInput(
     "session",
-    factsId(context.role, operation.order.jobId),
+    factsId(context.role, order.jobId),
   );
   if (value === undefined) {
     throw new DacsSessionBootstrapAgreementRuntimeError("session-agreement-facts-missing");
   }
   const facts = captureFacts(value);
-  if (facts.role !== context.role || facts.jobId !== operation.order.jobId ||
-      facts.localBindingHash !== operation.order.localBindingHash ||
-      !sameCanonicalClaimIdentity(facts.buyerIdentity.presentedBy, operation.order.buyer) ||
-      !sameCanonicalClaimIdentity(facts.sellerIdentity.presentedBy, operation.order.seller)) {
+  if (facts.role !== context.role || facts.jobId !== order.jobId ||
+      facts.localBindingHash !== order.localBindingHash ||
+      !sameCanonicalClaimIdentity(facts.buyerIdentity.presentedBy, order.buyer) ||
+      !sameCanonicalClaimIdentity(facts.sellerIdentity.presentedBy, order.seller)) {
     throw new DacsSessionBootstrapAgreementRuntimeError("session-agreement-facts-corrupt");
   }
   return Object.freeze(structuredClone(facts));
@@ -280,7 +278,10 @@ export function loadDacsBuyerSessionAgreementFactsV1(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   operation: Readonly<FixedPriceX402TrackOperationInput>,
 ): Readonly<DacsBuyerSessionAgreementFactsV1> {
-  const facts = loadFacts(context, operation);
+  if (!operationBound(context, operation)) {
+    throw new DacsSessionBootstrapAgreementRuntimeError("session-agreement-track-mismatch");
+  }
+  const facts = loadFacts(context, operation.order);
   if (facts.role !== "buyer") {
     throw new DacsSessionBootstrapAgreementRuntimeError("buyer-session-facts-missing");
   }
@@ -291,9 +292,27 @@ export function loadDacsSellerSessionAgreementFactsV1(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   operation: Readonly<FixedPriceX402TrackOperationInput>,
 ): Readonly<DacsSellerSessionAgreementFactsV1> {
-  const facts = loadFacts(context, operation);
+  if (!operationBound(context, operation)) {
+    throw new DacsSessionBootstrapAgreementRuntimeError("session-agreement-track-mismatch");
+  }
+  const facts = loadFacts(context, operation.order);
   if (facts.role !== "seller") {
     throw new DacsSessionBootstrapAgreementRuntimeError("seller-session-facts-missing");
+  }
+  return facts;
+}
+
+/** Resolve the buyer's immutable bootstrap facts from a loaded coordinator order. */
+export function loadDacsBuyerSessionAgreementFactsForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPriceX402OrderRecord>,
+): Readonly<DacsBuyerSessionAgreementFactsV1> {
+  if (context.role !== "buyer" || order.role !== "buyer") {
+    throw new DacsSessionBootstrapAgreementRuntimeError("buyer-session-order-mismatch");
+  }
+  const facts = loadFacts(context, order);
+  if (facts.role !== "buyer") {
+    throw new DacsSessionBootstrapAgreementRuntimeError("buyer-session-facts-missing");
   }
   return facts;
 }
