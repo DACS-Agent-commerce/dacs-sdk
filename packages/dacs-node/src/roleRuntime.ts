@@ -428,6 +428,12 @@ export async function createDacsLiveRoleRuntimeV1(
       } catch {
         throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
       }
+      if (!plainObject(created.availability) ||
+          (created.availability.status !== "configured" &&
+            (created.availability.status !== "blocked" ||
+              !nonEmpty(created.availability.reasonCode)))) {
+        throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+      }
       commerceGraph = created;
     }
     const serviceOptions: DacsLiveRoleServiceOptionsV1 = {
@@ -460,6 +466,10 @@ export async function createDacsLiveRoleRuntimeV1(
           ? rawOptions.handleMessage!(authenticated, inbound)
           : commerceGraph.handleMessage(authenticated, inbound);
       },
+      commerceAvailability: commerceGraph?.availability ?? Object.freeze({
+        status: "blocked" as const,
+        reasonCode: "legacy-commerce-capability-unreported",
+      }),
       readiness: readinessLatch.readiness,
       ...(rawOptions.handlePublicRequest === undefined ? {} : {
         handlePublicRequest: rawOptions.handlePublicRequest,

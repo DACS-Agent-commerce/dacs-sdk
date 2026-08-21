@@ -20,6 +20,10 @@ export interface DacsRoleServiceStatusSummaryV1 {
   role: DacsLiveRole;
   lifecycle: DacsLiveRoleServiceLifecycle;
   checkedAt: number;
+  commerce: Readonly<
+    | { status: "configured" }
+    | { status: "blocked"; reasonCode: string }
+  >;
   queues: Readonly<{
     inboxPending: boolean;
     outboxPending: boolean;
@@ -159,6 +163,20 @@ function queueSummary(value: unknown): DacsRoleServiceStatusSummaryV1["queues"] 
   });
 }
 
+function commerceSummary(
+  value: unknown,
+): DacsRoleServiceStatusSummaryV1["commerce"] | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<string, unknown>;
+  if (item.status === "configured" && Object.keys(item).length === 1) {
+    return Object.freeze({ status: "configured" as const });
+  }
+  if (item.status !== "blocked" || Object.keys(item).length !== 2 ||
+      typeof item.reasonCode !== "string" ||
+      !/^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/.test(item.reasonCode)) return undefined;
+  return Object.freeze({ status: "blocked" as const, reasonCode: item.reasonCode });
+}
+
 function sessionSummary(value: unknown): DacsRoleServiceStatusSummaryV1["sessions"] | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const item = value as Record<string, unknown>;
@@ -190,6 +208,7 @@ function statusSummary(
 ): Readonly<DacsRoleServiceStatusSummaryV1> | undefined {
   const lifecycles = new Set(["stopped", "starting", "running", "stopping"]);
   const queues = queueSummary(value.queues);
+  const commerce = commerceSummary(value.commerce);
   const sessions = sessionSummary(value.sessions);
   const worker = workerSummary(value.worker);
   if (value.version !== 1 || value.role !== role ||
@@ -197,11 +216,13 @@ function statusSummary(
       value.sdkVersion !== expected.sdkVersion ||
       value.standardRevision !== expected.standardRevision ||
       value.profile !== expected.profile || !nonNegativeInteger(value.checkedAt) ||
-      queues === undefined || sessions === undefined || worker === undefined) return undefined;
+      commerce === undefined || queues === undefined || sessions === undefined ||
+      worker === undefined) return undefined;
   return Object.freeze({
     role,
     lifecycle: value.lifecycle as DacsLiveRoleServiceLifecycle,
     checkedAt: value.checkedAt,
+    commerce,
     queues,
     sessions,
     worker,
@@ -299,6 +320,15 @@ export function createDacsRoleServiceDoctorProbesV1(
       Array.isArray(item.body.reasonCodes) && item.body.reasonCodes.length === 0)
       ? pass({ roleCount: 2 }) : fail("role-service-not-ready");
   };
+  const commerce: DacsLiveDoctorProbeV1 = async ({ signal }) => {
+    const observed = await Promise.all([
+      jsonGet(fetcher, targets.buyer.endpoint, "/status", signal),
+      jsonGet(fetcher, targets.seller.endpoint, "/status", signal),
+    ]);
+    const configured = observed.every((entry) => entry?.status === 200 &&
+      commerceSummary(entry.body.commerce)?.status === "configured");
+    return configured ? pass({ roleCount: 2 }) : fail("role-commerce-not-configured");
+  };
   const versions: DacsLiveDoctorProbeV1 = async ({ signal }) => {
     const entries = await Promise.all([
       jsonGet(fetcher, targets.buyer.endpoint, "/status", signal),
@@ -349,5 +379,6 @@ export function createDacsRoleServiceDoctorProbesV1(
     "service.public-reachability": publicReachability,
     "service.version-agreement": versions,
     "service.readiness": readiness,
+    "service.commerce-configured": commerce,
   });
 }

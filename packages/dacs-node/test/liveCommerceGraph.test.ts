@@ -41,6 +41,7 @@ describe("closed live commerce graphs", () => {
     expect(Object.keys(graph.operations).sort()).toEqual([
       "agreement", "audit", "buyer-received", "payment", "payment-evidence",
     ]);
+    expect(graph.availability).toEqual({ status: "configured" });
     expect(graph.operations.agreement).toBe(agreement);
     expect(graph.operations["payment-evidence"]).toBe(paymentEvidence.operation);
     await expect(graph.validatePayload({
@@ -88,6 +89,7 @@ describe("closed live commerce graphs", () => {
     expect(graph.operations["delivery-evidence"]).toBe(x402.deliveryEvidence);
     expect(graph.operations["payment-evidence"]).toBe(paymentEvidence);
     expect(graph.handleApplicationRequest).toBe(handleApplicationRequest);
+    expect(graph.availability).toEqual({ status: "configured" });
   });
 
   it("rejects partial graphs before a role service can start", () => {
@@ -107,6 +109,10 @@ describe("closed live commerce graphs", () => {
       reasonCode: "commerce-not-admitted",
     });
     expect(buyer.role).toBe("buyer");
+    expect(buyer.availability).toEqual({
+      status: "blocked",
+      reasonCode: "commerce-not-admitted",
+    });
     expect(Object.keys(buyer.operations).sort()).toEqual([
       "agreement", "audit", "buyer-received", "payment", "payment-evidence",
     ]);
@@ -125,6 +131,10 @@ describe("closed live commerce graphs", () => {
       reasonCode: "commerce-not-admitted",
     });
     expect(seller.role).toBe("seller");
+    expect(seller.availability).toEqual({
+      status: "blocked",
+      reasonCode: "commerce-not-admitted",
+    });
     expect(Object.keys(seller.operations).sort()).toEqual([
       "agreement", "audit", "delivery", "delivery-evidence", "payment",
       "payment-evidence",

@@ -116,6 +116,7 @@ describe("complete role-owned live runtime", () => {
         graphContexts.push(context);
         return Object.freeze({
           role: "buyer" as const,
+          availability: Object.freeze({ status: "configured" as const }),
           operations: Object.freeze({
             agreement: pending,
             payment: pending,

@@ -57,6 +57,7 @@ export interface DacsSellerLiveCommerceGraphOptionsV1<T = unknown> {
 
 export interface DacsBuyerLiveCommerceGraphV1 {
   readonly role: "buyer";
+  readonly availability: Readonly<DacsLiveCommerceAvailabilityV1>;
   readonly operations: Readonly<DacsFixedPriceX402BuyerOperationsV1> &
     Readonly<FixedPriceX402Operations>;
   readonly router: Readonly<DacsLiveRoleMessageRouterV1>;
@@ -69,6 +70,7 @@ export interface DacsBuyerLiveCommerceGraphV1 {
 
 export interface DacsSellerLiveCommerceGraphV1 {
   readonly role: "seller";
+  readonly availability: Readonly<DacsLiveCommerceAvailabilityV1>;
   readonly operations: Readonly<DacsFixedPriceX402SellerOperationsV1> &
     Readonly<FixedPriceX402Operations>;
   readonly router: Readonly<DacsLiveRoleMessageRouterV1>;
@@ -79,6 +81,10 @@ export interface DacsSellerLiveCommerceGraphV1 {
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
   ): Promise<DacsHttpInboundDispositionV1>;
 }
+
+export type DacsLiveCommerceAvailabilityV1 =
+  | { status: "configured" }
+  | { status: "blocked"; reasonCode: string };
 
 export interface DacsUnavailableLiveCommerceGraphOptionsV1 {
   role: "buyer" | "seller";
@@ -138,7 +144,7 @@ export function createDacsUnavailableLiveCommerceGraphV1(
   });
   const runtime = Object.freeze({ validatePayload, handleMessage });
   if (options.role === "buyer") {
-    return createDacsBuyerLiveCommerceGraphV1({
+    const graph = createDacsBuyerLiveCommerceGraphV1({
       agreement: unavailableOperation,
       payment: unavailableOperation,
       paymentEvidence: Object.freeze({ ...runtime, operation: unavailableOperation }),
@@ -146,6 +152,13 @@ export function createDacsUnavailableLiveCommerceGraphV1(
       audit: unavailableOperation,
       agreementTransport: runtime as unknown as DacsBuyerAgreementTransportRuntimeV1,
       bundleTransport: runtime as unknown as DacsBuyerBundleTransportRuntimeV1,
+    });
+    return Object.freeze({
+      ...graph,
+      availability: Object.freeze({
+        status: "blocked" as const,
+        reasonCode: options.reasonCode,
+      }),
     });
   }
   const handleApplicationRequest: DacsLiveRoleApplicationRequestHandlerV1 =
@@ -162,7 +175,7 @@ export function createDacsUnavailableLiveCommerceGraphV1(
     deliveryEvidence: unavailableOperation,
     handleApplicationRequest,
   }) as unknown as Readonly<DacsSellerX402RuntimeV1>;
-  return createDacsSellerLiveCommerceGraphV1({
+  const graph = createDacsSellerLiveCommerceGraphV1({
     agreement: unavailableOperation,
     x402,
     paymentEvidence: unavailableOperation,
@@ -170,6 +183,13 @@ export function createDacsUnavailableLiveCommerceGraphV1(
     agreementTransport: runtime as unknown as DacsSellerAgreementTransportRuntimeV1,
     paymentEvidenceTransport: runtime as unknown as DacsSellerPaymentEvidenceRuntimeV1,
     bundleTransport: runtime as unknown as DacsSellerBundleTransportRuntimeV1,
+  });
+  return Object.freeze({
+    ...graph,
+    availability: Object.freeze({
+      status: "blocked" as const,
+      reasonCode: options.reasonCode,
+    }),
   });
 }
 
@@ -236,6 +256,7 @@ export function createDacsBuyerLiveCommerceGraphV1(
   });
   return Object.freeze({
     role: "buyer" as const,
+    availability: Object.freeze({ status: "configured" as const }),
     operations,
     router,
     validatePayload: router.validatePayload,
@@ -305,6 +326,7 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
   });
   return Object.freeze({
     role: "seller" as const,
+    availability: Object.freeze({ status: "configured" as const }),
     operations,
     router,
     validatePayload: router.validatePayload,

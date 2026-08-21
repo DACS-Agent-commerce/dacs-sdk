@@ -46,6 +46,7 @@ export const DACS_LIVE_DOCTOR_CHECK_IDS = Object.freeze([
   "service.public-reachability",
   "service.version-agreement",
   "service.readiness",
+  "service.commerce-configured",
 ] as const);
 
 export type DacsLiveDoctorCheckIdV1 =
@@ -176,6 +177,7 @@ const DEFINITIONS: readonly Readonly<CheckDefinition>[] = Object.freeze([
   { id: "service.public-reachability", label: "configured public endpoint reachability", availableFrom: "post-start", scopes: ALL_SCOPES },
   { id: "service.version-agreement", label: "cross-process version and store agreement", availableFrom: "post-start", scopes: ALL_SCOPES },
   { id: "service.readiness", label: "fresh role service readiness latch", availableFrom: "post-start", scopes: ALL_SCOPES },
+  { id: "service.commerce-configured", label: "buyer and seller commerce graph capability", availableFrom: "post-start", scopes: BUY },
 ]);
 
 function positiveInteger(value: unknown, maximum: number): value is number {

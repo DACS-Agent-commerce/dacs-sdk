@@ -32,6 +32,7 @@ describe("role service doctor probes", () => {
         sdkVersion: "sdk-v1",
         standardRevision: "standard-v1",
         profile: "profile-v1",
+        commerce: { status: "configured" },
       });
     });
     const diagnostic = vi.fn(async () => ({
@@ -60,7 +61,7 @@ describe("role service doctor probes", () => {
       expect(item.status, item.id).toBe("pass");
     }
     expect(diagnostic).toHaveBeenCalledTimes(2);
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(8);
   });
 
   it("blocks public checks without an independent probe and rejects version drift", async () => {
@@ -127,6 +128,7 @@ describe("role service status projection", () => {
       queues: { inboxPending: false, outboxPending: true, outboxOperatorAction: false },
       sessions: { runnable: 2, truncated: false },
       worker: { running: true, lastCycleAt: 49, lastSuccessAt: 48 },
+      commerce: { status: "configured" },
     };
   }
 
@@ -145,8 +147,8 @@ describe("role service status projection", () => {
       observedAt: 100,
       status: "available",
       roles: [
-        { role: "buyer", queues: { outboxPending: true }, sessions: { runnable: 2 } },
-        { role: "seller", queues: { outboxPending: true }, sessions: { runnable: 2 } },
+        { role: "buyer", commerce: { status: "configured" }, queues: { outboxPending: true }, sessions: { runnable: 2 } },
+        { role: "seller", commerce: { status: "configured" }, queues: { outboxPending: true }, sessions: { runnable: 2 } },
       ],
     });
   });

@@ -99,6 +99,10 @@ export interface DacsLiveRoleServiceStatusV1 {
   lifecycle: DacsLiveRoleServiceLifecycle;
   checkedAt: number;
   endpoint?: string;
+  commerce: Readonly<
+    | { status: "configured" }
+    | { status: "blocked"; reasonCode: string }
+  >;
   queues: Readonly<{
     inboxPending: boolean;
     outboxPending: boolean;
@@ -170,6 +174,10 @@ export interface DacsLiveRoleServiceOptionsV1 {
    */
   handleApplicationRequest?: DacsLiveRoleApplicationRequestHandlerV1;
   handlePublicRequest?: DacsLiveRolePublicRequestHandlerV1;
+  commerceAvailability?: Readonly<
+    | { status: "configured" }
+    | { status: "blocked"; reasonCode: string }
+  >;
   events?: DacsNodeEventSink;
   readiness?: () => Promise<Readonly<DacsNodeReadinessStatus>> |
     Readonly<DacsNodeReadinessStatus>;
@@ -322,6 +330,7 @@ function captureServiceOptions(
   ], [
     "handleApplicationRequest",
     "handlePublicRequest",
+    "commerceAvailability",
     "events",
     "readiness",
     "readinessMaxAgeMs",
@@ -470,6 +479,10 @@ export function createDacsLiveRoleServiceV1(
   const workerBatchSize = options.workerBatchSize ?? DEFAULT_WORKER_BATCH_SIZE;
   const readinessMaxAgeMs = options.readinessMaxAgeMs ?? DEFAULT_READINESS_MAX_AGE_MS;
   const coordinatorLeaseDurationMs = options.coordinatorLeaseDurationMs ?? 300_000;
+  const commerceAvailability = options.commerceAvailability ?? Object.freeze({
+    status: "blocked" as const,
+    reasonCode: "commerce-capability-unreported",
+  });
   if (!nonEmpty(peerAuthority) || !demosAuthority(peerAuthority) ||
       sameAuthority(authority, peerAuthority) || !nonEmpty(workerId) ||
       !nonEmpty(options.peerEndpoint) ||
@@ -482,6 +495,9 @@ export function createDacsLiveRoleServiceV1(
         typeof options.handleApplicationRequest !== "function") ||
       (options.handlePublicRequest !== undefined &&
         typeof options.handlePublicRequest !== "function") ||
+      (commerceAvailability.status !== "configured" &&
+        (commerceAvailability.status !== "blocked" ||
+          !validReasonCode(commerceAvailability.reasonCode))) ||
       (options.events !== undefined &&
         (options.events === null || typeof options.events !== "object" ||
           typeof options.events.emit !== "function")) ||
@@ -895,6 +911,7 @@ export function createDacsLiveRoleServiceV1(
       lifecycle,
       checkedAt: readTime(),
       ...(server === undefined ? {} : { endpoint: server.endpoint }),
+      commerce: Object.freeze({ ...commerceAvailability }),
       queues: Object.freeze({ inboxPending, outboxPending, outboxOperatorAction }),
       sessions: Object.freeze({
         runnable: runnableSessions,

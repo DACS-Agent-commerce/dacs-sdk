@@ -292,7 +292,14 @@ describe("authority-separated live role services", () => {
     expect(await ready.json()).toMatchObject({ ready: true, reasonCodes: [] });
     expect(status.status).toBe(200);
     const projected = await status.json();
-    expect(projected).toMatchObject({ role: "seller", lifecycle: "running" });
+    expect(projected).toMatchObject({
+      role: "seller",
+      lifecycle: "running",
+      commerce: {
+        status: "blocked",
+        reasonCode: "commerce-capability-unreported",
+      },
+    });
     expect(JSON.stringify(projected)).not.toContain(BUYER);
     expect(JSON.stringify(projected)).not.toContain(SELLER);
 
