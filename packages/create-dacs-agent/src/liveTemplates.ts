@@ -598,7 +598,10 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
           client,
           chainId: actors.buyer.evmIdentity.chainId,
           payer: actors.buyer.evmIdentity.address,
-          minimumEth: buyer.limits.maxEvmNetworkFeeEth,
+          // The configured value is a ceiling, not an estimate. The x402 cost
+          // gate remains blocked until exact Listing/payment preparation can
+          // prove whether the buyer owes any gas (facilitators commonly sponsor it).
+          minimumEth: "0",
         }),
       ]);
       return Object.freeze({ asset, gas });
