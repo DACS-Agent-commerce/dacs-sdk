@@ -149,6 +149,33 @@ authorization, or private provider URLs. Coordinator operation callbacks still
 own public-SDK validation and adapter reconciliation. The service does not turn
 an unsafe irreversible-effect adapter into an exactly-once adapter.
 
+`createDacsLiveRoleRuntimeV1()` is the higher-level actor boundary used by the
+generated live services. It opens one role-bound SQLite database, Demos wallet
+and write journal, v2 fenced-session store, x402 settlement store, seller
+receipt store where applicable, and EVM runtime. The buyer EVM signer remains
+private to the buyer process and is destroyed on shutdown; the seller runtime
+retains only its derived public EVM identity. Production operation and payload
+callbacks receive these already-admitted actor-local resources, so generated
+projects do not reopen stores or copy host implementation code.
+
+`createDacsFixedPriceX402OperationSetV1()` admits only the complete set of
+role-owned coordinator tracks. Core coordinators continue to support partial
+maps for focused recovery and tests, while the host production boundary rejects
+missing or cross-role tracks. `putDacsLiveOrderInputV1()` retains the immutable
+canonical public application/session facts before the first track can run;
+`loadDacsLiveOrderInputForTrackV1()` then binds recovery to the coordinator's
+exact role, job and local binding hash. Payment bearers and private material do
+not belong in that order-input record.
+
+`createDacsX402BuyerRuntimePaymentTrackV1()` composes those retained order facts
+with the buyer's role-local signer, chain-finality read client, durable x402
+settlement store and paid-request transport. Challenge acquisition is a
+read-only preparation step: a transient challenge failure creates no effect
+intent and is retryable. Once a bearer is retained and a paid request may have
+been sent, the existing payment effect fence and chain-authenticated
+reconciliation path remain authoritative; an unknown result never causes a new
+authorization or a blind paid-request replay.
+
 `loadDacsSecretV1()` applies file, injected OS-secret-manager, then explicit
 environment-variable precedence. Live files must be absolute, regular,
 non-symlink, owned by the process user, and mode `0600`; opening uses
