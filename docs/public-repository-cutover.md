@@ -13,9 +13,9 @@ history, publishing packages, or merging pull requests.
       is actually released.
 - [ ] Decide whether to retain or remove the 105 stale remote branches. Branch
       deletion is separate, destructive work and is not required for security.
-- [ ] Decide whether the historical contributor email addresses and local path
-      references are acceptable to expose. Rewriting history is not part of this
-      cutover and must not be attempted without an explicit migration plan.
+- [x] Existing contributor email addresses and local path references were
+      accepted by the repository owner on 2026-08-21. Do not rewrite history;
+      recommend GitHub `noreply` addresses for future commits.
 - [ ] Triage open issues and pull requests for internal operational detail. A
       public repository makes their titles, bodies, comments, reviews, and
       attachments visible.
