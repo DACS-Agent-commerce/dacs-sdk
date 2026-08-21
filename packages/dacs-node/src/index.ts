@@ -15,6 +15,7 @@ export * from "./localDoctor.js";
 export * from "./orderInput.js";
 export * from "./paymentEvidenceRuntime.js";
 export * from "./liveEffects.js";
+export * from "./liveCommerceGraph.js";
 export * from "./messageRouter.js";
 export * from "./offline.js";
 export * from "./offlineLifecycle.js";
