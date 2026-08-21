@@ -70,6 +70,10 @@ export interface DacsFixedPriceX402SellerAuthorityOptionsV1 {
 export interface DacsFixedPriceX402SellerAuthorityV1
   extends SellerIntakeAuthorityV1 {
   resolveCommittedSession: X402SellerSpineOptions["resolveCommittedSession"];
+  resolveHttpScope(jobId: string): Promise<Readonly<{
+    paymentPhaseIndex: number;
+    httpResource: string;
+  }>>;
   resolveOrderScope: DacsSellerX402RuntimeOptionsV1["resolveOrderScope"];
   authorizePaymentComplete:
     DacsSellerX402RuntimeOptionsV1["authorizePaymentComplete"];
@@ -545,6 +549,13 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
   };
 
   const authority: DacsFixedPriceX402SellerAuthorityV1 = {
+    async resolveHttpScope(jobId) {
+      const state = await stateForJob(jobId);
+      return Object.freeze({
+        paymentPhaseIndex: state.scope.paymentPhaseIndex,
+        httpResource: state.scope.httpResource,
+      });
+    },
     async resolveCommittedSession(input: Readonly<X402PaywallPreSettlementContext>) {
       try {
         const state = await stateForJob(input.jobId);

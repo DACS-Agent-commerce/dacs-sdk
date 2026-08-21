@@ -13,6 +13,7 @@ export * from "./events.js";
 export * from "./fundingDoctor.js";
 export * from "./fixedPriceX402Profile.js";
 export * from "./fixedPriceX402SellerAuthority.js";
+export * from "./fixedPriceX402SellerSettlement.js";
 export * from "./guardedCommands.js";
 export * from "./localDoctor.js";
 export * from "./orderInput.js";

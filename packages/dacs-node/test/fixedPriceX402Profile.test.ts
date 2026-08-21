@@ -1243,6 +1243,10 @@ describe("fixed-price x402 generated profile policy", () => {
       operation: operation(loaded.record, "payment"),
       retained: retainedPut.record,
     })).resolves.toEqual({ paymentPhaseIndex: 2, deliveryPhaseIndex: 3 });
+    await expect(sellerAuthority.resolveHttpScope(JOB_ID)).resolves.toEqual({
+      paymentPhaseIndex: 2,
+      httpResource: `https://seller.example/dacs/x402/${JOB_ID}`,
+    });
     const expected = {
       network: "eip155:84532" as const,
       payTo: `0x${"33".repeat(20)}`,
