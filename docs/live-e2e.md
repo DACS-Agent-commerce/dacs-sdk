@@ -9,6 +9,11 @@ the full env is present, so `npm test` / CI stay offline.
 Each funded attempt is permanently marked **non-rerunnable** (keyed by
 `LIVE_E2E_RUN_ID`), so use a fresh run id every time.
 
+Use disposable, testnet-only wallets for this run. Never reuse production or
+mainnet keys, commit wallet material, paste it into an issue or log, or put it
+directly in shell history. Treat testnet mnemonics and private keys as secrets
+even when the balances are small.
+
 ## 1. Node version (required)
 
 demosdk's ESM packaging + `avsc` break on Node ≥ 24 (`buffer.SlowBuffer is not a
@@ -45,6 +50,11 @@ receives.
 
 ## 3. Env
 
+Load these values from a protected environment file outside the repository (or
+from a secret manager), rather than prefixing a shell command with literal
+credentials. Ensure the file is readable only by its owner and never commit it.
+The following block documents variable names and public configuration only:
+
 ```
 DEMOS_RPC=https://demosnode.discus.sh/
 SELLER_WALLET=<seller mnemonic>   SELLER_DID=did:demos:agent:<seller hex>
@@ -69,20 +79,26 @@ supplying it proves cross-RPC (2-of-2) agreement instead of a lone `1-of-1` view
 ### Base Sepolia RPCs
 
 `PAY_RPC` is only for the test's own on-chain reads (the facilitator broadcasts
-via its own RPC). Public endpoints vary in reliability:
+via its own RPC). Public endpoints vary in reliability. During the August 2026
+funded validation, the observed state was:
 
-- Working: `https://base-sepolia.gateway.tenderly.co`,
+- Observed working: `https://base-sepolia.gateway.tenderly.co`,
   `https://base-sepolia-rpc.publicnode.com`,
   `https://base-sepolia.api.onfinality.io/public`
-- Flaky/dead at time of writing: `https://sepolia.base.org`,
+- Observed flaky/dead: `https://sepolia.base.org`,
   `https://base-sepolia.drpc.org`, `https://1rpc.io/base-sepolia`
+
+Probe both configured endpoints before a funded attempt; this list is an
+observation, not an availability guarantee.
 
 ## 4. Run + expected
 
-Prefix the §1 command with the env. A clean run is ~75s to commerce-complete and
-~4 min for the full audit/bundle path. Green = the full two-sided lifecycle ran
-on-chain (real DEM fees + a real ~0.000001 USDC transfer buyer→seller) and both
-role-owned DACS-5 bundles finalized and re-verified from cold storage.
+Load the protected environment, then run the §1 command. One clean August 2026
+run took approximately 75 seconds to commerce-complete and approximately four
+minutes for the full audit/bundle path; public-network latency varies. Green =
+the full two-sided lifecycle ran on-chain (real DEM fees + a real ~0.000001 USDC
+transfer buyer→seller) and both role-owned DACS-5 bundles finalized and
+re-verified from cold storage.
 
 ## 5. Troubleshooting
 
@@ -93,8 +109,10 @@ role-owned DACS-5 bundles finalized and re-verified from cold storage.
   with a fresh `LIVE_E2E_RUN_ID`.
 - **`facilitator-settle-outcome:failure-invalid-exact-evm-transaction-failed`** —
   the public x402 facilitator's on-chain settlement reverted. This facilitator is
-  **transiently flaky** — retrying (fresh run id) usually succeeds within a couple
-  of attempts; the SDK side (DACS-1/2/3 + cold-authority) passes regardless.
+  **transiently flaky**. Retry with a fresh run id only after the settlement
+  observer establishes an explicit terminal revert/no transfer. Never retry an
+  ambiguous timeout or unknown outcome until the original authorization and
+  transaction have been reconciled, or the test may pay twice.
 - **`request to <url> failed`** — `PAYWALL_URL` was set to a URL instead of the
   literal `local`.
 - USDC landed but the test can't see it — confirm it's on **Base Sepolia**
