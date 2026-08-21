@@ -744,7 +744,7 @@ function fixture(
           vetRecordRef: structuredClone(sellerVetRef),
           evaluatedParty: SELLER,
           requirement: { requirementVersion: "1", required: [] },
-          verifier: SELLER,
+          verifier: BUYER,
           freshness: [],
           dealSpecific: [],
         },

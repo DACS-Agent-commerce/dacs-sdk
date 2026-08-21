@@ -1537,6 +1537,11 @@ function auditSourceViolation(
     const seenResultRefs = new Set<string>();
     const seenResultHashes = new Set<string>();
     const listingOwned = binding?.roles.has("buyer") === true;
+    const expectedVerifier = listingOwned
+      ? sellerParty.primaryClaim
+      : binding?.roles.has("seller") === true
+        ? buyerParty.primaryClaim
+        : undefined;
     const expectedCompositeAddress =
       `dacs2:composite:${authorization.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
     const uncoveredRequired = invocation.requirement.required.some(
@@ -1548,8 +1553,9 @@ function auditSourceViolation(
         expectedResults.some((result) =>
           result.scheme === alternative.scheme && exact(result.requirement, alternative))),
     );
-    return !binding || invocation.evaluatedParty !== binding.primaryClaim ||
-      invocation.verifier !== orchestrator.primaryClaim ||
+    return !binding || expectedVerifier === undefined ||
+      invocation.evaluatedParty !== binding.primaryClaim ||
+      invocation.verifier !== expectedVerifier ||
       invocation.vetRecordRef.anchor.kind !== "storage-program" ||
       invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
       (invocation.vetRecordRef.signer !== undefined &&
