@@ -1,0 +1,55 @@
+{
+  "name": "@kynesyslabs/dacs-node",
+  "version": "0.1.0-alpha.0",
+  "description": "Production Node.js host contracts and adapters for the DACS SDK.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./transport": {
+      "types": "./dist/transport/index.d.ts",
+      "import": "./dist/transport/index.js"
+    },
+    "./sqlite": {
+      "types": "./dist/sqlite.d.ts",
+      "import": "./dist/sqlite.js"
+    },
+    "./vectors/dacs-http-envelope-v1.json": "./vectors/dacs-http-envelope-v1.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "vectors",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:with-core": "npm --prefix ../.. run build && npm run build",
+    "prepack": "npm run clean && npm run build:with-core",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build:with-core"
+  },
+  "peerDependencies": {
+    "@kynesyslabs/dacs": "0.1.0-alpha.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "12.6.2"
+  },
+  "devDependencies": {
+    "@kynesyslabs/dacs": "file:../..",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^4.0.18"
+  }
+}

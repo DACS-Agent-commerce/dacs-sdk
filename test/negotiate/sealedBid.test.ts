@@ -124,6 +124,37 @@ describe("matchRevealsToCommits (authoritative candidate set)", () => {
     const matched = matchRevealsToCommits(commits, reveals);
     expect(matched.map((m) => m.reveal.bidderClaim)).toEqual(["a"]);
   });
+
+  test("SE-9: equal-timestamp authority uses bidHash after exact-duplicate collapse", () => {
+    const one = makeCommitment(bid("100"), SALT_A);
+    const two = makeCommitment(bid("200"), SALT_B);
+    const first = one.bidHash < two.bidHash ? one : two;
+    const later = first === one ? two : one;
+    const commitFor = (value: typeof one): AnchoredCommit => ({
+      bidderClaim: "same-bidder",
+      bidHash: value.bidHash,
+      anchorTs: 10,
+    });
+    const revealFor = (value: typeof one): AnchoredReveal => ({
+      bidderClaim: "same-bidder",
+      bid: value.bid,
+      salt: value.salt,
+      anchorTs: 100,
+    });
+    const commits = [commitFor(later), commitFor(first), commitFor(first)];
+
+    for (const orderedCommits of permutations(commits)) {
+      const matched = matchRevealsToCommits(orderedCommits, [revealFor(first)]);
+      expect(matched).toHaveLength(1);
+      expect(matched[0]!.commit.bidHash).toBe(first.bidHash);
+
+      // Opening only the non-authoritative same-bidder commit never provides a
+      // second choice at reveal time.
+      expect(
+        matchRevealsToCommits(orderedCommits, [revealFor(later)]),
+      ).toEqual([]);
+    }
+  });
 });
 
 describe("compareDecimal", () => {
@@ -263,4 +294,13 @@ describe("selectSealedWinner (§8.4.3 step 5)", () => {
 // Small helper mirroring compareDecimal for the acceptance-predicate test.
 function compareDecimalLte(a: string, b: string): boolean {
   return compareDecimal(a, b) <= 0;
+}
+
+function permutations<T>(values: T[]): T[][] {
+  if (values.length <= 1) return [values];
+  return values.flatMap((value, index) =>
+    permutations(values.filter((_, candidate) => candidate !== index)).map(
+      (rest) => [value, ...rest],
+    ),
+  );
 }

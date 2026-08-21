@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -16,9 +19,9 @@ jobs:
         node-version: ["20.19.0", "22"]
     name: build-test (node ${{ matrix.node-version }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
 
@@ -31,19 +34,220 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Typecheck Node host kit
+        run: npm run host:typecheck
+
+      - name: Typecheck project generator
+        run: npm run generator:typecheck
+
       - name: Build
         run: npm run build
+
+      - name: Build Node host kit
+        run: npm run host:build
+
+      - name: Build project generator
+        run: npm run generator:build
 
       - name: Package smoke (core install without live peers)
         run: |
           mkdir -p package-smoke/app
+          node -e "require('node:fs').rmSync('dist', { recursive: true, force: true })"
           npm pack --pack-destination package-smoke
+          test -f dist/index.js
+          tar -tf package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz | grep -Fx package/dist/index.js
+          tar -tf package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz | grep -Fx package/dist/commerce/index.js
           npm install --prefix package-smoke/app --omit=optional --ignore-scripts "$GITHUB_WORKSPACE"/package-smoke/*.tgz
-          (cd package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller')]).then(([root, seller]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1) process.exit(1) })")
+          (cd package-smoke/app && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
           npm audit --prefix package-smoke/app --omit=dev --omit=optional
+
+      - name: Package smoke (Node host kit boundary)
+        run: |
+          mkdir -p host-package-smoke/app
+          npm pack --pack-destination host-package-smoke
+          node -e "require('node:fs').rmSync('packages/dacs-node/dist', { recursive: true, force: true })"
+          npm pack --workspace @kynesyslabs/dacs-node --pack-destination host-package-smoke
+          test -f packages/dacs-node/dist/index.js
+          tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/index.js
+          tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/transport/index.js
+          tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/sqlite.js
+          node -e "const core=require('./package.json'); const host=require('./packages/dacs-node/package.json'); if (host.peerDependencies?.['@kynesyslabs/dacs'] !== core.version || host.peerDependenciesMeta?.['@kynesyslabs/dacs']?.optional === true) process.exit(1)"
+          npm install --prefix host-package-smoke/app --ignore-scripts --strict-peer-deps \
+            "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
+            "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
+          (cd host-package-smoke/app && node --input-type=module -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || !import.meta.resolve('@kynesyslabs/dacs-node/sqlite')) process.exit(1) })")
+          node -e "const p=require('./package.json'); if ((p.dependencies && p.dependencies['@kynesyslabs/dacs-node']) || (p.optionalDependencies && p.optionalDependencies['@kynesyslabs/dacs-node']) || (p.peerDependencies && p.peerDependencies['@kynesyslabs/dacs-node'])) process.exit(1)"
+
+      - name: Packed SQLite host smoke
+        run: |
+          mkdir -p host-sqlite-smoke/app
+          npm install --prefix host-sqlite-smoke/app \
+            "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
+            "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
+          (cd host-sqlite-smoke/app && node --input-type=module - <<'NODE'
+          import { mkdtempSync, rmSync } from "node:fs";
+          import { tmpdir } from "node:os";
+          import { join } from "node:path";
+          import {
+            DACS_NODE_OFFLINE_PROFILE,
+          } from "@kynesyslabs/dacs-node";
+          import {
+            FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
+            FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+            fixedPriceOfflineOrderBindingHash,
+            fixedPriceOfflineOrderLocalBindingHash,
+          } from "@kynesyslabs/dacs/commerce";
+          import {
+            openDacsNodeSqliteDatabase,
+          } from "@kynesyslabs/dacs-node/sqlite";
+
+          const root = mkdtempSync(join(tmpdir(), "dacs-packed-sqlite-"));
+          try {
+            const database = await openDacsNodeSqliteDatabase({
+              databasePath: join(root, "buyer.sqlite"),
+              mode: "offline",
+              profile: DACS_NODE_OFFLINE_PROFILE,
+              role: "buyer",
+              authority: "claim:packed-smoke:buyer",
+            });
+            if (database.diagnostics().quickCheck !== "ok") process.exit(1);
+            const order = {
+              jobId: "01J8N4YV7YVYQ4DB7M8T4C7W0A",
+              buyer: "claim:packed-smoke:buyer",
+              seller: "claim:packed-smoke:seller",
+              protocol: {
+                commerceProfile: FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
+                standardRevision: FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+                mode: "offline",
+                orchestratorTopology: "seller-as-phase-orchestrator-v1",
+                orchestrator: "claim:packed-smoke:seller",
+                settlement: {
+                  adapter: "deterministic-offline",
+                  version: 1,
+                  disposition: "mocked",
+                },
+              },
+              sdkJobs: {
+                role: "buyer",
+                agreement: "packed:agreement",
+                payment: "packed:payment",
+                paymentEvidence: "packed:payment-evidence",
+                buyerReceived: "packed:buyer-received",
+                audit: "packed:audit",
+              },
+            };
+            const store = database.createOfflineCoordinatorStore("buyer");
+            const bindingHash = fixedPriceOfflineOrderBindingHash(order);
+            const localBindingHash = fixedPriceOfflineOrderLocalBindingHash(order);
+            const created = await store.create({
+              role: "buyer",
+              order,
+              bindingHash,
+              localBindingHash,
+            });
+            const loaded = await store.load("buyer", order.jobId);
+            if (created.status !== "created" || loaded.status !== "ok" ||
+                loaded.record.bindingHash !== bindingHash ||
+                loaded.record.localBindingHash !== localBindingHash) process.exit(1);
+            database.close();
+          } finally {
+            rmSync(root, { recursive: true, force: true });
+          }
+          NODE
+          )
+          npm audit --prefix host-sqlite-smoke/app --omit=dev
+
+      - name: Packed generator clean-project acceptance
+        run: |
+          mkdir -p generator-smoke/packs generator-smoke/runner
+          npm pack --pack-destination generator-smoke/packs
+          npm pack --workspace @kynesyslabs/dacs-node --pack-destination generator-smoke/packs
+          node -e "require('node:fs').rmSync('packages/create-dacs-agent/dist', { recursive: true, force: true })"
+          npm pack --workspace create-dacs-agent --pack-destination generator-smoke/packs
+          test -f packages/create-dacs-agent/dist/bin.js
+          npm install --prefix generator-smoke/runner --ignore-scripts \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/create-dacs-agent-0.1.0-alpha.0.tgz
+          node generator-smoke/runner/node_modules/create-dacs-agent/dist/bin.js \
+            generator-smoke/generated-agent --yes --no-install
+          test ! -e generator-smoke/generated-agent/package-lock.json
+          node -e 'const p=require("./generator-smoke/generated-agent/package.json"); const exact={"@kynesyslabs/dacs":"0.1.0-alpha.0","@kynesyslabs/dacs-node":"0.1.0-alpha.0"}; if(JSON.stringify(p.dependencies)!==JSON.stringify(exact)) process.exit(1)'
+          # The prerelease packages are intentionally installed from the local
+          # tarballs. --no-save preserves the generator's registry-ready exact
+          # manifest; npm ci cannot validate it until those versions publish.
+          (cd generator-smoke/generated-agent && npm install --no-save --ignore-scripts --omit=optional \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
+            typescript@5.9.2 @types/node@20.19.1)
+          (cd generator-smoke/generated-agent && npm run typecheck && npm test && npm run dacs:smoke:offline)
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = path.resolve("generator-smoke/generated-agent");
+          const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          const exact = {
+            "@kynesyslabs/dacs": "0.1.0-alpha.0",
+            "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
+          };
+          if (JSON.stringify(packageJson.dependencies) !== JSON.stringify(exact)) process.exit(1);
+          if (fs.existsSync(path.join(root, "node_modules", "better-sqlite3"))) process.exit(1);
+          const files = [];
+          const visit = (directory) => {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              if (["node_modules", "dist", "data"].includes(entry.name)) continue;
+              const candidate = path.join(directory, entry.name);
+              if (entry.isDirectory()) visit(candidate);
+              else files.push(candidate);
+            }
+          };
+          visit(root);
+          const source = files.map((file) => fs.readFileSync(file, "utf8")).join("\n");
+          for (const forbidden of ["../../src/", "@kynesyslabs/dacs/dist", "PRIVATE_KEY", "SEED_PHRASE", "MNEMONIC"]) {
+            if (source.includes(forbidden)) {
+              console.error(`generated tree contains forbidden token: ${forbidden}`);
+              process.exit(1);
+            }
+          }
+          const reports = [];
+          const findReports = (directory) => {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const candidate = path.join(directory, entry.name);
+              if (entry.isDirectory()) findReports(candidate);
+              else if (entry.name === "simulation-report.json") reports.push(candidate);
+            }
+          };
+          findReports(path.join(root, "data"));
+          if (reports.length !== 1) process.exit(1);
+          const report = JSON.parse(fs.readFileSync(reports[0], "utf8"));
+          if (!report.simulationPassed || report.normativeConformance !== false ||
+              report.commercialSuccess !== false || report.mode !== "offline" ||
+              report.payment.availability !== "mocked" ||
+              report.assurance.substrateAuthority !== "mocked-local-not-sr2" ||
+              report.assurance.providerAuthority !== "mocked-self-signed-not-sr3" ||
+              report.assurance.railAuthority !== "mocked-local-not-rav-r5" ||
+              report.assurance.jobIdDiscipline !== "fresh-csprng-ulid-per-run" ||
+              report.phases.map((phase) => phase.stage).join(",") !== "DACS-1,DACS-2,DACS-3,DACS-4,DACS-5") {
+            process.exit(1);
+          }
+          const fixtureDirectory = path.join(path.dirname(reports[0]), "simulation-artifacts");
+          for (const file of fs.readdirSync(fixtureDirectory)) {
+            const fixture = JSON.parse(fs.readFileSync(path.join(fixtureDirectory, file), "utf8"));
+            if (fixture.normativeConformance !== false ||
+                fixture.commercialAuthority !== "none" ||
+                fixture.anchorAuthority !== "none" ||
+                fixture.portableAttestationRef !== false) {
+              process.exit(1);
+            }
+          }
+          NODE
 
       - name: Test (unit + conformance harness)
         run: npm test
+
+      - name: Test Node host kit
+        run: npm run host:test
+
+      - name: Test project generator
+        run: npm run generator:test
 
       # Informational (non-blocking): surface production-tree advisories per the
       # SECURITY.md audit policy (#40). continue-on-error keeps the JOB green, but

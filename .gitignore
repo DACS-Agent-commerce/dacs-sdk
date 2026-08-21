@@ -16,3 +16,6 @@ vendor/
 
 # Ephemeral npm-audit JSON written by the CI dependency-audit step.
 audit.json
+
+# Reproducible local package candidates and provenance receipts.
+package-artifacts/

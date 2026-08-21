@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { keccak256, stringToHex } from "viem";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
@@ -20,8 +21,7 @@ import {
 
 const STEWARD_SEED = Uint8Array.from(Buffer.alloc(32, 42));
 const IMPOSTOR_SEED = Uint8Array.from(Buffer.alloc(32, 99));
-const HARDHAT_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const TEST_EVM_KEY = keccak256(stringToHex("dacs-sdk:test:registry-rail"));
 
 function signerFor(seed: Uint8Array): Signer {
   const priv = privateKeyFromSeed(seed);
@@ -813,7 +813,7 @@ describe("rail dispatch by kind (T6)", () => {
         availability: "live",
         params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
       },
-      { evmPrivateKey: HARDHAT_KEY, paywall },
+      { evmPrivateKey: TEST_EVM_KEY, paywall },
     );
     expect(typeof settle).toBe("function");
   });
@@ -822,7 +822,7 @@ describe("rail dispatch by kind (T6)", () => {
     await expect(
       settleFromRail(
         { id: "x402:default", kind: "x402", availability: "live", params: {} },
-        { evmPrivateKey: HARDHAT_KEY, paywall },
+        { evmPrivateKey: TEST_EVM_KEY, paywall },
       ),
     ).rejects.toThrow(/tokenAddress/);
   });
@@ -835,7 +835,7 @@ describe("rail dispatch by kind (T6)", () => {
         availability: "live",
         params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
       },
-      { evmPrivateKey: HARDHAT_KEY, paywall, rpcUrl: "https://sepolia.base.org" },
+      { evmPrivateKey: TEST_EVM_KEY, paywall, rpcUrl: "https://sepolia.base.org" },
     );
     expect(typeof settle).toBe("function");
   });
@@ -844,7 +844,7 @@ describe("rail dispatch by kind (T6)", () => {
     await expect(
       settleFromRail(
         { id: "evm-erc20:usdc", kind: "evm-erc20", availability: "live", params: {} },
-        { evmPrivateKey: HARDHAT_KEY, paywall, rpcUrl: "https://sepolia.base.org" },
+        { evmPrivateKey: TEST_EVM_KEY, paywall, rpcUrl: "https://sepolia.base.org" },
       ),
     ).rejects.toThrow(/tokenAddress/);
   });
@@ -858,7 +858,7 @@ describe("rail dispatch by kind (T6)", () => {
           availability: "live",
           params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
         },
-        { evmPrivateKey: HARDHAT_KEY, paywall },
+        { evmPrivateKey: TEST_EVM_KEY, paywall },
       ),
     ).rejects.toThrow(/rpcUrl/);
   });
@@ -885,7 +885,7 @@ describe("rail dispatch by kind (T6)", () => {
         params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
       },
       {
-        evmPrivateKey: HARDHAT_KEY,
+        evmPrivateKey: TEST_EVM_KEY,
         payment: {
           network: paywall.network,
           recipient: paywall.recipientEvm,
@@ -900,7 +900,7 @@ describe("rail dispatch by kind (T6)", () => {
     await expect(
       settleFromRail(
         { id: "x", kind: "bogus", availability: "live", params: {} },
-        { evmPrivateKey: HARDHAT_KEY, paywall },
+        { evmPrivateKey: TEST_EVM_KEY, paywall },
       ),
     ).rejects.toThrow(/unknown rail kind/);
   });

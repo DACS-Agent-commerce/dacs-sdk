@@ -119,6 +119,54 @@ const isString = (value: unknown): value is string => typeof value === "string";
 const isNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
+const LEGACY_FINALITY_MODELS = new Set([
+  "block-depth",
+  "commitment-level",
+  "provider-receipt",
+  "htlc-reveal",
+  "liquidity-tank",
+  "bft-final",
+]);
+
+function hasOnlyKeys(
+  value: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+): boolean {
+  const names = new Set(allowed);
+  return Object.keys(value).every((key) => names.has(key));
+}
+
+function isLegacySettlementFinality(value: unknown): value is SettlementFinality {
+  if (
+    !isRecord(value) ||
+    typeof value.model !== "string" ||
+    !LEGACY_FINALITY_MODELS.has(value.model) ||
+    !isNumber(value.finalityObservedAt)
+  ) {
+    return false;
+  }
+  if (value.model === "block-depth") {
+    return (
+      hasOnlyKeys(value, ["model", "finalityBlocks", "finalityObservedAt"]) &&
+      (value.finalityBlocks === undefined ||
+        (Number.isSafeInteger(value.finalityBlocks) &&
+          (value.finalityBlocks as number) >= 0))
+    );
+  }
+  if (value.model === "commitment-level") {
+    return hasOnlyKeys(value, [
+      "model",
+      "finalityCommitmentLevel",
+      "finalityObservedAt",
+    ]) &&
+      (value.finalityCommitmentLevel === undefined ||
+        value.finalityCommitmentLevel === "processed" ||
+        value.finalityCommitmentLevel === "confirmed" ||
+        value.finalityCommitmentLevel === "finalized");
+  }
+  return hasOnlyKeys(value, ["model", "finalityObservedAt"]);
+}
+
 export function isLegacyMvpAgreementDocument(
   value: unknown,
 ): value is LegacyMvpAgreementDocument {
@@ -185,9 +233,7 @@ export function isLegacyMvpSettlementEvidence(
     isRecord(amount) &&
     isString(amount.amount) &&
     isString(amount.currency) &&
-    isRecord(finality) &&
-    isString(finality.model) &&
-    isNumber(finality.finalityObservedAt)
+    isLegacySettlementFinality(finality)
   );
 }
 

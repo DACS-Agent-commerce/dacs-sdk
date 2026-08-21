@@ -14,6 +14,7 @@ import {
   isCompositeVerificationRecord,
   isListing,
   isLegacyMvpListing,
+  isLegacyMvpSettlementEvidence,
   isPayeeBoundAgreementDocument,
   isPricingSpec,
   isSettlementEvidence,
@@ -52,6 +53,53 @@ const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
   AttestationBundle: isAttestationBundle,
   FaultAttestationBundle: isFaultAttestationBundle,
 };
+
+describe("legacy MVP settlement finality compatibility", () => {
+  const evidence = {
+    evidenceVersion: "1",
+    jobId: "job-1",
+    phase: "pay-x402",
+    phaseIndex: 0,
+    outcome: "success",
+    paymentTxRefs: [{ rail: "test", txHash: "0x1", kind: "payment" }],
+    paymentAmount: { amount: "1", currency: "USDC" },
+    observedAt: 1,
+  };
+
+  it("accepts valid optional finality echoes and rejects cross-model fields", () => {
+    expect(isLegacyMvpSettlementEvidence({
+      ...evidence,
+      settlementFinality: {
+        model: "block-depth",
+        finalityObservedAt: 1,
+      },
+    })).toBe(true);
+    expect(isLegacyMvpSettlementEvidence({
+      ...evidence,
+      settlementFinality: {
+        model: "commitment-level",
+        finalityCommitmentLevel: "confirmed",
+        finalityObservedAt: 1,
+      },
+    })).toBe(true);
+    expect(isLegacyMvpSettlementEvidence({
+      ...evidence,
+      settlementFinality: {
+        model: "commitment-level",
+        finalityBlocks: 1,
+        finalityObservedAt: 1,
+      },
+    })).toBe(false);
+    expect(isLegacyMvpSettlementEvidence({
+      ...evidence,
+      settlementFinality: {
+        model: "provider-receipt",
+        finalityObservedAt: 1,
+        extra: true,
+      },
+    })).toBe(false);
+  });
+});
 
 describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
   if (!have) {
@@ -177,6 +225,64 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
         },
       }),
     ).toBe(false);
+
+    const finalityBase = {
+      ...valid,
+      settlementFinality: {
+        model: "provider-receipt",
+        finalityObservedAt: valid.settlementFinality.finalityObservedAt,
+      },
+    };
+    for (const settlementFinality of [
+      { model: "block-depth", finalityObservedAt: 1 },
+      { model: "block-depth", finalityBlocks: 0, finalityObservedAt: 1 },
+      { model: "commitment-level", finalityObservedAt: 1 },
+      {
+        model: "commitment-level",
+        finalityCommitmentLevel: "processed",
+        finalityObservedAt: 1,
+      },
+      {
+        model: "commitment-level",
+        finalityCommitmentLevel: "confirmed",
+        finalityObservedAt: 1,
+      },
+      {
+        model: "commitment-level",
+        finalityCommitmentLevel: "finalized",
+        finalityObservedAt: 1,
+      },
+      { model: "provider-receipt", finalityObservedAt: 1 },
+      { model: "htlc-reveal", finalityObservedAt: 1 },
+      { model: "liquidity-tank", finalityObservedAt: 1 },
+      { model: "bft-final", finalityObservedAt: 1 },
+    ]) {
+      expect(isSettlementEvidence({ ...finalityBase, settlementFinality }))
+        .toBe(true);
+    }
+    for (const settlementFinality of [
+      { model: "block-depth", finalityBlocks: -1, finalityObservedAt: 1 },
+      { model: "block-depth", finalityBlocks: 1.5, finalityObservedAt: 1 },
+      {
+        model: "block-depth",
+        finalityCommitmentLevel: "confirmed",
+        finalityObservedAt: 1,
+      },
+      {
+        model: "commitment-level",
+        finalityBlocks: 1,
+        finalityObservedAt: 1,
+      },
+      {
+        model: "commitment-level",
+        finalityCommitmentLevel: "kinda",
+        finalityObservedAt: 1,
+      },
+      { model: "provider-receipt", extra: true, finalityObservedAt: 1 },
+    ]) {
+      expect(isSettlementEvidence({ ...finalityBase, settlementFinality }))
+        .toBe(false);
+    }
   });
 });
 

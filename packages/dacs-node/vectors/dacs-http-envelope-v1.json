@@ -1,0 +1,180 @@
+{
+  "vectorVersion": 1,
+  "algorithm": "ed25519",
+  "warning": "The seed is public test material and must never be used for a production identity.",
+  "envelopeIdDomain": "dacs-http-envelope-id:v1:",
+  "messageDomain": "dacs-http-message:v1:",
+  "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "publicKeyHex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "sender": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "audience": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396",
+  "issuedAt": 1800000000000,
+  "expiresAt": 1800000300000,
+  "cases": [
+    {
+      "type": "agreement-proposal",
+      "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "payload": {
+        "transportIdentity": {
+          "sender": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "audience": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
+        },
+        "proposal": {
+          "numericEdge": 9007199254740991,
+          "label": "Café",
+          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        }
+      },
+      "payloadCanonical": "{\"proposal\":{\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"label\":\"Café\",\"numericEdge\":9007199254740991},\"transportIdentity\":{\"audience\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"sender\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}}",
+      "payloadHash": "1475e7fa9b53d986c06d5533543b57e673d07950c3181145299be76955dc447a",
+      "envelopeId": "519af08b90428f8ed9cebdc536eadfd541b102c4c8ee4bb563aca98279b27282",
+      "envelopeHash": "c8732437e71d45ac26de2af35b6f76bd52f325e1d17293009ad7dba56dd4c2c8",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313ac8732437e71d45ac26de2af35b6f76bd52f325e1d17293009ad7dba56dd4c2c8",
+      "signature": "uEtUwrbDvG_KE1byReUcnWXEd01hlT9Hs6SLX7v7Y7doFmsvxPt9RQjIyN7AYuF9mIOO_jby1zLJITxA3sd4BQ"
+    },
+    {
+      "type": "agreement-response",
+      "nonce": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "payload": {
+        "responseVersion": "vector",
+        "accepted": true,
+        "note": "键顺序"
+      },
+      "payloadCanonical": "{\"accepted\":true,\"note\":\"键顺序\",\"responseVersion\":\"vector\"}",
+      "payloadHash": "7d8f74a3a48f0551a2dff9205ee00a979d8619dfe53ee2efb8e01d347d32a255",
+      "envelopeId": "89997fb69905238a8aa4fd1d309be42928de836b88d4aa652d9107d5a019c89a",
+      "envelopeHash": "6144aaa913a983947b1abe33766a2f734866c5e98822f87a76430a381dc08069",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a6144aaa913a983947b1abe33766a2f734866c5e98822f87a76430a381dc08069",
+      "signature": "Dh1a5u7CN4clGjbfdpkx4ox_iBg8XaO12LEgK2xzYTpucHzVKJL_sIaWAvy2rh6Np8_jNUceZsQbMf68L4bzAw"
+    },
+    {
+      "type": "payment-evidence-request",
+      "nonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "payload": {
+        "messageId": "request-vector",
+        "requestHash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "seller": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "buyer": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
+      },
+      "payloadCanonical": "{\"buyer\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"request-vector\",\"requestHash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"seller\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}",
+      "payloadHash": "af9209d4a7c1aa1987c965e42c276502210fedeb1f320810f58e8cd672be05bb",
+      "envelopeId": "24b7fc52b7380ed0607b81246148212f9b9d6c6d97291d2b9a6f76aea9b3831a",
+      "envelopeHash": "782a5964af5d43ef7690be5cb0d0b0396d719e1865aa1377d6729da77f8bc36a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a782a5964af5d43ef7690be5cb0d0b0396d719e1865aa1377d6729da77f8bc36a",
+      "signature": "nkKb2REPq0ERonNqbR2bnskCedls3j2kOj3hWsXcE1-AyJIbxEXZdq6ihn-0wUE73LlaTJGOLmuTXaKwMmDhAQ"
+    },
+    {
+      "type": "payment-evidence-completion",
+      "nonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+      "payload": {
+        "messageId": "completion-vector",
+        "completionHash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "buyer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+      },
+      "payloadCanonical": "{\"buyer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"completionHash\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"completion-vector\"}",
+      "payloadHash": "b0210de459b24d620c09855ee898dc7b2df7ce59a3b7b009dc73466512d96d8d",
+      "envelopeId": "9f5dc5714d088e73c805a44de8de4aa6fa436874e8a7dc7443d932c52c3c2fe8",
+      "envelopeHash": "96fb2fe51c70b77bf97875f8e5a579bca43253c645cd2bbbfb1f9a653da3fc38",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a96fb2fe51c70b77bf97875f8e5a579bca43253c645cd2bbbfb1f9a653da3fc38",
+      "signature": "HEtdxNPSY6NCefuaXRswhTsl_FTVIzL_MsLO8WuCZ0pGMSSMmmvs344fRcscrJ8_8_JB2gcVtdKQQ0QD7Q3yBQ"
+    },
+    {
+      "type": "bundle-signature-request",
+      "nonce": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "payload": {
+        "bundleContentHash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "signedScope": {
+          "z": 0,
+          "a": "Å"
+        },
+        "signedBytes": "AQID",
+        "requiredCounterSigners": [
+          "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
+        ]
+      },
+      "payloadCanonical": "{\"bundleContentHash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"requiredCounterSigners\":[\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\"],\"signedBytes\":\"AQID\",\"signedScope\":{\"a\":\"Å\",\"z\":0}}",
+      "payloadHash": "9941e730ff5cee3f271b477a2f20d09e5aa0a3988b92e93b9ba6fe60386bd563",
+      "envelopeId": "516e0438b1995fe386e91f51d61fe3eceeaaeab513084a72a7a4ee995d8a0977",
+      "envelopeHash": "408ed8518fabddbbc08515f7311e41245712d51e580b6e2b4976be2f8a239ac8",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a408ed8518fabddbbc08515f7311e41245712d51e580b6e2b4976be2f8a239ac8",
+      "signature": "5d266CBR6sCSvXV72O3f33pWYko01bHGgUzLq-kzFo7lhlnsa5anhMbW-8t-eUlTLEjjiq8IBTvpErGGFollAA"
+    },
+    {
+      "type": "bundle-signature-response",
+      "nonce": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "payload": {
+        "party": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "algorithm": "ed25519",
+        "signature": "vector-signature"
+      },
+      "payloadCanonical": "{\"algorithm\":\"ed25519\",\"party\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"signature\":\"vector-signature\"}",
+      "payloadHash": "8163c58bd137179620c4818333f59998d258ae1b503ce455cf6890b63127dc7a",
+      "envelopeId": "948986c78b0aefc26a97f0ff366c4b584b43e228be2716c584818c97dbd8e823",
+      "envelopeHash": "add81e860f5948f4b433005d1c67c3c87044bad7e54157ba4f6672137bb9e92e",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aadd81e860f5948f4b433005d1c67c3c87044bad7e54157ba4f6672137bb9e92e",
+      "signature": "WJaURF2VykNMRMlKa4E6drQPU4U76_qrlw__OITLT-aSSP0m8Ml1nSCIs9tW1Pm2XABrbuTG9rAlm3cT02lCCQ"
+    },
+    {
+      "type": "acknowledgement",
+      "nonce": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "payload": {
+        "acknowledgedEnvelopeId": "4444444444444444444444444444444444444444444444444444444444444444",
+        "acknowledgedPayloadHash": "5555555555555555555555555555555555555555555555555555555555555555",
+        "disposition": "accepted"
+      },
+      "payloadCanonical": "{\"acknowledgedEnvelopeId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"acknowledgedPayloadHash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"disposition\":\"accepted\"}",
+      "payloadHash": "4230548f3af0a9ff387d56eb08af9e4cd38fd3192d55d90138a2f3b1f212afe0",
+      "envelopeId": "09846d7e8cc376d4ebc0b08a4dadd24d307d70704b22af38f19dfc71ff00bfab",
+      "envelopeHash": "771914d54236f719ff7f6e756715a3dcda6c397093c646b4afa7fbafa2a1145a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a771914d54236f719ff7f6e756715a3dcda6c397093c646b4afa7fbafa2a1145a",
+      "signature": "rgBduV18DxGXWRs5h0G2VVAoZQSRhFJAaEBL9In1VQehFddGhRKQVN8s_ffmp2N4XpEamRhc0n8G--DOMwH-CQ"
+    }
+  ],
+  "negativeCases": [
+    {
+      "name": "modified-payload",
+      "baseCase": "agreement-proposal",
+      "mutation": "replace payload with {\"changed\":true} without updating derived fields",
+      "expectedReasonCode": "envelope-payload-hash-mismatch"
+    },
+    {
+      "name": "modified-audience",
+      "baseCase": "agreement-proposal",
+      "mutation": "replace audience with did:demos:agent: plus 64 lowercase d characters without updating derived fields",
+      "expectedReasonCode": "envelope-id-mismatch"
+    },
+    {
+      "name": "wrong-signature-domain",
+      "baseCase": "agreement-proposal",
+      "mutation": "sign dacs-artifact:v1: || raw envelopeHash instead of the message-domain bytes",
+      "expectedReasonCode": "envelope-signature-invalid"
+    },
+    {
+      "name": "padded-nonce",
+      "baseCase": "agreement-proposal",
+      "mutation": "append = to nonce",
+      "expectedReasonCode": "nonce-base64url-invalid"
+    },
+    {
+      "name": "padded-signature",
+      "baseCase": "agreement-proposal",
+      "mutation": "append = to signature",
+      "expectedReasonCode": "signature-base64url-invalid"
+    },
+    {
+      "name": "unsafe-time",
+      "baseCase": "agreement-proposal",
+      "mutation": "replace expiresAt with 9007199254740992",
+      "expectedReasonCode": "envelope-canonical-json-invalid"
+    },
+    {
+      "name": "non-canonical-principal",
+      "baseCase": "agreement-proposal",
+      "mutation": "replace sender with its bare 64-character lowercase public key",
+      "expectedReasonCode": "envelope-identity-fields-invalid"
+    }
+  ]
+}
