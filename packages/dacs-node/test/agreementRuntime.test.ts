@@ -208,6 +208,52 @@ describe("durable agreement role tracks", () => {
     });
   });
 
+  it("preserves a retryable seller completion dependency", async () => {
+    loadOrderInput.mockReturnValue({ application: { proposal: true } });
+    const response = {
+      responseVersion: "1",
+      transportIdentity: {
+        jobId: JOB_ID,
+        planHash: "1".repeat(64),
+        agreementHash: "2".repeat(64),
+        buyer: BUYER,
+        seller: SELLER,
+        proposalHash: "3".repeat(64),
+      },
+      sellerContribution: {},
+    };
+    respondAgreement.mockResolvedValue({
+      disposition: "complete",
+      recovered: true,
+      result: response,
+    });
+    const proposal = { proposalHash: "3".repeat(64) } as never;
+    const authorizeComplete = vi.fn(async () => ({
+      status: "pending-retry" as const,
+      reasonCode: "seller-commitment-pending",
+    }));
+    const track = createDacsSellerAgreementTrackV1({
+      context: context("seller") as never,
+      workerId: "seller-worker",
+      resolveProposal: () => ({ proposal, transportIdentity: response.transportIdentity }),
+      resolveAuthenticatedAgreementContext: vi.fn(async () => resolution),
+      verifyContribution: vi.fn(),
+      reconcileSellerSignature: vi.fn(async () => resolution),
+      transport: {
+        publishSellerContribution: vi.fn(async () => ({ disposition: "submitted" })),
+        reconcileSellerContributionPublication: vi.fn(async () => resolution),
+      },
+      authorizeComplete,
+    });
+
+    await expect(track(operation("seller").input as never)).resolves.toEqual({
+      status: "pending-retry",
+      reasonCode: "seller-commitment-pending",
+      retryAt: 2_000,
+    });
+    expect(authorizeComplete).toHaveBeenCalledWith(expect.objectContaining({ proposal }));
+  });
+
   it("fails closed on cross-track invocation and unauthorized terminal readback", async () => {
     loadOrderInput.mockReturnValue({ application: {} });
     advanceAgreement.mockResolvedValue({

@@ -40,6 +40,11 @@ export type DacsAgreementRejectionDecisionV1 = Readonly<
     }
 >;
 
+export type DacsAgreementAuthorizationDecisionV1 = Readonly<
+  | { status: "pending-retry" | "indeterminate"; reasonCode: string }
+  | { status: "operator-action"; reasonCode: string }
+>;
+
 interface DacsAgreementRuntimeOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   workerId: string;
@@ -100,8 +105,10 @@ export interface DacsSellerAgreementTrackOptionsV1
   authorizeComplete(input: Readonly<{
     operation: Readonly<FixedPriceX402TrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1>;
+    proposal: Readonly<FixedPriceAgreementProposal>;
     result: Readonly<DurableSellerFixedPriceAgreementResponse>;
-  }>): Promise<boolean> | boolean;
+  }>): Promise<boolean | DacsAgreementAuthorizationDecisionV1> |
+    boolean | DacsAgreementAuthorizationDecisionV1;
   classifyRejected?: DacsBuyerAgreementTrackOptionsV1["classifyRejected"];
 }
 
@@ -514,12 +521,28 @@ export function createDacsSellerAgreementTrackV1(
       await operation.fence.assertCurrent();
       if (progress.result.transportIdentity.jobId !== operation.order.jobId ||
           progress.result.transportIdentity.buyer !== operation.order.buyer ||
-          progress.result.transportIdentity.seller !== operation.order.seller ||
-          await options.authorizeComplete({
+          progress.result.transportIdentity.seller !== operation.order.seller) {
+        throw new Error();
+      }
+      const authorization = await options.authorizeComplete({
             operation,
             retained,
+            proposal: resolved.proposal,
             result: progress.result,
-          }) !== true) {
+          });
+      if (authorization !== true) {
+        if (plainObject(authorization) &&
+            (authorization.status === "pending-retry" ||
+              authorization.status === "indeterminate" ||
+              authorization.status === "operator-action") &&
+            typeof authorization.reasonCode === "string" &&
+            REASON_RE.test(authorization.reasonCode)) {
+          return authorization.status === "operator-action"
+            ? Object.freeze({ status: "operator-action" as const,
+                reasonCode: authorization.reasonCode })
+            : progressResult(authorization.status, authorization.reasonCode,
+                retryAt(common.context, common.retryDelayMs));
+        }
         throw new Error();
       }
       return Object.freeze({
