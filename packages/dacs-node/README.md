@@ -7,8 +7,9 @@ concerns outside the transport-neutral SDK. It publishes the stable host
 interfaces, byte-exact authenticated HTTP envelope, and the local SQLite
 durability foundation. The SQLite surface includes the actor-bound coordinator
 and payment-evidence handshake stores plus durable authenticated HTTP inbox and
-outbox records. The HTTP listener/client, role services, and live deployment
-remain separate stacked implementation units.
+outbox records. It also provides the bounded HTTP listener and durable client
+that operate those stores. Role services and live deployment remain separate
+stacked implementation units.
 
 ```ts
 import {
@@ -75,10 +76,61 @@ the outbox.
 Both transport stores reject retention shorter than seven days, support a
 terminal-session retention extension, use stable bounded cursors, and keep a
 complete hash-chained canonical transition history. Their durable monotonic
-clock prevents a backwards host clock from reviving a lease. These stores do
-not open a socket or perform a request; admission, bounded HTTP parsing, TLS,
-rate limiting, payload validation and role dispatch belong to the next host
-unit.
+clock prevents a backwards host clock from reviving a lease.
+
+`startDacsHttpMessageServerV1()` serves only
+`POST /dacs-transport/v1/messages`. It bounds decoded JSON bodies to 256 KiB,
+rate-limits a bounded set of peers, authenticates the envelope and independently
+validates its typed payload before inbox admission, and emits only a signed
+acknowledgement after the handler disposition is durable. A thrown or malformed
+handler result leaves the reservation pending; call `resumeDacsHttpInboxV1()`
+during startup to resume those items with the same idempotent handler before
+accepting traffic. Plain HTTP is restricted to loopback bindings. Non-loopback
+listeners require TLS key and certificate material.
+
+`createDacsHttpMessageClientV1()` retains the exact self-signed envelope before
+the first request. Network failures, timeouts and 2xx responses without an
+authenticated, exactly bound acknowledgement schedule the retained envelope
+for replay rather than clearing it. `runRunnable()` processes due work after a
+restart using the outbox's generation-fenced leases and bounded exponential
+backoff. A signed `rejected` acknowledgement is a terminal transport result;
+the owning SDK operation must inspect its disposition and decide the protocol
+outcome.
+
+```ts
+import {
+  createDacsHttpMessageClientV1,
+  resumeDacsHttpInboxV1,
+  startDacsHttpMessageServerV1,
+} from "@kynesyslabs/dacs-node/transport";
+import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
+
+const database = await openDacsNodeSqliteDatabase(actorBoundDatabaseOptions);
+const endpointOptions = {
+  authority: configuredActorClaimRef,
+  inbox: database.createHttpInboxStore(),
+  resolveIdentity: verifiedDemosIdentityResolver,
+  validatePayload: publicSdkPayloadValidator,
+  handleMessage: idempotentDurableRoleHandler,
+  signAcknowledgement: actorIdentitySigner,
+};
+
+await resumeDacsHttpInboxV1(endpointOptions);
+const server = await startDacsHttpMessageServerV1(endpointOptions);
+
+const client = createDacsHttpMessageClientV1({
+  endpoint: configuredPeerEndpoint,
+  authority: configuredActorClaimRef,
+  outbox: database.createHttpOutboxStore(),
+  resolveIdentity: verifiedDemosIdentityResolver,
+  workerId: processWorkerId,
+});
+```
+
+The transport callbacks are intentionally host-owned. The identity resolver
+must dereference and verify Demos identity material; the payload validator must
+use public SDK validators plus independently retained session facts. Returning
+`valid` solely because an envelope is signed is not sufficient authorization.
 
 The public v2, v3, and v4 schemas are immutable migration inputs. A v2 database
 contains only the coordinator order table and its runnable index; the

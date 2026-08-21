@@ -1377,7 +1377,12 @@ export function createDacsHttpOutboxSqliteStore(
     async recordSendFailure(input) {
       const lease = captureLease(input.lease);
       if (!lease || !validateIdentity(input.envelopeId, input.envelopeHash) ||
-          !reasonCode(input.reasonCode)) return { status: "conflict" };
+          !reasonCode(input.reasonCode) ||
+          (input.retryAfterMs !== undefined &&
+            (!safeUint(input.retryAfterMs) ||
+              input.retryAfterMs > DACS_HTTP_MAXIMUM_RETRY_DELAY_MS))) {
+        return { status: "conflict" };
+      }
       return context.beginImmediate(() => {
         const loaded = readOutbox(context, input.envelopeId);
         if (!loaded) return { status: "missing" };
@@ -1406,10 +1411,11 @@ export function createDacsHttpOutboxSqliteStore(
         if (!Number.isInteger(jitter) || Math.abs(jitter) > Math.floor(baseDelayMs / 2)) {
           throw context.error("http-outbox-jitter-invalid", "HTTP retry jitter is out of bounds");
         }
-        const delay = Math.max(0, Math.min(
+        const localDelay = Math.max(0, Math.min(
           DACS_HTTP_MAXIMUM_RETRY_DELAY_MS,
           baseDelayMs + jitter,
         ));
+        const delay = Math.max(localDelay, input.retryAfterMs ?? 0);
         const computed = now + delay;
         if (!Number.isSafeInteger(computed)) {
           throw context.error("http-outbox-retry-overflow", "HTTP outbox retry time overflows");

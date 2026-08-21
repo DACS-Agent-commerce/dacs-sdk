@@ -170,6 +170,8 @@ export interface DacsHttpOutboxStoreV1 {
     envelopeHash: string;
     lease: Readonly<DacsHttpOutboxLeaseV1>;
     reasonCode: string;
+    /** Bounded server delay, combined with (never substituted for) local backoff. */
+    retryAfterMs?: number;
   }>): Promise<Readonly<{
     status: "recorded" | "existing" | "stale" | "conflict" | "missing";
     record?: Readonly<DacsHttpOutboxItemV1>;
