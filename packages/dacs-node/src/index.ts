@@ -1,4 +1,5 @@
 export * from "./config.js";
+export * from "./agreementRuntime.js";
 export * from "./commerceRuntime.js";
 export * from "./contracts.js";
 export * from "./doctor.js";
