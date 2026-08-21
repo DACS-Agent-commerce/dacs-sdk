@@ -21,5 +21,6 @@ export * from "./supervision.js";
 export * from "./transportDiagnostic.js";
 export * from "./transport/index.js";
 export * from "./x402Payment.js";
+export * from "./x402RuntimePayment.js";
 export * from "./x402Http.js";
 export * from "./evmRuntime.js";
