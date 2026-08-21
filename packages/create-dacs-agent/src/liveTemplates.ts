@@ -199,6 +199,11 @@ export function configuredEvmRpcUrl(): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
+export function configuredSellerEvmPayee(): string | undefined {
+  const value = process.env.DACS_SELLER_EVM_PAYEE;
+  return value === undefined || value.trim() === "" ? undefined : value;
+}
+
 export function configuredListingDraftFile(): string | undefined {
   const value = process.env.DACS_LISTING_DRAFT_FILE;
   return value === undefined || value.trim() === "" ? undefined : resolve(value);
@@ -295,6 +300,7 @@ import {
   configuredEvmRpcUrl,
   configuredListingDraftFile,
   configuredRailStewardAuthority,
+  configuredSellerEvmPayee,
   configuredX402FacilitatorUrl,
   configuredX402RailId,
   loadRoleConfig,
@@ -837,8 +843,11 @@ function baseProbes(
         ? pass({ payer: actors.buyer.evmIdentity.address.toLowerCase() })
         : fail("x402-payer-binding-mismatch"),
     "x402.payee-binding": actors === undefined ? actorUnavailable : () =>
-      actors.seller.evmIdentity.network === loadRoleConfig("seller").rail.requestedNetwork &&
+      configuredSellerEvmPayee() !== undefined &&
+        actors.seller.evmIdentity.network === loadRoleConfig("seller").rail.requestedNetwork &&
         /^0x[0-9A-Fa-f]{40}$/.test(actors.seller.evmIdentity.address) &&
+        actors.seller.evmIdentity.address.toLowerCase() ===
+          configuredSellerEvmPayee()!.toLowerCase() &&
         actors.seller.evmIdentity.address.toLowerCase() !==
           actors.buyer.evmIdentity.address.toLowerCase()
         ? pass({ payee: actors.seller.evmIdentity.address.toLowerCase() })
@@ -981,6 +990,7 @@ import {
   configuredAuthority,
   configuredListingDraftFile,
   configuredRailStewardAuthority,
+  configuredSellerEvmPayee,
   configuredX402RailId,
   listingDiscoveryDirectory,
   loadRoleConfig,
@@ -1041,11 +1051,13 @@ async function buildPrepared(
   const draftPath = configuredListingDraftFile();
   const stewardAuthority = configuredRailStewardAuthority();
   const sellerEndpoint = sellerConfig.publicBaseUrl;
+  const configuredPayee = configuredSellerEvmPayee();
   const stewardPublicKey = stewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(stewardAuthority);
   if (sellerAuthority === undefined || buyerAuthority === undefined ||
       demosSecretPath === undefined || evmSecretPath === undefined || draftPath === undefined ||
-      stewardAuthority === undefined || stewardPublicKey === null || sellerEndpoint === undefined) {
+      stewardAuthority === undefined || stewardPublicKey === null || sellerEndpoint === undefined ||
+      configuredPayee === undefined || !/^0x[0-9A-Fa-f]{40}$/.test(configuredPayee)) {
     throw new Error("setup prerequisite is unavailable");
   }
   const demosSecret = await loadDacsSecretV1({
@@ -1070,6 +1082,9 @@ async function buildPrepared(
     role: "seller",
     evmPrivateKey: evmSecret,
   });
+  if (evm.address.toLowerCase() !== configuredPayee.toLowerCase()) {
+    throw new Error("configured seller payee does not match the seller EVM authority");
+  }
   const rail = await resolveRail(
     RAIL_REGISTRY_INDEX_ADDRESS,
     configuredX402RailId(),
@@ -1161,14 +1176,246 @@ export async function executeGeneratedListingSetupV1(input: Readonly<{
 }
 `;
 
+const PURCHASE_SOURCE = `import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+
+import {
+  RAIL_REGISTRY_INDEX_ADDRESS,
+  resolveRail,
+} from "@kynesyslabs/dacs";
+import { canonicalize } from "@kynesyslabs/dacs/canonical";
+import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
+import {
+  DACS_NODE_LIVE_PROFILE,
+  createDacsDemosActorRuntimeV1,
+  createDacsDemosRailRegistryProviderV1,
+  createDacsPurchaseQueueExecutorV1,
+  deriveDacsEvmRoleIdentityV1,
+  loadDacsSecretV1,
+  prepareDacsX402PurchaseV1,
+  readDacsPublicJsonV1,
+  resolveDacsX402ExistingListingV1,
+  runDacsGuardedCommandV1,
+  type DacsGuardedCommandResultV1,
+  type DacsLiveDoctorReportV1,
+  type DacsPreparedX402PurchaseV1,
+} from "@kynesyslabs/dacs-node";
+import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
+
+import {
+  actorDatabasePath,
+  actorSecretPath,
+  configuredAuthority,
+  configuredRailStewardAuthority,
+  configuredSellerEvmPayee,
+  configuredX402RailId,
+  loadRoleConfig,
+} from "./config.js";
+
+export const GENERATED_PURCHASE_REQUEST_SCHEMA =
+  "dacs-generated-purchase-request/v1" as const;
+
+export interface GeneratedPurchasePreparationInputV1 {
+  jobId: string;
+  listingRef: string;
+  request: Readonly<Record<string, unknown>>;
+  maximumServiceAmount: string;
+  maximumNetworkFeeEth: string;
+}
+
+function plainData(value: unknown): value is Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return (prototype === Object.prototype || prototype === null) &&
+      Reflect.ownKeys(value).every((key) => {
+        if (typeof key !== "string") return false;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return descriptor !== undefined && descriptor.enumerable && "value" in descriptor;
+      });
+  } catch {
+    return false;
+  }
+}
+
+export async function readGeneratedPurchaseRequestV1(
+  path: string,
+): Promise<Readonly<Record<string, unknown>>> {
+  const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const observed = await file.stat();
+    if (!observed.isFile() || observed.size <= 0 || observed.size > 1_048_576) {
+      throw new Error("purchase request file is unsafe");
+    }
+    const bytes = await file.readFile();
+    try {
+      const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      if (!plainData(parsed) || Reflect.ownKeys(parsed).length !== 2 ||
+          parsed.schema !== GENERATED_PURCHASE_REQUEST_SCHEMA ||
+          !Object.hasOwn(parsed, "input")) {
+        throw new Error("purchase request schema is invalid");
+      }
+      return Object.freeze(JSON.parse(canonicalize(parsed)) as Record<string, unknown>);
+    } finally {
+      bytes.fill(0);
+    }
+  } finally {
+    await file.close();
+  }
+}
+
+async function buildPrepared(
+  input: Readonly<GeneratedPurchasePreparationInputV1>,
+): Promise<Readonly<DacsPreparedX402PurchaseV1>> {
+  const buyerConfig = loadRoleConfig("buyer");
+  const sellerConfig = loadRoleConfig("seller");
+  const buyerAuthority = configuredAuthority("buyer");
+  const sellerAuthority = configuredAuthority("seller");
+  const buyerDemosSecretPath = actorSecretPath("buyer", "demos-identity");
+  const buyerEvmSecretPath = actorSecretPath("buyer", "evm-wallet");
+  const stewardAuthority = configuredRailStewardAuthority();
+  const stewardPublicKey = stewardAuthority === undefined
+    ? null : canonicalDemosAgentPublicKey(stewardAuthority);
+  const sellerPublicKey = sellerAuthority === undefined
+    ? null : canonicalDemosAgentPublicKey(sellerAuthority);
+  const sellerPayee = configuredSellerEvmPayee();
+  const sellerEndpoint = sellerConfig.publicBaseUrl;
+  if (buyerAuthority === undefined || sellerAuthority === undefined ||
+      buyerDemosSecretPath === undefined || buyerEvmSecretPath === undefined ||
+      stewardAuthority === undefined || stewardPublicKey === null || sellerPublicKey === null ||
+      sellerPayee === undefined || !/^0x[0-9A-Fa-f]{40}$/.test(sellerPayee) ||
+      sellerEndpoint === undefined) {
+    throw new Error("purchase prerequisite is unavailable");
+  }
+  const demosSecret = await loadDacsSecretV1({
+    name: "buyer-purchase-demos-identity",
+    mode: "live-demos",
+    filePath: buyerDemosSecretPath,
+  });
+  const buyer = await createDacsDemosActorRuntimeV1({
+    config: buyerConfig,
+    role: "buyer",
+    authority: buyerAuthority,
+    demosIdentity: demosSecret,
+    writePolicy: "read-only",
+  });
+  const evmSecret = await loadDacsSecretV1({
+    name: "buyer-purchase-evm-wallet",
+    mode: "live-demos",
+    filePath: buyerEvmSecretPath,
+  });
+  const payer = await deriveDacsEvmRoleIdentityV1({
+    config: buyerConfig,
+    role: "buyer",
+    evmPrivateKey: evmSecret,
+  });
+  const rail = await resolveRail(
+    RAIL_REGISTRY_INDEX_ADDRESS,
+    configuredX402RailId(),
+    createDacsDemosRailRegistryProviderV1({
+      runtime: buyer,
+      stewardAuthority,
+      stewardPublicKey,
+    }),
+  );
+  const resolved = await resolveDacsX402ExistingListingV1({
+    listingRef: input.listingRef,
+    sellerAuthority,
+    sellerPublicKey,
+    sellerPublicEndpoint: sellerEndpoint,
+    sellerPayee,
+    network: buyerConfig.rail.requestedNetwork as \`eip155:\${number}\`,
+    rail,
+    maximumServiceAmount: input.maximumServiceAmount,
+    now: Date.now(),
+    readAnchor: (locator) => buyer.adapter.readAnchor(locator),
+    async authenticateAnchor(anchor) {
+      const receipt = await buyer.adapter.resolveDemosAnchorReceipt(anchor);
+      return receipt !== null &&
+        await buyer.adapter.verifyDemosAnchorReceipt(receipt) === true;
+    },
+    readJson: (url) => readDacsPublicJsonV1(url, {
+      timeoutMs: 5_000,
+      maxBytes: 1_048_576,
+    }),
+  });
+  if (resolved.status !== "verified") {
+    throw new Error("purchase Listing admission failed: " + resolved.reasonCode);
+  }
+  return prepareDacsX402PurchaseV1({
+    admission: resolved.admission,
+    jobId: input.jobId,
+    buyerAuthority,
+    payer: payer.address,
+    request: input.request,
+    maximumServiceAmount: input.maximumServiceAmount,
+    maximumNetworkFeeEth: input.maximumNetworkFeeEth,
+  });
+}
+
+export async function prepareGeneratedPurchaseV1(
+  input: Readonly<GeneratedPurchasePreparationInputV1>,
+): Promise<Readonly<DacsPreparedX402PurchaseV1>> {
+  return buildPrepared(input);
+}
+
+export async function executeGeneratedPurchaseV1(input: Readonly<{
+  expected: Readonly<DacsPreparedX402PurchaseV1>;
+  preparation: Readonly<GeneratedPurchasePreparationInputV1>;
+  doctorReport: Readonly<DacsLiveDoctorReportV1>;
+  confirmation: string;
+  nonInteractive: boolean;
+  confirm(summary: Readonly<{
+    kind: "setup" | "purchase" | "funded-doctor";
+    planHash: string;
+    actionCount: number;
+    network: string;
+    maximumAssetSpend: string;
+    maximumNetworkFee: string;
+    paymentPossible: boolean;
+  }>): Promise<boolean>;
+}>): Promise<Readonly<DacsGuardedCommandResultV1>> {
+  const prepared = await buildPrepared(input.preparation);
+  if (canonicalize(prepared) !== canonicalize(input.expected)) {
+    throw new Error("purchase plan changed after doctor");
+  }
+  const database = await openDacsNodeSqliteDatabase({
+    databasePath: actorDatabasePath("buyer"),
+    mode: "live-demos",
+    profile: DACS_NODE_LIVE_PROFILE,
+    role: "buyer",
+    authority: prepared.plan.buyerAuthority,
+  });
+  try {
+    return await runDacsGuardedCommandV1({
+      plan: prepared.plan,
+      execute: true,
+      database,
+      workerId: "buyer-purchase-" + String(process.pid),
+      doctorReports: [input.doctorReport],
+      confirmation: input.confirmation,
+      nonInteractive: input.nonInteractive,
+      confirm: input.confirm,
+      executor: createDacsPurchaseQueueExecutorV1({
+        prepared,
+        database,
+        workerId: "buyer-purchase-queue-" + String(process.pid),
+      }),
+    });
+  } finally {
+    database.close();
+  }
+}
+`;
+
 const CLI_SOURCE = `import { spawn } from "node:child_process";
-import { constants } from "node:fs";
-import { lstat, mkdir, open } from "node:fs/promises";
+import { lstat, mkdir } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 
 import { VERSION } from "@kynesyslabs/dacs";
-import { canonicalize, canonicalizeDecimal, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { canonicalizeDecimal } from "@kynesyslabs/dacs/canonical";
 import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
+import { generateCanonicalJobId, isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 import {
   DACS_NODE_LIVE_PROFILE,
   formatDacsLiveDoctorTextV1,
@@ -1188,6 +1435,11 @@ import {
   executeGeneratedListingSetupV1,
   prepareGeneratedListingSetupV1,
 } from "./setup.js";
+import {
+  executeGeneratedPurchaseV1,
+  prepareGeneratedPurchaseV1,
+  readGeneratedPurchaseRequestV1,
+} from "./purchase.js";
 
 type DoctorPhase = "pre-start" | "post-start";
 type DoctorScope = "start" | "setup" | "buy";
@@ -1311,84 +1563,107 @@ function decimalWithin(value: string, ceiling: string): string {
   return normalized;
 }
 
-function closedOptions(
-  args: readonly string[],
-  names: readonly string[],
-): Readonly<Record<string, string>> {
-  const allowed = new Set(names);
-  const captured: Record<string, string> = {};
-  for (let index = 0; index < args.length; index += 2) {
-    const name = args[index];
-    if (name === undefined || !allowed.has(name) || Object.hasOwn(captured, name)) {
-      throw new Error("unknown or repeated command option");
-    }
-    captured[name] = valueAfter(args, index, name);
-  }
-  if (Object.keys(captured).length !== names.length) {
-    throw new Error("required command option is missing");
-  }
-  return Object.freeze(captured);
-}
-
-async function preflightPlan(scope: "buy", args: readonly string[]) {
+async function purchaseArguments(args: readonly string[]) {
   const config = loadRoleConfig("buyer");
-  const values = closedOptions(args, [
-    "--listing-ref", "--request-file", "--max-service-amount", "--max-network-fee-eth",
+  const values: Record<string, string> = {};
+  let nonInteractive = false;
+  const valued = new Set([
+    "--listing-ref", "--request-file", "--max-service-amount",
+    "--max-network-fee-eth", "--resume-job",
   ]);
+  for (let index = 0; index < args.length; index += 1) {
+    const name = args[index]!;
+    if (name === "--non-interactive") {
+      if (nonInteractive) throw new Error("purchase option is repeated");
+      nonInteractive = true;
+      continue;
+    }
+    if (!valued.has(name) || Object.hasOwn(values, name)) {
+      throw new Error("unknown or repeated purchase option");
+    }
+    values[name] = valueAfter(args, index, name);
+    index += 1;
+  }
+  for (const required of [
+    "--listing-ref", "--request-file", "--max-service-amount", "--max-network-fee-eth",
+  ]) {
+    if (!Object.hasOwn(values, required)) throw new Error(required + " is required");
+  }
   const listingRef = values["--listing-ref"]!;
   if (listingRef.length > 512 || listingRef.trim() !== listingRef || listingRef.length === 0) {
     throw new Error("listing reference is malformed");
   }
-  const requestPath = values["--request-file"]!;
-  const requestFile = await open(requestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-  let request: Buffer;
-  try {
-    const observed = await requestFile.stat();
-    if (!observed.isFile() || observed.size > 1_048_576) {
-      throw new Error("request file is unsafe");
-    }
-    request = await requestFile.readFile();
-  } finally {
-    await requestFile.close();
+  const resumedJobId = values["--resume-job"];
+  if (resumedJobId !== undefined && !isCanonicalJobId(resumedJobId)) {
+    throw new Error("resume job must be a canonical DACS job ID");
   }
-  const requestHash = sha256Hex(request);
-  request.fill(0);
   return Object.freeze({
-    schema: "dacs-generated-command-preflight/v1",
-    kind: "purchase",
-    execute: false,
+    invocationMode: resumedJobId === undefined ? "new" as const : "resume" as const,
+    jobId: resumedJobId ?? generateCanonicalJobId(),
     listingRef,
-    requestHash,
+    request: await readGeneratedPurchaseRequestV1(values["--request-file"]!),
     maximumServiceAmount: decimalWithin(
       values["--max-service-amount"]!, config.limits.maxServiceAmount.amount),
     maximumNetworkFeeEth: decimalWithin(
       values["--max-network-fee-eth"]!, config.limits.maxEvmNetworkFeeEth),
-    adapterStatus: "not-configured",
+    nonInteractive,
   });
 }
 
-async function guardedUnavailable(scope: "buy", args: readonly string[]): Promise<number> {
-  const plan = await preflightPlan(scope, args);
-  const body = { ...plan, planHash: sha256Hex("dacs-generated-command-preflight:v1:" +
-    canonicalize(plan)) };
-  process.stdout.write(JSON.stringify(body) + "\\n");
-  const confirmationName = "DACS_PURCHASE_CONFIRM";
-  const confirmation = process.env[confirmationName];
-  if (confirmation === undefined) return 0;
-  if (confirmation !== "1") throw new Error("write confirmation is malformed");
+async function confirmPurchase(planHash: string): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("interactive purchase requires a terminal; use --non-interactive explicitly");
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await prompt.question(
+      "Enqueue the exact purchase plan " + planHash + "? Type yes to continue: ",
+    );
+    return answer === "yes";
+  } finally {
+    prompt.close();
+  }
+}
+
+async function guardedPurchase(args: readonly string[]): Promise<number> {
+  const parsed = await purchaseArguments(args);
   const report = await runGeneratedDoctor(
     "post-start",
-    scope,
+    "buy",
     {
-      listingRef: plan.listingRef,
-      maximumServiceAmount: plan.maximumServiceAmount,
-      maximumNetworkFeeEth: plan.maximumNetworkFeeEth,
+      listingRef: parsed.listingRef,
+      maximumServiceAmount: parsed.maximumServiceAmount,
+      maximumNetworkFeeEth: parsed.maximumNetworkFeeEth,
     },
   );
-  process.stdout.write(formatDacsLiveDoctorTextV1(report));
+  printDoctor(report);
   if (report.exitCode !== 0) return report.exitCode;
-  process.stderr.write("reviewed live effect adapter is not configured; no write was attempted\\n");
-  return 5;
+  const preparation = Object.freeze({
+    jobId: parsed.jobId,
+    listingRef: parsed.listingRef,
+    request: parsed.request,
+    maximumServiceAmount: parsed.maximumServiceAmount,
+    maximumNetworkFeeEth: parsed.maximumNetworkFeeEth,
+  });
+  const prepared = await prepareGeneratedPurchaseV1(preparation);
+  process.stdout.write(JSON.stringify({
+    execute: false,
+    invocationMode: parsed.invocationMode,
+    ...prepared.plan,
+  }) + "\\n");
+  const confirmation = process.env.DACS_PURCHASE_CONFIRM;
+  if (confirmation === undefined) return 0;
+  if (confirmation !== "1") throw new Error("write confirmation is malformed");
+  const result = await executeGeneratedPurchaseV1({
+    expected: prepared,
+    preparation,
+    doctorReport: report,
+    confirmation,
+    nonInteractive: parsed.nonInteractive,
+    confirm: ({ planHash }) => confirmPurchase(planHash),
+  });
+  process.stdout.write(JSON.stringify(result) + "\\n");
+  return result.status === "completed" || result.status === "existing-completion" ? 0 : 5;
 }
 
 function setupArguments(args: readonly string[]): Readonly<{
@@ -1467,7 +1742,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   } else if (operation === "status") {
     process.exitCode = await serviceStatus();
   } else if (operation === "setup") process.exitCode = await guardedSetup(rest);
-  else if (operation === "buy") process.exitCode = await guardedUnavailable("buy", rest);
+  else if (operation === "buy") process.exitCode = await guardedPurchase(rest);
   else if (operation === "doctor-funded") {
     if (process.env.DACS_DOCTOR_FUNDED_CONFIRM !== "1") {
       throw new Error("funded doctor requires DACS_DOCTOR_FUNDED_CONFIRM=1");
@@ -1707,6 +1982,7 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_MAX_EVM_NETWORK_FEE_ETH: \${DACS_MAX_EVM_NETWORK_FEE_ETH:-0.001}
   DACS_BUYER_AUTHORITY: \${DACS_BUYER_AUTHORITY:-}
   DACS_SELLER_AUTHORITY: \${DACS_SELLER_AUTHORITY:-}
+  DACS_SELLER_EVM_PAYEE: \${DACS_SELLER_EVM_PAYEE:-}
   DACS_BUYER_PUBLIC_BASE_URL: \${DACS_BUYER_PUBLIC_BASE_URL:-}
   DACS_SELLER_PUBLIC_BASE_URL: \${DACS_SELLER_PUBLIC_BASE_URL:-}
 
@@ -1798,6 +2074,7 @@ DACS_BUYER_SERVICE_URL=http://127.0.0.1:3101
 DACS_SELLER_SERVICE_URL=http://127.0.0.1:3102
 DACS_BUYER_AUTHORITY=
 DACS_SELLER_AUTHORITY=
+DACS_SELLER_EVM_PAYEE=
 DACS_BUYER_DEMOS_SECRET_FILE=
 DACS_BUYER_EVM_SECRET_FILE=
 DACS_SELLER_DEMOS_SECRET_FILE=
@@ -1866,6 +2143,16 @@ are non-interchangeable and are rejected if persisted there. Without its own
 confirmation, setup or purchase prints a read-only preflight plan and exits.
 Every executing command also requires explicit caps.
 
+The purchase request file is closed, versioned JSON:
+
+\`\`\`json
+{"schema":"dacs-generated-purchase-request/v1","input":{"query":"bounded request"}}
+\`\`\`
+
+A fresh buy generates and prints a new canonical job ID. To reconcile or resume
+that exact retained purchase, repeat the same inputs with
+\`--resume-job <printed-job-id>\`; never omit it when recovering an earlier run.
+
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
 the reviewed \`better-sqlite3\` native adapter. It uses separate non-root buyer/seller processes, secret mounts and durable
@@ -1897,6 +2184,7 @@ export function liveProjectTemplates(
     "src/config.ts": CONFIG_SOURCE,
     "src/doctor.ts": DOCTOR_SOURCE,
     "src/setup.ts": SETUP_SOURCE,
+    "src/purchase.ts": PURCHASE_SOURCE,
     "src/cli.ts": CLI_SOURCE,
     "src/offline-smoke.ts": OFFLINE_SMOKE_SOURCE,
     "test/live-bootstrap.test.ts": TEST_SOURCE,

@@ -219,6 +219,7 @@ describe("create-dacs-agent", () => {
     expect(await filesBelow(target)).toEqual(expect.arrayContaining([
       "src/cli.ts",
       "src/doctor.ts",
+      "src/purchase.ts",
       "src/setup.ts",
       "src/service.ts",
       "test/live-bootstrap.test.ts",
@@ -291,6 +292,11 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("inspectDacsX402ListingDraftV1");
     expect(combined).toContain("prepareDacsListingSetupV1");
     expect(combined).toContain("createDacsListingSetupExecutorV1");
+    expect(combined).toContain("createDacsPurchaseQueueExecutorV1");
+    expect(combined).toContain("prepareDacsX402PurchaseV1");
+    expect(combined).toContain("dacs-generated-purchase-request/v1");
+    expect(combined).toContain("--resume-job");
+    expect(combined).not.toContain('adapterStatus: "not-configured"');
     expect(combined).toContain("runDacsGuardedCommandV1");
     expect(combined).toContain("openDacsListingDiscoveryStoreV1");
     expect(combined).toContain("createDacsListingDiscoveryRequestHandlerV1");
