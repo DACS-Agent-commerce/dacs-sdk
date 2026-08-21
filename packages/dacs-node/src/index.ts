@@ -1,6 +1,7 @@
 export * from "./config.js";
 export * from "./agreementRuntime.js";
 export * from "./agreementTransportRuntime.js";
+export * from "./auditRuntime.js";
 export * from "./buyerReceivedRuntime.js";
 export * from "./bundleTransportRuntime.js";
 export * from "./commerceRuntime.js";
