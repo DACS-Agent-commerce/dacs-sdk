@@ -208,6 +208,10 @@ export function actorDatabasePath(role: GeneratedLiveRole): string {
   return resolve(loadRoleConfig(role).dataDirectory, "actor.sqlite");
 }
 
+export function listingDiscoveryDirectory(): string {
+  return resolve(loadRoleConfig("seller").dataDirectory, "discovery");
+}
+
 export function actorSecretPaths(role: GeneratedLiveRole): readonly string[] {
   return SECRET_NAMES[role].flatMap((name) => {
     const value = process.env[name];
@@ -369,6 +373,7 @@ async function openDoctorActors(
         role,
         authority,
         demosIdentity: secret,
+        writePolicy: "read-only",
       });
       const evmSecretPath = actorSecretPath(role, "evm-wallet");
       if (evmSecretPath === undefined) throw new Error("doctor EVM secret unavailable");
@@ -945,9 +950,221 @@ export async function runGeneratedDoctor(
 }
 `;
 
+const SETUP_SOURCE = `import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+
+import {
+  RAIL_REGISTRY_INDEX_ADDRESS,
+  resolveRail,
+} from "@kynesyslabs/dacs";
+import { canonicalize, canonicalizeDecimal, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
+import {
+  DACS_NODE_LIVE_PROFILE,
+  createDacsDemosActorRuntimeV1,
+  createDacsDemosRailRegistryProviderV1,
+  createDacsListingSetupExecutorV1,
+  deriveDacsEvmRoleIdentityV1,
+  loadDacsSecretV1,
+  openDacsListingDiscoveryStoreV1,
+  prepareDacsListingSetupV1,
+  runDacsGuardedCommandV1,
+  type DacsGuardedCommandResultV1,
+  type DacsLiveDoctorReportV1,
+  type DacsPreparedListingSetupV1,
+} from "@kynesyslabs/dacs-node";
+import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
+
+import {
+  actorDatabasePath,
+  actorSecretPath,
+  configuredAuthority,
+  configuredListingDraftFile,
+  configuredRailStewardAuthority,
+  configuredX402RailId,
+  listingDiscoveryDirectory,
+  loadRoleConfig,
+} from "./config.js";
+
+interface PreparedContext {
+  prepared: Readonly<DacsPreparedListingSetupV1>;
+  seller: Awaited<ReturnType<typeof createDacsDemosActorRuntimeV1>>;
+  rail: Awaited<ReturnType<typeof resolveRail>>;
+}
+
+async function publicJsonFile(path: string): Promise<unknown> {
+  const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const observed = await file.stat();
+    if (!observed.isFile() || observed.size <= 0 || observed.size > 1_048_576) {
+      throw new Error("Listing candidate file is unsafe");
+    }
+    const bytes = await file.readFile();
+    try {
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } finally {
+      bytes.fill(0);
+    }
+  } finally {
+    await file.close();
+  }
+}
+
+function exactMaximum(value: string, ceiling: string): string {
+  const normalized = canonicalizeDecimal(value);
+  const configured = canonicalizeDecimal(ceiling);
+  if (normalized.startsWith("-") || normalized === "0") {
+    throw new Error("setup maximum must be positive");
+  }
+  const decimal = (input: string) => {
+    const [whole, fraction = ""] = input.split(".");
+    return { whole: whole!, fraction };
+  };
+  const left = decimal(normalized);
+  const right = decimal(configured);
+  const scale = Math.max(left.fraction.length, right.fraction.length);
+  const units = (input: typeof left) => BigInt(input.whole + input.fraction.padEnd(scale, "0"));
+  if (units(left) > units(right)) throw new Error("setup maximum exceeds configured ceiling");
+  return normalized;
+}
+
+async function buildPrepared(
+  maximumSpendDem: string,
+  writePolicy: "perform" | "read-only",
+): Promise<PreparedContext> {
+  const sellerConfig = loadRoleConfig("seller");
+  const buyerConfig = loadRoleConfig("buyer");
+  const sellerAuthority = configuredAuthority("seller");
+  const buyerAuthority = configuredAuthority("buyer");
+  const demosSecretPath = actorSecretPath("seller", "demos-identity");
+  const evmSecretPath = actorSecretPath("seller", "evm-wallet");
+  const draftPath = configuredListingDraftFile();
+  const stewardAuthority = configuredRailStewardAuthority();
+  const sellerEndpoint = sellerConfig.publicBaseUrl;
+  const stewardPublicKey = stewardAuthority === undefined
+    ? null : canonicalDemosAgentPublicKey(stewardAuthority);
+  if (sellerAuthority === undefined || buyerAuthority === undefined ||
+      demosSecretPath === undefined || evmSecretPath === undefined || draftPath === undefined ||
+      stewardAuthority === undefined || stewardPublicKey === null || sellerEndpoint === undefined) {
+    throw new Error("setup prerequisite is unavailable");
+  }
+  const demosSecret = await loadDacsSecretV1({
+    name: "seller-setup-demos-identity",
+    mode: "live-demos",
+    filePath: demosSecretPath,
+  });
+  const seller = await createDacsDemosActorRuntimeV1({
+    config: sellerConfig,
+    role: "seller",
+    authority: sellerAuthority,
+    demosIdentity: demosSecret,
+    writePolicy,
+  });
+  const evmSecret = await loadDacsSecretV1({
+    name: "seller-setup-evm-wallet",
+    mode: "live-demos",
+    filePath: evmSecretPath,
+  });
+  const evm = await deriveDacsEvmRoleIdentityV1({
+    config: sellerConfig,
+    role: "seller",
+    evmPrivateKey: evmSecret,
+  });
+  const rail = await resolveRail(
+    RAIL_REGISTRY_INDEX_ADDRESS,
+    configuredX402RailId(),
+    createDacsDemosRailRegistryProviderV1({
+      runtime: seller,
+      stewardAuthority,
+      stewardPublicKey,
+    }),
+  );
+  const networkInfo = await seller.networkInfo();
+  const demosNetwork = "demos-network:sha256:" + sha256Hex(canonicalize(networkInfo));
+  const prepared = await prepareDacsListingSetupV1({
+    draft: await publicJsonFile(draftPath),
+    buyerAuthority,
+    seller,
+    sellerPublicEndpoint: sellerEndpoint,
+    sellerPayee: evm.address,
+    network: sellerConfig.rail.requestedNetwork as \`eip155:\${number}\`,
+    demosNetwork,
+    rail,
+    maximumServiceAmount: buyerConfig.limits.maxServiceAmount.amount,
+    actionMaximumSpendDem: sellerConfig.limits.maxDemosNetworkFeeDem,
+    safetyMarginDem: sellerConfig.limits.maxDemosNetworkFeeDem,
+    maximumSpendDem: exactMaximum(maximumSpendDem, sellerConfig.limits.maxSetupSpendDem),
+    now: Date.now(),
+  });
+  return Object.freeze({ prepared, seller, rail });
+}
+
+export async function prepareGeneratedListingSetupV1(
+  maximumSpendDem: string,
+): Promise<Readonly<DacsPreparedListingSetupV1>> {
+  return (await buildPrepared(maximumSpendDem, "read-only")).prepared;
+}
+
+export async function executeGeneratedListingSetupV1(input: Readonly<{
+  expected: Readonly<DacsPreparedListingSetupV1>;
+  maximumSpendDem: string;
+  doctorReports: readonly Readonly<DacsLiveDoctorReportV1>[];
+  confirmation: string;
+  nonInteractive: boolean;
+  confirm(summary: Readonly<{
+    kind: "setup" | "purchase" | "funded-doctor";
+    planHash: string;
+    actionCount: number;
+    network: string;
+    maximumAssetSpend: string;
+    maximumNetworkFee: string;
+    paymentPossible: boolean;
+  }>): Promise<boolean>;
+}>): Promise<Readonly<DacsGuardedCommandResultV1>> {
+  const context = await buildPrepared(input.maximumSpendDem, "perform");
+  if (canonicalize(context.prepared.plan) !== canonicalize(input.expected.plan) ||
+      canonicalize(context.prepared.listing) !== canonicalize(input.expected.listing)) {
+    throw new Error("setup plan changed after doctor");
+  }
+  const database = await openDacsNodeSqliteDatabase({
+    databasePath: actorDatabasePath("seller"),
+    mode: "live-demos",
+    profile: DACS_NODE_LIVE_PROFILE,
+    role: "seller",
+    authority: context.seller.authority,
+  });
+  try {
+    const discovery = await openDacsListingDiscoveryStoreV1({
+      directory: listingDiscoveryDirectory(),
+      sellerAuthority: context.seller.authority,
+      sellerPublicEndpoint: loadRoleConfig("seller").publicBaseUrl!,
+    });
+    return await runDacsGuardedCommandV1({
+      plan: context.prepared.plan,
+      execute: true,
+      database,
+      workerId: "seller-setup-" + String(process.pid),
+      doctorReports: input.doctorReports,
+      confirmation: input.confirmation,
+      nonInteractive: input.nonInteractive,
+      confirm: input.confirm,
+      executor: createDacsListingSetupExecutorV1({
+        prepared: context.prepared,
+        seller: context.seller,
+        rail: context.rail,
+        discovery,
+      }),
+    });
+  } finally {
+    database.close();
+  }
+}
+`;
+
 const CLI_SOURCE = `import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open } from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
 
 import { VERSION } from "@kynesyslabs/dacs";
 import { canonicalize, canonicalizeDecimal, sha256Hex } from "@kynesyslabs/dacs/canonical";
@@ -967,6 +1184,10 @@ import {
   serviceEndpoint,
 } from "./config.js";
 import { runGeneratedDoctor } from "./doctor.js";
+import {
+  executeGeneratedListingSetupV1,
+  prepareGeneratedListingSetupV1,
+} from "./setup.js";
 
 type DoctorPhase = "pre-start" | "post-start";
 type DoctorScope = "start" | "setup" | "buy";
@@ -1109,18 +1330,8 @@ function closedOptions(
   return Object.freeze(captured);
 }
 
-async function preflightPlan(scope: "setup" | "buy", args: readonly string[]) {
+async function preflightPlan(scope: "buy", args: readonly string[]) {
   const config = loadRoleConfig("buyer");
-  if (scope === "setup") {
-    const values = closedOptions(args, ["--max-spend-dem"]);
-    return Object.freeze({
-      schema: "dacs-generated-command-preflight/v1",
-      kind: "setup",
-      execute: false,
-      maximumSpendDem: decimalWithin(values["--max-spend-dem"]!, config.limits.maxSetupSpendDem),
-      adapterStatus: "not-configured",
-    });
-  }
   const values = closedOptions(args, [
     "--listing-ref", "--request-file", "--max-service-amount", "--max-network-fee-eth",
   ]);
@@ -1156,29 +1367,92 @@ async function preflightPlan(scope: "setup" | "buy", args: readonly string[]) {
   });
 }
 
-async function guardedUnavailable(scope: "setup" | "buy", args: readonly string[]): Promise<number> {
+async function guardedUnavailable(scope: "buy", args: readonly string[]): Promise<number> {
   const plan = await preflightPlan(scope, args);
   const body = { ...plan, planHash: sha256Hex("dacs-generated-command-preflight:v1:" +
     canonicalize(plan)) };
   process.stdout.write(JSON.stringify(body) + "\\n");
-  const confirmationName = scope === "setup"
-    ? "DACS_SETUP_WRITE_CONFIRM" : "DACS_PURCHASE_CONFIRM";
+  const confirmationName = "DACS_PURCHASE_CONFIRM";
   const confirmation = process.env[confirmationName];
   if (confirmation === undefined) return 0;
   if (confirmation !== "1") throw new Error("write confirmation is malformed");
   const report = await runGeneratedDoctor(
-    scope === "buy" ? "post-start" : "pre-start",
+    "post-start",
     scope,
-    plan.kind === "purchase" ? {
+    {
       listingRef: plan.listingRef,
       maximumServiceAmount: plan.maximumServiceAmount,
       maximumNetworkFeeEth: plan.maximumNetworkFeeEth,
-    } : undefined,
+    },
   );
   process.stdout.write(formatDacsLiveDoctorTextV1(report));
   if (report.exitCode !== 0) return report.exitCode;
   process.stderr.write("reviewed live effect adapter is not configured; no write was attempted\\n");
   return 5;
+}
+
+function setupArguments(args: readonly string[]): Readonly<{
+  maximumSpendDem: string;
+  nonInteractive: boolean;
+}> {
+  let maximumSpendDem: string | undefined;
+  let nonInteractive = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument === "--non-interactive") {
+      if (nonInteractive) throw new Error("setup option is repeated");
+      nonInteractive = true;
+    } else if (argument === "--max-spend-dem") {
+      if (maximumSpendDem !== undefined) throw new Error("setup option is repeated");
+      maximumSpendDem = valueAfter(args, index, argument);
+      index += 1;
+    } else {
+      throw new Error("unknown setup option: " + argument);
+    }
+  }
+  if (maximumSpendDem === undefined) throw new Error("--max-spend-dem is required");
+  return Object.freeze({ maximumSpendDem, nonInteractive });
+}
+
+async function confirmSetup(planHash: string): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("interactive setup requires a terminal; use --non-interactive explicitly");
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await prompt.question(
+      "Execute the exact setup plan " + planHash + "? Type yes to continue: ",
+    );
+    return answer === "yes";
+  } finally {
+    prompt.close();
+  }
+}
+
+async function guardedSetup(args: readonly string[]): Promise<number> {
+  const parsed = setupArguments(args);
+  const prepared = await prepareGeneratedListingSetupV1(parsed.maximumSpendDem);
+  process.stdout.write(JSON.stringify({ execute: false, ...prepared.plan }) + "\\n");
+  const confirmation = process.env.DACS_SETUP_WRITE_CONFIRM;
+  if (confirmation === undefined) return 0;
+  if (confirmation !== "1") throw new Error("write confirmation is malformed");
+  const postStart = await runGeneratedDoctor("post-start", "start");
+  printDoctor(postStart);
+  if (postStart.exitCode !== 0) return postStart.exitCode;
+  const preSetup = await runGeneratedDoctor("pre-start", "setup");
+  printDoctor(preSetup);
+  if (preSetup.exitCode !== 0) return preSetup.exitCode;
+  if (!parsed.nonInteractive && !await confirmSetup(prepared.plan.planHash)) return 5;
+  const result = await executeGeneratedListingSetupV1({
+    expected: prepared,
+    maximumSpendDem: parsed.maximumSpendDem,
+    doctorReports: [postStart, preSetup],
+    confirmation,
+    nonInteractive: parsed.nonInteractive,
+    confirm: async () => true,
+  });
+  process.stdout.write(JSON.stringify(result) + "\\n");
+  return result.status === "completed" || result.status === "existing-completion" ? 0 : 5;
 }
 
 async function main(args = process.argv.slice(2)): Promise<void> {
@@ -1192,7 +1466,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     process.exitCode = await command("docker", ["compose", "down"]);
   } else if (operation === "status") {
     process.exitCode = await serviceStatus();
-  } else if (operation === "setup") process.exitCode = await guardedUnavailable("setup", rest);
+  } else if (operation === "setup") process.exitCode = await guardedSetup(rest);
   else if (operation === "buy") process.exitCode = await guardedUnavailable("buy", rest);
   else if (operation === "doctor-funded") {
     if (process.env.DACS_DOCTOR_FUNDED_CONFIRM !== "1") {
@@ -1213,9 +1487,11 @@ main().catch(() => {
 `;
 
 const SERVICE_SOURCE = `import {
+  createDacsListingDiscoveryRequestHandlerV1,
   createDacsUnavailableLiveCommerceGraphV1,
   createDacsLiveRoleRuntimeV1,
   installDacsRoleServiceProcessHooksV1,
+  openDacsListingDiscoveryStoreV1,
   type DacsNodeEvent,
 } from "@kynesyslabs/dacs-node";
 
@@ -1223,6 +1499,7 @@ import {
   actorSecretPath,
   configuredEvmRpcUrl,
   configuredAuthority,
+  listingDiscoveryDirectory,
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
@@ -1265,6 +1542,13 @@ async function main(): Promise<void> {
   if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
     throw new Error("role service port is invalid");
   }
+  const discovery = role === "seller" && config.publicBaseUrl !== undefined
+    ? await openDacsListingDiscoveryStoreV1({
+        directory: listingDiscoveryDirectory(),
+        sellerAuthority: authority,
+        sellerPublicEndpoint: config.publicBaseUrl,
+      })
+    : undefined;
 
   const runtime = await createDacsLiveRoleRuntimeV1({
     config,
@@ -1282,6 +1566,9 @@ async function main(): Promise<void> {
     createCommerceGraph: async () => createDacsUnavailableLiveCommerceGraphV1({
       role,
       reasonCode: "commerce-operation-not-configured",
+    }),
+    ...(discovery === undefined ? {} : {
+      handlePublicRequest: createDacsListingDiscoveryRequestHandlerV1(discovery),
     }),
     events: { emit: eventSink },
     server: { hostname: ownEndpoint.hostname, port },
@@ -1609,6 +1896,7 @@ export function liveProjectTemplates(
     "src/service.ts": SERVICE_SOURCE,
     "src/config.ts": CONFIG_SOURCE,
     "src/doctor.ts": DOCTOR_SOURCE,
+    "src/setup.ts": SETUP_SOURCE,
     "src/cli.ts": CLI_SOURCE,
     "src/offline-smoke.ts": OFFLINE_SMOKE_SOURCE,
     "test/live-bootstrap.test.ts": TEST_SOURCE,

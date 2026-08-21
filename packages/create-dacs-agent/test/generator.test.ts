@@ -219,6 +219,7 @@ describe("create-dacs-agent", () => {
     expect(await filesBelow(target)).toEqual(expect.arrayContaining([
       "src/cli.ts",
       "src/doctor.ts",
+      "src/setup.ts",
       "src/service.ts",
       "test/live-bootstrap.test.ts",
       "compose.yaml",
@@ -288,6 +289,12 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("inspectDacsX402AssetBalanceV1");
     expect(combined).toContain("inspectDacsX402GasBalanceV1");
     expect(combined).toContain("inspectDacsX402ListingDraftV1");
+    expect(combined).toContain("prepareDacsListingSetupV1");
+    expect(combined).toContain("createDacsListingSetupExecutorV1");
+    expect(combined).toContain("runDacsGuardedCommandV1");
+    expect(combined).toContain("openDacsListingDiscoveryStoreV1");
+    expect(combined).toContain("createDacsListingDiscoveryRequestHandlerV1");
+    expect(combined).toContain('writePolicy: "read-only"');
     expect(combined).toContain("readDacsRoleServiceStatusesV1");
     expect(combined).toContain("createDacsLiveRoleRuntimeV1");
     expect(combined).toContain("createDacsUnavailableLiveCommerceGraphV1");
