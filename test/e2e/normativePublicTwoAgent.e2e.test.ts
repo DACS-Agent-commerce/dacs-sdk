@@ -4016,7 +4016,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
       },
       buyer: { identityBundle: BUYER_IDENTITY, vetRecordRef: vetRef("buyer") },
       seller: {
-        identityBundle: identity("did:demos:agent:unrelated-seller"),
+        identityBundle: identity("did:demos:unrelated-seller"),
         vetRecordRef: vetRef("seller"),
       },
       selectedRail: RAIL,
