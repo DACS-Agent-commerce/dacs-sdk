@@ -1,5 +1,15 @@
 import { resolve } from "node:path";
 
+import {
+  createFsFencedSessionStore,
+  createFsSellerReceiptStore,
+  createFsX402BuyerSettlementStore,
+  createFsX402PaywallSettlementStore,
+  type FencedSessionStoreV2,
+  type SellerReceiptStore,
+  type X402BuyerSettlementStore,
+  type X402PaywallSettlementStore,
+} from "@kynesyslabs/dacs";
 import type { FixedPriceX402Operations } from "@kynesyslabs/dacs/commerce";
 
 import {
@@ -86,9 +96,23 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
  */
 export interface DacsLiveRoleOperationContextV1
   extends DacsLiveRoleRuntimeContextV1 {
+  readonly config: Readonly<DacsLiveAgentConfig>;
   readonly database: DacsNodeSqliteDatabase;
   readonly demos: Readonly<DacsDemosActorRuntimeV1>;
+  readonly sessionStore: FencedSessionStoreV2;
+  readonly commerceStores: Readonly<DacsLiveRoleCommerceStoresV1>;
 }
+
+export type DacsLiveRoleCommerceStoresV1 =
+  | Readonly<{
+      role: "buyer";
+      x402Settlement: X402BuyerSettlementStore;
+    }>
+  | Readonly<{
+      role: "seller";
+      x402Settlement: X402PaywallSettlementStore;
+      sellerReceipts: SellerReceiptStore;
+    }>;
 
 export interface DacsLiveRoleInboundOperationContextV1
   extends DacsLiveRoleInboundContextV1 {
@@ -112,6 +136,8 @@ export interface DacsLiveRoleRuntimeV1 {
   readonly config: Readonly<DacsLiveAgentConfig>;
   readonly database: DacsNodeSqliteDatabase;
   readonly demos: Readonly<DacsDemosActorRuntimeV1>;
+  readonly sessionStore: FencedSessionStoreV2;
+  readonly commerceStores: Readonly<DacsLiveRoleCommerceStoresV1>;
   readonly readinessLatch: Readonly<DacsRoleReadinessLatchV1>;
   readonly service: Readonly<DacsLiveRoleServiceV1>;
   start(): Promise<void>;
@@ -225,6 +251,37 @@ export async function createDacsLiveRoleRuntimeV1(
     database.close();
     throw new DacsLiveRoleRuntimeError("role-readiness-create-failed");
   }
+  let sessionStore: FencedSessionStoreV2;
+  try {
+    sessionStore = await createFsFencedSessionStore({
+      dir: resolve(config.dataDirectory, "sessions"),
+    });
+  } catch {
+    database.close();
+    throw new DacsLiveRoleRuntimeError("role-session-store-open-failed");
+  }
+  let commerceStores: Readonly<DacsLiveRoleCommerceStoresV1>;
+  try {
+    commerceStores = role === "buyer"
+      ? Object.freeze({
+          role,
+          x402Settlement: await createFsX402BuyerSettlementStore({
+            dir: resolve(config.dataDirectory, "x402-buyer-settlements"),
+          }),
+        })
+      : Object.freeze({
+          role,
+          x402Settlement: await createFsX402PaywallSettlementStore({
+            dir: resolve(config.dataDirectory, "x402-seller-settlements"),
+          }),
+          sellerReceipts: await createFsSellerReceiptStore({
+            dir: resolve(config.dataDirectory, "seller-receipts"),
+          }),
+        });
+  } catch {
+    database.close();
+    throw new DacsLiveRoleRuntimeError("role-commerce-stores-open-failed");
+  }
   let service: Readonly<DacsLiveRoleServiceV1>;
   try {
     const resolveIdentity = createDacsDemosIdentityResolverV1({
@@ -238,15 +295,21 @@ export async function createDacsLiveRoleRuntimeV1(
       context: Readonly<DacsLiveRoleRuntimeContextV1>,
     ): Readonly<DacsLiveRoleOperationContextV1> => Object.freeze({
       ...context,
+      config,
       database: database!,
       demos,
+      sessionStore,
+      commerceStores,
     });
     const inboundOperationContext = (
       context: Readonly<DacsLiveRoleInboundContextV1>,
     ): Readonly<DacsLiveRoleInboundOperationContextV1> => Object.freeze({
       ...context,
+      config,
       database: database!,
       demos,
+      sessionStore,
+      commerceStores,
     });
     let establishedOperationContext: Readonly<DacsLiveRoleOperationContextV1> | undefined;
     const serviceOptions: DacsLiveRoleServiceOptionsV1 = {
@@ -331,6 +394,8 @@ export async function createDacsLiveRoleRuntimeV1(
     config,
     database,
     demos,
+    sessionStore,
+    commerceStores,
     readinessLatch,
     service,
     async start() {

@@ -125,9 +125,17 @@ describe("complete role-owned live runtime", () => {
       role: "buyer",
       authority: AUTHORITY,
       peerAuthority: PEER_AUTHORITY,
+      config: runtime.config,
       database: runtime.database,
       demos: runtime.demos,
+      sessionStore: runtime.sessionStore,
+      commerceStores: runtime.commerceStores,
     });
+    expect(runtime.commerceStores).toMatchObject({ role: "buyer" });
+    if (runtime.commerceStores.role === "buyer") {
+      await expect(runtime.commerceStores.x402Settlement.load("missing"))
+        .resolves.toMatchObject({ status: "absent" });
+    }
     await runtime.start();
     const endpoint = runtime.service.endpoint!;
     await expect(fetch(new URL("/health", endpoint)).then((response) => response.json()))
