@@ -137,6 +137,16 @@ export type DacsLiveRoleApplicationRequestHandlerV1 = (
   context: Readonly<DacsLiveRoleInboundContextV1>,
 ) => Promise<boolean> | boolean;
 
+/**
+ * Read-only unauthenticated public metadata surface (for example DACS
+ * well-known discovery). It runs independently of the commerce readiness
+ * latch, must not perform protocol effects, and is limited to GET by the host.
+ */
+export type DacsLiveRolePublicRequestHandlerV1 = (
+  request: IncomingMessage,
+  response: ServerResponse,
+) => Promise<boolean> | boolean;
+
 export interface DacsLiveRoleServiceOptionsV1 {
   config: unknown;
   database: DacsNodeSqliteDatabase;
@@ -159,6 +169,7 @@ export interface DacsLiveRoleServiceOptionsV1 {
    * freshness-bounded readiness result is true. Return true after handling.
    */
   handleApplicationRequest?: DacsLiveRoleApplicationRequestHandlerV1;
+  handlePublicRequest?: DacsLiveRolePublicRequestHandlerV1;
   events?: DacsNodeEventSink;
   readiness?: () => Promise<Readonly<DacsNodeReadinessStatus>> |
     Readonly<DacsNodeReadinessStatus>;
@@ -310,6 +321,7 @@ function captureServiceOptions(
     "handleMessage",
   ], [
     "handleApplicationRequest",
+    "handlePublicRequest",
     "events",
     "readiness",
     "readinessMaxAgeMs",
@@ -468,6 +480,8 @@ export function createDacsLiveRoleServiceV1(
       typeof options.handleMessage !== "function" ||
       (options.handleApplicationRequest !== undefined &&
         typeof options.handleApplicationRequest !== "function") ||
+      (options.handlePublicRequest !== undefined &&
+        typeof options.handlePublicRequest !== "function") ||
       (options.events !== undefined &&
         (options.events === null || typeof options.events !== "object" ||
           typeof options.events.emit !== "function")) ||
@@ -505,6 +519,9 @@ export function createDacsLiveRoleServiceV1(
   const handleApplicationRequest = options.handleApplicationRequest === undefined
     ? undefined
     : bindCallback(options.handleApplicationRequest, options);
+  const handlePublicRequest = options.handlePublicRequest === undefined
+    ? undefined
+    : bindCallback(options.handlePublicRequest, options);
   const eventSink = options.events === undefined
     ? undefined
     : bindCallback(options.events.emit, options.events);
@@ -911,6 +928,10 @@ export function createDacsLiveRoleServiceV1(
       if (request.url === "/status") {
         writePublicJson(response, 200, await status());
         return;
+      }
+      if (handlePublicRequest !== undefined) {
+        if (await handlePublicRequest(request, response)) return;
+        if (response.headersSent || response.writableEnded) return;
       }
       if (handleApplicationRequest !== undefined) {
         const ready = await readiness();

@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { isListing, type Listing } from "@kynesyslabs/dacs/artifacts";
 import {
@@ -70,6 +71,11 @@ export interface DacsListingDiscoveryStoreV1
   readIndex(): Promise<Readonly<DacsListingIndexV1>>;
   readAgentCard(): Promise<Readonly<DacsAgentCardV1>>;
 }
+
+export type DacsListingDiscoveryRequestHandlerV1 = (
+  request: IncomingMessage,
+  response: ServerResponse,
+) => Promise<boolean>;
 
 export class DacsListingDiscoveryStoreError extends Error {
   override readonly name = "DacsListingDiscoveryStoreError";
@@ -288,25 +294,21 @@ export async function openDacsListingDiscoveryStoreV1(
   const now = options.now ?? Date.now;
   await ensureSafeDirectory(directory);
   let mutation = Promise.resolve();
+  const initialGeneratedAt = now();
+  if (!validTimestamp(initialGeneratedAt)) {
+    throw new DacsListingDiscoveryStoreError("listing-discovery-clock-invalid");
+  }
 
   async function load(): Promise<DacsListingIndexV1> {
     const text = await readSafeFile(filePath);
     if (text !== undefined) return parseIndex(text, options.sellerAuthority);
-    const generatedAt = now();
-    if (!validTimestamp(generatedAt)) {
-      throw new DacsListingDiscoveryStoreError("listing-discovery-clock-invalid");
-    }
-    const initial: DacsListingIndexV1 = {
+    return {
       indexVersion: "1",
-      generatedAt,
+      generatedAt: initialGeneratedAt,
       seller: options.sellerAuthority,
       listings: [],
     };
-    await atomicWrite(filePath, canonicalize(initial));
-    return initial;
   }
-
-  await load();
 
   async function publishActive(
     input: Readonly<DacsListingDiscoveryPublicationInputV1>,
@@ -380,4 +382,29 @@ export async function openDacsListingDiscoveryStoreV1(
       });
     },
   });
+}
+
+/** Serve only the two DACS well-known discovery documents as canonical JSON. */
+export function createDacsListingDiscoveryRequestHandlerV1(
+  store: Readonly<DacsListingDiscoveryStoreV1>,
+): DacsListingDiscoveryRequestHandlerV1 {
+  if (store === null || typeof store !== "object" ||
+      typeof store.readAgentCard !== "function" || typeof store.readIndex !== "function") {
+    throw new TypeError("Listing discovery request handler store is invalid");
+  }
+  return async (request, response) => {
+    if (request.method !== "GET") return false;
+    const value = request.url === "/.well-known/agent.json"
+      ? await store.readAgentCard()
+      : request.url === "/.well-known/dacs/listings.json"
+        ? await store.readIndex() : undefined;
+    if (value === undefined) return false;
+    const body = canonicalize(value);
+    response.statusCode = 200;
+    response.setHeader("cache-control", "no-store");
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.setHeader("content-length", Buffer.byteLength(body, "utf8"));
+    response.end(body);
+    return true;
+  };
 }

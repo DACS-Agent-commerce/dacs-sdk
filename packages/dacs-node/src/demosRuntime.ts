@@ -84,6 +84,8 @@ export interface DacsDemosActorRuntimeOptionsV1 {
   authority: string;
   demosIdentity: Readonly<DacsLoadedSecretV1>;
   journalDirectory?: string;
+  /** Read-only probes receive an adapter whose journal rejects every write lease. */
+  writePolicy?: "perform" | "read-only";
   /** Deterministic test/custom-host seam. Production omits this callback. */
   createAdapter?: (input: Readonly<{
     rpc: string;
@@ -216,6 +218,8 @@ export async function createDacsDemosActorRuntimeV1(
       typeof rawOptions.demosIdentity.destroy !== "function" ||
       (rawOptions.journalDirectory !== undefined &&
         typeof rawOptions.journalDirectory !== "string") ||
+      (rawOptions.writePolicy !== undefined && rawOptions.writePolicy !== "perform" &&
+        rawOptions.writePolicy !== "read-only") ||
       (rawOptions.createAdapter !== undefined &&
         typeof rawOptions.createAdapter !== "function")) {
     throw new TypeError("Demos actor runtime options are invalid");
@@ -235,19 +239,28 @@ export async function createDacsDemosActorRuntimeV1(
   }
   let adapter: DacsDemosAdapterV1;
   try {
-    const journalDirectory = await privateJournalDirectory(
-      config,
-      rawOptions.journalDirectory,
-    );
-    // The journal is exported from the substrate-neutral root barrel. Loading
-    // it must not eagerly initialize the optional demosdk peer: custom hosts
-    // and tests can inject an adapter without that peer being installed.
-    const substrate = await import("@kynesyslabs/dacs").catch(() => {
-      throw new DacsDemosRuntimeError("demos-journal-unavailable");
-    });
-    const writeJournal = await substrate.createFsDemosWriteJournal({
-      dir: journalDirectory,
-    });
+    let writeJournal: DemosWriteJournal;
+    if (rawOptions.writePolicy === "read-only") {
+      writeJournal = Object.freeze({
+        async acquire() {
+          throw new DacsDemosRuntimeError("demos-write-disabled");
+        },
+      });
+    } else {
+      const journalDirectory = await privateJournalDirectory(
+        config,
+        rawOptions.journalDirectory,
+      );
+      // The journal is exported from the substrate-neutral root barrel. Loading
+      // it must not eagerly initialize the optional demosdk peer: custom hosts
+      // and tests can inject an adapter without that peer being installed.
+      const substrate = await import("@kynesyslabs/dacs").catch(() => {
+        throw new DacsDemosRuntimeError("demos-journal-unavailable");
+      });
+      writeJournal = await substrate.createFsDemosWriteJournal({
+        dir: journalDirectory,
+      });
+    }
     const makeAdapter = rawOptions.createAdapter ?? defaultAdapter;
     try {
       adapter = await makeAdapter({ rpc: config.demos.rpcUrl, secret, writeJournal });

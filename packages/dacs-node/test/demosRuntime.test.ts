@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
+import type { DemosWriteJournal } from "@kynesyslabs/dacs/substrate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -76,6 +77,10 @@ describe("role-owned Demos runtime", () => {
       })),
       readAnchor: vi.fn(async () => null),
       resolveAnchorByName: vi.fn(async () => ({ status: "absent" as const })),
+      scanOwnAnchorsByNamePrefix: vi.fn(async () => ({
+        status: "ok" as const,
+        anchors: [],
+      })),
       anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
       verifyDemosAnchorReceipt: vi.fn(async () => true),
       resolveDemosAnchorReceipt: vi.fn(async () => null),
@@ -134,6 +139,26 @@ describe("role-owned Demos runtime", () => {
       reasonCode: "demos-component-signature-authority-mismatch",
     });
     expect(mock.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens read-only probes without creating a durable write journal", async () => {
+    const directory = root();
+    const loaded = await secret(directory);
+    let journal: DemosWriteJournal | undefined;
+    await createDacsDemosActorRuntimeV1({
+      config: config(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: loaded,
+      writePolicy: "read-only",
+      createAdapter: async (input) => {
+        journal = input.writeJournal;
+        return adapter();
+      },
+    });
+    expect(existsSync(join(directory, "demos-write-journal"))).toBe(false);
+    await expect(journal!.acquire({ chainIdentity: "test", wallet: "0xactor" }))
+      .rejects.toMatchObject({ reasonCode: "demos-write-disabled" });
   });
 
   it("rejects a wallet whose derived primary ClaimRef differs", async () => {

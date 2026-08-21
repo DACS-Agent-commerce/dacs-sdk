@@ -341,6 +341,43 @@ describe("authority-separated live role services", () => {
     expect(handled).toHaveBeenCalledTimes(1);
   });
 
+  it("serves read-only public metadata without weakening the commerce gate", async () => {
+    const database = await open(root(), "seller");
+    const publicHandler = vi.fn(async (request, response) => {
+      if (request.url !== "/.well-known/agent.json") return false;
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      response.end('{"dacs":{"dacsVersion":"1"}}');
+      return true;
+    });
+    const applicationHandler = vi.fn(async () => true);
+    const service = remember(createDacsSellerServiceV1(options("seller", database,
+      undefined, {
+        readiness: () => ({ ready: false, checkedAt: Date.now(),
+          reasonCodes: ["live-adapter-not-ready"] }),
+        handlePublicRequest: publicHandler,
+        handleApplicationRequest: applicationHandler,
+      })));
+    await service.start();
+
+    const metadata = await fetch(new URL("/.well-known/agent.json", service.endpoint));
+    expect(metadata.status).toBe(200);
+    await expect(metadata.json()).resolves.toEqual({ dacs: { dacsVersion: "1" } });
+    expect(publicHandler).toHaveBeenCalledTimes(1);
+    expect(applicationHandler).not.toHaveBeenCalled();
+
+    const commerce = await fetch(new URL("/deliver/test", service.endpoint));
+    expect(commerce.status).toBe(503);
+    expect(publicHandler).toHaveBeenCalledTimes(2);
+    expect(applicationHandler).not.toHaveBeenCalled();
+
+    const write = await fetch(new URL("/.well-known/agent.json", service.endpoint), {
+      method: "POST",
+    });
+    expect(write.status).toBe(405);
+    expect(publicHandler).toHaveBeenCalledTimes(2);
+  });
+
   it("adapts an advertised seller resource to the framework-neutral x402 paywall", async () => {
     const database = await open(root(), "seller");
     const paywallHandle = vi.fn(async (input) => {

@@ -39,6 +39,7 @@ import {
   createDacsBuyerServiceV1,
   createDacsSellerServiceV1,
   type DacsLiveRoleApplicationRequestHandlerV1,
+  type DacsLiveRolePublicRequestHandlerV1,
   type DacsLiveRoleInboundContextV1,
   type DacsLiveRoleRuntimeContextV1,
   type DacsLiveRoleServiceOptionsV1,
@@ -94,6 +95,7 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
   ): Promise<DacsHttpInboundDispositionV1> | DacsHttpInboundDispositionV1;
   handleApplicationRequest?: DacsLiveRoleRuntimeApplicationRequestHandlerV1;
+  handlePublicRequest?: DacsLiveRolePublicRequestHandlerV1;
   events?: DacsLiveRoleServiceOptionsV1["events"];
   workerIntervalMs?: number;
   workerBatchSize?: number;
@@ -239,6 +241,8 @@ export async function createDacsLiveRoleRuntimeV1(
       (rawOptions.createCommerceGraph !== undefined && !graphMode) ||
       (rawOptions.handleApplicationRequest !== undefined &&
         typeof rawOptions.handleApplicationRequest !== "function") ||
+      (rawOptions.handlePublicRequest !== undefined &&
+        typeof rawOptions.handlePublicRequest !== "function") ||
       (rawOptions.authorizeJob !== undefined && typeof rawOptions.authorizeJob !== "function") ||
       (rawOptions.createDemosAdapter !== undefined &&
         typeof rawOptions.createDemosAdapter !== "function") ||
@@ -457,6 +461,9 @@ export async function createDacsLiveRoleRuntimeV1(
           : commerceGraph.handleMessage(authenticated, inbound);
       },
       readiness: readinessLatch.readiness,
+      ...(rawOptions.handlePublicRequest === undefined ? {} : {
+        handlePublicRequest: rawOptions.handlePublicRequest,
+      }),
       ...((rawOptions.handleApplicationRequest === undefined &&
           !(commerceGraph?.role === "seller"))
         ? {} : {
