@@ -87,6 +87,7 @@ export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const EFFECT_KINDS = new Set<DacsNodeSqliteEffectKind>([
+  "session",
   "payment",
   "fulfilment",
   "artifact-publication",
@@ -138,6 +139,7 @@ const NETWORK_FILESYSTEM_MAGIC = new Set([
 
 export type DacsNodeSqliteActorRole = "buyer" | "seller" | "verifier";
 export type DacsNodeSqliteEffectKind =
+  | "session"
   | "payment"
   | "fulfilment"
   | "artifact-publication"
@@ -2535,6 +2537,7 @@ function reservationKindForEffect(
   kind: DacsNodeSqliteEffectKind,
 ): DacsNodeSqliteReservationKind {
   switch (kind) {
+    case "session": return "session";
     case "payment": return "payment-effect";
     case "fulfilment": return "fulfilment-effect";
     case "artifact-publication": return "artifact-publication";

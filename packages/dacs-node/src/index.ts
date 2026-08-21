@@ -7,6 +7,7 @@ export * from "./demosPublication.js";
 export * from "./events.js";
 export * from "./guardedCommands.js";
 export * from "./localDoctor.js";
+export * from "./orderInput.js";
 export * from "./liveEffects.js";
 export * from "./offline.js";
 export * from "./offlineLifecycle.js";
