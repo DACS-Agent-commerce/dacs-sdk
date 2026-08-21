@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createDacsBuyerLiveCommerceGraphV1,
   createDacsSellerLiveCommerceGraphV1,
+  createDacsUnavailableLiveCommerceGraphV1,
 } from "../src/liveCommerceGraph.js";
 
 const operation = () => vi.fn(async () => ({
@@ -98,5 +99,35 @@ describe("closed live commerce graphs", () => {
       agreement: operation(),
       paymentEvidence: operation(),
     } as never)).toThrow("seller live commerce graph options are invalid");
+  });
+
+  it("provides a complete but non-performing bootstrap graph", async () => {
+    const buyer = createDacsUnavailableLiveCommerceGraphV1({
+      role: "buyer",
+      reasonCode: "commerce-not-admitted",
+    });
+    expect(buyer.role).toBe("buyer");
+    expect(Object.keys(buyer.operations).sort()).toEqual([
+      "agreement", "audit", "buyer-received", "payment", "payment-evidence",
+    ]);
+    await expect(buyer.operations.agreement({} as never)).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "commerce-not-admitted",
+    });
+    await expect(buyer.validatePayload({ type: "agreement-response" } as never))
+      .resolves.toEqual({
+        status: "invalid",
+        reasonCode: "commerce-not-admitted",
+      });
+
+    const seller = createDacsUnavailableLiveCommerceGraphV1({
+      role: "seller",
+      reasonCode: "commerce-not-admitted",
+    });
+    expect(seller.role).toBe("seller");
+    expect(Object.keys(seller.operations).sort()).toEqual([
+      "agreement", "audit", "delivery", "delivery-evidence", "payment",
+      "payment-evidence",
+    ]);
   });
 });

@@ -1014,6 +1014,7 @@ main().catch(() => {
 `;
 
 const SERVICE_SOURCE = `import {
+  createDacsUnavailableLiveCommerceGraphV1,
   createDacsLiveRoleRuntimeV1,
   installDacsRoleServiceProcessHooksV1,
   type DacsNodeEvent,
@@ -1076,15 +1077,11 @@ async function main(): Promise<void> {
     demosIdentityFilePath,
     evmPrivateKeyFilePath,
     evmRpcUrl,
-    // Commerce operations remain fail-closed until setup/buy has resolved the
-    // exact Listing, rail authority and role-owned SDK operation graph.
-    createOperations: () => Object.freeze({}),
-    validatePayload: () => Object.freeze({
-      status: "invalid" as const,
-      reasonCode: "commerce-operation-not-configured",
-    }),
-    handleMessage: () => Object.freeze({
-      disposition: "rejected" as const,
+    // Every track and message direction exists from startup, but remains
+    // explicitly non-performing until guarded setup/buy installs admitted
+    // Listing, rail and application facts through the production assembly.
+    createCommerceGraph: async () => createDacsUnavailableLiveCommerceGraphV1({
+      role,
       reasonCode: "commerce-operation-not-configured",
     }),
     events: { emit: eventSink },

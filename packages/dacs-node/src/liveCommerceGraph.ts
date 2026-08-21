@@ -80,6 +80,11 @@ export interface DacsSellerLiveCommerceGraphV1 {
   ): Promise<DacsHttpInboundDispositionV1>;
 }
 
+export interface DacsUnavailableLiveCommerceGraphOptionsV1 {
+  role: "buyer" | "seller";
+  reasonCode: string;
+}
+
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   try {
@@ -103,6 +108,69 @@ function exactFields(value: Readonly<Record<string, unknown>>, fields: readonly 
 
 function operation(value: unknown): value is FixedPriceX402TrackOperation {
   return typeof value === "function";
+}
+
+/**
+ * Complete, deliberately non-performing graph used while guarded setup has not
+ * installed an admitted commerce configuration. Unlike an empty operation map,
+ * every coordinator track and message direction is explicit and fail-closed.
+ */
+export function createDacsUnavailableLiveCommerceGraphV1(
+  options: Readonly<DacsUnavailableLiveCommerceGraphOptionsV1>,
+): Readonly<DacsBuyerLiveCommerceGraphV1 | DacsSellerLiveCommerceGraphV1> {
+  if (!plainObject(options) || !exactFields(options, ["role", "reasonCode"]) ||
+      (options.role !== "buyer" && options.role !== "seller") ||
+      typeof options.reasonCode !== "string" ||
+      !/^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/.test(options.reasonCode)) {
+    throw new TypeError("unavailable live commerce graph options are invalid");
+  }
+  const unavailableOperation: FixedPriceX402TrackOperation = async () => Object.freeze({
+    status: "operator-action" as const,
+    reasonCode: options.reasonCode,
+  });
+  const validatePayload: DacsHttpPayloadValidatorV1 = () => Object.freeze({
+    status: "invalid" as const,
+    reasonCode: options.reasonCode,
+  });
+  const handleMessage = async () => Object.freeze({
+    disposition: "rejected" as const,
+    reasonCode: options.reasonCode,
+  });
+  const runtime = Object.freeze({ validatePayload, handleMessage });
+  if (options.role === "buyer") {
+    return createDacsBuyerLiveCommerceGraphV1({
+      agreement: unavailableOperation,
+      payment: unavailableOperation,
+      paymentEvidence: Object.freeze({ ...runtime, operation: unavailableOperation }),
+      buyerReceived: unavailableOperation,
+      audit: unavailableOperation,
+      agreementTransport: runtime as unknown as DacsBuyerAgreementTransportRuntimeV1,
+      bundleTransport: runtime as unknown as DacsBuyerBundleTransportRuntimeV1,
+    });
+  }
+  const handleApplicationRequest: DacsLiveRoleApplicationRequestHandlerV1 =
+    (_request, response) => {
+      if (response.headersSent || response.writableEnded) return true;
+      response.statusCode = 503;
+      response.setHeader("content-type", "application/json; charset=utf-8");
+      response.end(JSON.stringify({ status: "blocked", reasonCode: options.reasonCode }));
+      return true;
+    };
+  const x402 = Object.freeze({
+    payment: unavailableOperation,
+    delivery: unavailableOperation,
+    deliveryEvidence: unavailableOperation,
+    handleApplicationRequest,
+  }) as unknown as Readonly<DacsSellerX402RuntimeV1>;
+  return createDacsSellerLiveCommerceGraphV1({
+    agreement: unavailableOperation,
+    x402,
+    paymentEvidence: unavailableOperation,
+    audit: unavailableOperation,
+    agreementTransport: runtime as unknown as DacsSellerAgreementTransportRuntimeV1,
+    paymentEvidenceTransport: runtime as unknown as DacsSellerPaymentEvidenceRuntimeV1,
+    bundleTransport: runtime as unknown as DacsSellerBundleTransportRuntimeV1,
+  });
 }
 
 function transportRuntime(value: unknown): value is Readonly<{

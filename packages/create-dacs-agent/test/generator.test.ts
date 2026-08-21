@@ -282,6 +282,9 @@ describe("create-dacs-agent", () => {
     expect(JSON.stringify(packageSource)).not.toContain("file:");
     expect(combined).toContain("reviewed-live-adapter-not-configured");
     expect(combined).toContain("createDacsLiveRoleRuntimeV1");
+    expect(combined).toContain("createDacsUnavailableLiveCommerceGraphV1");
+    expect(combined).toContain("createCommerceGraph: async");
+    expect(combined).not.toContain("createOperations: () => Object.freeze({})");
     expect(combined).toContain("post-start-doctor-required");
     expect(combined).toContain("DACS_SETUP_WRITE_CONFIRM=1");
     expect(combined).toContain("DACS_PURCHASE_CONFIRM=1");
