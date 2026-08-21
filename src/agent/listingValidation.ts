@@ -37,6 +37,7 @@ import {
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1310,7 +1311,8 @@ export async function validateListingArtifact(
   }
 
   const signerIsCarried = listing.seller.identity.claims.some(
-    (claim) => claim.ref === listing.signature.signer,
+    (claim) =>
+      sameCanonicalClaimIdentity(claim.ref, listing.signature.signer),
   );
   let signerControlled: unknown = false;
   if (signerIsCarried) {

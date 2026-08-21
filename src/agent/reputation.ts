@@ -1,4 +1,8 @@
 import type { AnyAttestationBundle } from "../artifacts/types.js";
+import {
+  parseCanonicalClaimReference,
+  requireCanonicalClaimReference,
+} from "../identity/claimReference.js";
 
 /**
  * Reputation for a primary claim, derived purely from its attestation bundles
@@ -27,17 +31,27 @@ export function computeReputation(
   primaryClaim: string,
   bundles: AnyAttestationBundle[],
 ): Reputation {
+  const subject = requireCanonicalClaimReference(
+    primaryClaim,
+    "Reputation primaryClaim",
+  ).identity;
+  const canonicalIdentity = `${subject.scheme}:${subject.identifier}`;
   const mineByJob = new Map<string, AnyAttestationBundle>();
   for (const bundle of bundles) {
     if (
-      bundle.parties.some((party) => party.primaryClaim === primaryClaim) &&
+      bundle.parties.some((party) => {
+        const parsed = parseCanonicalClaimReference(party.primaryClaim);
+        return parsed !== null &&
+          parsed.identity.scheme === subject.scheme &&
+          parsed.identity.identifier === subject.identifier;
+      }) &&
       !mineByJob.has(bundle.jobId)
     ) mineByJob.set(bundle.jobId, bundle);
   }
   const mine = [...mineByJob.values()];
   const completed = mine.filter((b) => b.outcome === "completed").length;
   return {
-    primaryClaim,
+    primaryClaim: canonicalIdentity,
     totalAgreements: mine.length,
     completed,
     avgRating: null,
