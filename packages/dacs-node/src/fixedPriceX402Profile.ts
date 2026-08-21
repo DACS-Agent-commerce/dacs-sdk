@@ -1,0 +1,1018 @@
+import {
+  demosWriteEvidenceToAnchorReceipt,
+  deriveFixedPriceAgreement,
+  fixedPriceAgreementLogicalAddress,
+  type AuthenticatedRailDefinition,
+  type DurableAnchoredFixedPriceAgreement,
+  type DurableSellerFixedPriceAgreementResponse,
+  type FixedPriceAgreementAnchorProvider,
+  type FixedPriceAgreementContributionVerifier,
+  type FixedPriceAgreementSignatureReconciliation,
+  type FixedPriceAgreementInput,
+  type SellerFixedPriceAgreementContextQuery,
+  type SellerFixedPriceAgreementContextResolution,
+  type UnsignedAgreementArtifact,
+} from "@kynesyslabs/dacs";
+import {
+  isBundleRequirement,
+  isAgreementArtifact,
+  isCanonicalBase64Url,
+  isReadableAnchorReceipt,
+  isListing,
+  type BundleRequirement,
+  type Listing,
+  type PaymentRailRef,
+} from "@kynesyslabs/dacs/artifacts";
+import {
+  canonicalize,
+  contentHash,
+  listingAddress,
+  sha256Hex,
+} from "@kynesyslabs/dacs/canonical";
+import type {
+  FixedPriceX402OrderInput,
+  FixedPriceX402OrderRecord,
+  FixedPriceX402TrackOperationInput,
+} from "@kynesyslabs/dacs/commerce";
+import { fixedPriceX402OrderLocalBindingHash } from "@kynesyslabs/dacs/commerce";
+import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
+import {
+  canonicalDemosAgentPublicKey,
+  sameCanonicalClaimIdentity,
+} from "@kynesyslabs/dacs/identity";
+
+import type { DacsSellerAgreementTransportRuntimeOptionsV1 } from
+  "./agreementTransportRuntime.js";
+import type {
+  DacsBuyerAgreementTrackOptionsV1,
+  DacsSellerAgreementTrackOptionsV1,
+} from "./agreementRuntime.js";
+import {
+  resolveDacsX402ExistingListingV1,
+  type DacsX402ExistingListingAdmissionV1,
+} from "./listingDoctor.js";
+import { createDacsFixedPriceX402RoleOrderV1 } from "./liveOrder.js";
+import type { DacsLiveOrderInputV1 } from "./orderInput.js";
+import { createDacsFixedPriceX402ProtocolBindingV1 } from "./purchaseQueue.js";
+import { readDacsPublicJsonV1 } from "./publicJson.js";
+import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import type {
+  DacsSellerSessionBootstrapAdmissionV1,
+  DacsSellerSessionBootstrapTransportOptionsV1,
+} from "./sessionBootstrapTransportRuntime.js";
+import type {
+  DacsBuyerSessionAgreementFactsV1,
+  DacsSellerSessionAgreementFactsV1,
+} from "./sessionBootstrapAgreementRuntime.js";
+import type { DacsAgreementSellerVetProductionV1 } from
+  "./agreementTransportRuntime.js";
+
+const APPLICATION_VERSION = "1" as const;
+const ADMISSION_VERSION = "1" as const;
+const ADMISSION_DOMAIN = "dacs-fixed-price-x402-seller-admission:v1:" as const;
+const DRAFT_CLOCK_VERSION = "1" as const;
+const DRAFT_CLOCK_DOMAIN = "dacs-fixed-price-x402-agreement-clock:v1:" as const;
+const AGREEMENT_PUBLICATION_VERSION = "1" as const;
+const AGREEMENT_PUBLICATION_DOMAIN =
+  "dacs-fixed-price-x402-agreement-publication:v1:" as const;
+const DEFAULT_MAXIMUM_CLOCK_SKEW_MS = 60_000;
+const HASH_RE = /^[0-9a-f]{64}$/;
+const STORAGE_RE = /^stor-[0-9a-f]{40}$/;
+
+export const DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1: Readonly<BundleRequirement> =
+  Object.freeze({ requirementVersion: "1", required: [] });
+
+export interface DacsFixedPriceX402ApplicationV1 {
+  applicationVersion: typeof APPLICATION_VERSION;
+  listingRef: string;
+  listingContentHash: string;
+  listingLogicalAddress: string;
+  listing: Readonly<Listing>;
+  requestHash: string;
+  request: Readonly<Record<string, unknown>>;
+}
+
+export interface DacsFixedPriceX402SellerAdmissionRecordV1 {
+  admissionVersion: typeof ADMISSION_VERSION;
+  jobId: string;
+  localBindingHash: string;
+  admittedAt: number;
+  application: Readonly<DacsFixedPriceX402ApplicationV1>;
+  authenticatedListing: Readonly<DacsX402ExistingListingAdmissionV1>;
+  protocol: Readonly<FixedPriceX402OrderInput["protocol"]>;
+}
+
+export interface DacsFixedPriceX402SellerSessionPolicyOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  rail: Readonly<AuthenticatedRailDefinition>;
+  sellerPublicEndpoint: string;
+  sellerPayee: string;
+  maximumServiceAmount: string;
+  now?(): number;
+  readJson?(url: string): Promise<unknown>;
+}
+
+export interface DacsFixedPriceX402SellerSessionPolicyV1 {
+  admitInit: DacsSellerSessionBootstrapTransportOptionsV1["admitInit"];
+  admitProposal: DacsSellerAgreementTransportRuntimeOptionsV1["admitProposal"];
+  resolveBuyerRequirement(input: Readonly<{
+    retained: Readonly<DacsLiveOrderInputV1>;
+  }>): Readonly<BundleRequirement>;
+  resolveSellerRequirement(): Readonly<BundleRequirement>;
+}
+
+export interface DacsFixedPriceX402BuyerAgreementPolicyOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  now?(): number;
+}
+
+export interface DacsFixedPriceX402BuyerAgreementPolicyV1 {
+  buildDraft(input: Readonly<{
+    operation: Readonly<FixedPriceX402TrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1>;
+    session: Readonly<DacsBuyerSessionAgreementFactsV1>;
+  }>): Readonly<UnsignedAgreementArtifact>;
+  verifyContribution: FixedPriceAgreementContributionVerifier;
+  reconcileBuyerSignature: DacsBuyerAgreementTrackOptionsV1[
+    "reconcileBuyerSignature"
+  ];
+  anchor: Readonly<FixedPriceAgreementAnchorProvider>;
+  authorizeAnchored(input: Readonly<{
+    operation: Readonly<FixedPriceX402TrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1>;
+    result: Readonly<DurableAnchoredFixedPriceAgreement>;
+  }>): boolean;
+}
+
+export interface DacsFixedPriceX402SellerAgreementPolicyOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  maximumClockSkewMs?: number;
+}
+
+export interface DacsFixedPriceX402SellerAgreementPolicyV1 {
+  resolveAuthenticatedAgreementContext(input: Readonly<
+    SellerFixedPriceAgreementContextQuery & {
+    operation: Readonly<FixedPriceX402TrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1>;
+    session: Readonly<DacsSellerSessionAgreementFactsV1>;
+    sellerVet: Readonly<DacsAgreementSellerVetProductionV1>;
+    sellerRequirement: Readonly<BundleRequirement>;
+  }>): SellerFixedPriceAgreementContextResolution;
+  verifyContribution: FixedPriceAgreementContributionVerifier;
+  reconcileSellerSignature: DacsSellerAgreementTrackOptionsV1[
+    "reconcileSellerSignature"
+  ];
+  authorizeComplete(input: Readonly<{
+    operation: Readonly<FixedPriceX402TrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1>;
+    result: Readonly<DurableSellerFixedPriceAgreementResponse>;
+  }>): boolean;
+}
+
+export class DacsFixedPriceX402ProfileError extends Error {
+  override readonly name = "DacsFixedPriceX402ProfileError";
+
+  constructor(readonly reasonCode: string) {
+    super(reasonCode);
+  }
+}
+
+function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return (prototype === Object.prototype || prototype === null) &&
+      Reflect.ownKeys(value).every((key) => {
+        if (typeof key !== "string") return false;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return descriptor !== undefined && descriptor.enumerable && "value" in descriptor;
+      });
+  } catch {
+    return false;
+  }
+}
+
+function exactKeys(value: Readonly<Record<string, unknown>>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key));
+}
+
+function copy<T>(value: T): T {
+  return JSON.parse(canonicalize(value)) as T;
+}
+
+function deepFreeze<T>(value: T): Readonly<T> {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export function captureDacsFixedPriceX402ApplicationV1(
+  value: unknown,
+): Readonly<DacsFixedPriceX402ApplicationV1> {
+  if (!plainObject(value) || !exactKeys(value, [
+    "applicationVersion", "listingRef", "listingContentHash", "listingLogicalAddress",
+    "listing", "requestHash", "request",
+  ]) || value.applicationVersion !== APPLICATION_VERSION ||
+      typeof value.listingRef !== "string" || !STORAGE_RE.test(value.listingRef) ||
+      typeof value.listingContentHash !== "string" ||
+        !HASH_RE.test(value.listingContentHash) ||
+      typeof value.listingLogicalAddress !== "string" ||
+        value.listingLogicalAddress.length === 0 ||
+      !isListing(value.listing) || typeof value.requestHash !== "string" ||
+        !HASH_RE.test(value.requestHash) || !plainObject(value.request)) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-application-invalid");
+  }
+  let captured: DacsFixedPriceX402ApplicationV1;
+  try {
+    captured = copy(value) as unknown as DacsFixedPriceX402ApplicationV1;
+  } catch {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-application-invalid");
+  }
+  if (contentHash(captured.listing as unknown as Record<string, unknown>) !==
+        captured.listingContentHash ||
+      listingAddress(
+        captured.listing.seller.identity.presentedBy,
+        captured.listing.listingId,
+        captured.listing.listingVersion,
+      ) !== captured.listingLogicalAddress ||
+      sha256Hex(canonicalize(captured.request)) !== captured.requestHash) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-application-binding-invalid");
+  }
+  return deepFreeze(captured);
+}
+
+export function resolveDacsFixedPriceX402BuyerRequirementsV1(
+  retained: Readonly<DacsLiveOrderInputV1>,
+): Readonly<{ buyer: Readonly<BundleRequirement>; seller: Readonly<BundleRequirement> }> {
+  const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
+  if (!isBundleRequirement(application.listing.buyerRequirement)) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-requirement-invalid");
+  }
+  return Object.freeze({
+    buyer: deepFreeze(copy(application.listing.buyerRequirement)),
+    // Standard #331 does not yet define complementary requirement provenance.
+    // The generated v1 profile is therefore explicit and intentionally empty.
+    seller: DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
+  });
+}
+
+function admissionId(jobId: string): string {
+  return sha256Hex(`${ADMISSION_DOMAIN}${jobId}`);
+}
+
+function captureAdmission(value: unknown): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
+  if (!plainObject(value) || !exactKeys(value, [
+    "admissionVersion", "jobId", "localBindingHash", "admittedAt", "application",
+    "authenticatedListing", "protocol",
+  ]) || value.admissionVersion !== ADMISSION_VERSION ||
+      typeof value.jobId !== "string" || typeof value.localBindingHash !== "string" ||
+      !HASH_RE.test(value.localBindingHash) || !Number.isSafeInteger(value.admittedAt) ||
+      Number(value.admittedAt) < 0 || !plainObject(value.authenticatedListing) ||
+      !plainObject(value.protocol)) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-corrupt");
+  }
+  const application = captureDacsFixedPriceX402ApplicationV1(value.application);
+  const admission = value.authenticatedListing as unknown as
+    Readonly<DacsX402ExistingListingAdmissionV1>;
+  if (admission.listingRef !== application.listingRef ||
+      admission.listingContentHash !== application.listingContentHash ||
+      admission.logicalAddress !== application.listingLogicalAddress ||
+      canonicalize(admission.listing) !== canonicalize(application.listing) ||
+      canonicalize(createDacsFixedPriceX402ProtocolBindingV1(admission)) !==
+        canonicalize(value.protocol)) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-corrupt");
+  }
+  return deepFreeze(copy({
+    admissionVersion: ADMISSION_VERSION,
+    jobId: value.jobId,
+    localBindingHash: value.localBindingHash,
+    admittedAt: Number(value.admittedAt),
+    application,
+    authenticatedListing: admission,
+    protocol: value.protocol as FixedPriceX402OrderInput["protocol"],
+  }));
+}
+
+function retainAdmission(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPriceX402OrderInput>,
+  application: Readonly<DacsFixedPriceX402ApplicationV1>,
+  authenticatedListing: Readonly<DacsX402ExistingListingAdmissionV1>,
+  admittedAt: number,
+): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
+  const id = admissionId(order.jobId);
+  const record: DacsFixedPriceX402SellerAdmissionRecordV1 = {
+    admissionVersion: ADMISSION_VERSION,
+    jobId: order.jobId,
+    localBindingHash: fixedPriceX402OrderLocalBindingHash(order),
+    admittedAt,
+    application,
+    authenticatedListing,
+    protocol: order.protocol,
+  };
+  const existing = context.database.loadEffectInput("session", id);
+  if (existing !== undefined) {
+    const captured = captureAdmission(existing);
+    if (captured.jobId !== record.jobId ||
+        captured.localBindingHash !== record.localBindingHash ||
+        canonicalize(captured.application) !== canonicalize(record.application) ||
+        canonicalize(captured.authenticatedListing) !==
+          canonicalize(record.authenticatedListing) ||
+        canonicalize(captured.protocol) !== canonicalize(record.protocol)) {
+      throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-conflict");
+    }
+    return captured;
+  }
+  const put = context.database.putEffectIntent({
+    kind: "session",
+    effectId: id,
+    bindingHash: record.localBindingHash,
+    input: record,
+    idempotencyKey: id,
+    jobId: order.jobId,
+  });
+  if (put.status === "conflict") {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-conflict");
+  }
+  return captureAdmission(context.database.loadEffectInput("session", id));
+}
+
+export function loadDacsFixedPriceX402SellerAdmissionV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPriceX402OrderRecord>,
+): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
+  if (context.role !== "seller" || order.role !== "seller") {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-seller-order-mismatch");
+  }
+  const value = context.database.loadEffectInput("session", admissionId(order.jobId));
+  if (value === undefined) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-missing");
+  }
+  const admission = captureAdmission(value);
+  if (admission.jobId !== order.jobId ||
+      admission.localBindingHash !== order.localBindingHash ||
+      canonicalize(admission.protocol) !== canonicalize(order.protocol)) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-corrupt");
+  }
+  return admission;
+}
+
+export function createDacsFixedPriceX402SellerSessionPolicyV1(
+  options: Readonly<DacsFixedPriceX402SellerSessionPolicyOptionsV1>,
+): Readonly<DacsFixedPriceX402SellerSessionPolicyV1> {
+  if (!plainObject(options) || !plainObject(options.context) ||
+      options.context.role !== "seller" || typeof options.sellerPublicEndpoint !== "string" ||
+      typeof options.sellerPayee !== "string" ||
+      typeof options.maximumServiceAmount !== "string" ||
+      (options.now !== undefined && typeof options.now !== "function") ||
+      (options.readJson !== undefined && typeof options.readJson !== "function")) {
+    throw new TypeError("fixed-price seller session policy options are invalid");
+  }
+  const context = options.context;
+  const sellerPublicKey = canonicalDemosAgentPublicKey(context.authority);
+  if (sellerPublicKey === null) {
+    throw new TypeError("fixed-price seller authority is invalid");
+  }
+
+  const admitInit: DacsSellerSessionBootstrapTransportOptionsV1["admitInit"] =
+    async ({ authenticated, payload }): Promise<Readonly<
+      DacsSellerSessionBootstrapAdmissionV1
+    >> => {
+      const application = captureDacsFixedPriceX402ApplicationV1(payload.application);
+      if (payload.order.sdkJobs.role !== "buyer" ||
+          !sameCanonicalClaimIdentity(payload.order.buyer, context.peerAuthority) ||
+          !sameCanonicalClaimIdentity(payload.order.seller, context.authority) ||
+          authenticated.envelope.sender !== context.peerAuthority ||
+          authenticated.envelope.audience !== context.authority) {
+        throw new DacsFixedPriceX402ProfileError("fixed-price-session-party-mismatch");
+      }
+      const admittedAt = options.now?.() ?? context.database.readTime();
+      const resolved = await resolveDacsX402ExistingListingV1({
+        listingRef: application.listingRef,
+        sellerAuthority: context.authority,
+        sellerPublicKey,
+        sellerPublicEndpoint: options.sellerPublicEndpoint,
+        sellerPayee: options.sellerPayee,
+        network: context.config.rail.requestedNetwork as `eip155:${number}`,
+        rail: options.rail,
+        maximumServiceAmount: options.maximumServiceAmount,
+        now: admittedAt,
+        readAnchor: (locator) => context.demos.adapter.readAnchor(locator),
+        async authenticateAnchor(anchor) {
+          const receipt = await context.demos.adapter.resolveDemosAnchorReceipt(anchor);
+          return receipt !== null &&
+            await context.demos.adapter.verifyDemosAnchorReceipt(receipt) === true;
+        },
+        readJson: options.readJson ?? ((url) => readDacsPublicJsonV1(url)),
+      });
+      if (resolved.status !== "verified" ||
+          resolved.admission.listingRef !== application.listingRef ||
+          resolved.admission.listingContentHash !== application.listingContentHash ||
+          resolved.admission.logicalAddress !== application.listingLogicalAddress ||
+          canonicalize(resolved.admission.listing) !== canonicalize(application.listing) ||
+          canonicalize(createDacsFixedPriceX402ProtocolBindingV1(resolved.admission)) !==
+            canonicalize(payload.order.protocol)) {
+        throw new DacsFixedPriceX402ProfileError("fixed-price-session-listing-not-admitted");
+      }
+      const order = createDacsFixedPriceX402RoleOrderV1({
+        role: "seller",
+        jobId: payload.order.jobId,
+        buyer: payload.order.buyer,
+        seller: payload.order.seller,
+        protocol: payload.order.protocol,
+      });
+      retainAdmission(
+        context,
+        order,
+        application,
+        resolved.admission,
+        admittedAt,
+      );
+      return Object.freeze({ order, application });
+    };
+
+  return Object.freeze({
+    admitInit,
+    async admitProposal({ payload }: Parameters<
+      DacsSellerAgreementTransportRuntimeOptionsV1["admitProposal"]
+    >[0]) {
+      const loaded = await context.database.createLiveCoordinatorStore("seller")
+        .load("seller", payload.transportIdentity.jobId);
+      if (loaded.status !== "ok") {
+        throw new DacsFixedPriceX402ProfileError("fixed-price-seller-order-missing");
+      }
+      const admission = loadDacsFixedPriceX402SellerAdmissionV1(context, loaded.record);
+      return Object.freeze({
+        order: createDacsFixedPriceX402RoleOrderV1({
+          role: "seller",
+          jobId: loaded.record.jobId,
+          buyer: loaded.record.buyer,
+          seller: loaded.record.seller,
+          protocol: loaded.record.protocol,
+        }),
+        application: admission.application,
+      });
+    },
+    resolveBuyerRequirement({ retained }: Readonly<{
+      retained: Readonly<DacsLiveOrderInputV1>;
+    }>) {
+      const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
+      return deepFreeze(copy(application.listing.buyerRequirement));
+    },
+    resolveSellerRequirement() {
+      return DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1;
+    },
+  });
+}
+
+interface AgreementClockRecordV1 {
+  clockVersion: typeof DRAFT_CLOCK_VERSION;
+  role: "buyer";
+  jobId: string;
+  localBindingHash: string;
+  generatedAt: number;
+}
+
+interface AgreementPublicationRecordV1 {
+  publicationVersion: typeof AGREEMENT_PUBLICATION_VERSION;
+  jobId: string;
+  localBindingHash: string;
+  writer: string;
+  logicalAddress: string;
+  agreementHash: string;
+  artifact: Readonly<Record<string, unknown>>;
+}
+
+function agreementClockId(jobId: string): string {
+  return sha256Hex(`${DRAFT_CLOCK_DOMAIN}${jobId}`);
+}
+
+function agreementPublicationId(logicalAddress: string): string {
+  return sha256Hex(`${AGREEMENT_PUBLICATION_DOMAIN}${logicalAddress}`);
+}
+
+function captureAgreementClock(value: unknown): Readonly<AgreementClockRecordV1> {
+  if (!plainObject(value) || !exactKeys(value, [
+    "clockVersion", "role", "jobId", "localBindingHash", "generatedAt",
+  ]) || value.clockVersion !== DRAFT_CLOCK_VERSION || value.role !== "buyer" ||
+      typeof value.jobId !== "string" || typeof value.localBindingHash !== "string" ||
+      !HASH_RE.test(value.localBindingHash) || !Number.isSafeInteger(value.generatedAt) ||
+      Number(value.generatedAt) < 0) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-clock-corrupt");
+  }
+  return Object.freeze({
+    clockVersion: DRAFT_CLOCK_VERSION,
+    role: "buyer",
+    jobId: value.jobId,
+    localBindingHash: value.localBindingHash,
+    generatedAt: Number(value.generatedAt),
+  });
+}
+
+function retainAgreementClock(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  now: () => number,
+): Readonly<AgreementClockRecordV1> {
+  const id = agreementClockId(operation.order.jobId);
+  const existing = context.database.loadEffectInput("session", id);
+  if (existing !== undefined) {
+    const captured = captureAgreementClock(existing);
+    if (captured.jobId !== operation.order.jobId ||
+        captured.localBindingHash !== operation.order.localBindingHash) {
+      throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-clock-conflict");
+    }
+    return captured;
+  }
+  const generatedAt = now();
+  const record: AgreementClockRecordV1 = {
+    clockVersion: DRAFT_CLOCK_VERSION,
+    role: "buyer",
+    jobId: operation.order.jobId,
+    localBindingHash: operation.order.localBindingHash,
+    generatedAt,
+  };
+  const put = context.database.putEffectIntent({
+    kind: "session",
+    effectId: id,
+    bindingHash: operation.order.localBindingHash,
+    input: record,
+    idempotencyKey: id,
+    jobId: operation.order.jobId,
+  });
+  if (put.status === "conflict") {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-clock-conflict");
+  }
+  return captureAgreementClock(context.database.loadEffectInput("session", id));
+}
+
+function exactRail(
+  application: Readonly<DacsFixedPriceX402ApplicationV1>,
+  order: Readonly<FixedPriceX402OrderInput>,
+): Readonly<{ rail: PaymentRailRef; phaseIndex: number; payeeAddress: string }> {
+  const listing = application.listing;
+  const accepted = listing.acceptedRails?.filter((candidate) =>
+    candidate.railId === order.protocol.rail.railId &&
+    candidate.railVersion === order.protocol.rail.railVersion
+  ) ?? [];
+  const phaseIndexes = listing.pipeline.flatMap((phase, index) =>
+    phase.kind === "pay-x402" ? [index] : []
+  );
+  const commitmentCount = listing.pipeline.filter((phase) =>
+    phase.kind === "commit-payee-bound-agreement"
+  ).length;
+  const phase = phaseIndexes.length === 1 ? listing.pipeline[phaseIndexes[0]!] : undefined;
+  const rail = accepted.length === 1 ? accepted[0] : undefined;
+  const payeeAddress = plainObject(rail?.parameters)
+    ? rail.parameters.payTo
+    : undefined;
+  if (order.protocol.phase !== "pay-x402" ||
+      order.protocol.rail.phaseHandler !== "pay-x402" ||
+      phaseIndexes.length !== 1 || commitmentCount !== 1 || rail === undefined ||
+      !plainObject(phase?.parameters) || phase.parameters.rail !== rail.railId ||
+      typeof payeeAddress !== "string" || payeeAddress.length === 0 ||
+      rail.parameters?.network !== order.protocol.rail.network) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-rail-invalid");
+  }
+  return Object.freeze({
+    rail: deepFreeze(copy(rail)),
+    phaseIndex: phaseIndexes[0]!,
+    payeeAddress,
+  });
+}
+
+function buildAgreementInput(input: Readonly<{
+  application: Readonly<DacsFixedPriceX402ApplicationV1>;
+  order: Readonly<FixedPriceX402OrderInput>;
+  buyerIdentity: Readonly<DacsBuyerSessionAgreementFactsV1["buyerIdentity"]>;
+  sellerIdentity: Readonly<DacsBuyerSessionAgreementFactsV1["sellerIdentity"]>;
+  buyerVetRef: Readonly<DacsBuyerSessionAgreementFactsV1["buyerVetRef"]>;
+  sellerVetRef: Readonly<DacsBuyerSessionAgreementFactsV1["sellerVetRef"]>;
+  generatedAt: number;
+}>): Readonly<FixedPriceAgreementInput> {
+  const { application, order } = input;
+  if (order.jobId.length === 0 ||
+      application.listingContentHash !== contentHash(
+        application.listing as unknown as Record<string, unknown>,
+      ) ||
+      !sameCanonicalClaimIdentity(application.listing.seller.identity.presentedBy,
+        order.seller) ||
+      !sameCanonicalClaimIdentity(input.buyerIdentity.presentedBy, order.buyer) ||
+      !sameCanonicalClaimIdentity(input.sellerIdentity.presentedBy, order.seller)) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-party-invalid");
+  }
+  const selected = exactRail(application, order);
+  return copy({
+    jobId: order.jobId,
+    verifiedListing: {
+      disposition: "verified" as const,
+      listing: application.listing,
+      pin: {
+        listingId: application.listing.listingId,
+        version: application.listing.listingVersion,
+        contentHash: application.listingContentHash,
+      },
+    },
+    buyer: {
+      identityBundle: input.buyerIdentity,
+      vetRecordRef: input.buyerVetRef,
+    },
+    seller: {
+      identityBundle: input.sellerIdentity,
+      vetRecordRef: input.sellerVetRef,
+    },
+    selectedRail: selected.rail,
+    payoutBindings: [{
+      railId: selected.rail.railId,
+      phaseIndex: selected.phaseIndex,
+      payeeAddress: selected.payeeAddress,
+    }],
+    generatedAt: input.generatedAt,
+  });
+}
+
+function agreementVerifier(
+  buyer: string,
+  seller: string,
+): FixedPriceAgreementContributionVerifier {
+  return ({ role, party, algorithm, value, signedBytes }) => {
+    const expected = role === "buyer" ? buyer : seller;
+    if (algorithm !== "ed25519" || party !== expected ||
+        !isCanonicalBase64Url(value)) return "invalid";
+    const signature = Buffer.from(value, "base64url");
+    if (signature.byteLength !== 64 || signature.toString("base64url") !== value) {
+      return "invalid";
+    }
+    const publicKey = canonicalDemosAgentPublicKey(expected);
+    if (publicKey === null) return "invalid";
+    try {
+      return ed25519Verify(
+        signedBytes,
+        Uint8Array.from(signature),
+        publicKeyFromRaw(publicKey),
+      ) ? "valid" : "invalid";
+    } catch {
+      return "error";
+    }
+  };
+}
+
+const absentSignature = (): FixedPriceAgreementSignatureReconciliation =>
+  Object.freeze({ disposition: "absent", reason: "local-signature-not-retained" });
+
+function captureAgreementPublication(
+  value: unknown,
+): Readonly<AgreementPublicationRecordV1> {
+  if (!plainObject(value) || !exactKeys(value, [
+    "publicationVersion", "jobId", "localBindingHash", "writer",
+    "logicalAddress", "agreementHash", "artifact",
+  ]) || value.publicationVersion !== AGREEMENT_PUBLICATION_VERSION ||
+      typeof value.jobId !== "string" || typeof value.localBindingHash !== "string" ||
+      !HASH_RE.test(value.localBindingHash) || typeof value.writer !== "string" ||
+      typeof value.logicalAddress !== "string" || typeof value.agreementHash !== "string" ||
+      !HASH_RE.test(value.agreementHash) || !isAgreementArtifact(value.artifact) ||
+      value.artifact.jobId !== value.jobId ||
+      fixedPriceAgreementLogicalAddress(value.jobId) !== value.logicalAddress ||
+      contentHash(value.artifact as unknown as Record<string, unknown>) !==
+        value.agreementHash) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-publication-corrupt");
+  }
+  return deepFreeze(copy(value as unknown as AgreementPublicationRecordV1));
+}
+
+async function buyerOrderRecord(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+): Promise<Readonly<FixedPriceX402OrderRecord>> {
+  const loaded = await context.database.createLiveCoordinatorStore("buyer")
+    .load("buyer", jobId);
+  if (loaded.status !== "ok" || loaded.record.role !== "buyer" ||
+      loaded.record.buyer !== context.authority ||
+      loaded.record.seller !== context.peerAuthority) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-order-missing");
+  }
+  return loaded.record;
+}
+
+function createAgreementAnchorProvider(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+): Readonly<FixedPriceAgreementAnchorProvider> {
+  async function retained(
+    logicalAddress: string,
+    agreementHash: string,
+  ): Promise<Readonly<AgreementPublicationRecordV1> | undefined> {
+    const value = context.database.loadEffectInput(
+      "artifact-publication",
+      agreementPublicationId(logicalAddress),
+    );
+    if (value === undefined) return undefined;
+    const record = captureAgreementPublication(value);
+    if (record.logicalAddress !== logicalAddress || record.agreementHash !== agreementHash ||
+        record.writer !== context.authority) {
+      throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-publication-conflict");
+    }
+    const order = await buyerOrderRecord(context, record.jobId);
+    if (record.localBindingHash !== order.localBindingHash) {
+      throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-publication-conflict");
+    }
+    return record;
+  }
+
+  const provider: FixedPriceAgreementAnchorProvider = {
+    async anchorAgreement(input, fence) {
+      try {
+        if (!isAgreementArtifact(input.artifact) ||
+            input.artifact.jobId.length === 0 ||
+            fixedPriceAgreementLogicalAddress(input.artifact.jobId) !== input.logicalAddress ||
+            contentHash(input.artifact as unknown as Record<string, unknown>) !==
+              input.agreementHash) {
+          return Object.freeze({ disposition: "rejected" as const,
+            reason: "agreement publication is malformed" });
+        }
+        const order = await buyerOrderRecord(context, input.artifact.jobId);
+        const record: AgreementPublicationRecordV1 = {
+          publicationVersion: AGREEMENT_PUBLICATION_VERSION,
+          jobId: order.jobId,
+          localBindingHash: order.localBindingHash,
+          writer: context.authority,
+          logicalAddress: input.logicalAddress,
+          agreementHash: input.agreementHash,
+          artifact: input.artifact as unknown as Record<string, unknown>,
+        };
+        const effectId = agreementPublicationId(input.logicalAddress);
+        const put = context.database.putEffectIntent({
+          kind: "artifact-publication",
+          effectId,
+          bindingHash: order.localBindingHash,
+          input: record,
+          idempotencyKey: effectId,
+          jobId: order.jobId,
+        });
+        if (put.status === "conflict") {
+          return Object.freeze({ disposition: "rejected" as const,
+            reason: "agreement publication conflicts with retained intent" });
+        }
+        captureAgreementPublication(context.database.loadEffectInput(
+          "artifact-publication", effectId,
+        ));
+        await context.demos.adapter.anchorWriteOnce(
+          record.logicalAddress,
+          record.artifact,
+          { metadata: {
+            logicalAddress: record.logicalAddress,
+            contentHash: record.agreementHash,
+          } },
+        );
+        return Object.freeze({ disposition: "submitted" as const });
+      } catch {
+        return Object.freeze({ disposition: "indeterminate" as const,
+          reason: "agreement publication outcome is ambiguous" });
+      }
+    },
+    async reconcileAgreementAnchor(input, fence) {
+      let record: Readonly<AgreementPublicationRecordV1> | undefined;
+      try {
+        record = await retained(input.logicalAddress, input.agreementHash);
+      } catch {
+        return Object.freeze({ disposition: "rejected" as const,
+          reason: "retained agreement publication conflicts" });
+      }
+      if (record === undefined) {
+        return Object.freeze({ disposition: "absent" as const,
+          reason: "agreement publication intent is absent" });
+      }
+      try {
+        const anchor = await context.demos.adapter.anchorWriteOnce(
+          record.logicalAddress,
+          record.artifact,
+          { metadata: {
+            logicalAddress: record.logicalAddress,
+            contentHash: record.agreementHash,
+          } },
+        );
+        const receipt = anchor.demosEvidence === undefined
+          ? await context.demos.adapter.resolveDemosAnchorReceipt({
+              logicalAddress: record.logicalAddress,
+              nativeAddress: anchor.address,
+              contentHash: record.agreementHash,
+              writer: record.writer,
+            })
+          : demosWriteEvidenceToAnchorReceipt({
+              evidence: anchor.demosEvidence,
+              logicalAddress: record.logicalAddress,
+              contentHash: record.agreementHash,
+              writer: record.writer,
+            });
+        if (receipt === null || !isReadableAnchorReceipt(receipt) ||
+            receipt.logicalAddress !== record.logicalAddress ||
+            receipt.contentHash !== record.agreementHash ||
+            receipt.writer !== record.writer ||
+            receipt.observationDisposition !== "established" ||
+            (receipt.state !== "included" && receipt.state !== "finalized")) {
+          return Object.freeze({ disposition: "indeterminate" as const,
+            reason: "agreement receipt is not authoritatively observable" });
+        }
+        const readback = await context.demos.adapter.readAnchor(receipt.nativeAddress);
+        if (readback === null || !isAgreementArtifact(readback) ||
+            canonicalize(readback) !== canonicalize(record.artifact) ||
+            contentHash(readback) !== record.agreementHash) {
+          return Object.freeze({ disposition: "indeterminate" as const,
+            reason: "agreement native readback is unavailable" });
+        }
+        return Object.freeze({
+          disposition: "present" as const,
+          value: Object.freeze({
+            artifact: deepFreeze(copy(readback)),
+            ref: Object.freeze({
+              anchor: Object.freeze({ kind: "storage-program" as const,
+                locator: record.logicalAddress }),
+              contentHash: record.agreementHash,
+              signer: record.writer,
+            }),
+            anchorReceipt: deepFreeze(copy(receipt)),
+          }),
+        });
+      } catch {
+        return Object.freeze({ disposition: "indeterminate" as const,
+          reason: "agreement publication reconciliation is unavailable" });
+      }
+    },
+    async verifyAnchorReceipt(input) {
+      if (input.expectedWriter !== context.authority ||
+          input.ref.anchor.kind !== "storage-program" ||
+          input.ref.signer !== context.authority ||
+          input.receipt.writer !== context.authority ||
+          input.receipt.logicalAddress !== input.ref.anchor.locator ||
+          input.receipt.contentHash !== input.ref.contentHash) return "invalid";
+      try {
+        return await context.demos.adapter.verifyDemosAnchorReceipt(input.receipt)
+          ? "valid" : "invalid";
+      } catch {
+        return "error";
+      }
+    },
+  };
+  return Object.freeze(provider);
+}
+
+function buyerSessionBindingsValid(
+  application: Readonly<DacsFixedPriceX402ApplicationV1>,
+  session: Readonly<DacsBuyerSessionAgreementFactsV1>,
+): boolean {
+  return session.buyerRequirementHash === sha256Hex(canonicalize(
+    application.listing.buyerRequirement,
+  )) && session.sellerRequirementHash === sha256Hex(canonicalize(
+    DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
+  ));
+}
+
+export function createDacsFixedPriceX402BuyerAgreementPolicyV1(
+  options: Readonly<DacsFixedPriceX402BuyerAgreementPolicyOptionsV1>,
+): Readonly<DacsFixedPriceX402BuyerAgreementPolicyV1> {
+  if (!plainObject(options) || !plainObject(options.context) ||
+      options.context.role !== "buyer" ||
+      (options.now !== undefined && typeof options.now !== "function")) {
+    throw new TypeError("fixed-price buyer agreement policy options are invalid");
+  }
+  const context = options.context;
+  const buildDraft: DacsFixedPriceX402BuyerAgreementPolicyV1["buildDraft"] = (input) => {
+    const application = captureDacsFixedPriceX402ApplicationV1(input.retained.application);
+    if (input.operation.order.jobId !== input.retained.jobId ||
+        input.operation.order.localBindingHash !== input.retained.localBindingHash ||
+        input.session.jobId !== input.retained.jobId ||
+        input.session.localBindingHash !== input.retained.localBindingHash ||
+        !buyerSessionBindingsValid(application, input.session)) {
+      throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-agreement-binding-invalid");
+    }
+    const clock = retainAgreementClock(
+      context,
+      input.operation,
+      options.now ?? (() => context.database.readTime()),
+    );
+    return deepFreeze(deriveFixedPriceAgreement(buildAgreementInput({
+      application,
+      order: input.retained.order,
+      buyerIdentity: input.session.buyerIdentity,
+      sellerIdentity: input.session.sellerIdentity,
+      buyerVetRef: input.session.buyerVetRef,
+      sellerVetRef: input.session.sellerVetRef,
+      generatedAt: clock.generatedAt,
+    })));
+  };
+  const policy: DacsFixedPriceX402BuyerAgreementPolicyV1 = {
+    buildDraft,
+    verifyContribution: agreementVerifier(context.authority, context.peerAuthority),
+    reconcileBuyerSignature: absentSignature,
+    anchor: createAgreementAnchorProvider(context),
+    authorizeAnchored({ operation, retained, result }) {
+      const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
+      return operation.order.jobId === retained.jobId &&
+        operation.order.localBindingHash === retained.localBindingHash &&
+        result.agreement.jobId === retained.jobId &&
+        result.agreementHash === contentHash(
+          result.agreement as unknown as Record<string, unknown>,
+        ) &&
+        result.agreementRef.anchor.kind === "storage-program" &&
+        result.agreementRef.anchor.locator === fixedPriceAgreementLogicalAddress(retained.jobId) &&
+        result.agreementRef.contentHash === result.agreementHash &&
+        result.agreementRef.signer === context.authority &&
+        result.anchorReceipt.writer === context.authority &&
+        result.anchorReceipt.contentHash === result.agreementHash &&
+        result.agreement.listingRef.listingId === application.listing.listingId &&
+        result.agreement.listingRef.version === application.listing.listingVersion &&
+        result.agreement.listingRef.contentHash === application.listingContentHash;
+    },
+  };
+  return Object.freeze(policy);
+}
+
+function sellerClockSkew(value: unknown): number {
+  const captured = value ?? DEFAULT_MAXIMUM_CLOCK_SKEW_MS;
+  if (!Number.isSafeInteger(captured) || Number(captured) < 0 ||
+      Number(captured) > 600_000) {
+    throw new TypeError("fixed-price seller agreement clock skew is invalid");
+  }
+  return Number(captured);
+}
+
+export function createDacsFixedPriceX402SellerAgreementPolicyV1(
+  options: Readonly<DacsFixedPriceX402SellerAgreementPolicyOptionsV1>,
+): Readonly<DacsFixedPriceX402SellerAgreementPolicyV1> {
+  if (!plainObject(options) || !plainObject(options.context) ||
+      options.context.role !== "seller") {
+    throw new TypeError("fixed-price seller agreement policy options are invalid");
+  }
+  const context = options.context;
+  const maximumClockSkewMs = sellerClockSkew(options.maximumClockSkewMs);
+  const policy: DacsFixedPriceX402SellerAgreementPolicyV1 = {
+    resolveAuthenticatedAgreementContext(input) {
+      try {
+        const admission = loadDacsFixedPriceX402SellerAdmissionV1(
+          context,
+          input.operation.order,
+        );
+        const application = captureDacsFixedPriceX402ApplicationV1(
+          input.retained.application,
+        );
+        const generatedAt = input.candidateDraft.generatedAt;
+        const now = context.database.readTime();
+        if (input.queryVersion !== "1" || input.jobId !== input.operation.order.jobId ||
+            input.jobId !== input.retained.jobId || input.buyer !== input.operation.order.buyer ||
+            input.seller !== input.operation.order.seller ||
+            input.operation.order.localBindingHash !== input.retained.localBindingHash ||
+            canonicalize(application) !== canonicalize(admission.application) ||
+            input.listingPin.listingId !== application.listing.listingId ||
+            input.listingPin.version !== application.listing.listingVersion ||
+            input.listingPin.contentHash !== application.listingContentHash ||
+            input.session.jobId !== input.jobId ||
+            input.session.localBindingHash !== input.retained.localBindingHash ||
+            input.session.buyerRequirementHash !== sha256Hex(canonicalize(
+              application.listing.buyerRequirement,
+            )) || input.sellerRequirement.required.length !== 0 ||
+            sha256Hex(canonicalize(input.sellerRequirement)) !== sha256Hex(canonicalize(
+              DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
+            )) || !Number.isSafeInteger(generatedAt) || generatedAt < 0 ||
+            generatedAt < application.listing.validity.notBefore ||
+            (application.listing.validity.notAfter !== undefined &&
+              generatedAt > application.listing.validity.notAfter) ||
+            generatedAt + maximumClockSkewMs < admission.admittedAt ||
+            generatedAt > now + maximumClockSkewMs ||
+            input.sellerVet.recordRef.contentHash !== contentHash(
+              input.sellerVet.record as unknown as Record<string, unknown>,
+            ) || input.sellerVet.recordRef.signer !== input.operation.order.buyer) {
+          return Object.freeze({ disposition: "rejected" as const,
+            reason: "seller-local agreement context does not match admitted session" });
+        }
+        const value = buildAgreementInput({
+          application,
+          order: input.retained.order,
+          buyerIdentity: input.session.buyerIdentity,
+          sellerIdentity: input.session.sellerIdentity,
+          buyerVetRef: input.session.buyerVetRef,
+          sellerVetRef: input.sellerVet.recordRef,
+          generatedAt,
+        });
+        return Object.freeze({ disposition: "present" as const, value });
+      } catch {
+        return Object.freeze({ disposition: "indeterminate" as const,
+          reason: "seller-local agreement context is unavailable" });
+      }
+    },
+    verifyContribution: agreementVerifier(context.peerAuthority, context.authority),
+    reconcileSellerSignature: absentSignature,
+    authorizeComplete({ operation, retained, result }) {
+      return operation.order.jobId === retained.jobId &&
+        operation.order.localBindingHash === retained.localBindingHash &&
+        result.transportIdentity.jobId === retained.jobId &&
+        result.transportIdentity.buyer === context.peerAuthority &&
+        result.transportIdentity.seller === context.authority &&
+        result.sellerContribution.role === "seller" &&
+        result.sellerContribution.party === context.authority &&
+        result.sellerContribution.planHash === result.transportIdentity.planHash;
+    },
+  };
+  return Object.freeze(policy);
+}
