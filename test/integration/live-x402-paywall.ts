@@ -90,6 +90,10 @@ export async function startLiveX402Paywall(cfg: Config): Promise<RunningPaywall>
         { request: context },
       );
       if (!settled.success) {
+        console.error("LIVE x402 facilitator rejected settlement", {
+          errorReason: settled.errorReason,
+          errorMessage: settled.errorMessage,
+        });
         res.writeHead(502, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: settled.errorReason }));
         return;
@@ -100,6 +104,10 @@ export async function startLiveX402Paywall(cfg: Config): Promise<RunningPaywall>
       });
       res.end(JSON.stringify({ ok: true }));
     })().catch((error: unknown) => {
+      console.error("LIVE x402 paywall request failed", {
+        name: error instanceof Error ? error.name : "unknown",
+        message: error instanceof Error ? error.message : String(error),
+      });
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
       }

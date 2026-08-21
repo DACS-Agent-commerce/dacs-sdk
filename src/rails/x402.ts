@@ -288,7 +288,8 @@ export async function x402SettleCore(
   const headerValue = final.headers.get("PAYMENT-RESPONSE");
   if (!final.ok || headerValue === null) {
     throw new CounterpartyError(
-      "x402: successful paid response requires PAYMENT-RESPONSE",
+      `x402: paid response returned HTTP ${final.status} ` +
+        `${headerValue === null ? "without" : "with"} PAYMENT-RESPONSE`,
     );
   }
   const commitment = deriveX402ReceiptCommitment({
