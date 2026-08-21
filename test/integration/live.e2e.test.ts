@@ -5,16 +5,22 @@ import { describe, expect, it } from "vitest";
 import { createPublicClient, erc20Abi, http } from "viem";
 
 import {
+  AnchorWaitError,
   createAgent,
   createFsDemosWriteJournal,
+  createFsSessionStore,
   createInMemoryBindingStore,
   createX402Rail,
   ed25519Verify,
+  generateCanonicalJobId,
   identityBundleHash,
+  listingAddress,
+  logicalToStorageProgramName,
   publicKeyFromRaw,
   signedBytes,
   x402Settle,
   type IdentityBundle,
+  type ListingDraft,
   type ListingValidationDeps,
   type PaymentRailRef,
 } from "../../src/index.js";
@@ -65,6 +71,33 @@ const PAYMENT_AMOUNT = 1n;
 const MAX_PAYMENT_AMOUNT = 1n;
 
 const payloadCapability = () => ({ disposition: "supported" as const });
+
+async function retryDefinitiveDemosFailure<T>(input: {
+  operation: () => Promise<T>;
+  expectedNames: ReadonlySet<string>;
+  label: string;
+}): Promise<T> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await input.operation();
+    } catch (error) {
+      const definitivelyFailed =
+        error instanceof AnchorWaitError &&
+        error.code === "inclusion-failed" &&
+        error.receipt.state === "failed" &&
+        input.expectedNames.has(error.receipt.name);
+      if (!definitivelyFailed || attempt === 3) throw error;
+      console.warn("LIVE E2E retrying definitively failed Demos write", {
+        label: input.label,
+        attempt,
+        name: error.receipt.name,
+        txRef: error.receipt.txRef,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error(`${input.label} exhausted its bounded Demos retries`);
+}
 
 function railAuthority(selectedRail: PaymentRailRef) {
   return {
@@ -245,6 +278,9 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           dir: join(env.DACS_STATE_DIR!, "live-e2e-buyer-demos-writes"),
         }),
       ]);
+      const buyerSessionStore = await createFsSessionStore({
+        dir: join(env.DACS_STATE_DIR!, "live-e2e-buyer-sessions"),
+      });
       const selectedRail: PaymentRailRef = {
         railId: "x402:default",
         railVersion: 1,
@@ -325,12 +361,13 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
       try {
         const runStartedAt = Date.now();
         const listingId = `live-e2e-${runStartedAt}-${randomUUID()}`;
+        const jobId = generateCanonicalJobId({ timestamp: runStartedAt });
         const sellerIdentity = await signedIdentity(
           env.SELLER_DID!,
           seller.adapter,
           runStartedAt,
         );
-        const published = await seller.publishListing({
+        const listing: ListingDraft = {
           dacsVersion: "1",
           listingVersion: 1,
           listingId,
@@ -369,6 +406,14 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
             notBefore: runStartedAt - 1_000,
             notAfter: runStartedAt + 3_600_000,
           },
+        };
+        const listingStorageName = logicalToStorageProgramName(
+          listingAddress(env.SELLER_DID!, listingId, 1),
+        );
+        const published = await retryDefinitiveDemosFailure({
+          label: "listing publication",
+          expectedNames: new Set([listingStorageName]),
+          operation: () => seller.publishListing(listing),
         });
         expect(published.status).toBe("published");
         if (published.status !== "published") {
@@ -377,24 +422,36 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         expect(published.ref).toBeTruthy();
         expect(published.listingPin.listingId).toBe(listingId);
 
-        const session = await buyer.runSession(published.ref, {
-          terms: {
-            price: {
-              amount: PAYMENT_AMOUNT.toString(),
-              asset: "USDC",
-              decimals: 6,
-              rail: "x402:default",
-            },
-            deliveryPhase: "deliver-attested-payload",
-            deliveryFormat: "application/json",
-          },
-          expectedSettlementPayee: sellerEvm,
-          settle: x402Settle(rail, {
-            url: localPaywall?.url ?? env.PAYWALL_URL!,
-            network: env.PAY_NETWORK!,
-            recipientEvm: sellerEvm,
-            asset: env.PAY_TOKEN!,
-          }),
+        const settle = x402Settle(rail, {
+          url: localPaywall?.url ?? env.PAYWALL_URL!,
+          network: env.PAY_NETWORK!,
+          recipientEvm: sellerEvm,
+          asset: env.PAY_TOKEN!,
+        });
+        const session = await retryDefinitiveDemosFailure({
+          label: "buyer session",
+          expectedNames: new Set([
+            `dacs3:agreement:${jobId}`,
+            `dacs4:evidence:${jobId}`,
+            `dacs5:bundle:${jobId}`,
+          ]),
+          operation: () =>
+            buyer.runSession(published.ref, {
+              jobId,
+              sessionStore: buyerSessionStore,
+              terms: {
+                price: {
+                  amount: PAYMENT_AMOUNT.toString(),
+                  asset: "USDC",
+                  decimals: 6,
+                  rail: "x402:default",
+                },
+                deliveryPhase: "deliver-attested-payload",
+                deliveryFormat: "application/json",
+              },
+              expectedSettlementPayee: sellerEvm,
+              settle,
+            }),
         });
         expect(session.outcome).toBe("completed");
 
