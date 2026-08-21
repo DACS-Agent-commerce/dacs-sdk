@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { inspectDacsDemosBalanceHeadroomV1 } from "../src/fundingDoctor.js";
+import {
+  inspectDacsDemosBalanceHeadroomV1,
+  inspectDacsX402AssetBalanceV1,
+  inspectDacsX402GasBalanceV1,
+} from "../src/fundingDoctor.js";
 
 function actor(role: "buyer" | "seller", input: Readonly<{
   activated?: boolean;
@@ -105,5 +109,77 @@ describe("Demos balance doctor", () => {
       status: "blocked",
       reasonCode: "demos-balance-read-unavailable",
     });
+  });
+});
+
+describe("x402 balance doctor", () => {
+  const payer = `0x${"1".repeat(40)}`;
+  const asset = `0x${"2".repeat(40)}`;
+
+  function client(input: Readonly<{ chainId?: number; asset?: bigint; gas?: bigint }> = {}) {
+    return {
+      getChainId: vi.fn(async () => input.chainId ?? 84_532),
+      getAssetBalance: vi.fn(async () => input.asset ?? 1_000_000n),
+      getNativeBalance: vi.fn(async () => input.gas ?? 1_000_000_000_000_000n),
+    };
+  }
+
+  it("checks exact token units and native gas independently", async () => {
+    const reader = client();
+    await expect(inspectDacsX402AssetBalanceV1({
+      client: reader,
+      chainId: 84_532,
+      payer,
+      asset,
+      symbol: "USDC",
+      decimals: 6,
+      minimumAmount: "1",
+    })).resolves.toEqual({
+      status: "pass",
+      facts: { assetSymbol: "USDC", availableAmount: "1", minimumAmount: "1", chainId: 84_532 },
+    });
+    await expect(inspectDacsX402GasBalanceV1({
+      client: reader,
+      chainId: 84_532,
+      payer,
+      minimumEth: "0.001",
+    })).resolves.toEqual({
+      status: "pass",
+      facts: { availableEth: "0.001", minimumEth: "0.001", chainId: 84_532 },
+    });
+  });
+
+  it("blocks insufficient token and gas balances", async () => {
+    const reader = client({ asset: 999_999n, gas: 999_999_999_999_999n });
+    await expect(inspectDacsX402AssetBalanceV1({
+      client: reader, chainId: 84_532, payer, asset, symbol: "USDC",
+      decimals: 6, minimumAmount: "1",
+    })).resolves.toMatchObject({
+      status: "blocked", reasonCode: "x402-asset-balance-insufficient",
+    });
+    await expect(inspectDacsX402GasBalanceV1({
+      client: reader, chainId: 84_532, payer, minimumEth: "0.001",
+    })).resolves.toMatchObject({
+      status: "blocked", reasonCode: "x402-gas-balance-insufficient",
+    });
+  });
+
+  it("fails wrong-chain and malformed balance responses", async () => {
+    await expect(inspectDacsX402AssetBalanceV1({
+      client: client({ chainId: 1 }), chainId: 84_532, payer, asset, symbol: "USDC",
+      decimals: 6, minimumAmount: "1",
+    })).resolves.toEqual({ status: "fail", reasonCode: "x402-asset-chain-mismatch" });
+    const malformed = client();
+    malformed.getNativeBalance.mockResolvedValueOnce(-1n);
+    await expect(inspectDacsX402GasBalanceV1({
+      client: malformed, chainId: 84_532, payer, minimumEth: "0.001",
+    })).resolves.toEqual({ status: "fail", reasonCode: "x402-gas-balance-invalid" });
+  });
+
+  it("rejects amounts with more precision than the authenticated asset", async () => {
+    await expect(inspectDacsX402AssetBalanceV1({
+      client: client(), chainId: 84_532, payer, asset, symbol: "USDC",
+      decimals: 6, minimumAmount: "0.0000001",
+    })).rejects.toThrow(/minimum is invalid/);
   });
 });

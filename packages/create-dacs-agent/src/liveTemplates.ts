@@ -250,10 +250,13 @@ import {
   createDacsDemosRailRegistryProviderV1,
   createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
+  createViemDacsX402BalanceReadClientV1,
   deriveDacsEvmRoleIdentityV1,
   establishDacsRoleServiceReadinessV1,
   inspectDacsDemosBalanceHeadroomV1,
   inspectDacsNodePackageIntegrityV1,
+  inspectDacsX402AssetBalanceV1,
+  inspectDacsX402GasBalanceV1,
   loadDacsSecretV1,
   runDacsRoleTransportDiagnosticV1,
   runDacsLiveDoctorV1,
@@ -535,6 +538,48 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
     );
     return railTask;
   };
+  let fundingTask: Promise<Readonly<{
+    asset: Readonly<DacsLiveDoctorProbeResultV1>;
+    gas: Readonly<DacsLiveDoctorProbeResultV1>;
+  }>> | undefined;
+  const selectedFunding = () => {
+    if (actors === undefined) throw new Error("x402 funding actor unavailable");
+    const rpcUrl = configuredEvmRpcUrl();
+    if (rpcUrl === undefined) throw new Error("x402 funding RPC unavailable");
+    fundingTask ??= (async () => {
+      const rail = await selectedRail();
+      const buyer = loadRoleConfig("buyer");
+      if (rail.asset.kind !== "erc20" ||
+          rail.asset.chainId !== actors.buyer.evmIdentity.chainId ||
+          rail.asset.symbol !== buyer.limits.maxServiceAmount.asset) {
+        const mismatch = fail("x402-funding-asset-mismatch");
+        return Object.freeze({ asset: mismatch, gas: mismatch });
+      }
+      const client = await createViemDacsX402BalanceReadClientV1({
+        rpcUrl,
+        chainId: actors.buyer.evmIdentity.chainId,
+      });
+      const [asset, gas] = await Promise.all([
+        inspectDacsX402AssetBalanceV1({
+          client,
+          chainId: actors.buyer.evmIdentity.chainId,
+          payer: actors.buyer.evmIdentity.address,
+          asset: rail.asset.contract,
+          symbol: rail.asset.symbol,
+          decimals: rail.asset.decimals,
+          minimumAmount: buyer.limits.maxServiceAmount.amount,
+        }),
+        inspectDacsX402GasBalanceV1({
+          client,
+          chainId: actors.buyer.evmIdentity.chainId,
+          payer: actors.buyer.evmIdentity.address,
+          minimumEth: buyer.limits.maxEvmNetworkFeeEth,
+        }),
+      ]);
+      return Object.freeze({ asset, gas });
+    })();
+    return fundingTask;
+  };
   return Object.freeze({
     "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
       : fail("node-version-unsupported"),
@@ -696,8 +741,14 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
           actors.buyer.evmIdentity.address.toLowerCase()
         ? pass({ payee: actors.seller.evmIdentity.address.toLowerCase() })
         : fail("x402-payee-binding-mismatch"),
-    "x402.asset-balance": unavailable,
-    "x402.gas-balance": unavailable,
+    "x402.asset-balance": actors === undefined ? actorUnavailable : async () => {
+      try { return (await selectedFunding()).asset; }
+      catch { return blocked("x402-funding-prerequisite-unavailable"); }
+    },
+    "x402.gas-balance": actors === undefined ? actorUnavailable : async () => {
+      try { return (await selectedFunding()).gas; }
+      catch { return blocked("x402-funding-prerequisite-unavailable"); }
+    },
     "x402.service-limit": () => pass({
       asset: loadRoleConfig("buyer").limits.maxServiceAmount.asset,
       amount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
