@@ -241,6 +241,7 @@ export function createDacsBuyerAgreementTrackV1(
 ): FixedPriceX402TrackOperation {
   const common = commonOptions(options);
   if (common.context.role !== "buyer" || common.context.demos.role !== "buyer" ||
+      typeof common.context.demos.signComponent !== "function" ||
       typeof options.buildDraft !== "function" ||
       typeof options.verifyContribution !== "function" ||
       typeof options.reconcileBuyerSignature !== "function" ||
@@ -330,9 +331,12 @@ export function createDacsBuyerAgreementTrackV1(
         buyer: {
           party: common.context.authority,
           algorithm: "ed25519",
-          sign: async (bytes) => {
+          sign: async (bytes, signatureContext) => {
             await operation.fence.assertCurrent();
-            return common.context.demos.adapter.sign(bytes);
+            return common.context.demos.signComponent(bytes, {
+              algorithm: signatureContext.algorithm,
+              signer: signatureContext.party,
+            });
           },
         },
       }, durability);
@@ -396,6 +400,7 @@ export function createDacsSellerAgreementTrackV1(
 ): FixedPriceX402TrackOperation {
   const common = commonOptions(options);
   if (common.context.role !== "seller" || common.context.demos.role !== "seller" ||
+      typeof common.context.demos.signComponent !== "function" ||
       typeof options.resolveProposal !== "function" ||
       typeof options.resolveAuthenticatedAgreementContext !== "function" ||
       typeof options.verifyContribution !== "function" ||
@@ -434,9 +439,12 @@ export function createDacsSellerAgreementTrackV1(
         seller: {
           party: common.context.authority,
           algorithm: "ed25519",
-          sign: async (bytes) => {
+          sign: async (bytes, signatureContext) => {
             await operation.fence.assertCurrent();
-            return common.context.demos.adapter.sign(bytes);
+            return common.context.demos.signComponent(bytes, {
+              algorithm: signatureContext.algorithm,
+              signer: signatureContext.party,
+            });
           },
         },
       }, {

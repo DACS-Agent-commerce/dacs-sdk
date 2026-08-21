@@ -37,6 +37,7 @@ function context(role: "buyer" | "seller") {
     demos: {
       role,
       adapter: { sign: vi.fn(async () => Uint8Array.from(Buffer.alloc(64, 1))) },
+      signComponent: vi.fn(async () => Uint8Array.from(Buffer.alloc(64, 1))),
     },
     sessionStore: {},
     commerceStores: { role },

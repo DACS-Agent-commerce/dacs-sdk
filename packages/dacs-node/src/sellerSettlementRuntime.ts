@@ -111,6 +111,7 @@ export function createDacsSellerSettlementPublicationTrackV1(
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" ||
       options.context.demos.role !== "seller" ||
+      typeof options.context.demos.signComponent !== "function" ||
       options.context.commerceStores.role !== "seller" ||
       !plainObject(options.paymentEvidence) ||
       typeof options.paymentEvidence.anchorEvidence !== "function" ||
