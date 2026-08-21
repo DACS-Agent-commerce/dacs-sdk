@@ -49,6 +49,7 @@ describe("computeReputation", () => {
       totalAgreements: 2,
       completed: 1,
       avgRating: null,
+      exclusions: [],
     });
   });
 
@@ -69,6 +70,7 @@ describe("computeReputation", () => {
       totalAgreements: 0,
       completed: 0,
       avgRating: null,
+      exclusions: [],
     });
   });
 
@@ -98,5 +100,31 @@ describe("computeReputation", () => {
       bundle({ parties: [party(`demos:0x${key}`)] }),
     ])).toMatchObject({ primaryClaim: demos, totalAgreements: 0 });
     expect(() => computeReputation(`0x${key}`, [])).toThrow(/CF-2/);
+  });
+
+  test("excludes divergent copies deterministically in either input order", () => {
+    const buyer = bundle({
+      jobId: "disputed",
+      anchoredByRole: "buyer",
+      outcome: "completed",
+    });
+    const seller = bundle({
+      jobId: "disputed",
+      anchoredByRole: "seller",
+      outcome: "failed-substrate",
+    });
+    const forward = computeReputation(ALICE, [buyer, seller]);
+    const reverse = computeReputation(ALICE, [seller, buyer]);
+    expect(reverse).toEqual(forward);
+    expect(forward).toMatchObject({
+      totalAgreements: 0,
+      completed: 0,
+      exclusions: [
+        {
+          code: "divergent-copies",
+          jobId: "disputed",
+        },
+      ],
+    });
   });
 });

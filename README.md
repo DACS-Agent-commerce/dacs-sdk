@@ -104,6 +104,12 @@ const seller = await createAgent({
       expectedVetClosureForBundle(bundle),
       vetVerificationDeps,
     ),
+  // Required to accept bundles with SettlementEvidence. Resolve the exact
+  // phase orchestrator and authenticated pinned-rail definition from trusted
+  // session/registry state; the SDK binds the Agreement and AttestationRef and
+  // performs the DACS-4 semantic and cryptographic verification itself.
+  resolveSettlementEvidenceContext: (input) =>
+    resolveAuthenticatedSettlementContext(input),
   bindings: { index: bindings, publisher: bindings },
 });
 
@@ -206,7 +212,8 @@ const session = await buyer.runSession(resolved, {
 });
 
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
-// and (through the configured callback above) every normative vet closure
+// and (through the configured callbacks above) every normative vet closure and
+// SettlementEvidence record
 const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
