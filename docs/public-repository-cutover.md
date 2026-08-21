@@ -11,14 +11,20 @@ history, publishing packages, or merging pull requests.
       on the exact candidate commit.
 - [ ] Confirm the npm package remains described as unpublished until a package
       is actually released.
-- [ ] Decide whether to retain or remove the 105 stale remote branches. Branch
-      deletion is separate, destructive work and is not required for security.
-- [x] Existing contributor email addresses and local path references were
-      accepted by the repository owner on 2026-08-21. Do not rewrite history;
-      recommend GitHub `noreply` addresses for future commits.
-- [ ] Triage open issues and pull requests for internal operational detail. A
-      public repository makes their titles, bodies, comments, reviews, and
-      attachments visible.
+- [ ] Decide whether to retain or remove the 105 stale remote branches. The
+      2026-08-21 audit found 72 strong deletion candidates, 24 closed-unmerged
+      PR heads, and nine unassociated unmerged heads. No deletion is required
+      for security and none is authorized by this checklist.
+- [x] Existing contributor email exposure was accepted by the repository owner
+      on 2026-08-21. Do not rewrite history; recommend GitHub `noreply`
+      addresses for future commits. The fresh audit found no absolute local path
+      in current GitHub records or reachable source history.
+- [x] Screen issue/PR bodies, issue comments, review comments, and review
+      summaries for secrets and internal operational references. The 2026-08-21
+      scans were clean, and no user attachment was present.
+- [ ] Close or update stale P0/P1 issues on engineering evidence. Nineteen are
+      open: eight are strong completed candidates, one is an architectural
+      supersession candidate, and ten still describe unfinished work.
 - [ ] Ensure the contribution guide is merged or otherwise available before
       accepting external contributions.
 - [ ] Record the accepted pre-alpha limitations and dependency posture in the
