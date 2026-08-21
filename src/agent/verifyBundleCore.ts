@@ -145,6 +145,17 @@ export interface BundleEvidenceVerificationContext {
   agreement: Record<string, unknown> | null;
 }
 
+export interface BundleEvidenceVerificationResult {
+  decision: "pass" | "fail" | "error" | "indeterminate";
+  /**
+   * Exact phase-orchestrator claim resolved from authenticated session state.
+   * `null` means the authority could not be established. The verifier uses
+   * this claim for the artifact-specific signature check; it never infers the
+   * evidence signer from an AttestationRef or from arbitrary bundle parties.
+   */
+  authorizedSigner: string | null;
+}
+
 export interface VerifyBundleDeps {
   /** Read a signed artifact at a storage ref (null if absent). */
   readArtifact: (ref: string) => Promise<Record<string, unknown> | null>;
@@ -188,18 +199,18 @@ export interface VerifyBundleDeps {
   /** Verify a signature over raw bytes for a public key. */
   verify: Verifier;
   /**
-   * OPTIONAL semantic check of a hash-matched SettlementEvidence artifact
+   * Semantic and authority check of a hash-matched SettlementEvidence artifact
    * (DACS-4 §9.7) — wire `verifySettlementEvidence` (with the caller's
    * agreement/rail/orchestrator context) here. The second argument carries the
-   * resolved agreement and exact attestation ref needed to build that context.
-   * When supplied, a settlement ref that hash-matches but whose evidence does
-   * not verify is downgraded to `invalid-evidence` and the bundle is not `ok`.
-   * Omitted by default — hash + shape integrity only, unchanged behaviour.
+   * resolved agreement and exact attestation ref needed to build that context;
+   * the result also returns the exact authenticated phase orchestrator used to
+   * authorize the component signature. Omission fails closed whenever a bundle
+   * contains settlement evidence.
    */
   verifyEvidence?: (
     evidence: Record<string, unknown>,
     context: BundleEvidenceVerificationContext,
-  ) => Promise<{ decision: "pass" | "fail" | "error" | "indeterminate" }>;
+  ) => Promise<BundleEvidenceVerificationResult>;
   /**
    * Required whenever `vetRecords` is non-empty. This must run the strict
    * DACS-2 verifier with the session's exact bundle/requirement expectations.
@@ -331,9 +342,7 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
               if (!captured) {
                 throw new TypeError("evidence verifier returned a non-wire verdict");
               }
-              return captured as {
-                decision: "pass" | "fail" | "error" | "indeterminate";
-              };
+              return captured as unknown as BundleEvidenceVerificationResult;
             },
           }
         : {}),
@@ -906,11 +915,9 @@ async function authenticateAgreementReference(
   return { verdict: "valid", signers: [...seen] };
 }
 
-function referenceSignerClaims(
+function bundlePartySignerClaims(
   bundle: ReadableAttestationBundle,
-  ref: ReadableAttestationRef,
 ): ReadonlySet<string> | null {
-  if (isAttestationRef(ref) && ref.signer) return new Set([ref.signer]);
   const claims = bundle.parties.map((party) => party.primaryClaim);
   return claims.length > 0 ? new Set(claims) : null;
 }
@@ -1358,13 +1365,6 @@ export async function verifyBundleCore(
       isLegacyMvpAttestationRef(ev)
         ? isLegacyMvpSettlementEvidence
         : isSettlementEvidenceScope,
-      (artifact) =>
-        authenticateComponentReference(
-          artifact,
-          ARTIFACT_SEPARATORS.SettlementEvidence,
-          referenceSignerClaims(bundle, ev),
-          deps,
-        ),
     );
     if (
       evidence.check.verdict === "ok" &&
@@ -1374,33 +1374,48 @@ export async function verifyBundleCore(
     ) {
       evidence.check.verdict = "invalid-binding";
     }
-    if (
-      evidence.check.verdict === "ok" &&
-      deps.verifyEvidence &&
-      evidence.value
-    ) {
-      const callbackVerdict = await deps.verifyEvidence(
-        structuredClone(evidence.value),
-        {
-          bundle: structuredClone(bundle),
-          evidenceRef: structuredClone(ev),
-          agreement:
-            agreementArtifact === null
-              ? null
-              : structuredClone(agreementArtifact),
-        },
-      );
+    if (evidence.check.verdict === "ok" && evidence.value) {
       let decision: unknown;
+      let authorizedSigner: string | null = null;
       try {
+        const callbackVerdict = deps.verifyEvidence
+          ? await deps.verifyEvidence(
+              structuredClone(evidence.value),
+              {
+                bundle: structuredClone(bundle),
+                evidenceRef: structuredClone(ev),
+                agreement:
+                  agreementArtifact === null
+                    ? null
+                    : structuredClone(agreementArtifact),
+              },
+            )
+          : null;
         const verdict = snapshotCanonicalJson(
           callbackVerdict,
           "SettlementEvidence verification verdict",
-        ) as { decision?: unknown };
-        decision = verdict.decision;
+        ) as { decision?: unknown; authorizedSigner?: unknown } | null;
+        if (verdict) {
+          decision = verdict.decision;
+          authorizedSigner =
+            typeof verdict.authorizedSigner === "string" &&
+            verdict.authorizedSigner.length > 0
+              ? verdict.authorizedSigner
+              : null;
+        }
       } catch {
         decision = undefined;
       }
-      if (decision !== "pass") {
+      evidence.check = attachSignatureCheck(
+        evidence.check,
+        await authenticateComponentReference(
+          evidence.value,
+          ARTIFACT_SEPARATORS.SettlementEvidence,
+          authorizedSigner === null ? null : new Set([authorizedSigner]),
+          deps,
+        ),
+      );
+      if (evidence.check.verdict === "ok" && decision !== "pass") {
         evidence.check.verdict = "invalid-evidence";
       }
     }
@@ -1468,7 +1483,7 @@ export async function verifyBundleCore(
             authenticateComponentReference(
               artifact,
               "dacs-amendment:v1:",
-              referenceSignerClaims(bundle, amendment),
+              bundlePartySignerClaims(bundle),
               deps,
             ),
         )
@@ -1476,26 +1491,42 @@ export async function verifyBundleCore(
     );
   }
   for (const rating of bundle.ratingRefs ?? []) {
-    refs.push(
-      (
-        await checkReadableRef(
-          "dacs-5-rating",
-          rating,
-          isRatingRecordScope,
-          (artifact) => {
-            const scope = stripSignature(artifact) as Record<string, unknown>;
-            const signers =
-              typeof scope.rater === "string" ? new Set([scope.rater]) : null;
-            return authenticateComponentReference(
-              artifact,
-              RATING_SEPARATOR,
-              signers,
-              deps,
-            );
-          },
-        )
-      ).check,
+    const checked = await checkReadableRef(
+      "dacs-5-rating",
+      rating,
+      isRatingRecordScope,
+      (artifact) => {
+        const scope = stripSignature(artifact) as Record<string, unknown>;
+        const signers =
+          typeof scope.rater === "string" ? new Set([scope.rater]) : null;
+        return authenticateComponentReference(
+          artifact,
+          RATING_SEPARATOR,
+          signers,
+          deps,
+        );
+      },
     );
+    if (checked.check.verdict === "ok" && checked.value) {
+      const scope = stripSignature(checked.value) as Record<string, unknown>;
+      const rater = bundle.parties.find(
+        (party) => party.primaryClaim === scope.rater,
+      );
+      const target = bundle.parties.find(
+        (party) => party.primaryClaim === scope.target,
+      );
+      if (
+        scope.jobId !== bundle.jobId ||
+        !rater ||
+        !target ||
+        rater.primaryClaim === target.primaryClaim ||
+        target.role !== scope.targetRole ||
+        (target.role !== "buyer" && target.role !== "seller")
+      ) {
+        checked.check.verdict = "invalid-binding";
+      }
+    }
+    refs.push(checked.check);
   }
 
   // Listing resolution is graph-discriminated. A current bundle always resolves

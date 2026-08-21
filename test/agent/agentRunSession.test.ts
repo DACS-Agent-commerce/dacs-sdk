@@ -1053,7 +1053,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       unconfiguredVerdict.refs.find(
         (entry) => entry.kind === "dacs-4-evidence",
       ),
-    ).toMatchObject({ verdict: "invalid-evidence" });
+    ).toMatchObject({ verdict: "signature-unresolved" });
     await expect(
       unconfiguredAgent.getReputation(normativeBuyerDid, ["stor:bundle"]),
     ).resolves.toMatchObject({ totalAgreements: 0, completed: 0 });

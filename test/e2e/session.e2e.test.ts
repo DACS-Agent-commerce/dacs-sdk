@@ -224,6 +224,10 @@ function verifyDeps(sub: ReturnType<typeof memSubstrate>): VerifyBundleDeps {
     },
     resolvePublicKey: async (did) => resolveFromDid(did),
     verify,
+    verifyEvidence: async () => ({
+      decision: "pass",
+      authorizedSigner: buyerDid,
+    }),
     verifyCompositeRecord: (record, bundle) => {
       const party = bundle.parties.find(
         (candidate) => candidate.primaryClaim === sellerDid,

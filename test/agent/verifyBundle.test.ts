@@ -370,11 +370,18 @@ function depsFor(
     resolveListingRef?: VerifyBundleDeps["resolveListingRef"];
     resolveRef?: VerifyBundleDeps["resolveRef"];
     listing?: Record<string, unknown> | null;
-    verifyEvidence?: VerifyBundleDeps["verifyEvidence"];
+    verifyEvidence?: VerifyBundleDeps["verifyEvidence"] | null;
     verifyCompositeRecord?: VerifyBundleDeps["verifyCompositeRecord"];
   } = {},
 ): VerifyBundleDeps {
   const listing = opts.listing === undefined ? fx.listing : opts.listing;
+  const verifyEvidence =
+    opts.verifyEvidence === undefined
+      ? async () => ({
+          decision: "pass" as const,
+          authorizedSigner: buyerDid,
+        })
+      : opts.verifyEvidence;
   return {
     readArtifact: async (ref) =>
       ref === LISTING_ADDR ? listing : fx.bundle,
@@ -391,7 +398,7 @@ function depsFor(
     ...(opts.resolveRef ? { resolveRef: opts.resolveRef } : {}),
     resolvePublicKey: async (did) => (opts.resolve ?? resolveFromDid)(did),
     verify,
-    ...(opts.verifyEvidence ? { verifyEvidence: opts.verifyEvidence } : {}),
+    ...(verifyEvidence ? { verifyEvidence } : {}),
     ...(opts.verifyCompositeRecord
       ? { verifyCompositeRecord: opts.verifyCompositeRecord }
       : {}),
@@ -506,6 +513,52 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
         verdict: "invalid",
         reason: "cryptographic-verification-failed",
       },
+    });
+  });
+
+  test("settlement evidence requires an authenticated exact phase orchestrator", async () => {
+    const missingContext = await buildFixture(buyerDid, signBuyer);
+    (
+      missingContext.bundle.settlementEvidence as Array<{
+        signer?: string;
+      }>
+    )[0]!.signer = buyerDid;
+    await resignFixture(missingContext, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const missingResult = await verifyBundleCore(
+      "ref",
+      depsFor(missingContext, { verifyEvidence: null }),
+    );
+    expect(
+      missingResult.refs.find((ref) => ref.kind === "dacs-4-evidence"),
+    ).toMatchObject({
+      verdict: "signature-unresolved",
+      signature: {
+        verdict: "unresolved",
+        reason: "authorization-unresolved",
+      },
+    });
+
+    const wrongRole = await buildFixture(buyerDid, signBuyer);
+    const evidenceScope = { ...wrongRole.evidence };
+    delete evidenceScope.signature;
+    wrongRole.evidence = {
+      ...evidenceScope,
+      signature: await componentSignature(
+        evidenceScope,
+        ARTIFACT_SEPARATORS.SettlementEvidence,
+        sellerDid,
+        signSeller,
+      ),
+    };
+    const wrongRoleResult = await verifyBundleCore("ref", depsFor(wrongRole));
+    expect(
+      wrongRoleResult.refs.find((ref) => ref.kind === "dacs-4-evidence"),
+    ).toMatchObject({
+      verdict: "signature-invalid",
+      signature: { verdict: "invalid", reason: "signer-not-authorized" },
     });
   });
 
@@ -1106,7 +1159,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
         depsFor(fx, {
           verifyEvidence: async (evidence) => {
             expect(evidence.signature).toEqual(fx.evidence.signature);
-            return { decision };
+            return { decision, authorizedSigner: buyerDid };
           },
         }),
       );
@@ -1122,7 +1175,12 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     const res = await verifyBundleCore(
       "ref",
-      depsFor(fx, { verifyEvidence: async () => ({ decision: "pass" }) }),
+      depsFor(fx, {
+        verifyEvidence: async () => ({
+          decision: "pass",
+          authorizedSigner: buyerDid,
+        }),
+      }),
     );
     expect(res.ok).toBe(true);
     expect(res.refs.every((r) => r.verdict === "ok")).toBe(true);
@@ -1470,6 +1528,43 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(bad.refs.find((r) => r.kind === "dacs-4-amendment")?.verdict).toBe(
       "hash-mismatch",
     );
+
+    const outsiderSeed = Uint8Array.from(Buffer.alloc(32, 11));
+    const outsider = didFor(outsiderSeed);
+    const outsiderRatingScope = { ...ratingScope, rater: outsider };
+    const outsiderRating = {
+      ...outsiderRatingScope,
+      signature: await componentSignature(
+        outsiderRatingScope,
+        "dacs-rating:v1:",
+        outsider,
+        signerFor(outsiderSeed),
+      ),
+    };
+    (fx.bundle.ratingRefs as Array<{ contentHash: string }>)[0]!.contentHash =
+      contentHash(outsiderRating);
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const outsiderResult = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
+            ? fx.agreement
+            : ref.anchor.locator === "settlement-j1"
+              ? fx.evidence
+              : ref.anchor.locator === "amendment-j1"
+                ? amendment
+                : ref.anchor.locator === "rating-j1"
+                  ? outsiderRating
+                  : null,
+      }),
+    );
+    expect(
+      outsiderResult.refs.find((ref) => ref.kind === "dacs-5-rating"),
+    ).toMatchObject({ verdict: "invalid-binding" });
   });
 
   test("ref that isn't a bundle => rejected", async () => {
