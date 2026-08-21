@@ -41,8 +41,11 @@ export type VerifiedRead =
   | { status: "indeterminate"; reason: string };
 
 export interface VerifiedReadDeps {
-  /** Read the record anchored at a native address (null if absent). */
-  read: (nativeAddress: string) => Promise<Record<string, unknown> | null>;
+  /** Read the record at its native locator and optional catalog anchor kind. */
+  read: (
+    nativeAddress: string,
+    anchorKind?: string,
+  ) => Promise<Record<string, unknown> | null>;
   /**
    * Content hash of a record's signed scope — compared against the binding's
    * `contentHash`. Pure/substrate-neutral; wire `contentHash ∘ stripSignature`.
@@ -106,6 +109,10 @@ export async function resolveAndRead(
     typeof binding.owner !== "string" ||
     normalizedBindingOwner(binding.owner) !==
       normalizedBindingOwner(expectedOwner) ||
+    (binding.anchorKind !== undefined &&
+      (typeof binding.anchorKind !== "string" ||
+        binding.anchorKind.length === 0 ||
+        binding.anchorKind !== binding.anchorKind.trim())) ||
     typeof binding.nativeAddress !== "string" ||
     binding.nativeAddress.trim().length === 0 ||
     binding.revoked === true
@@ -120,7 +127,7 @@ export async function resolveAndRead(
 
   let record: Record<string, unknown> | null;
   try {
-    record = await deps.read(nativeAddress);
+    record = await deps.read(nativeAddress, binding.anchorKind);
   } catch (e) {
     // A read that FAILED is not an absence — the record may exist but be
     // momentarily unreachable. Fail closed to `indeterminate`.
