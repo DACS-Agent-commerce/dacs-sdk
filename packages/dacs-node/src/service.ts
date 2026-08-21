@@ -163,6 +163,7 @@ export interface DacsLiveRoleServiceOptionsV1 {
   readiness?: () => Promise<Readonly<DacsNodeReadinessStatus>> |
     Readonly<DacsNodeReadinessStatus>;
   readinessMaxAgeMs?: number;
+  coordinatorLeaseDurationMs?: number;
   workerIntervalMs?: number;
   workerBatchSize?: number;
   server?: Readonly<{
@@ -312,6 +313,7 @@ function captureServiceOptions(
     "events",
     "readiness",
     "readinessMaxAgeMs",
+    "coordinatorLeaseDurationMs",
     "workerIntervalMs",
     "workerBatchSize",
     "server",
@@ -455,6 +457,7 @@ export function createDacsLiveRoleServiceV1(
   const workerIntervalMs = options.workerIntervalMs ?? DEFAULT_WORKER_INTERVAL_MS;
   const workerBatchSize = options.workerBatchSize ?? DEFAULT_WORKER_BATCH_SIZE;
   const readinessMaxAgeMs = options.readinessMaxAgeMs ?? DEFAULT_READINESS_MAX_AGE_MS;
+  const coordinatorLeaseDurationMs = options.coordinatorLeaseDurationMs ?? 300_000;
   if (!nonEmpty(peerAuthority) || !demosAuthority(peerAuthority) ||
       sameAuthority(authority, peerAuthority) || !nonEmpty(workerId) ||
       !nonEmpty(options.peerEndpoint) ||
@@ -471,7 +474,8 @@ export function createDacsLiveRoleServiceV1(
       (options.readiness !== undefined && typeof options.readiness !== "function") ||
       !safePositiveInteger(workerIntervalMs, 60_000) ||
       !safePositiveInteger(workerBatchSize, 1_000) ||
-      !safePositiveInteger(readinessMaxAgeMs, 300_000)) {
+      !safePositiveInteger(readinessMaxAgeMs, 300_000) ||
+      !safePositiveInteger(coordinatorLeaseDurationMs, 600_000)) {
     throw new TypeError("live role service options are invalid");
   }
 
@@ -641,11 +645,13 @@ export function createDacsLiveRoleServiceV1(
         store: coordinatorStore,
         workerId,
         operations: coordinatorOperations,
+        leaseDurationMs: coordinatorLeaseDurationMs,
       })
     : createFixedPriceX402SellerCoordinator({
         store: coordinatorStore,
         workerId,
         operations: coordinatorOperations,
+        leaseDurationMs: coordinatorLeaseDurationMs,
       });
   const inboundContext: Readonly<DacsLiveRoleInboundContextV1> = Object.freeze({
     ...runtimeContext,

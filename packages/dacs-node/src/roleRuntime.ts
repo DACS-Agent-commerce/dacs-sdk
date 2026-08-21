@@ -83,6 +83,7 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   events?: DacsLiveRoleServiceOptionsV1["events"];
   workerIntervalMs?: number;
   workerBatchSize?: number;
+  coordinatorLeaseDurationMs?: number;
   readinessMaxAgeMs?: number;
   server?: DacsLiveRoleServiceOptionsV1["server"];
   transport?: DacsLiveRoleServiceOptionsV1["transport"];
@@ -399,6 +400,8 @@ export async function createDacsLiveRoleRuntimeV1(
         ? {} : { workerIntervalMs: rawOptions.workerIntervalMs }),
       ...(rawOptions.workerBatchSize === undefined
         ? {} : { workerBatchSize: rawOptions.workerBatchSize }),
+      ...(rawOptions.coordinatorLeaseDurationMs === undefined
+        ? {} : { coordinatorLeaseDurationMs: rawOptions.coordinatorLeaseDurationMs }),
       ...(rawOptions.readinessMaxAgeMs === undefined
         ? {} : { readinessMaxAgeMs: rawOptions.readinessMaxAgeMs }),
       ...(rawOptions.server === undefined ? {} : { server: rawOptions.server }),

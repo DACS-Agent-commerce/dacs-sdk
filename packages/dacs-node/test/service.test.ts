@@ -242,6 +242,14 @@ describe("authority-separated live role services", () => {
       ...options("buyer", buyerDatabase),
       peerAuthority: BUYER,
     })).toThrow(/options are invalid/);
+    expect(() => createDacsBuyerServiceV1({
+      ...options("buyer", buyerDatabase),
+      coordinatorLeaseDurationMs: 0,
+    })).toThrow(/options are invalid/);
+    expect(() => createDacsBuyerServiceV1({
+      ...options("buyer", buyerDatabase),
+      coordinatorLeaseDurationMs: 600_001,
+    })).toThrow(/options are invalid/);
     const sellerDatabase = await open(root(), "seller");
     expect(() => createDacsBuyerServiceV1({
       ...options("buyer", buyerDatabase),
