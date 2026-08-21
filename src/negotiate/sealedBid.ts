@@ -139,7 +139,7 @@ export function verifyReveal(
 
 // ── Session parameters + deadline gating ────────────────────────────────────
 
-export interface SealedEnvelopeParams {
+export interface SealedEnvelopeBaseParams {
   /** unix ms; MUST be ≥ now + 60s (SE-1). */
   commitDeadline: number;
   /** seconds after commitDeadline; MUST be ≥ 60. */
@@ -151,6 +151,23 @@ export interface SealedEnvelopeParams {
    */
   acceptanceRule?: `rule-ref:${string}`;
 }
+
+/** Parameters for the backwards-compatible demand/default phase (SE-8). */
+export interface DemandSealedEnvelopeParams extends SealedEnvelopeBaseParams {
+  /** Optional no-op marker; absent and `demand` have identical semantics. */
+  auctionMode?: "demand";
+}
+
+/** Parameters for the explicit procurement phase (SE-8). */
+export interface ProcurementSealedEnvelopeParams extends SealedEnvelopeBaseParams {
+  /** Required on `negotiate-sealed-envelope-procurement`; never inferred. */
+  auctionMode: "procurement";
+}
+
+/** Runtime-validated phase parameter union. */
+export type SealedEnvelopeParams =
+  | DemandSealedEnvelopeParams
+  | ProcurementSealedEnvelopeParams;
 
 /** Validate session parameters (SE-1 + reveal-window floor). Throws on violation. */
 export function validateSealedParams(
