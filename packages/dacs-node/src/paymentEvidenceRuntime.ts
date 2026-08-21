@@ -512,6 +512,7 @@ export function createDacsBuyerPaymentEvidenceRuntimeV1(
               type: "payment-evidence-completion",
               jobId: claim.completion.jobId,
               payload: claim.completion,
+              idempotencyKey: `payment-evidence-completion:${claim.completion.messageId}`,
             } satisfies DacsLiveRoleSendInputV1<"payment-evidence-completion">);
             const disposition = acceptedAcknowledgement(acknowledgement);
             if (disposition === "accepted" || disposition === "existing") {
@@ -743,6 +744,7 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
               type: "payment-evidence-request",
               jobId: claim.request.jobId,
               payload: claim.request,
+              idempotencyKey: `payment-evidence-request:${claim.request.messageId}`,
             } satisfies DacsLiveRoleSendInputV1<"payment-evidence-request">);
             const disposition = acceptedAcknowledgement(acknowledgement);
             if (disposition === "accepted" || disposition === "existing") {

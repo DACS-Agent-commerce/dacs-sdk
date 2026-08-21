@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { canonicalize } from "@kynesyslabs/dacs/canonical";
+import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   createFixedPriceX402BuyerCoordinator,
   createFixedPriceX402SellerCoordinator,
@@ -31,6 +31,7 @@ import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 import {
   DACS_HTTP_MAX_ENVELOPE_LIFETIME_MS,
   createDacsHttpEnvelopeV1,
+  dacsHttpPayloadHashV1,
   generateDacsHttpNonceV1,
   type DacsHttpAuthenticatedEnvelopeV1,
   type DacsHttpEnvelopeV1,
@@ -56,6 +57,8 @@ const DEFAULT_WORKER_INTERVAL_MS = 1_000;
 const DEFAULT_WORKER_BATCH_SIZE = 100;
 const DEFAULT_READINESS_MAX_AGE_MS = 30_000;
 const READINESS_CLOCK_SKEW_MS = 1_000;
+const TRANSPORT_MESSAGE_INTENT_VERSION = "1" as const;
+const TRANSPORT_MESSAGE_INTENT_DOMAIN = "dacs-live-transport-message-intent:v1:" as const;
 
 export type DacsLiveRole = "buyer" | "seller";
 export type DacsLiveRoleServiceLifecycle =
@@ -74,6 +77,8 @@ export interface DacsLiveRoleSendInputV1<
   type: Type;
   jobId: string;
   payload: Readonly<DacsHttpPayloadByType[Type]>;
+  /** Stable semantic effect key. Retries reuse the exact retained envelope. */
+  idempotencyKey?: string;
   lifetimeMs?: number;
 }
 
@@ -413,6 +418,89 @@ function safeDeadline(now: number, lifetimeMs: number): number {
   return deadline;
 }
 
+interface DacsTransportMessageIntentV1 {
+  intentVersion: typeof TRANSPORT_MESSAGE_INTENT_VERSION;
+  role: DacsLiveRole;
+  sender: string;
+  audience: string;
+  type: DacsLiveOutboundMessageType;
+  jobId: string;
+  idempotencyKey: string;
+  issuedAt: number;
+  expiresAt: number;
+  nonce: string;
+  payloadHash: string;
+  payload: Readonly<Record<string, unknown>>;
+}
+
+function transportMessageIntentEffectId(input: Readonly<{
+  role: DacsLiveRole;
+  sender: string;
+  audience: string;
+  idempotencyKey: string;
+}>): string {
+  return sha256Hex(`${TRANSPORT_MESSAGE_INTENT_DOMAIN}${canonicalize(input)}`);
+}
+
+function transportMessageIntentBindingHash(
+  input: Readonly<DacsTransportMessageIntentV1>,
+): string {
+  return sha256Hex(canonicalize({
+    role: input.role,
+    sender: input.sender,
+    audience: input.audience,
+    type: input.type,
+    jobId: input.jobId,
+    idempotencyKey: input.idempotencyKey,
+    payloadHash: input.payloadHash,
+  }));
+}
+
+function captureTransportMessageIntent(value: unknown): Readonly<DacsTransportMessageIntentV1> {
+  let captured: Readonly<Record<string, unknown>>;
+  try {
+    captured = captureClosedDataObject(value, [
+      "intentVersion", "role", "sender", "audience", "type", "jobId",
+      "idempotencyKey", "issuedAt", "expiresAt", "nonce", "payloadHash", "payload",
+    ]);
+  } catch {
+    throw new DacsLiveRoleServiceError("service-message-intent-corrupt");
+  }
+  if (captured.intentVersion !== TRANSPORT_MESSAGE_INTENT_VERSION ||
+      (captured.role !== "buyer" && captured.role !== "seller") ||
+      typeof captured.type !== "string" ||
+      !OUTBOUND_BY_ROLE[captured.role].has(captured.type as DacsLiveOutboundMessageType) ||
+      !demosAuthority(captured.sender) || !demosAuthority(captured.audience) ||
+      !nonEmpty(captured.jobId) || !nonEmpty(captured.idempotencyKey) ||
+      captured.idempotencyKey.length > 1_024 ||
+      !Number.isSafeInteger(captured.issuedAt) || Number(captured.issuedAt) < 0 ||
+      !Number.isSafeInteger(captured.expiresAt) ||
+      Number(captured.expiresAt) <= Number(captured.issuedAt) ||
+      Number(captured.expiresAt) - Number(captured.issuedAt) >
+        DACS_HTTP_MAX_ENVELOPE_LIFETIME_MS ||
+      typeof captured.nonce !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/.test(captured.nonce) ||
+      Buffer.from(captured.nonce, "base64url").byteLength !== 32 ||
+      Buffer.from(captured.nonce, "base64url").toString("base64url") !== captured.nonce ||
+      typeof captured.payloadHash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(captured.payloadHash) ||
+      captured.payload === null || typeof captured.payload !== "object" ||
+      Array.isArray(captured.payload)) {
+    throw new DacsLiveRoleServiceError("service-message-intent-corrupt");
+  }
+  let payloadHash: string;
+  try {
+    payloadHash = dacsHttpPayloadHashV1(captured.payload);
+  } catch {
+    throw new DacsLiveRoleServiceError("service-message-intent-corrupt");
+  }
+  if (payloadHash !== captured.payloadHash) {
+    throw new DacsLiveRoleServiceError("service-message-intent-corrupt");
+  }
+  return Object.freeze(structuredClone(captured)) as unknown as
+    Readonly<DacsTransportMessageIntentV1>;
+}
+
 function snapshotReadiness(value: unknown): Readonly<DacsNodeReadinessStatus> | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = value as Record<string, unknown>;
@@ -642,17 +730,91 @@ export function createDacsLiveRoleServiceV1(
     if (!safePositiveInteger(lifetimeMs, DACS_HTTP_MAX_ENVELOPE_LIFETIME_MS)) {
       throw new DacsLiveRoleServiceError("service-message-lifetime-invalid");
     }
-    const issuedAt = await outbox.readTime();
+    if (input.idempotencyKey !== undefined &&
+        (!nonEmpty(input.idempotencyKey) || input.idempotencyKey.length > 1_024)) {
+      throw new DacsLiveRoleServiceError("service-message-idempotency-key-invalid");
+    }
+    let payload: Readonly<Record<string, unknown>>;
+    try {
+      payload = JSON.parse(canonicalize(input.payload)) as Record<string, unknown>;
+    } catch {
+      throw new DacsLiveRoleServiceError("service-message-payload-invalid");
+    }
+    const payloadHash = dacsHttpPayloadHashV1(payload);
+    let intent: Readonly<DacsTransportMessageIntentV1>;
+    if (input.idempotencyKey === undefined) {
+      const issuedAt = await outbox.readTime();
+      intent = Object.freeze({
+        intentVersion: TRANSPORT_MESSAGE_INTENT_VERSION,
+        role,
+        sender: authority,
+        audience: peerAuthority,
+        type: input.type,
+        jobId: input.jobId,
+        idempotencyKey: generateDacsHttpNonceV1(),
+        issuedAt,
+        expiresAt: safeDeadline(issuedAt, lifetimeMs),
+        nonce: generateDacsHttpNonceV1(),
+        payloadHash,
+        payload,
+      });
+    } else {
+      const effectId = transportMessageIntentEffectId({
+        role,
+        sender: authority,
+        audience: peerAuthority,
+        idempotencyKey: input.idempotencyKey,
+      });
+      let retained = database.loadEffectInput("session", effectId);
+      if (retained === undefined) {
+        const issuedAt = await outbox.readTime();
+        const candidate: DacsTransportMessageIntentV1 = {
+          intentVersion: TRANSPORT_MESSAGE_INTENT_VERSION,
+          role,
+          sender: authority,
+          audience: peerAuthority,
+          type: input.type,
+          jobId: input.jobId,
+          idempotencyKey: input.idempotencyKey,
+          issuedAt,
+          expiresAt: safeDeadline(issuedAt, lifetimeMs),
+          nonce: generateDacsHttpNonceV1(),
+          payloadHash,
+          payload,
+        };
+        database.putEffectIntent({
+          kind: "session",
+          effectId,
+          bindingHash: transportMessageIntentBindingHash(candidate),
+          input: candidate,
+          idempotencyKey: effectId,
+          jobId: input.jobId,
+        });
+        retained = database.loadEffectInput("session", effectId);
+      }
+      if (retained === undefined) {
+        throw new DacsLiveRoleServiceError("service-message-intent-unavailable");
+      }
+      intent = captureTransportMessageIntent(retained);
+      if (intent.role !== role || intent.sender !== authority ||
+          intent.audience !== peerAuthority || intent.type !== input.type ||
+          intent.jobId !== input.jobId || intent.idempotencyKey !== input.idempotencyKey ||
+          intent.expiresAt - intent.issuedAt !== lifetimeMs ||
+          intent.payloadHash !== payloadHash ||
+          canonicalize(intent.payload) !== canonicalize(payload)) {
+        throw new DacsLiveRoleServiceError("service-message-idempotency-conflict");
+      }
+    }
     const signed = await createDacsHttpEnvelopeV1({
-      type: input.type,
-      jobId: input.jobId,
-      sender: authority,
-      audience: peerAuthority,
-      issuedAt,
-      expiresAt: safeDeadline(issuedAt, lifetimeMs),
-      nonce: generateDacsHttpNonceV1(),
-      payload: input.payload,
-    }, signTransportEnvelope);
+      type: intent.type,
+      jobId: intent.jobId,
+      sender: intent.sender,
+      audience: intent.audience,
+      issuedAt: intent.issuedAt,
+      expiresAt: intent.expiresAt,
+      nonce: intent.nonce,
+      payload: intent.payload as never,
+    }, signTransportEnvelope) as Readonly<DacsHttpEnvelopeV1>;
     const acknowledgement = await client.send(
       signed as Readonly<DacsHttpEnvelopeV1>,
       options,

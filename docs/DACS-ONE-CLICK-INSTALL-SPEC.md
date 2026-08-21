@@ -802,6 +802,15 @@ operation must re-evaluate whether work is still valid and, if so, create a new
 envelope containing the same stable effect identity in its typed payload; the
 old inbox reservation remains authoritative for the old message.
 
+The role-service send boundary MUST accept a stable semantic idempotency key
+for action-bearing messages. Before signing, it durably retains the exact role,
+actors, job, type, payload, issue/expiry times and nonce under that key. Every
+same-key retry or process restart reconstructs the same signed envelope and
+resumes its existing outbox item; substituting any retained field is a terminal
+local conflict. A replacement after expiry therefore requires an explicit
+higher-level recovery decision and a new transport idempotency key—it is never
+created as a side effect of retrying the old operation.
+
 ### 12.6 HTTP dispositions
 
 The transport uses:

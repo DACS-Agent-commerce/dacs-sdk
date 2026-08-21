@@ -472,20 +472,47 @@ describe("authority-separated live role services", () => {
     )));
     await buyer.start();
 
-    const acknowledgement = await buyer.sendMessage({
+    const message = {
       type: "agreement-proposal",
       jobId: JOB_ID,
       payload: {
         proposal: { jobId: JOB_ID, label: "role-service-test" },
         transportIdentity: { sender: BUYER, audience: SELLER },
       } as never,
-    });
+      idempotencyKey: `agreement-proposal:${JOB_ID}:test`,
+    } as const;
+    const acknowledgement = await buyer.sendMessage(message);
+    const replayAcknowledgement = await buyer.sendMessage(message);
 
     expect(acknowledgement.envelope.payload).toMatchObject({
       disposition: "accepted",
     });
+    expect(replayAcknowledgement).toEqual(acknowledgement);
     expect(handled).toHaveBeenCalledTimes(1);
+    await expect(buyer.sendMessage({
+      ...message,
+      payload: {
+        proposal: { jobId: JOB_ID, label: "substituted" },
+        transportIdentity: { sender: BUYER, audience: SELLER },
+      } as never,
+    })).rejects.toEqual(
+      new DacsLiveRoleServiceError("service-message-idempotency-conflict"),
+    );
     await buyer.runOnce();
+    expect(handled).toHaveBeenCalledTimes(1);
+
+    await buyer.stop();
+    services.splice(services.indexOf(buyer), 1);
+    buyerDatabase.close();
+    databases.splice(databases.indexOf(buyerDatabase), 1);
+    const reopenedBuyerDatabase = await open(directory, "buyer");
+    const recoveredBuyer = remember(createDacsBuyerServiceV1(options(
+      "buyer",
+      reopenedBuyerDatabase,
+      seller.endpoint,
+    )));
+    await recoveredBuyer.start();
+    await expect(recoveredBuyer.sendMessage(message)).resolves.toEqual(acknowledgement);
     expect(handled).toHaveBeenCalledTimes(1);
   });
 

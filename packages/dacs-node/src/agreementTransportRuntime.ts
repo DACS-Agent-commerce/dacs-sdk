@@ -389,6 +389,7 @@ async function sendProposal(
       type: "agreement-proposal",
       jobId: binding.payload.transportIdentity.jobId,
       payload: binding.payload,
+      idempotencyKey: `agreement-proposal:${binding.payload.transportIdentity.jobId}:${binding.payloadHash}`,
     } satisfies DacsLiveRoleSendInputV1<"agreement-proposal">);
     const disposition = acceptedAcknowledgement(acknowledgement);
     return disposition === "accepted" || disposition === "existing"
@@ -411,6 +412,7 @@ async function sendResponse(
       type: "agreement-response",
       jobId: binding.payload.transportIdentity.jobId,
       payload: binding.payload,
+      idempotencyKey: `agreement-response:${binding.payload.transportIdentity.jobId}:${binding.payloadHash}`,
     } satisfies DacsLiveRoleSendInputV1<"agreement-response">);
     const disposition = acceptedAcknowledgement(acknowledgement);
     return disposition === "accepted" || disposition === "existing"

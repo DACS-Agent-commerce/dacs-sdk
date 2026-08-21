@@ -417,6 +417,7 @@ export function createDacsBuyerBundleTransportRuntimeV1(
           type: "bundle-signature-response",
           jobId: input.identity.jobId,
           payload: binding.signature,
+          idempotencyKey: `bundle-signature-response:${input.identity.jobId}:${input.requestHash}`,
         } satisfies DacsLiveRoleSendInputV1<"bundle-signature-response">);
         const disposition = acknowledgementDisposition(acknowledgement);
         return disposition === "accepted" || disposition === "existing"
@@ -541,6 +542,7 @@ export function createDacsSellerBundleTransportRuntimeV1(
           type: "bundle-signature-request",
           jobId,
           payload: binding.payload,
+          idempotencyKey: `bundle-signature-request:${jobId}:${binding.requestHash}`,
         } satisfies DacsLiveRoleSendInputV1<"bundle-signature-request">);
         const disposition = acknowledgementDisposition(acknowledgement);
         return {

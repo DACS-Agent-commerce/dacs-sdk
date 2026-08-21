@@ -469,6 +469,7 @@ async function publish(
       type,
       jobId: operation.order.jobId,
       payload: payload as never,
+      idempotencyKey: `${operation.fence.idempotencyKey}:session-${kind}`,
     }));
   } catch {
     return "pending";

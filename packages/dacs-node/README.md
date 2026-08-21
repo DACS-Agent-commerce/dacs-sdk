@@ -103,7 +103,11 @@ generation-fenced lease, applies one-second exponential backoff capped at sixty
 seconds, and never manufactures a replacement after envelope expiry. A valid
 authenticated and exactly bound late acknowledgement is monotonic and may
 complete an item after its send lease expires. HTTP status alone never clears
-the outbox.
+the outbox. Action-bearing runtime transports also supply a stable semantic
+idempotency key to the role service. The service durably retains the envelope
+inputs before signing, so a coordinator retry or process restart reconstructs
+and resumes the exact same envelope; reusing the key with a changed payload,
+job, type or lifetime fails locally.
 
 Both transport stores reject retention shorter than seven days, support a
 terminal-session retention extension, use stable bounded cursors, and keep a
