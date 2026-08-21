@@ -46,6 +46,13 @@ import {
   type DacsSellerX402RuntimeOptionsV1,
 } from "./sellerX402Runtime.js";
 import {
+  createDacsBuyerSessionBootstrapAgreementTrackV1,
+  createDacsSellerSessionBootstrapAgreementTrackV1,
+  loadDacsBuyerSessionAgreementFactsV1,
+  type DacsBuyerSessionBootstrapAgreementTrackOptionsV1,
+  type DacsSellerSessionBootstrapAgreementTrackOptionsV1,
+} from "./sessionBootstrapAgreementRuntime.js";
+import {
   createDacsBuyerSessionBootstrapTransportRuntimeV1,
   createDacsSellerSessionBootstrapTransportRuntimeV1,
   type DacsSellerSessionBootstrapTransportOptionsV1,
@@ -58,10 +65,18 @@ import {
 export interface DacsBuyerLiveCommerceAssemblyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   workerId: string;
+  sessionBootstrap: Readonly<Pick<
+    DacsBuyerSessionBootstrapAgreementTrackOptionsV1,
+    "resolveRequirements"
+  >>;
   agreement: Readonly<Omit<
     DacsBuyerAgreementTrackOptionsV1,
-    "context" | "workerId" | "transport"
-  >>;
+    "context" | "workerId" | "transport" | "buildDraft"
+  > & {
+    buildDraft(input: Parameters<DacsBuyerAgreementTrackOptionsV1["buildDraft"]>[0] &
+      Readonly<{ session: ReturnType<typeof loadDacsBuyerSessionAgreementFactsV1> }>):
+      ReturnType<DacsBuyerAgreementTrackOptionsV1["buildDraft"]>;
+  }>;
   payment: Readonly<Omit<
     DacsX402BuyerRuntimePaymentTrackOptionsV1,
     "context" | "workerId"
@@ -87,6 +102,9 @@ export interface DacsSellerLiveCommerceAssemblyOptionsV1<T = unknown> {
   sessionBootstrap: Readonly<Omit<
     DacsSellerSessionBootstrapTransportOptionsV1,
     "context"
+  > & Pick<
+    DacsSellerSessionBootstrapAgreementTrackOptionsV1,
+    "resolveBuyerRequirement"
   >>;
   agreementTransport: Readonly<Omit<
     DacsSellerAgreementTransportRuntimeOptionsV1,
@@ -160,13 +178,23 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
     ...options.bundleTransport,
     context,
   });
+  const agreement = createDacsBuyerAgreementTrackV1({
+    ...options.agreement,
+    buildDraft: (input) => options.agreement.buildDraft({
+      ...input,
+      session: loadDacsBuyerSessionAgreementFactsV1(context, input.operation),
+    }),
+    context,
+    workerId: options.workerId,
+    transport: agreementTransport.transport,
+  });
   return createDacsBuyerLiveCommerceGraphV1({
     sessionBootstrap,
-    agreement: createDacsBuyerAgreementTrackV1({
-      ...options.agreement,
+    agreement: createDacsBuyerSessionBootstrapAgreementTrackV1({
       context,
-      workerId: options.workerId,
-      transport: agreementTransport.transport,
+      sessionBootstrap,
+      resolveRequirements: options.sessionBootstrap.resolveRequirements,
+      agreement,
     }),
     payment: createDacsX402BuyerRuntimePaymentTrackV1({
       ...options.payment,
@@ -219,15 +247,29 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
     context,
     workerId: options.workerId,
   });
+  const agreement = createDacsSellerAgreementTrackV1({
+    ...options.agreement,
+    context,
+    workerId: options.workerId,
+    resolveProposal: ({ operation }) =>
+      agreementTransport.resolveProposal({ operation }),
+    transport: agreementTransport.transport,
+  });
   return createDacsSellerLiveCommerceGraphV1({
     sessionBootstrap,
-    agreement: createDacsSellerAgreementTrackV1({
-      ...options.agreement,
+    agreement: createDacsSellerSessionBootstrapAgreementTrackV1({
       context,
-      workerId: options.workerId,
-      resolveProposal: ({ operation }) =>
-        agreementTransport.resolveProposal({ operation }),
-      transport: agreementTransport.transport,
+      sessionBootstrap,
+      resolveBuyerRequirement: options.sessionBootstrap.resolveBuyerRequirement,
+      agreementProposalReady: async ({ operation }) => {
+        try {
+          await agreementTransport.resolveProposal({ operation });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      agreement,
     }),
     x402,
     paymentEvidence: createDacsSellerSettlementPublicationTrackV1({

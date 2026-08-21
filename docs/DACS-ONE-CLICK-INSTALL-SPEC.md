@@ -617,7 +617,7 @@ The `type` field fixes the exact payload shape. The initial mappings are:
 | `session-init` | `DacsSessionInitPayloadV1`: the buyer role order and public application plus the buyer-generated challenge for the seller |
 | `session-challenge` | `DacsSessionChallengePayloadV1`: exact init hash, both verifier challenges and the seller's seller-challenge-bound session identity |
 | `session-presentation` | `DacsSessionPresentationPayloadV1`: exact challenge hash and the buyer's buyer-challenge-bound session identity |
-| `session-admission` | `DacsSessionAdmissionPayloadV1`: exact presentation and identity hashes plus the seller-produced buyer Vet record and reference |
+| `session-admission` | `DacsSessionAdmissionPayloadV1`: exact presentation and identity hashes plus the seller-produced buyer Vet record, reference and authenticated-finality receipt |
 | `agreement-proposal` | `{ proposal: FixedPriceAgreementProposal; transportIdentity: FixedPriceAgreementTransportIdentity }`, the data-only portion of the public SDK `DurableSellerFixedPriceAgreementInput` |
 | `agreement-response` | public SDK `DurableSellerFixedPriceAgreementResponse` |
 | `payment-evidence-request` | public SDK `PaymentEvidenceAnchorRequest` |
@@ -640,14 +640,24 @@ type DacsBundleSignatureRequestV1 = {
 The four `session-*` messages form a no-payment, pre-agreement bootstrap. The
 buyer first challenges the seller; the seller presents its session-bound
 identity and independently challenges the buyer; the buyer presents its own
-session-bound identity; and the seller returns its completed Vet of the buyer.
+session-bound identity; and the seller returns its completed Vet of the buyer,
+including the receipt needed for exact native-address authentication.
 This permits the buyer's Vet of the seller and the seller's Vet of the buyer to
 run concurrently under separate actor wallets. Each challenge is fresh,
 single-session and durably reserved, and every later message hashes the exact
 preceding payload. The buyer MUST authenticate finality and exact native
 readback of the returned buyer Vet before including its reference in an
-agreement proposal. The bootstrap itself authorizes no payment, fulfilment or
-agreement.
+agreement proposal. Native receipt verification and exact native-address
+readback are the gate; logical-name index visibility is not on this path. The
+bootstrap itself authorizes no payment, fulfilment or agreement.
+
+The initial generated fixed-price profile automatically produces only an empty
+`BundleRequirement` Vet (`required: []` with no `oneOf`). Any non-empty buyer or
+seller requirement fails closed before a transport or Demos effect until a
+real requirement-specific Vet provider is configured. The complementary
+seller requirement remains an explicit local policy input while Standard issue
+#331 has not defined normative authenticated provenance for it; the host MUST
+NOT describe that local policy as normative provenance.
 
 The host kit MUST validate each payload with the corresponding public SDK
 validator or verifier before invoking a coordinator. For a bundle request it

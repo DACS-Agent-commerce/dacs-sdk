@@ -19,6 +19,8 @@ const factories = vi.hoisted(() => ({
   buyerPayment: vi.fn(),
   buyerSessionBootstrap: vi.fn(),
   sellerSessionBootstrap: vi.fn(),
+  buyerSessionAgreement: vi.fn(),
+  sellerSessionAgreement: vi.fn(),
 }));
 
 vi.mock("../src/agreementRuntime.js", async (importOriginal) => ({
@@ -71,6 +73,12 @@ vi.mock("../src/sessionBootstrapTransportRuntime.js", async (importOriginal) => 
   ...(await importOriginal<typeof import("../src/sessionBootstrapTransportRuntime.js")>()),
   createDacsBuyerSessionBootstrapTransportRuntimeV1: factories.buyerSessionBootstrap,
   createDacsSellerSessionBootstrapTransportRuntimeV1: factories.sellerSessionBootstrap,
+}));
+vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/sessionBootstrapAgreementRuntime.js")>()),
+  createDacsBuyerSessionBootstrapAgreementTrackV1: factories.buyerSessionAgreement,
+  createDacsSellerSessionBootstrapAgreementTrackV1: factories.sellerSessionAgreement,
+  loadDacsBuyerSessionAgreementFactsV1: vi.fn(() => ({ session: true })),
 }));
 
 import {
@@ -127,6 +135,8 @@ describe("one-factory live commerce assembly", () => {
     factories.buyerPayment.mockReturnValue("buyer-payment");
     factories.buyerSessionBootstrap.mockReturnValue("buyer-session-bootstrap");
     factories.sellerSessionBootstrap.mockReturnValue("seller-session-bootstrap");
+    factories.buyerSessionAgreement.mockReturnValue("buyer-session-agreement");
+    factories.sellerSessionAgreement.mockReturnValue("seller-session-agreement");
     factories.buyerGraph.mockImplementation((value) => ({ role: "buyer", value }));
     factories.sellerGraph.mockImplementation((value) => ({ role: "seller", value }));
   });
@@ -136,6 +146,7 @@ describe("one-factory live commerce assembly", () => {
     const result = await createDacsBuyerLiveCommerceAssemblyV1({
       context,
       workerId: "buyer-worker",
+      sessionBootstrap: { resolveRequirements: vi.fn() },
       agreement: { buildDraft: vi.fn() },
       payment: { resolvePreparation: vi.fn() },
       paymentEvidence: { verifyEvidence: vi.fn() },
@@ -159,6 +170,7 @@ describe("one-factory live commerce assembly", () => {
     });
     const graph = factories.buyerGraph.mock.calls[0]![0];
     expect(graph.sessionBootstrap).toBe("buyer-session-bootstrap");
+    expect(graph.agreement).toBe("buyer-session-agreement");
     expect(graph.agreementTransport).toBe(
       factories.buyerAgreementTransport.mock.results[0]!.value,
     );
@@ -175,7 +187,7 @@ describe("one-factory live commerce assembly", () => {
     const result = await createDacsSellerLiveCommerceAssemblyV1({
       context,
       workerId: "seller-worker",
-      sessionBootstrap: { admitInit: vi.fn() },
+      sessionBootstrap: { admitInit: vi.fn(), resolveBuyerRequirement: vi.fn() },
       agreementTransport: { admitProposal: vi.fn() },
       agreement: { authorizeComplete: vi.fn() },
       x402: { publicBaseUrl: "https://seller.example" },
@@ -192,6 +204,7 @@ describe("one-factory live commerce assembly", () => {
     });
     const graph = factories.sellerGraph.mock.calls[0]![0];
     expect(graph.sessionBootstrap).toBe("seller-session-bootstrap");
+    expect(graph.agreement).toBe("seller-session-agreement");
     expect(graph.x402).toBe(await factories.sellerX402.mock.results[0]!.value);
     expect(graph.paymentEvidenceTransport).toBe(paymentEvidence);
     expect(graph.bundleTransport).toBe(

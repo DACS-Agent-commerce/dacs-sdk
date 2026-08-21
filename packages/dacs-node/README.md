@@ -119,9 +119,17 @@ Before agreement, the live graph uses a four-message `session-init` →
 It binds fresh verifier-issued challenges to each role's signed session
 identity, links every step by its canonical payload hash, reserves challenges
 durably against reuse, and carries the seller-produced buyer Vet back to the
-buyer. This is an operational transport transcript, not a DACS artifact or an
-authorization to pay. The agreement track must still authenticate the Vet's
-Demos finality and exact native readback before using its reference.
+buyer with its finality receipt. This is an operational transport transcript,
+not a DACS artifact or an authorization to pay. The agreement track
+authenticates the receipt and exact native-address readback before using the
+Vet reference; it does not wait for logical-name index visibility.
+
+`createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
+drive this transcript before delegating to the existing durable agreement
+tracks. The generated profile's built-in Vet producer is deliberately limited
+to an empty `BundleRequirement`; non-empty claim requirements fail closed until
+a requirement-specific provider is supplied. Complementary seller requirement
+provenance remains a non-normative policy seam pending Standard issue #331.
 
 `startDacsHttpMessageServerV1()` serves only
 `POST /dacs-transport/v1/messages`. It bounds decoded JSON bodies to 256 KiB,

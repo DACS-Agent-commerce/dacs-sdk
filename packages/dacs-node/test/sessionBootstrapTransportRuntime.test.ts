@@ -356,6 +356,21 @@ describe("pre-agreement session bootstrap transport", () => {
         contentHash: contentHash(record as unknown as Record<string, unknown>),
         signer: value.seller,
       }),
+      buyerVetReceipt: Object.freeze({
+        receiptVersion: "1" as const,
+        substrate: "demos" as const,
+        finalityProfile: "demos-bft-confirmed-native-read",
+        logicalAddress: compositeVerificationAddress(JOB_ID, value.buyer),
+        nativeAddress: `stor-${"a".repeat(40)}`,
+        contentHash: contentHash(record as unknown as Record<string, unknown>),
+        transactionRef: { kind: "demos-storage-program", value: "tx-buyer-vet" },
+        writer: value.seller,
+        state: "finalized" as const,
+        observationDisposition: "established" as const,
+        observedAt: 1_800_000_000_200,
+        blockRef: { id: "block-buyer-vet", height: "42" },
+        evidence: { kind: "demos-bft-write-proof-v1", value: "proof" },
+      }),
     });
     const forgedRecord = Object.freeze({
       ...record,
@@ -369,6 +384,10 @@ describe("pre-agreement session bootstrap transport", () => {
       buyerVetRecord: forgedRecord,
       buyerVetRef: {
         ...admission.buyerVetRef,
+        contentHash: contentHash(forgedRecord as unknown as Record<string, unknown>),
+      },
+      buyerVetReceipt: {
+        ...admission.buyerVetReceipt,
         contentHash: contentHash(forgedRecord as unknown as Record<string, unknown>),
       },
     })).rejects.toMatchObject({ reasonCode: "session-admission-binding-mismatch" });

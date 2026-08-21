@@ -135,6 +135,21 @@ const payloads = {
       contentHash: "e".repeat(64),
       signer: audience,
     },
+    buyerVetReceipt: {
+      receiptVersion: "1",
+      substrate: "demos",
+      finalityProfile: "demos-bft-confirmed-native-read",
+      logicalAddress: "dacs2:vector:buyer-vet",
+      nativeAddress: `stor-${"f".repeat(40)}`,
+      contentHash: "e".repeat(64),
+      transactionRef: { kind: "demos-storage-program", value: "tx-vector-buyer-vet" },
+      writer: audience,
+      state: "finalized",
+      observationDisposition: "established",
+      observedAt: issuedAt,
+      blockRef: { id: "block-vector-buyer-vet", height: "42" },
+      evidence: { kind: "demos-bft-write-proof-v1", value: "vector-proof" },
+    },
   },
 };
 

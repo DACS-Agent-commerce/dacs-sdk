@@ -4,6 +4,7 @@ import {
   isAttestationRef,
   isCompositeVerificationRecord,
   isIdentityBundle,
+  isReadableAnchorReceipt,
   type AttestationRef,
   type BundleSignature,
   type CompositeVerificationRecord,
@@ -16,6 +17,7 @@ import type {
   PaymentEvidenceAnchorRequest,
   PaymentEvidenceAuthenticatedPeer,
 } from "@kynesyslabs/dacs/commerce";
+import type { ProtocolAnchorReceipt } from "@kynesyslabs/dacs";
 import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
 import {
   parseCanonicalClaimReference,
@@ -91,6 +93,7 @@ export interface DacsSessionAdmissionPayloadV1 {
   sellerIdentityHash: string;
   buyerVetRecord: Readonly<CompositeVerificationRecord>;
   buyerVetRef: Readonly<AttestationRef>;
+  buyerVetReceipt: Readonly<ProtocolAnchorReceipt>;
 }
 
 export interface DacsBundleSignatureRequestV1 {
@@ -406,11 +409,12 @@ export function validateDacsHttpSessionAdmissionPayloadV1(
 ): value is Readonly<DacsSessionAdmissionPayloadV1> {
   return record(value) && exactKeys(value, [
     "bootstrapVersion", "presentationPayloadHash", "buyerIdentityHash",
-    "sellerIdentityHash", "buyerVetRecord", "buyerVetRef",
+    "sellerIdentityHash", "buyerVetRecord", "buyerVetRef", "buyerVetReceipt",
   ]) && value.bootstrapVersion === "1" && hash(value.presentationPayloadHash) &&
     hash(value.buyerIdentityHash) && hash(value.sellerIdentityHash) &&
     isCompositeVerificationRecord(value.buyerVetRecord) &&
-    isAttestationRef(value.buyerVetRef);
+    isAttestationRef(value.buyerVetRef) &&
+    isReadableAnchorReceipt(value.buyerVetReceipt);
 }
 
 function exactKeys(

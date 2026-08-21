@@ -79,6 +79,9 @@ export interface DacsSellerSessionBootstrapTransportOptionsV1 {
 
 export interface DacsBuyerSessionBootstrapTransportRuntimeV1 {
   readonly validatePayload: DacsHttpPayloadValidatorV1;
+  resolveInit(
+    operation: Readonly<FixedPriceX402TrackOperationInput>,
+  ): Readonly<DacsSessionInitPayloadV1> | undefined;
   publishInit(
     operation: Readonly<FixedPriceX402TrackOperationInput>,
     payload: Readonly<DacsSessionInitPayloadV1>,
@@ -90,6 +93,9 @@ export interface DacsBuyerSessionBootstrapTransportRuntimeV1 {
     operation: Readonly<FixedPriceX402TrackOperationInput>,
     payload: Readonly<DacsSessionPresentationPayloadV1>,
   ): Promise<"acknowledged" | "pending" | "rejected">;
+  resolvePresentation(
+    operation: Readonly<FixedPriceX402TrackOperationInput>,
+  ): Readonly<DacsSessionPresentationPayloadV1> | undefined;
   resolveAdmission(
     operation: Readonly<FixedPriceX402TrackOperationInput>,
   ): Readonly<DacsSessionAdmissionPayloadV1> | undefined;
@@ -108,6 +114,9 @@ export interface DacsSellerSessionBootstrapTransportRuntimeV1 {
     operation: Readonly<FixedPriceX402TrackOperationInput>,
     payload: Readonly<DacsSessionChallengePayloadV1>,
   ): Promise<"acknowledged" | "pending" | "rejected">;
+  resolveChallenge(
+    operation: Readonly<FixedPriceX402TrackOperationInput>,
+  ): Readonly<DacsSessionChallengePayloadV1> | undefined;
   resolvePresentation(
     operation: Readonly<FixedPriceX402TrackOperationInput>,
   ): Readonly<DacsSessionPresentationPayloadV1> | undefined;
@@ -115,6 +124,9 @@ export interface DacsSellerSessionBootstrapTransportRuntimeV1 {
     operation: Readonly<FixedPriceX402TrackOperationInput>,
     payload: Readonly<DacsSessionAdmissionPayloadV1>,
   ): Promise<"acknowledged" | "pending" | "rejected">;
+  resolveAdmission(
+    operation: Readonly<FixedPriceX402TrackOperationInput>,
+  ): Readonly<DacsSessionAdmissionPayloadV1> | undefined;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
@@ -446,6 +458,9 @@ function outboundSemantics(
       admission.buyerVetRef.anchor.locator !==
         compositeVerificationAddress(order.jobId, order.buyer) ||
       !sameCanonicalClaimIdentity(admission.buyerVetRef.signer, order.seller) ||
+      admission.buyerVetReceipt.logicalAddress !== admission.buyerVetRef.anchor.locator ||
+      admission.buyerVetReceipt.contentHash !== admission.buyerVetRef.contentHash ||
+      !sameCanonicalClaimIdentity(admission.buyerVetReceipt.writer, order.seller) ||
       !vetSignatureValid(admission, order.seller)) {
     throw new DacsSessionBootstrapTransportError("session-admission-binding-mismatch");
   }
@@ -485,6 +500,8 @@ export function createDacsBuyerSessionBootstrapTransportRuntimeV1(
   const runtime: DacsBuyerSessionBootstrapTransportRuntimeV1 = {
     validatePayload: (input: Parameters<DacsHttpPayloadValidatorV1>[0]) =>
       payloadValidation("buyer", input),
+    resolveInit: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+      resolvePayload(context, operation, "init", validateDacsHttpSessionInitPayloadV1),
     publishInit: (operation: Readonly<FixedPriceX402TrackOperationInput>,
       payload: Readonly<DacsSessionInitPayloadV1>) =>
       publish(context, operation, "init", "session-init", payload),
@@ -495,6 +512,9 @@ export function createDacsBuyerSessionBootstrapTransportRuntimeV1(
       payload: Readonly<DacsSessionPresentationPayloadV1>) =>
       publish(context, operation, "presentation",
       "session-presentation", payload),
+    resolvePresentation: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+      resolvePayload(context, operation, "presentation",
+      validateDacsHttpSessionPresentationPayloadV1),
     resolveAdmission: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
       resolvePayload(context, operation, "admission",
       validateDacsHttpSessionAdmissionPayloadV1),
@@ -550,6 +570,9 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1(
       payload: Readonly<DacsSessionChallengePayloadV1>) =>
       publish(context, operation, "challenge",
       "session-challenge", payload),
+    resolveChallenge: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+      resolvePayload(context, operation, "challenge",
+      validateDacsHttpSessionChallengePayloadV1),
     resolvePresentation: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
       resolvePayload(context, operation, "presentation",
       validateDacsHttpSessionPresentationPayloadV1),
@@ -557,6 +580,9 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1(
       payload: Readonly<DacsSessionAdmissionPayloadV1>) =>
       publish(context, operation, "admission",
       "session-admission", payload),
+    resolveAdmission: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+      resolvePayload(context, operation, "admission",
+      validateDacsHttpSessionAdmissionPayloadV1),
     async handleMessage(authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
       inbound: Readonly<DacsLiveRoleInboundOperationContextV1>) {
       if (authenticated.envelope.type === "session-init") {
