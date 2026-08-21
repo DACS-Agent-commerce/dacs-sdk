@@ -24,6 +24,7 @@ import {
   rawPublicKey,
 } from "../../src/crypto/index.js";
 import {
+  createCatalogBindingIndex,
   createInMemoryBindingIndex,
   type AnchorBinding,
   type BindingIndex,
@@ -105,9 +106,12 @@ async function normativeListingFixture(options: {
   listingId?: string;
   version?: number;
   signer?: typeof SELLER.privateKey;
+  primaryClaim?: string;
+  additionalClaimRef?: string;
 } = {}): Promise<Fixture> {
   const listingId = options.listingId ?? "normative-market-data";
   const version = options.version ?? 1;
+  const primaryClaim = options.primaryClaim ?? SELLER.did;
   const draft: ListingDraft = {
     dacsVersion: "1",
     listingVersion: version,
@@ -115,12 +119,25 @@ async function normativeListingFixture(options: {
     seller: {
       identity: {
         bundleVersion: "1",
-        presentedBy: SELLER.did,
+        presentedBy: primaryClaim,
         presentedAt: 1_780_000_000_000,
-        claims: [{ ref: SELLER.did }],
+        claims: [
+          { ref: primaryClaim },
+          ...(options.additionalClaimRef
+            ? [{ ref: options.additionalClaimRef }]
+            : []),
+        ],
         presentation: {
           kind: "per-claim",
-          signatures: [{ ref: SELLER.did, signature: "identity-presentation" }],
+          signatures: [
+            { ref: primaryClaim, signature: "identity-presentation" },
+            ...(options.additionalClaimRef
+              ? [{
+                  ref: options.additionalClaimRef,
+                  signature: "additional-claim-proof",
+                }]
+              : []),
+          ],
         },
       },
       displayName: "Normative Market Data",
@@ -154,14 +171,14 @@ async function normativeListingFixture(options: {
     ARTIFACT_SEPARATORS.Listing,
     {
       algorithm: "ed25519",
-      signer: SELLER.did,
+      signer: primaryClaim,
       sign: (bytes) => ed25519Sign(
         bytes,
         options.signer ?? SELLER.privateKey,
       ),
     },
   ) as unknown as Record<string, unknown>;
-  const logicalAddress = listingAddress(SELLER.did, listingId, version);
+  const logicalAddress = listingAddress(primaryClaim, listingId, version);
   const nativeAddress = `stor-${listingId}-${version}`;
   return {
     logicalAddress,
@@ -194,11 +211,13 @@ function depsFor(
   };
 }
 
-function normativeValidationDeps(): ListingValidationDeps {
+function normativeValidationDeps(
+  primaryClaim = SELLER.did,
+): ListingValidationDeps {
   return {
     nowMs: () => 1_780_000_000_000,
     verifyListingSignature: ({ signedBytes, signature }) =>
-      signature.signer === SELLER.did &&
+      signature.signer === primaryClaim &&
       ed25519Verify(
         signedBytes,
         Uint8Array.from(Buffer.from(signature.value, "base64url")),
@@ -229,7 +248,7 @@ function normativeValidationDeps(): ListingValidationDeps {
     resolvePayloadVerificationCapability: () => ({
       disposition: "supported",
     }),
-    verifySellerControl: ({ signer }) => signer === SELLER.did,
+    verifySellerControl: ({ signer }) => signer === primaryClaim,
   };
 }
 
@@ -263,6 +282,52 @@ describe("readListingByLogicalAddress (#54)", () => {
     });
   });
 
+  test("authenticates a parameterized Demos seller through a catalog index", async () => {
+    const primaryClaim = `${SELLER.did}?jurisdiction=GB`;
+    const fixture = await normativeListingFixture({ primaryClaim });
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      listings: [{
+        listingId: "normative-market-data",
+        version: 1,
+        contentHash: fixture.binding.contentHash,
+        anchor: { kind: "storage-program", locator: fixture.nativeAddress },
+        seller: { primaryClaim, displayName: "Normative Market Data" },
+        offering: {
+          title: "Normative Market Data",
+          category: "data.finance",
+          tags: ["market-data"],
+        },
+        pricing: { priceHint: "1", currency: "USDC" },
+        status: "active",
+        catalogObservedAt: 1_780_000_000_000,
+      }],
+      total: 1,
+    }), { headers: { "content-type": "application/json" } }));
+    const index = createCatalogBindingIndex({
+      catalogUrl: "https://directory.example/api/dacs/listings",
+      fetchImpl,
+    });
+
+    await expect(readListingByLogicalAddress(
+      fixture.logicalAddress,
+      depsFor([fixture], {
+        index,
+        listingValidationDeps: normativeValidationDeps(primaryClaim),
+      }),
+    )).resolves.toMatchObject({
+      status: "verified",
+      compatibility: "normative",
+      logicalAddress: fixture.logicalAddress,
+      listing: {
+        seller: { identity: { presentedBy: primaryClaim } },
+        signature: { signer: primaryClaim },
+      },
+    });
+    // Catalog binding resolution makes two bounded scans to reject TOCTOU
+    // changes before the authenticated Listing read.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   test("rejects a normative Listing signed with the wrong seller key", async () => {
     const fixture = await normativeListingFixture({ signer: OTHER.privateKey });
     await expect(
@@ -277,6 +342,25 @@ describe("readListingByLogicalAddress (#54)", () => {
       check: "validation",
       code: "listing-validation-failed",
       validation: { disposition: "rejected", step: 4 },
+    });
+  });
+
+  test("rejects non-CF-2 ClaimReferences embedded outside the signer field", async () => {
+    const fixture = await normativeListingFixture({
+      additionalClaimRef: `${SELLER.did}?z=last&a=first`,
+    });
+    await expect(
+      readListingByLogicalAddress(
+        fixture.logicalAddress,
+        depsFor([fixture], {
+          listingValidationDeps: normativeValidationDeps(),
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: "rejected",
+      check: "shape",
+      code: "unsupported-listing-shape",
+      reason: expect.stringContaining("non-canonical CORE B.1 CF-2"),
     });
   });
 

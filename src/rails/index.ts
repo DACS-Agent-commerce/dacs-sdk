@@ -10,6 +10,7 @@ export {
   type X402ClientLike,
   type X402PaymentRequired,
   type X402PaymentRequirement,
+  type X402SettlementResponse,
 } from "./x402.js";
 export {
   createX402Paywall,
@@ -178,6 +179,9 @@ export {
   type PayDemRail,
   type PayDemRailConfig,
   type PayDemPreparedTransfer,
+  type PayDemSettlementRecoveryContext,
+  type PayDemReconciledSettlement,
+  type PayDemSettlementReconcile,
   type PayDemSettleParams,
   type DemosNativeClient,
   type DemosTransferResult,

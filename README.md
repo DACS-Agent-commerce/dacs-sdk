@@ -49,6 +49,26 @@ process termination; multi-host writers need a shared journal backend with the
 same exclusive lease and generation-fencing guarantees. Read-only agents may
 omit it.
 
+### Demos agent ClaimReferences
+
+Use `demosAgentClaimRef`, `parseDemosAgentClaimReference`,
+`demosAgentPublicKey`, and `isDemosAgentClaimRef` from either
+`@kynesyslabs/dacs` or
+`@kynesyslabs/dacs/identity` for the DACS-1 §6.3.1 / §A.1 self-certifying
+profile. Writers emit only `did:demos:agent:<64-lowercase-hex>`. Readers accept
+case variation in the leading `did` scheme and preserve unknown canonical
+parameters for forwarding; the typed parse result exposes the parameter-free
+CF-3 identity separately. Signed-artifact authorization uses exact CF-2 bytes
+and never performs that read-time repair. Foreign DIDs, mixed-case
+`demos:agent`, uppercase key bytes, bare keys, and `demos:0x...` substrate
+address notation are never intrinsically decoded as Demos signature authority
+or aliased to the registered profile. `Agent.resolveIdentity()` retains
+bare/`0x` native-address lookup as an explicit convenience but returns the
+canonical Demos DID, so aliases never leak into a `CciRecord` or reputation key.
+Non-intrinsic writer identities require
+`AgentConfig.resolveIdentitySigningPublicKey` and are bound to the connected
+adapter's actual key before signing.
+
 ## Public API
 
 ```ts
@@ -263,6 +283,22 @@ durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
 additionally requires an application-owned durable journal or equivalent rail
 record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
+When the rail is selected through `settleFromRail`, supply these dependencies
+under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
+`settlementStore`, and `reconcile`. The bridge adds the exact
+`(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
+amount to every prepared-transfer record, allowing the journal and durable
+settlement log to authenticate the same PC-7 effect. `reconcile` receives that
+`PayDemSettlementRecoveryContext` and must return either an exact
+`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
+when authoritative observation proves no transfer for that tuple landed. A
+non-final observation must throw. Cached durable success is reauthenticated
+after every process restart before reuse; missing or contradictory recovery
+fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
+the two values must match rather than silently defaulting or dropping the
+configured discriminator. The compatibility defaults remain process-local and
+must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
@@ -441,6 +477,7 @@ used without pulling in `demosdk`:
 | Import | Needs `demosdk` | Use for |
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
+| `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
@@ -448,6 +485,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
+| `@kynesyslabs/dacs/identity` | no | CCI parsing + canonical Demos agent ClaimReference helpers |
 
 The commerce coordinator is an explicit production x402 profile, not a generic
 `pay-*` dispatcher. It binds the supported Standard revision plus the verified
@@ -457,9 +495,15 @@ seller operations, and uses durable cursor/claim/ack outboxes. See
 for the store, authentication, reconciliation and terminal-failure contracts.
 
 The Demos adapter and live rail clients are optional peers: install
-`@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus
-`viem` for the corresponding live rails. Pure artifact, verifier, canonical,
-and injected rail-core consumers do not install those integration trees.
+`@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,
+`@x402/fetch`, plus `viem` for the corresponding live rails. Pure artifact,
+verifier, canonical, and injected rail-core consumers do not install those
+integration trees. CI installs the packed tarball in an external strict
+NodeNext TypeScript project twice: once with every optional peer omitted, and
+again with the live peers present. Both passes keep `skipLibCheck` disabled.
+The SDK-owned `DemosRawClient` boundary prevents demosdk's internal declaration
+graph from leaking into consumers; applications can explicitly narrow the
+unstable `raw` escape hatch when they intentionally depend on demosdk types.
 
 ## Package artifacts
 

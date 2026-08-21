@@ -50,6 +50,24 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     if (r.status === "verified") expect(r.record).toEqual(RECORD);
   });
 
+  test("preserves the catalog anchor kind through dereference", async () => {
+    let observed: readonly [string, string | undefined] | undefined;
+    const index = createInMemoryBindingIndex([
+      binding({ anchorKind: "ipfs", nativeAddress: "same-locator" }),
+    ]);
+    const result = await resolveAndRead(index, LOGICAL, SELLER, {
+      read: async (nativeAddress, anchorKind) => {
+        observed = [nativeAddress, anchorKind];
+        return RECORD;
+      },
+      contentHashOf,
+      verifySignature: () => true,
+    });
+
+    expect(result.status).toBe("verified");
+    expect(observed).toEqual(["same-locator", "ipfs"]);
+  });
+
   test("FORGERY DEFENSE: a forged same-owner entry pointing at wrong bytes → hash-mismatch", async () => {
     // The forger copies the real owner (so the binding resolves) but points at
     // attacker-chosen bytes. The content-hash binding catches it — this is why
