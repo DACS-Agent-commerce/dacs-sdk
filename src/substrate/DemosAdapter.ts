@@ -130,13 +130,13 @@ interface QueuedWrite<T> {
  * can narrow the returned values after importing those types explicitly.
  */
 export interface DemosRawClient {
-  connect(rpc: string): Promise<unknown>;
+  connect(rpc: string): Promise<boolean>;
   connectWallet(
     masterSeed: string | Uint8Array,
-    options?: Record<string, unknown>,
-  ): Promise<unknown>;
+    options?: { dual_sign?: boolean },
+  ): Promise<string>;
   getAddress(): string;
-  getAddressNonce(address?: string): Promise<number>;
+  getAddressNonce(address: string): Promise<number>;
   getNetworkInfo(): Promise<
     | {
         forks?: {
@@ -157,8 +157,8 @@ export interface DemosRawClient {
     | undefined
   >;
   getBlockByNumber(blockNumber: number): Promise<unknown>;
-  getTxByHash(txHash: string): Promise<unknown>;
-  nodeCall(...args: unknown[]): Promise<unknown>;
+  getTxByHash(txHash?: string): Promise<unknown>;
+  nodeCall(message: unknown, args?: Record<string, unknown>): Promise<unknown>;
   broadcastAndWait(...args: unknown[]): Promise<unknown>;
   // demosdk namespaces are intentionally open-ended. `any` is confined to
   // this explicitly unstable escape hatch so the stable DACS API remains
@@ -169,8 +169,6 @@ export interface DemosRawClient {
     sign(...args: any[]): any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     read(...args: any[]): any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    [name: string]: any;
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tx: {
@@ -178,10 +176,7 @@ export interface DemosRawClient {
     confirm(...args: any[]): any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     broadcast(...args: any[]): any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    [name: string]: any;
   };
-  [name: string]: unknown;
 }
 
 type BroadcastObservation =
@@ -756,7 +751,7 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /** Underlying demosdk instance through a peer-independent escape-hatch type. */
   get raw(): DemosRawClient {
-    return this.demos as unknown as DemosRawClient;
+    return this.demos;
   }
 
   /**
