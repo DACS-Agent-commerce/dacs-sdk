@@ -442,7 +442,7 @@ used without pulling in `demosdk`:
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, plus evm-erc20 settlement |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
@@ -455,6 +455,13 @@ registry/rail/network and seller-orchestrator topology, separates buyer and
 seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
 for the store, authentication, reconciliation and terminal-failure contracts.
+
+Sellers use `createX402Paywall` as the framework-neutral HTTP protocol adapter
+and compose it with the authenticated seller spine. It settles or reconciles
+the retained payer authorization before durable fulfilment, while PC-7 payment-
+evidence anchoring catches up independently. See
+[the seller x402 paywall guide](./docs/x402-seller-paywall.md) for the exact
+ordering, recovery, and post-settlement failure contract.
 
 The Demos adapter and live rail clients are optional peers: install
 `@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus
