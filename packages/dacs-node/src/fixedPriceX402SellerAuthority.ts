@@ -9,6 +9,9 @@ import {
   type AuthenticatedRailDefinition,
   type CommitmentSignatureVerifier,
   type FinalityCommitmentProvider,
+  type SellerFulfilmentAgreement,
+  type SellerFulfilmentListing,
+  type SellerFulfilmentResolution,
   type SellerListingAtCommitResolution,
   type SellerPaymentIntakeDeps,
   type SellerSupportedRailDefinition,
@@ -74,6 +77,12 @@ export interface DacsFixedPriceX402SellerAuthorityV1
     paymentPhaseIndex: number;
     httpResource: string;
   }>>;
+  resolveFulfilmentAgreement(
+    ref: string,
+  ): Promise<SellerFulfilmentResolution<SellerFulfilmentAgreement>>;
+  resolveFulfilmentListing(
+    ref: Readonly<ListingRef>,
+  ): Promise<SellerFulfilmentResolution<SellerFulfilmentListing>>;
   resolveOrderScope: DacsSellerX402RuntimeOptionsV1["resolveOrderScope"];
   authorizePaymentComplete:
     DacsSellerX402RuntimeOptionsV1["authorizePaymentComplete"];
@@ -160,6 +169,8 @@ interface SellerStateV1 {
   scope: Readonly<X402SellerCommittedSessionScope>;
   agreement: Readonly<Record<string, unknown>>;
   listingResolution: Readonly<SellerListingAtCommitResolution>;
+  fulfilmentAgreement: Readonly<SellerFulfilmentAgreement>;
+  fulfilmentListing: Readonly<SellerFulfilmentListing>;
 }
 
 async function loadOrder(
@@ -452,6 +463,44 @@ async function authenticateState(
       eip712: copy(options.tokenDomain),
     },
   };
+  const fulfilmentAgreement: SellerFulfilmentAgreement = {
+    artifactKind: "payee-bound",
+    ref: scope.agreementRef,
+    contentHash: scope.agreementHash,
+    jobId: order.jobId,
+    listingPin: copy(listingRef),
+    buyer: {
+      primaryClaim: order.buyer,
+      bundleHash: buyer.bundleHash,
+      vetRecordRef: copy(buyer.vetRecordRef),
+    },
+    seller: {
+      primaryClaim: order.seller,
+      bundleHash: seller.bundleHash,
+      vetRecordRef: copy(seller.vetRecordRef),
+    },
+    deliverableRef: {
+      deliverableType: "attested-payload",
+      hash: agreement.terms.deliverable.hash,
+      ...(agreement.terms.deliverable.schemaUrl === undefined
+        ? {} : { schemaUrl: agreement.terms.deliverable.schemaUrl }),
+    },
+    commitment: {
+      status: "finalized",
+      ref: scope.commitmentRef,
+      agreementHash: scope.agreementHash,
+      recordContentHash: scope.commitmentContentHash,
+      finalizedAt: scope.commitmentFinalizedAt,
+      signer: order.seller,
+    },
+  };
+  const fulfilmentListing: SellerFulfilmentListing = {
+    pin: copy(listingRef),
+    sellerPrimaryClaim: order.seller,
+    buyerRequirement: copy(application.listing.buyerRequirement),
+    pipeline: copy(application.listing.pipeline),
+    deliverable: copy(application.listing.offering.deliverable),
+  };
   return deepFreeze({
     order,
     retained,
@@ -459,6 +508,8 @@ async function authenticateState(
     scope,
     agreement: copy(agreement as unknown as Record<string, unknown>),
     listingResolution,
+    fulfilmentAgreement,
+    fulfilmentListing,
   });
 }
 
@@ -502,6 +553,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
 
   const stateCache = new Map<string, Readonly<SellerStateV1>>();
   const listingAuthorities = new Map<string, Readonly<SellerListingAtCommitResolution>>();
+  const fulfilmentListings = new Map<string, Readonly<SellerFulfilmentListing>>();
   const identityAuthorities = new Map<string, Readonly<{
     role: "buyer" | "seller";
     bundle: Readonly<IdentityBundle>;
@@ -512,6 +564,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
     const priorState = stateCache.get(state.order.jobId);
     const listingKey = canonicalize(state.scope.listingRef);
     const priorListing = listingAuthorities.get(listingKey);
+    const priorFulfilmentListing = fulfilmentListings.get(listingKey);
     const buyerHash = identityBundleHash(state.session.buyerIdentity);
     const sellerHash = identityBundleHash(state.session.sellerIdentity);
     const priorBuyer = identityAuthorities.get(buyerHash);
@@ -519,6 +572,9 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
     if ((priorState !== undefined && canonicalize(priorState) !== canonicalize(state)) ||
         (priorListing !== undefined &&
           canonicalize(priorListing) !== canonicalize(state.listingResolution)) ||
+        (priorFulfilmentListing !== undefined &&
+          canonicalize(priorFulfilmentListing) !==
+            canonicalize(state.fulfilmentListing)) ||
         (priorBuyer !== undefined && (priorBuyer.role !== "buyer" ||
           canonicalize(priorBuyer.bundle) !== canonicalize(state.session.buyerIdentity))) ||
         (priorSeller !== undefined && (priorSeller.role !== "seller" ||
@@ -527,6 +583,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
     }
     stateCache.set(state.order.jobId, state);
     listingAuthorities.set(listingKey, state.listingResolution);
+    fulfilmentListings.set(listingKey, state.fulfilmentListing);
     identityAuthorities.set(buyerHash, Object.freeze({
       role: "buyer",
       bundle: state.session.buyerIdentity,
@@ -555,6 +612,33 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
         paymentPhaseIndex: state.scope.paymentPhaseIndex,
         httpResource: state.scope.httpResource,
       });
+    },
+    async resolveFulfilmentAgreement(ref) {
+      try {
+        const prefix = "dacs3:agreement:";
+        if (typeof ref !== "string" || !ref.startsWith(prefix)) {
+          return { status: "rejected" as const, reason: "agreement-ref-invalid" };
+        }
+        const jobId = ref.slice(prefix.length);
+        const state = await stateForJob(jobId);
+        return state.fulfilmentAgreement.ref === ref
+          ? { status: "verified" as const, value: copy(state.fulfilmentAgreement) }
+          : { status: "rejected" as const, reason: "agreement-ref-mismatch" };
+      } catch {
+        return { status: "indeterminate" as const,
+          reason: "agreement-authority-unavailable" };
+      }
+    },
+    async resolveFulfilmentListing(ref) {
+      try {
+        const found = fulfilmentListings.get(canonicalize(ref));
+        return found === undefined
+          ? { status: "indeterminate" as const,
+              reason: "listing-authority-unavailable" }
+          : { status: "verified" as const, value: copy(found) };
+      } catch {
+        return { status: "rejected" as const, reason: "listing-ref-invalid" };
+      }
     },
     async resolveCommittedSession(input: Readonly<X402PaywallPreSettlementContext>) {
       try {

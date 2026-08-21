@@ -1295,6 +1295,30 @@ describe("fixed-price x402 generated profile policy", () => {
       validation: { disposition: "verified", step: 9 },
       payloadVerificationProducerAdmission: { operation: "produce" },
     });
+    await expect(sellerAuthority.resolveFulfilmentAgreement(
+      `dacs3:agreement:${JOB_ID}`,
+    )).resolves.toMatchObject({
+      status: "verified",
+      value: {
+        artifactKind: "payee-bound",
+        jobId: JOB_ID,
+        listingPin: candidateDraft.listingRef,
+        buyer: { primaryClaim: BUYER },
+        seller: { primaryClaim: SELLER },
+        deliverableRef: { deliverableType: "attested-payload" },
+        commitment: { status: "finalized", signer: SELLER },
+      },
+    });
+    await expect(sellerAuthority.resolveFulfilmentListing(
+      candidateDraft.listingRef,
+    )).resolves.toMatchObject({
+      status: "verified",
+      value: {
+        pin: candidateDraft.listingRef,
+        sellerPrimaryClaim: SELLER,
+        deliverable: { kind: "attested-payload" },
+      },
+    });
     await expect(sellerAuthority.resolveRail({
       ref: candidateDraft.terms.rail,
       railRegistryVersion: 1,
