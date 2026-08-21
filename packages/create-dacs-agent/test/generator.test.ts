@@ -252,6 +252,10 @@ describe("create-dacs-agent", () => {
     expect(compose).toContain("read_only: true");
     expect(compose).toContain("DACS_RUNTIME_UID");
     expect(compose).toContain("no-new-privileges:true");
+    expect(compose).toContain("network_mode: host");
+    expect(compose).toContain("http://127.0.0.1:3101");
+    expect(compose).not.toContain("http://buyer:");
+    expect(compose).not.toContain("http://seller:");
     expect(compose).not.toMatch(/(?:3306|5432|6379):/);
     const environmentExample = await readFile(join(target, ".env.example"), "utf8");
     const expectedRuntimeUid = typeof process.getuid === "function" && process.getuid() > 0
@@ -275,6 +279,8 @@ describe("create-dacs-agent", () => {
     expect(combined).not.toContain("../../src/");
     expect(JSON.stringify(packageSource)).not.toContain("file:");
     expect(combined).toContain("reviewed-live-adapter-not-configured");
+    expect(combined).toContain("createDacsLiveRoleRuntimeV1");
+    expect(combined).toContain("post-start-doctor-required");
     expect(combined).toContain("DACS_SETUP_WRITE_CONFIRM=1");
     expect(combined).toContain("DACS_PURCHASE_CONFIRM=1");
     expect(combined).toContain("DACS_DOCTOR_FUNDED_CONFIRM=1");

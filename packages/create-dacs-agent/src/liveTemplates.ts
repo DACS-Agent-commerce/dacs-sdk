@@ -191,6 +191,17 @@ export function actorSecretPaths(role: GeneratedLiveRole): readonly string[] {
   });
 }
 
+export function actorSecretPath(
+  role: "buyer" | "seller",
+  kind: "demos-identity" | "evm-wallet",
+): string | undefined {
+  const name = role === "buyer"
+    ? kind === "demos-identity" ? "DACS_BUYER_DEMOS_SECRET_FILE" : "DACS_BUYER_EVM_SECRET_FILE"
+    : kind === "demos-identity" ? "DACS_SELLER_DEMOS_SECRET_FILE" : "DACS_SELLER_EVM_SECRET_FILE";
+  const value = process.env[name];
+  return value === undefined || value.trim() === "" ? undefined : resolve(value);
+}
+
 export function serviceEndpoint(role: "buyer" | "seller"): string {
   return process.env[role === "buyer" ? "DACS_BUYER_SERVICE_URL" : "DACS_SELLER_SERVICE_URL"] ??
     (role === "buyer" ? "http://127.0.0.1:3101" : "http://127.0.0.1:3102");
@@ -696,26 +707,98 @@ main().catch(() => {
 });
 `;
 
-const SERVICE_SOURCE = `import { loadRoleConfig } from "./config.js";
+const SERVICE_SOURCE = `import {
+  createDacsLiveRoleRuntimeV1,
+  installDacsRoleServiceProcessHooksV1,
+  type DacsNodeEvent,
+} from "@kynesyslabs/dacs-node";
+
+import {
+  actorSecretPath,
+  configuredAuthority,
+  loadRoleConfig,
+  serviceEndpoint,
+} from "./config.js";
+
+function loopbackHostname(hostname: string): boolean {
+  const value = hostname.toLowerCase().replace(/\\.$/, "");
+  return value === "localhost" || value.endsWith(".localhost") || value === "[::1]" ||
+    value === "::1" || /^127(?:\\.\\d{1,3}){3}$/.test(value);
+}
+
+function eventSink(event: Readonly<DacsNodeEvent>): void {
+  process.stderr.write(JSON.stringify({ event: "dacs.live-service.event", ...event }) + "\\n");
+}
 
 async function main(): Promise<void> {
   const role = process.env.DACS_ROLE;
-  if (role !== "buyer" && role !== "seller" && role !== "verifier") {
-    throw new Error("live service requires DACS_ROLE=buyer, seller or verifier");
+  if (role !== "buyer" && role !== "seller") {
+    throw new Error("live service requires an authority-separated buyer or seller role");
   }
-  loadRoleConfig(role);
-  process.stderr.write(JSON.stringify({
-    event: "dacs.live-service.blocked",
+  const peerRole = role === "buyer" ? "seller" : "buyer";
+  const config = loadRoleConfig(role);
+  const authority = configuredAuthority(role);
+  const peerAuthority = configuredAuthority(peerRole);
+  const demosIdentityFilePath = actorSecretPath(role, "demos-identity");
+  if (authority === undefined || peerAuthority === undefined ||
+      demosIdentityFilePath === undefined) {
+    throw new Error("role authority or Demos identity file is unavailable");
+  }
+  const ownEndpoint = new URL(serviceEndpoint(role));
+  const peerEndpoint = new URL("/dacs-transport/v1/messages", serviceEndpoint(peerRole));
+  if (ownEndpoint.protocol !== "http:" || !loopbackHostname(ownEndpoint.hostname) ||
+      peerEndpoint.protocol !== "http:" || !loopbackHostname(peerEndpoint.hostname) ||
+      ownEndpoint.pathname !== "/" || ownEndpoint.search !== "" || ownEndpoint.hash !== "") {
+    throw new Error("generated v1 role transport must remain on its loopback HTTP hop");
+  }
+  const port = Number(ownEndpoint.port);
+  if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
+    throw new Error("role service port is invalid");
+  }
+
+  const runtime = await createDacsLiveRoleRuntimeV1({
+    config,
     role,
-    reasonCode: "reviewed-live-adapter-not-configured",
-  }) + "\\n");
-  process.exitCode = 5;
+    authority,
+    peerAuthority,
+    peerEndpoint: peerEndpoint.toString(),
+    workerId: role + "-" + String(process.pid),
+    demosIdentityFilePath,
+    // Commerce operations remain fail-closed until setup/buy has resolved the
+    // exact Listing, rail authority and role-owned SDK operation graph.
+    createOperations: () => Object.freeze({}),
+    validatePayload: () => Object.freeze({
+      status: "invalid" as const,
+      reasonCode: "commerce-operation-not-configured",
+    }),
+    handleMessage: () => Object.freeze({
+      disposition: "rejected" as const,
+      reasonCode: "commerce-operation-not-configured",
+    }),
+    events: { emit: eventSink },
+    server: { hostname: ownEndpoint.hostname, port },
+  });
+  const hooks = installDacsRoleServiceProcessHooksV1(runtime);
+  try {
+    await runtime.start();
+    process.stdout.write(JSON.stringify({
+      event: "dacs.live-service.started",
+      role,
+      endpoint: runtime.service.endpoint,
+      readiness: "post-start-doctor-required",
+    }) + "\\n");
+    const result = await hooks.waitForShutdown();
+    if (result.status === "failed") process.exitCode = 1;
+  } finally {
+    hooks.dispose();
+    await runtime.stop();
+  }
 }
 
 main().catch(() => {
   process.stderr.write(JSON.stringify({
     event: "dacs.live-service.failed",
-    reasonCode: "configuration-or-adapter-invalid",
+    reasonCode: "role-runtime-unavailable",
   }) + "\\n");
   process.exitCode = 1;
 });
@@ -831,6 +914,9 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
 x-dacs-role: &dacs-role
   build: .
   user: "\${DACS_RUNTIME_UID:?set DACS_RUNTIME_UID}:\${DACS_RUNTIME_GID:?set DACS_RUNTIME_GID}"
+  # V1 keeps the inter-role HTTP hop on the VPS loopback interface. Public
+  # traffic terminates TLS at a separately managed local reverse proxy.
+  network_mode: host
   read_only: true
   restart: unless-stopped
   init: true
@@ -862,15 +948,12 @@ services:
       DACS_BUYER_DATA_DIRECTORY: /var/lib/dacs
       DACS_BUYER_DEMOS_SECRET_FILE: /run/secrets/demos-identity
       DACS_BUYER_EVM_SECRET_FILE: /run/secrets/evm-wallet
-      DACS_BUYER_SERVICE_URL: http://buyer:3101
-      DACS_SELLER_SERVICE_URL: http://seller:3102
+      DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
+      DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
     volumes:
       - \${DACS_BUYER_DATA_DIRECTORY:?set DACS_BUYER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_BUYER_DEMOS_SECRET_FILE:?set DACS_BUYER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_BUYER_EVM_SECRET_FILE:?set DACS_BUYER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
-    ports:
-      - 127.0.0.1:3101:3101
-
   seller:
     <<: *dacs-role
     environment:
@@ -880,15 +963,12 @@ services:
       DACS_SELLER_DATA_DIRECTORY: /var/lib/dacs
       DACS_SELLER_DEMOS_SECRET_FILE: /run/secrets/demos-identity
       DACS_SELLER_EVM_SECRET_FILE: /run/secrets/evm-wallet
-      DACS_BUYER_SERVICE_URL: http://buyer:3101
-      DACS_SELLER_SERVICE_URL: http://seller:3102
+      DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
+      DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
     volumes:
       - \${DACS_SELLER_DATA_DIRECTORY:?set DACS_SELLER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_SELLER_DEMOS_SECRET_FILE:?set DACS_SELLER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_SELLER_EVM_SECRET_FILE:?set DACS_SELLER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
-    ports:
-      - 127.0.0.1:3102:3102
-
 `;
 
 function envExample(options: LiveProjectTemplateOptions): string {
@@ -965,9 +1045,11 @@ npm run dacs:down
 \`\`\`
 
 Doctor exit 5 means **blocked**, not failed: no credential, balance, signed rail,
-Listing or reviewed adapter was guessed and no write occurred. Current generated
-live services remain blocked until the reviewed Demos identity/registry and x402
-effect adapters are installed by the lower SDK stack. Never bypass that gate.
+Listing or reviewed adapter was guessed and no write occurred. Buyer and seller
+services open the SDK's role-owned SQLite, Demos identity, authenticated HTTP and
+readiness runtime when their prerequisites exist. Commerce remains blocked until
+the exact Listing, signed rail authority and operation graph pass doctor. Never
+bypass that gate.
 
 Setup requires \`DACS_SETUP_WRITE_CONFIRM=1\`; purchase requires
 \`DACS_PURCHASE_CONFIRM=1\`; funded doctor requires
@@ -980,7 +1062,9 @@ Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
 the reviewed \`better-sqlite3\` native adapter. It uses separate non-root buyer/seller processes, secret mounts and durable
 data bind mounts, read-only root filesystems, bounded resources and no database
-port. \`dacs:down\` retains both data directories; use documented backup
+port. On the clean Linux VPS it uses host networking solely to keep the
+inter-role transport on \`127.0.0.1\`; public traffic requires a separately
+managed HTTPS reverse proxy. \`dacs:down\` retains both data directories; use documented backup
 procedures before any manual data removal.
 `;
 }
