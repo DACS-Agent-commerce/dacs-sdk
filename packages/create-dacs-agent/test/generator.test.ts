@@ -280,7 +280,10 @@ describe("create-dacs-agent", () => {
     expect(combined).not.toContain("git+");
     expect(combined).not.toContain("../../src/");
     expect(JSON.stringify(packageSource)).not.toContain("file:");
-    expect(combined).toContain("reviewed-live-adapter-not-configured");
+    expect(combined).not.toContain("reviewed-live-adapter-not-configured");
+    expect(combined).toContain("resolveDacsX402ExistingListingV1");
+    expect(combined).toContain("readDacsPublicJsonV1");
+    expect(combined).toContain("inspectDacsX402PurchaseCostV1");
     expect(combined).toContain("inspectDacsDemosBalanceHeadroomV1");
     expect(combined).toContain("inspectDacsX402AssetBalanceV1");
     expect(combined).toContain("inspectDacsX402GasBalanceV1");

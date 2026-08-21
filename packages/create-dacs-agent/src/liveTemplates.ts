@@ -262,8 +262,11 @@ import {
   inspectDacsNodePackageIntegrityV1,
   inspectDacsX402AssetBalanceV1,
   inspectDacsX402GasBalanceV1,
+  inspectDacsX402PurchaseCostV1,
+  resolveDacsX402ExistingListingV1,
   inspectDacsX402ListingDraftV1,
   loadDacsSecretV1,
+  readDacsPublicJsonV1,
   runDacsRoleTransportDiagnosticV1,
   runDacsLiveDoctorV1,
   type DacsDemosActorRuntimeV1,
@@ -310,6 +313,12 @@ interface DoctorActor {
 }
 
 type DoctorActors = Readonly<Record<"buyer" | "seller", Readonly<DoctorActor>>>;
+
+export interface GeneratedDoctorOperationV1 {
+  listingRef: string;
+  maximumServiceAmount: string;
+  maximumNetworkFeeEth: string;
+}
 
 function pass(facts?: Readonly<Record<string, string | number | boolean | null>>) {
   return Object.freeze({ status: "pass" as const, ...(facts === undefined ? {} : { facts }) });
@@ -541,8 +550,10 @@ async function dockerRuntime(
   });
 }
 
-function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
-  const unavailable = () => blocked("reviewed-live-adapter-not-configured");
+function baseProbes(
+  actors: DoctorActors | undefined,
+  operation: Readonly<GeneratedDoctorOperationV1> | undefined,
+): DacsLiveDoctorProbesV1 {
   const actorUnavailable = () => blocked("role-demos-runtime-unavailable");
   const stewardAuthority = configuredRailStewardAuthority();
   const stewardPublicKey = stewardAuthority === undefined
@@ -592,7 +603,7 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
           asset: rail.asset.contract,
           symbol: rail.asset.symbol,
           decimals: rail.asset.decimals,
-          minimumAmount: buyer.limits.maxServiceAmount.amount,
+          minimumAmount: operation?.maximumServiceAmount ?? buyer.limits.maxServiceAmount.amount,
         }),
         inspectDacsX402GasBalanceV1({
           client,
@@ -607,6 +618,33 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
       return Object.freeze({ asset, gas });
     })();
     return fundingTask;
+  };
+  let listingTask: ReturnType<typeof resolveDacsX402ExistingListingV1> | undefined;
+  const selectedListing = () => {
+    if (actors === undefined || operation === undefined) {
+      throw new Error("existing Listing operation context unavailable");
+    }
+    const sellerEndpoint = loadRoleConfig("seller").publicBaseUrl;
+    if (sellerEndpoint === undefined) throw new Error("seller public endpoint unavailable");
+    listingTask ??= (async () => resolveDacsX402ExistingListingV1({
+      listingRef: operation.listingRef,
+      sellerAuthority: actors.seller.authority,
+      sellerPublicKey: actors.seller.runtime.publicKey,
+      sellerPublicEndpoint: sellerEndpoint,
+      sellerPayee: actors.seller.evmIdentity.address,
+      network: loadRoleConfig("buyer").rail.requestedNetwork as \`eip155:\${number}\`,
+      rail: await selectedRail(),
+      maximumServiceAmount: operation.maximumServiceAmount,
+      now: Date.now(),
+      readAnchor: (locator) => actors.buyer.runtime.adapter.readAnchor(locator),
+      async authenticateAnchor(input) {
+        const receipt = await actors.buyer.runtime.adapter.resolveDemosAnchorReceipt(input);
+        return receipt !== null &&
+          await actors.buyer.runtime.adapter.verifyDemosAnchorReceipt(receipt) === true;
+      },
+      readJson: (url) => readDacsPublicJsonV1(url, { timeoutMs: 5_000, maxBytes: 1_048_576 }),
+    }))();
+    return listingTask;
   };
   return Object.freeze({
     "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
@@ -694,7 +732,10 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
             buyer: buyer.limits.maxDemosNetworkFeeDem,
             seller: seller.limits.maxDemosNetworkFeeDem,
           };
-      return inspectDacsDemosBalanceHeadroomV1({ actors, minimumDem });
+      return inspectDacsDemosBalanceHeadroomV1({
+        actors: { buyer: actors.buyer.runtime, seller: actors.seller.runtime },
+        minimumDem,
+      });
     },
     "demos.wallet-identity": actors === undefined ? actorUnavailable : () =>
       actors.buyer.runtime.authority === actors.buyer.authority &&
@@ -721,7 +762,15 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
         });
       } catch { return fail("listing-candidate-read-or-authority-invalid"); }
     },
-    "demos.listing-existing": unavailable,
+    "demos.listing-existing": actors === undefined ? actorUnavailable
+      : operation === undefined ? () => blocked("listing-operation-context-missing")
+      : async () => {
+          try {
+            const result = await selectedListing();
+            return result.status === "verified"
+              ? pass(result.admission.facts) : result;
+          } catch { return blocked("listing-existing-resolution-unavailable"); }
+        },
     "demos.engagement-endpoint-shape": () => {
       try { new URL(serviceEndpoint("buyer")); new URL(serviceEndpoint("seller")); return pass(); }
       catch { return fail("engagement-endpoint-invalid"); }
@@ -801,13 +850,27 @@ function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
       asset: loadRoleConfig("buyer").limits.maxServiceAmount.asset,
       amount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
     }),
-    "x402.cost-estimate": unavailable,
+    "x402.cost-estimate": actors === undefined ? actorUnavailable
+      : operation === undefined ? () => blocked("purchase-cost-context-missing")
+      : async () => {
+          try {
+            const result = await selectedListing();
+            return result.status === "verified"
+              ? inspectDacsX402PurchaseCostV1({
+                  admission: result.admission,
+                  maximumServiceAmount: operation.maximumServiceAmount,
+                  maximumNetworkFeeEth: operation.maximumNetworkFeeEth,
+                })
+              : result;
+          } catch { return blocked("x402-cost-estimate-unavailable"); }
+        },
   });
 }
 
 export async function runGeneratedDoctor(
   phase: DacsLiveDoctorPhaseV1,
   scope: DacsLiveDoctorScopeV1,
+  operation?: Readonly<GeneratedDoctorOperationV1>,
 ): Promise<Readonly<DacsLiveDoctorReportV1>> {
   const actors = await openDoctorActors(phase);
   try {
@@ -840,7 +903,7 @@ export async function runGeneratedDoctor(
         },
       }),
     }) : {};
-    const probes = Object.freeze({ ...baseProbes(actors), ...service });
+    const probes = Object.freeze({ ...baseProbes(actors, operation), ...service });
     const doctor = {
       sdkVersion: VERSION,
       standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
@@ -1103,7 +1166,15 @@ async function guardedUnavailable(scope: "setup" | "buy", args: readonly string[
   const confirmation = process.env[confirmationName];
   if (confirmation === undefined) return 0;
   if (confirmation !== "1") throw new Error("write confirmation is malformed");
-  const report = await runGeneratedDoctor(scope === "buy" ? "post-start" : "pre-start", scope);
+  const report = await runGeneratedDoctor(
+    scope === "buy" ? "post-start" : "pre-start",
+    scope,
+    plan.kind === "purchase" ? {
+      listingRef: plan.listingRef,
+      maximumServiceAmount: plan.maximumServiceAmount,
+      maximumNetworkFeeEth: plan.maximumNetworkFeeEth,
+    } : undefined,
+  );
   process.stdout.write(formatDacsLiveDoctorTextV1(report));
   if (report.exitCode !== 0) return report.exitCode;
   process.stderr.write("reviewed live effect adapter is not configured; no write was attempted\\n");

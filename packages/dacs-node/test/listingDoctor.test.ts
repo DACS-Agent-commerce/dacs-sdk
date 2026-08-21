@@ -9,11 +9,17 @@ vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
   getAuthenticatedRailProvenance: () => authenticated.value ? { registryVersion: 1 } : null,
 }));
 
-import { contentHash } from "@kynesyslabs/dacs/canonical";
+import { ARTIFACT_SEPARATORS, signComponentArtifact } from "@kynesyslabs/dacs/artifacts";
+import { canonicalize, contentHash, listingAddress, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { rawPublicKey, signedBytes } from "@kynesyslabs/dacs/crypto";
 import { demosAgentClaimRef, identityBundleHash } from "@kynesyslabs/dacs/identity";
 
-import { inspectDacsX402ListingDraftV1 } from "../src/listingDoctor.js";
+import {
+  inspectDacsX402ExistingListingV1,
+  inspectDacsX402ListingDraftV1,
+  inspectDacsX402PurchaseCostV1,
+  resolveDacsX402ExistingListingV1,
+} from "../src/listingDoctor.js";
 
 const PAYEE = `0x${"2".repeat(40)}`;
 const ASSET = `0x${"3".repeat(40)}`;
@@ -84,6 +90,7 @@ function fixture() {
     signature: { algorithm: "ed25519", signer: authority, value: "A".repeat(86) },
   };
   return {
+    keys,
     draft,
     options: {
       draft,
@@ -140,5 +147,140 @@ describe("x402 Listing candidate doctor", () => {
     const value = fixture();
     expect(inspectDacsX402ListingDraftV1({ ...value.options, now: 3_000 } as never))
       .toEqual({ status: "blocked", reasonCode: "listing-candidate-not-live" });
+  });
+});
+
+describe("existing x402 Listing doctor", () => {
+  beforeEach(() => { authenticated.value = true; });
+
+  async function publishedFixture() {
+    const value = fixture();
+    const listing = await signComponentArtifact(
+      value.draft,
+      ARTIFACT_SEPARATORS.Listing,
+      {
+        algorithm: "ed25519",
+        signer: value.options.sellerAuthority,
+        sign: (bytes) => sign(null, bytes, value.keys.privateKey),
+      },
+    );
+    const listingRef = `stor-${"4".repeat(40)}`;
+    const listingContentHash = contentHash(listing as unknown as Record<string, unknown>);
+    const logicalAddress = listingAddress(
+      listing.seller.identity.presentedBy,
+      listing.listingId,
+      listing.listingVersion,
+    );
+    const index = {
+      indexVersion: "1",
+      generatedAt: 1_000,
+      seller: value.options.sellerAuthority,
+      listings: [{
+        listingId: listing.listingId,
+        version: listing.listingVersion,
+        contentHash: listingContentHash,
+        anchor: { kind: "storage-program", locator: listingRef },
+        summary: {
+          title: listing.offering.title,
+          category: listing.offering.category,
+          tags: listing.offering.tags,
+          priceHint: listing.pricing.kind === "fixed" ? listing.pricing.price.amount : undefined,
+        },
+        status: "active",
+      }],
+    };
+    const card = {
+      dacs: {
+        dacsVersion: "1",
+        listings: {
+          indexUrl: "https://seller.example/.well-known/dacs/listings.json",
+          indexHash: `sha256-${sha256Hex(canonicalize(index))}`,
+        },
+      },
+    };
+    const options = {
+      ...value.options,
+      listingRef,
+      now: 1_000,
+      readAnchor: vi.fn(async (locator: string) => locator === listingRef
+        ? listing as unknown as Record<string, unknown> : null),
+      authenticateAnchor: vi.fn(async (input: { logicalAddress: string }) =>
+        input.logicalAddress === logicalAddress),
+      readJson: vi.fn(async (url: string) => url.endsWith("agent.json") ? card : index),
+    };
+    return { ...value, listing, listingRef, listingContentHash, logicalAddress, index, card, options };
+  }
+
+  it("admits an exact receipt-authenticated Listing through its integrity-bound active index", async () => {
+    const value = await publishedFixture();
+    const result = await resolveDacsX402ExistingListingV1(value.options as never);
+    expect(result).toMatchObject({
+      status: "verified",
+      admission: {
+        listingRef: value.listingRef,
+        logicalAddress: value.logicalAddress,
+        listingContentHash: value.listingContentHash,
+        facts: {
+          amount: "0.5",
+          asset: "USDC",
+          network: "eip155:84532",
+          payee: PAYEE,
+        },
+      },
+    });
+    await expect(inspectDacsX402ExistingListingV1(value.options as never)).resolves
+      .toMatchObject({ status: "pass", facts: { listingRef: value.listingRef } });
+    if (result.status !== "verified") throw new Error("fixture was not admitted");
+    expect(inspectDacsX402PurchaseCostV1({
+      admission: result.admission,
+      maximumServiceAmount: "0.75",
+      maximumNetworkFeeEth: "0.001",
+    })).toEqual({
+      status: "pass",
+      facts: {
+        serviceAsset: "USDC",
+        estimatedServiceAmount: "0.5",
+        maximumServiceAmount: "0.75",
+        estimatedBuyerNetworkFeeEth: "0",
+        networkFeeSafetyMarginEth: "0",
+        maximumNetworkFeeEth: "0.001",
+        facilitatorBroadcast: true,
+        demosFeesReportedSeparately: true,
+      },
+    });
+    expect(inspectDacsX402PurchaseCostV1({
+      admission: result.admission,
+      maximumServiceAmount: "0.25",
+      maximumNetworkFeeEth: "0",
+    })).toEqual({
+      status: "fail",
+      reasonCode: "x402-service-cost-ceiling-exceeded",
+    });
+  });
+
+  it("fails a false Demos receipt and blocks an integrity-mismatched discovery index", async () => {
+    const receipt = await publishedFixture();
+    receipt.options.authenticateAnchor.mockResolvedValue(false);
+    await expect(resolveDacsX402ExistingListingV1(receipt.options as never)).resolves.toEqual({
+      status: "fail",
+      reasonCode: "listing-anchor-authentication-invalid",
+    });
+
+    const discovery = await publishedFixture();
+    discovery.card.dacs.listings.indexHash = `sha256-${"0".repeat(64)}`;
+    await expect(resolveDacsX402ExistingListingV1(discovery.options as never)).resolves.toEqual({
+      status: "blocked",
+      reasonCode: "listing-registry-resolution-unavailable",
+    });
+  });
+
+  it("rejects an exact reference whose authenticated index binds another native anchor", async () => {
+    const value = await publishedFixture();
+    value.index.listings[0]!.anchor.locator = `stor-${"5".repeat(40)}`;
+    value.card.dacs.listings.indexHash = `sha256-${sha256Hex(canonicalize(value.index))}`;
+    await expect(resolveDacsX402ExistingListingV1(value.options as never)).resolves.toEqual({
+      status: "blocked",
+      reasonCode: "listing-registry-resolution-unavailable",
+    });
   });
 });
