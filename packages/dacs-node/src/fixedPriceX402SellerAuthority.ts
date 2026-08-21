@@ -24,7 +24,7 @@ import {
   type IdentityBundle,
   type ListingRef,
 } from "@kynesyslabs/dacs/artifacts";
-import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { canonicalize, contentHash } from "@kynesyslabs/dacs/canonical";
 import type {
   FixedPriceX402OrderRecord,
   FixedPriceX402TrackOperationInput,
@@ -210,9 +210,18 @@ function exactPhases(application: ReturnType<
   const payment = application.listing.pipeline
     .map((phase, index) => ({ phase, index }))
     .filter(({ phase }) => phase.kind === "pay-x402");
+  const deliverable = application.listing.offering.deliverable;
+  const expectedDeliveryPhase = deliverable.kind === "storage-program"
+    ? "deliver-storage-program"
+    : deliverable.kind === "entitlement"
+      ? "deliver-entitlement"
+      : deliverable.kind === "attested-payload"
+        ? "deliver-attested-payload"
+        : undefined;
   if (payment.length !== 1 || payment[0]!.index < 0 ||
+      expectedDeliveryPhase === undefined ||
       application.listing.pipeline[payment[0]!.index + 1]?.kind !==
-        "deliver-attested-payload") {
+        expectedDeliveryPhase) {
     throw new DacsFixedPriceX402SellerAuthorityError("seller-authority-phases-invalid");
   }
   const paymentPhaseIndex = payment[0]!.index;
@@ -405,11 +414,17 @@ async function authenticateState(
     throw new DacsFixedPriceX402SellerAuthorityError("seller-authority-listing-invalid");
   }
   const deliverable = application.listing.offering.deliverable;
-  if (deliverable.kind !== "attested-payload" || !deliverable.verificationMethod) {
-    throw new DacsFixedPriceX402SellerAuthorityError("seller-authority-deliverable-invalid");
+  // The first generated live profile owns one fully implemented delivery
+  // contract: public Demos Storage Program publication. Fail every other mode
+  // before settlement. In particular, never manufacture an attested-payload
+  // producer/reader capability from the Listing's self-assertion.
+  if (deliverable.kind !== "storage-program" ||
+      (deliverable.accessModel !== undefined && deliverable.accessModel !== "public") ||
+      deliverable.schemaUrl !== undefined) {
+    throw new DacsFixedPriceX402SellerAuthorityError(
+      "seller-authority-deliverable-unconfigured",
+    );
   }
-  const verificationMethodHash = sha256Hex(canonicalize(deliverable.verificationMethod));
-  const deliverableSpecHash = sha256Hex(canonicalize(deliverable));
   const listingResolution: SellerListingAtCommitResolution = {
     rawListing: copy(application.listing as unknown as Record<string, unknown>),
     validation: {
@@ -418,23 +433,6 @@ async function authenticateState(
       reason: "seller-session-admission-verified",
       listing: copy(application.listing),
       listingContentHash: application.listingContentHash,
-      payloadVerificationCapability: {
-        operation: "verify",
-        disposition: "supported",
-        reason: "generated-profile-attested-payload",
-        verificationMethodKind: deliverable.verificationMethod.kind,
-        verificationMethodHash,
-        deliverableSpecHash,
-      },
-    },
-    payloadVerificationProducerAdmission: {
-      operation: "produce",
-      disposition: "supported",
-      listingRef,
-      verificationMethodKind: deliverable.verificationMethod.kind,
-      verificationMethodHash,
-      deliverableSpecHash,
-      admittedAt: admission.admittedAt,
     },
   };
   const scope: X402SellerCommittedSessionScope = {
@@ -480,7 +478,7 @@ async function authenticateState(
       vetRecordRef: copy(seller.vetRecordRef),
     },
     deliverableRef: {
-      deliverableType: "attested-payload",
+      deliverableType: deliverable.kind,
       hash: agreement.terms.deliverable.hash,
       ...(agreement.terms.deliverable.schemaUrl === undefined
         ? {} : { schemaUrl: agreement.terms.deliverable.schemaUrl }),

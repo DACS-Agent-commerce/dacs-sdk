@@ -150,9 +150,8 @@ function listing(): Listing {
       category: "data.test",
       tags: ["test"],
       deliverable: {
-        kind: "attested-payload",
-        payloadFormat: "application/json",
-        verificationMethod: { kind: "self-signed" },
+        kind: "storage-program",
+        accessModel: "public",
       },
     },
     buyerRequirement: { requirementVersion: "1", required: [] },
@@ -160,7 +159,7 @@ function listing(): Listing {
       { kind: "negotiate-fixed-price" },
       { kind: "commit-payee-bound-agreement" },
       { kind: "pay-x402", parameters: { rail: "x402:test" } },
-      { kind: "deliver-attested-payload" },
+      { kind: "deliver-storage-program" },
     ],
     pricing: { kind: "fixed", price: { amount: "1", currency: "USDC" } },
     acceptedRails: [{
@@ -1293,7 +1292,6 @@ describe("fixed-price x402 generated profile policy", () => {
       candidateDraft.listingRef,
     )).resolves.toMatchObject({
       validation: { disposition: "verified", step: 9 },
-      payloadVerificationProducerAdmission: { operation: "produce" },
     });
     await expect(sellerAuthority.resolveFulfilmentAgreement(
       `dacs3:agreement:${JOB_ID}`,
@@ -1305,7 +1303,7 @@ describe("fixed-price x402 generated profile policy", () => {
         listingPin: candidateDraft.listingRef,
         buyer: { primaryClaim: BUYER },
         seller: { primaryClaim: SELLER },
-        deliverableRef: { deliverableType: "attested-payload" },
+        deliverableRef: { deliverableType: "storage-program" },
         commitment: { status: "finalized", signer: SELLER },
       },
     });
@@ -1316,7 +1314,7 @@ describe("fixed-price x402 generated profile policy", () => {
       value: {
         pin: candidateDraft.listingRef,
         sellerPrimaryClaim: SELLER,
-        deliverable: { kind: "attested-payload" },
+        deliverable: { kind: "storage-program" },
       },
     });
     await expect(sellerAuthority.resolveRail({

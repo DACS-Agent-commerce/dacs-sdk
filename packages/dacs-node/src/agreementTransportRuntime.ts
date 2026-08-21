@@ -431,6 +431,32 @@ function loadProposalBinding(
   return binding;
 }
 
+/**
+ * Load the exact seller Vet production retained with the authenticated
+ * agreement proposal. Later fulfilment/audit workers use this read-only view;
+ * they must not need to recreate an agreement-track fence merely to recover
+ * evidence already durably bound to the order.
+ */
+export function loadDacsSellerAgreementVetProductionForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPriceX402OrderRecord>,
+): Readonly<DacsAgreementSellerVetProductionV1> {
+  if (context.role !== "seller" || order.role !== "seller" ||
+      !sameCanonicalClaimIdentity(order.seller, context.authority) ||
+      !sameCanonicalClaimIdentity(order.buyer, context.peerAuthority)) {
+    throw new DacsAgreementTransportRuntimeError("agreement-proposal-order-mismatch");
+  }
+  const binding = loadProposalBinding(context, order);
+  if (binding === undefined) {
+    throw new DacsAgreementTransportRuntimeError("agreement-proposal-pending");
+  }
+  return Object.freeze({
+    record: structuredClone(binding.payload.sellerVetRecord),
+    recordRef: structuredClone(binding.payload.sellerVetRef),
+    anchorReceipt: structuredClone(binding.payload.sellerVetReceipt),
+  });
+}
+
 function loadResponseBinding(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   order: Readonly<FixedPriceX402OrderRecord>,
@@ -734,15 +760,10 @@ export function createDacsSellerAgreementTransportRuntimeV1(
         throw new DacsAgreementTransportRuntimeError("agreement-proposal-track-mismatch");
       }
       const order = await loadOrder(context, operation.order.jobId);
-      const binding = order === undefined ? undefined : loadProposalBinding(context, order);
-      if (binding === undefined) {
+      if (order === undefined) {
         throw new DacsAgreementTransportRuntimeError("agreement-proposal-pending");
       }
-      return Object.freeze({
-        record: structuredClone(binding.payload.sellerVetRecord),
-        recordRef: structuredClone(binding.payload.sellerVetRef),
-        anchorReceipt: structuredClone(binding.payload.sellerVetReceipt),
-      });
+      return loadDacsSellerAgreementVetProductionForOrderV1(context, order);
     },
     async handleMessage(
       authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,

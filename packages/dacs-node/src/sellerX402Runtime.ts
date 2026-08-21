@@ -9,6 +9,7 @@ import {
   type DurableSellerFulfilmentDeps,
   type FixedPriceX402ErrorClass,
   type FixedPriceX402FaultedParty,
+  type FixedPriceX402OrderRecord,
   type FixedPriceX402TrackOperation,
   type FixedPriceX402TrackOperationInput,
   type SellerFulfilmentDurability,
@@ -147,6 +148,18 @@ function plainObject(value: unknown): value is Readonly<Record<string, unknown>>
   }
 }
 
+function immutableCanonicalCopy<T>(value: T): Readonly<T> {
+  const copy = JSON.parse(canonicalize(value)) as T;
+  const freeze = (candidate: unknown): void => {
+    if (candidate !== null && typeof candidate === "object" && !Object.isFrozen(candidate)) {
+      for (const child of Object.values(candidate as Record<string, unknown>)) freeze(child);
+      Object.freeze(candidate);
+    }
+  };
+  freeze(copy);
+  return copy;
+}
+
 function safePhase(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
@@ -245,6 +258,42 @@ function captureDeliveryBinding(value: unknown): Readonly<DacsSellerDeliveryBind
     throw new DacsSellerX402RuntimeError("seller-delivery-binding-corrupt");
   }
   return value as unknown as Readonly<DacsSellerDeliveryBindingV1>;
+}
+
+/**
+ * Recover the exact bearer authorization retained after authenticated x402
+ * finality. Fulfilment/audit composition uses this read-only order-bound view
+ * rather than reaching into a live paywall instance or accepting HTTP fields.
+ */
+export function loadDacsSellerX402AuthorizationForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPriceX402OrderRecord>,
+  paymentPhaseIndex: number,
+): Readonly<X402SellerPaymentPermitAuthorization> {
+  if (context.role !== "seller" || order.role !== "seller" ||
+      order.seller !== context.authority || order.buyer !== context.peerAuthority ||
+      !safePhase(paymentPhaseIndex)) {
+    throw new DacsSellerX402RuntimeError("seller-x402-authorization-order-mismatch");
+  }
+  const value = context.database.loadEffectInput(
+    "session",
+    authorizationId(order.jobId, paymentPhaseIndex),
+  );
+  if (value === undefined) {
+    throw new DacsSellerX402RuntimeError("seller-x402-authorization-pending");
+  }
+  const binding = captureAuthorizationBinding(value);
+  const session = binding.authorization.sessionAuthorization;
+  if (binding.localBindingHash !== order.localBindingHash ||
+      session.jobId !== order.jobId ||
+      session.paymentPhaseIndex !== paymentPhaseIndex ||
+      binding.settlementKey !== x402PaywallSettlementKey({
+        jobId: order.jobId,
+        phaseIndex: paymentPhaseIndex,
+      })) {
+    throw new DacsSellerX402RuntimeError("seller-x402-authorization-binding-corrupt");
+  }
+  return immutableCanonicalCopy(binding.authorization);
 }
 
 function requestFromAuthorization(
