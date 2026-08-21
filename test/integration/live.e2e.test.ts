@@ -58,7 +58,11 @@ const OS_PER_DEM = 1_000_000_000n;
 // The extra DEM is deliberate live-test headroom, not a general fee estimator.
 const SELLER_MINIMUM_OS = 3n * OS_PER_DEM;
 const BUYER_MINIMUM_OS = 7n * OS_PER_DEM;
-const PAYMENT_AMOUNT = 1_000_000n;
+// A real non-zero settlement is sufficient for this finality gate. Keep the
+// irreversible spend aligned with the Listing's base-unit price and capped at
+// the smallest representable USDC amount.
+const PAYMENT_AMOUNT = 1n;
+const MAX_PAYMENT_AMOUNT = 1n;
 
 const payloadCapability = () => ({ disposition: "supported" as const });
 
@@ -219,6 +223,9 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         throw new Error(
           "set LIVE_E2E_CONFIRM=1 to acknowledge the Demos writes and x402 payment",
         );
+      }
+      if (PAYMENT_AMOUNT <= 0n || PAYMENT_AMOUNT > MAX_PAYMENT_AMOUNT) {
+        throw new Error("live x402 payment exceeds the one-base-unit spend cap");
       }
       if (
         env.PAY_NETWORK === "eip155:8453" &&
