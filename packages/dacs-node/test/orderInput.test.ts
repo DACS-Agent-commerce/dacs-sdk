@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DACS_NODE_LIVE_PROFILE,
   loadDacsLiveOrderInputV1,
+  loadDacsLiveOrderInputForTrackV1,
   putDacsLiveOrderInputV1,
 } from "../src/index.js";
 import {
@@ -120,6 +121,32 @@ describe("durable live order input", () => {
     })).toMatchObject({ status: "existing", effectId: first.effectId });
     expect(loadDacsLiveOrderInputV1({ database: opened, order: order() }))
       .toEqual(first.status === "conflict" ? undefined : first.record);
+    if (first.status !== "conflict") {
+      expect(loadDacsLiveOrderInputForTrackV1({
+        order: {
+          ...first.record.order,
+          storeVersion: 3,
+          revision: 1,
+          role: "buyer",
+          bindingHash: first.record.bindingHash,
+          localBindingHash: first.record.localBindingHash,
+          tracks: {},
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        fence: {
+          role: "buyer",
+          jobId: JOB_ID,
+          bindingHash: first.record.bindingHash,
+          localBindingHash: first.record.localBindingHash,
+          track: "agreement",
+          owner: "worker",
+          generation: 1,
+          idempotencyKey: "agreement-effect",
+          assertCurrent: async () => undefined,
+        },
+      }, opened)).toEqual(first.record);
+    }
   });
 
   it("rejects changed application facts and cross-role databases", async () => {

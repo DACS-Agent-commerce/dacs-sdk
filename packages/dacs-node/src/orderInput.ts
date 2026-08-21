@@ -4,6 +4,7 @@ import {
   fixedPriceX402OrderLocalBindingHash,
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402OrderInput,
+  type FixedPriceX402TrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
 import { isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 
@@ -186,4 +187,47 @@ export function loadDacsLiveOrderInputV1(input: Readonly<{
     throw new DacsLiveOrderInputError("live-order-input-corrupt");
   }
   return Object.freeze(structuredClone(record));
+}
+
+/** Resolve the retained application facts from an already fenced track claim. */
+export function loadDacsLiveOrderInputForTrackV1(
+  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  database: DacsNodeSqliteDatabase,
+): Readonly<DacsLiveOrderInputV1> {
+  if (!plainData(operation) || !plainData(operation.order) ||
+      operation.fence === null || typeof operation.fence !== "object" ||
+      database === null || typeof database !== "object") {
+    throw new TypeError("live order track input is invalid");
+  }
+  const order = operation.order;
+  const fence = operation.fence;
+  if (order.role !== fence.role || order.jobId !== fence.jobId ||
+      order.bindingHash !== fence.bindingHash ||
+      order.localBindingHash !== fence.localBindingHash ||
+      database.metadata.role !== fence.role) {
+    throw new DacsLiveOrderInputError("live-order-track-binding-mismatch");
+  }
+  const id = effectId({
+    role: fence.role,
+    jobId: fence.jobId,
+    localBindingHash: fence.localBindingHash,
+  });
+  const value = database.loadEffectInput("session", id);
+  if (value === undefined) {
+    throw new DacsLiveOrderInputError("live-order-input-missing");
+  }
+  const retained = captureRecord(value);
+  const projected = {
+    jobId: order.jobId,
+    buyer: order.buyer,
+    seller: order.seller,
+    protocol: order.protocol,
+    sdkJobs: order.sdkJobs,
+  };
+  if (retained.bindingHash !== fence.bindingHash ||
+      retained.localBindingHash !== fence.localBindingHash ||
+      canonicalize(retained.order) !== canonicalize(projected)) {
+    throw new DacsLiveOrderInputError("live-order-track-binding-mismatch");
+  }
+  return Object.freeze(structuredClone(retained));
 }
