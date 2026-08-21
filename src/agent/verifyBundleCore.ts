@@ -826,7 +826,9 @@ export async function verifyBundleCore(
       "dacs-4-evidence",
       ev,
       isLegacyMvpAttestationRef(ev)
-        ? isLegacyMvpSettlementEvidence
+        ? (value) =>
+            isLegacyMvpSettlementEvidence(value) ||
+            isSettlementEvidence(value)
         : isSettlementEvidence,
     );
     if (

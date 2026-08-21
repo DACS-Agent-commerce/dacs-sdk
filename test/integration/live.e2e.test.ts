@@ -94,13 +94,18 @@ function requireIdentity(label: string, address: string, did: string) {
   }
 }
 
-async function tokenBalance(address: string): Promise<bigint> {
+function paymentRpc(): string {
   const rpc =
     process.env.PAY_RPC ??
     (env.PAY_NETWORK === "eip155:84532" ? "https://sepolia.base.org" : undefined);
   if (!rpc) {
     throw new Error("PAY_RPC is required to preflight token funds on this network");
   }
+  return rpc;
+}
+
+async function tokenBalance(address: string): Promise<bigint> {
+  const rpc = paymentRpc();
   const client = createPublicClient({ transport: http(rpc) });
   return client.readContract({
     address: env.PAY_TOKEN! as `0x${string}`,
@@ -155,7 +160,11 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         demosWriteJournal: buyerWriteJournal,
         identity: { agentId: env.BUYER_DID! },
       });
-      const rail = await createX402Rail({ evmPrivateKey: env.BUYER_EVM_KEY! });
+      const rail = await createX402Rail({
+        evmPrivateKey: env.BUYER_EVM_KEY!,
+        rpcUrl: paymentRpc(),
+        finalityBlocks: 1,
+      });
 
       const [sellerBalanceOs, buyerBalanceOs, buyerTokenBalance] = await Promise.all([
         balanceInOs(seller),

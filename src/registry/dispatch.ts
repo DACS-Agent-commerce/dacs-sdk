@@ -34,7 +34,7 @@ export interface RailDispatchOptions {
    * should use `payment`; this EVM-shaped projection is not required by DEM.
    */
   paywall?: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
-  /** JSON-RPC URL — required by the direct-transfer (evm-erc20) rail. */
+  /** Trusted EVM JSON-RPC URL — required by x402 and evm-erc20 finality. */
   rpcUrl?: string;
   /** Demos node RPC URL — required by pay-dem and pay-d402. */
   demosRpc?: string;
@@ -89,6 +89,16 @@ function requiredEvmPrivateKey(
   return opts.evmPrivateKey;
 }
 
+function requiredFinalityBlocks(descriptor: RailDescriptor): number {
+  const value = descriptor.params["finalityBlocks"];
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new DacsError(
+      `${descriptor.kind} rail "${descriptor.id}" descriptor requires a positive params.finalityBlocks`,
+    );
+  }
+  return value as number;
+}
+
 export async function settleFromRail(
   descriptor: RailDescriptor,
   opts: RailDispatchOptions,
@@ -112,10 +122,15 @@ export async function settleFromRail(
         "x402",
         "recipient",
       );
+      if (!opts.rpcUrl) {
+        throw new DacsError("x402 rail requires opts.rpcUrl for independent finality");
+      }
       const rail = await createX402Rail({
         evmPrivateKey: requiredEvmPrivateKey(opts, "x402"),
         fetchImpl: opts.fetchImpl,
         requireSessionBinding: true,
+        rpcUrl: opts.rpcUrl,
+        finalityBlocks: requiredFinalityBlocks(descriptor),
       });
       return x402Settle(rail, {
         url,
@@ -153,6 +168,7 @@ export async function settleFromRail(
         evmPrivateKey: requiredEvmPrivateKey(opts, "evm-erc20"),
         rpcUrl: opts.rpcUrl,
         network,
+        finalityBlocks: requiredFinalityBlocks(descriptor),
       });
       return evmErc20Settle(rail, {
         tokenAddress,
