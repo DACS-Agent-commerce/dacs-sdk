@@ -76,6 +76,14 @@ acknowledged. Evidence verification, native publication and receipt
 verification remain explicit SDK adapter callbacks; the host does not replace
 those security boundaries.
 
+For the standard buyer-owned Demos lane,
+`createDacsBuyerDemosPaymentEvidenceRuntimeV1()` supplies the publication and
+reconciliation callbacks from the role-owned Demos adapter. It requires a
+separate cryptographic `SettlementEvidence` verifier, re-enters only the exact
+write-once journal operation after ambiguity, verifies the finalized receipt,
+and requires content-identical native-address readback before acknowledging the
+seller.
+
 `createDacsSellerSettlementPublicationTrackV1()` composes the seller side with
 the SDK's normative `publishSellerSessionSettlement()` state machine. It reads
 the consumed permit from the runtime-owned seller receipt store, reasserts the

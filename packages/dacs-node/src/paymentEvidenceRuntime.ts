@@ -1,4 +1,9 @@
-import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import {
+  demosWriteEvidenceToAnchorReceipt,
+  type ProtocolAnchorReceipt,
+} from "@kynesyslabs/dacs";
+import { isReadableAnchorReceipt } from "@kynesyslabs/dacs/artifacts";
+import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   createBuyerPaymentEvidenceHandshake,
   createSellerPaymentEvidenceHandshake,
@@ -64,7 +69,15 @@ export interface DacsBuyerPaymentEvidenceRuntimeOptionsV1
 
 export interface DacsSellerPaymentEvidenceRuntimeOptionsV1
   extends DacsPaymentEvidenceRuntimeCommonV1 {
-  verifyAnchorReceipt: SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"];
+  verifyAnchorReceipt?: SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"];
+}
+
+export interface DacsBuyerDemosPaymentEvidenceRuntimeOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  workerId: string;
+  verifyEvidence: BuyerPaymentEvidenceHandshakeOptions["verifyEvidence"];
+  leaseDurationMs?: number;
+  retryDelayMs?: number;
 }
 
 export interface DacsBuyerPaymentEvidenceRuntimeV1 {
@@ -241,6 +254,139 @@ function payloadResult(valid: boolean, reasonCode: string): DacsHttpPayloadValid
   return valid
     ? Object.freeze({ status: "valid" as const })
     : Object.freeze({ status: "invalid" as const, reasonCode });
+}
+
+async function publishBuyerDemosEvidence(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  input: Parameters<BuyerPaymentEvidenceHandshakeOptions["anchorEvidence"]>[0],
+  fence: Parameters<BuyerPaymentEvidenceHandshakeOptions["anchorEvidence"]>[1],
+): Promise<SellerSessionSettlementAnchorResult> {
+  if (context.role !== "buyer" || input.expectedWriter.role !== "buyer" ||
+      input.expectedWriter.primaryClaim !== context.authority ||
+      input.evidenceHash !== contentHash(
+        input.evidence as unknown as Record<string, unknown>,
+      )) {
+    return Object.freeze({
+      disposition: "rejected" as const,
+      reason: "buyer Demos payment-evidence publication is unbound",
+    });
+  }
+  try {
+    await fence.assertCurrent();
+    const anchored = await context.demos.adapter.anchorWriteOnce(
+      input.logicalAddress,
+      input.evidence,
+      {
+        metadata: {
+          logicalAddress: input.logicalAddress,
+          contentHash: input.evidenceHash,
+        },
+      },
+    );
+    let receipt: ProtocolAnchorReceipt | null;
+    if (anchored.demosEvidence !== undefined) {
+      receipt = demosWriteEvidenceToAnchorReceipt({
+        evidence: anchored.demosEvidence,
+        logicalAddress: input.logicalAddress,
+        contentHash: input.evidenceHash,
+        writer: context.authority,
+      });
+    } else {
+      receipt = await context.demos.adapter.resolveDemosAnchorReceipt({
+        logicalAddress: input.logicalAddress,
+        nativeAddress: anchored.address,
+        contentHash: input.evidenceHash,
+        writer: context.authority,
+      });
+    }
+    if (receipt === null || !isReadableAnchorReceipt(receipt)) {
+      return Object.freeze({
+        disposition: "indeterminate" as const,
+        reason: "buyer Demos payment-evidence receipt is unavailable",
+      });
+    }
+    await fence.assertCurrent();
+    if (await context.demos.adapter.verifyDemosAnchorReceipt(receipt) !== true) {
+      return Object.freeze({
+        disposition: "indeterminate" as const,
+        reason: "buyer Demos payment-evidence receipt is unverified",
+      });
+    }
+    const readback = await context.demos.adapter.readAnchor(receipt.nativeAddress);
+    if (readback === null || contentHash(readback) !== input.evidenceHash ||
+        canonicalize(readback) !== canonicalize(input.evidence)) {
+      return Object.freeze({
+        disposition: "indeterminate" as const,
+        reason: "buyer Demos payment-evidence readback is unavailable",
+      });
+    }
+    await fence.assertCurrent();
+    return Object.freeze({
+      disposition: "anchored" as const,
+      evidenceRef: {
+        anchor: { kind: "storage-program" as const, locator: input.logicalAddress },
+        contentHash: input.evidenceHash,
+        signer: input.evidence.signature.signer,
+      },
+      anchorReceipt: receipt,
+    });
+  } catch {
+    return Object.freeze({
+      disposition: "indeterminate" as const,
+      reason: "buyer Demos payment-evidence reconciliation is required",
+    });
+  }
+}
+
+/** Use the actor's durable Demos write journal as the buyer PC-7 anchor lane. */
+export function createDacsBuyerDemosPaymentEvidenceRuntimeV1(
+  options: Readonly<DacsBuyerDemosPaymentEvidenceRuntimeOptionsV1>,
+): Readonly<DacsBuyerPaymentEvidenceRuntimeV1> {
+  if (!plainObject(options) || !plainObject(options.context) ||
+      options.context.role !== "buyer" || options.context.demos.role !== "buyer" ||
+      typeof options.verifyEvidence !== "function") {
+    throw new TypeError("buyer Demos payment evidence runtime options are invalid");
+  }
+  const context = options.context;
+  return createDacsBuyerPaymentEvidenceRuntimeV1({
+    context,
+    workerId: options.workerId,
+    verifyEvidence: options.verifyEvidence,
+    anchorEvidence: (input, fence) => publishBuyerDemosEvidence(context, input, fence),
+    reconcileAnchor: async (input, fence) => {
+      const result = await publishBuyerDemosEvidence(context, input, fence);
+      return result.disposition === "anchored"
+        ? result
+        : { disposition: "indeterminate", reason: result.reason };
+    },
+    verifyAnchorReceipt: async ({ request, completion }) => {
+      try {
+        const valid = await context.demos.adapter.verifyDemosAnchorReceipt(
+          completion.anchorReceipt,
+        );
+        const readback = valid
+          ? await context.demos.adapter.readAnchor(completion.anchorReceipt.nativeAddress)
+          : null;
+        return valid && readback !== null &&
+          contentHash(readback) === request.evidenceHash &&
+          canonicalize(readback) === canonicalize(request.evidence)
+          ? { disposition: "valid" as const }
+          : {
+              disposition: "indeterminate" as const,
+              reason: "buyer Demos payment-evidence completion is unverified",
+            };
+      } catch {
+        return {
+          disposition: "indeterminate" as const,
+          reason: "buyer Demos payment-evidence completion verification failed",
+        };
+      }
+    },
+    ...(options.leaseDurationMs === undefined
+      ? {} : { leaseDurationMs: options.leaseDurationMs }),
+    ...(options.retryDelayMs === undefined
+      ? {} : { retryDelayMs: options.retryDelayMs }),
+  });
 }
 
 async function releaseBuyerCompletion(
@@ -487,12 +633,30 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
 ): Readonly<DacsSellerPaymentEvidenceRuntimeV1> {
   const common = handshakeOptions(options);
   if (options.context.role !== "seller" ||
-      typeof options.verifyAnchorReceipt !== "function") {
+      (options.verifyAnchorReceipt !== undefined &&
+        typeof options.verifyAnchorReceipt !== "function")) {
     throw new TypeError("seller payment evidence runtime options are invalid");
   }
   const context = options.context;
   const store = context.database.createPaymentEvidenceHandshakeStore();
   const retryDelayMs = timing(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS);
+  const verifyAnchorReceipt = options.verifyAnchorReceipt ?? (async ({ completion }) => {
+    try {
+      return await context.demos.adapter.verifyDemosAnchorReceipt(
+        completion.anchorReceipt,
+      ) === true
+        ? { disposition: "valid" as const }
+        : {
+            disposition: "indeterminate" as const,
+            reason: "seller payment-evidence receipt is unverified",
+          };
+    } catch {
+      return {
+        disposition: "indeterminate" as const,
+        reason: "seller payment-evidence receipt verification failed",
+      };
+    }
+  });
 
   const createHandshake = (
     order: Pick<FixedPriceX402OrderRecord, "seller" | "buyer" | "protocol">,
@@ -519,7 +683,7 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
         return { disposition: "rejected", reason: "signed-envelope-invalid" };
       }
     },
-    verifyAnchorReceipt: options.verifyAnchorReceipt,
+    verifyAnchorReceipt,
     ...(common.leaseDurationMs === undefined
       ? {} : { leaseDurationMs: common.leaseDurationMs }),
   });

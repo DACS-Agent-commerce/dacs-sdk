@@ -24,6 +24,7 @@ import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import {
   createDacsBuyerPaymentEvidenceRuntimeV1,
+  createDacsBuyerDemosPaymentEvidenceRuntimeV1,
   createDacsSellerPaymentEvidenceRuntimeV1,
   type DacsSellerPaymentEvidenceRuntimeV1,
 } from "../src/paymentEvidenceRuntime.js";
@@ -235,11 +236,29 @@ describe("live payment-evidence runtime", () => {
     let buyerRuntime: ReturnType<typeof createDacsBuyerPaymentEvidenceRuntimeV1>;
     let sellerRuntime: ReturnType<typeof createDacsSellerPaymentEvidenceRuntimeV1>;
 
+    let anchoredArtifact: Record<string, unknown> | undefined;
+    const anchorWriteOnce = vi.fn(async (logicalAddress: string, value: object) => {
+      anchoredArtifact = structuredClone(value) as Record<string, unknown>;
+      return { address: `native:${logicalAddress}` };
+    });
     const buyerContext = {
       role: "buyer",
       authority: BUYER,
       peerAuthority: SELLER,
       database: buyerDatabase,
+      demos: {
+        role: "buyer",
+        adapter: {
+          anchorWriteOnce,
+          resolveDemosAnchorReceipt: async (input: {
+            logicalAddress: string;
+            contentHash: string;
+          }) => anchor(input.logicalAddress, input.contentHash).anchorReceipt,
+          verifyDemosAnchorReceipt: async () => true,
+          readAnchor: async () => anchoredArtifact === undefined
+            ? null : structuredClone(anchoredArtifact),
+        },
+      },
       sendMessage: async (message: { type: string; payload: unknown }) => {
         const handled = await sellerRuntime.handleMessage(
           authenticated(message.type as "payment-evidence-completion", message.payload, BUYER, SELLER),
@@ -262,19 +281,10 @@ describe("live payment-evidence runtime", () => {
       },
     } as unknown as DacsLiveRoleOperationContextV1;
 
-    buyerRuntime = createDacsBuyerPaymentEvidenceRuntimeV1({
+    buyerRuntime = createDacsBuyerDemosPaymentEvidenceRuntimeV1({
       context: buyerContext,
       workerId: "buyer-worker",
       verifyEvidence: () => ({ disposition: "valid" }),
-      anchorEvidence: (input) => ({
-        disposition: "anchored",
-        ...anchor(input.logicalAddress, input.evidenceHash),
-      }),
-      reconcileAnchor: (input) => ({
-        disposition: "anchored",
-        ...anchor(input.logicalAddress, input.evidenceHash),
-      }),
-      verifyAnchorReceipt: () => ({ disposition: "valid" }),
     });
     sellerRuntime = createDacsSellerPaymentEvidenceRuntimeV1({
       context: sellerContext,
@@ -306,6 +316,7 @@ describe("live payment-evidence runtime", () => {
       outcome: "success",
       reference: logicalAddress,
     });
+    expect(anchorWriteOnce).toHaveBeenCalledOnce();
     await expect(sellerRuntime.anchorEvidence(sellerOperation, input)).resolves.toMatchObject({
       disposition: "anchored",
       evidenceRef: { contentHash: evidenceHash },
