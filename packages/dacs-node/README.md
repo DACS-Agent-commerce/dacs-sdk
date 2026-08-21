@@ -199,6 +199,13 @@ canonical public application/session facts before the first track can run;
 exact role, job and local binding hash. Payment bearers and private material do
 not belong in that order-input record.
 
+`createDacsLiveRoleMessageRouterV1()` applies the same closed-set rule to
+authenticated commerce messages. Buyer and seller routers must supply all
+three role-owned agreement, payment-evidence and bundle-signature routes and
+cannot accept the peer direction. A validator outage fails authentication
+closed; a handler exception remains indeterminate so the durable inbox can
+resume it rather than acknowledging work that may not have been retained.
+
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange
 and responder to the role-owned fenced-session store and Demos signer. Every
