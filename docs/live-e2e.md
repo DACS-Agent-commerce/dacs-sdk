@@ -17,14 +17,18 @@ even when the balances are small.
 ## 1. Node version (required)
 
 demosdk's ESM packaging + `avsc` break on Node ≥ 24 (`buffer.SlowBuffer is not a
-constructor`). Run under **Node 20**:
+constructor`). Use **Node 20 or 22** (the versions CI runs). Select it with your
+version manager, then run through the local binary:
 
 ```bash
-~/.nvm/versions/node/v20.19.4/bin/node node_modules/.bin/vitest run \
-  test/integration/funded-two-agent.e2e.test.ts
+nvm use 20            # or: nvm use 22 — anything on 20.19+/22.12+, not >=24
+node --version        # confirm you are on 20 or 22 before spending funds
+npx vitest run test/integration/funded-two-agent.e2e.test.ts
 ```
 
-(`nvm use 20` may not take in a non-interactive shell — call the binary by path.)
+If your shell's `nvm use` doesn't stick in a non-interactive context, invoke the
+matching Node binary explicitly (`"$(nvm which 20)" node_modules/.bin/vitest …`)
+rather than hard-coding an absolute path.
 
 ## 2. Funding (all public, no captcha)
 
@@ -37,8 +41,9 @@ curl -s -X POST https://faucetbackend.demos.sh/api/request \
 
 ~2400 DEM per request. **Denomination:** `getAddressInfo().balance` is in **OS**,
 `1 DEM = 1,000,000,000 OS` (raw `2398000000000` = 2398 DEM). Preflight needs
-seller ≥ 3 DEM, buyer ≥ 7 DEM. Funding is async — poll the balance until non-zero
-before running. The faucet is per-address rate-limited (~2400 / interval) and its
+seller ≥ 23 DEM, buyer ≥ 15 DEM (the full two-sided lifecycle anchors several
+records per side, so budget well above the old single-sided floors). Funding is
+async — poll the balance until it clears the floor before running. The faucet is per-address rate-limited (~2400 / interval) and its
 broadcast can silently fail to land; if a wallet stays at 0, mint a fresh wallet
 rather than re-requesting the rate-limited one.
 
@@ -91,7 +96,25 @@ funded validation, the observed state was:
 Probe both configured endpoints before a funded attempt; this list is an
 observation, not an availability guarantee.
 
-## 4. Run + expected
+## 4. Funded-run safety
+
+Because a run moves real testnet value, the harness is built to fail closed
+rather than pay twice or spend without bound:
+
+- **Durable run marker, written before any irreversible work.** Each attempt is
+  recorded in a persistent marker directory (created `0700`, owner-only) *before*
+  it broadcasts anything. A crashed or repeated attempt is then refused instead
+  of re-paying. Keep the marker directory on stable local storage — not a `/tmp`
+  path that clears between runs — or the non-rerunnable guarantee is lost.
+- **Maximum-total-debit cap.** Set an explicit ceiling on the whole run's spend
+  and make it cover **both** the x402 USDC amount **and** the Demos anchor fees,
+  not just the payment. The run aborts before broadcasting if the projected total
+  debit would exceed the cap.
+- **Reconcile, don't blindly rerun.** If a run ends ambiguous (see the
+  `evm-authorization-lookup-unavailable` note below), reconcile the original
+  attempt on-chain read-only before starting a fresh one.
+
+## 5. Run + expected
 
 Load the protected environment, then run the §1 command. One clean August 2026
 run took approximately 75 seconds to commerce-complete and approximately four
@@ -100,13 +123,16 @@ the full two-sided lifecycle ran on-chain (real DEM fees + a real ~0.000001 USDC
 transfer buyer→seller) and both role-owned DACS-5 bundles finalized and
 re-verified from cold storage.
 
-## 5. Troubleshooting
+## 6. Troubleshooting
 
 - **`Insufficient balance …`** — Demos funding not confirmed yet, or the funded
   address ≠ the mnemonic's address. Verify the balance before running.
 - **`evm-authorization-lookup-unavailable`** — the `PAY_RPC` couldn't serve a read
-  mid-settlement. Switch to a more reliable RPC (see the working list) and retry
-  with a fresh `LIVE_E2E_RUN_ID`.
+  mid-settlement. The settlement authorization may already have been submitted, so
+  do **not** simply retry with a fresh `LIVE_E2E_RUN_ID` — a fresh authorization
+  can pay twice. First reconcile the original run read-only (confirm on-chain
+  whether the transfer landed) using a more reliable RPC; only start a fresh run
+  once you've established the original made no payment.
 - **`facilitator-settle-outcome:failure-invalid-exact-evm-transaction-failed`** —
   the public x402 facilitator's on-chain settlement reverted. This facilitator is
   **transiently flaky**. Retry with a fresh run id only after the settlement
