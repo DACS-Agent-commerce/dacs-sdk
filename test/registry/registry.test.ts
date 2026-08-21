@@ -811,9 +811,16 @@ describe("rail dispatch by kind (T6)", () => {
         id: "x402:default",
         kind: "x402",
         availability: "live",
-        params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+        params: {
+          tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          finalityBlocks: 1,
+        },
       },
-      { evmPrivateKey: TEST_EVM_KEY, paywall },
+      {
+        evmPrivateKey: TEST_EVM_KEY,
+        paywall,
+        rpcUrl: "https://sepolia.base.org",
+      },
     );
     expect(typeof settle).toBe("function");
   });
@@ -833,7 +840,10 @@ describe("rail dispatch by kind (T6)", () => {
         id: "evm-erc20:usdc",
         kind: "evm-erc20",
         availability: "live",
-        params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+        params: {
+          tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          finalityBlocks: 1,
+        },
       },
       { evmPrivateKey: TEST_EVM_KEY, paywall, rpcUrl: "https://sepolia.base.org" },
     );
@@ -856,7 +866,10 @@ describe("rail dispatch by kind (T6)", () => {
           id: "evm-erc20:usdc",
           kind: "evm-erc20",
           availability: "live",
-          params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+          params: {
+            tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            finalityBlocks: 1,
+          },
         },
         { evmPrivateKey: TEST_EVM_KEY, paywall },
       ),
@@ -882,7 +895,10 @@ describe("rail dispatch by kind (T6)", () => {
         id: "evm-erc20:usdc",
         kind: "evm-erc20",
         availability: "live",
-        params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+        params: {
+          tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          finalityBlocks: 1,
+        },
       },
       {
         evmPrivateKey: TEST_EVM_KEY,
@@ -894,6 +910,22 @@ describe("rail dispatch by kind (T6)", () => {
       },
     );
     expect(typeof settle).toBe("function");
+  });
+
+  test("EVM-backed dispatch rejects a missing signed finality depth", async () => {
+    await expect(settleFromRail(
+      {
+        id: "x402:default",
+        kind: "x402",
+        availability: "live",
+        params: { tokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+      },
+      {
+        evmPrivateKey: TEST_EVM_KEY,
+        paywall,
+        rpcUrl: "https://sepolia.base.org",
+      },
+    )).rejects.toThrow(/finalityBlocks/);
   });
 
   test("unknown kind is rejected", async () => {
