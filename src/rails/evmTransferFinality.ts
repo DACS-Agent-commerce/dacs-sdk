@@ -1,4 +1,4 @@
-import { CounterpartyError } from "../errors.js";
+import { CounterpartyError, TransientError } from "../errors.js";
 
 /** keccak256("Transfer(address,address,uint256)"). */
 export const ERC20_TRANSFER_EVENT_TOPIC =
@@ -7,6 +7,8 @@ export const ERC20_TRANSFER_EVENT_TOPIC =
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 const WORD_RE = /^0x[0-9a-fA-F]{64}$/;
+const RPC_READ_ATTEMPTS = 6;
+const RPC_READ_INITIAL_DELAY_MS = 250;
 
 export interface EvmTransferLog {
   address: string;
@@ -157,6 +159,32 @@ function addressTopic(address: string): string {
 }
 
 /**
+ * A successful receipt wait and the immediately following exact read can hit
+ * different replicas behind a public RPC endpoint. Retry only thrown transport
+ * or not-found observations; malformed or contradictory values are parsed and
+ * rejected outside this helper without retry.
+ */
+async function retryRpcRead<T>(label: string, read: () => Promise<T>): Promise<T> {
+  let cause: unknown;
+  for (let attempt = 1; attempt <= RPC_READ_ATTEMPTS; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      cause = error;
+      if (attempt < RPC_READ_ATTEMPTS) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, RPC_READ_INITIAL_DELAY_MS * 2 ** (attempt - 1)),
+        );
+      }
+    }
+  }
+  throw new TransientError(
+    `evm finality: ${label} remained unavailable after ${RPC_READ_ATTEMPTS} reads`,
+    { cause },
+  );
+}
+
+/**
  * Wait for and independently re-read the exact finalized ERC-20 Transfer event.
  * Success is impossible when the event is missing or ambiguous.
  */
@@ -186,16 +214,20 @@ export async function verifyEvmTransferFinality(
     confirmations: request.minimumConfirmations,
   });
   // Re-read after the wait so a stale/pre-reorg receipt cannot become evidence.
-  const receipt = parseReceipt(await client.getTransactionReceipt({
-    hash: transactionHash,
-  }));
+  const receipt = parseReceipt(await retryRpcRead(
+    "transaction receipt",
+    () => client.getTransactionReceipt({ hash: transactionHash }),
+  ));
   if (receipt.status !== "success") return fail("transaction reverted");
   if (receipt.transactionHash !== transactionHash) {
     return fail("receipt transaction hash does not match the submitted transaction");
   }
 
   const inclusionBlock = parseBlock(
-    await client.getBlock({ blockNumber: receipt.blockNumber }),
+    await retryRpcRead(
+      "inclusion block",
+      () => client.getBlock({ blockNumber: receipt.blockNumber }),
+    ),
     "inclusion block",
   );
   if (inclusionBlock.number !== receipt.blockNumber ||
@@ -205,7 +237,10 @@ export async function verifyEvmTransferFinality(
   const finalityBlockNumber = receipt.blockNumber +
     BigInt(request.minimumConfirmations - 1);
   const finalityBlock = parseBlock(
-    await client.getBlock({ blockNumber: finalityBlockNumber }),
+    await retryRpcRead(
+      "finality block",
+      () => client.getBlock({ blockNumber: finalityBlockNumber }),
+    ),
     "finality block",
   );
   if (finalityBlock.number !== finalityBlockNumber) {
@@ -243,11 +278,17 @@ export async function verifyEvmTransferFinality(
   // A reorg between the first canonical reads and the event check must not leave
   // a self-inconsistent observation that can be signed as final.
   const inclusionRecheck = parseBlock(
-    await client.getBlock({ blockNumber: receipt.blockNumber }),
+    await retryRpcRead(
+      "inclusion block recheck",
+      () => client.getBlock({ blockNumber: receipt.blockNumber }),
+    ),
     "inclusion block recheck",
   );
   const finalityRecheck = parseBlock(
-    await client.getBlock({ blockNumber: finalityBlockNumber }),
+    await retryRpcRead(
+      "finality block recheck",
+      () => client.getBlock({ blockNumber: finalityBlockNumber }),
+    ),
     "finality block recheck",
   );
   if (inclusionRecheck.hash !== inclusionBlock.hash ||

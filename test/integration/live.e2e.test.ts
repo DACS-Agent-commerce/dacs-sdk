@@ -9,7 +9,14 @@ import {
   createFsDemosWriteJournal,
   createInMemoryBindingStore,
   createX402Rail,
+  ed25519Verify,
+  identityBundleHash,
+  publicKeyFromRaw,
+  signedBytes,
   x402Settle,
+  type IdentityBundle,
+  type ListingValidationDeps,
+  type PaymentRailRef,
 } from "../../src/index.js";
 import { startLiveX402Paywall } from "./live-x402-paywall.js";
 
@@ -52,6 +59,90 @@ const OS_PER_DEM = 1_000_000_000n;
 const SELLER_MINIMUM_OS = 3n * OS_PER_DEM;
 const BUYER_MINIMUM_OS = 7n * OS_PER_DEM;
 const PAYMENT_AMOUNT = 1_000_000n;
+
+const payloadCapability = () => ({ disposition: "supported" as const });
+
+function railAuthority(selectedRail: PaymentRailRef) {
+  return {
+    trustPhase: "PA-1" as const,
+    trustPolicyAcceptsPA1: true,
+    registry: { state: "not-used" as const, entries: [], definitions: [] },
+    inCodeDefinitions: [
+      {
+        railId: selectedRail.railId,
+        railVersion: selectedRail.railVersion!,
+        phaseHandler: "pay-x402",
+        governanceAnchoring: "in-code" as const,
+        signatureValid: true,
+      },
+    ],
+  };
+}
+
+async function signedIdentity(
+  primaryClaim: string,
+  signer: { sign(bytes: Uint8Array): Promise<Uint8Array> },
+  presentedAt: number,
+): Promise<IdentityBundle> {
+  const presentation = {
+    kind: "per-claim" as const,
+    signatures: [{ ref: primaryClaim, signature: "pending" }],
+  };
+  const bundle: IdentityBundle = {
+    bundleVersion: "1",
+    presentedBy: primaryClaim,
+    presentedAt,
+    claims: [{ ref: primaryClaim }],
+    presentation,
+  };
+  const signature = await signer.sign(
+    signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(bundle)),
+  );
+  presentation.signatures[0]!.signature = Buffer.from(signature).toString("base64url");
+  return bundle;
+}
+
+function listingValidationDeps(input: {
+  sellerDid: string;
+  sellerPublicKey: Uint8Array;
+  selectedRail: PaymentRailRef;
+}): ListingValidationDeps {
+  const verifyEd25519 = (bytes: Uint8Array, value: string): boolean => {
+    try {
+      return ed25519Verify(
+        bytes,
+        Uint8Array.from(Buffer.from(value, "base64url")),
+        publicKeyFromRaw(input.sellerPublicKey),
+      );
+    } catch {
+      return false;
+    }
+  };
+  return {
+    nowMs: () => Date.now(),
+    verifyListingSignature: ({ signedBytes: bytes, signature }) =>
+      signature.signer === input.sellerDid &&
+      signature.algorithm === "ed25519" &&
+      verifyEd25519(bytes, signature.value),
+    revocation: {
+      surfaces: [{ kind: "well-known", status: "active", integrity: "verified" }],
+      readMarker: async () => null,
+      verifyMarkerSignature: () => false,
+    },
+    verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) =>
+      bundle.presentedBy === input.sellerDid &&
+      bundle.presentation.kind === "per-claim" &&
+      bundle.presentation.signatures.length === 1 &&
+      bundle.presentation.signatures[0]?.ref === input.sellerDid &&
+      verifyEd25519(bytes, bundle.presentation.signatures[0].signature),
+    loadRailResolution: () => railAuthority(input.selectedRail),
+    resolvePayloadVerificationCapability: payloadCapability,
+    verifySellerControl: ({ bundle, signer }) =>
+      signer === input.sellerDid &&
+      bundle.presentedBy === signer &&
+      bundle.claims.some(({ ref }) => ref === signer),
+  };
+}
 
 function formatDem(os: bigint): string {
   const whole = os / OS_PER_DEM;
@@ -147,18 +238,34 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           dir: join(env.DACS_STATE_DIR!, "live-e2e-buyer-demos-writes"),
         }),
       ]);
+      const selectedRail: PaymentRailRef = {
+        railId: "x402:default",
+        railVersion: 1,
+        parameters: {
+          network: env.PAY_NETWORK!,
+          asset: env.PAY_TOKEN!,
+        },
+      };
       const seller = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.SELLER_WALLET!,
         demosWriteJournal: sellerWriteJournal,
         identity: { agentId: env.SELLER_DID! },
         bindings: { index: sellerBindings, publisher: sellerBindings },
+        loadListingRailResolution: () => railAuthority(selectedRail),
+        resolvePayloadVerificationCapability: payloadCapability,
       });
+      const sellerPublicKey = await seller.adapter.getPublicKey();
       const buyer = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.BUYER_WALLET!,
         demosWriteJournal: buyerWriteJournal,
         identity: { agentId: env.BUYER_DID! },
+        listingValidationDeps: listingValidationDeps({
+          sellerDid: env.SELLER_DID!,
+          sellerPublicKey,
+          selectedRail,
+        }),
       });
       const rail = await createX402Rail({
         evmPrivateKey: env.BUYER_EVM_KEY!,
@@ -211,28 +318,21 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
       try {
         const runStartedAt = Date.now();
         const listingId = `live-e2e-${runStartedAt}-${randomUUID()}`;
+        const sellerIdentity = await signedIdentity(
+          env.SELLER_DID!,
+          seller.adapter,
+          runStartedAt,
+        );
         const published = await seller.publishListing({
           dacsVersion: "1",
           listingVersion: 1,
           listingId,
           seller: {
-            identity: {
-              bundleVersion: "1",
-              presentedBy: env.SELLER_DID!,
-              presentedAt: runStartedAt,
-              claims: [{ ref: env.SELLER_DID! }],
-              presentation: {
-                kind: "per-claim",
-                signatures: [
-                  {
-                    ref: env.SELLER_DID!,
-                    signature: "live-wallet-presentation",
-                  },
-                ],
-              },
-            },
+            identity: sellerIdentity,
             displayName: "Live E2E",
-            publicEndpoint: localPaywall?.url ?? env.PAYWALL_URL!,
+            // DACS-1 advertisements are HTTPS-only. The loopback HTTP paywall
+            // is an isolated test transport supplied directly to x402Settle.
+            publicEndpoint: "https://seller.example/dacs/live-e2e",
           },
           offering: {
             title: "Live E2E",
@@ -256,9 +356,12 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
             kind: "fixed",
             price: { amount: "1", currency: "USDC" },
           },
-          acceptedRails: [{ railId: "x402:default" }],
+          acceptedRails: [selectedRail],
           terms: { deadlineSecAfterCommit: 3_600 },
-          validity: { notBefore: runStartedAt - 1_000 },
+          validity: {
+            notBefore: runStartedAt - 1_000,
+            notAfter: runStartedAt + 3_600_000,
+          },
         });
         expect(published.status).toBe("published");
         if (published.status !== "published") {

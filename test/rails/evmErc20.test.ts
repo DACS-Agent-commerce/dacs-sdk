@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   evmErc20SettleCore,
@@ -162,6 +162,55 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
         }),
       }),
     }))).rejects.toThrow(/canonical chain/);
+  });
+
+  test("retries transient receipt and canonical-block visibility gaps", async () => {
+    const base = finalityClient();
+    let receiptReads = 0;
+    let inclusionReads = 0;
+    const result = await evmErc20SettleCore(params, client({
+      finalityClient: finalityClient({
+        getTransactionReceipt: async (input) => {
+          receiptReads += 1;
+          if (receiptReads === 1) throw new Error("receipt replica is behind");
+          return base.getTransactionReceipt(input);
+        },
+        getBlock: async (input) => {
+          if (input.blockNumber === 100n) {
+            inclusionReads += 1;
+            if (inclusionReads === 1) throw new Error("block replica is behind");
+          }
+          return base.getBlock(input);
+        },
+      }),
+    }));
+
+    expect(result.txRef).toMatchObject({ kind: "evm-event" });
+    expect(receiptReads).toBe(2);
+    // One failed initial read, its successful retry, and the canonical recheck.
+    expect(inclusionReads).toBe(3);
+  });
+
+  test("fails transiently when a canonical block remains unavailable", async () => {
+    vi.useFakeTimers();
+    try {
+      const outcome = evmErc20SettleCore(params, client({
+        finalityClient: finalityClient({
+          getBlock: async () => {
+            throw new Error("block not found");
+          },
+        }),
+      }));
+      const rejection = expect(outcome).rejects.toMatchObject({
+        name: "TransientError",
+        category: "transient",
+        message: expect.stringMatching(/inclusion block remained unavailable after 6 reads/),
+      });
+      await vi.runAllTimersAsync();
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("rejects a block-set change during the finality read", async () => {
