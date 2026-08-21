@@ -771,12 +771,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           !isAgreementArtifact(context.agreement) ||
           !isAttestationRef(context.evidenceRef)
         ) {
-          return { decision: "fail" as const };
+          return { decision: "fail" as const, authorizedSigner: null };
         }
         const agreement = context.agreement;
         const phase = typeof evidence.phase === "string" ? evidence.phase : "";
         if (!resolveSettlementEvidenceContext) {
-          return { decision: "indeterminate" as const };
+          return { decision: "indeterminate" as const, authorizedSigner: null };
         }
         let resolvedContext: AgentSettlementEvidenceContext | null;
         try {
@@ -791,10 +791,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             agreement,
           );
         } catch {
-          return { decision: "indeterminate" as const };
+          return { decision: "indeterminate" as const, authorizedSigner: null };
         }
-        if (!resolvedContext) return { decision: "error" as const };
-        return verifySettlementEvidence(
+        if (!resolvedContext) {
+          return { decision: "error" as const, authorizedSigner: null };
+        }
+        const verification = await verifySettlementEvidence(
           evidence,
           {
             ...resolvedContext,
@@ -809,6 +811,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             verify: ed25519RawVerify,
           },
         );
+        return {
+          ...verification,
+          authorizedSigner: resolvedContext.orchestrator,
+        };
       },
     });
   const hasWallet =

@@ -366,6 +366,7 @@ export {
   type RefCheck,
   type RefVerdict,
   type BundleEvidenceVerificationContext,
+  type BundleEvidenceVerificationResult,
   bundleConsistency,
   bundlesDiverge,
   type ConsistencyVerdict,
