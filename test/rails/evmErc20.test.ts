@@ -152,16 +152,28 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
     }))).rejects.toThrow(/event is ambiguous/);
   });
 
-  test("rejects a receipt whose inclusion block is no longer canonical", async () => {
-    await expect(evmErc20SettleCore(params, client({
-      finalityClient: finalityClient({
-        getBlock: async ({ blockNumber }) => ({
-          number: blockNumber,
-          hash: FINALITY_HASH,
-          timestamp: 1_700_000_011n,
+  test("fails transiently when receipt and block views never converge", async () => {
+    vi.useFakeTimers();
+    try {
+      const outcome = evmErc20SettleCore(params, client({
+        finalityClient: finalityClient({
+          getBlock: async ({ blockNumber }) => ({
+            number: blockNumber,
+            hash: FINALITY_HASH,
+            timestamp: 1_700_000_011n,
+          }),
         }),
-      }),
-    }))).rejects.toThrow(/canonical chain/);
+      }));
+      const rejection = expect(outcome).rejects.toMatchObject({
+        name: "TransientError",
+        category: "transient",
+        message: expect.stringMatching(/canonical receipt\/block snapshot remained unavailable/),
+      });
+      await vi.runAllTimersAsync();
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("retries transient receipt and canonical-block visibility gaps", async () => {
@@ -186,8 +198,9 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
     }));
 
     expect(result.txRef).toMatchObject({ kind: "evm-event" });
-    expect(receiptReads).toBe(2);
-    // One failed initial read, its successful retry, and the canonical recheck.
+    // One receipt failure and one block failure each restart the whole snapshot.
+    expect(receiptReads).toBe(3);
+    // One failed block read, then the initial canonical read and its recheck.
     expect(inclusionReads).toBe(3);
   });
 
@@ -204,7 +217,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
       const rejection = expect(outcome).rejects.toMatchObject({
         name: "TransientError",
         category: "transient",
-        message: expect.stringMatching(/inclusion block remained unavailable after 6 reads/),
+        message: expect.stringMatching(/canonical receipt\/block snapshot remained unavailable/),
       });
       await vi.runAllTimersAsync();
       await rejection;
@@ -213,22 +226,24 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
     }
   });
 
-  test("rejects a block-set change during the finality read", async () => {
+  test("retries the whole snapshot when the block set changes during the read", async () => {
     let inclusionReads = 0;
-    await expect(evmErc20SettleCore(params, client({
+    const result = await evmErc20SettleCore(params, client({
       finalityClient: finalityClient({
         getBlock: async ({ blockNumber }) => {
           if (blockNumber === 100n) inclusionReads += 1;
           return {
             number: blockNumber,
             hash: blockNumber === 100n
-              ? (inclusionReads === 1 ? BLOCK_HASH : FINALITY_HASH)
+              ? (inclusionReads === 2 ? FINALITY_HASH : BLOCK_HASH)
               : FINALITY_HASH,
             timestamp: 1_700_000_011n,
           };
         },
       }),
-    }))).rejects.toThrow(/changed during finality/);
+    }));
+    expect(result.txRef).toMatchObject({ kind: "evm-event" });
+    expect(inclusionReads).toBe(4);
   });
 
   test("passes the descriptor confirmation depth and timestamps its Nth block", async () => {

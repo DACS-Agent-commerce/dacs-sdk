@@ -170,6 +170,9 @@ async function retryRpcRead<T>(label: string, read: () => Promise<T>): Promise<T
     try {
       return await read();
     } catch (error) {
+      // Structurally malformed or contradictory authenticated data is not a
+      // visibility race. Preserve the fail-closed counterparty verdict.
+      if (error instanceof CounterpartyError) throw error;
       cause = error;
       if (attempt < RPC_READ_ATTEMPTS) {
         await new Promise((resolve) =>
@@ -213,91 +216,92 @@ export async function verifyEvmTransferFinality(
     hash: transactionHash,
     confirmations: request.minimumConfirmations,
   });
-  // Re-read after the wait so a stale/pre-reorg receipt cannot become evidence.
-  const receipt = parseReceipt(await retryRpcRead(
-    "transaction receipt",
-    () => client.getTransactionReceipt({ hash: transactionHash }),
-  ));
-  if (receipt.status !== "success") return fail("transaction reverted");
-  if (receipt.transactionHash !== transactionHash) {
-    return fail("receipt transaction hash does not match the submitted transaction");
-  }
-
-  const inclusionBlock = parseBlock(
-    await retryRpcRead(
-      "inclusion block",
-      () => client.getBlock({ blockNumber: receipt.blockNumber }),
-    ),
-    "inclusion block",
-  );
-  if (inclusionBlock.number !== receipt.blockNumber ||
-      inclusionBlock.hash !== receipt.blockHash) {
-    return fail("receipt block is not on the canonical chain");
-  }
-  const finalityBlockNumber = receipt.blockNumber +
-    BigInt(request.minimumConfirmations - 1);
-  const finalityBlock = parseBlock(
-    await retryRpcRead(
-      "finality block",
-      () => client.getBlock({ blockNumber: finalityBlockNumber }),
-    ),
-    "finality block",
-  );
-  if (finalityBlock.number !== finalityBlockNumber) {
-    return fail("RPC returned the wrong finality block");
-  }
-  if (finalityBlock.timestamp < inclusionBlock.timestamp) {
-    return fail("finality block predates the inclusion block");
-  }
-
   const expectedFrom = addressTopic(payerAddress);
   const expectedTo = addressTopic(payeeAddress);
-  const candidates = receipt.logs.filter((log) => {
-    if (log.removed === true || log.address !== tokenAddress ||
-        log.transactionHash !== transactionHash ||
-        log.blockNumber !== receipt.blockNumber || log.blockHash !== receipt.blockHash ||
-        log.topics.length !== 3 ||
-        log.topics[0] !== ERC20_TRANSFER_EVENT_TOPIC ||
-        log.topics[1] !== expectedFrom || log.topics[2] !== expectedTo ||
-        !WORD_RE.test(log.data)) return false;
-    try {
-      return BigInt(log.data) === request.amount;
-    } catch {
-      return false;
-    }
-  });
-  if (candidates.length !== 1) {
-    return fail(
-      candidates.length === 0
-        ? "exact ERC-20 Transfer event is missing"
-        : "exact ERC-20 Transfer event is ambiguous",
-    );
-  }
+  const snapshot = await retryRpcRead(
+    "canonical receipt/block snapshot",
+    async () => {
+      // Re-read after the wait so a stale/pre-reorg receipt cannot become
+      // evidence. The complete snapshot is retried when independently served
+      // receipt and block views have not converged yet.
+      const receipt = parseReceipt(await client.getTransactionReceipt({
+        hash: transactionHash,
+      }));
+      if (receipt.status !== "success") return fail("transaction reverted");
+      if (receipt.transactionHash !== transactionHash) {
+        return fail("receipt transaction hash does not match the submitted transaction");
+      }
 
-  // Pin the two decisive block identities across the complete receipt/log read.
-  // A reorg between the first canonical reads and the event check must not leave
-  // a self-inconsistent observation that can be signed as final.
-  const inclusionRecheck = parseBlock(
-    await retryRpcRead(
-      "inclusion block recheck",
-      () => client.getBlock({ blockNumber: receipt.blockNumber }),
-    ),
-    "inclusion block recheck",
-  );
-  const finalityRecheck = parseBlock(
-    await retryRpcRead(
-      "finality block recheck",
-      () => client.getBlock({ blockNumber: finalityBlockNumber }),
-    ),
-    "finality block recheck",
-  );
-  if (inclusionRecheck.hash !== inclusionBlock.hash ||
-      finalityRecheck.hash !== finalityBlock.hash ||
-      finalityRecheck.timestamp !== finalityBlock.timestamp) {
-    return fail("canonical block set changed during finality verification");
-  }
+      const inclusionBlock = parseBlock(
+        await client.getBlock({ blockNumber: receipt.blockNumber }),
+        "inclusion block",
+      );
+      if (inclusionBlock.number !== receipt.blockNumber) {
+        return fail("RPC returned the wrong inclusion block");
+      }
+      if (inclusionBlock.hash !== receipt.blockHash) {
+        throw new TransientError(
+          "evm finality: receipt and canonical block views have not converged",
+        );
+      }
+      const finalityBlockNumber = receipt.blockNumber +
+        BigInt(request.minimumConfirmations - 1);
+      const finalityBlock = parseBlock(
+        await client.getBlock({ blockNumber: finalityBlockNumber }),
+        "finality block",
+      );
+      if (finalityBlock.number !== finalityBlockNumber) {
+        return fail("RPC returned the wrong finality block");
+      }
+      if (finalityBlock.timestamp < inclusionBlock.timestamp) {
+        return fail("finality block predates the inclusion block");
+      }
 
-  const finalitySeconds = safeNumber(finalityBlock.timestamp, "finality timestamp");
+      const candidates = receipt.logs.filter((log) => {
+        if (log.removed === true || log.address !== tokenAddress ||
+            log.transactionHash !== transactionHash ||
+            log.blockNumber !== receipt.blockNumber || log.blockHash !== receipt.blockHash ||
+            log.topics.length !== 3 ||
+            log.topics[0] !== ERC20_TRANSFER_EVENT_TOPIC ||
+            log.topics[1] !== expectedFrom || log.topics[2] !== expectedTo ||
+            !WORD_RE.test(log.data)) return false;
+        try {
+          return BigInt(log.data) === request.amount;
+        } catch {
+          return false;
+        }
+      });
+      if (candidates.length !== 1) {
+        return fail(
+          candidates.length === 0
+            ? "exact ERC-20 Transfer event is missing"
+            : "exact ERC-20 Transfer event is ambiguous",
+        );
+      }
+
+      // Pin the two decisive block identities across the complete receipt/log
+      // read. A reorg or replica change restarts the entire snapshot so success
+      // can bind only one self-consistent canonical view.
+      const inclusionRecheck = parseBlock(
+        await client.getBlock({ blockNumber: receipt.blockNumber }),
+        "inclusion block recheck",
+      );
+      const finalityRecheck = parseBlock(
+        await client.getBlock({ blockNumber: finalityBlockNumber }),
+        "finality block recheck",
+      );
+      if (inclusionRecheck.hash !== inclusionBlock.hash ||
+          finalityRecheck.hash !== finalityBlock.hash ||
+          finalityRecheck.timestamp !== finalityBlock.timestamp) {
+        throw new TransientError(
+          "evm finality: canonical block set changed during finality verification",
+        );
+      }
+      return { receipt, finalityBlock, candidate: candidates[0]! };
+    },
+  );
+
+  const finalitySeconds = safeNumber(snapshot.finalityBlock.timestamp, "finality timestamp");
   const finalityObservedAt = finalitySeconds * 1_000;
   if (!Number.isSafeInteger(finalityObservedAt)) {
     return fail("finality timestamp is outside the safe millisecond range");
@@ -305,8 +309,8 @@ export async function verifyEvmTransferFinality(
   return {
     chainId: request.chainId,
     transactionHash: transactionHash.slice(2),
-    logIndex: candidates[0]!.logIndex,
-    blockNumber: safeNumber(receipt.blockNumber, "receipt block number"),
+    logIndex: snapshot.candidate.logIndex,
+    blockNumber: safeNumber(snapshot.receipt.blockNumber, "receipt block number"),
     confirmations: request.minimumConfirmations,
     finalityObservedAt,
   };
