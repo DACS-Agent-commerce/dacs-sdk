@@ -218,19 +218,30 @@ import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
 import {
   DACS_LIVE_DOCTOR_CHECK_IDS,
   DACS_NODE_LIVE_PROFILE,
+  createDacsDemosActorRuntimeV1,
+  createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
+  establishDacsRoleServiceReadinessV1,
   inspectDacsNodePackageIntegrityV1,
+  loadDacsSecretV1,
+  runDacsRoleTransportDiagnosticV1,
   runDacsLiveDoctorV1,
+  type DacsDemosActorRuntimeV1,
   type DacsLiveDoctorPhaseV1,
   type DacsLiveDoctorProbeResultV1,
   type DacsLiveDoctorProbesV1,
   type DacsLiveDoctorReportV1,
   type DacsLiveDoctorScopeV1,
 } from "@kynesyslabs/dacs-node";
-import { inspectExistingDacsNodeSqliteDatabaseV1 } from "@kynesyslabs/dacs-node/sqlite";
+import {
+  inspectExistingDacsNodeSqliteDatabaseV1,
+  openDacsNodeSqliteDatabase,
+  type DacsNodeSqliteDatabase,
+} from "@kynesyslabs/dacs-node/sqlite";
 
 import {
   actorDatabasePath,
+  actorSecretPath,
   actorSecretPaths,
   configuredAuthority,
   loadRoleConfig,
@@ -240,6 +251,15 @@ import {
 const ROLES = Object.freeze(["buyer", "seller"] as const);
 const AUTHORITY_RE = /^did:demos:agent:[0-9a-f]{64}$/;
 
+interface DoctorActor {
+  role: "buyer" | "seller";
+  authority: string;
+  runtime: Readonly<DacsDemosActorRuntimeV1>;
+  database?: DacsNodeSqliteDatabase;
+}
+
+type DoctorActors = Readonly<Record<"buyer" | "seller", Readonly<DoctorActor>>>;
+
 function pass(facts?: Readonly<Record<string, string | number | boolean | null>>) {
   return Object.freeze({ status: "pass" as const, ...(facts === undefined ? {} : { facts }) });
 }
@@ -248,6 +268,55 @@ function fail(reasonCode: string) {
 }
 function blocked(reasonCode: string) {
   return Object.freeze({ status: "blocked" as const, reasonCode });
+}
+
+async function openDoctorActors(
+  phase: DacsLiveDoctorPhaseV1,
+): Promise<DoctorActors | undefined> {
+  const opened: DoctorActor[] = [];
+  try {
+    for (const role of ROLES) {
+      const authority = configuredAuthority(role);
+      const secretPath = actorSecretPath(role, "demos-identity");
+      if (authority === undefined || secretPath === undefined) {
+        throw new Error("doctor actor prerequisite unavailable");
+      }
+      const secret = await loadDacsSecretV1({
+        name: role + "-doctor-demos-identity",
+        mode: "live-demos",
+        filePath: secretPath,
+      });
+      const runtime = await createDacsDemosActorRuntimeV1({
+        config: loadRoleConfig(role),
+        role,
+        authority,
+        demosIdentity: secret,
+      });
+      const database = phase === "post-start"
+        ? await openDacsNodeSqliteDatabase({
+            databasePath: actorDatabasePath(role),
+            mode: "live-demos",
+            profile: DACS_NODE_LIVE_PROFILE,
+            role,
+            authority,
+          })
+        : undefined;
+      opened.push({ role, authority, runtime, ...(database === undefined ? {} : { database }) });
+    }
+    const buyer = opened.find((actor) => actor.role === "buyer");
+    const seller = opened.find((actor) => actor.role === "seller");
+    return buyer === undefined || seller === undefined
+      ? undefined : Object.freeze({ buyer, seller });
+  } catch {
+    for (const actor of opened) actor.database?.close();
+    return undefined;
+  }
+}
+
+function closeDoctorActors(actors: DoctorActors | undefined): void {
+  if (actors === undefined) return;
+  actors.buyer.database?.close();
+  actors.seller.database?.close();
 }
 
 function supportedNode(): boolean {
@@ -385,8 +454,9 @@ async function dockerRuntime(
   });
 }
 
-function baseProbes(): DacsLiveDoctorProbesV1 {
+function baseProbes(actors: DoctorActors | undefined): DacsLiveDoctorProbesV1 {
   const unavailable = () => blocked("reviewed-live-adapter-not-configured");
+  const actorUnavailable = () => blocked("role-demos-runtime-unavailable");
   return Object.freeze({
     "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
       : fail("node-version-unsupported"),
@@ -406,14 +476,35 @@ function baseProbes(): DacsLiveDoctorProbesV1 {
     "local.sqlite": sqlite,
     "local.secrets": secrets,
     "local.authority-separation": authorities,
-    "local.transport-identities": unavailable,
+    "local.transport-identities": actors === undefined ? actorUnavailable : async () => {
+      try {
+        await Promise.all([
+          actors.buyer.runtime.adapter.resolveIdentity(actors.seller.authority),
+          actors.seller.runtime.adapter.resolveIdentity(actors.buyer.authority),
+        ]);
+        return pass({ directionCount: 2 });
+      } catch { return fail("transport-identity-resolution-failed"); }
+    },
     "local.deployment-runtime": dockerRuntime,
-    "demos.rpc-chain": unavailable,
+    "demos.rpc-chain": actors === undefined ? actorUnavailable : async () => {
+      try {
+        await Promise.all([actors.buyer.runtime.networkInfo(), actors.seller.runtime.networkInfo()]);
+        return pass({ actorCount: 2 });
+      } catch { return fail("demos-rpc-unavailable"); }
+    },
     "demos.storage-read": unavailable,
     "demos.binding-resolution": unavailable,
-    "demos.nonce": unavailable,
+    "demos.nonce": actors === undefined ? actorUnavailable : async () => {
+      try {
+        await Promise.all([actors.buyer.runtime.addressNonce(), actors.seller.runtime.addressNonce()]);
+        return pass({ actorCount: 2 });
+      } catch { return fail("demos-nonce-unavailable"); }
+    },
     "demos.balance-fees": unavailable,
-    "demos.wallet-identity": unavailable,
+    "demos.wallet-identity": actors === undefined ? actorUnavailable : () =>
+      actors.buyer.runtime.authority === actors.buyer.authority &&
+        actors.seller.runtime.authority === actors.seller.authority
+        ? pass({ actorCount: 2 }) : fail("demos-wallet-identity-mismatch"),
     "demos.listing-candidate": unavailable,
     "demos.listing-existing": unavailable,
     "demos.engagement-endpoint-shape": () => {
@@ -440,29 +531,76 @@ export async function runGeneratedDoctor(
   phase: DacsLiveDoctorPhaseV1,
   scope: DacsLiveDoctorScopeV1,
 ): Promise<Readonly<DacsLiveDoctorReportV1>> {
-  const service = phase === "post-start" ? createDacsRoleServiceDoctorProbesV1({
-    targets: [
-      { role: "buyer", endpoint: serviceEndpoint("buyer") },
-      { role: "seller", endpoint: serviceEndpoint("seller") },
-    ],
-    sdkVersion: VERSION,
-    standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
-    profile: DACS_NODE_LIVE_PROFILE,
-  }) : {};
-  const probes = Object.freeze({ ...baseProbes(), ...service });
-  const report = await runDacsLiveDoctorV1({
-    phase,
-    scope,
-    sdkVersion: VERSION,
-    standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
-    profile: DACS_NODE_LIVE_PROFILE,
-    probes,
-    probeTimeoutMs: 5_000,
-  });
-  if (report.checks.length !== DACS_LIVE_DOCTOR_CHECK_IDS.length) {
-    throw new Error("doctor-catalog-incomplete");
+  const actors = await openDoctorActors(phase);
+  try {
+    const service = phase === "post-start" ? createDacsRoleServiceDoctorProbesV1({
+      targets: [
+        { role: "buyer", endpoint: serviceEndpoint("buyer") },
+        { role: "seller", endpoint: serviceEndpoint("seller") },
+      ],
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      profile: DACS_NODE_LIVE_PROFILE,
+      ...(actors === undefined ? {} : {
+        transportDiagnostic: (role: "buyer" | "seller") => {
+          const actor = actors[role];
+          if (actor.database === undefined) {
+            throw new Error("doctor actor database unavailable");
+          }
+          const peerRole = role === "buyer" ? "seller" : "buyer";
+          return runDacsRoleTransportDiagnosticV1({
+            role,
+            database: actor.database,
+            demos: actor.runtime,
+            peerAuthority: actors[peerRole].authority,
+            peerEndpoint: new URL(
+              "/dacs-transport/v1/messages",
+              serviceEndpoint(peerRole),
+            ).toString(),
+            workerId: role + "-doctor-" + String(process.pid),
+          });
+        },
+      }),
+    }) : {};
+    const probes = Object.freeze({ ...baseProbes(actors), ...service });
+    const doctor = {
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      profile: DACS_NODE_LIVE_PROFILE,
+      probes,
+      probeTimeoutMs: 5_000,
+    };
+    const report = phase === "post-start" && scope === "start" && actors !== undefined &&
+        actors.buyer.database !== undefined && actors.seller.database !== undefined
+      ? (await establishDacsRoleServiceReadinessV1({
+          actors: [
+            {
+              role: "buyer",
+              latch: createDacsRoleReadinessLatchV1({
+                config: loadRoleConfig("buyer"),
+                authority: actors.buyer.authority,
+              }),
+              sign: actors.buyer.runtime.signTransportEnvelope,
+            },
+            {
+              role: "seller",
+              latch: createDacsRoleReadinessLatchV1({
+                config: loadRoleConfig("seller"),
+                authority: actors.seller.authority,
+              }),
+              sign: actors.seller.runtime.signTransportEnvelope,
+            },
+          ],
+          doctor,
+        })).report
+      : await runDacsLiveDoctorV1({ phase, scope, ...doctor });
+    if (report.checks.length !== DACS_LIVE_DOCTOR_CHECK_IDS.length) {
+      throw new Error("doctor-catalog-incomplete");
+    }
+    return report;
+  } finally {
+    closeDoctorActors(actors);
   }
-  return report;
 }
 `;
 
