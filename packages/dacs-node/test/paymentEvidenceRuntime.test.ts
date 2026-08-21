@@ -25,6 +25,7 @@ import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import {
   createDacsBuyerPaymentEvidenceRuntimeV1,
   createDacsSellerPaymentEvidenceRuntimeV1,
+  type DacsSellerPaymentEvidenceRuntimeV1,
 } from "../src/paymentEvidenceRuntime.js";
 import type {
   DacsLiveRoleInboundOperationContextV1,
@@ -35,6 +36,8 @@ import {
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
 import type { DacsHttpAuthenticatedEnvelopeV1 } from "../src/transport/envelope.js";
+import { createDacsSellerSettlementPublicationTrackV1 } from
+  "../src/sellerSettlementRuntime.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"1".repeat(64)}`;
@@ -312,5 +315,63 @@ describe("live payment-evidence runtime", () => {
       status: "final",
       outcome: "success",
     });
+  });
+
+  it("fences seller publication composition and maps invalid input to operator action", async () => {
+    const sellerDatabase = await open("seller");
+    const inspectPermit = vi.fn();
+    const flushOutboundRequests = vi.fn(async () => ({ status: "pending" as const }));
+    const paymentEvidence = {
+      validatePayload: vi.fn(),
+      anchorEvidence: vi.fn(),
+      flushOutboundRequests,
+      handleMessage: vi.fn(),
+    } as unknown as DacsSellerPaymentEvidenceRuntimeV1;
+    const context = {
+      role: "seller",
+      authority: SELLER,
+      peerAuthority: BUYER,
+      database: sellerDatabase,
+      commerceStores: {
+        role: "seller",
+        x402Settlement: {},
+        sellerReceipts: { inspectPermit },
+      },
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const resolvePublication = vi.fn(async () => ({
+      request: {},
+      dependencies: {
+        evidenceSigner: {
+          algorithm: "ed25519" as const,
+          signer: SELLER,
+          sign: vi.fn(),
+        },
+      },
+    })) as unknown as Parameters<
+      typeof createDacsSellerSettlementPublicationTrackV1
+    >[0]["resolvePublication"];
+    const track = createDacsSellerSettlementPublicationTrackV1({
+      context,
+      paymentEvidence,
+      resolvePublication,
+      authorizePublished: () => true,
+    });
+    const validOperation = operation(order("seller"));
+    const wrongTrack = {
+      ...validOperation,
+      fence: { ...validOperation.fence, track: "delivery" as const },
+    };
+
+    await expect(track(wrongTrack)).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "seller-settlement-track-binding-mismatch",
+    });
+    expect(resolvePublication).not.toHaveBeenCalled();
+    await expect(track(validOperation)).resolves.toMatchObject({
+      status: "operator-action",
+      reasonCode: expect.stringContaining("seller-settlement"),
+    });
+    expect(flushOutboundRequests).toHaveBeenCalledOnce();
+    expect(inspectPermit).not.toHaveBeenCalled();
   });
 });

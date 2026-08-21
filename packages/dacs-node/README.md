@@ -76,6 +76,15 @@ acknowledged. Evidence verification, native publication and receipt
 verification remain explicit SDK adapter callbacks; the host does not replace
 those security boundaries.
 
+`createDacsSellerSettlementPublicationTrackV1()` composes the seller side with
+the SDK's normative `publishSellerSessionSettlement()` state machine. It reads
+the consumed permit from the runtime-owned seller receipt store, reasserts the
+outer coordinator fence before signing, and supplies the buyer-owned handshake
+as the publication adapter. The seller therefore remains the evidence author
+while the buyer owns the PC-7 Demos write. The track becomes final only after
+the exact evidence, buyer-written receipt and independently resolved readback
+have all passed the SDK publisher's checks.
+
 Live buyer and seller databases also expose `createHttpInboxStore()` and
 `createHttpOutboxStore()`. The inbox atomically retains the complete canonical
 signed envelope, authentication and identity-evidence hashes before an action
