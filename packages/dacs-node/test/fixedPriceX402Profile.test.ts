@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { sign } from "node:crypto";
 
 import {
+  commitFixedPriceAgreement,
   createFixedPriceAgreementSignatureContribution,
   createFixedPriceAgreementSigningPlan,
   deriveFixedPriceAgreement,
+  finalizeFixedPriceAgreementContributions,
   fixedPriceAgreementLogicalAddress,
 } from "@kynesyslabs/dacs";
 import type { Listing } from "@kynesyslabs/dacs/artifacts";
@@ -24,16 +26,27 @@ import {
   fixedPriceX402OrderLocalBindingHash,
 } from "@kynesyslabs/dacs/commerce";
 import {
+  ed25519Verify,
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
 } from "@kynesyslabs/dacs/crypto";
-import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
+import { demosAgentClaimRef, identityBundleHash } from "@kynesyslabs/dacs/identity";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const dependencies = vi.hoisted(() => ({
   resolveListing: vi.fn(),
   protocolBinding: vi.fn(),
+  railProvenance: new WeakMap<object, Readonly<Record<string, unknown>>>(),
+}));
+
+vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@kynesyslabs/dacs")>()),
+  isAuthenticatedRailDefinition: (value: unknown) =>
+    typeof value === "object" && value !== null && dependencies.railProvenance.has(value),
+  getAuthenticatedRailProvenance: (value: unknown) =>
+    typeof value === "object" && value !== null
+      ? dependencies.railProvenance.get(value) ?? null : null,
 }));
 
 vi.mock("../src/listingDoctor.js", async (importOriginal) => ({
@@ -50,9 +63,12 @@ import {
   DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
   captureDacsFixedPriceX402ApplicationV1,
   createDacsFixedPriceX402BuyerAgreementPolicyV1,
+  createDacsFixedPriceX402BuyerPaymentPolicyV1,
   createDacsFixedPriceX402SellerAgreementPolicyV1,
   createDacsFixedPriceX402SellerSessionPolicyV1,
   loadDacsFixedPriceX402CommitmentResultV1,
+  loadDacsFixedPriceX402BuyerAgreementPublicationV1,
+  loadDacsFixedPriceX402BuyerCommitmentResultV1,
   loadDacsFixedPriceX402SellerAdmissionV1,
   resolveDacsFixedPriceX402BuyerRequirementsV1,
 } from "../src/fixedPriceX402Profile.js";
@@ -69,6 +85,7 @@ const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 11));
 const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 22));
 const BUYER = demosAgentClaimRef(rawPublicKey(publicKeyFromSeed(BUYER_SEED)));
 const SELLER = demosAgentClaimRef(rawPublicKey(publicKeyFromSeed(SELLER_SEED)));
+const PAYER = `0x${"55".repeat(20)}`;
 const roots: string[] = [];
 const databases: DacsNodeSqliteDatabase[] = [];
 
@@ -173,15 +190,56 @@ function application(exactListing = listing()) {
   };
 }
 
-function identity(authority: string) {
+function authenticatedRail() {
+  const rail = Object.freeze({
+    railVersion: 2,
+    railId: "x402:test",
+    railType: "x402" as const,
+    asset: {
+      kind: "erc20" as const,
+      chainId: 84532,
+      contract: `0x${"44".repeat(20)}`,
+      symbol: "USDC",
+      decimals: 6,
+    },
+    network: {
+      kind: "x402-resource" as const,
+      resourceBaseUrl: "https://seller.example/dacs/x402",
+    },
+    phaseHandler: "pay-x402" as const,
+    parameters: { authorization: "eip-3009", finalityBlocks: 1 },
+    availability: "live" as const,
+    governance: {
+      proposedBy: SELLER,
+      acceptedAt: NOW - 1_000,
+      anchoring: "single-signer" as const,
+    },
+    signature: {
+      algorithm: "ed25519" as const,
+      signer: SELLER,
+      value: Buffer.alloc(64, 4).toString("base64url"),
+    },
+  });
+  dependencies.railProvenance.set(rail, Object.freeze({
+    indexContentHash: "1".repeat(64),
+    definitionContentHash: "2".repeat(64),
+  }));
+  return rail;
+}
+
+function identity(authority: string, linkedClaim?: string) {
+  const claims = [authority, ...(linkedClaim === undefined ? [] : [linkedClaim])];
   return {
     bundleVersion: "1" as const,
     presentedBy: authority,
     presentedAt: NOW - 500,
-    claims: [{ ref: authority }],
+    claims: claims.map((ref) => ({ ref })),
     presentation: {
       kind: "per-claim" as const,
-      signatures: [{ ref: authority, signature: Buffer.alloc(64, 7).toString("base64url") }],
+      signatures: claims.map((ref) => ({
+        ref,
+        signature: Buffer.alloc(64, 7).toString("base64url"),
+      })),
     },
   };
 }
@@ -198,12 +256,12 @@ function vetRef(subject: "buyer" | "seller", signer: string) {
 }
 
 function operation(record: Readonly<{ role: "buyer" | "seller"; jobId: string;
-  bindingHash: string; localBindingHash: string }>) {
+  bindingHash: string; localBindingHash: string }>, track = "agreement") {
   return {
     order: record,
     fence: {
       role: record.role,
-      track: "agreement",
+      track,
       jobId: record.jobId,
       bindingHash: record.bindingHash,
       localBindingHash: record.localBindingHash,
@@ -337,6 +395,7 @@ async function buyerFixture() {
   const loaded = await store.load("buyer", JOB_ID);
   if (loaded.status !== "ok") throw new Error("buyer order missing");
   const anchors = new Map<string, Readonly<Record<string, unknown>>>();
+  const namedAnchors = new Map<string, string>();
   let loseFirstResponse = false;
   const anchorWriteOnce = vi.fn(async (
     logicalAddress: string,
@@ -348,6 +407,7 @@ async function buyerFixture() {
       throw new Error("anchor conflict");
     }
     anchors.set(address, structuredClone(artifact));
+    namedAnchors.set(logicalAddress, address);
     if (loseFirstResponse) {
       loseFirstResponse = false;
       throw new Error("response lost");
@@ -358,6 +418,7 @@ async function buyerFixture() {
     role: "buyer",
     authority: BUYER,
     peerAuthority: SELLER,
+    config: { rail: { requestedNetwork: "eip155:84532" } },
     database,
     demos: {
       adapter: {
@@ -379,33 +440,120 @@ async function buyerFixture() {
           state: "finalized" as const,
           observationDisposition: "established" as const,
           observedAt: NOW + 1,
-          blockRef: { id: "block:42", height: "42" },
+          blockRef: { id: "block:42", height: "42", timestamp: NOW + 10 },
           evidence: { kind: "demos-bft-write-proof-v1", value: "proof" },
         })),
         verifyDemosAnchorReceipt: vi.fn(async () => true),
         readAnchor: vi.fn(async (address: string) =>
           structuredClone(anchors.get(address) ?? null)),
+        resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
+          const address = namedAnchors.get(logicalAddress);
+          return address === undefined
+            ? { status: "absent" as const }
+            : { status: "present" as const, address };
+        }),
+      },
+    },
+    evm: {
+      role: "buyer",
+      address: PAYER,
+      runtime: {
+        network: "eip155:84532",
+        chainId: 84532,
+        payerAddress: PAYER,
       },
     },
   } as never;
+  const buyerIdentity = identity(BUYER, `cci-xm:evm:84532:${PAYER}`);
+  const sellerIdentity = identity(SELLER);
+  function vetProduction(
+    evaluatedIdentity: ReturnType<typeof identity>,
+    evaluatedParty: string,
+    verifier: string,
+    subject: "buyer" | "seller",
+  ) {
+    const requirement = subject === "buyer"
+      ? app.listing.buyerRequirement
+      : DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1;
+    const unsigned = {
+      recordVersion: "1" as const,
+      jobId: JOB_ID,
+      evaluatedParty,
+      bundleHash: identityBundleHash(evaluatedIdentity),
+      requirementHash: sha256Hex(canonicalize(requirement)),
+      freshness: [],
+      supplementary: [],
+      dealSpecific: [],
+      overallDecision: "pass" as const,
+      generatedAt: NOW,
+    };
+    const record = {
+      ...unsigned,
+      signature: {
+        algorithm: "ed25519" as const,
+        signer: verifier,
+        value: Buffer.alloc(64, subject === "buyer" ? 8 : 9).toString("base64url"),
+      },
+    };
+    const recordRef = {
+      anchor: { kind: "storage-program" as const,
+        locator: `dacs2:composite:${JOB_ID}:${evaluatedParty}` },
+      contentHash: contentHash(record),
+      signer: verifier,
+    };
+    return {
+      record,
+      recordRef,
+      anchorReceipt: {
+        receiptVersion: "1" as const,
+        substrate: "demos" as const,
+        finalityProfile: "demos-bft-confirmed-native-read",
+        logicalAddress: recordRef.anchor.locator,
+        nativeAddress: `stor-${sha256Hex(subject).slice(0, 40)}`,
+        contentHash: recordRef.contentHash,
+        transactionRef: { kind: "demos-storage-program", value: `tx:${subject}` },
+        writer: verifier,
+        state: "finalized" as const,
+        observationDisposition: "established" as const,
+        observedAt: NOW,
+        blockRef: { id: `block:${subject}`, height: "40", timestamp: NOW },
+        evidence: { kind: "demos-bft-write-proof-v1", value: "proof" },
+      },
+    };
+  }
+  const buyerVet = vetProduction(buyerIdentity, BUYER, SELLER, "buyer");
+  const sellerVet = vetProduction(sellerIdentity, SELLER, BUYER, "seller");
   const session = {
     factsVersion: "1",
     role: "buyer",
     jobId: JOB_ID,
     localBindingHash: loaded.record.localBindingHash,
-    buyerIdentity: identity(BUYER),
-    sellerIdentity: identity(SELLER),
+    buyerIdentity,
+    sellerIdentity,
     buyerRequirementHash: sha256Hex(canonicalize(app.listing.buyerRequirement)),
-    buyerVetRecord: {},
-    buyerVetRef: vetRef("buyer", SELLER),
-    buyerVetReceipt: {},
+    buyerVetRecord: buyerVet.record,
+    buyerVetRef: buyerVet.recordRef,
+    buyerVetReceipt: buyerVet.anchorReceipt,
     sellerRequirementHash: sha256Hex(canonicalize(
       DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
     )),
-    sellerVetRecord: {},
-    sellerVetRef: vetRef("seller", BUYER),
-    sellerVetReceipt: {},
+    sellerVetRecord: sellerVet.record,
+    sellerVetRef: sellerVet.recordRef,
+    sellerVetReceipt: sellerVet.anchorReceipt,
   } as never;
+  const factsId = sha256Hex(`dacs-live-session-agreement-facts:v1:${canonicalize({
+    role: "buyer",
+    jobId: JOB_ID,
+  })}`);
+  const factsPut = database.putEffectIntent({
+    kind: "session",
+    effectId: factsId,
+    bindingHash: loaded.record.localBindingHash,
+    input: session,
+    idempotencyKey: factsId,
+    jobId: JOB_ID,
+  });
+  if (factsPut.status === "conflict") throw new Error("buyer facts conflict");
   return {
     database,
     pair,
@@ -416,6 +564,12 @@ async function buyerFixture() {
     context,
     session,
     anchorWriteOnce,
+    publishRemote(logicalAddress: string, artifact: Readonly<Record<string, unknown>>) {
+      const address = `stor-${sha256Hex(logicalAddress).slice(0, 40)}`;
+      anchors.set(address, structuredClone(artifact));
+      namedAnchors.set(logicalAddress, address);
+      return address;
+    },
     loseNextResponse() { loseFirstResponse = true; },
   };
 }
@@ -595,6 +749,263 @@ describe("fixed-price x402 generated profile policy", () => {
         anchorReceipt: reconciled.value.anchorReceipt,
       },
     })).toBe(true);
+  });
+
+  it("authenticates the finalized commitment before deriving exact buyer x402 authority", async () => {
+    const value = await buyerFixture();
+    const agreementPolicy = createDacsFixedPriceX402BuyerAgreementPolicyV1({
+      context: value.context,
+      now: () => NOW,
+    });
+    const draft = agreementPolicy.buildDraft({
+      operation: value.operation,
+      retained: value.retained,
+      session: value.session,
+    });
+    const plan = createFixedPriceAgreementSigningPlan(draft);
+    const [buyerContribution, sellerContribution] = await Promise.all([
+      createFixedPriceAgreementSignatureContribution(plan, "buyer", {
+        party: BUYER,
+        algorithm: "ed25519",
+        sign: (bytes) => sign(null, bytes, privateKeyFromSeed(BUYER_SEED)),
+      }),
+      createFixedPriceAgreementSignatureContribution(plan, "seller", {
+        party: SELLER,
+        algorithm: "ed25519",
+        sign: (bytes) => sign(null, bytes, privateKeyFromSeed(SELLER_SEED)),
+      }),
+    ]);
+    const agreement = await finalizeFixedPriceAgreementContributions(
+      plan,
+      [buyerContribution, sellerContribution],
+      agreementPolicy.verifyContribution,
+    );
+    const agreementHash = contentHash(agreement as unknown as Record<string, unknown>);
+    const logicalAddress = fixedPriceAgreementLogicalAddress(JOB_ID);
+    await expect(agreementPolicy.anchor.anchorAgreement({
+      logicalAddress,
+      agreementHash,
+      artifact: agreement,
+    }, {} as never)).resolves.toEqual({ disposition: "submitted" });
+    await expect(loadDacsFixedPriceX402BuyerAgreementPublicationV1(
+      value.context,
+      value.record,
+    )).resolves.toMatchObject({ agreementHash, artifact: agreement });
+
+    const rail = authenticatedRail();
+    const paymentPolicy = createDacsFixedPriceX402BuyerPaymentPolicyV1({
+      context: value.context,
+      rail: rail as never,
+      tokenDomain: { name: "USD Coin", version: "2" },
+      maxTimeoutSeconds: 120,
+    });
+    const paymentOperation = operation(value.record, "payment");
+    await expect(paymentPolicy.resolvePreparation({
+      operation: paymentOperation,
+      retained: value.retained,
+    } as never)).rejects.toMatchObject({
+      status: "pending-retry",
+      reasonCode: "fixed-price-commitment-pending",
+    });
+
+    const commitmentAgreement = JSON.parse(canonicalize(agreement));
+    const commitment = await commitFixedPriceAgreement({
+      agreement: commitmentAgreement,
+      verifiedListing: {
+        disposition: "verified",
+        listing: JSON.parse(canonicalize(value.app.listing)),
+        pin: JSON.parse(canonicalize(agreement.listingRef)),
+      },
+      session: {
+        jobId: JOB_ID,
+        listingRef: JSON.parse(canonicalize(agreement.listingRef)),
+        phaseKind: "commit-payee-bound-agreement",
+        orchestrator: SELLER,
+        buyer: {
+          primaryClaim: BUYER,
+          bundleHash: identityBundleHash(value.session.buyerIdentity),
+          vetRecordRef: JSON.parse(canonicalize(value.session.buyerVetRef)),
+        },
+        seller: {
+          primaryClaim: SELLER,
+          bundleHash: identityBundleHash(value.session.sellerIdentity),
+          vetRecordRef: JSON.parse(canonicalize(value.session.sellerVetRef)),
+        },
+      },
+      createdAt: NOW + 5,
+      commitmentSigner: {
+        algorithm: "ed25519",
+        signer: SELLER,
+        sign: (bytes) => sign(null, bytes, privateKeyFromSeed(SELLER_SEED)),
+      },
+    }, {
+      resolve: async () => ({ disposition: "absent" }),
+      submit: async (commitmentAddress, record) => {
+        const address = value.publishRemote(
+          commitmentAddress,
+          record as unknown as Record<string, unknown>,
+        );
+        return {
+          record,
+          nativeAddress: address,
+          anchorTxRef: {
+            kind: "storage-program",
+            address,
+            writeTxHash: `tx:${address}`,
+          },
+          anchorReceipt: {
+            receiptVersion: "1",
+            substrate: "demos",
+            finalityProfile: "demos-bft-confirmed-native-read",
+            logicalAddress: commitmentAddress,
+            nativeAddress: address,
+            contentHash: contentHash(record as unknown as Record<string, unknown>),
+            transactionRef: { kind: "demos-storage-program", value: `tx:${address}` },
+            writer: SELLER,
+            state: "finalized",
+            observationDisposition: "established",
+            observedAt: NOW + 10,
+            blockRef: { id: "block:commitment", height: "43", timestamp: NOW + 10 },
+            evidence: { kind: "demos-bft-write-proof-v1", value: "proof" },
+          },
+        };
+      },
+      verifyAnchorReceipt: async () => "valid",
+    }, ({ signer, algorithm, value: signature, signedBytes }) => {
+      const seed = signer === BUYER ? BUYER_SEED : signer === SELLER ? SELLER_SEED : null;
+      if (seed === null || algorithm !== "ed25519") return "invalid";
+      return ed25519Verify(
+        signedBytes,
+        Uint8Array.from(Buffer.from(signature, "base64url")),
+        publicKeyFromSeed(seed),
+      ) ? "valid" : "invalid";
+    });
+    expect(commitment.recordKind).toBe("finality");
+
+    const preparation = await paymentPolicy.resolvePreparation({
+      operation: paymentOperation,
+      retained: value.retained,
+    } as never);
+    expect(preparation).toEqual({
+      authority: {
+        jobId: JOB_ID,
+        phaseIndex: 2,
+        railId: "x402:test",
+        railVersion: "2",
+        railDescriptorHash: "2".repeat(64),
+        agreementHash,
+        termsHash: sha256Hex(canonicalize(agreement.terms)),
+        sessionBindingHash: sha256Hex(canonicalize({
+          jobId: JOB_ID,
+          payer: PAYER,
+          commitment: `dacs3:commit:${JOB_ID}`,
+        })),
+        network: "eip155:84532",
+        payer: PAYER,
+        payee: `0x${"33".repeat(20)}`,
+        asset: `0x${"44".repeat(20)}`,
+        amount: "1000000",
+        httpResource: "https://seller.example/dacs/x402",
+        method: "GET",
+      },
+      expectedRequirements: {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: `0x${"44".repeat(20)}`,
+        payTo: `0x${"33".repeat(20)}`,
+        maxTimeoutSeconds: 120,
+        extra: {
+          name: "USD Coin",
+          version: "2",
+          assetTransferMethod: "eip3009",
+        },
+      },
+    });
+    expect(loadDacsFixedPriceX402BuyerCommitmentResultV1(
+      value.context,
+      value.record,
+    )).toMatchObject({ agreementHash, commitment: { recordKind: "finality" } });
+    const intent = {
+      ...preparation.authority,
+      intentVersion: "1",
+      settlementKey: "settlement:test",
+      bindingHash: "f".repeat(64),
+      chosenRequirements: preparation.expectedRequirements,
+      signedPaymentPayload: {},
+      paymentHeader: { name: "PAYMENT-SIGNATURE", value: "opaque" },
+      authorizationNonce: `0x${"1".repeat(64)}`,
+    } as never;
+    const authorization = {
+      from: PAYER,
+      to: `0x${"33".repeat(20)}`,
+      value: "1000000",
+      validAfter: String(Math.floor(NOW / 1_000) - 1),
+      validBefore: String(Math.floor(agreement.terms.deadline / 1_000)),
+      nonce: `0x${"1".repeat(64)}`,
+      signature: `0x${"1".repeat(130)}`,
+      domain: {
+        name: "USD Coin",
+        version: "2",
+        chainId: 84532,
+        verifyingContract: `0x${"44".repeat(20)}`,
+      },
+    } as const;
+    await expect(paymentPolicy.authorizeIntent({
+      intent,
+      authorization,
+      fence: {} as never,
+    })).resolves.toEqual({ disposition: "authorized", bindingHash: "f".repeat(64) });
+    await expect(paymentPolicy.authorizeIntent({
+      intent,
+      authorization: {
+        ...authorization,
+        validBefore: String(Math.floor(agreement.terms.deadline / 1_000) + 1),
+      },
+      fence: {} as never,
+    })).resolves.toMatchObject({
+      disposition: "rejected",
+      reason: "payment-authority-mismatch",
+    });
+    expect(paymentPolicy.authorizePreparedIntent({
+      operation: paymentOperation,
+      retained: value.retained,
+      intent,
+    } as never)).toBe(true);
+    expect(paymentPolicy.authorizePreparedIntent({
+      operation: paymentOperation,
+      retained: value.retained,
+      intent: { ...intent, amount: "1000001" },
+    } as never)).toBe(false);
+
+    vi.spyOn(value.database, "readTime").mockReturnValue(agreement.terms.deadline + 1);
+    await expect(paymentPolicy.authorizeIntent({
+      intent,
+      authorization,
+      fence: {} as never,
+    })).resolves.toEqual({ disposition: "authorized", bindingHash: "f".repeat(64) });
+    expect(paymentPolicy.authorizePreparedIntent({
+      operation: paymentOperation,
+      retained: value.retained,
+      intent,
+    } as never)).toBe(false);
+  });
+
+  it("requires operator action when the completed buyer Agreement is unavailable", async () => {
+    const value = await buyerFixture();
+    const paymentPolicy = createDacsFixedPriceX402BuyerPaymentPolicyV1({
+      context: value.context,
+      rail: authenticatedRail() as never,
+      tokenDomain: { name: "USD Coin", version: "2" },
+      maxTimeoutSeconds: 120,
+    });
+    await expect(paymentPolicy.resolvePreparation({
+      operation: operation(value.record, "payment"),
+      retained: value.retained,
+    } as never)).rejects.toMatchObject({
+      status: "operator-action",
+      reasonCode: "fixed-price-agreement-authority-invalid",
+    });
   });
 
   it("reconstructs the admitted seller Agreement instead of trusting the proposal", async () => {

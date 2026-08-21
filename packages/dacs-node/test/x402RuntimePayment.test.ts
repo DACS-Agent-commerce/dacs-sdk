@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DACS_NODE_LIVE_PROFILE,
+  DacsLiveEffectInputControlError,
   createDacsX402BuyerRuntimePaymentTrackV1,
   putDacsLiveOrderInputV1,
   type DacsLiveRoleOperationContextV1,
@@ -216,5 +217,28 @@ describe("buyer runtime x402 payment composition", () => {
     expect(createChallengeClient).toHaveBeenCalledOnce();
     expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
     expect(challengeClient.createPaymentPayload).not.toHaveBeenCalled();
+
+    const controlledTrack = createDacsX402BuyerRuntimePaymentTrackV1({
+      context,
+      workerId: "buyer-worker",
+      minimumConfirmations: 1,
+      authorizationSearchFromBlock: 1,
+      resolvePreparation: () => {
+        throw new DacsLiveEffectInputControlError(
+          "operator-action",
+          "agreement-authority-invalid",
+        );
+      },
+      authorizeIntent: async ({ intent }) => ({
+        disposition: "authorized" as const,
+        bindingHash: intent.bindingHash,
+      }),
+      authorizePreparedIntent: () => true,
+    });
+    await expect(controlledTrack(operation())).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "agreement-authority-invalid",
+    });
+    expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
   });
 });

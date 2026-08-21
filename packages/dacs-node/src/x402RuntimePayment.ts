@@ -158,7 +158,8 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       let preparation: Readonly<DacsX402BuyerRuntimePreparationV1>;
       try {
         preparation = await options.resolvePreparation({ operation, retained });
-      } catch {
+      } catch (error) {
+        if (error instanceof DacsLiveEffectInputControlError) throw error;
         throw new DacsLiveEffectInputControlError(
           "pending-retry",
           "x402-preparation-authority-unavailable",
