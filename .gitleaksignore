@@ -1,0 +1,29 @@
+# Reviewed historical fixtures and false positives. Keep entries exact: never
+# replace these fingerprints with path, rule, or commit-wide allowlists.
+2da38fcb55b1c6843cff3fac55549fe7f2f14526:test/integration/connectivity.smoke.test.ts:dacs-mnemonic-assignment:7
+e7bb2528a9c3ca42ce40f01d01ed04e841cf94f0:test/identity/claimReference.test.ts:generic-api-key:55
+2c83f6ffb0ac1c5939c3336377135bb588623c8c:test/identity/claimReference.test.ts:generic-api-key:87
+2f6b59c3971e5659473860fa16259678e59506b0:docs/live-e2e.md:generic-api-key:54
+7d887956952fc5ce848e206a9b72a49c1e161f5f:test/identity/claimReference.test.ts:generic-api-key:87
+45a8e2853794ade999e28f4e629a965d15096842:test/identity/claimReference.test.ts:generic-api-key:55
+f0448dba17f412eeff7afa3d325db06307bf6e72:test/registry/registry.test.ts:generic-api-key:885
+b7dae4c988a269d2fce36eee325b4d4ab509e54a:test/integration/funded-two-agent.e2e.test.ts:generic-api-key:198
+67e54fb1b79bb1d0936c6898c31727a567c42645:test/rails/x402BuyerDacsEvm.test.ts:generic-api-key:23
+890772eb8e428e7aa6d8a57031aac56f07c59122:test/rails/x402BuyerDacsEvm.test.ts:generic-api-key:21
+6e6ea77aa4b95293e5ce6d2573fd35532203c76f:test/integration/funded-two-agent.e2e.test.ts:generic-api-key:176
+4af2dd2c300fc9e0d7431835ec6619e7c6c4c912:test/agent/runFulfilment.test.ts:generic-api-key:3294
+01b8582843c8e2b96710fde264b974aecda67423:docs/live-e2e.md:generic-api-key:49
+acaa8a8d806520f3d2bdef688c9fef64b75218c4:test/registry/registry.test.ts:generic-api-key:136
+acaa8a8d806520f3d2bdef688c9fef64b75218c4:test/registry/registry.test.ts:generic-api-key:161
+acaa8a8d806520f3d2bdef688c9fef64b75218c4:test/registry/registry.test.ts:generic-api-key:187
+6a0db619170d404ad7ad797eee8f27a74457c8f3:test/rails/x402.test.ts:generic-api-key:19
+9ab177c04559fdfb2a4f563e09b18cc16b338d30:test/rails/x402.test.ts:generic-api-key:19
+a4133d206cf140e7fad431159eb4b97a39f881cb:test/cli/doctor.test.ts:generic-api-key:44
+56cc75d317d1a4929d136d932ca4aed8967b0144:test/cli/doctor.test.ts:generic-api-key:30
+01891589f8c65a3cf7b4a1da75617b2d547c7b1f:test/e2e/localChainTwoSidedBundle.e2e.test.ts:generic-api-key:43
+b19f5b184a6b946209afe0fb9c2af14079f1dbc3:test/registry/registry.test.ts:generic-api-key:135
+461b081275c5db4f5e7fdcba2bbf3968aa401e59:test/registry/registry.test.ts:generic-api-key:135
+f5266368c979ac9ab68dee1e93f43726f44aa47e:test/registry/registry.test.ts:generic-api-key:143
+f5266368c979ac9ab68dee1e93f43726f44aa47e:test/registry/registry.test.ts:generic-api-key:166
+f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api-key:9
+60afda953de7dfff972b9a029a5a32a5718f3107:test/registry/registry.test.ts:generic-api-key:21

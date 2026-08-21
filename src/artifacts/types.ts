@@ -693,24 +693,37 @@ export type SettlementFinalityModel =
   | "liquidity-tank"
   | "bft-final";
 
-/** Settlement finality model for a payment. */
-export type SettlementFinality =
+/** Commitment levels permitted by the DACS-4 §9.7 commitment-level model. */
+export type SettlementCommitmentLevel =
+  | "processed"
+  | "confirmed"
+  | "finalized";
+
+/**
+ * Optional model-specific DACS-4 §9.7 echoes reported by a settlement rail.
+ * Parameters belong only to their discriminated model; omission remains valid.
+ */
+export type SettlementFinalityParameters =
   | {
       model: "block-depth";
       finalityBlocks?: number;
-      finalityObservedAt: number;
+      finalityCommitmentLevel?: never;
     }
   | {
       model: "commitment-level";
-      finalityCommitmentLevel?: "processed" | "confirmed" | "finalized";
-      finalityObservedAt: number;
+      finalityBlocks?: never;
+      finalityCommitmentLevel?: SettlementCommitmentLevel;
     }
   | {
       model: Exclude<SettlementFinalityModel, "block-depth" | "commitment-level">;
       finalityBlocks?: never;
       finalityCommitmentLevel?: never;
-      finalityObservedAt: number;
     };
+
+/** Settlement finality model and observation time for a payment. */
+export type SettlementFinality = SettlementFinalityParameters & {
+  finalityObservedAt: number;
+};
 
 /** Algorithms permitted by the DACS v0.x ComponentSignature envelope. */
 export type ComponentSignatureAlgorithm =

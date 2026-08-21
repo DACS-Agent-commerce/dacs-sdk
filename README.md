@@ -4,9 +4,13 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 
 > **Status: pre-alpha / in development.** This repo is being extracted from the `agent-commerce-demo` reference implementation into a reusable library. See **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** for the v0.1 MVP build plan.
 
+> **Package availability:** the SDK packages are not yet published to npm. The
+> package commands in this repository build and verify release candidates; use a
+> source checkout until the first release is published.
+
 ## What this is
 
-`agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so any developer can `npm install` it and build their own DACS buyer/seller agents instead of wiring the protocol by hand.
+`agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.
 
 - **Optionally integrates with** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
 - **Tested against** the canonical conformance vectors in [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard) — the normative source of truth.
@@ -206,16 +210,71 @@ status, native-transfer body, and confirmed block. It derives finality time from
 the block rather than the transaction timestamp. The status API's `included`
 state remains the finality authority; an `included`, `confirmed`, or `finalized`
 transaction-body label is accepted only when that status and confirmed-block
-membership agree. The native-send payload disambiguates the denomination fork:
+membership agree. RPC time and decoded JSON size are bounded (15 seconds and
+64 MiB by default, both configurable), including the potentially larger
+confirmed-block response. The native-send payload disambiguates the denomination
+fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
-are converted at `1 DEM = 1,000,000,000 OS`. It trusts the configured Demos
+are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
+ed25519 owner address (the account whose nonce and balance are mutated), not an
+alternate active signing key in `content.from`. It trusts the configured Demos
 RPC's confirmed-block view; applications requiring an independent
 validator-quorum proof must inject a stronger `observeDemosTransfer` provider.
 
 The funded boundary test is disabled by default. It requires two independent
-Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), and
-`LIVE_PAY_DEM_CONFIRM=1` before it performs exactly one transfer:
+Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), an
+explicit `PAY_DEM_MAX_TOTAL_DEBIT_OS` (transfer plus confirmed fees, capped at
+3 DEM), a unique `LIVE_PAY_DEM_RUN_ID`, and `LIVE_PAY_DEM_CONFIRM=1`. The rail
+checks the node-confirmed fee against that ceiling before broadcast and fails
+closed if the fee is missing or ambiguous. Its
+`LIVE_PAY_DEM_MARKER_DIR` must be provisioned before the run on persistent local
+storage: use its canonical absolute path (no symlink components), make it owned
+by the test process user, and set mode `0700`. The test will not create or repair
+this safety directory and rejects operating-system temporary paths. Provision a
+dedicated directory and pass the result of `realpath` as the environment value.
+
+Immediately before settlement, the test atomically writes and syncs a permanent
+intent marker and never removes it. An ambiguous or merely unobserved settlement
+therefore blocks that run id from being submitted again even if its wallet or
+amount is changed. The guarantee is scoped to the same marker directory on the
+same host: changing hosts or directories, deleting the ledger, or using
+ephemeral storage bypasses it. Preserve and back up the directory with the
+funded-run records; do not use a network filesystem unless its exclusive-create
+and fsync guarantees have been independently established. Use fresh dedicated
+wallets and a new run id only for a separately reconciled and approved attempt.
+
+The funded pay-DEM runner also writes and syncs a second, write-once preparation
+checkpoint after confirmation, denomination, fee and debit-cap validation and
+immediately before broadcast. It contains only public recovery facts: the
+canonical transaction hash, nonce, payer, payee, amount, cap and network. A
+crash after this checkpoint but before the broadcast call is intentionally
+treated exactly like a lost response after submission: the original run stays
+blocked and recovery may only observe that hash/nonce. The checkpoint does not
+contain the signed validity body, so it cannot reconstruct or authorize an
+exact resubmission; neither re-signing nor rebroadcasting is a permitted recovery
+action.
+
+`createPayDemRail` exposes the same boundary as the optional
+`journalPreparedTransfer` hook. Ordinary non-funded callers can omit it, but the
+low-level rail then provides only in-process hash-first observation. Across a
+process restart, at-most-once settlement still requires `payDemSettle` with a
+durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
+additionally requires an application-owned durable journal or equivalent rail
+record. With neither durable mechanism, the SDK cannot prove that a lost
+response did not move value, so applications must not automatically retry.
+
+The inclusion wait is bounded independently of the broadcast response and never
+starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
+requests used by broadcast, status, and nonce reads have no cancellation or
+request timeout. An open transport socket may therefore keep a Node process
+alive after the rail has returned an unresolved result. Terminating that process
+does not make the marked attempt retryable: retain the marker and checkpoint and
+reconcile read-only from another process. demosdk may internally retry the same
+signed transaction on selected transport errors inside that one SDK broadcast
+invocation; every such attempt retains the same canonical hash and nonce.
+
+Run the funded test only with the complete guarded environment described above:
 
 ```sh
 npm run test:live:pay-dem
@@ -255,8 +314,49 @@ cursor is owner-bound and at-least-once: `historyPageSize` counts raw history
 rows, a page can contain no Listings, and `nextCursor: null` means only that the
 current traversal reached its end. Upsert results idempotently by
 `(logicalAddress, contentHash, ref)`. Restart from a null cursor to see a binding
-repaired after its history page was already consumed. Global/category discovery
-still requires a production catalog.
+repaired after its history page was already consumed.
+
+Global/category discovery uses the open DACS-1 §6.3.6 catalog surface. Catalog
+summaries are untrusted candidates: use `queryListingCatalog` to search, then
+give `createCatalogBindingIndex` to the Agent so `readListing` dereferences and
+validates the selected anchor before engagement:
+
+```ts
+import {
+  createCatalogBindingIndex,
+  listingAddress,
+  queryListingCatalog,
+} from "@kynesyslabs/dacs";
+
+const catalog = {
+  catalogUrl: "https://directory.example/api/dacs/listings",
+};
+const search = await queryListingCatalog(catalog, {
+  category: "data.weather",
+  rail: "x402:default",
+  limit: 50,
+});
+if (search.status !== "ok") throw new Error(search.reason);
+
+const candidate = search.page.listings[0];
+if (!candidate) throw new Error("no matching listing");
+const catalogIndex = createCatalogBindingIndex(catalog);
+const logicalAddress = listingAddress(
+  candidate.seller.primaryClaim,
+  candidate.listingId,
+  candidate.version,
+);
+// Configure `bindings.index: catalogIndex`, then require a normative `verified`
+// result from `readListing(logicalAddress)` before starting a session.
+```
+
+The catalog client rejects transport/malformed-page failures, pagination loops,
+bounded-scan exhaustion, conflicting exact candidates, and unsupported anchor
+kinds as `indeterminate`; it never converts those states to `absent`. HTTPS,
+redirect refusal, omitted ambient credentials, response-size limits, and finite
+timeouts are defaults. Plain HTTP requires explicit `allowInsecureHttp: true`
+for trusted development catalogs. `reachabilityHint` and `reputationHint` remain
+operational pre-filters, never validity or trust evidence.
 
 Handle enumeration results by status. A `page` may contain permanent candidate
 `diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
@@ -344,14 +444,42 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
+| `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
+
+The commerce coordinator is an explicit production x402 profile, not a generic
+`pay-*` dispatcher. It binds the supported Standard revision plus the verified
+registry/rail/network and seller-orchestrator topology, separates buyer and
+seller operations, and uses durable cursor/claim/ack outboxes. See
+[the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
+for the store, authentication, reconciliation and terminal-failure contracts.
 
 The Demos adapter and live rail clients are optional peers: install
 `@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus
 `viem` for the corresponding live rails. Pure artifact, verifier, canonical,
 and injected rail-core consumers do not install those integration trees.
+
+## Package artifacts
+
+`npm pack` runs a clean build before it creates the tarball, so a package made
+from a source checkout contains every declared ESM, type, and CLI export. To
+reproduce the release-candidate checks locally:
+
+```sh
+npm ci
+npm run package:verify -- --output-dir package-artifacts
+```
+
+The verifier creates the package twice and requires byte-identical tarballs,
+checks every declared export, records source/lockfile/toolchain and artifact
+digests, and installs the exact tarball in a fresh Bun consumer. It then removes
+the consumer's `node_modules`, performs a frozen rematerialization with an empty
+cache and an unreachable loopback registry, and reruns the substrate-free
+`canonical` and `artifacts` imports. CI uploads the
+tarball and `provenance.json` for the exact checkout SHA. This is a qualified
+package candidate, not evidence that the package was published to npm.
 
 ## License
 

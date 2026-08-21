@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@kynesyslabs/dacs": ["../../src/index.ts"],
+      "@kynesyslabs/dacs/artifacts": ["../../src/artifacts/index.ts"],
+      "@kynesyslabs/dacs/canonical": ["../../src/canonical/index.ts"],
+      "@kynesyslabs/dacs/commerce": ["../../src/commerce/index.ts"],
+      "@kynesyslabs/dacs/crypto": ["../../src/crypto/index.ts"],
+      "@kynesyslabs/dacs/identity": ["../../src/identity/index.ts"],
+      "@kynesyslabs/dacs/negotiate": ["../../src/negotiate/index.ts"],
+      "@kynesyslabs/dacs/seller": ["../../src/seller/index.ts"]
+    }
+  },
+  "include": ["src", "test", "vitest.config.ts"]
+}
