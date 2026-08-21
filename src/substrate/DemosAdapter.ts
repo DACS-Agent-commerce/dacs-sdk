@@ -121,6 +121,64 @@ interface QueuedWrite<T> {
   safe: Promise<void>;
 }
 
+/**
+ * Peer-independent public view of the underlying demosdk client.
+ *
+ * `raw` is an integration escape hatch, not a second stable SDK surface. Keep
+ * the commonly used account/network calls typed here while leaving provider-
+ * specific namespaces open. Consumers that need demosdk-specific result types
+ * can narrow the returned values after importing those types explicitly.
+ */
+export interface DemosRawClient {
+  connect(rpc: string): Promise<boolean>;
+  connectWallet(
+    masterSeed: string | Uint8Array,
+    options?: { dual_sign?: boolean },
+  ): Promise<string>;
+  getAddress(): string;
+  getAddressNonce(address: string): Promise<number>;
+  getNetworkInfo(): Promise<
+    | {
+        forks?: {
+          osDenomination?: { activated?: boolean };
+          [name: string]: unknown;
+        };
+        [name: string]: unknown;
+      }
+    | null
+    | undefined
+  >;
+  getAddressInfo(address: string): Promise<
+    | {
+        balance?: bigint;
+        [name: string]: unknown;
+      }
+    | null
+    | undefined
+  >;
+  getBlockByNumber(blockNumber: number): Promise<unknown>;
+  getTxByHash(txHash?: string): Promise<unknown>;
+  nodeCall(message: unknown, args?: Record<string, unknown>): Promise<unknown>;
+  broadcastAndWait(...args: unknown[]): Promise<unknown>;
+  // demosdk namespaces are intentionally open-ended. `any` is confined to
+  // this explicitly unstable escape hatch so the stable DACS API remains
+  // peer-independent without pretending to own demosdk's method signatures.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  storagePrograms: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sign(...args: any[]): any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    read(...args: any[]): any;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tx: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    confirm(...args: any[]): any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    broadcast(...args: any[]): any;
+  };
+}
+
 type BroadcastObservation =
   | { state: "accepted" }
   | { state: "ambiguous" }
@@ -691,8 +749,8 @@ export class DemosAdapter implements SubstrateAdapter {
     this.demos = new Demos();
   }
 
-  /** Underlying demosdk instance — escape hatch while the seam fills out. */
-  get raw(): Demos {
+  /** Underlying demosdk instance through a peer-independent escape-hatch type. */
+  get raw(): DemosRawClient {
     return this.demos;
   }
 
