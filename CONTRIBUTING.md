@@ -39,6 +39,9 @@ manifest-driven and will fail against stale/missing vectors.
 4. Add or update tests. Prefer proving fail-closed behavior on bad input, not
    just the happy path — that's the bar in this codebase.
 5. Before pushing: `npm run typecheck && npm run build && npm test` all green.
+   If your change touches a workspace package, also run its checks — the
+   `dacs-node` package (build + tests) and the `create-dacs-agent` generator
+   (its packed-project acceptance) — since CI gates on those too.
 
 ## Tests
 
@@ -46,21 +49,27 @@ manifest-driven and will fail against stale/missing vectors.
   CI gates on, across Node 20 and 22.
 - Live on-chain tests are **skipped unless their env is set**, so they never run
   in `npm test`/CI. To run the funded two-sided lifecycle against a real Demos
-  node + Base Sepolia, see [`docs/live-e2e.md`](./docs/live-e2e.md).
+  node + Base Sepolia, follow the runbook at `docs/live-e2e.md` (added in #179).
 
 ## Pull requests
 
-- Open the PR against `main`. There's no branch protection, so keep the merge
-  state CLEAN and wait for **green CI on both Node 20 and Node 22** before merge.
+- Open the PR against `main`. Branch protection requires an approving review and
+  **green CI on both Node 20 and Node 22**, so keep the merge state CLEAN.
 - Stacked PRs merge parent-first; rebase each onto its reviewed base before merge.
 - Every PR gets a review. Reviews are done at the exact current head — if you
   rewrite a head after approval, request a fresh review rather than relying on the
   stale one.
-- Never commit secrets. `.env` and key material are gitignored; live tests read
-  all credentials from the environment (see the runbook).
+- Never commit secrets. Only `.env*` files are gitignored — that does **not**
+  cover arbitrary key material, so never add wallet mnemonics, private keys, or
+  other credentials to the repo. Keep them in your ignored env file or a secret
+  manager; live tests read all credentials from the environment (see the runbook).
 
 ## Reporting issues
 
-Bugs, spec-conformance gaps, and security concerns are all welcome as GitHub
-issues. For anything touching signing, settlement, or verification, please note
-the relevant DACS-Standard section so it can be traced back to the spec.
+Bugs and spec-conformance gaps are welcome as GitHub issues. For anything
+touching signing, settlement, or verification, please note the relevant
+DACS-Standard section so it can be traced back to the spec.
+
+**Do not report suspected security vulnerabilities in public issues.** Report
+them privately — use GitHub's private vulnerability reporting on this repo (see
+[`SECURITY.md`](./SECURITY.md)) — so a fix can land before the details are public.
