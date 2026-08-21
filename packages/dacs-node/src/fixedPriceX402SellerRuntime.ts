@@ -7,12 +7,17 @@ import type {
 import {
   createDacsFixedPriceX402SellerFulfilmentV1,
   type DacsPublicStorageDeliverableInputV1,
+  type DacsFixedPriceX402SellerFulfilmentV1,
 } from "./fixedPriceX402SellerFulfilment.js";
-import { createDacsFixedPriceX402SellerSettlementV1 } from
+import {
+  createDacsFixedPriceX402SellerSettlementV1,
+  type DacsFixedPriceX402SellerSettlementV1,
+} from
   "./fixedPriceX402SellerSettlement.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import {
   createDacsSellerX402RuntimeV1,
+  type DacsSellerX402RuntimeOptionsV1,
   type DacsSellerX402RuntimeV1,
 } from "./sellerX402Runtime.js";
 
@@ -41,6 +46,15 @@ export interface DacsFixedPriceX402SellerRuntimeOptionsV1 {
   maxResponseBytes?: number;
 }
 
+export interface DacsFixedPriceX402SellerX402CompositionV1 {
+  readonly settlement: Readonly<DacsFixedPriceX402SellerSettlementV1>;
+  readonly fulfilment: Readonly<DacsFixedPriceX402SellerFulfilmentV1>;
+  readonly x402: Readonly<Omit<
+    DacsSellerX402RuntimeOptionsV1<unknown>,
+    "context" | "workerId"
+  >>;
+}
+
 function jsonResponse(
   body: unknown,
 ): Readonly<X402SellerRenderedResponse<unknown>> {
@@ -57,9 +71,9 @@ function jsonResponse(
  * the surrounding role graph, while this factory owns the complete paid HTTP
  * resource and its payment/delivery/evidence replay boundaries.
  */
-export async function createDacsFixedPriceX402SellerRuntimeProfileV1(
+export function createDacsFixedPriceX402SellerX402CompositionV1(
   options: Readonly<DacsFixedPriceX402SellerRuntimeOptionsV1>,
-): Promise<Readonly<DacsSellerX402RuntimeV1<unknown>>> {
+): Readonly<DacsFixedPriceX402SellerX402CompositionV1> {
   const settlement = createDacsFixedPriceX402SellerSettlementV1({
     context: options.context,
     rail: options.rail,
@@ -99,9 +113,7 @@ export async function createDacsFixedPriceX402SellerRuntimeProfileV1(
     }
     return resolved.value.artifact.cleartextPayload;
   };
-  return createDacsSellerX402RuntimeV1({
-    context: options.context,
-    workerId: options.workerId,
+  const x402: DacsFixedPriceX402SellerX402CompositionV1["x402"] = {
     paywall: settlement.paywall,
     publicBaseUrl: settlement.publicBaseUrl,
     resolveHttpRequest: settlement.resolveHttpRequest,
@@ -133,5 +145,26 @@ export async function createDacsFixedPriceX402SellerRuntimeProfileV1(
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
     ...(options.maxResponseBytes === undefined
       ? {} : { maxResponseBytes: options.maxResponseBytes }),
+  };
+  return Object.freeze({
+    settlement,
+    fulfilment,
+    x402: Object.freeze(x402),
+  });
+}
+
+/**
+ * Standalone paid-resource wrapper. Full role graphs should consume
+ * `createDacsFixedPriceX402SellerX402CompositionV1` so their assembly remains
+ * the single owner of the x402 runtime instance.
+ */
+export async function createDacsFixedPriceX402SellerRuntimeProfileV1(
+  options: Readonly<DacsFixedPriceX402SellerRuntimeOptionsV1>,
+): Promise<Readonly<DacsSellerX402RuntimeV1<unknown>>> {
+  const composition = createDacsFixedPriceX402SellerX402CompositionV1(options);
+  return createDacsSellerX402RuntimeV1({
+    ...composition.x402,
+    context: options.context,
+    workerId: options.workerId,
   });
 }

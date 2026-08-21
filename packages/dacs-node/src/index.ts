@@ -14,6 +14,7 @@ export * from "./fundingDoctor.js";
 export * from "./fixedPriceX402Profile.js";
 export * from "./fixedPriceX402SellerAuthority.js";
 export * from "./fixedPriceX402SellerFulfilment.js";
+export * from "./fixedPriceX402SellerLive.js";
 export * from "./fixedPriceX402SellerPaymentEvidence.js";
 export * from "./fixedPriceX402SellerRuntime.js";
 export * from "./fixedPriceX402SellerSettlement.js";
