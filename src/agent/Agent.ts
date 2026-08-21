@@ -1,7 +1,9 @@
 import { types as nodeTypes } from "node:util";
 import type {
+  AgreementArtifact,
   AnyAttestationBundle,
   AnchorReceipt as ProtocolAnchorReceipt,
+  AttestationRef,
   CompositeVerificationRecord,
   ListingDraft,
   ListingPin,
@@ -10,7 +12,7 @@ import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { verifyComponentSignature } from "../artifacts/signatures.js";
 import {
   isAnyAttestationBundle,
-  isAgreementDocument,
+  isAgreementArtifact,
   isAttestationRef,
   isLegacyMvpListing,
   isListing,
@@ -20,7 +22,6 @@ import {
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
-  stripSignature,
 } from "../canonical/index.js";
 import {
   ed25519Verify,
@@ -85,7 +86,10 @@ import {
 import {
   attestationBundleHash,
 } from "./twoSidedBundle.js";
-import { verifySettlementEvidence } from "./verifySettlementEvidence.js";
+import {
+  verifySettlementEvidence,
+  type EvidenceContext,
+} from "./verifySettlementEvidence.js";
 import {
   verifyBundleCore,
   type SignatureCheck,
@@ -229,15 +233,6 @@ function captureAgentListingValidationDeps(
   });
 }
 
-const RAIL_TYPE_BY_HANDLER: Readonly<Record<string, string>> = Object.freeze({
-  "pay-evm-erc20": "evm-erc20",
-  "pay-solana-spl": "solana-spl",
-  "pay-cross-chain-htlc": "cross-chain-htlc",
-  "pay-cross-chain-liquidity-tank": "cross-chain-liquidity-tank",
-  "pay-ap2": "ap2",
-  "pay-x402": "x402",
-});
-
 /**
  * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
  * model a CCI *is* the ed25519 public-key hex, so a DID embedding that hex
@@ -369,6 +364,17 @@ export interface AgentConfig {
   verifyCompositeRecord?: NonNullable<
     VerifyBundleDeps["verifyCompositeRecord"]
   >;
+  /**
+   * Resolve independently authenticated DACS-4 context for one referenced
+   * SettlementEvidence record. The SDK owns evidence shape, hash, signature,
+   * agreement-price, rail-coherence, and attestation-ref verification; the
+   * host supplies only facts that cannot be derived from the bundle itself:
+   * the exact phase orchestrator and authenticated pinned-rail definition.
+   *
+   * Required whenever a public bundle verification contains settlement
+   * evidence. Omission fails closed instead of accepting hash-only evidence.
+   */
+  resolveSettlementEvidenceContext?: AgentSettlementEvidenceContextResolver;
 
   /**
    * Published logical→native binding authority used by listing writes and their
@@ -378,6 +384,82 @@ export interface AgentConfig {
    * typed logical reads and owner-scoped enumeration require only `index`.
    */
   bindings?: AgentBindingConfig;
+}
+
+export interface AgentSettlementEvidenceContextInput {
+  evidence: Readonly<Record<string, unknown>>;
+  bundle: Readonly<AnyAttestationBundle>;
+  evidenceRef: Readonly<AttestationRef>;
+  agreement: Readonly<AgreementArtifact>;
+}
+
+export type AgentSettlementEvidenceContext = Omit<
+  EvidenceContext,
+  "agreement" | "attestationRef"
+> & {
+  orchestrator: string;
+};
+
+export type AgentSettlementEvidenceContextResolver = (
+  input: Readonly<AgentSettlementEvidenceContextInput>,
+) =>
+  | Promise<AgentSettlementEvidenceContext | null>
+  | AgentSettlementEvidenceContext
+  | null;
+
+function captureSettlementEvidenceContext(
+  value: unknown,
+  phase: string,
+  agreement: Readonly<AgreementArtifact>,
+): AgentSettlementEvidenceContext | null {
+  let captured: unknown;
+  try {
+    captured = snapshotCanonicalJson(
+      value,
+      "Agent settlement evidence context",
+    );
+  } catch {
+    return null;
+  }
+  if (
+    captured === null ||
+    typeof captured !== "object" ||
+    Array.isArray(captured)
+  ) {
+    return null;
+  }
+  const context = captured as Record<string, unknown>;
+  if (
+    Object.prototype.hasOwnProperty.call(context, "agreement") ||
+    Object.prototype.hasOwnProperty.call(context, "attestationRef") ||
+    typeof context.orchestrator !== "string" ||
+    context.orchestrator.length === 0
+  ) {
+    return null;
+  }
+
+  if (phase.startsWith("pay-")) {
+    const rail = context.rail;
+    const pinnedRail = agreement.terms.rail;
+    if (
+      rail === null ||
+      typeof rail !== "object" ||
+      Array.isArray(rail) ||
+      !pinnedRail ||
+      (rail as Record<string, unknown>).railId !== pinnedRail.railId ||
+      (rail as Record<string, unknown>).handler !== phase ||
+      typeof (rail as Record<string, unknown>).railType !== "string" ||
+      typeof (rail as Record<string, unknown>).asset !== "string"
+    ) {
+      return null;
+    }
+  } else if (phase.startsWith("deliver-") && context.rail !== undefined) {
+    // Rail context belongs only to payment evidence. Supplying it for delivery
+    // can create a false phase/rail comparison in the generic verifier.
+    return null;
+  }
+
+  return context as unknown as AgentSettlementEvidenceContext;
 }
 
 export interface AgentBindingConfig {
@@ -500,7 +582,8 @@ export interface Agent<
   /**
    * Anyone: verify an anchored bundle's signatures, referenced artifacts, and
    * strict DACS-2 vet closure. Bundles with vet records fail closed unless
-   * `AgentConfig.verifyCompositeRecord` was configured.
+   * `AgentConfig.verifyCompositeRecord` was configured; bundles with settlement
+   * evidence likewise require `AgentConfig.resolveSettlementEvidenceContext`.
    */
   verifyBundle(ref: string): Promise<BundleVerification>;
   /**
@@ -612,7 +695,22 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       : undefined;
   // Capture policy at construction time. Callers cannot swap the verifier on
   // a live Agent between verifyBundle() and getReputation().
-  const verifyCompositeRecord = config.verifyCompositeRecord;
+  const verifyCompositeRecord = stableAgentMethod<
+    AgentConfig["verifyCompositeRecord"]
+  >(
+    config,
+    "verifyCompositeRecord",
+    "AgentConfig.verifyCompositeRecord",
+    true,
+  );
+  const resolveSettlementEvidenceContext = stableAgentMethod<
+    AgentConfig["resolveSettlementEvidenceContext"]
+  >(
+    config,
+    "resolveSettlementEvidenceContext",
+    "AgentConfig.resolveSettlementEvidenceContext",
+    true,
+  );
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
@@ -668,42 +766,43 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       verify: ed25519RawVerify,
       ...(verifyCompositeRecord ? { verifyCompositeRecord } : {}),
       verifyEvidence: async (evidence, context) => {
-        const agreementScope = context.agreement
-          ? stripSignature(context.agreement)
-          : null;
-        if (!agreementScope || !isAgreementDocument(agreementScope)) {
+        if (
+          !context.agreement ||
+          !isAgreementArtifact(context.agreement) ||
+          !isAttestationRef(context.evidenceRef)
+        ) {
           return { decision: "fail" as const };
         }
-        const handler =
-          typeof evidence.phase === "string" ? evidence.phase : "";
-        const railType = RAIL_TYPE_BY_HANDLER[handler];
-        if (!railType) return { decision: "fail" as const };
-        const orchestrator =
-          context.bundle.parties.find(
-            (party) => party.role === "orchestrator",
-          )?.primaryClaim ??
-          context.bundle.parties.find((party) => party.role === "buyer")
-            ?.primaryClaim;
-        if (!orchestrator) return { decision: "fail" as const };
+        const agreement = context.agreement;
+        const phase = typeof evidence.phase === "string" ? evidence.phase : "";
+        if (!resolveSettlementEvidenceContext) {
+          return { decision: "indeterminate" as const };
+        }
+        let resolvedContext: AgentSettlementEvidenceContext | null;
+        try {
+          resolvedContext = captureSettlementEvidenceContext(
+            await resolveSettlementEvidenceContext({
+              evidence: structuredClone(evidence),
+              bundle: structuredClone(context.bundle as AnyAttestationBundle),
+              evidenceRef: structuredClone(context.evidenceRef),
+              agreement: structuredClone(agreement),
+            }),
+            phase,
+            agreement,
+          );
+        } catch {
+          return { decision: "indeterminate" as const };
+        }
+        if (!resolvedContext) return { decision: "error" as const };
         return verifySettlementEvidence(
           evidence,
           {
-            orchestrator,
+            ...resolvedContext,
             agreement: {
-              amount: agreementScope.terms.price.amount,
-              currency: agreementScope.terms.price.currency,
+              amount: agreement.terms.price.amount,
+              currency: agreement.terms.price.currency,
             },
-            rail: {
-              ...(agreementScope.terms.rail
-                ? { railId: agreementScope.terms.rail.railId }
-                : {}),
-              railType,
-              asset: agreementScope.terms.price.currency,
-              handler,
-            },
-            ...(isAttestationRef(context.evidenceRef)
-              ? { attestationRef: context.evidenceRef }
-              : {}),
+            attestationRef: context.evidenceRef,
           },
           {
             resolvePublicKey: async (signer) => publicKeyFromDid(signer),
