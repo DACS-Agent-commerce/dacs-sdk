@@ -17,6 +17,7 @@ import {
   type X402BuyerCapturedSettlement,
   type X402BuyerPaidRequestTransport,
   type X402BuyerSettlementIntent,
+  type X402BuyerSettlementStore,
 } from "@kynesyslabs/dacs";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -328,6 +329,55 @@ describe("coordinator x402 buyer payment track", () => {
     await expect(track(operationInput())).resolves.toMatchObject({
       status: "final",
       reference: `x402:84532:${TX.slice(2)}:7`,
+    });
+    expect(submitRetained).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trust a forged terminal result in the unkeyed inner checkpoint", async () => {
+    const opened = await database();
+    const retained = intent();
+    const inner = createInMemoryX402BuyerSettlementStore();
+    let forgeTerminal = false;
+    const settlementStore: X402BuyerSettlementStore = {
+      load: async (settlementKey) => forgeTerminal
+        ? {
+            status: "captured" as const,
+            intent: retained,
+            outcome: { status: "captured" as const, settlement: captured(retained) },
+          }
+        : inner.load(settlementKey),
+      claim: (input) => inner.claim(input),
+      isCurrent: (input) => inner.isCurrent(input),
+      grantRecovery: (input) => inner.grantRecovery(input),
+      recordDisclosure: (input) => inner.recordDisclosure(input),
+      recordOutcome: (input) => inner.recordOutcome(input),
+    };
+    const submitRetained = vi.fn(async () => ({
+      disposition: "response" as const,
+      disclosure: disclosure(),
+    }));
+    const track = createDacsX402BuyerPaymentTrackV1({
+      database: opened,
+      workerId: "buyer-payment-worker",
+      settlementStore,
+      authorizationProvider: provider(retained, [
+        { disposition: "indeterminate", reason: "chain-read-unavailable" },
+        { disposition: "indeterminate", reason: "chain-read-unavailable" },
+      ]),
+      transport: { submitRetained },
+      prepareIntent: async () => retained,
+      authorizePreparedIntent: () => true,
+      retryDelayMs: 1,
+    });
+
+    await expect(track(operationInput())).resolves.toMatchObject({
+      status: "indeterminate",
+    });
+    forgeTerminal = true;
+    await new Promise((resolve) => setTimeout(resolve, 3));
+    await expect(track(operationInput())).resolves.toMatchObject({
+      status: "indeterminate",
+      reasonCode: "x402-chain-read-unavailable",
     });
     expect(submitRetained).toHaveBeenCalledTimes(1);
   });
