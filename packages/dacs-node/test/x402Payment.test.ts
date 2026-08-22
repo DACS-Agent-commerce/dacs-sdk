@@ -379,7 +379,7 @@ describe("coordinator x402 buyer payment track", () => {
       },
       prepareIntent: async () => retained,
       authorizePreparedIntent: () => true,
-      effectLeaseDurationMs: 5,
+      effectLeaseDurationMs: 1_000,
       settlementLeaseDurationMs: 30_000,
       retryDelayMs: 1,
     });
@@ -387,7 +387,7 @@ describe("coordinator x402 buyer payment track", () => {
     await expect(track(operationInput())).resolves.toMatchObject({
       status: "indeterminate",
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
     await expect(track(operationInput())).resolves.toMatchObject({
       status: "indeterminate",
       reasonCode: "x402-store-lease-held",
