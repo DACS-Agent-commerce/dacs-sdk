@@ -28,6 +28,8 @@ vi.mock("@kynesyslabs/dacs/seller", async (importOriginal) => ({
 import {
   createDacsBuyerBundleTransportRuntimeV1,
   createDacsSellerBundleTransportRuntimeV1,
+  loadDacsBuyerBundleSignatureForOrderV1,
+  loadDacsBuyerBundleSignatureRequestForOrderV1,
 } from "../src/bundleTransportRuntime.js";
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
@@ -250,6 +252,16 @@ describe("bundle signature HTTP transport", () => {
       requiredCounterSignersHash: sha256Hex(canonicalize([BUYER])),
       buyerSignature: signature,
     })).resolves.toEqual({ disposition: "present", value: [signature] });
+    await expect(loadDacsBuyerBundleSignatureRequestForOrderV1(
+      buyerContext,
+      { ...order("buyer"), localBindingHash:
+        fixedPriceX402OrderLocalBindingHash(order("buyer")) },
+    )).resolves.toEqual(request);
+    await expect(loadDacsBuyerBundleSignatureForOrderV1(
+      buyerContext,
+      { ...order("buyer"), localBindingHash:
+        fixedPriceX402OrderLocalBindingHash(order("buyer")) },
+    )).resolves.toEqual({ requestHash: published.requestHash, signature });
   });
 
   it("rejects a forged buyer bundle signature before retention", async () => {

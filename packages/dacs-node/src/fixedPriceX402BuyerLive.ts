@@ -5,6 +5,9 @@ import type {
 } from "@kynesyslabs/dacs";
 
 import {
+  createDacsFixedPriceX402BuyerAuditV1,
+} from "./fixedPriceX402BuyerAudit.js";
+import {
   createDacsFixedPriceX402BuyerCommerceV1,
 } from "./fixedPriceX402BuyerCommerce.js";
 import {
@@ -15,7 +18,6 @@ import {
 } from "./fixedPriceX402Profile.js";
 import {
   createDacsBuyerLiveCommerceAssemblyV1,
-  type DacsBuyerLiveCommerceAssemblyOptionsV1,
 } from "./liveCommerceAssembly.js";
 import type { DacsBuyerLiveCommerceGraphV1 } from "./liveCommerceGraph.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
@@ -28,6 +30,10 @@ export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
   maxTimeoutSeconds: number;
   minimumConfirmations: number;
   authorizationSearchFromBlock: number;
+  evmRpcUrl: string;
+  recipeRegistryVersion: number;
+  finalityTag?: "finalized" | "safe" | "latest";
+  logPageSize?: number;
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
   fetchImpl?: typeof fetch;
@@ -36,14 +42,12 @@ export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
   leaseDurationMs?: number;
   retryDelayMs?: number;
   maxBodyBytes?: number;
-  bundleTransport: DacsBuyerLiveCommerceAssemblyOptionsV1["bundleTransport"];
-  audit: DacsBuyerLiveCommerceAssemblyOptionsV1["audit"];
 }
 
 /**
  * Close the buyer graph around the fixed-price x402 policies. The remaining
- * explicit inputs are DACS-5 read/finalisation material, whose provider is
- * shared with the seller role rather than application-specific commerce work.
+ * DACS-5 review and publication are reconstructed from authenticated durable
+ * protocol state; callers cannot inject an audit or counter-signing bypass.
  */
 export async function createDacsFixedPriceX402BuyerLiveV1(
   options: Readonly<DacsFixedPriceX402BuyerLiveOptionsV1>,
@@ -63,6 +67,17 @@ export async function createDacsFixedPriceX402BuyerLiveV1(
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
     ...(options.maxBodyBytes === undefined ? {} : { maxBodyBytes: options.maxBodyBytes }),
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
+  });
+  const audit = createDacsFixedPriceX402BuyerAuditV1({
+    context: options.context,
+    rail: options.rail,
+    evmRpcUrl: options.evmRpcUrl,
+    authorizationSearchFromBlock: options.authorizationSearchFromBlock,
+    recipeRegistryVersion: options.recipeRegistryVersion,
+    ...(options.finalityTag === undefined ? {} : { finalityTag: options.finalityTag }),
+    ...(options.logPageSize === undefined ? {} : { logPageSize: options.logPageSize }),
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+    ...(options.leaseDurationMs === undefined ? {} : { leaseTtlMs: options.leaseDurationMs }),
   });
 
   return createDacsBuyerLiveCommerceAssemblyV1({
@@ -101,7 +116,7 @@ export async function createDacsFixedPriceX402BuyerLiveV1(
       ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
     },
     buyerReceived: commerce.buyerReceived,
-    bundleTransport: options.bundleTransport,
-    audit: options.audit,
+    bundleTransport: audit.bundleTransport,
+    audit: audit.audit,
   });
 }

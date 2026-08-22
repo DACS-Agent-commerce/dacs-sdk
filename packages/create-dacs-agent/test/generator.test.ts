@@ -303,7 +303,11 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain('writePolicy: "read-only"');
     expect(combined).toContain("readDacsRoleServiceStatusesV1");
     expect(combined).toContain("createDacsLiveRoleRuntimeV1");
-    expect(combined).toContain("createDacsUnavailableLiveCommerceGraphV1");
+    expect(combined).not.toContain("createDacsUnavailableLiveCommerceGraphV1");
+    expect(combined).toContain("createDacsFixedPriceX402BuyerLiveV1");
+    expect(combined).toContain("createDacsFixedPriceX402SellerLiveV1");
+    expect(combined).toContain("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK");
+    expect(combined).not.toContain('status: "not-configured"');
     expect(combined).toContain("createCommerceGraph: async");
     expect(combined).not.toContain("createOperations: () => Object.freeze({})");
     expect(combined).toContain("post-start-doctor-required");

@@ -287,6 +287,27 @@ async function loadRequest(
   return binding;
 }
 
+/**
+ * Recover the exact seller review request retained after authenticated HTTP
+ * admission. Buyer audit recovery uses this data-only view; it carries no
+ * signing or publication authority.
+ */
+export async function loadDacsBuyerBundleSignatureRequestForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<{ jobId: string; buyer: string; seller: string; localBindingHash: string }>,
+): Promise<Readonly<CompletedSellerBundleCounterSignatureRequest> | undefined> {
+  if (context.role !== "buyer" || order.buyer !== context.authority ||
+      order.seller !== context.peerAuthority) {
+    throw new DacsBundleTransportRuntimeError("bundle-request-order-mismatch");
+  }
+  const binding = await loadRequest(context, order.jobId);
+  if (binding === undefined) return undefined;
+  if (binding.localBindingHash !== order.localBindingHash) {
+    throw new DacsBundleTransportRuntimeError("bundle-request-binding-corrupt");
+  }
+  return requestFromPayload(binding.payload);
+}
+
 async function putSignature(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   jobId: string,
@@ -347,6 +368,32 @@ async function loadSignature(
     throw new DacsBundleTransportRuntimeError("bundle-signature-binding-corrupt");
   }
   return binding;
+}
+
+/**
+ * Recover the exact buyer counter-signature retained before authenticated HTTP
+ * publication. The durable finalizer uses this read-only view after a crash.
+ */
+export async function loadDacsBuyerBundleSignatureForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<{ jobId: string; buyer: string; seller: string; localBindingHash: string }>,
+): Promise<Readonly<{
+  requestHash: string;
+  signature: Readonly<BundleSignature>;
+}> | undefined> {
+  if (context.role !== "buyer" || order.buyer !== context.authority ||
+      order.seller !== context.peerAuthority) {
+    throw new DacsBundleTransportRuntimeError("bundle-signature-order-mismatch");
+  }
+  const binding = await loadSignature(context, order.jobId);
+  if (binding === undefined) return undefined;
+  if (binding.localBindingHash !== order.localBindingHash) {
+    throw new DacsBundleTransportRuntimeError("bundle-signature-binding-corrupt");
+  }
+  return Object.freeze({
+    requestHash: binding.requestHash,
+    signature: structuredClone(binding.signature),
+  });
 }
 
 function acknowledgementDisposition(
