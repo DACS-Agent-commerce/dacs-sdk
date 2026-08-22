@@ -52,7 +52,7 @@ async function listingFixture(version = 1): Promise<Readonly<{
     keys.privateKey,
   ).toString("base64url");
   const listing = await signComponentArtifact({
-    dacsVersion: "1",
+    dacsVersion: "1" as const,
     listingVersion: version,
     listingId: "generated-live-service",
     seller: {
@@ -65,7 +65,7 @@ async function listingFixture(version = 1): Promise<Readonly<{
       description: "A bounded application result",
       category: "software.service",
       tags: ["dacs"],
-      deliverable: { kind: "storage-program", accessModel: "public" },
+      deliverable: { kind: "storage-program" as const, accessModel: "public" as const },
     },
     buyerRequirement: { requirementVersion: "1", required: [] },
     pipeline: [
@@ -87,7 +87,7 @@ async function listingFixture(version = 1): Promise<Readonly<{
     }],
     terms: { deadlineSecAfterCommit: 3_600 },
     validity: { notBefore: 900, notAfter: 2_000 },
-  }, ARTIFACT_SEPARATORS.Listing, {
+  } satisfies Omit<Listing, "signature">, ARTIFACT_SEPARATORS.Listing, {
     algorithm: "ed25519",
     signer: authority,
     sign: (bytes) => sign(null, bytes, keys.privateKey),

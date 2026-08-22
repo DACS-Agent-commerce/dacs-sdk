@@ -32,7 +32,7 @@ function protocol() {
       railVersion: 2,
       railType: "x402" as const,
       phaseHandler: "pay-x402" as const,
-      network: "eip155:84532",
+      network: "eip155:84532" as const,
       availability: "live" as const,
     },
   };

@@ -253,7 +253,7 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
       phase: "deliver-storage-program" as const,
       logicalAddress: `dacs4:deliverable:${JOB_ID}`,
       agreement,
-      deliverable: exactListing.offering.deliverable,
+      deliverable: exactListing.offering.deliverable as never,
     };
     const first = await composed.fulfilmentDeps.prepareDelivery(preparationInput);
     const second = await composed.fulfilmentDeps.prepareDelivery(preparationInput);

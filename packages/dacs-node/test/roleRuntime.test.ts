@@ -74,6 +74,7 @@ describe("complete role-owned live runtime", () => {
       resolveIdentity: vi.fn(async (ref) => ({ ref, boundTo: ref, raw: { fixture: true } })),
       readAnchor: vi.fn(async () => null),
       resolveAnchorByName: vi.fn(async () => ({ status: "absent" as const })),
+      scanOwnAnchorsByNamePrefix: vi.fn(async () => ({ status: "ok" as const, anchors: [] })),
       anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
       verifyDemosAnchorReceipt: vi.fn(async () => true),
       resolveDemosAnchorReceipt: vi.fn(async () => null),

@@ -113,7 +113,7 @@ function operation(
       bindingHash,
       localBindingHash,
       sdkJobs: input.sdkJobs,
-    },
+    } as never,
     fence: {
       role,
       jobId: input.jobId,
@@ -577,7 +577,7 @@ describe("live payment-evidence runtime", () => {
       retained: {} as never,
     });
     await expect(resolved.dependencies.resolveAuthenticatedNativeProof({
-      authorization: paymentAuthorization,
+      authorization: paymentAuthorization as never,
     })).resolves.toMatchObject({
       disposition: "authenticated",
       binding: {

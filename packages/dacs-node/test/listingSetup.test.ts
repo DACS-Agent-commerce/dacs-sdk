@@ -152,7 +152,7 @@ describe("guarded Listing setup", () => {
     expect(Object.isFrozen(prepared.draft)).toBe(true);
     expect(Object.isFrozen(prepared.draft.seller.identity)).toBe(true);
     expect(() => {
-      (prepared.draft.acceptedRails[0]!.parameters as { payTo: string }).payTo =
+      (prepared.draft.acceptedRails![0]!.parameters as { payTo: string }).payTo =
         `0x${"9".repeat(40)}`;
     }).toThrow();
     const publishActive = vi.fn(async () => ({

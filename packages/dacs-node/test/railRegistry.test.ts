@@ -113,6 +113,7 @@ async function fixture() {
       status: "present" as const,
       address: "stor:binding",
     })),
+    scanOwnAnchorsByNamePrefix: vi.fn(async () => ({ status: "ok" as const, anchors: [] })),
     readAnchor: vi.fn(async (address) => {
       if (address === "stor:binding") return structuredClone(current);
       if (address === "stor:index") return structuredClone(index);
@@ -141,6 +142,7 @@ async function fixture() {
     publicKey: new Uint8Array(32),
     adapter,
     signTransportEnvelope: vi.fn(async () => new Uint8Array(64)),
+    signComponent: vi.fn(async () => new Uint8Array(64)),
     networkInfo: vi.fn(async () => ({})),
     addressNonce: vi.fn(async () => 0),
     addressInfo: vi.fn(async () => ({})),

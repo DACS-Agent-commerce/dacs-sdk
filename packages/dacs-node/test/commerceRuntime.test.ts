@@ -53,7 +53,7 @@ describe("production fixed-price x402 operation set", () => {
 
     const invalid = Object.fromEntries(
       dacsFixedPriceX402RequiredTracksV1("buyer").map((track) => [track, operation()]),
-    );
+    ) as Record<string, unknown>;
     invalid.payment = "unsafe";
     expect(() => createDacsFixedPriceX402OperationSetV1({
       role: "buyer",

@@ -542,8 +542,8 @@ async function buyerFixture() {
   const buyerVet = vetProduction(buyerIdentity, BUYER, SELLER, "buyer");
   const sellerVet = vetProduction(sellerIdentity, SELLER, BUYER, "seller");
   const session = {
-    factsVersion: "1",
-    role: "buyer",
+    factsVersion: "1" as const,
+    role: "buyer" as const,
     jobId: JOB_ID,
     localBindingHash: loaded.record.localBindingHash,
     buyerIdentity,
@@ -558,7 +558,7 @@ async function buyerFixture() {
     sellerVetRecord: sellerVet.record,
     sellerVetRef: sellerVet.recordRef,
     sellerVetReceipt: sellerVet.anchorReceipt,
-  } as never;
+  };
   const factsId = sha256Hex(`dacs-live-session-agreement-facts:v1:${canonicalize({
     role: "buyer",
     jobId: JOB_ID,
@@ -750,21 +750,26 @@ describe("fixed-price x402 generated profile policy", () => {
     }, {} as never);
     expect(reconciled).toMatchObject({ disposition: "present" });
     if (reconciled.disposition !== "present") throw new Error("agreement missing");
-    expect(reconciled.value.artifact).toEqual(artifact);
+    const reconciledValue = reconciled.value as {
+      artifact: typeof artifact;
+      ref: Parameters<typeof policy.anchor.verifyAnchorReceipt>[0]["ref"];
+      anchorReceipt: Parameters<typeof policy.anchor.verifyAnchorReceipt>[0]["receipt"];
+    };
+    expect(reconciledValue.artifact).toEqual(artifact);
     expect(value.anchorWriteOnce).toHaveBeenCalledTimes(2);
     await expect(policy.anchor.verifyAnchorReceipt({
       expectedWriter: BUYER,
-      ref: reconciled.value.ref,
-      receipt: reconciled.value.anchorReceipt,
+      ref: reconciledValue.ref,
+      receipt: reconciledValue.anchorReceipt,
     })).resolves.toBe("valid");
     expect(policy.authorizeAnchored({
       operation: value.operation,
       retained: value.retained,
       result: {
-        agreement: reconciled.value.artifact,
+        agreement: reconciledValue.artifact,
         agreementHash,
-        agreementRef: reconciled.value.ref,
-        anchorReceipt: reconciled.value.anchorReceipt,
+        agreementRef: reconciledValue.ref,
+        anchorReceipt: reconciledValue.anchorReceipt,
       },
     })).toBe(true);
   });
@@ -888,7 +893,7 @@ describe("fixed-price x402 generated profile policy", () => {
           },
         };
       },
-      verifyAnchorReceipt: async () => "valid",
+      verifyAnchorReceipt: async () => "valid" as const,
     }, ({ signer, algorithm, value: signature, signedBytes }) => {
       const seed = signer === BUYER ? BUYER_SEED : signer === SELLER ? SELLER_SEED : null;
       if (seed === null || algorithm !== "ed25519") return "invalid";
@@ -993,7 +998,7 @@ describe("fixed-price x402 generated profile policy", () => {
     expect(paymentPolicy.authorizePreparedIntent({
       operation: paymentOperation,
       retained: value.retained,
-      intent: { ...intent, amount: "1000001" },
+      intent: { ...(intent as unknown as Record<string, unknown>), amount: "1000001" },
     } as never)).toBe(false);
 
     vi.spyOn(value.database, "readTime").mockReturnValue(agreement.terms.deadline + 1);
@@ -1148,8 +1153,8 @@ describe("fixed-price x402 generated profile policy", () => {
       },
       sellerVet: { record: sellerVetRecord, recordRef: sellerVetRef, anchorReceipt: {} },
       sellerRequirement: DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
-    } as never;
-    const resolved = policy.resolveAuthenticatedAgreementContext(base);
+    };
+    const resolved = policy.resolveAuthenticatedAgreementContext(base as never);
     expect(resolved).toEqual({
       disposition: "present",
       value: expect.any(Object),
@@ -1160,7 +1165,7 @@ describe("fixed-price x402 generated profile policy", () => {
     expect(policy.resolveAuthenticatedAgreementContext({
       ...base,
       listingPin: { ...candidateDraft.listingRef, contentHash: "9".repeat(64) },
-    })).toMatchObject({ disposition: "rejected" });
+    } as never)).toMatchObject({ disposition: "rejected" });
 
     const plan = createFixedPriceAgreementSigningPlan(candidateDraft);
     const buyerContribution = await createFixedPriceAgreementSignatureContribution(
@@ -1318,7 +1323,7 @@ describe("fixed-price x402 generated profile policy", () => {
       },
     });
     await expect(sellerAuthority.resolveRail({
-      ref: candidateDraft.terms.rail,
+      ref: candidateDraft.terms.rail!,
       railRegistryVersion: 1,
     })).resolves.toMatchObject({ disposition: "verified", railRegistryVersion: 1 });
     await expect(sellerAuthority.resolveIdentityBundle(

@@ -343,7 +343,11 @@ describe("coordinator x402 buyer payment track", () => {
         ? {
             status: "captured" as const,
             intent: retained,
-            outcome: { status: "captured" as const, settlement: captured(retained) },
+            outcome: {
+              outcomeVersion: "1" as const,
+              status: "captured" as const,
+              settlement: captured(retained),
+            },
           }
         : inner.load(settlementKey),
       claim: (input) => inner.claim(input),

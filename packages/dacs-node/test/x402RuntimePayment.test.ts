@@ -167,7 +167,7 @@ describe("buyer runtime x402 payment composition", () => {
           destroy: vi.fn(),
         },
       },
-    }) satisfies DacsLiveRoleOperationContextV1;
+    }) as unknown as DacsLiveRoleOperationContextV1;
     const track = createDacsX402BuyerRuntimePaymentTrackV1({
       context,
       workerId: "buyer-worker",

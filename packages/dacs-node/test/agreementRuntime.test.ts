@@ -142,14 +142,14 @@ describe("durable agreement role tracks", () => {
       verifyContribution: vi.fn(),
       reconcileBuyerSignature: vi.fn(async () => resolution),
       transport: {
-        publishProposal: vi.fn(async () => ({ disposition: "submitted" })),
+        publishProposal: vi.fn(async () => ({ disposition: "submitted" as const })),
         reconcileProposalPublication: vi.fn(async () => resolution),
         resolveSellerContributions: vi.fn(async () => resolution),
       },
       anchor: {
-        anchorAgreement: vi.fn(async () => ({ disposition: "submitted" })),
+        anchorAgreement: vi.fn(async () => ({ disposition: "submitted" as const })),
         reconcileAgreementAnchor: vi.fn(async () => resolution),
-        verifyAnchorReceipt: vi.fn(async () => "valid"),
+        verifyAnchorReceipt: vi.fn(async () => "valid" as const),
       },
       authorizeAnchored,
     });
@@ -194,7 +194,7 @@ describe("durable agreement role tracks", () => {
       verifyContribution: vi.fn(),
       reconcileSellerSignature: vi.fn(async () => resolution),
       transport: {
-        publishSellerContribution: vi.fn(async () => ({ disposition: "submitted" })),
+        publishSellerContribution: vi.fn(async () => ({ disposition: "submitted" as const })),
         reconcileSellerContributionPublication: vi.fn(async () => resolution),
       },
       authorizeComplete: async () => true,
@@ -240,7 +240,7 @@ describe("durable agreement role tracks", () => {
       verifyContribution: vi.fn(),
       reconcileSellerSignature: vi.fn(async () => resolution),
       transport: {
-        publishSellerContribution: vi.fn(async () => ({ disposition: "submitted" })),
+        publishSellerContribution: vi.fn(async () => ({ disposition: "submitted" as const })),
         reconcileSellerContributionPublication: vi.fn(async () => resolution),
       },
       authorizeComplete,
