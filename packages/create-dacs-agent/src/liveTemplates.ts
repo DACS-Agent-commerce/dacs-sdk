@@ -2779,6 +2779,10 @@ async function main(): Promise<void> {
     demosIdentityFilePath,
     evmPrivateKeyFilePath,
     evmRpcUrl,
+    // The authenticated registry supplies finalityBlocks below. Use the live
+    // head here so that policy, rather than the host runtime's safe default,
+    // determines the required confirmation depth.
+    evmFinalityTag: "latest",
     createCommerceGraph: async (context) => {
       const rail = await resolveRail(
         RAIL_REGISTRY_INDEX_ADDRESS,
@@ -2805,6 +2809,7 @@ async function main(): Promise<void> {
         authorizationSearchFromBlock,
         recipeRegistryVersion: 1,
         finalityTag: "latest" as const,
+        retryDelayMs: 5_000,
       };
       if (role === "buyer") {
         const sellerPublicEndpoint = loadRoleConfig("seller").publicBaseUrl;

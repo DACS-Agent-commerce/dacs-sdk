@@ -60,6 +60,7 @@ const READINESS_CLOCK_SKEW_MS = 1_000;
 const TRANSPORT_MESSAGE_INTENT_VERSION = "1" as const;
 const TRANSPORT_MESSAGE_INTENT_DOMAIN = "dacs-live-transport-message-intent:v1:" as const;
 const MAX_TRANSPORT_MESSAGE_RENEWALS = 64;
+const MAX_RETAINED_PROGRESS_EVENTS = 10_000;
 
 export type DacsLiveRole = "buyer" | "seller";
 export type DacsLiveRoleServiceLifecycle =
@@ -682,6 +683,7 @@ export function createDacsLiveRoleServiceV1(
   let lastCycleAt: number | undefined;
   let lastSuccessAt: number | undefined;
   let lastWorkerReasonCode: string | undefined;
+  const retainedProgressEvents = new Map<string, string>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let workerAbort = new AbortController();
   let cycleTask: Promise<Readonly<DacsLiveRoleCycleReportV1>> | undefined;
@@ -695,6 +697,40 @@ export function createDacsLiveRoleServiceV1(
     } catch {
       return Date.now();
     }
+  };
+
+  const capturedReadiness = async (): Promise<Readonly<DacsNodeReadinessStatus>> => {
+    const now = readTime();
+    if (readinessProvider === undefined) {
+      return Object.freeze({
+        ready: false,
+        checkedAt: now,
+        reasonCodes: Object.freeze(["service-readiness-not-latched"]),
+      });
+    }
+    try {
+      const captured = snapshotReadiness(await readinessProvider());
+      if (captured !== undefined) {
+        const observedAt = readTime();
+        if (captured.ready &&
+            (captured.checkedAt > observedAt + READINESS_CLOCK_SKEW_MS ||
+              observedAt - captured.checkedAt > readinessMaxAgeMs)) {
+          return Object.freeze({
+            ready: false,
+            checkedAt: observedAt,
+            reasonCodes: Object.freeze(["service-readiness-stale"]),
+          });
+        }
+        return captured;
+      }
+    } catch {
+      // Project only the bounded failure below.
+    }
+    return Object.freeze({
+      ready: false,
+      checkedAt: now,
+      reasonCodes: Object.freeze(["service-readiness-check-failed"]),
+    });
   };
 
   const emit = async (
@@ -901,10 +937,13 @@ export function createDacsLiveRoleServiceV1(
     inbox,
     resolveIdentity: resolveConfiguredPeer,
     validatePayload: validateServicePayload,
-    handleMessage: (authenticated) => {
+    handleMessage: async (authenticated) => {
       if (authenticated.envelope.type === "diagnostic-probe-buyer" ||
           authenticated.envelope.type === "diagnostic-probe-seller") {
         return Object.freeze({ disposition: "accepted" as const });
+      }
+      if (!(await capturedReadiness()).ready) {
+        throw new DacsLiveRoleServiceError("service-readiness-blocked");
       }
       return handleMessage(authenticated, inboundContext);
     },
@@ -923,6 +962,23 @@ export function createDacsLiveRoleServiceV1(
     signal: AbortSignal | undefined,
   ): Promise<Readonly<DacsLiveRoleCycleReportV1>> => {
     const startedAt = readTime();
+    if (!(await capturedReadiness()).ready) {
+      const completedAt = readTime();
+      lastCycleAt = completedAt;
+      lastWorkerReasonCode = undefined;
+      return Object.freeze({
+        startedAt,
+        completedAt,
+        inbox: Object.freeze({ inspected: 0, disposed: 0, pending: 0 }),
+        coordinator: Object.freeze({ processed: 0 }),
+        outbox: Object.freeze({
+          attempted: 0,
+          acknowledged: 0,
+          retryScheduled: 0,
+          operatorAction: 0,
+        }),
+      });
+    }
     const inboxReport = await resumeDacsHttpInboxV1(endpointOptions, {
       limit: workerBatchSize,
     });
@@ -950,23 +1006,27 @@ export function createDacsLiveRoleServiceV1(
     lastSuccessAt = completedAt;
     lastWorkerReasonCode = undefined;
     for (const item of coordinatorPage.items) {
-      await emit("info", "order-progress", "order-track-processed", {
-        jobId: item.jobId,
-        details: {
-          track: item.track,
-          state: item.status,
-          ...(item.outcome === undefined ? {} : { outcome: item.outcome }),
-          ...(item.reasonCode === undefined ? {} : { reasonCode: item.reasonCode }),
-        },
-      });
+      const details = {
+        track: item.track,
+        state: item.status,
+        ...(item.outcome === undefined ? {} : { outcome: item.outcome }),
+        ...(item.reasonCode === undefined ? {} : { reasonCode: item.reasonCode }),
+      };
+      const progressKey = `${item.jobId}:${item.track}`;
+      const progressValue = canonicalize(details);
+      if (retainedProgressEvents.get(progressKey) !== progressValue) {
+        retainedProgressEvents.delete(progressKey);
+        retainedProgressEvents.set(progressKey, progressValue);
+        if (retainedProgressEvents.size > MAX_RETAINED_PROGRESS_EVENTS) {
+          const oldest = retainedProgressEvents.keys().next().value as string | undefined;
+          if (oldest !== undefined) retainedProgressEvents.delete(oldest);
+        }
+        await emit("info", "order-progress", "order-track-processed", {
+          jobId: item.jobId,
+          details,
+        });
+      }
     }
-    await emit("debug", "service-lifecycle", "service-worker-cycle-complete", {
-      details: {
-        inboxInspected: inboxReport.inspected,
-        coordinatorProcessed: coordinatorPage.items.length,
-        outboxAttempted: outboxReport.attempted,
-      },
-    });
     return report;
   };
 
@@ -1009,36 +1069,7 @@ export function createDacsLiveRoleServiceV1(
         reasonCodes: Object.freeze(["service-not-running"]),
       });
     }
-    if (readinessProvider === undefined) {
-      return Object.freeze({
-        ready: false,
-        checkedAt: now,
-        reasonCodes: Object.freeze(["service-readiness-not-latched"]),
-      });
-    }
-    try {
-      const captured = snapshotReadiness(await readinessProvider());
-      if (captured !== undefined) {
-        const observedAt = readTime();
-        if (captured.ready &&
-            (captured.checkedAt > observedAt + READINESS_CLOCK_SKEW_MS ||
-              observedAt - captured.checkedAt > readinessMaxAgeMs)) {
-          return Object.freeze({
-            ready: false,
-            checkedAt: observedAt,
-            reasonCodes: Object.freeze(["service-readiness-stale"]),
-          });
-        }
-        return captured;
-      }
-    } catch {
-      // Project only the bounded failure below.
-    }
-    return Object.freeze({
-      ready: false,
-      checkedAt: now,
-      reasonCodes: Object.freeze(["service-readiness-check-failed"]),
-    });
+    return capturedReadiness();
   };
 
   const health = async (): Promise<Readonly<DacsNodeHealthStatus>> => {
@@ -1185,7 +1216,6 @@ export function createDacsLiveRoleServiceV1(
       workerAbort = new AbortController();
       await emit("info", "service-lifecycle", "service-starting");
       try {
-        await resumeDacsHttpInboxV1(endpointOptions, { limit: workerBatchSize });
         server = await startDacsHttpMessageServerV1({
           ...endpointOptions,
           hostname: options.server?.hostname ?? "127.0.0.1",

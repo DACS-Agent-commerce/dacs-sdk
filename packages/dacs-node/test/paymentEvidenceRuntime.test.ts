@@ -243,6 +243,14 @@ describe("live payment-evidence runtime", () => {
     let sellerRuntime: ReturnType<typeof createDacsSellerPaymentEvidenceRuntimeV1>;
 
     let anchoredArtifact: Record<string, unknown> | undefined;
+    const requestIdempotencyKeys: string[] = [];
+    const completionIdempotencyKeys: string[] = [];
+    const verifyEvidence = vi.fn()
+      .mockReturnValueOnce({
+        disposition: "indeterminate" as const,
+        reason: "fixture verifier unavailable",
+      })
+      .mockReturnValue({ disposition: "valid" as const });
     const anchorWriteOnce = vi.fn(async (
       logicalAddress: string,
       value: object,
@@ -269,7 +277,12 @@ describe("live payment-evidence runtime", () => {
             ? null : structuredClone(anchoredArtifact),
         },
       },
-      sendMessage: async (message: { type: string; payload: unknown }) => {
+      sendMessage: async (message: {
+        type: string;
+        payload: unknown;
+        idempotencyKey: string;
+      }) => {
+        completionIdempotencyKeys.push(message.idempotencyKey);
         const handled = await sellerRuntime.handleMessage(
           authenticated(message.type as "payment-evidence-completion", message.payload, BUYER, SELLER),
           { role: "seller" } as DacsLiveRoleInboundOperationContextV1,
@@ -286,7 +299,12 @@ describe("live payment-evidence runtime", () => {
         role: "seller",
         signComponent: vi.fn(),
       },
-      sendMessage: async (message: { type: string; payload: unknown }) => {
+      sendMessage: async (message: {
+        type: string;
+        payload: unknown;
+        idempotencyKey: string;
+      }) => {
+        requestIdempotencyKeys.push(message.idempotencyKey);
         const handled = await buyerRuntime.handleMessage(
           authenticated(message.type as "payment-evidence-request", message.payload, SELLER, BUYER),
           { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
@@ -298,12 +316,20 @@ describe("live payment-evidence runtime", () => {
     buyerRuntime = createDacsBuyerDemosPaymentEvidenceRuntimeV1({
       context: buyerContext,
       workerId: "buyer-worker",
-      verifyEvidence: () => ({ disposition: "valid" }),
+      verifyEvidence,
+      retryDelayMs: 1,
     });
+    const verifyAnchorReceipt = vi.fn()
+      .mockReturnValueOnce({
+        disposition: "indeterminate" as const,
+        reason: "fixture receipt verifier unavailable",
+      })
+      .mockReturnValue({ disposition: "valid" as const });
     sellerRuntime = createDacsSellerPaymentEvidenceRuntimeV1({
       context: sellerContext,
       workerId: "seller-worker",
-      verifyAnchorReceipt: () => ({ disposition: "valid" }),
+      retryDelayMs: 1,
+      verifyAnchorReceipt,
     });
 
     const artifact = evidence();
@@ -323,13 +349,27 @@ describe("live payment-evidence runtime", () => {
       disposition: "indeterminate",
     });
     await expect(sellerRuntime.flushOutboundRequests(sellerOperation)).resolves.toEqual({
+      status: "pending",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await expect(sellerRuntime.flushOutboundRequests(sellerOperation)).resolves.toEqual({
       status: "acknowledged",
     });
+    expect(requestIdempotencyKeys).toHaveLength(2);
+    expect(new Set(requestIdempotencyKeys).size).toBe(1);
+    expect(requestIdempotencyKeys[0]).toMatch(/^payment-evidence-request:/);
+    await expect(buyerRuntime.operation(buyerOperation)).resolves.toMatchObject({
+      status: "pending-retry",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await expect(buyerRuntime.operation(buyerOperation)).resolves.toMatchObject({
       status: "final",
       outcome: "success",
       reference: logicalAddress,
     });
+    expect(completionIdempotencyKeys).toHaveLength(2);
+    expect(new Set(completionIdempotencyKeys).size).toBe(1);
+    expect(completionIdempotencyKeys[0]).toMatch(/^payment-evidence-completion:/);
     expect(anchorWriteOnce).toHaveBeenCalledOnce();
     expect(anchorWriteOnce.mock.calls[0]?.[2]).toEqual({ metadata: {
       logicalAddress,
@@ -372,10 +412,16 @@ describe("live payment-evidence runtime", () => {
         sellerReceipts: { inspectPermit },
       },
     } as unknown as DacsLiveRoleOperationContextV1;
-    const resolvePublication = vi.fn(async () => ({
-      request: {},
-      dependencies: {},
-    })) as unknown as Parameters<
+    const transientResolution = Object.assign(new Error("fixture transient"), {
+      reasonCode: "seller-authority-unavailable",
+    });
+    const invalidResolution = Object.assign(new Error("fixture invalid"), {
+      reasonCode: "seller-authorization-binding-corrupt",
+    });
+    const resolvePublication = vi.fn()
+      .mockRejectedValueOnce(transientResolution)
+      .mockRejectedValueOnce(invalidResolution)
+      .mockResolvedValue({ request: {}, dependencies: {} }) as unknown as Parameters<
       typeof createDacsSellerSettlementPublicationTrackV1
     >[0]["resolvePublication"];
     const track = createDacsSellerSettlementPublicationTrackV1({
@@ -395,6 +441,15 @@ describe("live payment-evidence runtime", () => {
       reasonCode: "seller-settlement-track-binding-mismatch",
     });
     expect(resolvePublication).not.toHaveBeenCalled();
+    await expect(track(validOperation)).resolves.toMatchObject({
+      status: "pending-retry",
+      reasonCode: "seller-settlement-publication-pending-seller-authority-unavailable",
+    });
+    await expect(track(validOperation)).resolves.toEqual({
+      status: "operator-action",
+      reasonCode:
+        "seller-settlement-publication-seller-authorization-binding-corrupt",
+    });
     await expect(track(validOperation)).resolves.toMatchObject({
       status: "operator-action",
       reasonCode: expect.stringContaining("seller-settlement"),
@@ -443,7 +498,8 @@ describe("live payment-evidence runtime", () => {
 
   it("accepts a later authenticated observation of the exact finalized event", async () => {
     const database = await open("seller");
-    const buyerPayingKey = `0x${"3".repeat(40)}`;
+    const buyerPayingAddress = `0x${"3".repeat(40)}`;
+    const buyerPayingKey = `cci-xm:evm:8453:${buyerPayingAddress}`;
     const sellerPayee = `0x${"4".repeat(40)}`;
     const asset = `0x${"5".repeat(40)}`;
     const txHash = `0x${"6".repeat(64)}`;
@@ -506,7 +562,7 @@ describe("live payment-evidence runtime", () => {
         jobId: JOB_ID,
         paymentPhaseIndex: 0,
         deliveryPhaseIndex: 1,
-        payer: BUYER,
+        payer: buyerPayingAddress,
         payerPayingKey: buyerPayingKey,
         httpResource: "https://seller.example/orders/runtime",
         railId: PROTOCOL.rail.railId,
@@ -550,18 +606,20 @@ describe("live payment-evidence runtime", () => {
       idempotencyKey: authorizationId,
       jobId: JOB_ID,
     }).status).toBe("created");
+    let observedConfirmations = 5;
+    let observedFinalityAt = 9_000;
     const observeX402Transfer = vi.fn(async () => ({
       status: "finalized" as const,
       chainId: 8453,
       txHash,
       logIndex: 1,
-      payer: buyerPayingKey,
+      payer: buyerPayingAddress,
       payee: sellerPayee,
       amountBaseUnits: "1000000",
       asset: { contract: asset, symbol: "USDC", decimals: 6 },
-      confirmations: 5,
+      confirmations: observedConfirmations,
       includedAt: 6_500,
-      finalityObservedAt: 9_000,
+      finalityObservedAt: observedFinalityAt,
       sessionBinding: {
         kind: "eip3009" as const,
         nonce: x402Eip3009Nonce(JOB_ID, 0),
@@ -585,9 +643,10 @@ describe("live payment-evidence runtime", () => {
       operation: operation(order("seller")),
       retained: {} as never,
     });
-    await expect(resolved.dependencies.resolveAuthenticatedNativeProof({
+    const firstProof = await resolved.dependencies.resolveAuthenticatedNativeProof({
       authorization: paymentAuthorization as never,
-    })).resolves.toMatchObject({
+    });
+    expect(firstProof).toMatchObject({
       disposition: "authenticated",
       binding: {
         settlementFinality: {
@@ -595,7 +654,13 @@ describe("live payment-evidence runtime", () => {
           finalityBlocks: 3,
         },
       },
-      proof: { artifact: { finalityObservedAt: 9_000, confirmations: 5 } },
+      proof: { artifact: { finalityObservedAt: 7_000, confirmations: 3 } },
     });
+    observedConfirmations = 8;
+    observedFinalityAt = 11_000;
+    const replayProof = await resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: paymentAuthorization as never,
+    });
+    expect(replayProof).toEqual(firstProof);
   });
 });

@@ -340,6 +340,8 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsFixedPriceX402SellerLiveV1");
     expect(combined).toContain("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK");
     expect(combined).toContain('finalityTag: "latest"');
+    expect(combined).toContain('evmFinalityTag: "latest"');
+    expect(combined).toContain("retryDelayMs: 5_000");
     expect(combined).toContain("minimumConfirmations: Number(finalityBlocks)");
     expect(combined).toContain("inspectDacsX402TokenDomainV1");
     expect(combined).toContain("DACS_X402_TOKEN_NAME=USDC");

@@ -222,7 +222,10 @@ async function resolveActorAnchor(
     contentHash: expectedHash,
     writer,
   });
-  if (artifact === null || contentHash(artifact) !== expectedHash || receipt === null ||
+  if (artifact === null || receipt === null) {
+    throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-anchor-unavailable");
+  }
+  if (contentHash(artifact) !== expectedHash ||
       receipt.writer !== writer || receipt.logicalAddress !== logicalAddress ||
       receipt.nativeAddress !== resolved.address || receipt.contentHash !== expectedHash ||
       receipt.state !== "finalized" || receipt.observationDisposition !== "established" ||
@@ -246,7 +249,10 @@ async function resolveNativeAnchor(
     contentHash: expectedHash,
     writer,
   });
-  if (artifact === null || contentHash(artifact) !== expectedHash || receipt === null ||
+  if (artifact === null || receipt === null) {
+    throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-anchor-unavailable");
+  }
+  if (contentHash(artifact) !== expectedHash ||
       receipt.writer !== writer || receipt.logicalAddress !== logicalAddress ||
       receipt.nativeAddress !== nativeAddress || receipt.contentHash !== expectedHash ||
       receipt.state !== "finalized" || receipt.observationDisposition !== "established" ||
@@ -448,7 +454,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
     const commitmentArtifact = commitmentAnchor.artifact;
     const committedAt = commitmentAnchor.receipt.blockRef?.timestamp ??
       commitmentAnchor.receipt.observedAt;
-    validateFixedPriceAgreementBinding({
+    validateFixedPriceAgreementBinding(copy({
       agreement,
       verifiedListing: {
         disposition: "verified",
@@ -456,7 +462,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
         pin: copy(agreement.listingRef),
       },
       committedAt,
-    });
+    }));
 
     const settlementRefs = signedScope.settlementEvidence;
     if (!Array.isArray(settlementRefs) || settlementRefs.length !== 2) {
@@ -1022,7 +1028,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
       async revalidateSettlement() {
         const fresh = await observer.observeX402Transfer({
           chainId: event.chainId,
-          txHash: event.settlementTxHash,
+          txHash: `0x${event.settlementTxHash}`,
         });
         if (fresh.status !== "finalized") {
           return fresh.status === "failed"
@@ -1032,7 +1038,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
                 reason: "buyer-audit-native-revalidation-unavailable" };
         }
         if (fresh.chainId !== event.chainId ||
-            fresh.txHash.toLowerCase() !== event.settlementTxHash.toLowerCase() ||
+            fresh.txHash.toLowerCase() !== `0x${event.settlementTxHash}` ||
             fresh.logIndex !== event.logIndex ||
             fresh.includedAt > paymentEvidence.observedAt ||
             fresh.payer.toLowerCase() !== settlementContext.payer.payingKey.toLowerCase() ||

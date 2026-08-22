@@ -390,7 +390,7 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
                 observed.includedAt !== payment.settlementIdentity.includedAt ||
                 observed.confirmations < retainedFinality.finalityBlocks ||
                 observed.finalityObservedAt < retainedFinality.finalityObservedAt ||
-                !sameEvmAddress(observed.payer, session.payerPayingKey) ||
+                !sameEvmAddress(observed.payer, session.payer) ||
                 !sameEvmAddress(observed.payee, session.expected.payTo) ||
                 observed.amountBaseUnits !== session.expected.amount ||
                 !sameEvmAddress(observed.asset.contract, session.expected.asset) ||
@@ -415,8 +415,12 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
               payee: observed.payee,
               amountBaseUnits: observed.amountBaseUnits,
               asset: copy(observed.asset),
-              confirmations: observed.confirmations,
-              finalityObservedAt: observed.finalityObservedAt,
+              // Retain the authorization's exact authenticated finality floor.
+              // A later observer may report a higher block depth or a newer
+              // observation time, but those monotonic facts must not change the
+              // publication effect identity on replay.
+              confirmations: retainedFinality.finalityBlocks,
+              finalityObservedAt: retainedFinality.finalityObservedAt,
               sessionBinding: copy(observed.sessionBinding),
             };
             return {

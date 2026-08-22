@@ -29,6 +29,18 @@ import type { DacsSellerBundleTransportRuntimeV1 } from "./bundleTransportRuntim
 
 const DEFAULT_RETRY_DELAY_MS = 1_000;
 
+const BUYER_MATERIAL_RETRY_REASONS = new Set([
+  "buyer-audit-anchor-unavailable",
+  "buyer-audit-request-pending",
+]);
+
+const SELLER_MATERIAL_RETRY_REASONS = new Set([
+  "seller-audit-anchor-unavailable",
+  "seller-audit-authority-unavailable",
+  "seller-audit-deliverable-unavailable",
+  "seller-audit-terminal-wal-unavailable",
+]);
+
 export type DacsSellerAuditInputV1 = Omit<
   FinalizeCompletedSellerBundleDurableInput,
   "seller" | "counterSignatures" | "bindingSigner"
@@ -167,6 +179,23 @@ function pending(
   });
 }
 
+function capturedReasonCode(error: unknown): string | undefined {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) {
+    return undefined;
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "reasonCode");
+    if (descriptor === undefined || !("value" in descriptor) ||
+        typeof descriptor.value !== "string" ||
+        !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(descriptor.value)) {
+      return undefined;
+    }
+    return descriptor.value;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Complete the seller-owned DACS-5 bundle only after the buyer has reviewed and
  * signed the exact SDK-produced request. The host supplies its actor signer and
@@ -195,10 +224,31 @@ export function createDacsSellerAuditTrackV1(
       });
     }
     let retained: Readonly<DacsLiveOrderInputV1>;
-    let material: Readonly<DacsSellerAuditMaterialV1>;
     try {
       retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
+    } catch {
+      return Object.freeze({
+        status: "operator-action" as const,
+        reasonCode: "seller-audit-material-invalid",
+      });
+    }
+    let material: Readonly<DacsSellerAuditMaterialV1>;
+    try {
       material = await options.resolveMaterial({ operation, retained });
+    } catch (error) {
+      const reasonCode = capturedReasonCode(error);
+      if (reasonCode === undefined) {
+        return pending(context, delay, "seller-audit-material-unavailable");
+      }
+      if (SELLER_MATERIAL_RETRY_REASONS.has(reasonCode)) {
+        return pending(context, delay, reasonCode);
+      }
+      return Object.freeze({
+        status: "operator-action" as const,
+        reasonCode: "seller-audit-material-invalid",
+      });
+    }
+    try {
       if (!plainObject(material) || !plainObject(material.input) ||
           !plainObject(material.input.seller) || !plainObject(material.provider) ||
           !plainObject(material.durability) ||
@@ -379,10 +429,31 @@ export function createDacsBuyerAuditTrackV1(
       });
     }
     let retained: Readonly<DacsLiveOrderInputV1>;
-    let material: Readonly<DacsBuyerAuditMaterialV1>;
     try {
       retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
+    } catch {
+      return Object.freeze({
+        status: "operator-action" as const,
+        reasonCode: "buyer-audit-material-invalid",
+      });
+    }
+    let material: Readonly<DacsBuyerAuditMaterialV1>;
+    try {
       material = await options.resolveMaterial({ operation, retained });
+    } catch (error) {
+      const reasonCode = capturedReasonCode(error);
+      if (reasonCode === undefined) {
+        return pending(context, delay, "buyer-audit-material-unavailable");
+      }
+      if (BUYER_MATERIAL_RETRY_REASONS.has(reasonCode)) {
+        return pending(context, delay, reasonCode);
+      }
+      return Object.freeze({
+        status: "operator-action" as const,
+        reasonCode: "buyer-audit-material-invalid",
+      });
+    }
+    try {
       if (!plainObject(material) || !plainObject(material.input) ||
           !plainObject(material.input.buyer) || !plainObject(material.provider) ||
           !plainObject(material.durability) ||

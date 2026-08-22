@@ -173,6 +173,53 @@ describe("durable role-owned audit tracks", () => {
     expect(current.assertCurrent).toHaveBeenCalled();
   });
 
+  it.each([
+    "seller-audit-anchor-unavailable",
+    "seller-audit-authority-unavailable",
+    "seller-audit-deliverable-unavailable",
+  ])("retries the transient seller material state %s", async (reasonCode) => {
+    loadOrderInput.mockReturnValue({ application: {} });
+    const error = Object.assign(new Error(reasonCode), { reasonCode });
+    const track = createDacsSellerAuditTrackV1({
+      context: context("seller") as never,
+      workerId: "seller-audit-worker",
+      bundleTransport: {
+        publishRequest: vi.fn(),
+        resolveCounterSignatures: vi.fn(),
+      } as never,
+      resolveMaterial: vi.fn(async () => { throw error; }),
+      authorizeFinalized: vi.fn(async () => true),
+      retryDelayMs: 2_000,
+    });
+
+    await expect(track(operation("seller").input as never)).resolves.toEqual({
+      status: "pending-retry",
+      reasonCode,
+      retryAt: 12_000,
+    });
+  });
+
+  it("retries an unclassified seller material resolver failure", async () => {
+    loadOrderInput.mockReturnValue({ application: {} });
+    const track = createDacsSellerAuditTrackV1({
+      context: context("seller") as never,
+      workerId: "seller-audit-worker",
+      bundleTransport: {
+        publishRequest: vi.fn(),
+        resolveCounterSignatures: vi.fn(),
+      } as never,
+      resolveMaterial: vi.fn(async () => { throw new Error("network unavailable"); }),
+      authorizeFinalized: vi.fn(async () => true),
+      retryDelayMs: 2_000,
+    });
+
+    await expect(track(operation("seller").input as never)).resolves.toEqual({
+      status: "pending-retry",
+      reasonCode: "seller-audit-material-unavailable",
+      retryAt: 12_000,
+    });
+  });
+
   it("advances the buyer durable protocol with its own signer and transport", async () => {
     const retained = { application: { purchase: true } };
     loadOrderInput.mockReturnValue(retained);
@@ -268,6 +315,78 @@ describe("durable role-owned audit tracks", () => {
       status: "pending-retry",
       reasonCode: "buyer-audit-seller-finalisation-pending",
       retryAt: 12_000,
+    });
+  });
+
+  it.each([
+    "buyer-audit-request-pending",
+    "buyer-audit-anchor-unavailable",
+  ])("retries the transient buyer material state %s", async (reasonCode) => {
+    loadOrderInput.mockReturnValue({ application: {} });
+    const advanceCallsBefore = advanceBuyer.mock.calls.length;
+    const error = Object.assign(new Error(reasonCode), { reasonCode });
+    const track = createDacsBuyerAuditTrackV1({
+      context: context("buyer") as never,
+      workerId: "buyer-audit-worker",
+      bundleTransport: {
+        resolveSellerRequest: vi.fn(),
+        publishCounterSignature: vi.fn(),
+        resolveCounterSignatures: vi.fn(),
+        resolveSellerFinalization: vi.fn(),
+      },
+      resolveMaterial: vi.fn(async () => { throw error; }),
+      authorizeFinalized: vi.fn(async () => true),
+      retryDelayMs: 2_000,
+    });
+
+    await expect(track(operation("buyer").input as never)).resolves.toEqual({
+      status: "pending-retry",
+      reasonCode,
+      retryAt: 12_000,
+    });
+    expect(advanceBuyer).toHaveBeenCalledTimes(advanceCallsBefore);
+  });
+
+  it("retries an unclassified buyer material resolver failure", async () => {
+    loadOrderInput.mockReturnValue({ application: {} });
+    const track = createDacsBuyerAuditTrackV1({
+      context: context("buyer") as never,
+      workerId: "buyer-audit-worker",
+      bundleTransport: {
+        resolveSellerRequest: vi.fn(),
+        publishCounterSignature: vi.fn(),
+        resolveCounterSignatures: vi.fn(),
+        resolveSellerFinalization: vi.fn(),
+      },
+      resolveMaterial: vi.fn(async () => { throw new Error("invalid"); }),
+      authorizeFinalized: vi.fn(async () => true),
+    });
+
+    await expect(track(operation("buyer").input as never)).resolves.toEqual({
+      status: "pending-retry",
+      reasonCode: "buyer-audit-material-unavailable",
+      retryAt: 11_000,
+    });
+  });
+
+  it("keeps malformed buyer material fail-closed", async () => {
+    loadOrderInput.mockReturnValue({ application: {} });
+    const track = createDacsBuyerAuditTrackV1({
+      context: context("buyer") as never,
+      workerId: "buyer-audit-worker",
+      bundleTransport: {
+        resolveSellerRequest: vi.fn(),
+        publishCounterSignature: vi.fn(),
+        resolveCounterSignatures: vi.fn(),
+        resolveSellerFinalization: vi.fn(),
+      },
+      resolveMaterial: vi.fn(async () => ({} as never)),
+      authorizeFinalized: vi.fn(async () => true),
+    });
+
+    await expect(track(operation("buyer").input as never)).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "buyer-audit-material-invalid",
     });
   });
 });

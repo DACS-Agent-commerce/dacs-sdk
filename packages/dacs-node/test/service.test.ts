@@ -223,6 +223,7 @@ describe("authority-separated live role services", () => {
         ed25519Sign(bytes, role === "buyer" ? BUYER_KEY : SELLER_KEY),
       createOperations: () => operations(role),
       handleMessage: async () => ({ disposition: "accepted" }),
+      readiness: () => ({ ready: true, checkedAt: Date.now(), reasonCodes: [] }),
       workerIntervalMs: 60_000,
       server: { hostname: "127.0.0.1", port: 0 },
       ...overrides,
@@ -317,7 +318,12 @@ describe("authority-separated live role services", () => {
 
   it("defaults readiness to fail-closed until the live adapter latches", async () => {
     const database = await open(root(), "seller");
-    const service = remember(createDacsSellerServiceV1(options("seller", database)));
+    const service = remember(createDacsSellerServiceV1(options(
+      "seller",
+      database,
+      undefined,
+      { readiness: undefined },
+    )));
     await service.start();
     const response = await fetch(new URL("/ready", service.endpoint));
     expect(response.status).toBe(503);
@@ -646,6 +652,50 @@ describe("authority-separated live role services", () => {
     expect(serialized).toContain(JOB_ID);
     expect(serialized).not.toContain(BUYER);
     expect(serialized).not.toContain(SELLER);
+  });
+
+  it("does not resume durable work before readiness and deduplicates unchanged progress", async () => {
+    const directory = root();
+    const databasePath = join(directory, "buyer.sqlite");
+    const database = await open(directory, "buyer");
+    let ready = false;
+    const agreement = vi.fn<FixedPriceX402TrackOperation>(async ({ fence }) => {
+      await fence.assertCurrent();
+      return {
+        status: "pending-retry",
+        reasonCode: "counterparty-pending",
+        retryAt: database.readTime() + 1,
+      };
+    });
+    const events: unknown[] = [];
+    const service = remember(createDacsBuyerServiceV1(options(
+      "buyer",
+      database,
+      undefined,
+      {
+        readiness: () => ({
+          ready,
+          checkedAt: Date.now(),
+          reasonCodes: ready ? [] : ["live-adapter-not-ready"],
+        }),
+        createOperations: () => ({ ...operations("buyer"), agreement }),
+        events: { emit: (event) => void events.push(event) },
+      },
+    )));
+    await service.start();
+    await service.startOrder(order("buyer"));
+    await service.runOnce();
+    expect(agreement).not.toHaveBeenCalled();
+
+    ready = true;
+    await service.runOnce();
+    expect(agreement).toHaveBeenCalledTimes(1);
+    advanceStoreClock(databasePath, database.readTime() + 2);
+    await service.runOnce();
+    expect(agreement).toHaveBeenCalledTimes(2);
+    const progress = events.filter((event) =>
+      JSON.stringify(event).includes('"code":"order-track-processed"'));
+    expect(progress).toHaveLength(1);
   });
 
   it("resumes an unfinished order from the actor database after service restart", async () => {

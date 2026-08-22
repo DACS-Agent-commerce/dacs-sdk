@@ -123,6 +123,35 @@ function deepFreeze<T>(value: T): Readonly<T> {
   return value;
 }
 
+/**
+ * Project the authenticated registry document onto the exact rail shape owned
+ * by seller payment intake. Registry governance and its ComponentSignature
+ * authenticate the source document, but they are not members of the
+ * `SellerSupportedRailDefinition` callback contract. Passing the full
+ * registry document would make the intake boundary reject an otherwise valid
+ * rail as an over-wide callback result.
+ */
+function sellerIntakeRail(
+  rail: Readonly<AuthenticatedRailDefinition>,
+): Readonly<SellerSupportedRailDefinition> {
+  if (rail.railType !== "x402" || rail.asset.kind !== "erc20" ||
+      rail.network.kind !== "x402-resource" || rail.phaseHandler !== "pay-x402" ||
+      (rail.availability !== "live" && rail.availability !== "operator_gated" &&
+        rail.availability !== "closed_data" && rail.availability !== "bilateral")) {
+    throw new TypeError("fixed-price seller authority requires an x402 rail");
+  }
+  return deepFreeze({
+    railVersion: rail.railVersion,
+    railId: rail.railId,
+    railType: rail.railType,
+    asset: copy(rail.asset),
+    network: copy(rail.network),
+    phaseHandler: rail.phaseHandler,
+    parameters: copy(rail.parameters),
+    availability: rail.availability,
+  });
+}
+
 function tokenDomain(value: unknown): Readonly<{ name: string; version: string }> {
   if (!plainObject(value) || Object.keys(value).length !== 2 ||
       typeof value.name !== "string" || value.name.length === 0 ||
@@ -547,6 +576,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
     tokenDomain: tokenDomain(rawOptions.tokenDomain),
   });
   const { context, rail } = options;
+  const intakeRail = sellerIntakeRail(rail);
 
   const stateCache = new Map<string, Readonly<SellerStateV1>>();
   const listingAuthorities = new Map<string, Readonly<SellerListingAtCommitResolution>>();
@@ -655,7 +685,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
       }
     },
     async resolveOrderScope({ operation, retained }) {
-      const state = await authenticateState(options, operation.order);
+      const state = await stateForJob(operation.order.jobId);
       if (canonicalize(retained) !== canonicalize(state.retained)) {
         throw new DacsFixedPriceX402SellerAuthorityError("seller-authority-input-invalid");
       }
@@ -665,13 +695,9 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
       });
     },
     async authorizePaymentComplete(input) {
-      try {
-        const state = await authenticateState(options, input.operation.order);
-        return canonicalize(input.retained) === canonicalize(state.retained) &&
-          paymentCompleteMatches(state, input.authorization, input.settlementTransaction);
-      } catch {
-        return false;
-      }
+      const state = await stateForJob(input.operation.order.jobId);
+      return canonicalize(input.retained) === canonicalize(state.retained) &&
+        paymentCompleteMatches(state, input.authorization, input.settlementTransaction);
     },
     async resolveCommittedAgreement(jobId) {
       try {
@@ -712,7 +738,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
           railAuthorities.has(canonicalize(ref)) && ref.railId === rail.railId &&
           ref.railVersion === rail.railVersion
         ? { disposition: "verified" as const,
-            rail: rail as SellerSupportedRailDefinition,
+            rail: intakeRail,
             railRegistryVersion }
         : { disposition: "rejected" as const, reason: "rail-authority-mismatch" };
     },
@@ -728,7 +754,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
         const retainedIdentity = identityAuthorities.get(identityBundleHash(buyerBundle));
         return paying.claim === payingKey &&
             retainedIdentity?.role === "buyer" &&
-            canonicalize(candidate) === canonicalize(rail)
+            canonicalize(candidate) === canonicalize(intakeRail)
           ? { disposition: "verified" as const, address: paying.address }
           : { disposition: "rejected" as const, reason: "payer-binding-mismatch" };
       } catch {
@@ -744,7 +770,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
       const retainedIdentity = identityAuthorities.get(identityBundleHash(payeeBundle));
       return payeePrimaryClaim === context.authority &&
           retainedIdentity?.role === "seller" &&
-          canonicalize(candidate) === canonicalize(rail) &&
+          canonicalize(candidate) === canonicalize(intakeRail) &&
           payoutAddress.toLowerCase() === context.evm.address.toLowerCase()
         ? { disposition: "bound" as const, address: context.evm.address, tier: 3 as const }
         : { disposition: "mismatch" as const,

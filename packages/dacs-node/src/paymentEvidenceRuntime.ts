@@ -420,6 +420,8 @@ export function createDacsBuyerPaymentEvidenceRuntimeV1(
 
   const createHandshake = (
     order: Pick<FixedPriceX402OrderRecord, "seller" | "buyer" | "protocol">,
+    verifyEvidence: BuyerPaymentEvidenceHandshakeOptions["verifyEvidence"] =
+      options.verifyEvidence,
   ): Readonly<BuyerPaymentEvidenceHandshake> => createBuyerPaymentEvidenceHandshake({
     store,
     seller: order.seller,
@@ -443,7 +445,7 @@ export function createDacsBuyerPaymentEvidenceRuntimeV1(
         return { disposition: "rejected", reason: "signed-envelope-invalid" };
       }
     },
-    verifyEvidence: options.verifyEvidence,
+    verifyEvidence,
     anchorEvidence: options.anchorEvidence,
     reconcileAnchor: options.reconcileAnchor,
     verifyAnchorReceipt: options.verifyAnchorReceipt,
@@ -597,34 +599,54 @@ export function createDacsBuyerPaymentEvidenceRuntimeV1(
       if (validation.status !== "valid") {
         return Object.freeze({ disposition: "rejected" as const, reasonCode: validation.reasonCode });
       }
-      try {
-        const order = await loadOrder(context, envelope.jobId);
-        if (order === undefined) throw new Error();
-        await createHandshake(order).receiveRequest(
-          envelope.payload,
-          { authenticated },
+      const order = await loadOrder(context, envelope.jobId);
+      if (order === undefined) {
+        throw new DacsPaymentEvidenceRuntimeError(
+          "payment-evidence-request-order-pending",
         );
-        const id = requestBindingIdFromRequest(envelope.payload);
-        const put = context.database.putEffectIntent({
-          kind: "session",
-          effectId: id,
-          bindingHash: order.localBindingHash,
-          input: {
-            requestBindingVersion: REQUEST_BINDING_VERSION,
-            localBindingHash: order.localBindingHash,
-            request: envelope.payload,
-          } satisfies DacsPaymentEvidenceRequestBindingV1,
-          idempotencyKey: id,
-          jobId: order.jobId,
-        });
-        if (put.status === "conflict") throw new Error();
-        return Object.freeze({ disposition: "accepted" as const });
-      } catch {
+      }
+      const verification = await options.verifyEvidence(envelope.payload);
+      if (verification.disposition === "invalid") {
+        const reasonCode = verification.reason === "payment evidence actor binding invalid"
+          ? "payment-evidence-request-actor-binding-invalid"
+          : verification.reason === "payment evidence settlement binding invalid"
+            ? "payment-evidence-request-settlement-binding-invalid"
+            : verification.reason === "payment evidence cryptographic verification failed"
+              ? "payment-evidence-request-cryptographic-invalid"
+              : "payment-evidence-request-invalid";
         return Object.freeze({
           disposition: "rejected" as const,
-          reasonCode: "payment-evidence-request-retention-failed",
+          reasonCode,
         });
       }
+      if (verification.disposition !== "valid") {
+        throw new DacsPaymentEvidenceRuntimeError(
+          "payment-evidence-request-verification-pending",
+        );
+      }
+      await createHandshake(order, () => verification).receiveRequest(
+        envelope.payload,
+        { authenticated },
+      );
+      const id = requestBindingIdFromRequest(envelope.payload);
+      const put = context.database.putEffectIntent({
+        kind: "session",
+        effectId: id,
+        bindingHash: order.localBindingHash,
+        input: {
+          requestBindingVersion: REQUEST_BINDING_VERSION,
+          localBindingHash: order.localBindingHash,
+          request: envelope.payload,
+        } satisfies DacsPaymentEvidenceRequestBindingV1,
+        idempotencyKey: id,
+        jobId: order.jobId,
+      });
+      if (put.status === "conflict") {
+        throw new DacsPaymentEvidenceRuntimeError(
+          "payment-evidence-request-binding-conflict",
+        );
+      }
+      return Object.freeze({ disposition: "accepted" as const });
     },
   };
   return Object.freeze(runtime);
@@ -662,6 +684,8 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
 
   const createHandshake = (
     order: Pick<FixedPriceX402OrderRecord, "seller" | "buyer" | "protocol">,
+    receiptVerifier: SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"] =
+      verifyAnchorReceipt,
   ): Readonly<SellerPaymentEvidenceHandshake> => createSellerPaymentEvidenceHandshake({
     store,
     seller: order.seller,
@@ -685,7 +709,7 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
         return { disposition: "rejected", reason: "signed-envelope-invalid" };
       }
     },
-    verifyAnchorReceipt,
+    verifyAnchorReceipt: receiptVerifier,
     ...(common.leaseDurationMs === undefined
       ? {} : { leaseDurationMs: common.leaseDurationMs }),
   });
@@ -791,20 +815,52 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
       if (validation.status !== "valid") {
         return Object.freeze({ disposition: "rejected" as const, reasonCode: validation.reasonCode });
       }
-      try {
-        const order = await loadOrder(context, envelope.jobId);
-        if (order === undefined) throw new Error();
-        await createHandshake(order).receiveCompletion(
-          envelope.payload,
-          { authenticated },
+      const order = await loadOrder(context, envelope.jobId);
+      if (order === undefined) {
+        throw new DacsPaymentEvidenceRuntimeError(
+          "payment-evidence-completion-order-pending",
         );
-        return Object.freeze({ disposition: "accepted" as const });
-      } catch {
+      }
+      const loaded = await store.load(
+        "seller",
+        envelope.payload.requestMessageId,
+        paymentEvidenceHandshakeScopeHash({
+          seller: order.seller,
+          buyer: order.buyer,
+          protocolHash: fixedPriceX402ProtocolBindingHash(order.protocol),
+        }),
+      );
+      if (loaded.status === "missing") {
         return Object.freeze({
           disposition: "rejected" as const,
-          reasonCode: "payment-evidence-completion-retention-failed",
+          reasonCode: "payment-evidence-completion-request-missing",
         });
       }
+      if (loaded.status !== "ok") {
+        throw new DacsPaymentEvidenceRuntimeError(
+          "payment-evidence-completion-request-pending",
+        );
+      }
+      const verification = await verifyAnchorReceipt({
+        request: loaded.record.request,
+        completion: envelope.payload,
+      });
+      if (verification.disposition === "invalid") {
+        return Object.freeze({
+          disposition: "rejected" as const,
+          reasonCode: "payment-evidence-completion-invalid",
+        });
+      }
+      if (verification.disposition !== "valid") {
+        throw new DacsPaymentEvidenceRuntimeError(
+          "payment-evidence-completion-verification-pending",
+        );
+      }
+      await createHandshake(order, () => verification).receiveCompletion(
+        envelope.payload,
+        { authenticated },
+      );
+      return Object.freeze({ disposition: "accepted" as const });
     },
   };
   return Object.freeze(runtime);

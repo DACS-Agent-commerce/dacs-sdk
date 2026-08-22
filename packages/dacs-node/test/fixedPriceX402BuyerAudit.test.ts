@@ -587,6 +587,10 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       exactRequest,
       exact.provider,
     )).resolves.toEqual(exactRequest);
+    expect(mocks.observeX402Transfer).toHaveBeenLastCalledWith({
+      chainId: observation.chainId,
+      txHash: observation.txHash,
+    });
 
     mocks.observeX402Transfer.mockResolvedValueOnce({
       ...observation,

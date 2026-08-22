@@ -210,7 +210,10 @@ async function authenticatedReceipt(
   }>,
 ): Promise<Readonly<AnchorReceipt>> {
   const receipt = await context.demos.adapter.resolveDemosAnchorReceipt(input);
-  if (receipt === null || receipt.writer !== input.writer ||
+  if (receipt === null) {
+    throw new DacsFixedPriceX402SellerAuditError("seller-audit-anchor-unavailable");
+  }
+  if (receipt.writer !== input.writer ||
       receipt.logicalAddress !== input.logicalAddress ||
       receipt.nativeAddress !== input.nativeAddress ||
       receipt.contentHash !== input.contentHash ||
@@ -236,7 +239,10 @@ async function resolveActorAnchor(
     throw new DacsFixedPriceX402SellerAuditError("seller-audit-anchor-unavailable");
   }
   const artifact = await context.demos.adapter.readAnchor(resolved.address);
-  if (artifact === null || contentHash(artifact) !== expectedHash) {
+  if (artifact === null) {
+    throw new DacsFixedPriceX402SellerAuditError("seller-audit-anchor-unavailable");
+  }
+  if (contentHash(artifact) !== expectedHash) {
     throw new DacsFixedPriceX402SellerAuditError("seller-audit-anchor-invalid");
   }
   const receipt = await authenticatedReceipt(context, {
@@ -265,7 +271,10 @@ async function authenticateRetainedAnchor(
     writer,
   });
   const readback = await context.demos.adapter.readAnchor(receipt.nativeAddress);
-  if (readback === null || canonicalize(readback) !== canonicalize(artifact)) {
+  if (readback === null) {
+    throw new DacsFixedPriceX402SellerAuditError("seller-audit-anchor-unavailable");
+  }
+  if (canonicalize(readback) !== canonicalize(artifact)) {
     throw new DacsFixedPriceX402SellerAuditError("seller-audit-retained-readback-invalid");
   }
   return Object.freeze({ artifact: copy(artifact), receipt: authenticated, writer });
@@ -318,6 +327,10 @@ export function createDacsFixedPriceX402SellerAuditV1(
       const listingResolution = await options.fulfilment.fulfilmentDeps.resolveListing(
         authorization.sessionAuthorization.listingRef,
       );
+      if (agreementResolution.status === "rejected" ||
+          listingResolution.status === "rejected") {
+        throw new DacsFixedPriceX402SellerAuditError("seller-audit-authority-invalid");
+      }
       if (agreementResolution.status !== "verified" ||
           listingResolution.status !== "verified") {
         throw new DacsFixedPriceX402SellerAuditError("seller-audit-authority-unavailable");
@@ -349,7 +362,7 @@ export function createDacsFixedPriceX402SellerAuditV1(
           canonicalize(admission.application) !== canonicalize(application)) {
         throw new DacsFixedPriceX402SellerAuditError("seller-audit-retained-state-invalid");
       }
-      validateFixedPriceAgreementBinding({
+      validateFixedPriceAgreementBinding(copy({
         agreement: commitment.agreement,
         verifiedListing: {
           disposition: "verified",
@@ -357,7 +370,7 @@ export function createDacsFixedPriceX402SellerAuditV1(
           pin: authorization.sessionAuthorization.listingRef,
         },
         committedAt: commitment.commitment.committedAt,
-      });
+      }));
 
       const agreementHash = contentHash(
         commitment.agreement as unknown as Record<string, unknown>,
@@ -382,7 +395,10 @@ export function createDacsFixedPriceX402SellerAuditV1(
             writer: order.seller,
           });
           const readback = await context.demos.adapter.readAnchor(application.listingRef);
-          if (readback === null || canonicalize(readback) !== canonicalize(artifact)) {
+          if (readback === null) {
+            throw new DacsFixedPriceX402SellerAuditError("seller-audit-anchor-unavailable");
+          }
+          if (canonicalize(readback) !== canonicalize(artifact)) {
             throw new DacsFixedPriceX402SellerAuditError("seller-audit-listing-readback-invalid");
           }
           return Object.freeze({ artifact: copy(artifact), receipt, writer: order.seller });

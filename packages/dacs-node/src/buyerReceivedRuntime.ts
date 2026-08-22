@@ -50,7 +50,7 @@ export interface DacsBuyerReceivedRuntimeOptionsV1 {
     settlement: Readonly<X402BuyerCapturedSettlement>;
     response: Readonly<DacsBuyerReceivedRecordV1>;
     body: Uint8Array;
-  }>): Promise<boolean> | boolean;
+  }>): Promise<boolean | "indeterminate"> | boolean | "indeterminate";
   fetchImpl?: typeof fetch;
   maxBodyBytes?: number;
   retryDelayMs?: number;
@@ -274,6 +274,15 @@ export function createDacsBuyerReceivedTrackV1(
           headers: { [intent.paymentHeader.name]: intent.paymentHeader.value },
           redirect: "error",
         });
+        if (response.status === 408 || response.status === 425 ||
+            response.status === 429 || response.status >= 500) {
+          await response.body?.cancel().catch(() => undefined);
+          return Object.freeze({
+            status: "pending-retry" as const,
+            reasonCode: "buyer-received-response-pending",
+            retryAt: context.database.readTime() + delay,
+          });
+        }
         if (response.status < 200 || response.status > 299 ||
             response.headers.get("PAYMENT-RESPONSE") !== settlement.encodedSettlementHeader) {
           return Object.freeze({
@@ -335,14 +344,22 @@ export function createDacsBuyerReceivedTrackV1(
     try {
       const body = Uint8Array.from(Buffer.from(record.bodyBase64Url, "base64url"));
       await operation.fence.assertCurrent();
-      if (await options.authorizeReceived({
+      const authorization = await options.authorizeReceived({
         operation,
         retained,
         intent,
         settlement,
         response: record,
         body,
-      }) !== true) {
+      });
+      if (authorization === "indeterminate") {
+        return Object.freeze({
+          status: "pending-retry" as const,
+          reasonCode: "buyer-received-authorization-pending",
+          retryAt: context.database.readTime() + delay,
+        });
+      }
+      if (authorization !== true) {
         throw new DacsBuyerReceivedRuntimeError("buyer-received-result-unauthorized");
       }
       await operation.fence.assertCurrent();

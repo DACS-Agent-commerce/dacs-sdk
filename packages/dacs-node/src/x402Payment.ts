@@ -11,6 +11,7 @@ import {
   type X402BuyerSettlementIntent,
   type X402BuyerSettlementStore,
 } from "@kynesyslabs/dacs";
+import { canonicalize } from "@kynesyslabs/dacs/canonical";
 
 import {
   createDacsLiveEffectTrackV1,
@@ -187,6 +188,138 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
     throw new TypeError("x402 buyer settlement lease duration is invalid");
   }
 
+  function sameSettlement(
+    left: Readonly<X402BuyerCapturedSettlement>,
+    right: Readonly<X402BuyerCapturedSettlement>,
+  ): boolean {
+    try {
+      return canonicalize(left) === canonicalize(right);
+    } catch {
+      return false;
+    }
+  }
+
+  async function persistAuthenticatedSettlement(
+    paymentInput: Readonly<DacsX402BuyerPaymentInputV1>,
+    settlement: Readonly<X402BuyerCapturedSettlement>,
+    outerFence: Readonly<DacsLiveEffectFenceV1>,
+  ): Promise<Readonly<DacsLiveEffectReconciliationV1<DacsX402BuyerPaymentResultV1>>> {
+    const owner = `${workerId}-reconcile-${outerFence.generation}`;
+    const inheritedExecutionOwner = (candidate: string): boolean => {
+      const prefix = `${workerId}-`;
+      if (!candidate.startsWith(prefix)) return false;
+      const suffix = candidate.slice(prefix.length);
+      if (!/^[1-9][0-9]*$/.test(suffix)) return false;
+      const generation = Number(suffix);
+      return Number.isSafeInteger(generation) && generation < outerFence.generation;
+    };
+    try {
+      await outerFence.assertCurrent();
+      const claimed = await settlementStore.claim({
+        intent: paymentInput.intent,
+        owner,
+        now: database.readTime(),
+        leaseDurationMs: settlementLeaseDurationMs,
+      });
+      await outerFence.assertCurrent();
+      if (claimed.status === "captured") {
+        return claimed.outcome.status === "captured" &&
+            sameSettlement(claimed.outcome.settlement, settlement)
+          ? { status: "completed", result: resultFromSettlement(settlement) }
+          : { status: "operator-action", reasonCode: "x402-store-settlement-conflict" };
+      }
+      if (claimed.status === "failed") {
+        return { status: "operator-action", reasonCode: "x402-store-terminal-failure" };
+      }
+      if (claimed.status === "conflict") {
+        return { status: "operator-action", reasonCode: "x402-store-intent-conflict" };
+      }
+      if (claimed.status === "unsupported" || claimed.status === "corrupt") {
+        return {
+          status: "indeterminate",
+          reasonCode: claimed.status === "unsupported"
+            ? "x402-store-version-unsupported" : "x402-store-corrupt",
+        };
+      }
+      if (claimed.status === "waiting" &&
+          !inheritedExecutionOwner(claimed.lease.owner)) {
+        // Never record through an unrelated worker's live lease. The one
+        // exception below is a lease created by an earlier generation of this
+        // exact outer effect: the current keyed outer fence proves that prior
+        // execution has been superseded, while chain authentication proves the
+        // terminal settlement being retained.
+        return { status: "indeterminate", reasonCode: "x402-store-lease-held" };
+      }
+      if ((claimed.status !== "acquired" && claimed.status !== "waiting") ||
+          claimed.intent.bindingHash !== paymentInput.intent.bindingHash ||
+          (claimed.status === "acquired" && claimed.lease.owner !== owner) ||
+          !Number.isSafeInteger(claimed.lease.generation) ||
+          claimed.lease.generation <= 0) {
+        return { status: "indeterminate", reasonCode: "x402-store-claim-invalid" };
+      }
+      const innerFence: X402BuyerEffectFence = Object.freeze({
+        owner: claimed.lease.owner,
+        generation: claimed.lease.generation,
+        settlementKey: paymentInput.intent.settlementKey,
+        bindingHash: paymentInput.intent.bindingHash,
+        idempotencyKey: paymentInput.intent.settlementKey,
+        async assertCurrent() {
+          if (!await settlementStore.isCurrent({
+            settlementKey: paymentInput.intent.settlementKey,
+            bindingHash: paymentInput.intent.bindingHash,
+            lease: claimed.lease,
+            now: database.readTime(),
+          })) {
+            throw new DacsX402BuyerPaymentError("x402-store-generation-stale");
+          }
+        },
+      });
+      const fence = combinedFence(innerFence, outerFence);
+      await fence.assertCurrent();
+      const written = await settlementStore.recordOutcome({
+        settlementKey: paymentInput.intent.settlementKey,
+        bindingHash: paymentInput.intent.bindingHash,
+        lease: claimed.lease,
+        outcome: {
+          outcomeVersion: "1",
+          status: "captured",
+          settlement,
+        },
+        now: database.readTime(),
+      });
+      await outerFence.assertCurrent();
+      if (written.status === "recorded" || written.status === "existing") {
+        return written.outcome.status === "captured" &&
+            sameSettlement(written.outcome.settlement, settlement)
+          ? { status: "completed", result: resultFromSettlement(settlement) }
+          : { status: "operator-action", reasonCode: "x402-store-settlement-conflict" };
+      }
+      if (written.status === "conflict") {
+        return { status: "operator-action", reasonCode: "x402-store-settlement-conflict" };
+      }
+      return {
+        status: "indeterminate",
+        reasonCode: written.status === "unsupported"
+          ? "x402-store-version-unsupported" : written.status === "corrupt"
+            ? "x402-store-corrupt" : "x402-store-generation-stale",
+      };
+    } catch {
+      // The authenticated terminal write may have committed before its local
+      // acknowledgement. Resolve that ambiguity from the exact retained key.
+      try {
+        const loaded = await settlementStore.load(paymentInput.intent.settlementKey);
+        if (loaded.status === "captured" && loaded.outcome.status === "captured" &&
+            sameSettlement(loaded.outcome.settlement, settlement)) {
+          await outerFence.assertCurrent();
+          return { status: "completed", result: resultFromSettlement(settlement) };
+        }
+      } catch {
+        // A failed read cannot establish that the terminal write committed.
+      }
+      return { status: "indeterminate", reasonCode: "x402-store-outcome-write-indeterminate" };
+    }
+  }
+
   async function reconcileFromChain(
     paymentInput: Readonly<DacsX402BuyerPaymentInputV1>,
     outerFence: Readonly<DacsLiveEffectFenceV1>,
@@ -211,10 +344,11 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
       );
       await fence.assertCurrent();
       if (recovered.disposition === "settled-same") {
-        return {
-          status: "completed",
-          result: resultFromSettlement(recovered.settlement),
-        };
+        return persistAuthenticatedSettlement(
+          paymentInput,
+          recovered.settlement,
+          outerFence,
+        );
       }
       if (recovered.disposition === "unused") {
         if (!HASH_RE.test(recovered.authenticationHash)) {

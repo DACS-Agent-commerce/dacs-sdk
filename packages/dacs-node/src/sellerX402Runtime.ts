@@ -42,6 +42,7 @@ const AUTHORIZATION_BINDING_DOMAIN = "dacs-live-seller-x402-authorization:v1:" a
 const DELIVERY_BINDING_DOMAIN = "dacs-live-seller-delivery:v1:" as const;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
+const REASON_CODE_RE = /^[a-z][a-z0-9-]{0,127}$/;
 
 interface DacsSellerX402AuthorizationBindingV1 {
   authorizationBindingVersion: typeof AUTHORIZATION_BINDING_VERSION;
@@ -165,6 +166,10 @@ function safePhase(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+function recoveryReasonCode(value: unknown, fallback: string): string {
+  return typeof value === "string" && REASON_CODE_RE.test(value) ? value : fallback;
+}
+
 function retryDelay(value: unknown): number {
   const captured = value ?? DEFAULT_RETRY_DELAY_MS;
   if (!Number.isSafeInteger(captured) || Number(captured) <= 0 ||
@@ -259,6 +264,18 @@ function captureDeliveryBinding(value: unknown): Readonly<DacsSellerDeliveryBind
     throw new DacsSellerX402RuntimeError("seller-delivery-binding-corrupt");
   }
   return value as unknown as Readonly<DacsSellerDeliveryBindingV1>;
+}
+
+function loadDeliveryBinding(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+  deliveryPhaseIndex: number,
+): Readonly<DacsSellerDeliveryBindingV1> | undefined {
+  const value = context.database.loadEffectInput(
+    "session",
+    deliveryId(jobId, deliveryPhaseIndex),
+  );
+  return value === undefined ? undefined : captureDeliveryBinding(value);
 }
 
 /**
@@ -551,15 +568,32 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
       });
     }
     let retained: Readonly<DacsLiveOrderInputV1>;
-    let scope: Readonly<DacsSellerX402OrderScopeV1>;
     try {
       retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
-      scope = captureScope(await options.resolveOrderScope({ operation, retained }));
-      await operation.fence.assertCurrent();
     } catch {
       return Object.freeze({
         status: "operator-action" as const,
         reasonCode: "seller-x402-payment-input-invalid",
+      });
+    }
+    let resolvedScope: Readonly<DacsSellerX402OrderScopeV1>;
+    try {
+      resolvedScope = await options.resolveOrderScope({ operation, retained });
+      await operation.fence.assertCurrent();
+    } catch {
+      return Object.freeze({
+        status: "pending-retry" as const,
+        reasonCode: "seller-x402-order-scope-pending",
+        retryAt: retryAt(context, delay),
+      });
+    }
+    let scope: Readonly<DacsSellerX402OrderScopeV1>;
+    try {
+      scope = captureScope(resolvedScope);
+    } catch {
+      return Object.freeze({
+        status: "operator-action" as const,
+        reasonCode: "seller-x402-order-scope-invalid",
       });
     }
     const settlementKey = x402PaywallSettlementKey({
@@ -632,21 +666,72 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
       } catch (error) {
         if (error instanceof DacsSellerX402RuntimeError &&
             error.reasonCode === "seller-x402-authorization-pending") {
+          let recovered: Awaited<ReturnType<typeof spine.recoverPaymentAuthorization>>;
+          try {
+            recovered = await spine.recoverPaymentAuthorization({
+              jobId: operation.order.jobId,
+              phaseIndex: scope.paymentPhaseIndex,
+            });
+          } catch {
+            return Object.freeze({
+              status: "pending-retry" as const,
+              reasonCode: "seller-x402-authorization-recovery-unavailable",
+              retryAt: retryAt(context, delay),
+            });
+          }
+          if (recovered.disposition !== "authorized") {
+            return recovered.disposition === "rejected"
+              ? Object.freeze({
+                  status: "operator-action" as const,
+                  reasonCode: recoveryReasonCode(
+                    recovered.reason,
+                    "seller-x402-authorization-recovery-rejected",
+                  ),
+                })
+              : Object.freeze({
+                  status: "pending-retry" as const,
+                  reasonCode: recoveryReasonCode(
+                    recovered.reason,
+                    "seller-x402-authorization-recovery-pending",
+                  ),
+                  retryAt: retryAt(context, delay),
+                });
+          }
+          try {
+            await retainAuthorization(recovered.authorization);
+            authorization = await loadAuthorization(operation);
+          } catch {
+            return Object.freeze({
+              status: "pending-retry" as const,
+              reasonCode: "seller-x402-authorization-retention-pending",
+              retryAt: retryAt(context, delay),
+            });
+          }
+        } else {
           return Object.freeze({
-            status: "pending-retry" as const,
-            reasonCode: error.reasonCode,
-            retryAt: retryAt(context, delay),
+            status: "operator-action" as const,
+            reasonCode: "seller-x402-authorization-invalid",
           });
         }
+      }
+      if (authorization.settlementKey !== settlementKey) {
         return Object.freeze({
           status: "operator-action" as const,
-          reasonCode: "seller-x402-authorization-invalid",
+          reasonCode: "seller-x402-authorization-settlement-mismatch",
         });
       }
-      if (authorization.settlementKey !== settlementKey) throw new Error();
-      const inspection = await receiptStore.inspectPermit(
-        authorization.authorization.paymentPermitId,
-      );
+      let inspection: Awaited<ReturnType<typeof receiptStore.inspectPermit>>;
+      try {
+        inspection = await receiptStore.inspectPermit(
+          authorization.authorization.paymentPermitId,
+        );
+      } catch {
+        return Object.freeze({
+          status: "pending-retry" as const,
+          reasonCode: "seller-x402-payment-permit-read-pending",
+          retryAt: retryAt(context, delay),
+        });
+      }
       if (inspection.status === "invalid") {
         return Object.freeze({
           status: "operator-action" as const,
@@ -654,14 +739,29 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
         });
       }
       if (canonicalize(inspection.claim.authorization) !==
-          canonicalize(authorization.authorization.paymentAuthorization)) throw new Error();
+          canonicalize(authorization.authorization.paymentAuthorization)) {
+        return Object.freeze({
+          status: "operator-action" as const,
+          reasonCode: "seller-x402-payment-permit-binding-mismatch",
+        });
+      }
       await operation.fence.assertCurrent();
-      if (await options.authorizePaymentComplete({
-        operation,
-        retained,
-        authorization: authorization.authorization,
-        settlementTransaction: settlement.outcome.settlement.transaction,
-      }) !== true) {
+      let complete: boolean;
+      try {
+        complete = await options.authorizePaymentComplete({
+          operation,
+          retained,
+          authorization: authorization.authorization,
+          settlementTransaction: settlement.outcome.settlement.transaction,
+        });
+      } catch {
+        return Object.freeze({
+          status: "pending-retry" as const,
+          reasonCode: "seller-x402-payment-result-pending",
+          retryAt: retryAt(context, delay),
+        });
+      }
+      if (complete !== true) {
         return Object.freeze({
           status: "operator-action" as const,
           reasonCode: "seller-x402-payment-result-unauthorized",
@@ -692,6 +792,30 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
     try {
       const authorization = await loadAuthorization(operation);
       await operation.fence.assertCurrent();
+      const session = authorization.authorization.sessionAuthorization;
+      const retainedDelivery = loadDeliveryBinding(
+        context,
+        operation.order.jobId,
+        session.deliveryPhaseIndex,
+      );
+      if (retainedDelivery !== undefined) {
+        if (retainedDelivery.localBindingHash !== operation.order.localBindingHash ||
+            retainedDelivery.jobId !== operation.order.jobId ||
+            retainedDelivery.deliveryPhaseIndex !== session.deliveryPhaseIndex ||
+            retainedDelivery.authorizationHash !== authorization.authorizationHash) {
+          return Object.freeze({
+            status: "operator-action" as const,
+            reasonCode: "seller-delivery-binding-mismatch",
+          });
+        }
+        await operation.fence.assertCurrent();
+        return Object.freeze({
+          status: "final" as const,
+          outcome: "success" as const,
+          reference: retainedDelivery.logicalAddress,
+          authenticationHash: retainedDelivery.evidenceHash,
+        });
+      }
       const output = await runDurableFulfilmentToDeliveryReady(
         requestFromAuthorization(authorization.authorization),
         fulfilmentDeps,

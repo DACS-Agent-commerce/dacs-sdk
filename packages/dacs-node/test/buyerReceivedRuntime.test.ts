@@ -168,6 +168,11 @@ describe("buyer received response runtime", () => {
       },
     } as const;
 
+    authorizeReceived.mockReturnValueOnce("indeterminate" as never);
+    await expect(track(operation)).resolves.toMatchObject({
+      status: "pending-retry",
+      reasonCode: "buyer-received-authorization-pending",
+    });
     await expect(track(operation)).resolves.toMatchObject({
       status: "final",
       outcome: "success",
@@ -181,10 +186,10 @@ describe("buyer received response runtime", () => {
       outcome: "success",
     });
     expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(authorizeReceived).toHaveBeenCalledTimes(2);
+    expect(authorizeReceived).toHaveBeenCalledTimes(3);
   });
 
-  it("rejects a paid response that does not bind the finalized settlement header", async () => {
+  it("retries a transient paid response and rejects a substituted success", async () => {
     const database = await open();
     const buyerOrder = order();
     await database.createLiveCoordinatorStore("buyer").create({
@@ -226,16 +231,14 @@ describe("buyer received response runtime", () => {
         },
       },
     } as unknown as DacsLiveRoleOperationContextV1;
+    let response = new Response("pending", { status: 503 });
     const track = createDacsBuyerReceivedTrackV1({
       context,
       resolvePaymentScope: () => ({ paymentPhaseIndex: 2 }),
       authorizeReceived: () => true,
-      fetchImpl: async () => new Response("substituted", {
-        status: 200,
-        headers: { "PAYMENT-RESPONSE": "different" },
-      }),
+      fetchImpl: async () => response,
     });
-    await expect(track({
+    const operation = {
       order: loaded.record,
       fence: {
         role: "buyer",
@@ -248,7 +251,17 @@ describe("buyer received response runtime", () => {
         idempotencyKey: "buyer-received",
         assertCurrent: async () => undefined,
       },
-    })).resolves.toEqual({
+    } as const;
+    await expect(track(operation)).resolves.toMatchObject({
+      status: "pending-retry",
+      reasonCode: "buyer-received-response-pending",
+    });
+
+    response = new Response("substituted", {
+      status: 200,
+      headers: { "PAYMENT-RESPONSE": "different" },
+    });
+    await expect(track(operation)).resolves.toEqual({
       status: "operator-action",
       reasonCode: "buyer-received-paid-response-invalid",
     });

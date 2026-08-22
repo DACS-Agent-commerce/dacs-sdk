@@ -70,6 +70,12 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   demosIdentityFilePath: string;
   evmPrivateKeyFilePath: string;
   evmRpcUrl: string;
+  /**
+   * Buyer chain head used by authorization reconciliation. `finalized` is the
+   * default; hosts selecting `safe` or `latest` must pair it with the
+   * authenticated rail's confirmation policy in their commerce graph.
+   */
+  evmFinalityTag?: "finalized" | "safe" | "latest";
   databasePath?: string;
   authorizeJob?: (input: Readonly<{
     jobId: string;
@@ -236,6 +242,8 @@ export async function createDacsLiveRoleRuntimeV1(
       !nonEmpty(rawOptions.peerEndpoint) || !nonEmpty(rawOptions.workerId) ||
       !nonEmpty(rawOptions.demosIdentityFilePath) ||
       !nonEmpty(rawOptions.evmPrivateKeyFilePath) || !nonEmpty(rawOptions.evmRpcUrl) ||
+      (rawOptions.evmFinalityTag !== undefined &&
+        !["finalized", "safe", "latest"].includes(rawOptions.evmFinalityTag)) ||
       (rawOptions.databasePath !== undefined && !nonEmpty(rawOptions.databasePath)) ||
       (graphMode ? anyLegacyCommerce : !completeLegacyCommerce) ||
       (rawOptions.createCommerceGraph !== undefined && !graphMode) ||
@@ -345,7 +353,7 @@ export async function createDacsLiveRoleRuntimeV1(
         config,
         evmPrivateKey,
         rpcUrl: rawOptions.evmRpcUrl,
-        finalityTag: "finalized",
+        finalityTag: rawOptions.evmFinalityTag ?? "finalized",
       });
       evm = Object.freeze({ role, runtime, address: runtime.payerAddress });
     } else {

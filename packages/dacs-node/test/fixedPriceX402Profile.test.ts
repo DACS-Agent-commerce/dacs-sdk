@@ -1272,6 +1272,15 @@ describe("fixed-price x402 generated profile policy", () => {
       operation: operation(loaded.record, "payment"),
       retained: retainedPut.record,
     })).resolves.toEqual({ paymentPhaseIndex: 2, deliveryPhaseIndex: 3 });
+    const laterOrderSnapshot = {
+      ...loaded.record,
+      revision: loaded.record.revision + 1,
+      updatedAt: loaded.record.updatedAt + 1,
+    };
+    await expect(sellerAuthority.resolveOrderScope({
+      operation: operation(laterOrderSnapshot, "payment-evidence"),
+      retained: retainedPut.record,
+    })).resolves.toEqual({ paymentPhaseIndex: 2, deliveryPhaseIndex: 3 });
     await expect(sellerAuthority.resolveHttpScope(JOB_ID)).resolves.toEqual({
       paymentPhaseIndex: 2,
       httpResource: `https://seller.example/dacs/x402/${JOB_ID}`,
@@ -1347,10 +1356,46 @@ describe("fixed-price x402 generated profile policy", () => {
         deliverable: { kind: "storage-program" },
       },
     });
-    await expect(sellerAuthority.resolveRail({
+    const intakeResolution = await sellerAuthority.resolveRail({
       ref: candidateDraft.terms.rail!,
       railRegistryVersion: 1,
-    })).resolves.toMatchObject({ disposition: "verified", railRegistryVersion: 1 });
+    });
+    expect(intakeResolution).toEqual({
+      disposition: "verified",
+      rail: {
+        railVersion: 2,
+        railId: "x402:test",
+        railType: "x402",
+        asset: {
+          kind: "erc20",
+          chainId: 84532,
+          contract: ASSET,
+          symbol: "USDC",
+          decimals: 6,
+        },
+        network: {
+          kind: "x402-resource",
+          resourceBaseUrl: "https://seller.example/dacs/x402",
+        },
+        phaseHandler: "pay-x402",
+        parameters: { authorization: "eip-3009", finalityBlocks: 1 },
+        availability: "live",
+      },
+      railRegistryVersion: 1,
+    });
+    if (intakeResolution.disposition !== "verified" ||
+        intakeResolution.rail.railType !== "x402") throw new Error("rail missing");
+    await expect(sellerAuthority.resolvePayerAddress({
+      payingKey: `cci-xm:evm:84532:${PAYER}`,
+      buyerBundle: buyerIdentity,
+      rail: intakeResolution.rail,
+    })).resolves.toEqual({ disposition: "verified", address: PAYER });
+    await expect(sellerAuthority.resolvePayeeDestination({
+      payeePrimaryClaim: SELLER,
+      payeeBundle: sellerIdentity,
+      payoutAddress: PAYEE,
+      rail: intakeResolution.rail,
+    })).resolves.toEqual({ disposition: "bound", address: PAYEE, tier: 3 });
     await expect(sellerAuthority.resolveIdentityBundle(
       identityBundleHash(buyerIdentity),
     )).resolves.toMatchObject({ disposition: "verified", bundle: buyerIdentity });

@@ -33,6 +33,32 @@ const BUNDLE_REQUEST_BINDING_VERSION = "1" as const;
 const BUNDLE_SIGNATURE_BINDING_VERSION = "1" as const;
 const BUNDLE_TRANSPORT_ID_DOMAIN = "dacs-live-bundle-transport:v1:" as const;
 const HASH_RE = /^[0-9a-f]{64}$/;
+const BUYER_BUNDLE_REQUEST_INVALID_REASONS = new Set([
+  "buyer-audit-anchor-invalid",
+  "buyer-audit-authority-invalid",
+  "buyer-audit-authorization-invalid",
+  "buyer-audit-commitment-ref-invalid",
+  "buyer-audit-core-artifact-invalid",
+  "buyer-audit-delivery-binding-invalid",
+  "buyer-audit-dependency-alias",
+  "buyer-audit-envelope-invalid",
+  "buyer-audit-evidence-address-invalid",
+  "buyer-audit-evidence-invalid",
+  "buyer-audit-evidence-inventory-invalid",
+  "buyer-audit-evidence-ref-invalid",
+  "buyer-audit-finality-invalid",
+  "buyer-audit-finalization-time-invalid",
+  "buyer-audit-local-scope-conflict",
+  "buyer-audit-native-anchor-invalid",
+  "buyer-audit-native-finality-invalid",
+  "buyer-audit-payer-invalid",
+  "buyer-audit-payment-event-invalid",
+  "buyer-audit-payment-terms-invalid",
+  "buyer-audit-phase-scope-invalid",
+  "buyer-audit-scope-invalid",
+  "buyer-audit-settlement-id-invalid",
+  "buyer-audit-vet-invalid",
+]);
 
 interface DacsBundleRequestBindingV1 {
   bindingVersion: typeof BUNDLE_REQUEST_BINDING_VERSION;
@@ -407,6 +433,20 @@ function payloadResult(valid: boolean, reasonCode: string): DacsHttpPayloadValid
   return valid ? { status: "valid" } : { status: "invalid", reasonCode };
 }
 
+function capturedReasonCode(error: unknown): string | undefined {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) {
+    return undefined;
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "reasonCode");
+    return descriptor !== undefined && "value" in descriptor &&
+        typeof descriptor.value === "string"
+      ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function identityMatchesOrder(identity: Readonly<BuyerBundleTransportIdentity>, order: Readonly<{
   jobId: string;
   buyer: string;
@@ -464,7 +504,8 @@ export function createDacsBuyerBundleTransportRuntimeV1(
           type: "bundle-signature-response",
           jobId: input.identity.jobId,
           payload: binding.signature,
-          idempotencyKey: `bundle-signature-response:${input.identity.jobId}:${input.requestHash}`,
+          idempotencyKey:
+            `bundle-signature-response:v1:${input.identity.jobId}:${input.requestHash}`,
         } satisfies DacsLiveRoleSendInputV1<"bundle-signature-response">);
         const disposition = acknowledgementDisposition(acknowledgement);
         return disposition === "accepted" || disposition === "existing"
@@ -513,9 +554,21 @@ export function createDacsBuyerBundleTransportRuntimeV1(
       if (validation.status !== "valid") {
         return { disposition: "rejected", reasonCode: validation.reasonCode };
       }
+      const request = requestFromPayload(envelope.payload);
+      let verification: Readonly<DacsBuyerBundleRequestVerificationV1>;
       try {
-        const request = requestFromPayload(envelope.payload);
-        const verification = await options.resolveVerification({ authenticated, request });
+        verification = await options.resolveVerification({ authenticated, request });
+      } catch (error) {
+        if (BUYER_BUNDLE_REQUEST_INVALID_REASONS.has(capturedReasonCode(error) ?? "")) {
+          return { disposition: "rejected", reasonCode: "bundle-signature-request-unverified" };
+        }
+        // Local state, native readback and RPC availability can lag behind the
+        // authenticated request. Leave the inbox reservation pending so the
+        // exact envelope can be retried; inability to verify is not proof of
+        // invalidity.
+        throw error;
+      }
+      try {
         if (!plainObject(verification) || !plainObject(verification.input) ||
             !plainObject(verification.provider)) throw new Error();
         const verified = await verifyCompletedSellerBundleCounterSignatureRequest(
@@ -589,7 +642,7 @@ export function createDacsSellerBundleTransportRuntimeV1(
           type: "bundle-signature-request",
           jobId,
           payload: binding.payload,
-          idempotencyKey: `bundle-signature-request:${jobId}:${binding.requestHash}`,
+          idempotencyKey: `bundle-signature-request:v1:${jobId}:${binding.requestHash}`,
         } satisfies DacsLiveRoleSendInputV1<"bundle-signature-request">);
         const disposition = acknowledgementDisposition(acknowledgement);
         return {

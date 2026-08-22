@@ -248,6 +248,10 @@ describe("seller x402 coordinator projection runtime", () => {
           disposition: "authorized",
           authorization: exactAuthorization,
         })),
+        recoverPaymentAuthorization: vi.fn(async () => ({
+          disposition: "indeterminate",
+          reason: "fixture-settlement-recovery-pending",
+        })),
         fulfil: vi.fn(),
       };
     });
@@ -294,6 +298,10 @@ describe("seller x402 coordinator projection runtime", () => {
       consumedPaymentAuthorization: exactAuthorization.paymentAuthorization,
     });
 
+    const resolveOrderScope = vi.fn()
+      .mockRejectedValueOnce(new Error("fixture authority temporarily unavailable"))
+      .mockReturnValueOnce({ paymentPhaseIndex: 2, deliveryPhaseIndex: 2 })
+      .mockReturnValue({ paymentPhaseIndex: 2, deliveryPhaseIndex: 3 });
     const runtime = await createDacsSellerX402RuntimeV1({
       context,
       workerId: "seller-worker",
@@ -317,14 +325,22 @@ describe("seller x402 coordinator projection runtime", () => {
       },
       publicBaseUrl: "https://seller.example",
       resolveHttpRequest: () => ({ status: "not-matched" }),
-      resolveOrderScope: () => ({ paymentPhaseIndex: 2, deliveryPhaseIndex: 3 }),
+      resolveOrderScope,
       authorizePaymentComplete: () => true,
       createPaywall: createPaywall as never,
     });
 
     await expect(runtime.payment(trackOperation(loaded, "payment"))).resolves.toMatchObject({
       status: "pending-retry",
-      reasonCode: "seller-x402-authorization-pending",
+      reasonCode: "seller-x402-order-scope-pending",
+    });
+    await expect(runtime.payment(trackOperation(loaded, "payment"))).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "seller-x402-order-scope-invalid",
+    });
+    await expect(runtime.payment(trackOperation(loaded, "payment"))).resolves.toMatchObject({
+      status: "pending-retry",
+      reasonCode: "fixture-settlement-recovery-pending",
     });
     expect(paywallHandlers).toBeDefined();
     await expect(paywallHandlers!.authorizePayment!()).resolves.toMatchObject({
@@ -361,7 +377,7 @@ describe("seller x402 coordinator projection runtime", () => {
       reference: "dacs4:evidence:runtime",
       authenticationHash: "9".repeat(64),
     });
-    expect(runDeliveryReady).toHaveBeenCalledTimes(2);
+    expect(runDeliveryReady).toHaveBeenCalledOnce();
     expect(resumeFinalisation).toHaveBeenCalledOnce();
   });
 });

@@ -261,6 +261,7 @@ describe("coordinator x402 buyer payment track", () => {
   it("persists the bearer before one paid request and replays the authenticated result", async () => {
     const opened = await database();
     const retained = intent();
+    const settlementStore = createInMemoryX402BuyerSettlementStore();
     const prepareIntent = vi.fn(async () => retained);
     const submitRetained = vi.fn(async () => ({
       disposition: "response" as const,
@@ -269,7 +270,7 @@ describe("coordinator x402 buyer payment track", () => {
     const track = createDacsX402BuyerPaymentTrackV1({
       database: opened,
       workerId: "buyer-payment-worker",
-      settlementStore: createInMemoryX402BuyerSettlementStore(),
+      settlementStore,
       authorizationProvider: provider(retained, [
         {
           disposition: "settled-same",
@@ -304,33 +305,98 @@ describe("coordinator x402 buyer payment track", () => {
   it("recovers an ambiguous paid response from chain without submitting again", async () => {
     const opened = await database();
     const retained = intent();
+    const settlementStore = createInMemoryX402BuyerSettlementStore();
     const submitRetained = vi.fn(async () => ({
       disposition: "response" as const,
       disclosure: disclosure(),
     }));
+    const authorizationProvider = provider(retained, [
+      { disposition: "indeterminate", reason: "chain-read-unavailable" },
+      { disposition: "settled-same", settlement: captured(retained) },
+    ]);
     const track = createDacsX402BuyerPaymentTrackV1({
       database: opened,
       workerId: "buyer-payment-worker",
-      settlementStore: createInMemoryX402BuyerSettlementStore(),
-      authorizationProvider: provider(retained, [
-        { disposition: "indeterminate", reason: "chain-read-unavailable" },
-        { disposition: "settled-same", settlement: captured(retained) },
-      ]),
+      settlementStore,
+      authorizationProvider,
       transport: { submitRetained },
       prepareIntent: async () => retained,
       authorizePreparedIntent: () => true,
+      settlementLeaseDurationMs: 30_000,
       retryDelayMs: 1,
     });
 
     await expect(track(operationInput())).resolves.toMatchObject({
       status: "indeterminate",
     });
-    await new Promise((resolve) => setTimeout(resolve, 3));
-    await expect(track(operationInput())).resolves.toMatchObject({
+    expect(authorizationProvider.authenticate).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const recovered = await track(operationInput());
+    expect(authorizationProvider.authenticate).toHaveBeenCalledTimes(2);
+    expect(recovered).toMatchObject({
       status: "final",
       reference: `x402:84532:${TX.slice(2)}:7`,
     });
+    await expect(settlementStore.load(retained.settlementKey)).resolves.toMatchObject({
+      status: "captured",
+      outcome: { status: "captured", settlement: captured(retained) },
+    });
     expect(submitRetained).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not record a reconciled settlement through an unrelated active lease", async () => {
+    const opened = await database();
+    const retained = intent();
+    const inner = createInMemoryX402BuyerSettlementStore();
+    await expect(inner.claim({
+      intent: retained,
+      owner: "independent-settlement-worker",
+      now: opened.readTime(),
+      leaseDurationMs: 30_000,
+    })).resolves.toMatchObject({ status: "acquired" });
+    const recordOutcome = vi.fn((input: Parameters<X402BuyerSettlementStore["recordOutcome"]>[0]) =>
+      inner.recordOutcome(input));
+    const settlementStore: X402BuyerSettlementStore = {
+      load: (settlementKey) => inner.load(settlementKey),
+      claim: (input) => inner.claim(input),
+      isCurrent: (input) => inner.isCurrent(input),
+      grantRecovery: (input) => inner.grantRecovery(input),
+      recordDisclosure: (input) => inner.recordDisclosure(input),
+      recordOutcome,
+    };
+    const track = createDacsX402BuyerPaymentTrackV1({
+      database: opened,
+      workerId: "buyer-payment-worker",
+      settlementStore,
+      authorizationProvider: provider(retained, [
+        { disposition: "settled-same", settlement: captured(retained) },
+      ]),
+      transport: {
+        submitRetained: vi.fn(async () => ({
+          disposition: "response" as const,
+          disclosure: disclosure(),
+        })),
+      },
+      prepareIntent: async () => retained,
+      authorizePreparedIntent: () => true,
+      effectLeaseDurationMs: 5,
+      settlementLeaseDurationMs: 30_000,
+      retryDelayMs: 1,
+    });
+
+    await expect(track(operationInput())).resolves.toMatchObject({
+      status: "indeterminate",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expect(track(operationInput())).resolves.toMatchObject({
+      status: "indeterminate",
+      reasonCode: "x402-store-lease-held",
+    });
+    expect(recordOutcome).not.toHaveBeenCalled();
+    await expect(inner.load(retained.settlementKey)).resolves.toMatchObject({
+      status: "held",
+      lease: { owner: "independent-settlement-worker" },
+    });
   });
 
   it("does not trust a forged terminal result in the unkeyed inner checkpoint", async () => {

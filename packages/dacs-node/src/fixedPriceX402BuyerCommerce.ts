@@ -224,7 +224,8 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           `dacs4:delivery-evidence:${operation.order.jobId}`,
           undefined,
         );
-        if (evidenceRaw === null || !isSettlementEvidence(evidenceRaw) ||
+        if (evidenceRaw === null) return "indeterminate" as const;
+        if (!isSettlementEvidence(evidenceRaw) ||
             evidenceRaw.jobId !== operation.order.jobId ||
             evidenceRaw.phase !== "deliver-storage-program" ||
             evidenceRaw.outcome !== "success" ||
@@ -234,15 +235,17 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
         }, verifier());
+        if (verification.decision === "indeterminate") return "indeterminate" as const;
         if (verification.decision !== "pass") return false;
         const delivered = await verifyPeerAnchor(
           context,
           evidenceRaw.deliverableAnchor.locator,
           evidenceRaw.deliverableContentHash,
         );
-        return delivered !== null && canonicalize(delivered) === canonicalize(payload);
+        return delivered === null ? "indeterminate" as const
+          : canonicalize(delivered) === canonicalize(payload);
       } catch {
-        return false;
+        return "indeterminate" as const;
       }
     },
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),

@@ -1,6 +1,7 @@
 import {
   createX402BuyerEvmAuthorizationProvider,
   createX402BuyerPaidRequestTransport,
+  createX402BuyerRetainedDisclosureRecovery,
   prepareX402BuyerSettlement,
   type FixedPriceX402TrackOperation,
   type FixedPriceX402TrackOperationInput,
@@ -192,6 +193,10 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
   if (evm.role !== "buyer" || commerceStores.role !== "buyer") {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
+  const recoverDisclosure = options.recoverDisclosure ??
+    createX402BuyerRetainedDisclosureRecovery(
+      options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
+    );
   const authorizationProvider = createX402BuyerEvmAuthorizationProvider({
     chainId: evm.runtime.chainId,
     minimumConfirmations: options.minimumConfirmations,
@@ -199,8 +204,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     client: evm.runtime.readClient,
     authorizeIntent: options.authorizeIntent,
     ...(options.confirmUnused === undefined ? {} : { confirmUnused: options.confirmUnused }),
-    ...(options.recoverDisclosure === undefined
-      ? {} : { recoverDisclosure: options.recoverDisclosure }),
+    recoverDisclosure,
   });
   const transport = createX402BuyerPaidRequestTransport(
     options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },

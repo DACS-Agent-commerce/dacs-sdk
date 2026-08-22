@@ -89,6 +89,25 @@ function reasonCode(prefix: string, reason: string): string {
   return suffix.length === 0 ? prefix : `${prefix}-${suffix}`;
 }
 
+function capturedReasonCode(error: unknown): string | undefined {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) {
+    return undefined;
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "reasonCode");
+    if (descriptor === undefined || !("value" in descriptor)) return undefined;
+    const candidate = descriptor.value;
+    return typeof candidate === "string" && /^[a-z][a-z0-9-]{0,127}$/.test(candidate)
+      ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function permanentResolutionFailure(reason: string): boolean {
+  return /(?:invalid|corrupt|mismatch|conflict|unbound|unauthorized|rejected)$/.test(reason);
+}
+
 function nextRetry(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   delay: number,
@@ -150,17 +169,39 @@ export function createDacsSellerSettlementPublicationTrackV1(
       });
     }
     let retained: Readonly<DacsLiveOrderInputV1>;
-    let resolved: Awaited<ReturnType<typeof options.resolvePublication>>;
     try {
       retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
-      resolved = await options.resolvePublication({ operation, retained });
-      if (!plainObject(resolved) || !plainObject(resolved.request) ||
-          !plainObject(resolved.dependencies)) throw new Error();
-      await operation.fence.assertCurrent();
     } catch {
       return Object.freeze({
         status: "operator-action" as const,
         reasonCode: "seller-settlement-publication-input-invalid",
+      });
+    }
+    let resolved: Awaited<ReturnType<typeof options.resolvePublication>>;
+    try {
+      resolved = await options.resolvePublication({ operation, retained });
+      await operation.fence.assertCurrent();
+    } catch (error) {
+      const captured = capturedReasonCode(error);
+      if (captured !== undefined && permanentResolutionFailure(captured)) {
+        return Object.freeze({
+          status: "operator-action" as const,
+          reasonCode: reasonCode("seller-settlement-publication", captured),
+        });
+      }
+      return Object.freeze({
+        status: "pending-retry" as const,
+        reasonCode: captured === undefined
+          ? "seller-settlement-publication-resolution-pending"
+          : reasonCode("seller-settlement-publication-pending", captured),
+        retryAt: nextRetry(context, delay),
+      });
+    }
+    if (!plainObject(resolved) || !plainObject(resolved.request) ||
+        !plainObject(resolved.dependencies)) {
+      return Object.freeze({
+        status: "operator-action" as const,
+        reasonCode: "seller-settlement-publication-resolution-invalid",
       });
     }
 
@@ -214,18 +255,24 @@ export function createDacsSellerSettlementPublicationTrackV1(
     }
     if (result.disposition === "published") {
       const reference = result.settlement.evidenceRef.anchor.locator;
+      let authorized: boolean;
       try {
         await operation.fence.assertCurrent();
-        if (await options.authorizePublished({
+        authorized = await options.authorizePublished({
           operation,
           retained,
           evidenceHash: result.evidenceHash,
           reference,
-        }) !== true) {
-          throw new Error();
-        }
+        });
         await operation.fence.assertCurrent();
       } catch {
+        return Object.freeze({
+          status: "pending-retry" as const,
+          reasonCode: "seller-settlement-publication-authorization-pending",
+          retryAt: nextRetry(context, delay),
+        });
+      }
+      if (authorized !== true) {
         return Object.freeze({
           status: "operator-action" as const,
           reasonCode: "seller-settlement-publication-unauthorized",

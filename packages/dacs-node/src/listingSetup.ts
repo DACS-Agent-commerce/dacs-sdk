@@ -108,6 +108,22 @@ async function signListing(
   return listing;
 }
 
+async function signListingBytes(
+  bytes: Uint8Array,
+  seller: Readonly<DacsDemosActorRuntimeV1>,
+): Promise<Uint8Array> {
+  const signed = await seller.signComponent(bytes, {
+    algorithm: "ed25519",
+    signer: seller.authority,
+  });
+  if (signed instanceof Uint8Array) return Uint8Array.from(signed);
+  const decoded = Uint8Array.from(Buffer.from(signed, "base64url"));
+  if (decoded.byteLength !== 64 || Buffer.from(decoded).toString("base64url") !== signed) {
+    throw new DacsListingSetupError("listing-signature-invalid");
+  }
+  return decoded;
+}
+
 function railAuthority(rail: Readonly<AuthenticatedRailDefinition>) {
   return {
     trustPhase: "PA-2" as const,
@@ -126,6 +142,32 @@ function railAuthority(rail: Readonly<AuthenticatedRailDefinition>) {
       }],
     },
   };
+}
+
+async function preflightListingPublication(
+  draft: ListingDraft,
+  listing: Readonly<Listing>,
+  seller: Readonly<DacsDemosActorRuntimeV1>,
+  rail: Readonly<AuthenticatedRailDefinition>,
+): Promise<void> {
+  let predicted: Record<string, unknown> | undefined;
+  const publication = await publishListingCore(draft, {
+    sign: (bytes) => signListingBytes(bytes, seller),
+    scanOwnAnchorsByNamePrefix: (prefix) =>
+      seller.adapter.scanOwnAnchorsByNamePrefix(prefix),
+    loadRailResolution: () => railAuthority(rail),
+    async writeArtifact(_logicalAddress, value) {
+      predicted = canonicalCopy(value);
+      return { address: "listing-setup-read-only-preflight" };
+    },
+  });
+  if (predicted === undefined ||
+      canonicalize(predicted) !== canonicalize(listing) ||
+      publication.listingPin.contentHash !== contentHash(
+        listing as unknown as Record<string, unknown>,
+      )) {
+    throw new DacsListingSetupError("listing-setup-preflight-mismatch");
+  }
 }
 
 /** Sign and bind the exact read-only setup plan before any Demos write. */
@@ -152,6 +194,11 @@ export async function prepareDacsListingSetupV1(
   }
   const draft = canonicalCopy(options.draft) as ListingDraft;
   const listing = await signListing(draft, options.seller);
+  // Exercise the complete read-only publication path before a guarded intent is
+  // created. In particular, this authenticates the owner-bound version history
+  // and rejects gaps (for example v2 on a fresh chain) without manufacturing an
+  // ambiguous effect that never crossed a write boundary.
+  await preflightListingPublication(draft, listing, options.seller, options.rail);
   const listingContentHash = contentHash(listing as unknown as Record<string, unknown>);
   const plan = createDacsGuardedSetupPlanV1({
     effectId: `listing-setup:${listingContentHash}`,
@@ -205,6 +252,7 @@ export function createDacsListingSetupExecutorV1(
       return Object.freeze({ status: "operator-action" as const,
         reasonCode: "listing-setup-plan-mismatch" });
     }
+    let writeMayHaveOccurred = false;
     try {
       // Re-sign the captured draft and compare it with the plan-bound Listing
       // before crossing the first effect boundary. This is deliberately
@@ -220,22 +268,16 @@ export function createDacsListingSetupExecutorV1(
       await fence.assertCurrent();
       const published = await publishListingCore(prepared.draft, {
         async sign(bytes) {
-          const signed = await options.seller.signComponent(bytes, {
-            algorithm: "ed25519",
-            signer: options.seller.authority,
-          });
-          if (signed instanceof Uint8Array) return Uint8Array.from(signed);
-          const decoded = Uint8Array.from(Buffer.from(signed, "base64url"));
-          if (decoded.byteLength !== 64 || Buffer.from(decoded).toString("base64url") !== signed) {
-            throw new DacsListingSetupError("listing-signature-invalid");
-          }
-          return decoded;
+          return signListingBytes(bytes, options.seller);
         },
         scanOwnAnchorsByNamePrefix: (prefix) =>
           options.seller.adapter.scanOwnAnchorsByNamePrefix(prefix),
         loadRailResolution: () => railAuthority(options.rail),
         async writeArtifact(logicalAddress, value, writeOptions) {
           await fence.assertCurrent();
+          // From this point a thrown response may follow an accepted Demos
+          // write. Only this boundary requires durable reconciliation.
+          writeMayHaveOccurred = true;
           const result = await options.seller.adapter.anchorWriteOnce(
             writeOptions.storageName,
             value,
@@ -299,6 +341,10 @@ export function createDacsListingSetupExecutorV1(
         ? Object.freeze({ status: "completed" as const, result })
         : Object.freeze({ status: "reconciled-performed" as const, result });
     } catch {
+      if (!writeMayHaveOccurred) {
+        return Object.freeze({ status: "operator-action" as const,
+          reasonCode: "listing-setup-prewrite-failed" });
+      }
       return fence.mode === "perform"
         ? Object.freeze({ status: "ambiguous" as const,
             reasonCode: "listing-setup-reconciliation-required" })

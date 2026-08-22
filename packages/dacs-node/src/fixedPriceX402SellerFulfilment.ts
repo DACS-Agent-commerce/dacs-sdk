@@ -350,7 +350,14 @@ function buildAuditSource(input: Readonly<{
   const negotiationDelta = {
     "negotiate-fixed-price": {
       agreementHash,
-      agreementRef: authorization.sessionAuthorization.agreementRef,
+      agreementRef: {
+        anchor: {
+          kind: "storage-program" as const,
+          locator: authorization.sessionAuthorization.agreementRef,
+        },
+        contentHash: agreementHash,
+        signer: order.buyer,
+      },
     },
   };
   const commitmentDelta = {

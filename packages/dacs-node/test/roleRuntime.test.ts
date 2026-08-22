@@ -145,6 +145,26 @@ describe("complete role-owned live runtime", () => {
     await runtime.stop();
   });
 
+  it("rejects an unknown buyer EVM finality tag before opening authority", async () => {
+    const directory = root();
+    await expect(createDacsLiveRoleRuntimeV1({
+      config: config(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-invalid-finality-worker",
+      demosIdentityFilePath: join(directory, "missing-demos.secret"),
+      evmPrivateKeyFilePath: join(directory, "missing-evm.secret"),
+      evmRpcUrl: "http://127.0.0.1:8545",
+      evmFinalityTag: "optimistic" as never,
+      createDemosAdapter: async () => adapter(),
+      createOperations: () => Object.freeze({}),
+      validatePayload: () => Object.freeze({ status: "valid" as const }),
+      handleMessage: () => Object.freeze({ disposition: "accepted" as const }),
+    })).rejects.toBeInstanceOf(TypeError);
+  });
+
   it("rejects a partial async commerce graph before service creation", async () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");

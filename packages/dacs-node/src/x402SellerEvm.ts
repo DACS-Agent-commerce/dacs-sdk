@@ -31,6 +31,7 @@ export interface DacsX402SellerEvmObserverOptionsV1 {
   finalityTag?: "finalized" | "safe" | "latest";
   logPageSize?: number;
   fetchImpl?: typeof fetch;
+  /** @deprecated Finality time is derived from canonical chain history. */
   now?(): number;
 }
 
@@ -282,7 +283,6 @@ export function createDacsX402SellerEvmObserverV1(
       Number(rail.parameters.finalityBlocks) > 0
     ? Number(rail.parameters.finalityBlocks) : 1;
   const finalityTag = options.finalityTag ?? "finalized";
-  const now = options.now ?? Date.now;
   let requestId = 0;
 
   const rpc = async (method: string, params: readonly unknown[]): Promise<unknown> => {
@@ -349,6 +349,13 @@ export function createDacsX402SellerEvmObserverV1(
       if (block.hash !== transaction.blockHash) {
         return { status: "unavailable", reason: "settlement-block-not-canonical" };
       }
+      const finalityBlockNumber = transaction.blockNumber + minimumConfirmations - 1;
+      const finalityBlock = finalityBlockNumber === transaction.blockNumber
+        ? block : await canonicalBlock(finalityBlockNumber);
+      if (finalityBlock.number !== finalityBlockNumber ||
+          finalityBlock.timestampMs < block.timestampMs) {
+        return { status: "unavailable", reason: "settlement-finality-history-invalid" };
+      }
       const transfers = transaction.logs.filter((log) =>
         log.address === asset && log.topics.length === 3 &&
         log.topics[0] === ERC20_TRANSFER_TOPIC && topicAddress(log.topics[1]) !== undefined &&
@@ -382,7 +389,10 @@ export function createDacsX402SellerEvmObserverV1(
         },
         confirmations,
         includedAt: block.timestampMs,
-        finalityObservedAt: now(),
+        // The durable deadline decision must survive a late observer or a
+        // process restart. Bind it to the canonical block where the rail's
+        // required depth was first reached, not to this process's wall clock.
+        finalityObservedAt: finalityBlock.timestampMs,
         sessionBinding: { kind: "eip3009", nonce: authorization.topics[2]! },
       };
     } catch {

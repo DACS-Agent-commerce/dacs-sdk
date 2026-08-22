@@ -25,6 +25,7 @@ const PAYEE = `0x${"33".repeat(20)}`;
 const NONCE = `0x${"11".repeat(32)}`;
 const TX = `0x${"aa".repeat(32)}`;
 const BLOCK = `0x${"bb".repeat(32)}`;
+const FINALITY_BLOCK = `0x${"dd".repeat(32)}`;
 const HEAD = `0x${"cc".repeat(32)}`;
 const AMOUNT = "1000000";
 
@@ -112,6 +113,8 @@ function rpcFetch(options: Readonly<{
     } else if (request.method === "eth_getBlockByNumber" && request.params[0] === "finalized") {
       result = { number: "0x64", hash: HEAD,
         timestamp: `0x${(options.headTimestamp ?? 1_800_000_100).toString(16)}` };
+    } else if (request.method === "eth_getBlockByNumber" && request.params[0] === "0x61") {
+      result = { number: "0x61", hash: FINALITY_BLOCK, timestamp: "0x6b49d20a" };
     } else if (request.method === "eth_getBlockByNumber") {
       result = { number: "0x60", hash: BLOCK, timestamp: "0x6b49d200" };
     } else if (request.method === "eth_getLogs") {
@@ -189,7 +192,7 @@ describe("seller x402 canonical EVM observation", () => {
       asset: { contract: ASSET, symbol: "USDC", decimals: 6 },
       confirmations: 5,
       includedAt: 1_800_000_000_000,
-      finalityObservedAt: 1_800_000_101_000,
+      finalityObservedAt: 1_800_000_010_000,
       sessionBinding: { kind: "eip3009", nonce: NONCE },
     });
 

@@ -170,6 +170,13 @@ describe("bundle signature HTTP transport", () => {
     const sellerDatabase = await open("seller");
     let buyerRuntime: ReturnType<typeof createDacsBuyerBundleTransportRuntimeV1>;
     let sellerRuntime: ReturnType<typeof createDacsSellerBundleTransportRuntimeV1>;
+    const requestIdempotencyKeys: string[] = [];
+    const temporarilyUnavailable = Object.assign(new Error("not ready"), {
+      reasonCode: "buyer-audit-input-unavailable",
+    });
+    const resolveVerification = vi.fn()
+      .mockRejectedValueOnce(temporarilyUnavailable)
+      .mockReturnValue({ input: {} as never, provider: {} as never });
     const buyerContext = {
       role: "buyer",
       authority: BUYER,
@@ -188,7 +195,12 @@ describe("bundle signature HTTP transport", () => {
       authority: SELLER,
       peerAuthority: BUYER,
       database: sellerDatabase,
-      sendMessage: async (message: { type: "bundle-signature-request"; payload: unknown }) => {
+      sendMessage: async (message: {
+        type: "bundle-signature-request";
+        payload: unknown;
+        idempotencyKey: string;
+      }) => {
+        requestIdempotencyKeys.push(message.idempotencyKey);
         const result = await buyerRuntime.handleMessage(
           authenticated(message.type, message.payload, SELLER, BUYER),
           { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
@@ -198,7 +210,7 @@ describe("bundle signature HTTP transport", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     buyerRuntime = createDacsBuyerBundleTransportRuntimeV1({
       context: buyerContext,
-      resolveVerification: () => ({ input: {} as never, provider: {} as never }),
+      resolveVerification,
       resolveSellerFinalization: async () => ({
         disposition: "absent",
         reason: "seller-finalization-pending",
@@ -213,8 +225,13 @@ describe("bundle signature HTTP transport", () => {
       signedBytes,
       requiredCounterSigners: [BUYER],
     };
+    expect((await sellerRuntime.publishRequest({ jobId: JOB_ID, request })).status)
+      .toBe("pending");
     const published = await sellerRuntime.publishRequest({ jobId: JOB_ID, request });
     expect(published.status).toBe("acknowledged");
+    expect(requestIdempotencyKeys).toHaveLength(2);
+    expect(new Set(requestIdempotencyKeys).size).toBe(1);
+    expect(requestIdempotencyKeys[0]).toMatch(/^bundle-signature-request:v1:/);
     expect(verifyRequest).toHaveBeenCalledOnce();
 
     const identity = {
@@ -293,5 +310,41 @@ describe("bundle signature HTTP transport", () => {
       sender: BUYER,
       audience: SELLER,
     })).toMatchObject({ status: "invalid" });
+  });
+
+  it("rejects a request that buyer review positively identifies as invalid", async () => {
+    const buyerDatabase = await open("buyer");
+    const invalid = Object.assign(new Error("scope conflict"), {
+      reasonCode: "buyer-audit-local-scope-conflict",
+    });
+    const runtime = createDacsBuyerBundleTransportRuntimeV1({
+      context: {
+        role: "buyer",
+        authority: BUYER,
+        peerAuthority: SELLER,
+        database: buyerDatabase,
+        sendMessage: vi.fn(),
+      } as unknown as DacsLiveRoleOperationContextV1,
+      resolveVerification: async () => { throw invalid; },
+      resolveSellerFinalization: async () => ({
+        disposition: "absent",
+        reason: "seller-finalization-pending",
+      }),
+    });
+    const result = await runtime.handleMessage(authenticated(
+      "bundle-signature-request",
+      {
+        bundleContentHash: "d".repeat(64),
+        signedScope: { jobId: JOB_ID },
+        signedBytes: Buffer.from([1, 2, 3]).toString("base64url"),
+        requiredCounterSigners: [BUYER],
+      },
+      SELLER,
+      BUYER,
+    ), { role: "buyer" } as DacsLiveRoleInboundOperationContextV1);
+    expect(result).toEqual({
+      disposition: "rejected",
+      reasonCode: "bundle-signature-request-unverified",
+    });
   });
 });

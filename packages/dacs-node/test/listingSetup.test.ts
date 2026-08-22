@@ -241,6 +241,72 @@ describe("guarded Listing setup", () => {
     });
   });
 
+  it("rejects a non-contiguous Listing version during read-only preparation", async () => {
+    const value = fixture();
+    value.draft.listingVersion = 2;
+    await expect(prepareDacsListingSetupV1({
+      draft: value.draft,
+      buyerAuthority: value.buyerAuthority,
+      seller: value.seller as never,
+      sellerPublicEndpoint: RESOURCE,
+      sellerPayee: PAYEE,
+      network: "eip155:84532",
+      demosNetwork: "demos:testnet",
+      rail: value.rail as never,
+      maximumServiceAmount: "1",
+      actionMaximumSpendDem: "2",
+      safetyMarginDem: "1",
+      maximumSpendDem: "10",
+      now: 1_000,
+    })).rejects.toThrow("listingVersion must advance monotonically without gaps");
+    expect(value.adapter.anchorWriteOnce).not.toHaveBeenCalled();
+  });
+
+  it("does not classify a pre-write history failure as an ambiguous write", async () => {
+    const value = fixture();
+    const prepared = await prepareDacsListingSetupV1({
+      draft: value.draft,
+      buyerAuthority: value.buyerAuthority,
+      seller: value.seller as never,
+      sellerPublicEndpoint: RESOURCE,
+      sellerPayee: PAYEE,
+      network: "eip155:84532",
+      demosNetwork: "demos:testnet",
+      rail: value.rail as never,
+      maximumServiceAmount: "1",
+      actionMaximumSpendDem: "2",
+      safetyMarginDem: "1",
+      maximumSpendDem: "10",
+      now: 1_000,
+    });
+    value.adapter.scanOwnAnchorsByNamePrefix.mockResolvedValue({
+      status: "indeterminate",
+      reason: "rpc-unavailable",
+    } as never);
+    const executor = createDacsListingSetupExecutorV1({
+      prepared,
+      seller: value.seller as never,
+      rail: value.rail as never,
+      discovery: { publishActive: vi.fn() },
+    });
+    await expect(executor({
+      plan: prepared.plan,
+      consent: {} as never,
+      fence: {
+        mode: "perform",
+        effectId: prepared.plan.effectId,
+        planHash: prepared.plan.planHash,
+        generation: 1,
+        idempotencyKey: "setup",
+        assertCurrent: async () => undefined,
+      },
+    })).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "listing-setup-prewrite-failed",
+    });
+    expect(value.adapter.anchorWriteOnce).not.toHaveBeenCalled();
+  });
+
   it("rejects a rail whose authenticated provenance has been lost", async () => {
     const value = fixture();
     const prepared = await prepareDacsListingSetupV1({
