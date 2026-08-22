@@ -304,7 +304,7 @@ function settlementEvent(evidence: Readonly<SettlementEvidence>) {
   if (evidence.phase !== "pay-x402" || evidence.outcome !== "success" ||
       event?.kind !== "x402-event" || !Number.isSafeInteger(event.chainId) ||
       !Number.isSafeInteger(event.logIndex) ||
-      !/^0x[0-9a-fA-F]{64}$/.test(event.settlementTxHash)) {
+      !/^[0-9a-f]{64}$/.test(event.settlementTxHash)) {
     throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-payment-event-invalid");
   }
   return event;
@@ -452,8 +452,8 @@ export function createDacsFixedPriceX402BuyerAuditV1(
       agreement,
       verifiedListing: {
         disposition: "verified",
-        listing: application.listing,
-        pin: agreement.listingRef,
+        listing: copy(application.listing),
+        pin: copy(agreement.listingRef),
       },
       committedAt,
     });
@@ -530,10 +530,14 @@ export function createDacsFixedPriceX402BuyerAuditV1(
     );
     const observation = await observer.observeX402Transfer({
       chainId: event.chainId,
-      txHash: event.settlementTxHash,
+      // DACS x402-event references use canonical lower-case hex without the
+      // RPC prefix, while the EVM observer intentionally accepts only an
+      // exact JSON-RPC transaction hash. Cross that representation boundary
+      // here rather than weakening either wire validator.
+      txHash: `0x${event.settlementTxHash}`,
     });
     if (observation.status !== "finalized" || observation.chainId !== event.chainId ||
-        observation.txHash.toLowerCase() !== event.settlementTxHash.toLowerCase() ||
+        observation.txHash.toLowerCase() !== `0x${event.settlementTxHash}` ||
         observation.logIndex !== event.logIndex ||
         observation.includedAt > paymentEvidence.observedAt ||
         observation.payer.toLowerCase() !== context.evm.address.toLowerCase() ||
