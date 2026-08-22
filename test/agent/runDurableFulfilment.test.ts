@@ -5705,6 +5705,24 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         h.deps.verifyAuditSourceCommitmentSignature,
       verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
     });
+
+    const withAgreementHistory = structuredClone(loaded.record);
+    withAgreementHistory.checkpoints.unshift(
+      {
+        key: "agreement-responder:proposal-binding",
+        stage: "intent",
+        data: { jobId: h.fixture.authorization.jobId },
+      },
+      {
+        key: "agreement-responder:proposal-binding",
+        stage: "outcome",
+        data: { jobId: h.fixture.authorization.jobId },
+      },
+    );
+    await expect(project(withAgreementHistory)).resolves.toMatchObject({
+      terminal: { result: { decision: "completed" } },
+    });
+
     const cases: Array<{
       name: string;
       mutate(record: FencedStoreRecord): void;
@@ -5767,6 +5785,16 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
             key: "seller:future-operation:2",
             stage: "intent",
             data: { fulfilmentId: "5".repeat(64), intentGeneration: 1 },
+          });
+        },
+      },
+      {
+        name: "interleaved non-seller checkpoint",
+        mutate(record) {
+          record.checkpoints.splice(2, 0, {
+            key: "agreement-responder:late-checkpoint",
+            stage: "intent",
+            data: { jobId: h.fixture.authorization.jobId },
           });
         },
       },

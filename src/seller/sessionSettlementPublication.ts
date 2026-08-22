@@ -835,7 +835,17 @@ function settlementPublicationEffectId(input: {
     authorizationHash,
     settlementId: input.authorization.settlementId,
     evidenceHash: input.authorization.evidenceHash,
-    nativeProofRef: input.nativeProofRef,
+    // The proof content can gain confirmations or a newer observation time on
+    // replay. Its authenticated kind/locator/encoding identify the same native
+    // fact; the authorization already pins the exact event and evidence hash.
+    // Excluding the mutable proof-content hash keeps one irreversible effect
+    // identity for that fact without weakening proof verification above.
+    nativeProof: {
+      proofVersion: input.nativeProofRef.proofVersion,
+      kind: input.nativeProofRef.kind,
+      locator: input.nativeProofRef.locator,
+      encoding: input.nativeProofRef.encoding,
+    },
     evidenceAuthority: input.evidenceAuthority,
     anchorWriter: input.anchorWriter,
   }))}`;
@@ -874,7 +884,7 @@ export async function publishSellerSessionSettlement(
     return failure("rejected", "payment permit is invalid");
   }
   if (inspection.status === "available" && exactKeys(inspection, ["status", "claim"])) {
-    return failure("rejected", "payment permit has not been consumed with a durable handoff");
+    return failure("indeterminate", "payment permit has not been consumed with a durable handoff");
   }
   if (inspection.status !== "already-consumed" ||
       !exactKeys(inspection, ["status", "claim", "handoff"]) ||

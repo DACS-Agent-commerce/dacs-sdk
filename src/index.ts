@@ -869,6 +869,7 @@ export {
   createFsX402BuyerSettlementStore,
   prepareX402BuyerSettlement,
   createX402BuyerPaidRequestTransport,
+  createX402BuyerRetainedDisclosureRecovery,
   createDacsX402BuyerEvmChallengeClient,
   advanceX402BuyerSettlement,
   type X402BuyerJson,

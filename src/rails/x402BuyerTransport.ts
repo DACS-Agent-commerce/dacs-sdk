@@ -1,6 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
+import type { X402BuyerEvmDisclosureRecovery } from "./x402BuyerEvmAuthorization.js";
 import {
   createX402BuyerSettlementIntent,
   type X402BuyerJson,
@@ -383,4 +384,21 @@ export function createX402BuyerPaidRequestTransport(
     },
   };
   return Object.freeze(transport);
+}
+
+/**
+ * Recover a lost PAYMENT-RESPONSE by replaying only the exact retained paid
+ * request. The EIP-3009 authorization provider invokes this callback only
+ * after it has observed the retained nonce as used on-chain, and it still
+ * authenticates the returned transaction against the canonical receipt.
+ * Reusing the same signed nonce cannot authorize a second token transfer.
+ */
+export function createX402BuyerRetainedDisclosureRecovery(
+  options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
+): X402BuyerEvmDisclosureRecovery {
+  const transport = createX402BuyerPaidRequestTransport(options);
+  return async ({ intent, fence }) => {
+    const result = await transport.submitRetained(intent, fence);
+    return result.disposition === "response" ? result.disclosure : undefined;
+  };
 }
