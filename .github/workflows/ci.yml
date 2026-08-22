@@ -284,14 +284,19 @@ jobs:
           const reportLine = doctor.stdout.trim().split("\n").at(-1);
           const report = JSON.parse(reportLine);
           if (report.safety.readOnly !== true || report.safety.funded !== false ||
-              report.gate.status !== "blocked" || report.checks.length !== 35 ||
+              report.gate.status !== "blocked" || report.checks.length !== 36 ||
               fs.existsSync(path.join(root, "data", "buyer", "actor.sqlite"))) process.exit(1);
           const setup = spawnSync("npm", [
             "run", "dacs:setup", "--", "--max-spend-dem", "1.00",
           ], { cwd: root, encoding: "utf8" });
-          const setupPlan = JSON.parse(setup.stdout.trim().split("\n").at(-1));
-          if (setup.status !== 0 || setupPlan.execute !== false ||
-              setupPlan.maximumSpendDem !== "1" ||
+          // A fresh project has no authenticated actor, wallet, listing or rail
+          // configuration from which to prepare an exact setup plan. It must
+          // fail closed without leaking the missing prerequisite or writing a
+          // store; configured setup-plan behavior is covered by package tests.
+          if (setup.status !== 1 ||
+              !setup.stderr.includes("dacs command failed; rerun doctor for a sanitized diagnosis") ||
+              setup.stderr.includes("setup prerequisite") ||
+              setup.stderr.includes("at file:") ||
               fs.existsSync(path.join(root, "data", "buyer", "actor.sqlite"))) process.exit(1);
           fs.writeFileSync(path.join(root, ".env"), "DACS_SETUP_WRITE_CONFIRM=1\n", { mode: 0o600 });
           const persistedConsent = spawnSync("npm", [
