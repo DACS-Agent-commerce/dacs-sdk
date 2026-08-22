@@ -576,8 +576,10 @@ function x402FundedRunIntent(preflight: Preflight) {
     runId: preflight.env.LIVE_E2E_RUN_ID,
     details: {
       asset: preflight.asset,
+      authorizationSearchFromBlock: preflight.authorizationSearchFromBlock,
       buyerDemosAddress: preflight.buyer.adapter.getAddress().toLowerCase(),
       demosNetwork: "demos",
+      jobId: preflight.jobId,
       maxDemosDebitOs: preflight.env.LIVE_E2E_MAX_DEMOS_DEBIT_OS,
       maxPaymentAmount: preflight.env.LIVE_E2E_MAX_PAYMENT_AMOUNT,
       payee: preflight.payee.toLowerCase(),
@@ -5928,6 +5930,36 @@ describe("issue #114 guarded funded two-agent spine", () => {
       rejected = error instanceof Error && error.message === "funded-e2e:demos-debit-cap-exceeded";
     }
     requireCondition(rejected && budget.reservedOs === 3n && calls.length === 1, "demos-cap-not-fail-closed");
+  });
+
+  it("persists the public coordinates needed to reconcile the original x402 run", () => {
+    const jobId = "01JZ0000000000000000000179";
+    const authorizationSearchFromBlock = 45_000_000;
+    const adapter = (address: string) => ({
+      getAddress: () => address,
+    }) as unknown as DemosBackedAdapter;
+    const intent = x402FundedRunIntent({
+      env: {
+        LIVE_E2E_MARKER_DIR: "/persistent/dacs-funded-ledger",
+        LIVE_E2E_RUN_ID: "x402-reconciliation-179",
+        LIVE_E2E_MAX_DEMOS_DEBIT_OS: HARD_MAX_DEMOS_DEBIT_OS.toString(),
+        LIVE_E2E_MAX_PAYMENT_AMOUNT: HARD_MAX_PAYMENT_AMOUNT.toString(),
+      },
+      jobId,
+      authorizationSearchFromBlock,
+      buyer: { adapter: adapter("b".repeat(64)) },
+      seller: { adapter: adapter("c".repeat(64)) },
+      payer: `0x${"1".repeat(40)}`,
+      payee: `0x${"2".repeat(40)}`,
+      asset: `0x${"3".repeat(40)}`,
+    } as unknown as Preflight);
+    requireCondition(
+      intent.details.jobId === jobId &&
+        intent.details.authorizationSearchFromBlock === authorizationSearchFromBlock &&
+        intent.details.maxDemosDebitOs === HARD_MAX_DEMOS_DEBIT_OS.toString() &&
+        intent.details.maxPaymentAmount === HARD_MAX_PAYMENT_AMOUNT.toString(),
+      "x402-reconciliation-coordinates-not-persisted",
+    );
   });
 
   it("durably detaches a successful facilitator result before acknowledgement loss", async () => {
