@@ -10,6 +10,7 @@
       "@kynesyslabs/dacs/crypto": ["../../src/crypto/index.ts"],
       "@kynesyslabs/dacs/identity": ["../../src/identity/index.ts"],
       "@kynesyslabs/dacs/negotiate": ["../../src/negotiate/index.ts"],
+      "@kynesyslabs/dacs/rails": ["../../src/rails/index.ts"],
       "@kynesyslabs/dacs/seller": ["../../src/seller/index.ts"],
       "@kynesyslabs/dacs/substrate": ["../../src/substrate/index.ts"]
     }
