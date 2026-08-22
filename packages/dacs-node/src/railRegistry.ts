@@ -2,11 +2,17 @@ import {
   RAIL_REGISTRY_INDEX_ADDRESS,
   ed25519Verify,
   publicKeyFromRaw,
+  resolveRail,
+  signComponentArtifact,
+  type AuthenticatedRailDefinition,
   type CurrentRailRegistryIndex,
+  type ProtocolAnchorReceipt,
+  type RailDefinition,
   type RailRegistryAuthorityInput,
   type RailRegistryAuthorityVerification,
   type RailRegistryDefinitionAuthorityInput,
   type RailRegistryDefinitionRef,
+  type RailRegistryIndexDocument,
   type RailRegistrySelectionProvider,
 } from "@kynesyslabs/dacs";
 import { canonicalize, contentHash } from "@kynesyslabs/dacs/canonical";
@@ -16,6 +22,15 @@ import {
 } from "@kynesyslabs/dacs/identity";
 
 import type { DacsDemosActorRuntimeV1 } from "./demosRuntime.js";
+
+/**
+ * Demos-specific mutable/currentness binding for the normative immutable
+ * `dacs4:registry:v0.1` index snapshot. Keeping this companion slot separate
+ * lets the canonical index remain exact readable registry JSON while its
+ * authenticated head can advance independently.
+ */
+export const DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1 =
+  `${RAIL_REGISTRY_INDEX_ADDRESS}:current` as const;
 
 export interface DacsDemosRailRegistryProviderOptionsV1 {
   runtime: Readonly<DacsDemosActorRuntimeV1>;
@@ -30,6 +45,25 @@ export class DacsDemosRailRegistryError extends Error {
   constructor(readonly reasonCode: string) {
     super(reasonCode);
   }
+}
+
+export interface BootstrapDacsDemosX402RailRegistryOptionsV1 {
+  runtime: Readonly<DacsDemosActorRuntimeV1>;
+  resourceBaseUrl: string;
+  assetContract: string;
+  acceptedAt: number;
+  /** V1 is deliberately one exact Base Sepolia USDC registry bootstrap. */
+  chainId?: 84532;
+  finalityBlocks?: number;
+}
+
+export interface BootstrapDacsDemosX402RailRegistryResultV1 {
+  rail: Readonly<AuthenticatedRailDefinition>;
+  definitionRef: Readonly<RailRegistryDefinitionRef>;
+  definitionReceipt: Readonly<ProtocolAnchorReceipt>;
+  indexRef: Readonly<RailRegistryDefinitionRef>;
+  indexReceipt: Readonly<ProtocolAnchorReceipt>;
+  currentBindingAddress: typeof DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1;
 }
 
 function canonicalCopy<T>(value: T): T {
@@ -47,6 +81,180 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 
 function nativeOwner(publicKey: Uint8Array): string {
   return Buffer.from(publicKey).toString("hex");
+}
+
+function exactHttpsBaseUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" || parsed.username !== "" ||
+        parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function authenticatedPublicationReceipt(
+  runtime: Readonly<DacsDemosActorRuntimeV1>,
+  logicalAddress: string,
+  nativeAddress: string,
+  value: Readonly<Record<string, unknown>>,
+): Promise<Readonly<ProtocolAnchorReceipt>> {
+  const expectedHash = contentHash(value);
+  const receipt = await runtime.adapter.resolveDemosAnchorReceipt({
+    logicalAddress,
+    nativeAddress,
+    contentHash: expectedHash,
+    writer: runtime.authority,
+  });
+  if (receipt === null || receipt.logicalAddress !== logicalAddress ||
+      receipt.nativeAddress !== nativeAddress || receipt.contentHash !== expectedHash ||
+      !sameCanonicalClaimIdentity(receipt.writer, runtime.authority) ||
+      receipt.state !== "finalized" ||
+      receipt.observationDisposition !== "established" ||
+      await runtime.adapter.verifyDemosAnchorReceipt(receipt) !== true) {
+    throw new DacsDemosRailRegistryError("rail-registry-publication-proof-invalid");
+  }
+  return canonicalCopy(receipt);
+}
+
+/**
+ * Bootstrap the first PA-2 x402 registry under one explicitly configured
+ * Demos steward. This is intentionally initial-version-only: registry updates
+ * require a separately reviewed supersession/update protocol, not another
+ * immutable bootstrap call.
+ */
+export async function bootstrapDacsDemosX402RailRegistryV1(
+  rawOptions: Readonly<BootstrapDacsDemosX402RailRegistryOptionsV1>,
+): Promise<Readonly<BootstrapDacsDemosX402RailRegistryResultV1>> {
+  if (rawOptions === null || typeof rawOptions !== "object" ||
+      rawOptions.runtime === null || typeof rawOptions.runtime !== "object") {
+    throw new TypeError("Demos x402 rail registry bootstrap options are invalid");
+  }
+  const runtime = rawOptions.runtime;
+  const resourceBaseUrl = exactHttpsBaseUrl(rawOptions.resourceBaseUrl);
+  const chainId = rawOptions.chainId ?? 84532;
+  const finalityBlocks = rawOptions.finalityBlocks ?? 1;
+  const assetContract = rawOptions.assetContract;
+  const acceptedAt = rawOptions.acceptedAt;
+  if (resourceBaseUrl === null || chainId !== 84532 ||
+      typeof assetContract !== "string" ||
+      !/^0x[0-9A-Fa-f]{40}$/.test(assetContract) ||
+      !Number.isSafeInteger(acceptedAt) || acceptedAt <= 0 ||
+      !Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
+    throw new TypeError("Demos x402 rail registry bootstrap options are invalid");
+  }
+  if (runtime.role !== "seller" ||
+      canonicalDemosAgentPublicKey(runtime.authority) === null ||
+      typeof runtime.adapter?.anchorWriteOnce !== "function" ||
+      typeof runtime.signComponent !== "function") {
+    throw new TypeError("Demos x402 rail registry bootstrap steward is invalid");
+  }
+
+  const unsignedDefinition: Omit<RailDefinition, "signature"> = {
+    railVersion: 1,
+    railId: "x402:default",
+    railType: "x402",
+    asset: {
+      kind: "erc20",
+      chainId,
+      contract: assetContract,
+      symbol: "USDC",
+      decimals: 6,
+    },
+    network: { kind: "x402-resource", resourceBaseUrl },
+    phaseHandler: "pay-x402",
+    parameters: { authorization: "eip-3009", finalityBlocks },
+    availability: "live",
+    governance: {
+      proposedBy: runtime.authority,
+      acceptedAt,
+      anchoring: "single-signer",
+    },
+  };
+  const definition = await signComponentArtifact(
+    unsignedDefinition,
+    "dacs-rail:v1:",
+    {
+      algorithm: "ed25519",
+      signer: runtime.authority,
+      sign: runtime.signComponent,
+    },
+  );
+  const definitionLogicalAddress = "dacs4:rail:x402%3Adefault:1";
+  const definitionAnchor = await runtime.adapter.anchorWriteOnce(
+    definitionLogicalAddress,
+    definition,
+  );
+  const definitionRef: RailRegistryDefinitionRef = {
+    logicalAddress: definitionLogicalAddress,
+    anchor: { kind: "storage-program", locator: definitionAnchor.address },
+    contentHash: contentHash(definition),
+  };
+  const definitionReceipt = await authenticatedPublicationReceipt(
+    runtime,
+    definitionLogicalAddress,
+    definitionAnchor.address,
+    definition,
+  );
+
+  const index: RailRegistryIndexDocument = {
+    registryId: RAIL_REGISTRY_INDEX_ADDRESS,
+    entries: [definitionRef],
+  };
+  const indexAnchor = await runtime.adapter.anchorWriteOnce(
+    RAIL_REGISTRY_INDEX_ADDRESS,
+    index,
+  );
+  const indexRef: RailRegistryDefinitionRef = {
+    logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
+    anchor: { kind: "storage-program", locator: indexAnchor.address },
+    contentHash: contentHash(index as unknown as Record<string, unknown>),
+  };
+  const indexReceipt = await authenticatedPublicationReceipt(
+    runtime,
+    RAIL_REGISTRY_INDEX_ADDRESS,
+    indexAnchor.address,
+    index as unknown as Record<string, unknown>,
+  );
+  const current: CurrentRailRegistryIndex = {
+    registryVersion: 1,
+    indexRef,
+    receipt: indexReceipt,
+  };
+  const bindingAnchor = await runtime.adapter.anchorWriteOnce(
+    DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+    current,
+  );
+  await authenticatedPublicationReceipt(
+    runtime,
+    DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+    bindingAnchor.address,
+    current as unknown as Record<string, unknown>,
+  );
+  const provider = createDacsDemosRailRegistryProviderV1({
+    runtime,
+    stewardAuthority: runtime.authority,
+    stewardPublicKey: runtime.publicKey,
+  });
+  const rail = await resolveRail(
+    RAIL_REGISTRY_INDEX_ADDRESS,
+    { railId: "x402:default", railVersion: 1 },
+    provider,
+  );
+  return Object.freeze({
+    rail,
+    definitionRef: canonicalCopy(definitionRef),
+    definitionReceipt,
+    indexRef: canonicalCopy(indexRef),
+    indexReceipt,
+    currentBindingAddress: DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+  });
 }
 
 function exactCurrentBinding(
@@ -101,7 +309,7 @@ export function createDacsDemosRailRegistryProviderV1(
     value: CurrentRailRegistryIndex;
   }> | null> {
     const resolution = await adapter.resolveAnchorByName(
-      RAIL_REGISTRY_INDEX_ADDRESS,
+      DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
       expectedNativeOwner,
     );
     if (resolution.status === "absent") return null;
@@ -147,7 +355,7 @@ export function createDacsDemosRailRegistryProviderV1(
           receipt: input.receipt,
         })) return "invalid";
         const bindingReceipt = await adapter.resolveDemosAnchorReceipt({
-          logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
+          logicalAddress: DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
           nativeAddress: binding.address,
           contentHash: contentHash(binding.value as unknown as Record<string, unknown>),
           writer: stewardAuthority,
