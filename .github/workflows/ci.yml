@@ -284,7 +284,7 @@ jobs:
           const reportLine = doctor.stdout.trim().split("\n").at(-1);
           const report = JSON.parse(reportLine);
           if (report.safety.readOnly !== true || report.safety.funded !== false ||
-              report.gate.status !== "blocked" || report.checks.length !== 34 ||
+              report.gate.status !== "blocked" || report.checks.length !== 35 ||
               fs.existsSync(path.join(root, "data", "buyer", "actor.sqlite"))) process.exit(1);
           const setup = spawnSync("npm", [
             "run", "dacs:setup", "--", "--max-spend-dem", "1.00",
