@@ -10,12 +10,15 @@ import { describe, expect, it, vi } from "vitest";
 import vectorDocument from "../vectors/dacs-http-envelope-v1.json" with { type: "json" };
 
 import {
+  DACS_HTTP_MESSAGE_TYPES,
   authenticateDacsHttpEnvelopeV1,
   createDacsHttpAcknowledgementEnvelopeV1,
   createDacsHttpEnvelopeV1,
+  dacsHttpRequiredSenderRoleV1,
   dacsHttpEnvelopeHashV1,
   dacsHttpEnvelopeSignedBytesV1,
   paymentEvidencePeerFromDacsHttpEnvelopeV1,
+  validateDacsHttpDiagnosticProbePayloadV1,
   verifyDacsHttpAcknowledgementBindingV1,
   type DacsHttpAuthenticatedEnvelopeV1,
   type DacsHttpEnvelopeCreateInput,
@@ -37,7 +40,94 @@ const SENDER_KEY_HEX = Buffer.from(PUBLIC_KEY).toString("hex");
 const SENDER = `did:demos:agent:${SENDER_KEY_HEX}`;
 const AUDIENCE = `did:demos:agent:${Buffer.from(AUDIENCE_PUBLIC_KEY).toString("hex")}`;
 
+it("keeps every session-bootstrap sender direction in the shared role map", () => {
+  expect(dacsHttpRequiredSenderRoleV1("session-init")).toBe("buyer");
+  expect(dacsHttpRequiredSenderRoleV1("session-challenge")).toBe("seller");
+  expect(dacsHttpRequiredSenderRoleV1("session-presentation")).toBe("buyer");
+  expect(dacsHttpRequiredSenderRoleV1("session-admission")).toBe("seller");
+  expect(dacsHttpRequiredSenderRoleV1("acknowledgement")).toBeUndefined();
+});
+
 const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
+  "session-init": {
+    bootstrapVersion: "1",
+    order: { jobId: JOB_ID, buyer: SENDER, seller: AUDIENCE },
+    application: { requestVersion: "1", query: "session vector" },
+    sellerChallenge: "6".repeat(64),
+  },
+  "session-challenge": {
+    bootstrapVersion: "1",
+    initPayloadHash: "7".repeat(64),
+    sellerChallenge: "6".repeat(64),
+    buyerChallenge: "8".repeat(64),
+    sellerIdentity: {
+      bundleVersion: "1",
+      presentedBy: AUDIENCE,
+      presentedAt: ISSUED_AT,
+      sessionNonce: "6".repeat(64),
+      claims: [{ ref: AUDIENCE }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: AUDIENCE, signature: "seller-vector-signature" }],
+      },
+    },
+  },
+  "session-presentation": {
+    bootstrapVersion: "1",
+    challengePayloadHash: "9".repeat(64),
+    buyerChallenge: "8".repeat(64),
+    buyerIdentity: {
+      bundleVersion: "1",
+      presentedBy: SENDER,
+      presentedAt: ISSUED_AT,
+      sessionNonce: "8".repeat(64),
+      claims: [{ ref: SENDER }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: SENDER, signature: "buyer-vector-signature" }],
+      },
+    },
+  },
+  "session-admission": {
+    bootstrapVersion: "1",
+    presentationPayloadHash: "a".repeat(64),
+    buyerIdentityHash: "b".repeat(64),
+    sellerIdentityHash: "c".repeat(64),
+    buyerVetRecord: {
+      recordVersion: "1",
+      jobId: JOB_ID,
+      evaluatedParty: SENDER,
+      bundleHash: "b".repeat(64),
+      requirementHash: "d".repeat(64),
+      freshness: [],
+      supplementary: [],
+      dealSpecific: [],
+      overallDecision: "pass",
+      generatedAt: ISSUED_AT,
+      signature: { algorithm: "ed25519", signer: AUDIENCE,
+        value: "seller-vet-vector-signature" },
+    },
+    buyerVetRef: {
+      anchor: { kind: "storage-program", locator: "dacs2:vector:buyer-vet" },
+      contentHash: "e".repeat(64),
+      signer: AUDIENCE,
+    },
+    buyerVetReceipt: {
+      receiptVersion: "1",
+      substrate: "demos",
+      finalityProfile: "demos-bft-confirmed-native-read",
+      logicalAddress: "dacs2:vector:buyer-vet",
+      nativeAddress: `stor-${"f".repeat(40)}`,
+      contentHash: "e".repeat(64),
+      transactionRef: { kind: "demos-storage-program", value: "tx-vector-buyer-vet" },
+      writer: AUDIENCE,
+      state: "finalized",
+      observationDisposition: "established",
+      observedAt: ISSUED_AT,
+      blockRef: { id: "block-vector-buyer-vet", height: "42" },
+      evidence: { kind: "demos-bft-write-proof-v1", value: "vector-proof" },
+    },
+  },
   "agreement-proposal": {
     transportIdentity: { sender: SENDER, audience: AUDIENCE },
     proposal: { jobId: JOB_ID, label: "Café", numericEdge: Number.MAX_SAFE_INTEGER },
@@ -71,6 +161,14 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
     algorithm: "ed25519",
     signature: "vector-signature",
   },
+  "diagnostic-probe-buyer": {
+    purpose: "transport-readiness",
+    challenge: Buffer.alloc(32, 8).toString("base64url"),
+  },
+  "diagnostic-probe-seller": {
+    purpose: "transport-readiness",
+    challenge: Buffer.alloc(32, 9).toString("base64url"),
+  },
   acknowledgement: {
     acknowledgedEnvelopeId: "4".repeat(64),
     acknowledgedPayloadHash: "5".repeat(64),
@@ -79,8 +177,10 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
 });
 
 function roleFor(type: DacsHttpMessageType): "buyer" | "seller" {
-  return type === "agreement-response" || type === "payment-evidence-request" ||
-      type === "bundle-signature-request" ? "seller" : "buyer";
+  return type === "session-challenge" || type === "session-admission" ||
+      type === "agreement-response" || type === "payment-evidence-request" ||
+      type === "bundle-signature-request" || type === "diagnostic-probe-seller"
+    ? "seller" : "buyer";
 }
 
 function nonce(index: number): string {
@@ -126,9 +226,12 @@ async function authenticate(
 }
 
 describe("DACS HTTP envelope v1", () => {
-  it("matches the published byte-exact vector for every message type", async () => {
+  it("matches every published byte-exact conformance-vector case", async () => {
     expect(vectorDocument.publicKeyHex).toBe(Buffer.from(PUBLIC_KEY).toString("hex"));
-    expect(vectorDocument.cases).toHaveLength(7);
+    expect(vectorDocument.cases).toHaveLength(DACS_HTTP_MESSAGE_TYPES.length);
+    expect(new Set(vectorDocument.cases.map((item) => item.type))).toEqual(
+      new Set(DACS_HTTP_MESSAGE_TYPES),
+    );
     for (const vectorCase of vectorDocument.cases) {
       const envelope = await createDacsHttpEnvelopeV1({
         type: vectorCase.type as DacsHttpMessageType,
@@ -173,6 +276,18 @@ describe("DACS HTTP envelope v1", () => {
         identityEvidenceHash: IDENTITY_EVIDENCE_HASH,
       });
     }
+  });
+
+  it("requires canonical Base64URL for no-effect diagnostic challenges", () => {
+    const challenge = Buffer.alloc(32, 7).toString("base64url");
+    expect(validateDacsHttpDiagnosticProbePayloadV1({
+      purpose: "transport-readiness",
+      challenge,
+    })).toBe(true);
+    expect(validateDacsHttpDiagnosticProbePayloadV1({
+      purpose: "transport-readiness",
+      challenge: `${challenge.slice(0, -1)}d`,
+    })).toBe(false);
   });
 
   it("preserves canonical ClaimReference parameters while authenticating the CF-3 principal", async () => {

@@ -659,7 +659,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
               vetRecordRef: structuredClone(sellerVetRef),
               evaluatedParty: SELLER,
               requirement: { requirementVersion: "1" as const, required: [] },
-              verifier: SELLER,
+              verifier: BUYER,
               freshness: [],
               dealSpecific: [],
             },

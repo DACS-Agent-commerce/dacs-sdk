@@ -39,7 +39,7 @@ const stewardPublicKey = Uint8Array.from(
   rawPublicKey(publicKeyFromSeed(STEWARD_SEED)),
 );
 const stewardSigner =
-  `did:demos:recipe-steward:${Buffer.from(stewardPublicKey).toString("hex")}`;
+  `did:demos:agent:${Buffer.from(stewardPublicKey).toString("hex")}`;
 const stewardWriter = stewardSigner;
 const verify = (bytes: Uint8Array, signature: Uint8Array, key: Uint8Array) =>
   ed25519Verify(bytes, signature, publicKeyFromRaw(key));

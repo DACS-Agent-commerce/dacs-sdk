@@ -61,8 +61,8 @@ import { isBundleBinding } from "../../src/artifacts/validators.js";
 
 const NOW = 1_786_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
-const BUYER = "did:demos:buyer";
-const SELLER = "did:demos:seller";
+const BUYER = `did:demos:agent:${"1".repeat(64)}`;
+const SELLER = `did:demos:agent:${"2".repeat(64)}`;
 const OUTSIDER = "did:demos:outsider";
 const BUYER_SEED = new Uint8Array(32).fill(31);
 const SELLER_SEED = new Uint8Array(32).fill(32);
@@ -70,16 +70,18 @@ const SELLER_SEED = new Uint8Array(32).fill(32);
 function signTestComponent<T extends Record<string, unknown>>(
   unsigned: T,
   separator: Parameters<typeof signedBytes>[0],
+  signer = SELLER,
 ): T & { signature: ComponentSignature } {
+  const seed = signer === BUYER ? BUYER_SEED : SELLER_SEED;
   return {
     ...unsigned,
     signature: {
       algorithm: "ed25519",
-      signer: SELLER,
+      signer,
       value: Buffer.from(
         ed25519Sign(
           signedBytes(separator, contentHash(unsigned)),
-          privateKeyFromSeed(SELLER_SEED),
+          privateKeyFromSeed(seed),
         ),
       ).toString("base64url"),
     },
@@ -111,6 +113,7 @@ function receipt(
   contentHashValue: string,
   logicalAddress = `dacs-test:${contentHashValue.slice(0, 12)}`,
   nativeAddress = `stor-${contentHashValue.slice(0, 40)}`,
+  writer = "test-writer",
 ): AnchorReceipt {
   return {
     receiptVersion: "1",
@@ -120,7 +123,7 @@ function receipt(
     nativeAddress,
     contentHash: contentHashValue,
     transactionRef: { kind: "test", value: `tx-${contentHashValue.slice(0, 16)}` },
-    writer: "test-writer",
+    writer,
     state: "finalized",
     observationDisposition: "established",
     observedAt: NOW,
@@ -346,6 +349,7 @@ function fixture(
     verifyRef: typeof buyerVerifyRef,
     requirement: typeof buyerRequirement,
     overallDecision: CompositeVerificationRecord["overallDecision"] = "pass",
+    verifier = SELLER,
   ): CompositeVerificationRecord =>
     signTestComponent(
       {
@@ -363,6 +367,7 @@ function fixture(
         generatedAt: NOW - 16_000,
       },
       "dacs-composite:v1:",
+      verifier,
     );
   const buyerVet = makeVetRecord(
     BUYER,
@@ -376,6 +381,7 @@ function fixture(
     sellerVerifyRef,
     sellerVetRequirement,
     options.sellerVetDecision,
+    BUYER,
   );
   const buyerVetRef = ref(
     "buyer-vet",
@@ -944,7 +950,7 @@ function fixture(
           vetRecordRef: sellerVetRef,
           evaluatedParty: SELLER,
           requirement: sellerVetRequirement,
-          verifier: SELLER,
+          verifier: BUYER,
           freshness: [],
           dealSpecific: [
             {
@@ -1101,7 +1107,7 @@ function fixture(
       bundle,
       nativeAddress,
       anchorTx: "test:bundle-anchor-tx",
-      anchorReceipt: receipt(hash, logicalAddress, nativeAddress),
+      anchorReceipt: receipt(hash, logicalAddress, nativeAddress, SELLER),
     };
   };
 
@@ -1127,13 +1133,16 @@ function fixture(
           : null,
       ),
       isRecipeSignerAuthorized: (_recipe, signature) =>
-        signature.signer === SELLER,
+        signature.signer === SELLER || signature.signer === BUYER,
       isVerifyResultSignerAuthorized: (_result, signature) =>
-        signature.signer === SELLER,
+        signature.signer === SELLER || signature.signer === BUYER,
       resolvePublicKey: async (signature) =>
-        signature.signer === SELLER && signature.algorithm === "ed25519"
-          ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
-          : null,
+        signature.algorithm !== "ed25519" ? null
+          : signature.signer === SELLER
+            ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
+            : signature.signer === BUYER
+              ? rawPublicKey(publicKeyFromSeed(BUYER_SEED))
+              : null,
       verify: ({ signedBytes: payload, signature, publicKey }) =>
         ed25519Verify(
           payload,

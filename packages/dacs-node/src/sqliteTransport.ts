@@ -23,6 +23,7 @@ import {
 } from "./transport/contracts.js";
 import {
   DACS_HTTP_MAX_FUTURE_SKEW_MS,
+  dacsHttpRequiredSenderRoleV1,
   verifyDacsHttpAcknowledgementBindingV1,
   verifyDacsHttpEnvelopeSelfSignatureV1,
   type DacsHttpAuthenticatedEnvelopeV1,
@@ -43,23 +44,6 @@ export interface DacsHttpSqliteContext {
   beginImmediate<T>(operation: () => T): T;
   readSnapshot<T>(operation: () => T): T;
   error(reasonCode: string, message: string): Error;
-}
-
-function requiredSenderRole(
-  envelope: Readonly<DacsHttpEnvelopeV1>,
-): "buyer" | "seller" | undefined {
-  switch (envelope.type) {
-    case "agreement-proposal":
-    case "payment-evidence-completion":
-    case "bundle-signature-response":
-      return "buyer";
-    case "agreement-response":
-    case "payment-evidence-request":
-    case "bundle-signature-request":
-      return "seller";
-    case "acknowledgement":
-      return undefined;
-  }
 }
 
 interface InboxRow {
@@ -321,11 +305,14 @@ function inboxStored(
       throw new Error();
     }
   } catch {
-    throw context.error("http-inbox-record-corrupt", "HTTP inbox record is not canonical authenticated data");
+    throw context.error(
+      "http-inbox-record-corrupt",
+      "HTTP inbox record is not canonical integrity-checked data",
+    );
   }
   const authenticated = authenticatedEnvelope(context, value.authenticated, context.authority);
   const envelope = authenticated.envelope;
-  const senderRole = requiredSenderRole(envelope);
+  const senderRole = dacsHttpRequiredSenderRoleV1(envelope.type);
   if ((value.state !== "pending" && value.state !== "disposed") ||
       senderRole === undefined || authenticated.identityRole !== senderRole ||
       context.role === senderRole ||
@@ -362,10 +349,13 @@ function outboxStored(
       throw new Error();
     }
   } catch {
-    throw context.error("http-outbox-record-corrupt", "HTTP outbox record is not canonical authenticated data");
+    throw context.error(
+      "http-outbox-record-corrupt",
+      "HTTP outbox record is not canonical integrity-checked data",
+    );
   }
   const verified = verifyDacsHttpEnvelopeSelfSignatureV1(value.envelope);
-  const senderRole = requiredSenderRole(value.envelope);
+  const senderRole = dacsHttpRequiredSenderRoleV1(value.envelope.type);
   if (verified.status !== "valid" || value.envelopeHash !== verified.authenticationHash ||
       !sameDemosAgentIdentity(value.envelope.sender, context.authority) ||
       value.envelope.type === "acknowledgement" ||
@@ -996,7 +986,7 @@ export function createDacsHttpInboxSqliteStore(
             "Acknowledgements are recorded against the outbox, not admitted to the action inbox",
           );
         }
-        const senderRole = requiredSenderRole(authenticated.envelope);
+        const senderRole = dacsHttpRequiredSenderRoleV1(authenticated.envelope.type);
         if (senderRole === undefined || authenticated.identityRole !== senderRole ||
             senderRole === context.role) {
           throw context.error(
@@ -1204,7 +1194,7 @@ export function createDacsHttpOutboxSqliteStore(
       if (verified.status !== "valid" ||
           !sameDemosAgentIdentity(verified.envelope.sender, context.authority) ||
           verified.envelope.type === "acknowledgement" ||
-          requiredSenderRole(verified.envelope) !== context.role) {
+          dacsHttpRequiredSenderRoleV1(verified.envelope.type) !== context.role) {
         throw context.error("http-outbox-envelope-invalid", "HTTP outbox envelope is invalid");
       }
       return context.beginImmediate(() => {
@@ -1377,7 +1367,12 @@ export function createDacsHttpOutboxSqliteStore(
     async recordSendFailure(input) {
       const lease = captureLease(input.lease);
       if (!lease || !validateIdentity(input.envelopeId, input.envelopeHash) ||
-          !reasonCode(input.reasonCode)) return { status: "conflict" };
+          !reasonCode(input.reasonCode) ||
+          (input.retryAfterMs !== undefined &&
+            (!safeUint(input.retryAfterMs) ||
+              input.retryAfterMs > DACS_HTTP_MAXIMUM_RETRY_DELAY_MS))) {
+        return { status: "conflict" };
+      }
       return context.beginImmediate(() => {
         const loaded = readOutbox(context, input.envelopeId);
         if (!loaded) return { status: "missing" };
@@ -1406,10 +1401,11 @@ export function createDacsHttpOutboxSqliteStore(
         if (!Number.isInteger(jitter) || Math.abs(jitter) > Math.floor(baseDelayMs / 2)) {
           throw context.error("http-outbox-jitter-invalid", "HTTP retry jitter is out of bounds");
         }
-        const delay = Math.max(0, Math.min(
+        const localDelay = Math.max(0, Math.min(
           DACS_HTTP_MAXIMUM_RETRY_DELAY_MS,
           baseDelayMs + jitter,
         ));
+        const delay = Math.max(localDelay, input.retryAfterMs ?? 0);
         const computed = now + delay;
         if (!Number.isSafeInteger(computed)) {
           throw context.error("http-outbox-retry-overflow", "HTTP outbox retry time overflows");

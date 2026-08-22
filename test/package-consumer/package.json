@@ -1,0 +1,5 @@
+{
+  "name": "dacs-package-consumer-smoke",
+  "private": true,
+  "type": "module"
+}

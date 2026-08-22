@@ -160,6 +160,29 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
     expect(recovered.toLowerCase()).toBe(ACCOUNT.address.toLowerCase());
   });
 
+  test("accepts the standard Exact EVM wire challenge without a private method marker", async () => {
+    const wireRequirements = requirements({
+      extra: { name: "USD Coin", version: "2" },
+    });
+    const client = await createDacsX402BuyerEvmChallengeClient({
+      evmPrivateKey: PRIVATE_KEY,
+      authority: authority(),
+      expectedRequirements: wireRequirements,
+    });
+    const result = await prepareX402BuyerSettlement(
+      { authority: authority() },
+      { client, fetchImpl: challengeFetch(challenge([wireRequirements])).fetchImpl },
+    );
+    expect(result.disposition).toBe("prepared");
+    if (result.disposition === "prepared") {
+      expect(result.intent.chosenRequirements.extra).toEqual({
+        name: "USD Coin",
+        version: "2",
+      });
+      expect(result.intent.signedPaymentPayload.accepted).toEqual(wireRequirements);
+    }
+  });
+
   test("rejects the stock ExactEvmScheme random nonce at durable preparation", async () => {
     const core = new x402Client().register(
       NETWORK,
