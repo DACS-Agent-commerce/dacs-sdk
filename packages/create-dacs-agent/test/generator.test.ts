@@ -225,7 +225,14 @@ describe("create-dacs-agent", () => {
       "test/live-bootstrap.test.ts",
       "compose.yaml",
       "Dockerfile",
+      "data/buyer/.gitkeep",
+      "data/seller/.gitkeep",
     ]));
+    for (const role of ["buyer", "seller"] as const) {
+      const observed = await lstat(join(target, "data", role));
+      expect(observed.isDirectory()).toBe(true);
+      if (process.platform !== "win32") expect(observed.mode & 0o077).toBe(0);
+    }
     const packageSource = JSON.parse(await readFile(join(target, "package.json"), "utf8"));
     expect(packageSource.dependencies).toEqual({
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
@@ -234,6 +241,7 @@ describe("create-dacs-agent", () => {
       "@x402/core": "2.15.0",
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
+      tsx: "4.23.12",
       "viem": "2.52.2",
     });
     expect(packageSource.scripts).toMatchObject({
@@ -246,6 +254,11 @@ describe("create-dacs-agent", () => {
       "dacs:down": expect.any(String),
       "dacs:upgrade": expect.any(String),
     });
+    for (const command of Object.values(packageSource.scripts as Record<string, string>)) {
+      if (command.includes("dist/src/") || command.includes("dist/test/")) {
+        expect(command).toContain("node --import tsx");
+      }
+    }
     const compose = await readFile(join(target, "compose.yaml"), "utf8");
     expect(compose).toContain("DACS_BUYER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
@@ -275,6 +288,9 @@ describe("create-dacs-agent", () => {
     expect(dockerfile).toContain("RUN npm rebuild better-sqlite3");
     expect(dockerfile).toContain("--mode=0755 /app");
     expect(dockerfile).toContain("USER 10001:10001");
+    expect(dockerfile).toContain(
+      'CMD ["node", "--import", "tsx", "dist/src/service.js"]',
+    );
     expect(dockerfile).not.toContain("COPY . .");
     const combined = (await Promise.all(
       (await filesBelow(target)).map((file) => readFile(join(target, file), "utf8")),

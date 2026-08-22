@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -227,6 +228,14 @@ export async function createDacsAgentProject(
         flag: "wx",
         mode: 0o600,
       });
+    }
+    if (mode === "live-demos") {
+      // Local live services require role-owned private persistence before the
+      // read-only pre-start doctor may pass. Keep both authorities separated
+      // even when the generated project supervises them together.
+      for (const role of ["buyer", "seller"] as const) {
+        await chmod(resolve(stagingDirectory, "data", role), 0o700);
+      }
     }
     await assertStableProjectParent(parent);
     // All nested paths are complete before the project name becomes visible.

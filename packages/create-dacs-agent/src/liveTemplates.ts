@@ -7,6 +7,7 @@ export interface LiveProjectTemplateOptions {
 }
 
 const SDK_VERSION = "0.1.0-alpha.0";
+const TSX_VERSION = "4.23.12";
 
 function packageJson(packageName: string): string {
   return JSON.stringify({
@@ -18,17 +19,20 @@ function packageJson(packageName: string): string {
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
-      test: "npm run build && node --test dist/test/live-bootstrap.test.js",
-      "dacs:doctor": "npm run build --silent && node dist/src/cli.js doctor",
-      "dacs:doctor:funded": "npm run build --silent && node dist/src/cli.js doctor-funded",
-      "dacs:up": "npm run build --silent && node dist/src/cli.js up",
-      "dacs:setup": "npm run build --silent && node dist/src/cli.js setup",
-      "dacs:buy": "npm run build --silent && node dist/src/cli.js buy",
-      "dacs:status": "npm run build --silent && node dist/src/cli.js status",
-      "dacs:down": "npm run build --silent && node dist/src/cli.js down",
-      "dacs:upgrade": "npm run build --silent && node dist/src/cli.js upgrade",
-      "dacs:service": "npm run build --silent && node dist/src/service.js",
-      "dacs:smoke:offline": "npm run build --silent && node dist/src/offline-smoke.js",
+      // demosdk 4.0.16 publishes one extensionless ESM directory import. The
+      // declared loader keeps generated services runnable on the supported
+      // Node floors without mutating the installed dependency.
+      test: "npm run build && node --import tsx --test dist/test/live-bootstrap.test.js",
+      "dacs:doctor": "npm run build --silent && node --import tsx dist/src/cli.js doctor",
+      "dacs:doctor:funded": "npm run build --silent && node --import tsx dist/src/cli.js doctor-funded",
+      "dacs:up": "npm run build --silent && node --import tsx dist/src/cli.js up",
+      "dacs:setup": "npm run build --silent && node --import tsx dist/src/cli.js setup",
+      "dacs:buy": "npm run build --silent && node --import tsx dist/src/cli.js buy",
+      "dacs:status": "npm run build --silent && node --import tsx dist/src/cli.js status",
+      "dacs:down": "npm run build --silent && node --import tsx dist/src/cli.js down",
+      "dacs:upgrade": "npm run build --silent && node --import tsx dist/src/cli.js upgrade",
+      "dacs:service": "npm run build --silent && node --import tsx dist/src/service.js",
+      "dacs:smoke:offline": "npm run build --silent && node --import tsx dist/src/offline-smoke.js",
     },
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
@@ -37,6 +41,7 @@ function packageJson(packageName: string): string {
       "@x402/core": "2.15.0",
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
+      tsx: TSX_VERSION,
       "viem": "2.52.2",
     },
     devDependencies: {
@@ -2081,7 +2086,7 @@ COPY --from=build --chown=dacs:dacs /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=dacs:dacs /app/node_modules ./node_modules
 COPY --from=build --chown=dacs:dacs /app/dist ./dist
 USER 10001:10001
-CMD ["node", "dist/src/service.js"]
+CMD ["node", "--import", "tsx", "dist/src/service.js"]
 `;
 
 const DOCKERIGNORE = `**
@@ -2325,7 +2330,8 @@ export function liveProjectTemplates(
     "src/cli.ts": CLI_SOURCE,
     "src/offline-smoke.ts": OFFLINE_SMOKE_SOURCE,
     "test/live-bootstrap.test.ts": TEST_SOURCE,
-    "data/.gitkeep": "",
+    "data/buyer/.gitkeep": "",
+    "data/seller/.gitkeep": "",
     "secrets/README.md": SECRETS_README,
   });
 }
