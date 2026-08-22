@@ -27,3 +27,13 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/registry/registry.test.ts:generic-
 f5266368c979ac9ab68dee1e93f43726f44aa47e:test/registry/registry.test.ts:generic-api-key:166
 f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api-key:9
 60afda953de7dfff972b9a029a5a32a5718f3107:test/registry/registry.test.ts:generic-api-key:21
+# Reviewed public deterministic fixtures reachable from the current finality
+# branch. These are the published Base-Sepolia USDC address, repeated-address
+# fixtures, and a test key derived in source from a fixed label.
+9e23f7c13addf5732f642d9e5590649956c9f0a8:test/rails/x402.test.ts:generic-api-key:21
+9e23f7c13addf5732f642d9e5590649956c9f0a8:test/e2e/session.e2e.test.ts:generic-api-key:53
+9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:815
+9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:844
+9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:870
+9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:899
+9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:921
