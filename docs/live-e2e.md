@@ -73,6 +73,9 @@ PAY_RPC_SECONDARY=https://base-sepolia.api.onfinality.io/public   # optional: di
 X402_FACILITATOR=https://x402.org/facilitator
 PAYWALL_URL=local          # literal — self-starts the in-test x402 paywall
 LIVE_E2E_RUN_ID=<fresh unique id every run>   # the attempt is non-rerunnable
+LIVE_E2E_MARKER_DIR=/absolute/path/to/persistent/dacs-funded-ledger
+LIVE_E2E_MAX_PAYMENT_AMOUNT=1        # Base-Sepolia USDC base units
+LIVE_E2E_MAX_DEMOS_DEBIT_OS=38000000000   # aggregate buyer + seller fee ceiling
 LIVE_E2E_CONFIRM=1
 ```
 
@@ -80,6 +83,12 @@ The DID is `did:demos:agent:` + the wallet address without the `0x`.
 `PAYWALL_URL=local` self-starts the correctly-configured in-test paywall — do NOT
 point it at a URL. `PAY_RPC_SECONDARY` must be a *different origin* from `PAY_RPC`;
 supplying it proves cross-RPC (2-of-2) agreement instead of a lone `1-of-1` view.
+If it is configured but unavailable or inconsistent, preflight intentionally
+fails; unset it if the approved run does not require the stronger 2-of-2 proof.
+Before the first run, create `LIVE_E2E_MARKER_DIR` on persistent local storage as
+the same uid that will run the test, for example
+`install -d -m 0700 /var/lib/dacs-funded-ledger`. Do not put it under `/tmp`, a
+checkout, a disposable container layer or any path that cleanup can recreate.
 
 ### Base Sepolia RPCs
 
@@ -106,10 +115,14 @@ rather than pay twice or spend without bound:
   it broadcasts anything. A crashed or repeated attempt is then refused instead
   of re-paying. Keep the marker directory on stable local storage — not a `/tmp`
   path that clears between runs — or the non-rerunnable guarantee is lost.
-- **Maximum-total-debit cap.** Set an explicit ceiling on the whole run's spend
-  and make it cover **both** the x402 USDC amount **and** the Demos anchor fees,
-  not just the payment. The run aborts before broadcasting if the projected total
-  debit would exceed the cap.
+- **Asset-specific maximum-total-debit caps.** USDC base units and Demos OS are
+  different assets and must not be added into a misleading scalar. Set both
+  `LIVE_E2E_MAX_PAYMENT_AMOUNT` and `LIVE_E2E_MAX_DEMOS_DEBIT_OS`. The harness
+  requires the USDC ceiling to bind the exact one-unit x402 payment, requires a
+  Demos ceiling between the projected 32 DEM clean-run cost and the hard 38 DEM
+  test limit, then reserves each confirmed Demos fee synchronously before its
+  broadcast. Missing/malformed fee data or an aggregate fee above the declared
+  ceiling prevents that broadcast.
 - **Reconcile, don't blindly rerun.** If a run ends ambiguous (see the
   `evm-authorization-lookup-unavailable` note below), reconcile the original
   attempt on-chain read-only before starting a fresh one.
@@ -118,10 +131,12 @@ rather than pay twice or spend without bound:
 
 Load the protected environment, then run the §1 command. One clean August 2026
 run took approximately 75 seconds to commerce-complete and approximately four
-minutes for the full audit/bundle path; public-network latency varies. Green =
-the full two-sided lifecycle ran on-chain (real DEM fees + a real ~0.000001 USDC
-transfer buyer→seller) and both role-owned DACS-5 bundles finalized and
-re-verified from cold storage.
+minutes for the full audit/bundle path; an independent run with three recovered
+anchor failures took approximately 14 minutes. Public-network latency varies,
+and the suite's 15-minute test timeout is the outer bound rather than a target.
+Green = the full two-sided lifecycle ran on-chain (real DEM fees + a real
+~0.000001 USDC transfer buyer→seller) and both role-owned DACS-5 bundles
+finalized and re-verified from cold storage.
 
 ## 6. Troubleshooting
 
@@ -141,5 +156,9 @@ re-verified from cold storage.
   transaction have been reconciled, or the test may pay twice.
 - **`request to <url> failed`** — `PAYWALL_URL` was set to a URL instead of the
   literal `local`.
+- **A long anchor stage** — terminally failed Demos writes can enter the
+  harness's durable anchor-recovery path. The same logical artifact is
+  reconciled before another write; do not terminate and rerun merely because a
+  stage is slow.
 - USDC landed but the test can't see it — confirm it's on **Base Sepolia**
   (chain 84532), not Ethereum Sepolia.
