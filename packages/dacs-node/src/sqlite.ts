@@ -287,10 +287,32 @@ export interface DacsNodeSqliteDiagnostics {
   filesystemMagic: number;
 }
 
+export interface DacsNodeSqliteUpgradeSafetyV1 {
+  safe: boolean;
+  intentEffects: number;
+  activeEffects: number;
+  reconciliationEffects: number;
+  operatorActionEffects: number;
+  incompleteOrders: number;
+}
+
 export type DacsNodeSqliteReadOnlyInspection = Readonly<
   | {
       status: "pass";
       diagnostics: Readonly<DacsNodeSqliteDiagnostics>;
+    }
+  | {
+      status: "blocked" | "fail";
+      reasonCode: string;
+      databasePath: string;
+    }
+>;
+
+export type DacsNodeSqliteUpgradeInspectionV1 = Readonly<
+  | {
+      status: "pass";
+      diagnostics: Readonly<DacsNodeSqliteDiagnostics>;
+      safety: Readonly<DacsNodeSqliteUpgradeSafetyV1>;
     }
   | {
       status: "blocked" | "fail";
@@ -311,6 +333,8 @@ export interface DacsNodeSqliteDatabase {
   }>;
   readTime(): number;
   diagnostics(): Readonly<DacsNodeSqliteDiagnostics>;
+  /** Read-only release gate; upgrades never proceed across unfinished effects or orders. */
+  upgradeSafety(): Readonly<DacsNodeSqliteUpgradeSafetyV1>;
   createLiveCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceX402CoordinatorStore;
@@ -4049,6 +4073,56 @@ function createSqlitePaymentEvidenceHandshakeStore(
   };
 }
 
+function readUpgradeSafety(
+  database: BetterSqlite3.Database,
+): Readonly<DacsNodeSqliteUpgradeSafetyV1> {
+  return readSnapshot(database, () => {
+    const effectCounts = database.prepare(`
+      SELECT
+        SUM(CASE WHEN state = 'intent' THEN 1 ELSE 0 END) AS intent_effects,
+        SUM(CASE WHEN state = 'active' THEN 1 ELSE 0 END) AS active_effects,
+        SUM(CASE WHEN state = 'reconciliation-required' THEN 1 ELSE 0 END)
+          AS reconciliation_effects,
+        SUM(CASE WHEN state = 'operator-action' THEN 1 ELSE 0 END)
+          AS operator_action_effects
+      FROM dacs_effects
+    `).get() as Readonly<{
+      intent_effects: number | null;
+      active_effects: number | null;
+      reconciliation_effects: number | null;
+      operator_action_effects: number | null;
+    }>;
+    const orderCounts = database.prepare(`
+      SELECT COUNT(*) AS incomplete_orders
+      FROM dacs_coordinator_orders
+      WHERE json_extract(record_json, '$.tracks.audit.state') IS NULL
+         OR json_extract(record_json, '$.tracks.audit.state') <> 'final'
+    `).get() as Readonly<{ incomplete_orders: number }>;
+    const intentEffects = effectCounts.intent_effects ?? 0;
+    const activeEffects = effectCounts.active_effects ?? 0;
+    const reconciliationEffects = effectCounts.reconciliation_effects ?? 0;
+    const operatorActionEffects = effectCounts.operator_action_effects ?? 0;
+    const incompleteOrders = orderCounts.incomplete_orders;
+    if ([intentEffects, activeEffects, reconciliationEffects,
+      operatorActionEffects, incompleteOrders]
+      .some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      throw new DacsNodeSqliteError(
+        "database-upgrade-safety-invalid",
+        "SQLite upgrade-safety projection is invalid",
+      );
+    }
+    return Object.freeze({
+      safe: intentEffects === 0 && activeEffects === 0 && reconciliationEffects === 0 &&
+        operatorActionEffects === 0 && incompleteOrders === 0,
+      intentEffects,
+      activeEffects,
+      reconciliationEffects,
+      operatorActionEffects,
+      incompleteOrders,
+    });
+  });
+}
+
 class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
   readonly databasePath: string;
   readonly metadata: DacsNodeSqliteDatabase["metadata"];
@@ -4108,6 +4182,11 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         : { filesystemType: this.location.filesystemType }),
       filesystemMagic: this.location.filesystemMagic,
     };
+  }
+
+  upgradeSafety(): Readonly<DacsNodeSqliteUpgradeSafetyV1> {
+    this.assertOpen();
+    return readUpgradeSafety(this.database);
   }
 
   createLiveCoordinatorStore(
@@ -6593,6 +6672,43 @@ export function inspectExistingDacsNodeSqliteDatabaseV1(
         ? error.reasonCode : "database-admission-failed",
       databasePath: location.databasePath,
     });
+  }
+}
+
+/**
+ * Authenticate the current store and project upgrade blockers through a
+ * read-only SQLite handle. It never initializes, migrates, checkpoints or
+ * backs up the database; those remain explicit upgrade-time operations.
+ */
+export function inspectDacsNodeSqliteUpgradeSafetyV1(
+  rawOptions: Readonly<DacsNodeSqliteDatabaseOptions>,
+): Readonly<DacsNodeSqliteUpgradeInspectionV1> {
+  const options = validateOptions(rawOptions);
+  const admitted = inspectExistingDacsNodeSqliteDatabaseV1(options);
+  if (admitted.status !== "pass") return admitted;
+  let database: BetterSqlite3.Database | undefined;
+  try {
+    database = new BetterSqlite3(admitted.diagnostics.databasePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: options.busyTimeoutMs,
+    });
+    configureAdmissionConnection(database, options);
+    verifyVersionedDatabase(database, options, DACS_NODE_SQLITE_SCHEMA_VERSION);
+    return Object.freeze({
+      status: "pass" as const,
+      diagnostics: admitted.diagnostics,
+      safety: readUpgradeSafety(database),
+    });
+  } catch (error) {
+    return Object.freeze({
+      status: "fail" as const,
+      reasonCode: error instanceof DacsNodeSqliteError
+        ? error.reasonCode : "database-upgrade-safety-unavailable",
+      databasePath: admitted.diagnostics.databasePath,
+    });
+  } finally {
+    database?.close();
   }
 }
 

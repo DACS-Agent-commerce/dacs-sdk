@@ -8,6 +8,9 @@ export interface LiveProjectTemplateOptions {
 
 const SDK_VERSION = "0.1.0-alpha.0";
 const TSX_VERSION = "4.23.12";
+const STANDARD_REVISION = "965df755aba4ff392f1fb37a93d287242b177ba4";
+const CONFIG_SCHEMA_VERSION = 1;
+const SQLITE_SCHEMA_VERSION = 6;
 
 function packageJson(packageName: string): string {
   return JSON.stringify({
@@ -43,6 +46,15 @@ function packageJson(packageName: string): string {
       "@x402/fetch": "2.15.0",
       tsx: TSX_VERSION,
       "viem": "2.55.19",
+    },
+    dacs: {
+      generatorVersion: SDK_VERSION,
+      releaseMetadataVersion: 1,
+      standardRevision: STANDARD_REVISION,
+      configSchemaVersion: CONFIG_SCHEMA_VERSION,
+      sqliteSchemaVersion: SQLITE_SCHEMA_VERSION,
+      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6],
+      breakingConfigurationChanges: [],
     },
     devDependencies: {
       "@types/node": "20.19.1",
@@ -1881,6 +1893,344 @@ export async function stopDacsLocalRoleServices(): Promise<number> {
 }
 `;
 
+const UPGRADE_SOURCE = `import { VERSION } from "@kynesyslabs/dacs";
+import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
+import {
+  DACS_NODE_CONFIG_SCHEMA_VERSION,
+  DACS_NODE_RELEASE_METADATA_V1,
+  readDacsPublicJsonV1,
+} from "@kynesyslabs/dacs-node";
+import {
+  DACS_NODE_SQLITE_SCHEMA_VERSION,
+  inspectDacsNodeSqliteUpgradeSafetyV1,
+  type DacsNodeSqliteUpgradeInspectionV1,
+} from "@kynesyslabs/dacs-node/sqlite";
+
+import {
+  actorDatabasePath,
+  configuredAuthority,
+} from "./config.js";
+import { DACS_NODE_LIVE_PROFILE } from "@kynesyslabs/dacs-node";
+
+const RELEASE_PACKAGES = Object.freeze([
+  "@kynesyslabs/dacs",
+  "@kynesyslabs/dacs-node",
+  "create-dacs-agent",
+] as const);
+const GENERATED_BY_VERSION = "${SDK_VERSION}";
+const DEFAULT_RELEASE_TAG = "next";
+
+interface ReleaseMetadataV1 {
+  releaseMetadataVersion: 1;
+  standardRevision: string;
+  configSchemaVersion: number;
+  sqliteSchemaVersion: number;
+  supportedSqliteMigrationFrom: readonly number[];
+  breakingConfigurationChanges: readonly string[];
+}
+
+interface RegistryReleaseV1 {
+  name: typeof RELEASE_PACKAGES[number];
+  version: string;
+  metadata: Readonly<ReleaseMetadataV1>;
+}
+
+interface ParsedSemverV1 {
+  core: readonly [bigint, bigint, bigint];
+  prerelease: readonly string[] | null;
+}
+
+export interface GeneratedUpgradeCheckDependenciesV1 {
+  readRegistryManifest(packageName: typeof RELEASE_PACKAGES[number], tag: string): Promise<unknown>;
+  inspectActor(role: "buyer" | "seller"): Promise<Readonly<DacsNodeSqliteUpgradeInspectionV1>>;
+}
+
+const object = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+
+function parseSemver(value: string): Readonly<ParsedSemverV1> | undefined {
+  const match = /^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$/u
+    .exec(value);
+  if (!match) return undefined;
+  const prerelease = match[4]?.split(".") ?? null;
+  if (prerelease?.some((item) => /^\\d+$/u.test(item) && item.length > 1 &&
+      item.startsWith("0"))) return undefined;
+  return Object.freeze({
+    core: Object.freeze([BigInt(match[1]!), BigInt(match[2]!), BigInt(match[3]!)]) as
+      readonly [bigint, bigint, bigint],
+    prerelease: prerelease === null ? null : Object.freeze(prerelease),
+  });
+}
+
+function compareSemver(left: string, right: string): -1 | 0 | 1 {
+  const a = parseSemver(left);
+  const b = parseSemver(right);
+  if (!a || !b) throw new Error("installed release version is invalid");
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index]! < b.core[index]!) return -1;
+    if (a.core[index]! > b.core[index]!) return 1;
+  }
+  if (a.prerelease === null && b.prerelease === null) return 0;
+  if (a.prerelease === null) return 1;
+  if (b.prerelease === null) return -1;
+  const width = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let index = 0; index < width; index += 1) {
+    const leftItem = a.prerelease[index];
+    const rightItem = b.prerelease[index];
+    if (leftItem === undefined) return -1;
+    if (rightItem === undefined) return 1;
+    if (leftItem === rightItem) continue;
+    const leftNumeric = /^\\d+$/u.test(leftItem);
+    const rightNumeric = /^\\d+$/u.test(rightItem);
+    if (leftNumeric && rightNumeric) {
+      return BigInt(leftItem) < BigInt(rightItem) ? -1 : 1;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftItem < rightItem ? -1 : 1;
+  }
+  return 0;
+}
+
+function parseReleaseMetadata(value: unknown): Readonly<ReleaseMetadataV1> | undefined {
+  const candidate = object(value);
+  if (!candidate || candidate.releaseMetadataVersion !== 1 ||
+      typeof candidate.standardRevision !== "string" ||
+      !/^[0-9a-f]{40}$/u.test(candidate.standardRevision) ||
+      !Number.isSafeInteger(candidate.configSchemaVersion) ||
+      (candidate.configSchemaVersion as number) < 1 ||
+      !Number.isSafeInteger(candidate.sqliteSchemaVersion) ||
+      (candidate.sqliteSchemaVersion as number) < 1 ||
+      !Array.isArray(candidate.supportedSqliteMigrationFrom) ||
+      candidate.supportedSqliteMigrationFrom.length === 0 ||
+      candidate.supportedSqliteMigrationFrom.length > 64 ||
+      candidate.supportedSqliteMigrationFrom.some((item) =>
+        !Number.isSafeInteger(item) || (item as number) < 1) ||
+      !Array.isArray(candidate.breakingConfigurationChanges) ||
+      candidate.breakingConfigurationChanges.length > 64 ||
+      candidate.breakingConfigurationChanges.some((item) =>
+        typeof item !== "string" || item.length === 0 || item.length > 256)) {
+    return undefined;
+  }
+  const migrationSources = candidate.supportedSqliteMigrationFrom as number[];
+  if (migrationSources.some((item, index) =>
+    index > 0 && item <= migrationSources[index - 1]!)) return undefined;
+  return Object.freeze({
+    releaseMetadataVersion: 1,
+    standardRevision: candidate.standardRevision,
+    configSchemaVersion: candidate.configSchemaVersion as number,
+    sqliteSchemaVersion: candidate.sqliteSchemaVersion as number,
+    supportedSqliteMigrationFrom: Object.freeze([...migrationSources]),
+    breakingConfigurationChanges: Object.freeze([
+      ...(candidate.breakingConfigurationChanges as string[]),
+    ]),
+  });
+}
+
+export function parseGeneratedRegistryReleaseV1(
+  packageName: typeof RELEASE_PACKAGES[number],
+  value: unknown,
+): Readonly<RegistryReleaseV1> | undefined {
+  const candidate = object(value);
+  const metadata = parseReleaseMetadata(candidate?.dacs);
+  if (!candidate || candidate.name !== packageName ||
+      typeof candidate.version !== "string" || candidate.version.length > 128 ||
+      parseSemver(candidate.version) === undefined || !metadata) return undefined;
+  return Object.freeze({ name: packageName, version: candidate.version, metadata });
+}
+
+const defaultDependencies: Readonly<GeneratedUpgradeCheckDependenciesV1> = Object.freeze({
+  async readRegistryManifest(
+    packageName: typeof RELEASE_PACKAGES[number],
+    tag: string,
+  ) {
+    return readDacsPublicJsonV1(
+      "https://registry.npmjs.org/" + encodeURIComponent(packageName) + "/" +
+        encodeURIComponent(tag),
+      { timeoutMs: 5_000, maxBytes: 1_048_576 },
+    );
+  },
+  async inspectActor(role: "buyer" | "seller") {
+    const authority = configuredAuthority(role);
+    if (authority === undefined) return Object.freeze({
+      status: "blocked" as const,
+      reasonCode: "actor-authority-unconfigured",
+      databasePath: actorDatabasePath(role),
+    });
+    return inspectDacsNodeSqliteUpgradeSafetyV1({
+      databasePath: actorDatabasePath(role),
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role,
+      authority,
+    });
+  },
+});
+
+export async function checkGeneratedUpgradeV1(
+  dependencies: Readonly<GeneratedUpgradeCheckDependenciesV1> = defaultDependencies,
+) {
+  const releaseResults = await Promise.all(RELEASE_PACKAGES.map(async (packageName) => {
+    try {
+      const value = await dependencies.readRegistryManifest(packageName, DEFAULT_RELEASE_TAG);
+      const parsed = parseGeneratedRegistryReleaseV1(packageName, value);
+      return parsed === undefined
+        ? Object.freeze({ packageName, status: "invalid" as const })
+        : Object.freeze({ packageName, status: "available" as const, release: parsed });
+    } catch {
+      return Object.freeze({ packageName, status: "unavailable" as const });
+    }
+  }));
+  const actorResults = await Promise.all((["buyer", "seller"] as const).map(async (role) => {
+    try {
+      return Object.freeze({ role, inspection: await dependencies.inspectActor(role) });
+    } catch {
+      return Object.freeze({ role, inspection: Object.freeze({
+        status: "fail" as const,
+        reasonCode: "actor-store-inspection-unavailable",
+        databasePath: actorDatabasePath(role),
+      }) });
+    }
+  }));
+
+  const releases = releaseResults.flatMap((item) =>
+    item.status === "available" ? [item.release] : []);
+  const versionsMatch = releases.length === RELEASE_PACKAGES.length &&
+    releases.every((release) => release.version === releases[0]!.version);
+  const metadataMatch = versionsMatch && releases.every((release) =>
+    JSON.stringify(release.metadata) === JSON.stringify(releases[0]!.metadata));
+  const available = metadataMatch ? releases[0]! : undefined;
+  const availableMetadata = available?.metadata;
+  const storeReports = actorResults.map(({ role, inspection }) => {
+    if (inspection.status === "pass") return Object.freeze({
+      role,
+      status: "authenticated" as const,
+      schemaVersion: inspection.diagnostics.schemaVersion,
+      safe: inspection.safety.safe,
+      blockers: inspection.safety,
+    });
+    if (inspection.reasonCode === "database-missing") return Object.freeze({
+      role,
+      status: "absent" as const,
+      schemaVersion: DACS_NODE_SQLITE_SCHEMA_VERSION,
+      safe: true,
+      reasonCode: inspection.reasonCode,
+    });
+    return Object.freeze({
+      role,
+      status: inspection.status,
+      schemaVersion: null,
+      safe: false,
+      reasonCode: inspection.reasonCode,
+    });
+  });
+  const storesSafe = storeReports.every((store) => store.safe);
+  const migrationSupported = availableMetadata !== undefined && storeReports.every((store) =>
+    store.schemaVersion !== null &&
+    availableMetadata.supportedSqliteMigrationFrom.includes(store.schemaVersion) &&
+    store.schemaVersion <= availableMetadata.sqliteSchemaVersion);
+  const standardChanged = availableMetadata !== undefined &&
+    availableMetadata.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION;
+  const configChanged = availableMetadata !== undefined &&
+    availableMetadata.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION;
+  const breakingConfigurationChanges = availableMetadata?.breakingConfigurationChanges ?? [];
+  const metadataCompatible = availableMetadata !== undefined && migrationSupported &&
+    !standardChanged && !configChanged && breakingConfigurationChanges.length === 0;
+  const availableVersion = available?.version;
+  const versionDirection = availableVersion === undefined
+    ? null : compareSemver(availableVersion, VERSION);
+  const upgradeAvailable = versionDirection === 1;
+  const reasonCodes: string[] = [];
+  if (releases.length !== RELEASE_PACKAGES.length) reasonCodes.push("registry-release-unavailable");
+  else if (!versionsMatch) reasonCodes.push("release-package-versions-diverge");
+  else if (!metadataMatch) reasonCodes.push("release-package-metadata-diverges");
+  if (versionDirection === -1) reasonCodes.push("registry-release-older-than-installed");
+  if (availableMetadata !== undefined && !migrationSupported) {
+    reasonCodes.push("store-migration-unsupported");
+  }
+  if (standardChanged) reasonCodes.push("standard-revision-review-required");
+  if (configChanged || breakingConfigurationChanges.length > 0) {
+    reasonCodes.push("configuration-migration-required");
+  }
+  if (!storesSafe) reasonCodes.push("active-recovering-or-unavailable-store");
+
+  const status = available === undefined ? "unavailable"
+    : !metadataCompatible || !storesSafe || versionDirection === -1 ? "blocked"
+      : upgradeAvailable ? "upgrade-available" : "current";
+  return Object.freeze({
+    schema: "dacs-generated-upgrade-check/v1",
+    status,
+    readOnly: true,
+    releaseTag: DEFAULT_RELEASE_TAG,
+    installed: Object.freeze({
+      packages: Object.freeze({
+        "@kynesyslabs/dacs": VERSION,
+        "@kynesyslabs/dacs-node": VERSION,
+        "create-dacs-agent": GENERATED_BY_VERSION,
+      }),
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      configSchemaVersion: DACS_NODE_CONFIG_SCHEMA_VERSION,
+      sqliteSchemaVersion: DACS_NODE_SQLITE_SCHEMA_VERSION,
+    }),
+    available: available === undefined ? null : Object.freeze({
+      version: available.version,
+      packages: Object.freeze(Object.fromEntries(
+        releases.map((release) => [release.name, release.version]),
+      )),
+      standardRevision: available.metadata.standardRevision,
+      configSchemaVersion: available.metadata.configSchemaVersion,
+      sqliteSchemaVersion: available.metadata.sqliteSchemaVersion,
+    }),
+    packageAvailability: Object.freeze(Object.fromEntries(releaseResults.map((item) => [
+      item.packageName,
+      item.status === "available" ? item.release.version : item.status,
+    ]))),
+    storeMigration: Object.freeze({
+      supported: migrationSupported,
+      targetSchemaVersion: availableMetadata?.sqliteSchemaVersion ?? null,
+      supportedFrom: availableMetadata?.supportedSqliteMigrationFrom ?? [],
+      actors: Object.freeze(storeReports),
+    }),
+    standardRevisionChange: Object.freeze({
+      changed: standardChanged,
+      from: FIXED_PRICE_X402_STANDARD_REVISION,
+      to: availableMetadata?.standardRevision ?? null,
+    }),
+    configurationChange: Object.freeze({
+      changed: configChanged || breakingConfigurationChanges.length > 0,
+      fromSchemaVersion: DACS_NODE_CONFIG_SCHEMA_VERSION,
+      toSchemaVersion: availableMetadata?.configSchemaVersion ?? null,
+      breakingChanges: Object.freeze([...breakingConfigurationChanges]),
+    }),
+    sessions: Object.freeze({
+      preventUpgrade: !storesSafe,
+      actors: Object.freeze(storeReports.map((store) => Object.freeze({
+        role: store.role,
+        safe: store.safe,
+        ...(store.status === "authenticated" ? { blockers: store.blockers } : {}),
+      }))),
+    }),
+    application: Object.freeze({
+      supported: false,
+      reasonCode: "automatic-upgrade-not-supported",
+    }),
+    upgradePermitted: false,
+    reasonCodes: Object.freeze(reasonCodes),
+    rollback: Object.freeze({
+      supportedOnlyFromRestorableBackup: true,
+      instructions: Object.freeze([
+        "Stop both role services before changing packages or store files.",
+        "Record the exact installed package version and preserve each actor database backup.",
+        "Restore buyer and seller backups independently while both services remain stopped.",
+        "Reinstall all three DACS packages at the recorded exact version.",
+        "Refuse rollback when that runtime does not support the restored store schema.",
+        "Run pre-start doctor before restarting either role service.",
+      ]),
+    }),
+  });
+}
+`;
+
 const CLI_SOURCE = `import { spawn } from "node:child_process";
 import { lstat, mkdir } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
@@ -1921,6 +2271,7 @@ import {
   startDacsLocalRoleServices,
   stopDacsLocalRoleServices,
 } from "./local-lifecycle.js";
+import { checkGeneratedUpgradeV1 } from "./upgrade.js";
 
 type DoctorPhase = "pre-start" | "post-start";
 type DoctorScope = "start" | "setup" | "buy";
@@ -2315,8 +2666,13 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   else if (operation === "buy") process.exitCode = await guardedPurchase(rest);
   else if (operation === "doctor-funded") process.exitCode = await guardedFundedDoctor(rest);
   else if (operation === "upgrade") {
-    if (!rest.includes("--check")) throw new Error("only dacs:upgrade -- --check is supported");
-    process.stdout.write(JSON.stringify({ status: "read-only", availableVersion: "not-queried" }) + "\\n");
+    if (rest.length !== 1 || rest[0] !== "--check") {
+      throw new Error("only dacs:upgrade -- --check is supported");
+    }
+    const report = await checkGeneratedUpgradeV1();
+    process.stdout.write(JSON.stringify(report) + "\\n");
+    process.exitCode = report.status === "current" || report.status === "upgrade-available"
+      ? 0 : 5;
   } else throw new Error("unknown dacs command: " + operation);
 }
 
@@ -2576,6 +2932,7 @@ import test from "node:test";
 
 import { DACS_LIVE_DOCTOR_CHECK_IDS } from "@kynesyslabs/dacs-node";
 import { runGeneratedDoctor } from "../src/doctor.js";
+import { checkGeneratedUpgradeV1 } from "../src/upgrade.js";
 
 test("fresh live bootstrap is complete, read-only and visibly blocked", async () => {
   const before = existsSync("./data/buyer/actor.sqlite");
@@ -2590,6 +2947,95 @@ test("fresh live bootstrap is complete, read-only and visibly blocked", async ()
   assert.equal(report.checks.length, DACS_LIVE_DOCTOR_CHECK_IDS.length);
   assert.equal(report.checks.some((item) => item.status === "blocked"), true);
   assert.equal(existsSync("./data/buyer/actor.sqlite"), before);
+});
+
+const releaseMetadata = Object.freeze({
+  releaseMetadataVersion: 1 as const,
+  standardRevision: "${STANDARD_REVISION}",
+  configSchemaVersion: ${CONFIG_SCHEMA_VERSION},
+  sqliteSchemaVersion: ${SQLITE_SCHEMA_VERSION},
+  supportedSqliteMigrationFrom: Object.freeze([1, 2, 3, 4, 5, 6]),
+  breakingConfigurationChanges: Object.freeze([]),
+});
+
+test("upgrade check proves compatible stores without writing", async () => {
+  const report = await checkGeneratedUpgradeV1({
+    readRegistryManifest: async (packageName) => Object.freeze({
+      name: packageName,
+      version: "0.1.0-alpha.1",
+      dacs: releaseMetadata,
+    }),
+    inspectActor: async (role) => Object.freeze({
+      status: "pass" as const,
+      diagnostics: Object.freeze({
+        databasePath: "/private/" + role + ".sqlite",
+        schemaVersion: ${SQLITE_SCHEMA_VERSION},
+        applicationId: 1145131859,
+        mode: "live-demos" as const,
+        profile: "dacs-sdk:fixed-price-x402:v1" as const,
+        role,
+        authority: "did:demos:agent:" + "0".repeat(64),
+        sdkVersion: "${SDK_VERSION}",
+        standardRevision: "${STANDARD_REVISION}",
+        journalMode: "wal" as const,
+        synchronous: "full" as const,
+        quickCheck: "ok" as const,
+        filesystemMagic: 1,
+      }),
+      safety: Object.freeze({
+        safe: true,
+        intentEffects: 0,
+        activeEffects: 0,
+        reconciliationEffects: 0,
+        operatorActionEffects: 0,
+        incompleteOrders: 0,
+      }),
+    }),
+  });
+  assert.equal(report.readOnly, true);
+  assert.equal(report.status, "upgrade-available");
+  assert.equal(report.upgradePermitted, false);
+  assert.equal(report.sessions.preventUpgrade, false);
+  assert.equal(report.storeMigration.supported, true);
+});
+
+test("upgrade check blocks an unfinished irreversible effect", async () => {
+  const report = await checkGeneratedUpgradeV1({
+    readRegistryManifest: async (packageName) => Object.freeze({
+      name: packageName,
+      version: "0.1.0-alpha.1",
+      dacs: releaseMetadata,
+    }),
+    inspectActor: async (role) => Object.freeze({
+      status: "pass" as const,
+      diagnostics: Object.freeze({
+        databasePath: "/private/" + role + ".sqlite",
+        schemaVersion: ${SQLITE_SCHEMA_VERSION},
+        applicationId: 1145131859,
+        mode: "live-demos" as const,
+        profile: "dacs-sdk:fixed-price-x402:v1" as const,
+        role,
+        authority: "did:demos:agent:" + "0".repeat(64),
+        sdkVersion: "${SDK_VERSION}",
+        standardRevision: "${STANDARD_REVISION}",
+        journalMode: "wal" as const,
+        synchronous: "full" as const,
+        quickCheck: "ok" as const,
+        filesystemMagic: 1,
+      }),
+      safety: Object.freeze({
+        safe: role === "seller",
+        intentEffects: role === "buyer" ? 1 : 0,
+        activeEffects: 0,
+        reconciliationEffects: 0,
+        operatorActionEffects: 0,
+        incompleteOrders: 0,
+      }),
+    }),
+  });
+  assert.equal(report.status, "blocked");
+  assert.equal(report.upgradePermitted, false);
+  assert.equal(report.sessions.preventUpgrade, true);
 });
 `;
 
@@ -2803,6 +3249,7 @@ npm run dacs:setup -- --max-spend-dem 10
 npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-network-fee-eth 0.001
 npm run dacs:doctor:funded -- --wallet disposable-alpha --max-cost-dem 2
 npm run dacs:status
+npm run dacs:upgrade -- --check
 npm run dacs:down
 \`\`\`
 
@@ -2837,6 +3284,14 @@ authorizes setup or purchase. Reconcile an ambiguous exact run with
 \`--resume-run <printed-run-id>\`; reconciliation is read-only and cannot
 rebroadcast the smoke.
 
+Upgrade check is read-only. It queries the public npm \`next\` manifests for all
+three exact-version DACS packages, compares their declared Standard, config and
+SQLite compatibility, authenticates each existing actor store, and blocks on
+unfinished or recovering work. Package application is intentionally not
+automatic in this release: stop both services and retain independent actor
+backups before following the report's rollback instructions. An older runtime
+must never open a store schema newer than it supports.
+
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
 the reviewed \`better-sqlite3\` native adapter. It uses separate non-root buyer/seller processes, secret mounts and durable
@@ -2870,6 +3325,7 @@ export function liveProjectTemplates(
     "src/setup.ts": SETUP_SOURCE,
     "src/purchase.ts": PURCHASE_SOURCE,
     "src/funded-doctor.ts": FUNDED_DOCTOR_SOURCE,
+    "src/upgrade.ts": UPGRADE_SOURCE,
     "src/local-lifecycle.ts": LOCAL_LIFECYCLE_SOURCE,
     "src/cli.ts": CLI_SOURCE,
     "src/offline-smoke.ts": OFFLINE_SMOKE_SOURCE,

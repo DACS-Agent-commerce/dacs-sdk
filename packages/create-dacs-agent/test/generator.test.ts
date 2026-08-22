@@ -224,6 +224,7 @@ describe("create-dacs-agent", () => {
       "src/purchase.ts",
       "src/setup.ts",
       "src/service.ts",
+      "src/upgrade.ts",
       "test/live-bootstrap.test.ts",
       "compose.yaml",
       "Dockerfile",
@@ -245,6 +246,15 @@ describe("create-dacs-agent", () => {
       "@x402/fetch": "2.15.0",
       tsx: "4.23.12",
       "viem": "2.55.19",
+    });
+    expect(packageSource.dacs).toEqual({
+      generatorVersion: "0.1.0-alpha.0",
+      releaseMetadataVersion: 1,
+      standardRevision: "965df755aba4ff392f1fb37a93d287242b177ba4",
+      configSchemaVersion: 1,
+      sqliteSchemaVersion: 6,
+      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6],
+      breakingConfigurationChanges: [],
     });
     expect(packageSource.scripts).toMatchObject({
       "dacs:doctor": expect.any(String),
@@ -346,6 +356,11 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("--resume-run");
     expect(combined).toContain("reconciliation is read-only");
     expect(combined).not.toContain("funded doctor adapter is not configured");
+    expect(combined).toContain("dacs-generated-upgrade-check/v1");
+    expect(combined).toContain("inspectDacsNodeSqliteUpgradeSafetyV1");
+    expect(combined).toContain("registry.npmjs.org");
+    expect(combined).toContain("automatic-upgrade-not-supported");
+    expect(combined).not.toContain('availableVersion: "not-queried"');
   });
 
   test("generates a real local role-service lifecycle when selected", async () => {
