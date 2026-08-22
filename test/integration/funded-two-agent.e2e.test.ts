@@ -26,6 +26,12 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
+import {
+  executeFundedRun,
+  recordFundedRunOutcome,
+  type ArmedFundedRun,
+} from "./funded-run-marker.js";
+
 /**
  * Guarded funded proof for issue #114.
  *
@@ -178,7 +184,7 @@ const DELIVERY_PHASE_INDEX = 3;
 const RAIL_REGISTRY_VERSION = 7;
 const RECIPE_REGISTRY_VERSION = 3;
 const PAYMENT_AMOUNT = 1n;
-const MAX_PAYMENT_AMOUNT = 1n;
+const HARD_MAX_PAYMENT_AMOUNT = 1n;
 const PAYMENT_TIMEOUT_SECONDS = 120;
 const X402_VERSION = 2;
 const TOKEN_NAME = "USDC";
@@ -191,6 +197,8 @@ const OS_PER_DEM = 1_000_000_000n;
 // extra writes are the role-owned BundleBindings and buyer finalization handoff.
 const SELLER_MINIMUM_OS = 23n * OS_PER_DEM;
 const BUYER_MINIMUM_OS = 15n * OS_PER_DEM;
+const PROJECTED_DEMOS_DEBIT_OS = 32n * OS_PER_DEM;
+const HARD_MAX_DEMOS_DEBIT_OS = SELLER_MINIMUM_OS + BUYER_MINIMUM_OS;
 const LEASE_DURATION_MS = 120_000;
 const EIP3009_AUTHORIZATION_USED_EVENT = parseAbiItem(
   "event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)",
@@ -268,7 +276,13 @@ const READ_ONLY_ENV = [
   "X402_FACILITATOR",
   "LIVE_E2E_RUN_ID",
 ] as const;
-const FUNDED_ENV = [...READ_ONLY_ENV, "LIVE_E2E_CONFIRM"] as const;
+const FUNDED_ENV = [
+  ...READ_ONLY_ENV,
+  "LIVE_E2E_MARKER_DIR",
+  "LIVE_E2E_MAX_PAYMENT_AMOUNT",
+  "LIVE_E2E_MAX_DEMOS_DEBIT_OS",
+  "LIVE_E2E_CONFIRM",
+] as const;
 
 type ReadOnlyEnvKey = (typeof READ_ONLY_ENV)[number];
 type FundedEnvKey = (typeof FUNDED_ENV)[number];
@@ -466,8 +480,130 @@ function completeReadOnlyEnv(): LiveEnv {
   requireCondition(missingReadOnly.length === 0, "configuration-incomplete");
   return {
     ...(rawEnv as Record<ReadOnlyEnvKey, string>),
+    LIVE_E2E_MARKER_DIR: rawEnv.LIVE_E2E_MARKER_DIR ?? "",
+    LIVE_E2E_MAX_PAYMENT_AMOUNT: rawEnv.LIVE_E2E_MAX_PAYMENT_AMOUNT ?? "",
+    LIVE_E2E_MAX_DEMOS_DEBIT_OS: rawEnv.LIVE_E2E_MAX_DEMOS_DEBIT_OS ?? "",
     LIVE_E2E_CONFIRM: rawEnv.LIVE_E2E_CONFIRM ?? "",
   };
+}
+
+function configuredPositiveInteger(value: string, code: string): bigint {
+  requireCondition(/^[1-9][0-9]*$/.test(value), code);
+  return BigInt(value);
+}
+
+function confirmedDemosFeeOs(value: unknown): bigint | undefined {
+  const data = (value as {
+    response?: {
+      data?: {
+        gas_operation?: unknown;
+        transaction?: { content?: { transaction_fee?: unknown }; hash?: unknown };
+      };
+    };
+  })?.response?.data;
+  if (!data || typeof data !== "object") return undefined;
+  const fees = data.gas_operation == null
+    ? data.transaction?.content?.transaction_fee
+    : typeof data.gas_operation === "object" && !Array.isArray(data.gas_operation)
+      ? (data.gas_operation as { fees?: unknown }).fees
+      : undefined;
+  if (!fees || typeof fees !== "object" || Array.isArray(fees)) return undefined;
+  const record = fees as Record<string, unknown>;
+  const components = [record.network_fee, record.rpc_fee, record.additional_fee];
+  if (!components.every((component) =>
+    typeof component === "string" && /^(?:0|[1-9][0-9]*)$/.test(component)
+  )) return undefined;
+  return components.reduce<bigint>((total, component) => total + BigInt(component as string), 0n);
+}
+
+interface FundedDemosDebitBudget {
+  readonly maximumOs: bigint;
+  readonly reservedOs: bigint;
+  reserve(validity: unknown): void;
+}
+
+function createFundedDemosDebitBudget(maximumOs: bigint): FundedDemosDebitBudget {
+  requireCondition(maximumOs > 0n, "demos-debit-cap-invalid");
+  let reservedOs = 0n;
+  const transactions = new Set<string>();
+  return {
+    maximumOs,
+    get reservedOs() {
+      return reservedOs;
+    },
+    reserve(validity) {
+      const transaction = (validity as {
+        response?: { data?: { transaction?: { hash?: unknown } } };
+      })?.response?.data?.transaction;
+      requireCondition(
+        typeof transaction?.hash === "string" && /^(?:0x)?[0-9a-fA-F]{64}$/.test(transaction.hash),
+        "demos-debit-transaction-hash-invalid",
+      );
+      const hash = transaction.hash.replace(/^0x/i, "").toLowerCase();
+      if (transactions.has(hash)) return;
+      const feeOs = confirmedDemosFeeOs(validity);
+      requireCondition(feeOs !== undefined, "demos-debit-fee-unavailable");
+      const next = reservedOs + feeOs;
+      requireCondition(next <= maximumOs, "demos-debit-cap-exceeded");
+      transactions.add(hash);
+      reservedOs = next;
+    },
+  };
+}
+
+function installFundedDemosDebitGuard(
+  adapter: DemosBackedAdapter,
+  budget: FundedDemosDebitBudget,
+): void {
+  const tx = adapter.raw?.tx as {
+    broadcast?: (validity: unknown, ...args: unknown[]) => Promise<unknown>;
+  } | undefined;
+  requireCondition(typeof tx?.broadcast === "function", "demos-broadcast-unavailable");
+  const broadcast = tx.broadcast.bind(tx);
+  tx.broadcast = (validity, ...args) => {
+    // `confirm` has already returned the exact transaction and its fee. Reserve
+    // that fee synchronously before the first network broadcast; an unknown or
+    // over-budget confirmation fails closed without invoking the transport.
+    budget.reserve(validity);
+    return broadcast(validity, ...args);
+  };
+}
+
+function x402FundedRunIntent(preflight: Preflight) {
+  return {
+    directory: preflight.env.LIVE_E2E_MARKER_DIR,
+    operation: "x402-funded-e2e",
+    runId: preflight.env.LIVE_E2E_RUN_ID,
+    details: {
+      asset: preflight.asset,
+      authorizationSearchFromBlock: preflight.authorizationSearchFromBlock,
+      buyerDemosAddress: preflight.buyer.adapter.getAddress().toLowerCase(),
+      demosNetwork: "demos",
+      jobId: preflight.jobId,
+      maxDemosDebitOs: preflight.env.LIVE_E2E_MAX_DEMOS_DEBIT_OS,
+      maxPaymentAmount: preflight.env.LIVE_E2E_MAX_PAYMENT_AMOUNT,
+      payee: preflight.payee.toLowerCase(),
+      payer: preflight.payer.toLowerCase(),
+      paymentAmount: PAYMENT_AMOUNT.toString(),
+      paymentNetwork: BASE_SEPOLIA_NETWORK,
+      sellerDemosAddress: preflight.seller.adapter.getAddress().toLowerCase(),
+    },
+  } as const;
+}
+
+async function recordX402FundedOutcome(
+  marker: Readonly<ArmedFundedRun>,
+  status: "delivery-complete" | "audit-complete",
+  jobId: string,
+  reservedDemosDebitOs: bigint,
+): Promise<void> {
+  await recordFundedRunOutcome(marker, {
+    status,
+    details: {
+      jobId,
+      reservedDemosDebitOs: reservedDemosDebitOs.toString(),
+    },
+  });
 }
 
 function didForAddress(address: string): string {
@@ -490,6 +626,7 @@ interface FundedPreflightInput {
   sellerDemosBalance: bigint;
   buyerDemosBalance: bigint;
   paymentBalance: bigint;
+  maxDemosDebitOs?: bigint;
 }
 
 function fundedPreflightDecision(input: FundedPreflightInput):
@@ -503,6 +640,10 @@ function fundedPreflightDecision(input: FundedPreflightInput):
   }
   if (input.buyerDemosBalance < BUYER_MINIMUM_OS) {
     return { disposition: "rejected", reason: "buyer-demos-headroom-insufficient" };
+  }
+  if (input.maxDemosDebitOs !== undefined &&
+      input.sellerDemosBalance + input.buyerDemosBalance < input.maxDemosDebitOs) {
+    return { disposition: "rejected", reason: "demos-debit-cap-unfunded" };
   }
   if (input.paymentBalance < PAYMENT_AMOUNT) {
     return { disposition: "rejected", reason: "payment-token-balance-insufficient" };
@@ -520,7 +661,7 @@ async function demosBalanceOs(adapter: DemosBackedAdapter): Promise<bigint> {
     : account.balance * OS_PER_DEM;
 }
 
-function validateStaticConfiguration(env: LiveEnv): void {
+function validateStaticConfiguration(env: LiveEnv, funded: boolean): void {
   requireCondition(env.PAYWALL_URL === "local", "paywall-must-be-local");
   requireCondition(env.PAY_NETWORK === BASE_SEPOLIA_NETWORK, "network-not-base-sepolia");
   requireCondition(/^0x[0-9a-fA-F]{40}$/.test(env.PAY_TOKEN), "token-address-invalid");
@@ -528,7 +669,26 @@ function validateStaticConfiguration(env: LiveEnv): void {
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(env.BUYER_EVM_KEY), "buyer-evm-key-invalid");
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(env.SELLER_EVM_KEY), "seller-evm-key-invalid");
   requireCondition(/^[A-Za-z0-9._-]{1,64}$/.test(env.LIVE_E2E_RUN_ID), "run-id-invalid");
-  requireCondition(PAYMENT_AMOUNT > 0n && PAYMENT_AMOUNT <= MAX_PAYMENT_AMOUNT, "spend-cap-invalid");
+  if (funded) {
+    const maxPaymentAmount = configuredPositiveInteger(
+      env.LIVE_E2E_MAX_PAYMENT_AMOUNT,
+      "payment-debit-cap-invalid",
+    );
+    requireCondition(
+      PAYMENT_AMOUNT > 0n && PAYMENT_AMOUNT <= maxPaymentAmount &&
+        maxPaymentAmount <= HARD_MAX_PAYMENT_AMOUNT,
+      "payment-debit-cap-invalid",
+    );
+    const maxDemosDebitOs = configuredPositiveInteger(
+      env.LIVE_E2E_MAX_DEMOS_DEBIT_OS,
+      "demos-debit-cap-invalid",
+    );
+    requireCondition(
+      maxDemosDebitOs >= PROJECTED_DEMOS_DEBIT_OS &&
+        maxDemosDebitOs <= HARD_MAX_DEMOS_DEBIT_OS,
+      "demos-debit-cap-invalid",
+    );
+  }
   for (const endpoint of [
     env.DEMOS_RPC,
     env.PAY_RPC,
@@ -792,8 +952,8 @@ const tokenMetadataAbi = parseAbi([
   "function version() view returns (string)",
 ]);
 
-async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
-  validateStaticConfiguration(env);
+async function runNoWritePreflight(env: LiveEnv, funded = false): Promise<Preflight> {
+  validateStaticConfiguration(env, funded);
   const buyerEvm = privateKeyToAccount(env.BUYER_EVM_KEY as `0x${string}`);
   const sellerEvm = privateKeyToAccount(env.SELLER_EVM_KEY as `0x${string}`);
   const payer = getAddress(buyerEvm.address);
@@ -889,6 +1049,14 @@ async function runNoWritePreflight(env: LiveEnv): Promise<Preflight> {
     sellerDemosBalance: sellerBalance,
     buyerDemosBalance: buyerBalance,
     paymentBalance: tokenBalance,
+    ...(funded
+      ? {
+          maxDemosDebitOs: configuredPositiveInteger(
+            env.LIVE_E2E_MAX_DEMOS_DEBIT_OS,
+            "demos-debit-cap-invalid",
+          ),
+        }
+      : {}),
   });
   requireCondition(
     funding.disposition === "ready",
@@ -5690,24 +5858,28 @@ describe("issue #114 guarded funded two-agent spine", () => {
       sellerDemosBalance: SELLER_MINIMUM_OS,
       buyerDemosBalance: BUYER_MINIMUM_OS,
       paymentBalance: PAYMENT_AMOUNT,
+      maxDemosDebitOs: HARD_MAX_DEMOS_DEBIT_OS,
     });
     const sellerShort = fundedPreflightDecision({
       connectedChainId: BASE_SEPOLIA_CHAIN_ID,
       sellerDemosBalance: SELLER_MINIMUM_OS - 1n,
       buyerDemosBalance: BUYER_MINIMUM_OS,
       paymentBalance: PAYMENT_AMOUNT,
+      maxDemosDebitOs: HARD_MAX_DEMOS_DEBIT_OS,
     });
     const buyerShort = fundedPreflightDecision({
       connectedChainId: BASE_SEPOLIA_CHAIN_ID,
       sellerDemosBalance: SELLER_MINIMUM_OS,
       buyerDemosBalance: BUYER_MINIMUM_OS - 1n,
       paymentBalance: PAYMENT_AMOUNT,
+      maxDemosDebitOs: HARD_MAX_DEMOS_DEBIT_OS,
     });
     const tokenShort = fundedPreflightDecision({
       connectedChainId: BASE_SEPOLIA_CHAIN_ID,
       sellerDemosBalance: SELLER_MINIMUM_OS,
       buyerDemosBalance: BUYER_MINIMUM_OS,
       paymentBalance: PAYMENT_AMOUNT - 1n,
+      maxDemosDebitOs: HARD_MAX_DEMOS_DEBIT_OS,
     });
     requireCondition(
       wrongNetwork.disposition === "rejected" && wrongNetwork.reason === "wrong-network" &&
@@ -5718,6 +5890,78 @@ describe("issue #114 guarded funded two-agent spine", () => {
       tokenShort.disposition === "rejected" &&
       tokenShort.reason === "payment-token-balance-insufficient",
       "funded-preflight-negative-case-regression",
+    );
+  });
+
+  it("reserves every confirmed Demos fee before invoking its broadcast", async () => {
+    const calls: unknown[] = [];
+    const adapter = {
+      raw: {
+        tx: {
+          broadcast: async (validity: unknown) => {
+            calls.push(validity);
+            return { accepted: true };
+          },
+        },
+      },
+    } as unknown as DemosBackedAdapter;
+    const budget = createFundedDemosDebitBudget(3n);
+    installFundedDemosDebitGuard(adapter, budget);
+    const validity = (hash: string, networkFee: string) => ({
+      response: {
+        data: {
+          transaction: {
+            hash,
+            content: {
+              transaction_fee: {
+                network_fee: networkFee,
+                rpc_fee: "1",
+                additional_fee: "0",
+              },
+            },
+          },
+        },
+      },
+    });
+    await adapter.raw.tx.broadcast(validity("1".repeat(64), "2"));
+    requireCondition(budget.reservedOs === 3n && calls.length === 1, "demos-debit-not-reserved");
+
+    let rejected = false;
+    try {
+      await adapter.raw.tx.broadcast(validity("2".repeat(64), "1"));
+    } catch (error) {
+      rejected = error instanceof Error && error.message === "funded-e2e:demos-debit-cap-exceeded";
+    }
+    requireCondition(rejected && budget.reservedOs === 3n && calls.length === 1, "demos-cap-not-fail-closed");
+  });
+
+  it("persists the public coordinates needed to reconcile the original x402 run", () => {
+    const jobId = "01JZ0000000000000000000179";
+    const authorizationSearchFromBlock = 45_000_000;
+    const adapter = (address: string) => ({
+      getAddress: () => address,
+    }) as unknown as DemosBackedAdapter;
+    const intent = x402FundedRunIntent({
+      env: {
+        LIVE_E2E_MARKER_DIR: "/persistent/dacs-funded-ledger",
+        LIVE_E2E_RUN_ID: "x402-reconciliation-179",
+        LIVE_E2E_MAX_DEMOS_DEBIT_OS: HARD_MAX_DEMOS_DEBIT_OS.toString(),
+        LIVE_E2E_MAX_PAYMENT_AMOUNT: HARD_MAX_PAYMENT_AMOUNT.toString(),
+      },
+      jobId,
+      authorizationSearchFromBlock,
+      buyer: { adapter: adapter("b".repeat(64)) },
+      seller: { adapter: adapter("c".repeat(64)) },
+      payer: `0x${"1".repeat(40)}`,
+      payee: `0x${"2".repeat(40)}`,
+      asset: `0x${"3".repeat(40)}`,
+    } as unknown as Preflight);
+    requireCondition(
+      intent.details.jobId === jobId &&
+        intent.details.authorizationSearchFromBlock === authorizationSearchFromBlock &&
+        intent.details.maxDemosDebitOs === HARD_MAX_DEMOS_DEBIT_OS.toString() &&
+        intent.details.maxPaymentAmount === HARD_MAX_PAYMENT_AMOUNT.toString(),
+      "x402-reconciliation-coordinates-not-persisted",
     );
   });
 
@@ -6050,38 +6294,48 @@ describe("issue #114 guarded funded two-agent spine", () => {
       const fastProfile = productionLatencyProfile();
       let preflight: Preflight | undefined;
       try {
-        preflight = await stage("preflight", () => runNoWritePreflight(env));
-        const jobId = preflight.jobId;
-        const selectedRail = rail(preflight.host.resourceUrl);
-        let published: PublishedListing | undefined;
+        preflight = await stage("preflight", () => runNoWritePreflight(env, true));
+        requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
+        const demosDebitBudget = createFundedDemosDebitBudget(
+          configuredPositiveInteger(
+            env.LIVE_E2E_MAX_DEMOS_DEBIT_OS,
+            "demos-debit-cap-invalid",
+          ),
+        );
+        installFundedDemosDebitGuard(preflight.seller.adapter, demosDebitBudget);
+        installFundedDemosDebitGuard(preflight.buyer.adapter, demosDebitBudget);
+        await executeFundedRun(x402FundedRunIntent(preflight), async (marker) => {
+          const jobId = preflight!.jobId;
+          const selectedRail = rail(preflight!.host.resourceUrl);
+          let published: PublishedListing | undefined;
 
         // The fast profile measures an honest buyer-visible session. A listing
         // is a reusable discovery artifact, so publish it before the timer with
         // a non-session-bound seller presentation. Vet remains inside the timer.
-        if (fastProfile) {
-          const listingNow = Date.now();
-          const listingSellerIdentity = await identity(
-            env.SELLER_DID,
-            preflight.seller.adapter,
-            listingNow,
-            undefined,
-            false,
-          );
-          requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
-          published = await stage("listing-presession", () => publishAndDiscoverListing({
-            preflight: preflight!,
-            jobId,
-            sellerIdentity: listingSellerIdentity,
-            selectedRail,
-            now: listingNow,
-          }));
-        }
+          if (fastProfile) {
+            const listingNow = Date.now();
+            const listingSellerIdentity = await identity(
+              env.SELLER_DID,
+              preflight!.seller.adapter,
+              listingNow,
+              undefined,
+              false,
+            );
+            requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
+            published = await stage("listing-presession", () => publishAndDiscoverListing({
+              preflight: preflight!,
+              jobId,
+              sellerIdentity: listingSellerIdentity,
+              selectedRail,
+              now: listingNow,
+            }));
+          }
 
         const sessionStartedAt = Date.now();
         const now = sessionStartedAt;
         const [buyerIdentity, sellerIdentity, rediscovered] = await Promise.all([
-          identity(env.BUYER_DID, preflight.buyer.adapter, now, env.BUYER_EVM_KEY),
-          identity(env.SELLER_DID, preflight.seller.adapter, now),
+          identity(env.BUYER_DID, preflight!.buyer.adapter, now, env.BUYER_EVM_KEY),
+          identity(env.SELLER_DID, preflight!.seller.adapter, now),
           fastProfile
             ? stage("listing-discovery", () => rediscoverPublishedListing({
                 preflight: preflight!,
@@ -6108,7 +6362,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
             now,
           }));
         requireCondition(
-          published.listing.seller.publicEndpoint === preflight.host.engagementUrl,
+          published.listing.seller.publicEndpoint === preflight!.host.engagementUrl,
           "advertised-endpoint-mismatch",
         );
         const preparedVet = await prepareVetRecords({
@@ -6167,7 +6421,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
         }
         const vet = finalizedVet ?? await vetPromise;
         requireCondition(
-          preflight.host.requestCounts.engagement === 1,
+          preflight!.host.requestCounts.engagement === 1,
           "advertised-engagement-endpoint-not-invoked",
         );
         requireCondition(commitmentPromise !== undefined, "commitment-not-started");
@@ -6213,6 +6467,12 @@ describe("issue #114 guarded funded two-agent spine", () => {
               crossRpc.status === "finalized" &&
                 sameFinalizedTransfer(crossRpc, observation),
               "delivery-only-cross-rpc-mismatch",
+            );
+            await recordX402FundedOutcome(
+              marker,
+              "delivery-complete",
+              jobId,
+              demosDebitBudget.reservedOs,
             );
             process.stderr.write("funded-e2e-fast:delivery-only-complete\n");
             return;
@@ -6296,6 +6556,13 @@ describe("issue #114 guarded funded two-agent spine", () => {
             `funded-e2e-fast:audit-complete-elapsed-ms:${Date.now() - sessionStartedAt}\n`,
           );
         }
+        await recordX402FundedOutcome(
+          marker,
+          "audit-complete",
+          jobId,
+          demosDebitBudget.reservedOs,
+        );
+        });
       } finally {
         if (preflight) await preflight.host.close();
       }
