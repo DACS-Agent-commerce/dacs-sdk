@@ -208,7 +208,11 @@ describe("authenticated Demos rail registry provider", () => {
   it("bootstraps an independently readable index and authenticated current binding", async () => {
     const byName = new Map<string, string>();
     const documents = new Map<string, Record<string, unknown>>();
-    const anchorWriteOnce = vi.fn(async (name: string, value: object) => {
+    const anchorWriteOnce = vi.fn(async (
+      name: string,
+      value: object,
+      _options?: Readonly<{ metadata?: Readonly<Record<string, unknown>> }>,
+    ) => {
       const address = byName.get(name) ?? `stor:${byName.size + 1}`;
       const existing = documents.get(address);
       if (existing !== undefined && contentHash(existing) !==
@@ -283,6 +287,12 @@ describe("authenticated Demos rail registry provider", () => {
       RAIL_REGISTRY_INDEX_ADDRESS,
       DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
     ]);
+    expect(anchorWriteOnce.mock.calls.every(([name, value, options]) =>
+      options?.metadata?.logicalAddress === name &&
+      options.metadata.contentHash === contentHash(value as Record<string, unknown>) &&
+      typeof options.metadata.envelopeHash === "string" &&
+      options.metadata.envelopeHash.length === 64,
+    )).toBe(true);
     expect(documents.get(byName.get(RAIL_REGISTRY_INDEX_ADDRESS)!)).toMatchObject({
       registryId: RAIL_REGISTRY_INDEX_ADDRESS,
       entries: [{ logicalAddress: "dacs4:rail:x402%3Adefault:1" }],

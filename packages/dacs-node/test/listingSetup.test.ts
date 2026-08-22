@@ -183,6 +183,17 @@ describe("guarded Listing setup", () => {
     });
     expect(assertCurrent).toHaveBeenCalledTimes(4);
     expect(value.adapter.anchorWriteOnce).toHaveBeenCalledTimes(1);
+    expect(value.adapter.anchorWriteOnce).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object),
+      {
+        metadata: {
+          logicalAddress: expect.any(String),
+          contentHash: prepared.plan.listingContentHash,
+          envelopeHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        },
+      },
+    );
     expect(value.adapter.verifyDemosAnchorReceipt).toHaveBeenCalledTimes(1);
     expect(publishActive).toHaveBeenCalledTimes(1);
   });

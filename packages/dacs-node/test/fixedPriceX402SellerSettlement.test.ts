@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createX402Paywall } from "@kynesyslabs/dacs";
 
 const factories = vi.hoisted(() => ({
   authority: vi.fn(),
@@ -76,7 +77,11 @@ describe("fixed-price seller settlement composition", () => {
     const facilitator = {
       verify: vi.fn(),
       settle: vi.fn(),
-      getSupported: vi.fn(),
+      getSupported: vi.fn(async () => ({
+        kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:84532" }],
+        extensions: [],
+        signers: {},
+      })),
     };
     const context = {
       role: "seller",
@@ -95,7 +100,7 @@ describe("fixed-price seller settlement composition", () => {
     });
 
     expect(result.paywall).toEqual({
-      route: "/dacs/x402/:jobId",
+      route: "GET /dacs/x402/:jobId",
       network: "eip155:84532",
       payTo: PAYEE,
       amount: "1000000",
@@ -124,6 +129,17 @@ describe("fixed-price seller settlement composition", () => {
     expect(result.spine.paymentIntakeDeps.observeX402Transfer).toBe(
       observer.observeX402Transfer,
     );
+    await expect(createX402Paywall(result.paywall, {
+      settlementStore: {
+        load: vi.fn(),
+        claim: vi.fn(),
+        recordOutcome: vi.fn(),
+      },
+      authorizeSettlement: vi.fn(),
+      reconcileSettlement: vi.fn(),
+      authorizePayment: vi.fn(),
+      fulfil: vi.fn(),
+    } as never)).resolves.toBeDefined();
 
     await expect(result.resolveHttpRequest({
       method: "GET",

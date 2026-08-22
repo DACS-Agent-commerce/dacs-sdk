@@ -1,10 +1,12 @@
 import {
   RAIL_REGISTRY_INDEX_ADDRESS,
+  demosWriteEvidenceToAnchorReceipt,
   ed25519Verify,
   publicKeyFromRaw,
   resolveRail,
   signComponentArtifact,
   type AuthenticatedRailDefinition,
+  type AnchorRef,
   type CurrentRailRegistryIndex,
   type ProtocolAnchorReceipt,
   type RailDefinition,
@@ -15,7 +17,7 @@ import {
   type RailRegistryIndexDocument,
   type RailRegistrySelectionProvider,
 } from "@kynesyslabs/dacs";
-import { canonicalize, contentHash } from "@kynesyslabs/dacs/canonical";
+import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   canonicalDemosAgentPublicKey,
   sameCanonicalClaimIdentity,
@@ -83,6 +85,17 @@ function nativeOwner(publicKey: Uint8Array): string {
   return Buffer.from(publicKey).toString("hex");
 }
 
+function publicationMetadata(
+  logicalAddress: string,
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, string>> {
+  return Object.freeze({
+    logicalAddress,
+    contentHash: contentHash(value),
+    envelopeHash: sha256Hex(canonicalize(value)),
+  });
+}
+
 function exactHttpsBaseUrl(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
     return null;
@@ -102,18 +115,25 @@ function exactHttpsBaseUrl(value: unknown): string | null {
 async function authenticatedPublicationReceipt(
   runtime: Readonly<DacsDemosActorRuntimeV1>,
   logicalAddress: string,
-  nativeAddress: string,
+  anchor: Readonly<AnchorRef>,
   value: Readonly<Record<string, unknown>>,
 ): Promise<Readonly<ProtocolAnchorReceipt>> {
   const expectedHash = contentHash(value);
-  const receipt = await runtime.adapter.resolveDemosAnchorReceipt({
-    logicalAddress,
-    nativeAddress,
-    contentHash: expectedHash,
-    writer: runtime.authority,
-  });
+  const receipt = anchor.demosEvidence === undefined
+    ? await runtime.adapter.resolveDemosAnchorReceipt({
+        logicalAddress,
+        nativeAddress: anchor.address,
+        contentHash: expectedHash,
+        writer: runtime.authority,
+      })
+    : demosWriteEvidenceToAnchorReceipt({
+        logicalAddress,
+        contentHash: expectedHash,
+        writer: runtime.authority,
+        evidence: anchor.demosEvidence,
+      });
   if (receipt === null || receipt.logicalAddress !== logicalAddress ||
-      receipt.nativeAddress !== nativeAddress || receipt.contentHash !== expectedHash ||
+      receipt.nativeAddress !== anchor.address || receipt.contentHash !== expectedHash ||
       !sameCanonicalClaimIdentity(receipt.writer, runtime.authority) ||
       receipt.state !== "finalized" ||
       receipt.observationDisposition !== "established" ||
@@ -190,6 +210,7 @@ export async function bootstrapDacsDemosX402RailRegistryV1(
   const definitionAnchor = await runtime.adapter.anchorWriteOnce(
     definitionLogicalAddress,
     definition,
+    { metadata: publicationMetadata(definitionLogicalAddress, definition) },
   );
   const definitionRef: RailRegistryDefinitionRef = {
     logicalAddress: definitionLogicalAddress,
@@ -199,7 +220,7 @@ export async function bootstrapDacsDemosX402RailRegistryV1(
   const definitionReceipt = await authenticatedPublicationReceipt(
     runtime,
     definitionLogicalAddress,
-    definitionAnchor.address,
+    definitionAnchor,
     definition,
   );
 
@@ -210,6 +231,10 @@ export async function bootstrapDacsDemosX402RailRegistryV1(
   const indexAnchor = await runtime.adapter.anchorWriteOnce(
     RAIL_REGISTRY_INDEX_ADDRESS,
     index,
+    { metadata: publicationMetadata(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      index as unknown as Record<string, unknown>,
+    ) },
   );
   const indexRef: RailRegistryDefinitionRef = {
     logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
@@ -219,7 +244,7 @@ export async function bootstrapDacsDemosX402RailRegistryV1(
   const indexReceipt = await authenticatedPublicationReceipt(
     runtime,
     RAIL_REGISTRY_INDEX_ADDRESS,
-    indexAnchor.address,
+    indexAnchor,
     index as unknown as Record<string, unknown>,
   );
   const current: CurrentRailRegistryIndex = {
@@ -230,11 +255,15 @@ export async function bootstrapDacsDemosX402RailRegistryV1(
   const bindingAnchor = await runtime.adapter.anchorWriteOnce(
     DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
     current,
+    { metadata: publicationMetadata(
+      DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+      current as unknown as Record<string, unknown>,
+    ) },
   );
   await authenticatedPublicationReceipt(
     runtime,
     DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
-    bindingAnchor.address,
+    bindingAnchor,
     current as unknown as Record<string, unknown>,
   );
   const provider = createDacsDemosRailRegistryProviderV1({

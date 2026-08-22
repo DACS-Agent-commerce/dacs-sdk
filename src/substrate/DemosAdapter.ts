@@ -10,8 +10,17 @@ import {
   logicalToStorageProgramName,
   sha256Hex,
 } from "../canonical/index.js";
+import {
+  ed25519Sign,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  rawPublicKey,
+} from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
-import { parseClaimRef } from "../identity/index.js";
+import {
+  parseClaimRef,
+  parseDemosAgentClaimReference,
+} from "../identity/index.js";
 import type { AnchorReceipt as ProtocolAnchorReceipt } from "../artifacts/types.js";
 import { AnchorWaitError } from "./AnchorWaitError.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
@@ -68,6 +77,8 @@ const WRITE_ONCE_VISIBILITY_TIMEOUT_MS = 120_000;
 const WRITE_ONCE_VISIBILITY_POLL_MS = 500;
 const STORAGE_SEARCH_PAGE_SIZE = 100;
 const STORAGE_SEARCH_MAX_PAGES = 100;
+const RECEIPT_HISTORY_PAGE_SIZE = 100;
+const RECEIPT_HISTORY_MAX_PAGES = 100;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const exactJsonHash = (value: Record<string, unknown>): string =>
   sha256Hex(canonicalize(value));
@@ -113,6 +124,19 @@ function normalizeRpcQueueKey(rpc: string): string {
     // transports while still collapsing the common trailing-slash spelling.
     return rpc.trim().replace(/\/+$/, "");
   }
+}
+
+function normalizedDemosAddress(value: unknown): string | undefined {
+  if (typeof value !== "string" || !/^(?:0x)?[0-9a-f]{64}$/i.test(value)) {
+    return undefined;
+  }
+  return value.toLowerCase().replace(/^0x/, "");
+}
+
+function sameOptionalJsonObject(left: unknown, right: unknown): boolean {
+  if (left === undefined && right === undefined) return true;
+  return isJsonObject(left) && isJsonObject(right) &&
+    canonicalize(left) === canonicalize(right);
 }
 
 type MutableReceipt = Omit<AnchorAttemptReceipt, "attempts" | "timings"> & {
@@ -662,6 +686,11 @@ export class DemosAdapter implements SubstrateAdapter {
     return previousHash;
   }
 
+  /** Stable authenticated Demos chain identity used to bind guarded plans. */
+  async getChainIdentity(): Promise<string> {
+    return this.resolveChainIdentity();
+  }
+
   private async acquireWriteLease(): Promise<DemosWriteJournalLease> {
     if (!this.config.writeJournal) {
       throw new DacsError(
@@ -1026,12 +1055,15 @@ export class DemosAdapter implements SubstrateAdapter {
         nativeObservation.lastModifiedByTx.length > 0
       ? nativeObservation.lastModifiedByTx
       : nativeObservation.createdByTx;
-    const provenanceCandidates = typeof latestProvenance === "string" &&
+    let provenanceCandidates = typeof latestProvenance === "string" &&
         latestProvenance.length > 0
       ? [latestProvenance]
       : [];
     if (provenanceCandidates.length === 0) {
-      throw new SubstrateError("Demos receipt native provenance is unavailable");
+      provenanceCandidates = await this.resolveDemosProvenanceFromHistory(
+        input.nativeAddress,
+        nativeObservation,
+      );
     }
 
     let lastFailure: unknown;
@@ -1129,15 +1161,174 @@ export class DemosAdapter implements SubstrateAdapter {
     });
   }
 
+  /**
+   * Older public nodes omit `createdByTx`/`lastModifiedByTx` from otherwise
+   * complete Storage Program reads. Recover the latest owner mutation from a
+   * stable, exhaustively paged owner history; any malformed row, moving head,
+   * unsupported latest operation or post-scan native change fails closed.
+   */
+  private async resolveDemosProvenanceFromHistory(
+    nativeAddress: string,
+    nativeObservation: Readonly<Record<string, unknown>>,
+  ): Promise<string[]> {
+    const owner = normalizedDemosAddress(nativeObservation.owner);
+    if (owner === undefined) {
+      throw new SubstrateError("Demos receipt native owner is invalid");
+    }
+    const ownerAddress = `0x${owner}`;
+    const rows: unknown[] = [];
+    let firstHash: string | undefined;
+    for (let page = 0; page < RECEIPT_HISTORY_MAX_PAGES; page += 1) {
+      const start = page * RECEIPT_HISTORY_PAGE_SIZE;
+      const raw = await this.demos.getTransactionHistory(
+        ownerAddress,
+        "storageProgram",
+        { start, limit: RECEIPT_HISTORY_PAGE_SIZE },
+      ) as unknown;
+      if (!Array.isArray(raw) || raw.length > RECEIPT_HISTORY_PAGE_SIZE) {
+        throw new SubstrateError("Demos receipt history page is malformed");
+      }
+      if (page === 0 && raw.length > 0) {
+        const head = raw[0];
+        if (!isRecord(head) || typeof head.hash !== "string" || head.hash.length === 0) {
+          throw new SubstrateError("Demos receipt history head is malformed");
+        }
+        firstHash = head.hash;
+      }
+      rows.push(...raw);
+      if (raw.length < RECEIPT_HISTORY_PAGE_SIZE) {
+        const lookahead = await this.demos.getTransactionHistory(
+          ownerAddress,
+          "storageProgram",
+          { start: start + raw.length, limit: 1 },
+        ) as unknown;
+        if (!Array.isArray(lookahead) || lookahead.length !== 0) {
+          throw new SubstrateError("Demos receipt history page is incomplete");
+        }
+        break;
+      }
+      if (page === RECEIPT_HISTORY_MAX_PAGES - 1) {
+        throw new SubstrateError("Demos receipt history exceeds the verification cap");
+      }
+    }
+    if (firstHash === undefined) {
+      throw new SubstrateError("Demos receipt native provenance is unavailable");
+    }
+    const headCheck = await this.demos.getTransactionHistory(
+      ownerAddress,
+      "storageProgram",
+      { start: 0, limit: 1 },
+    ) as unknown;
+    if (!Array.isArray(headCheck) || headCheck.length !== 1 ||
+        !isRecord(headCheck[0]) || headCheck[0].hash !== firstHash) {
+      throw new SubstrateError("Demos receipt history changed during verification");
+    }
+
+    const mutations: Array<Readonly<{
+      hash: string;
+      blockNumber: number;
+      nonce: number;
+      operation: string;
+      data: unknown;
+      metadata: unknown;
+    }>> = [];
+    for (const [index, raw] of rows.entries()) {
+      if (!isRecord(raw) || typeof raw.hash !== "string" || raw.hash.length === 0 ||
+          typeof raw.status !== "string") {
+        throw new SubstrateError(`Demos receipt history row ${index} is malformed`);
+      }
+      if (raw.status === "failed") continue;
+      if (raw.status !== "confirmed" || !isRecord(raw.content) ||
+          raw.content.type !== "storageProgram") {
+        throw new SubstrateError(`Demos receipt history row ${index} is not canonical`);
+      }
+      if (normalizedDemosAddress(raw.content.from) !== owner) continue;
+      const tuple = Array.isArray(raw.content.data) ? raw.content.data : [];
+      const payload = isRecord(tuple[1]) ? tuple[1] : undefined;
+      const touchesNative = raw.content.to === nativeAddress ||
+        payload?.storageAddress === nativeAddress;
+      if (!touchesNative) continue;
+      if (tuple[0] !== "storageProgram" || payload === undefined ||
+          raw.content.to !== nativeAddress || payload.storageAddress !== nativeAddress ||
+          typeof payload.operation !== "string") {
+        throw new SubstrateError("Demos receipt history has inconsistent native provenance");
+      }
+      const blockNumber = demosNonNegativeInteger(raw.blockNumber);
+      const nonce = demosNonNegativeInteger(raw.content.nonce);
+      if (blockNumber === undefined || nonce === undefined) {
+        throw new SubstrateError("Demos receipt history mutation lacks ordering evidence");
+      }
+      mutations.push({
+        hash: raw.hash,
+        blockNumber,
+        nonce,
+        operation: payload.operation,
+        data: payload.data,
+        metadata: payload.metadata,
+      });
+    }
+    mutations.sort((left, right) =>
+      right.blockNumber - left.blockNumber || right.nonce - left.nonce);
+    const latest = mutations[0];
+    if (latest === undefined ||
+        (latest.operation !== "CREATE_STORAGE_PROGRAM" &&
+          latest.operation !== "WRITE_STORAGE")) {
+      throw new SubstrateError("Demos receipt latest native mutation is unsupported");
+    }
+    const observedMetadata = nativeObservation.metadata ?? undefined;
+    if (!isJsonObject(latest.data) ||
+        canonicalize(latest.data) !== canonicalize(nativeObservation.data) ||
+        !sameOptionalJsonObject(latest.metadata ?? undefined, observedMetadata)) {
+      throw new SubstrateError("Demos receipt history does not bind the native value");
+    }
+    const fresh = await this.demos.storagePrograms.read(nativeAddress) as unknown;
+    if (!isRecord(fresh) || fresh.success !== true ||
+        fresh.storageAddress !== nativeAddress ||
+        normalizedDemosAddress(fresh.owner) !== owner ||
+        fresh.programName !== nativeObservation.programName ||
+        !isJsonObject(fresh.data) ||
+        canonicalize(fresh.data) !== canonicalize(nativeObservation.data) ||
+        !sameOptionalJsonObject(fresh.metadata ?? undefined, observedMetadata)) {
+      throw new SubstrateError("Demos receipt native value changed during verification");
+    }
+    return [latest.hash];
+  }
+
   async sign(bytes: Uint8Array): Promise<Uint8Array> {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    const result = await (this.demos as any).crypto.sign(
-      (this.demos as any).algorithm,
-      bytes,
-    );
-    return result.signature as Uint8Array;
+    if (!(bytes instanceof Uint8Array)) {
+      throw new SubstrateError("Demos Ed25519 signer input is invalid");
+    }
+    const identity = await (this.demos as any).crypto.getIdentity("ed25519") as {
+      privateKey?: unknown;
+      publicKey?: unknown;
+    };
+    if (!(identity.privateKey instanceof Uint8Array) ||
+        identity.privateKey.byteLength !== 64 ||
+        !(identity.publicKey instanceof Uint8Array) ||
+        identity.publicKey.byteLength !== 32) {
+      throw new SubstrateError("Demos Ed25519 signing identity is invalid");
+    }
+    // demosdk's generic signer decodes input as UTF-8 before signing. DACS
+    // signs domain-separated binary hash bytes, so that path corrupts any
+    // non-UTF-8 octets. Forge exposes its Ed25519 private key as the RFC 8032
+    // 32-byte seed followed by the 32-byte public key; derive a Node KeyObject
+    // from a private copy and prove it matches the connected wallet before use.
+    const seed = Uint8Array.from(identity.privateKey.subarray(0, 32));
+    try {
+      const key = privateKeyFromSeed(seed);
+      if (!Buffer.from(rawPublicKey(publicKeyFromSeed(seed)))
+        .equals(Buffer.from(identity.publicKey))) {
+        throw new SubstrateError(
+          "Demos Ed25519 signing identity does not match its public key",
+        );
+      }
+      return ed25519Sign(bytes, key);
+    } finally {
+      seed.fill(0);
+    }
   }
 
   async getPublicKey(): Promise<Uint8Array> {
@@ -3217,6 +3408,17 @@ export class DemosAdapter implements SubstrateAdapter {
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const intrinsic = parseDemosAgentClaimReference(ref);
+    if (intrinsic !== null) {
+      return {
+        ref: intrinsic.canonicalReference,
+        boundTo: intrinsic.canonicalIdentity,
+        raw: {
+          profile: "demos-primary-self-certifying:v1",
+          publicKey: Buffer.from(intrinsic.publicKey).toString("hex"),
+        },
+      };
     }
     const raw = await new Identities().getIdentities(
       this.demos,

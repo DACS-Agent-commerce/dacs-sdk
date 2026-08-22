@@ -15,12 +15,16 @@ import {
   type FixedPriceX402OrderRecord,
   type FixedPriceX402TrackOperationInput,
   type X402BuyerChallengeClient,
+  type X402BuyerEffectFence,
+  type X402BuyerEip3009Authorization,
+  type X402BuyerSettlementIntent,
 } from "@kynesyslabs/dacs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DACS_NODE_LIVE_PROFILE,
   DacsLiveEffectInputControlError,
+  createDacsX402ExactRetainedReplayConfirmerV1,
   createDacsX402BuyerRuntimePaymentTrackV1,
   putDacsLiveOrderInputV1,
   type DacsLiveRoleOperationContextV1,
@@ -37,6 +41,81 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAYEE = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const RESOURCE = `https://seller.example/deliver/${JOB_ID}`;
+
+describe("exact retained x402 replay authority", () => {
+  const bindingHash = "a".repeat(64);
+  const settlementKey = "dacs:x402-buyer:test";
+  const nonce = `0x${"b".repeat(64)}` as const;
+  const intent = {
+    jobId: JOB_ID,
+    httpResource: `https://seller.example/x402/${JOB_ID}`,
+    method: "GET",
+    bindingHash,
+    settlementKey,
+    authorizationNonce: nonce,
+  } as Readonly<X402BuyerSettlementIntent>;
+  const authorization = { nonce } as Readonly<X402BuyerEip3009Authorization>;
+  const finalityHead = {
+    chainId: 84532,
+    blockNumber: 10,
+    blockHash: `0x${"c".repeat(64)}`,
+    timestamp: 100,
+  };
+  const authorizationState = {
+    used: false,
+    blockNumber: 10,
+    blockHash: finalityHead.blockHash,
+  };
+  const current = vi.fn(async () => undefined);
+  const fence = {
+    owner: "buyer-worker",
+    generation: 2,
+    settlementKey,
+    bindingHash,
+    idempotencyKey: "buyer-payment-effect",
+    assertCurrent: current,
+  } satisfies X402BuyerEffectFence;
+
+  it("permits only the exact canonical generated seller request", async () => {
+    const confirm = createDacsX402ExactRetainedReplayConfirmerV1({
+      publicBaseUrl: "https://seller.example",
+    });
+    await expect(confirm({
+      intent,
+      authorization,
+      finalityHead,
+      authorizationState,
+      fence,
+    })).resolves.toEqual({ disposition: "safe", bindingHash });
+    expect(current).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed for a different resource, nonce, binding or used state", async () => {
+    const confirm = createDacsX402ExactRetainedReplayConfirmerV1({
+      publicBaseUrl: "https://seller.example",
+    });
+    for (const changed of [
+      { intent: { ...intent, httpResource: `https://other.example/x402/${JOB_ID}` } },
+      { intent: { ...intent, authorizationNonce: `0x${"d".repeat(64)}` } },
+      { intent: { ...intent, bindingHash: "e".repeat(64) } },
+      { authorizationState: { ...authorizationState, used: true } },
+    ]) {
+      await expect(confirm({
+        intent: (changed.intent ?? intent) as Readonly<X402BuyerSettlementIntent>,
+        authorization,
+        finalityHead,
+        authorizationState: changed.authorizationState ?? authorizationState,
+        fence,
+      })).resolves.toMatchObject({ disposition: "unsafe" });
+    }
+  });
+
+  it("rejects malformed or credential-bearing configured origins", () => {
+    expect(() => createDacsX402ExactRetainedReplayConfirmerV1({
+      publicBaseUrl: "https://user:secret@seller.example",
+    })).toThrow(/public base URL/u);
+  });
+});
 
 function orderInput(): FixedPriceX402OrderInput {
   return {

@@ -592,7 +592,7 @@ export function createDacsBuyerAgreementTransportRuntimeV1(
         }
         const sent = await sendProposal(context, binding);
         return sent.disposition === "submitted"
-          ? { disposition: "present", value: binding.payload }
+          ? { disposition: "present", value: binding.payload.proposal }
           : sent.disposition === "rejected"
             ? { disposition: "rejected", reason: sent.reason }
             : { disposition: "indeterminate", reason: sent.reason };
@@ -726,7 +726,7 @@ export function createDacsSellerAgreementTransportRuntimeV1(
         }
         const sent = await sendResponse(context, binding);
         return sent.disposition === "submitted"
-          ? { disposition: "present", value: binding.payload }
+          ? { disposition: "present", value: binding.payload.sellerContribution }
           : sent.disposition === "rejected"
             ? { disposition: "rejected", reason: sent.reason }
             : { disposition: "indeterminate", reason: sent.reason };

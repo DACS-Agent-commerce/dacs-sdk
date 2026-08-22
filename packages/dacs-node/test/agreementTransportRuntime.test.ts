@@ -433,6 +433,10 @@ describe("live agreement HTTP transport runtime", () => {
       request.transportIdentity,
       { owner: "seller", generation: 1, idempotencyKey: "response" },
     )).resolves.toEqual({ disposition: "submitted" });
+    await expect(sellerRuntime.transport.reconcileSellerContributionPublication(
+      request.transportIdentity,
+      { owner: "seller", generation: 2, idempotencyKey: "response" },
+    )).resolves.toEqual({ disposition: "present", value: sellerContribution });
     await expect(buyerRuntime.transport.resolveSellerContributions(
       request.transportIdentity,
     )).resolves.toEqual({ disposition: "present", value: [sellerContribution] });
@@ -440,7 +444,7 @@ describe("live agreement HTTP transport runtime", () => {
     await expect(buyerRuntime.transport.reconcileProposalPublication(
       request.transportIdentity,
       { owner: "buyer", generation: 2, idempotencyKey: "proposal" },
-    )).resolves.toMatchObject({ disposition: "present" });
+    )).resolves.toEqual({ disposition: "present", value: request.proposal });
     expect(sellerCoordinator.startOrder).toHaveBeenCalledTimes(2);
   });
 

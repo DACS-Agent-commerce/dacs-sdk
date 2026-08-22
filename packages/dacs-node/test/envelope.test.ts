@@ -14,6 +14,7 @@ import {
   authenticateDacsHttpEnvelopeV1,
   createDacsHttpAcknowledgementEnvelopeV1,
   createDacsHttpEnvelopeV1,
+  dacsHttpRequiredSenderRoleV1,
   dacsHttpEnvelopeHashV1,
   dacsHttpEnvelopeSignedBytesV1,
   paymentEvidencePeerFromDacsHttpEnvelopeV1,
@@ -38,6 +39,14 @@ const AUDIENCE_PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(AUDIENCE_SEED));
 const SENDER_KEY_HEX = Buffer.from(PUBLIC_KEY).toString("hex");
 const SENDER = `did:demos:agent:${SENDER_KEY_HEX}`;
 const AUDIENCE = `did:demos:agent:${Buffer.from(AUDIENCE_PUBLIC_KEY).toString("hex")}`;
+
+it("keeps every session-bootstrap sender direction in the shared role map", () => {
+  expect(dacsHttpRequiredSenderRoleV1("session-init")).toBe("buyer");
+  expect(dacsHttpRequiredSenderRoleV1("session-challenge")).toBe("seller");
+  expect(dacsHttpRequiredSenderRoleV1("session-presentation")).toBe("buyer");
+  expect(dacsHttpRequiredSenderRoleV1("session-admission")).toBe("seller");
+  expect(dacsHttpRequiredSenderRoleV1("acknowledgement")).toBeUndefined();
+});
 
 const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
   "session-init": {

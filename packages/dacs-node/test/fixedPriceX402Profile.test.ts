@@ -92,6 +92,8 @@ const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 22));
 const BUYER = demosAgentClaimRef(rawPublicKey(publicKeyFromSeed(BUYER_SEED)));
 const SELLER = demosAgentClaimRef(rawPublicKey(publicKeyFromSeed(SELLER_SEED)));
 const PAYER = `0x${"55".repeat(20)}`;
+const PAYEE = "0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd";
+const ASSET = "0xCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEf";
 const roots: string[] = [];
 const databases: DacsNodeSqliteDatabase[] = [];
 
@@ -167,8 +169,8 @@ function listing(): Listing {
       railVersion: 2,
       parameters: {
         network: "eip155:84532",
-        payTo: `0x${"33".repeat(20)}`,
-        asset: `0x${"44".repeat(20)}`,
+        payTo: PAYEE,
+        asset: ASSET,
         httpResource: "https://seller.example/dacs/x402",
       },
     }],
@@ -203,7 +205,7 @@ function authenticatedRail() {
     asset: {
       kind: "erc20" as const,
       chainId: 84532,
-      contract: `0x${"44".repeat(20)}`,
+      contract: ASSET,
       symbol: "USDC",
       decimals: 6,
     },
@@ -313,12 +315,12 @@ async function fixture() {
     config: { rail: { requestedNetwork: "eip155:84532" } },
     evm: {
       role: "seller",
-      address: `0x${"33".repeat(20)}`,
+      address: PAYEE,
       identity: {
         role: "seller",
         network: "eip155:84532",
         chainId: 84532,
-        address: `0x${"33".repeat(20)}`,
+        address: PAYEE,
         warningCodes: [],
       },
     },
@@ -371,7 +373,7 @@ async function fixture() {
     context,
     rail: admission.rail as never,
     sellerPublicEndpoint: "https://seller.example",
-    sellerPayee: `0x${"33".repeat(20)}`,
+    sellerPayee: PAYEE,
     maximumServiceAmount: "1",
     now: () => clock++,
     readJson: vi.fn(),
@@ -418,6 +420,7 @@ async function buyerFixture() {
   const anchorWriteOnce = vi.fn(async (
     logicalAddress: string,
     artifact: Readonly<Record<string, unknown>>,
+    _options?: Readonly<{ metadata?: Readonly<Record<string, string>> }>,
   ) => {
     const address = `stor-${sha256Hex(logicalAddress).slice(0, 40)}`;
     const existing = anchors.get(address);
@@ -648,6 +651,17 @@ describe("fixed-price x402 generated profile policy", () => {
     expect(retained.admittedAt).toBe(NOW);
     expect(retained.application).toEqual(value.app);
 
+    // Runtime rail provenance is intentionally held in a WeakMap and cannot
+    // survive SQLite serialization. Durable replay must validate the retained
+    // protocol pin instead of trying to recreate authentication from JSON.
+    dependencies.protocolBinding.mockImplementation(() => {
+      throw new Error("online rail authentication is unavailable after restart");
+    });
+    expect(loadDacsFixedPriceX402SellerAdmissionV1(
+      value.context,
+      loaded.record,
+    ).protocol).toEqual(first.order.protocol);
+
     await expect(value.policy.admitProposal({
       payload: { transportIdentity: { jobId: JOB_ID } },
     } as never)).resolves.toEqual({
@@ -690,7 +704,7 @@ describe("fixed-price x402 generated profile policy", () => {
       .toEqual([{
         railId: "x402:test",
         phaseIndex: 2,
-        payeeAddress: `0x${"33".repeat(20)}`,
+        payeeAddress: PAYEE,
       }]);
 
     const bytes = Uint8Array.from(Buffer.from("agreement contribution"));
@@ -736,6 +750,7 @@ describe("fixed-price x402 generated profile policy", () => {
       }],
     };
     const agreementHash = contentHash(artifact as unknown as Record<string, unknown>);
+    const envelopeHash = sha256Hex(canonicalize(artifact));
     const logicalAddress = fixedPriceAgreementLogicalAddress(JOB_ID);
     value.loseNextResponse();
     await expect(policy.anchor.anchorAgreement({
@@ -757,6 +772,13 @@ describe("fixed-price x402 generated profile policy", () => {
     };
     expect(reconciledValue.artifact).toEqual(artifact);
     expect(value.anchorWriteOnce).toHaveBeenCalledTimes(2);
+    for (const invocation of value.anchorWriteOnce.mock.calls) {
+      expect(invocation[2]).toEqual({ metadata: {
+        logicalAddress,
+        contentHash: agreementHash,
+        envelopeHash,
+      } });
+    }
     await expect(policy.anchor.verifyAnchorReceipt({
       expectedWriter: BUYER,
       ref: reconciledValue.ref,
@@ -925,8 +947,8 @@ describe("fixed-price x402 generated profile policy", () => {
         })),
         network: "eip155:84532",
         payer: PAYER,
-        payee: `0x${"33".repeat(20)}`,
-        asset: `0x${"44".repeat(20)}`,
+        payee: PAYEE,
+        asset: ASSET,
         amount: "1000000",
         httpResource: `https://seller.example/dacs/x402/${JOB_ID}`,
         method: "GET",
@@ -935,13 +957,12 @@ describe("fixed-price x402 generated profile policy", () => {
         scheme: "exact",
         network: "eip155:84532",
         amount: "1000000",
-        asset: `0x${"44".repeat(20)}`,
-        payTo: `0x${"33".repeat(20)}`,
+        asset: ASSET,
+        payTo: PAYEE,
         maxTimeoutSeconds: 120,
         extra: {
           name: "USD Coin",
           version: "2",
-          assetTransferMethod: "eip3009",
         },
       },
     });
@@ -954,14 +975,18 @@ describe("fixed-price x402 generated profile policy", () => {
       intentVersion: "1",
       settlementKey: "settlement:test",
       bindingHash: "f".repeat(64),
-      chosenRequirements: preparation.expectedRequirements,
+      chosenRequirements: {
+        ...preparation.expectedRequirements,
+        asset: ASSET.toLowerCase(),
+        payTo: PAYEE.toLowerCase(),
+      },
       signedPaymentPayload: {},
       paymentHeader: { name: "PAYMENT-SIGNATURE", value: "opaque" },
       authorizationNonce: `0x${"1".repeat(64)}`,
     } as never;
     const authorization = {
       from: PAYER,
-      to: `0x${"33".repeat(20)}`,
+      to: PAYEE.toLowerCase(),
       value: "1000000",
       validAfter: String(Math.floor(NOW / 1_000) - 1),
       validBefore: String(Math.floor(agreement.terms.deadline / 1_000)),
@@ -971,7 +996,7 @@ describe("fixed-price x402 generated profile policy", () => {
         name: "USD Coin",
         version: "2",
         chainId: 84532,
-        verifyingContract: `0x${"44".repeat(20)}`,
+        verifyingContract: ASSET.toLowerCase(),
       },
     } as const;
     await expect(paymentPolicy.authorizeIntent({
@@ -1120,7 +1145,7 @@ describe("fixed-price x402 generated profile policy", () => {
       payoutBindings: [{
         railId: "x402:test",
         phaseIndex: 2,
-        payeeAddress: `0x${"33".repeat(20)}`,
+        payeeAddress: PAYEE,
       }],
       generatedAt: NOW,
     });
@@ -1253,9 +1278,9 @@ describe("fixed-price x402 generated profile policy", () => {
     });
     const expected = {
       network: "eip155:84532" as const,
-      payTo: `0x${"33".repeat(20)}`,
+      payTo: PAYEE,
       amount: "1000000",
-      asset: `0x${"44".repeat(20)}`,
+      asset: ASSET,
       eip712: { name: "USD Coin", version: "2" },
     };
     await expect(sellerAuthority.resolveCommittedSession({

@@ -1,5 +1,6 @@
 import {
   baseUnits,
+  captureFixedPriceX402ProtocolBinding,
   demosWriteEvidenceToAnchorReceipt,
   commitFixedPriceAgreement,
   deriveFixedPriceAgreement,
@@ -81,6 +82,8 @@ import type {
   DacsSellerSessionBootstrapAdmissionV1,
   DacsSellerSessionBootstrapTransportOptionsV1,
 } from "./sessionBootstrapTransportRuntime.js";
+import { DacsSellerSessionAdmissionUnavailableError } from
+  "./sessionBootstrapTransportRuntime.js";
 import type {
   DacsBuyerSessionAgreementFactsV1,
   DacsSellerSessionAgreementFactsV1,
@@ -95,8 +98,8 @@ import type { DacsAgreementSellerVetProductionV1 } from
   "./agreementTransportRuntime.js";
 
 const APPLICATION_VERSION = "1" as const;
-const ADMISSION_VERSION = "1" as const;
-const ADMISSION_DOMAIN = "dacs-fixed-price-x402-seller-admission:v1:" as const;
+const ADMISSION_VERSION = "2" as const;
+const ADMISSION_DOMAIN = "dacs-fixed-price-x402-seller-admission:v2:" as const;
 const DRAFT_CLOCK_VERSION = "1" as const;
 const DRAFT_CLOCK_DOMAIN = "dacs-fixed-price-x402-agreement-clock:v1:" as const;
 const AGREEMENT_PUBLICATION_VERSION = "1" as const;
@@ -161,7 +164,6 @@ export interface DacsFixedPriceX402SellerAdmissionRecordV1 {
   localBindingHash: string;
   admittedAt: number;
   application: Readonly<DacsFixedPriceX402ApplicationV1>;
-  authenticatedListing: Readonly<DacsX402ExistingListingAdmissionV1>;
   protocol: Readonly<FixedPriceX402OrderInput["protocol"]>;
 }
 
@@ -339,23 +341,18 @@ function admissionId(jobId: string): string {
 function captureAdmission(value: unknown): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
   if (!plainObject(value) || !exactKeys(value, [
     "admissionVersion", "jobId", "localBindingHash", "admittedAt", "application",
-    "authenticatedListing", "protocol",
+    "protocol",
   ]) || value.admissionVersion !== ADMISSION_VERSION ||
       typeof value.jobId !== "string" || typeof value.localBindingHash !== "string" ||
       !HASH_RE.test(value.localBindingHash) || !Number.isSafeInteger(value.admittedAt) ||
-      Number(value.admittedAt) < 0 || !plainObject(value.authenticatedListing) ||
-      !plainObject(value.protocol)) {
+      Number(value.admittedAt) < 0 || !plainObject(value.protocol)) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-corrupt");
   }
   const application = captureDacsFixedPriceX402ApplicationV1(value.application);
-  const admission = value.authenticatedListing as unknown as
-    Readonly<DacsX402ExistingListingAdmissionV1>;
-  if (admission.listingRef !== application.listingRef ||
-      admission.listingContentHash !== application.listingContentHash ||
-      admission.logicalAddress !== application.listingLogicalAddress ||
-      canonicalize(admission.listing) !== canonicalize(application.listing) ||
-      canonicalize(createDacsFixedPriceX402ProtocolBindingV1(admission)) !==
-        canonicalize(value.protocol)) {
+  let protocol: FixedPriceX402OrderInput["protocol"];
+  try {
+    protocol = captureFixedPriceX402ProtocolBinding(value.protocol);
+  } catch {
     throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-corrupt");
   }
   return deepFreeze(copy({
@@ -364,8 +361,7 @@ function captureAdmission(value: unknown): Readonly<DacsFixedPriceX402SellerAdmi
     localBindingHash: value.localBindingHash,
     admittedAt: Number(value.admittedAt),
     application,
-    authenticatedListing: admission,
-    protocol: value.protocol as FixedPriceX402OrderInput["protocol"],
+    protocol,
   }));
 }
 
@@ -373,7 +369,6 @@ function retainAdmission(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   order: Readonly<FixedPriceX402OrderInput>,
   application: Readonly<DacsFixedPriceX402ApplicationV1>,
-  authenticatedListing: Readonly<DacsX402ExistingListingAdmissionV1>,
   admittedAt: number,
 ): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
   const id = admissionId(order.jobId);
@@ -383,7 +378,6 @@ function retainAdmission(
     localBindingHash: fixedPriceX402OrderLocalBindingHash(order),
     admittedAt,
     application,
-    authenticatedListing,
     protocol: order.protocol,
   };
   const existing = context.database.loadEffectInput("session", id);
@@ -392,8 +386,6 @@ function retainAdmission(
     if (captured.jobId !== record.jobId ||
         captured.localBindingHash !== record.localBindingHash ||
         canonicalize(captured.application) !== canonicalize(record.application) ||
-        canonicalize(captured.authenticatedListing) !==
-          canonicalize(record.authenticatedListing) ||
         canonicalize(captured.protocol) !== canonicalize(record.protocol)) {
       throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-conflict");
     }
@@ -481,8 +473,13 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
         },
         readJson: options.readJson ?? ((url) => readDacsPublicJsonV1(url)),
       });
-      if (resolved.status !== "verified" ||
-          resolved.admission.listingRef !== application.listingRef ||
+      if (resolved.status === "blocked") {
+        throw new DacsSellerSessionAdmissionUnavailableError(resolved.reasonCode);
+      }
+      if (resolved.status !== "verified") {
+        throw new DacsFixedPriceX402ProfileError(resolved.reasonCode);
+      }
+      if (resolved.admission.listingRef !== application.listingRef ||
           resolved.admission.listingContentHash !== application.listingContentHash ||
           resolved.admission.logicalAddress !== application.listingLogicalAddress ||
           canonicalize(resolved.admission.listing) !== canonicalize(application.listing) ||
@@ -501,7 +498,6 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
         context,
         order,
         application,
-        resolved.admission,
         admittedAt,
       );
       return Object.freeze({ order, application });
@@ -865,6 +861,7 @@ function createAgreementAnchorProvider(
           { metadata: {
             logicalAddress: record.logicalAddress,
             contentHash: record.agreementHash,
+            envelopeHash: sha256Hex(canonicalize(record.artifact)),
           } },
         );
         return { disposition: "submitted" as const };
@@ -892,6 +889,7 @@ function createAgreementAnchorProvider(
           { metadata: {
             logicalAddress: record.logicalAddress,
             contentHash: record.agreementHash,
+            envelopeHash: sha256Hex(canonicalize(record.artifact)),
           } },
         );
         const receipt = anchor.demosEvidence === undefined
@@ -1401,7 +1399,6 @@ function paymentPreparation(
     extra: {
       name: options.tokenDomain.name,
       version: options.tokenDomain.version,
-      assetTransferMethod: "eip3009",
     },
   };
   const httpResource = dacsFixedPriceX402DeliveryResourceV1(
@@ -1441,12 +1438,24 @@ function intentMatchesPreparation(
   const authority = preparation.authority;
   return [
     "jobId", "phaseIndex", "railId", "railVersion", "railDescriptorHash",
-    "agreementHash", "termsHash", "sessionBindingHash", "network", "payer",
-    "payee", "asset", "amount", "httpResource", "method",
+    "agreementHash", "termsHash", "sessionBindingHash", "network", "amount",
+    "httpResource", "method",
   ].every((key) => canonicalize((intent as unknown as Record<string, unknown>)[key]) ===
       canonicalize((authority as unknown as Record<string, unknown>)[key])) &&
-    canonicalize(intent.chosenRequirements) ===
-      canonicalize(preparation.expectedRequirements);
+    intent.payer.toLowerCase() === authority.payer.toLowerCase() &&
+    intent.payee.toLowerCase() === authority.payee.toLowerCase() &&
+    intent.asset.toLowerCase() === authority.asset.toLowerCase() &&
+    intent.chosenRequirements.scheme === preparation.expectedRequirements.scheme &&
+    intent.chosenRequirements.network === preparation.expectedRequirements.network &&
+    intent.chosenRequirements.amount === preparation.expectedRequirements.amount &&
+    intent.chosenRequirements.asset.toLowerCase() ===
+      preparation.expectedRequirements.asset.toLowerCase() &&
+    intent.chosenRequirements.payTo.toLowerCase() ===
+      preparation.expectedRequirements.payTo.toLowerCase() &&
+    intent.chosenRequirements.maxTimeoutSeconds ===
+      preparation.expectedRequirements.maxTimeoutSeconds &&
+    canonicalize(intent.chosenRequirements.extra) ===
+      canonicalize(preparation.expectedRequirements.extra);
 }
 
 function authorizationWithinAgreement(
@@ -1758,6 +1767,7 @@ function createCommitmentProvider(
       { metadata: {
         logicalAddress: retained.logicalAddress,
         contentHash: retained.commitmentHash,
+        envelopeHash: sha256Hex(canonicalize(retained.record)),
       } },
     );
     const receipt = anchor.demosEvidence === undefined

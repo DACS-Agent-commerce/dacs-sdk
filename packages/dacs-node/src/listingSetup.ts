@@ -239,7 +239,13 @@ export function createDacsListingSetupExecutorV1(
           const result = await options.seller.adapter.anchorWriteOnce(
             writeOptions.storageName,
             value,
-            { metadata: { logicalAddress } },
+            {
+              metadata: {
+                logicalAddress,
+                contentHash: contentHash(value),
+                envelopeHash: sha256Hex(canonicalize(value)),
+              },
+            },
           );
           return Object.freeze({
             address: result.address,

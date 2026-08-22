@@ -298,6 +298,13 @@ const REQUIRED_SENDER_ROLE = Object.freeze({
   "diagnostic-probe-buyer": "buyer",
   "diagnostic-probe-seller": "seller",
 } as const);
+
+/** One authoritative sender-role mapping shared by authentication and stores. */
+export function dacsHttpRequiredSenderRoleV1(
+  type: DacsHttpMessageType,
+): "buyer" | "seller" | undefined {
+  return type === "acknowledgement" ? undefined : REQUIRED_SENDER_ROLE[type];
+}
 const HASH_RE = /^[0-9a-f]{64}$/;
 const IDENTITY_REJECTION_CODE_SET = new Set<DacsHttpIdentityRejectionCode>([
   "identity-unresolved",
@@ -783,7 +790,7 @@ export async function authenticateDacsHttpEnvelopeV1(
       failure("authentication", "identity-resolution-mismatch");
     }
     if (envelope.type !== "acknowledgement" &&
-        identity.role !== REQUIRED_SENDER_ROLE[envelope.type]) {
+        identity.role !== dacsHttpRequiredSenderRoleV1(envelope.type)) {
       failure("authentication", "identity-role-incompatible");
     }
     let signatureValid = false;

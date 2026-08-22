@@ -251,6 +251,20 @@ describe("seller x402 canonical EVM observation", () => {
     });
   });
 
+  it("grants one exact-nonce redrive while a canonical authorization remains unused", async () => {
+    const observer = createDacsX402SellerEvmObserverV1({
+      rail: rail() as never,
+      rpcUrl: "https://rpc.example",
+      authorizationSearchFromBlock: 1,
+      fetchImpl: rpcFetch({ logs: [], authorizationUsed: false,
+        headTimestamp: 1_800_000_100 }),
+    });
+    await expect(observer.reconcileSettlement(intent("1800000200"))).resolves.toEqual({
+      status: "authoritatively-absent",
+      reason: "authorization-live-unused-exact-redrive-safe",
+    });
+  });
+
   it("fails closed for malformed retained intents and non-TLS remote RPCs", async () => {
     expect(() => createDacsX402SellerEvmObserverV1({
       rail: rail() as never,

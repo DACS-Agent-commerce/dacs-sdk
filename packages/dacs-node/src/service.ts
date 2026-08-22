@@ -59,6 +59,7 @@ const DEFAULT_READINESS_MAX_AGE_MS = 30_000;
 const READINESS_CLOCK_SKEW_MS = 1_000;
 const TRANSPORT_MESSAGE_INTENT_VERSION = "1" as const;
 const TRANSPORT_MESSAGE_INTENT_DOMAIN = "dacs-live-transport-message-intent:v1:" as const;
+const MAX_TRANSPORT_MESSAGE_RENEWALS = 64;
 
 export type DacsLiveRole = "buyer" | "seller";
 export type DacsLiveRoleServiceLifecycle =
@@ -442,6 +443,17 @@ function transportMessageIntentEffectId(input: Readonly<{
   return sha256Hex(`${TRANSPORT_MESSAGE_INTENT_DOMAIN}${canonicalize(input)}`);
 }
 
+function transportMessageRenewalKey(
+  idempotencyKey: string,
+  renewal: number,
+): string {
+  return renewal === 0 ? idempotencyKey : sha256Hex(canonicalize({
+    domain: TRANSPORT_MESSAGE_INTENT_DOMAIN,
+    idempotencyKey,
+    renewal,
+  }));
+}
+
 function transportMessageIntentBindingHash(
   input: Readonly<DacsTransportMessageIntentV1>,
 ): string {
@@ -759,51 +771,78 @@ export function createDacsLiveRoleServiceV1(
         payload,
       });
     } else {
-      const effectId = transportMessageIntentEffectId({
-        role,
-        sender: authority,
-        audience: peerAuthority,
-        idempotencyKey: input.idempotencyKey,
-      });
-      let retained = database.loadEffectInput("session", effectId);
-      if (retained === undefined) {
-        const issuedAt = await outbox.readTime();
-        const candidate: DacsTransportMessageIntentV1 = {
-          intentVersion: TRANSPORT_MESSAGE_INTENT_VERSION,
+      const now = await outbox.readTime();
+      let selected: Readonly<DacsTransportMessageIntentV1> | undefined;
+      for (let renewal = 0; renewal <= MAX_TRANSPORT_MESSAGE_RENEWALS; renewal += 1) {
+        const effectId = transportMessageIntentEffectId({
           role,
           sender: authority,
           audience: peerAuthority,
-          type: input.type,
-          jobId: input.jobId,
-          idempotencyKey: input.idempotencyKey,
-          issuedAt,
-          expiresAt: safeDeadline(issuedAt, lifetimeMs),
-          nonce: generateDacsHttpNonceV1(),
-          payloadHash,
-          payload,
-        };
-        database.putEffectIntent({
-          kind: "session",
-          effectId,
-          bindingHash: transportMessageIntentBindingHash(candidate),
-          input: candidate,
-          idempotencyKey: effectId,
-          jobId: input.jobId,
+          idempotencyKey: transportMessageRenewalKey(input.idempotencyKey, renewal),
         });
-        retained = database.loadEffectInput("session", effectId);
+        let retained = database.loadEffectInput("session", effectId);
+        if (retained === undefined) {
+          const candidate: DacsTransportMessageIntentV1 = {
+            intentVersion: TRANSPORT_MESSAGE_INTENT_VERSION,
+            role,
+            sender: authority,
+            audience: peerAuthority,
+            type: input.type,
+            jobId: input.jobId,
+            idempotencyKey: input.idempotencyKey,
+            issuedAt: now,
+            expiresAt: safeDeadline(now, lifetimeMs),
+            nonce: generateDacsHttpNonceV1(),
+            payloadHash,
+            payload,
+          };
+          database.putEffectIntent({
+            kind: "session",
+            effectId,
+            bindingHash: transportMessageIntentBindingHash(candidate),
+            input: candidate,
+            idempotencyKey: effectId,
+            jobId: input.jobId,
+          });
+          retained = database.loadEffectInput("session", effectId);
+        }
+        if (retained === undefined) {
+          throw new DacsLiveRoleServiceError("service-message-intent-unavailable");
+        }
+        const candidate = captureTransportMessageIntent(retained);
+        if (candidate.role !== role || candidate.sender !== authority ||
+            candidate.audience !== peerAuthority || candidate.type !== input.type ||
+            candidate.jobId !== input.jobId ||
+            candidate.idempotencyKey !== input.idempotencyKey ||
+            candidate.expiresAt - candidate.issuedAt !== lifetimeMs ||
+            candidate.payloadHash !== payloadHash ||
+            canonicalize(candidate.payload) !== canonicalize(payload)) {
+          throw new DacsLiveRoleServiceError("service-message-idempotency-conflict");
+        }
+        let acknowledged = false;
+        if (candidate.expiresAt <= now) {
+          const expiredEnvelope = await createDacsHttpEnvelopeV1({
+            type: candidate.type,
+            jobId: candidate.jobId,
+            sender: candidate.sender,
+            audience: candidate.audience,
+            issuedAt: candidate.issuedAt,
+            expiresAt: candidate.expiresAt,
+            nonce: candidate.nonce,
+            payload: candidate.payload as never,
+          }, signTransportEnvelope) as Readonly<DacsHttpEnvelopeV1>;
+          acknowledged = (await outbox.load(expiredEnvelope.envelopeId))?.state ===
+            "acknowledged";
+        }
+        if (candidate.expiresAt > now || acknowledged) {
+          selected = candidate;
+          break;
+        }
       }
-      if (retained === undefined) {
-        throw new DacsLiveRoleServiceError("service-message-intent-unavailable");
+      if (selected === undefined) {
+        throw new DacsLiveRoleServiceError("service-message-renewal-limit");
       }
-      intent = captureTransportMessageIntent(retained);
-      if (intent.role !== role || intent.sender !== authority ||
-          intent.audience !== peerAuthority || intent.type !== input.type ||
-          intent.jobId !== input.jobId || intent.idempotencyKey !== input.idempotencyKey ||
-          intent.expiresAt - intent.issuedAt !== lifetimeMs ||
-          intent.payloadHash !== payloadHash ||
-          canonicalize(intent.payload) !== canonicalize(payload)) {
-        throw new DacsLiveRoleServiceError("service-message-idempotency-conflict");
-      }
+      intent = selected;
     }
     const signed = await createDacsHttpEnvelopeV1({
       type: intent.type,

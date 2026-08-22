@@ -68,6 +68,19 @@ export interface DacsSellerSessionBootstrapAdmissionV1 {
   application: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * A seller admission dependency is temporarily unavailable. The HTTP inbox
+ * must remain pending so the exact authenticated envelope can be retried; it
+ * must not turn this into a durable counterparty rejection.
+ */
+export class DacsSellerSessionAdmissionUnavailableError extends Error {
+  override readonly name = "DacsSellerSessionAdmissionUnavailableError";
+
+  constructor(readonly reasonCode: string) {
+    super(reasonCode);
+  }
+}
+
 export interface DacsSellerSessionBootstrapTransportOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   admitInit(input: Readonly<{
@@ -624,9 +637,15 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1(
             authenticated,
             payload: authenticated.envelope.payload,
           });
-        } catch {
+        } catch (error) {
+          if (error instanceof DacsSellerSessionAdmissionUnavailableError) throw error;
+          const reasonCode = error !== null && typeof error === "object" &&
+              "reasonCode" in error && typeof error.reasonCode === "string" &&
+              /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/.test(error.reasonCode)
+            ? error.reasonCode
+            : "session-init-not-admitted";
           return Object.freeze({ disposition: "rejected" as const,
-            reasonCode: "session-init-not-admitted" });
+            reasonCode });
         }
         const input = authenticated.envelope.payload;
         if (!plainObject(admission) || !plainObject(admission.order) ||

@@ -5,6 +5,8 @@ import {
 import {
   captureFixedPriceX402ProtocolBinding,
   createFixedPriceX402BuyerCoordinator,
+  fixedPriceX402OrderBindingHash,
+  fixedPriceX402OrderLocalBindingHash,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
@@ -27,7 +29,10 @@ import {
 } from "./guardedCommands.js";
 import type { DacsX402ExistingListingAdmissionV1 } from "./listingDoctor.js";
 import { createDacsFixedPriceX402RoleOrderV1 } from "./liveOrder.js";
-import { putDacsLiveOrderInputV1 } from "./orderInput.js";
+import {
+  loadDacsLiveOrderInputV1,
+  putDacsLiveOrderInputV1,
+} from "./orderInput.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -40,6 +45,7 @@ export interface DacsPrepareX402PurchaseOptionsV1 {
   request: Readonly<Record<string, unknown>>;
   maximumServiceAmount: string;
   maximumNetworkFeeEth: string;
+  resume?: boolean;
 }
 
 export interface DacsPreparedX402PurchaseV1 {
@@ -159,7 +165,8 @@ export function prepareDacsX402PurchaseV1(
   if (options === null || typeof options !== "object" ||
       !isCanonicalJobId(options.jobId) || !EVM_ADDRESS_RE.test(options.payer) ||
       options.request === null || typeof options.request !== "object" ||
-      Array.isArray(options.request)) {
+      Array.isArray(options.request) ||
+      (options.resume !== undefined && typeof options.resume !== "boolean")) {
     throw new TypeError("x402 purchase preparation options are invalid");
   }
   let request: Readonly<Record<string, unknown>>;
@@ -186,6 +193,7 @@ export function prepareDacsX402PurchaseV1(
   const plan = createDacsGuardedPurchasePlanV1({
     effectId: `purchase:${options.jobId}:${requestHash}`,
     jobId: options.jobId,
+    resume: options.resume,
     listingRef: admission.listingRef,
     requestHash,
     buyerAuthority: options.buyerAuthority,
@@ -248,6 +256,32 @@ export function createDacsPurchaseQueueExecutorV1(
     }
     try {
       await fence.assertCurrent();
+      const coordinator = createFixedPriceX402BuyerCoordinator({
+        store: options.database.createLiveCoordinatorStore("buyer"),
+        workerId: options.workerId,
+        operations: {},
+      });
+      if (prepared.plan.resume) {
+        const [existingOrder, existingInput] = await Promise.all([
+          coordinator.getOrderStatus(prepared.order.jobId),
+          Promise.resolve(loadDacsLiveOrderInputV1({
+            database: options.database,
+            order: prepared.order,
+          })),
+        ]);
+        if (existingOrder === null || existingInput === undefined) {
+          return Object.freeze({ status: "operator-action" as const,
+            reasonCode: "purchase-resume-target-missing" });
+        }
+        if (existingOrder.bindingHash !== fixedPriceX402OrderBindingHash(prepared.order) ||
+            existingOrder.localBindingHash !==
+              fixedPriceX402OrderLocalBindingHash(prepared.order) ||
+            canonicalize(existingInput.application) !== canonicalize(prepared.application)) {
+          return Object.freeze({ status: "operator-action" as const,
+            reasonCode: "purchase-resume-binding-mismatch" });
+        }
+      }
+      await fence.assertCurrent();
       const retained = putDacsLiveOrderInputV1({
         database: options.database,
         order: prepared.order,
@@ -258,11 +292,6 @@ export function createDacsPurchaseQueueExecutorV1(
           reasonCode: "purchase-order-input-conflict" });
       }
       await fence.assertCurrent();
-      const coordinator = createFixedPriceX402BuyerCoordinator({
-        store: options.database.createLiveCoordinatorStore("buyer"),
-        workerId: options.workerId,
-        operations: {},
-      });
       const status = await coordinator.startOrder(prepared.order);
       await fence.assertCurrent();
       const result = Object.freeze({

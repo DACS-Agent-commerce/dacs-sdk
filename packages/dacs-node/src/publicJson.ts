@@ -143,7 +143,24 @@ function pinnedHttpsRequest(input: Readonly<{
         "accept-encoding": "identity",
         "user-agent": "dacs-node-public-json/v1",
       },
-      lookup: (_hostname, _options, callback) => callback(null, address, family),
+      lookup: (_hostname, options, callback) => {
+        // Node 20.13+ may request every candidate (`all: true`) for its
+        // connection-attempt scheduler. Returning the legacy scalar tuple to
+        // that overload produces ERR_INVALID_IP_ADDRESS before TLS starts.
+        // Preserve DNS pinning while satisfying both lookup callback shapes.
+        if (typeof options === "object" && options.all === true) {
+          (callback as unknown as (
+            error: null,
+            addresses: readonly Readonly<{ address: string; family: number }>[],
+          ) => void)(null, [Object.freeze({ address, family })]);
+          return;
+        }
+        (callback as unknown as (
+          error: null,
+          resolvedAddress: string,
+          resolvedFamily: number,
+        ) => void)(null, address, family);
+      },
     }, (response) => {
       const chunks: Buffer[] = [];
       let total = 0;

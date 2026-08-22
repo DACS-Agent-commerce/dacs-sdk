@@ -123,7 +123,7 @@ export function createDacsFixedPriceX402SellerSettlementV1(
   if (options.rail.asset.kind !== "erc20") {
     throw new TypeError("fixed-price seller settlement requires an ERC-20 rail");
   }
-  const route = `${base.pathname}/:jobId`;
+  const route = `GET ${base.pathname}/:jobId`;
   const paywall: X402PaywallConfig = Object.freeze({
     route,
     network: observer.network,

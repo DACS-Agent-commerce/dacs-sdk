@@ -54,12 +54,71 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   retryDelayMs?: number;
 }
 
+export interface DacsX402ExactRetainedReplayConfirmerOptionsV1 {
+  /** Exact externally advertised seller origin used by the generated paywall. */
+  publicBaseUrl: string;
+}
+
 export class DacsX402BuyerRuntimePaymentError extends Error {
   override readonly name = "DacsX402BuyerRuntimePaymentError";
 
   constructor(readonly reasonCode: string) {
     super(reasonCode);
   }
+}
+
+/**
+ * Authorize replay of the exact retained EIP-3009 bearer for the generated
+ * single-seller paywall profile.
+ *
+ * This is deliberately narrower than a generic "unused" policy: the resource
+ * must be the canonical `/x402/<jobId>` URL beneath the captured seller
+ * origin, the durable settlement binding and nonce must still match, and the
+ * caller's lease is checked on both sides of the decision. Concurrent copies
+ * remain safe because they carry the same EIP-3009 nonce and the generated
+ * seller uses one durable settlement/fulfilment authority for that job. No new
+ * authorization or payment identity is minted by this confirmer.
+ */
+export function createDacsX402ExactRetainedReplayConfirmerV1(
+  options: Readonly<DacsX402ExactRetainedReplayConfirmerOptionsV1>,
+): X402BuyerEvmUnusedConfirmer {
+  if (!plainObject(options) || typeof options.publicBaseUrl !== "string") {
+    throw new TypeError("x402 exact replay confirmer options are invalid");
+  }
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(options.publicBaseUrl);
+  } catch {
+    throw new TypeError("x402 exact replay confirmer public base URL is invalid");
+  }
+  if ((baseUrl.protocol !== "https:" && baseUrl.protocol !== "http:") ||
+      baseUrl.username !== "" || baseUrl.password !== "" ||
+      baseUrl.search !== "" || baseUrl.hash !== "") {
+    throw new TypeError("x402 exact replay confirmer public base URL is invalid");
+  }
+  const capturedOrigin = baseUrl.origin;
+  return async ({ intent, authorization, finalityHead, authorizationState, fence }) => {
+    await fence.assertCurrent();
+    let resource: URL;
+    try {
+      resource = new URL(intent.httpResource);
+    } catch {
+      return { disposition: "unsafe", reason: "retained-resource-invalid" };
+    }
+    const expectedPath = `/x402/${encodeURIComponent(intent.jobId)}`;
+    const safe = resource.origin === capturedOrigin &&
+      resource.pathname === expectedPath && resource.search === "" && resource.hash === "" &&
+      intent.method === "GET" && intent.bindingHash === fence.bindingHash &&
+      intent.settlementKey === fence.settlementKey &&
+      authorization.nonce.toLowerCase() === intent.authorizationNonce.toLowerCase() &&
+      authorizationState.used === false &&
+      authorizationState.blockNumber === finalityHead.blockNumber &&
+      authorizationState.blockHash === finalityHead.blockHash;
+    await fence.assertCurrent();
+    return safe
+      ? { disposition: "safe", bindingHash: intent.bindingHash }
+      : { disposition: "unsafe", reason: "retained-replay-binding-mismatch" };
+  };
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {

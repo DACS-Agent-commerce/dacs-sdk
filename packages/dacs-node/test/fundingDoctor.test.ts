@@ -4,6 +4,7 @@ import {
   inspectDacsDemosBalanceHeadroomV1,
   inspectDacsX402AssetBalanceV1,
   inspectDacsX402GasBalanceV1,
+  inspectDacsX402TokenDomainV1,
 } from "../src/fundingDoctor.js";
 
 function actor(role: "buyer" | "seller", input: Readonly<{
@@ -120,9 +121,53 @@ describe("x402 balance doctor", () => {
     return {
       getChainId: vi.fn(async () => input.chainId ?? 84_532),
       getAssetBalance: vi.fn(async () => input.asset ?? 1_000_000n),
+      getAssetTokenDomain: vi.fn(async () => ({ name: "USDC", version: "2" })),
       getNativeBalance: vi.fn(async () => input.gas ?? 1_000_000_000_000_000n),
     };
   }
+
+  it("authenticates the configured EIP-712 token domain on-chain", async () => {
+    const reader = client();
+    await expect(inspectDacsX402TokenDomainV1({
+      client: reader,
+      chainId: 84_532,
+      asset,
+      expected: { name: "USDC", version: "2" },
+    })).resolves.toEqual({
+      status: "pass",
+      facts: { domainName: "USDC", domainVersion: "2" },
+    });
+    reader.getAssetTokenDomain.mockResolvedValueOnce({ name: "USD Coin", version: "2" });
+    await expect(inspectDacsX402TokenDomainV1({
+      client: reader,
+      chainId: 84_532,
+      asset,
+      expected: { name: "USDC", version: "2" },
+    })).resolves.toEqual({
+      status: "fail",
+      reasonCode: "x402-token-domain-mismatch",
+      facts: { domainName: "USD Coin", domainVersion: "2" },
+    });
+  });
+
+  it("fails closed when token-domain metadata is unavailable or malformed", async () => {
+    const unavailable = client();
+    unavailable.getAssetTokenDomain.mockRejectedValueOnce(new Error("private RPC detail"));
+    await expect(inspectDacsX402TokenDomainV1({
+      client: unavailable, chainId: 84_532, asset,
+      expected: { name: "USDC", version: "2" },
+    })).resolves.toEqual({
+      status: "blocked", reasonCode: "x402-token-domain-unavailable",
+    });
+    const malformed = client();
+    malformed.getAssetTokenDomain.mockResolvedValueOnce({ name: "USDC" } as never);
+    await expect(inspectDacsX402TokenDomainV1({
+      client: malformed, chainId: 84_532, asset,
+      expected: { name: "USDC", version: "2" },
+    })).resolves.toEqual({
+      status: "fail", reasonCode: "x402-token-domain-invalid",
+    });
+  });
 
   it("checks exact token units and native gas independently", async () => {
     const reader = client();

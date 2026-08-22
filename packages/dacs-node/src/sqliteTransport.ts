@@ -23,6 +23,7 @@ import {
 } from "./transport/contracts.js";
 import {
   DACS_HTTP_MAX_FUTURE_SKEW_MS,
+  dacsHttpRequiredSenderRoleV1,
   verifyDacsHttpAcknowledgementBindingV1,
   verifyDacsHttpEnvelopeSelfSignatureV1,
   type DacsHttpAuthenticatedEnvelopeV1,
@@ -43,25 +44,6 @@ export interface DacsHttpSqliteContext {
   beginImmediate<T>(operation: () => T): T;
   readSnapshot<T>(operation: () => T): T;
   error(reasonCode: string, message: string): Error;
-}
-
-function requiredSenderRole(
-  envelope: Readonly<DacsHttpEnvelopeV1>,
-): "buyer" | "seller" | undefined {
-  switch (envelope.type) {
-    case "agreement-proposal":
-    case "payment-evidence-completion":
-    case "bundle-signature-response":
-    case "diagnostic-probe-buyer":
-      return "buyer";
-    case "agreement-response":
-    case "payment-evidence-request":
-    case "bundle-signature-request":
-    case "diagnostic-probe-seller":
-      return "seller";
-    case "acknowledgement":
-      return undefined;
-  }
 }
 
 interface InboxRow {
@@ -330,7 +312,7 @@ function inboxStored(
   }
   const authenticated = authenticatedEnvelope(context, value.authenticated, context.authority);
   const envelope = authenticated.envelope;
-  const senderRole = requiredSenderRole(envelope);
+  const senderRole = dacsHttpRequiredSenderRoleV1(envelope.type);
   if ((value.state !== "pending" && value.state !== "disposed") ||
       senderRole === undefined || authenticated.identityRole !== senderRole ||
       context.role === senderRole ||
@@ -373,7 +355,7 @@ function outboxStored(
     );
   }
   const verified = verifyDacsHttpEnvelopeSelfSignatureV1(value.envelope);
-  const senderRole = requiredSenderRole(value.envelope);
+  const senderRole = dacsHttpRequiredSenderRoleV1(value.envelope.type);
   if (verified.status !== "valid" || value.envelopeHash !== verified.authenticationHash ||
       !sameDemosAgentIdentity(value.envelope.sender, context.authority) ||
       value.envelope.type === "acknowledgement" ||
@@ -1004,7 +986,7 @@ export function createDacsHttpInboxSqliteStore(
             "Acknowledgements are recorded against the outbox, not admitted to the action inbox",
           );
         }
-        const senderRole = requiredSenderRole(authenticated.envelope);
+        const senderRole = dacsHttpRequiredSenderRoleV1(authenticated.envelope.type);
         if (senderRole === undefined || authenticated.identityRole !== senderRole ||
             senderRole === context.role) {
           throw context.error(
@@ -1212,7 +1194,7 @@ export function createDacsHttpOutboxSqliteStore(
       if (verified.status !== "valid" ||
           !sameDemosAgentIdentity(verified.envelope.sender, context.authority) ||
           verified.envelope.type === "acknowledgement" ||
-          requiredSenderRole(verified.envelope) !== context.role) {
+          dacsHttpRequiredSenderRoleV1(verified.envelope.type) !== context.role) {
         throw context.error("http-outbox-envelope-invalid", "HTTP outbox envelope is invalid");
       }
       return context.beginImmediate(() => {

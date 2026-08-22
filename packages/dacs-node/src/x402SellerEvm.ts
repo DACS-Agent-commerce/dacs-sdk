@@ -497,7 +497,14 @@ export function createDacsX402SellerEvmObserverV1(
       }
       return BigInt(finalityHead.timestampMs) >= BigInt(authorization.validBefore) * 1_000n
         ? { status: "failed", reason: "authorization-expired-unused" }
-        : { status: "pending", reason: "authorization-live-unsettled" };
+        : {
+            // The canonical chain proves this exact EIP-3009 nonce is still
+            // unused. Re-driving the byte-identical retained authorization is
+            // at-most-once even if an earlier facilitator request is still in
+            // flight: the token contract can consume this nonce only once.
+            status: "authoritatively-absent",
+            reason: "authorization-live-unused-exact-redrive-safe",
+          };
     } catch {
       return { status: "indeterminate", reason: "settlement-reconciliation-unavailable" };
     }

@@ -56,6 +56,7 @@ export interface DacsDemosAdapterV1 {
     getAddressInfo(address: string): Promise<unknown>;
   }>;
   connect(): Promise<void>;
+  getChainIdentity?(): Promise<string>;
   getAddress(): string;
   getPublicKey(): Promise<Uint8Array>;
   sign(bytes: Uint8Array): Promise<Uint8Array>;
@@ -108,6 +109,7 @@ export interface DacsDemosActorRuntimeV1 {
   /** Role-bound component signer; rejects substituted signer or algorithm context. */
   readonly signComponent: ComponentSigner;
   networkInfo(): Promise<unknown>;
+  chainIdentity?(): Promise<string>;
   addressNonce(): Promise<number>;
   addressInfo(): Promise<unknown>;
 }
@@ -320,6 +322,12 @@ export async function createDacsDemosActorRuntimeV1(
     signTransportEnvelope,
     signComponent,
     networkInfo: () => adapter.raw.getNetworkInfo(),
+    chainIdentity: async () => {
+      if (adapter.getChainIdentity === undefined) {
+        throw new DacsDemosRuntimeError("demos-chain-identity-unavailable");
+      }
+      return adapter.getChainIdentity();
+    },
     addressNonce: () => adapter.raw.getAddressNonce(walletAddress),
     addressInfo: () => adapter.raw.getAddressInfo(walletAddress),
   });

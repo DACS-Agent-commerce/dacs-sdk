@@ -29,6 +29,7 @@ import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import {
+  DacsSellerSessionAdmissionUnavailableError,
   createDacsBuyerSessionBootstrapTransportRuntimeV1,
   createDacsSellerSessionBootstrapTransportRuntimeV1,
 } from "../src/sessionBootstrapTransportRuntime.js";
@@ -491,6 +492,41 @@ describe("pre-agreement session bootstrap transport", () => {
     } as never)).resolves.toEqual({ disposition: "rejected",
       reasonCode: "session-init-envelope-invalid" });
     expect(value.admitInit).not.toHaveBeenCalled();
+
+    value.admitInit.mockImplementationOnce(() => {
+      throw Object.assign(new Error("blocked"), {
+        reasonCode: "listing-anchor-read-unavailable",
+      });
+    });
+    const blocked = await authenticated("session-init", init, {
+      sender: value.buyer,
+      audience: value.seller,
+      privateKey: value.buyerKeys.privateKey,
+      role: "buyer",
+      nonceByte: 8,
+    });
+    await expect(value.sellerRuntime.handleMessage(blocked, {
+      role: "seller", coordinator: { startOrder: value.startOrder },
+    } as never)).resolves.toEqual({ disposition: "rejected",
+      reasonCode: "listing-anchor-read-unavailable" });
+
+    value.admitInit.mockImplementationOnce(() => {
+      throw new DacsSellerSessionAdmissionUnavailableError(
+        "listing-registry-resolution-unavailable",
+      );
+    });
+    const unavailable = await authenticated("session-init", init, {
+      sender: value.buyer,
+      audience: value.seller,
+      privateKey: value.buyerKeys.privateKey,
+      role: "buyer",
+      nonceByte: 9,
+    });
+    await expect(value.sellerRuntime.handleMessage(unavailable, {
+      role: "seller", coordinator: { startOrder: value.startOrder },
+    } as never)).rejects.toMatchObject({
+      reasonCode: "listing-registry-resolution-unavailable",
+    });
 
     await value.buyerRuntime.publishInit(value.buyerOperation, init);
     const wrongChallenge = {

@@ -18,6 +18,7 @@ import {
   type FixedPriceX402ProtocolBinding,
   type FixedPriceX402TrackOperation,
 } from "@kynesyslabs/dacs/commerce";
+import BetterSqlite3 from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -195,6 +196,13 @@ describe("authority-separated live role services", () => {
     });
     databases.push(database);
     return database;
+  }
+
+  function advanceStoreClock(databasePath: string, value: number): void {
+    const raw = new BetterSqlite3(databasePath);
+    raw.prepare("UPDATE dacs_http_clock SET last_time = ? WHERE singleton = 1")
+      .run(value);
+    raw.close();
   }
 
   function options(
@@ -387,6 +395,7 @@ describe("authority-separated live role services", () => {
 
   it("adapts an advertised seller resource to the framework-neutral x402 paywall", async () => {
     const database = await open(root(), "seller");
+    const observeResult = vi.fn();
     const paywallHandle = vi.fn(async (input) => {
       expect(input.jobId).toBe(JOB_ID);
       expect(input.phaseIndex).toBe(2);
@@ -423,6 +432,7 @@ describe("authority-separated live role services", () => {
           pathname === `/deliver/${JOB_ID}/2`
         ? { status: "matched", jobId: JOB_ID, phaseIndex: 2 }
         : { status: "not-matched" },
+      observeResult,
     });
     const service = remember(createDacsSellerServiceV1(options("seller", database,
       undefined, {
@@ -439,6 +449,15 @@ describe("authority-separated live role services", () => {
     expect(response.headers.get("payment-required")).toBe("challenge");
     await expect(response.json()).resolves.toEqual({ payment: "required" });
     expect(paywallHandle).toHaveBeenCalledTimes(1);
+    expect(observeResult).toHaveBeenCalledWith({
+      jobId: JOB_ID,
+      phaseIndex: 2,
+      paymentPresented: true,
+      disposition: "payment-required",
+      settled: false,
+      reason: "payment-required",
+      responseStatus: 402,
+    });
   });
 
   it("rejects a stale successful readiness latch", async () => {
@@ -514,6 +533,47 @@ describe("authority-separated live role services", () => {
     await recoveredBuyer.start();
     await expect(recoveredBuyer.sendMessage(message)).resolves.toEqual(acknowledgement);
     expect(handled).toHaveBeenCalledTimes(1);
+  });
+
+  it("renews an expired unacknowledged semantic message after a restart", async () => {
+    const directory = root();
+    const databasePath = join(directory, "buyer.sqlite");
+    const buyerDatabase = await open(directory, "buyer");
+    const buyer = remember(createDacsBuyerServiceV1(options(
+      "buyer",
+      buyerDatabase,
+      "http://127.0.0.1:1/dacs-transport/v1/messages",
+    )));
+    await buyer.start();
+    const message = {
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      payload: {
+        proposal: { jobId: JOB_ID, label: "renewal-test" },
+        transportIdentity: { sender: BUYER, audience: SELLER },
+      } as never,
+      idempotencyKey: `agreement-proposal:${JOB_ID}:renewal-test`,
+      lifetimeMs: 1_000,
+    } as const;
+    await expect(buyer.sendMessage(message)).rejects.toBeDefined();
+    advanceStoreClock(databasePath, buyerDatabase.readTime() + 2_000);
+    await expect(buyer.sendMessage(message)).rejects.toBeDefined();
+
+    const raw = new BetterSqlite3(databasePath, { readonly: true });
+    const intents = raw.prepare(`
+      SELECT COUNT(*) AS count
+      FROM dacs_effects
+      WHERE effect_kind = 'session' AND job_id = ?
+        AND json_extract(input_json, '$.intentVersion') = '1'
+    `).get(JOB_ID) as { count: number };
+    const envelopes = raw.prepare(`
+      SELECT COUNT(DISTINCT envelope_id) AS count
+      FROM dacs_http_outbox
+      WHERE job_id = ?
+    `).get(JOB_ID) as { count: number };
+    raw.close();
+    expect(intents.count).toBe(2);
+    expect(envelopes.count).toBe(2);
   });
 
   it("handles reserved transport diagnostics without invoking application work", async () => {

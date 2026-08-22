@@ -219,6 +219,8 @@ describe("create-dacs-agent", () => {
     expect(await filesBelow(target)).toEqual(expect.arrayContaining([
       "src/cli.ts",
       "src/doctor.ts",
+      "src/funded-doctor.ts",
+      "src/local-lifecycle.ts",
       "src/purchase.ts",
       "src/setup.ts",
       "src/service.ts",
@@ -242,7 +244,7 @@ describe("create-dacs-agent", () => {
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
       tsx: "4.23.12",
-      "viem": "2.52.2",
+      "viem": "2.55.19",
     });
     expect(packageSource.scripts).toMatchObject({
       "dacs:doctor": expect.any(String),
@@ -276,6 +278,7 @@ describe("create-dacs-agent", () => {
     const expectedRuntimeUid = typeof process.getuid === "function" && process.getuid() > 0
       ? process.getuid() : 10001;
     expect(environmentExample).toContain(`DACS_RUNTIME_UID=${expectedRuntimeUid}`);
+    expect(environmentExample).toContain("DACS_DEPLOYMENT=docker");
     expect(environmentExample).not.toContain("DACS_SETUP_WRITE_CONFIRM");
     expect(environmentExample).not.toContain("DACS_PURCHASE_CONFIRM");
     expect(environmentExample).not.toContain("DACS_DOCTOR_FUNDED_CONFIRM");
@@ -312,6 +315,9 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("prepareDacsX402PurchaseV1");
     expect(combined).toContain("dacs-generated-purchase-request/v1");
     expect(combined).toContain("--resume-job");
+    expect(combined).toContain("resume: input.resume");
+    expect(combined).toContain("createDacsX402ExactRetainedReplayConfirmerV1");
+    expect(combined).toContain("startDacsLocalRoleServices");
     expect(combined).not.toContain('adapterStatus: "not-configured"');
     expect(combined).toContain("runDacsGuardedCommandV1");
     expect(combined).toContain("openDacsListingDiscoveryStoreV1");
@@ -323,6 +329,11 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsFixedPriceX402BuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceX402SellerLiveV1");
     expect(combined).toContain("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK");
+    expect(combined).toContain('finalityTag: "latest"');
+    expect(combined).toContain("minimumConfirmations: Number(finalityBlocks)");
+    expect(combined).toContain("inspectDacsX402TokenDomainV1");
+    expect(combined).toContain("DACS_X402_TOKEN_NAME=USDC");
+    expect(combined).not.toContain("DACS_X402_TOKEN_NAME=USD Coin");
     expect(combined).not.toContain('status: "not-configured"');
     expect(combined).toContain("createCommerceGraph: async");
     expect(combined).not.toContain("createOperations: () => Object.freeze({})");
@@ -330,6 +341,33 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("DACS_SETUP_WRITE_CONFIRM=1");
     expect(combined).toContain("DACS_PURCHASE_CONFIRM=1");
     expect(combined).toContain("DACS_DOCTOR_FUNDED_CONFIRM=1");
+    expect(combined).toContain("prepareDacsFundedDoctorV1");
+    expect(combined).toContain("createDacsFundedDoctorExecutorV1");
+    expect(combined).toContain("--resume-run");
+    expect(combined).toContain("reconciliation is read-only");
+    expect(combined).not.toContain("funded doctor adapter is not configured");
+  });
+
+  test("generates a real local role-service lifecycle when selected", async () => {
+    const parent = await temporaryDirectory();
+    const target = join(parent, "local-live-agent");
+    await createDacsAgentProject({
+      targetDirectory: target,
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "buyer",
+      deployment: "local",
+      install: false,
+    });
+    const environmentExample = await readFile(join(target, ".env.example"), "utf8");
+    const lifecycle = await readFile(join(target, "src/local-lifecycle.ts"), "utf8");
+    const cli = await readFile(join(target, "src/cli.ts"), "utf8");
+    expect(environmentExample).toContain("DACS_DEPLOYMENT=local");
+    expect(lifecycle).toContain('DACS_ROLE: role');
+    expect(lifecycle).toContain('process.kill(record.pid, "SIGTERM")');
+    expect(lifecycle).toContain("local-runtime-process-identity-mismatch");
+    expect(cli).toContain("startDacsLocalRoleServices");
+    expect(cli).toContain("stopDacsLocalRoleServices");
   });
 
   test("publishes the complete tree atomically across a nested-symlink race", async () => {

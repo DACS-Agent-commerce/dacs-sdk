@@ -161,6 +161,7 @@ describe("guarded x402 purchase queue", () => {
     });
     expect(prepared.plan).toMatchObject({
       kind: "purchase",
+      resume: false,
       serviceAmount: "0.5",
       estimatedNetworkFeeEth: "0",
       listingRef: value.listingRef,
@@ -204,7 +205,52 @@ describe("guarded x402 purchase queue", () => {
       status: "reconciled-performed",
       result: { jobId: prepared.plan.jobId, orderInputStatus: "existing" },
     });
-    expect(fence.assertCurrent).toHaveBeenCalledTimes(6);
+    expect(fence.assertCurrent).toHaveBeenCalledTimes(8);
+  });
+
+  it("never turns an explicit resume into a new retained purchase", async () => {
+    const value = await fixture();
+    const prepared = prepareDacsX402PurchaseV1({
+      admission: value.admission as never,
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
+      buyerAuthority: value.buyer,
+      payer: `0x${"1".repeat(40)}`,
+      request: { requestVersion: "1", query: "bounded test" },
+      maximumServiceAmount: "1",
+      maximumNetworkFeeEth: "0.001",
+      resume: true,
+    });
+    expect(prepared.plan.resume).toBe(true);
+    const root = mkdtempSync(join(tmpdir(), "dacs-purchase-resume-"));
+    roots.push(root);
+    const database = await openDacsNodeSqliteDatabase({
+      databasePath: join(root, "buyer.sqlite"),
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: value.buyer,
+    });
+    databases.push(database);
+    const executor = createDacsPurchaseQueueExecutorV1({
+      prepared,
+      database,
+      workerId: "buyer-resume-test",
+    });
+    await expect(executor({
+      plan: prepared.plan,
+      consent: {} as never,
+      fence: {
+        effectId: prepared.plan.effectId,
+        planHash: prepared.plan.planHash,
+        generation: 1,
+        idempotencyKey: "purchase-resume",
+        mode: "perform",
+        assertCurrent: async () => undefined,
+      },
+    })).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "purchase-resume-target-missing",
+    });
   });
 
   it("rejects loss of authenticated rail provenance before creating a plan", async () => {

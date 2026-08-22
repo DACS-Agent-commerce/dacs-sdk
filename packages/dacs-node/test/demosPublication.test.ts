@@ -176,7 +176,11 @@ describe("Demos immutable publication coordinator track", () => {
 
   it("publishes once and replays the authenticated outer SQLite result", async () => {
     const opened = await database();
-    const anchorWriteOnce = vi.fn(async () => ({
+    const anchorWriteOnce = vi.fn(async (
+      _logicalAddress: string,
+      _artifact: Readonly<Record<string, unknown>>,
+      _options?: Readonly<{ metadata?: Readonly<Record<string, string>> }>,
+    ) => ({
       address: "stor-test-payment-evidence",
       txRef: "tx-test-payment",
     }));
@@ -201,6 +205,11 @@ describe("Demos immutable publication coordinator track", () => {
     });
     await expect(track(operationInput())).resolves.toMatchObject({ status: "final" });
     expect(anchorWriteOnce).toHaveBeenCalledTimes(1);
+    expect(anchorWriteOnce.mock.calls[0]?.[2]).toEqual({ metadata: {
+      logicalAddress: LOGICAL_ADDRESS,
+      contentHash: CONTENT_HASH,
+      envelopeHash: sha256Hex(canonicalize(ARTIFACT)),
+    } });
   });
 
   it("recovers an ambiguous process result through the same journalled write identity", async () => {

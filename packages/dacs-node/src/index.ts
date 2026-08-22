@@ -12,6 +12,7 @@ export * from "./demosBundlePublication.js";
 export * from "./demosPublication.js";
 export * from "./events.js";
 export * from "./fundingDoctor.js";
+export * from "./fundedDoctor.js";
 export * from "./fixedPriceX402Profile.js";
 export * from "./fixedPriceX402BuyerCommerce.js";
 export * from "./fixedPriceX402BuyerAudit.js";

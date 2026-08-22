@@ -185,6 +185,7 @@ export function createDacsDemosPublicationTrackV1(
           metadata: {
             logicalAddress: captured.logicalAddress,
             contentHash: captured.contentHash,
+            envelopeHash: sha256Hex(canonicalize(captured.artifact)),
           },
         },
       );

@@ -40,6 +40,17 @@ export interface DacsX402HttpRequestFactsV1 {
   url: string;
 }
 
+/** Sanitized result metadata; it never includes authorization or response bodies. */
+export interface DacsX402HttpResultObservationV1 {
+  jobId: string;
+  phaseIndex: number;
+  paymentPresented: boolean;
+  disposition: X402PaywallResult<unknown>["disposition"];
+  settled: X402PaywallResult<unknown>["settled"];
+  reason: string;
+  responseStatus: number;
+}
+
 export interface DacsX402HttpHandlerOptionsV1<T = unknown> {
   paywall: Readonly<X402Paywall<T>>;
   /** Exact externally advertised origin used in the payer-signed resource URL. */
@@ -48,6 +59,7 @@ export interface DacsX402HttpHandlerOptionsV1<T = unknown> {
     request: Readonly<DacsX402HttpRequestFactsV1>,
     context: Readonly<DacsLiveRoleInboundContextV1>,
   ): Promise<DacsX402HttpRequestResolutionV1> | DacsX402HttpRequestResolutionV1;
+  observeResult?(result: Readonly<DacsX402HttpResultObservationV1>): void;
   maxResponseBytes?: number;
 }
 
@@ -225,7 +237,8 @@ export function createDacsX402ApplicationRequestHandlerV1<T = unknown>(
 ): DacsLiveRoleApplicationRequestHandlerV1 {
   if (!plainObject(options) || options.paywall === null ||
       typeof options.paywall !== "object" || typeof options.paywall.handle !== "function" ||
-      typeof options.resolveRequest !== "function") {
+      typeof options.resolveRequest !== "function" ||
+      (options.observeResult !== undefined && typeof options.observeResult !== "function")) {
     throw new TypeError("x402 HTTP handler options are invalid");
   }
   const baseUrl = captureBaseUrl(options.publicBaseUrl);
@@ -236,6 +249,7 @@ export function createDacsX402ApplicationRequestHandlerV1<T = unknown>(
   }
   const handle = options.paywall.handle.bind(options.paywall);
   const resolveRequest = options.resolveRequest.bind(options);
+  const observeResult = options.observeResult?.bind(options);
 
   return async (request, response, context) => {
     let url: URL;
@@ -284,6 +298,21 @@ export function createDacsX402ApplicationRequestHandlerV1<T = unknown>(
         phaseIndex: resolution.phaseIndex,
         request: httpAdapter(request, url),
       });
+      if (observeResult !== undefined) {
+        try {
+          observeResult(Object.freeze({
+            jobId: resolution.jobId,
+            phaseIndex: resolution.phaseIndex,
+            paymentPresented: header(request, "PAYMENT-SIGNATURE") !== undefined,
+            disposition: result.disposition,
+            settled: result.settled,
+            reason: result.reason,
+            responseStatus: result.response.status,
+          }));
+        } catch {
+          // Diagnostics are intentionally non-authoritative and off-path.
+        }
+      }
       writePaywallResult(response, result, maximumBytes);
     } catch {
       if (!response.headersSent) {

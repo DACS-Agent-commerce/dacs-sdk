@@ -243,7 +243,11 @@ describe("live payment-evidence runtime", () => {
     let sellerRuntime: ReturnType<typeof createDacsSellerPaymentEvidenceRuntimeV1>;
 
     let anchoredArtifact: Record<string, unknown> | undefined;
-    const anchorWriteOnce = vi.fn(async (logicalAddress: string, value: object) => {
+    const anchorWriteOnce = vi.fn(async (
+      logicalAddress: string,
+      value: object,
+      _options?: Readonly<{ metadata?: Readonly<Record<string, string>> }>,
+    ) => {
       anchoredArtifact = structuredClone(value) as Record<string, unknown>;
       return { address: `native:${logicalAddress}` };
     });
@@ -327,6 +331,11 @@ describe("live payment-evidence runtime", () => {
       reference: logicalAddress,
     });
     expect(anchorWriteOnce).toHaveBeenCalledOnce();
+    expect(anchorWriteOnce.mock.calls[0]?.[2]).toEqual({ metadata: {
+      logicalAddress,
+      contentHash: evidenceHash,
+      envelopeHash: sha256Hex(canonicalize(artifact)),
+    } });
     await expect(sellerRuntime.anchorEvidence(sellerOperation, input)).resolves.toMatchObject({
       disposition: "anchored",
       evidenceRef: { contentHash: evidenceHash },

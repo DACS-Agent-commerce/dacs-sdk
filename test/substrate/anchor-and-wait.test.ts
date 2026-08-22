@@ -959,6 +959,35 @@ describe("DemosAdapter.anchorAndWait", () => {
       state: "finalized",
       observationDisposition: "established",
     });
+    const historyTransaction = await raw.getTxByHash(anchored.txRef);
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
+      data: value,
+    });
+    raw.getTransactionHistory = vi.fn(async (
+      _owner: string,
+      _type: string,
+      options: { start: number; limit: number },
+    ) => options.start === 0 ? [historyTransaction] : []);
+    await expect(adapter.resolveDemosAnchorReceipt({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+    })).resolves.toMatchObject({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      transactionRef: { value: anchored.txRef },
+      state: "finalized",
+    });
+    expect(raw.getTransactionHistory).toHaveBeenCalledWith(
+      wallet,
+      "storageProgram",
+      { start: 0, limit: 100 },
+    );
     raw.getTxByHash.mockClear();
     raw.storagePrograms.read.mockResolvedValue({
       success: true,

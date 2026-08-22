@@ -289,7 +289,6 @@ async function authenticateState(
       rail.railVersion !== order.protocol.rail.railVersion ||
       `eip155:${rail.asset.chainId}` !== order.protocol.rail.network ||
       canonicalize(admission.application) !== canonicalize(application) ||
-      canonicalize(admission.authenticatedListing.rail) !== canonicalize(rail) ||
       result.commitment.recordKind !== "finality" ||
       result.commitment.record.signature.signer !== context.authority ||
       result.commitment.anchorReceipt.writer !== context.authority ||

@@ -16,6 +16,7 @@ export interface DacsDemosBalanceHeadroomOptionsV1 {
 export interface DacsX402BalanceReadClientV1 {
   getChainId(): Promise<unknown>;
   getAssetBalance(input: Readonly<{ asset: string; owner: string }>): Promise<unknown>;
+  getAssetTokenDomain(asset: string): Promise<unknown>;
   getNativeBalance(owner: string): Promise<unknown>;
 }
 
@@ -197,6 +198,12 @@ export async function createViemDacsX402BalanceReadClientV1(
   const balanceOf = [{ type: "function", name: "balanceOf", stateMutability: "view",
     inputs: [{ name: "account", type: "address" }],
     outputs: [{ name: "balance", type: "uint256" }] }] as const;
+  const tokenDomain = [
+    { type: "function", name: "name", stateMutability: "view", inputs: [],
+      outputs: [{ name: "", type: "string" }] },
+    { type: "function", name: "version", stateMutability: "view", inputs: [],
+      outputs: [{ name: "", type: "string" }] },
+  ] as const;
   return Object.freeze({
     getChainId: () => client.getChainId(),
     getAssetBalance: ({ asset, owner }: Readonly<{ asset: string; owner: string }>) =>
@@ -206,9 +213,71 @@ export async function createViemDacsX402BalanceReadClientV1(
       functionName: "balanceOf",
       args: [viem.getAddress(owner)],
     }),
+    async getAssetTokenDomain(asset: string) {
+      const address = viem.getAddress(asset);
+      const [name, version] = await Promise.all([
+        client.readContract({ address, abi: tokenDomain, functionName: "name" }),
+        client.readContract({ address, abi: tokenDomain, functionName: "version" }),
+      ]);
+      return Object.freeze({ name, version });
+    },
     getNativeBalance: (owner: string) =>
       client.getBalance({ address: viem.getAddress(owner) }),
   });
+}
+
+/**
+ * Authenticate the EIP-712 domain used by EIP-3009 signatures against the
+ * selected rail's token contract. A syntactically valid local override is not
+ * sufficient: a name/version mismatch makes every signed payment unusable.
+ */
+export async function inspectDacsX402TokenDomainV1(options: Readonly<{
+  client: Readonly<DacsX402BalanceReadClientV1>;
+  chainId: number;
+  asset: string;
+  expected: Readonly<{ name: string; version: string }>;
+}>): Promise<Readonly<DacsLiveDoctorProbeResultV1>> {
+  if (!dataRecord(options) || !dataRecord(options.client) ||
+      typeof options.client.getChainId !== "function" ||
+      typeof options.client.getAssetTokenDomain !== "function" ||
+      !Number.isSafeInteger(options.chainId) || options.chainId <= 0 ||
+      !EVM_ADDRESS_RE.test(options.asset) || !dataRecord(options.expected) ||
+      typeof options.expected.name !== "string" || options.expected.name.length === 0 ||
+      options.expected.name.length > 128 || options.expected.name.trim() !== options.expected.name ||
+      typeof options.expected.version !== "string" || options.expected.version.length === 0 ||
+      options.expected.version.length > 64 ||
+      options.expected.version.trim() !== options.expected.version) {
+    throw new TypeError("x402 token domain options are invalid");
+  }
+  let observedChain: unknown;
+  let observedDomain: unknown;
+  try {
+    [observedChain, observedDomain] = await Promise.all([
+      options.client.getChainId(),
+      options.client.getAssetTokenDomain(options.asset),
+    ]);
+  } catch {
+    return Object.freeze({ status: "blocked", reasonCode: "x402-token-domain-unavailable" });
+  }
+  if (observedChain !== options.chainId) {
+    return Object.freeze({ status: "fail", reasonCode: "x402-token-domain-chain-mismatch" });
+  }
+  if (!dataRecord(observedDomain) || typeof observedDomain.name !== "string" ||
+      observedDomain.name.length === 0 || observedDomain.name.length > 128 ||
+      observedDomain.name.trim() !== observedDomain.name ||
+      typeof observedDomain.version !== "string" || observedDomain.version.length === 0 ||
+      observedDomain.version.length > 64 ||
+      observedDomain.version.trim() !== observedDomain.version) {
+    return Object.freeze({ status: "fail", reasonCode: "x402-token-domain-invalid" });
+  }
+  const facts = Object.freeze({
+    domainName: observedDomain.name,
+    domainVersion: observedDomain.version,
+  });
+  return observedDomain.name === options.expected.name &&
+      observedDomain.version === options.expected.version
+    ? Object.freeze({ status: "pass", facts })
+    : Object.freeze({ status: "fail", reasonCode: "x402-token-domain-mismatch", facts });
 }
 
 export async function inspectDacsX402AssetBalanceV1(options: Readonly<{

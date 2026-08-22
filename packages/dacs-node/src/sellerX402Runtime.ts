@@ -110,6 +110,7 @@ export interface DacsSellerX402RuntimeOptionsV1<T = unknown> {
   }>;
   retryDelayMs?: number;
   maxResponseBytes?: number;
+  observeHttpResult?: DacsX402HttpHandlerOptionsV1<T>["observeResult"];
   /** Deterministic test/custom-host seam. Production uses the public SDK factory. */
   createPaywall?: typeof createX402Paywall;
 }
@@ -366,6 +367,8 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
       typeof options.authorizePaymentComplete !== "function" ||
       (options.classifySettlementFailure !== undefined &&
         typeof options.classifySettlementFailure !== "function") ||
+      (options.observeHttpResult !== undefined &&
+        typeof options.observeHttpResult !== "function") ||
       (options.createPaywall !== undefined && typeof options.createPaywall !== "function")) {
     throw new TypeError("seller x402 runtime options are invalid");
   }
@@ -807,6 +810,8 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
       paywall,
       publicBaseUrl: options.publicBaseUrl,
       resolveRequest: options.resolveHttpRequest,
+      ...(options.observeHttpResult === undefined
+        ? {} : { observeResult: options.observeHttpResult }),
       ...(options.maxResponseBytes === undefined
         ? {} : { maxResponseBytes: options.maxResponseBytes }),
     }),

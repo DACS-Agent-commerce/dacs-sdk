@@ -44,6 +44,7 @@ export interface DacsFixedPriceX402SellerRuntimeOptionsV1 {
   retryDelayMs?: number;
   leaseTtlMs?: number;
   maxResponseBytes?: number;
+  observeHttpResult?: DacsSellerX402RuntimeOptionsV1<unknown>["observeHttpResult"];
 }
 
 export interface DacsFixedPriceX402SellerX402CompositionV1 {
@@ -145,6 +146,8 @@ export function createDacsFixedPriceX402SellerX402CompositionV1(
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
     ...(options.maxResponseBytes === undefined
       ? {} : { maxResponseBytes: options.maxResponseBytes }),
+    ...(options.observeHttpResult === undefined
+      ? {} : { observeHttpResult: options.observeHttpResult }),
   };
   return Object.freeze({
     settlement,

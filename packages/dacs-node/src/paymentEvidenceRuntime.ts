@@ -280,6 +280,7 @@ async function publishBuyerDemosEvidence(
         metadata: {
           logicalAddress: input.logicalAddress,
           contentHash: input.evidenceHash,
+          envelopeHash: sha256Hex(canonicalize(input.evidence)),
         },
       },
     );
