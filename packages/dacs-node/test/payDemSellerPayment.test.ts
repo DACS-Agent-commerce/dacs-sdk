@@ -30,7 +30,11 @@ import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import { createDacsPayDemPaymentNoticeV1 } from "../src/payDemPayment.js";
 import type { DacsRetainedPayDemPaymentNoticeV1 } from
   "../src/payDemPaymentNoticeRuntime.js";
-import { createDacsPayDemSellerPaymentTrackV1 } from
+import {
+  createDacsPayDemSellerPaymentTrackV1,
+  loadDacsPayDemSellerPaymentAuthorizationForOrderV1,
+  loadDacsPayDemSellerPaymentResultForOrderV1,
+} from
   "../src/payDemSellerPayment.js";
 import {
   openDacsNodeSqliteDatabase,
@@ -425,5 +429,47 @@ describe("native DEM seller payment track", () => {
 
     expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "final", outcome: "success" });
+    const resumedOrder = await restarted.createPayDemCoordinatorStore("seller")
+      .load("seller", JOB_ID);
+    if (resumedOrder.status !== "ok") throw new Error("resumed order missing");
+    const result = loadDacsPayDemSellerPaymentResultForOrderV1({
+      role: "seller",
+      authority: SELLER,
+      peerAuthority: BUYER,
+      database: restarted,
+    }, resumedOrder.record);
+    expect(result).toMatchObject({
+      jobId: JOB_ID,
+      railId: PROTOCOL.rail.railId,
+      txHash: TX_HASH,
+      blockNumber: 88,
+      evidenceHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      permitId: expect.any(String),
+    });
+    const recovered = await loadDacsPayDemSellerPaymentAuthorizationForOrderV1({
+      role: "seller",
+      authority: SELLER,
+      peerAuthority: BUYER,
+      database: restarted,
+      commerceStores: {
+        role: "seller",
+        sellerReceipts: durableReceipts,
+      },
+    } as never, resumedOrder.record);
+    expect(recovered.result).toEqual(result);
+    expect(recovered.authorization).toMatchObject({
+      jobId: JOB_ID,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+      railId: PROTOCOL.rail.railId,
+      settlementIdentity: {
+        kind: "demos",
+        txHash: TX_HASH,
+        blockNumber: 88,
+      },
+      evidenceInput: {
+        phase: "pay-dem",
+        paymentAmount: { amount: "1.25", currency: "DEM" },
+      },
+    });
   });
 });

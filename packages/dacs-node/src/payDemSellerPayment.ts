@@ -1,12 +1,14 @@
 import { baseUnits, canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
   FixedPricePayDemOrderInput,
+  FixedPricePayDemOrderRecord,
   FixedPricePayDemTrackOperation,
   FixedPricePayDemTrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
 import { parseCanonicalClaimReference } from "@kynesyslabs/dacs/identity";
 import {
   verifySellerPaymentIntake,
+  type SellerPaymentAuthorization,
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeResult,
 } from "@kynesyslabs/dacs/seller";
@@ -26,6 +28,7 @@ import {
   captureDacsRetainedPayDemPaymentNoticeV1,
   type DacsRetainedPayDemPaymentNoticeV1,
 } from "./payDemPaymentNoticeRuntime.js";
+import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -250,6 +253,124 @@ function captureVerified(
   });
 }
 
+function captureResult(value: unknown): Readonly<DacsPayDemSellerPaymentResultV1> {
+  if (!plainObject(value) || !exactFields(value, [
+    "paymentResultVersion", "jobId", "phaseIndex", "railId", "agreementHash",
+    "settlementId", "txHash", "blockNumber", "observedAt", "evidenceHash",
+    "permitId", "noticeHash",
+  ]) || value.paymentResultVersion !== "1" || !nonEmpty(value.jobId) ||
+      !Number.isSafeInteger(value.phaseIndex) || Number(value.phaseIndex) < 0 ||
+      !nonEmpty(value.railId) || typeof value.agreementHash !== "string" ||
+      !HASH_RE.test(value.agreementHash) || !nonEmpty(value.settlementId) ||
+      typeof value.txHash !== "string" || !HASH_RE.test(value.txHash) ||
+      !Number.isSafeInteger(value.blockNumber) || Number(value.blockNumber) < 0 ||
+      !Number.isSafeInteger(value.observedAt) || Number(value.observedAt) < 0 ||
+      typeof value.evidenceHash !== "string" || !HASH_RE.test(value.evidenceHash) ||
+      !nonEmpty(value.permitId) || typeof value.noticeHash !== "string" ||
+      !HASH_RE.test(value.noticeHash)) {
+    throw new DacsPayDemSellerPaymentError("pay-dem-seller-payment-result-invalid");
+  }
+  return Object.freeze(JSON.parse(canonicalize(value)) as DacsPayDemSellerPaymentResultV1);
+}
+
+function authorizationMatchesResult(
+  authorization: Readonly<SellerPaymentAuthorization>,
+  result: Readonly<DacsPayDemSellerPaymentResultV1>,
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): boolean {
+  const identity = authorization.settlementIdentity;
+  const txRef = authorization.evidenceInput.paymentTxRefs[0];
+  return authorization.jobId === order.jobId &&
+    authorization.phaseIndex === result.phaseIndex &&
+    authorization.agreementHash === result.agreementHash &&
+    authorization.railId === order.protocol.rail.railId &&
+    authorization.railId === result.railId &&
+    authorization.settlementId === result.settlementId &&
+    authorization.evidenceHash === result.evidenceHash &&
+    authorization.payoutBindingTier === 1 &&
+    identity.kind === "demos" && identity.txHash === result.txHash &&
+    identity.blockNumber === result.blockNumber &&
+    identity.includedAt === result.observedAt &&
+    authorization.evidenceInput.phase === "pay-dem" &&
+    authorization.evidenceInput.paymentAmount.currency === "DEM" &&
+    authorization.evidenceInput.paymentTxRefs.length === 1 &&
+    txRef?.kind === "demos" && txRef.txHash === result.txHash &&
+    txRef.blockNumber === result.blockNumber;
+}
+
+function paymentEffectId(order: Readonly<FixedPricePayDemOrderRecord>): string {
+  return sha256Hex(canonicalize({
+    localBindingHash: order.localBindingHash,
+    role: "seller",
+    track: "payment",
+    roleLocalJob: order.sdkJobs.payment,
+  }));
+}
+
+/**
+ * Recover the exact completed native-payment result selected by the durable
+ * seller coordinator. This exposes only the opaque permit id; the authority
+ * behind it remains in the receipt store.
+ */
+export function loadDacsPayDemSellerPaymentResultForOrderV1(
+  context: Readonly<{
+    role: "buyer" | "seller";
+    authority: string;
+    peerAuthority: string;
+    database: DacsNodeSqliteDatabase;
+  }>,
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): Readonly<DacsPayDemSellerPaymentResultV1> {
+  if (context.role !== "seller" || order.role !== "seller" ||
+      order.seller !== context.authority || order.buyer !== context.peerAuthority ||
+      order.protocol.phase !== "pay-dem") {
+    throw new DacsPayDemSellerPaymentError("pay-dem-seller-payment-order-mismatch");
+  }
+  const effect = context.database.loadEffect("payment", paymentEffectId(order));
+  if (effect === undefined || effect.state !== "completed" ||
+      effect.bindingHash !== order.localBindingHash || effect.result === undefined) {
+    throw new DacsPayDemSellerPaymentError("pay-dem-seller-payment-result-pending");
+  }
+  const result = captureResult(effect.result);
+  if (result.jobId !== order.jobId || result.railId !== order.protocol.rail.railId) {
+    throw new DacsPayDemSellerPaymentError("pay-dem-seller-payment-result-corrupt");
+  }
+  return result;
+}
+
+/**
+ * Resolve the authoritative native payment facts retained behind the opaque
+ * one-shot permit. Read-only inspection grants no fulfilment authority; the
+ * durable fulfilment core must still atomically consume the exact permit and
+ * its complete handoff before invoking application work.
+ */
+export async function loadDacsPayDemSellerPaymentAuthorizationForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): Promise<Readonly<{
+  result: Readonly<DacsPayDemSellerPaymentResultV1>;
+  authorization: Readonly<SellerPaymentAuthorization>;
+}>> {
+  if (context.role !== "seller" || context.commerceStores.role !== "seller" ||
+      typeof context.commerceStores.sellerReceipts.inspectPermit !== "function") {
+    throw new DacsPayDemSellerPaymentError("pay-dem-seller-payment-store-invalid");
+  }
+  const result = loadDacsPayDemSellerPaymentResultForOrderV1(context, order);
+  const inspection = await context.commerceStores.sellerReceipts.inspectPermit(
+    result.permitId,
+  );
+  if (inspection.status === "invalid" ||
+      !authorizationMatchesResult(inspection.claim.authorization, result, order)) {
+    throw new DacsPayDemSellerPaymentError("pay-dem-seller-payment-authorization-invalid");
+  }
+  return Object.freeze({
+    result,
+    authorization: Object.freeze(
+      JSON.parse(canonicalize(inspection.claim.authorization)) as SellerPaymentAuthorization,
+    ),
+  });
+}
+
 function executionControl(
   result: Readonly<SellerPaymentIntakeResult>,
 ): DacsLiveEffectExecutionControlV1 {
@@ -415,19 +536,10 @@ export function createDacsPayDemSellerPaymentTrackV1(
       },
     },
     projectResult(value) {
-      if (value.paymentResultVersion !== "1" || !nonEmpty(value.jobId) ||
-          !Number.isSafeInteger(value.phaseIndex) || value.phaseIndex < 0 ||
-          !nonEmpty(value.railId) || !HASH_RE.test(value.agreementHash) ||
-          !nonEmpty(value.settlementId) || !HASH_RE.test(value.txHash) ||
-          !Number.isSafeInteger(value.blockNumber) || value.blockNumber < 0 ||
-          !Number.isSafeInteger(value.observedAt) || value.observedAt < 0 ||
-          !HASH_RE.test(value.evidenceHash) || !nonEmpty(value.permitId) ||
-          !HASH_RE.test(value.noticeHash)) {
-        throw new DacsPayDemSellerPaymentError("pay-dem-seller-payment-result-invalid");
-      }
+      const captured = captureResult(value);
       return Object.freeze({
-        reference: `demos:${value.txHash}:${value.blockNumber}`,
-        authenticationHash: value.evidenceHash,
+        reference: `demos:${captured.txHash}:${captured.blockNumber}`,
+        authenticationHash: captured.evidenceHash,
       });
     },
     ...(options.effectLeaseDurationMs === undefined
