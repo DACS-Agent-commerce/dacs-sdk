@@ -134,4 +134,3 @@ describe("fixed-price pay-dem coordinator", () => {
       .not.toBe(fixedPricePayDemOrderLocalBindingHash(sellerOrder));
   });
 });
-

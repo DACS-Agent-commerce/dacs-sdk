@@ -130,4 +130,3 @@ export function fixedPricePayDemProtocolBindingHash(
     orchestrator: parseCanonicalClaimReference(captured.orchestrator)!.identity,
   }));
 }
-
