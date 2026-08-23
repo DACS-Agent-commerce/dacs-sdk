@@ -30,6 +30,8 @@ import {
 } from "@kynesyslabs/dacs/negotiate";
 import type { DurableSellerFixedPriceAgreementResponse } from "@kynesyslabs/dacs/seller";
 
+import type { DacsPayDemPaymentNoticeV1 } from "../payDemPayment.js";
+
 export const DACS_HTTP_TRANSPORT_PATH = "/dacs-transport/v1/messages" as const;
 export const DACS_HTTP_ENVELOPE_VERSION = "1" as const;
 export const DACS_HTTP_ENVELOPE_ID_DOMAIN =
@@ -48,6 +50,7 @@ export const DACS_HTTP_MESSAGE_TYPES = Object.freeze([
   "session-admission",
   "agreement-proposal",
   "agreement-response",
+  "pay-dem-payment-notice",
   "payment-evidence-request",
   "payment-evidence-completion",
   "bundle-signature-request",
@@ -131,6 +134,7 @@ export interface DacsHttpPayloadByType {
   "session-admission": DacsSessionAdmissionPayloadV1;
   "agreement-proposal": DacsAgreementProposalPayloadV1;
   "agreement-response": DurableSellerFixedPriceAgreementResponse;
+  "pay-dem-payment-notice": DacsPayDemPaymentNoticeV1;
   "payment-evidence-request": PaymentEvidenceAnchorRequest;
   "payment-evidence-completion": PaymentEvidenceAnchorCompletion;
   "bundle-signature-request": DacsBundleSignatureRequestV1;
@@ -291,6 +295,7 @@ const REQUIRED_SENDER_ROLE = Object.freeze({
   "session-admission": "seller",
   "agreement-proposal": "buyer",
   "agreement-response": "seller",
+  "pay-dem-payment-notice": "buyer",
   "payment-evidence-request": "seller",
   "payment-evidence-completion": "buyer",
   "bundle-signature-request": "seller",

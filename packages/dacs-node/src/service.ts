@@ -34,6 +34,7 @@ import {
   dacsHttpPayloadHashV1,
   generateDacsHttpNonceV1,
   type DacsHttpAuthenticatedEnvelopeV1,
+  type DacsHttpEnvelopeFor,
   type DacsHttpEnvelopeV1,
   type DacsHttpEnvelopeSigner,
   type DacsHttpIdentityResolverV1,
@@ -131,6 +132,10 @@ export interface DacsLiveRoleRuntimeContextV1 {
   readonly role: DacsLiveRole;
   readonly authority: string;
   readonly peerAuthority: string;
+  /** Sign and durably retain a message for background delivery. */
+  queueMessage<Type extends DacsLiveOutboundMessageType>(
+    input: Readonly<DacsLiveRoleSendInputV1<Type>>,
+  ): Promise<Readonly<DacsHttpEnvelopeFor<Type>>>;
   sendMessage<Type extends DacsLiveOutboundMessageType>(
     input: Readonly<DacsLiveRoleSendInputV1<Type>>,
     options?: Readonly<{ signal?: AbortSignal }>,
@@ -219,6 +224,9 @@ export interface DacsLiveRoleServiceV1 {
   stop(): Promise<void>;
   startOrder(order: Readonly<FixedPriceX402OrderInput>): Promise<FixedPriceX402OrderStatus>;
   getOrderStatus(jobId: string): Promise<FixedPriceX402OrderStatus | null>;
+  queueMessage<Type extends DacsLiveOutboundMessageType>(
+    input: Readonly<DacsLiveRoleSendInputV1<Type>>,
+  ): Promise<Readonly<DacsHttpEnvelopeFor<Type>>>;
   sendMessage<Type extends DacsLiveOutboundMessageType>(
     input: Readonly<DacsLiveRoleSendInputV1<Type>>,
     options?: Readonly<{ signal?: AbortSignal }>,
@@ -246,6 +254,7 @@ const OUTBOUND_BY_ROLE: Readonly<
     "session-init",
     "session-presentation",
     "agreement-proposal",
+    "pay-dem-payment-notice",
     "payment-evidence-completion",
     "bundle-signature-response",
     "diagnostic-probe-buyer",
@@ -763,9 +772,8 @@ export function createDacsLiveRoleServiceV1(
     }
   };
 
-  const sendMessage: DacsLiveRoleRuntimeContextV1["sendMessage"] = async (
+  const queueMessage: DacsLiveRoleRuntimeContextV1["queueMessage"] = async (
     input,
-    options = {},
   ) => {
     if (lifecycle !== "starting" && lifecycle !== "running") {
       throw new DacsLiveRoleServiceError("service-not-running");
@@ -890,10 +898,24 @@ export function createDacsLiveRoleServiceV1(
       nonce: intent.nonce,
       payload: intent.payload as never,
     }, signTransportEnvelope) as Readonly<DacsHttpEnvelopeV1>;
-    const acknowledgement = await client.send(
-      signed as Readonly<DacsHttpEnvelopeV1>,
-      options,
-    );
+    await client.queue(signed);
+    await emit("info", "transport", "transport-message-queued", {
+      jobId: input.jobId,
+      details: { messageType: input.type },
+    });
+    return signed as Readonly<DacsHttpEnvelopeFor<typeof input.type>>;
+  };
+
+  const sendMessage: DacsLiveRoleRuntimeContextV1["sendMessage"] = async (
+    input,
+    options = {},
+  ) => {
+    const signed = await queueMessage(input);
+    const dispatched = await client.dispatch(signed.envelopeId, options);
+    if (dispatched.status !== "acknowledged") {
+      throw new DacsLiveRoleServiceError(dispatched.reasonCode);
+    }
+    const acknowledgement = dispatched.acknowledgement;
     await emit("info", "transport", "transport-message-acknowledged", {
       jobId: input.jobId,
       details: {
@@ -910,6 +932,7 @@ export function createDacsLiveRoleServiceV1(
     role,
     authority,
     peerAuthority,
+    queueMessage,
     sendMessage,
   });
   const coordinatorOperations = createOperations(runtimeContext);
@@ -1290,6 +1313,7 @@ export function createDacsLiveRoleServiceV1(
       return created;
     },
     getOrderStatus: (jobId) => coordinator.getOrderStatus(jobId),
+    queueMessage,
     sendMessage,
     runOnce,
     health,

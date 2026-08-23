@@ -403,6 +403,15 @@ export async function createDacsLiveRoleRuntimeV1(
     let commerceGraph: Readonly<DacsLiveRoleCommerceGraphV1> | undefined;
     let commerceOperations: Readonly<FixedPriceX402Operations> | undefined;
     if (graphMode) {
+      const deferredQueueMessage: DacsLiveRoleRuntimeContextV1["queueMessage"] =
+        (input) => {
+          if (service === undefined) {
+            return Promise.reject(new DacsLiveRoleRuntimeError(
+              "role-service-send-before-initialization",
+            ));
+          }
+          return service.queueMessage(input);
+        };
       const deferredSendMessage: DacsLiveRoleRuntimeContextV1["sendMessage"] =
         (input, sendOptions) => {
           if (service === undefined) {
@@ -416,6 +425,7 @@ export async function createDacsLiveRoleRuntimeV1(
         role,
         authority: rawOptions.authority,
         peerAuthority: rawOptions.peerAuthority,
+        queueMessage: deferredQueueMessage,
         sendMessage: deferredSendMessage,
       }));
       const created = await rawOptions.createCommerceGraph!(establishedOperationContext);

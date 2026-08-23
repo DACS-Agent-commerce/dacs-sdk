@@ -60,6 +60,17 @@ export interface DacsPayDemBuyerPaymentResultV1 {
   settlement: Readonly<SettleResult>;
 }
 
+/**
+ * Authenticated operational handoff from the native DEM buyer to the seller.
+ * The seller treats every field except the transaction hash as an asserted
+ * binding and independently reconstructs the finalized transfer from Demos.
+ */
+export interface DacsPayDemPaymentNoticeV1 {
+  paymentNoticeVersion: "1";
+  payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
+  settlement: Readonly<SettleResult>;
+}
+
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | {
       status: "completed";
@@ -85,6 +96,14 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
     fence: Readonly<DacsLiveEffectFenceV1>;
   }>): Promise<DacsPayDemBuyerChainReconciliationV1> |
     DacsPayDemBuyerChainReconciliationV1;
+  /**
+   * Durably queue the authenticated seller notice. Returning means the notice
+   * can survive process loss; a peer acknowledgement is not required here.
+   */
+  publishNotice(input: Readonly<{
+    notice: Readonly<DacsPayDemPaymentNoticeV1>;
+    fence: Readonly<DacsLiveEffectFenceV1>;
+  }>): Promise<void> | void;
   effectLeaseDurationMs?: number;
   retryDelayMs?: number;
 }
@@ -279,6 +298,36 @@ function result(settlement: Readonly<SettleResult>): DacsPayDemBuyerPaymentResul
   return Object.freeze({ paymentResultVersion: "1", settlement });
 }
 
+export function createDacsPayDemPaymentNoticeV1(
+  payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+  settlement: Readonly<SettleResult>,
+): Readonly<DacsPayDemPaymentNoticeV1> {
+  const capturedPayment = capturePaymentInput(payment);
+  const capturedSettlement = captureSettlement(settlement, capturedPayment);
+  return Object.freeze({
+    paymentNoticeVersion: "1",
+    payment: capturedPayment,
+    settlement: capturedSettlement,
+  });
+}
+
+export function isDacsPayDemPaymentNoticeV1(
+  value: unknown,
+): value is Readonly<DacsPayDemPaymentNoticeV1> {
+  if (!plainObject(value) || !exactKeys(value, [
+    "paymentNoticeVersion", "payment", "settlement",
+  ]) || value.paymentNoticeVersion !== "1") return false;
+  try {
+    createDacsPayDemPaymentNoticeV1(
+      value.payment as DacsPayDemBuyerPaymentInputV1,
+      value.settlement as SettleResult,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function control(reasonCode: string): DacsLiveEffectExecutionControlV1 {
   return Object.freeze({
     effectControlVersion: "1",
@@ -340,6 +389,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
       canonicalAddress(options.rail.address) === null ||
       typeof options.resolveAuthority !== "function" ||
       typeof options.reconcile !== "function" ||
+      typeof options.publishNotice !== "function" ||
       options.database.metadata.mode !== "live-demos" ||
       options.database.metadata.role !== "buyer") {
     throw new TypeError("pay-dem buyer payment track options are invalid");
@@ -394,6 +444,10 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             assertCurrentBeforeBroadcast: () => fence.assertCurrent(),
           });
           settlement = captureSettlement(raw, payment);
+          await options.publishNotice({
+            notice: createDacsPayDemPaymentNoticeV1(payment, settlement),
+            fence,
+          });
         } catch {
           return control("pay-dem-settlement-ambiguous");
         }
@@ -415,7 +469,24 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           ...(prepared === undefined ? {} : { prepared }),
           fence,
         });
-        return captureChainReconciliation(reconciled, payment);
+        const captured = captureChainReconciliation(reconciled, payment);
+        if (captured.status === "completed") {
+          try {
+            await options.publishNotice({
+              notice: createDacsPayDemPaymentNoticeV1(
+                payment,
+                captured.result.settlement,
+              ),
+              fence,
+            });
+          } catch {
+            return Object.freeze({
+              status: "indeterminate" as const,
+              reasonCode: "pay-dem-payment-notice-pending",
+            });
+          }
+        }
+        return captured;
       },
     },
     projectResult(value) {

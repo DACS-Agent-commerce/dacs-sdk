@@ -158,6 +158,14 @@ describe("native DEM buyer payment track", () => {
       rail,
       resolveAuthority: () => AUTHORITY,
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+      publishNotice: ({ notice }) => {
+        expect(notice).toMatchObject({
+          paymentNoticeVersion: "1",
+          payment: { jobId: JOB_ID, amountOs: AUTHORITY.amountOs },
+          settlement: { txHash: TX_HASH, blockNumber: 42 },
+        });
+        events.push("notice-queued");
+      },
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
       store: database.createPayDemCoordinatorStore("buyer"),
@@ -173,12 +181,12 @@ describe("native DEM buyer payment track", () => {
     await coordinator.startOrder(ORDER);
     await coordinator.runPending({ limit: 2 });
 
-    expect(events).toEqual(["journal-committed", "broadcast"]);
+    expect(events).toEqual(["journal-committed", "broadcast", "notice-queued"]);
     expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "final", outcome: "success" });
   });
 
-  it("reconciles the original checkpoint after restart without settling again", async () => {
+  it("reconciles after notice queue failure without settling again", async () => {
     const databasePath = join(root(), "buyer.sqlite");
     const first = await open(databasePath);
     putDacsLiveOrderInputV1({ database: first, order: ORDER, application: {} });
@@ -196,7 +204,16 @@ describe("native DEM buyer payment track", () => {
           recovery: input.recovery!,
         });
         await input.assertCurrentBeforeBroadcast!();
-        throw new Error("broadcast response lost");
+        return {
+          ok: true,
+          txHash: TX_HASH,
+          chainId: "demos",
+          payer: PAYER,
+          payee: PAYEE,
+          finality: { model: "bft-final" },
+          blockNumber: 43,
+          txRefKind: "demos",
+        };
       },
     };
     const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
@@ -205,6 +222,9 @@ describe("native DEM buyer payment track", () => {
       rail: firstRail,
       resolveAuthority: () => AUTHORITY,
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
+      publishNotice: async () => {
+        throw new Error("notice queue unavailable");
+      },
       retryDelayMs: 1,
     });
     const initial = createFixedPricePayDemBuyerCoordinator({
@@ -239,12 +259,14 @@ describe("native DEM buyer payment track", () => {
         amountOs: AUTHORITY.amountOs,
       },
     }));
+    const publishNotice = vi.fn();
     const resumedPayment = createDacsPayDemBuyerPaymentTrackV1({
       database: restarted,
       workerId: "buyer-dem-after-restart",
       rail: { address: PAYER, settle },
       resolveAuthority: () => AUTHORITY,
       reconcile,
+      publishNotice,
       retryDelayMs: 1,
     });
     const resumed = createFixedPricePayDemBuyerCoordinator({
@@ -257,6 +279,18 @@ describe("native DEM buyer payment track", () => {
     expect(settle).not.toHaveBeenCalled();
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({
       prepared: expect.objectContaining({ txHash: TX_HASH, nonce: 9 }),
+    }));
+    expect(publishNotice).toHaveBeenCalledWith(expect.objectContaining({
+      notice: expect.objectContaining({ settlement: {
+        ok: true,
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: PAYEE,
+        finality: { model: "bft-final" },
+        blockNumber: 43,
+        txRefKind: "demos",
+      } }),
     }));
     expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "final", outcome: "success" });

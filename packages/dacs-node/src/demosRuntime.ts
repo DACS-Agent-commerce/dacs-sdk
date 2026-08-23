@@ -41,6 +41,7 @@ const ROLE_BY_MESSAGE: Readonly<
   "session-admission": "seller",
   "agreement-proposal": "buyer",
   "agreement-response": "seller",
+  "pay-dem-payment-notice": "buyer",
   "payment-evidence-request": "seller",
   "payment-evidence-completion": "buyer",
   "bundle-signature-request": "seller",
