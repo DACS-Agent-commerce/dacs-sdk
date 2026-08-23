@@ -25,6 +25,10 @@ describe("createDacsPublicHttpsFetchV1", () => {
     ["https://169.254.169.254/latest/meta-data/", ["169.254.169.254"]],
     ["https://[::1]/pay", ["::1"]],
     ["https://[::ffff:127.0.0.1]/pay", ["::ffff:127.0.0.1"]],
+    ["https://[4000::1]/pay", ["4000::1"]],
+    ["https://[3000::1]/pay", ["3000::1"]],
+    ["https://[3fff::1]/pay", ["3fff::1"]],
+    ["https://[2001:1000::1]/pay", ["2001:1000::1"]],
     ["https://seller.example/pay", ["8.8.8.8", "10.0.0.1"]],
   ])("refuses unsafe target %s before request", async (url, addresses) => {
     const deps = dependencies(addresses);
