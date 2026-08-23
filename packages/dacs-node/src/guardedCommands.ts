@@ -545,7 +545,9 @@ export function createDacsFundedDoctorPlanV1(input: Readonly<{
   });
 }
 
-function captureGuardedPlan(plan: unknown): Readonly<DacsGuardedPlanV1> | undefined {
+export function captureDacsGuardedPlanV1(
+  plan: unknown,
+): Readonly<DacsGuardedPlanV1> | undefined {
   try {
     if (plan === null || typeof plan !== "object") return undefined;
     const kindDescriptor = Object.getOwnPropertyDescriptor(plan, "kind");
@@ -880,7 +882,7 @@ export async function runDacsGuardedCommandV1(
     "execute", "confirmation", "nonInteractive", "confirm", "now",
     "doctorMaxAgeMs", "leaseDurationMs",
   ]);
-  const plan = captureGuardedPlan(source.plan);
+  const plan = captureDacsGuardedPlanV1(source.plan);
   const doctorReports = Array.isArray(source.doctorReports)
     ? Object.freeze([...source.doctorReports])
     : undefined;

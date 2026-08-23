@@ -47,6 +47,7 @@ import {
   sha256Hex,
 } from "@kynesyslabs/dacs/canonical";
 import type {
+  FixedPricePayDemTrackOperationInput,
   FixedPriceX402OrderInput,
   FixedPriceX402OrderRecord,
   FixedPriceX402TrackOperationInput,
@@ -73,6 +74,7 @@ import {
 import { createDacsFixedPriceX402RoleOrderV1 } from "./liveOrder.js";
 import {
   type DacsLiveOrderRecordV1,
+  type DacsLiveTrackOperationInputV1,
   type DacsLiveOrderV1,
   loadDacsLiveOrderInputV1,
   type DacsLiveOrderInputV1,
@@ -1080,7 +1082,7 @@ function captureBuyerCommitmentResult(
 
 function retainBuyerCommitmentResult(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
   agreementHash: string,
   commitment: Readonly<FinalizedFinalityAgreementCommitment>,
 ): Readonly<DacsFixedPriceX402BuyerCommitmentResultV1> {
@@ -1112,7 +1114,7 @@ function retainBuyerCommitmentResult(
 
 export function loadDacsFixedPriceX402BuyerCommitmentResultV1(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
 ): Readonly<DacsFixedPriceX402BuyerCommitmentResultV1> {
   if (context.role !== "buyer" || order.role !== "buyer") {
     throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-commitment-role-mismatch");
@@ -1193,10 +1195,11 @@ async function readBuyerCommitment(
 
 async function authenticateBuyerCommitment(input: Readonly<{
   context: Readonly<DacsLiveRoleOperationContextV1>;
-  operation: Readonly<FixedPriceX402TrackOperationInput>;
-  retained: Readonly<DacsLiveOrderInputV1>;
+  operation: Readonly<DacsLiveTrackOperationInputV1>;
+  retained: Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>>;
   application: Readonly<DacsFixedPriceX402ApplicationV1>;
   agreement: Readonly<DacsFixedPriceX402BuyerAgreementPublicationV1>;
+  session: Readonly<DacsBuyerSessionAgreementFactsV1>;
 }>): Promise<Readonly<FinalizedFinalityAgreementCommitment>> {
   const { context, operation, application, agreement } = input;
   if (input.retained.jobId !== operation.order.jobId ||
@@ -1209,10 +1212,7 @@ async function authenticateBuyerCommitment(input: Readonly<{
       "fixed-price-buyer-commitment-binding-invalid",
     );
   }
-  const session = loadDacsBuyerSessionAgreementFactsForOrderV1(
-    context,
-    operation.order,
-  );
+  const session = input.session;
   const logicalAddress = finalityCommitmentAddress(operation.order.jobId);
   const lookup = await readBuyerCommitment(context, logicalAddress);
   if (lookup.disposition !== "present") {
@@ -1284,6 +1284,48 @@ async function authenticateBuyerCommitment(input: Readonly<{
     throw new DacsFixedPriceX402ProfileError("fixed-price-current-commitment-required");
   }
   return commitment;
+}
+
+/**
+ * Authenticate and retain the seller's exact finality commitment before either
+ * supported payment rail can sign an irreversible authorization. The caller
+ * supplies its rail-specific, already-authenticated session facts; the shared
+ * commitment verifier owns every remaining agreement/anchor check.
+ */
+export async function ensureDacsFixedPriceBuyerCommitmentV1(input: Readonly<{
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  operation: Readonly<FixedPriceX402TrackOperationInput |
+    FixedPricePayDemTrackOperationInput>;
+  retained: Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>>;
+  application: Readonly<DacsFixedPriceX402ApplicationV1>;
+  agreement: Readonly<DacsFixedPriceX402BuyerAgreementPublicationV1>;
+  session: Readonly<DacsBuyerSessionAgreementFactsV1>;
+}>): Promise<Readonly<DacsFixedPriceX402BuyerCommitmentResultV1>> {
+  try {
+    return loadDacsFixedPriceX402BuyerCommitmentResultV1(
+      input.context,
+      input.operation.order,
+    );
+  } catch (error) {
+    if (!(error instanceof DacsFixedPriceX402ProfileError) ||
+        error.reasonCode !== "fixed-price-buyer-commitment-missing") {
+      throw error;
+    }
+  }
+  const commitment = await authenticateBuyerCommitment({
+    context: input.context,
+    operation: input.operation,
+    retained: input.retained,
+    application: input.application,
+    agreement: input.agreement,
+    session: input.session,
+  });
+  return retainBuyerCommitmentResult(
+    input.context,
+    input.operation,
+    input.agreement.agreementHash,
+    commitment,
+  );
 }
 
 function tokenDomain(value: unknown): Readonly<{ name: string; version: string }> {
@@ -1550,6 +1592,10 @@ export function createDacsFixedPriceX402BuyerPaymentPolicyV1(
             retained: input.retained,
             application,
             agreement,
+            session: loadDacsBuyerSessionAgreementFactsForOrderV1(
+              context,
+              input.operation.order,
+            ),
           });
         } catch (cause) {
           if (cause instanceof DacsLiveEffectInputControlError) throw cause;

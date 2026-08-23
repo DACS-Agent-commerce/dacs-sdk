@@ -6,9 +6,10 @@ import {
   type PayDemSettlementRecoveryContext,
   type SettleResult,
 } from "@kynesyslabs/dacs";
-import { canonicalize } from "@kynesyslabs/dacs/canonical";
+import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
   FixedPricePayDemOrderInput,
+  FixedPricePayDemOrderRecord,
   FixedPricePayDemTrackOperation,
   FixedPricePayDemTrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
@@ -334,6 +335,61 @@ function control(reasonCode: string): DacsLiveEffectExecutionControlV1 {
     status: "indeterminate",
     reasonCode,
   });
+}
+
+function buyerPaymentEffectId(
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): string {
+  return sha256Hex(canonicalize({
+    localBindingHash: order.localBindingHash,
+    role: "buyer",
+    track: "payment",
+    roleLocalJob: order.sdkJobs.payment,
+  }));
+}
+
+/** Read the exact completed native payment and its retained authority. */
+export function loadDacsPayDemBuyerPaymentForOrderV1(
+  context: Readonly<{
+    role: "buyer" | "seller";
+    authority: string;
+    peerAuthority: string;
+    database: DacsNodeSqliteDatabase;
+  }>,
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): Readonly<{
+  payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
+  result: Readonly<DacsPayDemBuyerPaymentResultV1>;
+}> {
+  if (context.role !== "buyer" || order.role !== "buyer" ||
+      order.buyer !== context.authority || order.seller !== context.peerAuthority ||
+      order.protocol.phase !== "pay-dem") {
+    throw new DacsPayDemBuyerPaymentError("pay-dem-buyer-payment-order-mismatch");
+  }
+  const effectId = buyerPaymentEffectId(order);
+  const effect = context.database.loadEffect("payment", effectId);
+  const rawInput = context.database.loadEffectInput("payment", effectId);
+  if (effect === undefined || effect.state !== "completed" ||
+      effect.bindingHash !== order.localBindingHash || effect.result === undefined ||
+      rawInput === undefined) {
+    throw new DacsPayDemBuyerPaymentError("pay-dem-buyer-payment-result-pending");
+  }
+  const payment = capturePaymentInput(rawInput);
+  const rawResult = effect.result;
+  if (!plainObject(rawResult) || !exactKeys(rawResult, [
+    "paymentResultVersion", "settlement",
+  ]) || rawResult.paymentResultVersion !== "1") {
+    throw new DacsPayDemBuyerPaymentError("pay-dem-buyer-payment-result-invalid");
+  }
+  const settlement = captureSettlement(rawResult.settlement, payment);
+  if (payment.jobId !== order.jobId ||
+      payment.orderBindingHash !== order.bindingHash ||
+      payment.orderLocalBindingHash !== order.localBindingHash ||
+      payment.railId !== order.protocol.rail.railId ||
+      payment.railVersion !== order.protocol.rail.railVersion) {
+    throw new DacsPayDemBuyerPaymentError("pay-dem-buyer-payment-result-corrupt");
+  }
+  return Object.freeze({ payment, result: result(settlement) });
 }
 
 function captureChainReconciliation(

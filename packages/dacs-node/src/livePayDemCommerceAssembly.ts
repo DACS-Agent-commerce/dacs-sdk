@@ -1,4 +1,5 @@
 import type { BundleRequirement } from "@kynesyslabs/dacs/artifacts";
+import type { FixedPricePayDemOrderInput } from "@kynesyslabs/dacs/commerce";
 
 import {
   createDacsPayDemBuyerAgreementTrackV1,
@@ -115,7 +116,7 @@ export interface DacsSellerPayDemLiveCommerceAssemblyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   workerId: string;
   sessionBootstrap: Readonly<Omit<
-    DacsSellerSessionBootstrapTransportOptionsV1,
+    DacsSellerSessionBootstrapTransportOptionsV1<FixedPricePayDemOrderInput>,
     "context"
   > & Pick<
     DacsPayDemSellerSessionBootstrapAgreementTrackOptionsV1,
@@ -132,7 +133,7 @@ export interface DacsSellerPayDemLiveCommerceAssemblyOptionsV1 {
     }>): Promise<Readonly<BundleRequirement>> | Readonly<BundleRequirement>;
   }>;
   agreementTransport: Readonly<Omit<
-    DacsSellerAgreementTransportRuntimeOptionsV1,
+    DacsSellerAgreementTransportRuntimeOptionsV1<FixedPricePayDemOrderInput>,
     "context"
   >>;
   agreement: Readonly<Omit<

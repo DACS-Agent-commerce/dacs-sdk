@@ -30,7 +30,10 @@ import type {
   FixedPriceX402OrderRecord,
 } from "@kynesyslabs/dacs/commerce";
 
-import type { DacsSellerAuditMaterialV1 } from "./auditRuntime.js";
+import type {
+  DacsPayDemSellerAuditRuntimeOptionsV1,
+  DacsSellerAuditMaterialV1,
+} from "./auditRuntime.js";
 import { loadDacsSellerAgreementVetProductionForOrderV1 } from
   "./agreementTransportRuntime.js";
 import {
@@ -67,6 +70,10 @@ const DEFAULT_LEASE_TTL_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 type SellerAuditOptions = DacsSellerLiveCommerceAssemblyOptionsV1["audit"];
+type PayDemSellerAuditOptions = Omit<
+  DacsPayDemSellerAuditRuntimeOptionsV1,
+  "context" | "workerId" | "bundleTransport"
+>;
 type Dependency = FinalizeCompletedSellerBundleInput["dependencies"][number];
 export interface DacsFixedPriceX402SellerAuditOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -853,6 +860,9 @@ export function createDacsFixedPriceX402SellerAuditV1(
 
 export function createDacsFixedPricePayDemSellerAuditV1(
   options: Readonly<DacsFixedPriceX402SellerAuditOptionsV1>,
-): Readonly<SellerAuditOptions> {
-  return createDacsFixedPriceSellerAuditV1({ ...options, paymentProfile: "pay-dem" });
+): Readonly<PayDemSellerAuditOptions> {
+  return createDacsFixedPriceSellerAuditV1({
+    ...options,
+    paymentProfile: "pay-dem",
+  }) as unknown as Readonly<PayDemSellerAuditOptions>;
 }

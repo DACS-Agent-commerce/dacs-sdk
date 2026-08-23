@@ -1,6 +1,7 @@
 import {
   captureFixedPricePayDemProtocolBinding,
   type AuthenticatedRailDefinition,
+  type UnsignedAgreementArtifact,
 } from "@kynesyslabs/dacs";
 import type { BundleRequirement } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
@@ -16,6 +17,12 @@ import {
 
 import type { DacsSellerAgreementTransportRuntimeOptionsV1 } from
   "./agreementTransportRuntime.js";
+import type { DacsAgreementSellerVetProductionV1 } from
+  "./agreementTransportRuntime.js";
+import type {
+  DacsPayDemBuyerAgreementTrackOptionsV1,
+  DacsPayDemSellerAgreementTrackOptionsV1,
+} from "./agreementRuntime.js";
 import {
   captureDacsFixedPriceX402ApplicationV1,
   createDacsFixedPriceX402BuyerAgreementPolicyV1,
@@ -23,9 +30,7 @@ import {
   DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
   DacsFixedPriceX402ProfileError,
   type DacsFixedPriceX402ApplicationV1,
-  type DacsFixedPriceX402BuyerAgreementPolicyV1,
   type DacsFixedPriceX402BuyerAgreementPublicationV1,
-  type DacsFixedPriceX402SellerAgreementPolicyV1,
   type DacsFixedPriceX402CommitmentResultV1,
   loadDacsFixedPriceX402BuyerAgreementPublicationV1,
   loadDacsFixedPriceX402CommitmentResultV1,
@@ -40,6 +45,10 @@ import type {
 import { createDacsFixedPricePayDemProtocolBindingV1 } from "./purchaseQueue.js";
 import { readDacsPublicJsonV1 } from "./publicJson.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import type {
+  DacsBuyerSessionAgreementFactsV1,
+  DacsSellerSessionAgreementFactsV1,
+} from "./sessionBootstrapAgreementRuntime.js";
 import {
   DacsSellerSessionAdmissionUnavailableError,
   type DacsSellerSessionBootstrapAdmissionV1,
@@ -77,7 +86,7 @@ export interface DacsFixedPricePayDemSellerSessionPolicyV1 {
     FixedPricePayDemOrderInput
   >["admitProposal"];
   resolveBuyerRequirement(input: Readonly<{
-    retained: Readonly<DacsLiveOrderInputV1>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
   }>): Readonly<BundleRequirement>;
   resolveSellerRequirement(): Readonly<BundleRequirement>;
 }
@@ -87,9 +96,35 @@ export interface DacsFixedPricePayDemBuyerAgreementPolicyOptionsV1 {
   now?(): number;
 }
 
+export interface DacsFixedPricePayDemBuyerAgreementPolicyV1
+  extends Pick<DacsPayDemBuyerAgreementTrackOptionsV1,
+    "verifyContribution" | "reconcileBuyerSignature" | "anchor" |
+      "authorizeAnchored" | "classifyRejected"> {
+  buildDraft(input:
+    Parameters<DacsPayDemBuyerAgreementTrackOptionsV1["buildDraft"]>[0] &
+    Readonly<{ session: Readonly<DacsBuyerSessionAgreementFactsV1> }>):
+    Readonly<UnsignedAgreementArtifact>;
+}
+
 export interface DacsFixedPricePayDemSellerAgreementPolicyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   maximumClockSkewMs?: number;
+}
+
+export interface DacsFixedPricePayDemSellerAgreementPolicyV1
+  extends Pick<DacsPayDemSellerAgreementTrackOptionsV1,
+    "verifyContribution" | "reconcileSellerSignature" | "authorizeComplete" |
+      "classifyRejected"> {
+  resolveAuthenticatedAgreementContext(input:
+    Parameters<DacsPayDemSellerAgreementTrackOptionsV1[
+      "resolveAuthenticatedAgreementContext"
+    ]>[0] & Readonly<{
+      session: Readonly<DacsSellerSessionAgreementFactsV1>;
+      sellerVet: Readonly<DacsAgreementSellerVetProductionV1>;
+      sellerRequirement: Readonly<BundleRequirement>;
+    }>): ReturnType<DacsPayDemSellerAgreementTrackOptionsV1[
+      "resolveAuthenticatedAgreementContext"
+    ]>;
 }
 
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -322,8 +357,9 @@ export function createDacsFixedPricePayDemSellerSessionPolicyV1(
 /** Use the shared Agreement anchor/signature spine with native rail selection. */
 export function createDacsFixedPricePayDemBuyerAgreementPolicyV1(
   options: Readonly<DacsFixedPricePayDemBuyerAgreementPolicyOptionsV1>,
-): Readonly<DacsFixedPriceX402BuyerAgreementPolicyV1> {
-  return createDacsFixedPriceX402BuyerAgreementPolicyV1(options);
+): Readonly<DacsFixedPricePayDemBuyerAgreementPolicyV1> {
+  return createDacsFixedPriceX402BuyerAgreementPolicyV1(options) as unknown as
+    Readonly<DacsFixedPricePayDemBuyerAgreementPolicyV1>;
 }
 
 /**
@@ -346,7 +382,7 @@ export function loadDacsFixedPricePayDemBuyerAgreementPublicationV1(
 /** Select the native admission journal while retaining the shared commitment spine. */
 export function createDacsFixedPricePayDemSellerAgreementPolicyV1(
   options: Readonly<DacsFixedPricePayDemSellerAgreementPolicyOptionsV1>,
-): Readonly<DacsFixedPriceX402SellerAgreementPolicyV1> {
+): Readonly<DacsFixedPricePayDemSellerAgreementPolicyV1> {
   return createDacsFixedPriceX402SellerAgreementPolicyV1({
     context: options.context,
     ...(options.maximumClockSkewMs === undefined
@@ -355,7 +391,7 @@ export function createDacsFixedPricePayDemSellerAgreementPolicyV1(
       options.context,
       order as FixedPricePayDemOrderRecord,
     ),
-  });
+  }) as unknown as Readonly<DacsFixedPricePayDemSellerAgreementPolicyV1>;
 }
 
 /** Recover the shared Agreement commitment under the native order binding. */
