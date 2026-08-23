@@ -14,6 +14,7 @@ export * from "./events.js";
 export * from "./fundingDoctor.js";
 export * from "./fundedDoctor.js";
 export * from "./fixedPriceX402Profile.js";
+export * from "./fixedPricePayDemProfile.js";
 export * from "./fixedPriceX402BuyerCommerce.js";
 export * from "./fixedPriceX402BuyerAudit.js";
 export * from "./fixedPriceX402BuyerLive.js";
