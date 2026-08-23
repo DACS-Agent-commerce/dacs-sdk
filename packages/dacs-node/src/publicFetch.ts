@@ -10,6 +10,10 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_BYTES = 1_048_576;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_RESPONSE_BYTES = 64 * 1_048_576;
+const ALLOWED_CALLER_HEADERS = new Set([
+  "accept",
+  "payment-signature",
+]);
 const FORBIDDEN_HEADERS = new Set([
   "authorization",
   "connection",
@@ -61,8 +65,8 @@ export class DacsPublicHttpsFetchError extends Error {
 
 function captureHeaders(value: RequestInit["headers"]): Headers {
   const captured = new Headers(value);
-  for (const name of FORBIDDEN_HEADERS) {
-    if (captured.has(name)) {
+  for (const name of captured.keys()) {
+    if (FORBIDDEN_HEADERS.has(name) || !ALLOWED_CALLER_HEADERS.has(name)) {
       throw new DacsPublicHttpsFetchError("public-fetch-ambient-header-refused");
     }
   }
@@ -164,8 +168,9 @@ const defaultDependencies: Readonly<DacsPublicHttpsFetchDependenciesV1> = Object
 /**
  * Create a public HTTPS fetch for counterparty-selected targets. With the
  * built-in dependencies, each call is bounded, resolves and validates every
- * address, and connects only to one validated address. Redirects and ambient
- * credential-bearing headers are refused. Injected dependencies are trusted
+ * address, and connects only to one validated address. Redirects are refused,
+ * and only `Accept` plus the retained payment signature may be forwarded.
+ * Injected dependencies are trusted
  * platform/test policy and must enforce the supplied addresses, bounds,
  * headers, and abort signal themselves.
  */

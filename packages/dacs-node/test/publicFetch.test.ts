@@ -120,8 +120,17 @@ describe("createDacsPublicHttpsFetchV1", () => {
     expect(deps.request.mock.calls[0]![0].maxBytes).toBe(8 * 1_048_576);
   });
 
-  test.each(["authorization", "cookie", "proxy-authorization", "host"])(
-    "refuses ambient or connection-authority header %s",
+  test.each([
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "host",
+    "x-api-key",
+    "x-auth-token",
+    "x-internal-authorization",
+    "x-unrecognized-header",
+  ])(
+    "refuses ambient, internal-authorization, or unrecognized header %s",
     async (name) => {
       const deps = dependencies(["8.8.8.8"]);
       const fetchImpl = createDacsPublicHttpsFetchV1({ dependencies: deps.value });

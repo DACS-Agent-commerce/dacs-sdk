@@ -41,7 +41,7 @@ export interface X402BuyerChallengeClient {
 export interface PrepareX402BuyerSettlementInput {
   /** Complete authenticated DACS authority, excluding challenge-derived fields. */
   authority: Readonly<X402BuyerPreparationAuthority>;
-  /** Optional non-authority request headers for the unpaid GET. */
+  /** Optional `Accept` header for the unpaid GET; every other caller header is refused. */
   challengeHeaders?: X402BuyerHeaderInit;
 }
 
@@ -61,7 +61,7 @@ export type X402BuyerSettlementPreparation =
 export interface X402BuyerPaidRequestTransportOptions {
   /** Caller-supplied transport that must enforce the DACS-1 §6.3.6 boundary. */
   fetchImpl: typeof fetch;
-  /** Captured once; payment, legacy-payment, and ambient-credential headers are forbidden. */
+  /** Optional `Accept` header; every other base header is refused before payment is added. */
   headers?: X402BuyerHeaderInit;
 }
 
@@ -69,6 +69,8 @@ export type X402BuyerHeaderInit =
   | Headers
   | Record<string, string>
   | Array<[string, string]>;
+
+const ALLOWED_X402_BUYER_BASE_HEADERS = new Set(["accept"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -218,9 +220,10 @@ function captureHeaders(value: X402BuyerHeaderInit | undefined): Headers {
   if (headers.has(PAYMENT_SIGNATURE) || headers.has("X-PAYMENT")) {
     throw new TypeError("x402 buyer base headers cannot contain payment authorization");
   }
-  if (["authorization", "cookie", "cookie2", "proxy-authorization"]
-    .some((name) => headers.has(name))) {
-    throw new TypeError("x402 buyer base headers cannot contain ambient credentials");
+  for (const name of headers.keys()) {
+    if (!ALLOWED_X402_BUYER_BASE_HEADERS.has(name)) {
+      throw new TypeError("x402 buyer base headers must be allowlisted and non-credentialed");
+    }
   }
   return headers;
 }

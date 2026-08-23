@@ -186,6 +186,16 @@ describe("prepareX402BuyerSettlement", () => {
       disposition: "rejected",
       reason: "x402-challenge-headers-invalid",
     });
+    await expect(prepareX402BuyerSettlement(
+      {
+        authority: authority(),
+        challengeHeaders: { "X-API-Key": "internal-secret" },
+      },
+      { client: client(), fetchImpl: async () => { throw new Error("must not fetch"); } },
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reason: "x402-challenge-headers-invalid",
+    });
   });
 
   test("rejects accessor and proxy authority before reading it or invoking the signer", async () => {
@@ -221,7 +231,7 @@ describe("prepareX402BuyerSettlement", () => {
 describe("createX402BuyerPaidRequestTransport", () => {
   test("asserts the generation immediately before sending only the retained bearer", async () => {
     const intent = await preparedIntent();
-    const baseHeaders = new Headers({ accept: "application/json", "x-client": "captured" });
+    const baseHeaders = new Headers({ accept: "application/json" });
     let asserted = false;
     let requests = 0;
     const transport = createX402BuyerPaidRequestTransport({
@@ -234,7 +244,7 @@ describe("createX402BuyerPaidRequestTransport", () => {
         expect(init?.redirect).toBe("error");
         const sent = new Headers(init?.headers);
         expect(sent.get("PAYMENT-SIGNATURE")).toBe(intent.paymentHeader.value);
-        expect(sent.get("x-client")).toBe("captured");
+        expect(sent.get("accept")).toBe("application/json");
         return new Response(null, {
           status: 200,
           headers: { "PAYMENT-RESPONSE": "retained-settlement-header" },
@@ -294,6 +304,10 @@ describe("createX402BuyerPaidRequestTransport", () => {
       fetchImpl: async () => new Response(null, { status: 200 }),
       headers: { "X-PAYMENT": "legacy-bearer" },
     })).toThrow(/cannot contain payment authorization/);
+    expect(() => createX402BuyerPaidRequestTransport({
+      fetchImpl: async () => new Response(null, { status: 200 }),
+      headers: { "X-Auth-Token": "internal-secret" },
+    })).toThrow(/must be allowlisted and non-credentialed/);
   });
 });
 
