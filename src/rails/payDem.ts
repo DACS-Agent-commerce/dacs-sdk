@@ -221,6 +221,12 @@ export interface PayDemSettleParams {
    * idempotency key instead of relying on transaction identity alone.
    */
   recovery?: Readonly<PayDemSettlementRecoveryContext>;
+  /** Durable per-attempt journal committed after validation and before broadcast. */
+  journalPreparedTransfer?: (
+    transfer: Readonly<PayDemPreparedTransfer>,
+  ) => Promise<void>;
+  /** Generation fence asserted immediately before the irreversible broadcast. */
+  assertCurrentBeforeBroadcast?: () => Promise<void>;
 }
 
 export interface PayDemSettlementRecoveryContext {
@@ -293,6 +299,10 @@ export interface DemosNativeClient {
     to: string;
     amountOs: bigint;
     recovery?: Readonly<PayDemSettlementRecoveryContext>;
+    journalPreparedTransfer?: (
+      transfer: Readonly<PayDemPreparedTransfer>,
+    ) => Promise<void>;
+    assertCurrentBeforeBroadcast?: () => Promise<void>;
   }): Promise<DemosTransferResult>;
 }
 
@@ -381,6 +391,7 @@ function captureRecoveryContext(
 export async function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
+  defaultNetwork = "demos",
 ): Promise<SettleResult> {
   // Capture all caller-controlled values and the effect method before the first
   // await. A mutable parameter/client object must not be able to change the
@@ -392,7 +403,12 @@ export async function payDemSettleCore(
     "pay-dem recipient",
   );
   const amount = requiredStableString(params, "amount", "pay-dem amount");
-  const network = optionalStableString(params, "network", "pay-dem network");
+  if (typeof defaultNetwork !== "string" || defaultNetwork.length === 0 ||
+      defaultNetwork.trim() !== defaultNetwork || defaultNetwork.includes("\0")) {
+    throw new DacsError("pay-dem default network must be stable text");
+  }
+  const network = optionalStableString(params, "network", "pay-dem network") ??
+    defaultNetwork;
   const recoveryProperty = stableDataProperty(
     params,
     "recovery",
@@ -401,6 +417,32 @@ export async function payDemSettleCore(
   const recovery = captureRecoveryContext(
     recoveryProperty.found ? recoveryProperty.value : undefined,
   );
+  const journalProperty = stableDataProperty(
+    params,
+    "journalPreparedTransfer",
+    "pay-dem per-settlement prepared-transfer journal",
+  );
+  const journalPreparedTransfer = !journalProperty.found ||
+      journalProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<PayDemSettleParams["journalPreparedTransfer"]>>(
+        params,
+        "journalPreparedTransfer",
+        "pay-dem per-settlement prepared-transfer journal",
+      );
+  const fenceProperty = stableDataProperty(
+    params,
+    "assertCurrentBeforeBroadcast",
+    "pay-dem pre-broadcast fence",
+  );
+  const assertCurrentBeforeBroadcast = !fenceProperty.found ||
+      fenceProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<PayDemSettleParams["assertCurrentBeforeBroadcast"]>>(
+        params,
+        "assertCurrentBeforeBroadcast",
+        "pay-dem pre-broadcast fence",
+      );
   const payer = requiredStableString(client, "address", "pay-dem payer");
   const transfer = stableMethod<DemosNativeClient["transfer"]>(
     client,
@@ -440,6 +482,10 @@ export async function payDemSettleCore(
     to: recipient,
     amountOs,
     ...(recovery === undefined ? {} : { recovery }),
+    ...(journalPreparedTransfer === undefined ? {} : { journalPreparedTransfer }),
+    ...(assertCurrentBeforeBroadcast === undefined
+      ? {}
+      : { assertCurrentBeforeBroadcast }),
   });
   const okProperty = stableDataProperty(response, "ok", "pay-dem transfer result ok");
   const hashProperty = stableDataProperty(
@@ -1089,7 +1135,13 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 
   const client: DemosNativeClient = {
     address,
-    transfer: async ({ to, amountOs, recovery }) => {
+    transfer: async ({
+      to,
+      amountOs,
+      recovery,
+      journalPreparedTransfer: invocationJournal,
+      assertCurrentBeforeBroadcast,
+    }) => {
       const signed = snapshotCanonicalJsonRead(
         await transfer(to, amountOs),
         "pay-dem signed transfer",
@@ -1211,7 +1263,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // This is the last operation before the only irreversible call. A funded
       // runner's hook fsyncs hash + nonce and the already-validated immutable
       // transfer facts. Any journal failure aborts before broadcast.
-      if (journalPreparedTransfer) await journalPreparedTransfer(prepared);
+      const preparedJournal = invocationJournal ?? journalPreparedTransfer;
+      if (preparedJournal) await preparedJournal(prepared);
+      if (assertCurrentBeforeBroadcast) await assertCurrentBeforeBroadcast();
 
       // Start exactly one submission. Do not await the HTTP response: demosdk's
       // transport has no request timeout, so the response can remain pending
@@ -1269,8 +1323,24 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 
   return {
     address: client.address,
-    settle: (params) =>
-      payDemSettleCore({ ...params, network: params.network ?? network ?? "demos" }, client),
+    settle: async (params) => {
+      const invocationJournal = stableDataProperty(
+        params,
+        "journalPreparedTransfer",
+        "pay-dem per-settlement prepared-transfer journal",
+      );
+      if (journalPreparedTransfer !== undefined && invocationJournal.found &&
+          invocationJournal.value !== undefined) {
+        throw new DacsError(
+          "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
+        );
+      }
+      return payDemSettleCore(
+        params,
+        client,
+        network ?? "demos",
+      );
+    },
   };
 }
 

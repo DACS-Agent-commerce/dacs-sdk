@@ -371,6 +371,46 @@ describe("createPayDemRail nonce coordination", () => {
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("supports a per-settlement journal and rechecks its fence beside broadcast", async () => {
+    const order: string[] = [];
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+    sdk.broadcast.mockImplementation(async () => {
+      order.push("broadcast");
+      return { response: { hash: TX_HASH } };
+    });
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => {
+        order.push("journal");
+      },
+      assertCurrentBeforeBroadcast: async () => {
+        order.push("fence");
+      },
+    })).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(order).toEqual(["journal", "fence", "broadcast"]);
+  });
+
+  it("fails before signing when configured and per-settlement journals conflict", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer: async () => undefined,
+    });
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => undefined,
+    })).rejects.toThrow(/cannot combine configured and per-settlement/);
+    expect(sdk.transfer).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
   it("does not broadcast when the durable preparation journal fails", async () => {
     const journalPreparedTransfer = vi.fn(async () => {
       throw new Error("journal-fsync-failed");

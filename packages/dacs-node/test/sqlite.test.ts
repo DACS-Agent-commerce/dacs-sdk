@@ -865,6 +865,70 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(coordinatorReads).toBe(0);
   });
 
+  it("durably journals one immutable pre-effect checkpoint per generation", async () => {
+    const databasePath = join(temporaryRoot(), "effect-checkpoint.sqlite");
+    const database = await open(databasePath);
+    const intent = {
+      kind: "payment" as const,
+      effectId: "payment:pay-dem-checkpoint",
+      bindingHash: BINDING_HASH,
+      input: { amountOs: "1000000000", payee: "2".repeat(64) },
+      idempotencyKey: "payment:pay-dem-checkpoint",
+      jobId: JOB_ID,
+    };
+    expect(database.putEffectIntent(intent)).toMatchObject({ status: "created" });
+    const claim = database.claimEffect({
+      kind: intent.kind,
+      effectId: intent.effectId,
+      bindingHash: intent.bindingHash,
+      owner: "pay-dem-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected pay-dem effect claim");
+    const checkpointInput = {
+      kind: intent.kind,
+      effectId: intent.effectId,
+      bindingHash: intent.bindingHash,
+      lease: claim.lease,
+      name: "pay-dem-prepared-transfer",
+      value: {
+        txHash: "3".repeat(64),
+        nonce: 7,
+        payer: "1".repeat(64),
+        payee: "2".repeat(64),
+        amountOs: "1000000000",
+        network: "demos",
+      },
+    };
+    expect(database.recordEffectCheckpoint(checkpointInput))
+      .toMatchObject({ status: "recorded", checkpoint: { generation: 1 } });
+    expect(database.recordEffectCheckpoint(checkpointInput))
+      .toMatchObject({ status: "existing", checkpoint: { generation: 1 } });
+    expect(database.recordEffectCheckpoint({
+      ...checkpointInput,
+      value: { ...checkpointInput.value, nonce: 8 },
+    })).toEqual({ status: "conflict" });
+    expect(database.loadEffectCheckpoint(
+      intent.kind,
+      intent.effectId,
+      checkpointInput.name,
+    )).toMatchObject({
+      generation: 1,
+      valueHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      value: checkpointInput.value,
+    });
+
+    database.checkpoint();
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const reopened = await open(databasePath);
+    expect(reopened.loadEffectCheckpoint(
+      intent.kind,
+      intent.effectId,
+      checkpointInput.name,
+    )).toMatchObject({ generation: 1, value: checkpointInput.value });
+  });
+
   it("reports a busy FULL checkpoint instead of treating a partial checkpoint as success", async () => {
     const databasePath = join(temporaryRoot(), "checkpoint.sqlite");
     const database = await open(databasePath, { busyTimeoutMs: 10 });

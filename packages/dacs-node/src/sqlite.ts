@@ -277,6 +277,22 @@ export type DacsNodeSqliteEffectWrite = Readonly<
   | { status: "missing" | "stale" | "conflict" }
 >;
 
+export type DacsNodeSqliteEffectCheckpointWrite = Readonly<
+  | {
+      status: "recorded" | "existing";
+      checkpoint: Readonly<DacsNodeSqliteEffectCheckpoint>;
+    }
+  | { status: "missing" | "stale" | "conflict" }
+>;
+
+export interface DacsNodeSqliteEffectCheckpoint {
+  name: string;
+  generation: number;
+  valueHash: string;
+  value: unknown;
+  recordedAt: number;
+}
+
 export interface DacsNodeSqliteDiagnostics {
   databasePath: string;
   schemaVersion: number;
@@ -418,6 +434,21 @@ export interface DacsNodeSqliteDatabase {
     bindingHash: string;
     lease: Readonly<DacsNodeSqliteEffectLease>;
   }>): boolean;
+  /** Commit public recovery coordinates before an irreversible adapter call. */
+  recordEffectCheckpoint(input: Readonly<{
+    kind: DacsNodeSqliteEffectKind;
+    effectId: string;
+    bindingHash: string;
+    lease: Readonly<DacsNodeSqliteEffectLease>;
+    name: string;
+    value: unknown;
+  }>): DacsNodeSqliteEffectCheckpointWrite;
+  /** Load the newest integrity-checked checkpoint with this name. */
+  loadEffectCheckpoint(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+    name: string,
+  ): Readonly<DacsNodeSqliteEffectCheckpoint> | undefined;
   recordEffectCompleted(input: Readonly<{
     kind: DacsNodeSqliteEffectKind;
     effectId: string;
@@ -5234,6 +5265,125 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     });
   }
 
+  recordEffectCheckpoint(input: Readonly<{
+    kind: DacsNodeSqliteEffectKind;
+    effectId: string;
+    bindingHash: string;
+    lease: Readonly<DacsNodeSqliteEffectLease>;
+    name: string;
+    value: unknown;
+  }>): DacsNodeSqliteEffectCheckpointWrite {
+    this.assertOpen();
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "lease", "name", "value"],
+    );
+    const lease = captured ? captureEffectLease(captured.lease) : null;
+    if (!captured || !lease || lease.mode !== "perform" ||
+        !reasonCode(captured.name)) {
+      throw new DacsNodeSqliteError(
+        "effect-checkpoint-malformed",
+        "SQLite effect checkpoint is malformed",
+      );
+    }
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      lease,
+      name: captured.name,
+    });
+    validateEffectIdentity(retained);
+    let value: unknown;
+    let valueJson: string;
+    try {
+      value = captureCanonicalData(captured.value);
+      valueJson = canonicalize(value);
+    } catch {
+      throw new DacsNodeSqliteError(
+        "effect-checkpoint-malformed",
+        "SQLite effect checkpoint must contain canonical JSON data",
+      );
+    }
+    const valueHash = sha256Hex(valueJson);
+    return beginImmediate(this.database, () => {
+      const row = this.effectRow(retained.kind, retained.effectId);
+      if (!row) return { status: "missing" as const };
+      const current = this.validatedEffectRecord(row);
+      if (current.bindingHash !== retained.bindingHash) {
+        return { status: "stale" as const };
+      }
+      const now = databaseTime(this.database);
+      if (!exactLease(current, retained.lease, now)) {
+        return { status: "stale" as const };
+      }
+      const existing = this.effectCheckpoint(
+        retained.kind,
+        retained.effectId,
+        retained.name,
+        retained.lease.generation,
+      );
+      if (existing) {
+        return existing.valueHash === valueHash &&
+            canonicalize(existing.value) === valueJson
+          ? { status: "existing" as const, checkpoint: clone(existing) }
+          : { status: "conflict" as const };
+      }
+      this.database.prepare(`
+        UPDATE dacs_effects SET updated_at = ?
+        WHERE effect_kind = ? AND effect_id = ? AND generation = ?
+      `).run(
+        Math.max(current.updatedAt, now),
+        retained.kind,
+        retained.effectId,
+        retained.lease.generation,
+      );
+      this.appendEffectHistory(
+        retained.kind,
+        retained.effectId,
+        "effect-checkpoint",
+        retained.lease.generation,
+        now,
+        { name: retained.name, valueHash, value },
+      );
+      const checkpoint = this.effectCheckpoint(
+        retained.kind,
+        retained.effectId,
+        retained.name,
+        retained.lease.generation,
+      );
+      if (!checkpoint) {
+        throw new DacsNodeSqliteError(
+          "database-logical-corruption",
+          "SQLite effect checkpoint was not retained",
+        );
+      }
+      this.validatedEffectRecord(this.effectRow(retained.kind, retained.effectId)!);
+      return { status: "recorded" as const, checkpoint: clone(checkpoint) };
+    });
+  }
+
+  loadEffectCheckpoint(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+    name: string,
+  ): Readonly<DacsNodeSqliteEffectCheckpoint> | undefined {
+    this.assertOpen();
+    if (!EFFECT_KINDS.has(kind) || !nonEmpty(effectId) || !reasonCode(name)) {
+      throw new DacsNodeSqliteError(
+        "effect-checkpoint-malformed",
+        "SQLite effect checkpoint lookup is malformed",
+      );
+    }
+    return readSnapshot(this.database, () => {
+      const row = this.effectRow(kind, effectId);
+      if (!row) return undefined;
+      this.validatedEffectRecord(row);
+      const checkpoint = this.effectCheckpoint(kind, effectId, name);
+      return checkpoint ? clone(checkpoint) : undefined;
+    });
+  }
+
   recordEffectCompleted(input: Readonly<{
     kind: DacsNodeSqliteEffectKind;
     effectId: string;
@@ -5544,6 +5694,42 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     return this.database.prepare(`
       SELECT * FROM dacs_effects WHERE effect_kind = ? AND effect_id = ?
     `).get(kind, effectId) as EffectRow | undefined;
+  }
+
+  private effectCheckpoint(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+    name: string,
+    generation?: number,
+  ): Readonly<DacsNodeSqliteEffectCheckpoint> | undefined {
+    const rows = this.database.prepare(`
+      SELECT generation, occurred_at, detail_json
+      FROM dacs_effect_history
+      WHERE effect_kind = ? AND effect_id = ? AND event = 'effect-checkpoint'
+        ${generation === undefined ? "" : "AND generation = ?"}
+      ORDER BY sequence DESC
+    `).all(
+      kind,
+      effectId,
+      ...(generation === undefined ? [] : [generation]),
+    ) as Array<{
+      generation: number;
+      occurred_at: number;
+      detail_json: string;
+    }>;
+    for (const row of rows) {
+      const details = JSON.parse(row.detail_json) as Record<string, unknown>;
+      if (details.name === name) {
+        return {
+          name,
+          generation: row.generation,
+          valueHash: details.valueHash as string,
+          value: clone(details.value),
+          recordedAt: row.occurred_at,
+        };
+      }
+    }
+    return undefined;
   }
 
   private validatedEffectRecord(row: EffectRow): DacsNodeSqliteEffectRecord {
@@ -5991,6 +6177,8 @@ function verifyEffectHistory(
   let last: EffectHistoryValidationRow | undefined;
   let latestAbsence: EffectHistoryValidationRow | undefined;
   let count = 0;
+  let lastWasCheckpoint = false;
+  const checkpoints = new Set<string>();
 
   for (const row of database.prepare(`
     SELECT sequence, effect_kind, effect_id, event, generation, occurred_at,
@@ -6041,9 +6229,11 @@ function verifyEffectHistory(
         effectLogicalCorruption("SQLite effect history has no integrity-bound origin event");
       }
       last = row;
+      lastWasCheckpoint = false;
       continue;
     }
 
+    lastWasCheckpoint = false;
     switch (row.event) {
       case "perform-claimed":
         if (phase !== "intent" || row.generation !== generation + 1 ||
@@ -6055,6 +6245,21 @@ function verifyEffectHistory(
         generation = row.generation;
         phase = "active-perform";
         break;
+      case "effect-checkpoint": {
+        if (phase !== "active-perform" || row.generation !== generation ||
+            !exactDataKeys(details, ["name", "valueHash", "value"]) ||
+            !reasonCode(details.name) || !hash(details.valueHash) ||
+            details.valueHash !== effectHistoryDetailHash(details.value)) {
+          effectLogicalCorruption("SQLite effect history has an invalid checkpoint");
+        }
+        const checkpointKey = `${generation}:${details.name}`;
+        if (checkpoints.has(checkpointKey)) {
+          effectLogicalCorruption("SQLite effect history repeats a checkpoint identity");
+        }
+        checkpoints.add(checkpointKey);
+        lastWasCheckpoint = true;
+        break;
+      }
       case "reconcile-claimed":
         if ((phase !== "active-perform" && phase !== "active-reconcile" &&
             phase !== "reconciliation-required") || row.generation !== generation + 1 ||
@@ -6177,7 +6382,7 @@ function verifyEffectHistory(
       expectedFinalDetailHash = effectHistoryDetailHash({ resultHash: effect.resultHash });
       break;
   }
-  if (last.detail_hash !== expectedFinalDetailHash) {
+  if (!lastWasCheckpoint && last.detail_hash !== expectedFinalDetailHash) {
     effectLogicalCorruption("SQLite effect state differs from its final history event");
   }
 }

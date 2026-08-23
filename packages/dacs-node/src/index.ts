@@ -28,6 +28,7 @@ export * from "./guardedCommands.js";
 export * from "./localDoctor.js";
 export * from "./orderInput.js";
 export * from "./paymentEvidenceRuntime.js";
+export * from "./payDemPayment.js";
 export * from "./publicJson.js";
 export * from "./release.js";
 export * from "./liveEffects.js";
