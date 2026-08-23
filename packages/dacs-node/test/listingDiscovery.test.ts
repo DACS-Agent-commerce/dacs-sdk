@@ -20,6 +20,7 @@ import { rawPublicKey, signedBytes } from "@kynesyslabs/dacs/crypto";
 import { demosAgentClaimRef, identityBundleHash } from "@kynesyslabs/dacs/identity";
 
 import { openDacsListingDiscoveryStoreV1 } from "../src/listingDiscovery.js";
+import { dacsListingOfferGroupV1 } from "../src/listingOffer.js";
 
 const roots: string[] = [];
 
@@ -133,6 +134,7 @@ describe("DacsListingDiscoveryStoreV1", () => {
         listingId: fixture.listing.listingId,
         version: 1,
         contentHash: fixture.hash,
+        offerGroup: dacsListingOfferGroupV1(fixture.listing),
         anchor: { kind: "storage-program", locator: fixture.ref },
         status: "active",
       }],

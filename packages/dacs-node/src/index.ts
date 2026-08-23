@@ -39,6 +39,7 @@ export * from "./liveCommerceAssembly.js";
 export * from "./liveOrder.js";
 export * from "./listingDoctor.js";
 export * from "./listingSetup.js";
+export * from "./listingOffer.js";
 export * from "./listingDiscovery.js";
 export * from "./purchaseQueue.js";
 export * from "./messageRouter.js";
