@@ -70,6 +70,9 @@ function pinnedHttpsRequest(input: Readonly<{
       port: url.port === "" ? 443 : Number(url.port),
       path: `${url.pathname}${url.search}`,
       method: "GET",
+      // Refuse pooled socket reuse: every call must traverse its own validated,
+      // pinned lookup rather than inherit a prior hostname/port connection.
+      agent: false,
       servername: isIP(url.hostname) === 0 ? url.hostname : undefined,
       headers: {
         accept: "application/json",

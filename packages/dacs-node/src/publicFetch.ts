@@ -92,6 +92,9 @@ function pinnedRequest(
       port: url.port === "" ? 443 : Number(url.port),
       path: `${url.pathname}${url.search}`,
       method: "GET",
+      // A shared agent may reuse a hostname/port socket and bypass this call's
+      // pinned lookup. One fresh connection per validated request is required.
+      agent: false,
       servername: isIP(url.hostname) === 0 ? url.hostname : undefined,
       headers: Object.fromEntries(input.headers.entries()),
       lookup: (_hostname, options, callback) => {
