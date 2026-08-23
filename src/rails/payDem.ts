@@ -215,6 +215,14 @@ export interface PayDemSettleParams {
   /** Network label recorded on the evidence (default "demos"). */
   network?: string;
   /**
+   * Exact per-payment ceiling in OS for the transfer amount plus confirmed
+   * Demos fees. Live coordinators bind this value to the retained purchase
+   * authority so one long-lived rail can safely serve differently capped
+   * orders. A rail-level ceiling, when configured, remains an additional
+   * upper bound.
+   */
+  maxTotalDebitOs?: string;
+  /**
    * Optional PC-7 recovery identity supplied by the runSession bridge. When
    * present it is persisted with the prepared transaction before broadcast so
    * a durable journal can bind the signed hash to the exact rail/session/phase
@@ -298,6 +306,7 @@ export interface DemosNativeClient {
   transfer(args: {
     to: string;
     amountOs: bigint;
+    maxTotalDebitOs?: bigint;
     recovery?: Readonly<PayDemSettlementRecoveryContext>;
     journalPreparedTransfer?: (
       transfer: Readonly<PayDemPreparedTransfer>,
@@ -459,6 +468,22 @@ export async function payDemSettleCore(
   if (amountOs <= 0n) {
     throw new DacsError(`pay-dem: amount must be > 0 (got ${amount})`);
   }
+  const maxTotalDebitProperty = stableDataProperty(
+    params,
+    "maxTotalDebitOs",
+    "pay-dem maximum total debit",
+  );
+  let maxTotalDebitOs: bigint | undefined;
+  if (maxTotalDebitProperty.found && maxTotalDebitProperty.value !== undefined) {
+    if (typeof maxTotalDebitProperty.value !== "string" ||
+        !/^[1-9][0-9]*$/.test(maxTotalDebitProperty.value)) {
+      throw new DacsError("pay-dem maximum total debit must be positive integer OS text");
+    }
+    maxTotalDebitOs = BigInt(maxTotalDebitProperty.value);
+    if (maxTotalDebitOs < amountOs) {
+      throw new DacsError("pay-dem maximum total debit cannot be less than the amount");
+    }
+  }
 
   if (recovery !== undefined) {
     const canonicalPayer = normalizeDemosNativeAddress(payer);
@@ -481,6 +506,7 @@ export async function payDemSettleCore(
   const response = await transfer({
     to: recipient,
     amountOs,
+    ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
     ...(recovery === undefined ? {} : { recovery }),
     ...(journalPreparedTransfer === undefined ? {} : { journalPreparedTransfer }),
     ...(assertCurrentBeforeBroadcast === undefined
@@ -1009,11 +1035,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     "maxTotalDebitOs",
     "pay-dem rail maxTotalDebitOs",
   );
-  const maxTotalDebitOs = maxTotalDebitProperty.found
+  const configuredMaxTotalDebitOs = maxTotalDebitProperty.found
     ? maxTotalDebitProperty.value
     : undefined;
-  if (maxTotalDebitOs !== undefined &&
-      (typeof maxTotalDebitOs !== "bigint" || maxTotalDebitOs <= 0n)) {
+  if (configuredMaxTotalDebitOs !== undefined &&
+      (typeof configuredMaxTotalDebitOs !== "bigint" || configuredMaxTotalDebitOs <= 0n)) {
     throw new DacsError("pay-dem rail maxTotalDebitOs must be positive");
   }
   const journalProperty = stableDataProperty(
@@ -1138,10 +1164,20 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     transfer: async ({
       to,
       amountOs,
+      maxTotalDebitOs: invocationMaxTotalDebitOs,
       recovery,
       journalPreparedTransfer: invocationJournal,
       assertCurrentBeforeBroadcast,
     }) => {
+      if (configuredMaxTotalDebitOs !== undefined &&
+          invocationMaxTotalDebitOs !== undefined &&
+          invocationMaxTotalDebitOs > configuredMaxTotalDebitOs) {
+        throw new DacsError(
+          "pay-dem per-payment maximum total debit exceeds the rail ceiling",
+        );
+      }
+      const effectiveMaxTotalDebitOs = invocationMaxTotalDebitOs ??
+        configuredMaxTotalDebitOs;
       const signed = snapshotCanonicalJsonRead(
         await transfer(to, amountOs),
         "pay-dem signed transfer",
@@ -1226,7 +1262,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           "pay-dem: signed and confirmed transaction bodies do not bind the requested native transfer; refusing broadcast",
         );
       }
-      if (maxTotalDebitOs !== undefined) {
+      if (effectiveMaxTotalDebitOs !== undefined) {
         const confirmedDebitOs = confirmedDebitFromValidity(validity, {
           ...transferBinding,
         });
@@ -1235,7 +1271,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
             "pay-dem: confirmed transaction has no unambiguous bound OS debit; refusing broadcast under maxTotalDebitOs",
           );
         }
-        if (confirmedDebitOs > maxTotalDebitOs) {
+        if (confirmedDebitOs > effectiveMaxTotalDebitOs) {
           throw new DacsError(
             "pay-dem: confirmed transaction exceeds maxTotalDebitOs; refusing broadcast",
           );
@@ -1254,9 +1290,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         payee: canonicalPayee,
         amountOs: amountOs.toString(),
         network: network ?? "demos",
-        ...(maxTotalDebitOs === undefined
+        ...(effectiveMaxTotalDebitOs === undefined
           ? {}
-          : { maxTotalDebitOs: maxTotalDebitOs.toString() }),
+          : { maxTotalDebitOs: effectiveMaxTotalDebitOs.toString() }),
         ...(recovery === undefined ? {} : { recovery }),
       }) satisfies Readonly<PayDemPreparedTransfer>;
 

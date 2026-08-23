@@ -435,6 +435,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           const raw = await rail.settle({
             recipient: payment.payee,
             amount: payment.amountOs,
+            maxTotalDebitOs: payment.maxTotalDebitOs,
             network: payment.network,
             recovery: recoveryContext(payment),
             journalPreparedTransfer: async (prepared) => {

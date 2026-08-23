@@ -49,6 +49,23 @@ describe("role-owned Demos runtime", () => {
     };
   }
 
+  function payDemConfig(directory: string) {
+    const value = config(directory);
+    return {
+      ...value,
+      rail: {
+        ...value.rail,
+        requestedNetwork: "demos",
+        enabledProfiles: ["pay-dem"] as const,
+      },
+      limits: {
+        ...value.limits,
+        maxServiceAmount: { asset: "DEM", amount: "1" },
+        maxEvmNetworkFeeEth: "0",
+      },
+    };
+  }
+
   async function secret(directory: string) {
     const path = join(directory, "demos.secret");
     writeFileSync(path, "test-only-secret\n", { mode: 0o600 });
@@ -159,6 +176,72 @@ describe("role-owned Demos runtime", () => {
     expect(existsSync(join(directory, "demos-write-journal"))).toBe(false);
     await expect(journal!.acquire({ chainIdentity: "test", wallet: "0xactor" }))
       .rejects.toMatchObject({ reasonCode: "demos-write-disabled" });
+  });
+
+  it("creates and binds the native buyer rail before destroying wallet material", async () => {
+    const directory = root();
+    const loaded = await secret(directory);
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    const settle = vi.fn();
+    const createPayDemRail = vi.fn(async ({ secret: captured }) => {
+      expect(captured).toBe("test-only-secret");
+      expect(loaded.destroyed).toBe(false);
+      return Object.freeze({ address: wallet, settle });
+    });
+    const opened = await createDacsDemosActorRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: loaded,
+      createAdapter: async () => adapter({ getAddress: vi.fn(() => wallet) }),
+      createPayDemRail,
+    });
+
+    expect(loaded.destroyed).toBe(true);
+    expect(opened.payDem?.rail.address).toBe(wallet);
+    expect(opened.payDem?.rail.settle).toBe(settle);
+    expect(createPayDemRail).toHaveBeenCalledWith({
+      rpc: "http://127.0.0.1:5350",
+      secret: "test-only-secret",
+      network: "demos",
+    });
+  });
+
+  it("does not open a payment signer for a read-only native doctor", async () => {
+    const directory = root();
+    const loaded = await secret(directory);
+    const createPayDemRail = vi.fn();
+    const opened = await createDacsDemosActorRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: loaded,
+      writePolicy: "read-only",
+      createAdapter: async () => adapter(),
+      createPayDemRail,
+    });
+    expect(opened.payDem).toBeUndefined();
+    expect(createPayDemRail).not.toHaveBeenCalled();
+  });
+
+  it("rejects a native rail whose payer differs from the Demos actor wallet", async () => {
+    const directory = root();
+    const loaded = await secret(directory);
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    await expect(createDacsDemosActorRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: loaded,
+      createAdapter: async () => adapter({ getAddress: vi.fn(() => wallet) }),
+      createPayDemRail: async () => ({
+        address: "ff".repeat(32),
+        settle: vi.fn(),
+      }),
+    })).rejects.toMatchObject({
+      reasonCode: "demos-pay-dem-wallet-authority-mismatch",
+    });
+    expect(loaded.destroyed).toBe(true);
   });
 
   it("rejects a wallet whose derived primary ClaimRef differs", async () => {

@@ -126,6 +126,7 @@ describe("native DEM buyer payment track", () => {
     const rail: PayDemRail = {
       address: PAYER,
       async settle(input) {
+        expect(input.maxTotalDebitOs).toBe(AUTHORITY.maxTotalDebitOs);
         const prepared = {
           txHash: TX_HASH,
           nonce: 7,

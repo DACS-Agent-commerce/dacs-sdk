@@ -514,6 +514,35 @@ describe("createPayDemRail nonce coordination", () => {
     expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
+  it("enforces a per-payment ceiling on a long-lived uncapped rail", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      maxTotalDebitOs: "1500000000",
+    })).rejects.toThrow(/exceeds maxTotalDebitOs/);
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("does not let a per-payment ceiling exceed the retained rail ceiling", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1",
+      maxTotalDebitOs: "2000000001",
+    })).rejects.toThrow(/per-payment maximum total debit exceeds the rail ceiling/);
+    expect(sdk.transfer).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-bigint debit ceiling at the JavaScript boundary", async () => {
     await expect(createPayDemRail({
       rpc: "https://node.test",

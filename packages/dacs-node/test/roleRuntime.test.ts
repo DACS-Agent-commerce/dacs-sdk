@@ -194,7 +194,14 @@ describe("complete role-owned live runtime", () => {
       peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
       workerId: "buyer-pay-dem-worker",
       demosIdentityFilePath: secretPath,
-      createDemosAdapter: async () => adapter(),
+      createDemosAdapter: async () => ({
+        ...adapter(),
+        getAddress: vi.fn(() => Buffer.from(PUBLIC_KEY).toString("hex")),
+      }),
+      createPayDemRail: async () => ({
+        address: Buffer.from(PUBLIC_KEY).toString("hex"),
+        settle: vi.fn(),
+      }),
       createPayDemOperations: () => Object.freeze({}),
       validatePayload: () => Object.freeze({ status: "valid" as const }),
       handleMessage: () => Object.freeze({ disposition: "accepted" as const }),
@@ -202,6 +209,9 @@ describe("complete role-owned live runtime", () => {
     });
     try {
       expect(runtime.evm).toBeUndefined();
+      expect(runtime.demos.payDem?.rail.address).toBe(
+        Buffer.from(PUBLIC_KEY).toString("hex"),
+      );
       expect(runtime.service.coordinator.profiles).toEqual(["pay-dem"]);
       expect(runtime.commerceStores).toEqual({ role: "buyer" });
       await runtime.start();

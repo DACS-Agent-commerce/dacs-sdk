@@ -120,6 +120,10 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   createDemosAdapter?: Parameters<
     typeof createDacsDemosActorRuntimeV1
   >[0]["createAdapter"];
+  /** Deterministic test/custom-host seam. Production uses the SDK native rail. */
+  createPayDemRail?: Parameters<
+    typeof createDacsDemosActorRuntimeV1
+  >[0]["createPayDemRail"];
   /** Deterministic test/custom-host seam. Production omits this callback. */
   openDatabase?: (
     input: Parameters<typeof openDacsNodeSqliteDatabase>[0],
@@ -269,6 +273,8 @@ export async function createDacsLiveRoleRuntimeV1(
       (rawOptions.authorizeJob !== undefined && typeof rawOptions.authorizeJob !== "function") ||
       (rawOptions.createDemosAdapter !== undefined &&
         typeof rawOptions.createDemosAdapter !== "function") ||
+      (rawOptions.createPayDemRail !== undefined &&
+        typeof rawOptions.createPayDemRail !== "function") ||
       (rawOptions.openDatabase !== undefined && typeof rawOptions.openDatabase !== "function")) {
     throw new TypeError("live role runtime options are invalid");
   }
@@ -321,6 +327,8 @@ export async function createDacsLiveRoleRuntimeV1(
       demosIdentity,
       ...(rawOptions.createDemosAdapter === undefined
         ? {} : { createAdapter: rawOptions.createDemosAdapter }),
+      ...(rawOptions.createPayDemRail === undefined
+        ? {} : { createPayDemRail: rawOptions.createPayDemRail }),
     });
   } catch {
     database.close();

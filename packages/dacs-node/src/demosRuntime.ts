@@ -2,7 +2,11 @@ import { lstat, mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
-import type { ProtocolAnchorReceipt } from "@kynesyslabs/dacs";
+import {
+  createPayDemRail as createSdkPayDemRail,
+  type PayDemRail,
+  type ProtocolAnchorReceipt,
+} from "@kynesyslabs/dacs";
 import type { ComponentSigner } from "@kynesyslabs/dacs/artifacts";
 import {
   canonicalDemosAgentPublicKey,
@@ -20,6 +24,7 @@ import type {
 
 import {
   DACS_NODE_LIVE_PROFILE,
+  dacsLiveRailProfiles,
   validateDacsAgentConfig,
   type DacsLiveAgentConfig,
 } from "./config.js";
@@ -98,6 +103,12 @@ export interface DacsDemosActorRuntimeOptionsV1 {
     secret: string;
     writeJournal: DemosWriteJournal;
   }>) => Promise<DacsDemosAdapterV1> | DacsDemosAdapterV1;
+  /** Deterministic test/custom-host seam. Production uses the SDK native rail. */
+  createPayDemRail?: (input: Readonly<{
+    rpc: string;
+    secret: string;
+    network: "demos";
+  }>) => Promise<Readonly<PayDemRail>> | Readonly<PayDemRail>;
 }
 
 export interface DacsDemosActorRuntimeV1 {
@@ -106,6 +117,8 @@ export interface DacsDemosActorRuntimeV1 {
   readonly walletAddress: string;
   readonly publicKey: Uint8Array;
   readonly adapter: DacsDemosAdapterV1;
+  /** Present only for a write-enabled native-DEM buyer authority. */
+  readonly payDem?: Readonly<{ rail: Readonly<PayDemRail> }>;
   readonly signTransportEnvelope: DacsHttpEnvelopeSigner;
   /** Role-bound component signer; rejects substituted signer or algorithm context. */
   readonly signComponent: ComponentSigner;
@@ -163,6 +176,11 @@ function plainObject(value: unknown): value is Record<string, unknown> {
 function exactPrimaryAuthority(value: unknown): value is string {
   const publicKey = canonicalDemosAgentPublicKey(value);
   return publicKey !== null && value === demosAgentClaimRef(publicKey);
+}
+
+function canonicalWalletAddress(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() !== value) return null;
+  return value.match(/^(?:0[xX])?([0-9a-fA-F]{64})$/)?.[1]?.toLowerCase() ?? null;
 }
 
 function snapshotSecretText(secret: Readonly<DacsLoadedSecretV1>): string {
@@ -228,7 +246,9 @@ export async function createDacsDemosActorRuntimeV1(
       (rawOptions.writePolicy !== undefined && rawOptions.writePolicy !== "perform" &&
         rawOptions.writePolicy !== "read-only") ||
       (rawOptions.createAdapter !== undefined &&
-        typeof rawOptions.createAdapter !== "function")) {
+        typeof rawOptions.createAdapter !== "function") ||
+      (rawOptions.createPayDemRail !== undefined &&
+        typeof rawOptions.createPayDemRail !== "function")) {
     throw new TypeError("Demos actor runtime options are invalid");
   }
   const config = validateDacsAgentConfig(rawOptions.config);
@@ -245,6 +265,7 @@ export async function createDacsDemosActorRuntimeV1(
     throw error;
   }
   let adapter: DacsDemosAdapterV1;
+  let payDemRail: Readonly<PayDemRail> | undefined;
   try {
     let writeJournal: DemosWriteJournal;
     if (rawOptions.writePolicy === "read-only") {
@@ -272,6 +293,15 @@ export async function createDacsDemosActorRuntimeV1(
     try {
       adapter = await makeAdapter({ rpc: config.demos.rpcUrl, secret, writeJournal });
       await adapter.connect();
+      if (rawOptions.role === "buyer" && rawOptions.writePolicy !== "read-only" &&
+          dacsLiveRailProfiles(config).includes("pay-dem")) {
+        const makePayDemRail = rawOptions.createPayDemRail ?? createSdkPayDemRail;
+        payDemRail = await makePayDemRail({
+          rpc: config.demos.rpcUrl,
+          secret,
+          network: "demos",
+        });
+      }
     } catch {
       throw new DacsDemosRuntimeError("demos-adapter-connect-failed");
     }
@@ -291,6 +321,13 @@ export async function createDacsDemosActorRuntimeV1(
       !text(walletAddress, 256)) {
     publicKey.fill(0);
     throw new DacsDemosRuntimeError("demos-wallet-authority-mismatch");
+  }
+  if (payDemRail !== undefined &&
+      (typeof payDemRail.settle !== "function" ||
+        canonicalWalletAddress(payDemRail.address) === null ||
+        canonicalWalletAddress(payDemRail.address) !== canonicalWalletAddress(walletAddress))) {
+    publicKey.fill(0);
+    throw new DacsDemosRuntimeError("demos-pay-dem-wallet-authority-mismatch");
   }
   const retainedPublicKey = Uint8Array.from(publicKey);
   publicKey.fill(0);
@@ -320,6 +357,9 @@ export async function createDacsDemosActorRuntimeV1(
       return Uint8Array.from(retainedPublicKey);
     },
     adapter,
+    ...(payDemRail === undefined
+      ? {}
+      : { payDem: Object.freeze({ rail: payDemRail }) }),
     signTransportEnvelope,
     signComponent,
     networkInfo: () => adapter.raw.getNetworkInfo(),
