@@ -18,9 +18,13 @@ import type { DacsSellerAgreementTransportRuntimeOptionsV1 } from
   "./agreementTransportRuntime.js";
 import {
   captureDacsFixedPriceX402ApplicationV1,
+  createDacsFixedPriceX402BuyerAgreementPolicyV1,
+  createDacsFixedPriceX402SellerAgreementPolicyV1,
   DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
   DacsFixedPriceX402ProfileError,
   type DacsFixedPriceX402ApplicationV1,
+  type DacsFixedPriceX402BuyerAgreementPolicyV1,
+  type DacsFixedPriceX402SellerAgreementPolicyV1,
 } from "./fixedPriceX402Profile.js";
 import {
   resolveDacsPayDemExistingListingV1,
@@ -72,6 +76,16 @@ export interface DacsFixedPricePayDemSellerSessionPolicyV1 {
     retained: Readonly<DacsLiveOrderInputV1>;
   }>): Readonly<BundleRequirement>;
   resolveSellerRequirement(): Readonly<BundleRequirement>;
+}
+
+export interface DacsFixedPricePayDemBuyerAgreementPolicyOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  now?(): number;
+}
+
+export interface DacsFixedPricePayDemSellerAgreementPolicyOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  maximumClockSkewMs?: number;
 }
 
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -298,5 +312,27 @@ export function createDacsFixedPricePayDemSellerSessionPolicyV1(
     resolveSellerRequirement() {
       return DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1;
     },
+  });
+}
+
+/** Use the shared Agreement anchor/signature spine with native rail selection. */
+export function createDacsFixedPricePayDemBuyerAgreementPolicyV1(
+  options: Readonly<DacsFixedPricePayDemBuyerAgreementPolicyOptionsV1>,
+): Readonly<DacsFixedPriceX402BuyerAgreementPolicyV1> {
+  return createDacsFixedPriceX402BuyerAgreementPolicyV1(options);
+}
+
+/** Select the native admission journal while retaining the shared commitment spine. */
+export function createDacsFixedPricePayDemSellerAgreementPolicyV1(
+  options: Readonly<DacsFixedPricePayDemSellerAgreementPolicyOptionsV1>,
+): Readonly<DacsFixedPriceX402SellerAgreementPolicyV1> {
+  return createDacsFixedPriceX402SellerAgreementPolicyV1({
+    context: options.context,
+    ...(options.maximumClockSkewMs === undefined
+      ? {} : { maximumClockSkewMs: options.maximumClockSkewMs }),
+    loadAdmission: (order) => loadDacsFixedPricePayDemSellerAdmissionV1(
+      options.context,
+      order as FixedPricePayDemOrderRecord,
+    ),
   });
 }

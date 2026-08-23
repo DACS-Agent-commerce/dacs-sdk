@@ -72,6 +72,8 @@ import {
 } from "./listingDoctor.js";
 import { createDacsFixedPriceX402RoleOrderV1 } from "./liveOrder.js";
 import {
+  type DacsLiveOrderRecordV1,
+  type DacsLiveOrderV1,
   loadDacsLiveOrderInputV1,
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
@@ -226,6 +228,11 @@ export interface DacsFixedPriceX402BuyerPaymentPolicyV1 {
 export interface DacsFixedPriceX402SellerAgreementPolicyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   maximumClockSkewMs?: number;
+  /** Select the actor-local admission store for this exact rail profile. */
+  loadAdmission?(order: Readonly<DacsLiveOrderRecordV1>): Readonly<{
+    admittedAt: number;
+    application: Readonly<DacsFixedPriceX402ApplicationV1>;
+  }>;
 }
 
 export interface DacsFixedPriceX402SellerAgreementPolicyV1 {
@@ -620,15 +627,16 @@ function retainAgreementClock(
 
 function exactRail(
   application: Readonly<DacsFixedPriceX402ApplicationV1>,
-  order: Readonly<FixedPriceX402OrderInput>,
+  order: Readonly<DacsLiveOrderV1>,
 ): Readonly<{ rail: PaymentRailRef; phaseIndex: number; payeeAddress: string }> {
   const listing = application.listing;
   const accepted = listing.acceptedRails?.filter((candidate) =>
     candidate.railId === order.protocol.rail.railId &&
     candidate.railVersion === order.protocol.rail.railVersion
   ) ?? [];
+  const paymentPhase = order.protocol.phase;
   const phaseIndexes = listing.pipeline.flatMap((phase, index) =>
-    phase.kind === "pay-x402" ? [index] : []
+    phase.kind === paymentPhase ? [index] : []
   );
   const commitmentCount = listing.pipeline.filter((phase) =>
     phase.kind === "commit-payee-bound-agreement"
@@ -638,8 +646,8 @@ function exactRail(
   const payeeAddress = plainObject(rail?.parameters)
     ? rail.parameters.payTo
     : undefined;
-  if (order.protocol.phase !== "pay-x402" ||
-      order.protocol.rail.phaseHandler !== "pay-x402" ||
+  if ((paymentPhase !== "pay-x402" && paymentPhase !== "pay-dem") ||
+      order.protocol.rail.phaseHandler !== paymentPhase ||
       phaseIndexes.length !== 1 || commitmentCount !== 1 || rail === undefined ||
       !plainObject(phase?.parameters) || phase.parameters.rail !== rail.railId ||
       typeof payeeAddress !== "string" || payeeAddress.length === 0 ||
@@ -655,7 +663,7 @@ function exactRail(
 
 function buildAgreementInput(input: Readonly<{
   application: Readonly<DacsFixedPriceX402ApplicationV1>;
-  order: Readonly<FixedPriceX402OrderInput>;
+  order: Readonly<DacsLiveOrderV1>;
   buyerIdentity: Readonly<DacsBuyerSessionAgreementFactsV1["buyerIdentity"]>;
   sellerIdentity: Readonly<DacsBuyerSessionAgreementFactsV1["sellerIdentity"]>;
   buyerVetRef: Readonly<DacsBuyerSessionAgreementFactsV1["buyerVetRef"]>;
@@ -1964,18 +1972,21 @@ export function createDacsFixedPriceX402SellerAgreementPolicyV1(
   options: Readonly<DacsFixedPriceX402SellerAgreementPolicyOptionsV1>,
 ): Readonly<DacsFixedPriceX402SellerAgreementPolicyV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
-      options.context.role !== "seller") {
+      options.context.role !== "seller" ||
+      (options.loadAdmission !== undefined && typeof options.loadAdmission !== "function")) {
     throw new TypeError("fixed-price seller agreement policy options are invalid");
   }
   const context = options.context;
   const maximumClockSkewMs = sellerClockSkew(options.maximumClockSkewMs);
+  const loadAdmission = options.loadAdmission ?? ((order: Readonly<DacsLiveOrderRecordV1>) =>
+    loadDacsFixedPriceX402SellerAdmissionV1(
+      context,
+      order as FixedPriceX402OrderRecord,
+    ));
   const policy: DacsFixedPriceX402SellerAgreementPolicyV1 = {
     resolveAuthenticatedAgreementContext(input) {
       try {
-        const admission = loadDacsFixedPriceX402SellerAdmissionV1(
-          context,
-          input.operation.order,
-        );
+        const admission = loadAdmission(input.operation.order);
         const application = captureDacsFixedPriceX402ApplicationV1(
           input.retained.application,
         );
@@ -2039,10 +2050,7 @@ export function createDacsFixedPriceX402SellerAgreementPolicyV1(
           proposal.plan.agreementHash !== result.transportIdentity.agreementHash) return false;
       try {
         const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
-        const admission = loadDacsFixedPriceX402SellerAdmissionV1(
-          context,
-          operation.order,
-        );
+        const admission = loadAdmission(operation.order);
         if (canonicalize(application) !== canonicalize(admission.application)) return false;
         const agreement = await finalizeFixedPriceAgreementContributions(
           proposal.plan,

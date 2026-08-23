@@ -26,6 +26,7 @@ import {
 } from "@kynesyslabs/dacs/commerce";
 
 import {
+  createDacsFixedPricePayDemBuyerAgreementPolicyV1,
   createDacsFixedPricePayDemSellerSessionPolicyV1,
   loadDacsFixedPricePayDemSellerAdmissionV1,
 } from "../src/fixedPricePayDemProfile.js";
@@ -205,5 +206,68 @@ describe("fixed-price pay-dem seller session policy", () => {
       authenticated: { envelope: { sender: BUYER, audience: SELLER } } as never,
       payload: { order: substituted, application: value.application } as never,
     })).rejects.toThrow(/session-party-mismatch/);
+  });
+
+  it("derives the Agreement payout from the selected native Listing", async () => {
+    const value = await fixture();
+    const effects = new Map<string, unknown>();
+    const localBindingHash = fixedPricePayDemOrderLocalBindingHash(value.buyerOrder);
+    const context = {
+      role: "buyer",
+      authority: BUYER,
+      peerAuthority: SELLER,
+      database: {
+        loadEffectInput: (_kind: string, id: string) => effects.get(id),
+        putEffectIntent: (input: { effectId: string; input: unknown }) => {
+          effects.set(input.effectId, structuredClone(input.input));
+          return { status: "created" as const };
+        },
+      },
+    };
+    const policy = createDacsFixedPricePayDemBuyerAgreementPolicyV1({
+      context: context as never,
+      now: () => 1_000,
+    });
+    const draft = policy.buildDraft({
+      operation: {
+        order: { ...value.buyerOrder, role: "buyer", localBindingHash },
+      },
+      retained: {
+        jobId: JOB_ID,
+        localBindingHash,
+        order: value.buyerOrder,
+        application: value.application,
+      },
+      session: {
+        jobId: JOB_ID,
+        localBindingHash,
+        buyerIdentity: identity(BUYER),
+        sellerIdentity: identity(SELLER),
+        buyerRequirementHash: sha256Hex(canonicalize(
+          value.listing.buyerRequirement,
+        )),
+        sellerRequirementHash: sha256Hex(canonicalize({
+          requirementVersion: "1", required: [],
+        })),
+        buyerVetRef: {
+          anchor: { kind: "storage-program", locator: `dacs2:vet:${JOB_ID}:buyer` },
+          contentHash: "d".repeat(64), signer: SELLER,
+        },
+        sellerVetRef: {
+          anchor: { kind: "storage-program", locator: `dacs2:vet:${JOB_ID}:seller` },
+          contentHash: "e".repeat(64), signer: BUYER,
+        },
+      },
+    } as never);
+    expect("payoutBindings" in draft.terms ? draft.terms.payoutBindings : undefined)
+      .toEqual([{
+        railId: "demos-native:DEM",
+        phaseIndex: 2,
+        payeeAddress: SELLER_KEY,
+      }]);
+    expect(draft.terms.rail).toMatchObject({
+      railId: "demos-native:DEM",
+      parameters: { network: "demos", payTo: SELLER_KEY },
+    });
   });
 });
