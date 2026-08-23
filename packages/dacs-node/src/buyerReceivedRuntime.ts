@@ -52,6 +52,7 @@ export interface DacsBuyerReceivedRuntimeOptionsV1 {
     response: Readonly<DacsBuyerReceivedRecordV1>;
     body: Uint8Array;
   }>): Promise<boolean | "indeterminate"> | boolean | "indeterminate";
+  /** Defaults to the locked-down public HTTPS transport when omitted. */
   fetchImpl?: typeof fetch;
   maxBodyBytes?: number;
   retryDelayMs?: number;
