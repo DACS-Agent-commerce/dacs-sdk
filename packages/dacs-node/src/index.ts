@@ -35,6 +35,7 @@ export * from "./payDemPayment.js";
 export * from "./payDemPaymentNoticeRuntime.js";
 export * from "./payDemSellerPayment.js";
 export * from "./payDemSellerFulfilmentRuntime.js";
+export * from "./payDemBuyerReceivedRuntime.js";
 export * from "./publicJson.js";
 export * from "./release.js";
 export * from "./liveEffects.js";
