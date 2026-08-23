@@ -3,6 +3,7 @@ import {
   FINALITY_COMMITMENT_SEPARATOR,
   bundleAddress,
   encodeAddressSegment,
+  fixedPriceAgreementLogicalAddress,
   projectDurableSellerAuditPending,
   validateFixedPriceAgreementBinding,
   type DurableSellerBundleFinalizationProvider,
@@ -24,6 +25,10 @@ import { ed25519Verify, publicKeyFromRaw, signedBytes } from
   "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey, identityBundleHash } from
   "@kynesyslabs/dacs/identity";
+import type {
+  FixedPricePayDemOrderRecord,
+  FixedPriceX402OrderRecord,
+} from "@kynesyslabs/dacs/commerce";
 
 import type { DacsSellerAuditMaterialV1 } from "./auditRuntime.js";
 import { loadDacsSellerAgreementVetProductionForOrderV1 } from
@@ -37,14 +42,23 @@ import {
   loadDacsFixedPriceX402CommitmentResultV1,
   loadDacsFixedPriceX402SellerAdmissionV1,
 } from "./fixedPriceX402Profile.js";
-import type { DacsFixedPriceX402SellerFulfilmentV1 } from
+import {
+  loadDacsFixedPricePayDemCommitmentResultV1,
+  loadDacsFixedPricePayDemSellerAdmissionV1,
+} from "./fixedPricePayDemProfile.js";
+import type { DacsFixedPriceSellerFulfilmentV1 } from
   "./fixedPriceX402SellerFulfilment.js";
 import type { DacsSellerLiveCommerceAssemblyOptionsV1 } from
   "./liveCommerceAssembly.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import { loadDacsSellerX402AuthorizationForOrderV1 } from
   "./sellerX402Runtime.js";
-import { loadDacsSellerSessionAgreementFactsForOrderV1 } from
+import { loadDacsPayDemSellerPaymentAuthorizationForOrderV1 } from
+  "./payDemSellerPayment.js";
+import {
+  loadDacsPayDemSellerSessionAgreementFactsForOrderV1,
+  loadDacsSellerSessionAgreementFactsForOrderV1,
+} from
   "./sessionBootstrapAgreementRuntime.js";
 
 const FINALIZATION_VERSION = "1" as const;
@@ -56,8 +70,21 @@ type SellerAuditOptions = DacsSellerLiveCommerceAssemblyOptionsV1["audit"];
 type Dependency = FinalizeCompletedSellerBundleInput["dependencies"][number];
 export interface DacsFixedPriceX402SellerAuditOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
-  fulfilment: Readonly<DacsFixedPriceX402SellerFulfilmentV1>;
+  fulfilment: Readonly<DacsFixedPriceSellerFulfilmentV1>;
   leaseTtlMs?: number;
+}
+
+export interface DacsFixedPriceSellerAuditOptionsV1
+  extends DacsFixedPriceX402SellerAuditOptionsV1 {
+  paymentProfile: "x402" | "pay-dem";
+}
+
+type SellerLiveOrderRecord = FixedPriceX402OrderRecord | FixedPricePayDemOrderRecord;
+
+function isPayDemOrder(
+  order: Readonly<SellerLiveOrderRecord>,
+): order is Readonly<FixedPricePayDemOrderRecord> {
+  return order.protocol.phase === "pay-dem";
 }
 
 export class DacsFixedPriceX402SellerAuditError extends Error {
@@ -296,11 +323,12 @@ function exactEmptyRequirement(value: unknown): boolean {
  * profile. Every dependency is re-read with an authenticated Demos receipt;
  * the terminal session is projected only from the exact fulfilment WAL.
  */
-export function createDacsFixedPriceX402SellerAuditV1(
-  options: Readonly<DacsFixedPriceX402SellerAuditOptionsV1>,
+export function createDacsFixedPriceSellerAuditV1(
+  options: Readonly<DacsFixedPriceSellerAuditOptionsV1>,
 ): Readonly<SellerAuditOptions> {
   if (!plainObject(options) || !plainObject(options.context) ||
-      options.context.role !== "seller" || !plainObject(options.fulfilment)) {
+      options.context.role !== "seller" || !plainObject(options.fulfilment) ||
+      (options.paymentProfile !== "x402" && options.paymentProfile !== "pay-dem")) {
     throw new TypeError("fixed-price seller audit options are invalid");
   }
   const context = options.context;
@@ -314,18 +342,31 @@ export function createDacsFixedPriceX402SellerAuditV1(
 
   return Object.freeze({
     async resolveMaterial({ operation, retained }) {
-      const order = operation.order;
+      const order = operation.order as unknown as SellerLiveOrderRecord;
+      if ((options.paymentProfile === "pay-dem") !== isPayDemOrder(order)) {
+        throw new DacsFixedPriceX402SellerAuditError("seller-audit-profile-invalid");
+      }
       const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
       if (retained.localBindingHash !== order.localBindingHash ||
           !exactEmptyRequirement(application.listing.buyerRequirement)) {
         throw new DacsFixedPriceX402SellerAuditError("seller-audit-profile-invalid");
       }
-      const authorization = loadDacsSellerX402AuthorizationForOrderV1(context, order, 2);
+      const payment = isPayDemOrder(order)
+        ? (await loadDacsPayDemSellerPaymentAuthorizationForOrderV1(
+            context,
+            order,
+          )).authorization
+        : loadDacsSellerX402AuthorizationForOrderV1(
+            context,
+            order,
+            2,
+          ).paymentAuthorization;
+      const agreementRef = fixedPriceAgreementLogicalAddress(order.jobId);
       const agreementResolution = await options.fulfilment.fulfilmentDeps.resolveAgreement(
-        authorization.sessionAuthorization.agreementRef,
+        agreementRef,
       );
       const listingResolution = await options.fulfilment.fulfilmentDeps.resolveListing(
-        authorization.sessionAuthorization.listingRef,
+        payment.listingRef,
       );
       if (agreementResolution.status === "rejected" ||
           listingResolution.status === "rejected") {
@@ -354,10 +395,16 @@ export function createDacsFixedPriceX402SellerAuditV1(
           "seller-audit-delivery-not-successful",
         );
       }
-      const session = loadDacsSellerSessionAgreementFactsForOrderV1(context, order);
+      const session = isPayDemOrder(order)
+        ? loadDacsPayDemSellerSessionAgreementFactsForOrderV1(context, order)
+        : loadDacsSellerSessionAgreementFactsForOrderV1(context, order);
       const sellerVet = loadDacsSellerAgreementVetProductionForOrderV1(context, order);
-      const admission = loadDacsFixedPriceX402SellerAdmissionV1(context, order);
-      const commitment = loadDacsFixedPriceX402CommitmentResultV1(context, order);
+      const admission = isPayDemOrder(order)
+        ? loadDacsFixedPricePayDemSellerAdmissionV1(context, order)
+        : loadDacsFixedPriceX402SellerAdmissionV1(context, order);
+      const commitment = isPayDemOrder(order)
+        ? loadDacsFixedPricePayDemCommitmentResultV1(context, order)
+        : loadDacsFixedPriceX402CommitmentResultV1(context, order);
       if (!exactEmptyRequirement(verifiedListing.buyerRequirement) ||
           canonicalize(admission.application) !== canonicalize(application)) {
         throw new DacsFixedPriceX402SellerAuditError("seller-audit-retained-state-invalid");
@@ -367,7 +414,7 @@ export function createDacsFixedPriceX402SellerAuditV1(
         verifiedListing: {
           disposition: "verified",
           listing: application.listing,
-          pin: authorization.sessionAuthorization.listingRef,
+          pin: payment.listingRef,
         },
         committedAt: commitment.commitment.committedAt,
       }));
@@ -379,7 +426,7 @@ export function createDacsFixedPriceX402SellerAuditV1(
         commitment.commitment.record as unknown as Record<string, unknown>,
       );
       const paymentRef = projection.sessionArtifacts.settlementEvidence.find((ref) =>
-        ref.contentHash === authorization.paymentAuthorization.evidenceHash
+        ref.contentHash === payment.evidenceHash
       );
       if (paymentRef === undefined || paymentRef.anchor.kind !== "storage-program") {
         throw new DacsFixedPriceX402SellerAuditError("seller-audit-payment-ref-invalid");
@@ -403,7 +450,7 @@ export function createDacsFixedPriceX402SellerAuditV1(
           }
           return Object.freeze({ artifact: copy(artifact), receipt, writer: order.seller });
         })(),
-        resolveActorAnchor(context, authorization.sessionAuthorization.agreementRef,
+        resolveActorAnchor(context, agreementRef,
           order.buyer, agreementHash),
         resolveActorAnchor(context, paymentRef.anchor.locator, order.buyer,
           paymentRef.contentHash),
@@ -531,11 +578,11 @@ export function createDacsFixedPriceX402SellerAuditV1(
       }
 
       const dependencies: Dependency[] = [
-        dependency({ kind: "listing", listingRef: authorization.sessionAuthorization.listingRef },
+        dependency({ kind: "listing", listingRef: payment.listingRef },
           listingAnchor),
         dependency({ kind: "attestation-ref", ref: {
           anchor: { kind: "storage-program", locator:
-            authorization.sessionAuthorization.agreementRef },
+            agreementRef },
           contentHash: agreementHash,
           signer: order.buyer,
         } }, agreementAnchor),
@@ -646,7 +693,6 @@ export function createDacsFixedPriceX402SellerAuditV1(
             ? "valid" : "invalid";
         },
         resolvePaymentPhaseIndex({ dependency: candidate, evidence }) {
-          const payment = authorization.paymentAuthorization;
           const exact = candidate.anchorReceipt.nativeAddress ===
               paymentAnchor.receipt.nativeAddress &&
             canonicalize(evidence) === canonicalize(paymentAnchor.artifact) &&
@@ -762,7 +808,7 @@ export function createDacsFixedPriceX402SellerAuditV1(
           verifiedListing: copy(verifiedListing),
           agreementRef: {
             anchor: { kind: "storage-program", locator:
-              authorization.sessionAuthorization.agreementRef },
+              agreementRef },
             contentHash: agreementHash,
             signer: order.buyer,
           },
@@ -797,4 +843,16 @@ export function createDacsFixedPriceX402SellerAuditV1(
         await publication.verifyBundleAnchorReceipt(anchored) === "valid";
     },
   });
+}
+
+export function createDacsFixedPriceX402SellerAuditV1(
+  options: Readonly<DacsFixedPriceX402SellerAuditOptionsV1>,
+): Readonly<SellerAuditOptions> {
+  return createDacsFixedPriceSellerAuditV1({ ...options, paymentProfile: "x402" });
+}
+
+export function createDacsFixedPricePayDemSellerAuditV1(
+  options: Readonly<DacsFixedPriceX402SellerAuditOptionsV1>,
+): Readonly<SellerAuditOptions> {
+  return createDacsFixedPriceSellerAuditV1({ ...options, paymentProfile: "pay-dem" });
 }
