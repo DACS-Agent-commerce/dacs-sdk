@@ -15,7 +15,6 @@ import {
   type ProtocolAnchorReceipt,
 } from "@kynesyslabs/dacs";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
-import type { FixedPriceX402TrackOperationInput } from "@kynesyslabs/dacs/commerce";
 import { ed25519Verify, publicKeyFromRaw, signedBytes } from "@kynesyslabs/dacs/crypto";
 import {
   canonicalDemosAgentPublicKey,
@@ -24,6 +23,7 @@ import {
 } from "@kynesyslabs/dacs/identity";
 
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import type { DacsLiveTrackOperationInputV1 } from "./orderInput.js";
 
 const VET_BINDING_VERSION = "1" as const;
 const VET_BINDING_DOMAIN = "dacs-live-session-vet-binding:v1:" as const;
@@ -102,7 +102,7 @@ function emptyRequirement(value: unknown): value is Readonly<BundleRequirement> 
 
 function operationBound(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
 ): boolean {
   return operation.fence.role === context.role && operation.fence.track === "agreement" &&
     operation.order.role === context.role && operation.order.jobId === operation.fence.jobId &&
@@ -153,7 +153,7 @@ function captureBinding(value: unknown): Readonly<DacsSessionVetBindingV1> {
 
 async function retainedRecord(input: Readonly<{
   context: Readonly<DacsLiveRoleOperationContextV1>;
-  operation: Readonly<FixedPriceX402TrackOperationInput>;
+  operation: Readonly<DacsLiveTrackOperationInputV1>;
   identity: Readonly<IdentityBundle>;
   requirement: Readonly<BundleRequirement>;
 }>): Promise<Readonly<CompositeVerificationRecord>> {
@@ -326,6 +326,27 @@ export async function createDacsX402SessionIdentityV1(input: Readonly<{
   return Object.freeze(structuredClone(bundle));
 }
 
+/**
+ * Select the action-bearing session claims from the rail fixed before
+ * Agreement. Native DEM uses the actor's Demos identity for both transport
+ * and payment authority; x402 additionally proves the buyer's EVM key.
+ */
+export async function createDacsLiveSessionIdentityV1(input: Readonly<{
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  operation: Readonly<DacsLiveTrackOperationInputV1>;
+  challenge: string;
+}>): Promise<Readonly<IdentityBundle>> {
+  if (!plainObject(input) || !plainObject(input.context) ||
+      !plainObject(input.operation) ||
+      !plainObject(input.operation.order) ||
+      !operationBound(input.context, input.operation)) {
+    throw new TypeError("live session identity input is invalid");
+  }
+  return input.operation.order.protocol.phase === "pay-dem"
+    ? createDacsSingleClaimSessionIdentityV1(input)
+    : createDacsX402SessionIdentityV1(input);
+}
+
 export async function authenticateDacsSessionVetProductionV1(input: Readonly<{
   context: Readonly<DacsLiveRoleOperationContextV1>;
   jobId: string;
@@ -376,7 +397,7 @@ export async function authenticateDacsSessionVetProductionV1(input: Readonly<{
 
 export async function produceDacsEmptyRequirementSessionVetV1(input: Readonly<{
   context: Readonly<DacsLiveRoleOperationContextV1>;
-  operation: Readonly<FixedPriceX402TrackOperationInput>;
+  operation: Readonly<DacsLiveTrackOperationInputV1>;
   evaluatedIdentity: Readonly<IdentityBundle>;
   requirement: Readonly<BundleRequirement>;
 }>): Promise<DacsSessionVetProductionOutcomeV1> {

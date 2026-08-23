@@ -1,11 +1,5 @@
-import {
-  fixedPriceX402OrderBindingHash,
-  fixedPriceX402OrderLocalBindingHash,
-  type FixedPriceX402OrderInput,
-  type FixedPriceX402OrderRecord,
-  type FixedPriceX402TrackOperationInput,
-} from "@kynesyslabs/dacs/commerce";
 import { compositeVerificationAddress } from "@kynesyslabs/dacs";
+import type { FixedPriceX402OrderInput } from "@kynesyslabs/dacs/commerce";
 import { ARTIFACT_SEPARATORS } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { ed25519Verify, publicKeyFromRaw, signedBytes } from "@kynesyslabs/dacs/crypto";
@@ -16,8 +10,12 @@ import {
 } from "@kynesyslabs/dacs/identity";
 
 import {
+  dacsLiveOrderBindingHashesV1,
   loadDacsLiveOrderInputForTrackV1,
   putDacsLiveOrderInputV1,
+  type DacsLiveOrderRecordV1,
+  type DacsLiveOrderV1,
+  type DacsLiveTrackOperationInputV1,
 } from "./orderInput.js";
 import type {
   DacsLiveRoleInboundOperationContextV1,
@@ -26,6 +24,7 @@ import type {
 import type {
   DacsSessionAdmissionPayloadV1,
   DacsSessionChallengePayloadV1,
+  DacsLiveSessionInitPayloadV1,
   DacsSessionInitPayloadV1,
   DacsSessionPresentationPayloadV1,
   DacsHttpAuthenticatedEnvelopeV1,
@@ -46,7 +45,7 @@ const BINDING_DOMAIN = "dacs-live-session-bootstrap-binding:v1:" as const;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 type BootstrapKind = "init" | "challenge" | "presentation" | "admission";
-type BootstrapPayload = DacsSessionInitPayloadV1 | DacsSessionChallengePayloadV1 |
+type BootstrapPayload = DacsLiveSessionInitPayloadV1 | DacsSessionChallengePayloadV1 |
   DacsSessionPresentationPayloadV1 | DacsSessionAdmissionPayloadV1;
 
 interface BootstrapBindingV1 {
@@ -63,8 +62,10 @@ interface BootstrapBindingV1 {
   }>;
 }
 
-export interface DacsSellerSessionBootstrapAdmissionV1 {
-  order: Readonly<FixedPriceX402OrderInput>;
+export interface DacsSellerSessionBootstrapAdmissionV1<
+  Order extends DacsLiveOrderV1 = FixedPriceX402OrderInput,
+> {
+  order: Readonly<Order>;
   application: Readonly<Record<string, unknown>>;
 }
 
@@ -81,36 +82,38 @@ export class DacsSellerSessionAdmissionUnavailableError extends Error {
   }
 }
 
-export interface DacsSellerSessionBootstrapTransportOptionsV1 {
+export interface DacsSellerSessionBootstrapTransportOptionsV1<
+  Order extends DacsLiveOrderV1 = FixedPriceX402OrderInput,
+> {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   admitInit(input: Readonly<{
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>;
-    payload: Readonly<DacsSessionInitPayloadV1>;
-  }>): Promise<Readonly<DacsSellerSessionBootstrapAdmissionV1>> |
-    Readonly<DacsSellerSessionBootstrapAdmissionV1>;
+    payload: Readonly<DacsSessionInitPayloadV1<Order>>;
+  }>): Promise<Readonly<DacsSellerSessionBootstrapAdmissionV1<Order>>> |
+    Readonly<DacsSellerSessionBootstrapAdmissionV1<Order>>;
 }
 
 export interface DacsBuyerSessionBootstrapTransportRuntimeV1 {
   readonly validatePayload: DacsHttpPayloadValidatorV1;
   resolveInit(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
-  ): Readonly<DacsSessionInitPayloadV1> | undefined;
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
+  ): Readonly<DacsLiveSessionInitPayloadV1> | undefined;
   publishInit(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
-    payload: Readonly<DacsSessionInitPayloadV1>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
+    payload: Readonly<DacsLiveSessionInitPayloadV1>,
   ): Promise<"acknowledged" | "pending" | "rejected">;
   resolveChallenge(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
   ): Readonly<DacsSessionChallengePayloadV1> | undefined;
   publishPresentation(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
     payload: Readonly<DacsSessionPresentationPayloadV1>,
   ): Promise<"acknowledged" | "pending" | "rejected">;
   resolvePresentation(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
   ): Readonly<DacsSessionPresentationPayloadV1> | undefined;
   resolveAdmission(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
   ): Readonly<DacsSessionAdmissionPayloadV1> | undefined;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
@@ -121,24 +124,24 @@ export interface DacsBuyerSessionBootstrapTransportRuntimeV1 {
 export interface DacsSellerSessionBootstrapTransportRuntimeV1 {
   readonly validatePayload: DacsHttpPayloadValidatorV1;
   resolveInit(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
-  ): Readonly<DacsSessionInitPayloadV1> | undefined;
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
+  ): Readonly<DacsLiveSessionInitPayloadV1> | undefined;
   publishChallenge(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
     payload: Readonly<DacsSessionChallengePayloadV1>,
   ): Promise<"acknowledged" | "pending" | "rejected">;
   resolveChallenge(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
   ): Readonly<DacsSessionChallengePayloadV1> | undefined;
   resolvePresentation(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
   ): Readonly<DacsSessionPresentationPayloadV1> | undefined;
   publishAdmission(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
     payload: Readonly<DacsSessionAdmissionPayloadV1>,
   ): Promise<"acknowledged" | "pending" | "rejected">;
   resolveAdmission(
-    operation: Readonly<FixedPriceX402TrackOperationInput>,
+    operation: Readonly<DacsLiveTrackOperationInputV1>,
   ): Readonly<DacsSessionAdmissionPayloadV1> | undefined;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
@@ -183,29 +186,33 @@ function bindingId(role: "buyer" | "seller", kind: BootstrapKind, jobId: string)
 }
 
 function orderLocalBindingHash(
-  order: Readonly<FixedPriceX402OrderInput | FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderV1 | DacsLiveOrderRecordV1>,
 ): string {
-  return "localBindingHash" in order
-    ? order.localBindingHash
-    : fixedPriceX402OrderLocalBindingHash(order);
+  return dacsLiveOrderBindingHashesV1(order).localBindingHash;
 }
 
-function loadOrder(
+async function loadOrder(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   jobId: string,
-): Promise<Readonly<FixedPriceX402OrderRecord> | undefined> {
-  return context.database.createLiveCoordinatorStore(context.role)
-    .load(context.role, jobId).then((loaded) => {
-      if (loaded.status === "missing") return undefined;
-      if (loaded.status !== "ok") {
-        throw new DacsSessionBootstrapTransportError("session-order-state-invalid");
-      }
-      return loaded.record;
-    });
+): Promise<Readonly<DacsLiveOrderRecordV1> | undefined> {
+  const [x402, payDem] = await Promise.all([
+    context.database.createLiveCoordinatorStore(context.role).load(context.role, jobId),
+    context.database.createPayDemCoordinatorStore(context.role).load(context.role, jobId),
+  ]);
+  if ((x402.status !== "missing" && x402.status !== "ok") ||
+      (payDem.status !== "missing" && payDem.status !== "ok") ||
+      (x402.status === "ok" && payDem.status === "ok")) {
+    throw new DacsSessionBootstrapTransportError("session-order-state-invalid");
+  }
+  return x402.status === "ok"
+    ? x402.record
+    : payDem.status === "ok"
+      ? payDem.record
+      : undefined;
 }
 
 function operationBound(
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
   role: "buyer" | "seller",
 ): boolean {
   return operation.fence.role === role && operation.fence.track === "agreement" &&
@@ -238,7 +245,7 @@ function captureBinding(value: unknown): Readonly<BootstrapBindingV1> {
 
 function retain(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderInput | FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderV1 | DacsLiveOrderRecordV1>,
   kind: BootstrapKind,
   payload: Readonly<BootstrapPayload>,
   authenticated?: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
@@ -291,7 +298,7 @@ function retain(
 
 function resolvePayload<T extends BootstrapPayload>(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
   kind: BootstrapKind,
   validate: (value: unknown) => value is T,
 ): Readonly<T> | undefined {
@@ -340,7 +347,7 @@ function acknowledgement(
 
 function reserveChallenge(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderInput | FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderV1 | DacsLiveOrderRecordV1>,
   challenge: string,
 ): void {
   const localBindingHash = orderLocalBindingHash(order);
@@ -412,6 +419,36 @@ export async function authenticateDacsX402SessionIdentityV1(
   }
 }
 
+export async function authenticateDacsLiveSessionIdentityV1(
+  value: DacsSessionChallengePayloadV1["sellerIdentity"] |
+    DacsSessionPresentationPayloadV1["buyerIdentity"],
+  authority: string,
+  challenge: string,
+  partyRole: "buyer" | "seller",
+  phase: "pay-x402" | "pay-dem",
+  network: string,
+): Promise<boolean> {
+  if (phase === "pay-x402") {
+    return authenticateDacsX402SessionIdentityV1(
+      value,
+      authority,
+      challenge,
+      partyRole,
+      network,
+    );
+  }
+  if (network !== "demos" || value.claims.length !== 1 ||
+      value.presentation.kind !== "per-claim" ||
+      value.presentation.signatures.length !== 1) return false;
+  return authenticateDacsX402SessionIdentityV1(
+    value,
+    authority,
+    challenge,
+    "seller",
+    network,
+  );
+}
+
 function vetSignatureValid(
   admission: Readonly<DacsSessionAdmissionPayloadV1>,
   authority: string,
@@ -433,15 +470,16 @@ async function outboundSemantics(
   kind: BootstrapKind,
   payload: Readonly<BootstrapPayload>,
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
 ): Promise<void> {
   const order = operation.order;
   if (kind === "init") {
-    const init = payload as DacsSessionInitPayloadV1;
+    const init = payload as DacsLiveSessionInitPayloadV1;
     const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
+    const initHashes = dacsLiveOrderBindingHashesV1(init.order);
     if (!validateDacsHttpSessionInitPayloadV1(init) ||
-        fixedPriceX402OrderBindingHash(init.order) !== order.bindingHash ||
-        fixedPriceX402OrderLocalBindingHash(init.order) !== order.localBindingHash ||
+        initHashes.bindingHash !== order.bindingHash ||
+        initHashes.localBindingHash !== order.localBindingHash ||
         canonicalize(init.application) !== canonicalize(retained.application)) {
       throw new DacsSessionBootstrapTransportError("session-init-binding-mismatch");
     }
@@ -454,8 +492,14 @@ async function outboundSemantics(
     if (init === undefined || !validateDacsHttpSessionChallengePayloadV1(challenge) ||
         challenge.initPayloadHash !== dacsHttpPayloadHashV1(init) ||
         challenge.sellerChallenge !== init.sellerChallenge ||
-        !await authenticateDacsX402SessionIdentityV1(challenge.sellerIdentity, order.seller,
-          challenge.sellerChallenge, "seller", order.protocol.rail.network)) {
+        !await authenticateDacsLiveSessionIdentityV1(
+          challenge.sellerIdentity,
+          order.seller,
+          challenge.sellerChallenge,
+          "seller",
+          order.protocol.phase,
+          order.protocol.rail.network,
+        )) {
       throw new DacsSessionBootstrapTransportError("session-challenge-binding-mismatch");
     }
     reserveChallenge(context, order, challenge.buyerChallenge);
@@ -468,8 +512,14 @@ async function outboundSemantics(
     if (challenge === undefined || !validateDacsHttpSessionPresentationPayloadV1(presentation) ||
         presentation.challengePayloadHash !== dacsHttpPayloadHashV1(challenge) ||
         presentation.buyerChallenge !== challenge.buyerChallenge ||
-        !await authenticateDacsX402SessionIdentityV1(presentation.buyerIdentity, order.buyer,
-          presentation.buyerChallenge, "buyer", order.protocol.rail.network)) {
+        !await authenticateDacsLiveSessionIdentityV1(
+          presentation.buyerIdentity,
+          order.buyer,
+          presentation.buyerChallenge,
+          "buyer",
+          order.protocol.phase,
+          order.protocol.rail.network,
+        )) {
       throw new DacsSessionBootstrapTransportError("session-presentation-binding-mismatch");
     }
     return;
@@ -504,7 +554,7 @@ async function outboundSemantics(
 
 async function publish(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
   kind: BootstrapKind,
   type: "session-init" | "session-challenge" | "session-presentation" | "session-admission",
   payload: Readonly<BootstrapPayload>,
@@ -536,22 +586,22 @@ export function createDacsBuyerSessionBootstrapTransportRuntimeV1(
   const runtime: DacsBuyerSessionBootstrapTransportRuntimeV1 = {
     validatePayload: (input: Parameters<DacsHttpPayloadValidatorV1>[0]) =>
       payloadValidation("buyer", input),
-    resolveInit: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+    resolveInit: (operation: Readonly<DacsLiveTrackOperationInputV1>) =>
       resolvePayload(context, operation, "init", validateDacsHttpSessionInitPayloadV1),
-    publishInit: (operation: Readonly<FixedPriceX402TrackOperationInput>,
-      payload: Readonly<DacsSessionInitPayloadV1>) =>
+    publishInit: (operation: Readonly<DacsLiveTrackOperationInputV1>,
+      payload: Readonly<DacsLiveSessionInitPayloadV1>) =>
       publish(context, operation, "init", "session-init", payload),
-    resolveChallenge: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+    resolveChallenge: (operation: Readonly<DacsLiveTrackOperationInputV1>) =>
       resolvePayload(context, operation, "challenge",
       validateDacsHttpSessionChallengePayloadV1),
-    publishPresentation: (operation: Readonly<FixedPriceX402TrackOperationInput>,
+    publishPresentation: (operation: Readonly<DacsLiveTrackOperationInputV1>,
       payload: Readonly<DacsSessionPresentationPayloadV1>) =>
       publish(context, operation, "presentation",
       "session-presentation", payload),
-    resolvePresentation: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+    resolvePresentation: (operation: Readonly<DacsLiveTrackOperationInputV1>) =>
       resolvePayload(context, operation, "presentation",
       validateDacsHttpSessionPresentationPayloadV1),
-    resolveAdmission: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+    resolveAdmission: (operation: Readonly<DacsLiveTrackOperationInputV1>) =>
       resolvePayload(context, operation, "admission",
       validateDacsHttpSessionAdmissionPayloadV1),
     async handleMessage(authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
@@ -573,7 +623,7 @@ export function createDacsBuyerSessionBootstrapTransportRuntimeV1(
       const operation = Object.freeze({ order, fence: Object.freeze({
         role: "buyer" as const, track: "agreement" as const, jobId: order.jobId,
         bindingHash: order.bindingHash, localBindingHash: order.localBindingHash,
-      }) }) as unknown as FixedPriceX402TrackOperationInput;
+      }) }) as unknown as DacsLiveTrackOperationInputV1;
       try {
         await outboundSemantics(kind, authenticated.envelope.payload, context, operation);
         const retained = retain(context, order, kind, authenticated.envelope.payload,
@@ -588,8 +638,10 @@ export function createDacsBuyerSessionBootstrapTransportRuntimeV1(
   return Object.freeze(runtime);
 }
 
-export function createDacsSellerSessionBootstrapTransportRuntimeV1(
-  options: Readonly<DacsSellerSessionBootstrapTransportOptionsV1>,
+export function createDacsSellerSessionBootstrapTransportRuntimeV1<
+  Order extends DacsLiveOrderV1 = FixedPriceX402OrderInput,
+>(
+  options: Readonly<DacsSellerSessionBootstrapTransportOptionsV1<Order>>,
 ): Readonly<DacsSellerSessionBootstrapTransportRuntimeV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" || typeof options.admitInit !== "function") {
@@ -599,24 +651,24 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1(
   const runtime: DacsSellerSessionBootstrapTransportRuntimeV1 = {
     validatePayload: (input: Parameters<DacsHttpPayloadValidatorV1>[0]) =>
       payloadValidation("seller", input),
-    resolveInit: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+    resolveInit: (operation: Readonly<DacsLiveTrackOperationInputV1>) =>
       resolvePayload(context, operation, "init",
       validateDacsHttpSessionInitPayloadV1),
-    publishChallenge: (operation: Readonly<FixedPriceX402TrackOperationInput>,
+    publishChallenge: (operation: Readonly<DacsLiveTrackOperationInputV1>,
       payload: Readonly<DacsSessionChallengePayloadV1>) =>
       publish(context, operation, "challenge",
       "session-challenge", payload),
-    resolveChallenge: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+    resolveChallenge: (operation: Readonly<DacsLiveTrackOperationInputV1>) =>
       resolvePayload(context, operation, "challenge",
       validateDacsHttpSessionChallengePayloadV1),
-    resolvePresentation: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+    resolvePresentation: (operation: Readonly<DacsLiveTrackOperationInputV1>) =>
       resolvePayload(context, operation, "presentation",
       validateDacsHttpSessionPresentationPayloadV1),
-    publishAdmission: (operation: Readonly<FixedPriceX402TrackOperationInput>,
+    publishAdmission: (operation: Readonly<DacsLiveTrackOperationInputV1>,
       payload: Readonly<DacsSessionAdmissionPayloadV1>) =>
       publish(context, operation, "admission",
       "session-admission", payload),
-    resolveAdmission: (operation: Readonly<FixedPriceX402TrackOperationInput>) =>
+    resolveAdmission: (operation: Readonly<DacsLiveTrackOperationInputV1>) =>
       resolvePayload(context, operation, "admission",
       validateDacsHttpSessionAdmissionPayloadV1),
     async handleMessage(authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
@@ -631,11 +683,11 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1(
           return Object.freeze({ disposition: "rejected" as const,
             reasonCode: "session-init-envelope-invalid" });
         }
-        let admission: Readonly<DacsSellerSessionBootstrapAdmissionV1>;
+        let admission: Readonly<DacsSellerSessionBootstrapAdmissionV1<DacsLiveOrderV1>>;
         try {
           admission = await options.admitInit({
             authenticated,
-            payload: authenticated.envelope.payload,
+            payload: authenticated.envelope.payload as DacsSessionInitPayloadV1<Order>,
           });
         } catch (error) {
           if (error instanceof DacsSellerSessionAdmissionUnavailableError) throw error;
@@ -651,8 +703,8 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1(
         if (!plainObject(admission) || !plainObject(admission.order) ||
             !plainObject(admission.application) || admission.order.sdkJobs.role !== "seller" ||
             admission.order.jobId !== authenticated.envelope.jobId ||
-            fixedPriceX402OrderBindingHash(admission.order) !==
-              fixedPriceX402OrderBindingHash(input.order) ||
+            dacsLiveOrderBindingHashesV1(admission.order).bindingHash !==
+              dacsLiveOrderBindingHashesV1(input.order).bindingHash ||
             canonicalize(admission.application) !== canonicalize(input.application) ||
             authenticated.envelope.sender !== admission.order.buyer ||
             authenticated.envelope.audience !== admission.order.seller) {
@@ -689,7 +741,7 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1(
       const operation = Object.freeze({ order, fence: Object.freeze({
         role: "seller" as const, track: "agreement" as const, jobId: order.jobId,
         bindingHash: order.bindingHash, localBindingHash: order.localBindingHash,
-      }) }) as unknown as FixedPriceX402TrackOperationInput;
+      }) }) as unknown as DacsLiveTrackOperationInputV1;
       try {
         await outboundSemantics("presentation", authenticated.envelope.payload, context, operation);
         const retained = retain(context, order, "presentation",

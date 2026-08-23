@@ -12,6 +12,7 @@ import {
 } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
+  FixedPricePayDemOrderInput,
   FixedPriceX402OrderInput,
   PaymentEvidenceAnchorCompletion,
   PaymentEvidenceAnchorRequest,
@@ -76,12 +77,19 @@ export interface DacsAgreementProposalPayloadV1 {
   sellerVetReceipt: Readonly<ProtocolAnchorReceipt>;
 }
 
-export interface DacsSessionInitPayloadV1 {
+export interface DacsSessionInitPayloadV1<
+  Order extends FixedPriceX402OrderInput | FixedPricePayDemOrderInput =
+    FixedPriceX402OrderInput,
+> {
   bootstrapVersion: "1";
-  order: Readonly<FixedPriceX402OrderInput>;
+  order: Readonly<Order>;
   application: Readonly<Record<string, unknown>>;
   sellerChallenge: string;
 }
+
+export type DacsLiveSessionInitPayloadV1 =
+  | DacsSessionInitPayloadV1<FixedPriceX402OrderInput>
+  | DacsSessionInitPayloadV1<FixedPricePayDemOrderInput>;
 
 export interface DacsSessionChallengePayloadV1 {
   bootstrapVersion: "1";
@@ -128,7 +136,7 @@ export interface DacsHttpDiagnosticProbePayloadV1 {
 }
 
 export interface DacsHttpPayloadByType {
-  "session-init": DacsSessionInitPayloadV1;
+  "session-init": DacsLiveSessionInitPayloadV1;
   "session-challenge": DacsSessionChallengePayloadV1;
   "session-presentation": DacsSessionPresentationPayloadV1;
   "session-admission": DacsSessionAdmissionPayloadV1;
@@ -396,7 +404,7 @@ function hash(value: unknown): value is string {
 
 export function validateDacsHttpSessionInitPayloadV1(
   value: unknown,
-): value is Readonly<DacsSessionInitPayloadV1> {
+): value is Readonly<DacsLiveSessionInitPayloadV1> {
   return record(value) && exactKeys(value, [
     "bootstrapVersion", "order", "application", "sellerChallenge",
   ]) && value.bootstrapVersion === "1" && record(value.order) &&

@@ -6,8 +6,10 @@ import {
   fixedPriceX402OrderLocalBindingHash,
   type FixedPriceX402CoordinatorRole,
   type FixedPricePayDemOrderInput,
+  type FixedPricePayDemOrderRecord,
   type FixedPricePayDemTrackOperationInput,
   type FixedPriceX402OrderInput,
+  type FixedPriceX402OrderRecord,
   type FixedPriceX402TrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
 import { isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
@@ -20,6 +22,9 @@ export const DACS_LIVE_ORDER_INPUT_ID_DOMAIN = "dacs-live-order-input-id:v1:" as
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 export type DacsLiveOrderV1 = FixedPriceX402OrderInput | FixedPricePayDemOrderInput;
+export type DacsLiveOrderRecordV1 =
+  | FixedPriceX402OrderRecord
+  | FixedPricePayDemOrderRecord;
 export type DacsLiveTrackOperationInputV1 =
   | FixedPriceX402TrackOperationInput
   | FixedPricePayDemTrackOperationInput;
@@ -99,6 +104,18 @@ function hashes(order: Readonly<DacsLiveOrderV1>): Readonly<{
   }
 }
 
+export function dacsLiveOrderBindingHashesV1(
+  order: Readonly<DacsLiveOrderV1 | DacsLiveOrderRecordV1>,
+): Readonly<{ bindingHash: string; localBindingHash: string }> {
+  if ("bindingHash" in order && "localBindingHash" in order) {
+    return Object.freeze({
+      bindingHash: order.bindingHash,
+      localBindingHash: order.localBindingHash,
+    });
+  }
+  return Object.freeze(hashes(order));
+}
+
 function effectId(input: Readonly<{
   role: FixedPriceX402CoordinatorRole;
   jobId: string;
@@ -149,6 +166,11 @@ export function putDacsLiveOrderInputV1(input: Readonly<{
   order: Readonly<FixedPricePayDemOrderInput>;
   application: Readonly<Record<string, unknown>>;
 }>): DacsLiveOrderInputPutV1<FixedPricePayDemOrderInput>;
+export function putDacsLiveOrderInputV1(input: Readonly<{
+  database: DacsNodeSqliteDatabase;
+  order: Readonly<DacsLiveOrderV1>;
+  application: Readonly<Record<string, unknown>>;
+}>): DacsLiveOrderInputPutV1<DacsLiveOrderV1>;
 export function putDacsLiveOrderInputV1(input: Readonly<{
   database: DacsNodeSqliteDatabase;
   order: Readonly<DacsLiveOrderV1>;
@@ -238,6 +260,10 @@ export function loadDacsLiveOrderInputForTrackV1(
   operation: Readonly<FixedPricePayDemTrackOperationInput>,
   database: DacsNodeSqliteDatabase,
 ): Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+export function loadDacsLiveOrderInputForTrackV1(
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
+  database: DacsNodeSqliteDatabase,
+): Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>>;
 export function loadDacsLiveOrderInputForTrackV1(
   operation: Readonly<DacsLiveTrackOperationInputV1>,
   database: DacsNodeSqliteDatabase,

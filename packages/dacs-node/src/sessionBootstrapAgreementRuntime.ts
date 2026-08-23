@@ -27,7 +27,7 @@ import {
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import {
   authenticateDacsSessionVetProductionV1,
-  createDacsX402SessionIdentityV1,
+  createDacsLiveSessionIdentityV1,
   produceDacsEmptyRequirementSessionVetV1,
   type DacsSessionVetProductionV1,
 } from "./sessionIdentityVetRuntime.js";
@@ -400,8 +400,9 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
           bootstrapVersion: "1" as const,
           challengePayloadHash: dacsHttpPayloadHashV1(challenge),
           buyerChallenge: challenge.buyerChallenge,
-          buyerIdentity: await createDacsX402SessionIdentityV1({
+          buyerIdentity: await createDacsLiveSessionIdentityV1({
             context,
+            operation,
             challenge: challenge.buyerChallenge,
           }),
         });
@@ -508,8 +509,9 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
           initPayloadHash: dacsHttpPayloadHashV1(init),
           sellerChallenge: init.sellerChallenge,
           buyerChallenge: randomBytes(32).toString("hex"),
-          sellerIdentity: await createDacsX402SessionIdentityV1({
+          sellerIdentity: await createDacsLiveSessionIdentityV1({
             context,
+            operation,
             challenge: init.sellerChallenge,
           }),
         });
