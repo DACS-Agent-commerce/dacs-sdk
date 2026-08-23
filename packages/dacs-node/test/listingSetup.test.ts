@@ -11,6 +11,7 @@ vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
 
 import { rawPublicKey, signedBytes } from "@kynesyslabs/dacs/crypto";
 import { demosAgentClaimRef, identityBundleHash } from "@kynesyslabs/dacs/identity";
+import type { ListingDraft } from "@kynesyslabs/dacs/artifacts";
 
 import {
   createDacsListingSetupExecutorV1,
@@ -201,13 +202,13 @@ describe("guarded Listing setup", () => {
   it("prepares a native DEM Listing without requiring any EVM configuration", async () => {
     const value = fixture();
     const sellerPayee = Buffer.from(value.seller.publicKey).toString("hex");
-    const draft = structuredClone(value.draft);
+    const draft = structuredClone(value.draft) as unknown as ListingDraft;
     draft.listingId = "generated-live-service-pay-dem";
     draft.pipeline[2] = {
       kind: "pay-dem",
       parameters: { rail: "demos-native:DEM" },
     };
-    draft.pricing.price = { amount: "1", currency: "DEM" };
+    draft.pricing = { kind: "fixed", price: { amount: "1", currency: "DEM" } };
     draft.acceptedRails = [{
       railId: "demos-native:DEM",
       railVersion: 1,

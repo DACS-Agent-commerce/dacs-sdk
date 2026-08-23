@@ -18,11 +18,14 @@ import type {
 const HASH_RE = /^[0-9a-f]{64}$/;
 const CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const DEMOS_ADDRESS_RE = /^[0-9a-f]{64}$/;
 const DEFAULT_DOCTOR_MAX_AGE_MS = 60_000;
 const DEFAULT_EFFECT_LEASE_MS = 30_000;
 
 export const DACS_SETUP_PLAN_SCHEMA = "dacs-guarded-setup-plan/v1" as const;
 export const DACS_PURCHASE_PLAN_SCHEMA = "dacs-guarded-purchase-plan/v1" as const;
+export const DACS_PAY_DEM_PURCHASE_PLAN_SCHEMA =
+  "dacs-guarded-pay-dem-purchase-plan/v1" as const;
 export const DACS_FUNDED_DOCTOR_PLAN_SCHEMA = "dacs-funded-doctor-plan/v1" as const;
 export const DACS_SETUP_CONSENT_DOMAIN = "dacs-setup-consent:v1" as const;
 export const DACS_PURCHASE_CONSENT_DOMAIN = "dacs-purchase-consent:v1" as const;
@@ -73,6 +76,29 @@ export interface DacsGuardedPurchasePlanV1 {
   planHash: string;
 }
 
+export interface DacsGuardedPayDemPurchasePlanV1 {
+  schema: typeof DACS_PAY_DEM_PURCHASE_PLAN_SCHEMA;
+  kind: "purchase-pay-dem";
+  effectId: string;
+  jobId: string;
+  resume: boolean;
+  listingRef: string;
+  requestHash: string;
+  buyerAuthority: string;
+  sellerAuthority: string;
+  payer: string;
+  payee: string;
+  railId: string;
+  network: "demos";
+  asset: "DEM";
+  serviceAmount: string;
+  maximumServiceAmount: string;
+  /** Transfer plus Demos transaction fees; enforced again by the rail. */
+  maximumTotalDebitDem: string;
+  paymentPossible: true;
+  planHash: string;
+}
+
 export interface DacsFundedDoctorDebitV1 {
   actionId: string;
   asset: string;
@@ -99,7 +125,7 @@ export interface DacsFundedDoctorPlanV1 {
 }
 
 export type DacsGuardedPlanV1 = DacsGuardedSetupPlanV1 | DacsGuardedPurchasePlanV1 |
-  DacsFundedDoctorPlanV1;
+  DacsGuardedPayDemPurchasePlanV1 | DacsFundedDoctorPlanV1;
 
 export interface DacsGuardedConsentV1 {
   domain: typeof DACS_SETUP_CONSENT_DOMAIN | typeof DACS_PURCHASE_CONSENT_DOMAIN |
@@ -155,7 +181,7 @@ export interface DacsGuardedCommandOptionsV1 {
   confirmation?: string;
   nonInteractive?: boolean;
   confirm?: (summary: Readonly<{
-    kind: "setup" | "purchase" | "funded-doctor";
+    kind: "setup" | "purchase" | "purchase-pay-dem" | "funded-doctor";
     planHash: string;
     actionCount: number;
     network: string;
@@ -408,6 +434,56 @@ export function createDacsGuardedPurchasePlanV1(input: Readonly<{
   });
 }
 
+export function createDacsGuardedPayDemPurchasePlanV1(input: Readonly<{
+  effectId: string;
+  jobId: string;
+  resume?: boolean;
+  listingRef: string;
+  requestHash: string;
+  buyerAuthority: string;
+  sellerAuthority: string;
+  payer: string;
+  payee: string;
+  railId: string;
+  serviceAmount: string;
+  maximumServiceAmount: string;
+  maximumTotalDebitDem: string;
+}>): Readonly<DacsGuardedPayDemPurchasePlanV1> {
+  if (input === null || typeof input !== "object" || !text(input.effectId, 256) ||
+      !isCanonicalJobId(input.jobId) || !text(input.listingRef) ||
+      !HASH_RE.test(input.requestHash) || !demosAuthority(input.buyerAuthority) ||
+      !demosAuthority(input.sellerAuthority) ||
+      sameCanonicalClaimIdentity(input.buyerAuthority, input.sellerAuthority) ||
+      !DEMOS_ADDRESS_RE.test(input.payer) || !DEMOS_ADDRESS_RE.test(input.payee) ||
+      input.payer === input.payee || !text(input.railId, 128) ||
+      input.railId !== "demos-native:DEM" || !decimal(input.serviceAmount) ||
+      !decimal(input.maximumServiceAmount) || !decimal(input.maximumTotalDebitDem) ||
+      !lessThanOrEqual(input.serviceAmount, input.maximumServiceAmount) ||
+      !lessThanOrEqual(input.serviceAmount, input.maximumTotalDebitDem)) {
+    throw new TypeError("guarded pay-dem purchase plan is invalid or exceeds a ceiling");
+  }
+  return withPlanHash("dacs-guarded-pay-dem-purchase-plan:v1:", {
+    schema: DACS_PAY_DEM_PURCHASE_PLAN_SCHEMA,
+    kind: "purchase-pay-dem" as const,
+    effectId: input.effectId,
+    jobId: input.jobId,
+    resume: input.resume ?? false,
+    listingRef: input.listingRef,
+    requestHash: input.requestHash,
+    buyerAuthority: input.buyerAuthority,
+    sellerAuthority: input.sellerAuthority,
+    payer: input.payer,
+    payee: input.payee,
+    railId: input.railId,
+    network: "demos" as const,
+    asset: "DEM" as const,
+    serviceAmount: input.serviceAmount,
+    maximumServiceAmount: input.maximumServiceAmount,
+    maximumTotalDebitDem: input.maximumTotalDebitDem,
+    paymentPossible: true as const,
+  });
+}
+
 export function createDacsFundedDoctorPlanV1(input: Readonly<{
   effectId: string;
   runId: string;
@@ -525,6 +601,32 @@ function captureGuardedPlan(plan: unknown): Readonly<DacsGuardedPlanV1> | undefi
       });
       return canonicalize(reconstructed) === canonicalize(candidate) ? reconstructed : undefined;
     }
+    if (kindDescriptor.value === "purchase-pay-dem") {
+      if (!exactDataKeys(candidate, [
+        "schema", "kind", "effectId", "jobId", "resume", "listingRef",
+        "requestHash", "buyerAuthority", "sellerAuthority", "payer", "payee",
+        "railId", "network", "asset", "serviceAmount", "maximumServiceAmount",
+        "maximumTotalDebitDem", "paymentPossible", "planHash",
+      ]) || candidate.schema !== DACS_PAY_DEM_PURCHASE_PLAN_SCHEMA ||
+          candidate.paymentPossible !== true) return undefined;
+      const payDem = candidate as Readonly<DacsGuardedPayDemPurchasePlanV1>;
+      const reconstructed = createDacsGuardedPayDemPurchasePlanV1({
+        effectId: payDem.effectId,
+        jobId: payDem.jobId,
+        resume: payDem.resume,
+        listingRef: payDem.listingRef,
+        requestHash: payDem.requestHash,
+        buyerAuthority: payDem.buyerAuthority,
+        sellerAuthority: payDem.sellerAuthority,
+        payer: payDem.payer,
+        payee: payDem.payee,
+        railId: payDem.railId,
+        serviceAmount: payDem.serviceAmount,
+        maximumServiceAmount: payDem.maximumServiceAmount,
+        maximumTotalDebitDem: payDem.maximumTotalDebitDem,
+      });
+      return canonicalize(reconstructed) === canonicalize(candidate) ? reconstructed : undefined;
+    }
     if (kindDescriptor.value === "funded-doctor") {
       if (!exactDataKeys(candidate, [
         "schema", "kind", "effectId", "runId", "disposableWallet",
@@ -595,7 +697,8 @@ function consentFor(
 ): Readonly<DacsGuardedConsentV1> {
   const domain = plan.kind === "setup"
     ? DACS_SETUP_CONSENT_DOMAIN
-    : plan.kind === "purchase" ? DACS_PURCHASE_CONSENT_DOMAIN
+    : plan.kind === "purchase" || plan.kind === "purchase-pay-dem"
+      ? DACS_PURCHASE_CONSENT_DOMAIN
     : DACS_FUNDED_DOCTOR_CONSENT_DOMAIN;
   const body = Object.freeze({ domain, planHash: plan.planHash, confirmedAt, mechanism });
   return Object.freeze({
@@ -613,11 +716,14 @@ function summaryFor(plan: Readonly<DacsGuardedPlanV1>) {
     network: plan.kind === "setup" ? plan.demosNetwork : plan.network,
     maximumAssetSpend: plan.kind === "setup"
       ? `${plan.maximumSpendDem} DEM`
-      : plan.kind === "purchase" ? `${plan.maximumServiceAmount} ${plan.asset}`
+      : plan.kind === "purchase" || plan.kind === "purchase-pay-dem"
+        ? `${plan.maximumServiceAmount} ${plan.asset}`
       : plan.ceilings.map((item) => `${item.maximumTotalDebit} ${item.asset}`).join(", "),
     maximumNetworkFee: plan.kind === "setup"
       ? `${plan.maximumSpendDem} DEM total`
       : plan.kind === "purchase" ? `${plan.maximumNetworkFeeEth} ETH`
+      : plan.kind === "purchase-pay-dem"
+        ? `included in ${plan.maximumTotalDebitDem} DEM total debit`
       : "included in per-asset total debit caps",
     paymentPossible: plan.paymentPossible,
   });
@@ -790,7 +896,8 @@ export async function runDacsGuardedCommandV1(
     plan,
     doctorReports,
   }) as unknown as Readonly<DacsGuardedCommandOptionsV1>;
-  if (options.execute !== true && options.plan.kind !== "purchase") {
+  if (options.execute !== true && options.plan.kind !== "purchase" &&
+      options.plan.kind !== "purchase-pay-dem") {
     return Object.freeze({ status: "plan-only", plan: options.plan });
   }
   const now = options.now ?? Date.now;
@@ -809,7 +916,8 @@ export async function runDacsGuardedCommandV1(
     requireDoctor(options.doctorReports.find((report) =>
       report.phase === "pre-start" && report.scope === "setup"),
     "pre-start", "setup", observedAt, doctorMaxAgeMs);
-  } else if (options.plan.kind === "purchase") {
+  } else if (options.plan.kind === "purchase" ||
+      options.plan.kind === "purchase-pay-dem") {
     requireDoctor(options.doctorReports.find((report) =>
       report.phase === "post-start" && report.scope === "buy"),
     "post-start", "buy", observedAt, doctorMaxAgeMs);
@@ -824,7 +932,8 @@ export async function runDacsGuardedCommandV1(
   if (options.confirmation !== "1") {
     throw new DacsGuardedCommandError(
       options.plan.kind === "setup" ? "setup-confirmation-missing"
-        : options.plan.kind === "purchase" ? "purchase-confirmation-missing"
+        : options.plan.kind === "purchase" || options.plan.kind === "purchase-pay-dem"
+          ? "purchase-confirmation-missing"
         : "funded-doctor-confirmation-missing",
     );
   }
@@ -845,7 +954,8 @@ export async function runDacsGuardedCommandV1(
     bindingHash: options.plan.planHash,
     input: options.plan,
     idempotencyKey: idempotencyKey(options.plan),
-    ...(options.plan.kind === "purchase" ? { jobId: options.plan.jobId }
+    ...(options.plan.kind === "purchase" || options.plan.kind === "purchase-pay-dem"
+      ? { jobId: options.plan.jobId }
       : options.plan.kind === "funded-doctor" ? { jobId: options.plan.runId } : {}),
   });
   if (intent.status === "conflict") throw new DacsGuardedCommandError("effect-plan-conflict");

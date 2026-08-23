@@ -10,6 +10,7 @@ import {
   DACS_NODE_LIVE_PROFILE,
   DACS_FUNDED_DOCTOR_CONSENT_DOMAIN,
   DacsGuardedCommandError,
+  createDacsGuardedPayDemPurchasePlanV1,
   createDacsGuardedPurchasePlanV1,
   createDacsGuardedSetupPlanV1,
   createDacsFundedDoctorPlanV1,
@@ -79,6 +80,23 @@ function purchasePlan(effectId = "x402-purchase-v1") {
     maximumServiceAmount: "1",
     estimatedNetworkFeeEth: "0.0001",
     maximumNetworkFeeEth: "0.001",
+  });
+}
+
+function payDemPurchasePlan(effectId = "pay-dem-purchase-v1") {
+  return createDacsGuardedPayDemPurchasePlanV1({
+    effectId,
+    jobId: JOB_ID,
+    listingRef: "stor-test-native-listing-ref",
+    requestHash: "e".repeat(64),
+    buyerAuthority: BUYER,
+    sellerAuthority: SELLER,
+    payer: "a".repeat(64),
+    payee: "b".repeat(64),
+    railId: "demos-native:DEM",
+    serviceAmount: "0.5",
+    maximumServiceAmount: "1",
+    maximumTotalDebitDem: "1.1",
   });
 }
 
@@ -158,6 +176,32 @@ describe("guarded setup and purchase commands", () => {
       now: () => NOW,
     })).resolves.toMatchObject({ status: "plan-only" });
     expect(executor).not.toHaveBeenCalled();
+  });
+
+  it("guards native DEM purchases with a total-debit ceiling and the buy doctor", async () => {
+    const db = await database("buyer");
+    const executor = vi.fn(async () => ({ status: "completed" as const, result: {} }));
+    await expect(runDacsGuardedCommandV1({
+      plan: payDemPurchasePlan(),
+      database: db,
+      workerId: "pay-dem-buyer-worker",
+      doctorReports: [await doctor("post-start", "buy")],
+      executor,
+      now: () => NOW,
+    })).resolves.toMatchObject({
+      status: "plan-only",
+      plan: {
+        kind: "purchase-pay-dem",
+        network: "demos",
+        maximumTotalDebitDem: "1.1",
+      },
+    });
+    expect(executor).not.toHaveBeenCalled();
+    expect(() => createDacsGuardedPayDemPurchasePlanV1({
+      ...payDemPurchasePlan(),
+      effectId: "pay-dem-over-ceiling",
+      maximumTotalDebitDem: "0.1",
+    })).toThrow(/exceeds a ceiling/);
   });
 
   it("rejects a forged or mutated plan before plan-only projection", async () => {
