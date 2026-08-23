@@ -181,7 +181,7 @@ describe("prepareX402BuyerSettlement", () => {
         authority: authority(),
         challengeHeaders: { "PAYMENT-SIGNATURE": "caller-bearer" },
       },
-      { client: client() },
+      { client: client(), fetchImpl: async () => { throw new Error("must not fetch"); } },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-challenge-headers-invalid",
@@ -201,14 +201,14 @@ describe("prepareX402BuyerSettlement", () => {
     });
     await expect(prepareX402BuyerSettlement(
       { authority: malformed as never },
-      { client: client(counters) },
+      { client: client(counters), fetchImpl: async () => { throw new Error("must not fetch"); } },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-settlement-authority-invalid",
     });
     await expect(prepareX402BuyerSettlement(
       { authority: new Proxy(authority(), {}) },
-      { client: client(counters) },
+      { client: client(counters), fetchImpl: async () => { throw new Error("must not fetch"); } },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-settlement-authority-invalid",
@@ -291,6 +291,7 @@ describe("createX402BuyerPaidRequestTransport", () => {
 
   test("rejects caller-supplied payment headers at construction", () => {
     expect(() => createX402BuyerPaidRequestTransport({
+      fetchImpl: async () => new Response(null, { status: 200 }),
       headers: { "X-PAYMENT": "legacy-bearer" },
     })).toThrow(/cannot contain payment authorization/);
   });

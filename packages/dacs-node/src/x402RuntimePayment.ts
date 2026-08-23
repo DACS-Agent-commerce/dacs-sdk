@@ -21,6 +21,7 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import { createDacsPublicHttpsFetchV1 } from "./publicFetch.js";
 import { createDacsX402BuyerPaymentTrackV1 } from "./x402Payment.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -193,10 +194,9 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
   if (evm.role !== "buyer" || commerceStores.role !== "buyer") {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
+  const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1();
   const recoverDisclosure = options.recoverDisclosure ??
-    createX402BuyerRetainedDisclosureRecovery(
-      options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
-    );
+    createX402BuyerRetainedDisclosureRecovery({ fetchImpl });
   const authorizationProvider = createX402BuyerEvmAuthorizationProvider({
     chainId: evm.runtime.chainId,
     minimumConfirmations: options.minimumConfirmations,
@@ -206,9 +206,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     ...(options.confirmUnused === undefined ? {} : { confirmUnused: options.confirmUnused }),
     recoverDisclosure,
   });
-  const transport = createX402BuyerPaidRequestTransport(
-    options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
-  );
+  const transport = createX402BuyerPaidRequestTransport({ fetchImpl });
 
   return createDacsX402BuyerPaymentTrackV1({
     database: context.database,
@@ -252,7 +250,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
           ? {} : { challengeHeaders: preparation.challengeHeaders }),
       }, {
         client,
-        ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+        fetchImpl,
       });
       if (result.disposition === "prepared") return result.intent;
       throw new DacsLiveEffectInputControlError(

@@ -47,7 +47,8 @@ export interface PrepareX402BuyerSettlementInput {
 
 export interface PrepareX402BuyerSettlementDeps {
   client: X402BuyerChallengeClient;
-  fetchImpl?: typeof fetch;
+  /** Trusted transport enforcing the DACS-1 §6.3.6 public-fetch boundary. */
+  fetchImpl: typeof fetch;
 }
 
 export type X402BuyerSettlementPreparation =
@@ -58,7 +59,8 @@ export type X402BuyerSettlementPreparation =
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
 export interface X402BuyerPaidRequestTransportOptions {
-  fetchImpl?: typeof fetch;
+  /** Trusted transport enforcing the DACS-1 §6.3.6 public-fetch boundary. */
+  fetchImpl: typeof fetch;
   /** Captured once; payment and legacy payment headers are forbidden. */
   headers?: X402BuyerHeaderInit;
 }
@@ -216,6 +218,10 @@ function captureHeaders(value: X402BuyerHeaderInit | undefined): Headers {
   if (headers.has(PAYMENT_SIGNATURE) || headers.has("X-PAYMENT")) {
     throw new TypeError("x402 buyer base headers cannot contain payment authorization");
   }
+  if (["authorization", "cookie", "cookie2", "proxy-authorization"]
+    .some((name) => headers.has(name))) {
+    throw new TypeError("x402 buyer base headers cannot contain ambient credentials");
+  }
   return headers;
 }
 
@@ -257,7 +263,7 @@ export async function prepareX402BuyerSettlement(
   } catch {
     return { disposition: "rejected", reason: "x402-challenge-headers-invalid" };
   }
-  const fetchImpl = deps?.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = deps?.fetchImpl;
   if (typeof fetchImpl !== "function" || !deps?.client ||
       (deps.client.isPaymentRequirementsAuthorized !== undefined &&
         typeof deps.client.isPaymentRequirementsAuthorized !== "function") ||
@@ -338,9 +344,9 @@ export async function prepareX402BuyerSettlement(
  * the chain event.
  */
 export function createX402BuyerPaidRequestTransport(
-  options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
+  options: Readonly<X402BuyerPaidRequestTransportOptions>,
 ): X402BuyerPaidRequestTransport {
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = options?.fetchImpl;
   if (typeof fetchImpl !== "function") {
     throw new TypeError("x402 buyer paid transport requires fetch");
   }
@@ -394,7 +400,7 @@ export function createX402BuyerPaidRequestTransport(
  * Reusing the same signed nonce cannot authorize a second token transfer.
  */
 export function createX402BuyerRetainedDisclosureRecovery(
-  options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
+  options: Readonly<X402BuyerPaidRequestTransportOptions>,
 ): X402BuyerEvmDisclosureRecovery {
   const transport = createX402BuyerPaidRequestTransport(options);
   return async ({ intent, fence }) => {

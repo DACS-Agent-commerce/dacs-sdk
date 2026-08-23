@@ -12,6 +12,7 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import { createDacsPublicHttpsFetchV1 } from "./publicFetch.js";
 
 const BUYER_RECEIVED_BINDING_VERSION = "1" as const;
 const BUYER_RECEIVED_BINDING_DOMAIN = "dacs-live-buyer-received:v1:" as const;
@@ -187,9 +188,8 @@ export function createDacsBuyerReceivedTrackV1(
   const context = options.context;
   const stores = context.commerceStores;
   if (stores.role !== "buyer") throw new TypeError("buyer received runtime options are invalid");
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new TypeError("buyer received runtime requires fetch");
   const maximum = positiveInteger(options.maxBodyBytes, DEFAULT_MAX_BODY_BYTES, 64 * 1_024 * 1_024);
+  const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1({ maxBytes: maximum });
   const delay = positiveInteger(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS, 600_000);
 
   return async (operation) => {

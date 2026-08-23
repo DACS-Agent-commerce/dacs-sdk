@@ -83,7 +83,7 @@ const ipv6InCidr = (value: bigint, base: string, prefix: number): boolean => {
   return value >> shift === baseValue >> shift;
 };
 
-function publicAddress(address: string): boolean {
+export function isDacsPublicAddressV1(address: string): boolean {
   const family = isIP(address);
   if (family === 4) {
     const value = ipv4Number(address)!;
@@ -109,7 +109,9 @@ function publicAddress(address: string): boolean {
   return false;
 }
 
-async function resolvePublicHost(hostname: string): Promise<readonly string[]> {
+export async function resolveDacsPublicHostV1(
+  hostname: string,
+): Promise<readonly string[]> {
   const literal = hostname.startsWith("[") && hostname.endsWith("]")
     ? hostname.slice(1, -1) : hostname;
   if (isIP(literal) !== 0) return [literal];
@@ -190,7 +192,7 @@ function pinnedHttpsRequest(input: Readonly<{
 }
 
 const defaultDependencies: Readonly<DacsPublicJsonReadDependenciesV1> = Object.freeze({
-  resolveHost: resolvePublicHost,
+  resolveHost: resolveDacsPublicHostV1,
   request: pinnedHttpsRequest,
 });
 
@@ -223,7 +225,7 @@ export async function readDacsPublicJsonV1(
     throw new DacsPublicJsonError("public-json-dns-unavailable");
   }
   if (addresses.length === 0) throw new DacsPublicJsonError("public-json-dns-empty");
-  if (!addresses.every(publicAddress)) {
+  if (!addresses.every(isDacsPublicAddressV1)) {
     throw new DacsPublicJsonError("public-json-address-unsafe");
   }
   let response: Readonly<DacsPublicJsonResponseV1>;

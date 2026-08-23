@@ -1,0 +1,211 @@
+import { request as httpsRequest } from "node:https";
+import { isIP } from "node:net";
+
+import {
+  isDacsPublicAddressV1,
+  resolveDacsPublicHostV1,
+} from "./publicJson.js";
+
+const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_MAX_BYTES = 1_048_576;
+const MAX_TIMEOUT_MS = 60_000;
+const MAX_RESPONSE_BYTES = 64 * 1_048_576;
+const FORBIDDEN_HEADERS = new Set([
+  "authorization",
+  "connection",
+  "content-length",
+  "cookie",
+  "cookie2",
+  "host",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+export interface DacsPublicHttpsFetchRequestV1 {
+  url: string;
+  approvedAddresses: readonly string[];
+  headers: Headers;
+  timeoutMs: number;
+  maxBytes: number;
+}
+
+export interface DacsPublicHttpsFetchDependenciesV1 {
+  resolveHost(hostname: string): Promise<readonly string[]>;
+  request(input: Readonly<DacsPublicHttpsFetchRequestV1>): Promise<Response>;
+}
+
+export interface DacsPublicHttpsFetchOptionsV1 {
+  timeoutMs?: number;
+  maxBytes?: number;
+  dependencies?: Readonly<DacsPublicHttpsFetchDependenciesV1>;
+}
+
+export class DacsPublicHttpsFetchError extends Error {
+  override readonly name = "DacsPublicHttpsFetchError";
+
+  constructor(readonly reasonCode: string) {
+    super(reasonCode);
+  }
+}
+
+function captureHeaders(value: RequestInit["headers"]): Headers {
+  const captured = new Headers(value);
+  for (const name of FORBIDDEN_HEADERS) {
+    if (captured.has(name)) {
+      throw new DacsPublicHttpsFetchError("public-fetch-ambient-header-refused");
+    }
+  }
+  captured.set("accept-encoding", "identity");
+  captured.set("user-agent", "dacs-node-public-fetch/v1");
+  return captured;
+}
+
+function pinnedRequest(
+  input: Readonly<DacsPublicHttpsFetchRequestV1>,
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(input.url);
+    const address = input.approvedAddresses[0];
+    if (address === undefined) {
+      reject(new DacsPublicHttpsFetchError("public-fetch-dns-empty"));
+      return;
+    }
+    const family = isIP(address);
+    const request = httpsRequest({
+      protocol: "https:",
+      hostname: url.hostname,
+      port: url.port === "" ? 443 : Number(url.port),
+      path: `${url.pathname}${url.search}`,
+      method: "GET",
+      servername: isIP(url.hostname) === 0 ? url.hostname : undefined,
+      headers: Object.fromEntries(input.headers.entries()),
+      lookup: (_hostname, options, callback) => {
+        if (typeof options === "object" && options.all === true) {
+          (callback as unknown as (
+            error: null,
+            addresses: readonly Readonly<{ address: string; family: number }>[],
+          ) => void)(null, [Object.freeze({ address, family })]);
+          return;
+        }
+        (callback as unknown as (
+          error: null,
+          resolvedAddress: string,
+          resolvedFamily: number,
+        ) => void)(null, address, family);
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      response.on("data", (chunk: Buffer | string) => {
+        const bytes = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
+        total += bytes.byteLength;
+        if (total > input.maxBytes) {
+          request.destroy(new DacsPublicHttpsFetchError("public-fetch-response-too-large"));
+          return;
+        }
+        chunks.push(bytes);
+      });
+      response.once("end", () => {
+        const headers = new Headers();
+        for (const [name, raw] of Object.entries(response.headers)) {
+          if (typeof raw === "string") headers.set(name, raw);
+          else if (Array.isArray(raw)) raw.forEach((value) => headers.append(name, value));
+        }
+        if (!/^\s*(?:identity)?\s*$/iu.test(headers.get("content-encoding") ?? "")) {
+          reject(new DacsPublicHttpsFetchError("public-fetch-content-encoding-refused"));
+          return;
+        }
+        const status = response.statusCode ?? 0;
+        if (status < 200 || status > 599) {
+          reject(new DacsPublicHttpsFetchError("public-fetch-http-status-invalid"));
+          return;
+        }
+        const body = status === 204 || status === 205 || status === 304
+          ? null : Uint8Array.from(Buffer.concat(chunks, total));
+        resolve(new Response(body, { status, headers }));
+      });
+    });
+    request.setTimeout(input.timeoutMs, () => {
+      request.destroy(new DacsPublicHttpsFetchError("public-fetch-timeout"));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+const defaultDependencies: Readonly<DacsPublicHttpsFetchDependenciesV1> = Object.freeze({
+  resolveHost: resolveDacsPublicHostV1,
+  request: pinnedRequest,
+});
+
+/**
+ * Create a bounded, DNS-pinned fetch for counterparty-selected HTTPS targets.
+ * Each call resolves and validates every address, then connects only to one of
+ * those validated addresses. Redirect handling remains manual and no ambient
+ * credential-bearing headers are accepted.
+ */
+export function createDacsPublicHttpsFetchV1(
+  options: Readonly<DacsPublicHttpsFetchOptionsV1> = {},
+): typeof fetch {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS ||
+      !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_RESPONSE_BYTES) {
+    throw new TypeError("public fetch bounds are invalid");
+  }
+  const dependencies = options.dependencies ?? defaultDependencies;
+  if (typeof dependencies.resolveHost !== "function" ||
+      typeof dependencies.request !== "function") {
+    throw new TypeError("public fetch dependencies are invalid");
+  }
+  const fetchImpl = async (
+    input: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1],
+  ): Promise<Response> => {
+    if (typeof input !== "string" && !(input instanceof URL)) {
+      throw new DacsPublicHttpsFetchError("public-fetch-request-object-refused");
+    }
+    if ((init?.method ?? "GET").toUpperCase() !== "GET" || init?.body !== undefined &&
+        init.body !== null || init?.redirect !== undefined && init.redirect !== "error") {
+      throw new DacsPublicHttpsFetchError("public-fetch-request-shape-refused");
+    }
+    const value = input.toString();
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new DacsPublicHttpsFetchError("public-fetch-url-invalid");
+    }
+    if (url.protocol !== "https:" || url.username !== "" || url.password !== "" ||
+        url.hash !== "" || value.length > 2_048 ||
+        url.hostname.toLowerCase() === "localhost") {
+      throw new DacsPublicHttpsFetchError("public-fetch-url-unsafe");
+    }
+    const literal = url.hostname.startsWith("[") && url.hostname.endsWith("]")
+      ? url.hostname.slice(1, -1) : url.hostname;
+    let addresses: readonly string[];
+    try {
+      addresses = [...new Set(await dependencies.resolveHost(literal))];
+    } catch {
+      throw new DacsPublicHttpsFetchError("public-fetch-dns-unavailable");
+    }
+    if (addresses.length === 0) {
+      throw new DacsPublicHttpsFetchError("public-fetch-dns-empty");
+    }
+    if (!addresses.every(isDacsPublicAddressV1)) {
+      throw new DacsPublicHttpsFetchError("public-fetch-address-unsafe");
+    }
+    return dependencies.request({
+      url: url.toString(),
+      approvedAddresses: addresses,
+      headers: captureHeaders(init?.headers),
+      timeoutMs,
+      maxBytes,
+    });
+  };
+  return fetchImpl as typeof fetch;
+}
