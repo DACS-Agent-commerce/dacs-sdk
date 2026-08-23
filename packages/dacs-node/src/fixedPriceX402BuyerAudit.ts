@@ -43,11 +43,21 @@ import { ed25519Verify, publicKeyFromRaw, signedBytes } from
 import { canonicalDemosAgentPublicKey, identityBundleHash } from
   "@kynesyslabs/dacs/identity";
 import type {
+  FixedPricePayDemOrderInput,
+  FixedPricePayDemOrderRecord,
+  FixedPriceX402OrderInput,
+  FixedPriceX402OrderRecord,
+} from "@kynesyslabs/dacs/commerce";
+import type {
   CompletedSellerBundleCounterSignatureRequest,
+  DemosTransferObservation,
   VerifyCompletedSellerBundleCounterSignatureRequestInput,
 } from "@kynesyslabs/dacs/seller";
 
-import type { DacsBuyerAuditMaterialV1 } from "./auditRuntime.js";
+import type {
+  DacsBuyerAuditMaterialV1,
+  DacsPayDemBuyerAuditRuntimeOptionsV1,
+} from "./auditRuntime.js";
 import type { DacsBuyerBundleRequestVerificationV1 } from
   "./bundleTransportRuntime.js";
 import {
@@ -63,13 +73,21 @@ import {
   captureDacsFixedPriceX402ApplicationV1,
   loadDacsFixedPriceX402BuyerAgreementPublicationV1,
 } from "./fixedPriceX402Profile.js";
+import { loadDacsFixedPricePayDemBuyerAgreementPublicationV1 } from
+  "./fixedPricePayDemProfile.js";
 import type { DacsBuyerLiveCommerceAssemblyOptionsV1 } from
   "./liveCommerceAssembly.js";
 import type { DacsLiveOrderInputV1 } from "./orderInput.js";
 import { loadDacsLiveOrderInputV1 } from "./orderInput.js";
-import { createDacsFixedPriceX402RoleOrderV1 } from "./liveOrder.js";
+import {
+  createDacsFixedPricePayDemRoleOrderV1,
+  createDacsFixedPriceX402RoleOrderV1,
+} from "./liveOrder.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
-import { loadDacsBuyerSessionAgreementFactsForOrderV1 } from
+import {
+  loadDacsBuyerSessionAgreementFactsForOrderV1,
+  loadDacsPayDemBuyerSessionAgreementFactsForOrderV1,
+} from
   "./sessionBootstrapAgreementRuntime.js";
 import { createDacsX402SellerEvmObserverV1 } from "./x402SellerEvm.js";
 
@@ -77,6 +95,10 @@ const DEFAULT_LEASE_TTL_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 type BuyerAuditOptions = DacsBuyerLiveCommerceAssemblyOptionsV1["audit"];
+type PayDemBuyerAuditOptions = Omit<
+  DacsPayDemBuyerAuditRuntimeOptionsV1,
+  "context" | "workerId" | "bundleTransport"
+>;
 type BuyerBundleTransportOptions = DacsBuyerLiveCommerceAssemblyOptionsV1["bundleTransport"];
 type Dependency = VerifyCompletedSellerBundleCounterSignatureRequestInput[
   "dependencies"
@@ -97,6 +119,34 @@ export interface DacsFixedPriceX402BuyerAuditOptionsV1 {
 export interface DacsFixedPriceX402BuyerAuditV1 {
   bundleTransport: Readonly<BuyerBundleTransportOptions>;
   audit: Readonly<BuyerAuditOptions>;
+}
+
+export interface DacsFixedPricePayDemBuyerAuditOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  rail: Readonly<AuthenticatedRailDefinition>;
+  observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
+  recipeRegistryVersion: number;
+  leaseTtlMs?: number;
+}
+
+export interface DacsFixedPricePayDemBuyerAuditV1 {
+  bundleTransport: Readonly<BuyerBundleTransportOptions>;
+  audit: Readonly<PayDemBuyerAuditOptions>;
+}
+
+type DacsFixedPriceBuyerAuditOptionsV1 =
+  | (DacsFixedPriceX402BuyerAuditOptionsV1 & { paymentProfile: "x402" })
+  | (DacsFixedPricePayDemBuyerAuditOptionsV1 & { paymentProfile: "pay-dem" });
+
+type BuyerLiveOrderRecord = FixedPriceX402OrderRecord | FixedPricePayDemOrderRecord;
+type BuyerRetainedOrder =
+  | DacsLiveOrderInputV1<FixedPriceX402OrderInput>
+  | DacsLiveOrderInputV1<FixedPricePayDemOrderInput>;
+
+function isPayDemOrder(
+  order: Readonly<BuyerLiveOrderRecord>,
+): order is Readonly<FixedPricePayDemOrderRecord> {
+  return order.protocol.phase === "pay-dem";
 }
 
 export class DacsFixedPriceX402BuyerAuditError extends Error {
@@ -316,6 +366,17 @@ function settlementEvent(evidence: Readonly<SettlementEvidence>) {
   return event;
 }
 
+function demosSettlementEvent(evidence: Readonly<SettlementEvidence>) {
+  const event = evidence.paymentTxRefs?.[0];
+  if (evidence.phase !== "pay-dem" || evidence.outcome !== "success" ||
+      event?.kind !== "demos" || typeof event.blockNumber !== "number" ||
+      !Number.isSafeInteger(event.blockNumber) ||
+      event.blockNumber < 0 || !/^[0-9a-f]{64}$/.test(event.txHash)) {
+    throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-payment-event-invalid");
+  }
+  return event;
+}
+
 function exactScopeParties(
   value: Readonly<Record<string, unknown>>,
   buyer: string,
@@ -329,54 +390,66 @@ function exactScopeParties(
   ]);
 }
 
-/** Buyer-owned DACS-5 reconstruction, request review, and role publication. */
-export function createDacsFixedPriceX402BuyerAuditV1(
-  options: Readonly<DacsFixedPriceX402BuyerAuditOptionsV1>,
+/** Rail-neutral buyer-owned DACS-5 reconstruction and role publication. */
+export function createDacsFixedPriceBuyerAuditV1(
+  options: Readonly<DacsFixedPriceBuyerAuditOptionsV1>,
 ): Readonly<DacsFixedPriceX402BuyerAuditV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
-      options.context.role !== "buyer" || options.context.evm?.role !== "buyer" ||
+      options.context.role !== "buyer" ||
       getAuthenticatedRailProvenance(options.rail) === null ||
-      typeof options.evmRpcUrl !== "string" || options.evmRpcUrl.length === 0 ||
-      !Number.isSafeInteger(options.authorizationSearchFromBlock) ||
-      options.authorizationSearchFromBlock < 0 ||
       !Number.isSafeInteger(options.recipeRegistryVersion) ||
-      options.recipeRegistryVersion <= 0) {
+      options.recipeRegistryVersion <= 0 ||
+      (options.paymentProfile !== "x402" && options.paymentProfile !== "pay-dem") ||
+      (options.paymentProfile === "x402" &&
+        (options.context.evm?.role !== "buyer" ||
+          typeof options.evmRpcUrl !== "string" || options.evmRpcUrl.length === 0 ||
+          !Number.isSafeInteger(options.authorizationSearchFromBlock) ||
+          options.authorizationSearchFromBlock < 0)) ||
+      (options.paymentProfile === "pay-dem" &&
+        typeof options.observeDemosTransfer !== "function")) {
     throw new TypeError("fixed-price buyer audit options are invalid");
   }
   const context = options.context;
-  const evm = context.evm;
-  if (evm?.role !== "buyer") {
-    throw new TypeError("fixed-price buyer audit options are invalid");
-  }
   const leaseTtlMs = timing(options.leaseTtlMs);
   const rail = options.rail;
   const provenance = getAuthenticatedRailProvenance(rail)!;
-  if (rail.railType !== "x402" || rail.phaseHandler !== "pay-x402" ||
-      rail.asset.kind !== "erc20") {
-    throw new TypeError("fixed-price buyer audit requires x402 ERC-20");
+  const payDem = options.paymentProfile === "pay-dem";
+  if ((payDem && (rail.railType !== "demos-native" ||
+      rail.phaseHandler !== "pay-dem" || rail.asset.kind !== "native-dem" ||
+      rail.asset.symbol !== "DEM" || rail.asset.decimals !== 9)) ||
+      (!payDem && (rail.railType !== "x402" ||
+        rail.phaseHandler !== "pay-x402" || rail.asset.kind !== "erc20"))) {
+    throw new TypeError(payDem
+      ? "fixed-price buyer audit requires native DEM"
+      : "fixed-price buyer audit requires x402 ERC-20");
   }
-  const asset = rail.asset;
-  const observer = createDacsX402SellerEvmObserverV1({
-    rail,
-    rpcUrl: options.evmRpcUrl,
-    authorizationSearchFromBlock: options.authorizationSearchFromBlock,
-    ...(options.finalityTag === undefined ? {} : { finalityTag: options.finalityTag }),
-    ...(options.logPageSize === undefined ? {} : { logPageSize: options.logPageSize }),
-    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
-  });
+  const observer = options.paymentProfile === "x402"
+    ? createDacsX402SellerEvmObserverV1({
+        rail,
+        rpcUrl: options.evmRpcUrl,
+        authorizationSearchFromBlock: options.authorizationSearchFromBlock,
+        ...(options.finalityTag === undefined ? {} : { finalityTag: options.finalityTag }),
+        ...(options.logPageSize === undefined ? {} : { logPageSize: options.logPageSize }),
+        ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+      })
+    : undefined;
 
   const build = async (
     request: Readonly<CompletedSellerBundleCounterSignatureRequest>,
-    order: Readonly<Parameters<typeof loadDacsBuyerSessionAgreementFactsForOrderV1>[1]>,
-    retained: Readonly<DacsLiveOrderInputV1>,
+    order: Readonly<BuyerLiveOrderRecord>,
+    retained: Readonly<BuyerRetainedOrder>,
   ): Promise<Readonly<BuyerReviewMaterialV1>> => {
+    if (payDem !== isPayDemOrder(order)) {
+      throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-profile-invalid");
+    }
     const signedScope = scope(request);
     const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
-    const session = loadDacsBuyerSessionAgreementFactsForOrderV1(context, order);
-    const agreementPublication = await loadDacsFixedPriceX402BuyerAgreementPublicationV1(
-      context,
-      order,
-    );
+    const session = isPayDemOrder(order)
+      ? loadDacsPayDemBuyerSessionAgreementFactsForOrderV1(context, order)
+      : loadDacsBuyerSessionAgreementFactsForOrderV1(context, order);
+    const agreementPublication = isPayDemOrder(order)
+      ? await loadDacsFixedPricePayDemBuyerAgreementPublicationV1(context, order)
+      : await loadDacsFixedPriceX402BuyerAgreementPublicationV1(context, order);
     const agreementRaw = agreementPublication.artifact;
     if (!isAgreementArtifact(agreementRaw) ||
         !("payeeBoundAgreementVersion" in agreementRaw) ||
@@ -391,7 +464,8 @@ export function createDacsFixedPriceX402BuyerAuditV1(
         order.protocol.rail.railVersion !== rail.railVersion ||
         order.protocol.rail.railType !== rail.railType ||
         order.protocol.rail.phaseHandler !== rail.phaseHandler ||
-        order.protocol.rail.network !== `eip155:${asset.chainId}` ||
+        order.protocol.rail.network !== (rail.asset.kind === "erc20"
+          ? `eip155:${rail.asset.chainId}` : "demos") ||
         !exactScopeParties(
           signedScope,
           order.buyer,
@@ -496,7 +570,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
       );
     }));
     const paymentAnchor = evidenceAnchors.find(({ artifact }) =>
-      isSettlementEvidence(artifact) && artifact.phase === "pay-x402");
+      isSettlementEvidence(artifact) && artifact.phase === rail.phaseHandler);
     const deliveryAnchor = evidenceAnchors.find(({ artifact }) =>
       isSettlementEvidence(artifact) && artifact.phase === "deliver-storage-program");
     if (paymentAnchor === undefined || deliveryAnchor === undefined ||
@@ -505,9 +579,13 @@ export function createDacsFixedPriceX402BuyerAuditV1(
         paymentAnchor.artifact.outcome !== "success" ||
         deliveryAnchor.artifact.phase !== "deliver-storage-program" ||
         deliveryAnchor.artifact.outcome !== "success" ||
-        paymentAnchor.artifact.settlementFinality?.model !== "block-depth" ||
-        !Number.isSafeInteger(paymentAnchor.artifact.settlementFinality.finalityBlocks) ||
-        Number(paymentAnchor.artifact.settlementFinality.finalityBlocks) <= 0 ||
+        (payDem
+          ? paymentAnchor.artifact.settlementFinality?.model !== "bft-final"
+          : paymentAnchor.artifact.settlementFinality?.model !== "block-depth" ||
+            !Number.isSafeInteger(
+              paymentAnchor.artifact.settlementFinality.finalityBlocks,
+            ) ||
+            Number(paymentAnchor.artifact.settlementFinality.finalityBlocks) <= 0) ||
         !verifySignature(ARTIFACT_SEPARATORS.SettlementEvidence,
           paymentAnchor.artifact, paymentAnchor.artifact.signature, order.seller) ||
         !verifySignature(ARTIFACT_SEPARATORS.SettlementEvidence,
@@ -523,58 +601,8 @@ export function createDacsFixedPriceX402BuyerAuditV1(
       deliverableAnchor: { kind: string; locator: string };
     };
     const capturedPaymentFinality = paymentEvidence.settlementFinality;
-    if (capturedPaymentFinality?.model !== "block-depth" ||
-        !Number.isSafeInteger(capturedPaymentFinality.finalityBlocks) ||
-        Number(capturedPaymentFinality.finalityBlocks) <= 0) {
+    if (capturedPaymentFinality === undefined) {
       throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-finality-invalid");
-    }
-    const paymentFinality = {
-      model: "block-depth" as const,
-      finalityBlocks: Number(capturedPaymentFinality.finalityBlocks),
-      finalityObservedAt: capturedPaymentFinality.finalityObservedAt,
-    };
-    const event = settlementEvent(paymentEvidence);
-    const expectedAmountBaseUnits = baseUnits(
-      agreement.terms.price.amount,
-      asset.decimals,
-    );
-    const observation = await observer.observeX402Transfer({
-      chainId: event.chainId,
-      // DACS x402-event references use canonical lower-case hex without the
-      // RPC prefix, while the EVM observer intentionally accepts only an
-      // exact JSON-RPC transaction hash. Cross that representation boundary
-      // here rather than weakening either wire validator.
-      txHash: `0x${event.settlementTxHash}`,
-    });
-    if (observation.status !== "finalized" || observation.chainId !== event.chainId ||
-        observation.txHash.toLowerCase() !== `0x${event.settlementTxHash}` ||
-        observation.logIndex !== event.logIndex ||
-        observation.includedAt > paymentEvidence.observedAt ||
-        observation.payer.toLowerCase() !== evm.address.toLowerCase() ||
-        observation.asset.contract.toLowerCase() !== asset.contract.toLowerCase() ||
-        observation.amountBaseUnits !== expectedAmountBaseUnits ||
-        observation.sessionBinding.kind !== "eip3009" ||
-        observation.sessionBinding.nonce !== x402Eip3009Nonce(order.jobId, 2) ||
-        observation.confirmations < paymentFinality.finalityBlocks ||
-        observation.finalityObservedAt < paymentFinality.finalityObservedAt) {
-      throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-native-finality-invalid");
-    }
-    const payout = agreement.terms.payoutBindings.find((binding) =>
-      binding.railId === rail.railId && binding.phaseIndex === 2);
-    if (payout === undefined || payout.payeeAddress.toLowerCase() !==
-        observation.payee.toLowerCase() || paymentEvidence.paymentAmount === undefined ||
-        paymentEvidence.paymentAmount.amount !== agreement.terms.price.amount ||
-        paymentEvidence.paymentAmount.currency !== agreement.terms.price.currency) {
-      throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-payment-terms-invalid");
-    }
-    const settlementId = canonicalSellerSettlementId({
-      kind: "evm",
-      chainId: event.chainId,
-      txHash: event.settlementTxHash,
-      logIndex: event.logIndex,
-    });
-    if (settlementId === null) {
-      throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-settlement-id-invalid");
     }
 
     const buyerVetAnchor = await resolveNativeAnchor(
@@ -665,7 +693,15 @@ export function createDacsFixedPriceX402BuyerAuditV1(
         signer: order.seller,
       },
     };
-    const authorization: SellerPaymentAuthorization = {
+    const payout = agreement.terms.payoutBindings.find((binding) =>
+      binding.railId === rail.railId && binding.phaseIndex === 2);
+    if (payout === undefined || paymentEvidence.paymentAmount === undefined ||
+        paymentEvidence.paymentAmount.amount !== agreement.terms.price.amount ||
+        paymentEvidence.paymentAmount.currency !== agreement.terms.price.currency) {
+      throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-payment-terms-invalid");
+    }
+    const evidenceHash = contentHash(paymentEvidence);
+    const commonAuthorization = {
       jobId: order.jobId,
       phaseIndex: 2,
       agreementHash: agreementPublication.agreementHash,
@@ -678,28 +714,322 @@ export function createDacsFixedPriceX402BuyerAuditV1(
         finalizedAt: committedAt,
         signer: order.seller,
       },
-      settlementIdentity: {
+      evidenceHash,
+      payoutBindingTier: 1 as const,
+      sessionBinding: "established" as const,
+    };
+    const paymentAudit = await (async () => {
+      if (options.paymentProfile === "pay-dem") {
+        if (capturedPaymentFinality.model !== "bft-final") {
+          throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-finality-invalid");
+        }
+        const event = demosSettlementEvent(paymentEvidence);
+        const observation = await options.observeDemosTransfer(event.txHash);
+        const buyerKey = canonicalDemosAgentPublicKey(order.buyer);
+        const sellerKey = canonicalDemosAgentPublicKey(order.seller);
+        const buyerPayingKey = buyerKey === null
+          ? undefined : Buffer.from(buyerKey).toString("hex");
+        const sellerReceivingKey = sellerKey === null
+          ? undefined : Buffer.from(sellerKey).toString("hex");
+        const expectedAmountOs = baseUnits(agreement.terms.price.amount, 9);
+        if (observation.status !== "included" || buyerPayingKey === undefined ||
+            sellerReceivingKey === undefined || observation.txHash !== event.txHash ||
+            observation.blockNumber !== event.blockNumber ||
+            observation.includedAt !== paymentEvidence.observedAt ||
+            observation.includedAt !== capturedPaymentFinality.finalityObservedAt ||
+            observation.includedAt < committedAt ||
+            observation.includedAt > agreement.terms.deadline ||
+            observation.payer !== buyerPayingKey ||
+            observation.payee !== sellerReceivingKey ||
+            observation.amountOs !== expectedAmountOs) {
+          throw new DacsFixedPriceX402BuyerAuditError(
+            "buyer-audit-native-finality-invalid",
+          );
+        }
+        if (payout.payeeAddress !== sellerReceivingKey) {
+          throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-payment-terms-invalid");
+        }
+        const settlementId = canonicalSellerSettlementId({
+          kind: "demos",
+          txHash: event.txHash,
+        });
+        if (settlementId === null) {
+          throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-settlement-id-invalid");
+        }
+        const paymentFinality = {
+          model: "bft-final" as const,
+          finalityObservedAt: capturedPaymentFinality.finalityObservedAt,
+        };
+        const authorization: SellerPaymentAuthorization = {
+          ...commonAuthorization,
+          settlementIdentity: {
+            kind: "demos",
+            txHash: event.txHash,
+            blockNumber: event.blockNumber,
+            includedAt: observation.includedAt,
+          },
+          settlementId,
+          evidenceInput: {
+            evidenceVersion: "1",
+            jobId: order.jobId,
+            phase: "pay-dem",
+            outcome: "success",
+            paymentTxRefs: [copy(event)],
+            paymentAmount: copy(paymentEvidence.paymentAmount),
+            settlementFinality: paymentFinality,
+            observedAt: paymentEvidence.observedAt,
+          },
+        };
+        const proofArtifact = {
+          proofVersion: "dacs-pay-dem-buyer-transfer-v1",
+          event: copy(event),
+          payer: observation.payer,
+          payee: observation.payee,
+          amountOs: observation.amountOs,
+        };
+        const proofRef: SessionSettlementNativeProofRef = {
+          proofVersion: "1",
+          kind: "authenticated-demos-transfer",
+          locator: event.txHash,
+          contentHash: sha256Hex(canonicalize(proofArtifact)),
+          encoding: "jcs",
+        };
+        const settlementContext: SessionSettlementContext = {
+          contextVersion: "1",
+          jobId: order.jobId,
+          agreementRef,
+          agreementHash: agreementPublication.agreementHash,
+          paymentPhaseIndex: 2,
+          orchestrator: order.seller,
+          payer: { primaryClaim: order.buyer, payingKey: buyerPayingKey },
+          payee: { primaryClaim: order.seller, receivingKey: sellerReceivingKey },
+          paymentAmount: copy(paymentEvidence.paymentAmount),
+          rail: {
+            railId: rail.railId,
+            railVersion: rail.railVersion,
+            railRegistryVersion: provenance.registryVersion,
+            descriptorHash: provenance.definitionContentHash,
+            railType: rail.railType,
+            handler: "pay-dem",
+            asset: "DEM",
+            network: "demos",
+            finality: { model: "bft-final" },
+          },
+        };
+        const revalidateSettlement: SessionSettlementVerificationProvider[
+          "revalidateSettlement"
+        ] = async () => {
+          const fresh = await options.observeDemosTransfer(event.txHash);
+          if (fresh.status !== "included") {
+            return fresh.status === "failed" || fresh.status === "invalid"
+              ? { disposition: "fail" as const,
+                  reason: "buyer-audit-native-settlement-failed" }
+              : { disposition: "indeterminate" as const,
+                  reason: "buyer-audit-native-revalidation-unavailable" };
+          }
+          if (fresh.txHash !== event.txHash || fresh.blockNumber !== event.blockNumber ||
+              fresh.includedAt !== paymentEvidence.observedAt ||
+              fresh.includedAt < committedAt ||
+              fresh.includedAt > agreement.terms.deadline ||
+              fresh.payer !== buyerPayingKey || fresh.payee !== sellerReceivingKey ||
+              fresh.amountOs !== expectedAmountOs) {
+            return { disposition: "fail" as const,
+              reason: "buyer-audit-native-settlement-conflict" };
+          }
+          return {
+            disposition: "pass" as const,
+            outcome: "success" as const,
+            binding: { jobId: order.jobId, railId: rail.railId,
+              phaseIndex: 2, settlementId },
+            nativeObservation: {
+              observationVersion: "1" as const,
+              kind: "authenticated-demos-transfer",
+              observedAt: fresh.includedAt,
+              finality: copy(paymentFinality),
+              sessionBinding: {
+                disposition: "established" as const,
+                kind: "pay-dem-transfer",
+                bindingHash: sha256Hex(canonicalize({
+                  jobId: order.jobId,
+                  phaseIndex: 2,
+                  txHash: fresh.txHash,
+                })),
+              },
+              details: { transactionHash: fresh.txHash,
+                blockNumber: fresh.blockNumber, payer: fresh.payer,
+                payee: fresh.payee, amountOs: fresh.amountOs },
+            },
+          };
+        };
+        return { authorization, settlementId, proofArtifact, proofRef,
+          settlementContext, revalidateSettlement };
+      }
+
+      const asset = rail.asset;
+      const evm = context.evm;
+      if (asset.kind !== "erc20" || evm?.role !== "buyer" || observer === undefined ||
+          capturedPaymentFinality.model !== "block-depth" ||
+          !Number.isSafeInteger(capturedPaymentFinality.finalityBlocks) ||
+          Number(capturedPaymentFinality.finalityBlocks) <= 0) {
+        throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-finality-invalid");
+      }
+      const paymentFinality = {
+        model: "block-depth" as const,
+        finalityBlocks: Number(capturedPaymentFinality.finalityBlocks),
+        finalityObservedAt: capturedPaymentFinality.finalityObservedAt,
+      };
+      const event = settlementEvent(paymentEvidence);
+      const expectedAmountBaseUnits = baseUnits(
+        agreement.terms.price.amount,
+        asset.decimals,
+      );
+      const observation = await observer.observeX402Transfer({
+        chainId: event.chainId,
+        txHash: `0x${event.settlementTxHash}`,
+      });
+      if (observation.status !== "finalized" || observation.chainId !== event.chainId ||
+          observation.txHash.toLowerCase() !== `0x${event.settlementTxHash}` ||
+          observation.logIndex !== event.logIndex ||
+          observation.includedAt > paymentEvidence.observedAt ||
+          observation.includedAt < committedAt ||
+          observation.includedAt > agreement.terms.deadline ||
+          observation.payer.toLowerCase() !== evm.address.toLowerCase() ||
+          observation.asset.contract.toLowerCase() !== asset.contract.toLowerCase() ||
+          observation.amountBaseUnits !== expectedAmountBaseUnits ||
+          observation.sessionBinding.kind !== "eip3009" ||
+          observation.sessionBinding.nonce !== x402Eip3009Nonce(order.jobId, 2) ||
+          observation.confirmations < paymentFinality.finalityBlocks ||
+          observation.finalityObservedAt < paymentFinality.finalityObservedAt) {
+        throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-native-finality-invalid");
+      }
+      if (payout.payeeAddress.toLowerCase() !== observation.payee.toLowerCase()) {
+        throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-payment-terms-invalid");
+      }
+      const settlementId = canonicalSellerSettlementId({
         kind: "evm",
         chainId: event.chainId,
         txHash: event.settlementTxHash,
         logIndex: event.logIndex,
-        includedAt: observation.includedAt,
-      },
-      settlementId,
-      evidenceHash: contentHash(paymentEvidence),
-      evidenceInput: {
-        evidenceVersion: "1",
+      });
+      if (settlementId === null) {
+        throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-settlement-id-invalid");
+      }
+      const authorization: SellerPaymentAuthorization = {
+        ...commonAuthorization,
+        settlementIdentity: {
+          kind: "evm",
+          chainId: event.chainId,
+          txHash: event.settlementTxHash,
+          logIndex: event.logIndex,
+          includedAt: observation.includedAt,
+        },
+        settlementId,
+        evidenceInput: {
+          evidenceVersion: "1",
+          jobId: order.jobId,
+          phase: "pay-x402",
+          outcome: "success",
+          paymentTxRefs: [copy(event)],
+          paymentAmount: copy(paymentEvidence.paymentAmount),
+          settlementFinality: copy(paymentFinality),
+          observedAt: paymentEvidence.observedAt,
+        },
+      };
+      const proofArtifact = {
+        proofVersion: "dacs-x402-buyer-event-v1",
+        event: copy(event),
+      };
+      const proofRef: SessionSettlementNativeProofRef = {
+        proofVersion: "1",
+        kind: "authenticated-x402-event",
+        locator: `eip155:${event.chainId}:${event.settlementTxHash.toLowerCase()}:` +
+          `${event.logIndex}`,
+        contentHash: sha256Hex(canonicalize(proofArtifact)),
+        encoding: "jcs",
+      };
+      const settlementContext: SessionSettlementContext = {
+        contextVersion: "1",
         jobId: order.jobId,
-        phase: "pay-x402",
-        outcome: "success",
-        paymentTxRefs: [copy(event)],
+        agreementRef,
+        agreementHash: agreementPublication.agreementHash,
+        paymentPhaseIndex: 2,
+        orchestrator: order.seller,
+        payer: { primaryClaim: order.buyer,
+          payingKey: payerAddress(session.buyerIdentity, asset.chainId) },
+        payee: { primaryClaim: order.seller, receivingKey: payout.payeeAddress },
         paymentAmount: copy(paymentEvidence.paymentAmount),
-        settlementFinality: copy(paymentFinality),
-        observedAt: paymentEvidence.observedAt,
-      },
-      payoutBindingTier: 1,
-      sessionBinding: "established",
-    };
+        rail: {
+          railId: rail.railId,
+          railVersion: rail.railVersion,
+          railRegistryVersion: provenance.registryVersion,
+          descriptorHash: provenance.definitionContentHash,
+          railType: rail.railType,
+          handler: "pay-x402",
+          asset: asset.symbol,
+          network: `eip155:${asset.chainId}`,
+          finality: { model: "block-depth",
+            finalityBlocks: paymentFinality.finalityBlocks },
+        },
+      };
+      const revalidateSettlement: SessionSettlementVerificationProvider[
+        "revalidateSettlement"
+      ] = async () => {
+        const fresh = await observer.observeX402Transfer({
+          chainId: event.chainId,
+          txHash: `0x${event.settlementTxHash}`,
+        });
+        if (fresh.status !== "finalized") {
+          return fresh.status === "failed"
+            ? { disposition: "fail" as const,
+                reason: "buyer-audit-native-settlement-failed" }
+            : { disposition: "indeterminate" as const,
+                reason: "buyer-audit-native-revalidation-unavailable" };
+        }
+        if (fresh.chainId !== event.chainId ||
+            fresh.txHash.toLowerCase() !== `0x${event.settlementTxHash}` ||
+            fresh.logIndex !== event.logIndex ||
+            fresh.includedAt > paymentEvidence.observedAt ||
+            fresh.includedAt < committedAt ||
+            fresh.includedAt > agreement.terms.deadline ||
+            fresh.payer.toLowerCase() !== settlementContext.payer.payingKey.toLowerCase() ||
+            fresh.payee.toLowerCase() !== settlementContext.payee.receivingKey.toLowerCase() ||
+            fresh.amountBaseUnits !== expectedAmountBaseUnits ||
+            fresh.asset.contract.toLowerCase() !== asset.contract.toLowerCase() ||
+            fresh.confirmations < paymentFinality.finalityBlocks ||
+            fresh.finalityObservedAt < paymentFinality.finalityObservedAt ||
+            fresh.sessionBinding.kind !== "eip3009" ||
+            fresh.sessionBinding.nonce !== x402Eip3009Nonce(order.jobId, 2)) {
+          return { disposition: "fail" as const,
+            reason: "buyer-audit-native-settlement-conflict" };
+        }
+        return {
+          disposition: "pass" as const,
+          outcome: "success" as const,
+          binding: { jobId: order.jobId, railId: rail.railId,
+            phaseIndex: 2, settlementId },
+          nativeObservation: {
+            observationVersion: "1" as const,
+            kind: "authenticated-x402-event",
+            observedAt: fresh.finalityObservedAt,
+            finality: copy(paymentFinality),
+            sessionBinding: {
+              disposition: "established" as const,
+              kind: "eip3009",
+              bindingHash: sha256Hex(canonicalize({
+                jobId: order.jobId,
+                phaseIndex: 2,
+                nonce: fresh.sessionBinding.nonce,
+              })),
+            },
+            details: { chainId: fresh.chainId,
+              transactionHash: fresh.txHash, logIndex: fresh.logIndex },
+          },
+        };
+      };
+      return { authorization, settlementId, proofArtifact, proofRef,
+        settlementContext, revalidateSettlement };
+    })();
+    const { authorization, settlementId } = paymentAudit;
     if (sha256Hex(canonicalize(authorization.evidenceInput)) !==
         authorization.evidenceHash) {
       throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-authorization-invalid");
@@ -957,41 +1287,8 @@ export function createDacsFixedPriceX402BuyerAuditV1(
       dependencies,
     };
 
-    const proofArtifact = {
-      proofVersion: "dacs-x402-buyer-event-v1",
-      event: copy(event),
-    };
-    const proofRef: SessionSettlementNativeProofRef = {
-      proofVersion: "1",
-      kind: "authenticated-x402-event",
-      locator: `eip155:${event.chainId}:${event.settlementTxHash.toLowerCase()}:${event.logIndex}`,
-      contentHash: sha256Hex(canonicalize(proofArtifact)),
-      encoding: "jcs",
-    };
-    const settlementContext: SessionSettlementContext = {
-      contextVersion: "1",
-      jobId: order.jobId,
-      agreementRef,
-      agreementHash: agreementPublication.agreementHash,
-      paymentPhaseIndex: 2,
-      orchestrator: order.seller,
-      payer: { primaryClaim: order.buyer,
-        payingKey: payerAddress(session.buyerIdentity, asset.chainId) },
-      payee: { primaryClaim: order.seller, receivingKey: payout.payeeAddress },
-      paymentAmount: copy(paymentEvidence.paymentAmount),
-      rail: {
-        railId: rail.railId,
-        railVersion: rail.railVersion,
-        railRegistryVersion: provenance.registryVersion,
-        descriptorHash: provenance.definitionContentHash,
-        railType: rail.railType,
-        handler: "pay-x402",
-        asset: asset.symbol,
-        network: `eip155:${asset.chainId}`,
-        finality: { model: "block-depth",
-          finalityBlocks: paymentFinality.finalityBlocks },
-      },
-    };
+    const { proofArtifact, proofRef, settlementContext,
+      revalidateSettlement } = paymentAudit;
     const settlement: FinalizedSessionSettlement = {
       settlementVersion: "1",
       outcome: "success",
@@ -1029,57 +1326,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
       resolveNativeProof: (candidate) => canonicalize(candidate) === canonicalize(proofRef)
         ? { disposition: "present" as const, artifact: copy(proofArtifact) }
         : { disposition: "absent" as const },
-      async revalidateSettlement() {
-        const fresh = await observer.observeX402Transfer({
-          chainId: event.chainId,
-          txHash: `0x${event.settlementTxHash}`,
-        });
-        if (fresh.status !== "finalized") {
-          return fresh.status === "failed"
-            ? { disposition: "fail" as const,
-                reason: "buyer-audit-native-settlement-failed" }
-            : { disposition: "indeterminate" as const,
-                reason: "buyer-audit-native-revalidation-unavailable" };
-        }
-        if (fresh.chainId !== event.chainId ||
-            fresh.txHash.toLowerCase() !== `0x${event.settlementTxHash}` ||
-            fresh.logIndex !== event.logIndex ||
-            fresh.includedAt > paymentEvidence.observedAt ||
-            fresh.payer.toLowerCase() !== settlementContext.payer.payingKey.toLowerCase() ||
-            fresh.payee.toLowerCase() !== settlementContext.payee.receivingKey.toLowerCase() ||
-            fresh.amountBaseUnits !== expectedAmountBaseUnits ||
-            fresh.asset.contract.toLowerCase() !== asset.contract.toLowerCase() ||
-            fresh.confirmations < paymentFinality.finalityBlocks ||
-            fresh.finalityObservedAt < paymentFinality.finalityObservedAt ||
-            fresh.sessionBinding.kind !== "eip3009" ||
-            fresh.sessionBinding.nonce !== x402Eip3009Nonce(order.jobId, 2)) {
-          return { disposition: "fail" as const,
-            reason: "buyer-audit-native-settlement-conflict" };
-        }
-        return {
-          disposition: "pass" as const,
-          outcome: "success" as const,
-          binding: { jobId: order.jobId, railId: rail.railId,
-            phaseIndex: 2, settlementId },
-          nativeObservation: {
-            observationVersion: "1" as const,
-            kind: "authenticated-x402-event",
-            observedAt: fresh.finalityObservedAt,
-            finality: copy(paymentFinality),
-            sessionBinding: {
-              disposition: "established" as const,
-              kind: "eip3009",
-              bindingHash: sha256Hex(canonicalize({
-                jobId: order.jobId,
-                phaseIndex: 2,
-                nonce: fresh.sessionBinding.nonce,
-              })),
-            },
-            details: { chainId: fresh.chainId,
-              transactionHash: fresh.txHash, logIndex: fresh.logIndex },
-          },
-        };
-      },
+      revalidateSettlement,
       evidence: evidenceVerifier,
     };
     return Object.freeze({ input, provider: commonProvider, publication,
@@ -1090,26 +1337,42 @@ export function createDacsFixedPriceX402BuyerAuditV1(
     request: Readonly<CompletedSellerBundleCounterSignatureRequest>,
     jobId: string,
   ) => {
-    const loaded = await context.database.createLiveCoordinatorStore("buyer")
-      .load("buyer", jobId);
+    const loaded = payDem
+      ? await context.database.createPayDemCoordinatorStore("buyer").load("buyer", jobId)
+      : await context.database.createLiveCoordinatorStore("buyer").load("buyer", jobId);
     if (loaded.status !== "ok") {
       throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-order-unavailable");
     }
-    const retained = loadDacsLiveOrderInputV1({
-      database: context.database,
-      order: createDacsFixedPriceX402RoleOrderV1({
-        role: "buyer",
-        jobId: loaded.record.jobId,
-        buyer: loaded.record.buyer,
-        seller: loaded.record.seller,
-        protocol: loaded.record.protocol,
-      }),
-    });
+    const record = loaded.record as BuyerLiveOrderRecord;
+    if (payDem !== isPayDemOrder(record)) {
+      throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-profile-invalid");
+    }
+    const retained = isPayDemOrder(record)
+      ? loadDacsLiveOrderInputV1({
+          database: context.database,
+          order: createDacsFixedPricePayDemRoleOrderV1({
+            role: "buyer",
+            jobId: record.jobId,
+            buyer: record.buyer,
+            seller: record.seller,
+            protocol: record.protocol,
+          }),
+        })
+      : loadDacsLiveOrderInputV1({
+          database: context.database,
+          order: createDacsFixedPriceX402RoleOrderV1({
+            role: "buyer",
+            jobId: record.jobId,
+            buyer: record.buyer,
+            seller: record.seller,
+            protocol: record.protocol,
+          }),
+        });
     if (retained === undefined || retained.localBindingHash !==
-        loaded.record.localBindingHash) {
+        record.localBindingHash) {
       throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-input-unavailable");
     }
-    return build(request, loaded.record, retained);
+    return build(request, record, retained);
   };
 
   const bundleTransport: BuyerBundleTransportOptions = {
@@ -1127,8 +1390,11 @@ export function createDacsFixedPriceX402BuyerAuditV1(
     },
     async resolveSellerFinalization(input) {
       try {
-        const loaded = await context.database.createLiveCoordinatorStore("buyer")
-          .load("buyer", input.identity.jobId);
+        const loaded = payDem
+          ? await context.database.createPayDemCoordinatorStore("buyer")
+              .load("buyer", input.identity.jobId)
+          : await context.database.createLiveCoordinatorStore("buyer")
+              .load("buyer", input.identity.jobId);
         if (loaded.status !== "ok" || input.identity.buyer !== loaded.record.buyer ||
             input.identity.seller !== loaded.record.seller) {
           return { disposition: "rejected" as const,
@@ -1255,6 +1521,10 @@ export function createDacsFixedPriceX402BuyerAuditV1(
             : { disposition: "rejected" as const, reason: "buyer-binding-conflict" };
         },
       };
+      const auditOrder = operation.order as unknown as BuyerLiveOrderRecord;
+      const buyerSession = isPayDemOrder(auditOrder)
+        ? loadDacsPayDemBuyerSessionAgreementFactsForOrderV1(context, auditOrder)
+        : loadDacsBuyerSessionAgreementFactsForOrderV1(context, auditOrder);
       const result: DacsBuyerAuditMaterialV1 = {
         input: {
           sellerVerificationInput: material.input,
@@ -1262,10 +1532,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
           settlement: material.settlement,
           buyer: {
             primaryClaim: operation.order.buyer,
-            bundleHash: identityBundleHash(
-              loadDacsBuyerSessionAgreementFactsForOrderV1(context, operation.order)
-                .buyerIdentity,
-            ),
+            bundleHash: identityBundleHash(buyerSession.buyerIdentity),
           },
         },
         provider,
@@ -1294,4 +1561,21 @@ export function createDacsFixedPriceX402BuyerAuditV1(
     bundleTransport: Object.freeze(bundleTransport),
     audit: Object.freeze(audit),
   });
+}
+
+/** Preserve the public x402-only composition surface. */
+export function createDacsFixedPriceX402BuyerAuditV1(
+  options: Readonly<DacsFixedPriceX402BuyerAuditOptionsV1>,
+): Readonly<DacsFixedPriceX402BuyerAuditV1> {
+  return createDacsFixedPriceBuyerAuditV1({ ...options, paymentProfile: "x402" });
+}
+
+/** Native DEM projection of the shared authenticated buyer audit spine. */
+export function createDacsFixedPricePayDemBuyerAuditV1(
+  options: Readonly<DacsFixedPricePayDemBuyerAuditOptionsV1>,
+): Readonly<DacsFixedPricePayDemBuyerAuditV1> {
+  return createDacsFixedPriceBuyerAuditV1({
+    ...options,
+    paymentProfile: "pay-dem",
+  }) as unknown as Readonly<DacsFixedPricePayDemBuyerAuditV1>;
 }

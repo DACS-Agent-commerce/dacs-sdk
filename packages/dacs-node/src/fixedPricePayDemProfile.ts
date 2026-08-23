@@ -24,8 +24,10 @@ import {
   DacsFixedPriceX402ProfileError,
   type DacsFixedPriceX402ApplicationV1,
   type DacsFixedPriceX402BuyerAgreementPolicyV1,
+  type DacsFixedPriceX402BuyerAgreementPublicationV1,
   type DacsFixedPriceX402SellerAgreementPolicyV1,
   type DacsFixedPriceX402CommitmentResultV1,
+  loadDacsFixedPriceX402BuyerAgreementPublicationV1,
   loadDacsFixedPriceX402CommitmentResultV1,
 } from "./fixedPriceX402Profile.js";
 import {
@@ -322,6 +324,23 @@ export function createDacsFixedPricePayDemBuyerAgreementPolicyV1(
   options: Readonly<DacsFixedPricePayDemBuyerAgreementPolicyOptionsV1>,
 ): Readonly<DacsFixedPriceX402BuyerAgreementPolicyV1> {
   return createDacsFixedPriceX402BuyerAgreementPolicyV1(options);
+}
+
+/**
+ * Native DEM and x402 share the same role-owned Agreement publication record.
+ * The order cast is safe because the loader authenticates only common order
+ * identity and the exact role-local binding retained with that publication.
+ */
+export function loadDacsFixedPricePayDemBuyerAgreementPublicationV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): Promise<Readonly<DacsFixedPriceX402BuyerAgreementPublicationV1>> {
+  return loadDacsFixedPriceX402BuyerAgreementPublicationV1(
+    context,
+    order as unknown as Parameters<
+      typeof loadDacsFixedPriceX402BuyerAgreementPublicationV1
+    >[1],
+  );
 }
 
 /** Select the native admission journal while retaining the shared commitment spine. */
