@@ -23,10 +23,19 @@ import type {
   SellerSessionSettlementAnchorWriter,
 } from "../seller/sessionSettlementPublication.js";
 import {
+  captureFixedPricePayDemProtocolBinding,
+  fixedPricePayDemProtocolBindingHash,
+  type FixedPricePayDemProtocolBinding,
+} from "./fixedPricePayDemProtocol.js";
+import {
   captureFixedPriceX402ProtocolBinding,
   fixedPriceX402ProtocolBindingHash,
   type FixedPriceX402ProtocolBinding,
 } from "./fixedPriceX402Protocol.js";
+
+export type PaymentEvidenceProtocolBinding =
+  | FixedPriceX402ProtocolBinding
+  | FixedPricePayDemProtocolBinding;
 
 export const PAYMENT_EVIDENCE_HANDSHAKE_STORE_VERSION = 3 as const;
 
@@ -47,7 +56,7 @@ export interface PaymentEvidenceAnchorRequest {
   seller: string;
   buyer: string;
   protocolHash: string;
-  protocol: Readonly<FixedPriceX402ProtocolBinding>;
+  protocol: Readonly<PaymentEvidenceProtocolBinding>;
   logicalAddress: string;
   evidenceHash: string;
   evidence: Readonly<SettlementEvidence>;
@@ -348,7 +357,7 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
   store: PaymentEvidenceHandshakeStore;
   seller: string;
   buyer: string;
-  protocol: Readonly<FixedPriceX402ProtocolBinding>;
+  protocol: Readonly<PaymentEvidenceProtocolBinding>;
   workerId: string;
   authenticateRequest(
     request: Readonly<PaymentEvidenceAnchorRequest>,
@@ -404,7 +413,7 @@ export interface SellerPaymentEvidenceHandshakeOptions {
   seller: string;
   buyer: string;
   workerId: string;
-  protocol: Readonly<FixedPriceX402ProtocolBinding>;
+  protocol: Readonly<PaymentEvidenceProtocolBinding>;
   authenticateCompletion(
     completion: Readonly<PaymentEvidenceAnchorCompletion>,
     transportContext: unknown,
@@ -658,17 +667,42 @@ function requestMatchesScope(
     request.protocolHash === scope.protocolHash;
 }
 
+function capturePaymentEvidenceProtocol(
+  value: unknown,
+): PaymentEvidenceProtocolBinding {
+  if (!plainRecord(value)) throw new DacsError("payment-evidence protocol is malformed");
+  return value.phase === "pay-dem"
+    ? captureFixedPricePayDemProtocolBinding(value)
+    : captureFixedPriceX402ProtocolBinding(value);
+}
+
+function paymentEvidenceProtocolHash(
+  protocol: Readonly<PaymentEvidenceProtocolBinding>,
+): string {
+  return protocol.phase === "pay-dem"
+    ? fixedPricePayDemProtocolBindingHash(protocol)
+    : fixedPriceX402ProtocolBindingHash(protocol);
+}
+
 function x402ChainId(protocol: Readonly<FixedPriceX402ProtocolBinding>): number {
   return Number(protocol.rail.network.slice("eip155:".length));
 }
 
-function supportedX402Evidence(
+function supportedPaymentEvidence(
   value: SettlementEvidence,
-  protocol: Readonly<FixedPriceX402ProtocolBinding>,
+  protocol: Readonly<PaymentEvidenceProtocolBinding>,
 ): boolean {
-  if (value.phase !== "pay-x402" ||
+  if (value.phase !== protocol.phase ||
       !sameCanonicalClaimIdentity(value.signature.signer, protocol.orchestrator)) return false;
   const refs = value.paymentTxRefs ?? [];
+  if (protocol.phase === "pay-dem") {
+    if (value.outcome === "success") {
+      return refs.length === 1 && refs[0]?.kind === "demos" &&
+        "paymentAmount" in value && value.paymentAmount.currency === "DEM" &&
+        "settlementFinality" in value && value.settlementFinality.model === "bft-final";
+    }
+    return refs.every((ref) => ref.kind === "demos");
+  }
   if (value.outcome === "success") {
     return refs.length === 1 && refs[0]?.kind === "x402-event" &&
       refs[0].chainId === x402ChainId(protocol) && refs[0].protocolVersion === "2" &&
@@ -723,15 +757,15 @@ export function isPaymentEvidenceAnchorRequest(
       ) || value.expectedWriter.role !== "buyer" ||
       !isCanonicalClaimReference(value.expectedWriter.primaryClaim) ||
       !sameCanonicalClaimIdentity(value.expectedWriter.primaryClaim, value.buyer)) return false;
-  let protocol: FixedPriceX402ProtocolBinding;
+  let protocol: PaymentEvidenceProtocolBinding;
   try {
-    protocol = captureFixedPriceX402ProtocolBinding(value.protocol);
+    protocol = capturePaymentEvidenceProtocol(value.protocol);
   } catch {
     return false;
   }
   if (!sameCanonicalClaimIdentity(protocol.orchestrator, value.seller) ||
-      fixedPriceX402ProtocolBindingHash(protocol) !== value.protocolHash ||
-      !supportedX402Evidence(value.evidence, protocol) ||
+      paymentEvidenceProtocolHash(protocol) !== value.protocolHash ||
+      !supportedPaymentEvidence(value.evidence, protocol) ||
       !exactPaymentEvidenceAddress(value.logicalAddress, value.jobId, protocol.rail.railId)) {
     return false;
   }
@@ -744,7 +778,7 @@ export function isPaymentEvidenceAnchorRequest(
 export function createPaymentEvidenceAnchorRequest(input: Readonly<{
   seller: string;
   buyer: string;
-  protocol: Readonly<FixedPriceX402ProtocolBinding>;
+  protocol: Readonly<PaymentEvidenceProtocolBinding>;
   effectId: string;
   logicalAddress: string;
   evidenceHash: string;
@@ -752,9 +786,9 @@ export function createPaymentEvidenceAnchorRequest(input: Readonly<{
   expectedWriter: Readonly<SellerSessionSettlementAnchorWriter>;
 }>): PaymentEvidenceAnchorRequest {
   const captured = ownClone(input, "payment-evidence anchor request input");
-  let protocol: FixedPriceX402ProtocolBinding;
+  let protocol: PaymentEvidenceProtocolBinding;
   try {
-    protocol = captureFixedPriceX402ProtocolBinding(captured.protocol);
+    protocol = capturePaymentEvidenceProtocol(captured.protocol);
   } catch {
     throw new DacsError("payment-evidence anchor request protocol is unsupported");
   }
@@ -765,7 +799,7 @@ export function createPaymentEvidenceAnchorRequest(input: Readonly<{
       !nonEmpty(captured.effectId) || !nonEmpty(captured.logicalAddress) ||
       typeof captured.evidenceHash !== "string" || !HASH_RE.test(captured.evidenceHash) ||
       !isSettlementEvidence(captured.evidence) ||
-      !supportedX402Evidence(captured.evidence, protocol) ||
+      !supportedPaymentEvidence(captured.evidence, protocol) ||
       !plainRecord(captured.expectedWriter) || !exactKeys(
         captured.expectedWriter,
         ["role", "primaryClaim"],
@@ -781,7 +815,7 @@ export function createPaymentEvidenceAnchorRequest(input: Readonly<{
     effectId: captured.effectId,
     seller: captured.seller,
     buyer: captured.buyer,
-    protocolHash: fixedPriceX402ProtocolBindingHash(protocol),
+    protocolHash: paymentEvidenceProtocolHash(protocol),
     protocol,
     logicalAddress: captured.logicalAddress,
     evidenceHash: captured.evidenceHash,
@@ -1900,14 +1934,14 @@ export function createBuyerPaymentEvidenceHandshake(
   const store = requireStore(options.store);
   const seller = options.seller;
   const buyer = options.buyer;
-  const protocol = captureFixedPriceX402ProtocolBinding(options.protocol);
+  const protocol = capturePaymentEvidenceProtocol(options.protocol);
   if (!sameCanonicalClaimIdentity(protocol.orchestrator, seller)) {
     throw new DacsError("buyer handshake requires the pinned seller-orchestrator topology");
   }
   const scope: PaymentEvidenceHandshakeScope = {
     seller,
     buyer,
-    protocolHash: fixedPriceX402ProtocolBindingHash(protocol),
+    protocolHash: paymentEvidenceProtocolHash(protocol),
   };
   const scopeHash = paymentEvidenceHandshakeScopeHash(scope);
   const workerId = options.workerId;
@@ -2452,14 +2486,14 @@ export function createSellerPaymentEvidenceHandshake(
   const seller = options.seller;
   const buyer = options.buyer;
   const workerId = options.workerId;
-  const protocol = captureFixedPriceX402ProtocolBinding(options.protocol);
+  const protocol = capturePaymentEvidenceProtocol(options.protocol);
   if (!sameCanonicalClaimIdentity(protocol.orchestrator, seller)) {
     throw new DacsError("seller handshake requires the pinned seller-orchestrator topology");
   }
   const scope: PaymentEvidenceHandshakeScope = {
     seller,
     buyer,
-    protocolHash: fixedPriceX402ProtocolBindingHash(protocol),
+    protocolHash: paymentEvidenceProtocolHash(protocol),
   };
   const scopeHash = paymentEvidenceHandshakeScopeHash(scope);
   const authenticateCompletion = options.authenticateCompletion;

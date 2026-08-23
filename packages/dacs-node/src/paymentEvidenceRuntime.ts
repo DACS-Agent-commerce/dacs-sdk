@@ -7,6 +7,7 @@ import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonica
 import {
   createBuyerPaymentEvidenceHandshake,
   createSellerPaymentEvidenceHandshake,
+  fixedPricePayDemProtocolBindingHash,
   fixedPriceX402ProtocolBindingHash,
   isPaymentEvidenceAnchorCompletion,
   isPaymentEvidenceAnchorRequest,
@@ -14,6 +15,8 @@ import {
   type BuyerPaymentEvidenceHandshake,
   type BuyerPaymentEvidenceHandshakeOptions,
   type FixedPriceX402OrderRecord,
+  type FixedPricePayDemOrderRecord,
+  type FixedPricePayDemTrackOperation,
   type FixedPriceX402TrackOperation,
   type FixedPriceX402TrackOperationInput,
   type PaymentEvidenceAnchorCompletion,
@@ -25,6 +28,8 @@ import {
 import type { SellerSessionSettlementAnchorResult } from "@kynesyslabs/dacs/seller";
 
 import {
+  type DacsLiveOrderRecordV1,
+  type DacsLiveTrackOperationInputV1,
   loadDacsLiveOrderInputForTrackV1,
 } from "./orderInput.js";
 import type {
@@ -89,6 +94,11 @@ export interface DacsBuyerPaymentEvidenceRuntimeV1 {
   ): Promise<DacsHttpInboundDispositionV1>;
 }
 
+export interface DacsPayDemBuyerPaymentEvidenceRuntimeV1
+  extends Omit<DacsBuyerPaymentEvidenceRuntimeV1, "operation"> {
+  readonly operation: FixedPricePayDemTrackOperation;
+}
+
 export interface DacsSellerPaymentEvidenceRuntimeV1 {
   readonly validatePayload: DacsHttpPayloadValidatorV1;
   anchorEvidence(
@@ -148,7 +158,7 @@ function retryAt(
 }
 
 function operationBound(
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
   role: "buyer" | "seller",
 ): boolean {
   return operation.fence.role === role && operation.fence.track === "payment-evidence" &&
@@ -166,12 +176,24 @@ function requestBindingId(input: Readonly<{
   return sha256Hex(`${REQUEST_BINDING_DOMAIN}${canonicalize(input)}`);
 }
 
-function requestBindingIdFromOrder(order: Readonly<FixedPriceX402OrderRecord>): string {
+function orderProtocolHash(
+  order: Readonly<Pick<DacsLiveOrderRecordV1, "protocol">>,
+): string {
+  return order.protocol.phase === "pay-dem"
+    ? fixedPricePayDemProtocolBindingHash(
+        order.protocol as FixedPricePayDemOrderRecord["protocol"],
+      )
+    : fixedPriceX402ProtocolBindingHash(
+        order.protocol as FixedPriceX402OrderRecord["protocol"],
+      );
+}
+
+function requestBindingIdFromOrder(order: Readonly<DacsLiveOrderRecordV1>): string {
   return requestBindingId({
     jobId: order.jobId,
     buyer: order.buyer,
     seller: order.seller,
-    protocolHash: fixedPriceX402ProtocolBindingHash(order.protocol),
+    protocolHash: orderProtocolHash(order),
   });
 }
 
@@ -187,33 +209,41 @@ function requestBindingIdFromRequest(request: Readonly<PaymentEvidenceAnchorRequ
 async function loadOrder(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   jobId: string,
-): Promise<Readonly<FixedPriceX402OrderRecord> | undefined> {
-  const loaded = await context.database.createLiveCoordinatorStore(context.role)
-    .load(context.role, jobId);
-  if (loaded.status === "missing") return undefined;
-  if (loaded.status !== "ok") {
+): Promise<Readonly<DacsLiveOrderRecordV1> | undefined> {
+  const [x402, payDem] = await Promise.all([
+    context.database.createLiveCoordinatorStore(context.role).load(context.role, jobId),
+    context.database.createPayDemCoordinatorStore(context.role).load(context.role, jobId),
+  ]);
+  if (x402.status === "ok" && payDem.status === "ok") {
+    throw new DacsPaymentEvidenceRuntimeError("payment-evidence-order-profile-conflict");
+  }
+  const loaded = x402.status === "ok" ? x402 : payDem.status === "ok" ? payDem : undefined;
+  if (loaded === undefined && x402.status === "missing" && payDem.status === "missing") {
+    return undefined;
+  }
+  if (loaded === undefined) {
     throw new DacsPaymentEvidenceRuntimeError("payment-evidence-order-state-invalid");
   }
-  return loaded.record;
+  return loaded.record as DacsLiveOrderRecordV1;
 }
 
 function requestMatchesOrder(
   request: Readonly<PaymentEvidenceAnchorRequest>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
 ): boolean {
   return request.jobId === order.jobId && request.buyer === order.buyer &&
     request.seller === order.seller &&
-    request.protocolHash === fixedPriceX402ProtocolBindingHash(order.protocol) &&
+    request.protocolHash === orderProtocolHash(order) &&
     canonicalize(request.protocol) === canonicalize(order.protocol);
 }
 
 function completionMatchesOrder(
   completion: Readonly<PaymentEvidenceAnchorCompletion>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
 ): boolean {
   return completion.jobId === order.jobId && completion.buyer === order.buyer &&
     completion.seller === order.seller &&
-    completion.protocolHash === fixedPriceX402ProtocolBindingHash(order.protocol);
+    completion.protocolHash === orderProtocolHash(order);
 }
 
 function acceptedAcknowledgement(
@@ -390,6 +420,26 @@ export function createDacsBuyerDemosPaymentEvidenceRuntimeV1(
   });
 }
 
+/** Native wrapper over the all-rail PC-7 handshake and Demos anchor worker. */
+export function createDacsPayDemBuyerDemosPaymentEvidenceRuntimeV1(
+  options: Readonly<DacsBuyerDemosPaymentEvidenceRuntimeOptionsV1>,
+): Readonly<DacsPayDemBuyerPaymentEvidenceRuntimeV1> {
+  const runtime = createDacsBuyerDemosPaymentEvidenceRuntimeV1(options);
+  return Object.freeze({
+    validatePayload: runtime.validatePayload,
+    handleMessage: runtime.handleMessage,
+    operation: (async (operation) => {
+      if (operation.order.protocol.phase !== "pay-dem") {
+        return Object.freeze({
+          status: "operator-action" as const,
+          reasonCode: "buyer-payment-evidence-rail-mismatch",
+        });
+      }
+      return runtime.operation(operation as unknown as FixedPriceX402TrackOperationInput);
+    }) satisfies FixedPricePayDemTrackOperation,
+  });
+}
+
 async function releaseBuyerCompletion(
   handshake: Readonly<BuyerPaymentEvidenceHandshake>,
   claim: Awaited<ReturnType<BuyerPaymentEvidenceHandshake["claimOutboundCompletions"]>>["items"][number],
@@ -419,7 +469,7 @@ export function createDacsBuyerPaymentEvidenceRuntimeV1(
   const retryDelayMs = timing(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS);
 
   const createHandshake = (
-    order: Pick<FixedPriceX402OrderRecord, "seller" | "buyer" | "protocol">,
+    order: Pick<DacsLiveOrderRecordV1, "seller" | "buyer" | "protocol">,
     verifyEvidence: BuyerPaymentEvidenceHandshakeOptions["verifyEvidence"] =
       options.verifyEvidence,
   ): Readonly<BuyerPaymentEvidenceHandshake> => createBuyerPaymentEvidenceHandshake({
@@ -547,7 +597,7 @@ export function createDacsBuyerPaymentEvidenceRuntimeV1(
         paymentEvidenceHandshakeScopeHash({
           seller: order.seller,
           buyer: order.buyer,
-          protocolHash: fixedPriceX402ProtocolBindingHash(order.protocol),
+          protocolHash: orderProtocolHash(order),
         }),
       );
       if (loaded.status !== "ok") throw new Error();
@@ -683,7 +733,7 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
   });
 
   const createHandshake = (
-    order: Pick<FixedPriceX402OrderRecord, "seller" | "buyer" | "protocol">,
+    order: Pick<DacsLiveOrderRecordV1, "seller" | "buyer" | "protocol">,
     receiptVerifier: SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"] =
       verifyAnchorReceipt,
   ): Readonly<SellerPaymentEvidenceHandshake> => createSellerPaymentEvidenceHandshake({
@@ -827,7 +877,7 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
         paymentEvidenceHandshakeScopeHash({
           seller: order.seller,
           buyer: order.buyer,
-          protocolHash: fixedPriceX402ProtocolBindingHash(order.protocol),
+          protocolHash: orderProtocolHash(order),
         }),
       );
       if (loaded.status === "missing") {
