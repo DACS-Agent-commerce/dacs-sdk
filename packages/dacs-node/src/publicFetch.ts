@@ -102,6 +102,10 @@ function pinnedRequest(
     }, (response) => {
       const chunks: Buffer[] = [];
       let total = 0;
+      response.once("aborted", () => reject(
+        new DacsPublicHttpsFetchError("public-fetch-response-aborted"),
+      ));
+      response.once("error", reject);
       response.on("data", (chunk: Buffer | string) => {
         const bytes = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
         total += bytes.byteLength;
