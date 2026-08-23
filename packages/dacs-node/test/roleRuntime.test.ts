@@ -57,6 +57,23 @@ describe("complete role-owned live runtime", () => {
     };
   }
 
+  function payDemConfig(directory: string, role: "buyer" | "seller" = "buyer") {
+    const value = config(directory, role);
+    return {
+      ...value,
+      rail: {
+        ...value.rail,
+        requestedNetwork: "demos",
+        enabledProfiles: ["pay-dem"] as const,
+      },
+      limits: {
+        ...value.limits,
+        maxServiceAmount: { asset: "DEM", amount: "1" },
+        maxEvmNetworkFeeEth: "0",
+      },
+    };
+  }
+
   function adapter(
     publicKey = PUBLIC_KEY,
     privateKey = PRIVATE_KEY,
@@ -165,6 +182,35 @@ describe("complete role-owned live runtime", () => {
     })).rejects.toBeInstanceOf(TypeError);
   });
 
+  it("opens a native DEM role without an EVM key, RPC, or x402 store", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    const runtime = await createDacsLiveRoleRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-pay-dem-worker",
+      demosIdentityFilePath: secretPath,
+      createDemosAdapter: async () => adapter(),
+      createPayDemOperations: () => Object.freeze({}),
+      validatePayload: () => Object.freeze({ status: "valid" as const }),
+      handleMessage: () => Object.freeze({ disposition: "accepted" as const }),
+      server: { hostname: "127.0.0.1", port: 0 },
+    });
+    try {
+      expect(runtime.evm).toBeUndefined();
+      expect(runtime.service.coordinator.profiles).toEqual(["pay-dem"]);
+      expect(runtime.commerceStores).toEqual({ role: "buyer" });
+      await runtime.start();
+      expect(runtime.service.endpoint).toEqual(expect.any(String));
+    } finally {
+      await runtime.stop();
+    }
+  });
+
   it("rejects a partial async commerce graph before service creation", async () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");
@@ -247,9 +293,10 @@ describe("complete role-owned live runtime", () => {
       role: "buyer",
       address: expect.stringMatching(/^0x[0-9A-Fa-f]{40}$/),
     });
-    expect(runtime.evm.role === "buyer" && runtime.evm.runtime.destroyed).toBe(false);
+    const buyerEvm = runtime.evm;
+    expect(buyerEvm?.role === "buyer" && buyerEvm.runtime.destroyed).toBe(false);
     if (runtime.commerceStores.role === "buyer") {
-      await expect(runtime.commerceStores.x402Settlement.load("missing"))
+      await expect(runtime.commerceStores.x402Settlement!.load("missing"))
         .resolves.toMatchObject({ status: "absent" });
     }
     await runtime.start();
@@ -272,7 +319,7 @@ describe("complete role-owned live runtime", () => {
       coordinator: runtime.service.coordinator,
     });
     await runtime.stop();
-    expect(runtime.evm.role === "buyer" && runtime.evm.runtime.destroyed).toBe(true);
+    expect(buyerEvm?.role === "buyer" && buyerEvm.runtime.destroyed).toBe(true);
     await expect(runtime.start()).rejects.toMatchObject({ reasonCode: "role-runtime-closed" });
 
     const restarted = await createDacsLiveRoleRuntimeV1({

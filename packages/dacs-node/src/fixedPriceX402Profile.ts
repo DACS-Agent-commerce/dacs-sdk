@@ -1297,6 +1297,10 @@ function paymentPreparation(
   enforceDeadline = true,
 ): Readonly<DacsX402BuyerRuntimePreparationV1> {
   const { context, rail } = options;
+  const evm = context.evm;
+  if (evm?.role !== "buyer") {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-payment-authority-invalid");
+  }
   const application = captureDacsFixedPriceX402ApplicationV1(input.retained.application);
   const publication = context.database.loadEffectInput(
     "artifact-publication",
@@ -1319,7 +1323,7 @@ function paymentPreparation(
         candidate.phaseIndex === selected.phaseIndex)
     : [];
   const payerClaim = `cci-xm:evm:${rail.asset.kind === "erc20" ? rail.asset.chainId : 0}:` +
-    context.evm.address;
+    evm.address;
   const session = loadDacsBuyerSessionAgreementFactsForOrderV1(
     context,
     input.operation.order,
@@ -1377,8 +1381,8 @@ function paymentPreparation(
       canonicalize(commitment.commitment.record.listingRef) !==
         canonicalize(artifact.listingRef) ||
       !session.buyerIdentity.claims.some((claim) => claim.ref === payerClaim) ||
-      context.evm.role !== "buyer" || context.evm.runtime.chainId !== rail.asset.chainId ||
-      context.evm.runtime.network !== input.operation.order.protocol.rail.network ||
+      evm.runtime.chainId !== rail.asset.chainId ||
+      evm.runtime.network !== input.operation.order.protocol.rail.network ||
       (enforceDeadline && context.database.readTime() > artifact.terms.deadline)) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-payment-authority-invalid");
   }
@@ -1416,11 +1420,11 @@ function paymentPreparation(
       termsHash: sha256Hex(canonicalize(artifact.terms)),
       sessionBindingHash: sha256Hex(canonicalize({
         jobId: input.operation.order.jobId,
-        payer: context.evm.address,
+        payer: evm.address,
         commitment: commitment.commitment.logicalAddress,
       })),
       network: input.operation.order.protocol.rail.network,
-      payer: context.evm.address,
+      payer: evm.address,
       payee: selected.payeeAddress,
       asset: rail.asset.contract,
       amount,
@@ -1472,7 +1476,7 @@ function authorizationWithinAgreement(
   const artifact = publication.artifact as unknown as
     DurableAnchoredFixedPriceAgreement["agreement"];
   const evm = options.context.evm;
-  if (evm.role !== "buyer") return false;
+  if (evm?.role !== "buyer") return false;
   if (!/^(0|[1-9][0-9]*)$/.test(authorization.validAfter) ||
       !/^[1-9][0-9]*$/.test(authorization.validBefore)) return false;
   const deadline = BigInt(artifact.terms.deadline);
@@ -1491,7 +1495,7 @@ export function createDacsFixedPriceX402BuyerPaymentPolicyV1(
   rawOptions: Readonly<DacsFixedPriceX402BuyerPaymentPolicyOptionsV1>,
 ): Readonly<DacsFixedPriceX402BuyerPaymentPolicyV1> {
   if (!plainObject(rawOptions) || !plainObject(rawOptions.context) ||
-      rawOptions.context.role !== "buyer" ||
+      rawOptions.context.role !== "buyer" || rawOptions.context.evm?.role !== "buyer" ||
       !isAuthenticatedRailDefinition(rawOptions.rail) ||
       !Number.isSafeInteger(rawOptions.maxTimeoutSeconds) ||
       rawOptions.maxTimeoutSeconds <= 0 || rawOptions.maxTimeoutSeconds > 86_400) {

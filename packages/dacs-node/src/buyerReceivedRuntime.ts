@@ -179,6 +179,7 @@ export function createDacsBuyerReceivedTrackV1(
 ): FixedPriceX402TrackOperation {
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "buyer" || options.context.commerceStores.role !== "buyer" ||
+      options.context.commerceStores.x402Settlement === undefined ||
       typeof options.resolvePaymentScope !== "function" ||
       typeof options.authorizeReceived !== "function" ||
       (options.fetchImpl !== undefined && typeof options.fetchImpl !== "function")) {
@@ -186,7 +187,10 @@ export function createDacsBuyerReceivedTrackV1(
   }
   const context = options.context;
   const stores = context.commerceStores;
-  if (stores.role !== "buyer") throw new TypeError("buyer received runtime options are invalid");
+  if (stores.role !== "buyer" || stores.x402Settlement === undefined) {
+    throw new TypeError("buyer received runtime options are invalid");
+  }
+  const settlementStore = stores.x402Settlement;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new TypeError("buyer received runtime requires fetch");
   const maximum = positiveInteger(options.maxBodyBytes, DEFAULT_MAX_BODY_BYTES, 64 * 1_024 * 1_024);
@@ -216,9 +220,9 @@ export function createDacsBuyerReceivedTrackV1(
       jobId: operation.order.jobId,
       phaseIndex: scope.paymentPhaseIndex,
     });
-    let stored: Awaited<ReturnType<typeof stores.x402Settlement.load>>;
+    let stored: Awaited<ReturnType<typeof settlementStore.load>>;
     try {
-      stored = await stores.x402Settlement.load(settlementKey);
+      stored = await settlementStore.load(settlementKey);
     } catch {
       return Object.freeze({
         status: "pending-retry" as const,

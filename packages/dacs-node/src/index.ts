@@ -42,6 +42,7 @@ export * from "./listingSetup.js";
 export * from "./listingDiscovery.js";
 export * from "./purchaseQueue.js";
 export * from "./messageRouter.js";
+export * from "./multirailCoordinator.js";
 export * from "./offline.js";
 export * from "./offlineLifecycle.js";
 export * from "./railRegistry.js";

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createDacsNodeOfflineProtocolBinding,
+  dacsLiveRailProfiles,
   DACS_NODE_LIVE_PROFILE,
   DACS_NODE_OFFLINE_PROFILE,
   validateDacsAgentConfig,
@@ -73,6 +74,66 @@ describe("DACS node configuration", () => {
     expect(Object.isFrozen(admitted.rail)).toBe(true);
     expect(Object.isFrozen(admitted.limits)).toBe(true);
     expect(Object.isFrozen(admitted.limits.maxServiceAmount)).toBe(true);
+  });
+
+  it.each([
+    ["native DEM", ["pay-dem"]],
+    ["x402", ["x402"]],
+    ["both rails", ["pay-dem", "x402"]],
+  ] as const)("admits and freezes the explicit %s profile selection", (_, enabledProfiles) => {
+    const admitted = validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      dataDirectory: "./data",
+      demos: { rpcUrl: "https://rpc.example" },
+      rail: {
+        registryIndexRef: "index",
+        requestedNetwork: "network",
+        enabledProfiles,
+      },
+      limits,
+    });
+    if (admitted.mode !== "live-demos") throw new Error("expected live configuration");
+
+    expect(dacsLiveRailProfiles(admitted)).toEqual(enabledProfiles);
+    expect(Object.isFrozen(admitted.rail.enabledProfiles)).toBe(true);
+  });
+
+  it("defaults pre-multirail live configurations to x402", () => {
+    const admitted = validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      dataDirectory: "./data",
+      demos: { rpcUrl: "https://rpc.example" },
+      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      limits,
+    });
+    if (admitted.mode !== "live-demos") throw new Error("expected live configuration");
+
+    expect(dacsLiveRailProfiles(admitted)).toEqual(["x402"]);
+    expect(Object.isFrozen(dacsLiveRailProfiles(admitted))).toBe(true);
+  });
+
+  it.each([
+    { enabledProfiles: [] },
+    { enabledProfiles: ["x402", "pay-dem"] },
+    { enabledProfiles: ["pay-dem", "pay-dem"] },
+    { enabledProfiles: ["x402", "x402"] },
+    { enabledProfiles: ["unknown"] },
+  ])("rejects ambiguous or unsupported live rail profile selection: $enabledProfiles", ({
+    enabledProfiles,
+  }) => {
+    expect(() => validateDacsAgentConfig({
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      dataDirectory: "./data",
+      demos: { rpcUrl: "https://rpc.example" },
+      rail: { registryIndexRef: "index", requestedNetwork: "network", enabledProfiles },
+      limits,
+    })).toThrow();
   });
 
   it.each([

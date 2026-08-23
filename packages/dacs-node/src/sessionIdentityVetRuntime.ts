@@ -283,18 +283,17 @@ export async function createDacsX402SessionIdentityV1(input: Readonly<{
   if (input.context.role === "seller") {
     return createDacsSingleClaimSessionIdentityV1(input);
   }
-  if (input.context.evm.role !== "buyer" ||
-      input.context.evm.runtime.network !== input.context.config.rail.requestedNetwork ||
-      input.context.evm.runtime.payerAddress.toLowerCase() !==
-        input.context.evm.address.toLowerCase()) {
+  const evm = input.context.evm;
+  if (evm?.role !== "buyer" ||
+      evm.runtime.network !== input.context.config.rail.requestedNetwork ||
+      evm.runtime.payerAddress.toLowerCase() !== evm.address.toLowerCase()) {
     throw new DacsSessionIdentityVetRuntimeError("session-identity-evm-authority-invalid");
   }
   const authority = input.context.authority;
   if (canonicalDemosAgentPublicKey(authority) === null) {
     throw new DacsSessionIdentityVetRuntimeError("session-identity-authority-invalid");
   }
-  const evmClaim = `cci-xm:evm:${input.context.evm.runtime.chainId}:` +
-    input.context.evm.address;
+  const evmClaim = `cci-xm:evm:${evm.runtime.chainId}:` + evm.address;
   const bundle: IdentityBundle = {
     bundleVersion: "1",
     presentedBy: authority,
@@ -315,7 +314,7 @@ export async function createDacsX402SessionIdentityV1(input: Readonly<{
       signedBytes("dacs-bundle-presentation:v1:", bundleHash),
       { algorithm: "ed25519", signer: authority },
     ),
-    input.context.evm.runtime.signIdentityPresentation(bundleHash),
+    evm.runtime.signIdentityPresentation(bundleHash),
   ]);
   if (bundle.presentation.kind !== "per-claim") throw new Error();
   bundle.presentation.signatures[0]!.signature = demosSignature instanceof Uint8Array

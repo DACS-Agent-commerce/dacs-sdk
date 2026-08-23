@@ -334,7 +334,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
   options: Readonly<DacsFixedPriceX402BuyerAuditOptionsV1>,
 ): Readonly<DacsFixedPriceX402BuyerAuditV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
-      options.context.role !== "buyer" || options.context.evm.role !== "buyer" ||
+      options.context.role !== "buyer" || options.context.evm?.role !== "buyer" ||
       getAuthenticatedRailProvenance(options.rail) === null ||
       typeof options.evmRpcUrl !== "string" || options.evmRpcUrl.length === 0 ||
       !Number.isSafeInteger(options.authorizationSearchFromBlock) ||
@@ -344,6 +344,10 @@ export function createDacsFixedPriceX402BuyerAuditV1(
     throw new TypeError("fixed-price buyer audit options are invalid");
   }
   const context = options.context;
+  const evm = context.evm;
+  if (evm?.role !== "buyer") {
+    throw new TypeError("fixed-price buyer audit options are invalid");
+  }
   const leaseTtlMs = timing(options.leaseTtlMs);
   const rail = options.rail;
   const provenance = getAuthenticatedRailProvenance(rail)!;
@@ -546,7 +550,7 @@ export function createDacsFixedPriceX402BuyerAuditV1(
         observation.txHash.toLowerCase() !== `0x${event.settlementTxHash}` ||
         observation.logIndex !== event.logIndex ||
         observation.includedAt > paymentEvidence.observedAt ||
-        observation.payer.toLowerCase() !== context.evm.address.toLowerCase() ||
+        observation.payer.toLowerCase() !== evm.address.toLowerCase() ||
         observation.asset.contract.toLowerCase() !== asset.contract.toLowerCase() ||
         observation.amountBaseUnits !== expectedAmountBaseUnits ||
         observation.sessionBinding.kind !== "eip3009" ||

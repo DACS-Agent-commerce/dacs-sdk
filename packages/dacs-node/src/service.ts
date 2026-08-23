@@ -2,12 +2,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
+  createFixedPricePayDemBuyerCoordinator,
+  createFixedPricePayDemSellerCoordinator,
   createFixedPriceX402BuyerCoordinator,
   createFixedPriceX402SellerCoordinator,
-  type FixedPriceX402CommerceCoordinator,
+  type FixedPricePayDemOperations,
   type FixedPriceX402Operations,
-  type FixedPriceX402OrderInput,
-  type FixedPriceX402OrderStatus,
 } from "@kynesyslabs/dacs/commerce";
 import {
   parseCanonicalClaimReference,
@@ -28,6 +28,12 @@ import type {
   DacsNodeReadinessStatus,
 } from "./events.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
+import {
+  createDacsLiveMultirailCoordinatorV1,
+  type DacsLiveCommerceOrderInputV1,
+  type DacsLiveCommerceOrderStatusV1,
+  type DacsLiveMultirailCoordinatorV1,
+} from "./multirailCoordinator.js";
 import {
   DACS_HTTP_MAX_ENVELOPE_LIFETIME_MS,
   createDacsHttpEnvelopeV1,
@@ -144,7 +150,7 @@ export interface DacsLiveRoleRuntimeContextV1 {
 
 export interface DacsLiveRoleInboundContextV1
   extends DacsLiveRoleRuntimeContextV1 {
-  readonly coordinator: FixedPriceX402CommerceCoordinator;
+  readonly coordinator: DacsLiveMultirailCoordinatorV1;
 }
 
 export type DacsLiveRoleApplicationRequestHandlerV1 = (
@@ -172,9 +178,12 @@ export interface DacsLiveRoleServiceOptionsV1 {
   resolveIdentity: DacsHttpIdentityResolverV1;
   validatePayload: DacsHttpPayloadValidatorV1;
   signTransportEnvelope: DacsHttpEnvelopeSigner;
-  createOperations(
+  createOperations?(
     context: Readonly<DacsLiveRoleRuntimeContextV1>,
   ): Readonly<FixedPriceX402Operations>;
+  createPayDemOperations?(
+    context: Readonly<DacsLiveRoleRuntimeContextV1>,
+  ): Readonly<FixedPricePayDemOperations>;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundContextV1>,
@@ -219,11 +228,12 @@ export interface DacsLiveRoleServiceV1 {
   readonly authority: string;
   readonly peerAuthority: string;
   readonly endpoint: string | undefined;
-  readonly coordinator: FixedPriceX402CommerceCoordinator;
+  readonly coordinator: DacsLiveMultirailCoordinatorV1;
   start(): Promise<void>;
   stop(): Promise<void>;
-  startOrder(order: Readonly<FixedPriceX402OrderInput>): Promise<FixedPriceX402OrderStatus>;
-  getOrderStatus(jobId: string): Promise<FixedPriceX402OrderStatus | null>;
+  startOrder(order: Readonly<DacsLiveCommerceOrderInputV1>):
+    Promise<DacsLiveCommerceOrderStatusV1>;
+  getOrderStatus(jobId: string): Promise<DacsLiveCommerceOrderStatusV1 | null>;
   queueMessage<Type extends DacsLiveOutboundMessageType>(
     input: Readonly<DacsLiveRoleSendInputV1<Type>>,
   ): Promise<Readonly<DacsHttpEnvelopeFor<Type>>>;
@@ -345,9 +355,10 @@ function captureServiceOptions(
     "resolveIdentity",
     "validatePayload",
     "signTransportEnvelope",
-    "createOperations",
     "handleMessage",
   ], [
+    "createOperations",
+    "createPayDemOperations",
     "handleApplicationRequest",
     "handlePublicRequest",
     "commerceAvailability",
@@ -603,7 +614,12 @@ export function createDacsLiveRoleServiceV1(
       typeof options.resolveIdentity !== "function" ||
       typeof options.validatePayload !== "function" ||
       typeof options.signTransportEnvelope !== "function" ||
-      typeof options.createOperations !== "function" ||
+      (options.createOperations !== undefined &&
+        typeof options.createOperations !== "function") ||
+      (options.createPayDemOperations !== undefined &&
+        typeof options.createPayDemOperations !== "function") ||
+      (options.createOperations === undefined &&
+        options.createPayDemOperations === undefined) ||
       typeof options.handleMessage !== "function" ||
       (options.handleApplicationRequest !== undefined &&
         typeof options.handleApplicationRequest !== "function") ||
@@ -644,7 +660,12 @@ export function createDacsLiveRoleServiceV1(
     return validatePayload(input);
   };
   const signTransportEnvelope = bindCallback(options.signTransportEnvelope, options);
-  const createOperations = bindCallback(options.createOperations, options);
+  const createOperations = options.createOperations === undefined
+    ? undefined
+    : bindCallback(options.createOperations, options);
+  const createPayDemOperations = options.createPayDemOperations === undefined
+    ? undefined
+    : bindCallback(options.createPayDemOperations, options);
   const handleMessage = bindCallback(options.handleMessage, options);
   const handleApplicationRequest = options.handleApplicationRequest === undefined
     ? undefined
@@ -935,21 +956,49 @@ export function createDacsLiveRoleServiceV1(
     queueMessage,
     sendMessage,
   });
-  const coordinatorOperations = createOperations(runtimeContext);
-  const coordinatorStore = database.createLiveCoordinatorStore(role);
-  const coordinator = role === "buyer"
-    ? createFixedPriceX402BuyerCoordinator({
-        store: coordinatorStore,
-        workerId,
-        operations: coordinatorOperations,
-        leaseDurationMs: coordinatorLeaseDurationMs,
-      })
-    : createFixedPriceX402SellerCoordinator({
-        store: coordinatorStore,
-        workerId,
-        operations: coordinatorOperations,
-        leaseDurationMs: coordinatorLeaseDurationMs,
-      });
+  const x402Operations = createOperations?.(runtimeContext);
+  const payDemOperations = createPayDemOperations?.(runtimeContext);
+  const x402CoordinatorStore = x402Operations === undefined
+    ? undefined
+    : database.createLiveCoordinatorStore(role);
+  const payDemCoordinatorStore = payDemOperations === undefined
+    ? undefined
+    : database.createPayDemCoordinatorStore(role);
+  const x402Coordinator = x402Operations === undefined
+    ? undefined
+    : role === "buyer"
+      ? createFixedPriceX402BuyerCoordinator({
+          store: x402CoordinatorStore!,
+          workerId,
+          operations: x402Operations,
+          leaseDurationMs: coordinatorLeaseDurationMs,
+        })
+      : createFixedPriceX402SellerCoordinator({
+          store: x402CoordinatorStore!,
+          workerId,
+          operations: x402Operations,
+          leaseDurationMs: coordinatorLeaseDurationMs,
+        });
+  const payDemCoordinator = payDemOperations === undefined
+    ? undefined
+    : role === "buyer"
+      ? createFixedPricePayDemBuyerCoordinator({
+          store: payDemCoordinatorStore!,
+          workerId,
+          operations: payDemOperations,
+          leaseDurationMs: coordinatorLeaseDurationMs,
+        })
+      : createFixedPricePayDemSellerCoordinator({
+          store: payDemCoordinatorStore!,
+          workerId,
+          operations: payDemOperations,
+          leaseDurationMs: coordinatorLeaseDurationMs,
+        });
+  const coordinator = createDacsLiveMultirailCoordinatorV1({
+    role,
+    ...(x402Coordinator === undefined ? {} : { x402: x402Coordinator }),
+    ...(payDemCoordinator === undefined ? {} : { payDem: payDemCoordinator }),
+  });
   const inboundContext: Readonly<DacsLiveRoleInboundContextV1> = Object.freeze({
     ...runtimeContext,
     coordinator,
@@ -1147,17 +1196,41 @@ export function createDacsLiveRoleServiceV1(
         outbox.list({ limit: 1, state: "pending" }).then((page) => page.items.length > 0),
         outbox.list({ limit: 1, state: "operator-action" })
           .then((page) => page.items.length > 0),
-        coordinatorStore.listRunnable({
-          role,
-          tracks: COORDINATOR_TRACKS_BY_ROLE[role],
-          limit: workerBatchSize,
-        }),
+        Promise.all([
+          ...(x402Operations === undefined ? [] : [
+            x402CoordinatorStore!.listRunnable({
+              role,
+              tracks: COORDINATOR_TRACKS_BY_ROLE[role],
+              limit: workerBatchSize,
+            }).then((page) => ({
+              count: page.items.length,
+              truncated: page.nextCursor !== undefined,
+            })),
+          ]),
+          ...(payDemOperations === undefined ? [] : [
+            payDemCoordinatorStore!.listRunnable({
+              role,
+              tracks: COORDINATOR_TRACKS_BY_ROLE[role],
+              limit: workerBatchSize,
+            }).then((page) => ({
+              count: page.items.length,
+              truncated: page.nextCursor !== undefined,
+            })),
+          ]),
+        ]).then((pages) => ({
+          count: Math.min(
+            pages.reduce((total, page) => total + page.count, 0),
+            workerBatchSize,
+          ),
+          truncated: pages.some((page) => page.truncated) ||
+            pages.reduce((total, page) => total + page.count, 0) > workerBatchSize,
+        })),
       ]);
       inboxPending = pendingInbox;
       outboxPending = pendingOutbox;
       outboxOperatorAction = operatorOutbox;
-      runnableSessions = runnable.items.length;
-      sessionsTruncated = runnable.nextCursor !== undefined;
+      runnableSessions = runnable.count;
+      sessionsTruncated = runnable.truncated;
     } catch {
       lastWorkerReasonCode = "service-status-store-unavailable";
     }
