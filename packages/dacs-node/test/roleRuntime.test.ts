@@ -74,6 +74,32 @@ describe("complete role-owned live runtime", () => {
     };
   }
 
+  function bothConfig(directory: string, role: "buyer" | "seller" = "buyer") {
+    const value = config(directory, role);
+    return {
+      ...value,
+      rail: {
+        ...value.rail,
+        enabledProfiles: ["pay-dem", "x402"] as const,
+      },
+    };
+  }
+
+  function buyerOperations() {
+    const pending = vi.fn(async () => ({
+      status: "pending-retry" as const,
+      reasonCode: "fixture-pending",
+      retryAt: 1,
+    }));
+    return Object.freeze({
+      agreement: pending,
+      payment: pending,
+      "payment-evidence": pending,
+      "buyer-received": pending,
+      audit: pending,
+    });
+  }
+
   function adapter(
     publicKey = PUBLIC_KEY,
     privateKey = PRIVATE_KEY,
@@ -216,6 +242,87 @@ describe("complete role-owned live runtime", () => {
       expect(runtime.commerceStores).toEqual({ role: "buyer" });
       await runtime.start();
       expect(runtime.service.endpoint).toEqual(expect.any(String));
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it("admits a role-closed native DEM commerce graph", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    const runtime = await createDacsLiveRoleRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-pay-dem-graph-worker",
+      demosIdentityFilePath: secretPath,
+      createDemosAdapter: async () => ({
+        ...adapter(),
+        getAddress: vi.fn(() => wallet),
+      }),
+      createPayDemRail: async () => ({ address: wallet, settle: vi.fn() }),
+      createCommerceGraph: async () => Object.freeze({
+        role: "buyer" as const,
+        availability: Object.freeze({ status: "configured" as const }),
+        payDemOperations: buyerOperations(),
+        validatePayload: vi.fn(() => Object.freeze({ status: "valid" as const })),
+        handleMessage: vi.fn(async () => Object.freeze({
+          disposition: "accepted" as const,
+        })),
+      }),
+      server: { hostname: "127.0.0.1", port: 0 },
+    });
+    try {
+      expect(runtime.service.coordinator.profiles).toEqual(["pay-dem"]);
+      await runtime.start();
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it("admits both complete rail graphs without sharing EVM requirements with DEM-only", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    const evmSecretPath = join(directory, "evm.secret");
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    writeFileSync(evmSecretPath, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
+    const runtime = await createDacsLiveRoleRuntimeV1({
+      config: bothConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-both-graph-worker",
+      demosIdentityFilePath: secretPath,
+      evmPrivateKeyFilePath: evmSecretPath,
+      evmRpcUrl: "http://127.0.0.1:8545",
+      createDemosAdapter: async () => ({
+        ...adapter(),
+        getAddress: vi.fn(() => wallet),
+      }),
+      createPayDemRail: async () => ({ address: wallet, settle: vi.fn() }),
+      createCommerceGraph: async () => Object.freeze({
+        role: "buyer" as const,
+        availability: Object.freeze({ status: "configured" as const }),
+        operations: buyerOperations(),
+        payDemOperations: buyerOperations(),
+        validatePayload: vi.fn(() => Object.freeze({ status: "valid" as const })),
+        handleMessage: vi.fn(async () => Object.freeze({
+          disposition: "accepted" as const,
+        })),
+      }),
+      server: { hostname: "127.0.0.1", port: 0 },
+    });
+    try {
+      expect(runtime.service.coordinator.profiles).toEqual(["x402", "pay-dem"]);
+      expect(runtime.evm?.role).toBe("buyer");
+      expect(runtime.demos.payDem?.rail.address).toBe(wallet);
+      await runtime.start();
     } finally {
       await runtime.stop();
     }

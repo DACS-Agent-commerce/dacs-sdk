@@ -15,7 +15,10 @@ import type {
   FixedPriceX402Operations,
 } from "@kynesyslabs/dacs/commerce";
 
-import { createDacsFixedPriceX402OperationSetV1 } from "./commerceRuntime.js";
+import {
+  createDacsFixedPricePayDemOperationSetV1,
+  createDacsFixedPriceX402OperationSetV1,
+} from "./commerceRuntime.js";
 import {
   DACS_NODE_LIVE_PROFILE,
   dacsLiveRailProfiles,
@@ -54,10 +57,6 @@ import {
   type DacsNodeSqliteDatabase,
 } from "./sqlite.js";
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
-import type {
-  DacsBuyerLiveCommerceGraphV1,
-  DacsSellerLiveCommerceGraphV1,
-} from "./liveCommerceGraph.js";
 import type {
   DacsHttpAuthenticatedEnvelopeV1,
   DacsHttpMessageType,
@@ -130,9 +129,23 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   ) => Promise<DacsNodeSqliteDatabase>;
 }
 
-export type DacsLiveRoleCommerceGraphV1 =
-  | DacsBuyerLiveCommerceGraphV1
-  | DacsSellerLiveCommerceGraphV1;
+export interface DacsLiveRoleCommerceGraphV1 {
+  readonly role: "buyer" | "seller";
+  readonly availability: Readonly<
+    | { status: "configured" }
+    | { status: "blocked"; reasonCode: string }
+  >;
+  /** Complete x402 track set when that rail is enabled. */
+  readonly operations?: Readonly<FixedPriceX402Operations>;
+  /** Complete native DEM track set when that rail is enabled. */
+  readonly payDemOperations?: Readonly<FixedPricePayDemOperations>;
+  readonly validatePayload: DacsHttpPayloadValidatorV1;
+  handleMessage(
+    authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
+    context: Readonly<DacsLiveRoleInboundOperationContextV1>,
+  ): Promise<DacsHttpInboundDispositionV1> | DacsHttpInboundDispositionV1;
+  readonly handleApplicationRequest?: DacsLiveRoleApplicationRequestHandlerV1;
+}
 
 /**
  * Complete actor-local authority available while composing production tracks.
@@ -288,7 +301,6 @@ export async function createDacsLiveRoleRuntimeV1(
   const payDemEnabled = railProfiles.includes("pay-dem");
   if ((x402Enabled && (!nonEmpty(rawOptions.evmPrivateKeyFilePath) ||
         !nonEmpty(rawOptions.evmRpcUrl))) ||
-      (graphMode && (!x402Enabled || payDemEnabled)) ||
       (rawOptions.createOperations !== undefined && !x402Enabled) ||
       (rawOptions.createPayDemOperations !== undefined && !payDemEnabled) ||
       (x402Enabled && !graphMode && rawOptions.createOperations === undefined) ||
@@ -447,6 +459,7 @@ export async function createDacsLiveRoleRuntimeV1(
     let establishedOperationContext: Readonly<DacsLiveRoleOperationContextV1> | undefined;
     let commerceGraph: Readonly<DacsLiveRoleCommerceGraphV1> | undefined;
     let commerceOperations: Readonly<FixedPriceX402Operations> | undefined;
+    let payDemCommerceOperations: Readonly<FixedPricePayDemOperations> | undefined;
     if (graphMode) {
       const deferredQueueMessage: DacsLiveRoleRuntimeContextV1["queueMessage"] =
         (input) => {
@@ -475,21 +488,33 @@ export async function createDacsLiveRoleRuntimeV1(
       }));
       const created = await rawOptions.createCommerceGraph!(establishedOperationContext);
       if (!plainObject(created) || created.role !== role ||
-          !plainObject(created.operations) ||
           typeof created.validatePayload !== "function" ||
           typeof created.handleMessage !== "function" ||
-          (role === "seller" &&
-            (created.role !== "seller" ||
-              typeof created.handleApplicationRequest !== "function"))) {
+          (role === "seller" && x402Enabled &&
+            typeof created.handleApplicationRequest !== "function") ||
+          (x402Enabled !== plainObject(created.operations)) ||
+          (payDemEnabled !== plainObject(created.payDemOperations))) {
         throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
       }
-      try {
-        commerceOperations = createDacsFixedPriceX402OperationSetV1({
-          role,
-          operations: created.operations as Readonly<Record<string, unknown>>,
-        });
-      } catch {
-        throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+      if (x402Enabled) {
+        try {
+          commerceOperations = createDacsFixedPriceX402OperationSetV1({
+            role,
+            operations: created.operations as Readonly<Record<string, unknown>>,
+          });
+        } catch {
+          throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+        }
+      }
+      if (payDemEnabled) {
+        try {
+          payDemCommerceOperations = createDacsFixedPricePayDemOperationSetV1({
+            role,
+            operations: created.payDemOperations as Readonly<Record<string, unknown>>,
+          });
+        } catch {
+          throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+        }
       }
       if (!plainObject(created.availability) ||
           (created.availability.status !== "configured" &&
@@ -527,12 +552,16 @@ export async function createDacsLiveRoleRuntimeV1(
               return rawOptions.createOperations!(establishedOperationContext);
             },
           }),
-      ...(rawOptions.createPayDemOperations === undefined
+      ...((payDemCommerceOperations === undefined &&
+          rawOptions.createPayDemOperations === undefined)
         ? {}
         : {
             createPayDemOperations: (
               context: Readonly<DacsLiveRoleRuntimeContextV1>,
             ) => {
+              if (payDemCommerceOperations !== undefined) {
+                return payDemCommerceOperations;
+              }
               establishedOperationContext = operationContext(context);
               return rawOptions.createPayDemOperations!(establishedOperationContext);
             },
@@ -552,11 +581,11 @@ export async function createDacsLiveRoleRuntimeV1(
         handlePublicRequest: rawOptions.handlePublicRequest,
       }),
       ...((rawOptions.handleApplicationRequest === undefined &&
-          !(commerceGraph?.role === "seller"))
+          commerceGraph?.handleApplicationRequest === undefined)
         ? {} : {
             handleApplicationRequest: (request, response, context) => {
               const inbound = inboundOperationContext(context);
-              return commerceGraph?.role === "seller"
+              return commerceGraph?.handleApplicationRequest !== undefined
                 ? commerceGraph.handleApplicationRequest(request, response, inbound)
                 : rawOptions.handleApplicationRequest!(request, response, inbound);
             },

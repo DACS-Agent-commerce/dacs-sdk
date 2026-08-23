@@ -1,4 +1,6 @@
 import type {
+  FixedPricePayDemOperations,
+  FixedPricePayDemTrackOperation,
   FixedPriceX402CoordinatorRole,
   FixedPriceX402Operations,
   FixedPriceX402Track,
@@ -34,6 +36,18 @@ export type DacsFixedPriceX402SellerOperationsV1 = Readonly<
 export type DacsFixedPriceX402CompleteOperationsV1 =
   | DacsFixedPriceX402BuyerOperationsV1
   | DacsFixedPriceX402SellerOperationsV1;
+
+export type DacsFixedPricePayDemBuyerOperationsV1 = Readonly<
+  Record<(typeof ROLE_TRACKS.buyer)[number], FixedPricePayDemTrackOperation>
+>;
+
+export type DacsFixedPricePayDemSellerOperationsV1 = Readonly<
+  Record<(typeof ROLE_TRACKS.seller)[number], FixedPricePayDemTrackOperation>
+>;
+
+export type DacsFixedPricePayDemCompleteOperationsV1 =
+  | DacsFixedPricePayDemBuyerOperationsV1
+  | DacsFixedPricePayDemSellerOperationsV1;
 
 export interface DacsFixedPriceX402OperationSetOptionsV1 {
   role: FixedPriceX402CoordinatorRole;
@@ -101,6 +115,14 @@ export function createDacsFixedPriceX402OperationSetV1(
     captured[track] = operation as FixedPriceX402TrackOperation;
   }
   return Object.freeze(captured);
+}
+
+/** Native DEM uses the same role track closure with a distinct protocol type. */
+export function createDacsFixedPricePayDemOperationSetV1(
+  rawOptions: Readonly<DacsFixedPriceX402OperationSetOptionsV1>,
+): Readonly<FixedPricePayDemOperations> {
+  return createDacsFixedPriceX402OperationSetV1(rawOptions) as unknown as
+    Readonly<FixedPricePayDemOperations>;
 }
 
 export function dacsFixedPriceX402RequiredTracksV1(

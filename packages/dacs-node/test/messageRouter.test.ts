@@ -110,6 +110,7 @@ describe("closed live role message router", () => {
         "session-init": route(),
         "session-presentation": route(),
         "agreement-proposal": unavailable,
+        "pay-dem-payment-notice": route(),
         "payment-evidence-completion": route(),
         "bundle-signature-response": route(),
       },
