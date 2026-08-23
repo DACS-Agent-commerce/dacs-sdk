@@ -22,6 +22,8 @@ import {
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import { createDacsPublicHttpsFetchV1 } from "./publicFetch.js";
+import { DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1 } from
+  "./buyerReceivedRuntime.js";
 import { createDacsX402BuyerPaymentTrackV1 } from "./x402Payment.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -51,6 +53,8 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
   fetchImpl?: typeof fetch;
+  /** Finite bound shared with the paid delivery read. */
+  maxResponseBytes?: number;
   effectLeaseDurationMs?: number;
   settlementLeaseDurationMs?: number;
   retryDelayMs?: number;
@@ -194,7 +198,10 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
   if (evm.role !== "buyer" || commerceStores.role !== "buyer") {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
-  const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1();
+  const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1({
+    maxBytes: options.maxResponseBytes ??
+      DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1,
+  });
   const recoverDisclosure = options.recoverDisclosure ??
     createX402BuyerRetainedDisclosureRecovery({ fetchImpl });
   const authorizationProvider = createX402BuyerEvmAuthorizationProvider({

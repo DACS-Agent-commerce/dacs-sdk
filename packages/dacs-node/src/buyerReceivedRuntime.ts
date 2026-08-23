@@ -17,7 +17,7 @@ import { createDacsPublicHttpsFetchV1 } from "./publicFetch.js";
 const BUYER_RECEIVED_BINDING_VERSION = "1" as const;
 const BUYER_RECEIVED_BINDING_DOMAIN = "dacs-live-buyer-received:v1:" as const;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
-const DEFAULT_MAX_BODY_BYTES = 8 * 1_024 * 1_024;
+export const DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1 = 8 * 1_024 * 1_024;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 export interface DacsBuyerReceivedPaymentScopeV1 {
@@ -188,7 +188,11 @@ export function createDacsBuyerReceivedTrackV1(
   const context = options.context;
   const stores = context.commerceStores;
   if (stores.role !== "buyer") throw new TypeError("buyer received runtime options are invalid");
-  const maximum = positiveInteger(options.maxBodyBytes, DEFAULT_MAX_BODY_BYTES, 64 * 1_024 * 1_024);
+  const maximum = positiveInteger(
+    options.maxBodyBytes,
+    DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1,
+    64 * 1_024 * 1_024,
+  );
   const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1({ maxBytes: maximum });
   const delay = positiveInteger(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS, 600_000);
 

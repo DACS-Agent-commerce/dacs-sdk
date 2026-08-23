@@ -31,6 +31,8 @@ export interface DacsPublicHttpsFetchRequestV1 {
   headers: Headers;
   timeoutMs: number;
   maxBytes: number;
+  /** Absolute whole-request deadline signal, starting before DNS resolution. */
+  signal: AbortSignal;
 }
 
 export interface DacsPublicHttpsFetchDependenciesV1 {
@@ -132,6 +134,14 @@ function pinnedRequest(
     request.setTimeout(input.timeoutMs, () => {
       request.destroy(new DacsPublicHttpsFetchError("public-fetch-timeout"));
     });
+    const abort = () => request.destroy(
+      input.signal.reason instanceof Error
+        ? input.signal.reason
+        : new DacsPublicHttpsFetchError("public-fetch-timeout"),
+    );
+    if (input.signal.aborted) abort();
+    else input.signal.addEventListener("abort", abort, { once: true });
+    request.once("close", () => input.signal.removeEventListener("abort", abort));
     request.once("error", reject);
     request.end();
   });
@@ -173,39 +183,66 @@ export function createDacsPublicHttpsFetchV1(
         init.body !== null || init?.redirect !== undefined && init.redirect !== "error") {
       throw new DacsPublicHttpsFetchError("public-fetch-request-shape-refused");
     }
-    const value = input.toString();
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      throw new DacsPublicHttpsFetchError("public-fetch-url-invalid");
-    }
-    if (url.protocol !== "https:" || url.username !== "" || url.password !== "" ||
-        url.hash !== "" || value.length > 2_048 ||
-        url.hostname.toLowerCase() === "localhost") {
-      throw new DacsPublicHttpsFetchError("public-fetch-url-unsafe");
-    }
-    const literal = url.hostname.startsWith("[") && url.hostname.endsWith("]")
-      ? url.hostname.slice(1, -1) : url.hostname;
-    let addresses: readonly string[];
-    try {
-      addresses = [...new Set(await dependencies.resolveHost(literal))];
-    } catch {
-      throw new DacsPublicHttpsFetchError("public-fetch-dns-unavailable");
-    }
-    if (addresses.length === 0) {
-      throw new DacsPublicHttpsFetchError("public-fetch-dns-empty");
-    }
-    if (!addresses.every(isDacsPublicAddressV1)) {
-      throw new DacsPublicHttpsFetchError("public-fetch-address-unsafe");
-    }
-    return dependencies.request({
-      url: url.toString(),
-      approvedAddresses: addresses,
-      headers: captureHeaders(init?.headers),
-      timeoutMs,
-      maxBytes,
+    const controller = new AbortController();
+    const timeoutError = new DacsPublicHttpsFetchError("public-fetch-timeout");
+    let rejectDeadline: ((reason: DacsPublicHttpsFetchError) => void) | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectDeadline = reject;
     });
+    const timer = setTimeout(() => {
+      controller.abort(timeoutError);
+      rejectDeadline?.(timeoutError);
+    }, timeoutMs);
+    try {
+      const operation = async (): Promise<Response> => {
+        const value = input.toString();
+        let url: URL;
+        try {
+          url = new URL(value);
+        } catch {
+          throw new DacsPublicHttpsFetchError("public-fetch-url-invalid");
+        }
+        if (url.protocol !== "https:" || url.username !== "" || url.password !== "" ||
+            url.hash !== "" || value.length > 2_048 ||
+            url.hostname.toLowerCase() === "localhost") {
+          throw new DacsPublicHttpsFetchError("public-fetch-url-unsafe");
+        }
+        const literal = url.hostname.startsWith("[") && url.hostname.endsWith("]")
+          ? url.hostname.slice(1, -1) : url.hostname;
+        let addresses: readonly string[];
+        try {
+          addresses = [...new Set(await dependencies.resolveHost(literal))];
+        } catch (error) {
+          if (controller.signal.aborted) throw timeoutError;
+          throw new DacsPublicHttpsFetchError("public-fetch-dns-unavailable");
+        }
+        if (controller.signal.aborted) throw timeoutError;
+        if (addresses.length === 0) {
+          throw new DacsPublicHttpsFetchError("public-fetch-dns-empty");
+        }
+        if (!addresses.every(isDacsPublicAddressV1)) {
+          throw new DacsPublicHttpsFetchError("public-fetch-address-unsafe");
+        }
+        const response = await dependencies.request({
+          url: url.toString(),
+          approvedAddresses: addresses,
+          headers: captureHeaders(init?.headers),
+          timeoutMs,
+          maxBytes,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) throw timeoutError;
+        if (response.status >= 300 && response.status < 400) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new DacsPublicHttpsFetchError("public-fetch-redirect-refused");
+        }
+        return response;
+      };
+      return await Promise.race([operation(), deadline]);
+    } finally {
+      clearTimeout(timer);
+      rejectDeadline = undefined;
+    }
   };
   return fetchImpl as typeof fetch;
 }
