@@ -47,7 +47,7 @@ export interface PrepareX402BuyerSettlementInput {
 
 export interface PrepareX402BuyerSettlementDeps {
   client: X402BuyerChallengeClient;
-  /** Trusted transport enforcing the DACS-1 §6.3.6 public-fetch boundary. */
+  /** Caller-supplied transport that must enforce the DACS-1 §6.3.6 boundary. */
   fetchImpl: typeof fetch;
 }
 
@@ -59,9 +59,9 @@ export type X402BuyerSettlementPreparation =
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
 export interface X402BuyerPaidRequestTransportOptions {
-  /** Trusted transport enforcing the DACS-1 §6.3.6 public-fetch boundary. */
+  /** Caller-supplied transport that must enforce the DACS-1 §6.3.6 boundary. */
   fetchImpl: typeof fetch;
-  /** Captured once; payment and legacy payment headers are forbidden. */
+  /** Captured once; payment, legacy-payment, and ambient-credential headers are forbidden. */
   headers?: X402BuyerHeaderInit;
 }
 

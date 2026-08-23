@@ -53,7 +53,7 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
   fetchImpl?: typeof fetch;
-  /** Finite bound shared with the paid delivery read. */
+  /** Finite bound for the built-in fetch, shared with the paid delivery read. */
   maxResponseBytes?: number;
   effectLeaseDurationMs?: number;
   settlementLeaseDurationMs?: number;

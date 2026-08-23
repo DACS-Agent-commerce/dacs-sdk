@@ -36,6 +36,11 @@ export interface DacsPublicHttpsFetchRequestV1 {
 }
 
 export interface DacsPublicHttpsFetchDependenciesV1 {
+  /**
+   * Trusted platform/test seam. Custom implementations must honor every
+   * approved address, bound, header, and abort signal supplied below; only the
+   * built-in dependencies provide those transport guarantees automatically.
+   */
   resolveHost(hostname: string): Promise<readonly string[]>;
   request(input: Readonly<DacsPublicHttpsFetchRequestV1>): Promise<Response>;
 }
@@ -157,10 +162,12 @@ const defaultDependencies: Readonly<DacsPublicHttpsFetchDependenciesV1> = Object
 });
 
 /**
- * Create a bounded, DNS-pinned fetch for counterparty-selected HTTPS targets.
- * Each call resolves and validates every address, then connects only to one of
- * those validated addresses. Redirect handling remains manual and no ambient
- * credential-bearing headers are accepted.
+ * Create a public HTTPS fetch for counterparty-selected targets. With the
+ * built-in dependencies, each call is bounded, resolves and validates every
+ * address, and connects only to one validated address. Redirects and ambient
+ * credential-bearing headers are refused. Injected dependencies are trusted
+ * platform/test policy and must enforce the supplied addresses, bounds,
+ * headers, and abort signal themselves.
  */
 export function createDacsPublicHttpsFetchV1(
   options: Readonly<DacsPublicHttpsFetchOptionsV1> = {},
