@@ -168,10 +168,10 @@ const defaultDependencies: Readonly<DacsPublicHttpsFetchDependenciesV1> = Object
 /**
  * Create a public HTTPS fetch for counterparty-selected targets. With the
  * built-in dependencies, each call is bounded, resolves and validates every
- * address, and connects only to one validated address. Redirects are refused,
- * and only `Accept` plus the retained payment signature may be forwarded.
- * Injected dependencies are trusted
- * platform/test policy and must enforce the supplied addresses, bounds,
+ * address, and connects only to one validated address. Redirects are refused.
+ * Only caller-provided `Accept` and `Payment-Signature` headers are accepted;
+ * the transport adds `Accept-Encoding` and `User-Agent`. Injected dependencies
+ * are trusted platform/test policy and must enforce the supplied addresses, bounds,
  * headers, and abort signal themselves.
  */
 export function createDacsPublicHttpsFetchV1(
