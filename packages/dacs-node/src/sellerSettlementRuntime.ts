@@ -5,6 +5,11 @@ import {
   type SellerSessionSettlementPublicationDeps,
   type SellerSessionSettlementPublicationRequest,
 } from "@kynesyslabs/dacs";
+import type {
+  FixedPricePayDemOrderInput,
+  FixedPricePayDemTrackOperation,
+  FixedPricePayDemTrackOperationInput,
+} from "@kynesyslabs/dacs/commerce";
 
 import {
   loadDacsLiveOrderInputForTrackV1,
@@ -49,6 +54,29 @@ export interface DacsSellerSettlementPublicationTrackOptionsV1 {
     SellerSessionSettlementPublicationDeps["anchorEvidence"]
   >[0]): Promise<void> | void;
   retryDelayMs?: number;
+}
+
+export interface DacsPayDemSellerSettlementPublicationTrackOptionsV1
+  extends Omit<
+    DacsSellerSettlementPublicationTrackOptionsV1,
+    "resolvePublication" | "authorizePublished"
+  > {
+  resolvePublication(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+  }>): Promise<Readonly<{
+    request: Readonly<SellerSessionSettlementPublicationRequest>;
+    dependencies: Readonly<DacsSellerSettlementPublicationDependenciesV1>;
+  }>> | Readonly<{
+    request: Readonly<SellerSessionSettlementPublicationRequest>;
+    dependencies: Readonly<DacsSellerSettlementPublicationDependenciesV1>;
+  }>;
+  authorizePublished(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+    evidenceHash: string;
+    reference: string;
+  }>): Promise<boolean> | boolean;
 }
 
 export class DacsSellerSettlementRuntimeError extends Error {
@@ -297,4 +325,13 @@ export function createDacsSellerSettlementPublicationTrackV1(
       retryAt: nextRetry(context, delay),
     });
   };
+}
+
+/** Native-order projection of the rail-neutral settlement publisher. */
+export function createDacsPayDemSellerSettlementPublicationTrackV1(
+  options: Readonly<DacsPayDemSellerSettlementPublicationTrackOptionsV1>,
+): FixedPricePayDemTrackOperation {
+  return createDacsSellerSettlementPublicationTrackV1(
+    options as unknown as DacsSellerSettlementPublicationTrackOptionsV1,
+  ) as unknown as FixedPricePayDemTrackOperation;
 }
