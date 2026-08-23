@@ -25,6 +25,8 @@ import {
   type DacsFixedPriceX402ApplicationV1,
   type DacsFixedPriceX402BuyerAgreementPolicyV1,
   type DacsFixedPriceX402SellerAgreementPolicyV1,
+  type DacsFixedPriceX402CommitmentResultV1,
+  loadDacsFixedPriceX402CommitmentResultV1,
 } from "./fixedPriceX402Profile.js";
 import {
   resolveDacsPayDemExistingListingV1,
@@ -335,4 +337,17 @@ export function createDacsFixedPricePayDemSellerAgreementPolicyV1(
       order as FixedPricePayDemOrderRecord,
     ),
   });
+}
+
+/** Recover the shared Agreement commitment under the native order binding. */
+export function loadDacsFixedPricePayDemCommitmentResultV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): Readonly<DacsFixedPriceX402CommitmentResultV1> {
+  return loadDacsFixedPriceX402CommitmentResultV1(
+    context,
+    order as unknown as Parameters<
+      typeof loadDacsFixedPriceX402CommitmentResultV1
+    >[1],
+  );
 }
