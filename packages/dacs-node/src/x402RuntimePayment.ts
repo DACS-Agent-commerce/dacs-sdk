@@ -49,6 +49,7 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   }>): Promise<boolean> | boolean;
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
+  /** Defaults to the locked-down public HTTPS transport when omitted. */
   fetchImpl?: typeof fetch;
   effectLeaseDurationMs?: number;
   settlementLeaseDurationMs?: number;

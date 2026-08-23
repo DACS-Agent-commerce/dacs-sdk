@@ -333,9 +333,10 @@ export async function prepareX402BuyerSettlement(
 
 /**
  * Create the paid HTTP effect used by the durable buyer coordinator. It sends
- * only the retained bearer, refuses redirects, and treats the response header
- * as a candidate until the independent authorization provider authenticates
- * the chain event.
+ * only the retained bearer credential plus an optional caller `Accept` header
+ * and the safe transport's own representation/user-agent headers. It refuses
+ * redirects and treats the response header as a candidate until the independent
+ * authorization provider authenticates the chain event.
  */
 export function createX402BuyerPaidRequestTransport(
   options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
