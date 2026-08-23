@@ -24,15 +24,22 @@ import {
   createFixedPriceX402BuyerCoordinator,
   FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
   FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceOfflineOrderBindingHash,
   fixedPriceOfflineOrderLocalBindingHash,
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
   type FixedPriceOfflineOrderInput,
   type FixedPriceOfflineProtocolBinding,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemProtocolBinding,
   type FixedPriceX402OrderInput,
   type FixedPriceX402ProtocolBinding,
   type FixedPriceX402TrackOperation,
@@ -54,6 +61,7 @@ import {
   type DacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabaseOptions,
 } from "../src/sqlite.js";
+import { downgradeCoordinatorSchemaToV6 } from "./helpers/sqliteSchema.js";
 
 const BINDING_HASH = "a".repeat(64);
 const OTHER_BINDING_HASH = "b".repeat(64);
@@ -79,6 +87,25 @@ const LIVE_PROTOCOL: FixedPriceX402ProtocolBinding = {
     railType: "x402",
     phaseHandler: "pay-x402",
     network: "eip155:8453",
+    availability: "live",
+  },
+};
+const PAY_DEM_PROTOCOL: FixedPricePayDemProtocolBinding = {
+  commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+  phase: "pay-dem",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  rail: {
+    registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+    registryIndexHash: "3".repeat(64),
+    railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+    railDefinitionHash: "4".repeat(64),
+    railId: "demos-native:DEM",
+    railVersion: 1,
+    railType: "demos-native",
+    phaseHandler: "pay-dem",
+    network: "demos",
     availability: "live",
   },
 };
@@ -124,6 +151,23 @@ function liveSellerOrder(jobId = JOB_ID): FixedPriceX402OrderInput {
       deliveryEvidence: `seller:delivery-evidence:${jobId}`,
       audit: `seller:audit:${jobId}`,
     },
+  };
+}
+
+function payDemOrder(jobId = JOB_ID): FixedPricePayDemOrderInput {
+  return {
+    ...liveOrder(jobId),
+    protocol: PAY_DEM_PROTOCOL,
+  };
+}
+
+function payDemOrderBinding(order: FixedPricePayDemOrderInput): Readonly<{
+  bindingHash: string;
+  localBindingHash: string;
+}> {
+  return {
+    bindingHash: fixedPricePayDemOrderBindingHash(order),
+    localBindingHash: fixedPricePayDemOrderLocalBindingHash(order),
   };
 }
 
@@ -261,6 +305,7 @@ describe("DACS Node SQLite durability foundation", () => {
         ON dacs_effect_history (effect_kind, effect_id, sequence);
       DROP TABLE dacs_coordinator_tracks;
       DROP TABLE dacs_coordinator_orders;
+      DELETE FROM dacs_migrations WHERE version = 7;
       DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
       DELETE FROM dacs_migrations WHERE version = 4;
@@ -514,6 +559,7 @@ describe("DACS Node SQLite durability foundation", () => {
             profile, role, track, eligible, state, next_attempt_at,
             lease_expires_at, job_id
           );
+        DELETE FROM dacs_migrations WHERE version = 7;
         DELETE FROM dacs_migrations WHERE version = 6;
         DELETE FROM dacs_migrations WHERE version = 5;
         DELETE FROM dacs_migrations WHERE version = 4;
@@ -1301,7 +1347,7 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(raw.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
       .toEqual([
         { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 },
-        { version: 6 },
+        { version: 6 }, { version: 7 },
       ]);
     raw.close();
   });
@@ -1469,6 +1515,7 @@ describe("DACS Node SQLite durability foundation", () => {
       DROP TABLE dacs_payment_evidence_history;
       DROP TABLE dacs_payment_evidence_reservations;
       DROP TABLE dacs_payment_evidence_handshakes;
+      DELETE FROM dacs_migrations WHERE version = 7;
       DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
       DELETE FROM dacs_migrations WHERE version = 4;
@@ -2218,6 +2265,81 @@ describe("DACS Node SQLite durability foundation", () => {
       .toMatchObject({ status: "created", record: { protocol: OFFLINE_PROTOCOL } });
     expect(await store.load("buyer", JOB_ID))
       .toMatchObject({ status: "ok", record: { bindingHash } });
+  });
+
+  it("keeps x402 and native DEM orders isolated in one live actor database", async () => {
+    const database = await open(join(temporaryRoot(), "buyer.sqlite"), {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const x402Store = database.createLiveCoordinatorStore("buyer");
+    const payDemStore = database.createPayDemCoordinatorStore("buyer");
+    const x402 = liveOrder();
+    const payDem = payDemOrder();
+
+    expect(await x402Store.create({
+      role: "buyer",
+      order: x402,
+      ...liveOrderBinding(x402),
+    })).toMatchObject({ status: "created", record: { protocol: LIVE_PROTOCOL } });
+    expect(await payDemStore.create({
+      role: "buyer",
+      order: payDem,
+      ...payDemOrderBinding(payDem),
+    })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
+
+    expect(await x402Store.load("buyer", JOB_ID)).toMatchObject({
+      status: "ok",
+      record: { protocol: LIVE_PROTOCOL },
+    });
+    expect(await payDemStore.load("buyer", JOB_ID)).toMatchObject({
+      status: "ok",
+      record: { protocol: PAY_DEM_PROTOCOL },
+    });
+  });
+
+  it("migrates a v6 x402 order before enabling the native DEM namespace", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const initial = await open(databasePath, liveOptions);
+    const x402 = liveOrder();
+    expect(await initial.createLiveCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: x402,
+      ...liveOrderBinding(x402),
+    })).toMatchObject({ status: "created" });
+    initial.checkpoint();
+    initial.close();
+    databases.splice(databases.indexOf(initial), 1);
+
+    const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
+    raw.exec(`
+      DELETE FROM dacs_migrations WHERE version = 7;
+      UPDATE dacs_store_metadata SET schema_version = 6 WHERE singleton = 1;
+      PRAGMA user_version = 6;
+    `);
+    raw.close();
+
+    const migrated = await open(databasePath, liveOptions);
+    expect(readdirSync(root).filter((name) => name.includes(".backup-v6-")))
+      .toHaveLength(1);
+    expect(await migrated.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
+      .toMatchObject({ status: "ok", record: { protocol: LIVE_PROTOCOL } });
+    const payDem = payDemOrder();
+    expect(await migrated.createPayDemCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: payDem,
+      ...payDemOrderBinding(payDem),
+    })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
   });
 
   it("enforces live DACS-5 terminal attribution and irreversible-effect rules", async () => {

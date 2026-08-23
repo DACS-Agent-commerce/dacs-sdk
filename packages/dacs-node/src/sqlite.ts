@@ -18,10 +18,14 @@ import { sameCanonicalClaimIdentity, VERSION } from "@kynesyslabs/dacs";
 import {
   FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
   FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceOfflineOrderBindingHash,
   fixedPriceOfflineOrderLocalBindingHash,
   fixedPriceOfflineOrderViolation,
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
+  fixedPricePayDemOrderViolation,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
   fixedPriceX402OrderViolation,
@@ -36,6 +40,8 @@ import {
   type FixedPriceOfflineSimulationOutcome,
   type FixedPriceOfflineTrackOperationResult,
   type FixedPriceOfflineTrackRecord,
+  type FixedPricePayDemCoordinatorStore,
+  type FixedPricePayDemOrderRecord,
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402CoordinatorStore,
   type FixedPriceX402ErrorClass,
@@ -79,7 +85,7 @@ import {
   type DacsHttpSqliteContext,
 } from "./sqliteTransport.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 6 as const;
+export const DACS_NODE_SQLITE_SCHEMA_VERSION = 7 as const;
 export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
@@ -172,6 +178,7 @@ export interface DacsNodeSqliteDatabaseOptions {
   /** Omit to use the exact Standard revision supported by the selected profile. */
   standardRevision?:
     | typeof FIXED_PRICE_OFFLINE_STANDARD_REVISION
+    | typeof FIXED_PRICE_PAY_DEM_STANDARD_REVISION
     | typeof FIXED_PRICE_X402_STANDARD_REVISION;
   busyTimeoutMs?: number;
 }
@@ -338,6 +345,9 @@ export interface DacsNodeSqliteDatabase {
   createLiveCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceX402CoordinatorStore;
+  createPayDemCoordinatorStore(
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPricePayDemCoordinatorStore;
   createOfflineCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceOfflineCoordinatorStore;
@@ -595,8 +605,11 @@ interface PaymentEvidenceHistoryRow {
   entry_hash: string;
 }
 
-type CoordinatorProfile = "live-x402" | "offline";
-type CoordinatorRecord = FixedPriceX402OrderRecord | FixedPriceOfflineOrderRecord;
+type CoordinatorProfile = "live-x402" | "live-pay-dem" | "offline";
+type CoordinatorRecord =
+  | FixedPriceX402OrderRecord
+  | FixedPricePayDemOrderRecord
+  | FixedPriceOfflineOrderRecord;
 type CoordinatorTrackRecord = FixedPriceX402TrackRecord | FixedPriceOfflineTrackRecord;
 type CoordinatorOutcome = FixedPriceX402NormativeOutcome | FixedPriceOfflineSimulationOutcome;
 type CoordinatorErrorClass = FixedPriceX402ErrorClass | FixedPriceOfflineSimulationErrorClass;
@@ -1267,6 +1280,53 @@ CREATE INDEX dacs_http_outbox_history_record_idx
   ON dacs_http_outbox_history (envelope_id, revision);
 `;
 
+/**
+ * Add a separate native-DEM coordinator namespace. Historical x402 rows retain
+ * their exact profile and bytes; the migration only broadens the constrained
+ * operational profile discriminator used by new records.
+ */
+const MIGRATION_7_PREPARE = MIGRATION_4_PREPARE
+  .replaceAll("_v3", "_v6")
+  .replaceAll(
+    "CHECK (profile IN ('live-x402', 'offline'))",
+    "CHECK (profile IN ('live-x402', 'live-pay-dem', 'offline'))",
+  )
+  .replace(
+    "(profile = 'live-x402' AND",
+    "(profile IN ('live-x402', 'live-pay-dem') AND",
+  );
+
+const MIGRATION_7_COPY = `
+INSERT INTO dacs_coordinator_orders (
+  profile, role, job_id, binding_hash, local_binding_hash, record_hash,
+  record_json, revision, created_at, updated_at
+)
+SELECT profile, role, job_id, binding_hash, local_binding_hash, record_hash,
+  record_json, revision, created_at, updated_at
+FROM dacs_coordinator_orders_v6;
+
+INSERT INTO dacs_coordinator_tracks (
+  profile, role, job_id, local_binding_hash, track, eligible, state, outcome,
+  error_class, faulted_party, withdrawn_by, generation, attempts,
+  lease_expires_at, next_attempt_at, updated_at
+)
+SELECT profile, role, job_id, local_binding_hash, track, eligible, state,
+  outcome, error_class, faulted_party, withdrawn_by, generation, attempts,
+  lease_expires_at, next_attempt_at, updated_at
+FROM dacs_coordinator_tracks_v6;
+`;
+
+const MIGRATION_7_FINALIZE = `
+DROP TABLE dacs_coordinator_tracks_v6;
+DROP TABLE dacs_coordinator_orders_v6;
+`;
+
+function applyMigration7(database: BetterSqlite3.Database): void {
+  database.exec(MIGRATION_7_PREPARE);
+  database.exec(MIGRATION_7_COPY);
+  database.exec(MIGRATION_7_FINALIZE);
+}
+
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 &&
     value.trim() === value && !value.includes("\0");
@@ -1294,6 +1354,10 @@ function coordinatorTracks(
   return COORDINATOR_TRACKS_BY_ROLE[role];
 }
 
+function liveCoordinatorProfile(profile: CoordinatorProfile): boolean {
+  return profile === "live-x402" || profile === "live-pay-dem";
+}
+
 function emptyCoordinatorTracks(
   role: FixedPriceX402CoordinatorRole,
   now: number,
@@ -1310,7 +1374,9 @@ function coordinatorViolation(
 ): string | null {
   return profile === "live-x402"
     ? fixedPriceX402OrderViolation(value)
-    : fixedPriceOfflineOrderViolation(value);
+    : profile === "live-pay-dem"
+      ? fixedPricePayDemOrderViolation(value)
+      : fixedPriceOfflineOrderViolation(value);
 }
 
 function coordinatorBindingHash(
@@ -1326,9 +1392,13 @@ function coordinatorBindingHash(
     ? fixedPriceX402OrderBindingHash(
         value as Parameters<typeof fixedPriceX402OrderBindingHash>[0],
       )
-    : fixedPriceOfflineOrderBindingHash(
-        value as Parameters<typeof fixedPriceOfflineOrderBindingHash>[0],
-      );
+    : profile === "live-pay-dem"
+      ? fixedPricePayDemOrderBindingHash(
+          value as Parameters<typeof fixedPricePayDemOrderBindingHash>[0],
+        )
+      : fixedPriceOfflineOrderBindingHash(
+          value as Parameters<typeof fixedPriceOfflineOrderBindingHash>[0],
+        );
 }
 
 function coordinatorLocalBindingHash(
@@ -1345,30 +1415,34 @@ function coordinatorLocalBindingHash(
     ? fixedPriceX402OrderLocalBindingHash(
         value as Parameters<typeof fixedPriceX402OrderLocalBindingHash>[0],
       )
-    : fixedPriceOfflineOrderLocalBindingHash(
-        value as Parameters<typeof fixedPriceOfflineOrderLocalBindingHash>[0],
-      );
+    : profile === "live-pay-dem"
+      ? fixedPricePayDemOrderLocalBindingHash(
+          value as Parameters<typeof fixedPricePayDemOrderLocalBindingHash>[0],
+        )
+      : fixedPriceOfflineOrderLocalBindingHash(
+          value as Parameters<typeof fixedPriceOfflineOrderLocalBindingHash>[0],
+        );
 }
 
 function coordinatorSuccessOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
-  return profile === "live-x402" ? "success" : "simulated-success";
+  return profile === "offline" ? "simulated-success" : "success";
 }
 
 function coordinatorFailureOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
-  return profile === "live-x402" ? "failure" : "simulated-failure";
+  return profile === "offline" ? "simulated-failure" : "failure";
 }
 
 function coordinatorAbortedOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
-  return profile === "live-x402" ? "aborted" : "simulated-aborted";
+  return profile === "offline" ? "simulated-aborted" : "aborted";
 }
 
 function coordinatorErrorClassAllowed(
   profile: CoordinatorProfile,
   value: unknown,
 ): value is CoordinatorErrorClass {
-  return profile === "live-x402"
-    ? COORDINATOR_ERROR_CLASSES.has(value as FixedPriceX402ErrorClass)
-    : OFFLINE_COORDINATOR_ERROR_CLASSES.has(value as FixedPriceOfflineSimulationErrorClass);
+  return profile === "offline"
+    ? OFFLINE_COORDINATOR_ERROR_CLASSES.has(value as FixedPriceOfflineSimulationErrorClass)
+    : COORDINATOR_ERROR_CLASSES.has(value as FixedPriceX402ErrorClass);
 }
 
 function coordinatorAuthorityMatches(
@@ -1516,7 +1590,7 @@ function legacyCoordinatorFromRow(
     if (!retained) {
       return { status: "corrupt", reason: "legacy coordinator track map is incomplete" };
     }
-    if (profile === "live-x402" && retained.state === "final" &&
+    if (liveCoordinatorProfile(profile) && retained.state === "final" &&
         (retained.outcome === "failure" || retained.outcome === "aborted")) {
       return {
         status: "corrupt",
@@ -1677,7 +1751,7 @@ function coordinatorResultAllowed(
     withdrawnBy?: FixedPriceX402CoordinatorRole;
   }>,
 ): boolean {
-  if (profile === "live-x402" && result.outcome === "failure" &&
+  if (liveCoordinatorProfile(profile) && result.outcome === "failure" &&
       (result.faultedParty === "orchestrator" ||
         (result.errorClass === "substrate") !== (result.faultedParty === "none"))) {
     return false;
@@ -1692,9 +1766,11 @@ function coordinatorResultAllowed(
     return result.outcome === expected.outcome &&
       (expected.outcome !== coordinatorFailureOutcome(profile) ||
         (result.errorClass === expected.errorClass &&
-          (profile !== "live-x402" || result.faultedParty === expected.faultedParty))) &&
+          (!liveCoordinatorProfile(profile) ||
+            result.faultedParty === expected.faultedParty))) &&
       (expected.outcome !== coordinatorAbortedOutcome(profile) ||
-        profile !== "live-x402" || result.withdrawnBy === expected.withdrawnBy);
+        !liveCoordinatorProfile(profile) ||
+        result.withdrawnBy === expected.withdrawnBy);
   }
   if (result.outcome === coordinatorAbortedOutcome(profile) &&
       (coordinatorTrackSuccessful(profile, record, "payment") ||
@@ -2112,18 +2188,18 @@ function captureCoordinatorResult(
       (value.authenticationHash === undefined || hash(value.authenticationHash))) {
     return clone(value) as unknown as CoordinatorOperationResult;
   }
-  const abortedKeys = profile === "live-x402"
+  const abortedKeys = liveCoordinatorProfile(profile)
     ? ["status", "outcome", "withdrawnBy", "reference"]
     : ["status", "outcome", "reference"];
   if (exactDataKeys(value, abortedKeys, ["authenticationHash"]) &&
       value.status === "final" && value.outcome === coordinatorAbortedOutcome(profile) &&
-      (profile !== "live-x402" || value.withdrawnBy === "buyer" ||
+      (!liveCoordinatorProfile(profile) || value.withdrawnBy === "buyer" ||
         value.withdrawnBy === "seller") &&
       nonEmpty(value.reference) &&
       (value.authenticationHash === undefined || hash(value.authenticationHash))) {
     return clone(value) as unknown as CoordinatorOperationResult;
   }
-  const failureKeys = profile === "live-x402"
+  const failureKeys = liveCoordinatorProfile(profile)
     ? ["status", "outcome", "errorClass", "faultedParty", "reference"]
     : ["status", "outcome", "errorClass", "reference"];
   if (exactDataKeys(
@@ -2132,7 +2208,7 @@ function captureCoordinatorResult(
     ["authenticationHash"],
   ) && value.status === "final" && value.outcome === coordinatorFailureOutcome(profile) &&
       coordinatorErrorClassAllowed(profile, value.errorClass) &&
-      (profile !== "live-x402" ||
+      (!liveCoordinatorProfile(profile) ||
         FAULTED_PARTIES.has(value.faultedParty as FixedPriceX402FaultedParty)) &&
       nonEmpty(value.reference) &&
       (value.authenticationHash === undefined || hash(value.authenticationHash))) {
@@ -4201,6 +4277,19 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     return this.createCoordinatorStore("live-x402", role);
   }
 
+  createPayDemCoordinatorStore(
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPricePayDemCoordinatorStore {
+    if (this.metadata.mode !== "live-demos") {
+      throw new DacsNodeSqliteError(
+        "coordinator-profile-mismatch",
+        "A pay-dem coordinator store requires a live Demos actor database",
+      );
+    }
+    return this.createCoordinatorStore("live-pay-dem", role) as unknown as
+      FixedPricePayDemCoordinatorStore;
+  }
+
   createOfflineCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceOfflineCoordinatorStore {
@@ -4675,14 +4764,14 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                       }>).errorClass,
                     }
                   : {}),
-                ...(profile === "live-x402" && result.outcome === "failure"
+                ...(liveCoordinatorProfile(profile) && result.outcome === "failure"
                   ? {
                       faultedParty: (result as Readonly<{
                         faultedParty: FixedPriceX402FaultedParty;
                       }>).faultedParty,
                     }
                   : {}),
-                ...(profile === "live-x402" && result.outcome === "aborted"
+                ...(liveCoordinatorProfile(profile) && result.outcome === "aborted"
                   ? {
                       withdrawnBy: (result as Readonly<{
                         withdrawnBy: FixedPriceX402CoordinatorRole;
@@ -5622,7 +5711,7 @@ type SchemaFingerprint = Readonly<{
   indexes: Readonly<Record<string, unknown>>;
 }>;
 
-type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6;
+type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const expectedSchemaFingerprints = new Map<number, SchemaFingerprint>();
 
@@ -5698,6 +5787,11 @@ function expectedSchemaFingerprint(version: DacsNodeSqliteSchemaVersion): Schema
     }
     if (version >= 5) reference.exec(MIGRATION_5);
     if (version >= 6) reference.exec(MIGRATION_6);
+    if (version >= 7) {
+      reference.exec(MIGRATION_7_PREPARE);
+      reference.exec(MIGRATION_7_COPY);
+      reference.exec(MIGRATION_7_FINALIZE);
+    }
     const objects = schemaObjects(reference, 64);
     const fingerprint = Object.freeze({
       objects,
@@ -5823,7 +5917,7 @@ function verifyMigrationHistory(
       SELECT version, applied_at
       FROM dacs_migrations
       ORDER BY version
-      LIMIT 6
+      LIMIT 8
     `).all() as MigrationRow[];
   } catch {
     throw new DacsNodeSqliteError(
@@ -6131,13 +6225,14 @@ function verifyLogicalRows(
       verifyEffectHistory(database, effect);
     }
     if (version >= 2) {
-      const expectedProfile: CoordinatorProfile = options.mode === "offline"
-        ? "offline"
-        : "live-x402";
+      const allowedProfiles = options.mode === "offline"
+        ? new Set<CoordinatorProfile>(["offline"])
+        : new Set<CoordinatorProfile>(["live-x402", "live-pay-dem"]);
       for (const row of database.prepare(
         "SELECT * FROM dacs_coordinator_orders ORDER BY profile, role, job_id",
       ).iterate() as IterableIterator<CoordinatorRow | LegacyCoordinatorRow>) {
-        if (row.profile !== expectedProfile || row.role !== options.role ||
+        if (!allowedProfiles.has(row.profile as CoordinatorProfile) ||
+            row.role !== options.role ||
             (row.role !== "buyer" && row.role !== "seller")) {
           throw new DacsNodeSqliteError(
             "database-logical-corruption",
@@ -6146,26 +6241,27 @@ function verifyLogicalRows(
         }
         let authenticatedRecord: Readonly<CoordinatorRecord> | undefined;
         let projectionMatches = false;
+        const rowProfile = row.profile as CoordinatorProfile;
         if (version >= 4) {
-          const decoded = coordinatorFromRow(row as CoordinatorRow, expectedProfile);
+          const decoded = coordinatorFromRow(row as CoordinatorRow, rowProfile);
           if (decoded.status === "ok") {
             authenticatedRecord = decoded.record;
             projectionMatches = coordinatorTrackProjectionMatches(
               database,
-              expectedProfile,
+              rowProfile,
               decoded.record,
             );
           }
         } else {
           const decoded = legacyCoordinatorFromRow(
             row as LegacyCoordinatorRow,
-            expectedProfile,
+            rowProfile,
           );
           if (decoded.status === "ok") {
             authenticatedRecord = decoded.record;
             projectionMatches = version < 3 || legacyCoordinatorTrackProjectionMatches(
               database,
-              expectedProfile,
+              rowProfile,
               decoded.legacyRecord,
             );
           }
@@ -6353,6 +6449,7 @@ function initializeEmptyDatabase(
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       INSERT INTO dacs_store_metadata (
         singleton, schema_version, mode, profile, role, authority,
@@ -6370,11 +6467,11 @@ function initializeEmptyDatabase(
     );
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?), (6, ?)
-    `).run(now, now, now, now, now, now);
+      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now, now, now, now, now);
     database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6387,7 +6484,7 @@ function removeGeneratedBackup(backupPath: string): void {
 async function createValidatedBackup(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2 | 3 | 4 | 5,
+  version: 1 | 2 | 3 | 4 | 5 | 6,
 ): Promise<Readonly<{ backupPath: string; sourceDataVersion: number }>> {
   const backupPath = `${options.databasePath}.backup-v${version}-${randomUUID()}.sqlite`;
   try {
@@ -6448,15 +6545,16 @@ function migrateV1Database(
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (2, ?), (3, ?), (4, ?), (5, ?), (6, ?)
-    `).run(now, now, now, now, now);
+      VALUES (2, ?), (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6483,15 +6581,16 @@ function migrateV2Database(
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (3, ?), (4, ?), (5, ?), (6, ?)
-    `).run(now, now, now, now);
+      VALUES (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6517,14 +6616,16 @@ function migrateV3Database(
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (4, ?), (5, ?), (6, ?)
-    `).run(now, now, now);
+      INSERT INTO dacs_migrations (version, applied_at)
+      VALUES (4, ?), (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6547,14 +6648,16 @@ function migrateV4Database(
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (5, ?), (6, ?)
-    `).run(now, now);
+      INSERT INTO dacs_migrations (version, applied_at)
+      VALUES (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6576,14 +6679,44 @@ function migrateV5Database(
     `).get() as { applied_at: number };
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (6, ?)
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (6, ?), (7, ?)
+    `).run(now, now);
+    database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    verifyVersionedDatabase(database, options, 7);
+  });
+}
+
+function migrateV6Database(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  sourceDataVersion: number,
+): void {
+  beginImmediate(database, () => {
+    if (Number(database.pragma("data_version", { simple: true })) !== sourceDataVersion) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite v6 data changed while its migration backup was created",
+      );
+    }
+    verifyVersionedDatabase(database, options, 6);
+    const previous = database.prepare(`
+      SELECT applied_at FROM dacs_migrations WHERE version = 6
+    `).get() as { applied_at: number };
+    const now = Math.max(databaseTime(database), previous.applied_at);
+    applyMigration7(database);
+    database.prepare(`
+      UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
+    `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    database.prepare(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (7, ?)
     `).run(now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6813,8 +6946,20 @@ export async function openDacsNodeSqliteDatabase(
         }
         throw error;
       }
+    } else if (admittedVersion === 6) {
+      verifyVersionedDatabase(database, options, 6);
+      const backup = await createValidatedBackup(database, options, 6);
+      try {
+        migrateV6Database(database, options, backup.sourceDataVersion);
+      } catch (error) {
+        if (error instanceof DacsNodeSqliteError &&
+            error.reasonCode === "database-version-raced") {
+          removeGeneratedBackup(backup.backupPath);
+        }
+        throw error;
+      }
     } else {
-      beginImmediate(database, () => verifyVersionedDatabase(database, options, 6));
+      beginImmediate(database, () => verifyVersionedDatabase(database, options, 7));
     }
     chmodSync(location.databasePath, 0o600);
     const journalMode = database.pragma("journal_mode = WAL", { simple: true });
@@ -6825,7 +6970,7 @@ export async function openDacsNodeSqliteDatabase(
         "SQLite WAL journal mode is unavailable",
       );
     }
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
     return new DacsNodeSqliteDatabaseImpl(database, options, location);
   } catch (error) {
     database.close();

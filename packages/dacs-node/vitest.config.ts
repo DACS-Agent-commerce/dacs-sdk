@@ -19,6 +19,7 @@ export default defineConfig({
       { find: "@kynesyslabs/dacs/crypto", replacement: coreSource("crypto") },
       { find: "@kynesyslabs/dacs/identity", replacement: coreSource("identity") },
       { find: "@kynesyslabs/dacs/negotiate", replacement: coreSource("negotiate") },
+      { find: "@kynesyslabs/dacs/rails", replacement: coreSource("rails") },
       { find: "@kynesyslabs/dacs/seller", replacement: coreSource("seller") },
       { find: "@kynesyslabs/dacs/substrate", replacement: coreSource("substrate") },
     ],

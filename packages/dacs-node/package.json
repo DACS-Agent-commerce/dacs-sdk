@@ -43,8 +43,8 @@
     "releaseMetadataVersion": 1,
     "standardRevision": "965df755aba4ff392f1fb37a93d287242b177ba4",
     "configSchemaVersion": 1,
-    "sqliteSchemaVersion": 6,
-    "supportedSqliteMigrationFrom": [1, 2, 3, 4, 5, 6],
+    "sqliteSchemaVersion": 7,
+    "supportedSqliteMigrationFrom": [1, 2, 3, 4, 5, 6, 7],
     "breakingConfigurationChanges": []
   },
   "scripts": {
