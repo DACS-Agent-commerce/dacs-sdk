@@ -4,7 +4,10 @@ import {
   evmErc20SettleCore,
   type EvmTransferClient,
 } from "../../src/rails/evmErc20.js";
-import type { EvmTransferFinalityClient } from "../../src/rails/evmTransferFinality.js";
+import {
+  verifyEvmTransferFinality,
+  type EvmTransferFinalityClient,
+} from "../../src/rails/evmTransferFinality.js";
 
 const NETWORK = "eip155:84532";
 const TOKEN = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
@@ -258,6 +261,80 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
     }));
     expect(confirmations).toBe(2);
     expect(res.finalityObservedAt).toBe(1_700_000_011_000);
+  });
+
+  test("pins all settlement params before the transfer callback", async () => {
+    const mutable = { ...params };
+    let sent: { token: string; to: string; amount: bigint } | undefined;
+    let waited = 0;
+    const result = await evmErc20SettleCore(mutable, client({
+      transfer: async (input) => {
+        sent = input;
+        Object.assign(mutable, {
+          network: "eip155:8453",
+          tokenAddress: "0x3333333333333333333333333333333333333333",
+          recipientEvm: "0x4444444444444444444444444444444444444444",
+          amount: "1",
+          finalityBlocks: 1,
+        });
+        return TX_HASH;
+      },
+      finalityClient: finalityClient({
+        waitForTransactionReceipt: async (input) => {
+          waited = input.confirmations;
+          return finalityClient().getTransactionReceipt({ hash: input.hash });
+        },
+      }),
+    }));
+
+    expect(sent).toEqual({ token: TOKEN, to: RECIPIENT, amount: 1000000n });
+    expect(waited).toBe(2);
+    expect(result).toMatchObject({
+      chainId: NETWORK,
+      payer: PAYER,
+      payee: RECIPIENT,
+      finality: { model: "block-depth", finalityBlocks: 2 },
+    });
+  });
+
+  test("pins the public finality request before the chain-id callback", async () => {
+    const mutable = {
+      chainId: 84532,
+      transactionHash: TX_HASH,
+      tokenAddress: TOKEN,
+      payerAddress: PAYER,
+      payeeAddress: RECIPIENT,
+      amount: 1000000n,
+      minimumConfirmations: 2,
+    };
+    const base = finalityClient();
+    let waited: { hash: string; confirmations: number } | undefined;
+    const observed = await verifyEvmTransferFinality(mutable, {
+      ...base,
+      getChainId: async () => {
+        Object.assign(mutable, {
+          chainId: 8453,
+          transactionHash: `0x${"d".repeat(64)}`,
+          tokenAddress: "0x3333333333333333333333333333333333333333",
+          payerAddress: "0x4444444444444444444444444444444444444444",
+          payeeAddress: "0x5555555555555555555555555555555555555555",
+          amount: 1n,
+          minimumConfirmations: 1,
+        });
+        return 84532;
+      },
+      waitForTransactionReceipt: async (input) => {
+        waited = input;
+        return base.getTransactionReceipt({ hash: input.hash });
+      },
+    });
+
+    expect(waited).toEqual({ hash: TX_HASH, confirmations: 2 });
+    expect(observed).toMatchObject({
+      chainId: 84532,
+      transactionHash: "a".repeat(64),
+      confirmations: 2,
+    });
   });
 
   test("canonicalizes a valid upper-case submitted transaction hash", async () => {

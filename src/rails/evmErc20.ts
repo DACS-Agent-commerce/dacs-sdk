@@ -48,47 +48,55 @@ export async function evmErc20SettleCore(
   params: EvmErc20SettleParams,
   client: EvmTransferClient,
 ): Promise<SettleResult> {
+  const network = params.network;
+  const tokenAddress = params.tokenAddress;
+  const recipientEvm = params.recipientEvm;
+  const requestedAmount = params.amount;
+  const finalityBlocks = params.finalityBlocks;
+  const payerAddress = client.address;
+  const transfer = client.transfer.bind(client);
+  const finalityClient = client.finalityClient;
   let amount: bigint;
   try {
-    amount = BigInt(params.amount);
+    amount = BigInt(requestedAmount);
   } catch {
-    throw new DacsError(`evm-erc20: invalid base-unit amount ${params.amount}`);
+    throw new DacsError(`evm-erc20: invalid base-unit amount ${requestedAmount}`);
   }
   if (amount <= 0n) {
-    throw new DacsError(`evm-erc20: amount must be > 0 (got ${params.amount})`);
+    throw new DacsError(`evm-erc20: amount must be > 0 (got ${requestedAmount})`);
   }
-  if (!Number.isSafeInteger(params.finalityBlocks) || params.finalityBlocks <= 0) {
+  if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
     throw new DacsError("evm-erc20: finalityBlocks must be a positive safe integer");
   }
-  const chainId = chainIdFromCaip2(params.network);
-  if (await client.finalityClient.getChainId() !== chainId) {
+  const chainId = chainIdFromCaip2(network);
+  if (await finalityClient.getChainId() !== chainId) {
     throw new DacsError(
       "evm-erc20: RPC chain id does not match the negotiated network",
     );
   }
 
-  const txHash = await client.transfer({
-    token: params.tokenAddress,
-    to: params.recipientEvm,
+  const txHash = await transfer({
+    token: tokenAddress,
+    to: recipientEvm,
     amount,
   });
   const observed = await verifyEvmTransferFinality({
     chainId,
     transactionHash: txHash,
-    tokenAddress: params.tokenAddress,
-    payerAddress: client.address,
-    payeeAddress: params.recipientEvm,
+    tokenAddress,
+    payerAddress,
+    payeeAddress: recipientEvm,
     amount,
-    minimumConfirmations: params.finalityBlocks,
-  }, client.finalityClient);
+    minimumConfirmations: finalityBlocks,
+  }, finalityClient);
 
   return {
     ok: true,
     txHash: `0x${observed.transactionHash}`,
-    chainId: params.network,
-    payer: client.address,
-    payee: params.recipientEvm,
-    finality: { model: "block-depth", finalityBlocks: params.finalityBlocks },
+    chainId: network,
+    payer: payerAddress,
+    payee: recipientEvm,
+    finality: { model: "block-depth", finalityBlocks },
     finalityObservedAt: observed.finalityObservedAt,
     blockNumber: observed.blockNumber,
     txRef: {
@@ -147,14 +155,18 @@ export interface EvmErc20Rail {
 export async function createEvmErc20Rail(
   config: EvmErc20RailConfig,
 ): Promise<EvmErc20Rail> {
-  if (!Number.isSafeInteger(config.finalityBlocks) || config.finalityBlocks <= 0) {
+  const evmPrivateKey = config.evmPrivateKey;
+  const requestedRpcUrl = config.rpcUrl;
+  const network = config.network;
+  const finalityBlocks = config.finalityBlocks;
+  if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
     throw new DacsError(
       "createEvmErc20Rail requires a positive finalityBlocks value",
     );
   }
   let rpcUrl: URL;
   try {
-    rpcUrl = new URL(config.rpcUrl);
+    rpcUrl = new URL(requestedRpcUrl);
   } catch {
     throw new DacsError("createEvmErc20Rail requires an absolute RPC URL");
   }
@@ -174,16 +186,16 @@ export async function createEvmErc20Rail(
   const { createWalletClient, createPublicClient, http, defineChain } = viem;
   const { privateKeyToAccount } = accounts;
 
-  const id = chainIdFromCaip2(config.network);
+  const id = chainIdFromCaip2(network);
   const chain = defineChain({
     id,
-    name: config.network,
+    name: network,
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: { default: { http: [config.rpcUrl] } },
+    rpcUrls: { default: { http: [requestedRpcUrl] } },
   });
-  const account = privateKeyToAccount(config.evmPrivateKey as `0x${string}`);
-  const wallet = createWalletClient({ account, chain, transport: http(config.rpcUrl) });
-  const pub = createPublicClient({ chain, transport: http(config.rpcUrl) });
+  const account = privateKeyToAccount(evmPrivateKey as `0x${string}`);
+  const wallet = createWalletClient({ account, chain, transport: http(requestedRpcUrl) });
+  const pub = createPublicClient({ chain, transport: http(requestedRpcUrl) });
 
   const client: EvmTransferClient = {
     address: account.address,
@@ -212,7 +224,7 @@ export async function createEvmErc20Rail(
     address: account.address,
     settle: (params) => evmErc20SettleCore({
       ...params,
-      finalityBlocks: config.finalityBlocks,
+      finalityBlocks,
     }, client),
   };
 }
