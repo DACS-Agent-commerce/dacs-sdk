@@ -197,7 +197,7 @@ describe("create-dacs-agent", () => {
     ).rejects.toThrow(/symbolic link/);
   });
 
-  test("generates a guarded authority-separated live Docker bootstrap", async () => {
+  test("generates a guarded authority-separated dual-rail Docker bootstrap", async () => {
     const parent = await temporaryDirectory();
     const target = join(parent, "live-agent");
     const result = await createDacsAgentProject({
@@ -206,6 +206,7 @@ describe("create-dacs-agent", () => {
       profile: "dacs-sdk:fixed-price-x402:v1",
       role: "buyer",
       deployment: "docker",
+      rails: "both",
       install: false,
     });
     expect(result).toMatchObject({
@@ -213,6 +214,7 @@ describe("create-dacs-agent", () => {
       profile: "dacs-sdk:fixed-price-x402:v1",
       role: "buyer",
       deployment: "docker",
+      rails: "both",
       installed: false,
       doctor: "not-run",
     });
@@ -252,8 +254,8 @@ describe("create-dacs-agent", () => {
       releaseMetadataVersion: 1,
       standardRevision: "965df755aba4ff392f1fb37a93d287242b177ba4",
       configSchemaVersion: 1,
-      sqliteSchemaVersion: 6,
-      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6],
+      sqliteSchemaVersion: 7,
+      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7],
       breakingConfigurationChanges: [],
     });
     expect(packageSource.scripts).toMatchObject({
@@ -276,6 +278,8 @@ describe("create-dacs-agent", () => {
     expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_BUYER_DEMOS_SECRET_FILE");
     expect(compose).toContain("DACS_SELLER_DEMOS_SECRET_FILE");
+    expect(compose).toContain("DACS_X402_LISTING_DRAFT_FILE");
+    expect(compose).toContain("DACS_PAY_DEM_LISTING_DRAFT_FILE");
     expect(compose).toContain("read_only: true");
     expect(compose).toContain("DACS_RUNTIME_UID");
     expect(compose).toContain("no-new-privileges:true");
@@ -295,6 +299,7 @@ describe("create-dacs-agent", () => {
     const generatedConfig = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(generatedConfig).toContain("write confirmation must not be persisted in .env");
     expect(generatedConfig).toContain("dacs4:registry:v0.1");
+    expect(generatedConfig).toContain('["pay-dem","x402"]');
     expect(generatedConfig).not.toContain("dacs4:registry:x402");
     const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
     expect(dockerfile).toContain("RUN npm ci --ignore-scripts");
@@ -323,6 +328,11 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsListingSetupExecutorV1");
     expect(combined).toContain("createDacsPurchaseQueueExecutorV1");
     expect(combined).toContain("prepareDacsX402PurchaseV1");
+    expect(combined).toContain("prepareDacsPayDemPurchaseV1");
+    expect(combined).toContain("resolveDacsPayDemExistingListingV1");
+    expect(combined).toContain("createDacsFixedPriceMultirailBuyerLiveV1");
+    expect(combined).toContain("createDacsFixedPriceMultirailSellerLiveV1");
+    expect(combined).toContain("--max-total-debit-dem");
     expect(combined).toContain("dacs-generated-purchase-request/v1");
     expect(combined).toContain("--resume-job");
     expect(combined).toContain("resume: input.resume");
@@ -363,6 +373,44 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("registry.npmjs.org");
     expect(combined).toContain("automatic-upgrade-not-supported");
     expect(combined).not.toContain('availableVersion: "not-queried"');
+  });
+
+  test("generates a native DEM project without EVM or x402 dependencies", async () => {
+    const parent = await temporaryDirectory();
+    const target = join(parent, "native-agent");
+    const result = await createDacsAgentProject({
+      targetDirectory: target,
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "seller",
+      deployment: "docker",
+      rails: "pay-dem",
+      install: false,
+    });
+    expect(result).toMatchObject({ rails: "pay-dem", installed: false });
+    const packageSource = JSON.parse(await readFile(join(target, "package.json"), "utf8"));
+    expect(packageSource.dependencies).toEqual({
+      "@kynesyslabs/dacs": "0.1.0-alpha.0",
+      "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
+      "@kynesyslabs/demosdk": "4.0.16",
+      tsx: "4.23.12",
+    });
+    const config = await readFile(join(target, "dacs.config.ts"), "utf8");
+    expect(config).toContain('["pay-dem"]');
+    expect(config).toContain('requestedNetwork: "demos"');
+    const environment = await readFile(join(target, ".env.example"), "utf8");
+    const compose = await readFile(join(target, "compose.yaml"), "utf8");
+    for (const source of [environment, compose]) {
+      expect(source).not.toContain("DACS_BUYER_EVM_SECRET_FILE");
+      expect(source).not.toContain("DACS_SELLER_EVM_SECRET_FILE");
+      expect(source).not.toContain("DACS_EVM_RPC_URL");
+      expect(source).not.toContain("DACS_X402_FACILITATOR_URL");
+      expect(source).not.toContain("DACS_MAX_EVM_NETWORK_FEE_ETH");
+      expect(source).toContain("DACS_PAY_DEM_LISTING_DRAFT_FILE");
+      expect(source).toContain("DACS_MAX_PAY_DEM_TOTAL_DEBIT");
+    }
+    expect(environment).toContain("DACS_MAX_SERVICE_ASSET=DEM");
+    expect(compose).toContain("DACS_MAX_SERVICE_ASSET:-DEM");
   });
 
   test("generates a real local role-service lifecycle when selected", async () => {
@@ -477,13 +525,18 @@ describe("create-dacs-agent", () => {
     expect(parseCreateDacsAgentArguments([
       "my-agent", "--yes", "--mode", "live-demos", "--profile",
       "dacs-sdk:fixed-price-x402:v1", "--role", "seller", "--deploy", "docker",
+      "--rails", "both",
     ])).toMatchObject({
       targetDirectory: "my-agent",
       mode: "live-demos",
       profile: "dacs-sdk:fixed-price-x402:v1",
       role: "seller",
       deployment: "docker",
+      rails: "both",
       yes: true,
     });
+    expect(() => parseCreateDacsAgentArguments([
+      "my-agent", "--yes", "--mode", "live-demos", "--rails", "fallback",
+    ])).toThrow(/x402, pay-dem or both/);
   });
 });

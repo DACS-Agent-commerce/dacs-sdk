@@ -25,6 +25,8 @@ export interface CreateDacsAgentOptions {
   profile?: string;
   role?: "demo-all" | "buyer" | "seller" | "verifier";
   deployment?: "local" | "docker";
+  /** Live payment capability: one rail or two signed sibling Listings. */
+  rails?: "x402" | "pay-dem" | "both";
   install?: boolean;
   run?: boolean;
 }
@@ -35,6 +37,7 @@ export interface CreatedDacsAgentProject {
   profile: typeof OFFLINE_PROFILE | typeof LIVE_PROFILE;
   role: "demo-all" | "buyer" | "seller" | "verifier";
   deployment: "local" | "docker";
+  rails?: "x402" | "pay-dem" | "both";
   installed: boolean;
   ran: boolean;
   doctor: "not-run" | "pass" | "blocked";
@@ -165,6 +168,7 @@ export async function createDacsAgentProject(
       | typeof LIVE_PROFILE;
   const role = options.role ?? (mode === "offline" ? "demo-all" : "buyer");
   const deployment = options.deployment ?? "local";
+  const rails = options.rails ?? "both";
   const install = options.install ?? true;
   const run = options.run ?? false;
 
@@ -176,6 +180,9 @@ export async function createDacsAgentProject(
   }
   if (deployment !== "local" && deployment !== "docker") {
     throw new Error("deployment must be local or docker");
+  }
+  if (rails !== "x402" && rails !== "pay-dem" && rails !== "both") {
+    throw new Error("rails must be x402, pay-dem or both");
   }
   if (typeof install !== "boolean" || typeof run !== "boolean") {
     throw new Error("install and run options must be boolean");
@@ -209,6 +216,7 @@ export async function createDacsAgentProject(
     deployment,
     mode,
     role,
+    rails,
     runtimeUid: typeof process.getuid === "function" && process.getuid() > 0
       ? process.getuid() : 10001,
     runtimeGid: typeof process.getgid === "function" && process.getgid() > 0
@@ -276,6 +284,7 @@ export async function createDacsAgentProject(
     profile,
     role,
     deployment,
+    ...(mode === "live-demos" ? { rails } : {}),
     installed: install,
     ran: run,
     doctor,

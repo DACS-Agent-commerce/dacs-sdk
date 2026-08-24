@@ -15,6 +15,7 @@ interface ParsedArguments extends CreateDacsAgentOptions {
 
 const ROLES = new Set(["demo-all", "buyer", "seller", "verifier"]);
 const DEPLOYMENTS = new Set(["local", "docker"]);
+const RAILS = new Set(["x402", "pay-dem", "both"]);
 
 function valueAfter(args: string[], index: number, flag: string): string {
   const value = args[index + 1];
@@ -30,6 +31,7 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
   let profile: string | undefined;
   let role: CreateDacsAgentOptions["role"];
   let deployment: CreateDacsAgentOptions["deployment"];
+  let rails: CreateDacsAgentOptions["rails"];
   let yes = false;
   let install = true;
   let run = false;
@@ -63,6 +65,13 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
       }
       deployment = value as CreateDacsAgentOptions["deployment"];
       index += 1;
+    } else if (argument === "--rails") {
+      const value = valueAfter(args, index, argument);
+      if (!RAILS.has(value)) {
+        throw new Error("--rails must be x402, pay-dem or both");
+      }
+      rails = value as CreateDacsAgentOptions["rails"];
+      index += 1;
     } else if (argument.startsWith("--")) {
       throw new Error(`unknown option: ${argument}`);
     } else if (targetDirectory === undefined) {
@@ -78,6 +87,7 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
     profile,
     role,
     deployment,
+    rails,
     install,
     run,
     yes,
@@ -133,6 +143,13 @@ async function interactive(parsed: ParsedArguments): Promise<ParsedArguments> {
       DEPLOYMENTS,
       "local",
     ))) as CreateDacsAgentOptions["deployment"];
+  const rails = mode === "live-demos"
+    ? (parsed.rails ?? await boundedAnswer(
+        "Payment rails [both] (x402/pay-dem/both): ",
+        RAILS,
+        "both",
+      )) as CreateDacsAgentOptions["rails"]
+    : undefined;
   const runAnswer = mode === "offline"
     ? parsed.run ? "yes" : await boundedAnswer(
       "Run offline smoke now? [yes] (yes/no): ", new Set(["yes", "no"]), "yes")
@@ -144,6 +161,7 @@ async function interactive(parsed: ParsedArguments): Promise<ParsedArguments> {
     profile: parsed.profile ?? (mode === "offline" ? OFFLINE_PROFILE : LIVE_PROFILE),
     role,
     deployment,
+    rails,
     run: runAnswer === "yes",
   };
 }

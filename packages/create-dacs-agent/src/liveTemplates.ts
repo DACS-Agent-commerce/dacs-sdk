@@ -2,6 +2,7 @@ export interface LiveProjectTemplateOptions {
   packageName: string;
   deployment: "local" | "docker";
   role: "buyer" | "seller" | "verifier";
+  rails: "x402" | "pay-dem" | "both";
   runtimeUid: number;
   runtimeGid: number;
 }
@@ -12,9 +13,10 @@ const STANDARD_REVISION = "965df755aba4ff392f1fb37a93d287242b177ba4";
 const CONFIG_SCHEMA_VERSION = 1;
 const SQLITE_SCHEMA_VERSION = 7;
 
-function packageJson(packageName: string): string {
+function packageJson(options: LiveProjectTemplateOptions): string {
+  const x402 = options.rails !== "pay-dem";
   return JSON.stringify({
-    name: packageName,
+    name: options.packageName,
     version: "0.1.0",
     private: true,
     type: "module",
@@ -41,11 +43,13 @@ function packageJson(packageName: string): string {
       "@kynesyslabs/dacs": SDK_VERSION,
       "@kynesyslabs/dacs-node": SDK_VERSION,
       "@kynesyslabs/demosdk": "4.0.16",
-      "@x402/core": "2.15.0",
-      "@x402/evm": "2.15.0",
-      "@x402/fetch": "2.15.0",
+      ...(x402 ? {
+        "@x402/core": "2.15.0",
+        "@x402/evm": "2.15.0",
+        "@x402/fetch": "2.15.0",
+      } : {}),
       tsx: TSX_VERSION,
-      "viem": "2.55.19",
+      ...(x402 ? { "viem": "2.55.19" } : {}),
     },
     dacs: {
       generatorVersion: SDK_VERSION,
@@ -84,7 +88,14 @@ const TSCONFIG = `{
 }
 `;
 
-function dacsConfig(role: LiveProjectTemplateOptions["role"]): string {
+function dacsConfig(options: LiveProjectTemplateOptions): string {
+  const enabledProfiles = options.rails === "both"
+    ? ["pay-dem", "x402"]
+    : [options.rails];
+  const requestedNetwork = options.rails === "pay-dem"
+    ? '"demos"'
+    : 'process.env.DACS_X402_NETWORK ?? "eip155:84532"';
+  const serviceAsset = options.rails === "pay-dem" ? "DEM" : "USDC";
   return `import { existsSync, readFileSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 
@@ -131,11 +142,12 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
     },
     rail: {
       registryIndexRef: process.env.DACS_RAIL_REGISTRY_INDEX_REF ?? "dacs4:registry:v0.1",
-      requestedNetwork: process.env.DACS_X402_NETWORK ?? "eip155:84532",
+      requestedNetwork: ${requestedNetwork},
+      enabledProfiles: ${JSON.stringify(enabledProfiles)},
     },
     limits: {
       maxServiceAmount: {
-        asset: process.env.DACS_MAX_SERVICE_ASSET ?? "USDC",
+        asset: process.env.DACS_MAX_SERVICE_ASSET ?? "${serviceAsset}",
         amount: process.env.DACS_MAX_SERVICE_AMOUNT ?? "1",
       },
       maxSetupSpendDem: process.env.DACS_MAX_SETUP_SPEND_DEM ?? "10",
@@ -146,7 +158,7 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
 }
 
 export function selectedGeneratedRoleConfig(): DacsLiveAgentConfig {
-  const selected = process.env.DACS_ROLE ?? "${role}";
+  const selected = process.env.DACS_ROLE ?? "${options.role}";
   if (selected !== "buyer" && selected !== "seller" && selected !== "verifier") {
     throw new Error("DACS_ROLE must be buyer, seller or verifier");
   }
@@ -160,6 +172,7 @@ export default selectedGeneratedRoleConfig;
 const CONFIG_SOURCE = `import { resolve } from "node:path";
 
 import {
+  dacsLiveRailProfiles,
   validateDacsAgentConfig,
   type DacsLiveAgentConfig,
 } from "@kynesyslabs/dacs-node";
@@ -206,6 +219,10 @@ export function configuredX402RailId(): string {
   return process.env.DACS_X402_RAIL_ID ?? "x402:default";
 }
 
+export function configuredPayDemRailId(): string {
+  return process.env.DACS_PAY_DEM_RAIL_ID ?? "demos-native:DEM";
+}
+
 export function configuredX402FacilitatorUrl(): string | undefined {
   const value = process.env.DACS_X402_FACILITATOR_URL;
   return value === undefined || value.trim() === "" ? undefined : value;
@@ -221,8 +238,13 @@ export function configuredSellerEvmPayee(): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
-export function configuredListingDraftFile(): string | undefined {
-  const value = process.env.DACS_LISTING_DRAFT_FILE;
+export function configuredListingDraftFile(
+  rail?: "x402" | "pay-dem",
+): string | undefined {
+  const value = process.env[rail === "x402"
+    ? "DACS_X402_LISTING_DRAFT_FILE"
+    : rail === "pay-dem" ? "DACS_PAY_DEM_LISTING_DRAFT_FILE" : "DACS_LISTING_DRAFT_FILE"] ??
+    process.env.DACS_LISTING_DRAFT_FILE;
   return value === undefined || value.trim() === "" ? undefined : resolve(value);
 }
 
@@ -260,6 +282,30 @@ export function configuredFixedPriceAmount(): string {
   return value;
 }
 
+export function configuredFixedPricePayDemAmount(): string {
+  const value = process.env.DACS_PAY_DEM_FIXED_PRICE_AMOUNT ?? "1";
+  if (value.length === 0 || value.trim() !== value) {
+    throw new Error("native DEM fixed service price is invalid");
+  }
+  return value;
+}
+
+export function configuredMaximumPayDemServiceAmount(): string {
+  const value = process.env.DACS_MAX_PAY_DEM_SERVICE_AMOUNT ?? "1";
+  if (value.length === 0 || value.trim() !== value) {
+    throw new Error("native DEM maximum service price is invalid");
+  }
+  return value;
+}
+
+export function configuredMaximumPayDemTotalDebit(): string {
+  const value = process.env.DACS_MAX_PAY_DEM_TOTAL_DEBIT ?? "3";
+  if (value.length === 0 || value.trim() !== value) {
+    throw new Error("native DEM total debit ceiling is invalid");
+  }
+  return value;
+}
+
 export function actorDatabasePath(role: GeneratedLiveRole): string {
   return resolve(loadRoleConfig(role).dataDirectory, "actor.sqlite");
 }
@@ -269,7 +315,10 @@ export function listingDiscoveryDirectory(): string {
 }
 
 export function actorSecretPaths(role: GeneratedLiveRole): readonly string[] {
-  return SECRET_NAMES[role].flatMap((name) => {
+  const profiles = role === "verifier" ? [] : dacsLiveRailProfiles(loadRoleConfig(role));
+  return SECRET_NAMES[role].filter((name) =>
+    !name.endsWith("_EVM_SECRET_FILE") || profiles.includes("x402")
+  ).flatMap((name) => {
     const value = process.env[name];
     return value === undefined || value.trim() === "" ? [] : [resolve(value)];
   });
@@ -279,6 +328,8 @@ export function actorSecretPath(
   role: "buyer" | "seller",
   kind: "demos-identity" | "evm-wallet",
 ): string | undefined {
+  if (kind === "evm-wallet" &&
+      !dacsLiveRailProfiles(loadRoleConfig(role)).includes("x402")) return undefined;
   const name = role === "buyer"
     ? kind === "demos-identity" ? "DACS_BUYER_DEMOS_SECRET_FILE" : "DACS_BUYER_EVM_SECRET_FILE"
     : kind === "demos-identity" ? "DACS_SELLER_DEMOS_SECRET_FILE" : "DACS_SELLER_EVM_SECRET_FILE";
@@ -336,6 +387,7 @@ import {
   createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
   createViemDacsX402BalanceReadClientV1,
+  dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
   establishDacsRoleServiceReadinessV1,
   inspectDacsDemosBalanceHeadroomV1,
@@ -344,6 +396,8 @@ import {
   inspectDacsX402GasBalanceV1,
   inspectDacsX402TokenDomainV1,
   inspectDacsX402PurchaseCostV1,
+  inspectDacsPayDemListingDraftV1,
+  resolveDacsPayDemExistingListingV1,
   resolveDacsX402ExistingListingV1,
   inspectDacsX402ListingDraftV1,
   loadDacsSecretV1,
@@ -362,7 +416,6 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "@kynesyslabs/dacs-node/sqlite";
-import { HTTPFacilitatorClient } from "@x402/core/http";
 
 import {
   actorDatabasePath,
@@ -371,7 +424,11 @@ import {
   configuredAuthority,
   configuredEvmRpcUrl,
   configuredFixedPriceAmount,
+  configuredFixedPricePayDemAmount,
   configuredListingDraftFile,
+  configuredMaximumPayDemServiceAmount,
+  configuredMaximumPayDemTotalDebit,
+  configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
   configuredX402AuthorizationSearchFromBlock,
@@ -400,10 +457,14 @@ interface DoctorActor {
 type DoctorActors = Readonly<Record<"buyer" | "seller", Readonly<DoctorActor>>>;
 
 export interface GeneratedDoctorOperationV1 {
-  listingRef: string;
-  maximumServiceAmount: string;
-  maximumNetworkFeeEth: string;
+  rail: "x402" | "pay-dem";
+  listingRef?: string;
+  maximumServiceAmount?: string;
+  maximumNetworkFeeEth?: string;
+  maximumTotalDebitDem?: string;
 }
+
+type GeneratedRailProfile = "x402" | "pay-dem";
 
 function pass(facts?: Readonly<Record<string, string | number | boolean | null>>) {
   return Object.freeze({ status: "pass" as const, ...(facts === undefined ? {} : { facts }) });
@@ -443,10 +504,39 @@ function listingPriceAmount(value: unknown): string | undefined {
   return typeof amount === "string" ? amount : undefined;
 }
 
+function decimalAtMost(value: string, ceiling: string): boolean {
+  const left = canonicalizeDecimal(value);
+  const right = canonicalizeDecimal(ceiling);
+  if (left.startsWith("-") || right.startsWith("-")) return false;
+  const scale = Math.max(left.split(".")[1]?.length ?? 0, right.split(".")[1]?.length ?? 0);
+  const units = (input: string) => {
+    const [whole, fraction = ""] = input.split(".");
+    return BigInt(whole! + fraction.padEnd(scale, "0"));
+  };
+  return units(left) <= units(right);
+}
+
+async function x402FacilitatorSupported(url: string): Promise<unknown> {
+  // The non-literal optional import keeps DEM-only generated projects free of
+  // x402 packages while retaining an exact runtime capability check when x402
+  // is enabled.
+  const moduleName: string = "@x402/core/http";
+  const loaded = await import(moduleName) as Readonly<{
+    HTTPFacilitatorClient?: new (options: Readonly<{ url: string }>) => Readonly<{
+      getSupported(): Promise<unknown>;
+    }>;
+  }>;
+  if (typeof loaded.HTTPFacilitatorClient !== "function") {
+    throw new Error("x402 facilitator client is unavailable");
+  }
+  return new loaded.HTTPFacilitatorClient({ url }).getSupported();
+}
+
 async function openDoctorActors(
   phase: DacsLiveDoctorPhaseV1,
 ): Promise<DoctorActors | undefined> {
   const opened: DoctorActor[] = [];
+  const x402Enabled = dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402");
   try {
     for (const role of ROLES) {
       const authority = configuredAuthority(role);
@@ -467,17 +557,19 @@ async function openDoctorActors(
         writePolicy: "read-only",
       });
       const evmSecretPath = actorSecretPath(role, "evm-wallet");
-      if (evmSecretPath === undefined) throw new Error("doctor EVM secret unavailable");
-      const evmSecret = await loadDacsSecretV1({
-        name: role + "-doctor-evm-wallet",
-        mode: "live-demos",
-        filePath: evmSecretPath,
-      });
-      const evmIdentity = await deriveDacsEvmRoleIdentityV1({
-        config: loadRoleConfig(role),
-        role,
-        evmPrivateKey: evmSecret,
-      });
+      const evmIdentity = x402Enabled ? await (async () => {
+        if (evmSecretPath === undefined) throw new Error("doctor EVM secret unavailable");
+        const evmSecret = await loadDacsSecretV1({
+          name: role + "-doctor-evm-wallet",
+          mode: "live-demos",
+          filePath: evmSecretPath,
+        });
+        return deriveDacsEvmRoleIdentityV1({
+          config: loadRoleConfig(role),
+          role,
+          evmPrivateKey: evmSecret,
+        });
+      })() : Object.freeze({ network: "disabled", chainId: 0, address: "" });
       const database = phase === "post-start"
         ? await openDacsNodeSqliteDatabase({
             databasePath: actorDatabasePath(role),
@@ -556,7 +648,8 @@ async function diskSpace() {
 
 async function secrets() {
   const paths = ROLES.flatMap((role) => actorSecretPaths(role));
-  if (paths.length !== 4) return blocked("role-secret-file-missing");
+  const expected = dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402") ? 4 : 2;
+  if (paths.length !== expected) return blocked("role-secret-file-missing");
   const hashes: string[] = [];
   try {
     for (const path of paths) {
@@ -651,24 +744,27 @@ function baseProbes(
   operation: Readonly<GeneratedDoctorOperationV1> | undefined,
 ): DacsLiveDoctorProbesV1 {
   const actorUnavailable = () => blocked("role-demos-runtime-unavailable");
+  const x402Disabled = () => blocked("x402-profile-disabled");
+  const payDemDisabled = () => blocked("pay-dem-profile-disabled");
   const stewardAuthority = configuredRailStewardAuthority();
   const stewardPublicKey = stewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(stewardAuthority);
-  let railTask: ReturnType<typeof resolveRail> | undefined;
-  const selectedRail = () => {
+  const enabledProfiles = dacsLiveRailProfiles(loadRoleConfig("buyer"));
+  const railTasks: Partial<Record<GeneratedRailProfile, ReturnType<typeof resolveRail>>> = {};
+  const selectedRail = (profile: GeneratedRailProfile) => {
     if (actors === undefined || stewardAuthority === undefined || stewardPublicKey === null) {
       throw new Error("rail authority prerequisite unavailable");
     }
-    railTask ??= resolveRail(
+    railTasks[profile] ??= resolveRail(
       RAIL_REGISTRY_INDEX_ADDRESS,
-      configuredX402RailId(),
+      profile === "x402" ? configuredX402RailId() : configuredPayDemRailId(),
       createDacsDemosRailRegistryProviderV1({
         runtime: actors.buyer.runtime,
         stewardAuthority,
         stewardPublicKey,
       }),
     );
-    return railTask;
+    return railTasks[profile]!;
   };
   let fundingTask: Promise<Readonly<{
     asset: Readonly<DacsLiveDoctorProbeResultV1>;
@@ -680,7 +776,7 @@ function baseProbes(
     const rpcUrl = configuredEvmRpcUrl();
     if (rpcUrl === undefined) throw new Error("x402 funding RPC unavailable");
     fundingTask ??= (async () => {
-      const rail = await selectedRail();
+      const rail = await selectedRail("x402");
       const buyer = loadRoleConfig("buyer");
       if (rail.asset.kind !== "erc20" ||
           rail.asset.chainId !== actors.buyer.evmIdentity.chainId ||
@@ -700,7 +796,8 @@ function baseProbes(
           asset: rail.asset.contract,
           symbol: rail.asset.symbol,
           decimals: rail.asset.decimals,
-          minimumAmount: operation?.maximumServiceAmount ?? buyer.limits.maxServiceAmount.amount,
+          minimumAmount: operation?.rail === "x402" && operation.maximumServiceAmount !== undefined
+            ? operation.maximumServiceAmount : buyer.limits.maxServiceAmount.amount,
         }),
         inspectDacsX402GasBalanceV1({
           client,
@@ -722,33 +819,69 @@ function baseProbes(
     })();
     return fundingTask;
   };
-  let listingTask: ReturnType<typeof resolveDacsX402ExistingListingV1> | undefined;
+  let x402ListingTask: ReturnType<typeof resolveDacsX402ExistingListingV1> | undefined;
+  let payDemListingTask: ReturnType<typeof resolveDacsPayDemExistingListingV1> | undefined;
   const selectedListing = () => {
-    if (actors === undefined || operation === undefined) {
+    if (actors === undefined || operation === undefined || operation.listingRef === undefined ||
+        operation.maximumServiceAmount === undefined) {
       throw new Error("existing Listing operation context unavailable");
     }
+    const listingRef = operation.listingRef;
+    const maximumServiceAmount = operation.maximumServiceAmount;
+    const operationRail = operation.rail;
     const sellerEndpoint = loadRoleConfig("seller").publicBaseUrl;
     if (sellerEndpoint === undefined) throw new Error("seller public endpoint unavailable");
-    listingTask ??= (async () => resolveDacsX402ExistingListingV1({
-      listingRef: operation.listingRef,
+    const common = {
+      listingRef,
       sellerAuthority: actors.seller.authority,
       sellerPublicKey: actors.seller.runtime.publicKey,
       sellerPublicEndpoint: sellerEndpoint,
-      sellerPayee: actors.seller.evmIdentity.address,
-      network: loadRoleConfig("buyer").rail.requestedNetwork as \`eip155:\${number}\`,
-      rail: await selectedRail(),
-      maximumServiceAmount: operation.maximumServiceAmount,
+      maximumServiceAmount,
       now: Date.now(),
-      readAnchor: (locator) => actors.buyer.runtime.adapter.readAnchor(locator),
-      async authenticateAnchor(input) {
+      readAnchor: (locator: string) => actors.buyer.runtime.adapter.readAnchor(locator),
+      async authenticateAnchor(input: Readonly<{
+        logicalAddress: string;
+        nativeAddress: string;
+        contentHash: string;
+        writer: string;
+      }>) {
         const receipt = await actors.buyer.runtime.adapter.resolveDemosAnchorReceipt(input);
         return receipt !== null &&
           await actors.buyer.runtime.adapter.verifyDemosAnchorReceipt(receipt) === true;
       },
-      readJson: (url) => readDacsPublicJsonV1(url, { timeoutMs: 5_000, maxBytes: 1_048_576 }),
+      readJson: (url: string) => readDacsPublicJsonV1(
+        url,
+        { timeoutMs: 5_000, maxBytes: 1_048_576 },
+      ),
+    };
+    if (operationRail === "pay-dem") {
+      payDemListingTask ??= (async () => resolveDacsPayDemExistingListingV1({
+        ...common,
+        sellerPayee: Buffer.from(actors.seller.runtime.publicKey).toString("hex"),
+        rail: await selectedRail("pay-dem"),
+      }))();
+      return payDemListingTask;
+    }
+    x402ListingTask ??= (async () => resolveDacsX402ExistingListingV1({
+      ...common,
+      sellerPayee: actors.seller.evmIdentity.address,
+      network: loadRoleConfig("buyer").rail.requestedNetwork as \`eip155:\${number}\`,
+      rail: await selectedRail("x402"),
     }))();
-    return listingTask;
+    return x402ListingTask;
   };
+  const x402Cost = operation?.rail === "x402" &&
+      operation.maximumServiceAmount !== undefined &&
+      operation.maximumNetworkFeeEth !== undefined
+    ? Object.freeze({
+        maximumServiceAmount: operation.maximumServiceAmount,
+        maximumNetworkFeeEth: operation.maximumNetworkFeeEth,
+      })
+    : undefined;
+  const payDemCost = operation?.rail === "pay-dem" &&
+      operation.maximumTotalDebitDem !== undefined
+    ? Object.freeze({ maximumTotalDebitDem: operation.maximumTotalDebitDem })
+    : undefined;
   return Object.freeze({
     "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
       : fail("node-version-unsupported"),
@@ -806,7 +939,10 @@ function baseProbes(
     "demos.storage-read": actors === undefined ? actorUnavailable
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
       : async () => {
-          try { await selectedRail(); return pass(); }
+          try {
+            await Promise.all(enabledProfiles.map((profile) => selectedRail(profile)));
+            return pass({ railCount: enabledProfiles.length });
+          }
           catch { return fail("demos-storage-read-or-proof-failed"); }
         },
     "demos.binding-resolution": actors === undefined ? actorUnavailable : async () => {
@@ -832,7 +968,8 @@ function baseProbes(
       const minimumDem = probeContext.scope === "setup"
         ? { buyer: "0", seller: seller.limits.maxSetupSpendDem }
         : {
-            buyer: buyer.limits.maxDemosNetworkFeeDem,
+            buyer: operation?.rail === "pay-dem" && operation.maximumTotalDebitDem !== undefined
+              ? operation.maximumTotalDebitDem : buyer.limits.maxDemosNetworkFeeDem,
             seller: seller.limits.maxDemosNetworkFeeDem,
           };
       return inspectDacsDemosBalanceHeadroomV1({
@@ -845,28 +982,41 @@ function baseProbes(
         actors.seller.runtime.authority === actors.seller.authority
         ? pass({ actorCount: 2 }) : fail("demos-wallet-identity-mismatch"),
     "demos.listing-candidate": actors === undefined ? actorUnavailable : async () => {
-      const path = configuredListingDraftFile();
+      const profile = operation?.rail;
+      if (profile === undefined) return blocked("listing-operation-context-missing");
+      const path = configuredListingDraftFile(profile);
       const endpoint = loadRoleConfig("seller").publicBaseUrl;
       if (path === undefined) return blocked("listing-candidate-file-missing");
       if (endpoint === undefined) return blocked("seller-public-endpoint-missing");
       try {
         const draft = await readPublicJsonFile(path);
-        const rail = await selectedRail();
-        const inspected = inspectDacsX402ListingDraftV1({
+        const rail = await selectedRail(profile);
+        const common = {
           draft,
           sellerAuthority: actors.seller.authority,
           sellerPublicKey: actors.seller.runtime.publicKey,
           sellerPublicEndpoint: endpoint,
-          sellerPayee: actors.seller.evmIdentity.address,
-          network: loadRoleConfig("seller").rail.requestedNetwork as \`eip155:\${number}\`,
           rail,
-          maximumServiceAmount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
+          maximumServiceAmount: profile === "x402"
+            ? loadRoleConfig("buyer").limits.maxServiceAmount.amount
+            : configuredMaximumPayDemServiceAmount(),
           now: Date.now(),
-        });
+        };
+        const inspected = profile === "x402"
+          ? inspectDacsX402ListingDraftV1({
+              ...common,
+              sellerPayee: actors.seller.evmIdentity.address,
+              network: loadRoleConfig("seller").rail.requestedNetwork as \`eip155:\${number}\`,
+            })
+          : inspectDacsPayDemListingDraftV1({
+              ...common,
+              sellerPayee: Buffer.from(actors.seller.runtime.publicKey).toString("hex"),
+            });
         if (inspected.status !== "pass") return inspected;
         const amount = listingPriceAmount(draft);
         return amount !== undefined && canonicalizeDecimal(amount) ===
-            canonicalizeDecimal(configuredFixedPriceAmount())
+            canonicalizeDecimal(profile === "x402"
+              ? configuredFixedPriceAmount() : configuredFixedPricePayDemAmount())
           ? inspected : fail("listing-fixed-price-runtime-mismatch");
       } catch { return fail("listing-candidate-read-or-authority-invalid"); }
     },
@@ -883,19 +1033,22 @@ function baseProbes(
       try { new URL(serviceEndpoint("buyer")); new URL(serviceEndpoint("seller")); return pass(); }
       catch { return fail("engagement-endpoint-invalid"); }
     },
-    "x402.rail-authority": actors === undefined ? actorUnavailable
+    "x402.rail-authority": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
       : async () => {
           try {
-            const rail = await selectedRail();
+            const rail = await selectedRail("x402");
             return rail.railType === "x402" && rail.phaseHandler === "pay-x402"
               ? pass({ railId: rail.railId, railVersion: rail.railVersion })
               : fail("x402-rail-incompatible");
           } catch { return fail("x402-rail-authority-invalid"); }
         },
-    "x402.testnet-policy": () => loadRoleConfig("buyer").rail.requestedNetwork === "eip155:84532"
-      ? pass() : fail("x402-mainnet-or-unsupported-network"),
-    "x402.endpoints": actors === undefined ? actorUnavailable
+    "x402.testnet-policy": !enabledProfiles.includes("x402") ? x402Disabled
+      : () => loadRoleConfig("buyer").rail.requestedNetwork === "eip155:84532"
+        ? pass() : fail("x402-mainnet-or-unsupported-network"),
+    "x402.endpoints": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
       : async () => {
           const facilitatorUrl = configuredX402FacilitatorUrl();
@@ -908,7 +1061,7 @@ function baseProbes(
           }
           try {
             configuredX402TokenDomain();
-            const rail = await selectedRail();
+            const rail = await selectedRail("x402");
             const resource = rail.network.kind === "x402-resource"
               ? new URL(rail.network.resourceBaseUrl) : undefined;
             const facilitator = new URL(facilitatorUrl);
@@ -926,7 +1079,7 @@ function baseProbes(
             });
             const [head, supported] = await Promise.all([
               reader.getFinalityHead(),
-              new HTTPFacilitatorClient({ url: facilitatorUrl }).getSupported(),
+              x402FacilitatorSupported(facilitatorUrl),
             ]);
             const finality = head as { chainId?: unknown };
             return finality !== null && typeof finality === "object" &&
@@ -939,16 +1092,19 @@ function baseProbes(
               : fail("x402-endpoint-capability-mismatch");
           } catch { return fail("x402-endpoint-resolution-failed"); }
         },
-    "x402.token-domain": actors === undefined ? actorUnavailable : async () => {
+    "x402.token-domain": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : async () => {
       try { return (await selectedFunding()).tokenDomain; }
       catch { return blocked("x402-funding-prerequisite-unavailable"); }
     },
-    "x402.payer-binding": actors === undefined ? actorUnavailable : () =>
+    "x402.payer-binding": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : () =>
       actors.buyer.evmIdentity.network === loadRoleConfig("buyer").rail.requestedNetwork &&
         /^0x[0-9A-Fa-f]{40}$/.test(actors.buyer.evmIdentity.address)
         ? pass({ payer: actors.buyer.evmIdentity.address.toLowerCase() })
         : fail("x402-payer-binding-mismatch"),
-    "x402.payee-binding": actors === undefined ? actorUnavailable : () =>
+    "x402.payee-binding": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : () =>
       configuredSellerEvmPayee() !== undefined &&
         actors.seller.evmIdentity.network === loadRoleConfig("seller").rail.requestedNetwork &&
         /^0x[0-9A-Fa-f]{40}$/.test(actors.seller.evmIdentity.address) &&
@@ -958,32 +1114,81 @@ function baseProbes(
           actors.buyer.evmIdentity.address.toLowerCase()
         ? pass({ payee: actors.seller.evmIdentity.address.toLowerCase() })
         : fail("x402-payee-binding-mismatch"),
-    "x402.asset-balance": actors === undefined ? actorUnavailable : async () => {
+    "x402.asset-balance": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : async () => {
       try { return (await selectedFunding()).asset; }
       catch { return blocked("x402-funding-prerequisite-unavailable"); }
     },
-    "x402.gas-balance": actors === undefined ? actorUnavailable : async () => {
+    "x402.gas-balance": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : async () => {
       try { return (await selectedFunding()).gas; }
       catch { return blocked("x402-funding-prerequisite-unavailable"); }
     },
-    "x402.service-limit": () => pass({
+    "x402.service-limit": !enabledProfiles.includes("x402") ? x402Disabled : () => pass({
       asset: loadRoleConfig("buyer").limits.maxServiceAmount.asset,
       amount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
     }),
-    "x402.cost-estimate": actors === undefined ? actorUnavailable
-      : operation === undefined ? () => blocked("purchase-cost-context-missing")
+    "x402.cost-estimate": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable
+      : x402Cost === undefined ? () => blocked("purchase-cost-context-missing")
       : async () => {
           try {
             const result = await selectedListing();
             return result.status === "verified"
               ? inspectDacsX402PurchaseCostV1({
                   admission: result.admission,
-                  maximumServiceAmount: operation.maximumServiceAmount,
-                  maximumNetworkFeeEth: operation.maximumNetworkFeeEth,
+                  maximumServiceAmount: x402Cost.maximumServiceAmount,
+                  maximumNetworkFeeEth: x402Cost.maximumNetworkFeeEth,
                 })
               : result;
           } catch { return blocked("x402-cost-estimate-unavailable"); }
         },
+    "pay-dem.rail-authority": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable
+      : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
+      : async () => {
+          try {
+            const rail = await selectedRail("pay-dem");
+            return rail.railType === "demos-native" && rail.phaseHandler === "pay-dem" &&
+                rail.asset.kind === "native-dem" && rail.network.kind === "demos"
+              ? pass({ railId: rail.railId, railVersion: rail.railVersion })
+              : fail("pay-dem-rail-incompatible");
+          } catch { return fail("pay-dem-rail-authority-invalid"); }
+        },
+    "pay-dem.payer-binding": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable : () => {
+      const payer = Buffer.from(actors.buyer.runtime.publicKey).toString("hex");
+      return payer.length === 64 && actors.buyer.runtime.authority === actors.buyer.authority
+        ? pass({ payer }) : fail("pay-dem-payer-binding-mismatch");
+    },
+    "pay-dem.payee-binding": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable : () => {
+      const payer = Buffer.from(actors.buyer.runtime.publicKey).toString("hex");
+      const payee = Buffer.from(actors.seller.runtime.publicKey).toString("hex");
+      return payee.length === 64 && payer !== payee &&
+          actors.seller.runtime.authority === actors.seller.authority
+        ? pass({ payee }) : fail("pay-dem-payee-binding-mismatch");
+    },
+    "pay-dem.service-limit": !enabledProfiles.includes("pay-dem") ? payDemDisabled : () => pass({
+      asset: "DEM",
+      amount: configuredMaximumPayDemServiceAmount(),
+    }),
+    "pay-dem.total-debit": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable
+      : payDemCost === undefined ? () => blocked("pay-dem-cost-context-missing")
+        : async () => {
+            try {
+              const result = await selectedListing();
+              if (result.status !== "verified") return result;
+              const amount = listingPriceAmount(result.admission.listing);
+              return amount !== undefined &&
+                  decimalAtMost(amount, payDemCost.maximumTotalDebitDem) &&
+                  decimalAtMost(payDemCost.maximumTotalDebitDem,
+                    configuredMaximumPayDemTotalDebit())
+                ? pass({ maximumTotalDebitDem: payDemCost.maximumTotalDebitDem })
+                : fail("pay-dem-total-debit-invalid");
+            } catch { return blocked("pay-dem-cost-estimate-unavailable"); }
+          },
   });
 }
 
@@ -1028,6 +1233,8 @@ export async function runGeneratedDoctor(
       sdkVersion: VERSION,
       standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
       profile: DACS_NODE_LIVE_PROFILE,
+      enabledRailProfiles: dacsLiveRailProfiles(loadRoleConfig("buyer")),
+      ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
       probes,
       // A Demos block is approximately ten seconds. Registry resolution can
       // legitimately cross one block boundary during node catch-up, so the
@@ -1083,6 +1290,7 @@ import {
   createDacsDemosActorRuntimeV1,
   createDacsDemosRailRegistryProviderV1,
   createDacsListingSetupExecutorV1,
+  dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
   loadDacsSecretV1,
   openDacsListingDiscoveryStoreV1,
@@ -1099,6 +1307,8 @@ import {
   actorSecretPath,
   configuredAuthority,
   configuredListingDraftFile,
+  configuredMaximumPayDemServiceAmount,
+  configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
   configuredX402RailId,
@@ -1111,6 +1321,8 @@ interface PreparedContext {
   seller: Awaited<ReturnType<typeof createDacsDemosActorRuntimeV1>>;
   rail: Awaited<ReturnType<typeof resolveRail>>;
 }
+
+export type GeneratedListingSetupRailV1 = "x402" | "pay-dem";
 
 async function publicJsonFile(path: string): Promise<unknown> {
   const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -1149,25 +1361,27 @@ function exactMaximum(value: string, ceiling: string): string {
 }
 
 async function buildPrepared(
+  selectedRail: GeneratedListingSetupRailV1,
   maximumSpendDem: string,
   writePolicy: "perform" | "read-only",
 ): Promise<PreparedContext> {
   const sellerConfig = loadRoleConfig("seller");
   const buyerConfig = loadRoleConfig("buyer");
+  if (!dacsLiveRailProfiles(sellerConfig).includes(selectedRail)) {
+    throw new Error("selected setup rail is not enabled");
+  }
   const sellerAuthority = configuredAuthority("seller");
   const buyerAuthority = configuredAuthority("buyer");
   const demosSecretPath = actorSecretPath("seller", "demos-identity");
-  const evmSecretPath = actorSecretPath("seller", "evm-wallet");
-  const draftPath = configuredListingDraftFile();
+  const draftPath = configuredListingDraftFile(selectedRail);
   const stewardAuthority = configuredRailStewardAuthority();
   const sellerEndpoint = sellerConfig.publicBaseUrl;
-  const configuredPayee = configuredSellerEvmPayee();
   const stewardPublicKey = stewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(stewardAuthority);
   if (sellerAuthority === undefined || buyerAuthority === undefined ||
-      demosSecretPath === undefined || evmSecretPath === undefined || draftPath === undefined ||
+      demosSecretPath === undefined || draftPath === undefined ||
       stewardAuthority === undefined || stewardPublicKey === null || sellerEndpoint === undefined ||
-      configuredPayee === undefined || !/^0x[0-9A-Fa-f]{40}$/.test(configuredPayee)) {
+      canonicalDemosAgentPublicKey(sellerAuthority) === null) {
     throw new Error("setup prerequisite is unavailable");
   }
   const demosSecret = await loadDacsSecretV1({
@@ -1182,22 +1396,9 @@ async function buildPrepared(
     demosIdentity: demosSecret,
     writePolicy,
   });
-  const evmSecret = await loadDacsSecretV1({
-    name: "seller-setup-evm-wallet",
-    mode: "live-demos",
-    filePath: evmSecretPath,
-  });
-  const evm = await deriveDacsEvmRoleIdentityV1({
-    config: sellerConfig,
-    role: "seller",
-    evmPrivateKey: evmSecret,
-  });
-  if (evm.address.toLowerCase() !== configuredPayee.toLowerCase()) {
-    throw new Error("configured seller payee does not match the seller EVM authority");
-  }
   const rail = await resolveRail(
     RAIL_REGISTRY_INDEX_ADDRESS,
-    configuredX402RailId(),
+    selectedRail === "x402" ? configuredX402RailId() : configuredPayDemRailId(),
     createDacsDemosRailRegistryProviderV1({
       runtime: seller,
       stewardAuthority,
@@ -1209,16 +1410,44 @@ async function buildPrepared(
   }
   const chainIdentity = await seller.chainIdentity();
   const demosNetwork = "demos-network:sha256:" + sha256Hex(canonicalize({ chainIdentity }));
+  let sellerPayee: string;
+  if (selectedRail === "x402") {
+    const evmSecretPath = actorSecretPath("seller", "evm-wallet");
+    const configuredPayee = configuredSellerEvmPayee();
+    if (evmSecretPath === undefined || configuredPayee === undefined ||
+        !/^0x[0-9A-Fa-f]{40}$/.test(configuredPayee)) {
+      throw new Error("x402 setup prerequisite is unavailable");
+    }
+    const evmSecret = await loadDacsSecretV1({
+      name: "seller-setup-evm-wallet",
+      mode: "live-demos",
+      filePath: evmSecretPath,
+    });
+    const evm = await deriveDacsEvmRoleIdentityV1({
+      config: sellerConfig,
+      role: "seller",
+      evmPrivateKey: evmSecret,
+    });
+    if (evm.address.toLowerCase() !== configuredPayee.toLowerCase()) {
+      throw new Error("configured seller payee does not match the seller EVM authority");
+    }
+    sellerPayee = evm.address;
+  } else {
+    sellerPayee = Buffer.from(seller.publicKey).toString("hex");
+  }
   const prepared = await prepareDacsListingSetupV1({
     draft: await publicJsonFile(draftPath),
     buyerAuthority,
     seller,
     sellerPublicEndpoint: sellerEndpoint,
-    sellerPayee: evm.address,
-    network: sellerConfig.rail.requestedNetwork as \`eip155:\${number}\`,
+    sellerPayee,
+    ...(selectedRail === "x402" ? {
+      network: sellerConfig.rail.requestedNetwork as \`eip155:\${number}\`,
+    } : {}),
     demosNetwork,
     rail,
-    maximumServiceAmount: buyerConfig.limits.maxServiceAmount.amount,
+    maximumServiceAmount: selectedRail === "x402"
+      ? buyerConfig.limits.maxServiceAmount.amount : configuredMaximumPayDemServiceAmount(),
     actionMaximumSpendDem: sellerConfig.limits.maxDemosNetworkFeeDem,
     safetyMarginDem: sellerConfig.limits.maxDemosNetworkFeeDem,
     maximumSpendDem: exactMaximum(maximumSpendDem, sellerConfig.limits.maxSetupSpendDem),
@@ -1228,19 +1457,21 @@ async function buildPrepared(
 }
 
 export async function prepareGeneratedListingSetupV1(
+  selectedRail: GeneratedListingSetupRailV1,
   maximumSpendDem: string,
 ): Promise<Readonly<DacsPreparedListingSetupV1>> {
-  return (await buildPrepared(maximumSpendDem, "read-only")).prepared;
+  return (await buildPrepared(selectedRail, maximumSpendDem, "read-only")).prepared;
 }
 
 export async function executeGeneratedListingSetupV1(input: Readonly<{
   expected: Readonly<DacsPreparedListingSetupV1>;
+  selectedRail: GeneratedListingSetupRailV1;
   maximumSpendDem: string;
   doctorReports: readonly Readonly<DacsLiveDoctorReportV1>[];
   confirmation: string;
   nonInteractive: boolean;
   confirm(summary: Readonly<{
-    kind: "setup" | "purchase" | "funded-doctor";
+    kind: "setup" | "purchase" | "purchase-pay-dem" | "funded-doctor";
     planHash: string;
     actionCount: number;
     network: string;
@@ -1249,7 +1480,7 @@ export async function executeGeneratedListingSetupV1(input: Readonly<{
     paymentPossible: boolean;
   }>): Promise<boolean>;
 }>): Promise<Readonly<DacsGuardedCommandResultV1>> {
-  const context = await buildPrepared(input.maximumSpendDem, "perform");
+  const context = await buildPrepared(input.selectedRail, input.maximumSpendDem, "perform");
   if (canonicalize(context.prepared.plan) !== canonicalize(input.expected.plan) ||
       canonicalize(context.prepared.listing) !== canonicalize(input.expected.listing)) {
     throw new Error("setup plan changed after doctor");
@@ -1303,14 +1534,19 @@ import {
   createDacsDemosActorRuntimeV1,
   createDacsDemosRailRegistryProviderV1,
   createDacsPurchaseQueueExecutorV1,
+  dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
   loadDacsSecretV1,
+  prepareDacsPayDemPurchaseV1,
   prepareDacsX402PurchaseV1,
   readDacsPublicJsonV1,
+  resolveDacsPayDemExistingListingV1,
   resolveDacsX402ExistingListingV1,
   runDacsGuardedCommandV1,
   type DacsGuardedCommandResultV1,
   type DacsLiveDoctorReportV1,
+  type DacsPreparedLivePurchaseV1,
+  type DacsPreparedPayDemPurchaseV1,
   type DacsPreparedX402PurchaseV1,
 } from "@kynesyslabs/dacs-node";
 import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
@@ -1319,6 +1555,7 @@ import {
   actorDatabasePath,
   actorSecretPath,
   configuredAuthority,
+  configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
   configuredX402RailId,
@@ -1329,12 +1566,14 @@ export const GENERATED_PURCHASE_REQUEST_SCHEMA =
   "dacs-generated-purchase-request/v1" as const;
 
 export interface GeneratedPurchasePreparationInputV1 {
+  rail: "x402" | "pay-dem";
   jobId: string;
   resume: boolean;
   listingRef: string;
   request: Readonly<Record<string, unknown>>;
   maximumServiceAmount: string;
-  maximumNetworkFeeEth: string;
+  maximumNetworkFeeEth?: string;
+  maximumTotalDebitDem?: string;
 }
 
 function plainData(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -1380,24 +1619,24 @@ export async function readGeneratedPurchaseRequestV1(
 
 async function buildPrepared(
   input: Readonly<GeneratedPurchasePreparationInputV1>,
-): Promise<Readonly<DacsPreparedX402PurchaseV1>> {
+): Promise<Readonly<DacsPreparedLivePurchaseV1>> {
   const buyerConfig = loadRoleConfig("buyer");
   const sellerConfig = loadRoleConfig("seller");
+  if (!dacsLiveRailProfiles(buyerConfig).includes(input.rail)) {
+    throw new Error("selected purchase rail is not enabled");
+  }
   const buyerAuthority = configuredAuthority("buyer");
   const sellerAuthority = configuredAuthority("seller");
   const buyerDemosSecretPath = actorSecretPath("buyer", "demos-identity");
-  const buyerEvmSecretPath = actorSecretPath("buyer", "evm-wallet");
   const stewardAuthority = configuredRailStewardAuthority();
   const stewardPublicKey = stewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(stewardAuthority);
   const sellerPublicKey = sellerAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(sellerAuthority);
-  const sellerPayee = configuredSellerEvmPayee();
   const sellerEndpoint = sellerConfig.publicBaseUrl;
   if (buyerAuthority === undefined || sellerAuthority === undefined ||
-      buyerDemosSecretPath === undefined || buyerEvmSecretPath === undefined ||
+      buyerDemosSecretPath === undefined ||
       stewardAuthority === undefined || stewardPublicKey === null || sellerPublicKey === null ||
-      sellerPayee === undefined || !/^0x[0-9A-Fa-f]{40}$/.test(sellerPayee) ||
       sellerEndpoint === undefined) {
     throw new Error("purchase prerequisite is unavailable");
   }
@@ -1413,6 +1652,68 @@ async function buildPrepared(
     demosIdentity: demosSecret,
     writePolicy: "read-only",
   });
+  const rail = await resolveRail(
+    RAIL_REGISTRY_INDEX_ADDRESS,
+    input.rail === "x402" ? configuredX402RailId() : configuredPayDemRailId(),
+    createDacsDemosRailRegistryProviderV1({
+      runtime: buyer,
+      stewardAuthority,
+      stewardPublicKey,
+    }),
+  );
+  const common = {
+    listingRef: input.listingRef,
+    sellerAuthority,
+    sellerPublicKey,
+    sellerPublicEndpoint: sellerEndpoint,
+    rail,
+    maximumServiceAmount: input.maximumServiceAmount,
+    now: Date.now(),
+    readAnchor: (locator: string) => buyer.adapter.readAnchor(locator),
+    async authenticateAnchor(anchor: Readonly<{
+      logicalAddress: string;
+      nativeAddress: string;
+      contentHash: string;
+      writer: string;
+    }>) {
+      const receipt = await buyer.adapter.resolveDemosAnchorReceipt(anchor);
+      return receipt !== null &&
+        await buyer.adapter.verifyDemosAnchorReceipt(receipt) === true;
+    },
+    readJson: (url: string) => readDacsPublicJsonV1(url, {
+      timeoutMs: 5_000,
+      maxBytes: 1_048_576,
+    }),
+  };
+  if (input.rail === "pay-dem") {
+    if (input.maximumTotalDebitDem === undefined) {
+      throw new Error("native DEM total debit ceiling is unavailable");
+    }
+    const resolved = await resolveDacsPayDemExistingListingV1({
+      ...common,
+      sellerPayee: Buffer.from(sellerPublicKey).toString("hex"),
+    });
+    if (resolved.status !== "verified") {
+      throw new Error("purchase Listing admission failed: " + resolved.reasonCode);
+    }
+    return prepareDacsPayDemPurchaseV1({
+      admission: resolved.admission,
+      jobId: input.jobId,
+      resume: input.resume,
+      buyerAuthority,
+      payer: Buffer.from(buyer.publicKey).toString("hex"),
+      request: input.request,
+      maximumServiceAmount: input.maximumServiceAmount,
+      maximumTotalDebitDem: input.maximumTotalDebitDem,
+    });
+  }
+  const buyerEvmSecretPath = actorSecretPath("buyer", "evm-wallet");
+  const sellerPayee = configuredSellerEvmPayee();
+  if (buyerEvmSecretPath === undefined || sellerPayee === undefined ||
+      !/^0x[0-9A-Fa-f]{40}$/.test(sellerPayee) ||
+      input.maximumNetworkFeeEth === undefined) {
+    throw new Error("x402 purchase prerequisite is unavailable");
+  }
   const evmSecret = await loadDacsSecretV1({
     name: "buyer-purchase-evm-wallet",
     mode: "live-demos",
@@ -1423,35 +1724,10 @@ async function buildPrepared(
     role: "buyer",
     evmPrivateKey: evmSecret,
   });
-  const rail = await resolveRail(
-    RAIL_REGISTRY_INDEX_ADDRESS,
-    configuredX402RailId(),
-    createDacsDemosRailRegistryProviderV1({
-      runtime: buyer,
-      stewardAuthority,
-      stewardPublicKey,
-    }),
-  );
   const resolved = await resolveDacsX402ExistingListingV1({
-    listingRef: input.listingRef,
-    sellerAuthority,
-    sellerPublicKey,
-    sellerPublicEndpoint: sellerEndpoint,
+    ...common,
     sellerPayee,
     network: buyerConfig.rail.requestedNetwork as \`eip155:\${number}\`,
-    rail,
-    maximumServiceAmount: input.maximumServiceAmount,
-    now: Date.now(),
-    readAnchor: (locator) => buyer.adapter.readAnchor(locator),
-    async authenticateAnchor(anchor) {
-      const receipt = await buyer.adapter.resolveDemosAnchorReceipt(anchor);
-      return receipt !== null &&
-        await buyer.adapter.verifyDemosAnchorReceipt(receipt) === true;
-    },
-    readJson: (url) => readDacsPublicJsonV1(url, {
-      timeoutMs: 5_000,
-      maxBytes: 1_048_576,
-    }),
   });
   if (resolved.status !== "verified") {
     throw new Error("purchase Listing admission failed: " + resolved.reasonCode);
@@ -1470,18 +1746,18 @@ async function buildPrepared(
 
 export async function prepareGeneratedPurchaseV1(
   input: Readonly<GeneratedPurchasePreparationInputV1>,
-): Promise<Readonly<DacsPreparedX402PurchaseV1>> {
+): Promise<Readonly<DacsPreparedLivePurchaseV1>> {
   return buildPrepared(input);
 }
 
 export async function executeGeneratedPurchaseV1(input: Readonly<{
-  expected: Readonly<DacsPreparedX402PurchaseV1>;
+  expected: Readonly<DacsPreparedX402PurchaseV1 | DacsPreparedPayDemPurchaseV1>;
   preparation: Readonly<GeneratedPurchasePreparationInputV1>;
   doctorReport: Readonly<DacsLiveDoctorReportV1>;
   confirmation: string;
   nonInteractive: boolean;
   confirm(summary: Readonly<{
-    kind: "setup" | "purchase" | "funded-doctor";
+    kind: "setup" | "purchase" | "purchase-pay-dem" | "funded-doctor";
     planHash: string;
     actionCount: number;
     network: string;
@@ -1629,7 +1905,7 @@ export async function executeGeneratedFundedDoctorV1(input: Readonly<{
   confirmation: string;
   nonInteractive: boolean;
   confirm(summary: Readonly<{
-    kind: "setup" | "purchase" | "funded-doctor";
+    kind: "setup" | "purchase" | "purchase-pay-dem" | "funded-doctor";
     planHash: string;
     actionCount: number;
     network: string;
@@ -2241,6 +2517,7 @@ import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
 import { generateCanonicalJobId, isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 import {
   DACS_NODE_LIVE_PROFILE,
+  dacsLiveRailProfiles,
   formatDacsLiveDoctorTextV1,
   readDacsRoleServiceStatusesV1,
   type DacsLiveDoctorReportV1,
@@ -2250,6 +2527,8 @@ import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
 import {
   actorDatabasePath,
   configuredAuthority,
+  configuredMaximumPayDemServiceAmount,
+  configuredMaximumPayDemTotalDebit,
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
@@ -2282,9 +2561,15 @@ function valueAfter(args: readonly string[], index: number, flag: string): strin
   return value;
 }
 
-function doctorArguments(args: readonly string[]): { phase: DoctorPhase; scope: DoctorScope; json: boolean } {
+function doctorArguments(args: readonly string[]): {
+  phase: DoctorPhase;
+  scope: DoctorScope;
+  rail?: "x402" | "pay-dem";
+  json: boolean;
+} {
   let phase: DoctorPhase = "pre-start";
   let scope: DoctorScope = "start";
+  let requestedRail: string | undefined;
   let json = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
@@ -2299,9 +2584,25 @@ function doctorArguments(args: readonly string[]): { phase: DoctorPhase; scope: 
       if (value !== "start" && value !== "setup" && value !== "buy") throw new Error("invalid doctor scope");
       scope = value;
       index += 1;
+    } else if (argument === "--rail") {
+      if (requestedRail !== undefined) throw new Error("doctor rail is repeated");
+      requestedRail = valueAfter(args, index, argument);
+      index += 1;
     } else throw new Error("unknown doctor option: " + argument);
   }
-  return { phase, scope, json };
+  if (scope === "start" && requestedRail !== undefined) {
+    throw new Error("--rail applies only to setup or buy doctor scopes");
+  }
+  if (scope === "start") return { phase, scope, json };
+  const enabledRails = dacsLiveRailProfiles(loadRoleConfig(scope === "setup" ? "seller" : "buyer"));
+  const rail = requestedRail === undefined && enabledRails.length === 1
+    ? enabledRails[0] : requestedRail;
+  if ((rail !== "x402" && rail !== "pay-dem") || !enabledRails.includes(rail)) {
+    throw new Error(enabledRails.length === 2
+      ? "--rail must select one enabled rail: x402 or pay-dem"
+      : "selected doctor rail is not enabled");
+  }
+  return { phase, scope, rail, json };
 }
 
 function printDoctor(report: Readonly<DacsLiveDoctorReportV1>, json = false): void {
@@ -2310,7 +2611,11 @@ function printDoctor(report: Readonly<DacsLiveDoctorReportV1>, json = false): vo
 
 async function doctor(args: readonly string[]): Promise<number> {
   const parsed = doctorArguments(args);
-  const report = await runGeneratedDoctor(parsed.phase, parsed.scope);
+  const report = await runGeneratedDoctor(
+    parsed.phase,
+    parsed.scope,
+    parsed.rail === undefined ? undefined : { rail: parsed.rail },
+  );
   printDoctor(report, parsed.json);
   return report.exitCode;
 }
@@ -2397,11 +2702,12 @@ function decimalWithin(value: string, ceiling: string): string {
 
 async function purchaseArguments(args: readonly string[]) {
   const config = loadRoleConfig("buyer");
+  const enabledRails = dacsLiveRailProfiles(config);
   const values: Record<string, string> = {};
   let nonInteractive = false;
   const valued = new Set([
-    "--listing-ref", "--request-file", "--max-service-amount",
-    "--max-network-fee-eth", "--resume-job",
+    "--rail", "--listing-ref", "--request-file", "--max-service-amount",
+    "--max-network-fee-eth", "--max-total-debit-dem", "--resume-job",
   ]);
   for (let index = 0; index < args.length; index += 1) {
     const name = args[index]!;
@@ -2416,10 +2722,27 @@ async function purchaseArguments(args: readonly string[]) {
     values[name] = valueAfter(args, index, name);
     index += 1;
   }
-  for (const required of [
-    "--listing-ref", "--request-file", "--max-service-amount", "--max-network-fee-eth",
-  ]) {
+  for (const required of ["--listing-ref", "--request-file", "--max-service-amount"]) {
     if (!Object.hasOwn(values, required)) throw new Error(required + " is required");
+  }
+  const requestedRail = values["--rail"];
+  const rail = requestedRail === undefined && enabledRails.length === 1
+    ? enabledRails[0]
+    : requestedRail;
+  if ((rail !== "x402" && rail !== "pay-dem") || !enabledRails.includes(rail)) {
+    throw new Error(enabledRails.length === 2
+      ? "--rail must select one enabled rail: x402 or pay-dem"
+      : "selected purchase rail is not enabled");
+  }
+  if (rail === "x402" && values["--max-network-fee-eth"] === undefined) {
+    throw new Error("--max-network-fee-eth is required for x402");
+  }
+  if (rail === "pay-dem" && values["--max-total-debit-dem"] === undefined) {
+    throw new Error("--max-total-debit-dem is required for pay-dem");
+  }
+  if (rail === "x402" && values["--max-total-debit-dem"] !== undefined ||
+      rail === "pay-dem" && values["--max-network-fee-eth"] !== undefined) {
+    throw new Error("purchase ceiling does not belong to the selected rail");
   }
   const listingRef = values["--listing-ref"]!;
   if (listingRef.length > 512 || listingRef.trim() !== listingRef || listingRef.length === 0) {
@@ -2429,17 +2752,29 @@ async function purchaseArguments(args: readonly string[]) {
   if (resumedJobId !== undefined && !isCanonicalJobId(resumedJobId)) {
     throw new Error("resume job must be a canonical DACS job ID");
   }
-  return Object.freeze({
+  const common = {
     invocationMode: resumedJobId === undefined ? "new" as const : "resume" as const,
     jobId: resumedJobId ?? generateCanonicalJobId(),
     listingRef,
     request: await readGeneratedPurchaseRequestV1(values["--request-file"]!),
     maximumServiceAmount: decimalWithin(
-      values["--max-service-amount"]!, config.limits.maxServiceAmount.amount),
-    maximumNetworkFeeEth: decimalWithin(
-      values["--max-network-fee-eth"]!, config.limits.maxEvmNetworkFeeEth),
+      values["--max-service-amount"]!, rail === "x402"
+        ? config.limits.maxServiceAmount.amount : configuredMaximumPayDemServiceAmount()),
     nonInteractive,
-  });
+  };
+  return rail === "x402"
+    ? Object.freeze({
+      ...common,
+      rail: "x402" as const,
+      maximumNetworkFeeEth: decimalWithin(
+        values["--max-network-fee-eth"]!, config.limits.maxEvmNetworkFeeEth),
+    })
+    : Object.freeze({
+      ...common,
+      rail: "pay-dem" as const,
+      maximumTotalDebitDem: decimalWithin(
+        values["--max-total-debit-dem"]!, configuredMaximumPayDemTotalDebit()),
+    });
 }
 
 async function confirmPurchase(planHash: string): Promise<boolean> {
@@ -2464,19 +2799,25 @@ async function guardedPurchase(args: readonly string[]): Promise<number> {
     "buy",
     {
       listingRef: parsed.listingRef,
+      rail: parsed.rail,
       maximumServiceAmount: parsed.maximumServiceAmount,
-      maximumNetworkFeeEth: parsed.maximumNetworkFeeEth,
+      ...(parsed.rail === "x402"
+        ? { maximumNetworkFeeEth: parsed.maximumNetworkFeeEth }
+        : { maximumTotalDebitDem: parsed.maximumTotalDebitDem }),
     },
   );
   printDoctor(report);
   if (report.exitCode !== 0) return report.exitCode;
   const preparation = Object.freeze({
+    rail: parsed.rail,
     jobId: parsed.jobId,
     resume: parsed.invocationMode === "resume",
     listingRef: parsed.listingRef,
     request: parsed.request,
     maximumServiceAmount: parsed.maximumServiceAmount,
-    maximumNetworkFeeEth: parsed.maximumNetworkFeeEth,
+    ...(parsed.rail === "x402"
+      ? { maximumNetworkFeeEth: parsed.maximumNetworkFeeEth }
+      : { maximumTotalDebitDem: parsed.maximumTotalDebitDem }),
   });
   const prepared = await prepareGeneratedPurchaseV1(preparation);
   process.stdout.write(JSON.stringify({
@@ -2500,9 +2841,12 @@ async function guardedPurchase(args: readonly string[]): Promise<number> {
 }
 
 function setupArguments(args: readonly string[]): Readonly<{
+  selectedRail: "x402" | "pay-dem";
   maximumSpendDem: string;
   nonInteractive: boolean;
 }> {
+  const enabledRails = dacsLiveRailProfiles(loadRoleConfig("seller"));
+  let selectedRail: string | undefined;
   let maximumSpendDem: string | undefined;
   let nonInteractive = false;
   for (let index = 0; index < args.length; index += 1) {
@@ -2514,12 +2858,23 @@ function setupArguments(args: readonly string[]): Readonly<{
       if (maximumSpendDem !== undefined) throw new Error("setup option is repeated");
       maximumSpendDem = valueAfter(args, index, argument);
       index += 1;
+    } else if (argument === "--rail") {
+      if (selectedRail !== undefined) throw new Error("setup option is repeated");
+      selectedRail = valueAfter(args, index, argument);
+      index += 1;
     } else {
       throw new Error("unknown setup option: " + argument);
     }
   }
   if (maximumSpendDem === undefined) throw new Error("--max-spend-dem is required");
-  return Object.freeze({ maximumSpendDem, nonInteractive });
+  const rail = selectedRail === undefined && enabledRails.length === 1
+    ? enabledRails[0] : selectedRail;
+  if ((rail !== "x402" && rail !== "pay-dem") || !enabledRails.includes(rail)) {
+    throw new Error(enabledRails.length === 2
+      ? "--rail must select one enabled rail: x402 or pay-dem"
+      : "selected setup rail is not enabled");
+  }
+  return Object.freeze({ selectedRail: rail, maximumSpendDem, nonInteractive });
 }
 
 async function confirmSetup(planHash: string): Promise<boolean> {
@@ -2539,7 +2894,10 @@ async function confirmSetup(planHash: string): Promise<boolean> {
 
 async function guardedSetup(args: readonly string[]): Promise<number> {
   const parsed = setupArguments(args);
-  const prepared = await prepareGeneratedListingSetupV1(parsed.maximumSpendDem);
+  const prepared = await prepareGeneratedListingSetupV1(
+    parsed.selectedRail,
+    parsed.maximumSpendDem,
+  );
   process.stdout.write(JSON.stringify({ execute: false, ...prepared.plan }) + "\\n");
   const confirmation = process.env.DACS_SETUP_WRITE_CONFIRM;
   if (confirmation === undefined) return 0;
@@ -2547,12 +2905,15 @@ async function guardedSetup(args: readonly string[]): Promise<number> {
   const postStart = await runGeneratedDoctor("post-start", "start");
   printDoctor(postStart);
   if (postStart.exitCode !== 0) return postStart.exitCode;
-  const preSetup = await runGeneratedDoctor("pre-start", "setup");
+  const preSetup = await runGeneratedDoctor("pre-start", "setup", {
+    rail: parsed.selectedRail,
+  });
   printDoctor(preSetup);
   if (preSetup.exitCode !== 0) return preSetup.exitCode;
   if (!parsed.nonInteractive && !await confirmSetup(prepared.plan.planHash)) return 5;
   const result = await executeGeneratedListingSetupV1({
     expected: prepared,
+    selectedRail: parsed.selectedRail,
     maximumSpendDem: parsed.maximumSpendDem,
     doctorReports: [postStart, preSetup],
     confirmation,
@@ -2690,14 +3051,20 @@ const SERVICE_SOURCE = `import {
 import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
 import {
   createDacsDemosRailRegistryProviderV1,
+  createDacsFixedPriceMultirailBuyerLiveV1,
+  createDacsFixedPriceMultirailSellerLiveV1,
+  createDacsFixedPricePayDemBuyerLiveV1,
+  createDacsFixedPricePayDemSellerLiveV1,
   createDacsX402ExactRetainedReplayConfirmerV1,
   createDacsFixedPriceX402BuyerLiveV1,
   createDacsFixedPriceX402SellerLiveV1,
   createDacsListingDiscoveryRequestHandlerV1,
   createDacsLiveRoleRuntimeV1,
+  dacsLiveRailProfiles,
   installDacsRoleServiceProcessHooksV1,
   openDacsListingDiscoveryStoreV1,
   type DacsNodeEvent,
+  type DacsX402HttpResultObservationV1,
 } from "@kynesyslabs/dacs-node";
 
 import {
@@ -2705,6 +3072,8 @@ import {
   configuredEvmRpcUrl,
   configuredAuthority,
   configuredFixedPriceAmount,
+  configuredMaximumPayDemServiceAmount,
+  configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
   configuredX402AuthorizationSearchFromBlock,
@@ -2744,10 +3113,14 @@ async function main(): Promise<void> {
   const railStewardPublicKey = railStewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(railStewardAuthority);
   const authorizationSearchFromBlock = configuredX402AuthorizationSearchFromBlock();
+  const profiles = dacsLiveRailProfiles(config);
+  const x402Enabled = profiles.includes("x402");
+  const payDemEnabled = profiles.includes("pay-dem");
   if (authority === undefined || peerAuthority === undefined ||
-      demosIdentityFilePath === undefined || evmPrivateKeyFilePath === undefined ||
-      evmRpcUrl === undefined || railStewardAuthority === undefined ||
-      railStewardPublicKey === null || authorizationSearchFromBlock === undefined) {
+      demosIdentityFilePath === undefined || railStewardAuthority === undefined ||
+      railStewardPublicKey === null ||
+      (x402Enabled && (evmPrivateKeyFilePath === undefined || evmRpcUrl === undefined ||
+        authorizationSearchFromBlock === undefined))) {
     throw new Error("role, rail, Demos identity, EVM identity or RPC is unavailable");
   }
   const ownEndpoint = new URL(serviceEndpoint(role));
@@ -2777,78 +3150,132 @@ async function main(): Promise<void> {
     peerEndpoint: peerEndpoint.toString(),
     workerId: role + "-" + String(process.pid),
     demosIdentityFilePath,
-    evmPrivateKeyFilePath,
-    evmRpcUrl,
+    ...(x402Enabled ? { evmPrivateKeyFilePath: evmPrivateKeyFilePath!,
+      evmRpcUrl: evmRpcUrl! } : {}),
     // The authenticated registry supplies finalityBlocks below. Use the live
     // head here so that policy, rather than the host runtime's safe default,
     // determines the required confirmation depth.
     evmFinalityTag: "latest",
     createCommerceGraph: async (context) => {
-      const rail = await resolveRail(
-        RAIL_REGISTRY_INDEX_ADDRESS,
-        configuredX402RailId(),
-        createDacsDemosRailRegistryProviderV1({
-          runtime: context.demos,
-          stewardAuthority: railStewardAuthority,
-          stewardPublicKey: railStewardPublicKey,
-        }),
-      );
-      if (rail.asset.kind !== "erc20") {
-        throw new Error("generated fixed-price graph requires an ERC-20 rail");
+      const provider = createDacsDemosRailRegistryProviderV1({
+        runtime: context.demos,
+        stewardAuthority: railStewardAuthority,
+        stewardPublicKey: railStewardPublicKey,
+      });
+      const [x402Rail, payDemRail] = await Promise.all([
+        x402Enabled ? resolveRail(
+          RAIL_REGISTRY_INDEX_ADDRESS,
+          configuredX402RailId(),
+          provider,
+        ) : undefined,
+        payDemEnabled ? resolveRail(
+          RAIL_REGISTRY_INDEX_ADDRESS,
+          configuredPayDemRailId(),
+          provider,
+        ) : undefined,
+      ]);
+      if (x402Rail !== undefined && x402Rail.asset.kind !== "erc20") {
+        throw new Error("generated x402 graph requires an ERC-20 rail");
       }
-      const finalityBlocks = rail.parameters.finalityBlocks;
-      if (!Number.isSafeInteger(finalityBlocks) || Number(finalityBlocks) <= 0) {
+      const x402Asset = x402Rail?.asset.kind === "erc20" ? x402Rail.asset : undefined;
+      if (payDemRail !== undefined && (payDemRail.asset.kind !== "native-dem" ||
+          payDemRail.phaseHandler !== "pay-dem" || payDemRail.network.kind !== "demos")) {
+        throw new Error("generated pay-dem graph requires the native DEM rail");
+      }
+      const finalityBlocks = x402Rail?.parameters.finalityBlocks;
+      if (x402Rail !== undefined &&
+          (!Number.isSafeInteger(finalityBlocks) || Number(finalityBlocks) <= 0)) {
         throw new Error("generated x402 rail requires positive finalityBlocks");
       }
-      const common = {
-        context,
-        workerId: role + "-" + String(process.pid),
-        rail,
-        tokenDomain: configuredX402TokenDomain(),
-        evmRpcUrl,
-        authorizationSearchFromBlock,
-        recipeRegistryVersion: 1,
-        finalityTag: "latest" as const,
-        retryDelayMs: 5_000,
-      };
+      const workerId = role + "-" + String(process.pid);
       if (role === "buyer") {
-        const sellerPublicEndpoint = loadRoleConfig("seller").publicBaseUrl;
-        if (sellerPublicEndpoint === undefined) {
-          throw new Error("seller x402 endpoint configuration is unavailable");
-        }
-        return createDacsFixedPriceX402BuyerLiveV1({
-          ...common,
+        const x402 = x402Rail === undefined ? undefined : {
+          context,
+          workerId,
+          rail: x402Rail,
+          tokenDomain: configuredX402TokenDomain(),
+          evmRpcUrl: evmRpcUrl!,
+          authorizationSearchFromBlock: authorizationSearchFromBlock!,
+          recipeRegistryVersion: 1,
+          finalityTag: "latest" as const,
+          retryDelayMs: 5_000,
           confirmUnused: createDacsX402ExactRetainedReplayConfirmerV1({
-            publicBaseUrl: sellerPublicEndpoint,
+            publicBaseUrl: loadRoleConfig("seller").publicBaseUrl ?? (() => {
+              throw new Error("seller x402 endpoint configuration is unavailable");
+            })(),
           }),
           maxTimeoutSeconds: 120,
           minimumConfirmations: Number(finalityBlocks),
-        });
+        };
+        const payDem = payDemRail === undefined ? undefined : {
+          context,
+          workerId,
+          rail: payDemRail,
+          demosRpcUrl: config.demos.rpcUrl,
+          recipeRegistryVersion: 1,
+          retryDelayMs: 5_000,
+        };
+        if (x402 !== undefined && payDem !== undefined) {
+          return createDacsFixedPriceMultirailBuyerLiveV1({ x402, payDem });
+        }
+        if (x402 !== undefined) return createDacsFixedPriceX402BuyerLiveV1(x402);
+        if (payDem !== undefined) return createDacsFixedPricePayDemBuyerLiveV1(payDem);
+        throw new Error("no generated buyer payment rail is enabled");
       }
-      const facilitatorUrl = configuredX402FacilitatorUrl();
-      const sellerPayee = configuredSellerEvmPayee();
       const sellerPublicEndpoint = config.publicBaseUrl;
-      if (facilitatorUrl === undefined || sellerPayee === undefined ||
-          sellerPublicEndpoint === undefined) {
-        throw new Error("seller x402 endpoint configuration is unavailable");
+      if (sellerPublicEndpoint === undefined) {
+        throw new Error("seller public endpoint configuration is unavailable");
       }
-      return createDacsFixedPriceX402SellerLiveV1({
-        ...common,
-        amount: baseUnits(configuredFixedPriceAmount(), rail.asset.decimals),
-        facilitator: { url: facilitatorUrl },
+      const x402 = x402Rail === undefined ? undefined : {
+        context,
+        workerId,
+        rail: x402Rail,
+        tokenDomain: configuredX402TokenDomain(),
+        evmRpcUrl: evmRpcUrl!,
+        authorizationSearchFromBlock: authorizationSearchFromBlock!,
+        recipeRegistryVersion: 1,
+        finalityTag: "latest" as const,
+        retryDelayMs: 5_000,
+        amount: baseUnits(configuredFixedPriceAmount(), x402Asset!.decimals),
+        facilitator: { url: configuredX402FacilitatorUrl() ?? (() => {
+          throw new Error("seller x402 facilitator is unavailable");
+        })() },
         prepareDeliverable: fulfil,
         sellerPublicEndpoint,
-        sellerPayee,
+        sellerPayee: configuredSellerEvmPayee() ?? (() => {
+          throw new Error("seller x402 payee is unavailable");
+        })(),
         maximumServiceAmount: config.limits.maxServiceAmount.amount,
         maxTimeoutSeconds: 120,
-        observeHttpResult: (result) => {
+        observeHttpResult: (result: Readonly<DacsX402HttpResultObservationV1>) => {
           process.stderr.write(JSON.stringify({
             event: "dacs.live-service.x402-result",
             role: "seller",
             ...result,
           }) + "\\n");
         },
-      });
+      };
+      const sellerDemosKey = canonicalDemosAgentPublicKey(authority);
+      const payDem = payDemRail === undefined ? undefined : {
+        context,
+        workerId,
+        rail: payDemRail,
+        demosRpcUrl: config.demos.rpcUrl,
+        sellerPublicEndpoint,
+        sellerPayee: sellerDemosKey === null ? (() => {
+          throw new Error("seller native DEM payee is unavailable");
+        })() : Buffer.from(sellerDemosKey).toString("hex"),
+        maximumServiceAmount: configuredMaximumPayDemServiceAmount(),
+        recipeRegistryVersion: 1,
+        prepareDeliverable: fulfil,
+        retryDelayMs: 5_000,
+      };
+      if (x402 !== undefined && payDem !== undefined) {
+        return createDacsFixedPriceMultirailSellerLiveV1({ x402, payDem });
+      }
+      if (x402 !== undefined) return createDacsFixedPriceX402SellerLiveV1(x402);
+      if (payDem !== undefined) return createDacsFixedPricePayDemSellerLiveV1(payDem);
+      throw new Error("no generated seller payment rail is enabled");
     },
     ...(discovery === undefined ? {} : {
       handlePublicRequest: createDacsListingDiscoveryRequestHandlerV1(discovery),
@@ -3085,6 +3512,7 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:v0.1}
   DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
   DACS_X402_RAIL_ID: \${DACS_X402_RAIL_ID:-x402:default}
+  DACS_PAY_DEM_RAIL_ID: \${DACS_PAY_DEM_RAIL_ID:-demos-native:DEM}
   DACS_X402_FACILITATOR_URL: \${DACS_X402_FACILITATOR_URL:-}
   DACS_EVM_RPC_URL: \${DACS_EVM_RPC_URL:-}
   DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK: \${DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK:-}
@@ -3093,6 +3521,9 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_X402_NETWORK: \${DACS_X402_NETWORK:-eip155:84532}
   DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-USDC}
   DACS_FIXED_PRICE_AMOUNT: \${DACS_FIXED_PRICE_AMOUNT:-1}
+  DACS_PAY_DEM_FIXED_PRICE_AMOUNT: \${DACS_PAY_DEM_FIXED_PRICE_AMOUNT:-1}
+  DACS_MAX_PAY_DEM_SERVICE_AMOUNT: \${DACS_MAX_PAY_DEM_SERVICE_AMOUNT:-1}
+  DACS_MAX_PAY_DEM_TOTAL_DEBIT: \${DACS_MAX_PAY_DEM_TOTAL_DEBIT:-3}
   DACS_MAX_SERVICE_AMOUNT: \${DACS_MAX_SERVICE_AMOUNT:-1}
   DACS_MAX_SETUP_SPEND_DEM: \${DACS_MAX_SETUP_SPEND_DEM:-10}
   DACS_MAX_DEMOS_NETWORK_FEE_DEM: \${DACS_MAX_DEMOS_NETWORK_FEE_DEM:-2}
@@ -3167,8 +3598,38 @@ services:
       - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro
 `;
 
+function compose(options: LiveProjectTemplateOptions): string {
+  const draftEnvironment = options.rails === "both"
+    ? "      DACS_X402_LISTING_DRAFT_FILE: /run/dacs/listing-draft-x402.json\n" +
+      "      DACS_PAY_DEM_LISTING_DRAFT_FILE: /run/dacs/listing-draft-pay-dem.json"
+    : options.rails === "x402"
+      ? "      DACS_X402_LISTING_DRAFT_FILE: /run/dacs/listing-draft-x402.json"
+      : "      DACS_PAY_DEM_LISTING_DRAFT_FILE: /run/dacs/listing-draft-pay-dem.json";
+  const draftVolumes = options.rails === "both"
+    ? "      - \${DACS_X402_LISTING_DRAFT_FILE:?set DACS_X402_LISTING_DRAFT_FILE}:/run/dacs/listing-draft-x402.json:ro\n" +
+      "      - \${DACS_PAY_DEM_LISTING_DRAFT_FILE:?set DACS_PAY_DEM_LISTING_DRAFT_FILE}:/run/dacs/listing-draft-pay-dem.json:ro"
+    : options.rails === "x402"
+      ? "      - \${DACS_X402_LISTING_DRAFT_FILE:?set DACS_X402_LISTING_DRAFT_FILE}:/run/dacs/listing-draft-x402.json:ro"
+      : "      - \${DACS_PAY_DEM_LISTING_DRAFT_FILE:?set DACS_PAY_DEM_LISTING_DRAFT_FILE}:/run/dacs/listing-draft-pay-dem.json:ro";
+  const configured = COMPOSE
+    .replaceAll("      DACS_LISTING_DRAFT_FILE: /run/dacs/listing-draft.json", draftEnvironment)
+    .replaceAll("      - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro", draftVolumes)
+    .replace("DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-USDC}",
+      `DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-${options.rails === "pay-dem" ? "DEM" : "USDC"}}`);
+  if (options.rails !== "pay-dem") return configured;
+  return configured.split("\n").filter((line) =>
+    !line.includes("DACS_BUYER_EVM_SECRET_FILE") &&
+    !line.includes("DACS_SELLER_EVM_SECRET_FILE") &&
+    !line.includes("DACS_EVM_RPC_URL") &&
+    !line.includes("DACS_SELLER_EVM_PAYEE") &&
+    !line.includes("DACS_X402_FACILITATOR_URL") &&
+    !line.includes("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK") &&
+    !line.includes("DACS_MAX_EVM_NETWORK_FEE_ETH")
+  ).join("\n");
+}
+
 function envExample(options: LiveProjectTemplateOptions): string {
-  return `# Public configuration only. Never put secret values in this file.
+  const template = `# Public configuration only. Never put secret values in this file.
 DACS_DEPLOYMENT=${options.deployment}
 DACS_RUNTIME_UID=${options.runtimeUid}
 DACS_RUNTIME_GID=${options.runtimeGid}
@@ -3178,6 +3639,7 @@ DACS_DEMOS_RPC_URL=https://node2.demos.sh
 DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
 DACS_RAIL_STEWARD_AUTHORITY=
 DACS_X402_RAIL_ID=x402:default
+DACS_PAY_DEM_RAIL_ID=demos-native:DEM
 DACS_X402_FACILITATOR_URL=
 DACS_EVM_RPC_URL=
 DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK=
@@ -3185,8 +3647,11 @@ DACS_X402_TOKEN_NAME=USDC
 DACS_X402_TOKEN_VERSION=2
 DACS_LISTING_DRAFT_FILE=./listing-draft.json
 DACS_X402_NETWORK=eip155:84532
-DACS_MAX_SERVICE_ASSET=USDC
+DACS_MAX_SERVICE_ASSET=${options.rails === "pay-dem" ? "DEM" : "USDC"}
 DACS_FIXED_PRICE_AMOUNT=1
+DACS_PAY_DEM_FIXED_PRICE_AMOUNT=1
+DACS_MAX_PAY_DEM_SERVICE_AMOUNT=1
+DACS_MAX_PAY_DEM_TOTAL_DEBIT=3
 DACS_MAX_SERVICE_AMOUNT=1
 DACS_MAX_SETUP_SPEND_DEM=10
 DACS_MAX_DEMOS_NETWORK_FEE_DEM=2
@@ -3204,6 +3669,23 @@ DACS_FUNDED_DOCTOR_AUTHORITY=
 DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE=
 DACS_FUNDED_DOCTOR_DATA_ROOT=./data/funded-doctor
 `;
+  const draftLines = options.rails === "both"
+    ? "DACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json\n" +
+      "DACS_PAY_DEM_LISTING_DRAFT_FILE=./listing-draft-pay-dem.json"
+    : options.rails === "x402"
+      ? "DACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json"
+      : "DACS_PAY_DEM_LISTING_DRAFT_FILE=./listing-draft-pay-dem.json";
+  const configured = template.replace("DACS_LISTING_DRAFT_FILE=./listing-draft.json", draftLines);
+  if (options.rails !== "pay-dem") return configured;
+  return configured.split("\n").filter((line) =>
+    !line.startsWith("DACS_BUYER_EVM_SECRET_FILE=") &&
+    !line.startsWith("DACS_SELLER_EVM_SECRET_FILE=") &&
+    !line.startsWith("DACS_EVM_RPC_URL=") &&
+    !line.startsWith("DACS_SELLER_EVM_PAYEE=") &&
+    !line.startsWith("DACS_X402_FACILITATOR_URL=") &&
+    !line.startsWith("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK=") &&
+    !line.startsWith("DACS_MAX_EVM_NETWORK_FEE_ETH=")
+  ).join("\n");
 }
 
 const GITIGNORE = `.env
@@ -3223,20 +3705,35 @@ secrets/*
 !secrets/README.md
 `;
 
-const SECRETS_README = `# Role secrets
+function secretsReadme(options: LiveProjectTemplateOptions): string {
+  const x402 = options.rails !== "pay-dem";
+  return `# Role secrets
 
-Keep buyer and seller material in four different files outside this project.
+Keep buyer and seller Demos identities in two different files outside this
+project.${x402 ? " Keep their EVM wallets in two additional role-owned files; no Demos or EVM secret may be reused across roles." : " This native DEM profile does not require or accept EVM wallet files."}
 Live mode rejects symlinks and group/other-readable secret files. Set each file
 to mode 0600 and make its owner the non-root DACS_RUNTIME_UID/GID written by the
 generator. Compose uses that same identity and bind-mounts only that role's
 files read-only under /run/secrets; no secret is shared across roles.
-The optional funded doctor uses a fifth, named disposable Demos wallet through
+The optional funded doctor uses a separate, named disposable Demos wallet through
 \`DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE\`; it must not reuse either role wallet.
 Do not persist a write-confirmation variable in .env or Compose.
 `;
+}
 
 function readme(options: LiveProjectTemplateOptions): string {
-  return `# DACS fixed-price x402 live bootstrap
+  const setupCommands = options.rails === "both"
+    ? "npm run dacs:setup -- --rail x402 --max-spend-dem 10\n" +
+      "npm run dacs:setup -- --rail pay-dem --max-spend-dem 10"
+    : `npm run dacs:setup -- --max-spend-dem 10`;
+  const purchaseCommands = options.rails === "both"
+    ? "# Select exactly one authenticated sibling; there is no fallback.\n" +
+      "npm run dacs:buy -- --rail x402 --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-network-fee-eth 0.001\n" +
+      "npm run dacs:buy -- --rail pay-dem --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-total-debit-dem 3"
+    : options.rails === "x402"
+      ? "npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-network-fee-eth 0.001"
+      : "npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-total-debit-dem 3";
+  return `# DACS fixed-price ${options.rails} live bootstrap
 
 This generated project is an **experimental live bootstrap** using the exact
 published SDK and host package surfaces. It contains deployment configuration
@@ -3250,8 +3747,8 @@ cp .env.example .env
 npm run dacs:doctor -- --phase pre-start --for start
 npm run dacs:up
 npm run dacs:doctor -- --phase post-start --for start
-npm run dacs:setup -- --max-spend-dem 10
-npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-network-fee-eth 0.001
+${setupCommands}
+${purchaseCommands}
 npm run dacs:doctor:funded -- --wallet disposable-alpha --max-cost-dem 2
 npm run dacs:status
 npm run dacs:upgrade -- --check
@@ -3264,6 +3761,11 @@ services open the SDK's role-owned SQLite, Demos identity, authenticated HTTP an
 readiness runtime when their prerequisites exist. Commerce remains blocked until
 the exact Listing, signed rail authority and operation graph pass doctor. Never
 bypass that gate.
+
+Payment capability: **${options.rails}**. Dual-rail mode publishes two separately
+signed sibling Listings for the same offer. Setup and purchase select one exact
+rail explicitly; a failed or indeterminate attempt is reconciled on that rail and
+is never retried on the sibling.
 
 Setup requires \`DACS_SETUP_WRITE_CONFIRM=1\`; purchase requires
 \`DACS_PURCHASE_CONFIRM=1\`; funded doctor requires
@@ -3312,14 +3814,14 @@ export function liveProjectTemplates(
   options: LiveProjectTemplateOptions,
 ): Readonly<Record<string, string>> {
   return Object.freeze({
-    "package.json": packageJson(options.packageName),
+    "package.json": packageJson(options),
     "tsconfig.json": TSCONFIG,
-    "dacs.config.ts": dacsConfig(options.role),
+    "dacs.config.ts": dacsConfig(options),
     ".env.example": envExample(options),
     ".gitignore": GITIGNORE,
     ".dockerignore": DOCKERIGNORE,
     Dockerfile: DOCKERFILE,
-    "compose.yaml": COMPOSE,
+    "compose.yaml": compose(options),
     "README.md": readme(options),
     "src/buyer.ts": BUYER_SOURCE,
     "src/seller.ts": SELLER_SOURCE,
@@ -3337,6 +3839,6 @@ export function liveProjectTemplates(
     "test/live-bootstrap.test.ts": TEST_SOURCE,
     "data/buyer/.gitkeep": "",
     "data/seller/.gitkeep": "",
-    "secrets/README.md": SECRETS_README,
+    "secrets/README.md": secretsReadme(options),
   });
 }
