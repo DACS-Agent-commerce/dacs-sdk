@@ -111,6 +111,7 @@ describe("complete role-owned live runtime", () => {
         getAddressInfo: vi.fn(async () => ({ balance: "10" })),
       },
       connect: vi.fn(async () => undefined),
+      getChainIdentity: vi.fn(async () => "test-chain"),
       getAddress: vi.fn(() => "0xactor"),
       getPublicKey: vi.fn(async () => Uint8Array.from(publicKey)),
       sign: vi.fn(async (bytes) => ed25519Sign(bytes, privateKey)),
@@ -121,6 +122,7 @@ describe("complete role-owned live runtime", () => {
       anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
       verifyDemosAnchorReceipt: vi.fn(async () => true),
       resolveDemosAnchorReceipt: vi.fn(async () => null),
+      reconcileNativeTransferJournal: vi.fn(async () => undefined),
     };
   }
 

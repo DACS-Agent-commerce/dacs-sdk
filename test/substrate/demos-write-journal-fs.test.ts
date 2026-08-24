@@ -47,6 +47,35 @@ function record(generation: number): DemosWriteJournalRecord {
   };
 }
 
+function nativeTransferRecord(generation: number): DemosWriteJournalRecord {
+  const payer = "ab".repeat(32);
+  const payee = "cd".repeat(32);
+  return {
+    writeId: `pay-dem-${"ef".repeat(32)}`,
+    generation,
+    kind: "native-transfer",
+    operation: "transfer",
+    stage: "broadcast-intent",
+    logicalName: "pay-dem:rail:job:0",
+    programName: "native-dem-transfer",
+    owner: payer,
+    nativeAddress: payee,
+    valueHash: "ef".repeat(32),
+    nonce: 8,
+    txRef: "12".repeat(32),
+    transfer: {
+      payer,
+      payee,
+      amountOs: "1000000000",
+      denomination: "os",
+      network: "demos",
+      maxTotalDebitOs: "2000000000",
+      settlementKey: "rail:job:0",
+    },
+    updatedAt: 2,
+  };
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((dir) =>
@@ -71,6 +100,43 @@ describe("filesystem Demos write journal", () => {
       record(first.generation),
     ]);
     await restarted.release();
+  });
+
+  it("recovers an unresolved native transfer in a fresh journal instance", async () => {
+    const dir = await temporaryDirectory();
+    const key = { chainIdentity: "genesis-native", wallet: `0x${"ab".repeat(32)}` };
+    const firstJournal = await createFsDemosWriteJournal({ dir });
+    const first = await firstJournal.acquire(key);
+    await first.put(nativeTransferRecord(first.generation));
+    await first.release();
+
+    const restartedJournal = await createFsDemosWriteJournal({ dir });
+    const restarted = await restartedJournal.acquire(key);
+    expect(restarted.generation).toBe(2);
+    expect(restarted.snapshot.records).toEqual([
+      nativeTransferRecord(first.generation),
+    ]);
+    await restarted.release();
+  });
+
+  it("rejects malformed native transfer bindings before persisting them", async () => {
+    const dir = await temporaryDirectory();
+    const journal = await createFsDemosWriteJournal({ dir });
+    const lease = await journal.acquire({
+      chainIdentity: "genesis-native",
+      wallet: "ab".repeat(32),
+    });
+    const valid = nativeTransferRecord(lease.generation);
+    await expect(lease.put({
+      ...valid,
+      transfer: { ...valid.transfer!, denomination: "tokens" as "os" },
+    })).rejects.toThrow(/invalid native transfer binding/);
+    await expect(lease.put({
+      ...valid,
+      stage: "native-visible",
+    })).rejects.toThrow(/invalid native-transfer stage/);
+    expect(lease.snapshot.records).toHaveLength(0);
+    await lease.release();
   });
 
   it("keys authority by chain identity and wallet, not endpoint spelling", async () => {

@@ -260,10 +260,14 @@ function capturePrepared(
   if (!plainObject(value) || !exactKeys(value, [
     "txHash", "nonce", "payer", "payee", "amountOs", "network",
     "maxTotalDebitOs", "recovery",
-  ]) || typeof value.txHash !== "string" || !HASH_RE.test(value.txHash) ||
+  ], ["denomination"]) || typeof value.txHash !== "string" ||
+      !HASH_RE.test(value.txHash) ||
       !Number.isSafeInteger(value.nonce) || (value.nonce as number) < 0 ||
       value.payer !== payment.payer || value.payee !== payment.payee ||
-      value.amountOs !== payment.amountOs || value.network !== payment.network ||
+      value.amountOs !== payment.amountOs ||
+      (value.denomination !== undefined && value.denomination !== "os" &&
+        value.denomination !== "dem") ||
+      value.network !== payment.network ||
       value.maxTotalDebitOs !== payment.maxTotalDebitOs ||
       canonicalize(value.recovery) !== canonicalize(recoveryContext(payment))) {
     throw new DacsPayDemBuyerPaymentError("pay-dem-prepared-transfer-invalid");

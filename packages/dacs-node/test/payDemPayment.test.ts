@@ -133,6 +133,7 @@ describe("native DEM buyer payment track", () => {
           payer: PAYER,
           payee: PAYEE,
           amountOs: AUTHORITY.amountOs,
+          denomination: "os",
           network: "demos",
           maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
           recovery: input.recovery!,
@@ -279,8 +280,13 @@ describe("native DEM buyer payment track", () => {
 
     expect(settle).not.toHaveBeenCalled();
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({
-      prepared: expect.objectContaining({ txHash: TX_HASH, nonce: 9 }),
+      prepared: expect.objectContaining({
+        txHash: TX_HASH,
+        nonce: 9,
+      }),
     }));
+    expect(vi.mocked(reconcile).mock.calls[0]?.[0].prepared)
+      .not.toHaveProperty("denomination");
     expect(publishNotice).toHaveBeenCalledWith(expect.objectContaining({
       notice: expect.objectContaining({ settlement: {
         ok: true,

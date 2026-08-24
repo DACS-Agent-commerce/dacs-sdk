@@ -58,8 +58,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const WRITE_KINDS = new Set(["mutable", "immutable"]);
-const WRITE_OPERATIONS = new Set(["create", "update"]);
+const WRITE_KINDS = new Set(["mutable", "immutable", "native-transfer"]);
+const WRITE_OPERATIONS = new Set(["create", "update", "transfer"]);
 const WRITE_STAGES = new Set([
   "prepared",
   "signed",
@@ -72,6 +72,19 @@ const WRITE_STAGES = new Set([
 
 function validOptionalString(value: unknown): boolean {
   return value === undefined || nonEmpty(value);
+}
+
+function positiveIntegerText(value: unknown): value is string {
+  return typeof value === "string" && /^[1-9][0-9]*$/.test(value);
+}
+
+function canonicalHex32(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function sameWallet(left: string, right: string): boolean {
+  return left.toLowerCase().replace(/^0x/, "") ===
+    right.toLowerCase().replace(/^0x/, "");
 }
 
 function validateJournalRecord(
@@ -96,7 +109,7 @@ function validateJournalRecord(
     !nonEmpty(record.logicalName) ||
     !nonEmpty(record.programName) ||
     !nonEmpty(record.owner) ||
-    (record.owner as string).toLowerCase() !== expectedWallet.toLowerCase() ||
+    !sameWallet(record.owner as string, expectedWallet) ||
     !nonEmpty(record.nativeAddress) ||
     !nonEmpty(record.valueHash) ||
     !validOptionalString(record.metadataHash) ||
@@ -114,13 +127,17 @@ function validateJournalRecord(
   ) invalid("has invalid fields");
 
   const stage = record.stage as DemosWriteJournalRecord["stage"];
-  if (stage !== "prepared" && (
+  const nativeTransfer = record.kind === "native-transfer";
+  if (nativeTransfer !== (record.operation === "transfer")) {
+    invalid("has an incompatible kind and operation");
+  }
+  if (!nativeTransfer && stage !== "prepared" && (
     !nonEmpty(record.txRef) ||
     !nonEmpty(record.signedTransaction) ||
     !nonEmpty(record.signedTransactionHash)
   )) invalid(`at stage ${stage} lacks its signed transaction`);
   if (
-    (stage === "canonical-confirmed" ||
+    !nativeTransfer && (stage === "canonical-confirmed" ||
       stage === "native-visible" ||
       stage === "index-visible") &&
     (!nonNegativeInteger(record.blockNumber) ||
@@ -129,6 +146,37 @@ function validateJournalRecord(
       !nonEmpty(record.finalityProof) ||
       !nonEmpty(record.finalityProofHash))
   ) invalid(`at stage ${stage} lacks canonical block evidence`);
+
+  if (nativeTransfer) {
+    if (stage !== "prepared" && stage !== "broadcast-intent" &&
+        stage !== "canonical-confirmed" && stage !== "canonical-failed") {
+      invalid(`has invalid native-transfer stage ${stage}`);
+    }
+    if (!isObject(record.transfer)) invalid("has no native transfer binding");
+    const transfer = record.transfer as Record<string, unknown>;
+    if (transfer.payer !== record.owner || transfer.payee !== record.nativeAddress ||
+        !canonicalHex32(transfer.payer) || !canonicalHex32(transfer.payee) ||
+        !canonicalHex32(record.txRef) || !canonicalHex32(record.valueHash) ||
+        !positiveIntegerText(transfer.amountOs) ||
+        (transfer.denomination !== "os" && transfer.denomination !== "dem") ||
+        !nonEmpty(transfer.network) ||
+        (transfer.maxTotalDebitOs !== undefined &&
+          !positiveIntegerText(transfer.maxTotalDebitOs)) ||
+        transfer.maxTotalDebitOs !== undefined &&
+          BigInt(transfer.maxTotalDebitOs as string) < BigInt(transfer.amountOs as string) ||
+        !validOptionalString(transfer.settlementKey) || !nonEmpty(record.txRef) ||
+        stage === "canonical-confirmed" && (
+          !nonNegativeInteger(record.blockNumber) || !nonEmpty(record.blockHash) ||
+          !nonNegativeInteger(record.blockTimestamp) || !nonEmpty(record.finalityProof) ||
+          !nonEmpty(record.finalityProofHash)) ||
+        record.metadataHash !== undefined || record.signedTransaction !== undefined ||
+        record.signedTransactionHash !== undefined || record.nativeRead !== undefined ||
+        record.indexRead !== undefined) {
+      invalid("has an invalid native transfer binding");
+    }
+  } else if (record.transfer !== undefined) {
+    invalid("anchor record carries a native transfer binding");
+  }
 
   if (record.nativeRead !== undefined) {
     if (!isObject(record.nativeRead)) invalid("has invalid native readback");

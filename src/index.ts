@@ -172,6 +172,8 @@ export type {
   DemosWriteJournalKey,
   DemosWriteJournalRecord,
   DemosWriteJournalSnapshot,
+  DemosWriteJournalOperation,
+  DemosNativeTransferJournalBinding,
 } from "./substrate/demosWriteJournal.js";
 export {
   createInMemoryDemosWriteJournal,

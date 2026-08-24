@@ -6,6 +6,7 @@ import {
   createInMemoryDemosWriteJournal,
   demosWriteEvidenceToAnchorReceipt,
   type AnchorAttemptReceipt,
+  type DemosWriteJournalRecord,
 } from "../../src/substrate/index.js";
 import {
   canonicalize,
@@ -53,6 +54,39 @@ function signedStorageTransaction(
       nonce,
       data: ["storageProgram", payload],
     },
+  };
+}
+
+function pendingNativeTransfer(
+  generation: number,
+  payer: string,
+  payee: string,
+  txRef: string,
+  nonce: number,
+): DemosWriteJournalRecord {
+  return {
+    writeId: `pay-dem-${txRef}`,
+    generation,
+    kind: "native-transfer",
+    operation: "transfer",
+    stage: "broadcast-intent",
+    logicalName: "pay-dem:pay-dem:job:0",
+    programName: "native-dem-transfer",
+    owner: payer,
+    nativeAddress: payee,
+    valueHash: "34".repeat(32),
+    nonce,
+    txRef,
+    transfer: {
+      payer,
+      payee,
+      amountOs: "1000000000",
+      denomination: "os",
+      network: "demos",
+      maxTotalDebitOs: "2000000000",
+      settlementKey: "pay-dem:job:0",
+    },
+    updatedAt: Date.now(),
   };
 }
 
@@ -180,6 +214,116 @@ afterEach(() => {
 });
 
 describe("DemosAdapter.anchorAndWait", () => {
+  it("authenticates a pending native transfer and advances the next anchor nonce", async () => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const payer = wallet.replace(/^0x/, "").toLowerCase();
+    const payee = "cd".repeat(32);
+    const txRef = "12".repeat(32);
+    const lease = await writeJournal.acquire({
+      chainIdentity: "test-chain",
+      wallet: wallet.toLowerCase(),
+    });
+    await lease.put(pendingNativeTransfer(
+      lease.generation,
+      payer,
+      payee,
+      txRef,
+      9,
+    ));
+    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 44 });
+    raw.getTxByHash.mockResolvedValue({
+      hash: txRef,
+      status: "confirmed",
+      blockNumber: 44,
+      content: {
+        type: "native",
+        from: payer,
+        from_ed25519_address: `0x${payer}`,
+        to: payee,
+        nonce: 9,
+        amount: "1000000000",
+        data: [
+          "native",
+          { nativeOperation: "send", args: [payee, "1000000000"] },
+        ],
+      },
+    });
+    raw.getBlockByNumber.mockResolvedValue({
+      number: 44,
+      hash: "block-44",
+      status: "confirmed",
+      content: { timestamp: 120, ordered_transactions: [txRef] },
+      validation_data: { signatures: ["validator-test-signature"] },
+    });
+
+    await adapter.reconcileNativeTransferJournal(lease, 1_000);
+    expect(lease.snapshot.records).toMatchObject([
+      {
+        txRef,
+        stage: "canonical-confirmed",
+        blockNumber: 44,
+        blockHash: "block-44",
+        finalityProofHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    ]);
+    await lease.release();
+
+    raw.getAddressNonce.mockResolvedValue(0);
+    raw.nodeCall.mockResolvedValue({ state: "failed" });
+    await adapter.anchorAndWait(
+      "after-native-transfer",
+      { value: 1 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    ).catch(() => undefined);
+    expect(raw.storagePrograms.sign).toHaveBeenCalledWith(
+      expect.anything(),
+      { nonce: 10 },
+    );
+  });
+
+  it("refuses to close a native transfer whose canonical amount changed", async () => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const payer = wallet.replace(/^0x/, "").toLowerCase();
+    const payee = "cd".repeat(32);
+    const txRef = "56".repeat(32);
+    const lease = await writeJournal.acquire({
+      chainIdentity: "test-chain",
+      wallet: wallet.toLowerCase(),
+    });
+    await lease.put(pendingNativeTransfer(
+      lease.generation,
+      payer,
+      payee,
+      txRef,
+      4,
+    ));
+    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 45 });
+    raw.getTxByHash.mockResolvedValue({
+      hash: txRef,
+      status: "confirmed",
+      blockNumber: 45,
+      content: {
+        type: "native",
+        from: payer,
+        to: payee,
+        nonce: 4,
+        amount: "2",
+        data: ["native", { nativeOperation: "send", args: [payee, "2"] }],
+      },
+    });
+    raw.getBlockByNumber.mockResolvedValue({
+      number: 45,
+      hash: "block-45",
+      status: "confirmed",
+      content: { timestamp: 120, ordered_transactions: [txRef] },
+      validation_data: { signatures: ["validator-test-signature"] },
+    });
+    await expect(adapter.reconcileNativeTransferJournal(lease, 1_000))
+      .rejects.toMatchObject({ code: "inclusion-failed" });
+    expect(lease.snapshot.records[0]?.stage).toBe("broadcast-intent");
+    await lease.release();
+  });
+
   it("binds a mutable create to the nonce used to derive its address", async () => {
     const { adapter, raw } = await makeAdapter();
 

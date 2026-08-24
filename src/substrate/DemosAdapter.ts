@@ -133,6 +133,39 @@ function normalizedDemosAddress(value: unknown): string | undefined {
   return value.toLowerCase().replace(/^0x/, "");
 }
 
+function sameDemosWallet(left: unknown, right: unknown): boolean {
+  const canonicalLeft = normalizedDemosAddress(left);
+  const canonicalRight = normalizedDemosAddress(right);
+  return canonicalLeft !== undefined && canonicalRight !== undefined
+    ? canonicalLeft === canonicalRight
+    : typeof left === "string" && typeof right === "string" &&
+      left.toLowerCase() === right.toLowerCase();
+}
+
+const DEMOS_OS_PER_DEM = 1_000_000_000n;
+
+function demosTransferAmountOs(
+  value: unknown,
+  denomination: "os" | "dem",
+  allowProjectedOsNumber = false,
+): bigint | undefined {
+  if (denomination === "os") {
+    if (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value)) {
+      return BigInt(value);
+    }
+    if (allowProjectedOsNumber && typeof value === "number" &&
+        Number.isSafeInteger(value) && value >= 0 &&
+        !Object.is(value, -0)) {
+      return BigInt(value);
+    }
+    return undefined;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+      !Object.is(value, -0)
+    ? BigInt(value) * DEMOS_OS_PER_DEM
+    : undefined;
+}
+
 function sameOptionalJsonObject(left: unknown, right: unknown): boolean {
   if (left === undefined && right === undefined) return true;
   return isJsonObject(left) && isJsonObject(right) &&
@@ -1400,6 +1433,7 @@ export class DemosAdapter implements SubstrateAdapter {
     const owner = this.demos.getAddress();
     const journalBindings = (this.activeWriteLease?.snapshot.records ?? [])
       .filter((record) =>
+        record.kind !== "native-transfer" &&
         record.logicalName === name &&
         record.owner.toLowerCase() === owner.toLowerCase() &&
         (record.stage === "native-visible" || record.stage === "index-visible")
@@ -1885,6 +1919,13 @@ export class DemosAdapter implements SubstrateAdapter {
     chainIdentity = this.activeWriteLease?.key.chainIdentity,
   ) {
     if (
+      record.kind === "native-transfer" ||
+      (record.operation !== "create" && record.operation !== "update")
+    ) {
+      throw new DacsError("native DEM wallet journal records are not anchor evidence");
+    }
+    const operation = record.operation;
+    if (
       !chainIdentity ||
       !record.txRef ||
       !record.signedTransaction ||
@@ -1906,7 +1947,7 @@ export class DemosAdapter implements SubstrateAdapter {
       writer: record.owner,
       logicalName: record.logicalName,
       nativeAddress: record.nativeAddress,
-      operation: record.operation,
+      operation,
       nonce: record.nonce,
       transactionRef: record.txRef,
       signedTransaction: record.signedTransaction!,
@@ -1918,6 +1959,125 @@ export class DemosAdapter implements SubstrateAdapter {
       finalityProofHash: record.finalityProofHash,
       nativeRead: structuredClone(record.nativeRead),
     };
+  }
+
+  private async authenticateCanonicalNativeTransfer(
+    record: DemosWriteJournalRecord,
+    ctx: AnchorContext,
+  ): Promise<Pick<
+    DemosWriteJournalRecord,
+    | "blockNumber"
+    | "blockHash"
+    | "blockTimestamp"
+    | "finalityProof"
+    | "finalityProofHash"
+  >> {
+    const transaction = ctx.canonicalTransaction;
+    const blockNumber = ctx.receipt.blockNumber;
+    const transfer = record.transfer;
+    const content = isRecord(transaction?.content) ? transaction.content : undefined;
+    const payerFields = [content?.from, content?.from_ed25519_address]
+      .filter((value) => value !== undefined);
+    const tuple = Array.isArray(content?.data) ? content.data : [];
+    const native = isRecord(tuple[1]) ? tuple[1] : undefined;
+    const args = Array.isArray(native?.args) ? native.args : [];
+    const expectedAmountOs = transfer !== undefined &&
+        /^[1-9][0-9]*$/.test(transfer.amountOs)
+      ? BigInt(transfer.amountOs)
+      : undefined;
+    if (record.kind !== "native-transfer" || transfer === undefined ||
+        !transaction || !Number.isSafeInteger(blockNumber) || blockNumber! < 0 ||
+        normalizedDemosAddress(transaction.hash) !== record.txRef ||
+        normalizedDemosAddress(transfer.payer) !== normalizedDemosAddress(record.owner) ||
+        normalizedDemosAddress(transfer.payee) !== normalizedDemosAddress(record.nativeAddress) ||
+        content?.type !== "native" || content.custom_charges != null ||
+        demosNonNegativeInteger(content.nonce) !== record.nonce ||
+        payerFields.length === 0 || payerFields.some((value) =>
+          normalizedDemosAddress(value) !== normalizedDemosAddress(record.owner)) ||
+        normalizedDemosAddress(content.to) !== normalizedDemosAddress(transfer.payee) ||
+        demosTransferAmountOs(content.amount, transfer.denomination, true) !==
+          expectedAmountOs ||
+        tuple.length !== 2 || tuple[0] !== "native" ||
+        native?.nativeOperation !== "send" || args.length !== 2 ||
+        normalizedDemosAddress(args[0]) !== normalizedDemosAddress(transfer.payee) ||
+        demosTransferAmountOs(args[1], transfer.denomination) !== expectedAmountOs) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `canonical Demos transfer ${record.txRef} does not match its wallet journal`,
+      );
+    }
+    const observed = await this.waitFor(
+      ctx,
+      this.demos.getBlockByNumber(blockNumber!),
+      "canonical transfer block authentication",
+    ) as unknown;
+    const block = isRecord(observed) && isRecord(observed.response)
+      ? observed.response : observed;
+    const blockContent = isRecord(block) && isRecord(block.content)
+      ? block.content : undefined;
+    const blockHash = isRecord(block) && typeof block.hash === "string" ? block.hash : "";
+    const blockTimestamp = demosBlockTimestampMs(blockContent?.timestamp);
+    const orderedTransactions = Array.isArray(blockContent?.ordered_transactions)
+      ? blockContent.ordered_transactions : [];
+    if (!isRecord(block) || !blockHash || block.status !== "confirmed" ||
+        block.number !== blockNumber || blockTimestamp === undefined ||
+        !orderedTransactions.includes(record.txRef) || block.validation_data === undefined) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `Demos block ${String(blockNumber)} does not authenticate transfer ${record.txRef}`,
+      );
+    }
+    const finalityProof = serializeSignedTransaction(block.validation_data);
+    return {
+      blockNumber: blockNumber!,
+      blockHash,
+      blockTimestamp,
+      finalityProof,
+      finalityProofHash: sha256Hex(finalityProof),
+    };
+  }
+
+  /** Reconcile wallet-journaled native transfers before another nonce is signed. */
+  async reconcileNativeTransferJournal(
+    lease: DemosWriteJournalLease,
+    timeoutMs = AMBIGUOUS_WRITE_RECOVERY_MS,
+  ): Promise<void> {
+    const retainedTransfers = lease.snapshot.records.filter((record) =>
+      record.kind === "native-transfer");
+    if (retainedTransfers.length === 0) return;
+    const wallet = normalizedDemosAddress(this.demos.getAddress());
+    if (!this.connected || wallet === undefined ||
+        !sameDemosWallet(lease.key.wallet, wallet) ||
+        lease.key.chainIdentity !== await this.resolveChainIdentity() ||
+        !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new DacsError("native DEM wallet journal reconciliation input is invalid");
+    }
+    for (const retained of retainedTransfers) {
+      if (retained.stage === "prepared" ||
+          retained.stage === "canonical-confirmed" ||
+          retained.stage === "canonical-failed") continue;
+      if (retained.stage !== "broadcast-intent" || !retained.txRef) {
+        throw new DacsError("native DEM wallet journal has an invalid pending record");
+      }
+      const ctx = this.newContext(retained.logicalName, timeoutMs, DEFAULT_ANCHOR_POLL_MS);
+      ctx.receipt.address = retained.nativeAddress;
+      ctx.receipt.txRef = retained.txRef;
+      const terminal = await this.waitForTerminal(retained.txRef, ctx);
+      const current = { ...retained, generation: lease.generation };
+      if (terminal === "failed") {
+        await lease.put({ ...current, stage: "canonical-failed", updatedAt: Date.now() });
+        continue;
+      }
+      const finality = await this.authenticateCanonicalNativeTransfer(current, ctx);
+      await lease.put({
+        ...current,
+        ...finality,
+        stage: "canonical-confirmed",
+        updatedAt: Date.now(),
+      });
+    }
   }
 
   private writeEvidenceFromLease(
@@ -2020,7 +2180,12 @@ export class DemosAdapter implements SubstrateAdapter {
   ): Promise<void> {
     const lease = this.activeWriteLease;
     if (!lease) throw new DacsError("Demos write journal lease is missing");
+    await this.reconcileNativeTransferJournal(
+      lease,
+      Math.max(1, current.deadline - Date.now()),
+    );
     for (const prior of lease.snapshot.records) {
+      if (prior.kind === "native-transfer") continue;
       if (
         prior.stage !== "broadcast-intent" &&
         prior.stage !== "canonical-confirmed"
@@ -3224,9 +3389,11 @@ export class DemosAdapter implements SubstrateAdapter {
     expectedOwner: string,
   ): Promise<AnchorResolution | null> {
     const journal = this.config.writeJournal;
+    const wallet = this.demos.getAddress().toLowerCase();
+    const expectedWallet = expectedOwner.toLowerCase();
     if (
       !journal ||
-      this.demos.getAddress().toLowerCase() !== expectedOwner.toLowerCase()
+      !sameDemosWallet(wallet, expectedWallet)
     ) return null;
 
     let lease = this.activeWriteLease;
@@ -3235,13 +3402,14 @@ export class DemosAdapter implements SubstrateAdapter {
       if (!lease) {
         lease = await journal.acquire({
           chainIdentity: await this.resolveChainIdentity(),
-          wallet: this.demos.getAddress().toLowerCase(),
+          wallet,
         });
         release = true;
       }
       const bindings = lease.snapshot.records.filter((record) =>
+        record.kind !== "native-transfer" &&
         record.logicalName === name &&
-        record.owner.toLowerCase() === expectedOwner.toLowerCase() &&
+        sameDemosWallet(record.owner, expectedWallet) &&
         JOURNAL_STAGE_RANK[record.stage] >= JOURNAL_STAGE_RANK["native-visible"]
       );
       if (bindings.length === 0) return null;
@@ -3260,7 +3428,7 @@ export class DemosAdapter implements SubstrateAdapter {
         native.success !== true ||
         native.storageAddress !== address ||
         typeof native.owner !== "string" ||
-        native.owner.toLowerCase() !== expectedOwner.toLowerCase() ||
+        !sameDemosWallet(native.owner, expectedWallet) ||
         native.programName !== programName
       ) {
         return {

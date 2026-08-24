@@ -624,6 +624,12 @@ export interface PayDemPreparedTransfer {
   payer: string;
   payee: string;
   amountOs: string;
+  /**
+   * Wire denomination authenticated before broadcast for exact restart
+   * reconciliation. Current SDK rails always provide it; optionality preserves
+   * read compatibility with prepared checkpoints written by older prereleases.
+   */
+  denomination?: "os" | "dem";
   network: string;
   maxTotalDebitOs?: string;
   /** Exact PC-7 session/phase identity when invoked through payDemSettle. */
@@ -1289,6 +1295,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         payer: canonicalPayer,
         payee: canonicalPayee,
         amountOs: amountOs.toString(),
+        denomination: postFork ? "os" : "dem",
         network: network ?? "demos",
         ...(effectiveMaxTotalDebitOs === undefined
           ? {}

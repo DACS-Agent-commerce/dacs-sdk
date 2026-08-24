@@ -20,6 +20,14 @@ const PEER_KEY = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
 const AUTHORITY = demosAgentClaimRef(PUBLIC_KEY);
 const PEER = demosAgentClaimRef(PEER_KEY);
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
 describe("role-owned Demos runtime", () => {
   const roots: string[] = [];
 
@@ -84,6 +92,7 @@ describe("role-owned Demos runtime", () => {
         getAddressInfo: vi.fn(async () => ({ balance: "10" })),
       },
       connect: vi.fn(async () => undefined),
+      getChainIdentity: vi.fn(async () => "test-chain"),
       getAddress: vi.fn(() => "0xactor"),
       getPublicKey: vi.fn(async () => Uint8Array.from(PUBLIC_KEY)),
       sign: vi.fn(async () => new Uint8Array(64).fill(7)),
@@ -101,6 +110,7 @@ describe("role-owned Demos runtime", () => {
       anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
       verifyDemosAnchorReceipt: vi.fn(async () => true),
       resolveDemosAnchorReceipt: vi.fn(async () => null),
+      reconcileNativeTransferJournal: vi.fn(async () => undefined),
       ...overrides,
     };
   }
@@ -199,12 +209,89 @@ describe("role-owned Demos runtime", () => {
 
     expect(loaded.destroyed).toBe(true);
     expect(opened.payDem?.rail.address).toBe(wallet);
-    expect(opened.payDem?.rail.settle).toBe(settle);
+    expect(opened.payDem?.rail.settle).not.toBe(settle);
     expect(createPayDemRail).toHaveBeenCalledWith({
       rpc: "http://127.0.0.1:5350",
       secret: "test-only-secret",
       network: "demos",
     });
+  });
+
+  it("holds the shared wallet lease across an ambiguous native broadcast", async () => {
+    const directory = root();
+    const loaded = await secret(directory);
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    const payee = "cd".repeat(32);
+    const txHash = "12".repeat(32);
+    const reachedBroadcast = deferred<void>();
+    const releaseBroadcast = deferred<void>();
+    let journal!: DemosWriteJournal;
+    const mock = adapter({
+      getAddress: vi.fn(() => wallet),
+      reconcileNativeTransferJournal: vi.fn(async () => undefined),
+    });
+    const opened = await createDacsDemosActorRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: loaded,
+      createAdapter: async (input) => {
+        journal = input.writeJournal;
+        return mock;
+      },
+      createPayDemRail: async () => ({
+        address: wallet,
+        async settle(input) {
+          await input.journalPreparedTransfer!({
+            txHash,
+            nonce: 7,
+            payer: wallet,
+            payee,
+            amountOs: "1000000000",
+            denomination: "os",
+            network: "demos",
+            maxTotalDebitOs: "2000000000",
+          });
+          await input.assertCurrentBeforeBroadcast!();
+          reachedBroadcast.resolve();
+          await releaseBroadcast.promise;
+          return {
+            ok: false,
+            txHash,
+            chainId: "demos",
+            payer: wallet,
+            payee,
+          };
+        },
+      }),
+    });
+
+    const payment = opened.payDem!.rail.settle({
+      recipient: payee,
+      amount: "1000000000",
+      maxTotalDebitOs: "2000000000",
+    });
+    await reachedBroadcast.promise;
+    const competing = journal.acquire({ chainIdentity: "test-chain", wallet });
+    await expect(Promise.race([
+      competing.then(() => "acquired"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("held"), 30)),
+    ])).resolves.toBe("held");
+
+    releaseBroadcast.resolve();
+    await expect(payment).resolves.toMatchObject({ ok: false, txHash });
+    const next = await competing;
+    expect(next.snapshot.records).toMatchObject([
+      {
+        kind: "native-transfer",
+        operation: "transfer",
+        stage: "broadcast-intent",
+        nonce: 7,
+        txRef: txHash,
+        transfer: { payer: wallet, payee, amountOs: "1000000000" },
+      },
+    ]);
+    await next.release();
   });
 
   it("does not open a payment signer for a read-only native doctor", async () => {

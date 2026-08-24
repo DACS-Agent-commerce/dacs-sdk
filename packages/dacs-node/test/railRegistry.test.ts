@@ -136,6 +136,7 @@ async function fixture() {
       }
       return null;
     }),
+    reconcileNativeTransferJournal: vi.fn(async () => undefined),
   };
   const runtime = {
     role: "buyer",
@@ -252,6 +253,7 @@ describe("authenticated Demos rail registry provider", () => {
         anchor: { kind: "storage-program", locator: input.nativeAddress },
         contentHash: input.contentHash,
       })),
+      reconcileNativeTransferJournal: vi.fn(async () => undefined),
     };
     const runtime: DacsDemosActorRuntimeV1 = {
       role: "seller",

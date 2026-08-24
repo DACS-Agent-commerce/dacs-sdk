@@ -2,8 +2,9 @@
 
 export const DEMOS_WRITE_JOURNAL_VERSION = 1;
 
-export type DemosWriteKind = "mutable" | "immutable";
+export type DemosWriteKind = "mutable" | "immutable" | "native-transfer";
 export type DemosWriteOperation = "create" | "update";
+export type DemosWriteJournalOperation = DemosWriteOperation | "transfer";
 
 export type DemosWriteStage =
   | "prepared"
@@ -34,11 +35,21 @@ export interface DemosIndexObservation {
   observedAt: number;
 }
 
+export interface DemosNativeTransferJournalBinding {
+  payer: string;
+  payee: string;
+  amountOs: string;
+  denomination: "os" | "dem";
+  network: string;
+  maxTotalDebitOs?: string;
+  settlementKey?: string;
+}
+
 export interface DemosWriteJournalRecord {
   writeId: string;
   generation: number;
   kind: DemosWriteKind;
-  operation: DemosWriteOperation;
+  operation: DemosWriteJournalOperation;
   stage: DemosWriteStage;
   logicalName: string;
   programName: string;
@@ -58,6 +69,8 @@ export interface DemosWriteJournalRecord {
   finalityProofHash?: string;
   nativeRead?: DemosNativeReadObservation;
   indexRead?: DemosIndexObservation;
+  /** Present only for a wallet-serialized native DEM transfer. */
+  transfer?: DemosNativeTransferJournalBinding;
   updatedAt: number;
 }
 
