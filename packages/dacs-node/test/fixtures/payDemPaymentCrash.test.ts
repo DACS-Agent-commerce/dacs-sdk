@@ -120,7 +120,13 @@ describe("native DEM payment crash fixture", () => {
           flag: "wx",
           mode: 0o600,
         });
-        await new Promise<void>(() => undefined);
+        // A pending Promise alone does not retain Node's event loop. Keep an
+        // active handle so every supported Node release leaves this fixture at
+        // the exact prepared checkpoint until the parent deliberately SIGKILLs
+        // the process.
+        await new Promise<void>(() => {
+          setInterval(() => undefined, 1_000);
+        });
         throw new Error("unreachable");
       },
     };
