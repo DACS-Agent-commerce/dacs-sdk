@@ -262,7 +262,8 @@ jobs:
 
           node generator-smoke/runner/node_modules/create-dacs-agent/dist/bin.js \
             generator-smoke/generated-live --yes --mode live-demos \
-            --profile dacs-sdk:fixed-price-x402:v1 --deploy docker --no-install
+            --profile dacs-sdk:fixed-price-x402:v1 --rails both \
+            --deploy docker --no-install
           (cd generator-smoke/generated-live && npm install --no-save --ignore-scripts \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
@@ -286,7 +287,7 @@ jobs:
           const reportLine = doctor.stdout.trim().split("\n").at(-1);
           const report = JSON.parse(reportLine);
           if (report.safety.readOnly !== true || report.safety.funded !== false ||
-              report.gate.status !== "blocked" || report.checks.length !== 36 ||
+              report.gate.status !== "blocked" || report.checks.length !== 41 ||
               actorStoreExists()) process.exit(1);
           const setup = spawnSync("npm", [
             "run", "dacs:setup", "--", "--max-spend-dem", "1.00",
