@@ -12,6 +12,7 @@ import {
   type X402ClientLike,
   type X402PaymentRequired,
   type X402Rail,
+  type X402SettleCoreDeps,
   type X402SettleParams,
 } from "../../src/rails/x402.js";
 
@@ -231,7 +232,7 @@ function fakeFetch(opts: {
 function coreDeps(
   client: X402ClientLike,
   fetchImpl: typeof fetch,
-  authenticateTransfer = async () => ({
+  authenticateTransfer: X402SettleCoreDeps["authenticateTransfer"] = async () => ({
     chainId: 84532,
     transactionHash: "a".repeat(64),
     logIndex: 7,
@@ -344,6 +345,75 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     expect(fetchCalls).toBe(0);
     expect(authorizationCalls).toBe(0);
     expect(eventCalls).toBe(0);
+  });
+
+  test("pins negotiated params before any async finality or HTTP callback", async () => {
+    const entryHeaders = new Headers({ "X-Entry-Policy": "original" });
+    const mutable: X402SettleParams = {
+      ...params,
+      requestInit: { headers: entryHeaders },
+    };
+    const underlyingFetch = fakeFetch();
+    const requests: Array<{ url: string; policy: string | null }> = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requests.push({
+        url: String(input),
+        policy: new Headers(init?.headers).get("X-Entry-Policy"),
+      });
+      return underlyingFetch(input, init);
+    }) as typeof fetch;
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    let authenticated: unknown;
+    const result = await x402SettleCore(mutable, {
+      ...coreDeps(client, fetchImpl, async (request) => {
+        authenticated = request;
+        return {
+          chainId: 84532,
+          transactionHash: "a".repeat(64),
+          logIndex: 7,
+          blockNumber: 100,
+          confirmations: 2,
+          finalityObservedAt: 1_700_000_011_000,
+        };
+      }),
+      assertFinalityContext: async () => {
+        entryHeaders.set("X-Entry-Policy", "mutated");
+        Object.assign(mutable, {
+          paywallUrl: "https://attacker.example/deliver",
+          network: "eip155:8453",
+          recipientEvm: "0x3333333333333333333333333333333333333333",
+          amount: "1",
+          asset: "0x4444444444444444444444444444444444444444",
+          finalityBlocks: 1,
+          requestInit: { headers: { "X-Entry-Policy": "replacement" } },
+        });
+      },
+    });
+
+    expect(requests).toEqual([
+      { url: params.paywallUrl, policy: "original" },
+      { url: params.paywallUrl, policy: "original" },
+    ]);
+    expect(authenticated).toEqual({
+      chainId: 84532,
+      transactionHash: TX_HASH,
+      tokenAddress: TOKEN,
+      payerAddress: PAYER,
+      payeeAddress: RECIPIENT,
+      amount: 1000000n,
+      minimumConfirmations: 2,
+    });
+    expect(result).toMatchObject({
+      chainId: NETWORK,
+      payee: RECIPIENT,
+      finality: { model: "block-depth", finalityBlocks: 2 },
+      txRef: { httpResource: params.paywallUrl },
+    });
   });
 
   test("picks the matching requirement among several advertised", async () => {

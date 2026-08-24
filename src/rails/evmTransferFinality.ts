@@ -195,26 +195,36 @@ export async function verifyEvmTransferFinality(
   request: Readonly<EvmTransferFinalityRequest>,
   client: EvmTransferFinalityClient,
 ): Promise<EvmTransferFinalityObservation> {
-  if (!Number.isSafeInteger(request.chainId) || request.chainId <= 0) {
+  // `Readonly` is a compile-time promise only. Capture every caller-owned
+  // scalar before the first callback so a callback that can reach the original
+  // object cannot silently weaken the amount or finality contract mid-flight.
+  const expectedChainId = request.chainId;
+  const requestedTransactionHash = request.transactionHash;
+  const requestedTokenAddress = request.tokenAddress;
+  const requestedPayerAddress = request.payerAddress;
+  const requestedPayeeAddress = request.payeeAddress;
+  const expectedAmount = request.amount;
+  const minimumConfirmations = request.minimumConfirmations;
+  if (!Number.isSafeInteger(expectedChainId) || expectedChainId <= 0) {
     return fail("expected chain id must be a positive safe integer");
   }
-  if (!Number.isSafeInteger(request.minimumConfirmations) ||
-      request.minimumConfirmations <= 0) {
+  if (!Number.isSafeInteger(minimumConfirmations) ||
+      minimumConfirmations <= 0) {
     return fail("minimum confirmations must be a positive safe integer");
   }
-  if (request.amount <= 0n) return fail("transfer amount must be positive");
+  if (expectedAmount <= 0n) return fail("transfer amount must be positive");
 
-  const transactionHash = canonicalHash(request.transactionHash, "transaction hash");
-  const tokenAddress = canonicalAddress(request.tokenAddress, "token address");
-  const payerAddress = canonicalAddress(request.payerAddress, "payer address");
-  const payeeAddress = canonicalAddress(request.payeeAddress, "payee address");
-  if (await client.getChainId() !== request.chainId) {
+  const transactionHash = canonicalHash(requestedTransactionHash, "transaction hash");
+  const tokenAddress = canonicalAddress(requestedTokenAddress, "token address");
+  const payerAddress = canonicalAddress(requestedPayerAddress, "payer address");
+  const payeeAddress = canonicalAddress(requestedPayeeAddress, "payee address");
+  if (await client.getChainId() !== expectedChainId) {
     return fail("RPC chain id does not match the negotiated network");
   }
 
   await client.waitForTransactionReceipt({
     hash: transactionHash,
-    confirmations: request.minimumConfirmations,
+    confirmations: minimumConfirmations,
   });
   const expectedFrom = addressTopic(payerAddress);
   const expectedTo = addressTopic(payeeAddress);
@@ -245,7 +255,7 @@ export async function verifyEvmTransferFinality(
         );
       }
       const finalityBlockNumber = receipt.blockNumber +
-        BigInt(request.minimumConfirmations - 1);
+        BigInt(minimumConfirmations - 1);
       const finalityBlock = parseBlock(
         await client.getBlock({ blockNumber: finalityBlockNumber }),
         "finality block",
@@ -266,7 +276,7 @@ export async function verifyEvmTransferFinality(
             log.topics[1] !== expectedFrom || log.topics[2] !== expectedTo ||
             !WORD_RE.test(log.data)) return false;
         try {
-          return BigInt(log.data) === request.amount;
+          return BigInt(log.data) === expectedAmount;
         } catch {
           return false;
         }
@@ -307,11 +317,11 @@ export async function verifyEvmTransferFinality(
     return fail("finality timestamp is outside the safe millisecond range");
   }
   return {
-    chainId: request.chainId,
+    chainId: expectedChainId,
     transactionHash: transactionHash.slice(2),
     logIndex: snapshot.candidate.logIndex,
     blockNumber: safeNumber(snapshot.receipt.blockNumber, "receipt block number"),
-    confirmations: request.minimumConfirmations,
+    confirmations: minimumConfirmations,
     finalityObservedAt,
   };
 }
