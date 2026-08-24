@@ -14,14 +14,24 @@ substrate anchors and finality are visibly non-normative; the project does not
 claim DACS conformance, commercial success, x402, Demos settlement, live
 readiness or real funds.
 
-The generator also emits an authority-separated experimental live bootstrap:
+The generator also emits an authority-separated experimental live bootstrap.
+Choose `x402`, native `pay-dem`, or `both`; dual-rail listings remain separate
+signed offers and each purchase pins one exact rail:
 
 ```bash
 npm create dacs-agent@latest my-agent -- \
   --yes --mode live-demos \
   --profile dacs-sdk:fixed-price-x402:v1 \
+  --rails both \
+  --role seller \
   --deploy docker
 ```
+
+`dacs-sdk:fixed-price-x402:v1` is retained as the compatibility identifier for
+the current fixed-price live runtime even when `--rails pay-dem` is selected.
+DEM-only projects omit the EVM key, EVM RPC, x402 packages and x402 secret
+mounts. Dual projects generate rail-specific listing drafts and require an
+explicit `--rail x402` or `--rail pay-dem` for guarded setup and purchase.
 
 Live generation runs the complete read-only pre-start doctor after install.
 Exit 5 is retained as a successful, visibly blocked bootstrap when credentials,
