@@ -55,13 +55,14 @@ function deps(
   };
 }
 
-const input = (over: Partial<SealedEnvelopeInput> = {}): SealedEnvelopeInput => ({
-  jobId: "job-1",
-  seller: "did:demos:agent:seller",
-  currency: "USDC",
-  params: { commitDeadline: DEADLINE, revealWindow: REVEAL_WINDOW, selectionRule: "lowest-price" },
-  ...over,
-});
+const input = (over: Partial<SealedEnvelopeInput> = {}): SealedEnvelopeInput =>
+  ({
+    jobId: "job-1",
+    seller: "did:demos:agent:seller",
+    currency: "USDC",
+    params: { commitDeadline: DEADLINE, revealWindow: REVEAL_WINDOW, selectionRule: "lowest-price" },
+    ...over,
+  }) as SealedEnvelopeInput;
 
 describe("channel message envelopes (§8.3.3)", () => {
   test("commit message body carries bidHash + bidderClaim == sender", () => {
@@ -450,6 +451,171 @@ describe("runSealedEnvelopeCore", () => {
         },
       ),
     ).toThrow();
+  });
+
+  test("SE-8 procurement assigns publisher→buyer and lowest bidder→seller", async () => {
+    const publisher = "did:demos:agent:procurer";
+    const a = bidder("did:demos:agent:provider-a", "3", DEADLINE - 100, DEADLINE + 1_000);
+    const b = bidder("did:demos:agent:provider-b", "4", DEADLINE - 50, DEADLINE + 1_001);
+    const res = await runSealedEnvelopeCore(
+      {
+        jobId: "job-procurement",
+        seller: publisher,
+        currency: "USDC",
+        phaseKind: "negotiate-sealed-envelope-procurement",
+        params: {
+          commitDeadline: DEADLINE,
+          revealWindow: REVEAL_WINDOW,
+          selectionRule: "lowest-price",
+          auctionMode: "procurement",
+        },
+      },
+      deps([a.commit, b.commit], [a.reveal, b.reveal], {
+        commitAgreement: async (ctx) => {
+          const agreement = buildSealedAgreement(ctx, {
+            seller: publisher,
+            listingRef: "stor-procurement-listing",
+            decimals: 0,
+            rail: "pay-dem",
+            deliveryPhase: "deliver-attested-payload",
+            deliveryFormat: "application/json",
+            expiresAt: "2026-12-31T00:00:00Z",
+          });
+          expect(ctx.validateAgreementForCommit(agreement, [publisher, "did:demos:agent:provider-a"]))
+            .toMatchObject({ ok: true });
+          return {
+            agreement,
+            verifiedSignerClaims: [publisher, "did:demos:agent:provider-a"],
+            agreementRef: "stor-procurement-agreement",
+            agreementHash: "procurement-hash",
+          };
+        },
+      }),
+    );
+
+    expect(res).toMatchObject({
+      ok: true,
+      phaseKind: "negotiate-sealed-envelope-procurement",
+      contextDeltaKey: "negotiate-sealed-envelope-procurement",
+      auctionMode: "procurement",
+      winningBidderClaim: "did:demos:agent:provider-a",
+      requiredSignerClaims: [publisher, "did:demos:agent:provider-a"],
+    });
+    expect(res.parties).toEqual([
+      { claim: publisher, role: "buyer", signatureRequired: true },
+      { claim: "did:demos:agent:provider-a", role: "seller", signatureRequired: true },
+      { claim: "did:demos:agent:provider-b", role: "bidder-non-winning", signatureRequired: false },
+    ]);
+  });
+
+  test("SE-8 rejects a role-inverted procurement agreement", async () => {
+    const publisher = "did:demos:agent:procurer";
+    const provider = "did:demos:agent:provider";
+    const a = bidder(provider, "3", DEADLINE - 100, DEADLINE + 1_000);
+    const res = await runSealedEnvelopeCore(
+      {
+        jobId: "job-inverted",
+        seller: publisher,
+        currency: "USDC",
+        phaseKind: "negotiate-sealed-envelope-procurement",
+        params: {
+          commitDeadline: DEADLINE,
+          revealWindow: REVEAL_WINDOW,
+          selectionRule: "lowest-price",
+          auctionMode: "procurement",
+        },
+      },
+      deps([a.commit], [a.reveal], {
+        commitAgreement: async (ctx) => {
+          const correct = buildSealedAgreement(ctx, {
+            seller: publisher,
+            listingRef: "stor-listing",
+            decimals: 0,
+            rail: "pay-dem",
+            deliveryPhase: "deliver-attested-payload",
+            deliveryFormat: "application/json",
+            expiresAt: "2026-12-31T00:00:00Z",
+          });
+          return {
+            agreement: { ...correct, buyer: provider, seller: publisher },
+            verifiedSignerClaims: [publisher, provider],
+            agreementRef: "must-not-succeed",
+            agreementHash: "must-not-succeed",
+          };
+        },
+      }),
+    );
+    expect(res).toMatchObject({
+      ok: false,
+      failedAt: "sealed-envelope-role-direction",
+      errorClass: "permanent",
+    });
+    expect(res.agreementRef).toBeUndefined();
+  });
+
+  test("SE-8 rejects procurement without both agreement-party signatures", async () => {
+    const publisher = "did:demos:agent:procurer";
+    const provider = "did:demos:agent:provider";
+    const a = bidder(provider, "3", DEADLINE - 100, DEADLINE + 1_000);
+    const res = await runSealedEnvelopeCore(
+      {
+        jobId: "job-missing-signature",
+        seller: publisher,
+        currency: "USDC",
+        phaseKind: "negotiate-sealed-envelope-procurement",
+        params: {
+          commitDeadline: DEADLINE,
+          revealWindow: REVEAL_WINDOW,
+          selectionRule: "lowest-price",
+          auctionMode: "procurement",
+        },
+      },
+      deps([a.commit], [a.reveal], {
+        commitAgreement: async (ctx) => ({
+          agreement: buildSealedAgreement(ctx, {
+            seller: publisher,
+            listingRef: "stor-listing",
+            decimals: 0,
+            rail: "pay-dem",
+            deliveryPhase: "deliver-attested-payload",
+            deliveryFormat: "application/json",
+            expiresAt: "2026-12-31T00:00:00Z",
+          }),
+          verifiedSignerClaims: [provider],
+          agreementRef: "must-not-succeed",
+          agreementHash: "must-not-succeed",
+        }),
+      }),
+    );
+    expect(res).toMatchObject({
+      ok: false,
+      failedAt: "required-signature",
+      missingSigner: publisher,
+    });
+  });
+
+  test("SE-8 procurement rejects an opaque legacy agreement result", async () => {
+    const a = bidder("provider", "3", DEADLINE - 100, DEADLINE + 1_000);
+    const res = await runSealedEnvelopeCore(
+      {
+        jobId: "job-opaque",
+        seller: "publisher",
+        currency: "USDC",
+        phaseKind: "negotiate-sealed-envelope-procurement",
+        params: {
+          commitDeadline: DEADLINE,
+          revealWindow: REVEAL_WINDOW,
+          selectionRule: "lowest-price",
+          auctionMode: "procurement",
+        },
+      },
+      deps([a.commit], [a.reveal]),
+    );
+    expect(res).toMatchObject({
+      ok: false,
+      failedAt: "agreement-validation",
+      errorClass: "permanent",
+    });
   });
 
   test("SE-1 is re-validated only against an explicit sessionStartMs, never now()", async () => {
