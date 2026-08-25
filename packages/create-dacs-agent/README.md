@@ -71,8 +71,8 @@ non-empty target fails. Docker output uses a deny-by-default `.dockerignore`,
 copies only explicit build inputs, installs from the generated lock, and places
 only compiled output, package manifests and pruned production dependencies in
 the non-root runtime stage. Live installation disables dependency lifecycle
-scripts globally and then explicitly rebuilds only the reviewed
-`better-sqlite3` host adapter.
+scripts globally, omits unused optional dependency trees, and then explicitly
+rebuilds only the reviewed `better-sqlite3` host adapter.
 
 Live services remain blocked until the lower Demos identity/registry and x402
 effect-adapter stack is installed and passes the generated doctor. This package

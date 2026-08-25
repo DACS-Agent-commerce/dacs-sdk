@@ -246,6 +246,7 @@ describe("create-dacs-agent", () => {
       "@x402/core": "2.15.0",
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
+      "better-sqlite3": "12.6.2",
       tsx: "4.23.12",
       "viem": "2.55.19",
     });
@@ -304,6 +305,8 @@ describe("create-dacs-agent", () => {
     const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
     expect(dockerfile).toContain("RUN npm ci --ignore-scripts");
     expect(dockerfile).toContain("RUN npm rebuild better-sqlite3");
+    expect(dockerfile).toContain("npm ci --ignore-scripts --omit=optional");
+    expect(dockerfile).toContain("npm prune --omit=dev --omit=optional --ignore-scripts");
     expect(dockerfile).toContain("--mode=0755 /app");
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).toContain(
@@ -393,6 +396,7 @@ describe("create-dacs-agent", () => {
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
       "@kynesyslabs/demosdk": "4.0.16",
+      "better-sqlite3": "12.6.2",
       tsx: "4.23.12",
     });
     const config = await readFile(join(target, "dacs.config.ts"), "utf8");

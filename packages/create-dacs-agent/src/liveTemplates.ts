@@ -8,6 +8,7 @@ export interface LiveProjectTemplateOptions {
 }
 
 const SDK_VERSION = "0.1.0-alpha.0";
+const BETTER_SQLITE_VERSION = "12.6.2";
 const TSX_VERSION = "4.23.12";
 const STANDARD_REVISION = "965df755aba4ff392f1fb37a93d287242b177ba4";
 const CONFIG_SCHEMA_VERSION = 1;
@@ -43,6 +44,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
       "@kynesyslabs/dacs": SDK_VERSION,
       "@kynesyslabs/dacs-node": SDK_VERSION,
       "@kynesyslabs/demosdk": "4.0.16",
+      "better-sqlite3": BETTER_SQLITE_VERSION,
       ...(x402 ? {
         "@x402/core": "2.15.0",
         "@x402/evm": "2.15.0",
@@ -3474,13 +3476,13 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --omit=optional
 RUN npm rebuild better-sqlite3
 COPY tsconfig.json dacs.config.ts ./
 COPY src ./src
 COPY test ./test
 RUN npm run build
-RUN npm prune --omit=dev --ignore-scripts
+RUN npm prune --omit=dev --omit=optional --ignore-scripts
 
 FROM node:20.19.1-bookworm-slim
 ENV NODE_ENV=production
@@ -3801,7 +3803,8 @@ must never open a store schema newer than it supports.
 
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
-the reviewed \`better-sqlite3\` native adapter. It uses separate non-root buyer/seller processes, secret mounts and durable
+the reviewed \`better-sqlite3\` native adapter. Unused optional dependency trees
+are omitted. It uses separate non-root buyer/seller processes, secret mounts and durable
 data bind mounts, read-only root filesystems, bounded resources and no database
 port. On the clean Linux VPS it uses host networking solely to keep the
 inter-role transport on \`127.0.0.1\`; public traffic requires a separately

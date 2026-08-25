@@ -259,7 +259,11 @@ export async function createDacsAgentProject(
 
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   if (install) {
-    await runCommand(npm, ["install", "--ignore-scripts"], targetDirectory);
+    await runCommand(npm, [
+      "install",
+      "--ignore-scripts",
+      "--omit=optional",
+    ], targetDirectory);
     if (mode === "live-demos") {
       // The host kit's reviewed SQLite adapter is the only dependency allowed
       // to run a native install lifecycle in the generated live project.

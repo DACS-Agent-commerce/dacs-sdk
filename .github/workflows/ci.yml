@@ -264,11 +264,13 @@ jobs:
             generator-smoke/generated-live --yes --mode live-demos \
             --profile dacs-sdk:fixed-price-x402:v1 --rails both \
             --deploy docker --no-install
-          (cd generator-smoke/generated-live && npm install --no-save --ignore-scripts \
+          (cd generator-smoke/generated-live && npm install --no-save --ignore-scripts --omit=optional \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
             typescript@5.9.2 @types/node@20.19.1)
           (cd generator-smoke/generated-live && npm rebuild better-sqlite3)
+          test -d generator-smoke/generated-live/node_modules/better-sqlite3
+          test ! -e generator-smoke/generated-live/node_modules/rubic-sdk
           (cd generator-smoke/generated-live && npm run typecheck && npm test)
           node - <<'NODE'
           const fs = require("node:fs");
