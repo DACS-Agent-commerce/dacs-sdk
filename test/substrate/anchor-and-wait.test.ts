@@ -1330,6 +1330,95 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("normalizes legacy confirmed DEM fee numbers before applying an OS ceiling", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3_000_000_000n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: false } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: 1,
+              rpc_fee: 1,
+              additional_fee: 1,
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-at-legacy-dem-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).resolves.toMatchObject({ txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the confirmed transaction fee only when gas-operation fees are absent", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: {
+            hash: signed.hash,
+            content: {
+              transaction_fee: {
+                network_fee: "1",
+                rpc_fee: "1",
+                additional_fee: "1",
+              },
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-at-fallback-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).resolves.toMatchObject({ txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back from a malformed gas-operation fee to transaction content", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: {
+            hash: signed.hash,
+            content: {
+              transaction_fee: {
+                network_fee: "1",
+                rpc_fee: "1",
+                additional_fee: "1",
+              },
+            },
+          },
+          gas_operation: { fees: { network_fee: "1" } },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-malformed-authoritative-fee",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).rejects.toThrow(/requires authoritative confirmed transaction fees/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
   it("refuses an immutable create signed with a different nonce", async () => {
     const { adapter, raw, wallet } = await makeAdapter();
     raw.storagePrograms.sign.mockResolvedValue({
