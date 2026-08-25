@@ -163,11 +163,13 @@ export type {
   ProxyFetchResult,
   ResolvedIdentity,
   AnchorReceipt as SubstrateAnchorReceipt,
+} from "./substrate/SubstrateAdapter.js";
+export type {
   DemosWriteJournal,
   DemosWriteJournalKey,
   DemosWriteJournalRecord,
   DemosWriteJournalSnapshot,
-} from "./substrate/index.js";
+} from "./substrate/demosWriteJournal.js";
 export {
   createInMemoryDemosWriteJournal,
 } from "./substrate/demosWriteJournal.js";
@@ -791,6 +793,7 @@ export {
   type X402ClientLike,
   type X402PaymentRequired,
   type X402PaymentRequirement,
+  type X402SettlementResponse,
   createX402Paywall,
   x402PaywallCore,
   x402PaywallFulfilmentKey,
