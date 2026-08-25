@@ -3,6 +3,9 @@ export {
   buildAgent,
   type Agent,
   type AgentConfig,
+  type AgentSettlementEvidenceContext,
+  type AgentSettlementEvidenceContextInput,
+  type AgentSettlementEvidenceContextResolver,
   type DemosBackedAdapter,
   type AgentBindingConfig,
   type PublishResult,
@@ -17,6 +20,7 @@ export {
   type BundleVerification,
   type SignatureCheck,
   type Reputation,
+  type ReputationExclusion,
   type RunSessionOptions,
   type SessionListingInput,
 } from "./Agent.js";
@@ -26,6 +30,7 @@ export {
   type SignatureVerdict,
   type RefCheck,
   type RefVerdict,
+  type BundleEvidenceVerificationContext,
 } from "./verifyBundleCore.js";
 export {
   bundleConsistency,
