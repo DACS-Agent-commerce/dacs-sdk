@@ -84,6 +84,12 @@ const seller = await createAgent({
       expectedVetClosureForBundle(bundle),
       vetVerificationDeps,
     ),
+  // Required to accept bundles with SettlementEvidence. Resolve the exact
+  // phase orchestrator and authenticated pinned-rail definition from trusted
+  // session/registry state; the SDK binds the Agreement and AttestationRef and
+  // performs the DACS-4 semantic and cryptographic verification itself.
+  resolveSettlementEvidenceContext: (input) =>
+    resolveAuthenticatedSettlementContext(input),
   bindings: { index: bindings, publisher: bindings },
 });
 
@@ -186,7 +192,8 @@ const session = await buyer.runSession(resolved, {
 });
 
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
-// and (through the configured callback above) every normative vet closure
+// and (through the configured callbacks above) every normative vet closure and
+// SettlementEvidence record
 const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
@@ -366,6 +373,21 @@ it returns no Listings or diagnostics, and the caller retries its unchanged
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
+### Sealed-envelope procurement
+
+`runSealedEnvelopeCore` supports both the backwards-compatible
+`negotiate-sealed-envelope` demand phase and the explicit
+`negotiate-sealed-envelope-procurement` phase. Demand makes the winning bidder
+the agreement buyer. Procurement requires `auctionMode: "procurement"` and
+makes the listing publisher the agreement buyer and the winning bidder the
+seller, so the bid price always flows from agreement buyer to agreement seller.
+
+Existing demand callbacks may still return only `agreementRef` and
+`agreementHash`. A procurement `commitAgreement` callback must verify both
+agreement-party signatures, call `ctx.validateAgreementForCommit(...)` before
+anchoring, and return the exact agreement plus `verifiedSignerClaims`; the core
+repeats the role/signature gate before returning an `ok` result.
+
 ### Fault-aware bundle helper
 
 `buildTwoSidedBundle(session)` is the low-level DACS-5 v0.3 producer. It emits a
@@ -441,8 +463,9 @@ used without pulling in `demosdk`:
 | Import | Needs `demosdk` | Use for |
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
+| `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, plus evm-erc20 settlement |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
@@ -456,10 +479,23 @@ seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
 for the store, authentication, reconciliation and terminal-failure contracts.
 
+Sellers use `createX402Paywall` as the framework-neutral HTTP protocol adapter
+and compose it with the authenticated seller spine. It settles or reconciles
+the retained payer authorization before durable fulfilment, while PC-7 payment-
+evidence anchoring catches up independently. See
+[the seller x402 paywall guide](./docs/x402-seller-paywall.md) for the exact
+ordering, recovery, and post-settlement failure contract.
+
 The Demos adapter and live rail clients are optional peers: install
-`@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus
-`viem` for the corresponding live rails. Pure artifact, verifier, canonical,
-and injected rail-core consumers do not install those integration trees.
+`@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,
+`@x402/fetch`, plus `viem` for the corresponding live rails. Pure artifact,
+verifier, canonical, and injected rail-core consumers do not install those
+integration trees. CI installs the packed tarball in an external strict
+NodeNext TypeScript project twice: once with every optional peer omitted, and
+again with the live peers present. Both passes keep `skipLibCheck` disabled.
+The SDK-owned `DemosRawClient` boundary prevents demosdk's internal declaration
+graph from leaking into consumers; applications can explicitly narrow the
+unstable `raw` escape hatch when they intentionally depend on demosdk types.
 
 ## Package artifacts
 
