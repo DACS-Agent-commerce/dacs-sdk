@@ -100,8 +100,11 @@ silently substitute them inside one actor's retained order.
 
 Every effect receives a generation fence and an idempotency key derived from
 the role-local binding, role, track and exact role-local job identity. The adapter
-must assert the fence immediately before an irreversible action and use the key
-in its own intent/perform/commit/reconcile journal.
+is entered only after the coordinator confirms that fence is current. The adapter
+must assert it again immediately before an irreversible action and use the key in
+its own intent/perform/commit/reconcile journal. The entry check prevents stale
+callbacks from starting; the adapter check closes the later race while callback
+work is in progress.
 
 Each operation also receives the scheduler's optional `AbortSignal`. This is
 cooperative cancellation: an adapter should stop before an irreversible action
