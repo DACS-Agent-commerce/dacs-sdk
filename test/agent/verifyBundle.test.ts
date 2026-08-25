@@ -1117,7 +1117,67 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     await resignFixture(fx, [{ party: buyerDid, sign: signBuyer }]);
     const res = await verifyBundleCore("ref", depsFor(fx));
     expect(res.ok).toBe(false);
-    expect(res.reason).toContain(sellerDid);
+    expect(res.reason).toMatch(/duplicate role/);
+  });
+
+  test("outsider-signed abort is rejected even when its signature is cryptographically valid", async () => {
+    const outsiderSeed = Uint8Array.from(Buffer.alloc(32, 77));
+    const outsiderDid = didFor(outsiderSeed);
+    const fx = await buildFixture(buyerDid, signBuyer);
+    delete fx.bundle.agreementRef;
+    fx.bundle.outcome = "aborted-by-other";
+    fx.bundle.settlementEvidence = [];
+    await resignFixture(fx, [
+      { party: outsiderDid, sign: signerFor(outsiderSeed) },
+    ]);
+    const result = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind) =>
+          kind === "dacs-1-listing" ? fx.listing : null,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.fullyVerified).toBe(false);
+    expect(result.signatures).toEqual([
+      { party: outsiderDid, verdict: "invalid" },
+    ]);
+  });
+
+  test("single-signed abort must be signed by the party named by anchoredByRole", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    delete fx.bundle.agreementRef;
+    fx.bundle.outcome = "aborted-by-other";
+    fx.bundle.settlementEvidence = [];
+    await resignFixture(fx, [{ party: sellerDid, sign: signSeller }]);
+    const result = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveRef: async (kind) =>
+          kind === "dacs-1-listing" ? fx.listing : null,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain(buyerDid);
+  });
+
+  test("multi-signed abort still requires the full signer set", async () => {
+    const orchestratorSeed = Uint8Array.from(Buffer.alloc(32, 78));
+    const orchestratorDid = didFor(orchestratorSeed);
+    const fx = await buildFixture(buyerDid, signBuyer);
+    fx.bundle.outcome = "aborted-by-other";
+    (fx.bundle.parties as Array<Record<string, unknown>>).push({
+      role: "orchestrator",
+      bundleHash: h("e"),
+      primaryClaim: orchestratorDid,
+    });
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const result = await verifyBundleCore("ref", depsFor(fx));
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain(orchestratorDid);
   });
 
   test("unknown bundle outcomes fail closed", async () => {

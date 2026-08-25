@@ -72,6 +72,7 @@ export type RefVerdict =
   | "ok"
   | "missing"
   | "invalid-shape"
+  | "invalid-binding"
   | "hash-mismatch"
   /** Hash and shape match, but the agreement disagrees with its bundle. */
   | "incoherent"
@@ -103,6 +104,12 @@ type ReadableAttestationBundle =
   | AnyAttestationBundle
   | LegacyMvpAnyAttestationBundle;
 type ReadableAttestationRef = AttestationRef | LegacyMvpAttestationRef;
+
+export interface BundleEvidenceVerificationContext {
+  bundle: ReadableAttestationBundle;
+  evidenceRef: ReadableAttestationRef;
+  agreement: Record<string, unknown> | null;
+}
 
 export interface VerifyBundleDeps {
   /** Read a signed artifact at a storage ref (null if absent). */
@@ -149,13 +156,15 @@ export interface VerifyBundleDeps {
   /**
    * OPTIONAL semantic check of a hash-matched SettlementEvidence artifact
    * (DACS-4 §9.7) — wire `verifySettlementEvidence` (with the caller's
-   * agreement/rail/orchestrator context) here. When supplied, a settlement ref
-   * that hash-matches but whose evidence does NOT verify is
-   * downgraded to `invalid-evidence` and the bundle is not `ok`. Omitted by
-   * default — hash + shape integrity only, unchanged behaviour.
+   * agreement/rail/orchestrator context) here. The second argument carries the
+   * resolved agreement and exact attestation ref needed to build that context.
+   * When supplied, a settlement ref that hash-matches but whose evidence does
+   * not verify is downgraded to `invalid-evidence` and the bundle is not `ok`.
+   * Omitted by default — hash + shape integrity only, unchanged behaviour.
    */
   verifyEvidence?: (
     evidence: Record<string, unknown>,
+    context: BundleEvidenceVerificationContext,
   ) => Promise<{ decision: "pass" | "fail" | "error" | "indeterminate" }>;
   /**
    * Required whenever `vetRecords` is non-empty. This must run the strict
@@ -274,9 +283,13 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
         )) === true,
       ...(verifyEvidenceSource
         ? {
-            verifyEvidence: async (evidence: Record<string, unknown>) => {
+            verifyEvidence: async (
+              evidence: Record<string, unknown>,
+              context: BundleEvidenceVerificationContext,
+            ) => {
               const raw = await verifyEvidenceSource(
                 deepFreezeSnapshot(structuredClone(evidence)),
+                deepFreezeSnapshot(structuredClone(context)),
               );
               const captured = snapshotRecord(
                 raw as unknown as Record<string, unknown>,
@@ -548,6 +561,42 @@ const CO_SIGNATURE_REQUIRED_OUTCOMES = new Set([
 ]);
 const ABORT_OUTCOMES = new Set(["aborted-by-self", "aborted-by-other"]);
 
+interface ValidatedBundleParties {
+  claims: Set<string>;
+  byRole: Map<"buyer" | "seller" | "orchestrator", string>;
+  hasRequiredRoles: boolean;
+}
+
+function validatedBundleParties(
+  bundle: AnyAttestationBundle,
+): ValidatedBundleParties | null {
+  const byRole = new Map<"buyer" | "seller" | "orchestrator", string>();
+  const claims = new Set<string>();
+  for (const party of bundle.parties) {
+    if (
+      party.role !== "buyer" &&
+      party.role !== "seller" &&
+      party.role !== "orchestrator"
+    ) {
+      return null;
+    }
+    if (
+      party.primaryClaim.length === 0 ||
+      byRole.has(party.role) ||
+      claims.has(party.primaryClaim)
+    ) {
+      return null;
+    }
+    byRole.set(party.role, party.primaryClaim);
+    claims.add(party.primaryClaim);
+  }
+  return {
+    claims,
+    byRole,
+    hasRequiredRoles: byRole.has("buyer") && byRole.has("seller"),
+  };
+}
+
 function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer" | "seller"): string | undefined {
   if (!agreement) return undefined;
   if (isAgreementArtifact(agreement)) {
@@ -615,16 +664,46 @@ function agreementIsCoherentWithBundle(
 function requiredSignatureClaims(
   bundle: ReadableAttestationBundle,
   agreement: Record<string, unknown> | null,
+  parties: ValidatedBundleParties | null,
+  signatureCount: number,
 ): string[] {
-  if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome)) return [];
-  const buyer = bundle.parties.find((party) => party.role === "buyer")?.primaryClaim;
-  const seller = bundle.parties.find((party) => party.role === "seller")?.primaryClaim;
+  if (!parties) {
+    if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome)) return [];
+    const buyer = bundle.parties.find((party) => party.role === "buyer")
+      ?.primaryClaim;
+    const seller = bundle.parties.find((party) => party.role === "seller")
+      ?.primaryClaim;
+    const claims = [
+      agreementClaim(agreement, "buyer") ?? buyer ?? "role:buyer",
+      agreementClaim(agreement, "seller") ?? seller ?? "role:seller",
+    ];
+    const orchestrator = bundle.parties.find(
+      (party) => party.role === "orchestrator",
+    )?.primaryClaim;
+    if (orchestrator && orchestrator !== buyer && orchestrator !== seller) {
+      claims.push(orchestrator);
+    }
+    return [...new Set(claims)];
+  }
+
+  const anchorClaim = bundle.anchoredByRole
+    ? parties.byRole.get(bundle.anchoredByRole)
+    : undefined;
+  if (
+    !CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) &&
+    signatureCount === 1
+  ) {
+    return anchorClaim ? [anchorClaim] : ["role:anchoring-party"];
+  }
+  const buyer = parties.byRole.get("buyer");
+  const seller = parties.byRole.get("seller");
   const claims = [
     agreementClaim(agreement, "buyer") ?? buyer ?? "role:buyer",
     agreementClaim(agreement, "seller") ?? seller ?? "role:seller",
   ];
-  const orchestrator = bundle.parties.find((party) => party.role === "orchestrator")?.primaryClaim;
+  const orchestrator = parties.byRole.get("orchestrator");
   if (orchestrator && orchestrator !== buyer && orchestrator !== seller) claims.push(orchestrator);
+  if (anchorClaim) claims.push(anchorClaim);
   return [...new Set(claims)];
 }
 
@@ -659,6 +738,33 @@ export async function verifyBundleCore(
     };
   }
   const bundle = raw as ReadableAttestationBundle;
+  const parties = isNormativeGraph
+    ? validatedBundleParties(bundle as AnyAttestationBundle)
+    : null;
+  if (isNormativeGraph && !parties) {
+    return {
+      ok: false,
+      reason:
+        "bundle parties contain an unsupported or duplicate role or a non-distinct party claim",
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+      bundle: structuredClone(bundle),
+    };
+  }
+  if (
+    parties &&
+    (!bundle.anchoredByRole || !parties.byRole.has(bundle.anchoredByRole))
+  ) {
+    return {
+      ok: false,
+      reason: "anchoredByRole must identify a validated bundle party role",
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+      bundle: structuredClone(bundle),
+    };
+  }
   if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) && !ABORT_OUTCOMES.has(bundle.outcome)) {
     return {
       ok: false,
@@ -685,29 +791,45 @@ export async function verifyBundleCore(
     : [];
 
   const signatures: SignatureCheck[] = [];
+  const seenSignatureClaims = new Set<string>();
   for (const s of sigs) {
     const party = typeof s.party === "string" ? s.party : "";
-    const resolvedKey = await deps.resolvePublicKey(party);
     let verdict: SignatureVerdict;
-    if (!resolvedKey) {
-      verdict = "unverified";
-    } else if (
-      !(resolvedKey instanceof Uint8Array) ||
-      resolvedKey.length !== 32
+    const algorithm = (s as { algorithm?: unknown }).algorithm;
+    const value = s.value;
+    if (
+      parties &&
+      (!parties.claims.has(party) ||
+        algorithm !== "ed25519" ||
+        typeof value !== "string" ||
+        !/^[A-Za-z0-9_-]+$/.test(value) ||
+        seenSignatureClaims.has(party))
     ) {
-      // Malformed resolved key — can't evaluate; ERROR, not a false FAIL.
-      verdict = "error";
+      verdict = "invalid";
     } else {
-      const key = Uint8Array.from(resolvedKey);
+      if (parties) seenSignatureClaims.add(party);
+      const resolvedKey = await deps.resolvePublicKey(party);
       const sigBytes = Uint8Array.from(
-        Buffer.from(typeof s.value === "string" ? s.value : "", "base64url"),
+        Buffer.from(typeof value === "string" ? value : "", "base64url"),
       );
-      const verified = await deps.verify(
-        Uint8Array.from(message),
-        Uint8Array.from(sigBytes),
-        Uint8Array.from(key),
-      );
-      verdict = verified === true ? "valid" : "invalid";
+      if (!resolvedKey) {
+        verdict = "unverified";
+      } else if (
+        !(resolvedKey instanceof Uint8Array) ||
+        resolvedKey.length !== 32 ||
+        (parties && sigBytes.length !== 64)
+      ) {
+        // Malformed resolved keys are errors; malformed normative signatures
+        // are invalid authorization rather than an indeterminate key lookup.
+        verdict = resolvedKey.length !== 32 ? "error" : "invalid";
+      } else {
+        const verified = await deps.verify(
+          Uint8Array.from(message),
+          Uint8Array.from(sigBytes),
+          Uint8Array.from(resolvedKey),
+        );
+        verdict = verified === true ? "valid" : "invalid";
+      }
     }
     signatures.push({ party, verdict });
   }
@@ -831,11 +953,27 @@ export async function verifyBundleCore(
     );
     if (
       evidence.check.verdict === "ok" &&
+      evidence.value &&
+      (stripSignature(evidence.value) as { jobId?: unknown }).jobId !==
+        bundle.jobId
+    ) {
+      evidence.check.verdict = "invalid-binding";
+    }
+    if (
+      evidence.check.verdict === "ok" &&
       deps.verifyEvidence &&
       evidence.value
     ) {
       const callbackVerdict = await deps.verifyEvidence(
         structuredClone(evidence.value),
+        {
+          bundle: structuredClone(bundle),
+          evidenceRef: structuredClone(ev),
+          agreement:
+            agreementArtifact === null
+              ? null
+              : structuredClone(agreementArtifact),
+        },
       );
       let decision: unknown;
       try {
@@ -959,29 +1097,44 @@ export async function verifyBundleCore(
       "resolved legacy Listing",
     );
   }
-  refs.push(
-    !listingPinCoherent
-      ? {
-          kind: "dacs-1-listing",
-          id: listingId,
-          verdict: "hash-mismatch",
-        }
-      : canResolveListing
-        ? checkArtifact(
-            "dacs-1-listing",
-            listingId,
-            bundle.listingRef.contentHash,
-            isNormativeGraph
-              ? isNormativeListingScope
-              : isLegacyMvpListingScope,
-            listing,
-          )
+  const listingCheck: RefCheck = !listingPinCoherent
+    ? {
+        kind: "dacs-1-listing",
+        id: listingId,
+        verdict: "hash-mismatch",
+      }
+    : canResolveListing
+      ? checkArtifact(
+          "dacs-1-listing",
+          listingId,
+          bundle.listingRef.contentHash,
+          isNormativeGraph
+            ? isNormativeListingScope
+            : isLegacyMvpListingScope,
+          listing,
+        )
       : {
           kind: "dacs-1-listing",
           id: listingId,
           verdict: "unresolved",
-        },
-  );
+        };
+  if (listingCheck.verdict === "ok" && listing && isNormativeGraph) {
+    const listingScope = stripSignature(listing) as {
+      listingId?: unknown;
+      seller?: { identity?: { presentedBy?: unknown } };
+    };
+    const sellerClaim = bundle.parties.find(
+      (party) => party.role === "seller",
+    )?.primaryClaim;
+    if (
+      listingScope.listingId !== listingId ||
+      (sellerClaim !== undefined &&
+        listingScope.seller?.identity?.presentedBy !== sellerClaim)
+    ) {
+      listingCheck.verdict = "invalid-binding";
+    }
+  }
+  refs.push(listingCheck);
 
   const anyInvalid = signatures.some((c) => c.verdict === "invalid");
   const anyError = signatures.some((c) => c.verdict === "error");
@@ -989,19 +1142,27 @@ export async function verifyBundleCore(
   const validSignatureClaims = new Set(
     signatures.filter((c) => c.verdict === "valid").map((c) => c.party),
   );
-  const missingRequiredSignatures = requiredSignatureClaims(bundle, agreementArtifact).filter(
-    (claim) => !validSignatureClaims.has(claim),
-  );
+  const missingRequiredSignatures = requiredSignatureClaims(
+    bundle,
+    agreementArtifact,
+    parties,
+    signatures.length,
+  ).filter((claim) => !validSignatureClaims.has(claim));
   const sigOk = anyValid && !anyInvalid && !anyError;
   const fullyVerified =
     signatures.length > 0 &&
     signatures.every((c) => c.verdict === "valid") &&
-    missingRequiredSignatures.length === 0;
+    missingRequiredSignatures.length === 0 &&
+    (!parties || parties.hasRequiredRoles);
   const badRef = refs.find((r) => r.verdict !== "ok");
   const refsOk = !badRef;
 
   return {
-    ok: sigOk && missingRequiredSignatures.length === 0 && refsOk,
+    ok:
+      sigOk &&
+      missingRequiredSignatures.length === 0 &&
+      (!parties || parties.hasRequiredRoles) &&
+      refsOk,
     reason:
       signatures.length === 0
         ? "bundle has no signatures"
@@ -1011,11 +1172,13 @@ export async function verifyBundleCore(
             ? "one or more signer keys were malformed (could not verify)"
             : missingRequiredSignatures.length > 0
               ? `missing required signature(s): ${missingRequiredSignatures.join(", ")}`
-            : !anyValid
-              ? "no signer key could be resolved"
-              : badRef
-                ? `referenced artifact ${badRef.kind}/${badRef.id} ${badRef.verdict}`
-                : undefined,
+              : parties && !parties.hasRequiredRoles
+                ? "bundle parties must identify both buyer and seller roles"
+                : !anyValid
+                  ? "no signer key could be resolved"
+                  : badRef
+                    ? `referenced artifact ${badRef.kind}/${badRef.id} ${badRef.verdict}`
+                    : undefined,
     fullyVerified,
     bundle: structuredClone(bundle),
     signatures,
