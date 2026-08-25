@@ -1847,6 +1847,10 @@ async function buildPrepared(
       maxBytes: 1_048_576,
     }),
   };
+  const maximumDemosStorageWriteFeeDem = Object.freeze({
+    buyer: buyerConfig.limits.maxDemosNetworkFeeDem,
+    seller: sellerConfig.limits.maxDemosNetworkFeeDem,
+  });
   if (input.rail === "pay-dem") {
     if (input.maximumTotalDebitDem === undefined) {
       throw new Error("native DEM total debit ceiling is unavailable");
@@ -1867,6 +1871,7 @@ async function buildPrepared(
       request: input.request,
       maximumServiceAmount: input.maximumServiceAmount,
       maximumTotalDebitDem: input.maximumTotalDebitDem,
+      maximumDemosStorageWriteFeeDem,
     });
   }
   const buyerEvmSecretPath = actorSecretPath("buyer", "evm-wallet");
@@ -1903,6 +1908,7 @@ async function buildPrepared(
     request: input.request,
     maximumServiceAmount: input.maximumServiceAmount,
     maximumNetworkFeeEth: input.maximumNetworkFeeEth,
+    maximumDemosStorageWriteFeeDem,
   });
 }
 
@@ -4043,11 +4049,13 @@ confirmation, setup or purchase prints a read-only preflight plan and exits.
 Every executing command also requires explicit caps.
 
 \`DACS_MAX_DEMOS_NETWORK_FEE_DEM\` is enforced before broadcast as the ceiling
-for each individual Storage Program transaction. Purchase doctor reserves six
-first-pass writes per role plus one write per role of headroom; pay-DEM also
-adds the selected transfer-and-fee ceiling. This is a conservative balance gate,
-not durable aggregate spend accounting: production release remains blocked
-until retries across both role processes share a retained per-order fee budget.
+for each individual Storage Program transaction. Purchase doctor and the
+consent-bound plan reserve five buyer writes, six seller writes and one write
+per role of headroom; pay-DEM also adds the selected transfer-and-fee ceiling.
+The generated graph is bounded by deterministic logical names, durable
+write-once reconciliation and those per-transaction caps. The reported ceiling
+does not cover custom extensions or unrelated concurrent orders using the same
+wallets.
 
 The purchase request file is closed, versioned JSON:
 

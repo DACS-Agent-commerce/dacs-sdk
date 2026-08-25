@@ -8,18 +8,35 @@ import type { DacsLiveDoctorProbeResultV1 } from "./doctor.js";
 const OS_PER_DEM = 1_000_000_000n;
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
+/** Exact role-owned Storage Program writes in the generated fixed-price graph. */
+export const DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1 = Object.freeze({
+  buyer: Object.freeze([
+    "counterparty-vet",
+    "agreement",
+    "payment-evidence",
+    "buyer-bundle",
+    "buyer-bundle-binding",
+  ] as const),
+  seller: Object.freeze([
+    "counterparty-vet",
+    "finality-commitment",
+    "deliverable",
+    "delivery-evidence",
+    "seller-bundle",
+    "seller-bundle-binding",
+  ] as const),
+});
+
 /**
  * Conservative clean-run write budget for the fixed-price live profile.
  *
- * Each role can publish six role-owned Storage Program artifacts while a
- * purchase advances through Vet, agreement/finality, settlement/delivery and
- * two-sided bundle closure. Replays may reuse those exact immutable writes;
- * they must not be assumed to cost zero during admission because an earlier
- * attempt may have stopped before broadcast.
+ * Replays reuse the exact immutable writes above. One additional write per
+ * role is reserved as explicit headroom, but the generated implementation does
+ * not treat that headroom as authority to invent another protocol artifact.
  */
 export const DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_BUDGET_V1 = Object.freeze({
-  buyer: 6,
-  seller: 6,
+  buyer: DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1.buyer.length,
+  seller: DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1.seller.length,
   safetyMarginPerRole: 1,
 });
 

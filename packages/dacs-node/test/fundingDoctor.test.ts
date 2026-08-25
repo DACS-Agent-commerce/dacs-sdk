@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1,
   estimateDacsFixedPriceDemosCostV1,
   inspectDacsDemosBalanceHeadroomV1,
   inspectDacsX402AssetBalanceV1,
@@ -9,6 +10,21 @@ import {
 } from "../src/fundingDoctor.js";
 
 describe("fixed-price Demos cost estimate", () => {
+  it("publishes the exact auditable generated write graph", () => {
+    expect(DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1).toEqual({
+      buyer: [
+        "counterparty-vet", "agreement", "payment-evidence", "buyer-bundle",
+        "buyer-bundle-binding",
+      ],
+      seller: [
+        "counterparty-vet", "finality-commitment", "deliverable", "delivery-evidence",
+        "seller-bundle", "seller-bundle-binding",
+      ],
+    });
+    expect(Object.isFrozen(DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1.buyer)).toBe(true);
+    expect(Object.isFrozen(DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1.seller)).toBe(true);
+  });
+
   it("budgets both role write graphs and one write of safety headroom", () => {
     expect(estimateDacsFixedPriceDemosCostV1({
       rail: "x402",
@@ -16,12 +32,12 @@ describe("fixed-price Demos cost estimate", () => {
     })).toEqual({
       rail: "x402",
       maximumStorageWriteFeeDem: { buyer: "2", seller: "3" },
-      expectedStorageWrites: { buyer: 6, seller: 6 },
+      expectedStorageWrites: { buyer: 5, seller: 6 },
       safetyMarginWrites: { buyer: 1, seller: 1 },
-      maximumStorageFeesDem: { buyer: "12", seller: "18" },
+      maximumStorageFeesDem: { buyer: "10", seller: "18" },
       safetyMarginDem: { buyer: "2", seller: "3" },
-      minimumDem: { buyer: "14", seller: "21" },
-      maximumTotalDemosDebitDem: "35",
+      minimumDem: { buyer: "12", seller: "21" },
+      maximumTotalDemosDebitDem: "33",
     });
   });
 
@@ -31,8 +47,8 @@ describe("fixed-price Demos cost estimate", () => {
       maximumStorageWriteFeeDem: { buyer: "2", seller: "2" },
       maximumPayDemTotalDebitDem: "3.5",
     })).toMatchObject({
-      minimumDem: { buyer: "17.5", seller: "14" },
-      maximumTotalDemosDebitDem: "31.5",
+      minimumDem: { buyer: "15.5", seller: "14" },
+      maximumTotalDemosDebitDem: "29.5",
     });
   });
 

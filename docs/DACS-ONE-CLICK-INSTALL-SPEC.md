@@ -901,6 +901,16 @@ the retained job and effect identity. A new invocation with the same user-level
 request but no explicit resume MUST NOT silently attach to or repeat an earlier
 purchase.
 
+The purchase plan MUST also bind the generated profile's whole-order Demos
+cost envelope. For the fixed-price profile this is derived from five named
+buyer Storage Program writes, six named seller writes, one explicit headroom
+write per role and each role's configured per-write ceiling. Native pay-DEM
+plans MUST add the selected transfer-and-fee ceiling to that projection. The
+plan hash changes if either role's Demos ceiling changes; deterministic logical
+names, durable write-once reconciliation and per-write adapter enforcement are
+the runtime bound. Custom extensions and unrelated concurrent orders are not
+covered by this generated-profile envelope.
+
 Setup and purchase confirmations MUST be distinct domain-separated consent
 records. Neither may be inferred from `dacs:up`, doctor, a previous run or a
 generic environment variable alone.

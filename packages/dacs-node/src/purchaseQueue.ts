@@ -63,6 +63,7 @@ export interface DacsPrepareX402PurchaseOptionsV1 {
   request: Readonly<Record<string, unknown>>;
   maximumServiceAmount: string;
   maximumNetworkFeeEth: string;
+  maximumDemosStorageWriteFeeDem: Readonly<Record<"buyer" | "seller", string>>;
   resume?: boolean;
 }
 
@@ -88,6 +89,7 @@ export interface DacsPreparePayDemPurchaseOptionsV1 {
   request: Readonly<Record<string, unknown>>;
   maximumServiceAmount: string;
   maximumTotalDebitDem: string;
+  maximumDemosStorageWriteFeeDem: Readonly<Record<"buyer" | "seller", string>>;
   resume?: boolean;
 }
 
@@ -304,6 +306,7 @@ export function prepareDacsX402PurchaseV1(
     maximumServiceAmount: options.maximumServiceAmount,
     estimatedNetworkFeeEth: "0",
     maximumNetworkFeeEth: options.maximumNetworkFeeEth,
+    maximumDemosStorageWriteFeeDem: options.maximumDemosStorageWriteFeeDem,
   });
   return deepFreeze({
     plan,
@@ -366,6 +369,7 @@ export function prepareDacsPayDemPurchaseV1(
     serviceAmount: amount,
     maximumServiceAmount: options.maximumServiceAmount,
     maximumTotalDebitDem: options.maximumTotalDebitDem,
+    maximumDemosStorageWriteFeeDem: options.maximumDemosStorageWriteFeeDem,
   });
   return deepFreeze({
     plan,

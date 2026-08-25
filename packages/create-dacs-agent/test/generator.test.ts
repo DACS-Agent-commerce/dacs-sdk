@@ -333,6 +333,8 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsPurchaseQueueExecutorV1");
     expect(combined).toContain("prepareDacsX402PurchaseV1");
     expect(combined).toContain("prepareDacsPayDemPurchaseV1");
+    expect(combined).toContain("maximumDemosStorageWriteFeeDem");
+    expect(combined).toContain("consent-bound plan reserve five buyer writes");
     expect(combined).toContain("resolveDacsPayDemExistingListingV1");
     expect(combined).toContain("createDacsFixedPriceMultirailBuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceMultirailSellerLiveV1");

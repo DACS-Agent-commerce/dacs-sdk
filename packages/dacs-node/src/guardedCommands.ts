@@ -9,6 +9,10 @@ import {
   DACS_LIVE_DOCTOR_REPORT_SCHEMA,
   type DacsLiveDoctorReportV1,
 } from "./doctor.js";
+import {
+  estimateDacsFixedPriceDemosCostV1,
+  type DacsFixedPriceDemosCostEstimateV1,
+} from "./fundingDoctor.js";
 import type {
   DacsNodeSqliteDatabase,
   DacsNodeSqliteEffectKind,
@@ -72,6 +76,7 @@ export interface DacsGuardedPurchasePlanV1 {
   maximumServiceAmount: string;
   estimatedNetworkFeeEth: string;
   maximumNetworkFeeEth: string;
+  demosCost: Readonly<DacsFixedPriceDemosCostEstimateV1>;
   paymentPossible: true;
   planHash: string;
 }
@@ -95,6 +100,7 @@ export interface DacsGuardedPayDemPurchasePlanV1 {
   maximumServiceAmount: string;
   /** Transfer plus Demos transaction fees; enforced again by the rail. */
   maximumTotalDebitDem: string;
+  demosCost: Readonly<DacsFixedPriceDemosCostEstimateV1>;
   paymentPossible: true;
   planHash: string;
 }
@@ -231,6 +237,18 @@ function exactDataKeys(
   } catch {
     return false;
   }
+}
+
+function exactDemosCost(value: unknown): value is Readonly<DacsFixedPriceDemosCostEstimateV1> {
+  if (!exactDataKeys(value, [
+    "rail", "maximumStorageWriteFeeDem", "expectedStorageWrites", "safetyMarginWrites",
+    "maximumStorageFeesDem", "safetyMarginDem", "minimumDem",
+    "maximumTotalDemosDebitDem",
+  ])) return false;
+  return [
+    "maximumStorageWriteFeeDem", "expectedStorageWrites", "safetyMarginWrites",
+    "maximumStorageFeesDem", "safetyMarginDem", "minimumDem",
+  ].every((key) => exactDataKeys(value[key], ["buyer", "seller"]));
 }
 
 function captureClosedDataObject(
@@ -394,6 +412,7 @@ export function createDacsGuardedPurchasePlanV1(input: Readonly<{
   maximumServiceAmount: string;
   estimatedNetworkFeeEth: string;
   maximumNetworkFeeEth: string;
+  maximumDemosStorageWriteFeeDem: Readonly<Record<"buyer" | "seller", string>>;
 }>): Readonly<DacsGuardedPurchasePlanV1> {
   if (input === null || typeof input !== "object" || !text(input.effectId, 256) ||
       !isCanonicalJobId(input.jobId) || !text(input.listingRef) ||
@@ -407,10 +426,17 @@ export function createDacsGuardedPurchasePlanV1(input: Readonly<{
       !text(input.asset, 64) || !decimal(input.serviceAmount) ||
       !decimal(input.maximumServiceAmount) || !decimal(input.estimatedNetworkFeeEth) ||
       !decimal(input.maximumNetworkFeeEth) ||
+      !exactDataKeys(input.maximumDemosStorageWriteFeeDem, ["buyer", "seller"]) ||
+      !decimal(input.maximumDemosStorageWriteFeeDem.buyer) ||
+      !decimal(input.maximumDemosStorageWriteFeeDem.seller) ||
       !lessThanOrEqual(input.serviceAmount, input.maximumServiceAmount) ||
       !lessThanOrEqual(input.estimatedNetworkFeeEth, input.maximumNetworkFeeEth)) {
     throw new TypeError("guarded purchase plan is invalid or exceeds a ceiling");
   }
+  const demosCost = estimateDacsFixedPriceDemosCostV1({
+    rail: "x402",
+    maximumStorageWriteFeeDem: input.maximumDemosStorageWriteFeeDem,
+  });
   return withPlanHash("dacs-guarded-purchase-plan:v1:", {
     schema: DACS_PURCHASE_PLAN_SCHEMA,
     kind: "purchase" as const,
@@ -430,6 +456,7 @@ export function createDacsGuardedPurchasePlanV1(input: Readonly<{
     maximumServiceAmount: input.maximumServiceAmount,
     estimatedNetworkFeeEth: input.estimatedNetworkFeeEth,
     maximumNetworkFeeEth: input.maximumNetworkFeeEth,
+    demosCost,
     paymentPossible: true as const,
   });
 }
@@ -448,6 +475,7 @@ export function createDacsGuardedPayDemPurchasePlanV1(input: Readonly<{
   serviceAmount: string;
   maximumServiceAmount: string;
   maximumTotalDebitDem: string;
+  maximumDemosStorageWriteFeeDem: Readonly<Record<"buyer" | "seller", string>>;
 }>): Readonly<DacsGuardedPayDemPurchasePlanV1> {
   if (input === null || typeof input !== "object" || !text(input.effectId, 256) ||
       !isCanonicalJobId(input.jobId) || !text(input.listingRef) ||
@@ -458,10 +486,18 @@ export function createDacsGuardedPayDemPurchasePlanV1(input: Readonly<{
       input.payer === input.payee || !text(input.railId, 128) ||
       input.railId !== "demos-native:DEM" || !decimal(input.serviceAmount) ||
       !decimal(input.maximumServiceAmount) || !decimal(input.maximumTotalDebitDem) ||
+      !exactDataKeys(input.maximumDemosStorageWriteFeeDem, ["buyer", "seller"]) ||
+      !decimal(input.maximumDemosStorageWriteFeeDem.buyer) ||
+      !decimal(input.maximumDemosStorageWriteFeeDem.seller) ||
       !lessThanOrEqual(input.serviceAmount, input.maximumServiceAmount) ||
       !lessThanOrEqual(input.serviceAmount, input.maximumTotalDebitDem)) {
     throw new TypeError("guarded pay-dem purchase plan is invalid or exceeds a ceiling");
   }
+  const demosCost = estimateDacsFixedPriceDemosCostV1({
+    rail: "pay-dem",
+    maximumStorageWriteFeeDem: input.maximumDemosStorageWriteFeeDem,
+    maximumPayDemTotalDebitDem: input.maximumTotalDebitDem,
+  });
   return withPlanHash("dacs-guarded-pay-dem-purchase-plan:v1:", {
     schema: DACS_PAY_DEM_PURCHASE_PLAN_SCHEMA,
     kind: "purchase-pay-dem" as const,
@@ -480,6 +516,7 @@ export function createDacsGuardedPayDemPurchasePlanV1(input: Readonly<{
     serviceAmount: input.serviceAmount,
     maximumServiceAmount: input.maximumServiceAmount,
     maximumTotalDebitDem: input.maximumTotalDebitDem,
+    demosCost,
     paymentPossible: true as const,
   });
 }
@@ -580,9 +617,12 @@ export function captureDacsGuardedPlanV1(
         "schema", "kind", "effectId", "jobId", "resume", "listingRef",
         "requestHash", "buyerAuthority", "sellerAuthority", "payer", "payee",
         "railId", "network", "asset", "serviceAmount", "maximumServiceAmount",
-        "estimatedNetworkFeeEth", "maximumNetworkFeeEth", "paymentPossible", "planHash",
+        "estimatedNetworkFeeEth", "maximumNetworkFeeEth", "demosCost", "paymentPossible",
+        "planHash",
       ]) || candidate.schema !== DACS_PURCHASE_PLAN_SCHEMA ||
-          candidate.paymentPossible !== true) return undefined;
+          candidate.paymentPossible !== true || !exactDemosCost(candidate.demosCost)) {
+        return undefined;
+      }
       const reconstructed = createDacsGuardedPurchasePlanV1({
         effectId: candidate.effectId,
         jobId: candidate.jobId,
@@ -600,6 +640,7 @@ export function captureDacsGuardedPlanV1(
         maximumServiceAmount: candidate.maximumServiceAmount,
         estimatedNetworkFeeEth: candidate.estimatedNetworkFeeEth,
         maximumNetworkFeeEth: candidate.maximumNetworkFeeEth,
+        maximumDemosStorageWriteFeeDem: candidate.demosCost.maximumStorageWriteFeeDem,
       });
       return canonicalize(reconstructed) === canonicalize(candidate) ? reconstructed : undefined;
     }
@@ -608,9 +649,11 @@ export function captureDacsGuardedPlanV1(
         "schema", "kind", "effectId", "jobId", "resume", "listingRef",
         "requestHash", "buyerAuthority", "sellerAuthority", "payer", "payee",
         "railId", "network", "asset", "serviceAmount", "maximumServiceAmount",
-        "maximumTotalDebitDem", "paymentPossible", "planHash",
+        "maximumTotalDebitDem", "demosCost", "paymentPossible", "planHash",
       ]) || candidate.schema !== DACS_PAY_DEM_PURCHASE_PLAN_SCHEMA ||
-          candidate.paymentPossible !== true) return undefined;
+          candidate.paymentPossible !== true || !exactDemosCost(candidate.demosCost)) {
+        return undefined;
+      }
       const payDem = candidate as Readonly<DacsGuardedPayDemPurchasePlanV1>;
       const reconstructed = createDacsGuardedPayDemPurchasePlanV1({
         effectId: payDem.effectId,
@@ -626,6 +669,7 @@ export function captureDacsGuardedPlanV1(
         serviceAmount: payDem.serviceAmount,
         maximumServiceAmount: payDem.maximumServiceAmount,
         maximumTotalDebitDem: payDem.maximumTotalDebitDem,
+        maximumDemosStorageWriteFeeDem: payDem.demosCost.maximumStorageWriteFeeDem,
       });
       return canonicalize(reconstructed) === canonicalize(candidate) ? reconstructed : undefined;
     }
@@ -714,7 +758,9 @@ function summaryFor(plan: Readonly<DacsGuardedPlanV1>) {
     kind: plan.kind,
     planHash: plan.planHash,
     actionCount: plan.kind === "setup" ? plan.actions.length
-      : plan.kind === "funded-doctor" ? plan.debits.length : 1,
+      : plan.kind === "funded-doctor" ? plan.debits.length
+      : plan.demosCost.expectedStorageWrites.buyer +
+        plan.demosCost.expectedStorageWrites.seller + 1,
     network: plan.kind === "setup" ? plan.demosNetwork : plan.network,
     maximumAssetSpend: plan.kind === "setup"
       ? `${plan.maximumSpendDem} DEM`
@@ -723,9 +769,12 @@ function summaryFor(plan: Readonly<DacsGuardedPlanV1>) {
       : plan.ceilings.map((item) => `${item.maximumTotalDebit} ${item.asset}`).join(", "),
     maximumNetworkFee: plan.kind === "setup"
       ? `${plan.maximumSpendDem} DEM total`
-      : plan.kind === "purchase" ? `${plan.maximumNetworkFeeEth} ETH`
+      : plan.kind === "purchase"
+        ? `${plan.maximumNetworkFeeEth} ETH EVM; ` +
+          `${plan.demosCost.maximumTotalDemosDebitDem} DEM whole-order Demos ceiling`
       : plan.kind === "purchase-pay-dem"
-        ? `included in ${plan.maximumTotalDebitDem} DEM total debit`
+        ? `${plan.demosCost.maximumTotalDemosDebitDem} DEM whole-order ceiling ` +
+          "including native payment and Demos evidence"
       : "included in per-asset total debit caps",
     paymentPossible: plan.paymentPossible,
   });
