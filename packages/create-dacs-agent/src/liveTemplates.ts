@@ -365,6 +365,7 @@ export function serviceEndpoint(role: "buyer" | "seller"): string {
 const DOCTOR_SOURCE = `import { constants } from "node:fs";
 import { access, lstat, open, readFile, statfs } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 
 import {
   RAIL_REGISTRY_INDEX_ADDRESS,
@@ -380,6 +381,7 @@ import {
 } from "@kynesyslabs/dacs/identity";
 import {
   DACS_LIVE_DOCTOR_CHECK_IDS,
+  DACS_NODE_CONFIG_SCHEMA_VERSION,
   DACS_NODE_LIVE_PROFILE,
   createDacsDemosActorRuntimeV1,
   createDacsDemosRailRegistryProviderV1,
@@ -411,6 +413,7 @@ import {
   type DacsLiveDoctorScopeV1,
 } from "@kynesyslabs/dacs-node";
 import {
+  DACS_NODE_SQLITE_SCHEMA_VERSION,
   inspectExistingDacsNodeSqliteDatabaseV1,
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -704,9 +707,58 @@ function sqlite() {
 }
 
 async function dockerRuntime(
-  context: Readonly<{ signal: AbortSignal }>,
+  context: Readonly<{ phase: DacsLiveDoctorPhaseV1; signal: AbortSignal }>,
 ): Promise<Readonly<DacsLiveDoctorProbeResultV1>> {
-  if ((process.env.DACS_DEPLOYMENT ?? "docker") === "local") return pass();
+  let endpoints: readonly Readonly<{ hostname: string; port: number }>[];
+  try {
+    endpoints = ROLES.map((role) => {
+      const endpoint = new URL(serviceEndpoint(role));
+      const hostname = endpoint.hostname.toLowerCase().replace(/\\.$/u, "");
+      const loopback = hostname === "localhost" || hostname.endsWith(".localhost") ||
+        hostname === "[::1]" || hostname === "::1" ||
+        /^127(?:\\.\\d{1,3}){3}$/u.test(hostname);
+      const port = Number(endpoint.port);
+      if (endpoint.protocol !== "http:" || !loopback || endpoint.pathname !== "/" ||
+          endpoint.username !== "" || endpoint.password !== "" || endpoint.search !== "" ||
+          endpoint.hash !== "" || !Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
+        throw new Error("service endpoint is not a bounded loopback port");
+      }
+      return Object.freeze({
+        hostname: endpoint.hostname.startsWith("[")
+          ? endpoint.hostname.slice(1, -1) : endpoint.hostname,
+        port,
+      });
+    });
+  } catch {
+    return fail("service-endpoint-invalid");
+  }
+  if (endpoints[0]!.port === endpoints[1]!.port) {
+    return fail("service-port-shared");
+  }
+  if (context.phase === "pre-start") {
+    for (const endpoint of endpoints) {
+      const available = await new Promise<boolean>((resolve) => {
+        const server = createServer();
+        let settled = false;
+        const finish = (result: boolean) => {
+          if (settled) return;
+          settled = true;
+          context.signal.removeEventListener("abort", onAbort);
+          server.close(() => resolve(result));
+        };
+        const onAbort = () => finish(false);
+        context.signal.addEventListener("abort", onAbort, { once: true });
+        server.once("error", () => finish(false));
+        server.listen({ host: endpoint.hostname, port: endpoint.port, exclusive: true },
+          () => finish(true));
+        if (context.signal.aborted) onAbort();
+      });
+      if (!available) return fail("service-port-unavailable");
+    }
+  }
+  if ((process.env.DACS_DEPLOYMENT ?? "docker") === "local") {
+    return pass({ servicePortCount: endpoints.length });
+  }
   const runtimeUid = Number(process.env.DACS_RUNTIME_UID);
   const runtimeGid = Number(process.env.DACS_RUNTIME_GID);
   if (process.env.DACS_RUNTIME_UID === undefined || process.env.DACS_RUNTIME_GID === undefined) {
@@ -734,8 +786,43 @@ async function dockerRuntime(
     context.signal.addEventListener("abort", onAbort, { once: true });
     if (context.signal.aborted) onAbort();
     child.once("error", () => finish(blocked("docker-runtime-unavailable")));
-    child.once("exit", (code) => finish(code === 0 ? pass() : blocked("docker-runtime-unavailable")));
+    child.once("exit", (code) => finish(code === 0
+      ? pass({ servicePortCount: endpoints.length })
+      : blocked("docker-runtime-unavailable")));
   });
+}
+
+async function versionBindings() {
+  try {
+    const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url),
+      "utf8")) as Readonly<{
+        dependencies?: Readonly<Record<string, unknown>>;
+        dacs?: Readonly<Record<string, unknown>>;
+      }>;
+    const metadata = manifest.dacs;
+    if (manifest.dependencies?.["@kynesyslabs/dacs"] !== VERSION ||
+        manifest.dependencies?.["@kynesyslabs/dacs-node"] !== VERSION ||
+        metadata?.generatorVersion !== VERSION ||
+        metadata?.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
+        metadata?.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION ||
+        metadata?.sqliteSchemaVersion !== DACS_NODE_SQLITE_SCHEMA_VERSION) {
+      return fail("version-binding-mismatch");
+    }
+    const configs = ROLES.map((role) => loadRoleConfig(role));
+    if (configs.some((config, index) => config.role !== ROLES[index] ||
+        config.profile !== DACS_NODE_LIVE_PROFILE)) {
+      return fail("version-binding-mismatch");
+    }
+    return pass({
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      profile: DACS_NODE_LIVE_PROFILE,
+      configSchemaVersion: DACS_NODE_CONFIG_SCHEMA_VERSION,
+      sqliteSchemaVersion: DACS_NODE_SQLITE_SCHEMA_VERSION,
+    });
+  } catch {
+    return fail("version-binding-unavailable");
+  }
 }
 
 function baseProbes(
@@ -885,8 +972,7 @@ function baseProbes(
     "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
       : fail("node-version-unsupported"),
     "local.package-integrity": inspectDacsNodePackageIntegrityV1,
-    "local.version-bindings": () => pass({ sdkVersion: VERSION,
-      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION, profile: DACS_NODE_LIVE_PROFILE }),
+    "local.version-bindings": versionBindings,
     "local.configuration": () => {
       try {
         const configs = ROLES.map((role) => loadRoleConfig(role));
@@ -1029,7 +1115,12 @@ function baseProbes(
           } catch { return blocked("listing-existing-resolution-unavailable"); }
         },
     "demos.engagement-endpoint-shape": () => {
-      try { new URL(serviceEndpoint("buyer")); new URL(serviceEndpoint("seller")); return pass(); }
+      const endpoint = loadRoleConfig("seller").publicBaseUrl;
+      if (endpoint === undefined) return blocked("seller-public-endpoint-missing");
+      try {
+        const parsed = new URL(endpoint);
+        return pass({ sellerPublicOrigin: parsed.origin });
+      }
       catch { return fail("engagement-endpoint-invalid"); }
     },
     "x402.rail-authority": !enabledProfiles.includes("x402") ? x402Disabled
@@ -3361,6 +3452,7 @@ const VERIFIER_SOURCE = `export const verifierApplication = Object.freeze({
 
 const TEST_SOURCE = `import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { createServer } from "node:net";
 import test from "node:test";
 
 import { DACS_LIVE_DOCTOR_CHECK_IDS } from "@kynesyslabs/dacs-node";
@@ -3379,7 +3471,64 @@ test("fresh live bootstrap is complete, read-only and visibly blocked", async ()
   assert.equal(report.exitCode, 5);
   assert.equal(report.checks.length, DACS_LIVE_DOCTOR_CHECK_IDS.length);
   assert.equal(report.checks.some((item) => item.status === "blocked"), true);
+  assert.equal(report.checks.find((item) => item.id === "local.version-bindings")?.status,
+    "pass");
+  assert.deepEqual(report.checks.find((item) => item.id === "local.deployment-runtime")?.facts,
+    { servicePortCount: 2 });
+  const engagement = report.checks.find((item) =>
+    item.id === "demos.engagement-endpoint-shape");
+  assert.equal(engagement?.status, "blocked");
+  assert.equal(engagement?.reasonCode, "seller-public-endpoint-missing");
   assert.equal(existsSync("./data/buyer/actor.sqlite"), before);
+});
+
+test("pre-start doctor rejects an occupied service port", async () => {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("test service did not receive an IP port");
+  }
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousBuyerUrl = process.env.DACS_BUYER_SERVICE_URL;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_BUYER_SERVICE_URL = "http://127.0.0.1:" + String(address.port);
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    const deployment = report.checks.find((item) =>
+      item.id === "local.deployment-runtime");
+    assert.equal(deployment?.status, "fail");
+    assert.equal(deployment?.reasonCode, "service-port-unavailable");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) =>
+      error === undefined ? resolve() : reject(error)));
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousBuyerUrl === undefined) delete process.env.DACS_BUYER_SERVICE_URL;
+    else process.env.DACS_BUYER_SERVICE_URL = previousBuyerUrl;
+  }
+});
+
+test("doctor validates the configured seller Listing endpoint", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousSellerUrl = process.env.DACS_SELLER_PUBLIC_BASE_URL;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_SELLER_PUBLIC_BASE_URL = "https://seller.example/engage";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    assert.deepEqual(report.checks.find((item) =>
+      item.id === "demos.engagement-endpoint-shape")?.facts, {
+        sellerPublicOrigin: "https://seller.example",
+      });
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousSellerUrl === undefined) delete process.env.DACS_SELLER_PUBLIC_BASE_URL;
+    else process.env.DACS_SELLER_PUBLIC_BASE_URL = previousSellerUrl;
+  }
 });
 
 const releaseMetadata = Object.freeze({
