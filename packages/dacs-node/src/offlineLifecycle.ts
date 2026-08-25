@@ -1436,13 +1436,15 @@ async function buildAndVerifyBundles(
       resolvePublicKey: resolveKey,
       verify: async (bytes, signature, publicKey) =>
         ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
-      verifyEvidence: (evidence) =>
-        verifyEvidence(
+      verifyEvidence: async (evidence) => ({
+        ...(await verifyEvidence(
           evidence,
           seller,
           resolveKey,
           deliveryEvidence.deliverableAnchor!.locator,
-        ),
+        )),
+        authorizedSigner: seller.claim,
+      }),
       verifyCompositeRecord: verifierForParty,
     });
   const [buyerVerification, sellerVerification] = await Promise.all([
