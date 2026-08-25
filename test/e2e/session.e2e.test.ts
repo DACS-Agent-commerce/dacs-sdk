@@ -224,6 +224,10 @@ function verifyDeps(sub: ReturnType<typeof memSubstrate>): VerifyBundleDeps {
     },
     resolvePublicKey: async (did) => resolveFromDid(did),
     verify,
+    verifyEvidence: async () => ({
+      decision: "pass",
+      authorizedSigner: buyerDid,
+    }),
     verifyCompositeRecord: (record, bundle) => {
       const party = bundle.parties.find(
         (candidate) => candidate.primaryClaim === sellerDid,
@@ -583,12 +587,23 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
     // Strict two-sided verification fail-closes the legacy buyer-only bundle
     // (see the first test) — assert that the missing seller signature is the
-    // ONLY failure: every referenced artifact, including the v2 listing at its
-    // versioned §6.3.4 address, must still dereference and hash-match. That
-    // ref integrity is what #29's version pinning is about.
+    // only bundle-level failure. The legacy one-sided Agreement is now also
+    // reported honestly as unauthenticated, while every other referenced
+    // artifact — including the v2 Listing at its versioned §6.3.4 address —
+    // must authenticate successfully. That pinning is what #29 tests.
     expect(v.ok).toBe(false);
     expect(v.reason).toMatch(/missing required signature/);
-    expect(v.refs.every((r) => r.verdict === "ok")).toBe(true);
+    expect(
+      v.refs.find((ref) => ref.kind === "dacs-3-agreement"),
+    ).toMatchObject({
+      verdict: "signature-missing",
+      signature: { verdict: "missing" },
+    });
+    expect(
+      v.refs
+        .filter((ref) => ref.kind !== "dacs-3-agreement")
+        .every((ref) => ref.verdict === "ok"),
+    ).toBe(true);
     // The bundle records the exact version it pinned, not a hardcoded 1.
     expect(v.bundle?.listingRef.version).toBe(2);
     const pinnedHash = v.bundle?.listingRef.contentHash;
@@ -613,10 +628,17 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     await sub.anchor(listingAddress(sellerDid, "market-data", 3), v3Signed);
 
     const after = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
-    // Still only the one-sided gap — v3's publication changed nothing: the
-    // pinned v2 ref still resolves and hash-matches at its own address.
+    // v3's publication changes nothing: the pinned v2 ref still resolves and
+    // authenticates at its own address; the same legacy Agreement gap remains.
     expect(after.reason).toMatch(/missing required signature/);
-    expect(after.refs.every((r) => r.verdict === "ok")).toBe(true);
+    expect(
+      after.refs.find((ref) => ref.kind === "dacs-3-agreement")?.verdict,
+    ).toBe("signature-missing");
+    expect(
+      after.refs
+        .filter((ref) => ref.kind !== "dacs-3-agreement")
+        .every((ref) => ref.verdict === "ok"),
+    ).toBe(true);
     expect(after.bundle?.listingRef.contentHash).toBe(pinnedHash);
   });
 
