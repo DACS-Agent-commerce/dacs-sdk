@@ -696,6 +696,36 @@ describe("fixed-price x402 coordinator", () => {
     expect(effects.mock.calls[0]?.[1]).toBe(effects.mock.calls[1]?.[1]);
   });
 
+  it("rejects a stale lease before entering a track operation", async () => {
+    let now = 4_000;
+    const delegate = createInMemoryFixedPriceX402CoordinatorStore({ now: () => now });
+    const operation = vi.fn(async () => ({
+      status: "final" as const,
+      outcome: "success" as const,
+      reference: "agreement:must-not-run",
+    }));
+    const coordinator = createFixedPriceX402BuyerCoordinator({
+      store: {
+        ...delegate,
+        isCurrent: async (input) => {
+          now += 11;
+          return delegate.isCurrent(input);
+        },
+      },
+      workerId: "buyer-worker",
+      leaseDurationMs: 10,
+      operations: { agreement: operation },
+    });
+
+    await coordinator.startOrder(order("buyer"));
+    expect((await coordinator.runPending()).items).toEqual([{
+      jobId: JOB_ID,
+      track: "agreement",
+      status: "stale",
+    }]);
+    expect(operation).not.toHaveBeenCalled();
+  });
+
   it("sanitizes thrown errors and supports an explicit operator repair transition", async () => {
     let now = 20_000;
     const agreement = vi.fn()
