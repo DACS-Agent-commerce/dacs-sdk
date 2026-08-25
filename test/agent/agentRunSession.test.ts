@@ -40,6 +40,7 @@ import {
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
+import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
 // listing verifier. Previously createAgent() supplied neither verifyListing nor
@@ -964,7 +965,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
   });
 
-  test("public verifyBundle/getReputation require the configured strict verifier for normative vet records", async () => {
+  test("public verifyBundle/getReputation require authenticated vet and settlement context", async () => {
     const { adapter, store } = memAdapter();
     const listingRef = await anchorListing(store);
     const listing = store.get(listingRef)!;
@@ -973,7 +974,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const buyerPriv = privateKeyFromSeed(buyerSeed);
     const buyerHex = Buffer.from(rawPublicKey(publicKeyFromSeed(buyerSeed))).toString("hex");
     const normativeBuyerDid = `did:demos:agent:${buyerHex}`;
-    const agreement = {
+    const agreementScope = {
       agreementVersion: "1",
       jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
       listingRef: {
@@ -1009,20 +1010,98 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       },
       derivedFromPattern: "fixed-price",
       generatedAt: 1786363200000,
+    };
+    const agreementPayload = signedBytes(
+      ARTIFACT_SEPARATORS.AgreementDocument,
+      contentHash(agreementScope),
+    );
+    const agreement = {
+      ...agreementScope,
       signatures: [
         {
           party: normativeBuyerDid,
           algorithm: "ed25519",
-          value: Buffer.alloc(64, 7).toString("base64url"),
+          value: Buffer.from(
+            ed25519Sign(agreementPayload, buyerPriv),
+          ).toString("base64url"),
         },
         {
           party: sellerDid,
           algorithm: "ed25519",
-          value: Buffer.alloc(64, 8).toString("base64url"),
+          value: Buffer.from(
+            ed25519Sign(agreementPayload, sellerPriv),
+          ).toString("base64url"),
         },
       ],
     };
     store.set("stor:agreement", agreement as Record<string, unknown>);
+
+    const evidence = await signComponentArtifact(
+      {
+        evidenceVersion: "1" as const,
+        jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+        phase: "pay-x402" as const,
+        outcome: "success" as const,
+        paymentTxRefs: [
+          {
+            kind: "x402" as const,
+            httpResource: "https://seller.example/pay",
+            paymentReceiptHash: "1".repeat(64),
+            settlementTxHash: "0xabc",
+            chainId: 84532,
+            protocolVersion: "1",
+          },
+        ],
+        paymentAmount: { amount: "1", currency: "USDC" },
+        settlementFinality: {
+          model: "block-depth" as const,
+          finalityBlocks: 1,
+          finalityObservedAt: 1786363150000,
+        },
+        observedAt: 1786363150000,
+      },
+      ARTIFACT_SEPARATORS.SettlementEvidence,
+      {
+        algorithm: "ed25519",
+        signer: sellerDid,
+        sign: (bytes) => ed25519Sign(bytes, sellerPriv),
+      },
+    );
+    const evidenceRef = {
+      anchor: {
+        kind: "storage-program" as const,
+        locator: "stor:settlement-evidence",
+      },
+      contentHash: contentHash(stripSignature(evidence)),
+    };
+    const directEvidenceVerdict = await verifySettlementEvidence(
+      evidence,
+      {
+        orchestrator: sellerDid,
+        agreement: { amount: "1", currency: "USDC" },
+        rail: {
+          railId: "x402:default",
+          railType: "x402",
+          asset: "USDC",
+          handler: "pay-x402",
+          network: "eip155:84532",
+        },
+        attestationRef: evidenceRef,
+      },
+      {
+        resolvePublicKey: async () => sellerPublicKey,
+        verify: (bytes, signature, publicKey) =>
+          ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+      },
+    );
+    expect(
+      directEvidenceVerdict.decision,
+      directEvidenceVerdict.reasons.join("; "),
+    ).toBe("pass");
+    store.set(
+      evidenceRef.anchor.locator,
+      evidence as unknown as Record<string, unknown>,
+    );
 
     const composite: CompositeVerificationRecord = {
       recordVersion: "1",
@@ -1077,7 +1156,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           ),
         },
       ],
-      settlementEvidence: [],
+      settlementEvidence: [evidenceRef],
       recipeRegistryVersion: 1,
       railRegistryVersion: 1,
       finalisedAt: 1786363200000,
@@ -1116,11 +1195,17 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         (entry) => entry.kind === "dacs-2-composite",
       ),
     ).toMatchObject({ verdict: "invalid-vet-record" });
+    expect(
+      unconfiguredVerdict.refs.find(
+        (entry) => entry.kind === "dacs-4-evidence",
+      ),
+    ).toMatchObject({ verdict: "signature-unresolved" });
     await expect(
       unconfiguredAgent.getReputation(normativeBuyerDid, ["stor:bundle"]),
     ).resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
 
     let verifierCalls = 0;
+    let evidenceContextCalls = 0;
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
@@ -1138,14 +1223,35 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           dealSpecificRecipes: [],
         };
       },
+      resolveSettlementEvidenceContext: async (input) => {
+        evidenceContextCalls += 1;
+        expect(input.evidence.phase).toBe("pay-x402");
+        expect(input.bundle.jobId).toBe("01J8ME0SXKQ4T9V2RC5HJ6WX7E");
+        expect(input.agreement.jobId).toBe("01J8ME0SXKQ4T9V2RC5HJ6WX7E");
+        expect(input.evidenceRef).toEqual(evidenceRef);
+        return {
+          orchestrator: sellerDid,
+          rail: {
+            railId: "x402:default",
+            railType: "x402",
+            asset: "USDC",
+            handler: "pay-x402",
+            network: "eip155:84532",
+          },
+        };
+      },
     });
-    await expect(agent.verifyBundle("stor:bundle")).resolves.toMatchObject({
+    const configuredVerdict = await agent.verifyBundle("stor:bundle");
+    expect(evidenceContextCalls).toBe(1);
+    expect(configuredVerdict.reason).toBeUndefined();
+    expect(configuredVerdict).toMatchObject({
       ok: true,
       fullyVerified: true,
     });
     await expect(agent.getReputation(normativeBuyerDid, ["stor:bundle"]))
       .resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
     expect(verifierCalls).toBe(2);
+    expect(evidenceContextCalls).toBe(2);
   });
 
   test("public verifyBundle owner-resolves a normative pre-commit abort Listing", async () => {

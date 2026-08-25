@@ -1,7 +1,8 @@
 # Seller x402 paywall
 
 Normative source audited: DACS Standard `next` at
-`c2ecd9fa658776f5511f2414d7b4c3e23b847463` (DACS-4 v0.5).
+`965df755aba4ff392f1fb37a93d287242b177ba4` (DACS-4 v0.6), the immutable
+revision pinned by the fixed-price coordinator.
 
 `createX402Paywall` is the thin HTTP-protocol adapter for the transport-
 independent seller lifecycle. It does not start a server or select a framework.
@@ -38,6 +39,24 @@ that identity. The callback must nevertheless be idempotent for the supplied
 stable key because a payer can retry after settlement while durable delivery
 reconciliation remains pending; the recommended #120/#121 composition already
 provides that guarantee.
+
+This deliberately resolves the ordering proposed by issue #24 differently from
+its original app-side prototype. `verify` authenticates a payer authorization;
+it does not prove that value moved. Running application work between `verify`
+and `settle` would expose the seller to an unpaid irreversible effect and would
+not provide a restart-safe boundary. The SDK therefore implements the
+pay-then-deliver pipeline selected by the finalized Listing: authenticate and
+retain the exact session, settle or reconcile to rail finality, authorize that
+payment, then enter durable idempotent fulfilment. A fulfilment failure after
+that point is reported as `settled: true`; it never attempts to cancel or
+misrepresent the already-final payment.
+
+DACS-4 PC-7 does not reverse this order. It separates rail finality from the
+later SR-2 `SettlementEvidence` anchor: once the x402 payment is independently
+known final, evidence publication catches up through its durable idempotent job
+and cannot cause a second payment. That bookkeeping may remain pending while
+delivery proceeds. Delivery evidence remains the gate for DACS-4 commerce
+completion, and DACS-5 terminal audit publication remains later still.
 
 `settlementStore.claim()` is a write-ahead, atomic put-if-absent operation by
 `settlementKey`. A durable implementation retains the complete intent (including
