@@ -31,6 +31,7 @@ export {
   type RefCheck,
   type RefVerdict,
   type BundleEvidenceVerificationContext,
+  type BundleEvidenceVerificationResult,
 } from "./verifyBundleCore.js";
 export {
   bundleConsistency,
