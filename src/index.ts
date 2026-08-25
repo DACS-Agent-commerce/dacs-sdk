@@ -373,6 +373,7 @@ export {
 
 // Public agent API (T4) — the headline surface a dApp dev uses.
 export {
+  isDacsPublicAddressV1,
   createAgent,
   type Agent,
   type AgentConfig,
