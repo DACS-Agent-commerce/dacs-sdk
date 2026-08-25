@@ -392,6 +392,7 @@ import {
   dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
   establishDacsRoleServiceReadinessV1,
+  estimateDacsFixedPriceDemosCostV1,
   inspectDacsDemosBalanceHeadroomV1,
   inspectDacsNodePackageIntegrityV1,
   inspectDacsX402AssetBalanceV1,
@@ -1059,19 +1060,46 @@ function baseProbes(
         return pass({ actorCount: 2 });
       } catch { return fail("demos-nonce-unavailable"); }
     },
-    "demos.balance-fees": actors === undefined ? actorUnavailable : (probeContext) => {
+    "demos.balance-fees": actors === undefined ? actorUnavailable : async (probeContext) => {
       const buyer = loadRoleConfig("buyer");
       const seller = loadRoleConfig("seller");
+      const estimate = probeContext.scope === "buy" && operation !== undefined &&
+          (operation.rail !== "pay-dem" || operation.maximumTotalDebitDem !== undefined)
+        ? estimateDacsFixedPriceDemosCostV1({
+            rail: operation.rail,
+            maximumStorageWriteFeeDem: {
+              buyer: buyer.limits.maxDemosNetworkFeeDem,
+              seller: seller.limits.maxDemosNetworkFeeDem,
+            },
+            ...(operation.rail === "pay-dem" && operation.maximumTotalDebitDem !== undefined
+              ? { maximumPayDemTotalDebitDem: operation.maximumTotalDebitDem } : {}),
+          })
+        : undefined;
+      if (probeContext.scope === "buy" && estimate === undefined) {
+        return blocked("purchase-cost-context-missing");
+      }
       const minimumDem = probeContext.scope === "setup"
         ? { buyer: "0", seller: seller.limits.maxSetupSpendDem }
-        : {
-            buyer: operation?.rail === "pay-dem" && operation.maximumTotalDebitDem !== undefined
-              ? operation.maximumTotalDebitDem : buyer.limits.maxDemosNetworkFeeDem,
+        : estimate?.minimumDem ?? {
+            buyer: buyer.limits.maxDemosNetworkFeeDem,
             seller: seller.limits.maxDemosNetworkFeeDem,
           };
-      return inspectDacsDemosBalanceHeadroomV1({
+      const inspected = await inspectDacsDemosBalanceHeadroomV1({
         actors: { buyer: actors.buyer.runtime, seller: actors.seller.runtime },
         minimumDem,
+      });
+      if (estimate === undefined || !("facts" in inspected)) return inspected;
+      return Object.freeze({
+        ...inspected,
+        facts: Object.freeze({
+          ...inspected.facts,
+          expectedBuyerStorageWrites: estimate.expectedStorageWrites.buyer,
+          expectedSellerStorageWrites: estimate.expectedStorageWrites.seller,
+          buyerDemosSafetyMarginDem: estimate.safetyMarginDem.buyer,
+          sellerDemosSafetyMarginDem: estimate.safetyMarginDem.seller,
+          maximumTotalDemosDebitDem: estimate.maximumTotalDemosDebitDem,
+          storageWriteFeeCeilingScope: "per-transaction",
+        }),
       });
     },
     "demos.wallet-identity": actors === undefined ? actorUnavailable : () =>
@@ -4015,11 +4043,11 @@ confirmation, setup or purchase prints a read-only preflight plan and exits.
 Every executing command also requires explicit caps.
 
 \`DACS_MAX_DEMOS_NETWORK_FEE_DEM\` is enforced before broadcast as the ceiling
-for each individual Storage Program transaction. It is not a whole-order
-aggregate: the doctor must also establish enough role-owned balance for the
-complete evidence graph. Do not treat the current single-write balance floor as
-that aggregate proof; production release remains blocked until durable
-per-order Demos fee accounting is added.
+for each individual Storage Program transaction. Purchase doctor reserves six
+first-pass writes per role plus one write per role of headroom; pay-DEM also
+adds the selected transfer-and-fee ceiling. This is a conservative balance gate,
+not durable aggregate spend accounting: production release remains blocked
+until retries across both role processes share a retained per-order fee budget.
 
 The purchase request file is closed, versioned JSON:
 

@@ -1,11 +1,52 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  estimateDacsFixedPriceDemosCostV1,
   inspectDacsDemosBalanceHeadroomV1,
   inspectDacsX402AssetBalanceV1,
   inspectDacsX402GasBalanceV1,
   inspectDacsX402TokenDomainV1,
 } from "../src/fundingDoctor.js";
+
+describe("fixed-price Demos cost estimate", () => {
+  it("budgets both role write graphs and one write of safety headroom", () => {
+    expect(estimateDacsFixedPriceDemosCostV1({
+      rail: "x402",
+      maximumStorageWriteFeeDem: { buyer: "2", seller: "3" },
+    })).toEqual({
+      rail: "x402",
+      maximumStorageWriteFeeDem: { buyer: "2", seller: "3" },
+      expectedStorageWrites: { buyer: 6, seller: 6 },
+      safetyMarginWrites: { buyer: 1, seller: 1 },
+      maximumStorageFeesDem: { buyer: "12", seller: "18" },
+      safetyMarginDem: { buyer: "2", seller: "3" },
+      minimumDem: { buyer: "14", seller: "21" },
+      maximumTotalDemosDebitDem: "35",
+    });
+  });
+
+  it("adds the native transfer-and-fee ceiling only to the pay-DEM buyer", () => {
+    expect(estimateDacsFixedPriceDemosCostV1({
+      rail: "pay-dem",
+      maximumStorageWriteFeeDem: { buyer: "2", seller: "2" },
+      maximumPayDemTotalDebitDem: "3.5",
+    })).toMatchObject({
+      minimumDem: { buyer: "17.5", seller: "14" },
+      maximumTotalDemosDebitDem: "31.5",
+    });
+  });
+
+  it("rejects missing pay-DEM debit and non-canonical fee ceilings", () => {
+    expect(() => estimateDacsFixedPriceDemosCostV1({
+      rail: "pay-dem",
+      maximumStorageWriteFeeDem: { buyer: "2", seller: "2" },
+    })).toThrow(/total debit/);
+    expect(() => estimateDacsFixedPriceDemosCostV1({
+      rail: "x402",
+      maximumStorageWriteFeeDem: { buyer: "02", seller: "2" },
+    })).toThrow(/write fee/);
+  });
+});
 
 function actor(role: "buyer" | "seller", input: Readonly<{
   activated?: boolean;
