@@ -4,7 +4,6 @@ import type {
   PaymentPayloadResult,
   PaymentRequirements,
   SchemeNetworkClient,
-  SettleResponse,
 } from "@x402/core/types";
 import {
   createIdempotencyStore,
@@ -39,6 +38,14 @@ export interface X402PaymentRequirement {
 export interface X402PaymentRequired {
   accepts?: X402PaymentRequirement[];
 }
+/** Peer-independent structural subset of the x402 settlement response. */
+export interface X402SettlementResponse {
+  success: boolean;
+  transaction: string;
+  network: string;
+  payer?: string;
+  amount?: string;
+}
 export interface X402ClientLike {
   getPaymentRequiredResponse(
     getHeader: (name: string) => string | null,
@@ -48,7 +55,7 @@ export interface X402ClientLike {
   encodePaymentSignatureHeader(payload: unknown): Record<string, string>;
   getPaymentSettleResponse(
     getHeader: (name: string) => string | null,
-  ): SettleResponse | undefined;
+  ): X402SettlementResponse | undefined;
 }
 
 /** Per-session settlement inputs, derived from the negotiated agreement. */
@@ -239,7 +246,7 @@ export async function x402SettleCore(
   //    only bind its claims back to the requested network, buyer, and (when the
   //    facilitator reports it) exact base-unit amount. Full receipt/finality
   //    authentication remains tracked by #102.
-  let settlement: SettleResponse | undefined;
+  let settlement: X402SettlementResponse | undefined;
   try {
     settlement = client.getPaymentSettleResponse((name) =>
       final.headers.get(name),
