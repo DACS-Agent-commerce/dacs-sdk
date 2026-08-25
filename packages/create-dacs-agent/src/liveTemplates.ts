@@ -1,7 +1,7 @@
 export interface LiveProjectTemplateOptions {
   packageName: string;
   deployment: "local" | "docker";
-  role: "buyer" | "seller" | "verifier";
+  role: "buyer" | "seller";
   rails: "x402" | "pay-dem" | "both";
   runtimeUid: number;
   runtimeGid: number;

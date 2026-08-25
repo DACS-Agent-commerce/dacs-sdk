@@ -13,7 +13,7 @@ interface ParsedArguments extends CreateDacsAgentOptions {
   yes: boolean;
 }
 
-const ROLES = new Set(["demo-all", "buyer", "seller", "verifier"]);
+const ROLES = new Set(["demo-all", "buyer", "seller"]);
 const DEPLOYMENTS = new Set(["local", "docker"]);
 const RAILS = new Set(["x402", "pay-dem", "both"]);
 
@@ -54,7 +54,7 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
     } else if (argument === "--role") {
       const value = valueAfter(args, index, argument);
       if (!ROLES.has(value)) {
-        throw new Error("--role must be demo-all, buyer, seller or verifier");
+        throw new Error("--role must be demo-all, buyer or seller");
       }
       role = value as CreateDacsAgentOptions["role"];
       index += 1;
@@ -133,8 +133,8 @@ async function interactive(parsed: ParsedArguments): Promise<ParsedArguments> {
   const role = (parsed.role ?? (await boundedAnswer(
     mode === "offline"
       ? "Process role [demo-all]: "
-      : "Process role [buyer] (buyer/seller/verifier): ",
-    mode === "offline" ? new Set(["demo-all"]) : new Set(["buyer", "seller", "verifier"]),
+      : "Process role [buyer] (buyer/seller): ",
+    mode === "offline" ? new Set(["demo-all"]) : new Set(["buyer", "seller"]),
     mode === "offline" ? "demo-all" : "buyer",
   ))) as CreateDacsAgentOptions["role"];
   const deployment = (parsed.deployment ??

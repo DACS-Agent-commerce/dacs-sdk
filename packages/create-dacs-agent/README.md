@@ -41,6 +41,12 @@ same reviewed host image with separate non-root buyer/seller processes, secret
 mounts and data volumes; the template contains only configuration, command
 wiring and the seller fulfilment callback.
 
+The live bootstrap currently supervises buyer and seller services. Its
+`--role` default is therefore restricted to `buyer` or `seller`; the generated
+read-only verifier placeholder is not exposed as a runnable live role until a
+real independent verifier service is implemented. Offline mode still runs its
+logical verifier simulation and labels it non-conformant.
+
 Runs use fresh job and presentation identifiers, but the simulation has neither
 the durable CORE §B.8 nonce ledger nor the DACS-4 §9.4.4 RAV-R5 rail authority
 required by a conformant session.

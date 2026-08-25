@@ -458,6 +458,37 @@ describe("live payment-evidence runtime", () => {
     expect(inspectPermit).not.toHaveBeenCalled();
   });
 
+  it("blocks payment evidence when the unselected rail store is corrupt", async () => {
+    const retainedOrder = operation(order("seller")).order;
+    const database = {
+      createPaymentEvidenceHandshakeStore: () => ({}),
+      createLiveCoordinatorStore: () => ({
+        load: async () => ({ status: "corrupt" as const, reason: "shadow-corrupt" }),
+      }),
+      createPayDemCoordinatorStore: () => ({
+        load: async () => ({ status: "ok" as const, record: retainedOrder }),
+      }),
+    };
+    const context = {
+      role: "seller",
+      authority: SELLER,
+      peerAuthority: BUYER,
+      database,
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const runtime = createDacsSellerPaymentEvidenceRuntimeV1({
+      context,
+      workerId: "seller-shadow-store-test",
+      verifyAnchorReceipt: vi.fn(),
+    });
+
+    await expect(runtime.anchorEvidence(
+      operation(order("seller")),
+      {} as never,
+    )).rejects.toMatchObject({
+      reasonCode: "payment-evidence-order-state-invalid",
+    });
+  });
+
   it("retains seller-authored evidence before the buyer publication handoff", async () => {
     const database = await open("seller");
     const context = {
@@ -493,6 +524,39 @@ describe("live payment-evidence runtime", () => {
       },
     })).rejects.toMatchObject({
       reasonCode: "seller-payment-evidence-retention-conflict",
+    });
+  });
+
+  it("refuses evidence retention when a shadow rail store is unsupported", async () => {
+    const retainedOrder = operation(order("seller")).order;
+    const context = {
+      role: "seller",
+      authority: SELLER,
+      peerAuthority: BUYER,
+      database: {
+        createLiveCoordinatorStore: () => ({
+          load: async () => ({ status: "unsupported" as const, version: 99 }),
+        }),
+        createPayDemCoordinatorStore: () => ({
+          load: async () => ({ status: "ok" as const, record: retainedOrder }),
+        }),
+      },
+      demos: { adapter: {} },
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const composed = createDacsFixedPriceX402SellerPaymentEvidenceV1({
+      context,
+      settlement: { observer: {}, resolveOrderScope: vi.fn() } as never,
+    });
+    const artifact = evidence();
+
+    await expect(composed.settlement.retainSignedEvidence!({
+      effectId: `seller-settlement:${JOB_ID}`,
+      logicalAddress: `dacs4:payment:${JOB_ID}:x402%3Aruntime:0`,
+      evidenceHash: contentHash(artifact as unknown as Record<string, unknown>),
+      evidence: artifact,
+      expectedWriter: { role: "buyer", primaryClaim: BUYER },
+    })).rejects.toMatchObject({
+      reasonCode: "seller-payment-evidence-order-state-invalid",
     });
   });
 

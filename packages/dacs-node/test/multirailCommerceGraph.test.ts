@@ -127,6 +127,37 @@ describe("strict multirail live commerce graph", () => {
     expect(payDem.handleMessage).not.toHaveBeenCalled();
   });
 
+  it("does not route a valid rail while the sibling validator is unavailable", async () => {
+    const x402 = graph("buyer", "x402", "valid");
+    const payDem = graph("buyer", "pay-dem", "authentication-failure");
+    const combined = createDacsMultirailLiveCommerceGraphV1({
+      role: "buyer",
+      x402: x402.value as never,
+      payDem: payDem.value as never,
+    });
+    const expected = {
+      status: "authentication-failure",
+      reasonCode: "multirail-message-validation-unavailable",
+    } as const;
+
+    await expect(combined.validatePayload({
+      type: "agreement-response",
+      payload: {},
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
+      sender: "seller",
+      audience: "buyer",
+    })).resolves.toEqual(expected);
+    await expect(combined.handleMessage(
+      authenticated(),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reasonCode: expected.reasonCode,
+    });
+    expect(x402.handleMessage).not.toHaveBeenCalled();
+    expect(payDem.handleMessage).not.toHaveBeenCalled();
+  });
+
   it("retains only the x402 seller paid-resource handler", () => {
     const x402 = graph("seller", "x402", "valid");
     const payDem = graph("seller", "pay-dem", "invalid");

@@ -23,7 +23,7 @@ export interface CreateDacsAgentOptions {
   targetDirectory: string;
   mode?: "offline" | "live-demos";
   profile?: string;
-  role?: "demo-all" | "buyer" | "seller" | "verifier";
+  role?: "demo-all" | "buyer" | "seller";
   deployment?: "local" | "docker";
   /** Live payment capability: one rail or two signed sibling Listings. */
   rails?: "x402" | "pay-dem" | "both";
@@ -35,7 +35,7 @@ export interface CreatedDacsAgentProject {
   targetDirectory: string;
   mode: "offline" | "live-demos";
   profile: typeof OFFLINE_PROFILE | typeof LIVE_PROFILE;
-  role: "demo-all" | "buyer" | "seller" | "verifier";
+  role: "demo-all" | "buyer" | "seller";
   deployment: "local" | "docker";
   rails?: "x402" | "pay-dem" | "both";
   installed: boolean;
@@ -175,8 +175,8 @@ export async function createDacsAgentProject(
   if (mode !== "offline" && mode !== "live-demos") {
     throw new Error("mode must be offline or live-demos");
   }
-  if (role !== "demo-all" && role !== "buyer" && role !== "seller" && role !== "verifier") {
-    throw new Error("role must be demo-all, buyer, seller or verifier");
+  if (role !== "demo-all" && role !== "buyer" && role !== "seller") {
+    throw new Error("role must be demo-all, buyer or seller");
   }
   if (deployment !== "local" && deployment !== "docker") {
     throw new Error("deployment must be local or docker");
@@ -200,7 +200,7 @@ export async function createDacsAgentProject(
     );
   }
   if (mode === "live-demos" && role === "demo-all") {
-    throw new Error("live-demos requires buyer, seller or verifier role separation");
+    throw new Error("live-demos requires buyer or seller role separation");
   }
   if (mode === "live-demos" && run) {
     throw new Error("--run is the offline smoke flag and is not valid for live-demos");

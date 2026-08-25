@@ -103,6 +103,16 @@ async function select(
     x402.validatePayload(input),
     payDem.validatePayload(input),
   ]);
+  if (x402Result.status === "authentication-failure" ||
+      payDemResult.status === "authentication-failure") {
+    return Object.freeze({
+      status: "invalid" as const,
+      validation: Object.freeze({
+        status: "authentication-failure" as const,
+        reasonCode: "multirail-message-validation-unavailable",
+      }),
+    });
+  }
   const x402Valid = x402Result.status === "valid";
   const payDemValid = payDemResult.status === "valid";
   if (x402Valid !== payDemValid) {
@@ -120,15 +130,11 @@ async function select(
       }),
     });
   }
-  const unavailable = x402Result.status === "authentication-failure" ||
-    payDemResult.status === "authentication-failure";
   return Object.freeze({
     status: "invalid" as const,
     validation: Object.freeze({
-      status: unavailable ? "authentication-failure" as const : "invalid" as const,
-      reasonCode: unavailable
-        ? "multirail-message-validation-unavailable"
-        : "multirail-message-profile-incompatible",
+      status: "invalid" as const,
+      reasonCode: "multirail-message-profile-incompatible",
     }),
   });
 }

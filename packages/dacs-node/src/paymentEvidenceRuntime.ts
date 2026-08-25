@@ -217,14 +217,16 @@ async function loadOrder(
   if (x402.status === "ok" && payDem.status === "ok") {
     throw new DacsPaymentEvidenceRuntimeError("payment-evidence-order-profile-conflict");
   }
-  const loaded = x402.status === "ok" ? x402 : payDem.status === "ok" ? payDem : undefined;
-  if (loaded === undefined && x402.status === "missing" && payDem.status === "missing") {
-    return undefined;
-  }
-  if (loaded === undefined) {
+  if ((x402.status !== "missing" && x402.status !== "ok") ||
+      (payDem.status !== "missing" && payDem.status !== "ok")) {
     throw new DacsPaymentEvidenceRuntimeError("payment-evidence-order-state-invalid");
   }
-  return loaded.record as DacsLiveOrderRecordV1;
+  if (x402.status === "missing" && payDem.status === "missing") {
+    return undefined;
+  }
+  if (x402.status === "ok") return x402.record;
+  if (payDem.status === "ok") return payDem.record;
+  throw new DacsPaymentEvidenceRuntimeError("payment-evidence-order-state-invalid");
 }
 
 function requestMatchesOrder(

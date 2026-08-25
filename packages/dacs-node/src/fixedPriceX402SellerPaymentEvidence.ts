@@ -179,6 +179,12 @@ async function loadOrder(
       "seller-payment-evidence-order-profile-conflict",
     );
   }
+  if ((x402.status !== "missing" && x402.status !== "ok") ||
+      (payDem.status !== "missing" && payDem.status !== "ok")) {
+    throw new DacsFixedPriceX402SellerPaymentEvidenceError(
+      "seller-payment-evidence-order-state-invalid",
+    );
+  }
   const loaded = x402.status === "ok" ? x402 : payDem.status === "ok" ? payDem : undefined;
   if (loaded === undefined) {
     throw new DacsFixedPriceX402SellerPaymentEvidenceError(

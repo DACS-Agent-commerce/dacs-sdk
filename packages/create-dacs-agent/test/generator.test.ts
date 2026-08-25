@@ -538,5 +538,19 @@ describe("create-dacs-agent", () => {
     expect(() => parseCreateDacsAgentArguments([
       "my-agent", "--yes", "--mode", "live-demos", "--rails", "fallback",
     ])).toThrow(/x402, pay-dem or both/);
+    expect(() => parseCreateDacsAgentArguments([
+      "my-agent", "--yes", "--mode", "live-demos", "--role", "verifier",
+    ])).toThrow(/demo-all, buyer or seller/);
+  });
+
+  test("rejects the unimplemented live verifier role through the public API", async () => {
+    const parent = await temporaryDirectory();
+    await expect(createDacsAgentProject({
+      targetDirectory: join(parent, "verifier-live-agent"),
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "verifier" as never,
+      install: false,
+    })).rejects.toThrow(/demo-all, buyer or seller/);
   });
 });
