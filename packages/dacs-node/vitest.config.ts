@@ -27,5 +27,9 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    // Host recovery tests spawn separate workers and real child processes.
+    // Bound outer concurrency so those safety fixtures are not starved by a
+    // high-core machine running every SQLite-heavy file simultaneously.
+    maxWorkers: 2,
   },
 });
