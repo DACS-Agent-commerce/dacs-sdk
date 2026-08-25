@@ -48,11 +48,14 @@ export function computeReputation(
   const canonicalIdentity = `${subject.scheme}:${subject.identifier}`;
   const mineByJob = new Map<string, AnyAttestationBundle[]>();
   for (const bundle of bundles) {
-    if (!bundle.parties.some((party) => {
-      const parsed = parseCanonicalClaimReference(party.primaryClaim);
-      return parsed !== null && parsed.identity.scheme === subject.scheme &&
-        parsed.identity.identifier === subject.identifier;
-    })) {
+    if (
+      !bundle.parties.some((party) => {
+        const parsed = parseCanonicalClaimReference(party.primaryClaim);
+        return parsed !== null &&
+          parsed.identity.scheme === subject.scheme &&
+          parsed.identity.identifier === subject.identifier;
+      })
+    ) {
       continue;
     }
     const copies = mineByJob.get(bundle.jobId) ?? [];
