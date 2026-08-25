@@ -419,6 +419,11 @@ function captureDispatchOptions(
         "evmPrivateKey",
         "x402 EVM private key",
       ),
+      rpcUrl: optionalDispatchValue<string>(
+        opts,
+        "rpcUrl",
+        "x402 EVM RPC URL",
+      ),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
   }
@@ -638,7 +643,7 @@ export async function settleFromRail(
         "x402",
         "recipient",
       );
-      if (!opts.rpcUrl) {
+      if (!capturedOptions.rpcUrl) {
         throw new DacsError("x402 rail requires opts.rpcUrl for independent finality");
       }
       const rail = await createX402Rail({
@@ -648,8 +653,8 @@ export async function settleFromRail(
         ),
         fetchImpl: capturedOptions.fetchImpl,
         requireSessionBinding: true,
-        rpcUrl: opts.rpcUrl,
-        finalityBlocks: requiredFinalityBlocks(descriptor),
+        rpcUrl: capturedOptions.rpcUrl,
+        finalityBlocks: requiredFinalityBlocks(capturedDescriptor),
       });
       return bindDescriptorRequest(descriptorIdentity, x402Settle(rail, {
         url,
