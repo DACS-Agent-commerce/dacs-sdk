@@ -366,6 +366,7 @@ const DOCTOR_SOURCE = `import { constants } from "node:fs";
 import { access, lstat, open, readFile, statfs } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { resolve } from "node:path";
 
 import {
   RAIL_REGISTRY_INDEX_ADDRESS,
@@ -975,10 +976,21 @@ function baseProbes(
     "local.version-bindings": versionBindings,
     "local.configuration": () => {
       try {
-        const configs = ROLES.map((role) => loadRoleConfig(role));
-        return configs.every((config) =>
-          config.rail.registryIndexRef === RAIL_REGISTRY_INDEX_ADDRESS)
-          ? pass() : fail("rail-registry-index-incompatible");
+        const [buyer, seller] = ROLES.map((role) => loadRoleConfig(role));
+        if (buyer === undefined || seller === undefined ||
+            buyer.rail.registryIndexRef !== RAIL_REGISTRY_INDEX_ADDRESS ||
+            seller.rail.registryIndexRef !== RAIL_REGISTRY_INDEX_ADDRESS) {
+          return fail("rail-registry-index-incompatible");
+        }
+        if (JSON.stringify(dacsLiveRailProfiles(buyer)) !==
+              JSON.stringify(dacsLiveRailProfiles(seller)) ||
+            buyer.rail.requestedNetwork !== seller.rail.requestedNetwork) {
+          return fail("role-commerce-configuration-mismatch");
+        }
+        if (resolve(buyer.dataDirectory) === resolve(seller.dataDirectory)) {
+          return fail("actor-data-directory-shared");
+        }
+        return pass({ enabledRailCount: dacsLiveRailProfiles(buyer).length });
       }
       catch { return fail("configuration-invalid"); }
     },
@@ -1287,6 +1299,38 @@ export async function runGeneratedDoctor(
   scope: DacsLiveDoctorScopeV1,
   operation?: Readonly<GeneratedDoctorOperationV1>,
 ): Promise<Readonly<DacsLiveDoctorReportV1>> {
+  let enabledRailProfiles: readonly GeneratedRailProfile[];
+  try {
+    const buyer = loadRoleConfig("buyer");
+    const seller = loadRoleConfig("seller");
+    enabledRailProfiles = dacsLiveRailProfiles(buyer);
+    dacsLiveRailProfiles(seller);
+  } catch {
+    const probes: DacsLiveDoctorProbesV1 = Object.freeze({
+      "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
+        : fail("node-version-unsupported"),
+      "local.package-integrity": inspectDacsNodePackageIntegrityV1,
+      "local.version-bindings": versionBindings,
+      "local.configuration": () => fail("configuration-invalid"),
+      "local.deployment-runtime": dockerRuntime,
+    });
+    const report = await runDacsLiveDoctorV1({
+      phase,
+      scope,
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      profile: DACS_NODE_LIVE_PROFILE,
+      enabledRailProfiles: operation === undefined
+        ? ["pay-dem", "x402"] : [operation.rail],
+      ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
+      probes,
+      probeTimeoutMs: 30_000,
+    });
+    if (report.checks.length !== DACS_LIVE_DOCTOR_CHECK_IDS.length) {
+      throw new Error("doctor-catalog-incomplete");
+    }
+    return report;
+  }
   const actors = await openDoctorActors(phase);
   try {
     const service = phase === "post-start" ? createDacsRoleServiceDoctorProbesV1({
@@ -1323,7 +1367,7 @@ export async function runGeneratedDoctor(
       sdkVersion: VERSION,
       standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
       profile: DACS_NODE_LIVE_PROFILE,
-      enabledRailProfiles: dacsLiveRailProfiles(loadRoleConfig("buyer")),
+      enabledRailProfiles,
       ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
       probes,
       // A Demos block is approximately ten seconds. Registry resolution can
@@ -3528,6 +3572,52 @@ test("doctor validates the configured seller Listing endpoint", async () => {
     else process.env.DACS_DEPLOYMENT = previousDeployment;
     if (previousSellerUrl === undefined) delete process.env.DACS_SELLER_PUBLIC_BASE_URL;
     else process.env.DACS_SELLER_PUBLIC_BASE_URL = previousSellerUrl;
+  }
+});
+
+test("malformed configuration still produces the complete fail-closed report", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousMaximum = process.env.DACS_MAX_SERVICE_AMOUNT;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_MAX_SERVICE_AMOUNT = "-1";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    assert.equal(report.checks.length, DACS_LIVE_DOCTOR_CHECK_IDS.length);
+    assert.equal(report.exitCode, 1);
+    const configuration = report.checks.find((item) =>
+      item.id === "local.configuration");
+    assert.equal(configuration?.status, "fail");
+    assert.equal(configuration?.reasonCode, "configuration-invalid");
+    assert.equal(report.checks.find((item) => item.id === "demos.rpc-chain")?.status,
+      "blocked");
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousMaximum === undefined) delete process.env.DACS_MAX_SERVICE_AMOUNT;
+    else process.env.DACS_MAX_SERVICE_AMOUNT = previousMaximum;
+  }
+});
+
+test("doctor rejects a shared buyer and seller data directory", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousBuyerDirectory = process.env.DACS_BUYER_DATA_DIRECTORY;
+  const previousSellerDirectory = process.env.DACS_SELLER_DATA_DIRECTORY;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_BUYER_DATA_DIRECTORY = "./data/shared";
+  process.env.DACS_SELLER_DATA_DIRECTORY = "./data/shared";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    const configuration = report.checks.find((item) =>
+      item.id === "local.configuration");
+    assert.equal(configuration?.status, "fail");
+    assert.equal(configuration?.reasonCode, "actor-data-directory-shared");
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousBuyerDirectory === undefined) delete process.env.DACS_BUYER_DATA_DIRECTORY;
+    else process.env.DACS_BUYER_DATA_DIRECTORY = previousBuyerDirectory;
+    if (previousSellerDirectory === undefined) delete process.env.DACS_SELLER_DATA_DIRECTORY;
+    else process.env.DACS_SELLER_DATA_DIRECTORY = previousSellerDirectory;
   }
 });
 
