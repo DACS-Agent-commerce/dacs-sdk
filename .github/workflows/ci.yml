@@ -271,6 +271,10 @@ jobs:
           (cd generator-smoke/generated-live && npm rebuild better-sqlite3)
           test -d generator-smoke/generated-live/node_modules/better-sqlite3
           test ! -e generator-smoke/generated-live/node_modules/rubic-sdk
+          test ! -e generator-smoke/generated-live/node_modules/tsx
+          (cd generator-smoke/generated-live && node \
+            --import @kynesyslabs/dacs-node/demos-loader \
+            -e 'import("@kynesyslabs/dacs/substrate").then((value) => { if (typeof value.DemosAdapter !== "function") process.exit(1) })')
           (cd generator-smoke/generated-live && npm run typecheck && npm test)
           node - <<'NODE'
           const fs = require("node:fs");

@@ -58,8 +58,9 @@ cannot share or expose a partially written output tree.
 The generator does not fabricate a dependency lock from unpublished packages.
 Its normal registry-backed install creates a valid lock; `--no-install` emits
 no lock and leaves dependency resolution to the operator. Before building the
-Docker profile after `--no-install`, run `npm install --ignore-scripts`; the
-Dockerfile requires that registry-created lock and uses `npm ci`.
+Docker profile after `--no-install`, run
+`npm install --ignore-scripts --omit=optional && npm rebuild better-sqlite3`;
+the Dockerfile requires that registry-created lock and uses `npm ci`.
 
 The project target's parent directory must already exist. The generator writes
 the complete project into a private sibling staging directory and atomically
@@ -72,7 +73,9 @@ copies only explicit build inputs, installs from the generated lock, and places
 only compiled output, package manifests and pruned production dependencies in
 the non-root runtime stage. Live installation disables dependency lifecycle
 scripts globally, omits unused optional dependency trees, and then explicitly
-rebuilds only the reviewed `better-sqlite3` host adapter.
+rebuilds only the reviewed `better-sqlite3` host adapter. Compiled live services
+use the host package's exact Demos ESM compatibility loader and do not install a
+general TypeScript/esbuild production transformer.
 
 Live services remain blocked until the lower Demos identity/registry and x402
 effect-adapter stack is installed and passes the generated doctor. This package

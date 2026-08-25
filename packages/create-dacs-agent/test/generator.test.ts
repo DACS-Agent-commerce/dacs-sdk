@@ -247,7 +247,6 @@ describe("create-dacs-agent", () => {
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
       "better-sqlite3": "12.6.2",
-      tsx: "4.23.12",
       "viem": "2.55.19",
     });
     expect(packageSource.dacs).toEqual({
@@ -271,7 +270,9 @@ describe("create-dacs-agent", () => {
     });
     for (const command of Object.values(packageSource.scripts as Record<string, string>)) {
       if (command.includes("dist/src/") || command.includes("dist/test/")) {
-        expect(command).toContain("node --import tsx");
+        expect(command).toContain(
+          "node --import @kynesyslabs/dacs-node/demos-loader",
+        );
       }
     }
     const compose = await readFile(join(target, "compose.yaml"), "utf8");
@@ -310,7 +311,7 @@ describe("create-dacs-agent", () => {
     expect(dockerfile).toContain("--mode=0755 /app");
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).toContain(
-      'CMD ["node", "--import", "tsx", "dist/src/service.js"]',
+      'CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]',
     );
     expect(dockerfile).not.toContain("COPY . .");
     const combined = (await Promise.all(
@@ -397,7 +398,6 @@ describe("create-dacs-agent", () => {
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
       "@kynesyslabs/demosdk": "4.0.16",
       "better-sqlite3": "12.6.2",
-      tsx: "4.23.12",
     });
     const config = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(config).toContain('["pay-dem"]');

@@ -9,7 +9,6 @@ export interface LiveProjectTemplateOptions {
 
 const SDK_VERSION = "0.1.0-alpha.0";
 const BETTER_SQLITE_VERSION = "12.6.2";
-const TSX_VERSION = "4.23.12";
 const STANDARD_REVISION = "965df755aba4ff392f1fb37a93d287242b177ba4";
 const CONFIG_SCHEMA_VERSION = 1;
 const SQLITE_SCHEMA_VERSION = 7;
@@ -25,20 +24,19 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
-      // demosdk 4.0.16 publishes one extensionless ESM directory import. The
-      // declared loader keeps generated services runnable on the supported
-      // Node floors without mutating the installed dependency.
-      test: "npm run build && node --import tsx --test dist/test/live-bootstrap.test.js",
-      "dacs:doctor": "npm run build --silent && node --import tsx dist/src/cli.js doctor",
-      "dacs:doctor:funded": "npm run build --silent && node --import tsx dist/src/cli.js doctor-funded",
-      "dacs:up": "npm run build --silent && node --import tsx dist/src/cli.js up",
-      "dacs:setup": "npm run build --silent && node --import tsx dist/src/cli.js setup",
-      "dacs:buy": "npm run build --silent && node --import tsx dist/src/cli.js buy",
-      "dacs:status": "npm run build --silent && node --import tsx dist/src/cli.js status",
-      "dacs:down": "npm run build --silent && node --import tsx dist/src/cli.js down",
-      "dacs:upgrade": "npm run build --silent && node --import tsx dist/src/cli.js upgrade",
-      "dacs:service": "npm run build --silent && node --import tsx dist/src/service.js",
-      "dacs:smoke:offline": "npm run build --silent && node --import tsx dist/src/offline-smoke.js",
+      // The host loader fixes only demosdk 4.0.16's published extensionless ESM
+      // directory import; generated production services need no TS transformer.
+      test: "npm run build && node --import @kynesyslabs/dacs-node/demos-loader --test dist/test/live-bootstrap.test.js",
+      "dacs:doctor": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor",
+      "dacs:doctor:funded": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor-funded",
+      "dacs:up": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js up",
+      "dacs:setup": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js setup",
+      "dacs:buy": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js buy",
+      "dacs:status": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js status",
+      "dacs:down": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js down",
+      "dacs:upgrade": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js upgrade",
+      "dacs:service": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/service.js",
+      "dacs:smoke:offline": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/offline-smoke.js",
     },
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
@@ -50,7 +48,6 @@ function packageJson(options: LiveProjectTemplateOptions): string {
         "@x402/evm": "2.15.0",
         "@x402/fetch": "2.15.0",
       } : {}),
-      tsx: TSX_VERSION,
       ...(x402 ? { "viem": "2.55.19" } : {}),
     },
     dacs: {
@@ -2117,7 +2114,9 @@ export async function startDacsLocalRoleServices(): Promise<number> {
     for (const role of ROLES) {
       const log = await safeLog(role);
       const token = randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", "");
-      const child = spawn(process.execPath, ["--import", "tsx", "dist/src/service.js"], {
+      const child = spawn(process.execPath, [
+        "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js",
+      ], {
         cwd: process.cwd(),
         detached: true,
         env: { ...process.env, DACS_DEPLOYMENT: "local", DACS_ROLE: role,
@@ -3494,7 +3493,7 @@ COPY --from=build --chown=dacs:dacs /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=dacs:dacs /app/node_modules ./node_modules
 COPY --from=build --chown=dacs:dacs /app/dist ./dist
 USER 10001:10001
-CMD ["node", "--import", "tsx", "dist/src/service.js"]
+CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]
 `;
 
 const DOCKERIGNORE = `**
@@ -3804,7 +3803,9 @@ must never open a store schema newer than it supports.
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
 the reviewed \`better-sqlite3\` native adapter. Unused optional dependency trees
-are omitted. It uses separate non-root buyer/seller processes, secret mounts and durable
+are omitted. Compiled services use the host package's exact Demos ESM
+compatibility loader rather than a general TypeScript/esbuild production
+transformer. It uses separate non-root buyer/seller processes, secret mounts and durable
 data bind mounts, read-only root filesystems, bounded resources and no database
 port. On the clean Linux VPS it uses host networking solely to keep the
 inter-role transport on \`127.0.0.1\`; public traffic requires a separately
