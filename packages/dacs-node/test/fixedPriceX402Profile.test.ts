@@ -816,6 +816,7 @@ describe("fixed-price x402 generated profile policy", () => {
         },
         feeBudget: {
           budgetId: `dacs-fixed-price-purchase:v1:${JOB_ID}:buyer`,
+          maximumPerWriteFeeOs: 2_000_000_000n,
           maximumTotalFeeOs: 12_000_000_000n,
         },
       });

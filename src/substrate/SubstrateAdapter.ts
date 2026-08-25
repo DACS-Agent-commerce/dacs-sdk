@@ -172,12 +172,14 @@ export interface AnchorWriteOnceOptions {
    */
   metadata?: Record<string, unknown>;
   /**
-   * Optional durable aggregate fee budget. The adapter reserves the confirmed
-   * fee before broadcast and counts the reservation even if the transaction is
-   * later reported failed, preventing crash/retry from exceeding the ceiling.
+   * Optional durable per-write and aggregate fee budget. The adapter reserves
+   * the confirmed fee before broadcast and counts the reservation even if the
+   * transaction is later reported failed, preventing restart/retry from
+   * exceeding either retained ceiling.
    */
   feeBudget?: Readonly<{
     budgetId: string;
+    maximumPerWriteFeeOs: bigint;
     maximumTotalFeeOs: bigint;
   }>;
 }

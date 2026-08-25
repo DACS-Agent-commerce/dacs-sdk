@@ -188,6 +188,7 @@ export function dacsFixedPricePurchaseAnchorOptionsV1(
     metadata: { ...metadata },
     feeBudget: Object.freeze({
       budgetId: grant.budgetId,
+      maximumPerWriteFeeOs: BigInt(grant.maximumPerWriteFeeOs),
       maximumTotalFeeOs: BigInt(grant.maximumTotalFeeOs),
     }),
   });

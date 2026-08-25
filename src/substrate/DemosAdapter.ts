@@ -905,7 +905,11 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   private reserveAggregateFeeBudget(
-    input: Readonly<{ budgetId: string; maximumTotalFeeOs: bigint }>,
+    input: Readonly<{
+      budgetId: string;
+      maximumPerWriteFeeOs: bigint;
+      maximumTotalFeeOs: bigint;
+    }>,
     confirmedFeeOs: bigint,
   ) {
     const lease = this.activeWriteLease;
@@ -917,13 +921,20 @@ export class DemosAdapter implements SubstrateAdapter {
       if (BigInt(budget.maximumTotalFeeOs) !== input.maximumTotalFeeOs) {
         throw new DacsError("Demos aggregate fee budget ceiling conflicts with its journal");
       }
+      if (BigInt(budget.maximumPerWriteFeeOs) !== input.maximumPerWriteFeeOs) {
+        throw new DacsError("Demos per-write fee budget ceiling conflicts with its journal");
+      }
       reserved += BigInt(budget.reservedFeeOs);
+    }
+    if (confirmedFeeOs > input.maximumPerWriteFeeOs) {
+      throw new SubstrateError("Demos confirmed fee exceeds per-write purchase budget");
     }
     if (reserved + confirmedFeeOs > input.maximumTotalFeeOs) {
       throw new SubstrateError("Demos aggregate confirmed fee exceeds purchase budget");
     }
     return {
       budgetId: input.budgetId,
+      maximumPerWriteFeeOs: input.maximumPerWriteFeeOs.toString(),
       maximumTotalFeeOs: input.maximumTotalFeeOs.toString(),
       reservedFeeOs: confirmedFeeOs.toString(),
     };
@@ -3088,7 +3099,11 @@ export class DemosAdapter implements SubstrateAdapter {
         "anchorWriteOnce timeoutMs/pollMs must be non-negative",
       );
     }
-    let feeBudget: Readonly<{ budgetId: string; maximumTotalFeeOs: bigint }> | undefined;
+    let feeBudget: Readonly<{
+      budgetId: string;
+      maximumPerWriteFeeOs: bigint;
+      maximumTotalFeeOs: bigint;
+    }> | undefined;
     if (opts?.feeBudget !== undefined) {
       const raw = opts.feeBudget;
       if (raw === null || typeof raw !== "object") {
@@ -3096,19 +3111,26 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       const keys = Reflect.ownKeys(raw);
       const budgetId = Object.getOwnPropertyDescriptor(raw, "budgetId");
+      const perWrite = Object.getOwnPropertyDescriptor(raw, "maximumPerWriteFeeOs");
       const maximum = Object.getOwnPropertyDescriptor(raw, "maximumTotalFeeOs");
-      if (keys.length !== 2 || !keys.every((key) =>
-        key === "budgetId" || key === "maximumTotalFeeOs") ||
+      if (keys.length !== 3 || !keys.every((key) =>
+        key === "budgetId" || key === "maximumPerWriteFeeOs" ||
+          key === "maximumTotalFeeOs") ||
           budgetId === undefined || !("value" in budgetId) || !budgetId.enumerable ||
+          perWrite === undefined || !("value" in perWrite) || !perWrite.enumerable ||
           maximum === undefined || !("value" in maximum) || !maximum.enumerable ||
           typeof budgetId.value !== "string" || budgetId.value.length === 0 ||
           budgetId.value.length > 256 || budgetId.value.trim() !== budgetId.value ||
-          budgetId.value.includes("\0") || typeof maximum.value !== "bigint" ||
-          maximum.value < 0n) {
+          budgetId.value.includes("\0") || typeof perWrite.value !== "bigint" ||
+          perWrite.value < 0n || typeof maximum.value !== "bigint" || maximum.value < 0n) {
+        throw new DacsError("anchorWriteOnce aggregate fee budget is invalid");
+      }
+      if (perWrite.value > maximum.value) {
         throw new DacsError("anchorWriteOnce aggregate fee budget is invalid");
       }
       feeBudget = Object.freeze({
         budgetId: budgetId.value,
+        maximumPerWriteFeeOs: perWrite.value,
         maximumTotalFeeOs: maximum.value,
       });
     }

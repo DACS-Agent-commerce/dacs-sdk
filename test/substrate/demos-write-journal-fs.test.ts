@@ -111,6 +111,7 @@ describe("filesystem Demos write journal", () => {
       ...record(first.generation),
       feeBudget: {
         budgetId: "dacs-fixed-price-purchase:v1:test:buyer",
+        maximumPerWriteFeeOs: "120",
         maximumTotalFeeOs: "120",
         reservedFeeOs: "3",
       },
@@ -130,6 +131,20 @@ describe("filesystem Demos write journal", () => {
       writeId: "aggregate-overspend",
       feeBudget: { ...budgeted.feeBudget, reservedFeeOs: "118" },
     })).rejects.toThrow(/aggregate fee budget is exceeded/);
+    await expect(restarted.put({
+      ...record(restarted.generation),
+      writeId: "per-write-overspend",
+      feeBudget: {
+        ...budgeted.feeBudget,
+        maximumPerWriteFeeOs: "5",
+        reservedFeeOs: "6",
+      },
+    })).rejects.toThrow(/invalid aggregate fee reservation/);
+    await expect(restarted.put({
+      ...record(restarted.generation),
+      writeId: "per-write-conflict",
+      feeBudget: { ...budgeted.feeBudget, maximumPerWriteFeeOs: "4" },
+    })).rejects.toThrow(/per-write fee budget ceilings conflict/);
     await restarted.release();
   });
 

@@ -45,9 +45,10 @@ export interface DemosNativeTransferJournalBinding {
   settlementKey?: string;
 }
 
-/** Conservative fee reservation retained before an anchor broadcast. */
+/** Per-write and aggregate fee reservation retained before an anchor broadcast. */
 export interface DemosWriteFeeBudgetReservation {
   budgetId: string;
+  maximumPerWriteFeeOs: string;
   maximumTotalFeeOs: string;
   reservedFeeOs: string;
 }
@@ -78,7 +79,7 @@ export interface DemosWriteJournalRecord {
   indexRead?: DemosIndexObservation;
   /** Present only for a wallet-serialized native DEM transfer. */
   transfer?: DemosNativeTransferJournalBinding;
-  /** Present when this broadcast consumes an explicit aggregate fee budget. */
+  /** Present when this broadcast consumes an explicit retained fee budget. */
   feeBudget?: DemosWriteFeeBudgetReservation;
   updatedAt: number;
 }

@@ -53,6 +53,7 @@ describe("fixed-price Demos aggregate fee budget", () => {
       metadata: { logicalAddress: "dacs:test:buyer" },
       feeBudget: {
         budgetId: `dacs-fixed-price-purchase:v1:${JOB_ID}:buyer`,
+        maximumPerWriteFeeOs: 2_000_000_000n,
         maximumTotalFeeOs: 12_000_000_000n,
       },
     });
@@ -79,11 +80,13 @@ describe("fixed-price Demos aggregate fee budget", () => {
   it("does not enlarge a retained order grant after configuration changes", () => {
     const value = context("buyer");
     value.config.limits.maxDemosNetworkFeeDem = "99";
-    expect(dacsFixedPricePurchaseAnchorOptionsV1(
+    const retained = dacsFixedPricePurchaseAnchorOptionsV1(
       value as never,
       JOB_ID,
       {},
-    ).feeBudget?.maximumTotalFeeOs).toBe(12_000_000_000n);
+    ).feeBudget;
+    expect(retained?.maximumPerWriteFeeOs).toBe(2_000_000_000n);
+    expect(retained?.maximumTotalFeeOs).toBe(12_000_000_000n);
     expect(() => retainDacsFixedPricePurchaseDemosBudgetGrantV1({
       database: value.database,
       jobId: JOB_ID,

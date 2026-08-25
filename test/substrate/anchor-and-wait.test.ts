@@ -1376,6 +1376,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     raw.nodeCall.mockResolvedValue({ state: "failed" });
     const feeBudget = {
       budgetId: "fixed-price:test-job:buyer",
+      maximumPerWriteFeeOs: 3n,
       maximumTotalFeeOs: 3n,
     };
 
@@ -1397,9 +1398,40 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(adapter.anchorWriteOnce(
       "invalid-aggregate-budget",
       { value: 1 },
-      { feeBudget: { budgetId: "bad budget", maximumTotalFeeOs: -1n } },
+      { feeBudget: {
+        budgetId: "bad budget",
+        maximumPerWriteFeeOs: 1n,
+        maximumTotalFeeOs: -1n,
+      } },
     )).rejects.toThrow(/aggregate fee budget is invalid/);
     expect(raw.tx.confirm).not.toHaveBeenCalled();
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("enforces the retained per-write budget when the adapter ceiling is higher", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 10n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: { network_fee: "2", rpc_fee: "2", additional_fee: "2" },
+          },
+        },
+      },
+    }));
+    await expect(adapter.anchorWriteOnce(
+      "per-write-budgeted-immutable",
+      { value: 1 },
+      { feeBudget: {
+        budgetId: "fixed-price:test-job:buyer",
+        maximumPerWriteFeeOs: 5n,
+        maximumTotalFeeOs: 20n,
+      } },
+    )).rejects.toThrow(/confirmed fee exceeds per-write purchase budget/);
     expect(raw.tx.broadcast).not.toHaveBeenCalled();
   });
 
