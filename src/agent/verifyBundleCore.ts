@@ -712,13 +712,6 @@ function componentSignatureCheck(
   return { verdict: result.status, reason: result.reason };
 }
 
-function parameterFreeIdentityClaim(value: string): string | null {
-  const parsed = parseCanonicalClaimReference(value);
-  return parsed === null
-    ? null
-    : `${parsed.identity.scheme}:${parsed.identity.identifier}`;
-}
-
 async function authenticateComponentReference(
   artifact: Record<string, unknown>,
   separator: DomainSeparator,
@@ -730,13 +723,17 @@ async function authenticateComponentReference(
       if (!authorizedSigners) {
         throw new Error("artifact signer authorization could not be resolved");
       }
-      return [...authorizedSigners].some((authorized) =>
-        sameCanonicalClaimIdentity(authorized, signature.signer));
+      return parseCanonicalClaimReference(signature.signer) !== null &&
+        [...authorizedSigners].some((claim) =>
+          sameCanonicalClaimIdentity(claim, signature.signer)
+        );
     },
     resolvePublicKey: async (signature) => {
-      const identity = parameterFreeIdentityClaim(signature.signer);
-      return signature.algorithm === "ed25519" && identity !== null
-        ? deps.resolvePublicKey(identity)
+      const signer = parseCanonicalClaimReference(signature.signer);
+      return signature.algorithm === "ed25519" && signer
+        ? deps.resolvePublicKey(
+            `${signer.identity.scheme}:${signer.identity.identifier}`,
+          )
         : null;
     },
     verify: async ({ signedBytes: message, signature, publicKey }) => {
@@ -863,17 +860,30 @@ async function authenticateAgreementReference(
 
   const signatures = artifact.signatures as AgreementSignature[];
   const required = [claims.buyer, claims.seller];
-  const seen: string[] = [];
+  const seen = new Set<string>();
+  const authenticatedSigners: string[] = [];
   for (const signature of signatures) {
-    if (!required.some((claim) =>
-      sameCanonicalClaimIdentity(claim, signature.party)) || seen.some((claim) =>
-      sameCanonicalClaimIdentity(claim, signature.party))) {
+    const parsed = parseCanonicalClaimReference(signature.party);
+    const identity = parsed
+      ? `${parsed.identity.scheme}:${parsed.identity.identifier}`
+      : null;
+    if (
+      !identity ||
+      !required.some((claim) =>
+        sameCanonicalClaimIdentity(claim, signature.party)
+      ) ||
+      seen.has(identity)
+    ) {
       return { verdict: "invalid", reason: "agreement-signer-not-authorized" };
     }
-    seen.push(signature.party);
+    seen.add(identity);
+    authenticatedSigners.push(signature.party);
   }
-  const missing = required.filter((party) => !seen.some((signer) =>
-    sameCanonicalClaimIdentity(signer, party)));
+  const missing = required.filter((party) => {
+    const parsed = parseCanonicalClaimReference(party);
+    return parsed === null ||
+      !seen.has(`${parsed.identity.scheme}:${parsed.identity.identifier}`);
+  });
   if (missing.length > 0) {
     return {
       verdict: "missing",
@@ -897,8 +907,10 @@ async function authenticateAgreementReference(
     }
     let key: Uint8Array | null;
     try {
-      const identity = parameterFreeIdentityClaim(signature.party);
-      key = identity === null ? null : await deps.resolvePublicKey(identity);
+      const parsed = parseCanonicalClaimReference(signature.party)!;
+      key = await deps.resolvePublicKey(
+        `${parsed.identity.scheme}:${parsed.identity.identifier}`,
+      );
     } catch {
       return { verdict: "unresolved", reason: "agreement-signer-key-resolution-failed" };
     }
@@ -930,7 +942,7 @@ async function authenticateAgreementReference(
       return { verdict: "unresolved", reason: "agreement-signature-verification-error" };
     }
   }
-  return { verdict: "valid", signers: [...seen] };
+  return { verdict: "valid", signers: authenticatedSigners };
 }
 
 function bundlePartySignerClaims(
@@ -1016,7 +1028,6 @@ const CO_SIGNATURE_REQUIRED_OUTCOMES = new Set([
 const ABORT_OUTCOMES = new Set(["aborted-by-self", "aborted-by-other"]);
 
 interface ValidatedBundleParties {
-  claims: Set<string>;
   byRole: Map<"buyer" | "seller" | "orchestrator", string>;
   hasRequiredRoles: boolean;
 }
@@ -1025,7 +1036,7 @@ function validatedBundleParties(
   bundle: AnyAttestationBundle,
 ): ValidatedBundleParties | null {
   const byRole = new Map<"buyer" | "seller" | "orchestrator", string>();
-  const claims = new Set<string>();
+  const seenClaims: string[] = [];
   for (const party of bundle.parties) {
     if (
       party.role !== "buyer" &&
@@ -1034,17 +1045,20 @@ function validatedBundleParties(
     ) {
       return null;
     }
-    const parsed = parseCanonicalClaimReference(party.primaryClaim);
-    if (parsed === null || byRole.has(party.role)) {
+    if (
+      party.primaryClaim.length === 0 ||
+      byRole.has(party.role) ||
+      seenClaims.some((claim) =>
+        sameCanonicalClaimIdentity(claim, party.primaryClaim) ||
+        claim === party.primaryClaim
+      )
+    ) {
       return null;
     }
-    const identity = `${parsed.identity.scheme}:${parsed.identity.identifier}`;
-    if (claims.has(identity)) return null;
     byRole.set(party.role, party.primaryClaim);
-    claims.add(identity);
+    seenClaims.push(party.primaryClaim);
   }
   return {
-    claims,
     byRole,
     hasRequiredRoles: byRole.has("buyer") && byRole.has("seller"),
   };
@@ -1167,7 +1181,9 @@ function requiredSignatureClaims(
     orchestrator &&
     !sameCanonicalClaimIdentity(orchestrator, buyer) &&
     !sameCanonicalClaimIdentity(orchestrator, seller)
-  ) claims.push(orchestrator);
+  ) {
+    claims.push(orchestrator);
+  }
   if (anchorClaim) claims.push(anchorClaim);
   return claims.filter(
     (claim, index) =>
@@ -1308,35 +1324,37 @@ export async function verifyBundleCore(
   for (const s of sigs) {
     const party = typeof s.party === "string" ? s.party : "";
     const parsedParty = parseCanonicalClaimReference(party);
+    const canonicalParty = parsedParty !== null;
+    const canonicalPartyIdentity = parsedParty
+      ? `${parsedParty.identity.scheme}:${parsedParty.identity.identifier}`
+      : null;
     const authorizedParty = parsedParty !== null && bundle.parties.some(
       (candidate) =>
         sameCanonicalClaimIdentity(candidate.primaryClaim, party),
     );
-    const identity = parsedParty === null ? null
-      : `${parsedParty.identity.scheme}:${parsedParty.identity.identifier}`;
     const encodedSignature = typeof s.value === "string" ? s.value : "";
     const signatureBytes = isCanonicalBase64Url(encodedSignature)
       ? Uint8Array.from(Buffer.from(encodedSignature, "base64url"))
       : null;
     let verdict: SignatureVerdict;
-    if (parsedParty === null) {
+    if (!canonicalParty) {
       verdict = "unverified";
     } else if (
       !authorizedParty ||
       s.algorithm !== "ed25519" ||
       signatureBytes === null ||
       signatureBytes.length !== 64 ||
-      (parties !== null && seenSignatureClaims.has(identity!))
+      seenSignatureClaims.has(canonicalPartyIdentity!)
     ) {
       // §10.4.1 / CORE §B.7: every carried signature must name a session
       // party, dispatch by its declared algorithm, and use exact SIG-6 bytes.
       // Unsupported algorithms are never reinterpreted as Ed25519.
       verdict = "invalid";
     } else {
-      if (parties !== null) seenSignatureClaims.add(identity!);
+      seenSignatureClaims.add(canonicalPartyIdentity!);
       // Resolve once. The branch above deliberately avoids exposing an
       // unauthorized or algorithm-confused signature to caller callbacks.
-      const resolvedKey = await deps.resolvePublicKey(identity!);
+      const resolvedKey = await deps.resolvePublicKey(canonicalPartyIdentity!);
       if (!resolvedKey) {
         verdict = "unverified";
       } else if (
@@ -1490,9 +1508,9 @@ export async function verifyBundleCore(
       ev,
       isLegacyMvpAttestationRef(ev)
         ? (value) =>
-             isLegacyMvpSettlementEvidence(value) ||
-             isSettlementEvidenceScope(value)
-         : isSettlementEvidenceScope,
+            isLegacyMvpSettlementEvidence(value) ||
+            isSettlementEvidenceScope(value)
+        : isSettlementEvidenceScope,
     );
     if (
       evidence.check.verdict === "ok" &&
@@ -1641,12 +1659,10 @@ export async function verifyBundleCore(
     if (checked.check.verdict === "ok" && checked.value) {
       const scope = stripSignature(checked.value) as Record<string, unknown>;
       const rater = bundle.parties.find(
-        (party) => typeof scope.rater === "string" &&
-          sameCanonicalClaimIdentity(party.primaryClaim, scope.rater),
+        (party) => sameCanonicalClaimIdentity(party.primaryClaim, scope.rater),
       );
       const target = bundle.parties.find(
-        (party) => typeof scope.target === "string" &&
-          sameCanonicalClaimIdentity(party.primaryClaim, scope.target),
+        (party) => sameCanonicalClaimIdentity(party.primaryClaim, scope.target),
       );
       if (
         scope.jobId !== bundle.jobId ||
@@ -1796,8 +1812,11 @@ export async function verifyBundleCore(
     agreementArtifact,
     parties,
     signatures.length,
-  ).filter((claim) => !validSignatureClaims.some((candidate) =>
-    sameCanonicalClaimIdentity(candidate, claim)));
+  ).filter((claim) =>
+    !validSignatureClaims.some((candidate) =>
+      sameCanonicalClaimIdentity(candidate, claim)
+    )
+  );
   const sigOk = canonicalBundleClaims && anyValid && !anyInvalid && !anyError;
   const fullyVerified =
     canonicalBundleClaims &&

@@ -1776,6 +1776,13 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
     ).rejects.toThrow(/finalityBlocks/);
   });
 
+  test("x402 without an independent finality rpc is rejected", async () => {
+    const descriptor = await authenticatedRail(x402Definition());
+    await expect(
+      settleFromRail(descriptor, { evmPrivateKey: TEST_EVM_KEY, paywall }),
+    ).rejects.toThrow(/rpcUrl/);
+  });
+
   test("a valid but unimplemented normative rail fails closed", async () => {
     const descriptor = await authenticatedRail(solanaDefinition());
     await expect(settleFromRail(descriptor, {})).rejects.toThrow(

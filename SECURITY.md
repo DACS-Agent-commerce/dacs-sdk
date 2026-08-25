@@ -196,10 +196,10 @@ the dependency-free root import and production audit contract.
 Report suspected security issues **privately**, not via a public issue:
 
 - **Preferred:** GitHub **private vulnerability reporting** — the repository's
-  **Security → Report a vulnerability** tab. Maintainers must enable this during
-  the public-repository cutover; it is not currently available while this file is
-  being updated.
-- Until that tab is available, email `info@kynesys.xyz` with the subject prefix
+  **Security → Report a vulnerability** tab. Private reporting is enabled for
+  this repository.
+- If you cannot use the GitHub reporting form, email `info@kynesys.xyz` with the
+  subject prefix
   `[dacs-sdk security]` to request a private reporting channel. Do not include
   sensitive vulnerability details until the maintainers confirm that channel,
   and do not include them in a public issue.

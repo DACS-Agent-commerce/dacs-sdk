@@ -420,6 +420,16 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
   });
 
   test("does not reinterpret Ed25519 bytes under another algorithm label", async () => {
+    const baseline = await buildFixture(buyerDid, signBuyer);
+    const baselineResolved: string[] = [];
+    const baselineResult = await verifyBundleCore("ref", depsFor(baseline, {
+      resolve: (claim) => {
+        baselineResolved.push(claim);
+        return resolveFromDid(claim);
+      },
+    }));
+    expect(baselineResult.ok).toBe(true);
+
     const fx = await buildFixture(buyerDid, signBuyer);
     const signatures = fx.bundle.signatures as Array<Record<string, unknown>>;
     signatures[0]!.algorithm = "ecdsa-secp256k1";
@@ -435,7 +445,9 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.ok).toBe(false);
     expect(res.fullyVerified).toBe(false);
     expect(res.signatures).toContainEqual({ party: buyerDid, verdict: "invalid" });
-    expect(resolved[0]).toBe(sellerDid);
+    expect(resolved.filter((claim) => claim === buyerDid)).toHaveLength(
+      baselineResolved.filter((claim) => claim === buyerDid).length - 1,
+    );
   });
 
   test("rejects a cryptographically valid abort signed by a non-party", async () => {
@@ -460,9 +472,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     const qualifiedSignature = `${buyerDid}?session=checkout`;
     const fx = await buildFixture(buyerDid, signBuyer);
     const agreementParties = fx.agreement.parties as Array<Record<string, unknown>>;
-    const agreementSignatures = fx.agreement.signatures as Array<Record<string, unknown>>;
     agreementParties[0]!.primaryClaim = qualifiedBuyer;
-    agreementSignatures[0]!.party = qualifiedBuyer;
     await resignAgreement(fx, [
       { party: qualifiedBuyer, sign: signBuyer },
       { party: sellerDid, sign: signSeller },
@@ -492,6 +502,47 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     });
     expect(resolvedClaims).toContain(buyerDid);
     expect(resolvedClaims).not.toContain(qualifiedSignature);
+  });
+
+  test("matches a referenced component signer by CF-3 identity", async () => {
+    const qualifiedBuyer = `${buyerDid}?purpose=settlement`;
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const evidenceScope = { ...fx.evidence };
+    delete evidenceScope.signature;
+    fx.evidence = {
+      ...evidenceScope,
+      signature: await componentSignature(
+        evidenceScope,
+        ARTIFACT_SEPARATORS.SettlementEvidence,
+        qualifiedBuyer,
+        signBuyer,
+      ),
+    };
+    (
+      fx.bundle.settlementEvidence as Array<{ contentHash: string }>
+    )[0]!.contentHash = contentHash(fx.evidence);
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const resolvedClaims: string[] = [];
+
+    const result = await verifyBundleCore("ref", depsFor(fx, {
+      resolve: (claim) => {
+        resolvedClaims.push(claim);
+        return resolveFromDid(claim);
+      },
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(
+      result.refs.find((ref) => ref.kind === "dacs-4-evidence"),
+    ).toMatchObject({
+      verdict: "ok",
+      signature: { verdict: "valid", signers: [qualifiedBuyer] },
+    });
+    expect(resolvedClaims).toContain(buyerDid);
+    expect(resolvedClaims).not.toContain(qualifiedBuyer);
   });
 
   test("a custom key resolver cannot authorize non-CF-2 signer bytes", async () => {
@@ -721,7 +772,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("legacy runSession graph authenticates only its exactly pinned normative Listing", async () => {
+  test("legacy runSession graph resolves only its exactly pinned normative Listing", async () => {
     const { listing } = await buildArtifacts();
     const listingPin = {
       listingId: listing.listingId,
@@ -803,12 +854,13 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
       });
 
     const accepted = await verifyGraph();
-    // The listing itself authenticates, but #38 correctly prevents the legacy
-    // unsigned Agreement from making the complete bundle trustworthy.
     expect(accepted.ok).toBe(false);
     expect(
-      accepted.refs.find((ref) => ref.kind === "dacs-3-agreement")?.verdict,
-    ).toBe("signature-missing");
+      accepted.refs.find((ref) => ref.kind === "dacs-3-agreement"),
+    ).toMatchObject({
+      verdict: "signature-missing",
+      signature: { verdict: "missing" },
+    });
     expect(
       accepted.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
     ).toBe("ok");

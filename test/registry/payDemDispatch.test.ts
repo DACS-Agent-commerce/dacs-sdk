@@ -790,12 +790,12 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       expectedPhase: "pay-x402",
       options: {
         evmPrivateKey: "0x" + "11".repeat(32),
+        rpcUrl: "https://rpc.example",
         payment: {
           url: "https://seller.example/pay",
           network: "eip155:84532",
           recipient: "0x2222222222222222222222222222222222222222",
         },
-        rpcUrl: "https://rpc.example",
       },
       create: mocks.createX402Rail,
       bridge: mocks.x402Settle,
