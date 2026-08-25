@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { encodePaymentResponseHeader } from "@x402/core/http";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   createPublicClient,
   erc20Abi,
@@ -311,18 +311,46 @@ function safeStageFailureClass(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   if (/^funded-e2e:[a-z0-9-]+$/.test(message)) return message.slice("funded-e2e:".length);
   const digest = sha256Hex(message).slice(0, 12);
-  if (/normative unsigned/.test(message)) return `listing-draft-invalid-${digest}`;
-  if (/signed Listing failed/.test(message)) return `listing-signature-envelope-invalid-${digest}`;
-  if (/canonical JSON|exact snapshot|stable/.test(message)) return `canonical-snapshot-invalid-${digest}`;
-  if (/rail/i.test(message)) return `rail-authority-invalid-${digest}`;
-  if (/history|prior listing|version/i.test(message)) return `listing-history-invalid-${digest}`;
-  if (/identity|self-certifying|wallet/i.test(message)) return `listing-identity-invalid-${digest}`;
-  if (/binding/i.test(message)) return `listing-binding-invalid-${digest}`;
-  if (/publication|anchor|write/i.test(message)) return `listing-publication-invalid-${digest}`;
+  // viem BaseError appends a package-version footer to unrelated RPC errors.
+  // Keep the raw message in the digest, but exclude only that trailing metadata
+  // line from the free-text fallback classifier so "Version: viem@..." cannot
+  // masquerade as a Listing-history failure (issue #189).
+  const classificationMessage = message.replace(
+    /\nVersion:\s+[A-Za-z0-9@/_-]+@[0-9A-Za-z.+-]+\s*$/,
+    "",
+  );
+  if (/normative unsigned/.test(classificationMessage)) return `listing-draft-invalid-${digest}`;
+  if (/signed Listing failed/.test(classificationMessage)) return `listing-signature-envelope-invalid-${digest}`;
+  if (/canonical JSON|exact snapshot|stable/.test(classificationMessage)) return `canonical-snapshot-invalid-${digest}`;
+  if (/rail/i.test(classificationMessage)) return `rail-authority-invalid-${digest}`;
+  if (/history|prior listing|version/i.test(classificationMessage)) return `listing-history-invalid-${digest}`;
+  if (/identity|self-certifying|wallet/i.test(classificationMessage)) return `listing-identity-invalid-${digest}`;
+  if (/binding/i.test(classificationMessage)) return `listing-binding-invalid-${digest}`;
+  if (/publication|anchor|write/i.test(classificationMessage)) return `listing-publication-invalid-${digest}`;
   return error instanceof Error && /^[A-Za-z][A-Za-z0-9]*Error$/.test(error.name)
     ? `${error.name.toLowerCase()}-${digest}`
     : "unknown-error";
 }
+
+describe("funded diagnostic failure classification", () => {
+  it("does not classify a viem package footer as Listing version history", () => {
+    const error = new Error([
+      "RPC Request failed.",
+      "Details: Too Many Requests",
+      "Version: viem@2.52.2",
+    ].join("\n"));
+    error.name = "HttpRequestError";
+    expect(safeStageFailureClass(error)).toMatch(/^httprequesterror-[0-9a-f]{12}$/);
+  });
+
+  it("still classifies a substantive Listing-version failure with that footer", () => {
+    const error = new Error([
+      "prior listing version is invalid",
+      "Version: viem@2.52.2",
+    ].join("\n"));
+    expect(safeStageFailureClass(error)).toMatch(/^listing-history-invalid-[0-9a-f]{12}$/);
+  });
+});
 
 async function diagnosticStep<T>(code: string, operation: () => Promise<T> | T): Promise<T> {
   requireCondition(/^[a-z0-9-]+$/.test(code), "diagnostic-step-code-invalid");
