@@ -4014,6 +4014,13 @@ are non-interchangeable and are rejected if persisted there. Without its own
 confirmation, setup or purchase prints a read-only preflight plan and exits.
 Every executing command also requires explicit caps.
 
+\`DACS_MAX_DEMOS_NETWORK_FEE_DEM\` is enforced before broadcast as the ceiling
+for each individual Storage Program transaction. It is not a whole-order
+aggregate: the doctor must also establish enough role-owned balance for the
+complete evidence graph. Do not treat the current single-write balance floor as
+that aggregate proof; production release remains blocked until durable
+per-order Demos fee accounting is added.
+
 The purchase request file is closed, versioned JSON:
 
 \`\`\`json

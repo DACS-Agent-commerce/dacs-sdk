@@ -8,6 +8,12 @@ export interface DemosAdapterConfig {
   /** Wallet secret — mnemonic or private key. Optional for read-only use. */
   secret?: string;
   /**
+   * Optional per-transaction fee ceiling in Demos OS base units. When set,
+   * every Storage Program confirmation must expose an authoritative fee at or
+   * below this value before the adapter invokes broadcast.
+   */
+  maximumFeeOs?: bigint;
+  /**
    * Durable, cross-process wallet/write authority. Required by every write
    * method; read-only adapters may omit it.
    */

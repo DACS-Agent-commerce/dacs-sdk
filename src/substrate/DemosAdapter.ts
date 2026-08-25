@@ -144,6 +144,59 @@ function sameDemosWallet(left: unknown, right: unknown): boolean {
 
 const DEMOS_OS_PER_DEM = 1_000_000_000n;
 
+function demosConfirmedFeeComponentOs(
+  value: unknown,
+  postFork: boolean,
+): bigint | undefined {
+  if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)) {
+    return BigInt(value);
+  }
+  if (!postFork && typeof value === "number" && Number.isSafeInteger(value) &&
+      value >= 0 && !Object.is(value, -0)) {
+    return BigInt(value) * DEMOS_OS_PER_DEM;
+  }
+  return undefined;
+}
+
+function demosConfirmedTransactionFeeOs(
+  value: unknown,
+  postFork: boolean,
+): bigint | undefined {
+  if (!isJsonObject(value)) return undefined;
+  const network = demosConfirmedFeeComponentOs(value.network_fee, postFork);
+  const rpc = demosConfirmedFeeComponentOs(value.rpc_fee, postFork);
+  const additional = demosConfirmedFeeComponentOs(value.additional_fee, postFork);
+  return network === undefined || rpc === undefined || additional === undefined
+    ? undefined : network + rpc + additional;
+}
+
+function demosConfirmedValidityFeeOs(
+  value: unknown,
+  postFork: boolean,
+): bigint | undefined {
+  const data = isRecord(value) && isRecord(value.response) &&
+      isRecord(value.response.data)
+    ? value.response.data : undefined;
+  if (data === undefined) return undefined;
+  if (data.gas_operation !== null && data.gas_operation !== undefined) {
+    if (!isJsonObject(data.gas_operation) ||
+        data.gas_operation.fees === null || data.gas_operation.fees === undefined) {
+      return undefined;
+    }
+    return demosConfirmedTransactionFeeOs(data.gas_operation.fees, postFork);
+  }
+  return isRecord(data.transaction) && isRecord(data.transaction.content)
+    ? demosConfirmedTransactionFeeOs(data.transaction.content.transaction_fee, postFork)
+    : undefined;
+}
+
+function demosOsDenominationActivated(value: unknown): boolean | undefined {
+  return isRecord(value) && isRecord(value.forks) &&
+      isRecord(value.forks.osDenomination) &&
+      typeof value.forks.osDenomination.activated === "boolean"
+    ? value.forks.osDenomination.activated : undefined;
+}
+
 function demosTransferAmountOs(
   value: unknown,
   denomination: "os" | "dem",
@@ -823,9 +876,37 @@ export class DemosAdapter implements SubstrateAdapter {
     });
   }
 
+  private async assertConfirmedFeeWithinCap(validity: unknown): Promise<void> {
+    const maximumFeeOs = this.config.maximumFeeOs;
+    if (maximumFeeOs === undefined) return;
+    const postFork = demosOsDenominationActivated(
+      await this.demos.getNetworkInfo(),
+    );
+    if (postFork === undefined) {
+      throw new SubstrateError(
+        "Demos fee ceiling cannot authenticate the network denomination",
+      );
+    }
+    const confirmedFeeOs = demosConfirmedValidityFeeOs(validity, postFork);
+    if (confirmedFeeOs === undefined) {
+      throw new SubstrateError(
+        "Demos fee ceiling requires authoritative confirmed transaction fees",
+      );
+    }
+    if (confirmedFeeOs > maximumFeeOs) {
+      throw new SubstrateError(
+        "Demos confirmed transaction fee exceeds maximumFeeOs",
+      );
+    }
+  }
+
   constructor(config: DemosAdapterConfig) {
     if (!config?.rpc) {
       throw new Error("DemosAdapter requires an rpc URL");
+    }
+    if (config.maximumFeeOs !== undefined &&
+        (typeof config.maximumFeeOs !== "bigint" || config.maximumFeeOs < 0n)) {
+      throw new Error("DemosAdapter maximumFeeOs must be a non-negative bigint");
     }
     this.config = config;
     this.demos = new Demos();
@@ -2394,6 +2475,11 @@ export class DemosAdapter implements SubstrateAdapter {
         this.demos.tx.confirm(signed, this.demos),
         "confirmation",
       );
+      await this.waitFor(
+        ctx,
+        this.assertConfirmedFeeWithinCap(validity),
+        "confirmed fee ceiling",
+      );
     } catch (error) {
       if (error instanceof AnchorWaitError) throw error;
       throw this.fail(
@@ -3127,6 +3213,11 @@ export class DemosAdapter implements SubstrateAdapter {
         ctx,
         this.demos.tx.confirm(signed, this.demos),
         "immutable confirmation",
+      );
+      await this.waitFor(
+        ctx,
+        this.assertConfirmedFeeWithinCap(validity),
+        "immutable confirmed fee ceiling",
       );
       const signedRecord = signed as unknown as {
         hash?: string;

@@ -11,6 +11,7 @@ export type DacsLiveRailProfile = "pay-dem" | "x402";
 export interface DacsAgentLimits {
   maxServiceAmount: Readonly<{ asset: string; amount: string }>;
   maxSetupSpendDem: string;
+  /** Maximum confirmed fee for each individual Demos write, in DEM. */
   maxDemosNetworkFeeDem: string;
   maxEvmNetworkFeeEth: string;
 }
