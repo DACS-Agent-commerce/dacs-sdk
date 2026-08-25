@@ -1358,6 +1358,51 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("retains failed-attempt fees and blocks aggregate-budget overspend before rebroadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: { network_fee: "1", rpc_fee: "1", additional_fee: "1" },
+          },
+        },
+      },
+    }));
+    raw.nodeCall.mockResolvedValue({ state: "failed" });
+    const feeBudget = {
+      budgetId: "fixed-price:test-job:buyer",
+      maximumTotalFeeOs: 3n,
+    };
+
+    await expect(adapter.anchorWriteOnce(
+      "budgeted-failed-immutable",
+      { value: 1 },
+      { timeoutMs: 20, pollMs: 1, feeBudget },
+    )).rejects.toThrow(/terminal state failed/);
+    await expect(adapter.anchorWriteOnce(
+      "budgeted-failed-immutable",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1, feeBudget },
+    )).rejects.toThrow(/aggregate confirmed fee exceeds purchase budget/);
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed aggregate fee budgets before confirmation or broadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    await expect(adapter.anchorWriteOnce(
+      "invalid-aggregate-budget",
+      { value: 1 },
+      { feeBudget: { budgetId: "bad budget", maximumTotalFeeOs: -1n } },
+    )).rejects.toThrow(/aggregate fee budget is invalid/);
+    expect(raw.tx.confirm).not.toHaveBeenCalled();
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
   it("uses the confirmed transaction fee only when gas-operation fees are absent", async () => {
     const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
     raw.getNetworkInfo = vi.fn(async () => ({

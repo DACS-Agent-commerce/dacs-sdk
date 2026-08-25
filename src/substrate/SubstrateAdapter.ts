@@ -171,6 +171,15 @@ export interface AnchorWriteOnceOptions {
    * cannot be backfilled without creating a different anchor.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * Optional durable aggregate fee budget. The adapter reserves the confirmed
+   * fee before broadcast and counts the reservation even if the transaction is
+   * later reported failed, preventing crash/retry from exceeding the ceiling.
+   */
+  feeBudget?: Readonly<{
+    budgetId: string;
+    maximumTotalFeeOs: bigint;
+  }>;
 }
 
 export interface ProxyFetchRequest {

@@ -28,6 +28,8 @@ import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPriceX402SellerPaymentEvidenceV1 } from
   "../src/fixedPriceX402SellerPaymentEvidence.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
+import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
+  "../src/purchaseDemosBudget.js";
 import {
   createDacsBuyerPaymentEvidenceRuntimeV1,
   createDacsBuyerDemosPaymentEvidenceRuntimeV1,
@@ -233,6 +235,13 @@ describe("live payment-evidence runtime", () => {
       localBindingHash: fixedPriceX402OrderLocalBindingHash(value),
     });
     putDacsLiveOrderInputV1({ database, order: value, application: { product: "runtime" } });
+    retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+      database,
+      jobId: JOB_ID,
+      role,
+      authority: role === "buyer" ? BUYER : SELLER,
+      maximumPerWriteFeeDem: "2",
+    });
     return database;
   }
 
@@ -263,6 +272,10 @@ describe("live payment-evidence runtime", () => {
       role: "buyer",
       authority: BUYER,
       peerAuthority: SELLER,
+      config: {
+        role: "buyer",
+        limits: { maxDemosNetworkFeeDem: "2" },
+      },
       database: buyerDatabase,
       demos: {
         role: "buyer",
@@ -371,11 +384,17 @@ describe("live payment-evidence runtime", () => {
     expect(new Set(completionIdempotencyKeys).size).toBe(1);
     expect(completionIdempotencyKeys[0]).toMatch(/^payment-evidence-completion:/);
     expect(anchorWriteOnce).toHaveBeenCalledOnce();
-    expect(anchorWriteOnce.mock.calls[0]?.[2]).toEqual({ metadata: {
-      logicalAddress,
-      contentHash: evidenceHash,
-      envelopeHash: sha256Hex(canonicalize(artifact)),
-    } });
+    expect(anchorWriteOnce.mock.calls[0]?.[2]).toEqual({
+      metadata: {
+        logicalAddress,
+        contentHash: evidenceHash,
+        envelopeHash: sha256Hex(canonicalize(artifact)),
+      },
+      feeBudget: {
+        budgetId: `dacs-fixed-price-purchase:v1:${JOB_ID}:buyer`,
+        maximumTotalFeeOs: 12_000_000_000n,
+      },
+    });
     await expect(sellerRuntime.anchorEvidence(sellerOperation, input)).resolves.toMatchObject({
       disposition: "anchored",
       evidenceRef: { contentHash: evidenceHash },

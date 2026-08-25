@@ -102,6 +102,37 @@ describe("filesystem Demos write journal", () => {
     await restarted.release();
   });
 
+  it("retains closed aggregate fee reservations and rejects malformed ones", async () => {
+    const dir = await temporaryDirectory();
+    const key = { chainIdentity: "genesis-budget", wallet: "0xabc" };
+    const journal = await createFsDemosWriteJournal({ dir });
+    const first = await journal.acquire(key);
+    const budgeted = {
+      ...record(first.generation),
+      feeBudget: {
+        budgetId: "dacs-fixed-price-purchase:v1:test:buyer",
+        maximumTotalFeeOs: "120",
+        reservedFeeOs: "3",
+      },
+    };
+    await first.put(budgeted);
+    await first.release();
+
+    const restarted = await (await createFsDemosWriteJournal({ dir })).acquire(key);
+    expect(restarted.snapshot.records[0]?.feeBudget).toEqual(budgeted.feeBudget);
+    await expect(restarted.put({
+      ...record(restarted.generation),
+      writeId: "invalid-budget",
+      feeBudget: { ...budgeted.feeBudget, reservedFeeOs: "121" },
+    })).rejects.toThrow(/invalid aggregate fee reservation/);
+    await expect(restarted.put({
+      ...record(restarted.generation),
+      writeId: "aggregate-overspend",
+      feeBudget: { ...budgeted.feeBudget, reservedFeeOs: "118" },
+    })).rejects.toThrow(/aggregate fee budget is exceeded/);
+    await restarted.release();
+  });
+
   it("recovers an unresolved native transfer in a fresh journal instance", async () => {
     const dir = await temporaryDirectory();
     const key = { chainIdentity: "genesis-native", wallet: `0x${"ab".repeat(32)}` };

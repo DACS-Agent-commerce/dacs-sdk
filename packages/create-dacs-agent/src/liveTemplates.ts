@@ -4052,8 +4052,14 @@ Every executing command also requires explicit caps.
 for each individual Storage Program transaction. Purchase doctor and the
 consent-bound plan reserve five buyer writes, six seller writes and one write
 per role of headroom; pay-DEM also adds the selected transfer-and-fee ceiling.
-The generated graph is bounded by deterministic logical names, durable
-write-once reconciliation and those per-transaction caps. The reported ceiling
+The buyer carries those ceilings in the authenticated order application. Each
+role retains its immutable local grant before starting the order, and the seller
+rejects a grant above its local policy. A later configuration increase therefore
+cannot enlarge an admitted order. The generated graph is bounded by deterministic
+logical names, durable write-once reconciliation and the per-transaction caps.
+Before each purchase artifact broadcast, the wallet journal durably reserves its
+authenticated confirmed fee against the role-local aggregate ceiling; a
+definitively failed attempt still consumes that reservation. The reported ceiling
 does not cover custom extensions or unrelated concurrent orders using the same
 wallets.
 

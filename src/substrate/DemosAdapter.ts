@@ -876,9 +876,12 @@ export class DemosAdapter implements SubstrateAdapter {
     });
   }
 
-  private async assertConfirmedFeeWithinCap(validity: unknown): Promise<void> {
+  private async assertConfirmedFeeWithinCap(
+    validity: unknown,
+    requireConfirmedFee = false,
+  ): Promise<bigint | undefined> {
     const maximumFeeOs = this.config.maximumFeeOs;
-    if (maximumFeeOs === undefined) return;
+    if (maximumFeeOs === undefined && !requireConfirmedFee) return undefined;
     const postFork = demosOsDenominationActivated(
       await this.demos.getNetworkInfo(),
     );
@@ -893,11 +896,37 @@ export class DemosAdapter implements SubstrateAdapter {
         "Demos fee ceiling requires authoritative confirmed transaction fees",
       );
     }
-    if (confirmedFeeOs > maximumFeeOs) {
+    if (maximumFeeOs !== undefined && confirmedFeeOs > maximumFeeOs) {
       throw new SubstrateError(
         "Demos confirmed transaction fee exceeds maximumFeeOs",
       );
     }
+    return confirmedFeeOs;
+  }
+
+  private reserveAggregateFeeBudget(
+    input: Readonly<{ budgetId: string; maximumTotalFeeOs: bigint }>,
+    confirmedFeeOs: bigint,
+  ) {
+    const lease = this.activeWriteLease;
+    if (!lease) throw new DacsError("Demos write journal lease is missing");
+    let reserved = 0n;
+    for (const record of lease.snapshot.records) {
+      const budget = record.feeBudget;
+      if (budget?.budgetId !== input.budgetId) continue;
+      if (BigInt(budget.maximumTotalFeeOs) !== input.maximumTotalFeeOs) {
+        throw new DacsError("Demos aggregate fee budget ceiling conflicts with its journal");
+      }
+      reserved += BigInt(budget.reservedFeeOs);
+    }
+    if (reserved + confirmedFeeOs > input.maximumTotalFeeOs) {
+      throw new SubstrateError("Demos aggregate confirmed fee exceeds purchase budget");
+    }
+    return {
+      budgetId: input.budgetId,
+      maximumTotalFeeOs: input.maximumTotalFeeOs.toString(),
+      reservedFeeOs: confirmedFeeOs.toString(),
+    };
   }
 
   constructor(config: DemosAdapterConfig) {
@@ -3059,6 +3088,30 @@ export class DemosAdapter implements SubstrateAdapter {
         "anchorWriteOnce timeoutMs/pollMs must be non-negative",
       );
     }
+    let feeBudget: Readonly<{ budgetId: string; maximumTotalFeeOs: bigint }> | undefined;
+    if (opts?.feeBudget !== undefined) {
+      const raw = opts.feeBudget;
+      if (raw === null || typeof raw !== "object") {
+        throw new DacsError("anchorWriteOnce aggregate fee budget is invalid");
+      }
+      const keys = Reflect.ownKeys(raw);
+      const budgetId = Object.getOwnPropertyDescriptor(raw, "budgetId");
+      const maximum = Object.getOwnPropertyDescriptor(raw, "maximumTotalFeeOs");
+      if (keys.length !== 2 || !keys.every((key) =>
+        key === "budgetId" || key === "maximumTotalFeeOs") ||
+          budgetId === undefined || !("value" in budgetId) || !budgetId.enumerable ||
+          maximum === undefined || !("value" in maximum) || !maximum.enumerable ||
+          typeof budgetId.value !== "string" || budgetId.value.length === 0 ||
+          budgetId.value.length > 256 || budgetId.value.trim() !== budgetId.value ||
+          budgetId.value.includes("\0") || typeof maximum.value !== "bigint" ||
+          maximum.value < 0n) {
+        throw new DacsError("anchorWriteOnce aggregate fee budget is invalid");
+      }
+      feeBudget = Object.freeze({
+        budgetId: budgetId.value,
+        maximumTotalFeeOs: maximum.value,
+      });
+    }
 
     const data = value as Record<string, unknown>;
     let metadata: Record<string, unknown> | undefined;
@@ -3214,9 +3267,9 @@ export class DemosAdapter implements SubstrateAdapter {
         this.demos.tx.confirm(signed, this.demos),
         "immutable confirmation",
       );
-      await this.waitFor(
+      const confirmedFeeOs = await this.waitFor(
         ctx,
-        this.assertConfirmedFeeWithinCap(validity),
+        this.assertConfirmedFeeWithinCap(validity, feeBudget !== undefined),
         "immutable confirmed fee ceiling",
       );
       const signedRecord = signed as unknown as {
@@ -3262,6 +3315,9 @@ export class DemosAdapter implements SubstrateAdapter {
         txRef,
         signedTransaction,
         signedTransactionHash: demosSignedTransactionProofHash(signed),
+        ...(feeBudget === undefined || confirmedFeeOs === undefined
+          ? {}
+          : { feeBudget: this.reserveAggregateFeeBudget(feeBudget, confirmedFeeOs) }),
       });
       if (this.remaining(ctx) <= 0) {
         throw this.fail(

@@ -30,6 +30,8 @@ import {
   prepareDacsPayDemPurchaseV1,
   prepareDacsX402PurchaseV1,
 } from "../src/purchaseQueue.js";
+import { dacsFixedPricePurchaseAnchorOptionsV1 } from
+  "../src/purchaseDemosBudget.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -235,6 +237,10 @@ describe("guarded x402 purchase queue", () => {
       railDefinitionRef: "dacs4:rail:x402%3Atest:1",
     });
     expect(Object.isFrozen(prepared.application.request)).toBe(true);
+    expect(prepared.application.demosWriteFeeCeilings).toEqual({
+      buyer: "2",
+      seller: "3",
+    });
 
     const root = mkdtempSync(join(tmpdir(), "dacs-purchase-queue-"));
     roots.push(root);
@@ -268,6 +274,13 @@ describe("guarded x402 purchase queue", () => {
       status: "reconciled-performed",
       result: { jobId: prepared.plan.jobId, orderInputStatus: "existing" },
     });
+    expect(dacsFixedPricePurchaseAnchorOptionsV1({
+      role: "buyer",
+      authority: value.buyer,
+      config: { role: "buyer", limits: { maxDemosNetworkFeeDem: "99" } },
+      database,
+    } as never, prepared.plan.jobId, {}).feeBudget?.maximumTotalFeeOs)
+      .toBe(12_000_000_000n);
     expect(fence.assertCurrent).toHaveBeenCalledTimes(8);
   });
 

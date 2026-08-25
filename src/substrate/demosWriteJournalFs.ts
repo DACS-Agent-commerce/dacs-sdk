@@ -78,6 +78,10 @@ function positiveIntegerText(value: unknown): value is string {
   return typeof value === "string" && /^[1-9][0-9]*$/.test(value);
 }
 
+function nonNegativeIntegerText(value: unknown): value is string {
+  return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
+}
+
 function canonicalHex32(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
@@ -128,6 +132,20 @@ function validateJournalRecord(
 
   const stage = record.stage as DemosWriteJournalRecord["stage"];
   const nativeTransfer = record.kind === "native-transfer";
+  if (record.feeBudget !== undefined) {
+    if (!isObject(record.feeBudget) ||
+        Object.keys(record.feeBudget).sort().join("\0") !==
+          ["budgetId", "maximumTotalFeeOs", "reservedFeeOs"].sort().join("\0") ||
+        !nonEmpty(record.feeBudget.budgetId) ||
+        (record.feeBudget.budgetId as string).length > 256 ||
+        !nonNegativeIntegerText(record.feeBudget.maximumTotalFeeOs) ||
+        !nonNegativeIntegerText(record.feeBudget.reservedFeeOs) ||
+        BigInt(record.feeBudget.reservedFeeOs as string) >
+          BigInt(record.feeBudget.maximumTotalFeeOs as string) ||
+        stage === "prepared" || nativeTransfer) {
+      invalid("has an invalid aggregate fee reservation");
+    }
+  }
   if (nativeTransfer !== (record.operation === "transfer")) {
     invalid("has an incompatible kind and operation");
   }
@@ -221,6 +239,26 @@ function cloneRecord(record: DemosWriteJournalRecord): DemosWriteJournalRecord {
   return structuredClone(record);
 }
 
+function validateAggregateFeeReservations(
+  records: readonly DemosWriteJournalRecord[],
+): void {
+  const budgets = new Map<string, Readonly<{ maximum: bigint; reserved: bigint }>>();
+  for (const record of records) {
+    const feeBudget = record.feeBudget;
+    if (feeBudget === undefined) continue;
+    const maximum = BigInt(feeBudget.maximumTotalFeeOs);
+    const prior = budgets.get(feeBudget.budgetId);
+    if (prior !== undefined && prior.maximum !== maximum) {
+      throw new DacsError("Demos write journal aggregate fee budget ceilings conflict");
+    }
+    const reserved = (prior?.reserved ?? 0n) + BigInt(feeBudget.reservedFeeOs);
+    if (reserved > maximum) {
+      throw new DacsError("Demos write journal aggregate fee budget is exceeded");
+    }
+    budgets.set(feeBudget.budgetId, { maximum, reserved });
+  }
+}
+
 function validateSnapshot(
   value: unknown,
   key: DemosWriteJournalKey,
@@ -253,6 +291,7 @@ function validateSnapshot(
   if (new Set(records.map(({ writeId }) => writeId)).size !== records.length) {
     throw new DacsError("Demos write journal contains duplicate write ids");
   }
+  validateAggregateFeeReservations(records);
   return {
     version: DEMOS_WRITE_JOURNAL_VERSION,
     chainIdentity: key.chainIdentity,
@@ -478,6 +517,7 @@ export async function createFsDemosWriteJournal(
                 .filter((candidate) => candidate.writeId !== record.writeId)
                 .map(cloneRecord);
               records.push(checked);
+              validateAggregateFeeReservations(records);
               current = { ...current, records };
               await atomicWrite(statePath, current);
             });

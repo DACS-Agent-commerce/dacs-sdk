@@ -80,6 +80,8 @@ import { createDacsFixedPriceX402SellerAuthorityV1 } from
   "../src/fixedPriceX402SellerAuthority.js";
 import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
+import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
+  "../src/purchaseDemosBudget.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -192,6 +194,7 @@ function application(exactListing = listing()) {
       exactListing.listingVersion,
     ),
     listing: exactListing,
+    demosWriteFeeCeilings: { buyer: "2", seller: "2" },
     requestHash: sha256Hex(canonicalize(request)),
     request,
   };
@@ -312,7 +315,11 @@ async function fixture() {
     role: "seller",
     authority: SELLER,
     peerAuthority: BUYER,
-    config: { rail: { requestedNetwork: "eip155:84532" } },
+    config: {
+      role: "seller",
+      rail: { requestedNetwork: "eip155:84532" },
+      limits: { maxDemosNetworkFeeDem: "2" },
+    },
     evm: {
       role: "seller",
       address: PAYEE,
@@ -405,6 +412,13 @@ async function buyerFixture() {
     application: app,
   });
   if (retainedPut.status === "conflict") throw new Error("buyer input conflict");
+  retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+    database,
+    jobId: JOB_ID,
+    role: "buyer",
+    authority: BUYER,
+    maximumPerWriteFeeDem: app.demosWriteFeeCeilings.buyer,
+  });
   const store = database.createLiveCoordinatorStore("buyer");
   await store.create({
     role: "buyer",
@@ -439,7 +453,11 @@ async function buyerFixture() {
     role: "buyer",
     authority: BUYER,
     peerAuthority: SELLER,
-    config: { rail: { requestedNetwork: "eip155:84532" } },
+    config: {
+      role: "buyer",
+      rail: { requestedNetwork: "eip155:84532" },
+      limits: { maxDemosNetworkFeeDem: "2" },
+    },
     database,
     demos: {
       adapter: {
@@ -619,6 +637,10 @@ describe("fixed-price x402 generated profile policy", () => {
       ...app,
       request: { changed: true },
     })).toThrow("fixed-price-application-binding-invalid");
+    expect(() => captureDacsFixedPriceX402ApplicationV1({
+      ...app,
+      demosWriteFeeCeilings: { buyer: "0.0000000001", seller: "2" },
+    })).toThrow("fixed-price-application-invalid");
   });
 
   it("independently admits and durably reuses one exact seller session", async () => {
@@ -681,6 +703,19 @@ describe("fixed-price x402 generated profile policy", () => {
       payload: { order: rebound, application: value.app } as never,
     })).rejects.toThrow("fixed-price-session-party-mismatch");
     expect(dependencies.resolveListing).not.toHaveBeenCalled();
+  });
+
+  it("rejects a buyer-supplied seller fee grant above local policy", async () => {
+    const value = await fixture();
+    const applicationWithHigherGrant = {
+      ...value.app,
+      demosWriteFeeCeilings: { buyer: "2", seller: "3" },
+    };
+    const init = { order: value.pair.buyer, application: applicationWithHigherGrant };
+    await expect(value.policy.admitInit({
+      authenticated: authenticated(init),
+      payload: init as never,
+    })).rejects.toThrow("fixed-price Demos fee budget exceeds local policy");
   });
 
   it("replays one exact buyer draft and verifies only the bound Ed25519 parties", async () => {
@@ -773,11 +808,17 @@ describe("fixed-price x402 generated profile policy", () => {
     expect(reconciledValue.artifact).toEqual(artifact);
     expect(value.anchorWriteOnce).toHaveBeenCalledTimes(2);
     for (const invocation of value.anchorWriteOnce.mock.calls) {
-      expect(invocation[2]).toEqual({ metadata: {
-        logicalAddress,
-        contentHash: agreementHash,
-        envelopeHash,
-      } });
+      expect(invocation[2]).toEqual({
+        metadata: {
+          logicalAddress,
+          contentHash: agreementHash,
+          envelopeHash,
+        },
+        feeBudget: {
+          budgetId: `dacs-fixed-price-purchase:v1:${JOB_ID}:buyer`,
+          maximumTotalFeeOs: 12_000_000_000n,
+        },
+      });
     }
     await expect(policy.anchor.verifyAnchorReceipt({
       expectedWriter: BUYER,

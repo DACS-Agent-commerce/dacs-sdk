@@ -51,6 +51,8 @@ import {
   loadDacsLiveOrderInputV1,
   putDacsLiveOrderInputV1,
 } from "./orderInput.js";
+import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
+  "./purchaseDemosBudget.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -76,6 +78,7 @@ export interface DacsPreparedX402PurchaseV1 {
     listingContentHash: string;
     listingLogicalAddress: string;
     listing: Readonly<DacsX402ExistingListingAdmissionV1["listing"]>;
+    demosWriteFeeCeilings: Readonly<Record<"buyer" | "seller", string>>;
     requestHash: string;
     request: Readonly<Record<string, unknown>>;
   }>;
@@ -317,6 +320,7 @@ export function prepareDacsX402PurchaseV1(
       listingContentHash: admission.listingContentHash,
       listingLogicalAddress: admission.logicalAddress,
       listing: canonicalCopy(admission.listing),
+      demosWriteFeeCeilings: plan.demosCost.maximumStorageWriteFeeDem,
       requestHash,
       request,
     },
@@ -380,6 +384,7 @@ export function prepareDacsPayDemPurchaseV1(
       listingContentHash: admission.listingContentHash,
       listingLogicalAddress: admission.logicalAddress,
       listing: canonicalCopy(admission.listing),
+      demosWriteFeeCeilings: plan.demosCost.maximumStorageWriteFeeDem,
       requestHash,
       request,
     },
@@ -411,6 +416,8 @@ export function createDacsPurchaseQueueExecutorV1(
       prepared.plan.buyerAuthority !== prepared.order.buyer ||
       prepared.plan.sellerAuthority !== prepared.order.seller ||
       prepared.application.requestHash !== prepared.plan.requestHash ||
+      canonicalize(prepared.application.demosWriteFeeCeilings) !==
+        canonicalize(prepared.plan.demosCost.maximumStorageWriteFeeDem) ||
       sha256Hex(canonicalize(prepared.application.request)) !== prepared.plan.requestHash) {
     throw new TypeError("prepared purchase queue input is inconsistent");
   }
@@ -477,6 +484,13 @@ export function createDacsPurchaseQueueExecutorV1(
         return Object.freeze({ status: "operator-action" as const,
           reasonCode: "purchase-order-input-conflict" });
       }
+      retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+        database: options.database,
+        jobId: prepared.order.jobId,
+        role: "buyer",
+        authority: prepared.order.buyer,
+        maximumPerWriteFeeDem: prepared.application.demosWriteFeeCeilings.buyer,
+      });
       await fence.assertCurrent();
       const status = payDem
         ? await (coordinator as ReturnType<typeof createFixedPricePayDemBuyerCoordinator>)

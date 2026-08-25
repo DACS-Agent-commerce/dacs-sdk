@@ -42,6 +42,7 @@ import {
 } from "@kynesyslabs/dacs/artifacts";
 import {
   canonicalize,
+  canonicalizeDecimal,
   contentHash,
   listingAddress,
   sha256Hex,
@@ -80,6 +81,10 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import { createDacsFixedPriceX402ProtocolBindingV1 } from "./purchaseQueue.js";
+import {
+  dacsFixedPricePurchaseAnchorOptionsV1,
+  retainDacsFixedPricePurchaseDemosBudgetGrantV1,
+} from "./purchaseDemosBudget.js";
 import { readDacsPublicJsonV1 } from "./publicJson.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import type {
@@ -158,6 +163,7 @@ export interface DacsFixedPriceX402ApplicationV1 {
   listingContentHash: string;
   listingLogicalAddress: string;
   listing: Readonly<Listing>;
+  demosWriteFeeCeilings: Readonly<Record<"buyer" | "seller", string>>;
   requestHash: string;
   request: Readonly<Record<string, unknown>>;
 }
@@ -281,6 +287,21 @@ function exactKeys(value: Readonly<Record<string, unknown>>, keys: readonly stri
     keys.every((key) => Object.hasOwn(value, key));
 }
 
+function demosWriteFeeCeilings(
+  value: unknown,
+): value is Readonly<Record<"buyer" | "seller", string>> {
+  if (!plainObject(value) || !exactKeys(value, ["buyer", "seller"])) return false;
+  return [value.buyer, value.seller].every((candidate) => {
+    if (typeof candidate !== "string") return false;
+    try {
+      return canonicalizeDecimal(candidate) === candidate &&
+        BigInt(baseUnits(candidate, 9)) >= 0n;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function copy<T>(value: T): T {
   return JSON.parse(canonicalize(value)) as T;
 }
@@ -298,14 +319,16 @@ export function captureDacsFixedPriceX402ApplicationV1(
 ): Readonly<DacsFixedPriceX402ApplicationV1> {
   if (!plainObject(value) || !exactKeys(value, [
     "applicationVersion", "listingRef", "listingContentHash", "listingLogicalAddress",
-    "listing", "requestHash", "request",
+    "listing", "demosWriteFeeCeilings", "requestHash", "request",
   ]) || value.applicationVersion !== APPLICATION_VERSION ||
       typeof value.listingRef !== "string" || !STORAGE_RE.test(value.listingRef) ||
       typeof value.listingContentHash !== "string" ||
         !HASH_RE.test(value.listingContentHash) ||
       typeof value.listingLogicalAddress !== "string" ||
         value.listingLogicalAddress.length === 0 ||
-      !isListing(value.listing) || typeof value.requestHash !== "string" ||
+      !isListing(value.listing) ||
+      !demosWriteFeeCeilings(value.demosWriteFeeCeilings) ||
+      typeof value.requestHash !== "string" ||
         !HASH_RE.test(value.requestHash) || !plainObject(value.request)) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-application-invalid");
   }
@@ -502,6 +525,14 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
         buyer: payload.order.buyer,
         seller: payload.order.seller,
         protocol: payload.order.protocol,
+      });
+      retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+        database: context.database,
+        jobId: order.jobId,
+        role: "seller",
+        authority: order.seller,
+        maximumPerWriteFeeDem: application.demosWriteFeeCeilings.seller,
+        maximumAllowedPerWriteFeeDem: context.config.limits.maxDemosNetworkFeeDem,
       });
       retainAdmission(
         context,
@@ -868,11 +899,11 @@ function createAgreementAnchorProvider(
         await context.demos.adapter.anchorWriteOnce(
           record.logicalAddress,
           record.artifact,
-          { metadata: {
+          dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
             logicalAddress: record.logicalAddress,
             contentHash: record.agreementHash,
             envelopeHash: sha256Hex(canonicalize(record.artifact)),
-          } },
+          }),
         );
         return { disposition: "submitted" as const };
       } catch {
@@ -896,11 +927,11 @@ function createAgreementAnchorProvider(
         const anchor = await context.demos.adapter.anchorWriteOnce(
           record.logicalAddress,
           record.artifact,
-          { metadata: {
+          dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
             logicalAddress: record.logicalAddress,
             contentHash: record.agreementHash,
             envelopeHash: sha256Hex(canonicalize(record.artifact)),
-          } },
+          }),
         );
         const receipt = anchor.demosEvidence === undefined
           ? await context.demos.adapter.resolveDemosAnchorReceipt({
@@ -1822,11 +1853,11 @@ function createCommitmentProvider(
     const anchor = await context.demos.adapter.anchorWriteOnce(
       retained.logicalAddress,
       retained.record as unknown as Record<string, unknown>,
-      { metadata: {
+      dacsFixedPricePurchaseAnchorOptionsV1(context, operation.order.jobId, {
         logicalAddress: retained.logicalAddress,
         contentHash: retained.commitmentHash,
         envelopeHash: sha256Hex(canonicalize(retained.record)),
-      } },
+      }),
     );
     const receipt = anchor.demosEvidence === undefined
       ? await context.demos.adapter.resolveDemosAnchorReceipt({

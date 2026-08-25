@@ -906,10 +906,18 @@ cost envelope. For the fixed-price profile this is derived from five named
 buyer Storage Program writes, six named seller writes, one explicit headroom
 write per role and each role's configured per-write ceiling. Native pay-DEM
 plans MUST add the selected transfer-and-fee ceiling to that projection. The
-plan hash changes if either role's Demos ceiling changes; deterministic logical
-names, durable write-once reconciliation and per-write adapter enforcement are
-the runtime bound. Custom extensions and unrelated concurrent orders are not
-covered by this generated-profile envelope.
+plan hash changes if either role's Demos ceiling changes. The buyer MUST carry
+those exact role ceilings in the authenticated session application. Before a
+role coordinator starts, its actor-local database MUST retain an immutable
+order grant; the seller MUST reject a grant above its then-current local policy.
+Restart MUST use that retained grant, so increasing process configuration
+cannot enlarge an admitted order's authority. Deterministic logical names,
+durable write-once reconciliation and per-write adapter enforcement are the
+runtime bound. Before broadcast, each role's wallet journal MUST durably reserve
+the authenticated confirmed fee against its aggregate purchase budget;
+definitively failed attempts continue to consume their reservation. Custom
+extensions and unrelated concurrent orders are not covered by this
+generated-profile envelope.
 
 Setup and purchase confirmations MUST be distinct domain-separated consent
 records. Neither may be inferred from `dacs:up`, doctor, a previous run or a

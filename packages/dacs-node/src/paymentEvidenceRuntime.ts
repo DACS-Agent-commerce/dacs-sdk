@@ -32,6 +32,7 @@ import {
   type DacsLiveTrackOperationInputV1,
   loadDacsLiveOrderInputForTrackV1,
 } from "./orderInput.js";
+import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
 import type {
   DacsLiveRoleInboundOperationContextV1,
   DacsLiveRoleOperationContextV1,
@@ -308,13 +309,15 @@ async function publishBuyerDemosEvidence(
     const anchored = await context.demos.adapter.anchorWriteOnce(
       input.logicalAddress,
       input.evidence,
-      {
-        metadata: {
+      dacsFixedPricePurchaseAnchorOptionsV1(
+        context,
+        input.evidence.jobId,
+        {
           logicalAddress: input.logicalAddress,
           contentHash: input.evidenceHash,
           envelopeHash: sha256Hex(canonicalize(input.evidence)),
         },
-      },
+      ),
     );
     let receipt: ProtocolAnchorReceipt | null;
     if (anchored.demosEvidence !== undefined) {
