@@ -359,6 +359,47 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
+  it("reports a post-settlement fulfilment failure as paid without cancellation", async () => {
+    const { payload, requirements } = await paymentFixture();
+    const cancel = vi.fn(async () => undefined);
+    const settlement = successfulSettlement(requirements);
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+        cancellationDispatcher: { cancel },
+      },
+      settlement,
+    });
+    const fulfil = vi.fn(async () => ({
+      disposition: "failed" as const,
+      reason: "application-work-failed",
+      status: 500,
+    }));
+
+    const result = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, { fulfil }),
+    );
+
+    expect(result).toMatchObject({
+      disposition: "fulfilment-failed",
+      settled: true,
+      reason: "application-work-failed",
+      response: {
+        status: 500,
+        body: { error: "application-work-failed" },
+      },
+    });
+    expect(result.response.headers["PAYMENT-RESPONSE"]).toBe(
+      settlement.headers["PAYMENT-RESPONSE"],
+    );
+    expect(server.processSettlement).toHaveBeenCalledTimes(1);
+    expect(fulfil).toHaveBeenCalledTimes(1);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it("requires authoritative reconciliation before treating settlement as failed", async () => {
     const { payload, requirements } = await paymentFixture();
     const failedSettlement: X402PaywallSettlementResult & { success: false } = {

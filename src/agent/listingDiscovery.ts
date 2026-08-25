@@ -20,6 +20,7 @@ import {
   scanAnchorPage,
   type AnchorHistoryPageFetcher,
 } from "../discovery/scanner.js";
+import { parseCanonicalClaimReference } from "../identity/claimReference.js";
 import { DEMOS_HISTORY_MAX_PAGE_SIZE } from "../substrate/demosHistory.js";
 import {
   isVerifiedListingAdmission,
@@ -28,9 +29,10 @@ import {
   type ListingValidationResult,
   type VerifiedListingAdmission,
 } from "./listingValidation.js";
+import { readableListingClaimReferencesAreCanonical } from "./listingClaimReferences.js";
 import { type Verifier } from "./signedArtifact.js";
 
-const CANONICAL_DEMOS_AGENT = /^did:demos:agent:([0-9a-f]{64})$/;
+const CANONICAL_DEMOS_AGENT_IDENTIFIER = /^demos:agent:([0-9a-f]{64})$/;
 const DEMOS_OWNER = /^(?:0x)?[0-9a-f]{64}$/i;
 const LOWER_HEX_HASH = /^[0-9a-f]{64}$/;
 const LOWER_HEX_ED25519_SIGNATURE = /^[0-9a-f]{128}$/;
@@ -70,7 +72,10 @@ function canonicalAgent(agentId: string): {
   owner: string;
   publicKey: Uint8Array;
 } | null {
-  const match = agentId.match(CANONICAL_DEMOS_AGENT);
+  const parsed = parseCanonicalClaimReference(agentId);
+  const match = parsed?.identity.scheme === "did"
+    ? parsed.identity.identifier.match(CANONICAL_DEMOS_AGENT_IDENTIFIER)
+    : null;
   if (!match) return null;
   const owner = match[1]!;
   return {
@@ -118,7 +123,7 @@ function parseListingAddress(logicalAddress: string): ParseResult {
     return {
       ok: false,
       reason:
-        "Listing seller must be a canonical did:demos:agent:<lowercase-ed25519-key>",
+        "Listing seller must use canonical did:demos:agent:<lowercase-ed25519-key> ClaimReference bytes",
     };
   }
   if (listingAddress(sellerPrimaryClaim, listingId, version) !== logicalAddress) {
@@ -228,6 +233,7 @@ export interface ListingDiscoveryDeps {
   index: BindingIndex;
   readAnchor: (
     nativeAddress: string,
+    anchorKind?: string,
   ) => Promise<Record<string, unknown> | null>;
   verify: Verifier;
   /** Required for normative reads; the SDK executes the ordered algorithm. */
@@ -374,7 +380,11 @@ export async function readListingByLogicalAddress(
   if (
     typeof candidate.logicalAddress !== "string" ||
     typeof candidate.nativeAddress !== "string" ||
-    typeof candidate.owner !== "string"
+    typeof candidate.owner !== "string" ||
+    (candidate.anchorKind !== undefined &&
+      (typeof candidate.anchorKind !== "string" ||
+        candidate.anchorKind.length === 0 ||
+        candidate.anchorKind !== candidate.anchorKind.trim()))
   ) {
     return rejected(
       logicalAddress,
@@ -481,7 +491,7 @@ export async function readListingByLogicalAddress(
 
   let readValue: unknown;
   try {
-    readValue = await readAnchor(binding.nativeAddress);
+    readValue = await readAnchor(binding.nativeAddress, binding.anchorKind);
   } catch (error) {
     return {
       status: "indeterminate",
@@ -544,6 +554,15 @@ export async function readListingByLogicalAddress(
       "shape",
       "unsupported-listing-shape",
       "record does not satisfy a supported normative or historical Listing shape",
+      binding.nativeAddress,
+    );
+  }
+  if (!readableListingClaimReferencesAreCanonical(readable)) {
+    return rejected(
+      logicalAddress,
+      "shape",
+      "unsupported-listing-shape",
+      "Listing contains a non-canonical CORE B.1 CF-2 ClaimReference",
       binding.nativeAddress,
     );
   }

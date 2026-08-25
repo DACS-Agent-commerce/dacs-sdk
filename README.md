@@ -49,6 +49,26 @@ process termination; multi-host writers need a shared journal backend with the
 same exclusive lease and generation-fencing guarantees. Read-only agents may
 omit it.
 
+### Demos agent ClaimReferences
+
+Use `demosAgentClaimRef`, `parseDemosAgentClaimReference`,
+`demosAgentPublicKey`, and `isDemosAgentClaimRef` from either
+`@kynesyslabs/dacs` or
+`@kynesyslabs/dacs/identity` for the DACS-1 §6.3.1 / §A.1 self-certifying
+profile. Writers emit only `did:demos:agent:<64-lowercase-hex>`. Readers accept
+case variation in the leading `did` scheme and preserve unknown canonical
+parameters for forwarding; the typed parse result exposes the parameter-free
+CF-3 identity separately. Signed-artifact authorization uses exact CF-2 bytes
+and never performs that read-time repair. Foreign DIDs, mixed-case
+`demos:agent`, uppercase key bytes, bare keys, and `demos:0x...` substrate
+address notation are never intrinsically decoded as Demos signature authority
+or aliased to the registered profile. `Agent.resolveIdentity()` retains
+bare/`0x` native-address lookup as an explicit convenience but returns the
+canonical Demos DID, so aliases never leak into a `CciRecord` or reputation key.
+Non-intrinsic writer identities require
+`AgentConfig.resolveIdentitySigningPublicKey` and are bound to the connected
+adapter's actual key before signing.
+
 ## Public API
 
 ```ts
@@ -84,6 +104,12 @@ const seller = await createAgent({
       expectedVetClosureForBundle(bundle),
       vetVerificationDeps,
     ),
+  // Required to accept bundles with SettlementEvidence. Resolve the exact
+  // phase orchestrator and authenticated pinned-rail definition from trusted
+  // session/registry state; the SDK binds the Agreement and AttestationRef and
+  // performs the DACS-4 semantic and cryptographic verification itself.
+  resolveSettlementEvidenceContext: (input) =>
+    resolveAuthenticatedSettlementContext(input),
   bindings: { index: bindings, publisher: bindings },
 });
 
@@ -191,7 +217,8 @@ const session = await buyer.runSession(resolved, {
 });
 
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
-// and (through the configured callback above) every normative vet closure
+// and (through the configured callbacks above) every normative vet closure and
+// SettlementEvidence record
 const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
@@ -268,6 +295,22 @@ durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
 additionally requires an application-owned durable journal or equivalent rail
 record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
+When the rail is selected through `settleFromRail`, supply these dependencies
+under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
+`settlementStore`, and `reconcile`. The bridge adds the exact
+`(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
+amount to every prepared-transfer record, allowing the journal and durable
+settlement log to authenticate the same PC-7 effect. `reconcile` receives that
+`PayDemSettlementRecoveryContext` and must return either an exact
+`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
+when authoritative observation proves no transfer for that tuple landed. A
+non-final observation must throw. Cached durable success is reauthenticated
+after every process restart before reuse; missing or contradictory recovery
+fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
+the two values must match rather than silently defaulting or dropping the
+configured discriminator. The compatibility defaults remain process-local and
+must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
@@ -371,6 +414,21 @@ it returns no Listings or diagnostics, and the caller retries its unchanged
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
+### Sealed-envelope procurement
+
+`runSealedEnvelopeCore` supports both the backwards-compatible
+`negotiate-sealed-envelope` demand phase and the explicit
+`negotiate-sealed-envelope-procurement` phase. Demand makes the winning bidder
+the agreement buyer. Procurement requires `auctionMode: "procurement"` and
+makes the listing publisher the agreement buyer and the winning bidder the
+seller, so the bid price always flows from agreement buyer to agreement seller.
+
+Existing demand callbacks may still return only `agreementRef` and
+`agreementHash`. A procurement `commitAgreement` callback must verify both
+agreement-party signatures, call `ctx.validateAgreementForCommit(...)` before
+anchoring, and return the exact agreement plus `verifiedSignerClaims`; the core
+repeats the role/signature gate before returning an `ok` result.
+
 ### Fault-aware bundle helper
 
 `buildTwoSidedBundle(session)` is the low-level DACS-5 v0.3 producer. It emits a
@@ -446,13 +504,15 @@ used without pulling in `demosdk`:
 | Import | Needs `demosdk` | Use for |
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
+| `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 + evm-erc20 settlement (`x402SettleCore`, `termsMatch`) |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, plus evm-erc20 settlement |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
+| `@kynesyslabs/dacs/identity` | no | CCI parsing + canonical Demos agent ClaimReference helpers |
 
 The commerce coordinator is an explicit production x402 profile, not a generic
 `pay-*` dispatcher. It binds the supported Standard revision plus the verified
@@ -461,10 +521,23 @@ seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
 for the store, authentication, reconciliation and terminal-failure contracts.
 
+Sellers use `createX402Paywall` as the framework-neutral HTTP protocol adapter
+and compose it with the authenticated seller spine. It settles or reconciles
+the retained payer authorization before durable fulfilment, while PC-7 payment-
+evidence anchoring catches up independently. See
+[the seller x402 paywall guide](./docs/x402-seller-paywall.md) for the exact
+ordering, recovery, and post-settlement failure contract.
+
 The Demos adapter and live rail clients are optional peers: install
-`@kynesyslabs/demosdk` for `createAgent`, and `@x402/evm`, `@x402/fetch`, plus
-`viem` for the corresponding live rails. Pure artifact, verifier, canonical,
-and injected rail-core consumers do not install those integration trees.
+`@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,
+`@x402/fetch`, plus `viem` for the corresponding live rails. Pure artifact,
+verifier, canonical, and injected rail-core consumers do not install those
+integration trees. CI installs the packed tarball in an external strict
+NodeNext TypeScript project twice: once with every optional peer omitted, and
+again with the live peers present. Both passes keep `skipLibCheck` disabled.
+The SDK-owned `DemosRawClient` boundary prevents demosdk's internal declaration
+graph from leaking into consumers; applications can explicitly narrow the
+unstable `raw` escape hatch when they intentionally depend on demosdk types.
 
 ## Package artifacts
 

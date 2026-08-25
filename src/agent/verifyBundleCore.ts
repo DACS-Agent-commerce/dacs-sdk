@@ -5,10 +5,24 @@ import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
-import { signedBytes } from "../crypto/index.js";
+import { signedBytes, type DomainSeparator } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
-import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import {
+  ARTIFACT_SEPARATORS,
+  RATING_SEPARATOR,
+} from "../artifacts/registry.js";
+import {
+  isCanonicalBase64Url,
+  isComponentSignature,
+  verifyComponentSignature,
+  type ComponentSignatureVerification,
+} from "../artifacts/signatures.js";
+import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import type {
+  AgreementSignature,
   AnyAttestationBundle,
   AttestationRef,
   BundleParty,
@@ -27,6 +41,7 @@ import {
   isAgreementArtifact,
   isAnyAttestationBundle,
   isAttestationRef,
+  isChainTxRef,
   isCompositeVerificationRecord,
   isLegacyMvpListing,
   isListingDraft,
@@ -49,16 +64,18 @@ import type { StrictCompositeVerification } from "./compositeVerification.js";
  *     (key resolved but malformed — §10.4.1 ERROR, not a false FAIL),
  *     `unverified` (no key resolvable).
  *
- *  2. Referenced-artifact integrity — the bundle's refs (optional agreementRef,
- *     settlementEvidence[], vetRecords[], listingRef) are content-addressed.
+ *  2. Referenced-artifact authenticity — the bundle's refs (optional
+ *     agreementRef, settlementEvidence[], vetRecords[], listingRef) are
+ *     content-addressed and independently signed under artifact-specific
+ *     domains.
  *     Normative session refs use DACS-2 §7.5.2
  *     `{anchor:{kind,locator},contentHash,signer?}`; the pre-#308 `{kind,id,...}`
  *     record is accepted only by the explicit legacy-MVP read path. A valid
- *     bundle signature only binds those *hashes*; it does NOT prove the referenced
- *     artifacts exist or are untampered. We therefore dereference each normative
- *     ref through `resolveAttestationRef`, validate the artifact, and confirm its
- *     signed-scope content hash. Without the appropriate resolver, refs report
- *     `unresolved` and the bundle is NOT ok.
+ *     bundle signature only binds those *hashes*; it does NOT prove the
+ *     referenced artifacts exist or are authentic. We therefore dereference
+ *     each normative ref, validate its unsigned scope, confirm its content hash,
+ *     and authenticate its authorised signer(s). Without the required artifact
+ *     or key resolver, refs fail closed and the bundle is NOT ok.
  */
 
 export type SignatureVerdict = "valid" | "invalid" | "error" | "unverified";
@@ -72,30 +89,52 @@ export type RefVerdict =
   | "ok"
   | "missing"
   | "invalid-shape"
+  | "invalid-binding"
   | "hash-mismatch"
   /** Hash and shape match, but the agreement disagrees with its bundle. */
   | "incoherent"
   | "unresolved"
+  | "signature-missing"
+  | "signature-malformed"
+  | "signature-invalid"
+  | "signature-unresolved"
   /** Hash-matched, but the artifact failed its own DACS-4/§9.7 semantic verification. */
   | "invalid-evidence"
   /** Hash-matched, but its DACS-2 recursive closure did not verify. */
   | "invalid-vet-record";
 
+export type RefSignatureVerdict =
+  | "valid"
+  | "missing"
+  | "malformed"
+  | "invalid"
+  | "unresolved";
+
+export interface RefSignatureCheck {
+  verdict: RefSignatureVerdict;
+  /** Stable diagnostic from envelope, policy, or crypto verification. */
+  reason?: string;
+  /** Authenticated signer claims when verification succeeds. */
+  signers?: string[];
+}
+
 export interface RefCheck {
   kind: string;
   id: string;
   verdict: RefVerdict;
+  /** Present once shape and content-hash validation reaches authentication. */
+  signature?: RefSignatureCheck;
 }
 
 export interface BundleVerification {
-  /** Signature(s) verified AND every referenced artifact resolved + hash-matched. */
+  /** Bundle and every referenced shape/hash/signature all verified. */
   ok: boolean;
   reason?: string;
   /** Every signature verified against a resolved key. */
   fullyVerified: boolean;
   bundle?: AnyAttestationBundle | LegacyMvpAnyAttestationBundle;
   signatures: SignatureCheck[];
-  /** Per-referenced-artifact integrity results. */
+  /** Per-referenced-artifact shape, integrity, and authentication results. */
   refs: RefCheck[];
 }
 
@@ -103,6 +142,23 @@ type ReadableAttestationBundle =
   | AnyAttestationBundle
   | LegacyMvpAnyAttestationBundle;
 type ReadableAttestationRef = AttestationRef | LegacyMvpAttestationRef;
+
+export interface BundleEvidenceVerificationContext {
+  bundle: ReadableAttestationBundle;
+  evidenceRef: ReadableAttestationRef;
+  agreement: Record<string, unknown> | null;
+}
+
+export interface BundleEvidenceVerificationResult {
+  decision: "pass" | "fail" | "error" | "indeterminate";
+  /**
+   * Exact phase-orchestrator claim resolved from authenticated session state.
+   * `null` means the authority could not be established. The verifier uses
+   * this claim for the artifact-specific signature check; it never infers the
+   * evidence signer from an AttestationRef or from arbitrary bundle parties.
+   */
+  authorizedSigner: string | null;
+}
 
 export interface VerifyBundleDeps {
   /** Read a signed artifact at a storage ref (null if absent). */
@@ -147,16 +203,18 @@ export interface VerifyBundleDeps {
   /** Verify a signature over raw bytes for a public key. */
   verify: Verifier;
   /**
-   * OPTIONAL semantic check of a hash-matched SettlementEvidence artifact
+   * Semantic and authority check of a hash-matched SettlementEvidence artifact
    * (DACS-4 §9.7) — wire `verifySettlementEvidence` (with the caller's
-   * agreement/rail/orchestrator context) here. When supplied, a settlement ref
-   * that hash-matches but whose evidence does NOT verify is
-   * downgraded to `invalid-evidence` and the bundle is not `ok`. Omitted by
-   * default — hash + shape integrity only, unchanged behaviour.
+   * agreement/rail/orchestrator context) here. The second argument carries the
+   * resolved agreement and exact attestation ref needed to build that context;
+   * the result also returns the exact authenticated phase orchestrator used to
+   * authorize the component signature. Omission fails closed whenever a bundle
+   * contains settlement evidence.
    */
   verifyEvidence?: (
     evidence: Record<string, unknown>,
-  ) => Promise<{ decision: "pass" | "fail" | "error" | "indeterminate" }>;
+    context: BundleEvidenceVerificationContext,
+  ) => Promise<BundleEvidenceVerificationResult>;
   /**
    * Required whenever `vetRecords` is non-empty. This must run the strict
    * DACS-2 verifier with the session's exact bundle/requirement expectations.
@@ -274,9 +332,13 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
         )) === true,
       ...(verifyEvidenceSource
         ? {
-            verifyEvidence: async (evidence: Record<string, unknown>) => {
+            verifyEvidence: async (
+              evidence: Record<string, unknown>,
+              context: BundleEvidenceVerificationContext,
+            ) => {
               const raw = await verifyEvidenceSource(
                 deepFreezeSnapshot(structuredClone(evidence)),
+                deepFreezeSnapshot(structuredClone(context)),
               );
               const captured = snapshotRecord(
                 raw as unknown as Record<string, unknown>,
@@ -284,9 +346,7 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
               if (!captured) {
                 throw new TypeError("evidence verifier returned a non-wire verdict");
               }
-              return captured as {
-                decision: "pass" | "fail" | "error" | "indeterminate";
-              };
+              return captured as unknown as BundleEvidenceVerificationResult;
             },
           }
         : {}),
@@ -492,24 +552,404 @@ function snapshotDependencyRecord(
   }
 }
 
-/** Hash-check one resolved artifact against the ref that points at it. */
+/** Shape/hash-check one resolved artifact before attempting authentication. */
 function checkArtifact(
   kind: string,
   id: string,
   expectedHash: string,
-  validate: (v: Record<string, unknown>) => boolean,
+  validateScope: (v: Record<string, unknown>) => boolean,
   resolved: Record<string, unknown> | null,
 ): RefCheck {
   if (!resolved) return { kind, id, verdict: "missing" };
-  const scope = stripSignature(resolved);
-  if (!validate(resolved)) return { kind, id, verdict: "invalid-shape" };
+  const scope = stripSignature(resolved) as Record<string, unknown>;
+  if (!validateScope(scope)) return { kind, id, verdict: "invalid-shape" };
   if (contentHash(scope) !== expectedHash)
     return { kind, id, verdict: "hash-mismatch" };
   return { kind, id, verdict: "ok" };
 }
 
-function isAnyRecord(v: Record<string, unknown>): boolean {
-  return typeof v === "object" && v !== null;
+const PLACEHOLDER_SIGNATURE_VALUE = Buffer.alloc(64).toString("base64url");
+const PLACEHOLDER_SIGNATURE = {
+  algorithm: "ed25519",
+  signer: `did:demos:agent:${"00".repeat(32)}`,
+  value: PLACEHOLDER_SIGNATURE_VALUE,
+} as const;
+
+function agreementRoleClaims(
+  scope: Record<string, unknown>,
+): { buyer: string; seller: string } | null {
+  if (!Array.isArray(scope.parties)) return null;
+  const parties = scope.parties.filter(
+    (party): party is Record<string, unknown> =>
+      party !== null && typeof party === "object" && !Array.isArray(party),
+  );
+  const buyers = parties.filter((party) => party.role === "buyer");
+  const sellers = parties.filter((party) => party.role === "seller");
+  const buyer = buyers[0]?.primaryClaim;
+  const seller = sellers[0]?.primaryClaim;
+  return buyers.length === 1 && sellers.length === 1 &&
+      typeof buyer === "string" && typeof seller === "string"
+    ? { buyer, seller }
+    : null;
+}
+
+/** Validate the current agreement body independently of its signature set. */
+function isAgreementScope(v: Record<string, unknown>): boolean {
+  const claims = agreementRoleClaims(v);
+  if (!claims) return false;
+  return isAgreementArtifact({
+    ...v,
+    signatures: [
+      {
+        party: claims.buyer,
+        algorithm: "ed25519",
+        value: PLACEHOLDER_SIGNATURE_VALUE,
+      },
+      {
+        party: claims.seller,
+        algorithm: "ed25519",
+        value: PLACEHOLDER_SIGNATURE_VALUE,
+      },
+    ],
+  });
+}
+
+/** Validate current single-signature records independently of the envelope. */
+function isSettlementEvidenceScope(v: Record<string, unknown>): boolean {
+  return isSettlementEvidence({ ...v, signature: PLACEHOLDER_SIGNATURE });
+}
+
+function isCompositeVerificationRecordScope(
+  v: Record<string, unknown>,
+): boolean {
+  return isCompositeVerificationRecord({
+    ...v,
+    signature: PLACEHOLDER_SIGNATURE,
+  });
+}
+
+function isSettlementAmendmentScope(v: Record<string, unknown>): boolean {
+  const type = v.amendmentType;
+  const amount = v.refundAmount;
+  const validAmount = (value: unknown): boolean =>
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 2 &&
+    typeof (value as Record<string, unknown>).amount === "string" &&
+    /^(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/.test(
+      (value as Record<string, unknown>).amount as string,
+    ) &&
+    !/^0(?:\.0*)?$/.test(
+      (value as Record<string, unknown>).amount as string,
+    ) &&
+    typeof (value as Record<string, unknown>).currency === "string" &&
+    ((value as Record<string, unknown>).currency as string).length > 0;
+  return (
+    v.amendmentVersion === "1" &&
+    typeof v.jobId === "string" && v.jobId.length > 0 &&
+    isAttestationRef(v.amendsEvidenceRef) &&
+    (type === "refund" || type === "partial-refund" || type === "correction") &&
+    (type === "correction" ? amount === undefined : validAmount(amount)) &&
+    (v.refundTxRefs === undefined ||
+      (Array.isArray(v.refundTxRefs) && v.refundTxRefs.every(isChainTxRef))) &&
+    typeof v.reason === "string" && v.reason.length > 0 &&
+    Number.isSafeInteger(v.observedAt) && (v.observedAt as number) >= 0
+  );
+}
+
+function isRatingRecordScope(v: Record<string, unknown>): boolean {
+  return (
+    v.ratingVersion === "1" &&
+    typeof v.jobId === "string" && v.jobId.length > 0 &&
+    typeof v.rater === "string" && v.rater.length > 0 &&
+    typeof v.target === "string" && v.target.length > 0 &&
+    (v.targetRole === "buyer" || v.targetRole === "seller") &&
+    typeof v.value === "number" &&
+    Number.isInteger(v.value) &&
+    v.value >= 1 &&
+    v.value <= 5 &&
+    (v.freeText === undefined ||
+      (typeof v.freeText === "string" && v.freeText.length <= 1_000)) &&
+    (v.dimensions === undefined ||
+      (v.dimensions !== null &&
+        typeof v.dimensions === "object" &&
+        !Array.isArray(v.dimensions) &&
+        Object.values(v.dimensions).every(
+          (score) => typeof score === "number" && Number.isFinite(score),
+        ))) &&
+    Number.isSafeInteger(v.ratedAt) && (v.ratedAt as number) >= 0
+  );
+}
+
+function refVerdictForSignature(
+  verdict: Exclude<RefSignatureVerdict, "valid">,
+): RefVerdict {
+  return `signature-${verdict}` as RefVerdict;
+}
+
+function attachSignatureCheck(
+  check: RefCheck,
+  signature: RefSignatureCheck,
+): RefCheck {
+  return {
+    ...check,
+    verdict:
+      signature.verdict === "valid"
+        ? check.verdict
+        : refVerdictForSignature(signature.verdict),
+    signature,
+  };
+}
+
+function componentSignatureCheck(
+  result: ComponentSignatureVerification,
+): RefSignatureCheck {
+  if (result.status === "valid") {
+    return { verdict: "valid", signers: [result.signature.signer] };
+  }
+  if (result.status === "missing") return { verdict: "missing" };
+  return { verdict: result.status, reason: result.reason };
+}
+
+async function authenticateComponentReference(
+  artifact: Record<string, unknown>,
+  separator: DomainSeparator,
+  authorizedSigners: ReadonlySet<string> | null,
+  deps: VerifyBundleDeps,
+): Promise<RefSignatureCheck> {
+  const result = await verifyComponentSignature(artifact, separator, {
+    isSignerAuthorized: (_record, signature) => {
+      if (!authorizedSigners) {
+        throw new Error("artifact signer authorization could not be resolved");
+      }
+      return parseCanonicalClaimReference(signature.signer) !== null &&
+        [...authorizedSigners].some((claim) =>
+          sameCanonicalClaimIdentity(claim, signature.signer)
+        );
+    },
+    resolvePublicKey: async (signature) => {
+      const signer = parseCanonicalClaimReference(signature.signer);
+      return signature.algorithm === "ed25519" && signer
+        ? deps.resolvePublicKey(
+            `${signer.identity.scheme}:${signer.identity.identifier}`,
+          )
+        : null;
+    },
+    verify: async ({ signedBytes: message, signature, publicKey }) => {
+      if (signature.algorithm !== "ed25519" || publicKey.length !== 32) {
+        throw new Error("unsupported algorithm or malformed resolved key");
+      }
+      const decoded = Uint8Array.from(
+        Buffer.from(signature.value, "base64url"),
+      );
+      if (decoded.length !== 64) return false;
+      return deps.verify(
+        Uint8Array.from(message),
+        Uint8Array.from(decoded),
+        Uint8Array.from(publicKey),
+      );
+    },
+  });
+  const check = componentSignatureCheck(result);
+  if (
+    check.verdict === "unresolved" &&
+    isComponentSignature(artifact.signature) &&
+    artifact.signature.algorithm !== "ed25519"
+  ) {
+    return {
+      verdict: "unresolved",
+      reason: `unsupported-signature-algorithm:${artifact.signature.algorithm}`,
+    };
+  }
+  return check;
+}
+
+/** Authenticate the SDK's explicitly isolated pre-ComponentSignature format. */
+async function authenticateLegacyHexReference(
+  artifact: Record<string, unknown>,
+  separator: DomainSeparator,
+  signer: string | null,
+  deps: VerifyBundleDeps,
+): Promise<RefSignatureCheck> {
+  if (!Object.prototype.hasOwnProperty.call(artifact, "signature")) {
+    return { verdict: "missing" };
+  }
+  if (
+    typeof artifact.signature !== "string" ||
+    !/^[0-9a-f]{128}$/.test(artifact.signature)
+  ) {
+    return { verdict: "malformed", reason: "invalid-legacy-hex-signature" };
+  }
+  if (!signer) {
+    return { verdict: "unresolved", reason: "legacy-signer-unresolved" };
+  }
+  let key: Uint8Array | null;
+  try {
+    key = await deps.resolvePublicKey(signer);
+  } catch {
+    return { verdict: "unresolved", reason: "legacy-signer-key-resolution-failed" };
+  }
+  if (!key || key.length !== 32) {
+    return {
+      verdict: "unresolved",
+      reason: key ? "legacy-signer-key-malformed" : "legacy-signer-key-not-found",
+    };
+  }
+  const message = signedBytes(
+    separator,
+    contentHash(stripSignature(artifact)),
+  );
+  try {
+    const valid = await deps.verify(
+      Uint8Array.from(message),
+      Uint8Array.from(Buffer.from(artifact.signature, "hex")),
+      Uint8Array.from(key),
+    );
+    return valid
+      ? { verdict: "valid", signers: [signer] }
+      : { verdict: "invalid", reason: "cryptographic-verification-failed" };
+  } catch {
+    return { verdict: "unresolved", reason: "legacy-signature-verification-error" };
+  }
+}
+
+function isAgreementSignatureShape(value: unknown): value is AgreementSignature {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const signature = value as Record<string, unknown>;
+  if (
+    Object.keys(signature).length !== 3 ||
+    typeof signature.party !== "string" ||
+    signature.party.length === 0 ||
+    (signature.algorithm !== "ed25519" &&
+      signature.algorithm !== "ecdsa-secp256k1" &&
+      signature.algorithm !== "sr1-aggregate") ||
+    !isCanonicalBase64Url(signature.value)
+  ) {
+    return false;
+  }
+  return (
+    signature.algorithm !== "ed25519" ||
+    Buffer.from(signature.value, "base64url").length === 64
+  );
+}
+
+async function authenticateAgreementReference(
+  artifact: Record<string, unknown>,
+  deps: VerifyBundleDeps,
+): Promise<RefSignatureCheck> {
+  const scope = stripSignature(artifact) as Record<string, unknown>;
+  const claims = agreementRoleClaims(scope);
+  if (!claims || !isAgreementScope(scope)) {
+    return { verdict: "malformed", reason: "invalid-agreement-scope" };
+  }
+  if (!Object.prototype.hasOwnProperty.call(artifact, "signatures")) {
+    return { verdict: "missing", reason: "agreement-signatures-missing" };
+  }
+  if (!Array.isArray(artifact.signatures)) {
+    return { verdict: "malformed", reason: "agreement-signatures-not-an-array" };
+  }
+  if (artifact.signatures.length === 0) {
+    return { verdict: "missing", reason: "agreement-signatures-empty" };
+  }
+  if (!artifact.signatures.every(isAgreementSignatureShape)) {
+    return { verdict: "malformed", reason: "malformed-agreement-signature" };
+  }
+
+  const signatures = artifact.signatures as AgreementSignature[];
+  const required = [claims.buyer, claims.seller];
+  const seen = new Set<string>();
+  const authenticatedSigners: string[] = [];
+  for (const signature of signatures) {
+    const parsed = parseCanonicalClaimReference(signature.party);
+    const identity = parsed
+      ? `${parsed.identity.scheme}:${parsed.identity.identifier}`
+      : null;
+    if (
+      !identity ||
+      !required.some((claim) =>
+        sameCanonicalClaimIdentity(claim, signature.party)
+      ) ||
+      seen.has(identity)
+    ) {
+      return { verdict: "invalid", reason: "agreement-signer-not-authorized" };
+    }
+    seen.add(identity);
+    authenticatedSigners.push(signature.party);
+  }
+  const missing = required.filter((party) => {
+    const parsed = parseCanonicalClaimReference(party);
+    return parsed === null ||
+      !seen.has(`${parsed.identity.scheme}:${parsed.identity.identifier}`);
+  });
+  if (missing.length > 0) {
+    return {
+      verdict: "missing",
+      reason: `agreement-party-signature-missing:${missing.join(",")}`,
+    };
+  }
+
+  const separator = Object.prototype.hasOwnProperty.call(
+    scope,
+    "payeeBoundAgreementVersion",
+  )
+    ? ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument
+    : ARTIFACT_SEPARATORS.AgreementDocument;
+  const message = signedBytes(separator, contentHash(scope));
+  for (const signature of signatures) {
+    if (signature.algorithm !== "ed25519") {
+      return {
+        verdict: "unresolved",
+        reason: `unsupported-agreement-signature-algorithm:${signature.algorithm}`,
+      };
+    }
+    let key: Uint8Array | null;
+    try {
+      const parsed = parseCanonicalClaimReference(signature.party)!;
+      key = await deps.resolvePublicKey(
+        `${parsed.identity.scheme}:${parsed.identity.identifier}`,
+      );
+    } catch {
+      return { verdict: "unresolved", reason: "agreement-signer-key-resolution-failed" };
+    }
+    if (!key || key.length !== 32) {
+      return {
+        verdict: "unresolved",
+        reason: key
+          ? "agreement-signer-key-malformed"
+          : "agreement-signer-key-not-found",
+      };
+    }
+    try {
+      const signatureBytes = Uint8Array.from(
+        Buffer.from(signature.value, "base64url"),
+      );
+      if (
+        !(await deps.verify(
+          Uint8Array.from(message),
+          Uint8Array.from(signatureBytes),
+          Uint8Array.from(key),
+        ))
+      ) {
+        return {
+          verdict: "invalid",
+          reason: "agreement-cryptographic-verification-failed",
+        };
+      }
+    } catch {
+      return { verdict: "unresolved", reason: "agreement-signature-verification-error" };
+    }
+  }
+  return { verdict: "valid", signers: authenticatedSigners };
+}
+
+function bundlePartySignerClaims(
+  bundle: ReadableAttestationBundle,
+): ReadonlySet<string> | null {
+  const claims = bundle.parties.map((party) => party.primaryClaim);
+  return claims.length > 0 ? new Set(claims) : null;
 }
 
 /** DACS-1 §6.3.4 bundles pin the unsigned normative Listing scope. */
@@ -587,6 +1027,43 @@ const CO_SIGNATURE_REQUIRED_OUTCOMES = new Set([
 ]);
 const ABORT_OUTCOMES = new Set(["aborted-by-self", "aborted-by-other"]);
 
+interface ValidatedBundleParties {
+  byRole: Map<"buyer" | "seller" | "orchestrator", string>;
+  hasRequiredRoles: boolean;
+}
+
+function validatedBundleParties(
+  bundle: AnyAttestationBundle,
+): ValidatedBundleParties | null {
+  const byRole = new Map<"buyer" | "seller" | "orchestrator", string>();
+  const seenClaims: string[] = [];
+  for (const party of bundle.parties) {
+    if (
+      party.role !== "buyer" &&
+      party.role !== "seller" &&
+      party.role !== "orchestrator"
+    ) {
+      return null;
+    }
+    if (
+      party.primaryClaim.length === 0 ||
+      byRole.has(party.role) ||
+      seenClaims.some((claim) =>
+        sameCanonicalClaimIdentity(claim, party.primaryClaim) ||
+        claim === party.primaryClaim
+      )
+    ) {
+      return null;
+    }
+    byRole.set(party.role, party.primaryClaim);
+    seenClaims.push(party.primaryClaim);
+  }
+  return {
+    byRole,
+    hasRequiredRoles: byRole.has("buyer") && byRole.has("seller"),
+  };
+}
+
 function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer" | "seller"): string | undefined {
   if (!agreement) return undefined;
   if (isAgreementArtifact(agreement)) {
@@ -624,9 +1101,15 @@ function agreementIsCoherentWithBundle(
       agreementBuyers.length === 1 &&
       agreementSellers.length === 1 &&
       bundleSellers.length === 1 &&
-      agreementBuyers[0]!.primaryClaim === bundleBuyers[0]!.primaryClaim &&
+      sameCanonicalClaimIdentity(
+        agreementBuyers[0]!.primaryClaim,
+        bundleBuyers[0]!.primaryClaim,
+      ) &&
       agreementBuyers[0]!.bundleHash === bundleBuyers[0]!.bundleHash &&
-      agreementSellers[0]!.primaryClaim === bundleSellers[0]!.primaryClaim &&
+      sameCanonicalClaimIdentity(
+        agreementSellers[0]!.primaryClaim,
+        bundleSellers[0]!.primaryClaim,
+      ) &&
       agreementSellers[0]!.bundleHash === bundleSellers[0]!.bundleHash
     );
   }
@@ -640,31 +1123,110 @@ function agreementIsCoherentWithBundle(
     return (
       isLegacyMvpAgreementDocument(scope) &&
       scope.jobId === bundle.jobId &&
-      scope.buyer === bundleBuyers[0]!.primaryClaim
+      sameCanonicalClaimIdentity(scope.buyer, bundleBuyers[0]!.primaryClaim)
     );
   }
   return (
     isLegacyMvpAgreementDocument(scope) &&
     scope.jobId === bundle.jobId &&
-    scope.buyer === bundleBuyers[0]!.primaryClaim &&
-    scope.seller === bundleSellers[0]!.primaryClaim
+    sameCanonicalClaimIdentity(scope.buyer, bundleBuyers[0]!.primaryClaim) &&
+    sameCanonicalClaimIdentity(scope.seller, bundleSellers[0]!.primaryClaim)
   );
 }
 
 function requiredSignatureClaims(
   bundle: ReadableAttestationBundle,
   agreement: Record<string, unknown> | null,
+  parties: ValidatedBundleParties | null,
+  signatureCount: number,
 ): string[] {
-  if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome)) return [];
-  const buyer = bundle.parties.find((party) => party.role === "buyer")?.primaryClaim;
-  const seller = bundle.parties.find((party) => party.role === "seller")?.primaryClaim;
+  if (!parties) {
+    if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome)) return [];
+    const buyer = bundle.parties.find((party) => party.role === "buyer")
+      ?.primaryClaim;
+    const seller = bundle.parties.find((party) => party.role === "seller")
+      ?.primaryClaim;
+    const claims = [
+      agreementClaim(agreement, "buyer") ?? buyer ?? "role:buyer",
+      agreementClaim(agreement, "seller") ?? seller ?? "role:seller",
+    ];
+    const orchestrator = bundle.parties.find(
+      (party) => party.role === "orchestrator",
+    )?.primaryClaim;
+    if (orchestrator && orchestrator !== buyer && orchestrator !== seller) {
+      claims.push(orchestrator);
+    }
+    return [...new Set(claims)];
+  }
+
+  const anchorClaim = bundle.anchoredByRole
+    ? parties.byRole.get(bundle.anchoredByRole)
+    : undefined;
+  if (
+    !CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) &&
+    signatureCount === 1
+  ) {
+    return anchorClaim ? [anchorClaim] : ["role:anchoring-party"];
+  }
+  const buyer = parties.byRole.get("buyer");
+  const seller = parties.byRole.get("seller");
   const claims = [
     agreementClaim(agreement, "buyer") ?? buyer ?? "role:buyer",
     agreementClaim(agreement, "seller") ?? seller ?? "role:seller",
   ];
-  const orchestrator = bundle.parties.find((party) => party.role === "orchestrator")?.primaryClaim;
-  if (orchestrator && orchestrator !== buyer && orchestrator !== seller) claims.push(orchestrator);
-  return [...new Set(claims)];
+  const orchestrator = parties.byRole.get("orchestrator");
+  if (
+    orchestrator &&
+    !sameCanonicalClaimIdentity(orchestrator, buyer) &&
+    !sameCanonicalClaimIdentity(orchestrator, seller)
+  ) {
+    claims.push(orchestrator);
+  }
+  if (anchorClaim) claims.push(anchorClaim);
+  return claims.filter(
+    (claim, index) =>
+      claims.findIndex((candidate) =>
+        sameCanonicalClaimIdentity(candidate, claim)
+      ) === index,
+  );
+}
+
+function bundleClaimReferencesAreCanonical(
+  bundle: Readonly<ReadableAttestationBundle>,
+): boolean {
+  const parties: unknown = bundle.parties;
+  const signatures: unknown = bundle.signatures;
+  if (!Array.isArray(parties) || parties.some((party) =>
+    party === null || typeof party !== "object" ||
+    typeof (party as { primaryClaim?: unknown }).primaryClaim !== "string"
+  ) || (signatures !== undefined &&
+    (!Array.isArray(signatures) || signatures.some((signature) =>
+      signature === null || typeof signature !== "object" ||
+      typeof (signature as { party?: unknown }).party !== "string"
+    )))) return false;
+  const references = [
+    ...parties.map(
+      (party) => (party as { primaryClaim: string }).primaryClaim,
+    ),
+    ...(signatures ?? []).map(
+      (signature) => (signature as { party: string }).party,
+    ),
+    ...[
+      bundle.agreementRef,
+      ...bundle.settlementEvidence,
+      ...bundle.vetRecords,
+      ...bundle.phaseSummary.map((phase) => phase.attestationRef),
+      ...(bundle.amendments ?? []),
+      ...(bundle.ratingRefs ?? []),
+    ].flatMap((ref) =>
+      ref && isAttestationRef(ref) && ref.signer !== undefined
+        ? [ref.signer]
+        : []
+    ),
+  ];
+  return references.every(
+    (reference) => parseCanonicalClaimReference(reference) !== null,
+  );
 }
 
 export async function verifyBundleCore(
@@ -698,6 +1260,34 @@ export async function verifyBundleCore(
     };
   }
   const bundle = raw as ReadableAttestationBundle;
+  const canonicalBundleClaims = bundleClaimReferencesAreCanonical(bundle);
+  const parties = isNormativeGraph
+    ? validatedBundleParties(bundle as AnyAttestationBundle)
+    : null;
+  if (isNormativeGraph && !parties) {
+    return {
+      ok: false,
+      reason:
+        "bundle parties contain an unsupported or duplicate role or a non-distinct party claim",
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+      bundle: structuredClone(bundle),
+    };
+  }
+  if (
+    parties &&
+    (!bundle.anchoredByRole || !parties.byRole.has(bundle.anchoredByRole))
+  ) {
+    return {
+      ok: false,
+      reason: "anchoredByRole must identify a validated bundle party role",
+      fullyVerified: false,
+      signatures: [],
+      refs: [],
+      bundle: structuredClone(bundle),
+    };
+  }
   if (!CO_SIGNATURE_REQUIRED_OUTCOMES.has(bundle.outcome) && !ABORT_OUTCOMES.has(bundle.outcome)) {
     return {
       ok: false,
@@ -720,33 +1310,65 @@ export async function verifyBundleCore(
   );
 
   const sigs = Array.isArray(raw["signatures"])
-    ? (raw["signatures"] as Array<{ party?: unknown; value?: unknown }>)
+    ? (raw["signatures"] as Array<{
+        party?: unknown;
+        algorithm?: unknown;
+        value?: unknown;
+      }>)
     : [];
 
   const signatures: SignatureCheck[] = [];
+  const seenSignatureClaims = new Set<string>();
   for (const s of sigs) {
     const party = typeof s.party === "string" ? s.party : "";
-    const resolvedKey = await deps.resolvePublicKey(party);
+    const parsedParty = parseCanonicalClaimReference(party);
+    const canonicalParty = parsedParty !== null;
+    const canonicalPartyIdentity = parsedParty
+      ? `${parsedParty.identity.scheme}:${parsedParty.identity.identifier}`
+      : null;
+    const authorizedParty = parsedParty !== null && bundle.parties.some(
+      (candidate) =>
+        sameCanonicalClaimIdentity(candidate.primaryClaim, party),
+    );
+    const encodedSignature = typeof s.value === "string" ? s.value : "";
+    const signatureBytes = isCanonicalBase64Url(encodedSignature)
+      ? Uint8Array.from(Buffer.from(encodedSignature, "base64url"))
+      : null;
     let verdict: SignatureVerdict;
-    if (!resolvedKey) {
+    if (!canonicalParty) {
       verdict = "unverified";
     } else if (
-      !(resolvedKey instanceof Uint8Array) ||
-      resolvedKey.length !== 32
+      !authorizedParty ||
+      s.algorithm !== "ed25519" ||
+      signatureBytes === null ||
+      signatureBytes.length !== 64 ||
+      seenSignatureClaims.has(canonicalPartyIdentity!)
     ) {
-      // Malformed resolved key — can't evaluate; ERROR, not a false FAIL.
-      verdict = "error";
+      // §10.4.1 / CORE §B.7: every carried signature must name a session
+      // party, dispatch by its declared algorithm, and use exact SIG-6 bytes.
+      // Unsupported algorithms are never reinterpreted as Ed25519.
+      verdict = "invalid";
     } else {
-      const key = Uint8Array.from(resolvedKey);
-      const sigBytes = Uint8Array.from(
-        Buffer.from(typeof s.value === "string" ? s.value : "", "base64url"),
-      );
-      const verified = await deps.verify(
-        Uint8Array.from(message),
-        Uint8Array.from(sigBytes),
-        Uint8Array.from(key),
-      );
-      verdict = verified === true ? "valid" : "invalid";
+      seenSignatureClaims.add(canonicalPartyIdentity!);
+      // Resolve once. The branch above deliberately avoids exposing an
+      // unauthorized or algorithm-confused signature to caller callbacks.
+      const resolvedKey = await deps.resolvePublicKey(canonicalPartyIdentity!);
+      if (!resolvedKey) {
+        verdict = "unverified";
+      } else if (
+        !(resolvedKey instanceof Uint8Array) ||
+        resolvedKey.length !== 32
+      ) {
+        // Malformed resolved key — can't evaluate; ERROR, not a false FAIL.
+        verdict = "error";
+      } else {
+        const verified = await deps.verify(
+          Uint8Array.from(message),
+          Uint8Array.from(signatureBytes),
+          Uint8Array.from(resolvedKey),
+        );
+        verdict = verified === true ? "valid" : "invalid";
+      }
     }
     signatures.push({ party, verdict });
   }
@@ -795,7 +1417,10 @@ export async function verifyBundleCore(
   const checkReadableRef = async (
     artifactKind: string,
     ref: ReadableAttestationRef,
-    validate: (value: Record<string, unknown>) => boolean,
+    validateScope: (value: Record<string, unknown>) => boolean,
+    authenticate?: (
+      value: Record<string, unknown>,
+    ) => Promise<RefSignatureCheck>,
   ): Promise<{ check: RefCheck; value: Record<string, unknown> | null }> => {
     const resolved = await resolveReadableRef(ref);
     if (!resolved.supported) {
@@ -826,14 +1451,18 @@ export async function verifyBundleCore(
         };
       }
     }
+    const check = checkArtifact(
+      artifactKind,
+      refLocator(ref),
+      ref.contentHash,
+      validateScope,
+      value,
+    );
     return {
-      check: checkArtifact(
-        artifactKind,
-        refLocator(ref),
-        ref.contentHash,
-        validate,
-        value,
-      ),
+      check:
+        check.verdict === "ok" && value && authenticate
+          ? attachSignatureCheck(check, await authenticate(value))
+          : check,
       value,
     };
   };
@@ -844,7 +1473,13 @@ export async function verifyBundleCore(
       bundle.agreementRef,
       isLegacyMvpAttestationRef(bundle.agreementRef)
         ? isLegacyMvpAgreementDocument
-        : isAgreementArtifact,
+        : isAgreementScope,
+      isLegacyMvpAttestationRef(bundle.agreementRef)
+        ? async () => ({
+            verdict: "missing" as const,
+            reason: "legacy-agreement-signatures-missing",
+          })
+        : (artifact) => authenticateAgreementReference(artifact, deps),
     );
     if (
       agreement.check.verdict === "ok" &&
@@ -855,8 +1490,13 @@ export async function verifyBundleCore(
     }
     refs.push(agreement.check);
     agreementArtifact =
-      agreement.check.verdict === "ok" ||
-      agreement.check.verdict === "incoherent"
+      agreement.value &&
+      ![
+        "missing",
+        "invalid-shape",
+        "hash-mismatch",
+        "unresolved",
+      ].includes(agreement.check.verdict)
         ? agreement.value
         : null;
   }
@@ -867,28 +1507,59 @@ export async function verifyBundleCore(
       isLegacyMvpAttestationRef(ev)
         ? (value) =>
             isLegacyMvpSettlementEvidence(value) ||
-            isSettlementEvidence(value)
-        : isSettlementEvidence,
+            isSettlementEvidenceScope(value)
+        : isSettlementEvidenceScope,
     );
     if (
       evidence.check.verdict === "ok" &&
-      deps.verifyEvidence &&
-      evidence.value
+      evidence.value &&
+      (stripSignature(evidence.value) as { jobId?: unknown }).jobId !==
+        bundle.jobId
     ) {
-      const callbackVerdict = await deps.verifyEvidence(
-        structuredClone(evidence.value),
-      );
+      evidence.check.verdict = "invalid-binding";
+    }
+    if (evidence.check.verdict === "ok" && evidence.value) {
       let decision: unknown;
+      let authorizedSigner: string | null = null;
       try {
+        const callbackVerdict = deps.verifyEvidence
+          ? await deps.verifyEvidence(
+              structuredClone(evidence.value),
+              {
+                bundle: structuredClone(bundle),
+                evidenceRef: structuredClone(ev),
+                agreement:
+                  agreementArtifact === null
+                    ? null
+                    : structuredClone(agreementArtifact),
+              },
+            )
+          : null;
         const verdict = snapshotCanonicalJson(
           callbackVerdict,
           "SettlementEvidence verification verdict",
-        ) as { decision?: unknown };
-        decision = verdict.decision;
+        ) as { decision?: unknown; authorizedSigner?: unknown } | null;
+        if (verdict) {
+          decision = verdict.decision;
+          authorizedSigner =
+            typeof verdict.authorizedSigner === "string" &&
+            verdict.authorizedSigner.length > 0
+              ? verdict.authorizedSigner
+              : null;
+        }
       } catch {
         decision = undefined;
       }
-      if (decision !== "pass") {
+      evidence.check = attachSignatureCheck(
+        evidence.check,
+        await authenticateComponentReference(
+          evidence.value,
+          ARTIFACT_SEPARATORS.SettlementEvidence,
+          authorizedSigner === null ? null : new Set([authorizedSigner]),
+          deps,
+        ),
+      );
+      if (evidence.check.verdict === "ok" && decision !== "pass") {
         evidence.check.verdict = "invalid-evidence";
       }
     }
@@ -898,7 +1569,7 @@ export async function verifyBundleCore(
     const composite = await checkReadableRef(
       "dacs-2-composite",
       vr,
-      isCompositeVerificationRecord,
+      isCompositeVerificationRecordScope,
     );
     if (composite.check.verdict === "ok" && composite.value) {
       if (!deps.verifyCompositeRecord) {
@@ -909,7 +1580,10 @@ export async function verifyBundleCore(
             composite.value as unknown as CompositeVerificationRecord;
           const boundParty = bundle.parties.find(
             (party) =>
-              party.primaryClaim === candidate.evaluatedParty &&
+              sameCanonicalClaimIdentity(
+                party.primaryClaim,
+                candidate.evaluatedParty,
+              ) &&
               party.bundleHash === candidate.bundleHash,
           );
           if (candidate.jobId !== bundle.jobId || !boundParty) {
@@ -931,6 +1605,11 @@ export async function verifyBundleCore(
             verification.record.signature.value !== candidate.signature.value
             ) {
               composite.check.verdict = "invalid-vet-record";
+            } else {
+              composite.check = attachSignatureCheck(composite.check, {
+                verdict: "valid",
+                signers: [candidate.signature.signer],
+              });
             }
           }
         } catch {
@@ -942,14 +1621,59 @@ export async function verifyBundleCore(
   }
   for (const amendment of bundle.amendments ?? []) {
     refs.push(
-      (await checkReadableRef("dacs-4-amendment", amendment, isAnyRecord))
-        .check,
+      (
+        await checkReadableRef(
+          "dacs-4-amendment",
+          amendment,
+          isSettlementAmendmentScope,
+          (artifact) =>
+            authenticateComponentReference(
+              artifact,
+              "dacs-amendment:v1:",
+              bundlePartySignerClaims(bundle),
+              deps,
+            ),
+        )
+      ).check,
     );
   }
   for (const rating of bundle.ratingRefs ?? []) {
-    refs.push(
-      (await checkReadableRef("dacs-5-rating", rating, isAnyRecord)).check,
+    const checked = await checkReadableRef(
+      "dacs-5-rating",
+      rating,
+      isRatingRecordScope,
+      (artifact) => {
+        const scope = stripSignature(artifact) as Record<string, unknown>;
+        const signers =
+          typeof scope.rater === "string" ? new Set([scope.rater]) : null;
+        return authenticateComponentReference(
+          artifact,
+          RATING_SEPARATOR,
+          signers,
+          deps,
+        );
+      },
     );
+    if (checked.check.verdict === "ok" && checked.value) {
+      const scope = stripSignature(checked.value) as Record<string, unknown>;
+      const rater = bundle.parties.find(
+        (party) => sameCanonicalClaimIdentity(party.primaryClaim, scope.rater),
+      );
+      const target = bundle.parties.find(
+        (party) => sameCanonicalClaimIdentity(party.primaryClaim, scope.target),
+      );
+      if (
+        scope.jobId !== bundle.jobId ||
+        !rater ||
+        !target ||
+        sameCanonicalClaimIdentity(rater.primaryClaim, target.primaryClaim) ||
+        target.role !== scope.targetRole ||
+        (target.role !== "buyer" && target.role !== "seller")
+      ) {
+        checked.check.verdict = "invalid-binding";
+      }
+    }
+    refs.push(checked.check);
   }
 
   // Listing resolution is graph-discriminated. A current bundle always resolves
@@ -1005,63 +1729,126 @@ export async function verifyBundleCore(
       "resolved legacy Listing",
     );
   }
-  refs.push(
-    !listingPinCoherent
-      ? {
-          kind: "dacs-1-listing",
-          id: listingId,
-          verdict: "hash-mismatch",
-        }
-      : canResolveListing
-        ? checkArtifact(
-            "dacs-1-listing",
-            listingId,
-            bundle.listingRef.contentHash,
-            listingUsesNormativeScope
-              ? isNormativeListingScope
-              : isLegacyMvpListingScope,
-            listing,
-          )
-      : {
-          kind: "dacs-1-listing",
-          id: listingId,
-          verdict: "unresolved",
-        },
-  );
+  let listingCheck: RefCheck;
+  if (!listingPinCoherent) {
+    listingCheck = {
+      kind: "dacs-1-listing",
+      id: listingId,
+      verdict: "hash-mismatch",
+    };
+  } else if (!canResolveListing) {
+    listingCheck = {
+      kind: "dacs-1-listing",
+      id: listingId,
+      verdict: "unresolved",
+    };
+  } else {
+    listingCheck = checkArtifact(
+      "dacs-1-listing",
+      listingId,
+      bundle.listingRef.contentHash,
+      listingUsesNormativeScope
+        ? isNormativeListingScope
+        : isLegacyMvpListingScope,
+      listing,
+    );
+    if (listingCheck.verdict === "ok" && listing && listingUsesNormativeScope) {
+      const listingScope = stripSignature(listing) as {
+        listingId?: unknown;
+        seller?: { identity?: { presentedBy?: unknown } };
+      };
+      const sellerClaim = bundle.parties.find(
+        (party) => party.role === "seller",
+      )?.primaryClaim;
+      if (
+        listingScope.listingId !== listingId ||
+        (sellerClaim !== undefined &&
+          !sameCanonicalClaimIdentity(
+            listingScope.seller?.identity?.presentedBy,
+            sellerClaim,
+          ))
+      ) {
+        listingCheck.verdict = "invalid-binding";
+      }
+    }
+    if (listingCheck.verdict === "ok" && listing) {
+      const listingScope = stripSignature(listing) as Record<string, unknown>;
+      const publisher = isListingDraft(listingScope)
+        ? listingScope.seller.identity.presentedBy
+        : isLegacyMvpListing(listingScope)
+          ? listingScope.agentId
+          : null;
+      listingCheck = attachSignatureCheck(
+        listingCheck,
+        isLegacyMvpListing(listingScope) &&
+          typeof listing.signature === "string"
+          ? await authenticateLegacyHexReference(
+              listing,
+              ARTIFACT_SEPARATORS.Listing,
+              publisher,
+              deps,
+            )
+          : await authenticateComponentReference(
+              listing,
+              ARTIFACT_SEPARATORS.Listing,
+              publisher ? new Set([publisher]) : null,
+              deps,
+            ),
+      );
+    }
+  }
+  refs.push(listingCheck);
 
   const anyInvalid = signatures.some((c) => c.verdict === "invalid");
   const anyError = signatures.some((c) => c.verdict === "error");
   const anyValid = signatures.some((c) => c.verdict === "valid");
-  const validSignatureClaims = new Set(
-    signatures.filter((c) => c.verdict === "valid").map((c) => c.party),
+  const validSignatureClaims = signatures
+    .filter((c) => c.verdict === "valid")
+    .map((c) => c.party);
+  const missingRequiredSignatures = requiredSignatureClaims(
+    bundle,
+    agreementArtifact,
+    parties,
+    signatures.length,
+  ).filter((claim) =>
+    !validSignatureClaims.some((candidate) =>
+      sameCanonicalClaimIdentity(candidate, claim)
+    )
   );
-  const missingRequiredSignatures = requiredSignatureClaims(bundle, agreementArtifact).filter(
-    (claim) => !validSignatureClaims.has(claim),
-  );
-  const sigOk = anyValid && !anyInvalid && !anyError;
+  const sigOk = canonicalBundleClaims && anyValid && !anyInvalid && !anyError;
   const fullyVerified =
+    canonicalBundleClaims &&
     signatures.length > 0 &&
     signatures.every((c) => c.verdict === "valid") &&
-    missingRequiredSignatures.length === 0;
+    missingRequiredSignatures.length === 0 &&
+    (!parties || parties.hasRequiredRoles);
   const badRef = refs.find((r) => r.verdict !== "ok");
   const refsOk = !badRef;
 
   return {
-    ok: sigOk && missingRequiredSignatures.length === 0 && refsOk,
+    ok:
+      sigOk &&
+      missingRequiredSignatures.length === 0 &&
+      (!parties || parties.hasRequiredRoles) &&
+      refsOk,
     reason:
       signatures.length === 0
         ? "bundle has no signatures"
+        : !canonicalBundleClaims
+          ? "bundle contains a non-canonical ClaimReference"
         : anyInvalid
           ? "one or more signatures failed verification"
           : anyError
             ? "one or more signer keys were malformed (could not verify)"
             : missingRequiredSignatures.length > 0
               ? `missing required signature(s): ${missingRequiredSignatures.join(", ")}`
-            : !anyValid
-              ? "no signer key could be resolved"
-              : badRef
-                ? `referenced artifact ${badRef.kind}/${badRef.id} ${badRef.verdict}`
-                : undefined,
+              : parties && !parties.hasRequiredRoles
+                ? "bundle parties must identify both buyer and seller roles"
+                : !anyValid
+                  ? "no signer key could be resolved"
+                  : badRef
+                    ? `referenced artifact ${badRef.kind}/${badRef.id} ${badRef.verdict}`
+                    : undefined,
     fullyVerified,
     bundle: structuredClone(bundle),
     signatures,
