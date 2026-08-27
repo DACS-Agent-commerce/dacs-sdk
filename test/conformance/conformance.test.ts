@@ -59,6 +59,10 @@ import type {
   AnyAttestationBundle,
   AttestationBundle,
 } from "../../src/artifacts/types.js";
+import {
+  isAttestationRef,
+  isChainTxRef,
+} from "../../src/artifacts/index.js";
 import type { LegacyMvpAgreementDocument as AgreementDocument } from "../../src/artifacts/legacyMvp.js";
 
 /**
@@ -142,6 +146,17 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     settlement: { seeds: Record<string, string>; publicKeys: Record<string, string> };
     verify: { seeds: Record<string, string> };
   } & Record<string, unknown>;
+  const referenceShapes = read(
+    "conformance/vectors/security/artifact-reference-shapes-v0.1.json",
+  ) as unknown as {
+    count: number;
+    vectors: Array<{
+      name: string;
+      type: "AttestationRef" | "ChainTxRef";
+      expected: "pass" | "fail";
+      value: unknown;
+    }>;
+  };
 
   it("loads the pinned manifest", () => {
     expect(manifest.dacsVersion).toBe("0.1");
@@ -519,6 +534,45 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
           "cci-xm:evm:mainnet:0x1234",
         ),
       ).toBe(want);
+    },
+
+    // Exact normative artifact-reference shapes — DACS-2 §7.5.2 / DACS-4 §9.3.
+    "artifact-shape-attestationref": (want) => {
+      expect(referenceShapes.vectors).toHaveLength(referenceShapes.count);
+      expect(referenceShapes.count).toBe(23);
+      const accepted = referenceShapes.vectors.filter(
+        (testCase) =>
+          testCase.type === "AttestationRef" && testCase.expected === "pass",
+      );
+      expect(
+        accepted.map(
+          (testCase) =>
+            (testCase.value as { anchor: { kind: string } }).anchor.kind,
+        ).sort(),
+      ).toEqual([...want.acceptedAnchorKinds].sort());
+      expect(accepted.every((testCase) => isAttestationRef(testCase.value))).toBe(true);
+      const legacy = referenceShapes.vectors.find(
+        (testCase) => testCase.name === "attestation-legacy-kind-id-rejected",
+      );
+      expect(isAttestationRef(legacy?.value) ? "pass" : "fail").toBe(want.legacyKindId);
+    },
+    "artifact-shape-chaintxref": (want) => {
+      const acceptedKinds = new Set<string>(want.acceptedKinds);
+      const accepted = referenceShapes.vectors.filter((testCase) => {
+        if (testCase.type !== "ChainTxRef" || testCase.expected !== "pass") return false;
+        const kind = (testCase.value as { kind?: unknown }).kind;
+        return typeof kind === "string" && acceptedKinds.has(kind);
+      });
+      expect(
+        accepted.map((testCase) => (testCase.value as { kind: string }).kind).sort(),
+      ).toEqual([...want.acceptedKinds].sort());
+      expect(accepted.every((testCase) => isChainTxRef(testCase.value))).toBe(true);
+      const legacy = referenceShapes.vectors.find(
+        (testCase) => testCase.name === "txref-legacy-rail-kind-rejected",
+      );
+      expect(isChainTxRef(legacy?.value) ? "pass" : "fail").toBe(
+        want.legacyRailTxHashKind,
+      );
     },
 
     // negotiate — DACS-3 SE-8 role assignment and commit teeth.
@@ -1237,10 +1291,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. Seventy-eight golden cases have non-vacuous SDK runners in
+    // This pin has 236 cases. Eighty golden cases have non-vacuous SDK runners in
     // this change; deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(78);
+    expect(Object.keys(RUNNERS)).toHaveLength(80);
     expect(manifest.cases).toHaveLength(236);
   });
 
