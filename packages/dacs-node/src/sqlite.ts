@@ -4531,6 +4531,18 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           }
           const violation = coordinatorViolation(profile, record);
           if (violation) return { status: "corrupt" as const, reason: violation };
+          // One actor-local job may bind to exactly one live rail. This check
+          // runs inside BEGIN IMMEDIATE, so competing x402/pay-DEM creators on
+          // this process or another connection cannot both observe absence and
+          // insert different profile rows. Offline databases never mix live
+          // profiles, but retaining the same identity rule there is harmless.
+          const otherProfile = database.prepare(`
+            SELECT profile FROM dacs_coordinator_orders
+            WHERE role = ? AND job_id = ? AND profile <> ?
+            LIMIT 1
+          `).get(role, input.order.jobId, profile) as
+            { profile: string } | undefined;
+          if (otherProfile !== undefined) return { status: "conflict" as const };
           const existing = loadRecord(input.order.jobId);
           if (existing.status !== "missing") {
             if (existing.status !== "ok") return existing;

@@ -5,6 +5,8 @@ import { createDacsMultirailLiveCommerceGraphV1 } from
 import type { DacsLiveRoleInboundOperationContextV1 } from "../src/roleRuntime.js";
 import type { DacsHttpAuthenticatedEnvelopeV1 } from "../src/transport/envelope.js";
 
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+
 function operations(role: "buyer" | "seller") {
   const operation = vi.fn(async () => ({ status: "pending-retry" as const }));
   return role === "buyer"
@@ -57,8 +59,6 @@ function graph(
   };
 }
 
-const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
-
 function authenticated(type = "agreement-response", payload: unknown = {}):
 Readonly<DacsHttpAuthenticatedEnvelopeV1> {
   return {
@@ -85,8 +85,6 @@ function coordinatorStore(status: "ok" | "missing" | "stale") {
   };
 }
 
-// A minimal inbound context whose two coordinator stores report which rail (if
-// any) already owns the job — the authoritative routing signal.
 function context(
   role: "buyer" | "seller",
   owner: Owner,
@@ -105,7 +103,7 @@ function context(
 }
 
 describe("strict multirail live commerce graph", () => {
-  it("routes a message to the rail that already owns the job", async () => {
+  it("routes a shared message to the rail that already owns the job", async () => {
     const x402 = graph("buyer", "x402", "valid");
     const payDem = graph("buyer", "pay-dem", "valid");
     const combined = createDacsMultirailLiveCommerceGraphV1({
@@ -113,18 +111,16 @@ describe("strict multirail live commerce graph", () => {
       x402: x402.value as never,
       payDem: payDem.value as never,
     });
+
     await expect(combined.handleMessage(
-      authenticated("agreement-response"),
+      authenticated(),
       context("buyer", "pay-dem"),
     )).resolves.toEqual({ disposition: "accepted" });
     expect(payDem.handleMessage).toHaveBeenCalledOnce();
     expect(x402.handleMessage).not.toHaveBeenCalled();
   });
 
-  it("admits a shared message both rails can parse instead of failing closed", async () => {
-    // Every session-handshake message satisfies both rails' schemas; that must
-    // be admitted (the retained binding decides the rail), not rejected as
-    // ambiguous the way the transport gate used to.
+  it("admits a shared message both rail schemas can parse", async () => {
     const x402 = graph("buyer", "x402", "valid");
     const payDem = graph("buyer", "pay-dem", "valid");
     const combined = createDacsMultirailLiveCommerceGraphV1({
@@ -132,6 +128,7 @@ describe("strict multirail live commerce graph", () => {
       x402: x402.value as never,
       payDem: payDem.value as never,
     });
+
     await expect(combined.validatePayload({
       type: "agreement-response",
       payload: {},
@@ -141,7 +138,7 @@ describe("strict multirail live commerce graph", () => {
     })).resolves.toEqual({ status: "valid" });
   });
 
-  it("routes a fresh session-init by the rail its order declares", async () => {
+  it("routes a fresh session-init by its declared order phase", async () => {
     const x402 = graph("seller", "x402", "valid");
     const payDem = graph("seller", "pay-dem", "valid");
     const combined = createDacsMultirailLiveCommerceGraphV1({
@@ -149,6 +146,7 @@ describe("strict multirail live commerce graph", () => {
       x402: x402.value as never,
       payDem: payDem.value as never,
     });
+
     await expect(combined.handleMessage(
       authenticated("session-init", { order: { protocol: { phase: "pay-dem" } } }),
       context("seller", undefined),
@@ -165,8 +163,9 @@ describe("strict multirail live commerce graph", () => {
       x402: x402.value as never,
       payDem: payDem.value as never,
     });
+
     await expect(combined.handleMessage(
-      authenticated("agreement-response"),
+      authenticated(),
       context("buyer", undefined),
     )).resolves.toEqual({
       disposition: "rejected",
@@ -184,8 +183,9 @@ describe("strict multirail live commerce graph", () => {
       x402: x402.value as never,
       payDem: payDem.value as never,
     });
+
     await expect(combined.handleMessage(
-      authenticated("agreement-response"),
+      authenticated(),
       context("buyer", "both"),
     )).resolves.toEqual({
       disposition: "rejected",
@@ -195,7 +195,7 @@ describe("strict multirail live commerce graph", () => {
     expect(payDem.handleMessage).not.toHaveBeenCalled();
   });
 
-  it("rejects when the owning rail rejects the payload", async () => {
+  it("rejects an invalid payload from the rail that owns the job", async () => {
     const x402 = graph("buyer", "x402", "valid");
     const payDem = graph("buyer", "pay-dem", "invalid");
     const combined = createDacsMultirailLiveCommerceGraphV1({
@@ -203,13 +203,57 @@ describe("strict multirail live commerce graph", () => {
       x402: x402.value as never,
       payDem: payDem.value as never,
     });
+
     await expect(combined.handleMessage(
-      authenticated("agreement-response"),
+      authenticated(),
       context("buyer", "pay-dem"),
     )).resolves.toEqual({
       disposition: "rejected",
       reasonCode: "pay-dem-fixture-invalid",
     });
+    expect(payDem.handleMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps an owning-rail validation outage pending instead of rejecting it", async () => {
+    const x402 = graph("buyer", "x402", "valid");
+    const payDem = graph("buyer", "pay-dem", "authentication-failure");
+    const combined = createDacsMultirailLiveCommerceGraphV1({
+      role: "buyer",
+      x402: x402.value as never,
+      payDem: payDem.value as never,
+    });
+
+    await expect(combined.validatePayload({
+      type: "agreement-response",
+      payload: {},
+      jobId: JOB_ID,
+      sender: "seller",
+      audience: "buyer",
+    })).resolves.toEqual({ status: "valid" });
+    await expect(combined.handleMessage(
+      authenticated(),
+      context("buyer", "pay-dem"),
+    )).rejects.toMatchObject({
+      reasonCode: "multirail-message-validation-unavailable",
+    });
+    expect(x402.handleMessage).not.toHaveBeenCalled();
+    expect(payDem.handleMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not let an unavailable sibling override the retained valid rail", async () => {
+    const x402 = graph("buyer", "x402", "valid");
+    const payDem = graph("buyer", "pay-dem", "authentication-failure");
+    const combined = createDacsMultirailLiveCommerceGraphV1({
+      role: "buyer",
+      x402: x402.value as never,
+      payDem: payDem.value as never,
+    });
+
+    await expect(combined.handleMessage(
+      authenticated(),
+      context("buyer", "x402"),
+    )).resolves.toEqual({ disposition: "accepted" });
+    expect(x402.handleMessage).toHaveBeenCalledOnce();
     expect(payDem.handleMessage).not.toHaveBeenCalled();
   });
 
@@ -224,3 +268,4 @@ describe("strict multirail live commerce graph", () => {
     expect(combined.handleApplicationRequest).toBe(x402.handleApplicationRequest);
   });
 });
+

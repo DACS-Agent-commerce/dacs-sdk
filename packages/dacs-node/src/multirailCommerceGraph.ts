@@ -89,12 +89,10 @@ function availability(
 }
 
 /**
- * Admit a message into the inbox when at least one rail can parse it. This is
- * only the transport-level acceptance gate; it never picks the rail. The
- * authoritative rail is resolved in `handleMessage` from the job's retained
- * binding, so a payload that happens to satisfy both rails' schemas (every
- * shared handshake message does) is admitted here and routed there, not failed
- * closed as "ambiguous" before a handler ever runs.
+ * Admit a message when either rail can parse it. Shared handshake messages
+ * deliberately validate under both profiles, so this transport-level gate
+ * cannot choose their rail. The retained coordinator identity does that in
+ * `handleMessage` before any rail handler runs.
  */
 async function admit(
   input: Readonly<PayloadValidationInput>,
@@ -118,12 +116,7 @@ async function admit(
   });
 }
 
-/**
- * Resolve the rail a job is already bound to by asking which coordinator store
- * owns it. One job lives on exactly one rail; a job present in both stores is a
- * cross-rail identity conflict and fails closed. Returns undefined when no rail
- * owns the job yet (i.e. an unopened session).
- */
+/** Resolve the one retained rail identity without payload-based fallback. */
 async function retainedRail(
   role: "buyer" | "seller",
   jobId: string,
@@ -143,11 +136,7 @@ async function retainedRail(
   return x402Owned ? "x402" : payDemOwned ? "pay-dem" : undefined;
 }
 
-/**
- * A session-init opens a new job before any rail owns it, so its rail is taken
- * from the rail-specific order it carries (`order.protocol.phase`). Every later
- * message routes by the retained binding instead.
- */
+/** A first session-init declares the profile that its durable order will own. */
 function initPayloadRail(input: Readonly<PayloadValidationInput>): Rail | undefined {
   const payload = input.payload as
     { order?: { protocol?: { phase?: unknown } } } | null | undefined;
@@ -175,11 +164,10 @@ function validationInput(
 
 /**
  * Join two independently closed rail graphs without introducing fallback.
- * Each authenticated message is routed to the single rail its job is already
- * bound to (a session-init, which opens the job, is routed by the rail its
- * order declares). A message the owning rail then rejects fails closed; a
- * message for a job no rail owns is rejected unless it is a session-init. No
- * message is ever handed to a rail other than the one that owns its job.
+ * Existing jobs route by their durable coordinator profile. Only session-init,
+ * before a coordinator exists, routes from the order's declared phase. The
+ * selected rail revalidates the payload and no sibling rail is ever used as a
+ * fallback.
  */
 export function createDacsMultirailLiveCommerceGraphV1(
   options: DacsMultirailLiveCommerceGraphOptionsV1,
@@ -234,8 +222,6 @@ export function createDacsMultirailLiveCommerceGraphV1(
       );
     }
     if (profile === undefined) {
-      // No rail owns this job yet: only a session-init can open one, and it must
-      // declare its rail through the order it carries.
       if (input.type !== "session-init") {
         return rejected("multirail-message-profile-unresolved");
       }
@@ -253,11 +239,16 @@ export function createDacsMultirailLiveCommerceGraphV1(
         "multirail-message-validation-unavailable",
       );
     }
+    if (validation.status === "authentication-failure") {
+      // The HTTP inbox converts thrown handler failures into retained pending
+      // work. Never durably reject a valid message for a temporary verifier or
+      // store outage on the rail that owns it.
+      throw new DacsMultirailCommerceGraphError(
+        "multirail-message-validation-unavailable",
+      );
+    }
     if (validation.status !== "valid") {
-      return rejected(validation.reasonCode ??
-        (validation.status === "authentication-failure"
-          ? "multirail-message-validation-unavailable"
-          : "multirail-message-profile-incompatible"));
+      return rejected(validation.reasonCode ?? "multirail-message-profile-incompatible");
     }
     return chosen.handleMessage(authenticated, context);
   };
@@ -273,3 +264,4 @@ export function createDacsMultirailLiveCommerceGraphV1(
       : {}),
   });
 }
+
