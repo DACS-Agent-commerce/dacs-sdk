@@ -80,6 +80,7 @@
   "files": [
     "dist",
     "README.md",
+    "docs/parser-engine.md",
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
     "docs/x402-seller-paywall.md",
@@ -107,6 +108,14 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "dependencies": {
+    "@swaggerexpert/jsonpath": "^4.0.4",
+    "@xmldom/xmldom": "^0.9.12",
+    "css-select": "^7.0.0",
+    "htmlparser2": "^12.0.0",
+    "re2-wasm": "^1.0.2",
+    "xpath": "^0.0.34"
   },
   "peerDependencies": {
     "@kynesyslabs/demosdk": "^4.0.16",
