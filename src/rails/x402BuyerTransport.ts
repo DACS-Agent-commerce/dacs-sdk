@@ -220,11 +220,15 @@ function captureHeaders(value: X402BuyerHeaderInit | undefined): Headers {
   if (headers.has(PAYMENT_SIGNATURE) || headers.has("X-PAYMENT")) {
     throw new TypeError("x402 buyer base headers cannot contain payment authorization");
   }
-  for (const name of headers.keys()) {
+  // `keys()` is declared only by DOM.Iterable. The parser engine's XPath
+  // types load base `lib.dom`, so using it here makes otherwise-compatible
+  // feature branches fail to compile together. `forEach()` is part of the
+  // base Fetch Headers contract and preserves the same allowlist gate.
+  headers.forEach((_value, name) => {
     if (!ALLOWED_X402_BUYER_BASE_HEADERS.has(name)) {
       throw new TypeError("x402 buyer base headers must be allowlisted and non-credentialed");
     }
-  }
+  });
   return headers;
 }
 
