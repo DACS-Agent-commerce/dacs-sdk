@@ -12,7 +12,7 @@ buyer signing oracle.
 
 The implementation follows the repository's reproducibly vendored
 DACS-Standard `next` oracle. The package remains on the common public
-`DACS_SPEC_VERSION = "0.1"` baseline; the applicable chapter is the draft
+`DACS_MVP_TARGET = "0.1"` delivery milestone; the applicable chapter is the draft
 DACS-5 v0.4 line in that oracle. Changes to the oracle still require the SDK's
 normal Standard pin/version review before release.
 

@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import { DACS_STANDARD_PIN } from "../version.js";
 import {
   isCanonicalClaimReference,
   parseCanonicalClaimReference,
@@ -13,7 +14,7 @@ import {
  * A Standard upgrade is a reviewed SDK change, never counterparty input.
  */
 export const FIXED_PRICE_X402_STANDARD_REVISION =
-  "965df755aba4ff392f1fb37a93d287242b177ba4" as const;
+  DACS_STANDARD_PIN;
 
 /** Operational SDK profile; this is not a normative DACS artifact field. */
 export const FIXED_PRICE_X402_COMMERCE_PROFILE =

@@ -4,6 +4,10 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 
 > **Status: pre-alpha / in development.** This repo is being extracted from the `agent-commerce-demo` reference implementation into a reusable library. See **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** for the v0.1 MVP build plan.
 
+`DACS_MVP_TARGET` names that SDK delivery milestone; it is not a claim about a
+DACS wire version. `DACS_STANDARD_PIN` exposes the exact immutable
+DACS-Standard revision used as the conformance oracle for this build.
+
 > **Package availability:** the SDK packages are not yet published to npm. The
 > package commands in this repository build and verify release candidates; use a
 > source checkout until the first release is published.
