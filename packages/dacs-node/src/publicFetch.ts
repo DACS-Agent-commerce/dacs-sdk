@@ -65,14 +65,22 @@ export class DacsPublicHttpsFetchError extends Error {
 
 function captureHeaders(value: RequestInit["headers"]): Headers {
   const captured = new Headers(value);
-  for (const name of captured.keys()) {
+  captured.forEach((_headerValue, name) => {
     if (FORBIDDEN_HEADERS.has(name) || !ALLOWED_CALLER_HEADERS.has(name)) {
       throw new DacsPublicHttpsFetchError("public-fetch-ambient-header-refused");
     }
-  }
+  });
   captured.set("accept-encoding", "identity");
   captured.set("user-agent", "dacs-node-public-fetch/v1");
   return captured;
+}
+
+function headerRecord(headers: Headers): Record<string, string> {
+  const record: Record<string, string> = {};
+  headers.forEach((value, name) => {
+    record[name] = value;
+  });
+  return record;
 }
 
 function pinnedRequest(
@@ -96,7 +104,7 @@ function pinnedRequest(
       // pinned lookup. One fresh connection per validated request is required.
       agent: false,
       servername: isIP(url.hostname) === 0 ? url.hostname : undefined,
-      headers: Object.fromEntries(input.headers.entries()),
+      headers: headerRecord(input.headers),
       lookup: (_hostname, options, callback) => {
         if (typeof options === "object" && options.all === true) {
           (callback as unknown as (
