@@ -22,5 +22,6 @@ export {
   sameCanonicalClaimIdentity,
   type CanonicalClaimIdentity,
   type CanonicalClaimReferenceParts,
+  type ClaimReferenceSchemeStatus,
 } from "./claimReference.js";
 export { identityBundleHash } from "./bundle.js";

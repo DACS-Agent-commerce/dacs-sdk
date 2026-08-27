@@ -1049,7 +1049,14 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       }
       return readListingByLogicalAddress(logicalAddress, {
         index: bindingIndex,
-        readAnchor: (nativeAddress) => adapter.readAnchor(nativeAddress),
+        readAnchor: (nativeAddress, anchorKind) => {
+          if (anchorKind !== undefined && anchorKind !== "storage-program") {
+            throw new DacsError(
+              `configured Demos adapter cannot dereference ${anchorKind} catalog anchors`,
+            );
+          }
+          return adapter.readAnchor(nativeAddress);
+        },
         verify: ed25519RawVerify,
         ...(config.listingValidationDeps
           ? { listingValidationDeps: config.listingValidationDeps }
@@ -1070,7 +1077,14 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         sellerId,
         {
           index: bindingIndex,
-          readAnchor: (nativeAddress) => adapter.readAnchor(nativeAddress),
+          readAnchor: (nativeAddress, anchorKind) => {
+            if (anchorKind !== undefined && anchorKind !== "storage-program") {
+              throw new DacsError(
+                `configured Demos adapter cannot dereference ${anchorKind} catalog anchors`,
+              );
+            }
+            return adapter.readAnchor(nativeAddress);
+          },
           verify: ed25519RawVerify,
           ...(config.listingValidationDeps
             ? { listingValidationDeps: config.listingValidationDeps }

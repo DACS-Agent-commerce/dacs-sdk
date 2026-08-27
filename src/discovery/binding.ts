@@ -38,6 +38,12 @@ import { normalizedBindingOwner } from "./owner.js";
 export interface AnchorBinding {
   /** The colon-bearing §6.3.4 LOGICAL address — the stable discovery key. */
   logicalAddress: string;
+  /**
+   * Optional transport/substrate discriminator carried by catalog pointers.
+   * A locator is not globally meaningful without its anchor kind. Legacy
+   * bindings omit this because their substrate adapter is already fixed.
+   */
+  anchorKind?: string;
   /** The substrate-native address the record actually lives at (e.g. `stor-…`). */
   nativeAddress: string;
   /**
@@ -112,7 +118,7 @@ export function resolveBinding(
   if (matches.some((candidate) => !sameBinding(first, candidate))) {
     return {
       status: "indeterminate",
-      reason: `published bindings disagree on the native address, content hash, version, or state for ${logicalAddress}`,
+      reason: `published bindings disagree on the anchor kind, native address, content hash, version, or state for ${logicalAddress}`,
     };
   }
   if (first.revoked === true) return { status: "absent" };
@@ -225,6 +231,7 @@ function sameOwner(left: string, right: string): boolean {
 function sameBinding(left: AnchorBinding, right: AnchorBinding): boolean {
   return (
     left.logicalAddress === right.logicalAddress &&
+    left.anchorKind === right.anchorKind &&
     left.nativeAddress === right.nativeAddress &&
     sameOwner(left.owner, right.owner) &&
     left.contentHash === right.contentHash &&

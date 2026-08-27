@@ -223,6 +223,7 @@ export {
   sameCanonicalClaimIdentity,
   type CanonicalClaimIdentity,
   type CanonicalClaimReferenceParts,
+  type ClaimReferenceSchemeStatus,
   type CciRecord,
   type CciClaim,
   type CciClaimKind,
