@@ -246,7 +246,7 @@ describe("create-dacs-agent", () => {
       "@x402/core": "2.15.0",
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
-      tsx: "4.23.12",
+      "better-sqlite3": "12.6.2",
       "viem": "2.55.19",
     });
     expect(packageSource.dacs).toEqual({
@@ -270,7 +270,9 @@ describe("create-dacs-agent", () => {
     });
     for (const command of Object.values(packageSource.scripts as Record<string, string>)) {
       if (command.includes("dist/src/") || command.includes("dist/test/")) {
-        expect(command).toContain("node --import tsx");
+        expect(command).toContain(
+          "node --import @kynesyslabs/dacs-node/demos-loader",
+        );
       }
     }
     const compose = await readFile(join(target, "compose.yaml"), "utf8");
@@ -304,10 +306,12 @@ describe("create-dacs-agent", () => {
     const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
     expect(dockerfile).toContain("RUN npm ci --ignore-scripts");
     expect(dockerfile).toContain("RUN npm rebuild better-sqlite3");
+    expect(dockerfile).toContain("npm ci --ignore-scripts --omit=optional");
+    expect(dockerfile).toContain("npm prune --omit=dev --omit=optional --ignore-scripts");
     expect(dockerfile).toContain("--mode=0755 /app");
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).toContain(
-      'CMD ["node", "--import", "tsx", "dist/src/service.js"]',
+      'CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]',
     );
     expect(dockerfile).not.toContain("COPY . .");
     const combined = (await Promise.all(
@@ -329,6 +333,8 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsPurchaseQueueExecutorV1");
     expect(combined).toContain("prepareDacsX402PurchaseV1");
     expect(combined).toContain("prepareDacsPayDemPurchaseV1");
+    expect(combined).toContain("maximumDemosStorageWriteFeeDem");
+    expect(combined).toContain("consent-bound plan reserve five buyer writes");
     expect(combined).toContain("resolveDacsPayDemExistingListingV1");
     expect(combined).toContain("createDacsFixedPriceMultirailBuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceMultirailSellerLiveV1");
@@ -393,7 +399,7 @@ describe("create-dacs-agent", () => {
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
       "@kynesyslabs/demosdk": "4.0.16",
-      tsx: "4.23.12",
+      "better-sqlite3": "12.6.2",
     });
     const config = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(config).toContain('["pay-dem"]');
@@ -538,5 +544,19 @@ describe("create-dacs-agent", () => {
     expect(() => parseCreateDacsAgentArguments([
       "my-agent", "--yes", "--mode", "live-demos", "--rails", "fallback",
     ])).toThrow(/x402, pay-dem or both/);
+    expect(() => parseCreateDacsAgentArguments([
+      "my-agent", "--yes", "--mode", "live-demos", "--role", "verifier",
+    ])).toThrow(/demo-all, buyer or seller/);
+  });
+
+  test("rejects the unimplemented live verifier role through the public API", async () => {
+    const parent = await temporaryDirectory();
+    await expect(createDacsAgentProject({
+      targetDirectory: join(parent, "verifier-live-agent"),
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "verifier" as never,
+      install: false,
+    })).rejects.toThrow(/demo-all, buyer or seller/);
   });
 });

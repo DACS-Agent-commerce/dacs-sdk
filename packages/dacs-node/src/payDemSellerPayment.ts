@@ -160,7 +160,6 @@ function noticeMatchesOperation(
       operation.order.protocol.rail.railDefinitionHash &&
     payment.network === operation.order.protocol.rail.network &&
     payment.orderBindingHash === operation.order.bindingHash &&
-    payment.orderLocalBindingHash === operation.order.localBindingHash &&
     settlement.txHash.length === 64 && settlement.chainId === "demos" &&
     settlement.payer === payment.payer && settlement.payee === payment.payee;
 }

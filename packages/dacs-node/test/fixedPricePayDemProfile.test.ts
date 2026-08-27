@@ -121,6 +121,7 @@ function fixture() {
     listingContentHash,
     listingLogicalAddress: logicalAddress,
     listing,
+    demosWriteFeeCeilings: { buyer: "2", seller: "2" },
     requestHash: "c".repeat(64),
     request: { requestVersion: "1" },
   };
@@ -134,6 +135,7 @@ describe("fixed-price pay-dem seller session policy", () => {
     const value = await fixture();
     const effects = new Map<string, unknown>();
     const database = {
+      metadata: { mode: "live-demos", role: "seller", authority: SELLER },
       readTime: () => 1_000,
       loadEffectInput: (_kind: string, id: string) => effects.get(id),
       putEffectIntent: (input: { effectId: string; input: unknown }) => {
@@ -156,6 +158,7 @@ describe("fixed-price pay-dem seller session policy", () => {
       role: "seller",
       authority: SELLER,
       peerAuthority: BUYER,
+      config: { role: "seller", limits: { maxDemosNetworkFeeDem: "2" } },
       database,
       demos: { adapter: {} },
     };

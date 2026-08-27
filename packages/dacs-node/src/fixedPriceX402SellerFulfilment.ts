@@ -38,6 +38,7 @@ import {
 import { loadDacsLiveOrderInputV1 } from "./orderInput.js";
 import { loadDacsPayDemSellerPaymentAuthorizationForOrderV1 } from
   "./payDemSellerPayment.js";
+import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import { loadDacsSellerX402AuthorizationForOrderV1 } from "./sellerX402Runtime.js";
 import {
@@ -282,6 +283,7 @@ async function resolvePublicAnchor(
 
 async function publishPublicAnchor(
   context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
   logicalAddress: string,
   raw: Readonly<Record<string, unknown>>,
   expectedHash: string,
@@ -294,13 +296,15 @@ async function publishPublicAnchor(
     await context.demos.adapter.anchorWriteOnce(
       logicalAddress,
       copy(raw),
-      {
-        metadata: {
+      dacsFixedPricePurchaseAnchorOptionsV1(
+        context,
+        jobId,
+        {
           logicalAddress,
           contentHash: expectedHash,
           envelopeHash: sha256Hex(canonicalize(raw)),
         },
-      },
+      ),
     );
   } catch {
     // A submitted Demos write is ambiguous until the exact logical name is
@@ -669,6 +673,7 @@ export function createDacsFixedPriceSellerFulfilmentV1(
       }
       const published = await publishPublicAnchor(
         context,
+        input.jobId,
         input.logicalAddress,
         input.artifact.anchoredValue,
         contentHash(input.artifact.anchoredValue),
@@ -775,6 +780,7 @@ export function createDacsFixedPriceSellerFulfilmentV1(
       const raw = input.evidence as unknown as Readonly<Record<string, unknown>>;
       const published = await publishPublicAnchor(
         context,
+        input.evidence.jobId,
         logicalAddress,
         raw,
         input.evidenceHash,

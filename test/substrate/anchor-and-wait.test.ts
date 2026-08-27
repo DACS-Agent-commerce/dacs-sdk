@@ -90,7 +90,11 @@ function pendingNativeTransfer(
   };
 }
 
-async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
+async function makeAdapter(options?: {
+  rpc?: string;
+  wallet?: string;
+  maximumFeeOs?: bigint;
+}) {
   fixtureId += 1;
   const id = fixtureId;
   const rpc = options?.rpc ?? `https://node-${id}.test`;
@@ -101,6 +105,8 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
     rpc,
     chainIdentity: "test-chain",
     writeJournal,
+    ...(options?.maximumFeeOs === undefined
+      ? {} : { maximumFeeOs: options.maximumFeeOs }),
   });
   const raw = adapter.raw as any;
   let signedCount = 0;
@@ -214,6 +220,38 @@ afterEach(() => {
 });
 
 describe("DemosAdapter.anchorAndWait", () => {
+  it("refuses an over-ceiling mutable anchor fee before broadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 2n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: "3",
+              rpc_fee: "0",
+              additional_fee: "0",
+            },
+          },
+        },
+      },
+    }));
+
+    const error = await adapter.anchorAndWait(
+      "mutable-over-fee-ceiling",
+      { value: 1 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AnchorWaitError);
+    expect((error as Error & { cause?: unknown }).cause).toMatchObject({
+      message: expect.stringMatching(/exceeds maximumFeeOs/),
+    });
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
   it("authenticates a pending native transfer and advances the next anchor nonce", async () => {
     const { adapter, raw, wallet } = await makeAdapter();
     const payer = wallet.replace(/^0x/, "").toLowerCase();
@@ -1220,6 +1258,242 @@ describe("DemosAdapter.anchorAndWait", () => {
       writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
       evidence: anchored.demosEvidence!,
     })).not.toThrow();
+  });
+
+  it("refuses an over-ceiling confirmed Storage Program fee before broadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 2n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: "1",
+              rpc_fee: "1",
+              additional_fee: "1",
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-over-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).rejects.toThrow(/exceeds maximumFeeOs/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("refuses a capped Storage Program write when confirmed fees are absent", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 2n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-missing-confirmed-fee",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).rejects.toThrow(/requires authoritative confirmed transaction fees/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("broadcasts a Storage Program write at the exact confirmed fee ceiling", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: "1",
+              rpc_fee: "1",
+              additional_fee: "1",
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-at-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).resolves.toMatchObject({ txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes legacy confirmed DEM fee numbers before applying an OS ceiling", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3_000_000_000n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: false } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: 1,
+              rpc_fee: 1,
+              additional_fee: 1,
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-at-legacy-dem-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).resolves.toMatchObject({ txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains failed-attempt fees and blocks aggregate-budget overspend before rebroadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: { network_fee: "1", rpc_fee: "1", additional_fee: "1" },
+          },
+        },
+      },
+    }));
+    raw.nodeCall.mockResolvedValue({ state: "failed" });
+    const feeBudget = {
+      budgetId: "fixed-price:test-job:buyer",
+      maximumPerWriteFeeOs: 3n,
+      maximumTotalFeeOs: 3n,
+    };
+
+    await expect(adapter.anchorWriteOnce(
+      "budgeted-failed-immutable",
+      { value: 1 },
+      { timeoutMs: 20, pollMs: 1, feeBudget },
+    )).rejects.toThrow(/terminal state failed/);
+    await expect(adapter.anchorWriteOnce(
+      "budgeted-failed-immutable",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1, feeBudget },
+    )).rejects.toThrow(/aggregate confirmed fee exceeds purchase budget/);
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed aggregate fee budgets before confirmation or broadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    await expect(adapter.anchorWriteOnce(
+      "invalid-aggregate-budget",
+      { value: 1 },
+      { feeBudget: {
+        budgetId: "bad budget",
+        maximumPerWriteFeeOs: 1n,
+        maximumTotalFeeOs: -1n,
+      } },
+    )).rejects.toThrow(/aggregate fee budget is invalid/);
+    expect(raw.tx.confirm).not.toHaveBeenCalled();
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("enforces the retained per-write budget when the adapter ceiling is higher", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 10n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: { network_fee: "2", rpc_fee: "2", additional_fee: "2" },
+          },
+        },
+      },
+    }));
+    await expect(adapter.anchorWriteOnce(
+      "per-write-budgeted-immutable",
+      { value: 1 },
+      { feeBudget: {
+        budgetId: "fixed-price:test-job:buyer",
+        maximumPerWriteFeeOs: 5n,
+        maximumTotalFeeOs: 20n,
+      } },
+    )).rejects.toThrow(/confirmed fee exceeds per-write purchase budget/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("uses the confirmed transaction fee only when gas-operation fees are absent", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: {
+            hash: signed.hash,
+            content: {
+              transaction_fee: {
+                network_fee: "1",
+                rpc_fee: "1",
+                additional_fee: "1",
+              },
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-at-fallback-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).resolves.toMatchObject({ txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back from a malformed gas-operation fee to transaction content", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: {
+            hash: signed.hash,
+            content: {
+              transaction_fee: {
+                network_fee: "1",
+                rpc_fee: "1",
+                additional_fee: "1",
+              },
+            },
+          },
+          gas_operation: { fees: { network_fee: "1" } },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-malformed-authoritative-fee",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).rejects.toThrow(/requires authoritative confirmed transaction fees/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
   });
 
   it("refuses an immutable create signed with a different nonce", async () => {

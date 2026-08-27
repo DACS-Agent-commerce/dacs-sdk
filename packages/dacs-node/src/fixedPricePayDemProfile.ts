@@ -43,6 +43,8 @@ import type {
   DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import { createDacsFixedPricePayDemProtocolBindingV1 } from "./purchaseQueue.js";
+import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
+  "./purchaseDemosBudget.js";
 import { readDacsPublicJsonV1 } from "./publicJson.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import type {
@@ -314,6 +316,14 @@ export function createDacsFixedPricePayDemSellerSessionPolicyV1(
         buyer: payload.order.buyer,
         seller: payload.order.seller,
         protocol: payload.order.protocol,
+      });
+      retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+        database: context.database,
+        jobId: order.jobId,
+        role: "seller",
+        authority: order.seller,
+        maximumPerWriteFeeDem: application.demosWriteFeeCeilings.seller,
+        maximumAllowedPerWriteFeeDem: context.config.limits.maxDemosNetworkFeeDem,
       });
       retainAdmission(context, order, application, admittedAt);
       return Object.freeze({ order, application });

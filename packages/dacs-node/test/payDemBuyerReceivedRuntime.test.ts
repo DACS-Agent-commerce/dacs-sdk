@@ -110,6 +110,7 @@ const application = {
   listingContentHash,
   listingLogicalAddress: listingAddress(SELLER, listing.listingId, listing.listingVersion),
   listing,
+  demosWriteFeeCeilings: { buyer: "2", seller: "2" },
   requestHash: sha256Hex(canonicalize({ requestVersion: "1" })),
   request: { requestVersion: "1" },
 } as const;

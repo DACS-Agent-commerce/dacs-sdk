@@ -47,6 +47,7 @@ const SELLER = `did:demos:agent:${"bb".repeat(32)}`;
 const PAYER = "aa".repeat(32);
 const PAYEE = "bb".repeat(32);
 const TX_HASH = "ab".repeat(32);
+const BUYER_LOCAL_BINDING_HASH = "c".repeat(64);
 const PAYMENT_PHASE_INDEX = 2;
 const AGREEMENT_SIGNATURE = Buffer.alloc(64, 7).toString("base64url");
 
@@ -290,6 +291,55 @@ function success(): FixedPricePayDemTrackOperation {
   };
 }
 
+function retainedNotice(input: Readonly<{
+  agreementHash: string;
+  orderBindingHash: string;
+  orderLocalBindingHash: string;
+}>): Readonly<DacsRetainedPayDemPaymentNoticeV1> {
+  const notice = createDacsPayDemPaymentNoticeV1({
+    authorityVersion: "1",
+    jobId: JOB_ID,
+    phaseIndex: PAYMENT_PHASE_INDEX,
+    railId: PROTOCOL.rail.railId,
+    railVersion: PROTOCOL.rail.railVersion,
+    railDescriptorHash: PROTOCOL.rail.railDefinitionHash,
+    network: "demos",
+    payer: PAYER,
+    payee: PAYEE,
+    amountOs: "1250000000",
+    maxTotalDebitOs: "1300000000",
+    agreementHash: input.agreementHash,
+    termsHash: "6".repeat(64),
+    payoutBindingHash: "7".repeat(64),
+    paymentInputVersion: "1",
+    orderBindingHash: input.orderBindingHash,
+    orderLocalBindingHash: input.orderLocalBindingHash,
+    settlementKey: `demos-native:DEM:${JOB_ID}:${PAYMENT_PHASE_INDEX}`,
+  }, {
+    ok: true,
+    txHash: TX_HASH,
+    chainId: "demos",
+    payer: PAYER,
+    payee: PAYEE,
+    finality: { model: "bft-final" },
+    blockNumber: 88,
+    txRefKind: "demos",
+  });
+  return {
+    bindingVersion: "1",
+    noticeHash: sha256Hex(canonicalize(notice)),
+    notice,
+    transportAuthentication: {
+      envelopeId: "8".repeat(64),
+      authenticationHash: "9".repeat(64),
+      identityEvidenceHash: "a".repeat(64),
+      sender: BUYER,
+      audience: SELLER,
+      payloadHash: sha256Hex(canonicalize(notice)),
+    },
+  };
+}
+
 describe("native DEM seller payment track", () => {
   const roots: string[] = [];
   const databases: DacsNodeSqliteDatabase[] = [];
@@ -344,52 +394,18 @@ describe("native DEM seller payment track", () => {
     }).startOrder(ORDER);
     const loaded = await store.load("seller", JOB_ID);
     if (loaded.status !== "ok") throw new Error("seller order missing");
-    const notice = createDacsPayDemPaymentNoticeV1({
-      authorityVersion: "1",
-      jobId: JOB_ID,
-      phaseIndex: PAYMENT_PHASE_INDEX,
-      railId: PROTOCOL.rail.railId,
-      railVersion: PROTOCOL.rail.railVersion,
-      railDescriptorHash: PROTOCOL.rail.railDefinitionHash,
-      network: "demos",
-      payer: PAYER,
-      payee: PAYEE,
-      amountOs: "1250000000",
-      maxTotalDebitOs: "1300000000",
+    expect(loaded.record.localBindingHash).not.toBe(BUYER_LOCAL_BINDING_HASH);
+    const retainedNoticeValue = retainedNotice({
       agreementHash: firstFixture.agreementHash,
-      termsHash: "6".repeat(64),
-      payoutBindingHash: "7".repeat(64),
-      paymentInputVersion: "1",
       orderBindingHash: loaded.record.bindingHash,
-      orderLocalBindingHash: loaded.record.localBindingHash,
-      settlementKey: `demos-native:DEM:${JOB_ID}:${PAYMENT_PHASE_INDEX}`,
-    }, {
-      ok: true,
-      txHash: TX_HASH,
-      chainId: "demos",
-      payer: PAYER,
-      payee: PAYEE,
-      finality: { model: "bft-final" },
-      blockNumber: 88,
-      txRefKind: "demos",
+      // This is the buyer's private retained binding. The seller authenticates
+      // the shared order binding above and must not compare actor-local hashes.
+      orderLocalBindingHash: BUYER_LOCAL_BINDING_HASH,
     });
-    const retainedNotice: DacsRetainedPayDemPaymentNoticeV1 = {
-      bindingVersion: "1",
-      noticeHash: sha256Hex(canonicalize(notice)),
-      notice,
-      transportAuthentication: {
-        envelopeId: "8".repeat(64),
-        authenticationHash: "9".repeat(64),
-        identityEvidenceHash: "a".repeat(64),
-        sender: BUYER,
-        audience: SELLER,
-        payloadHash: sha256Hex(canonicalize(notice)),
-      },
-    };
     const firstPayment = createDacsPayDemSellerPaymentTrackV1({
       database: first,
       workerId: "seller-payment-before-restart",
-      noticeRuntime: { load: () => retainedNotice },
+      noticeRuntime: { load: () => retainedNoticeValue },
       resolvePayerPayingKey: () => BUYER,
       intakeDeps: firstFixture.intakeDeps,
       retryDelayMs: 1,
@@ -415,7 +431,7 @@ describe("native DEM seller payment track", () => {
     const resumedPayment = createDacsPayDemSellerPaymentTrackV1({
       database: restarted,
       workerId: "seller-payment-after-restart",
-      noticeRuntime: { load: () => retainedNotice },
+      noticeRuntime: { load: () => retainedNoticeValue },
       resolvePayerPayingKey: () => BUYER,
       intakeDeps: restartedFixture.intakeDeps,
       retryDelayMs: 1,
@@ -470,6 +486,42 @@ describe("native DEM seller payment track", () => {
         phase: "pay-dem",
         paymentAmount: { amount: "1.25", currency: "DEM" },
       },
+    });
+  });
+
+  it("rejects a payment notice that forges the shared order binding", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-seller-binding-"));
+    roots.push(root);
+    const database = await open(join(root, "seller.sqlite"));
+    const receipts = await createFsSellerReceiptStore({ dir: join(root, "receipts") });
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    const store = database.createPayDemCoordinatorStore("seller");
+    const loadedFixture = fixture(receipts);
+    const payment = createDacsPayDemSellerPaymentTrackV1({
+      database,
+      workerId: "seller-payment-forged-binding",
+      noticeRuntime: {
+        load: () => retainedNotice({
+          agreementHash: loadedFixture.agreementHash,
+          orderBindingHash: "d".repeat(64),
+          orderLocalBindingHash: BUYER_LOCAL_BINDING_HASH,
+        }),
+      },
+      resolvePayerPayingKey: () => BUYER,
+      intakeDeps: loadedFixture.intakeDeps,
+      retryDelayMs: 1,
+    });
+    const coordinator = createFixedPricePayDemSellerCoordinator({
+      store,
+      workerId: "seller-coordinator-forged-binding",
+      operations: { agreement: success(), payment },
+    });
+    await coordinator.startOrder(ORDER);
+    await coordinator.resumePendingOrders({ limit: 2 });
+
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+      state: "operator-action",
+      reasonCode: "pay-dem-payment-notice-order-mismatch",
     });
   });
 });

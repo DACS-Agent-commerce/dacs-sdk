@@ -268,4 +268,3 @@ describe("strict multirail live commerce graph", () => {
     expect(combined.handleApplicationRequest).toBe(x402.handleApplicationRequest);
   });
 });
-

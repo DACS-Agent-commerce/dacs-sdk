@@ -3,6 +3,7 @@ import { resolve, sep } from "node:path";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
+  baseUnits,
   createPayDemRail as createSdkPayDemRail,
   type PayDemRail,
   type PayDemSettleParams,
@@ -109,6 +110,7 @@ export interface DacsDemosActorRuntimeOptionsV1 {
     rpc: string;
     secret: string;
     writeJournal: DemosWriteJournal;
+    maximumFeeOs: bigint;
   }>) => Promise<DacsDemosAdapterV1> | DacsDemosAdapterV1;
   /** Deterministic test/custom-host seam. Production uses the SDK native rail. */
   createPayDemRail?: (input: Readonly<{
@@ -225,6 +227,7 @@ async function defaultAdapter(input: Readonly<{
   rpc: string;
   secret: string;
   writeJournal: DemosWriteJournal;
+  maximumFeeOs: bigint;
 }>): Promise<DacsDemosAdapterV1> {
   const substrate = await import("@kynesyslabs/dacs/substrate").catch(() => {
     throw new DacsDemosRuntimeError("demos-adapter-unavailable");
@@ -405,7 +408,12 @@ export async function createDacsDemosActorRuntimeV1(
     }
     const makeAdapter = rawOptions.createAdapter ?? defaultAdapter;
     try {
-      adapter = await makeAdapter({ rpc: config.demos.rpcUrl, secret, writeJournal });
+      adapter = await makeAdapter({
+        rpc: config.demos.rpcUrl,
+        secret,
+        writeJournal,
+        maximumFeeOs: BigInt(baseUnits(config.limits.maxDemosNetworkFeeDem, 9)),
+      });
       await adapter.connect();
       if (rawOptions.role === "buyer" && rawOptions.writePolicy !== "read-only" &&
           dacsLiveRailProfiles(config).includes("pay-dem")) {

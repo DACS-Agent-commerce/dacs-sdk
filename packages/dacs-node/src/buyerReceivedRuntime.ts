@@ -12,11 +12,12 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import { createDacsPublicHttpsFetchV1 } from "./publicFetch.js";
 
 const BUYER_RECEIVED_BINDING_VERSION = "1" as const;
 const BUYER_RECEIVED_BINDING_DOMAIN = "dacs-live-buyer-received:v1:" as const;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
-const DEFAULT_MAX_BODY_BYTES = 8 * 1_024 * 1_024;
+export const DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1 = 8 * 1_024 * 1_024;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 export interface DacsBuyerReceivedPaymentScopeV1 {
@@ -51,6 +52,7 @@ export interface DacsBuyerReceivedRuntimeOptionsV1 {
     response: Readonly<DacsBuyerReceivedRecordV1>;
     body: Uint8Array;
   }>): Promise<boolean | "indeterminate"> | boolean | "indeterminate";
+  /** Defaults to the locked-down public HTTPS transport when omitted. */
   fetchImpl?: typeof fetch;
   maxBodyBytes?: number;
   retryDelayMs?: number;
@@ -191,9 +193,12 @@ export function createDacsBuyerReceivedTrackV1(
     throw new TypeError("buyer received runtime options are invalid");
   }
   const settlementStore = stores.x402Settlement;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new TypeError("buyer received runtime requires fetch");
-  const maximum = positiveInteger(options.maxBodyBytes, DEFAULT_MAX_BODY_BYTES, 64 * 1_024 * 1_024);
+  const maximum = positiveInteger(
+    options.maxBodyBytes,
+    DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1,
+    64 * 1_024 * 1_024,
+  );
+  const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1({ maxBytes: maximum });
   const delay = positiveInteger(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS, 600_000);
 
   return async (operation) => {

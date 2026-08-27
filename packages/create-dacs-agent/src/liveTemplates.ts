@@ -1,14 +1,14 @@
 export interface LiveProjectTemplateOptions {
   packageName: string;
   deployment: "local" | "docker";
-  role: "buyer" | "seller" | "verifier";
+  role: "buyer" | "seller";
   rails: "x402" | "pay-dem" | "both";
   runtimeUid: number;
   runtimeGid: number;
 }
 
 const SDK_VERSION = "0.1.0-alpha.0";
-const TSX_VERSION = "4.23.12";
+const BETTER_SQLITE_VERSION = "12.6.2";
 const STANDARD_REVISION = "965df755aba4ff392f1fb37a93d287242b177ba4";
 const CONFIG_SCHEMA_VERSION = 1;
 const SQLITE_SCHEMA_VERSION = 7;
@@ -24,31 +24,30 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
-      // demosdk 4.0.16 publishes one extensionless ESM directory import. The
-      // declared loader keeps generated services runnable on the supported
-      // Node floors without mutating the installed dependency.
-      test: "npm run build && node --import tsx --test dist/test/live-bootstrap.test.js",
-      "dacs:doctor": "npm run build --silent && node --import tsx dist/src/cli.js doctor",
-      "dacs:doctor:funded": "npm run build --silent && node --import tsx dist/src/cli.js doctor-funded",
-      "dacs:up": "npm run build --silent && node --import tsx dist/src/cli.js up",
-      "dacs:setup": "npm run build --silent && node --import tsx dist/src/cli.js setup",
-      "dacs:buy": "npm run build --silent && node --import tsx dist/src/cli.js buy",
-      "dacs:status": "npm run build --silent && node --import tsx dist/src/cli.js status",
-      "dacs:down": "npm run build --silent && node --import tsx dist/src/cli.js down",
-      "dacs:upgrade": "npm run build --silent && node --import tsx dist/src/cli.js upgrade",
-      "dacs:service": "npm run build --silent && node --import tsx dist/src/service.js",
-      "dacs:smoke:offline": "npm run build --silent && node --import tsx dist/src/offline-smoke.js",
+      // The host loader fixes only demosdk 4.0.16's published extensionless ESM
+      // directory import; generated production services need no TS transformer.
+      test: "npm run build && node --import @kynesyslabs/dacs-node/demos-loader --test dist/test/live-bootstrap.test.js",
+      "dacs:doctor": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor",
+      "dacs:doctor:funded": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor-funded",
+      "dacs:up": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js up",
+      "dacs:setup": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js setup",
+      "dacs:buy": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js buy",
+      "dacs:status": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js status",
+      "dacs:down": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js down",
+      "dacs:upgrade": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js upgrade",
+      "dacs:service": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/service.js",
+      "dacs:smoke:offline": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/offline-smoke.js",
     },
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
       "@kynesyslabs/dacs-node": SDK_VERSION,
       "@kynesyslabs/demosdk": "4.0.16",
+      "better-sqlite3": BETTER_SQLITE_VERSION,
       ...(x402 ? {
         "@x402/core": "2.15.0",
         "@x402/evm": "2.15.0",
         "@x402/fetch": "2.15.0",
       } : {}),
-      tsx: TSX_VERSION,
       ...(x402 ? { "viem": "2.55.19" } : {}),
     },
     dacs: {
@@ -366,6 +365,8 @@ export function serviceEndpoint(role: "buyer" | "seller"): string {
 const DOCTOR_SOURCE = `import { constants } from "node:fs";
 import { access, lstat, open, readFile, statfs } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { resolve } from "node:path";
 
 import {
   RAIL_REGISTRY_INDEX_ADDRESS,
@@ -381,6 +382,7 @@ import {
 } from "@kynesyslabs/dacs/identity";
 import {
   DACS_LIVE_DOCTOR_CHECK_IDS,
+  DACS_NODE_CONFIG_SCHEMA_VERSION,
   DACS_NODE_LIVE_PROFILE,
   createDacsDemosActorRuntimeV1,
   createDacsDemosRailRegistryProviderV1,
@@ -390,6 +392,7 @@ import {
   dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
   establishDacsRoleServiceReadinessV1,
+  estimateDacsFixedPriceDemosCostV1,
   inspectDacsDemosBalanceHeadroomV1,
   inspectDacsNodePackageIntegrityV1,
   inspectDacsX402AssetBalanceV1,
@@ -412,6 +415,7 @@ import {
   type DacsLiveDoctorScopeV1,
 } from "@kynesyslabs/dacs-node";
 import {
+  DACS_NODE_SQLITE_SCHEMA_VERSION,
   inspectExistingDacsNodeSqliteDatabaseV1,
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -705,9 +709,58 @@ function sqlite() {
 }
 
 async function dockerRuntime(
-  context: Readonly<{ signal: AbortSignal }>,
+  context: Readonly<{ phase: DacsLiveDoctorPhaseV1; signal: AbortSignal }>,
 ): Promise<Readonly<DacsLiveDoctorProbeResultV1>> {
-  if ((process.env.DACS_DEPLOYMENT ?? "docker") === "local") return pass();
+  let endpoints: readonly Readonly<{ hostname: string; port: number }>[];
+  try {
+    endpoints = ROLES.map((role) => {
+      const endpoint = new URL(serviceEndpoint(role));
+      const hostname = endpoint.hostname.toLowerCase().replace(/\\.$/u, "");
+      const loopback = hostname === "localhost" || hostname.endsWith(".localhost") ||
+        hostname === "[::1]" || hostname === "::1" ||
+        /^127(?:\\.\\d{1,3}){3}$/u.test(hostname);
+      const port = Number(endpoint.port);
+      if (endpoint.protocol !== "http:" || !loopback || endpoint.pathname !== "/" ||
+          endpoint.username !== "" || endpoint.password !== "" || endpoint.search !== "" ||
+          endpoint.hash !== "" || !Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
+        throw new Error("service endpoint is not a bounded loopback port");
+      }
+      return Object.freeze({
+        hostname: endpoint.hostname.startsWith("[")
+          ? endpoint.hostname.slice(1, -1) : endpoint.hostname,
+        port,
+      });
+    });
+  } catch {
+    return fail("service-endpoint-invalid");
+  }
+  if (endpoints[0]!.port === endpoints[1]!.port) {
+    return fail("service-port-shared");
+  }
+  if (context.phase === "pre-start") {
+    for (const endpoint of endpoints) {
+      const available = await new Promise<boolean>((resolve) => {
+        const server = createServer();
+        let settled = false;
+        const finish = (result: boolean) => {
+          if (settled) return;
+          settled = true;
+          context.signal.removeEventListener("abort", onAbort);
+          server.close(() => resolve(result));
+        };
+        const onAbort = () => finish(false);
+        context.signal.addEventListener("abort", onAbort, { once: true });
+        server.once("error", () => finish(false));
+        server.listen({ host: endpoint.hostname, port: endpoint.port, exclusive: true },
+          () => finish(true));
+        if (context.signal.aborted) onAbort();
+      });
+      if (!available) return fail("service-port-unavailable");
+    }
+  }
+  if ((process.env.DACS_DEPLOYMENT ?? "docker") === "local") {
+    return pass({ servicePortCount: endpoints.length });
+  }
   const runtimeUid = Number(process.env.DACS_RUNTIME_UID);
   const runtimeGid = Number(process.env.DACS_RUNTIME_GID);
   if (process.env.DACS_RUNTIME_UID === undefined || process.env.DACS_RUNTIME_GID === undefined) {
@@ -735,8 +788,43 @@ async function dockerRuntime(
     context.signal.addEventListener("abort", onAbort, { once: true });
     if (context.signal.aborted) onAbort();
     child.once("error", () => finish(blocked("docker-runtime-unavailable")));
-    child.once("exit", (code) => finish(code === 0 ? pass() : blocked("docker-runtime-unavailable")));
+    child.once("exit", (code) => finish(code === 0
+      ? pass({ servicePortCount: endpoints.length })
+      : blocked("docker-runtime-unavailable")));
   });
+}
+
+async function versionBindings() {
+  try {
+    const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url),
+      "utf8")) as Readonly<{
+        dependencies?: Readonly<Record<string, unknown>>;
+        dacs?: Readonly<Record<string, unknown>>;
+      }>;
+    const metadata = manifest.dacs;
+    if (manifest.dependencies?.["@kynesyslabs/dacs"] !== VERSION ||
+        manifest.dependencies?.["@kynesyslabs/dacs-node"] !== VERSION ||
+        metadata?.generatorVersion !== VERSION ||
+        metadata?.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
+        metadata?.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION ||
+        metadata?.sqliteSchemaVersion !== DACS_NODE_SQLITE_SCHEMA_VERSION) {
+      return fail("version-binding-mismatch");
+    }
+    const configs = ROLES.map((role) => loadRoleConfig(role));
+    if (configs.some((config, index) => config.role !== ROLES[index] ||
+        config.profile !== DACS_NODE_LIVE_PROFILE)) {
+      return fail("version-binding-mismatch");
+    }
+    return pass({
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      profile: DACS_NODE_LIVE_PROFILE,
+      configSchemaVersion: DACS_NODE_CONFIG_SCHEMA_VERSION,
+      sqliteSchemaVersion: DACS_NODE_SQLITE_SCHEMA_VERSION,
+    });
+  } catch {
+    return fail("version-binding-unavailable");
+  }
 }
 
 function baseProbes(
@@ -886,14 +974,24 @@ function baseProbes(
     "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
       : fail("node-version-unsupported"),
     "local.package-integrity": inspectDacsNodePackageIntegrityV1,
-    "local.version-bindings": () => pass({ sdkVersion: VERSION,
-      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION, profile: DACS_NODE_LIVE_PROFILE }),
+    "local.version-bindings": versionBindings,
     "local.configuration": () => {
       try {
-        const configs = ROLES.map((role) => loadRoleConfig(role));
-        return configs.every((config) =>
-          config.rail.registryIndexRef === RAIL_REGISTRY_INDEX_ADDRESS)
-          ? pass() : fail("rail-registry-index-incompatible");
+        const [buyer, seller] = ROLES.map((role) => loadRoleConfig(role));
+        if (buyer === undefined || seller === undefined ||
+            buyer.rail.registryIndexRef !== RAIL_REGISTRY_INDEX_ADDRESS ||
+            seller.rail.registryIndexRef !== RAIL_REGISTRY_INDEX_ADDRESS) {
+          return fail("rail-registry-index-incompatible");
+        }
+        if (JSON.stringify(dacsLiveRailProfiles(buyer)) !==
+              JSON.stringify(dacsLiveRailProfiles(seller)) ||
+            buyer.rail.requestedNetwork !== seller.rail.requestedNetwork) {
+          return fail("role-commerce-configuration-mismatch");
+        }
+        if (resolve(buyer.dataDirectory) === resolve(seller.dataDirectory)) {
+          return fail("actor-data-directory-shared");
+        }
+        return pass({ enabledRailCount: dacsLiveRailProfiles(buyer).length });
       }
       catch { return fail("configuration-invalid"); }
     },
@@ -962,19 +1060,46 @@ function baseProbes(
         return pass({ actorCount: 2 });
       } catch { return fail("demos-nonce-unavailable"); }
     },
-    "demos.balance-fees": actors === undefined ? actorUnavailable : (probeContext) => {
+    "demos.balance-fees": actors === undefined ? actorUnavailable : async (probeContext) => {
       const buyer = loadRoleConfig("buyer");
       const seller = loadRoleConfig("seller");
+      const estimate = probeContext.scope === "buy" && operation !== undefined &&
+          (operation.rail !== "pay-dem" || operation.maximumTotalDebitDem !== undefined)
+        ? estimateDacsFixedPriceDemosCostV1({
+            rail: operation.rail,
+            maximumStorageWriteFeeDem: {
+              buyer: buyer.limits.maxDemosNetworkFeeDem,
+              seller: seller.limits.maxDemosNetworkFeeDem,
+            },
+            ...(operation.rail === "pay-dem" && operation.maximumTotalDebitDem !== undefined
+              ? { maximumPayDemTotalDebitDem: operation.maximumTotalDebitDem } : {}),
+          })
+        : undefined;
+      if (probeContext.scope === "buy" && estimate === undefined) {
+        return blocked("purchase-cost-context-missing");
+      }
       const minimumDem = probeContext.scope === "setup"
         ? { buyer: "0", seller: seller.limits.maxSetupSpendDem }
-        : {
-            buyer: operation?.rail === "pay-dem" && operation.maximumTotalDebitDem !== undefined
-              ? operation.maximumTotalDebitDem : buyer.limits.maxDemosNetworkFeeDem,
+        : estimate?.minimumDem ?? {
+            buyer: buyer.limits.maxDemosNetworkFeeDem,
             seller: seller.limits.maxDemosNetworkFeeDem,
           };
-      return inspectDacsDemosBalanceHeadroomV1({
+      const inspected = await inspectDacsDemosBalanceHeadroomV1({
         actors: { buyer: actors.buyer.runtime, seller: actors.seller.runtime },
         minimumDem,
+      });
+      if (estimate === undefined || !("facts" in inspected)) return inspected;
+      return Object.freeze({
+        ...inspected,
+        facts: Object.freeze({
+          ...inspected.facts,
+          expectedBuyerStorageWrites: estimate.expectedStorageWrites.buyer,
+          expectedSellerStorageWrites: estimate.expectedStorageWrites.seller,
+          buyerDemosSafetyMarginDem: estimate.safetyMarginDem.buyer,
+          sellerDemosSafetyMarginDem: estimate.safetyMarginDem.seller,
+          maximumTotalDemosDebitDem: estimate.maximumTotalDemosDebitDem,
+          storageWriteFeeCeilingScope: "per-transaction",
+        }),
       });
     },
     "demos.wallet-identity": actors === undefined ? actorUnavailable : () =>
@@ -1030,7 +1155,12 @@ function baseProbes(
           } catch { return blocked("listing-existing-resolution-unavailable"); }
         },
     "demos.engagement-endpoint-shape": () => {
-      try { new URL(serviceEndpoint("buyer")); new URL(serviceEndpoint("seller")); return pass(); }
+      const endpoint = loadRoleConfig("seller").publicBaseUrl;
+      if (endpoint === undefined) return blocked("seller-public-endpoint-missing");
+      try {
+        const parsed = new URL(endpoint);
+        return pass({ sellerPublicOrigin: parsed.origin });
+      }
       catch { return fail("engagement-endpoint-invalid"); }
     },
     "x402.rail-authority": !enabledProfiles.includes("x402") ? x402Disabled
@@ -1197,6 +1327,38 @@ export async function runGeneratedDoctor(
   scope: DacsLiveDoctorScopeV1,
   operation?: Readonly<GeneratedDoctorOperationV1>,
 ): Promise<Readonly<DacsLiveDoctorReportV1>> {
+  let enabledRailProfiles: readonly GeneratedRailProfile[];
+  try {
+    const buyer = loadRoleConfig("buyer");
+    const seller = loadRoleConfig("seller");
+    enabledRailProfiles = dacsLiveRailProfiles(buyer);
+    dacsLiveRailProfiles(seller);
+  } catch {
+    const probes: DacsLiveDoctorProbesV1 = Object.freeze({
+      "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
+        : fail("node-version-unsupported"),
+      "local.package-integrity": inspectDacsNodePackageIntegrityV1,
+      "local.version-bindings": versionBindings,
+      "local.configuration": () => fail("configuration-invalid"),
+      "local.deployment-runtime": dockerRuntime,
+    });
+    const report = await runDacsLiveDoctorV1({
+      phase,
+      scope,
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      profile: DACS_NODE_LIVE_PROFILE,
+      enabledRailProfiles: operation === undefined
+        ? ["pay-dem", "x402"] : [operation.rail],
+      ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
+      probes,
+      probeTimeoutMs: 30_000,
+    });
+    if (report.checks.length !== DACS_LIVE_DOCTOR_CHECK_IDS.length) {
+      throw new Error("doctor-catalog-incomplete");
+    }
+    return report;
+  }
   const actors = await openDoctorActors(phase);
   try {
     const service = phase === "post-start" ? createDacsRoleServiceDoctorProbesV1({
@@ -1233,7 +1395,7 @@ export async function runGeneratedDoctor(
       sdkVersion: VERSION,
       standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
       profile: DACS_NODE_LIVE_PROFILE,
-      enabledRailProfiles: dacsLiveRailProfiles(loadRoleConfig("buyer")),
+      enabledRailProfiles,
       ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
       probes,
       // A Demos block is approximately ten seconds. Registry resolution can
@@ -1685,6 +1847,10 @@ async function buildPrepared(
       maxBytes: 1_048_576,
     }),
   };
+  const maximumDemosStorageWriteFeeDem = Object.freeze({
+    buyer: buyerConfig.limits.maxDemosNetworkFeeDem,
+    seller: sellerConfig.limits.maxDemosNetworkFeeDem,
+  });
   if (input.rail === "pay-dem") {
     if (input.maximumTotalDebitDem === undefined) {
       throw new Error("native DEM total debit ceiling is unavailable");
@@ -1705,6 +1871,7 @@ async function buildPrepared(
       request: input.request,
       maximumServiceAmount: input.maximumServiceAmount,
       maximumTotalDebitDem: input.maximumTotalDebitDem,
+      maximumDemosStorageWriteFeeDem,
     });
   }
   const buyerEvmSecretPath = actorSecretPath("buyer", "evm-wallet");
@@ -1741,6 +1908,7 @@ async function buildPrepared(
     request: input.request,
     maximumServiceAmount: input.maximumServiceAmount,
     maximumNetworkFeeEth: input.maximumNetworkFeeEth,
+    maximumDemosStorageWriteFeeDem,
   });
 }
 
@@ -2115,7 +2283,9 @@ export async function startDacsLocalRoleServices(): Promise<number> {
     for (const role of ROLES) {
       const log = await safeLog(role);
       const token = randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", "");
-      const child = spawn(process.execPath, ["--import", "tsx", "dist/src/service.js"], {
+      const child = spawn(process.execPath, [
+        "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js",
+      ], {
         cwd: process.cwd(),
         detached: true,
         env: { ...process.env, DACS_DEPLOYMENT: "local", DACS_ROLE: role,
@@ -3360,6 +3530,7 @@ const VERIFIER_SOURCE = `export const verifierApplication = Object.freeze({
 
 const TEST_SOURCE = `import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { createServer } from "node:net";
 import test from "node:test";
 
 import { DACS_LIVE_DOCTOR_CHECK_IDS } from "@kynesyslabs/dacs-node";
@@ -3378,7 +3549,110 @@ test("fresh live bootstrap is complete, read-only and visibly blocked", async ()
   assert.equal(report.exitCode, 5);
   assert.equal(report.checks.length, DACS_LIVE_DOCTOR_CHECK_IDS.length);
   assert.equal(report.checks.some((item) => item.status === "blocked"), true);
+  assert.equal(report.checks.find((item) => item.id === "local.version-bindings")?.status,
+    "pass");
+  assert.deepEqual(report.checks.find((item) => item.id === "local.deployment-runtime")?.facts,
+    { servicePortCount: 2 });
+  const engagement = report.checks.find((item) =>
+    item.id === "demos.engagement-endpoint-shape");
+  assert.equal(engagement?.status, "blocked");
+  assert.equal(engagement?.reasonCode, "seller-public-endpoint-missing");
   assert.equal(existsSync("./data/buyer/actor.sqlite"), before);
+});
+
+test("pre-start doctor rejects an occupied service port", async () => {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("test service did not receive an IP port");
+  }
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousBuyerUrl = process.env.DACS_BUYER_SERVICE_URL;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_BUYER_SERVICE_URL = "http://127.0.0.1:" + String(address.port);
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    const deployment = report.checks.find((item) =>
+      item.id === "local.deployment-runtime");
+    assert.equal(deployment?.status, "fail");
+    assert.equal(deployment?.reasonCode, "service-port-unavailable");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) =>
+      error === undefined ? resolve() : reject(error)));
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousBuyerUrl === undefined) delete process.env.DACS_BUYER_SERVICE_URL;
+    else process.env.DACS_BUYER_SERVICE_URL = previousBuyerUrl;
+  }
+});
+
+test("doctor validates the configured seller Listing endpoint", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousSellerUrl = process.env.DACS_SELLER_PUBLIC_BASE_URL;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_SELLER_PUBLIC_BASE_URL = "https://seller.example/engage";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    assert.deepEqual(report.checks.find((item) =>
+      item.id === "demos.engagement-endpoint-shape")?.facts, {
+        sellerPublicOrigin: "https://seller.example",
+      });
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousSellerUrl === undefined) delete process.env.DACS_SELLER_PUBLIC_BASE_URL;
+    else process.env.DACS_SELLER_PUBLIC_BASE_URL = previousSellerUrl;
+  }
+});
+
+test("malformed configuration still produces the complete fail-closed report", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousMaximum = process.env.DACS_MAX_SERVICE_AMOUNT;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_MAX_SERVICE_AMOUNT = "-1";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    assert.equal(report.checks.length, DACS_LIVE_DOCTOR_CHECK_IDS.length);
+    assert.equal(report.exitCode, 1);
+    const configuration = report.checks.find((item) =>
+      item.id === "local.configuration");
+    assert.equal(configuration?.status, "fail");
+    assert.equal(configuration?.reasonCode, "configuration-invalid");
+    assert.equal(report.checks.find((item) => item.id === "demos.rpc-chain")?.status,
+      "blocked");
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousMaximum === undefined) delete process.env.DACS_MAX_SERVICE_AMOUNT;
+    else process.env.DACS_MAX_SERVICE_AMOUNT = previousMaximum;
+  }
+});
+
+test("doctor rejects a shared buyer and seller data directory", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousBuyerDirectory = process.env.DACS_BUYER_DATA_DIRECTORY;
+  const previousSellerDirectory = process.env.DACS_SELLER_DATA_DIRECTORY;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_BUYER_DATA_DIRECTORY = "./data/shared";
+  process.env.DACS_SELLER_DATA_DIRECTORY = "./data/shared";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    const configuration = report.checks.find((item) =>
+      item.id === "local.configuration");
+    assert.equal(configuration?.status, "fail");
+    assert.equal(configuration?.reasonCode, "actor-data-directory-shared");
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousBuyerDirectory === undefined) delete process.env.DACS_BUYER_DATA_DIRECTORY;
+    else process.env.DACS_BUYER_DATA_DIRECTORY = previousBuyerDirectory;
+    if (previousSellerDirectory === undefined) delete process.env.DACS_SELLER_DATA_DIRECTORY;
+    else process.env.DACS_SELLER_DATA_DIRECTORY = previousSellerDirectory;
+  }
 });
 
 const releaseMetadata = Object.freeze({
@@ -3474,13 +3748,13 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --omit=optional
 RUN npm rebuild better-sqlite3
 COPY tsconfig.json dacs.config.ts ./
 COPY src ./src
 COPY test ./test
 RUN npm run build
-RUN npm prune --omit=dev --ignore-scripts
+RUN npm prune --omit=dev --omit=optional --ignore-scripts
 
 FROM node:20.19.1-bookworm-slim
 ENV NODE_ENV=production
@@ -3492,7 +3766,7 @@ COPY --from=build --chown=dacs:dacs /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=dacs:dacs /app/node_modules ./node_modules
 COPY --from=build --chown=dacs:dacs /app/dist ./dist
 USER 10001:10001
-CMD ["node", "--import", "tsx", "dist/src/service.js"]
+CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]
 `;
 
 const DOCKERIGNORE = `**
@@ -3774,6 +4048,21 @@ are non-interchangeable and are rejected if persisted there. Without its own
 confirmation, setup or purchase prints a read-only preflight plan and exits.
 Every executing command also requires explicit caps.
 
+\`DACS_MAX_DEMOS_NETWORK_FEE_DEM\` is enforced before broadcast as the ceiling
+for each individual Storage Program transaction. Purchase doctor and the
+consent-bound plan reserve five buyer writes, six seller writes and one write
+per role of headroom; pay-DEM also adds the selected transfer-and-fee ceiling.
+The buyer carries those ceilings in the authenticated order application. Each
+role retains its immutable local grant before starting the order, and the seller
+rejects a grant above its local policy. A later configuration increase therefore
+cannot enlarge an admitted order. The generated graph is bounded by deterministic
+logical names, durable write-once reconciliation and the per-transaction caps.
+Before each purchase artifact broadcast, the wallet journal durably reserves its
+authenticated confirmed fee against the role-local aggregate ceiling; a
+definitively failed attempt still consumes that reservation. The reported ceiling
+does not cover custom extensions or unrelated concurrent orders using the same
+wallets.
+
 The purchase request file is closed, versioned JSON:
 
 \`\`\`json
@@ -3801,7 +4090,10 @@ must never open a store schema newer than it supports.
 
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
-the reviewed \`better-sqlite3\` native adapter. It uses separate non-root buyer/seller processes, secret mounts and durable
+the reviewed \`better-sqlite3\` native adapter. Unused optional dependency trees
+are omitted. Compiled services use the host package's exact Demos ESM
+compatibility loader rather than a general TypeScript/esbuild production
+transformer. It uses separate non-root buyer/seller processes, secret mounts and durable
 data bind mounts, read-only root filesystems, bounded resources and no database
 port. On the clean Linux VPS it uses host networking solely to keep the
 inter-role transport on \`127.0.0.1\`; public traffic requires a separately

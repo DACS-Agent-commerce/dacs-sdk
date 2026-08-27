@@ -172,6 +172,7 @@ describe("role-owned Demos runtime", () => {
     const directory = root();
     const loaded = await secret(directory);
     let journal: DemosWriteJournal | undefined;
+    let maximumFeeOs: bigint | undefined;
     await createDacsDemosActorRuntimeV1({
       config: config(directory),
       role: "buyer",
@@ -180,9 +181,11 @@ describe("role-owned Demos runtime", () => {
       writePolicy: "read-only",
       createAdapter: async (input) => {
         journal = input.writeJournal;
+        maximumFeeOs = input.maximumFeeOs;
         return adapter();
       },
     });
+    expect(maximumFeeOs).toBe(2_000_000_000n);
     expect(existsSync(join(directory, "demos-write-journal"))).toBe(false);
     await expect(journal!.acquire({ chainIdentity: "test", wallet: "0xactor" }))
       .rejects.toMatchObject({ reasonCode: "demos-write-disabled" });

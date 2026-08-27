@@ -21,6 +21,8 @@ import { createDacsFixedPriceX402SellerFulfilmentV1 } from
   "../src/fixedPriceX402SellerFulfilment.js";
 import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
+import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
+  "../src/purchaseDemosBudget.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -143,6 +145,7 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
         exactListing.listingVersion,
       ),
       listing: exactListing,
+      demosWriteFeeCeilings: { buyer: "2", seller: "2" },
       requestHash: sha256Hex(canonicalize(request)),
       request,
     };
@@ -152,6 +155,13 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
       application,
     });
     expect(retained.status).toBe("created");
+    retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+      database,
+      jobId: JOB_ID,
+      role: "seller",
+      authority: SELLER,
+      maximumPerWriteFeeDem: application.demosWriteFeeCeilings.seller,
+    });
     const store = database.createLiveCoordinatorStore("seller");
     await store.create({
       role: "seller",
@@ -209,6 +219,10 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
       role: "seller",
       authority: SELLER,
       peerAuthority: BUYER,
+      config: {
+        role: "seller",
+        limits: { maxDemosNetworkFeeDem: "2" },
+      },
       database,
       demos: { publicKey: SELLER_KEY, adapter },
     } as never;

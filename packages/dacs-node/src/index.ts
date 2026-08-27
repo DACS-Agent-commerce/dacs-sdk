@@ -42,6 +42,7 @@ export * from "./payDemSellerPayment.js";
 export * from "./payDemSellerFulfilmentRuntime.js";
 export * from "./payDemBuyerReceivedRuntime.js";
 export * from "./publicJson.js";
+export * from "./publicFetch.js";
 export * from "./release.js";
 export * from "./liveEffects.js";
 export * from "./liveCommerceGraph.js";

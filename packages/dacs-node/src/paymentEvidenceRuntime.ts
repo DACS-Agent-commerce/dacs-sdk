@@ -32,6 +32,7 @@ import {
   type DacsLiveTrackOperationInputV1,
   loadDacsLiveOrderInputForTrackV1,
 } from "./orderInput.js";
+import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
 import type {
   DacsLiveRoleInboundOperationContextV1,
   DacsLiveRoleOperationContextV1,
@@ -217,14 +218,16 @@ async function loadOrder(
   if (x402.status === "ok" && payDem.status === "ok") {
     throw new DacsPaymentEvidenceRuntimeError("payment-evidence-order-profile-conflict");
   }
-  const loaded = x402.status === "ok" ? x402 : payDem.status === "ok" ? payDem : undefined;
-  if (loaded === undefined && x402.status === "missing" && payDem.status === "missing") {
-    return undefined;
-  }
-  if (loaded === undefined) {
+  if ((x402.status !== "missing" && x402.status !== "ok") ||
+      (payDem.status !== "missing" && payDem.status !== "ok")) {
     throw new DacsPaymentEvidenceRuntimeError("payment-evidence-order-state-invalid");
   }
-  return loaded.record as DacsLiveOrderRecordV1;
+  if (x402.status === "missing" && payDem.status === "missing") {
+    return undefined;
+  }
+  if (x402.status === "ok") return x402.record;
+  if (payDem.status === "ok") return payDem.record;
+  throw new DacsPaymentEvidenceRuntimeError("payment-evidence-order-state-invalid");
 }
 
 function requestMatchesOrder(
@@ -306,13 +309,15 @@ async function publishBuyerDemosEvidence(
     const anchored = await context.demos.adapter.anchorWriteOnce(
       input.logicalAddress,
       input.evidence,
-      {
-        metadata: {
+      dacsFixedPricePurchaseAnchorOptionsV1(
+        context,
+        input.evidence.jobId,
+        {
           logicalAddress: input.logicalAddress,
           contentHash: input.evidenceHash,
           envelopeHash: sha256Hex(canonicalize(input.evidence)),
         },
-      },
+      ),
     );
     let receipt: ProtocolAnchorReceipt | null;
     if (anchored.demosEvidence !== undefined) {

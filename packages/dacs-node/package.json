@@ -29,6 +29,7 @@
       "types": "./dist/sqlite.d.ts",
       "import": "./dist/sqlite.js"
     },
+    "./demos-loader": "./dist/demosLoader.js",
     "./vectors/dacs-http-envelope-v1.json": "./vectors/dacs-http-envelope-v1.json"
   },
   "main": "./dist/index.js",

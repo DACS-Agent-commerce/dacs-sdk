@@ -21,6 +21,9 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import { createDacsPublicHttpsFetchV1 } from "./publicFetch.js";
+import { DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1 } from
+  "./buyerReceivedRuntime.js";
 import { createDacsX402BuyerPaymentTrackV1 } from "./x402Payment.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -49,7 +52,10 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   }>): Promise<boolean> | boolean;
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
+  /** Defaults to the locked-down public HTTPS transport when omitted. */
   fetchImpl?: typeof fetch;
+  /** Finite bound for the built-in fetch, shared with the paid delivery read. */
+  maxResponseBytes?: number;
   effectLeaseDurationMs?: number;
   settlementLeaseDurationMs?: number;
   retryDelayMs?: number;
@@ -196,10 +202,12 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       commerceStores.x402Settlement === undefined) {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
+  const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1({
+    maxBytes: options.maxResponseBytes ??
+      DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1,
+  });
   const recoverDisclosure = options.recoverDisclosure ??
-    createX402BuyerRetainedDisclosureRecovery(
-      options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
-    );
+    createX402BuyerRetainedDisclosureRecovery({ fetchImpl });
   const authorizationProvider = createX402BuyerEvmAuthorizationProvider({
     chainId: evm.runtime.chainId,
     minimumConfirmations: options.minimumConfirmations,
@@ -209,9 +217,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     ...(options.confirmUnused === undefined ? {} : { confirmUnused: options.confirmUnused }),
     recoverDisclosure,
   });
-  const transport = createX402BuyerPaidRequestTransport(
-    options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
-  );
+  const transport = createX402BuyerPaidRequestTransport({ fetchImpl });
 
   return createDacsX402BuyerPaymentTrackV1({
     database: context.database,
@@ -255,7 +261,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
           ? {} : { challengeHeaders: preparation.challengeHeaders }),
       }, {
         client,
-        ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+        fetchImpl,
       });
       if (result.disposition === "prepared") return result.intent;
       throw new DacsLiveEffectInputControlError(

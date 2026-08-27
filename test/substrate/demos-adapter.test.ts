@@ -35,6 +35,13 @@ describe("DemosAdapter", () => {
     expect(() => new DemosAdapter({})).toThrow(/rpc/);
   });
 
+  it("rejects an invalid confirmed-fee ceiling", () => {
+    expect(() => new DemosAdapter({
+      rpc: RPC,
+      maximumFeeOs: -1n,
+    })).toThrow(/maximumFeeOs/);
+  });
+
   it("constructs and exposes the raw demosdk instance", () => {
     const adapter = makeAdapter();
     expect(adapter.raw).toBeDefined();

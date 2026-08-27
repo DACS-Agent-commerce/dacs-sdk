@@ -24,6 +24,7 @@ import {
 
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import type { DacsLiveTrackOperationInputV1 } from "./orderInput.js";
+import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
 
 const VET_BINDING_VERSION = "1" as const;
 const VET_BINDING_DOMAIN = "dacs-live-session-vet-binding:v1:" as const;
@@ -439,11 +440,15 @@ export async function produceDacsEmptyRequirementSessionVetV1(input: Readonly<{
     const anchored = await input.context.demos.adapter.anchorWriteOnce(
       logicalAddress,
       record as unknown as Record<string, unknown>,
-      { metadata: {
+      dacsFixedPricePurchaseAnchorOptionsV1(
+        input.context,
+        input.operation.order.jobId,
+        {
         logicalAddress,
         contentHash: recordHash,
         envelopeHash: sha256Hex(canonicalize(record)),
-      } },
+        },
+      ),
     );
     receipt = anchored.demosEvidence === undefined
       ? await input.context.demos.adapter.resolveDemosAnchorReceipt({

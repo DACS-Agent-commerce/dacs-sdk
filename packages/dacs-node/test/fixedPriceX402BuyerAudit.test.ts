@@ -460,6 +460,7 @@ async function fixture() {
     listingLogicalAddress: listingAddress(SELLER, listing.listingId,
       listing.listingVersion),
     listing,
+    demosWriteFeeCeilings: { buyer: "2", seller: "2" },
     requestHash: sha256Hex(canonicalize({ query: "test" })),
     request: { query: "test" },
   };

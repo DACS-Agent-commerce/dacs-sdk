@@ -4,7 +4,7 @@ export interface ProjectTemplateOptions {
   packageName: string;
   deployment: "local" | "docker";
   mode?: "offline" | "live-demos";
-  role?: "demo-all" | "buyer" | "seller" | "verifier";
+  role?: "demo-all" | "buyer" | "seller";
   rails?: "x402" | "pay-dem" | "both";
   runtimeUid?: number;
   runtimeGid?: number;

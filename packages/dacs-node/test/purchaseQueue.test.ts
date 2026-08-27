@@ -30,6 +30,8 @@ import {
   prepareDacsPayDemPurchaseV1,
   prepareDacsX402PurchaseV1,
 } from "../src/purchaseQueue.js";
+import { dacsFixedPricePurchaseAnchorOptionsV1 } from
+  "../src/purchaseDemosBudget.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -216,6 +218,7 @@ describe("guarded x402 purchase queue", () => {
       request: { requestVersion: "1", query: "bounded test" },
       maximumServiceAmount: "1",
       maximumNetworkFeeEth: "0.001",
+      maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
     });
     expect(prepared.plan).toMatchObject({
       kind: "purchase",
@@ -223,6 +226,10 @@ describe("guarded x402 purchase queue", () => {
       serviceAmount: "0.5",
       estimatedNetworkFeeEth: "0",
       listingRef: value.listingRef,
+      demosCost: {
+        expectedStorageWrites: { buyer: 5, seller: 6 },
+        maximumTotalDemosDebitDem: "33",
+      },
     });
     expect(prepared.order.protocol.rail).toMatchObject({
       registryIndexHash: "a".repeat(64),
@@ -230,6 +237,10 @@ describe("guarded x402 purchase queue", () => {
       railDefinitionRef: "dacs4:rail:x402%3Atest:1",
     });
     expect(Object.isFrozen(prepared.application.request)).toBe(true);
+    expect(prepared.application.demosWriteFeeCeilings).toEqual({
+      buyer: "2",
+      seller: "3",
+    });
 
     const root = mkdtempSync(join(tmpdir(), "dacs-purchase-queue-"));
     roots.push(root);
@@ -263,6 +274,13 @@ describe("guarded x402 purchase queue", () => {
       status: "reconciled-performed",
       result: { jobId: prepared.plan.jobId, orderInputStatus: "existing" },
     });
+    expect(dacsFixedPricePurchaseAnchorOptionsV1({
+      role: "buyer",
+      authority: value.buyer,
+      config: { role: "buyer", limits: { maxDemosNetworkFeeDem: "99" } },
+      database,
+    } as never, prepared.plan.jobId, {}).feeBudget?.maximumTotalFeeOs)
+      .toBe(12_000_000_000n);
     expect(fence.assertCurrent).toHaveBeenCalledTimes(8);
   });
 
@@ -276,6 +294,7 @@ describe("guarded x402 purchase queue", () => {
       request: { requestVersion: "1", query: "bounded test" },
       maximumServiceAmount: "1",
       maximumNetworkFeeEth: "0.001",
+      maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
       resume: true,
     });
     expect(prepared.plan.resume).toBe(true);
@@ -322,6 +341,7 @@ describe("guarded x402 purchase queue", () => {
       request: { requestVersion: "1" },
       maximumServiceAmount: "1",
       maximumNetworkFeeEth: "0.001",
+      maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
     })).toThrow("authenticated x402 Listing admission is invalid");
   });
 });
@@ -339,6 +359,7 @@ describe("guarded pay-dem purchase queue", () => {
       request: { requestVersion: "1", query: "native bounded test" },
       maximumServiceAmount: "1",
       maximumTotalDebitDem: "1.1",
+      maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
     });
     expect(prepared).toMatchObject({
       plan: {
@@ -348,6 +369,7 @@ describe("guarded pay-dem purchase queue", () => {
         network: "demos",
         asset: "DEM",
         maximumTotalDebitDem: "1.1",
+        demosCost: { maximumTotalDemosDebitDem: "34.1" },
       },
       order: { protocol: { phase: "pay-dem", rail: { railType: "demos-native" } } },
     });
