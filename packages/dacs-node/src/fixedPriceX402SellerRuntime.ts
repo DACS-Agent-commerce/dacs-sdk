@@ -94,6 +94,7 @@ export function createDacsFixedPriceX402SellerX402CompositionV1(
   });
   const fulfilment = createDacsFixedPriceX402SellerFulfilmentV1({
     context: options.context,
+    rail: options.rail,
     authority: settlement.authority,
     workerId: options.workerId,
     recipeRegistryVersion: options.recipeRegistryVersion,

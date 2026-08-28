@@ -42,6 +42,7 @@ export function createDacsFixedPricePayDemSellerFulfilmentV1(
   });
   const fulfilment = createDacsFixedPriceSellerFulfilmentV1({
     context: options.context,
+    rail: options.rail,
     authority,
     paymentProfile: "pay-dem",
     workerId: options.workerId,

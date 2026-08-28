@@ -1,5 +1,8 @@
 import {
+  getAuthenticatedRailProvenance,
+  isAuthenticatedRailDefinition,
   encodeAddressSegment,
+  type AuthenticatedRailDefinition,
   type DurableSellerFulfilmentDeps,
   type ProtocolAnchorReceipt,
   type SellerFulfilmentAuditSourceV1,
@@ -61,6 +64,8 @@ export interface DacsPublicStorageDeliverableInputV1 {
 
 export interface DacsFixedPriceX402SellerFulfilmentOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
+  /** Exact authenticated registry capability selected for this order profile. */
+  rail: Readonly<AuthenticatedRailDefinition>;
   authority: Readonly<{
     resolveFulfilmentAgreement: DurableSellerFulfilmentDeps["resolveAgreement"];
     resolveFulfilmentListing: DurableSellerFulfilmentDeps["resolveListing"];
@@ -367,6 +372,10 @@ function buildAuditSource(input: Readonly<{
   context: Readonly<DacsLiveRoleOperationContextV1>;
   order: Readonly<SellerLiveOrderRecord>;
   payment: Readonly<SellerPaymentAuthorization>;
+  rail: Readonly<AuthenticatedRailDefinition>;
+  railRegistryVersion: number;
+  railRegistryIndexHash: string;
+  railDefinitionHash: string;
   recipeRegistryVersion: number;
 }>): Readonly<SellerFulfilmentAuditSourceV1> {
   const { context, order, payment } = input;
@@ -388,6 +397,13 @@ function buildAuditSource(input: Readonly<{
   const paymentKind = order.protocol.phase;
   if (payment.jobId !== order.jobId ||
       payment.railId !== order.protocol.rail.railId ||
+      payment.railRegistryVersion !== input.railRegistryVersion ||
+      input.rail.railId !== order.protocol.rail.railId ||
+      input.rail.railVersion !== order.protocol.rail.railVersion ||
+      input.rail.railType !== order.protocol.rail.railType ||
+      input.rail.phaseHandler !== order.protocol.rail.phaseHandler ||
+      input.railRegistryIndexHash !== order.protocol.rail.registryIndexHash ||
+      input.railDefinitionHash !== order.protocol.rail.railDefinitionHash ||
       payment.commitment.ref !== commitment.commitment.logicalAddress ||
       payment.commitment.contentHash !== contentHash(
         commitment.commitment.record as unknown as Record<string, unknown>,
@@ -488,7 +504,7 @@ function buildAuditSource(input: Readonly<{
     startedAt: commitment.agreement.generatedAt,
     lastUpdatedAt: payment.evidenceInput.observedAt,
     recipeRegistryVersion: input.recipeRegistryVersion,
-    railRegistryVersion: payment.railRegistryVersion,
+    railRegistryVersion: input.railRegistryVersion,
   };
   return deepFreeze({
     sourceVersion: "1" as const,
@@ -544,6 +560,7 @@ export function createDacsFixedPriceSellerFulfilmentV1(
 ): Readonly<DacsFixedPriceSellerFulfilmentV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" || !plainObject(options.authority) ||
+      !isAuthenticatedRailDefinition(options.rail) ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
       !safePositive(options.recipeRegistryVersion) ||
       (options.paymentProfile !== "x402" && options.paymentProfile !== "pay-dem") ||
@@ -555,6 +572,15 @@ export function createDacsFixedPriceSellerFulfilmentV1(
   const context = options.context;
   const leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
   const paymentProfile = options.paymentProfile;
+  const railProvenance = getAuthenticatedRailProvenance(options.rail);
+  if (railProvenance === null ||
+      (paymentProfile === "x402" &&
+        (options.rail.railType !== "x402" || options.rail.phaseHandler !== "pay-x402")) ||
+      (paymentProfile === "pay-dem" &&
+        (options.rail.railType !== "demos-native" ||
+          options.rail.phaseHandler !== "pay-dem"))) {
+    throw new TypeError("fixed-price seller fulfilment rail authority is invalid");
+  }
 
   const resolveByLogicalAddress = async (logicalAddress: string) =>
     resolvePublicAnchor(context, logicalAddress);
@@ -581,6 +607,10 @@ export function createDacsFixedPriceSellerFulfilmentV1(
           context,
           order,
           payment,
+          rail: options.rail,
+          railRegistryVersion: railProvenance.registryVersion,
+          railRegistryIndexHash: railProvenance.indexContentHash,
+          railDefinitionHash: railProvenance.definitionContentHash,
           recipeRegistryVersion: options.recipeRegistryVersion,
         }) };
       } catch {

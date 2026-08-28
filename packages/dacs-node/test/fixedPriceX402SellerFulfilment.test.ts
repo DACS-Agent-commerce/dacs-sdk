@@ -2,6 +2,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { vi } from "vitest";
+
+const dependencies = vi.hoisted(() => ({
+  railProvenance: new WeakMap<object, Readonly<Record<string, unknown>>>(),
+}));
+
+vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@kynesyslabs/dacs")>()),
+  isAuthenticatedRailDefinition: (value: unknown) =>
+    typeof value === "object" && value !== null &&
+    dependencies.railProvenance.has(value),
+  getAuthenticatedRailProvenance: (value: unknown) =>
+    typeof value === "object" && value !== null
+      ? dependencies.railProvenance.get(value) ?? null : null,
+}));
+
 import type { Listing } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, listingAddress, sha256Hex } from
   "@kynesyslabs/dacs/canonical";
@@ -14,7 +30,7 @@ import {
 } from "@kynesyslabs/dacs/commerce";
 import { publicKeyFromSeed, rawPublicKey } from "@kynesyslabs/dacs/crypto";
 import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPriceX402SellerFulfilmentV1 } from
@@ -62,6 +78,44 @@ function protocol() {
       availability: "live" as const,
     },
   };
+}
+
+function authenticatedRail() {
+  const value = Object.freeze({
+    railVersion: 2,
+    railId: "x402:test",
+    railType: "x402" as const,
+    asset: {
+      kind: "erc20" as const,
+      chainId: 84532,
+      contract: `0x${"4".repeat(40)}`,
+      symbol: "USDC",
+      decimals: 6,
+    },
+    network: {
+      kind: "x402-resource" as const,
+      resourceBaseUrl: "https://seller.example/dacs/x402",
+    },
+    phaseHandler: "pay-x402" as const,
+    parameters: {},
+    availability: "live" as const,
+    governance: {
+      proposedBy: SELLER,
+      acceptedAt: NOW - 1,
+      anchoring: "single-signer" as const,
+    },
+    signature: {
+      algorithm: "ed25519" as const,
+      signer: SELLER,
+      value: Buffer.alloc(64, 1).toString("base64url"),
+    },
+  });
+  dependencies.railProvenance.set(value, Object.freeze({
+    registryVersion: 1,
+    indexContentHash: "1".repeat(64),
+    definitionContentHash: "2".repeat(64),
+  }));
+  return value;
 }
 
 function listing(): Listing {
@@ -233,6 +287,7 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
     const prepareDeliverable = vi.fn(async () => ({ answer: 42 }));
     const composed = createDacsFixedPriceX402SellerFulfilmentV1({
       context,
+      rail: authenticatedRail() as never,
       authority,
       workerId: "seller-test-worker",
       recipeRegistryVersion: 1,
