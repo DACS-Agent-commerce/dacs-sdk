@@ -84,6 +84,11 @@ import {
   isAttestationRef,
   isChainTxRef,
 } from "../../src/artifacts/index.js";
+import {
+  assessRegistryGovernanceDisclosure,
+  classifyRecipeAnchoringPhase,
+  evaluatePinnedRecipeGovernance,
+} from "../../src/registry/governance.js";
 import type { LegacyMvpAgreementDocument as AgreementDocument } from "../../src/artifacts/legacyMvp.js";
 
 /**
@@ -998,6 +1003,111 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       });
     },
 
+    // governance — DACS-2 §7.4.4 GOV-1..GOV-3. These primitive vectors
+    // exercise the shipped fail-closed phase/disclosure policy directly.
+    "gov-gov2-classify": (want) => {
+      let unknownRejected = false;
+      try {
+        classifyRecipeAnchoringPhase("future-phase");
+      } catch {
+        unknownRejected = true;
+      }
+      expect([
+        classifyRecipeAnchoringPhase("in-code").phase,
+        classifyRecipeAnchoringPhase("single-signer").phase,
+        classifyRecipeAnchoringPhase("multisig").phase,
+        unknownRejected,
+      ]).toEqual(want);
+    },
+    "gov-gov2-incode-not-anchored": (want) => {
+      expect([
+        classifyRecipeAnchoringPhase("in-code").canonicallyAnchored,
+        classifyRecipeAnchoringPhase("single-signer").canonicallyAnchored,
+        classifyRecipeAnchoringPhase("multisig").canonicallyAnchored,
+      ]).toEqual(want);
+    },
+    "gov-gov1-discloses-key": (want) => {
+      expect(assessRegistryGovernanceDisclosure({
+        authoritativeSigningKey: "key:steward-v1",
+        actualPhase: "single-signer",
+        represents: "single-steward",
+      })).toMatchObject(want);
+    },
+    "gov-gov1-missing-key": (want) => {
+      expect(assessRegistryGovernanceDisclosure({
+        actualPhase: "single-signer",
+        represents: "single-steward",
+      }).ok).toBe(want);
+    },
+    "gov-gov1-misrepresent-constituted": (want) => {
+      expect(assessRegistryGovernanceDisclosure({
+        authoritativeSigningKey: "key:steward-v1",
+        actualPhase: "single-signer",
+        represents: "constituted-body",
+      }).ok).toBe(want);
+    },
+    "gov-gov1-constituted-ok-at-multisig": (want) => {
+      expect(assessRegistryGovernanceDisclosure({
+        authoritativeSigningKey: "key:body-v1",
+        actualPhase: "multisig",
+        represents: "constituted-body",
+      })).toMatchObject(want);
+    },
+    "gov-gov3-pintime-governs": (want) => {
+      expect(evaluatePinnedRecipeGovernance({
+        recipeVersion: want.recipeVersion,
+        pinnedPhase: "single-signer",
+        minimumPhase: "single-signer",
+      })).toMatchObject(want);
+    },
+    "gov-gov3-incode-pin-not-anchored": (want) => {
+      expect(evaluatePinnedRecipeGovernance({
+        recipeVersion: 1,
+        pinnedPhase: "in-code",
+        minimumPhase: "in-code",
+      })).toMatchObject(want);
+    },
+    "gov-gov3-below-trust-floor": (want) => {
+      expect(evaluatePinnedRecipeGovernance({
+        recipeVersion: 3,
+        pinnedPhase: "single-signer",
+        minimumPhase: "multisig",
+      }).ok).toBe(want);
+    },
+    "gov-gov3-meets-trust-floor": (want) => {
+      expect(evaluatePinnedRecipeGovernance({
+        recipeVersion: 4,
+        pinnedPhase: "multisig",
+        minimumPhase: "multisig",
+      }).ok).toBe(want);
+    },
+    "gov-gov3-unknown-phase-rejected": (want) => {
+      let rejected = false;
+      try {
+        evaluatePinnedRecipeGovernance({
+          recipeVersion: 3,
+          pinnedPhase: "unknown" as "single-signer",
+          minimumPhase: "in-code",
+        });
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).toBe(want);
+    },
+    "gov-gov1-unknown-phase-rejected": (want) => {
+      let rejected = false;
+      try {
+        assessRegistryGovernanceDisclosure({
+          authoritativeSigningKey: "key:steward-v1",
+          actualPhase: "unknown" as "single-signer",
+          represents: "single-steward",
+        });
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).toBe(want);
+    },
+
     // dacs1 — identityTier derivation (§6.3.2.1 IT-1..IT-3), via
     // src/identity/tier.ts. Fixture-backed where golden.identityTier ships a
     // fixture; the fixture-less IT-3 cases construct the bundle the summary
@@ -1536,7 +1646,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     vet: "remaining §6.3.3 matching/freshness inputs and §7.7.1 companion error-class provenance are constructed in dacs-verify run.ts but not shipped",
     negotiate:
       "remaining §8.5.1/§8.5.2 price, fee, listing, and commitment checks need richer constructed inputs or focused SDK surfaces",
-    governance: "no GOV-1..3 governance surface in the SDK",
+    governance: "all current GOV-1..3 goldens replay through the exported governance policy surface",
     dispute:
       "no DACS-X §11.2.1 dispute verifier in the SDK; vector inputs are constructed in dacs-verify run.ts, not shipped",
     disclosure:
@@ -1603,10 +1713,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
 
   it("does not silently demote replayed cases back to todo", () => {
     // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
-    // DACS-5 state/outcome, DACS-2 Vet, and Listing semantics raise coverage to 114.
+    // DACS-5 state/outcome, DACS-2 Vet, Listing, and GOV-1..3 semantics raise
+    // coverage to 126.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(114);
+    expect(Object.keys(RUNNERS)).toHaveLength(126);
     expect(manifest.cases).toHaveLength(236);
   });
 
