@@ -382,6 +382,43 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.bundleCount).toBe(0);
   });
 
+  test("async validation snapshots each accepted copy before a later await permits caller mutation", async () => {
+    const accepted = bundle("accepted", "completed", 1100);
+    const delayed = bundle("delayed", "completed", 1200);
+    let releaseDelayed!: () => void;
+    const delayedGate = new Promise<void>((resolve) => {
+      releaseDelayed = resolve;
+    });
+    let signalDelayed!: () => void;
+    const delayedStarted = new Promise<void>((resolve) => {
+      signalDelayed = resolve;
+    });
+
+    const pending = deriveReputationWithValidation(
+      PARTY,
+      [accepted, delayed],
+      WINDOW,
+      {
+        validate: async (candidate) => {
+          if (candidate === accepted) return true;
+          signalDelayed();
+          await delayedGate;
+          return false;
+        },
+        copyAbsence: () => "absent",
+      },
+    );
+
+    await delayedStarted;
+    accepted.outcome = "failed-perm";
+    accepted.parties[0]!.primaryClaim = "did:demos:mutated";
+    releaseDelayed();
+
+    const r = await pending;
+    expect(r.bundleCount).toBe(1);
+    expect(r.metrics.completionRate).toBe(1);
+  });
+
   test("requires an explicit isValid or trustBundles — no fail-open default", () => {
     expect(() =>
       deriveReputation(PARTY, [bundle("a", "completed", 1100)], WINDOW),

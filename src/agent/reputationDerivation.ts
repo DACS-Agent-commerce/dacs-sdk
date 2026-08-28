@@ -1,4 +1,5 @@
 import { bundleAddress, contentHash, stripSignature } from "../canonical/index.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import type { AnyAttestationBundle, AttestationRef } from "../artifacts/types.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
@@ -336,7 +337,14 @@ export async function deriveReputationWithValidation(
   for (const bundle of bundles) {
     try {
       const decision: unknown = await deps.validate(bundle);
-      if (decision === true) accepted.push(bundle);
+      if (decision === true) {
+        accepted.push(
+          snapshotCanonicalJsonRead(
+            bundle,
+            "validated reputation bundle",
+          ),
+        );
+      }
     } catch {
       // Verification transport errors, rejected Promises, and hostile inputs are
       // indeterminate, never permission to include the candidate in a score.
