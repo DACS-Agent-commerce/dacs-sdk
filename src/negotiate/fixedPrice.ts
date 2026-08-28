@@ -105,6 +105,14 @@ const isSafeTime = (value: number): boolean =>
   Number.isSafeInteger(value) && value >= 0;
 
 type MeteredPricing = Extract<PricingSpec, { kind: "metered" }>;
+type NegotiablePricing = Extract<PricingSpec, { kind: "negotiable" }>;
+
+export interface NegotiablePriceBand {
+  /** Inclusive lower bound, rounded half-up to the band centre's precision. */
+  lower: string;
+  /** Inclusive upper bound, rounded half-up to the band centre's precision. */
+  upper: string;
+}
 
 function decimalParts(value: string): { whole: string; fraction: string } {
   const [whole = "0", fraction = ""] = value.split(".");
@@ -122,6 +130,127 @@ function compareCanonicalDecimal(left: string, right: string): number {
   const aFraction = a.fraction.padEnd(width, "0");
   const bFraction = b.fraction.padEnd(width, "0");
   return aFraction === bFraction ? 0 : aFraction < bFraction ? -1 : 1;
+}
+
+function canonicalNumberDecimal(value: number, label: string): string {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new DacsError(`${label} must be a finite non-negative number`);
+  }
+  // Reuse the canonical JSON number guard (including the safe magnitude cap),
+  // then expand its possible exponent form into an exact decimal ratio. This
+  // never performs price arithmetic in IEEE-754.
+  const encoded = canonicalize(value);
+  if (!/[eE]/.test(encoded)) return canonicalizeDecimal(encoded);
+  const match = /^(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(encoded);
+  if (!match) throw new DacsError(`${label} is not a canonical JSON number`);
+  const whole = match[1]!;
+  const fraction = match[2] ?? "";
+  const exponent = Number(match[3]);
+  const digits = `${whole}${fraction}`;
+  const decimalPlaces = fraction.length - exponent;
+  const expanded = decimalPlaces <= 0
+    ? `${digits}${"0".repeat(-decimalPlaces)}`
+    : digits.length > decimalPlaces
+      ? `${digits.slice(0, digits.length - decimalPlaces)}.${digits.slice(-decimalPlaces)}`
+      : `0.${"0".repeat(decimalPlaces - digits.length)}${digits}`;
+  return canonicalizeDecimal(expanded);
+}
+
+function scaledDecimal(value: string): {
+  units: bigint;
+  fractionalDigits: number;
+} {
+  const [whole, fraction = ""] = value.split(".");
+  return {
+    units: BigInt(`${whole}${fraction}`),
+    fractionalDigits: fraction.length,
+  };
+}
+
+function formatScaledDecimal(units: bigint, fractionalDigits: number): string {
+  if (fractionalDigits === 0) return units.toString();
+  const digits = units.toString().padStart(fractionalDigits + 1, "0");
+  const split = digits.length - fractionalDigits;
+  return canonicalizeDecimal(`${digits.slice(0, split)}.${digits.slice(split)}`);
+}
+
+function roundHalfUp(numerator: bigint, denominator: bigint): bigint {
+  const quotient = numerator / denominator;
+  const remainder = numerator % denominator;
+  return remainder * 2n >= denominator ? quotient + 1n : quotient;
+}
+
+/**
+ * DACS-3 §8.5.2 exact negotiable-price bounds. The percentage multiplication
+ * uses integer ratios and each bound is rounded half-up to the number of
+ * fractional digits in the canonical band centre; currency precision is not
+ * consulted at negotiation time.
+ */
+export function negotiablePriceBand(
+  pricing: NegotiablePricing,
+): NegotiablePriceBand {
+  const captured = snapshotCanonicalJson(
+    pricing,
+    "negotiable price-band input",
+  );
+  const candidate = captured as unknown;
+  if (
+    candidate === null ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate) ||
+    (candidate as Record<string, unknown>).kind !== "negotiable" ||
+    (candidate as Record<string, unknown>).bandCenter === null ||
+    typeof (candidate as Record<string, unknown>).bandCenter !== "object" ||
+    Array.isArray((candidate as Record<string, unknown>).bandCenter)
+  ) {
+    throw new DacsError("negotiable price-band calculation requires negotiable pricing");
+  }
+  const owned = candidate as NegotiablePricing;
+  const centre = canonicalizeDecimal(owned.bandCenter.amount);
+  if (centre !== owned.bandCenter.amount || centre === "0") {
+    throw new DacsError("negotiable bandCenter must be a positive CD-1 canonical decimal");
+  }
+  if (
+    typeof owned.bandCenter.currency !== "string" ||
+    owned.bandCenter.currency.length === 0
+  ) {
+    throw new DacsError("negotiable bandCenter currency must be non-empty");
+  }
+  const min = scaledDecimal(canonicalNumberDecimal(owned.minPct, "minPct"));
+  const max = scaledDecimal(canonicalNumberDecimal(owned.maxPct, "maxPct"));
+  const minScale = 10n ** BigInt(min.fractionalDigits);
+  const maxScale = 10n ** BigInt(max.fractionalDigits);
+  const minFactor = 100n * minScale - min.units;
+  if (minFactor <= 0n) {
+    throw new DacsError("negotiable minPct must produce a positive lower bound");
+  }
+  const maxFactor = 100n * maxScale + max.units;
+  const { units: centreUnits, fractionalDigits } = scaledDecimal(centre);
+  const lowerUnits = roundHalfUp(centreUnits * minFactor, 100n * minScale);
+  const upperUnits = roundHalfUp(centreUnits * maxFactor, 100n * maxScale);
+  if (lowerUnits <= 0n) {
+    throw new DacsError("negotiable price band must have a positive lower bound");
+  }
+  return {
+    lower: formatScaledDecimal(lowerUnits, fractionalDigits),
+    upper: formatScaledDecimal(upperUnits, fractionalDigits),
+  };
+}
+
+/** True when a canonical amount lies inside the inclusive §8.5.2 band. */
+export function isNegotiablePriceWithinBand(
+  amount: string,
+  pricing: NegotiablePricing,
+): boolean {
+  const canonicalAmount = canonicalizeDecimal(amount);
+  if (canonicalAmount !== amount || canonicalAmount === "0") {
+    throw new DacsError("agreement price must be a positive CD-1 canonical decimal");
+  }
+  const band = negotiablePriceBand(pricing);
+  return (
+    compareCanonicalDecimal(canonicalAmount, band.lower) >= 0 &&
+    compareCanonicalDecimal(canonicalAmount, band.upper) <= 0
+  );
 }
 
 function multiplyCanonicalDecimal(amount: string, quantity: string): string {

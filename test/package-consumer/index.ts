@@ -5,6 +5,8 @@ import {
   type DeriveReputationDeps,
   type SubstrateAdapter,
   lookupBundleCopies,
+  negotiablePriceBand,
+  isNegotiablePriceWithinBand,
   verifyBundleCore,
 } from "@kynesyslabs/dacs";
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
@@ -18,6 +20,18 @@ const reputationDeps: DeriveReputationDeps = {
   resolvePartyRole: ({ jobId, partyPrimaryClaim }) =>
     jobId.length > 0 && partyPrimaryClaim.length > 0 ? "buyer" : undefined,
 };
+const priceBand = negotiablePriceBand({
+  kind: "negotiable",
+  bandCenter: { amount: "100", currency: "USDC" },
+  minPct: 10,
+  maxPct: 10,
+});
+const priceAccepted: boolean = isNegotiablePriceWithinBand("95", {
+  kind: "negotiable",
+  bandCenter: { amount: "100", currency: "USDC" },
+  minPct: 10,
+  maxPct: 10,
+});
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 
@@ -29,6 +43,8 @@ void config;
 void verifier;
 void bundleLookup;
 void reputationDeps;
+void priceBand;
+void priceAccepted;
 void canonical;
 void fulfilment;
 void adapter;
