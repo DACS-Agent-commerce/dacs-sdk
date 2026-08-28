@@ -36,6 +36,7 @@ import {
   bundleConsistency,
   type BundleCopies,
 } from "../../src/agent/bundleConsistency.js";
+import { verifyBundleCopy } from "../../src/agent/bundleCopyValidity.js";
 import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { deriveReputation } from "../../src/agent/reputationDerivation.js";
 import {
@@ -254,6 +255,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       computedAt: number;
       partyPrimaryClaim: string;
       bundles: AttestationBundle[];
+      seeds: Record<string, string>;
     };
   const deriveCurrentRep = (bundles: AnyAttestationBundle[]) => {
     const fx = repFixture();
@@ -1612,6 +1614,130 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(bundleDecision(await runBundle(buyer, fx.seeds))).toBe(want.buyerDecision);
       expect(bundleDecision(await runBundle(seller, fx.seeds))).toBe(want.sellerDecision);
     },
+    "verify-reputation-single-signed-non-abort-dropped": async (want) => {
+      const fx = repFixture();
+      const completed = structuredClone(
+        fx.bundles.find((bundle) =>
+          bundle.jobId === "DACS-VERIFY-L3-REP-COMPLETED"
+        )!,
+      );
+      const invalidCounterparty = structuredClone(
+        fx.bundles.find((bundle) =>
+          bundle.jobId === "DACS-VERIFY-L3-REP-COUNTERPARTY"
+        )!,
+      );
+      // anchoredByRole is outside the signed scope, so the retained seller
+      // signature remains cryptographically valid. The copy must nevertheless
+      // be dropped: failed-counterparty is not eligible for the §10.11
+      // single-signed-abort exception.
+      invalidCounterparty.anchoredByRole = "seller";
+      invalidCounterparty.signatures = invalidCounterparty.signatures.filter(
+        (signature) => signature.party === "did:demos:seller",
+      );
+      const keys = keysFromSeeds(fx.seeds);
+      const verifier = {
+        resolvePublicKey: async (did: string) => keys[did] ?? null,
+        verify: verifySig,
+      };
+      const completedValidity = await verifyBundleCopy(
+        completed as unknown as Record<string, unknown>,
+        "buyer",
+        verifier,
+      );
+      const invalidValidity = await verifyBundleCopy(
+        invalidCounterparty as unknown as Record<string, unknown>,
+        "seller",
+        verifier,
+      );
+      expect(completedValidity.valid).toBe(true);
+      expect(invalidValidity.valid ? "pass" : "fail").toBe(
+        want.verifyBundleDecision,
+      );
+
+      // deriveReputation's validation gate is synchronous, so pass only the
+      // exact copy that the async cryptographic gate accepted above.
+      const validated = new Set<AnyAttestationBundle>([completed]);
+      const derived = deriveReputation(
+        fx.partyPrimaryClaim,
+        [completed, invalidCounterparty],
+        {
+          windowStart: fx.windowStart,
+          windowEnd: fx.windowEnd,
+          computedAt: fx.computedAt,
+          windowingBasis: fx.windowingBasis,
+        },
+        {
+          isValid: (bundle) => validated.has(bundle),
+          copyAbsence: () => "absent",
+        },
+      );
+      expect(derived.bundleCount).toBe(want.bundleCount);
+      expect(derived.metrics.completionRate).toBe(want.completionRate);
+      expect(derived.metrics.counterpartyFaultRate).toBe(
+        want.counterpartyFaultRate,
+      );
+      expect(derived.bundleRefs.map((ref) => ref.anchor.locator)).toEqual(
+        want.bundleRefs.map((jobId: string) => bundleAddress(jobId, "buyer")),
+      );
+    },
+    "verify-reputation-divergence-excluded": async (want) => {
+      const fx = repFixture();
+      const completed = structuredClone(
+        fx.bundles.find((bundle) =>
+          bundle.jobId === "DACS-VERIFY-L3-REP-COMPLETED"
+        )!,
+      );
+      const divergentBuyer = read(golden.bundle.fixture) as unknown as AttestationBundle;
+      const divergentSeller = read(
+        golden.bundle.divergentSellerFixture,
+      ) as unknown as AttestationBundle;
+      const keys = keysFromSeeds(golden.bundle.seeds);
+      const verifier = {
+        resolvePublicKey: async (did: string) => keys[did] ?? null,
+        verify: verifySig,
+      };
+      const validated = new Set<AnyAttestationBundle>();
+      expect((await verifyBundleCopy(
+        completed as unknown as Record<string, unknown>,
+        "buyer",
+        verifier,
+      )).valid).toBe(true);
+      validated.add(completed);
+      for (const [bundle, role] of [
+        [divergentBuyer, "buyer"],
+        [divergentSeller, "seller"],
+      ] as const) {
+        const validity = await verifyBundleCopy(
+          bundle as unknown as Record<string, unknown>,
+          role,
+          verifier,
+        );
+        expect(validity.valid).toBe(true);
+        validated.add(bundle);
+      }
+      const derived = deriveReputation(
+        fx.partyPrimaryClaim,
+        [completed, divergentBuyer, divergentSeller],
+        {
+          windowStart: 0,
+          windowEnd: Number.MAX_SAFE_INTEGER,
+          computedAt: fx.computedAt,
+          windowingBasis: fx.windowingBasis,
+        },
+        {
+          isValid: (bundle) => validated.has(bundle),
+          copyAbsence: () => "absent",
+        },
+      );
+      expect(derived.bundleCount).toBe(want.bundleCount);
+      expect(derived.metrics.completionRate).toBe(want.completionRate);
+      expect(derived.metrics.counterpartyFaultRate).toBe(
+        want.counterpartyFaultRate,
+      );
+      expect(derived.bundleRefs.map((ref) => ref.anchor.locator)).toEqual(
+        want.bundleRefs.map((jobId: string) => bundleAddress(jobId, "buyer")),
+      );
+    },
     "verify-reputation-unqualified-one-copy-excluded": (want) => {
       // Guard (iv): the same one-copy fixture with NO retained
       // authoritative-absence context is excluded from every metric.
@@ -1714,10 +1840,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   it("does not silently demote replayed cases back to todo", () => {
     // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
     // DACS-5 state/outcome, DACS-2 Vet, Listing, and GOV-1..3 semantics raise
-    // coverage to 126.
+    // coverage to 128.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(126);
+    expect(Object.keys(RUNNERS)).toHaveLength(128);
     expect(manifest.cases).toHaveLength(236);
   });
 
