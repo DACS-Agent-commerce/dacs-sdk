@@ -410,13 +410,36 @@ describe("create-dacs-agent", () => {
       expect(source).not.toContain("DACS_BUYER_EVM_SECRET_FILE");
       expect(source).not.toContain("DACS_SELLER_EVM_SECRET_FILE");
       expect(source).not.toContain("DACS_EVM_RPC_URL");
-      expect(source).not.toContain("DACS_X402_FACILITATOR_URL");
+      expect(source).not.toContain("DACS_X402_");
+      expect(source).not.toContain("DACS_FIXED_PRICE_AMOUNT");
       expect(source).not.toContain("DACS_MAX_EVM_NETWORK_FEE_ETH");
       expect(source).toContain("DACS_PAY_DEM_LISTING_DRAFT_FILE");
       expect(source).toContain("DACS_MAX_PAY_DEM_TOTAL_DEBIT");
     }
     expect(environment).toContain("DACS_MAX_SERVICE_ASSET=DEM");
     expect(compose).toContain("DACS_MAX_SERVICE_ASSET:-DEM");
+  });
+
+  test("generates an x402 project without native-payment configuration noise", async () => {
+    const parent = await temporaryDirectory();
+    const target = join(parent, "x402-agent");
+    await createDacsAgentProject({
+      targetDirectory: target,
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "buyer",
+      deployment: "docker",
+      rails: "x402",
+      install: false,
+    });
+    const environment = await readFile(join(target, ".env.example"), "utf8");
+    const compose = await readFile(join(target, "compose.yaml"), "utf8");
+    for (const source of [environment, compose]) {
+      expect(source).not.toContain("DACS_PAY_DEM_");
+      expect(source).not.toContain("DACS_MAX_PAY_DEM_");
+      expect(source).toContain("DACS_X402_LISTING_DRAFT_FILE");
+      expect(source).toContain("DACS_X402_FACILITATOR_URL");
+    }
   });
 
   test("generates a real local role-service lifecycle when selected", async () => {

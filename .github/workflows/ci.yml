@@ -399,3 +399,87 @@ jobs:
             }
             console.log("No high/critical advisory on any direct dependency.");
           '
+
+  packed-live-rail:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rail: [x402, pay-dem]
+    name: packed live consumer (${{ matrix.rail }})
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20.19.0"
+
+      - name: Install source dependencies
+        run: npm ci
+
+      - name: Pack exact three-package release set
+        run: |
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          mkdir -p rail-smoke/packs rail-smoke/runner
+          npm pack --pack-destination rail-smoke/packs
+          npm pack --workspace @kynesyslabs/dacs-node --pack-destination rail-smoke/packs
+          npm pack --workspace create-dacs-agent --pack-destination rail-smoke/packs
+          npm install --prefix rail-smoke/runner --ignore-scripts \
+            "$GITHUB_WORKSPACE"/rail-smoke/packs/create-dacs-agent-"$PACKAGE_VERSION".tgz
+
+      - name: Generate, install and compile ${{ matrix.rail }} consumer
+        env:
+          DACS_TEST_RAIL: ${{ matrix.rail }}
+        run: |
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          node rail-smoke/runner/node_modules/create-dacs-agent/dist/bin.js \
+            rail-smoke/generated --yes --mode live-demos \
+            --profile dacs-sdk:fixed-price-x402:v1 --role buyer \
+            --rails "$DACS_TEST_RAIL" --deploy docker --no-install
+          (cd rail-smoke/generated && npm install --no-save --ignore-scripts --omit=optional \
+            "$GITHUB_WORKSPACE"/rail-smoke/packs/kynesyslabs-dacs-"$PACKAGE_VERSION".tgz \
+            "$GITHUB_WORKSPACE"/rail-smoke/packs/kynesyslabs-dacs-node-"$PACKAGE_VERSION".tgz \
+            typescript@5.9.2 @types/node@20.19.1)
+          (cd rail-smoke/generated && npm rebuild better-sqlite3)
+          (cd rail-smoke/generated && npm run typecheck && npm test)
+
+      - name: Prove rail-specific dependency and configuration isolation
+        env:
+          DACS_TEST_RAIL: ${{ matrix.rail }}
+        run: |
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = path.resolve("rail-smoke/generated");
+          const rail = process.env.DACS_TEST_RAIL;
+          const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          const environment = fs.readFileSync(path.join(root, ".env.example"), "utf8");
+          const compose = fs.readFileSync(path.join(root, "compose.yaml"), "utf8");
+          const configuration = `${environment}\n${compose}`;
+          const dependencies = manifest.dependencies || {};
+          const has = (name) => Object.prototype.hasOwnProperty.call(dependencies, name);
+          const rejectConfig = (prefixes) => {
+            for (const line of configuration.split("\n")) {
+              if (prefixes.some((prefix) => line.trimStart().startsWith(prefix))) {
+                throw new Error(`${rail} generated unrelated configuration: ${line}`);
+              }
+            }
+          };
+          if (Object.values(dependencies).some((value) =>
+            value.startsWith("file:") || value.startsWith("git+"))) {
+            throw new Error("generated manifest contains a non-registry dependency");
+          }
+          if (rail === "pay-dem") {
+            for (const name of ["@x402/core", "@x402/evm", "@x402/fetch", "viem"]) {
+              if (has(name) || fs.existsSync(path.join(root, "node_modules", ...name.split("/")))) {
+                throw new Error(`pay-dem consumer contains ${name}`);
+              }
+            }
+            rejectConfig(["DACS_X402_", "DACS_EVM_", "DACS_FIXED_PRICE_AMOUNT", "DACS_MAX_EVM_"]);
+          } else {
+            for (const name of ["@x402/core", "@x402/evm", "@x402/fetch", "viem"]) {
+              if (!has(name)) throw new Error(`x402 consumer omits ${name}`);
+            }
+            rejectConfig(["DACS_PAY_DEM_", "DACS_MAX_PAY_DEM_"]);
+          }
+          NODE
