@@ -136,6 +136,7 @@ async function fixture() {
       }
       return null;
     }),
+    reconcileWalletJournal: vi.fn(async () => undefined),
     reconcileNativeTransferJournal: vi.fn(async () => undefined),
   };
   const runtime = {
@@ -253,6 +254,7 @@ describe("authenticated Demos rail registry provider", () => {
         anchor: { kind: "storage-program", locator: input.nativeAddress },
         contentHash: input.contentHash,
       })),
+      reconcileWalletJournal: vi.fn(async () => undefined),
       reconcileNativeTransferJournal: vi.fn(async () => undefined),
     };
     const runtime: DacsDemosActorRuntimeV1 = {

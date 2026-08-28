@@ -110,6 +110,7 @@ describe("role-owned Demos runtime", () => {
       anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
       verifyDemosAnchorReceipt: vi.fn(async () => true),
       resolveDemosAnchorReceipt: vi.fn(async () => null),
+      reconcileWalletJournal: vi.fn(async () => undefined),
       reconcileNativeTransferJournal: vi.fn(async () => undefined),
       ...overrides,
     };
@@ -220,6 +221,47 @@ describe("role-owned Demos runtime", () => {
     });
   });
 
+  it("reconciles the complete wallet journal before invoking native settlement", async () => {
+    const directory = root();
+    const loaded = await secret(directory);
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    const payee = "cd".repeat(32);
+    const calls: string[] = [];
+    const mock = adapter({
+      getAddress: vi.fn(() => wallet),
+      reconcileWalletJournal: vi.fn(async () => {
+        calls.push("reconcile-wallet");
+      }),
+    });
+    const opened = await createDacsDemosActorRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: loaded,
+      createAdapter: async () => mock,
+      createPayDemRail: async () => ({
+        address: wallet,
+        async settle() {
+          calls.push("settle-native");
+          return {
+            ok: false,
+            txHash: "",
+            chainId: "demos",
+            payer: wallet,
+            payee,
+          };
+        },
+      }),
+    });
+
+    await expect(opened.payDem!.rail.settle({
+      recipient: payee,
+      amount: "1000000000",
+    })).resolves.toMatchObject({ ok: false });
+    expect(calls).toEqual(["reconcile-wallet", "settle-native"]);
+    expect(mock.reconcileNativeTransferJournal).not.toHaveBeenCalled();
+  });
+
   it("holds the shared wallet lease across an ambiguous native broadcast", async () => {
     const directory = root();
     const loaded = await secret(directory);
@@ -231,6 +273,7 @@ describe("role-owned Demos runtime", () => {
     let journal!: DemosWriteJournal;
     const mock = adapter({
       getAddress: vi.fn(() => wallet),
+      reconcileWalletJournal: vi.fn(async () => undefined),
       reconcileNativeTransferJournal: vi.fn(async () => undefined),
     });
     const opened = await createDacsDemosActorRuntimeV1({

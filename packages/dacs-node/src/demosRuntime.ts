@@ -91,6 +91,11 @@ export interface DacsDemosAdapterV1 {
     contentHash: string;
     writer: string;
   }>): Promise<ProtocolAnchorReceipt | null>;
+  reconcileWalletJournal(
+    lease: DemosWriteJournalLease,
+    timeoutMs?: number,
+  ): Promise<void>;
+  /** @deprecated Compatibility alias; implementations must reconcile all kinds. */
   reconcileNativeTransferJournal(
     lease: DemosWriteJournalLease,
     timeoutMs?: number,
@@ -262,7 +267,7 @@ function walletCoordinatedPayDemRail(input: Readonly<{
       });
       let record: DemosWriteJournalRecord | undefined;
       try {
-        await input.adapter.reconcileNativeTransferJournal(lease);
+        await input.adapter.reconcileWalletJournal(lease);
         const result = await input.rail.settle({
           ...settlement,
           journalPreparedTransfer: async (prepared) => {
@@ -327,7 +332,7 @@ function walletCoordinatedPayDemRail(input: Readonly<{
           if (record === undefined || result.txHash !== record.txRef) {
             throw new DacsDemosRuntimeError("demos-pay-dem-result-record-mismatch");
           }
-          await input.adapter.reconcileNativeTransferJournal(lease);
+          await input.adapter.reconcileWalletJournal(lease);
           const retained = lease.snapshot.records.find((candidate) =>
             candidate.writeId === record?.writeId);
           if (retained?.stage !== "canonical-confirmed") {
@@ -424,7 +429,7 @@ export async function createDacsDemosActorRuntimeV1(
           network: "demos",
         });
         if (adapter.getChainIdentity === undefined ||
-            typeof adapter.reconcileNativeTransferJournal !== "function") {
+            typeof adapter.reconcileWalletJournal !== "function") {
           throw new DacsDemosRuntimeError("demos-pay-dem-wallet-coordinator-unavailable");
         }
         payDemRail = walletCoordinatedPayDemRail({

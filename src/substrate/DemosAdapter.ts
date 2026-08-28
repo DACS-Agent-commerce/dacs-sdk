@@ -2160,45 +2160,200 @@ export class DemosAdapter implements SubstrateAdapter {
     };
   }
 
-  /** Reconcile wallet-journaled native transfers before another nonce is signed. */
+  private async waitForWalletNonceVisibility(
+    lease: DemosWriteJournalLease,
+    deadline: number,
+    pollMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const highestCanonicalNonce = lease.snapshot.records.reduce<number | undefined>(
+      (highest, record) =>
+        record.stage === "canonical-confirmed" ||
+        record.stage === "native-visible" ||
+        record.stage === "index-visible"
+          ? Math.max(highest ?? -1, record.nonce)
+          : highest,
+      undefined,
+    );
+    if (highestCanonicalNonce === undefined) return;
+    const ctx = this.newContext(
+      `wallet-nonce:${lease.key.wallet}`,
+      Math.max(1, deadline - Date.now()),
+      pollMs,
+      signal === undefined ? undefined : { signal },
+    );
+    for (;;) {
+      await lease.assertCurrent();
+      ctx.receipt.attempts.visibilityReads += 1;
+      try {
+        const observed = await this.waitFor(
+          ctx,
+          this.demos.getAddressNonce(this.demos.getAddress()),
+          "wallet nonce visibility",
+        ) as unknown;
+        if (typeof observed === "number" && Number.isSafeInteger(observed) &&
+            observed >= highestCanonicalNonce) return;
+        ctx.receipt.lastObservedState = "wallet-nonce-lagging";
+      } catch (error) {
+        if (error instanceof AnchorWaitError && error.code === "timeout") {
+          throw this.fail(
+            ctx,
+            "timeout",
+            `Demos wallet nonce did not reach ${highestCanonicalNonce} after canonical finality`,
+            error,
+          );
+        }
+        ctx.receipt.lastObservedState = "wallet-nonce-unavailable";
+      }
+      try {
+        await this.delay(ctx);
+      } catch (error) {
+        if (error instanceof AnchorWaitError && error.code === "timeout") {
+          throw this.fail(
+            ctx,
+            "timeout",
+            `Demos wallet nonce did not reach ${highestCanonicalNonce} after canonical finality`,
+            error,
+          );
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Reconcile every broadcast-intent for this wallet before another nonce is
+   * signed. Anchors and native transfers share one Demos account nonce, so a
+   * caller may never recover only its own write kind.
+   */
+  async reconcileWalletJournal(
+    lease: DemosWriteJournalLease,
+    timeoutMs = AMBIGUOUS_WRITE_RECOVERY_MS,
+    options: Readonly<{
+      pollMs?: number;
+      signal?: AbortSignal;
+      requireNonceVisibility?: boolean;
+    }> = {},
+  ): Promise<void> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new DacsError("Demos wallet journal reconciliation input is invalid");
+    }
+    await lease.assertCurrent();
+    // There is no chain state to authenticate until a prior write exists. This
+    // also preserves the adapter's read-before-create seam for empty journals;
+    // the subsequently prepared write is still retained under this exact
+    // chain/wallet lease before any broadcast is attempted.
+    if (lease.snapshot.records.length === 0) return;
+    const wallet = normalizedDemosAddress(this.demos.getAddress());
+    if (!this.connected) throw new DacsError("Demos adapter is not connected");
+    if (wallet === undefined) throw new DacsError("Demos wallet address is invalid");
+    if (!sameDemosWallet(lease.key.wallet, wallet)) {
+      throw new DacsError("Demos wallet journal belongs to another wallet");
+    }
+    if (lease.key.chainIdentity !== await this.resolveChainIdentity()) {
+      throw new DacsError("Demos wallet journal belongs to another chain");
+    }
+    const deadline = Date.now() + timeoutMs;
+    const pollMs = options.pollMs ?? DEFAULT_ANCHOR_POLL_MS;
+    const contextOptions = options.signal === undefined
+      ? undefined
+      : { signal: options.signal };
+    for (const retained of lease.snapshot.records) {
+      if (retained.stage === "prepared" ||
+          retained.stage === "canonical-failed") continue;
+      if (retained.kind === "native-transfer") {
+        if (retained.stage === "canonical-confirmed") continue;
+        if (retained.stage !== "broadcast-intent" || !retained.txRef) {
+          throw new DacsError("native DEM wallet journal has an invalid pending record");
+        }
+        const ctx = this.newContext(
+          retained.logicalName,
+          Math.max(1, deadline - Date.now()),
+          pollMs,
+          contextOptions,
+        );
+        ctx.receipt.address = retained.nativeAddress;
+        ctx.receipt.txRef = retained.txRef;
+        const terminal = await this.waitForTerminal(retained.txRef, ctx);
+        const current = { ...retained, generation: lease.generation };
+        if (terminal === "failed") {
+          await lease.put({ ...current, stage: "canonical-failed", updatedAt: Date.now() });
+          continue;
+        }
+        const finality = await this.authenticateCanonicalNativeTransfer(current, ctx);
+        await lease.put({
+          ...current,
+          ...finality,
+          stage: "canonical-confirmed",
+          updatedAt: Date.now(),
+        });
+        continue;
+      }
+
+      if (retained.stage !== "broadcast-intent" &&
+          retained.stage !== "canonical-confirmed") continue;
+      if (!retained.txRef) {
+        throw new DacsError("Demos wallet journal has an anchor without a transaction hash");
+      }
+      const ctx = this.newContext(
+        retained.logicalName,
+        Math.max(1, deadline - Date.now()),
+        pollMs,
+        contextOptions,
+      );
+      ctx.receipt.address = retained.nativeAddress;
+      ctx.receipt.txRef = retained.txRef;
+      let current = { ...retained, generation: lease.generation };
+      if (retained.stage === "broadcast-intent") {
+        const terminal = await this.waitForTerminal(retained.txRef, ctx);
+        if (terminal === "failed") {
+          await lease.put({
+            ...current,
+            stage: "canonical-failed",
+            updatedAt: Date.now(),
+          });
+          continue;
+        }
+        const finality = await this.authenticateCanonicalWrite(current, ctx);
+        current = {
+          ...current,
+          ...finality,
+          stage: "canonical-confirmed" as const,
+          updatedAt: Date.now(),
+        };
+        await lease.put(current);
+      } else {
+        ctx.receipt.state = "included";
+        ctx.receipt.completion = "included";
+        if (retained.blockNumber !== undefined) {
+          ctx.receipt.blockNumber = retained.blockNumber;
+        }
+      }
+      const nativeRead = await this.waitForNativeJournalVisibility(current, ctx);
+      await lease.put({
+        ...current,
+        generation: lease.generation,
+        nativeRead,
+        stage: "native-visible",
+        updatedAt: Date.now(),
+      });
+    }
+    if (options.requireNonceVisibility !== false) {
+      await this.waitForWalletNonceVisibility(
+        lease,
+        deadline,
+        pollMs,
+        options.signal,
+      );
+    }
+  }
+
+  /** @deprecated Use reconcileWalletJournal; this alias is wallet-wide too. */
   async reconcileNativeTransferJournal(
     lease: DemosWriteJournalLease,
     timeoutMs = AMBIGUOUS_WRITE_RECOVERY_MS,
   ): Promise<void> {
-    const retainedTransfers = lease.snapshot.records.filter((record) =>
-      record.kind === "native-transfer");
-    if (retainedTransfers.length === 0) return;
-    const wallet = normalizedDemosAddress(this.demos.getAddress());
-    if (!this.connected || wallet === undefined ||
-        !sameDemosWallet(lease.key.wallet, wallet) ||
-        lease.key.chainIdentity !== await this.resolveChainIdentity() ||
-        !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-      throw new DacsError("native DEM wallet journal reconciliation input is invalid");
-    }
-    for (const retained of retainedTransfers) {
-      if (retained.stage === "prepared" ||
-          retained.stage === "canonical-confirmed" ||
-          retained.stage === "canonical-failed") continue;
-      if (retained.stage !== "broadcast-intent" || !retained.txRef) {
-        throw new DacsError("native DEM wallet journal has an invalid pending record");
-      }
-      const ctx = this.newContext(retained.logicalName, timeoutMs, DEFAULT_ANCHOR_POLL_MS);
-      ctx.receipt.address = retained.nativeAddress;
-      ctx.receipt.txRef = retained.txRef;
-      const terminal = await this.waitForTerminal(retained.txRef, ctx);
-      const current = { ...retained, generation: lease.generation };
-      if (terminal === "failed") {
-        await lease.put({ ...current, stage: "canonical-failed", updatedAt: Date.now() });
-        continue;
-      }
-      const finality = await this.authenticateCanonicalNativeTransfer(current, ctx);
-      await lease.put({
-        ...current,
-        ...finality,
-        stage: "canonical-confirmed",
-        updatedAt: Date.now(),
-      });
-    }
+    await this.reconcileWalletJournal(lease, timeoutMs);
   }
 
   private writeEvidenceFromLease(
@@ -2295,69 +2450,31 @@ export class DemosAdapter implements SubstrateAdapter {
     }
   }
 
-  private async reconcilePrevious(
-    key: string,
-    current: AnchorContext,
-  ): Promise<void> {
+  private async reconcilePrevious(current: AnchorContext): Promise<void> {
     const lease = this.activeWriteLease;
     if (!lease) throw new DacsError("Demos write journal lease is missing");
-    await this.reconcileNativeTransferJournal(
-      lease,
-      Math.max(1, current.deadline - Date.now()),
-    );
-    for (const prior of lease.snapshot.records) {
-      if (prior.kind === "native-transfer") continue;
-      if (
-        prior.stage !== "broadcast-intent" &&
-        prior.stage !== "canonical-confirmed"
-      ) {
-        continue;
-      }
-      if (!prior.txRef) {
-        throw new DacsError(
-          `Demos write journal ${prior.writeId} lacks its transaction hash`,
-        );
-      }
-      const ctx = this.newContext(
-        prior.logicalName,
+    try {
+      await this.reconcileWalletJournal(
+        lease,
         Math.max(1, current.deadline - Date.now()),
-        current.pollMs,
-        { signal: current.signal },
+        {
+          pollMs: current.pollMs,
+          signal: current.signal,
+          // Anchor nonce selection additionally consults the canonical journal,
+          // so it need not wait for the node's address-nonce index to catch up.
+          requireNonceVisibility: false,
+        },
       );
-      ctx.receipt.address = prior.nativeAddress;
-      ctx.receipt.txRef = prior.txRef;
-      if (prior.stage === "canonical-confirmed") {
-        ctx.receipt.state = "included";
-        ctx.receipt.completion = "included";
-        if (prior.blockNumber !== undefined) {
-          ctx.receipt.blockNumber = prior.blockNumber;
-        }
-      }
-      this.activeWriteRecord = {
-        ...prior,
-        generation: lease.generation,
-      };
-      try {
-        await this.reconcileUntilNonceSafe(
-          key,
-          prior.txRef,
-          prior.nonce,
-          ctx,
-          prior.stage === "canonical-confirmed",
+    } catch (error) {
+      if (error instanceof AnchorWaitError) {
+        throw new AnchorWaitError(
+          error.code,
+          "previous wallet write is unresolved; refusing a potentially conflicting nonce",
+          error.receipt,
+          { cause: error },
         );
-      } catch (error) {
-        if (error instanceof AnchorWaitError) {
-          throw new AnchorWaitError(
-            error.code,
-            `previous anchor ${prior.txRef} is unresolved; refusing a potentially conflicting nonce`,
-            error.receipt,
-            { cause: error },
-          );
-        }
-        throw error;
-      } finally {
-        this.activeWriteRecord = undefined;
       }
+      throw error;
     }
   }
 
@@ -2461,7 +2578,7 @@ export class DemosAdapter implements SubstrateAdapter {
     expected: string | undefined,
     ctx: AnchorContext,
   ): Promise<QueuedWrite<AnchorReceipt>> {
-    await this.reconcilePrevious(key, ctx);
+    await this.reconcilePrevious(ctx);
 
     let prepared: Awaited<ReturnType<DemosAdapter["prepareAnchorPayload"]>>;
     try {
@@ -3163,7 +3280,7 @@ export class DemosAdapter implements SubstrateAdapter {
       (turn) => turn,
       () => this.withWriteLease<AnchorRef>(async () => {
       const ctx = this.newContext(name, timeoutMs, pollMs, opts);
-      await this.reconcilePrevious(key, ctx);
+      await this.reconcilePrevious(ctx);
       const owner = this.demos.getAddress();
       const programName = logicalToStorageProgramName(name);
       const metadataLogicalAddress = typeof metadata?.logicalAddress === "string" &&
