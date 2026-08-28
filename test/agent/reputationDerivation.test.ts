@@ -18,6 +18,7 @@ const WINDOW: ReputationWindow = {
 };
 const TRUSTED_WITH_ABSENCE = {
   trustBundles: true,
+  trustBundlePartyRoles: true,
   copyAbsence: () => "absent" as const,
 };
 
@@ -149,6 +150,60 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.bundleCount).toBe(1); // deduped by jobId
   });
 
+  test("uses the independently resolved per-job role instead of relabelled bundle parties", () => {
+    const relabelled = bundle("relabelled", "aborted-by-self", 1100, "buyer", [
+      { role: "seller", bundleHash: "h", primaryClaim: PARTY },
+      { role: "buyer", bundleHash: "h", primaryClaim: CP },
+    ]);
+    const resolved: Array<Readonly<{
+      jobId: string;
+      partyPrimaryClaim: string;
+    }>> = [];
+    const r = deriveReputation(PARTY, [relabelled], WINDOW, {
+      trustBundles: true,
+      resolvePartyRole: (context) => {
+        resolved.push(context);
+        return "buyer";
+      },
+      copyAbsence: () => "absent",
+    });
+
+    expect(resolved).toEqual([
+      { jobId: "relabelled", partyPrimaryClaim: PARTY },
+    ]);
+    expect(Object.isFrozen(resolved[0])).toBe(true);
+    expect(r.bundleCount).toBe(1);
+    expect(r.metrics.counterpartyFaultRate).toBe(0);
+    expect(r.metrics.completionRate).toBe(0);
+  });
+
+  test("does not score Promise-like, unresolved, or thrown role results", () => {
+    const candidate = bundle("a", "completed", 1100);
+    const promised = deriveReputation(PARTY, [candidate], WINDOW, {
+      trustBundles: true,
+      resolvePartyRole: (() => Promise.resolve("buyer")) as unknown as () =>
+        | "buyer"
+        | "seller",
+      copyAbsence: () => "absent",
+    });
+    const unresolved = deriveReputation(PARTY, [candidate], WINDOW, {
+      trustBundles: true,
+      resolvePartyRole: () => undefined,
+      copyAbsence: () => "absent",
+    });
+    const thrown = deriveReputation(PARTY, [candidate], WINDOW, {
+      trustBundles: true,
+      resolvePartyRole: () => {
+        throw new Error("session context unavailable");
+      },
+      copyAbsence: () => "absent",
+    });
+
+    expect(promised.bundleCount).toBe(0);
+    expect(unresolved.bundleCount).toBe(0);
+    expect(thrown.bundleCount).toBe(0);
+  });
+
   test("divergent copies of one job are excluded from all metrics (§10.4.3d)", () => {
     const r = deriveReputation(
       PARTY,
@@ -263,7 +318,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       PARTY,
       [bundle("j1", "aborted-by-self", 1100, "seller")],
       WINDOW,
-      { trustBundles: true },
+      { trustBundles: true, trustBundlePartyRoles: true },
     );
     expect(r.bundleCount).toBe(0);
     expect(r.metrics.counterpartyFaultRate).toBeNull();
@@ -275,7 +330,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       PARTY,
       [faultBundle("j1", "completed", "none", "buyer")],
       WINDOW,
-      { trustBundles: true },
+      { trustBundles: true, trustBundlePartyRoles: true },
     );
     expect(r.bundleCount).toBe(0);
     expect(r.metrics.completionRate).toBeNull();
@@ -288,6 +343,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       WINDOW,
       {
         trustBundles: true,
+        trustBundlePartyRoles: true,
         copyAbsence: ({ jobId, missingRole, presentRole }) => {
           expect(jobId).toBe("j1");
           expect(missingRole).toBe("buyer");
@@ -305,7 +361,11 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       PARTY,
       [bundle("a", "completed", 1100), bundle("b", "completed", 1200)],
       WINDOW,
-      { isValid: (b) => b.jobId === "a", copyAbsence: () => "absent" },
+      {
+        isValid: (b) => b.jobId === "a",
+        trustBundlePartyRoles: true,
+        copyAbsence: () => "absent",
+      },
     );
     expect(r.bundleCount).toBe(1);
   });
@@ -320,6 +380,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
           // JavaScript and casted callers can bypass the TypeScript return type;
           // the runtime boundary must still fail closed on Promise truthiness.
           isValid: (async () => false) as unknown as () => boolean,
+          trustBundlePartyRoles: true,
           copyAbsence: () => "absent",
         },
       ),
@@ -345,6 +406,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
           }
           return Promise.resolve(false);
         },
+        trustBundlePartyRoles: true,
         copyAbsence: () => "absent",
       },
     );
@@ -374,6 +436,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       WINDOW,
       {
         validate: async () => false,
+        trustBundlePartyRoles: true,
         copyAbsence: () => "absent",
       },
     );
@@ -405,6 +468,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
           await delayedGate;
           return false;
         },
+        trustBundlePartyRoles: true,
         copyAbsence: () => "absent",
       },
     );
@@ -419,10 +483,79 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.metrics.completionRate).toBe(1);
   });
 
+  test("async validation forwards the independent role resolver", async () => {
+    const relabelled = bundle("relabelled", "aborted-by-self", 1100, "buyer", [
+      { role: "seller", bundleHash: "h", primaryClaim: PARTY },
+      { role: "buyer", bundleHash: "h", primaryClaim: CP },
+    ]);
+    const r = await deriveReputationWithValidation(
+      PARTY,
+      [relabelled],
+      WINDOW,
+      {
+        validate: async () => true,
+        resolvePartyRole: ({ jobId, partyPrimaryClaim }) =>
+          jobId === "relabelled" && partyPrimaryClaim === PARTY
+            ? "buyer"
+            : undefined,
+        copyAbsence: () => "absent",
+      },
+    );
+
+    expect(r.bundleCount).toBe(1);
+    expect(r.metrics.counterpartyFaultRate).toBe(0);
+    expect(r.metrics.completionRate).toBe(0);
+  });
+
   test("requires an explicit isValid or trustBundles — no fail-open default", () => {
     expect(() =>
       deriveReputation(PARTY, [bundle("a", "completed", 1100)], WINDOW),
     ).toThrow(/isValid|trustBundles/);
+  });
+
+  test("requires independent role resolution or an explicit authenticated-role assertion", () => {
+    expect(() =>
+      deriveReputation(
+        PARTY,
+        [bundle("a", "completed", 1100)],
+        WINDOW,
+        { trustBundles: true },
+      ),
+    ).toThrow(/resolvePartyRole|trustBundlePartyRoles/);
+  });
+
+  test("trust assertions accept only primitive true", () => {
+    const candidate = bundle("a", "completed", 1100);
+    expect(() =>
+      deriveReputation(PARTY, [candidate], WINDOW, {
+        trustBundles: {} as unknown as true,
+        trustBundlePartyRoles: true,
+      }),
+    ).toThrow(/isValid|trustBundles/);
+    expect(() =>
+      deriveReputation(PARTY, [candidate], WINDOW, {
+        trustBundles: true,
+        trustBundlePartyRoles: {} as unknown as true,
+      }),
+    ).toThrow(/resolvePartyRole|trustBundlePartyRoles/);
+  });
+
+  test("async validation checks role configuration before invoking the validator", async () => {
+    let calls = 0;
+    await expect(
+      deriveReputationWithValidation(
+        PARTY,
+        [bundle("a", "completed", 1100)],
+        WINDOW,
+        {
+          validate: async () => {
+            calls += 1;
+            return true;
+          },
+        },
+      ),
+    ).rejects.toThrow(/resolvePartyRole|trustBundlePartyRoles/);
+    expect(calls).toBe(0);
   });
 
   test("counterpartyAdjustedCompletionRate strips counterparty-caused failures from the denom", () => {
@@ -455,6 +588,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("transactionCountByCurrency is schema-present ([]) until volume wiring", () => {
     const r = deriveReputation(PARTY, [bundle("a", "completed", 1100)], WINDOW, {
       trustBundles: true,
+      trustBundlePartyRoles: true,
     });
     expect(r.metrics.transactionCountByCurrency).toEqual([]);
   });

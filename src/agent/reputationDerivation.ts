@@ -90,8 +90,9 @@ export interface ReputationWindow {
 
 // §10.4.3(d) divergence uses the ONE shared predicate (bundleDivergence.js),
 // identical to the two-sided consistency verdict — presence-mismatch by phase
-// `index` counts as divergence (#224). Previously a private by-position copy here
-// that disagreed with bundleConsistency on length-mismatched phaseSummary.
+// `index` counts as divergence (DACS-Standard#224). Previously a private
+// by-position copy here that disagreed with bundleConsistency on
+// length-mismatched phaseSummary.
 
 /** §10.4.1 signed-scope content hash of a bundle (omit signatures + anchoredByRole). */
 function bundleContentHash(bundle: AnyAttestationBundle): string {
@@ -119,6 +120,30 @@ export interface DeriveReputationDeps {
    */
   trustBundles?: boolean;
   /**
+   * Resolve the scored party's buyer/seller role from independently
+   * authenticated session context (normally the pinned agreement), once per
+   * job. Bundle-local `parties[]` labels are signed producer assertions, not an
+   * external role binding; trusting them lets a relabelled self-abort become a
+   * false counterparty fault.
+   *
+   * The resolver is deliberately synchronous so the deterministic scorer
+   * cannot admit a truthy Promise. Resolve asynchronous agreement/session data
+   * before derivation and expose the retained mapping through this callback.
+   * Missing, thrown, Promise-like, or non-buyer/seller results exclude that job.
+   */
+  resolvePartyRole?: (context: Readonly<{
+    jobId: string;
+    partyPrimaryClaim: string;
+  }>) => "buyer" | "seller" | undefined;
+  /**
+   * Explicit compatibility assertion that every admitted bundle's role map was
+   * already authenticated against independent session/agreement context.
+   * Ignored when `resolvePartyRole` is supplied. This is distinct from
+   * `trustBundles`: signature validity alone does not establish the externally
+   * expected buyer/seller assignment.
+   */
+  trustBundlePartyRoles?: boolean;
+  /**
    * §10.5.1 SR-2 absence evidence. When only one buyer/seller copy is present,
    * a deriver may attribute it only if the other role's copy is authoritatively
    * absent. Ordinary not-found, transport failure, stale reads, or bindings
@@ -140,6 +165,10 @@ export interface DeriveReputationValidationDeps {
    * all excluded fail-closed.
    */
   validate: (bundle: AnyAttestationBundle) => boolean | Promise<boolean>;
+  /** Authenticated per-job role binding, as defined by the pure scorer. */
+  resolvePartyRole?: DeriveReputationDeps["resolvePartyRole"];
+  /** Explicit pre-authenticated-role compatibility assertion. */
+  trustBundlePartyRoles?: boolean;
   /** Authoritative SR-2 absence evidence, with the same contract as the pure scorer. */
   copyAbsence?: DeriveReputationDeps["copyAbsence"];
 }
@@ -148,7 +177,7 @@ function validatedCandidates(
   bundles: AnyAttestationBundle[],
   deps: DeriveReputationDeps,
 ): AnyAttestationBundle[] {
-  if (deps.trustBundles && !deps.isValid) return bundles;
+  if (deps.trustBundles === true && !deps.isValid) return bundles;
   const isValid = deps.isValid;
   if (!isValid) return [];
   return bundles.filter((bundle) => {
@@ -174,10 +203,17 @@ export function deriveReputation(
   deps: DeriveReputationDeps = {},
 ): ReputationDerivation {
   const basis = window.windowingBasis ?? "finalisedAt";
-  if (!deps.isValid && !deps.trustBundles) {
+  if (!deps.isValid && deps.trustBundles !== true) {
     throw new DacsError(
       "deriveReputation requires deps.isValid (wire verifyBundle) or an explicit deps.trustBundles: true opt-out — " +
         "deriving from unvalidated bundles is not a safe default",
+    );
+  }
+  if (!deps.resolvePartyRole && deps.trustBundlePartyRoles !== true) {
+    throw new DacsError(
+      "deriveReputation requires deps.resolvePartyRole or an explicit " +
+        "deps.trustBundlePartyRoles: true assertion — bundle-local role labels " +
+        "are not an independent session-role binding",
     );
   }
   // Validate before reading party/window fields. With `trustBundles`, the caller
@@ -231,7 +267,25 @@ export function deriveReputation(
       (b) => b.anchoredByRole === "buyer" || b.anchoredByRole === "seller",
     );
     if (valid.length === 0) continue;
-    const roleOfParty = valid[0]!.parties.find((p) => p.primaryClaim === party)?.role;
+    let roleOfParty: unknown;
+    if (deps.resolvePartyRole) {
+      try {
+        roleOfParty = deps.resolvePartyRole(Object.freeze({
+          jobId: valid[0]!.jobId,
+          partyPrimaryClaim: party,
+        }));
+      } catch {
+        // Unavailable or malformed independent context is not permission to
+        // fall back to the producer's self-declared role map.
+        continue;
+      }
+    } else {
+      // Explicit compatibility path for callers that authenticated the exact
+      // party map against independent session/agreement context upstream.
+      roleOfParty = valid[0]!.parties.find(
+        (candidate) => candidate.primaryClaim === party,
+      )?.role;
+    }
     if (roleOfParty !== "buyer" && roleOfParty !== "seller") continue;
     const selfCopy = valid.find((b) => b.anchoredByRole === roleOfParty);
     const cp = valid.find((b) => b.anchoredByRole !== roleOfParty);
@@ -332,6 +386,12 @@ export async function deriveReputationWithValidation(
       "deriveReputationWithValidation requires deps.validate",
     );
   }
+  if (!deps.resolvePartyRole && deps.trustBundlePartyRoles !== true) {
+    throw new DacsError(
+      "deriveReputationWithValidation requires deps.resolvePartyRole or an " +
+        "explicit deps.trustBundlePartyRoles: true assertion",
+    );
+  }
 
   const accepted: AnyAttestationBundle[] = [];
   for (const bundle of bundles) {
@@ -353,6 +413,9 @@ export async function deriveReputationWithValidation(
 
   return deriveReputation(party, accepted, window, {
     isValid: () => true,
+    ...(deps.resolvePartyRole
+      ? { resolvePartyRole: deps.resolvePartyRole }
+      : { trustBundlePartyRoles: true }),
     ...(deps.copyAbsence ? { copyAbsence: deps.copyAbsence } : {}),
   });
 }
