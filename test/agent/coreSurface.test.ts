@@ -42,6 +42,7 @@ import {
   verifyFinalizedTerminalBundleReadOnly,
   isCanonicalSettlementIdentity,
   createX402Paywall,
+  deriveReputationWithValidation,
   x402PaywallCore,
   x402PaywallSettlementKey,
   runSessionCore,
@@ -71,6 +72,7 @@ import {
   type TerminalBundleResolution,
 } from "../../src/index.js";
 import {
+  deriveReputationWithValidation as agentDeriveReputationWithValidation,
   createCompletedCounterpartyBundleCounterSignature as agentCreateCompletedCounterpartyBundleCounterSignature,
   finalizeCompletedCounterpartyBundleCore as agentFinalizeCompletedCounterpartyBundleCore,
   assembleTerminalBundleForOwnRole as agentAssembleTerminalBundleForOwnRole,
@@ -113,6 +115,13 @@ import {
 } from "../../src/rails/index.js";
 
 describe("public core surface (#14)", () => {
+  it("#220: async reputation validation is exported from root and agent surfaces", () => {
+    expect(typeof deriveReputationWithValidation).toBe("function");
+    expect(agentDeriveReputationWithValidation).toBe(
+      deriveReputationWithValidation,
+    );
+  });
+
   it("F1: runSessionCore is exported from the barrel", () => {
     expect(typeof runSessionCore).toBe("function");
   });
