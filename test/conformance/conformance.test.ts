@@ -34,6 +34,7 @@ import {
 import { verifyBundleCore } from "../../src/agent/verifyBundleCore.js";
 import {
   bundleConsistency,
+  lookupBundleCopies,
   type BundleCopies,
 } from "../../src/agent/bundleConsistency.js";
 import { verifyBundleCopy } from "../../src/agent/bundleCopyValidity.js";
@@ -1537,6 +1538,46 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       ];
       expect([b !== s, s !== o]).toEqual(want);
     },
+    "verify-lookup-both": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async (_address, role) => ({
+        disposition: "present",
+        bundle: { jobId: "job-1", anchoredByRole: role },
+      }));
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-one": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async (_address, role) =>
+        role === "buyer"
+          ? {
+              disposition: "present",
+              bundle: { jobId: "job-1", anchoredByRole: role },
+            }
+          : { disposition: "absent" },
+      );
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-none": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async () => ({
+        disposition: "absent",
+      }));
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-cross-session-jobid-ignored": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async () => ({
+        disposition: "present",
+        bundle: { jobId: "job-other" },
+      }));
+      expect(await bundleConsistency(copies, { trustBundles: true })).toBe(want);
+    },
     "verify-consume-absent": async (want) => {
       expect(await consume({ buyer: absent, seller: absent })).toBe(want.verdict);
     },
@@ -1840,10 +1881,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   it("does not silently demote replayed cases back to todo", () => {
     // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
     // DACS-5 state/outcome, DACS-2 Vet, Listing, and GOV-1..3 semantics raise
-    // coverage to 128.
+    // coverage to 128; the two-sided bundle lookup surface raises it to 132.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(128);
+    expect(Object.keys(RUNNERS)).toHaveLength(132);
     expect(manifest.cases).toHaveLength(236);
   });
 
