@@ -48,6 +48,10 @@ import {
   shouldRetryVerification,
   vetPhaseFailureClass,
 } from "../../src/agent/vetSemantics.js";
+import {
+  validateListingArtifact,
+  type ListingValidationDeps,
+} from "../../src/agent/listingValidation.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
@@ -71,6 +75,8 @@ import {
 import type {
   AnyAttestationBundle,
   AttestationBundle,
+  IdentityBundle,
+  Listing,
   VerificationDecision,
   VerifyResult,
 } from "../../src/artifacts/types.js";
@@ -306,6 +312,43 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       signer: `key:${"c".repeat(64)}`,
       value: Buffer.alloc(64).toString("base64url"),
     },
+  });
+  const listingFixture = (): Listing => {
+    const source = read(
+      "conformance/vectors/security/listing-preserve-unknown-v0.1.json",
+    ) as unknown as {
+      fixtures: { "listing-with-inert-extension": { listing: Listing } };
+    };
+    return structuredClone(
+      source.fixtures["listing-with-inert-extension"].listing,
+    );
+  };
+  const listingDeps = (nowMs: number): ListingValidationDeps => ({
+    nowMs: () => nowMs,
+    verifyListingSignature: () => true,
+    revocation: {
+      surfaces: [{
+        kind: "well-known",
+        status: "active",
+        integrity: "verified",
+      }],
+      readMarker: async () => null,
+      verifyMarkerSignature: () => true,
+    },
+    verifyIdentityPresentation: (_input: {
+      bundle: Readonly<IdentityBundle>;
+      signedBytes: Uint8Array;
+    }) => true,
+    loadRailResolution: () => ({
+      trustPhase: "PA-2",
+      registry: {
+        state: "verified-finalized",
+        entries: [],
+        definitions: [],
+      },
+    }),
+    resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
+    verifySellerControl: () => true,
   });
   const htlcEvidence = () => {
     const evidence = paymentEvidence();
@@ -565,6 +608,50 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     },
     "cf4-dacs1-listing-address": (want) => {
       expect(listingAddress("cci-xm:evm:mainnet:0x1234", "rfq-lot-x-1", 3)).toBe(want);
+    },
+    "dacs1-listing-intake-ok": async (want) => {
+      const listing = listingFixture();
+      const result = await validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        listingDeps(listing.validity.notBefore),
+      );
+      expect(result).toMatchObject({
+        disposition: "verified",
+        step: 9,
+        railResolution: { disposition: "verified", reason: "not-applicable" },
+      });
+      expect(result.disposition === "verified").toBe(want);
+    },
+    "dacs1-listing-pay-no-rails-fail": async (want) => {
+      const listing = listingFixture();
+      listing.pipeline.splice(2, 0, {
+        kind: "pay-x402",
+        parameters: { rail: "x402:default" },
+      });
+      delete listing.acceptedRails;
+      const result = await validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        listingDeps(listing.validity.notBefore),
+      );
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        step: 8,
+        reason: "missing-accepted-rails",
+      });
+      expect({ ok: false, failedAt: "accepted-rails-conditional" }).toEqual(want);
+    },
+    "dacs1-listing-expired-fail": async (want) => {
+      const listing = listingFixture();
+      const result = await validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        listingDeps(listing.validity.notAfter! + 1),
+      );
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        step: 3,
+        reason: "outside-validity-window",
+      });
+      expect({ ok: false, failedAt: "validity-window" }).toEqual(want);
     },
 
     // vet — §7.5.1 decisions/method binding, §7.6.1 retry policy and §7.8.2
@@ -1445,7 +1532,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   // Why un-runnable cases are todo, per area (with per-case overrides).
   const TODO_AREA_REASON: Record<string, string> = {
     dacs1:
-      "no exported §6.3.2/§6.3.3 requirement-matching, freshness-gate, control-gate (#170) or §6.3.4 listing-conformance surface",
+      "remaining §6.3.2/§6.3.3 requirement-matching, freshness, and control-gate inputs lack an independently exported policy surface",
     vet: "remaining §6.3.3 matching/freshness inputs and §7.7.1 companion error-class provenance are constructed in dacs-verify run.ts but not shipped",
     negotiate:
       "remaining §8.5.1/§8.5.2 price, fee, listing, and commitment checks need richer constructed inputs or focused SDK surfaces",
@@ -1516,10 +1603,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
 
   it("does not silently demote replayed cases back to todo", () => {
     // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
-    // DACS-5 state/outcome and DACS-2 Vet semantics raise coverage to 111.
+    // DACS-5 state/outcome, DACS-2 Vet, and Listing semantics raise coverage to 114.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(111);
+    expect(Object.keys(RUNNERS)).toHaveLength(114);
     expect(manifest.cases).toHaveLength(236);
   });
 
