@@ -136,6 +136,13 @@ case "$host_port" in
 esac
 host_registry="http://127.0.0.1:$host_port"
 consumer_registry="http://host.docker.internal:$host_port"
+consumer_network_args=(--add-host host.docker.internal:host-gateway)
+build_network_args=(--add-host host.docker.internal:host-gateway)
+if [ "$(uname -s)" = "Linux" ]; then
+  consumer_registry=$host_registry
+  consumer_network_args=(--network host)
+  build_network_args=(--network host)
+fi
 
 ready=0
 for attempt in $(seq 1 30); do
@@ -176,7 +183,7 @@ for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; 
 done
 
 docker run --rm \
-  --add-host host.docker.internal:host-gateway \
+  "${consumer_network_args[@]}" \
   --volume "$consumer_root:/work" \
   --workdir /work \
   --env DACS_PACKAGE_VERSION="$version" \
@@ -309,7 +316,7 @@ env \
     > "$artifact_stage/compose.rendered.yaml"
 
 docker build \
-  --add-host host.docker.internal:host-gateway \
+  "${build_network_args[@]}" \
   --tag "$runtime_image" \
   "$project" \
   | tee "$artifact_stage/docker-build.log"
