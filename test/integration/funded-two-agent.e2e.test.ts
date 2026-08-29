@@ -1674,6 +1674,20 @@ interface PublishedVetArtifacts extends VetArtifacts {
   externalSellerProvenanceReceipt: AnchorReceipt;
 }
 
+function assertPreparedVetSignerBindings(
+  prepared: PreparedVetArtifacts,
+  buyerDid: string,
+  sellerDid: string,
+): void {
+  requireCondition(
+    prepared.buyer.signature.signer === sellerDid &&
+      prepared.buyerRef.signer === sellerDid &&
+      prepared.seller.signature.signer === buyerDid &&
+      prepared.sellerRef.signer === buyerDid,
+    "prepared-vet-signer-binding-invalid",
+  );
+}
+
 async function prepareVetRecords(input: {
   preflight: Preflight;
   jobId: string;
@@ -1771,17 +1785,23 @@ async function publishPreparedVetRecords(input: {
   preflight: Preflight;
   prepared: PreparedVetArtifacts;
 }): Promise<VetArtifacts> {
+  assertPreparedVetSignerBindings(
+    input.prepared,
+    input.preflight.env.BUYER_DID,
+    input.preflight.env.SELLER_DID,
+  );
   const [buyerAnchor, sellerAnchor] = await Promise.all([
     anchorArtifact({
       adapter: input.preflight.seller.adapter,
       writer: input.preflight.env.SELLER_DID,
+      refSigner: input.prepared.buyerRef.signer,
       logicalAddress: input.prepared.buyerRef.anchor.locator,
       artifact: input.prepared.buyer as unknown as Record<string, unknown>,
     }),
     anchorArtifact({
       adapter: input.preflight.buyer.adapter,
       writer: input.preflight.env.BUYER_DID,
-      refSigner: input.preflight.env.SELLER_DID,
+      refSigner: input.prepared.sellerRef.signer,
       logicalAddress: input.prepared.sellerRef.anchor.locator,
       artifact: input.prepared.seller as unknown as Record<string, unknown>,
     }),
@@ -5706,6 +5726,27 @@ async function closeDurableDetachedRoleBundles(input: {
 }
 
 describe("issue #114 guarded funded two-agent spine", () => {
+  it("binds each prepared Vet reference to the verifier that signed it", () => {
+    const buyerDid = "did:demos:agent:buyer";
+    const sellerDid = "did:demos:agent:seller";
+    const prepared = {
+      buyer: { signature: { signer: sellerDid } },
+      buyerRef: { signer: sellerDid },
+      seller: { signature: { signer: buyerDid } },
+      sellerRef: { signer: buyerDid },
+    } as unknown as PreparedVetArtifacts;
+
+    expect(() =>
+      assertPreparedVetSignerBindings(prepared, buyerDid, sellerDid)
+    ).not.toThrow();
+
+    const rebound = structuredClone(prepared);
+    rebound.sellerRef.signer = sellerDid;
+    expect(() =>
+      assertPreparedVetSignerBindings(rebound, buyerDid, sellerDid)
+    ).toThrow("funded-e2e:prepared-vet-signer-binding-invalid");
+  });
+
   it("retries immutable proof reads without promoting a non-establishing view", async () => {
     let recoveringCalls = 0;
     const recovered = await retryEstablishedRead(async () => {
