@@ -102,7 +102,9 @@ log:
   level: warn
 listen: 0.0.0.0:4873
 YAML
-chmod 0600 "$registry_config"
+# The bind-mounted file is intentionally secret-free and must be readable by
+# Verdaccio's non-root container user on Linux runners.
+chmod 0644 "$registry_config"
 
 cd "$repo_root"
 npm run conformance:sync
