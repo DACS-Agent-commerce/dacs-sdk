@@ -181,18 +181,7 @@ for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; 
   test "$observed" = "$version"
 done
 
-docker_cache_args=()
-if [ -n "${DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY-}" ]; then
-  case "$DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY" in
-    /*) ;;
-    *) echo "DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY must be absolute" >&2; exit 2 ;;
-  esac
-  test -d "$DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY"
-  docker_cache_args=(--volume "$DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY:/root/.npm")
-fi
-
 docker run --rm \
-  "${docker_cache_args[@]}" \
   --add-host host.docker.internal:host-gateway \
   --volume "$consumer_root:/work" \
   --workdir /work \
@@ -311,8 +300,19 @@ fs.writeFileSync(process.argv[3], JSON.stringify({
 process.stdout.write(JSON.stringify(counts) + "\n");
 NODE
 
-docker compose --file "$project/compose.yaml" config --no-interpolate \
-  > "$artifact_stage/compose.rendered.yaml"
+env \
+  DACS_RUNTIME_UID=10001 \
+  DACS_RUNTIME_GID=10001 \
+  DACS_BUYER_DATA_DIRECTORY=/var/lib/dacs-acceptance/buyer \
+  DACS_SELLER_DATA_DIRECTORY=/var/lib/dacs-acceptance/seller \
+  DACS_BUYER_DEMOS_SECRET_FILE=/run/dacs-acceptance/buyer-demos \
+  DACS_SELLER_DEMOS_SECRET_FILE=/run/dacs-acceptance/seller-demos \
+  DACS_BUYER_EVM_SECRET_FILE=/run/dacs-acceptance/buyer-evm \
+  DACS_SELLER_EVM_SECRET_FILE=/run/dacs-acceptance/seller-evm \
+  DACS_X402_LISTING_DRAFT_FILE=/run/dacs-acceptance/listing-x402.json \
+  DACS_PAY_DEM_LISTING_DRAFT_FILE=/run/dacs-acceptance/listing-pay-dem.json \
+  docker compose --file "$project/compose.yaml" config \
+    > "$artifact_stage/compose.rendered.yaml"
 
 docker build \
   --add-host host.docker.internal:host-gateway \
