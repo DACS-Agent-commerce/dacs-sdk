@@ -181,7 +181,18 @@ for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; 
   test "$observed" = "$version"
 done
 
+docker_cache_args=()
+if [ -n "${DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY-}" ]; then
+  case "$DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY" in
+    /*) ;;
+    *) echo "DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY must be absolute" >&2; exit 2 ;;
+  esac
+  test -d "$DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY"
+  docker_cache_args=(--volume "$DACS_ACCEPTANCE_NPM_CACHE_DIRECTORY:/root/.npm")
+fi
+
 docker run --rm \
+  "${docker_cache_args[@]}" \
   --add-host host.docker.internal:host-gateway \
   --volume "$consumer_root:/work" \
   --workdir /work \
@@ -214,7 +225,9 @@ docker run --rm \
     mkdir /work/lock-only
     cp package.json package-lock.json /work/lock-only/
     cd /work/lock-only
-    npm sbom --package-lock-only --sbom-format cyclonedx --omit=dev > /work/consumer-lock.cdx.json
+    lock_status=0
+    npm sbom --package-lock-only --sbom-format cyclonedx --omit=dev > /work/consumer-lock.cdx.json 2> /work/consumer-lock-sbom.err || lock_status=$?
+    printf "%s\n" "$lock_status" > /work/consumer-lock-sbom.exit-code
     engine_status=0
     npm ci --package-lock-only --ignore-scripts --omit=optional --engine-strict > /work/engine-strict.log 2>&1 || engine_status=$?
     printf "%s\n" "$engine_status" > /work/engine-strict.exit-code
@@ -333,6 +346,8 @@ cp "$consumer_root/doctor.log" "$artifact_stage/"
 cp "$consumer_root/npm-audit.json" "$artifact_stage/"
 cp "$consumer_root/npm-audit.exit-code" "$artifact_stage/"
 cp "$consumer_root/consumer-lock.cdx.json" "$artifact_stage/"
+cp "$consumer_root/consumer-lock-sbom.err" "$artifact_stage/"
+cp "$consumer_root/consumer-lock-sbom.exit-code" "$artifact_stage/"
 cp "$consumer_root/consumer-physical.cdx.json" "$artifact_stage/"
 cp "$consumer_root/consumer-physical-sbom.err" "$artifact_stage/"
 cp "$consumer_root/consumer-physical-sbom.exit-code" "$artifact_stage/"
@@ -352,6 +367,15 @@ const dependencyPolicy = JSON.parse(
 );
 const engineStrictExitCode = Number(
   fs.readFileSync(path.join(root, "engine-strict.exit-code"), "utf8").trim(),
+);
+const auditExitCode = Number(
+  fs.readFileSync(path.join(root, "npm-audit.exit-code"), "utf8").trim(),
+);
+const lockSbomExitCode = Number(
+  fs.readFileSync(path.join(root, "consumer-lock-sbom.exit-code"), "utf8").trim(),
+);
+const physicalSbomExitCode = Number(
+  fs.readFileSync(path.join(root, "consumer-physical-sbom.exit-code"), "utf8").trim(),
 );
 const summary = {
   schema: "dacs-registry-container-acceptance/v1",
@@ -374,12 +398,14 @@ const summary = {
   audit: audit.metadata.vulnerabilities,
   securityGate: {
     productionPublicationBlockedBy: "DACS-Agent-commerce/dacs-sdk#191",
-    passed: dependencyPolicy.passed && engineStrictExitCode === 0,
+    passed: dependencyPolicy.passed && engineStrictExitCode === 0 &&
+      auditExitCode === 0 && audit.metadata.vulnerabilities.total === 0 &&
+      lockSbomExitCode === 0 && physicalSbomExitCode === 0,
     registryDependencyPolicyPassed: dependencyPolicy.passed,
     engineStrictExitCode,
-    physicalSbomExitCode: Number(
-      fs.readFileSync(path.join(root, "consumer-physical-sbom.exit-code"), "utf8").trim(),
-    ),
+    auditExitCode,
+    lockSbomExitCode,
+    physicalSbomExitCode,
   },
 };
 fs.writeFileSync(
