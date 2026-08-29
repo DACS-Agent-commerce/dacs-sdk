@@ -206,24 +206,32 @@ docker run --rm \
     npm run dacs:doctor > /work/doctor.log 2>&1 || doctor_status=$?
     test "$doctor_status" -eq 5
     audit_status=0
-    npm audit --omit=dev --json > /work/npm-audit.json || audit_status=$?
+    npm audit --registry https://registry.npmjs.org --omit=dev --json > /work/npm-audit.json || audit_status=$?
     printf "%s\n" "$audit_status" > /work/npm-audit.exit-code
-    npm sbom --package-lock-only --sbom-format cyclonedx --omit=dev > /work/consumer-lock.cdx.json
     physical_status=0
     npm sbom --sbom-format cyclonedx --omit=dev > /work/consumer-physical.cdx.json 2> /work/consumer-physical-sbom.err || physical_status=$?
     printf "%s\n" "$physical_status" > /work/consumer-physical-sbom.exit-code
+    mkdir /work/lock-only
+    cp package.json package-lock.json /work/lock-only/
+    cd /work/lock-only
+    npm sbom --package-lock-only --sbom-format cyclonedx --omit=dev > /work/consumer-lock.cdx.json
+    engine_status=0
+    npm ci --package-lock-only --ignore-scripts --omit=optional --engine-strict > /work/engine-strict.log 2>&1 || engine_status=$?
+    printf "%s\n" "$engine_status" > /work/engine-strict.exit-code
   ' | tee "$artifact_stage/generation.log"
 
 project="$consumer_root/one-click-agent"
-node - "$project" "$consumer_registry" <<'NODE'
+node - "$project" "$consumer_registry" "$artifact_stage/dependency-policy.json" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const root = process.argv[2];
 const registry = process.argv[3];
+const reportPath = process.argv[4];
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const lockSource = fs.readFileSync(path.join(root, "package-lock.json"), "utf8");
 const lock = JSON.parse(lockSource);
 const dependencies = manifest.dependencies ?? {};
+const violations = [];
 for (const name of [
   "@kynesyslabs/dacs",
   "@kynesyslabs/dacs-node",
@@ -240,11 +248,22 @@ for (const name of [
 }
 for (const value of Object.values(dependencies)) {
   if (/^(?:file:|git\+|https?:\/\/github\.com\/)/.test(value)) {
-    throw new Error("generated manifest contains a non-registry dependency");
+    violations.push({ location: "package.json", value });
   }
 }
-if (/file:|git\+|github\.com\/.*\.git/.test(lockSource)) {
-  throw new Error("generated lock contains a file or Git dependency");
+for (const [location, entry] of Object.entries(lock.packages ?? {})) {
+  for (const [field, value] of Object.entries(entry ?? {})) {
+    if (typeof value === "string" &&
+        /^(?:file:|git\+|git:|git@|https?:\/\/github\.com\/.*#)/.test(value)) {
+      violations.push({ location, field, value });
+    }
+  }
+  for (const [name, value] of Object.entries(entry?.dependencies ?? {})) {
+    if (typeof value === "string" &&
+        /^(?:file:|git\+|git:|git@|https?:\/\/github\.com\/.*#)/.test(value)) {
+      violations.push({ location, field: `dependencies.${name}`, value });
+    }
+  }
 }
 for (const name of [
   "node_modules/@kynesyslabs/dacs",
@@ -255,6 +274,11 @@ for (const name of [
     throw new Error("candidate package did not resolve through the isolated registry: " + name);
   }
 }
+fs.writeFileSync(reportPath, JSON.stringify({
+  schema: "dacs-registry-dependency-policy/v1",
+  passed: violations.length === 0,
+  violations,
+}, null, 2) + "\n");
 NODE
 
 node - "$consumer_root/npm-audit.json" <<'NODE'
@@ -312,6 +336,8 @@ cp "$consumer_root/consumer-lock.cdx.json" "$artifact_stage/"
 cp "$consumer_root/consumer-physical.cdx.json" "$artifact_stage/"
 cp "$consumer_root/consumer-physical-sbom.err" "$artifact_stage/"
 cp "$consumer_root/consumer-physical-sbom.exit-code" "$artifact_stage/"
+cp "$consumer_root/engine-strict.log" "$artifact_stage/"
+cp "$consumer_root/engine-strict.exit-code" "$artifact_stage/"
 
 node - "$artifact_stage" "$version" "$runtime_image" <<'NODE'
 const fs = require("node:fs");
@@ -321,6 +347,12 @@ const version = process.argv[3];
 const image = process.argv[4];
 const inspect = JSON.parse(fs.readFileSync(path.join(root, "docker-image.json"), "utf8"))[0];
 const audit = JSON.parse(fs.readFileSync(path.join(root, "npm-audit.json"), "utf8"));
+const dependencyPolicy = JSON.parse(
+  fs.readFileSync(path.join(root, "dependency-policy.json"), "utf8"),
+);
+const engineStrictExitCode = Number(
+  fs.readFileSync(path.join(root, "engine-strict.exit-code"), "utf8").trim(),
+);
 const summary = {
   schema: "dacs-registry-container-acceptance/v1",
   packageVersion: version,
@@ -342,6 +374,9 @@ const summary = {
   audit: audit.metadata.vulnerabilities,
   securityGate: {
     productionPublicationBlockedBy: "DACS-Agent-commerce/dacs-sdk#191",
+    passed: dependencyPolicy.passed && engineStrictExitCode === 0,
+    registryDependencyPolicyPassed: dependencyPolicy.passed,
+    engineStrictExitCode,
     physicalSbomExitCode: Number(
       fs.readFileSync(path.join(root, "consumer-physical-sbom.exit-code"), "utf8").trim(),
     ),
@@ -354,4 +389,14 @@ fs.writeFileSync(
 NODE
 
 mv "$artifact_stage" "$output_dir"
+security_passed=$(node - "$output_dir/acceptance-summary.json" <<'NODE'
+const fs = require("node:fs");
+const summary = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+process.stdout.write(String(summary.securityGate?.passed === true));
+NODE
+)
+if [ "$security_passed" != "true" ]; then
+  echo "functional registry/container rehearsal passed, but the #191 security gate remains blocked: $output_dir" >&2
+  exit 3
+fi
 echo "registry/container acceptance passed: $output_dir"
