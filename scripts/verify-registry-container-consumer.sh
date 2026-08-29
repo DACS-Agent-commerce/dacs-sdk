@@ -138,6 +138,11 @@ host_registry="http://127.0.0.1:$host_port"
 consumer_registry="http://host.docker.internal:$host_port"
 consumer_network_args=(--add-host host.docker.internal:host-gateway)
 build_network_args=(--add-host host.docker.internal:host-gateway)
+host_uid=$(id -u)
+host_gid=$(id -g)
+case "$host_uid:$host_gid" in
+  *[!0-9:]*) echo "host uid/gid is invalid" >&2; exit 1 ;;
+esac
 if [ "$(uname -s)" = "Linux" ]; then
   consumer_registry=$host_registry
   consumer_network_args=(--network host)
@@ -187,11 +192,17 @@ docker run --rm \
   --volume "$consumer_root:/work" \
   --workdir /work \
   --env DACS_PACKAGE_VERSION="$version" \
+  --env DACS_HOST_UID="$host_uid" \
+  --env DACS_HOST_GID="$host_gid" \
   --env npm_config_registry="$consumer_registry" \
   --env npm_config_audit=false \
   --env npm_config_fund=false \
   node:20.19.1-bookworm-slim@sha256:83e53269616ca1b22cf7533e5db4e2f1a0c24a8e818b21691d6d4a69ec9e2c6d \
   sh -ceu '
+    restore_host_ownership() {
+      chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work || true
+    }
+    trap restore_host_ownership EXIT
     npm install --global --ignore-scripts npm@11.19.0
     npm create "dacs-agent@$DACS_PACKAGE_VERSION" one-click-agent -- \
       --yes \
