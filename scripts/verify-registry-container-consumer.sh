@@ -315,12 +315,17 @@ image_started=1
 
 docker image inspect "$runtime_image" > "$artifact_stage/docker-image.json"
 image_user=$(docker image inspect --format '{{.Config.User}}' "$runtime_image")
-test "$image_user" = "10001:10001"
 runtime_uid=$(docker run --rm --entrypoint id "$runtime_image" -u)
-test "$runtime_uid" = "10001"
-docker run --rm --entrypoint sh "$runtime_image" -ceu '
-  test ! -d node_modules/typescript
-  test ! -d node_modules/rubic-sdk
+typescript_present=false
+if docker run --rm --entrypoint test "$runtime_image" -d node_modules/typescript; then
+  typescript_present=true
+fi
+rubic_present=false
+if docker run --rm --entrypoint test "$runtime_image" -d node_modules/rubic-sdk; then
+  rubic_present=true
+fi
+runtime_imports_passed=false
+if docker run --rm --entrypoint sh "$runtime_image" -ceu '
   node --import @kynesyslabs/dacs-node/demos-loader --input-type=module -e "
     Promise.all([
       import(\"@kynesyslabs/dacs\"),
@@ -332,7 +337,32 @@ docker run --rm --entrypoint sh "$runtime_image" -ceu '
       if (typeof sqlite.openDacsNodeSqliteDatabase !== \"function\") process.exit(1);
     });
   "
-'
+'; then
+  runtime_imports_passed=true
+fi
+
+IMAGE_USER="$image_user" \
+RUNTIME_UID="$runtime_uid" \
+TYPESCRIPT_PRESENT="$typescript_present" \
+RUBIC_PRESENT="$rubic_present" \
+RUNTIME_IMPORTS_PASSED="$runtime_imports_passed" \
+  node - "$artifact_stage/runtime-image-policy.json" <<'NODE'
+const fs = require("node:fs");
+const policy = {
+  schema: "dacs-runtime-image-policy/v1",
+  expectedUser: "10001:10001",
+  observedUser: process.env.IMAGE_USER,
+  observedUid: process.env.RUNTIME_UID,
+  runtimeImportsPassed: process.env.RUNTIME_IMPORTS_PASSED === "true",
+  typescriptPresent: process.env.TYPESCRIPT_PRESENT === "true",
+  rubicSdkPresent: process.env.RUBIC_PRESENT === "true",
+};
+policy.functionalPassed = policy.observedUser === policy.expectedUser &&
+  policy.observedUid === "10001" && policy.runtimeImportsPassed;
+policy.productionDependencyPolicyPassed = !policy.typescriptPresent &&
+  !policy.rubicSdkPresent;
+fs.writeFileSync(process.argv[2], JSON.stringify(policy, null, 2) + "\n");
+NODE
 
 cp "$release_set/release-provenance.json" "$artifact_stage/"
 cp "$release_set/SHA256SUMS" "$artifact_stage/"
@@ -364,6 +394,9 @@ const dependencyPolicy = JSON.parse(
 const auditPolicy = JSON.parse(
   fs.readFileSync(path.join(root, "audit-policy.json"), "utf8"),
 );
+const runtimeImagePolicy = JSON.parse(
+  fs.readFileSync(path.join(root, "runtime-image-policy.json"), "utf8"),
+);
 const engineStrictExitCode = Number(
   fs.readFileSync(path.join(root, "engine-strict.exit-code"), "utf8").trim(),
 );
@@ -384,6 +417,7 @@ const summary = {
   generatedRails: ["x402", "pay-dem"],
   registryDependencyOnly: true,
   generatedTestsPassed: true,
+  functionalPassed: runtimeImagePolicy.functionalPassed,
   doctor: {
     expectedExitCode: 5,
     disposition: "blocked-without-credentials",
@@ -393,15 +427,20 @@ const summary = {
     id: inspect.Id,
     size: inspect.Size,
     user: inspect.Config.User,
+    policy: runtimeImagePolicy,
   },
   audit: audit.metadata.vulnerabilities,
   securityGate: {
     productionPublicationBlockedBy: "DACS-Agent-commerce/dacs-sdk#191",
-    passed: dependencyPolicy.passed && engineStrictExitCode === 0 &&
+    passed: dependencyPolicy.passed &&
+      runtimeImagePolicy.productionDependencyPolicyPassed &&
+      engineStrictExitCode === 0 &&
     auditExitCode === 0 && audit.metadata.vulnerabilities.total === 0 &&
       auditPolicy.baselineExceeded === false &&
       lockSbomExitCode === 0 && physicalSbomExitCode === 0,
     registryDependencyPolicyPassed: dependencyPolicy.passed,
+    productionImageDependencyPolicyPassed:
+      runtimeImagePolicy.productionDependencyPolicyPassed,
     engineStrictExitCode,
     auditExitCode,
     auditBaselineExceeded: auditPolicy.baselineExceeded,
@@ -416,12 +455,16 @@ fs.writeFileSync(
 NODE
 
 mv "$artifact_stage" "$output_dir"
-security_passed=$(node - "$output_dir/acceptance-summary.json" <<'NODE'
+read -r functional_passed security_passed < <(node - "$output_dir/acceptance-summary.json" <<'NODE'
 const fs = require("node:fs");
 const summary = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-process.stdout.write(String(summary.securityGate?.passed === true));
+process.stdout.write(`${summary.functionalPassed === true} ${summary.securityGate?.passed === true}`);
 NODE
 )
+if [ "$functional_passed" != "true" ]; then
+  echo "functional registry/container rehearsal failed: $output_dir" >&2
+  exit 1
+fi
 if [ "$security_passed" != "true" ]; then
   echo "functional registry/container rehearsal passed, but the #191 security gate remains blocked: $output_dir" >&2
   exit 3
