@@ -458,7 +458,9 @@ mv "$artifact_stage" "$output_dir"
 read -r functional_passed security_passed < <(node - "$output_dir/acceptance-summary.json" <<'NODE'
 const fs = require("node:fs");
 const summary = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-process.stdout.write(`${summary.functionalPassed === true} ${summary.securityGate?.passed === true}`);
+process.stdout.write(
+  `${summary.functionalPassed === true} ${summary.securityGate?.passed === true}\n`,
+);
 NODE
 )
 if [ "$functional_passed" != "true" ]; then
