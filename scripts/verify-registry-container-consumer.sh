@@ -294,16 +294,20 @@ fs.writeFileSync(reportPath, JSON.stringify({
 }, null, 2) + "\n");
 NODE
 
-node - "$consumer_root/npm-audit.json" <<'NODE'
+node - "$consumer_root/npm-audit.json" "$artifact_stage/audit-policy.json" <<'NODE'
 const fs = require("node:fs");
 const audit = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const counts = audit.metadata?.vulnerabilities;
 if (!counts || !Number.isInteger(counts.total) || !Number.isInteger(counts.critical)) {
   throw new Error("npm audit did not produce vulnerability metadata");
 }
-if (counts.total > 66 || counts.critical > 3) {
-  throw new Error("production dependency audit regressed beyond the #191 baseline");
-}
+const baselineExceeded = counts.total > 66 || counts.critical > 3;
+fs.writeFileSync(process.argv[3], JSON.stringify({
+  schema: "dacs-registry-audit-policy/v1",
+  baseline: { total: 66, critical: 3 },
+  observed: counts,
+  baselineExceeded,
+}, null, 2) + "\n");
 process.stdout.write(JSON.stringify(counts) + "\n");
 NODE
 
@@ -365,6 +369,9 @@ const audit = JSON.parse(fs.readFileSync(path.join(root, "npm-audit.json"), "utf
 const dependencyPolicy = JSON.parse(
   fs.readFileSync(path.join(root, "dependency-policy.json"), "utf8"),
 );
+const auditPolicy = JSON.parse(
+  fs.readFileSync(path.join(root, "audit-policy.json"), "utf8"),
+);
 const engineStrictExitCode = Number(
   fs.readFileSync(path.join(root, "engine-strict.exit-code"), "utf8").trim(),
 );
@@ -399,11 +406,13 @@ const summary = {
   securityGate: {
     productionPublicationBlockedBy: "DACS-Agent-commerce/dacs-sdk#191",
     passed: dependencyPolicy.passed && engineStrictExitCode === 0 &&
-      auditExitCode === 0 && audit.metadata.vulnerabilities.total === 0 &&
+    auditExitCode === 0 && audit.metadata.vulnerabilities.total === 0 &&
+      auditPolicy.baselineExceeded === false &&
       lockSbomExitCode === 0 && physicalSbomExitCode === 0,
     registryDependencyPolicyPassed: dependencyPolicy.passed,
     engineStrictExitCode,
     auditExitCode,
+    auditBaselineExceeded: auditPolicy.baselineExceeded,
     lockSbomExitCode,
     physicalSbomExitCode,
   },
