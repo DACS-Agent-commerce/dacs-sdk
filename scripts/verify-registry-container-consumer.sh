@@ -157,8 +157,6 @@ const value = JSON.parse(process.env.AUTH_RESPONSE);
 if (typeof value.token !== "string" || value.token.length < 8) process.exit(1);
 process.stdout.write(value.token);
 ')
-auth_host=$(printf '%s' "$host_registry" | sed 's#^http:##')
-auth_option="--$auth_host/:_authToken=$auth_token"
 
 for package in \
   "$release_set/kynesyslabs-dacs-$version.tgz" \
@@ -166,14 +164,8 @@ for package in \
   "$release_set/create-dacs-agent-$version.tgz"
 do
   test -f "$package"
-  npm publish "$package" \
-    --registry "$host_registry" \
-    --tag acceptance \
-    --access public \
-    --ignore-scripts \
-    --provenance=false \
-    --loglevel=error \
-    "$auth_option"
+  DACS_LOCAL_REGISTRY_TOKEN="$auth_token" \
+    node scripts/publish-exact-local-registry.mjs "$package" "$host_registry"
 done
 
 for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; do
