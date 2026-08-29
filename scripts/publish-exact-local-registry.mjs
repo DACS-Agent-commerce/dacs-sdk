@@ -50,4 +50,3 @@ await publish(manifest, tarball, {
   provenance: false,
   [`//${registry.host}/:_authToken`]: token,
 });
-
