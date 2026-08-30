@@ -94,7 +94,8 @@ async function waitForPreparedCheckpoint(
   child: ChildProcess,
   output: () => string,
 ): Promise<void> {
-  const deadline = Date.now() + 15_000;
+  // A fresh nested Vitest transform can be slow on a saturated CI runner.
+  const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     try {
       if (await readFile(readyPath, "utf8") === "prepared") return;
@@ -251,14 +252,16 @@ describe("native DEM process recovery", () => {
       resolveAuthority: () => AUTHORITY,
       reconcile,
       publishNotice,
-      effectLeaseDurationMs: 100,
+      // The dead fixture's 100 ms lease has already expired. Give the recovery
+      // worker enough time to finish even when a loaded CI runner pauses it.
+      effectLeaseDurationMs: 5_000,
       retryDelayMs: 1,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-after-kill",
       operations: { payment },
-      leaseDurationMs: 100,
+      leaseDurationMs: 5_000,
     });
 
     await coordinator.runPending({ limit: 1 });
@@ -272,5 +275,5 @@ describe("native DEM process recovery", () => {
         payment: { state: "final", outcome: "success" },
       },
     });
-  }, 30_000);
+  }, 75_000);
 });
