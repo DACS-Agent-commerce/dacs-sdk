@@ -224,7 +224,9 @@ import {
   completeRatingPhase,
   deriveReputationWithValidation,
   isRatingRecord,
+  persistRatingPhaseHandoffDurably,
   publishRatingRecordDurably,
+  recoverRatingPhaseHandoff,
 } from "@kynesyslabs/dacs";
 import { createSqliteRatingPublicationEffectStore } from "@kynesyslabs/dacs-node/sqlite";
 
@@ -295,8 +297,34 @@ if (ratingHandoff.disposition === "waiting") {
   // plan rather than omitting a possibly anchored rating.
   return ratingHandoff;
 }
-// Append ratingHandoff.phaseEntry to the SessionRecord and pass
-// ratingHandoff.ratingRefs as the terminal finalizer rating-record inventory.
+
+// Write the exact handoff to the existing fenced session WAL before audit work.
+// The outcome checkpoint and rate-pending -> audit-pending transition commit
+// atomically; neither party's signing or publication authority is present here.
+const durableRatingHandoff = await persistRatingPhaseHandoffDurably(
+  ratingHandoff,
+  {
+    store: fencedSessionStore,
+    workerId: processInstanceId,
+    leaseTtlMs: 30_000,
+    authenticateHandoff: authenticateRatingHandoffAgainstRetainedSession,
+  },
+);
+if (durableRatingHandoff.disposition !== "persisted") {
+  return durableRatingHandoff;
+}
+
+// On process start, recover only a committed outcome. A bare WAL intent is
+// pending and must be resumed through persistRatingPhaseHandoffDurably().
+const recoveredRatingHandoff = await recoverRatingPhaseHandoff(jobId, {
+  store: fencedSessionStore,
+  authenticateHandoff: authenticateRatingHandoffAgainstRetainedSession,
+});
+if (recoveredRatingHandoff.disposition === "recovered") {
+  // Append phaseEntry to the full SessionRecord projection and pass ratingRefs
+  // as the terminal finalizer's exact rating-record inventory.
+  startTerminalAudit(recoveredRatingHandoff.handoff);
+}
 
 const reputation = await deriveReputationWithValidation(
   sellerPrimaryClaim,
@@ -328,8 +356,10 @@ publishes only its own direction, and the handoff re-authenticates every remote
 publication before exposing terminal fields. Explicit decline and absence are
 non-fatal. A Listing rate step with required:true is reported through
 requiredAdvisoryMissingRoles but, as DACS-5 ST-5 requires, never blocks terminal
-bundle production or demotes completed commerce. An application must not treat
-a locally signed record as an anchored rating.
+bundle production or demotes completed commerce. The final handoff is stored in
+the existing generation-fenced session WAL, so restart recovery returns the
+same phase entry and refs and rejects any attempt to rebind them. An application
+must not treat a locally signed record as an anchored rating.
 
 `Agent.getReputation()` is the normal untrusted-input path and fully verifies
 each referenced bundle before scoring it. Lower-level consumers that already

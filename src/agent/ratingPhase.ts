@@ -130,6 +130,167 @@ export interface RatingPhaseReadyHandoff {
   handoffHash: string;
 }
 
+/**
+ * Snapshot and structurally verify a serialized rating handoff.
+ *
+ * This verifies the self-authenticating hash and all internal bindings. It does
+ * not authenticate the retained SessionRecord; durable/replayed consumers must
+ * still bind `sessionRecordHash` and `planHash` to their trusted session state.
+ */
+export function captureRatingPhaseReadyHandoff(
+  value: unknown,
+): Readonly<RatingPhaseReadyHandoff> {
+  const captured = snapshotCanonicalJsonRead(
+    value,
+    "rating phase ready handoff",
+  ) as RatingPhaseReadyHandoff;
+  if (
+    captured === null ||
+    typeof captured !== "object" ||
+    Array.isArray(captured) ||
+    !exactKeys(captured as unknown as Record<string, unknown>, [
+      "handoffVersion",
+      "disposition",
+      "jobId",
+      "sessionRecordHash",
+      "planHash",
+      "phaseEntry",
+      "ratingRefs",
+      "roleResults",
+      "requiredAdvisoryMissingRoles",
+      "handoffHash",
+    ]) ||
+    captured.handoffVersion !== "1" ||
+    captured.disposition !== "ready" ||
+    typeof captured.jobId !== "string" ||
+    captured.jobId.length === 0 ||
+    captured.jobId.trim() !== captured.jobId ||
+    captured.jobId.normalize("NFC") !== captured.jobId ||
+    /[\u0000-\u001f\u007f]/.test(captured.jobId) ||
+    !HASH.test(captured.sessionRecordHash) ||
+    !HASH.test(captured.planHash) ||
+    !HASH.test(captured.handoffHash) ||
+    !Array.isArray(captured.ratingRefs) ||
+    captured.ratingRefs.length > ROLE_ORDER.length ||
+    captured.ratingRefs.some((ref) =>
+      !isAttestationRef(ref) || ref.anchor.kind !== "storage-program"
+    ) ||
+    new Set(captured.ratingRefs.map((ref) => ref.signer)).size !==
+      captured.ratingRefs.length ||
+    !Array.isArray(captured.roleResults) ||
+    captured.roleResults.length !== ROLE_ORDER.length ||
+    !Array.isArray(captured.requiredAdvisoryMissingRoles)
+  ) {
+    throw new DacsError("rating phase ready handoff is malformed");
+  }
+
+  const phaseEntry = captured.phaseEntry;
+  if (
+    phaseEntry === null ||
+    typeof phaseEntry !== "object" ||
+    Array.isArray(phaseEntry) ||
+    !exactKeys(phaseEntry as unknown as Record<string, unknown>, [
+      "index",
+      "step",
+      "invokedAt",
+      "result",
+      "contextDelta",
+    ]) ||
+    !Number.isSafeInteger(phaseEntry.index) ||
+    phaseEntry.index < 0 ||
+    !isPhaseStep(phaseEntry.step) ||
+    phaseEntry.step.kind !== "rate" ||
+    !Number.isSafeInteger(phaseEntry.invokedAt) ||
+    phaseEntry.invokedAt < 0 ||
+    phaseEntry.result === null ||
+    typeof phaseEntry.result !== "object" ||
+    Array.isArray(phaseEntry.result) ||
+    phaseEntry.contextDelta === null ||
+    typeof phaseEntry.contextDelta !== "object" ||
+    Array.isArray(phaseEntry.contextDelta)
+  ) {
+    throw new DacsError("rating phase handoff entry is malformed");
+  }
+
+  const expectedContext = captured.ratingRefs.length > 0
+    ? { ratingRefs: captured.ratingRefs }
+    : {};
+  const resultRecord = phaseEntry.result as unknown as Record<string, unknown>;
+  const resultIsValid = captured.ratingRefs.length > 0
+    ? exactKeys(resultRecord, ["ok", "contextDelta"]) &&
+      phaseEntry.result.ok === true
+    : exactKeys(resultRecord, ["ok", "reason", "contextDelta"]) &&
+      phaseEntry.result.ok === false &&
+      phaseEntry.result.reason === "rating absent, declined, or rejected";
+  if (
+    !resultIsValid ||
+    !sameValue(phaseEntry.contextDelta, expectedContext) ||
+    !sameValue(phaseEntry.result.contextDelta, expectedContext)
+  ) {
+    throw new DacsError("rating phase handoff result is not bound to its refs");
+  }
+
+  const publishedRefs: AttestationRef[] = [];
+  for (let index = 0; index < ROLE_ORDER.length; index += 1) {
+    const expectedRole = ROLE_ORDER[index]!;
+    const result = captured.roleResults[index];
+    if (
+      result === null ||
+      typeof result !== "object" ||
+      Array.isArray(result) ||
+      result.role !== expectedRole
+    ) {
+      throw new DacsError("rating phase handoff role results are malformed or unordered");
+    }
+    const record = result as unknown as Record<string, unknown>;
+    if (
+      result.disposition === "published" &&
+      exactKeys(record, ["role", "disposition", "ref"]) &&
+      isAttestationRef(result.ref) &&
+      result.ref.anchor.kind === "storage-program"
+    ) {
+      publishedRefs.push(result.ref);
+      continue;
+    }
+    if (
+      (result.disposition === "declined" ||
+        result.disposition === "absent" ||
+        result.disposition === "rejected") &&
+      exactKeys(record, ["role", "disposition", "reason"]) &&
+      typeof result.reason === "string" &&
+      result.reason.length > 0
+    ) {
+      continue;
+    }
+    throw new DacsError("rating phase handoff role result is malformed");
+  }
+  if (!sameValue(publishedRefs, captured.ratingRefs)) {
+    throw new DacsError("rating phase handoff refs do not match published role results");
+  }
+
+  const missingRoles = ROLE_ORDER.filter((role) =>
+    captured.roleResults.find((result) => result.role === role)?.disposition !== "published"
+  );
+  const advisoryRoles = captured.requiredAdvisoryMissingRoles;
+  if (
+    advisoryRoles.some((role) => role !== "buyer" && role !== "seller") ||
+    new Set(advisoryRoles).size !== advisoryRoles.length ||
+    advisoryRoles.some((role, index) =>
+      index > 0 &&
+      ROLE_ORDER.indexOf(role) <= ROLE_ORDER.indexOf(advisoryRoles[index - 1]!)
+    ) ||
+    (advisoryRoles.length > 0 && !sameValue(advisoryRoles, missingRoles))
+  ) {
+    throw new DacsError("rating phase advisory roles are not bound to role results");
+  }
+
+  const { handoffHash, ...withoutHash } = captured;
+  if (sha256Hex(canonicalize(withoutHash)) !== handoffHash) {
+    throw new DacsError("rating phase handoff hash does not match its content");
+  }
+  return deepFreeze(snapshotCanonicalJson(captured, "rating phase ready handoff output"));
+}
+
 export type RatingPhaseCompletion =
   | Readonly<RatingPhaseReadyHandoff>
   | Readonly<{
