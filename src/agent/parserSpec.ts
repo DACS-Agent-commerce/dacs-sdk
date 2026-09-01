@@ -52,8 +52,10 @@ export interface ParserEvalContext {
    * PSP-5 completeness floor: for a negative-match "absence in a full list" recipe,
    * a `pass` (= "not listed") is only trustworthy over a provably-complete response.
    * Pass the completeness verdict (record-count / sentinel / Content-Length checked
-   * by the caller). When the recipe is completeness-gated and this is not `true`,
-   * the `pass` is downgraded to `indeterminate`. Omit for non-list recipes.
+   * by the caller). Every negative-match absence is completeness-gated by
+   * construction; callers cannot opt out of PSP-5.
+   *
+   * @deprecated PSP-5 is derived from `negativeMatch`; this flag is ignored.
    */
   requiresCompleteness?: boolean;
   listComplete?: boolean;
@@ -177,7 +179,7 @@ export function evaluateParserSpec(
 
   // PSP-5: a negative-match `pass` that rests on ABSENCE from a full list is only
   // trustworthy over a provably-complete response — else `indeterminate`.
-  if (neg && decision === "pass" && ctx.requiresCompleteness && ctx.listComplete !== true) {
+  if (neg && decision === "pass" && ctx.listComplete !== true) {
     return result(
       "indeterminate",
       "negative-match pass requires a confirmed-complete response (PSP-5)",
