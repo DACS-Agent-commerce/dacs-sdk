@@ -6,14 +6,14 @@ import {
   isCanonicalClaimReference,
   parseCanonicalClaimReference,
 } from "../identity/claimReference.js";
+import { DACS_STANDARD_PIN } from "../version.js";
 
 /**
  * Exact DACS-Standard revision supported by this coordinator slice. This is
  * intentionally the same immutable revision used by scripts/sync-vectors.mjs.
  * A Standard upgrade is a reviewed SDK change, never counterparty input.
  */
-export const FIXED_PRICE_X402_STANDARD_REVISION =
-  "965df755aba4ff392f1fb37a93d287242b177ba4" as const;
+export const FIXED_PRICE_X402_STANDARD_REVISION = DACS_STANDARD_PIN;
 
 /** Operational SDK profile; this is not a normative DACS artifact field. */
 export const FIXED_PRICE_X402_COMMERCE_PROFILE =
