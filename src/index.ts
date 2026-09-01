@@ -10,7 +10,7 @@
  * IMPLEMENTATION.md.
  */
 
-export { VERSION, DACS_SPEC_VERSION } from "./version.js";
+export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
 export * from "./commerce/index.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
