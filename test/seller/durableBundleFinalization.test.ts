@@ -772,6 +772,19 @@ beforeEach(() => {
 });
 
 describe("durable seller bundle coordinator v2", () => {
+  test("rejects raw seed material before durable capture", async () => {
+    const harness = await createHarness("pure");
+    harness.input.seller.signer = new Uint8Array(32) as unknown as
+      typeof harness.input.seller.signer;
+
+    await expect(finalizeCompletedSellerBundleDurable(
+      harness.input,
+      harness.provider,
+      durability(createInMemoryFencedSessionStore()),
+    )).rejects.toThrow(/must not retain a raw Ed25519 seed/);
+    expect(projectAuditMock).not.toHaveBeenCalled();
+  });
+
   test("rejects caller-assembled session facts that differ from the WAL projection", async () => {
     const harness = await createHarness("write-input");
     const store = createInMemoryFencedSessionStore();
