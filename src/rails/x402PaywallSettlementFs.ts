@@ -621,6 +621,27 @@ export async function createFsX402PaywallSettlementStore(
     await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
   }
 
+  async function publishLockCandidate(candidate: string, path: string): Promise<boolean> {
+    // Stale recovery observes and renames `path` while holding this gate. A
+    // normal successor must use the same transition gate or it can replace the
+    // observed path immediately before the reclaimer's rename.
+    const gateOwner: LockOwner = { pid: process.pid, token: randomUUID() };
+    if (!await acquireReclaimGate(gateOwner)) return false;
+    try {
+      try {
+        await rename(candidate, path);
+        await syncDirectory(locksDir);
+        return true;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EEXIST" || code === "ENOTEMPTY") return false;
+        throw error;
+      }
+    } finally {
+      await releaseReclaimGate(gateOwner);
+    }
+  }
+
   async function withLock<T>(settlementKey: string, operation: () => Promise<T>): Promise<T> {
     const path = lockPath(settlementKey);
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
@@ -639,18 +660,14 @@ export async function createFsX402PaywallSettlementStore(
           await handle.close();
         }
         await syncDirectory(candidate);
-        await rename(candidate, path);
-        await syncDirectory(locksDir);
-        break;
-      } catch (error) {
-        await rm(candidate, { recursive: true, force: true }).catch(() => {});
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+        if (await publishLockCandidate(candidate, path)) break;
         await maybeReclaimStale(path);
         if (Date.now() >= deadline) {
           throw new DacsError("timed out acquiring x402 paywall settlement lock");
         }
         await wait(options.lockPollMs);
+      } finally {
+        await rm(candidate, { recursive: true, force: true }).catch(() => {});
       }
     }
     try {
