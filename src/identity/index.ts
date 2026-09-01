@@ -12,8 +12,32 @@ export {
   type CciWalletClaim,
   type CciUdClaim,
   type CciPqcClaim,
+  type CciNomisClaim,
+  type CciHumanPassportClaim,
+  type CciEthosClaim,
+  type CciTlsnClaim,
   type ParsedClaimRef,
 } from "./cci.js";
+
+export {
+  authenticateDemosCciRecord,
+  classifyCciTlsnProof,
+  getAuthenticatedCciProvenance,
+  isAuthenticatedCciRecord,
+  projectCciSupplementarySignals,
+  type AuthenticateDemosCciDeps,
+  type AuthenticateDemosCciInput,
+  type AuthenticateDemosCciResult,
+  type AuthenticatedCciRecord,
+  type CciSignalOmission,
+  type CciSignalOmissionReason,
+  type CciSupplementaryFreshnessPolicy,
+  type CciSupplementarySignalProjection,
+  type CciTlsnDisposition,
+  type ClassifyCciTlsnDeps,
+  type DemosCciProvenance,
+  type DemosCciResolutionAuthentication,
+} from "./demosCci.js";
 
 export {
   isCanonicalClaimReference,

@@ -551,15 +551,16 @@ export interface Agent<
   readonly adapter: TAdapter;
   /**
    * Anyone: resolve a subject's full cross-context identity (DACS-1) — its
-   * primary claim plus the linked Web2 handles and cross-chain wallets bound to
-   * it in the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
+   * primary claim plus all eight production Demos CCI contexts bound to it in
+   * the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
    * primary key; other claim refs are passed through (reverse resolution is a
    * substrate follow-up).
    */
   resolveIdentity(subject: string): Promise<CciRecord>;
   /**
    * Anyone: reverse-resolve a linked claim to the subject(s) that hold it —
-   * `findByClaim("web2:twitter:alice")` or `findByClaim("xm:evm:0x…")` returns
+   * `findByClaim("cci-web2:twitter:alice")` or
+   * `findByClaim("cci-xm:evm:mainnet:0x…")` returns
    * the matching primary claims (Demos pubkeys), usually one, or [] if none.
    */
   findByClaim(claimRef: string): Promise<string[]>;
