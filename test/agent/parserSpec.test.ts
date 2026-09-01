@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   defaultParserEngine,
+  defaultParserEngineCapabilities,
   evaluateParserSpec,
   type ParserSpec,
 } from "../../src/agent/parserSpec.js";
@@ -45,9 +46,14 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
     expect(evalSpec({ format: "json", successJsonPath: "$.a" }, "{bad")).toBe("error");
   });
 
-  it("PSP-4/engine: html and xml are unsupported by the default engine ⇒ error", () => {
-    expect(evalSpec({ format: "html", successSelector: ".x" }, "<div class=x/>")).toBe("error");
-    expect(evalSpec({ format: "xml", successXPath: "//x" }, "<x/>")).toBe("error");
+  it("PSP-1/4: the default engine evaluates CSS and XPath without executing content", () => {
+    expect(
+      evalSpec(
+        { format: "html", successSelector: "article.result[data-status='issued']" },
+        "<main><article class='result' data-status='issued'>ok</article></main>",
+      ),
+    ).toBe("pass");
+    expect(evalSpec({ format: "xml", successXPath: "//x" }, "<root><x/></root>")).toBe("pass");
   });
 
   it("PSP-5 negative-match absence requires a complete response", () => {
@@ -148,15 +154,13 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
 
   // ── Review counterexamples (second-round #49) ──
 
-  it("an UNSUPPORTED JSONPath filter is rejected as error, never silently partial-parsed to fail", () => {
+  it("the normative filtered JSONPath example is evaluated by the default engine", () => {
     const spec: ParserSpec = {
       format: "json",
       successJsonPath: '$.data[?(@.attributes.registration.status=="ISSUED")]',
     };
-    // A body that a full JSONPath engine WOULD match must not come back `fail`;
-    // the default engine can't evaluate the filter, so it is `error`.
     const body = JSON.stringify({ data: [{ attributes: { registration: { status: "ISSUED" } } }] });
-    expect(evalSpec(spec, body)).toBe("error");
+    expect(evalSpec(spec, body)).toBe("pass");
   });
 
   it("a non-RE2 matcher (backreference) is rejected as error, not run through JS RegExp", () => {
@@ -188,5 +192,112 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
       indeterminateOn: [{ selector: ".pending" }],
     };
     expect(evalSpec(spec, JSON.stringify({ ok: true }))).toBe("error");
+  });
+
+  it("declares the exact default-engine capability boundary", () => {
+    expect(defaultParserEngine.capabilities).toBe(defaultParserEngineCapabilities);
+    expect(defaultParserEngineCapabilities).toEqual({
+      engine: "dacs-conformant-v1",
+      formats: ["json", "html", "xml", "raw"],
+      jsonPath: "rfc9535",
+      htmlSelector: "css-select",
+      xmlXPath: "xpath-1.0",
+      rawMatcher: "re2",
+      executesScripts: false,
+      fetchesSubresources: false,
+      followsRedirects: false,
+    });
+    expect(Object.isFrozen(defaultParserEngineCapabilities)).toBe(true);
+    expect(Object.isFrozen(defaultParserEngineCapabilities.formats)).toBe(true);
+  });
+
+  it("PSP-3 extracts values through filtered JSONPath, CSS, and XPath", () => {
+    expect(
+      evaluateParserSpec(
+        {
+          format: "json",
+          successJsonPath: "$.data[?(@.status=='ISSUED')]",
+          dataMap: { name: "$.data[?(@.status=='ISSUED')].name" },
+        },
+        JSON.stringify({ data: [{ status: "ISSUED", name: "Acme" }] }),
+        defaultParserEngine,
+      ),
+    ).toMatchObject({ decision: "pass", data: { name: "Acme" } });
+
+    expect(
+      evaluateParserSpec(
+        {
+          format: "html",
+          successSelector: "article.issued",
+          dataMap: { name: "article.issued .name" },
+        },
+        "<article class='issued'><span class='name'>Acme</span></article>",
+        defaultParserEngine,
+      ),
+    ).toMatchObject({ decision: "pass", data: { name: "Acme" } });
+
+    expect(
+      evaluateParserSpec(
+        {
+          format: "xml",
+          successXPath: "//record[@status='ISSUED']",
+          dataMap: { name: "string(//record/name)" },
+        },
+        "<records><record status='ISSUED'><name>Acme</name></record></records>",
+        defaultParserEngine,
+      ),
+    ).toMatchObject({ decision: "pass", data: { name: "Acme" } });
+  });
+
+  it("malformed JSONPath, CSS, XPath, XML, and RE2 recipes fail closed", () => {
+    expect(evalSpec({ format: "json", successJsonPath: "$[?broken(" }, "{}")).toBe("error");
+    expect(evalSpec({ format: "html", successSelector: "div[" }, "<div></div>")).toBe("error");
+    expect(evalSpec({ format: "xml", successXPath: "//*[" }, "<root/>")).toBe("error");
+    expect(evalSpec({ format: "xml", successXPath: "//x" }, "<root><x></root>")).toBe("error");
+    expect(evalSpec({ format: "raw", matcher: "(a+)\\1" }, "aa")).toBe("error");
+  });
+
+  it("uses RE2 for valid adversarial raw matchers", () => {
+    const spec: ParserSpec = { format: "raw", matcher: "^(a+)+$" };
+    expect(evalSpec(spec, `${"a".repeat(20_000)}!`)).toBe("fail");
+  });
+
+  it("routes RFC 9535 match() and search() through RE2", () => {
+    expect(
+      evalSpec(
+        {
+          format: "json",
+          successJsonPath: '$.data[?match(@.status, "ISSUED")]',
+        },
+        JSON.stringify({ data: [{ status: "ISSUED" }] }),
+      ),
+    ).toBe("pass");
+    expect(
+      evalSpec(
+        {
+          format: "json",
+          successJsonPath: '$.data[?search(@.status, "^(a+)+$")]',
+        },
+        JSON.stringify({ data: [{ status: `${"a".repeat(20_000)}!` }] }),
+      ),
+    ).toBe("fail");
+  });
+
+  it("never executes script elements while evaluating HTML", () => {
+    const probe = globalThis as unknown as Record<string, unknown>;
+    delete probe.__dacsParserExecuted;
+    expect(
+      evalSpec(
+        { format: "html", successSelector: "script" },
+        "<script>globalThis.__dacsParserExecuted = true</script>",
+      ),
+    ).toBe("pass");
+    expect(probe.__dacsParserExecuted).toBeUndefined();
+  });
+
+  it("rejects unresolved XML entities instead of reading external resources", () => {
+    const body =
+      '<!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root>&xxe;</root>';
+    expect(evalSpec({ format: "xml", successXPath: "//root" }, body)).toBe("error");
   });
 });
