@@ -41,6 +41,7 @@ import {
   isCompositeVerificationRecord,
   isLegacyMvpListing,
   isListingDraft,
+  isRatingRecord,
   isExactJsonRecord,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
@@ -571,6 +572,14 @@ const PLACEHOLDER_SIGNATURE = {
   value: PLACEHOLDER_SIGNATURE_VALUE,
 } as const;
 
+/** Adapt the shared full-record gate to checkArtifact's signature-omitted scope. */
+function isRatingRecordSignedScope(scope: Record<string, unknown>): boolean {
+  return typeof scope.rater === "string" && isRatingRecord({
+    ...scope,
+    signature: { ...PLACEHOLDER_SIGNATURE, signer: scope.rater },
+  });
+}
+
 function agreementRoleClaims(
   scope: Record<string, unknown>,
 ): { buyer: string; seller: string } | null {
@@ -651,30 +660,6 @@ function isSettlementAmendmentScope(v: Record<string, unknown>): boolean {
       (Array.isArray(v.refundTxRefs) && v.refundTxRefs.every(isChainTxRef))) &&
     typeof v.reason === "string" && v.reason.length > 0 &&
     Number.isSafeInteger(v.observedAt) && (v.observedAt as number) >= 0
-  );
-}
-
-function isRatingRecordScope(v: Record<string, unknown>): boolean {
-  return (
-    v.ratingVersion === "1" &&
-    typeof v.jobId === "string" && v.jobId.length > 0 &&
-    typeof v.rater === "string" && v.rater.length > 0 &&
-    typeof v.target === "string" && v.target.length > 0 &&
-    (v.targetRole === "buyer" || v.targetRole === "seller") &&
-    typeof v.value === "number" &&
-    Number.isInteger(v.value) &&
-    v.value >= 1 &&
-    v.value <= 5 &&
-    (v.freeText === undefined ||
-      (typeof v.freeText === "string" && v.freeText.length <= 1_000)) &&
-    (v.dimensions === undefined ||
-      (v.dimensions !== null &&
-        typeof v.dimensions === "object" &&
-        !Array.isArray(v.dimensions) &&
-        Object.values(v.dimensions).every(
-          (score) => typeof score === "number" && Number.isFinite(score),
-        ))) &&
-    Number.isSafeInteger(v.ratedAt) && (v.ratedAt as number) >= 0
   );
 }
 
@@ -1494,7 +1479,7 @@ export async function verifyBundleCore(
     const checked = await checkReadableRef(
       "dacs-5-rating",
       rating,
-      isRatingRecordScope,
+      isRatingRecordSignedScope,
       (artifact) => {
         const scope = stripSignature(artifact) as Record<string, unknown>;
         const signers =

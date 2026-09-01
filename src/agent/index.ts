@@ -297,6 +297,12 @@ export {
   type TwoSidedBundles,
 } from "./twoSidedBundle.js";
 export {
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  type CreateRatingRecordInput,
+  type RatingRecordSigner,
+} from "./ratingRecord.js";
+export {
   assembleTerminalBundleForOwnRole,
   createTerminalBundleAuthority,
   createTerminalBundlePlan,

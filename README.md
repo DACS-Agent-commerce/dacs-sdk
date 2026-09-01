@@ -212,6 +212,44 @@ const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
 
+The public RatingRecord producers own the two permitted DACS-5 directions and
+do not accept a caller-selected rater or target role. They reject malformed
+RT-1 input before calling the wallet and return an isolated, signed wire record:
+
+```ts
+import {
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  isRatingRecord,
+} from "@kynesyslabs/dacs";
+
+const buyerRating = await createBuyerRatingRecord(
+  {
+    jobId,
+    buyer: buyerPrimaryClaim,
+    seller: sellerPrimaryClaim,
+    value: 5,
+    dimensions: { timeliness: 5 },
+    ratedAt: Date.now(),
+  },
+  {
+    algorithm: "ed25519",
+    sign: signWithBuyerIdentityKey,
+  },
+);
+
+if (!isRatingRecord(buyerRating)) throw new Error("invalid RatingRecord");
+
+// The seller-owned direction uses the same session parties but necessarily
+// produces seller -> buyer with targetRole "buyer".
+const sellerRating = await createSellerRatingRecord(ratingInput, sellerSigner);
+```
+
+These functions produce and validate the signed RatingRecord. Durable SR-2
+publication, optional/required rate-phase orchestration, terminal-bundle
+handoff, and reputation aggregation remain separate lifecycle operations; an
+application must not treat a locally signed record as an anchored rating.
+
 `Agent.getReputation()` is the normal untrusted-input path and fully verifies
 each referenced bundle before scoring it. Lower-level consumers that already
 hold candidate bundle objects must use `deriveReputationWithValidation()` when

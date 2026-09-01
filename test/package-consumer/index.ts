@@ -3,7 +3,11 @@ import {
   type DemosAdapterConfig,
   type DemosWriteJournal,
   type DeriveReputationDeps,
+  type RatingRecord,
   type SubstrateAdapter,
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  isRatingRecord,
   lookupBundleCopies,
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
@@ -34,6 +38,9 @@ const priceAccepted: boolean = isNegotiablePriceWithinBand("95", {
 });
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
+const ratingValidator: (value: unknown) => value is RatingRecord = isRatingRecord;
+const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRecord;
+const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
@@ -47,6 +54,9 @@ void priceBand;
 void priceAccepted;
 void canonical;
 void fulfilment;
+void ratingValidator;
+void buyerRatingProducer;
+void sellerRatingProducer;
 void adapter;
 void journal;
 void result;
