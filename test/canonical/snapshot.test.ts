@@ -21,6 +21,7 @@ describe("snapshotWireJsonRead", () => {
     const snapshot = snapshotWireJsonRead(input, "signed transaction");
 
     expect(snapshot).not.toBe(input);
+    expect(JSON.stringify(snapshot)).toBe(JSON.stringify(input));
     expect(snapshot.content).not.toBe(input.content);
     expect(snapshot.content.gcr_edits).not.toBe(input.content.gcr_edits);
     expect(snapshot.content.gcr_edits[0]).not.toBe(child);

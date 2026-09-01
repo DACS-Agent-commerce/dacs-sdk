@@ -249,6 +249,9 @@ export function snapshotWireJsonRead<T>(value: T, label: string): T {
     if (!isDataOnlyJson(snapshot)) {
       throw new TypeError("wire snapshot changed data shape");
     }
+    if (JSON.stringify(snapshot) !== JSON.stringify(value)) {
+      throw new TypeError("wire snapshot changed JSON serialization");
+    }
     return snapshot;
   } catch (cause) {
     throw new DacsError(`${label} is not stable wire JSON`, { cause });
