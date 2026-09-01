@@ -569,9 +569,89 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ctx: EvidenceContext = { expectedAnchorLocator: "stor-somewhere-else" };
     expect((await verify(delivery(), ctx)).decision).toBe("fail");
   });
+  test("binds the complete PC-2 payment address tuple, including CF-4 rail encoding", async () => {
+    const fixture = read("fixtures/settlement-evidence-payment-success.json");
+    const validContext: EvidenceContext = {
+      attestationRef: fixture.result.attestationRef,
+      rail: { railId: "polygon-amoy-usdc" },
+      paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 0 },
+    };
+    expect((await verify(fixture.evidence, validContext)).decision).toBe("pass");
+
+    expect((await verify(fixture.evidence, {
+      ...validContext,
+      paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 1 },
+    })).decision).toBe("fail");
+
+    expect((await verify(fixture.evidence, {
+      ...validContext,
+      rail: { railId: "evm-erc20:80002:USDC" },
+      paymentAddress: { railId: "evm-erc20:80002:USDC", phaseIndex: 0 },
+      attestationRef: {
+        ...fixture.result.attestationRef,
+        anchor: {
+          kind: "storage-program",
+          locator:
+            `dacs4:payment:${fixture.evidence.jobId}:` +
+            "evm-erc20%3A80002%3AUSDC:0",
+        },
+      },
+    })).decision).toBe("pass");
+  });
+  test("does not turn a missing PC-2 read into evidence absence", async () => {
+    const ev = payment();
+    const result = await verify(ev, {
+      paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 0 },
+    });
+    expect(result.decision).toBe("indeterminate");
+    expect(result.reasons).toContain(
+      "payment evidence attestationRef is unavailable for PC-2 address binding",
+    );
+  });
+  test("requires signed paymentTxRefs to equal the authenticated handler result", async () => {
+    const fixture = read("fixtures/settlement-evidence-payment-success.json");
+    expect((await verify(fixture.evidence, {
+      result: { ok: true, txRefs: fixture.result.txRefs },
+    })).decision).toBe("pass");
+
+    const mismatched = structuredClone(fixture.result.txRefs);
+    mismatched[0].txHash = "polygon-amoy:0xanother-settlement";
+    expect((await verify(fixture.evidence, {
+      result: { ok: true, txRefs: mismatched },
+    })).decision).toBe("fail");
+  });
   test("incoherentRailTypeHandler → fail", async () => {
     const ctx: EvidenceContext = { rail: { railType: "evm-erc20", handler: "pay-solana-spl" } };
     expect((await verify(payment(), ctx)).decision).toBe("fail");
+  });
+  test("enforces structured RD-5 asset/network kinds and EVM chain identity", async () => {
+    const valid: EvidenceContext = {
+      rail: {
+        railType: "evm-erc20",
+        network: "eip155:80002",
+        assetSpec: { kind: "erc20", chainId: 80002 },
+        networkSpec: { kind: "evm", chainId: 80002 },
+      },
+    };
+    expect((await verify(payment(), valid)).decision).toBe("pass");
+    expect((await verify(payment(), {
+      rail: {
+        ...valid.rail,
+        networkSpec: { kind: "solana", cluster: "devnet" },
+      },
+    })).decision).toBe("fail");
+    expect((await verify(payment(), {
+      rail: {
+        ...valid.rail,
+        networkSpec: { kind: "evm", chainId: 8453 },
+      },
+    })).decision).toBe("fail");
+    expect((await verify(payment(), {
+      rail: {
+        ...valid.rail,
+        assetSpec: { kind: "erc20", chainId: 0 },
+      },
+    })).decision).toBe("error");
   });
 
   // Tolerated / valid cross-chain shapes → pass.
