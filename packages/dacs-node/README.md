@@ -141,7 +141,10 @@ define the seller's local Agreement context.
 
 Pre-agreement Vet failure uses a separate symmetric terminal path. Configure
 `terminalBundle.authenticateProduction` on both live-role factories with the
-application's recursive DACS-2 verifier. A terminal proposal carries the exact
+application's recursive DACS-2 verifier. A non-empty requirement also requires
+the matching `vet.produce` and `vet.authenticate` host policy; the agreement
+track will not mix a custom producer with the empty-requirement authenticator.
+A terminal proposal carries the exact
 finalized `VetProduction` as well as the derived co-signed plan; each role
 independently authenticates the production, reconstructs the authority and
 requires byte-equivalent canonical output before retaining or signing it.
@@ -158,6 +161,18 @@ and exact finalized-head recovery all retain the same job/role authority. The
 runtime supports both fixed-price x402 and native DEM orders and rejects a
 terminal pipeline for the other rail. The host deliberately does not replace
 the recursive Vet authenticator with a sender assertion.
+
+The fixed-price live factories also connect that runtime to the agreement
+worker. The first local objective `fail` stores a durable Vet invocation,
+projects the exact signed Listing pipeline and authenticated registry versions,
+registers the terminal material, and stops before Agreement. The Listing must
+select exactly one `vet-credentials` phase; the host never inserts an unsigned
+phase after publication. Both role workers resume the
+same terminal job on later coordinator attempts, including after process
+restart; once their own bundle and BB-1 binding are finalized, the agreement
+track records the attributed DACS-5 failure using that exact publication.
+Remote `fail` bytes on the ordinary admission path never authorize local blame:
+the receiver waits for the independently authenticated terminal proposal.
 
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement

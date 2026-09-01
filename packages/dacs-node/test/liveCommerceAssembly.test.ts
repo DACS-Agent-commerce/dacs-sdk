@@ -22,6 +22,8 @@ const factories = vi.hoisted(() => ({
   buyerSessionAgreement: vi.fn(),
   sellerSessionAgreement: vi.fn(),
   authenticateSellerVet: vi.fn(),
+  terminalBundleTransport: vi.fn(),
+  advanceTerminal: vi.fn(),
 }));
 
 vi.mock("../src/agreementRuntime.js", async (importOriginal) => ({
@@ -79,6 +81,7 @@ vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => 
   ...(await importOriginal<typeof import("../src/sessionBootstrapAgreementRuntime.js")>()),
   createDacsBuyerSessionBootstrapAgreementTrackV1: factories.buyerSessionAgreement,
   createDacsSellerSessionBootstrapAgreementTrackV1: factories.sellerSessionAgreement,
+  advanceDacsVetTerminalTrackV1: factories.advanceTerminal,
   loadDacsBuyerSessionAgreementFactsV1: vi.fn(() => ({ session: true })),
   loadDacsBuyerSessionAgreementFactsForOrderV1: vi.fn(() => ({
     sellerVetRecord: "seller-vet-record",
@@ -89,6 +92,10 @@ vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => 
     sellerIdentity: { presentedBy: "seller" },
     session: true,
   })),
+}));
+vi.mock("../src/terminalBundleTransportRuntime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/terminalBundleTransportRuntime.js")>()),
+  createDacsVetTerminalBundleTransportRuntimeV1: factories.terminalBundleTransport,
 }));
 vi.mock("../src/sessionIdentityVetRuntime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/sessionIdentityVetRuntime.js")>()),
@@ -157,6 +164,8 @@ describe("one-factory live commerce assembly", () => {
     factories.buyerSessionAgreement.mockReturnValue("buyer-session-agreement");
     factories.sellerSessionAgreement.mockReturnValue("seller-session-agreement");
     factories.authenticateSellerVet.mockResolvedValue("valid");
+    factories.terminalBundleTransport.mockReturnValue({ terminal: true });
+    factories.advanceTerminal.mockResolvedValue(undefined);
     factories.buyerGraph.mockImplementation((value) => ({ role: "buyer", value }));
     factories.sellerGraph.mockImplementation((value) => ({ role: "seller", value }));
   });
@@ -257,5 +266,49 @@ describe("one-factory live commerce assembly", () => {
         sellerRequirement: { requirementVersion: "1", required: [] },
       }),
     );
+  });
+
+  it("projects a recovered Vet terminal result through buyer audit without success material", async () => {
+    const context = { role: "buyer" };
+    const normalAudit = vi.fn(async () => ({ status: "final", outcome: "success" }));
+    const terminalResult = Object.freeze({
+      status: "final",
+      outcome: "failure",
+      errorClass: "counterparty",
+      faultedParty: "seller",
+      reference: "terminal-native-address",
+      authenticationHash: "terminal-plan-hash",
+    });
+    factories.buyerAudit.mockReturnValueOnce(normalAudit);
+    factories.advanceTerminal.mockResolvedValueOnce(terminalResult);
+
+    await createDacsBuyerLiveCommerceAssemblyV1({
+      context,
+      workerId: "buyer-worker",
+      sessionBootstrap: { resolveRequirements: vi.fn() },
+      agreement: { buildDraft: vi.fn() },
+      payment: { resolvePreparation: vi.fn() },
+      paymentEvidence: { verifyEvidence: vi.fn() },
+      buyerReceived: { resolvePaymentScope: vi.fn() },
+      bundleTransport: { resolveVerification: vi.fn() },
+      audit: { resolveMaterial: vi.fn(), retryDelayMs: 23 },
+      terminalBundle: {
+        authenticateProduction: vi.fn(),
+        createInput: vi.fn(),
+      },
+    } as never);
+
+    const graph = factories.buyerGraph.mock.calls[0]![0];
+    await expect(graph.audit({ order: { jobId: "job-terminal" } }))
+      .resolves.toBe(terminalResult);
+    expect(factories.advanceTerminal).toHaveBeenCalledWith(
+      { terminal: true },
+      context,
+      23,
+      "job-terminal",
+    );
+    expect(normalAudit).not.toHaveBeenCalled();
+    expect(factories.buyerSessionAgreement.mock.calls[0]![0].terminalBundle)
+      .toMatchObject({ runtime: { terminal: true } });
   });
 });

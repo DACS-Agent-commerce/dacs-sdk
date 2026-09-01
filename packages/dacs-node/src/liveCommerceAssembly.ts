@@ -49,9 +49,11 @@ import {
 import {
   createDacsBuyerSessionBootstrapAgreementTrackV1,
   createDacsSellerSessionBootstrapAgreementTrackV1,
+  advanceDacsVetTerminalTrackV1,
   loadDacsBuyerSessionAgreementFactsForOrderV1,
   loadDacsBuyerSessionAgreementFactsV1,
   loadDacsSellerSessionAgreementFactsV1,
+  type DacsSessionVetTerminalTrackV1,
   type DacsBuyerSessionBootstrapAgreementTrackOptionsV1,
   type DacsSellerSessionBootstrapAgreementTrackOptionsV1,
 } from "./sessionBootstrapAgreementRuntime.js";
@@ -65,7 +67,10 @@ import {
   type DacsX402BuyerRuntimePaymentTrackOptionsV1,
 } from "./x402RuntimePayment.js";
 import type { BundleRequirement } from "@kynesyslabs/dacs/artifacts";
-import { authenticateDacsSessionVetProductionV1 } from "./sessionIdentityVetRuntime.js";
+import {
+  authenticateDacsSessionVetProductionV1,
+  type DacsSessionVetRuntimeV1,
+} from "./sessionIdentityVetRuntime.js";
 import {
   createDacsVetTerminalBundleTransportRuntimeV1,
   type DacsVetTerminalBundleTransportOptionsV1,
@@ -77,7 +82,7 @@ export interface DacsBuyerLiveCommerceAssemblyOptionsV1 {
   sessionBootstrap: Readonly<Pick<
     DacsBuyerSessionBootstrapAgreementTrackOptionsV1,
     "resolveRequirements"
-  >>;
+  > & { vet?: Readonly<DacsSessionVetRuntimeV1> }>;
   agreement: Readonly<Omit<
     DacsBuyerAgreementTrackOptionsV1,
     "context" | "workerId" | "transport" | "buildDraft"
@@ -106,7 +111,7 @@ export interface DacsBuyerLiveCommerceAssemblyOptionsV1 {
   terminalBundle?: Readonly<Omit<
     DacsVetTerminalBundleTransportOptionsV1,
     "context"
-  >>;
+  > & Pick<DacsSessionVetTerminalTrackV1, "createInput">>;
 }
 
 export interface DacsSellerLiveCommerceAssemblyOptionsV1<T = unknown> {
@@ -129,7 +134,7 @@ export interface DacsSellerLiveCommerceAssemblyOptionsV1<T = unknown> {
       ]>[0]["retained"];
       session: ReturnType<typeof loadDacsSellerSessionAgreementFactsV1>;
     }>): Promise<Readonly<BundleRequirement>> | Readonly<BundleRequirement>;
-  }>;
+  } & { vet?: Readonly<DacsSessionVetRuntimeV1> }>;
   agreementTransport: Readonly<Omit<
     DacsSellerAgreementTransportRuntimeOptionsV1,
     "context"
@@ -169,7 +174,7 @@ export interface DacsSellerLiveCommerceAssemblyOptionsV1<T = unknown> {
   terminalBundle?: Readonly<Omit<
     DacsVetTerminalBundleTransportOptionsV1,
     "context"
-  >>;
+  > & Pick<DacsSessionVetTerminalTrackV1, "createInput">>;
 }
 
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -243,6 +248,12 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
     workerId: options.workerId,
     transport: agreementTransport.transport,
   });
+  const audit = createDacsBuyerAuditTrackV1({
+    ...options.audit,
+    context,
+    workerId: options.workerId,
+    bundleTransport: bundleTransport.transport,
+  });
   return createDacsBuyerLiveCommerceGraphV1({
     sessionBootstrap,
     agreement: createDacsBuyerSessionBootstrapAgreementTrackV1({
@@ -250,6 +261,13 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
       sessionBootstrap,
       resolveRequirements: options.sessionBootstrap.resolveRequirements,
       agreement,
+      ...(options.sessionBootstrap.vet === undefined
+        ? {} : { vet: options.sessionBootstrap.vet }),
+      ...(terminalBundleTransport === undefined || options.terminalBundle === undefined
+        ? {} : { terminalBundle: {
+            runtime: terminalBundleTransport,
+            createInput: options.terminalBundle.createInput,
+          } }),
     }),
     payment: createDacsX402BuyerRuntimePaymentTrackV1({
       ...options.payment,
@@ -261,12 +279,15 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
       ...options.buyerReceived,
       context,
     }),
-    audit: createDacsBuyerAuditTrackV1({
-      ...options.audit,
-      context,
-      workerId: options.workerId,
-      bundleTransport: bundleTransport.transport,
-    }),
+    audit: terminalBundleTransport === undefined ? audit : async (operation) => {
+      const terminal = await advanceDacsVetTerminalTrackV1(
+        terminalBundleTransport,
+        context,
+        options.audit.retryDelayMs ?? 1_000,
+        operation.order.jobId,
+      );
+      return terminal ?? await audit(operation);
+    },
     agreementTransport,
     bundleTransport,
     ...(terminalBundleTransport === undefined ? {} : { terminalBundleTransport }),
@@ -348,6 +369,12 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
     },
     transport: agreementTransport.transport,
   });
+  const audit = createDacsSellerAuditTrackV1({
+    ...options.audit,
+    context,
+    workerId: options.workerId,
+    bundleTransport,
+  });
   return createDacsSellerLiveCommerceGraphV1({
     sessionBootstrap,
     agreement: createDacsSellerSessionBootstrapAgreementTrackV1({
@@ -363,6 +390,13 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
         }
       },
       agreement,
+      ...(options.sessionBootstrap.vet === undefined
+        ? {} : { vet: options.sessionBootstrap.vet }),
+      ...(terminalBundleTransport === undefined || options.terminalBundle === undefined
+        ? {} : { terminalBundle: {
+            runtime: terminalBundleTransport,
+            createInput: options.terminalBundle.createInput,
+          } }),
     }),
     x402,
     paymentEvidence: createDacsSellerSettlementPublicationTrackV1({
@@ -370,12 +404,15 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
       context,
       paymentEvidence: paymentEvidenceTransport,
     }),
-    audit: createDacsSellerAuditTrackV1({
-      ...options.audit,
-      context,
-      workerId: options.workerId,
-      bundleTransport,
-    }),
+    audit: terminalBundleTransport === undefined ? audit : async (operation) => {
+      const terminal = await advanceDacsVetTerminalTrackV1(
+        terminalBundleTransport,
+        context,
+        options.audit.retryDelayMs ?? 1_000,
+        operation.order.jobId,
+      );
+      return terminal ?? await audit(operation);
+    },
     agreementTransport,
     paymentEvidenceTransport,
     bundleTransport,

@@ -32,6 +32,8 @@ import {
   createDacsBuyerSessionBootstrapTransportRuntimeV1,
   createDacsSellerSessionBootstrapTransportRuntimeV1,
 } from "../src/sessionBootstrapTransportRuntime.js";
+import { DacsVetTerminalBundleTransportError } from
+  "../src/terminalBundleTransportRuntime.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -458,5 +460,132 @@ describe("session bootstrap agreement tracks", () => {
       reasonCode: "buyer-session-requirements-invalid",
     });
     expect(value.buyerSend).not.toHaveBeenCalled();
+  });
+
+  it("stops before agreement and resumes a locally produced Vet failure", async () => {
+    const value = await fixture();
+    const sellerTrack = createDacsSellerSessionBootstrapAgreementTrackV1({
+      context: value.sellerContext,
+      sessionBootstrap: value.sellerTransport,
+      resolveBuyerRequirement: () => EMPTY_REQUIREMENT,
+      agreementProposalReady: () => false,
+      agreement: vi.fn(),
+    });
+    const nonEmptyRequirement = Object.freeze({
+      requirementVersion: "1" as const,
+      required: [{ scheme: "did", verificationRequired: true }],
+    });
+    const production = Object.freeze({
+      record: Object.freeze({ overallDecision: "fail" as const }),
+    }) as never;
+    const vet = {
+      produce: vi.fn(async () => Object.freeze({
+        status: "ready" as const,
+        production,
+      })),
+      authenticate: vi.fn(async () => "valid" as const),
+    };
+    let registered = false;
+    let advancesAfterRegistration = 0;
+    const registerLocalTerminal = vi.fn(async () => {
+      registered = true;
+      return {} as never;
+    });
+    const advanceRegisteredTerminal = vi.fn(async () => {
+      if (!registered) {
+        throw new DacsVetTerminalBundleTransportError(
+          "vet-terminal-material-unavailable",
+        );
+      }
+      advancesAfterRegistration += 1;
+      if (advancesAfterRegistration === 1) {
+        return Object.freeze({
+          disposition: "waiting" as const,
+          stage: "signature-matrix" as const,
+          reason: "counterparty contribution pending",
+        });
+      }
+      return Object.freeze({
+        disposition: "finalised" as const,
+        recovered: true,
+        result: {
+          bundle: { faultedParty: "seller" },
+          planHash: "a".repeat(64),
+          publication: { nativeAddress: "stor-terminal-buyer-copy" },
+        },
+      }) as never;
+    });
+    const createInput = vi.fn(() => ({ terminalInputVersion: "test" }) as never);
+    const agreement = vi.fn();
+    const buyerTrack = createDacsBuyerSessionBootstrapAgreementTrackV1({
+      context: value.buyerContext,
+      sessionBootstrap: value.buyerTransport,
+      resolveRequirements: () => ({
+        buyer: EMPTY_REQUIREMENT,
+        seller: nonEmptyRequirement,
+      }),
+      vet,
+      terminalBundle: {
+        runtime: {
+          registerLocalTerminal,
+          advanceRegisteredTerminal,
+        } as never,
+        createInput,
+      },
+      agreement,
+    });
+
+    await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject({
+      reasonCode: "buyer-session-challenge-pending",
+    });
+    const init = lastMessage(value.buyerSend);
+    await value.sellerTransport.handleMessage(await authenticated({
+      type: "session-init",
+      payload: init.payload as DacsHttpPayloadByType["session-init"],
+      sender: value.buyer,
+      audience: value.seller,
+      privateKey: value.buyerKeys.privateKey,
+      role: "buyer",
+      nonceByte: 11,
+    }), { role: "seller", coordinator: { startOrder: value.startOrder } } as never);
+    const sellerLoaded = await value.sellerStore.load("seller", JOB_ID);
+    if (sellerLoaded.status !== "ok") throw new Error("seller order missing");
+    await sellerTrack(operation(sellerLoaded.record));
+    const challenge = lastMessage(value.sellerSend);
+    await value.buyerTransport.handleMessage(await authenticated({
+      type: "session-challenge",
+      payload: challenge.payload as DacsHttpPayloadByType["session-challenge"],
+      sender: value.seller,
+      audience: value.buyer,
+      privateKey: value.sellerKeys.privateKey,
+      role: "seller",
+      nonceByte: 12,
+    }), { role: "buyer" } as never);
+
+    await expect(buyerTrack(value.buyerOperation)).resolves.toEqual({
+      status: "pending-retry",
+      reasonCode: "vet-terminal-finalization-pending",
+      retryAt: expect.any(Number),
+    });
+    expect(createInput).toHaveBeenCalledWith(expect.objectContaining({
+      evaluatedRole: "seller",
+      production,
+      vetInvokedAt: expect.any(Number),
+    }));
+    expect(registerLocalTerminal).toHaveBeenCalledTimes(1);
+    expect(vet.produce).toHaveBeenCalledTimes(1);
+    expect(agreement).not.toHaveBeenCalled();
+
+    await expect(buyerTrack(value.buyerOperation)).resolves.toEqual({
+      status: "final",
+      outcome: "failure",
+      errorClass: "counterparty",
+      faultedParty: "seller",
+      reference: "stor-terminal-buyer-copy",
+      authenticationHash: "a".repeat(64),
+    });
+    expect(registerLocalTerminal).toHaveBeenCalledTimes(1);
+    expect(vet.produce).toHaveBeenCalledTimes(1);
+    expect(agreement).not.toHaveBeenCalled();
   });
 });

@@ -62,11 +62,13 @@ import {
   type DacsPayDemSellerSettlementPublicationTrackOptionsV1,
 } from "./sellerSettlementRuntime.js";
 import {
+  advanceDacsVetTerminalTrackV1,
   createDacsPayDemBuyerSessionBootstrapAgreementTrackV1,
   createDacsPayDemSellerSessionBootstrapAgreementTrackV1,
   loadDacsPayDemBuyerSessionAgreementFactsForOrderV1,
   loadDacsPayDemBuyerSessionAgreementFactsV1,
   loadDacsPayDemSellerSessionAgreementFactsV1,
+  type DacsSessionVetTerminalTrackV1,
   type DacsPayDemBuyerSessionBootstrapAgreementTrackOptionsV1,
   type DacsPayDemSellerSessionBootstrapAgreementTrackOptionsV1,
 } from "./sessionBootstrapAgreementRuntime.js";
@@ -75,8 +77,10 @@ import {
   createDacsSellerSessionBootstrapTransportRuntimeV1,
   type DacsSellerSessionBootstrapTransportOptionsV1,
 } from "./sessionBootstrapTransportRuntime.js";
-import { authenticateDacsSessionVetProductionV1 } from
-  "./sessionIdentityVetRuntime.js";
+import {
+  authenticateDacsSessionVetProductionV1,
+  type DacsSessionVetRuntimeV1,
+} from "./sessionIdentityVetRuntime.js";
 import {
   createDacsVetTerminalBundleTransportRuntimeV1,
   type DacsVetTerminalBundleTransportOptionsV1,
@@ -88,7 +92,7 @@ export interface DacsBuyerPayDemLiveCommerceAssemblyOptionsV1 {
   sessionBootstrap: Readonly<Pick<
     DacsPayDemBuyerSessionBootstrapAgreementTrackOptionsV1,
     "resolveRequirements"
-  >>;
+  > & { vet?: Readonly<DacsSessionVetRuntimeV1> }>;
   agreement: Readonly<Omit<
     DacsPayDemBuyerAgreementTrackOptionsV1,
     "context" | "workerId" | "transport" | "buildDraft"
@@ -117,7 +121,7 @@ export interface DacsBuyerPayDemLiveCommerceAssemblyOptionsV1 {
   terminalBundle?: Readonly<Omit<
     DacsVetTerminalBundleTransportOptionsV1,
     "context"
-  >>;
+  > & Pick<DacsSessionVetTerminalTrackV1, "createInput">>;
 }
 
 export interface DacsSellerPayDemLiveCommerceAssemblyOptionsV1 {
@@ -139,7 +143,7 @@ export interface DacsSellerPayDemLiveCommerceAssemblyOptionsV1 {
       ]>[0]["retained"];
       session: ReturnType<typeof loadDacsPayDemSellerSessionAgreementFactsV1>;
     }>): Promise<Readonly<BundleRequirement>> | Readonly<BundleRequirement>;
-  }>;
+  } & { vet?: Readonly<DacsSessionVetRuntimeV1> }>;
   agreementTransport: Readonly<Omit<
     DacsSellerAgreementTransportRuntimeOptionsV1<FixedPricePayDemOrderInput>,
     "context"
@@ -183,7 +187,7 @@ export interface DacsSellerPayDemLiveCommerceAssemblyOptionsV1 {
   terminalBundle?: Readonly<Omit<
     DacsVetTerminalBundleTransportOptionsV1,
     "context"
-  >>;
+  > & Pick<DacsSessionVetTerminalTrackV1, "createInput">>;
 }
 
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -248,6 +252,12 @@ export async function createDacsBuyerPayDemLiveCommerceAssemblyV1(
     workerId: options.workerId,
     transport: agreementTransport.transport,
   });
+  const audit = createDacsPayDemBuyerAuditTrackV1({
+    ...options.audit,
+    context,
+    workerId: options.workerId,
+    bundleTransport: bundleTransport.transport,
+  });
   return createDacsBuyerPayDemLiveCommerceGraphV1({
     sessionBootstrap,
     agreement: createDacsPayDemBuyerSessionBootstrapAgreementTrackV1({
@@ -255,6 +265,13 @@ export async function createDacsBuyerPayDemLiveCommerceAssemblyV1(
       sessionBootstrap,
       resolveRequirements: options.sessionBootstrap.resolveRequirements,
       agreement,
+      ...(options.sessionBootstrap.vet === undefined
+        ? {} : { vet: options.sessionBootstrap.vet }),
+      ...(terminalBundleTransport === undefined || options.terminalBundle === undefined
+        ? {} : { terminalBundle: {
+            runtime: terminalBundleTransport,
+            createInput: options.terminalBundle.createInput,
+          } }),
     }),
     payment: createDacsPayDemBuyerPaymentTrackV1({
       ...options.payment,
@@ -268,12 +285,15 @@ export async function createDacsBuyerPayDemLiveCommerceAssemblyV1(
       ...options.buyerReceived,
       context,
     }),
-    audit: createDacsPayDemBuyerAuditTrackV1({
-      ...options.audit,
-      context,
-      workerId: options.workerId,
-      bundleTransport: bundleTransport.transport,
-    }),
+    audit: terminalBundleTransport === undefined ? audit : async (operation) => {
+      const terminal = await advanceDacsVetTerminalTrackV1(
+        terminalBundleTransport,
+        context,
+        options.audit.retryDelayMs ?? 1_000,
+        operation.order.jobId,
+      );
+      return terminal ?? await audit(operation);
+    },
     agreementTransport,
     bundleTransport,
     ...(terminalBundleTransport === undefined ? {} : { terminalBundleTransport }),
@@ -359,6 +379,12 @@ export async function createDacsSellerPayDemLiveCommerceAssemblyV1(
     context,
     workerId: options.workerId,
   });
+  const audit = createDacsPayDemSellerAuditTrackV1({
+    ...options.audit,
+    context,
+    workerId: options.workerId,
+    bundleTransport,
+  });
   return createDacsSellerPayDemLiveCommerceGraphV1({
     sessionBootstrap,
     agreement: createDacsPayDemSellerSessionBootstrapAgreementTrackV1({
@@ -374,6 +400,13 @@ export async function createDacsSellerPayDemLiveCommerceAssemblyV1(
         }
       },
       agreement,
+      ...(options.sessionBootstrap.vet === undefined
+        ? {} : { vet: options.sessionBootstrap.vet }),
+      ...(terminalBundleTransport === undefined || options.terminalBundle === undefined
+        ? {} : { terminalBundle: {
+            runtime: terminalBundleTransport,
+            createInput: options.terminalBundle.createInput,
+          } }),
     }),
     paymentNotice,
     payment,
@@ -384,12 +417,15 @@ export async function createDacsSellerPayDemLiveCommerceAssemblyV1(
     }),
     delivery: fulfilment.delivery,
     deliveryEvidence: fulfilment.deliveryEvidence,
-    audit: createDacsPayDemSellerAuditTrackV1({
-      ...options.audit,
-      context,
-      workerId: options.workerId,
-      bundleTransport,
-    }),
+    audit: terminalBundleTransport === undefined ? audit : async (operation) => {
+      const terminal = await advanceDacsVetTerminalTrackV1(
+        terminalBundleTransport,
+        context,
+        options.audit.retryDelayMs ?? 1_000,
+        operation.order.jobId,
+      );
+      return terminal ?? await audit(operation);
+    },
     agreementTransport,
     paymentEvidenceTransport,
     bundleTransport,
