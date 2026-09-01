@@ -508,11 +508,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       const pub = hex(golden.signing.publicKeyHex);
       expect(verifyArtifact("dacs-bundle:v1:", golden.signing.doc, sig, pub)).toBe(want);
     },
-    // DIVERGENCE (it.fails below): the golden pins a closed registry of
-    // exactly 24 separators (§B.7); the SDK's SIGNATURE_DOMAIN_SEPARATORS
-    // carries 18 — it deliberately excludes the composite-payload separators
-    // (session-binding, auto-accept-*) and lacks bundle-binding,
-    // fault-bundle-pointer and finality-commitment. Tracked in #86.
+    // The oracle pins a closed registry of 28 separators and the SDK exposes the same
+    // 28 in CORE §B.7 table order; sig-registry-closed is compared as an exact set
+    // below. The only remaining it.fails divergence is canonical-number handling.
     "sig-registry-closed": (want) => {
       expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(want.count);
       expect([...SIGNATURE_DOMAIN_SEPARATORS].sort()).toEqual(want.separators);
