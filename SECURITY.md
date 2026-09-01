@@ -167,6 +167,16 @@ WebSocket transport — an app already running a full chain stack with these dep
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.
 
+## In-process signing keys
+
+Session and bundle-finalization APIs do not accept raw Ed25519 seed arrays.
+Callers must convert a seed to a Node `KeyObject` before constructing a session,
+then immediately wipe their own seed buffer, or provide a remote/HSM-backed
+signing callback. `privateKeyFromSeed()` wipes its temporary PKCS#8 encoding but
+does not mutate the caller-owned array. Long-running services should prefer a
+signing callback so exportable private-key material does not live in the
+JavaScript heap.
+
 ## Remediation implemented
 
 The structural fix is to stop shipping the multichain tree to consumers who only
