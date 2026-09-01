@@ -11,10 +11,11 @@ review/sign step; the seller API never receives a buyer private key or invokes a
 buyer signing oracle.
 
 The implementation follows the repository's reproducibly vendored
-DACS-Standard `next` oracle. The package remains on the common public
-`DACS_SPEC_VERSION = "0.1"` baseline; the applicable chapter is the draft
-DACS-5 v0.4 line in that oracle. Changes to the oracle still require the SDK's
-normal Standard pin/version review before release.
+DACS-Standard `next` oracle. `DACS_MVP_TARGET = "0.1"` describes the SDK's
+product scope; it is not a Standard version. `DACS_STANDARD_PIN` identifies the
+exact conformance oracle revision, whose applicable chapter is the draft
+DACS-5 v0.4 line. Changes to that pin still require the SDK's normal Standard
+review before release.
 
 ## Normative traceability
 

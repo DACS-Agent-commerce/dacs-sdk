@@ -424,6 +424,13 @@ Normative producers, including `buildTwoSidedBundle`, reject those legacy
 shapes. The existing buyer-only `runSessionCore` producer remains explicitly
 quarantined on `LegacyMvp*` until its v0.3 migration in #81.
 
+Its deterministic historical names are available as
+`legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
+prefix is intentional: these strings must not be used as the current DACS
+address grammar. New code should use the typed address helper exported by the
+relevant producer, such as `compositeVerificationAddress`,
+`fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
+
 ## Doctor
 
 The package ships a read-only preflight command:
