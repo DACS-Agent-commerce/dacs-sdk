@@ -22,6 +22,8 @@ import type { DacsSellerPayDemLiveCommerceGraphV1 } from
 import type { DacsPublicStorageDeliverableInputV1 } from
   "./fixedPriceX402SellerFulfilment.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import type { DacsVetTerminalBundleTransportOptionsV1 } from
+  "./terminalBundleTransportRuntime.js";
 
 export interface DacsFixedPricePayDemSellerLiveOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -44,6 +46,10 @@ export interface DacsFixedPricePayDemSellerLiveOptionsV1 {
   effectLeaseDurationMs?: number;
   leaseTtlMs?: number;
   retryDelayMs?: number;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 /** Close the complete fixed-price native DEM seller graph. */
@@ -133,5 +139,7 @@ export async function createDacsFixedPricePayDemSellerLiveV1(
         ? {} : { retryDelayMs: options.retryDelayMs }),
     },
     audit,
+    ...(options.terminalBundle === undefined
+      ? {} : { terminalBundle: options.terminalBundle }),
   });
 }

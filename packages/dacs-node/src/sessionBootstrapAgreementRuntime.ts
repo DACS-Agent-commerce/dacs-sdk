@@ -213,7 +213,7 @@ function productionFieldsValid(input: Readonly<{
   const ref = input.ref as AttestationRef;
   return ref.anchor?.kind === "storage-program" &&
     ref.contentHash === contentHash(input.record as unknown as Record<string, unknown>) &&
-    input.receipt.logicalAddress === ref.anchor.locator &&
+    input.receipt.nativeAddress === ref.anchor.locator &&
     input.receipt.contentHash === ref.contentHash;
 }
 

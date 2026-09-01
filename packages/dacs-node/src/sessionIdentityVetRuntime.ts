@@ -378,7 +378,8 @@ export async function authenticateDacsSessionVetProductionV1(input: Readonly<{
         record.requirementHash !== sha256Hex(canonicalize(input.requirement)) ||
         record.overallDecision !== "pass" ||
         !recordSignatureValid(record, input.verifier) ||
-        ref.anchor.kind !== "storage-program" || ref.anchor.locator !== expectedAddress ||
+        ref.anchor.kind !== "storage-program" ||
+        ref.anchor.locator !== receipt.nativeAddress ||
         ref.contentHash !== expectedHash ||
         !sameCanonicalClaimIdentity(ref.signer, input.verifier) ||
         receipt.substrate !== "demos" || receipt.logicalAddress !== expectedAddress ||
@@ -474,7 +475,7 @@ export async function produceDacsEmptyRequirementSessionVetV1(input: Readonly<{
   const production: DacsSessionVetProductionV1 = {
     record,
     recordRef: {
-      anchor: { kind: "storage-program", locator: logicalAddress },
+      anchor: { kind: "storage-program", locator: receipt.nativeAddress },
       contentHash: recordHash,
       signer: input.context.authority,
     },

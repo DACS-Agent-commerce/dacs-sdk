@@ -77,6 +77,10 @@ import {
 } from "./sessionBootstrapTransportRuntime.js";
 import { authenticateDacsSessionVetProductionV1 } from
   "./sessionIdentityVetRuntime.js";
+import {
+  createDacsVetTerminalBundleTransportRuntimeV1,
+  type DacsVetTerminalBundleTransportOptionsV1,
+} from "./terminalBundleTransportRuntime.js";
 
 export interface DacsBuyerPayDemLiveCommerceAssemblyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -109,6 +113,10 @@ export interface DacsBuyerPayDemLiveCommerceAssemblyOptionsV1 {
   audit: Readonly<Omit<
     DacsPayDemBuyerAuditRuntimeOptionsV1,
     "context" | "workerId" | "bundleTransport"
+  >>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
   >>;
 }
 
@@ -172,6 +180,10 @@ export interface DacsSellerPayDemLiveCommerceAssemblyOptionsV1 {
     DacsPayDemSellerAuditRuntimeOptionsV1,
     "context" | "workerId" | "bundleTransport"
   >>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -221,6 +233,11 @@ export async function createDacsBuyerPayDemLiveCommerceAssemblyV1(
     ...options.bundleTransport,
     context,
   });
+  const terminalBundleTransport = options.terminalBundle === undefined
+    ? undefined : createDacsVetTerminalBundleTransportRuntimeV1({
+        context,
+        authenticateProduction: options.terminalBundle.authenticateProduction,
+      });
   const agreement = createDacsPayDemBuyerAgreementTrackV1({
     ...options.agreement,
     buildDraft: (input) => options.agreement.buildDraft({
@@ -259,6 +276,7 @@ export async function createDacsBuyerPayDemLiveCommerceAssemblyV1(
     }),
     agreementTransport,
     bundleTransport,
+    ...(terminalBundleTransport === undefined ? {} : { terminalBundleTransport }),
   });
 }
 
@@ -282,6 +300,11 @@ export async function createDacsSellerPayDemLiveCommerceAssemblyV1(
     workerId: options.workerId,
   });
   const bundleTransport = createDacsSellerBundleTransportRuntimeV1(context);
+  const terminalBundleTransport = options.terminalBundle === undefined
+    ? undefined : createDacsVetTerminalBundleTransportRuntimeV1({
+        context,
+        authenticateProduction: options.terminalBundle.authenticateProduction,
+      });
   const agreement = createDacsPayDemSellerAgreementTrackV1({
     ...options.agreement,
     context,
@@ -370,5 +393,6 @@ export async function createDacsSellerPayDemLiveCommerceAssemblyV1(
     agreementTransport,
     paymentEvidenceTransport,
     bundleTransport,
+    ...(terminalBundleTransport === undefined ? {} : { terminalBundleTransport }),
   });
 }

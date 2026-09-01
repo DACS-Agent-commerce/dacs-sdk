@@ -15,6 +15,8 @@ import {
   createDacsSellerLiveCommerceAssemblyV1,
 } from "./liveCommerceAssembly.js";
 import type { DacsSellerLiveCommerceGraphV1 } from "./liveCommerceGraph.js";
+import type { DacsVetTerminalBundleTransportOptionsV1 } from
+  "./terminalBundleTransportRuntime.js";
 
 export interface DacsFixedPriceX402SellerLiveOptionsV1
   extends DacsFixedPriceX402SellerRuntimeOptionsV1 {
@@ -22,6 +24,10 @@ export interface DacsFixedPriceX402SellerLiveOptionsV1
   sellerPayee: string;
   maximumServiceAmount: string;
   maximumClockSkewMs?: number;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 /**
@@ -70,5 +76,7 @@ export async function createDacsFixedPriceX402SellerLiveV1(
     paymentEvidence: paymentEvidence.paymentEvidence,
     settlement: paymentEvidence.settlement,
     audit,
+    ...(options.terminalBundle === undefined
+      ? {} : { terminalBundle: options.terminalBundle }),
   });
 }

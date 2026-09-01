@@ -66,6 +66,10 @@ import {
 } from "./x402RuntimePayment.js";
 import type { BundleRequirement } from "@kynesyslabs/dacs/artifacts";
 import { authenticateDacsSessionVetProductionV1 } from "./sessionIdentityVetRuntime.js";
+import {
+  createDacsVetTerminalBundleTransportRuntimeV1,
+  type DacsVetTerminalBundleTransportOptionsV1,
+} from "./terminalBundleTransportRuntime.js";
 
 export interface DacsBuyerLiveCommerceAssemblyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -98,6 +102,10 @@ export interface DacsBuyerLiveCommerceAssemblyOptionsV1 {
   audit: Readonly<Omit<
     DacsBuyerAuditRuntimeOptionsV1,
     "context" | "workerId" | "bundleTransport"
+  >>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
   >>;
 }
 
@@ -158,6 +166,10 @@ export interface DacsSellerLiveCommerceAssemblyOptionsV1<T = unknown> {
     DacsSellerAuditRuntimeOptionsV1,
     "context" | "workerId" | "bundleTransport"
   >>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -216,6 +228,11 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
     ...options.bundleTransport,
     context,
   });
+  const terminalBundleTransport = options.terminalBundle === undefined
+    ? undefined : createDacsVetTerminalBundleTransportRuntimeV1({
+        context,
+        authenticateProduction: options.terminalBundle.authenticateProduction,
+      });
   const agreement = createDacsBuyerAgreementTrackV1({
     ...options.agreement,
     buildDraft: (input) => options.agreement.buildDraft({
@@ -252,6 +269,7 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
     }),
     agreementTransport,
     bundleTransport,
+    ...(terminalBundleTransport === undefined ? {} : { terminalBundleTransport }),
   });
 }
 
@@ -280,6 +298,11 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
     workerId: options.workerId,
   });
   const bundleTransport = createDacsSellerBundleTransportRuntimeV1(context);
+  const terminalBundleTransport = options.terminalBundle === undefined
+    ? undefined : createDacsVetTerminalBundleTransportRuntimeV1({
+        context,
+        authenticateProduction: options.terminalBundle.authenticateProduction,
+      });
   const x402 = await createDacsSellerX402RuntimeV1({
     ...options.x402,
     context,
@@ -356,5 +379,6 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
     agreementTransport,
     paymentEvidenceTransport,
     bundleTransport,
+    ...(terminalBundleTransport === undefined ? {} : { terminalBundleTransport }),
   });
 }

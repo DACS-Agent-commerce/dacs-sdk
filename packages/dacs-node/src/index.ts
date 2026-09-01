@@ -72,6 +72,7 @@ export * from "./sessionIdentityVetRuntime.js";
 export * from "./service.js";
 export * from "./serviceDoctor.js";
 export * from "./supervision.js";
+export * from "./terminalBundleTransportRuntime.js";
 export * from "./transportDiagnostic.js";
 export * from "./transport/index.js";
 export * from "./x402Payment.js";

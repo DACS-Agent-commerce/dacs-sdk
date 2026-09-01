@@ -139,6 +139,26 @@ requirement before exposing them to the seller agreement policy. This keeps the
 two role-owned Vet writes parallel without letting an unverified proposal
 define the seller's local Agreement context.
 
+Pre-agreement Vet failure uses a separate symmetric terminal path. Configure
+`terminalBundle.authenticateProduction` on both live-role factories with the
+application's recursive DACS-2 verifier. A terminal proposal carries the exact
+finalized `VetProduction` as well as the derived co-signed plan; each role
+independently authenticates the production, reconstructs the authority and
+requires byte-equivalent canonical output before retaining or signing it.
+`pass` creates no terminal authority, while `indeterminate`, verifier outage,
+or a non-terminal Vet decision remains retryable and produces no blame.
+
+When configured, the returned graph exposes `terminalBundles`.
+`registerLocalTerminal(input)` durably binds locally observed failure material,
+and `advanceRegisteredTerminal(jobId)` drives the SDK's generation-fenced
+two-role finalizer, authenticated HTTP proposal/contribution exchange, own-role
+Demos bundle publication and BB-1 binding. It is safe to call again after a
+restart: acknowledgement loss, signature checkpoints, ambiguous anchor writes
+and exact finalized-head recovery all retain the same job/role authority. The
+runtime supports both fixed-price x402 and native DEM orders and rejects a
+terminal pipeline for the other rail. The host deliberately does not replace
+the recursive Vet authenticator with a sender assertion.
+
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement
 tracks. The generated profile's built-in Vet producer is deliberately limited

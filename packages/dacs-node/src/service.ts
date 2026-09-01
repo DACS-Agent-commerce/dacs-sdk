@@ -267,6 +267,8 @@ const OUTBOUND_BY_ROLE: Readonly<
     "pay-dem-payment-notice",
     "payment-evidence-completion",
     "bundle-signature-response",
+    "terminal-bundle-proposal-buyer",
+    "terminal-bundle-contribution-buyer",
     "diagnostic-probe-buyer",
   ]),
   seller: new Set<DacsLiveOutboundMessageType>([
@@ -275,6 +277,8 @@ const OUTBOUND_BY_ROLE: Readonly<
     "agreement-response",
     "payment-evidence-request",
     "bundle-signature-request",
+    "terminal-bundle-proposal-seller",
+    "terminal-bundle-contribution-seller",
     "diagnostic-probe-seller",
   ]),
 });

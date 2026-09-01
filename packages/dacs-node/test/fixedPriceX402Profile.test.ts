@@ -534,9 +534,10 @@ async function buyerFixture() {
         value: Buffer.alloc(64, subject === "buyer" ? 8 : 9).toString("base64url"),
       },
     };
+    const nativeAddress = `stor-${sha256Hex(subject).slice(0, 40)}`;
     const recordRef = {
       anchor: { kind: "storage-program" as const,
-        locator: `dacs2:composite:${JOB_ID}:${evaluatedParty}` },
+        locator: nativeAddress },
       contentHash: contentHash(record),
       signer: verifier,
     };
@@ -547,8 +548,8 @@ async function buyerFixture() {
         receiptVersion: "1" as const,
         substrate: "demos" as const,
         finalityProfile: "demos-bft-confirmed-native-read",
-        logicalAddress: recordRef.anchor.locator,
-        nativeAddress: `stor-${sha256Hex(subject).slice(0, 40)}`,
+        logicalAddress: `dacs2:composite:${JOB_ID}:${evaluatedParty}`,
+        nativeAddress,
         contentHash: recordRef.contentHash,
         transactionRef: { kind: "demos-storage-program", value: `tx:${subject}` },
         writer: verifier,
@@ -1145,7 +1146,7 @@ describe("fixed-price x402 generated profile policy", () => {
     const buyerVetRef = {
       anchor: {
         kind: "storage-program" as const,
-        locator: `dacs2:composite:${JOB_ID}:${BUYER}`,
+        locator: `stor-${sha256Hex("seller-buyer-vet").slice(0, 40)}`,
       },
       contentHash: contentHash(buyerVetRecord),
       signer: SELLER,
@@ -1154,7 +1155,7 @@ describe("fixed-price x402 generated profile policy", () => {
       receiptVersion: "1" as const,
       substrate: "demos" as const,
       finalityProfile: "demos-bft-confirmed-native-read",
-      logicalAddress: buyerVetRef.anchor.locator,
+      logicalAddress: `dacs2:composite:${JOB_ID}:${BUYER}`,
       nativeAddress: `stor-${sha256Hex("seller-buyer-vet").slice(0, 40)}`,
       contentHash: buyerVetRef.contentHash,
       transactionRef: { kind: "demos-storage-program" as const, value: "tx:buyer-vet" },

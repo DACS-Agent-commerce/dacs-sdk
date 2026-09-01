@@ -29,6 +29,7 @@ describe("closed live commerce graphs", () => {
     const audit = operation();
     const agreementTransport = route();
     const bundleTransport = route();
+    const terminalBundleTransport = route();
     const graph = createDacsBuyerLiveCommerceGraphV1({
       sessionBootstrap: sessionBootstrap as never,
       agreement,
@@ -38,6 +39,7 @@ describe("closed live commerce graphs", () => {
       audit,
       agreementTransport: agreementTransport as never,
       bundleTransport: bundleTransport as never,
+      terminalBundleTransport: terminalBundleTransport as never,
     });
 
     expect(Object.keys(graph.operations).sort()).toEqual([
@@ -46,10 +48,15 @@ describe("closed live commerce graphs", () => {
     expect(graph.availability).toEqual({ status: "configured" });
     expect(graph.operations.agreement).toBe(agreement);
     expect(graph.operations["payment-evidence"]).toBe(paymentEvidence.operation);
+    expect(graph.terminalBundles).toBe(terminalBundleTransport);
     await expect(graph.validatePayload({
       type: "bundle-signature-request",
     } as never)).resolves.toEqual({ status: "valid" });
     expect(bundleTransport.validatePayload).toHaveBeenCalledOnce();
+    await expect(graph.validatePayload({
+      type: "terminal-bundle-proposal-seller",
+    } as never)).resolves.toEqual({ status: "valid" });
+    expect(terminalBundleTransport.validatePayload).toHaveBeenCalledOnce();
     await expect(graph.validatePayload({
       type: "agreement-proposal",
     } as never)).resolves.toEqual({
