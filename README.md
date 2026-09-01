@@ -60,6 +60,12 @@ a complete live Demos L2PS phase handler; see the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
 and the upstream signature-format dependency.
 
+`createFsDurableRfqLifecycleStore()` provides the single-host production
+restart boundary for one RFQ role: keyed record authentication, strict local
+permissions, synchronized atomic writes, cross-process locking, and monotonic
+compare-and-swap validation. Buyer and seller require separate directories and
+separate integrity keys; the in-memory RFQ store remains test-only.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the

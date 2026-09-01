@@ -72,6 +72,8 @@ export {
   createInMemoryDurableRfqLifecycleStore,
   createInMemoryRfqLifecycleNetwork,
   durableRfqLifecycleBindingHash,
+  durableRfqLifecycleRecordViolation,
+  durableRfqLifecycleTransitionViolation,
   rfqLifecyclePacketId,
   type DurableRfqLifecycleRole,
   type DurableRfqAgreementAuthority,
@@ -100,6 +102,10 @@ export {
   type DurableRfqLifecycleClient,
   type InMemoryRfqLifecycleNetwork,
 } from "./negotiate/durableRfqLifecycle.js";
+export {
+  createFsDurableRfqLifecycleStore,
+  type FsDurableRfqLifecycleStoreOptions,
+} from "./negotiate/durableRfqLifecycleStoreFs.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
   LEGACY_COMMITMENT_SEPARATOR,
