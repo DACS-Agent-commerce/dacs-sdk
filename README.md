@@ -27,7 +27,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402** and **direct ERC-20** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, sealed-bid auctions, RFQ, private channels, AP2, and dispute (DACS-X) are deferred.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, and provider-injected **AP2 safety-core** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, a bundled live AP2 provider integration, and dispute execution (DACS-X) remain deferred.
 
 ## What's implemented
 
@@ -38,7 +38,7 @@ All five lifecycle stages run end to end:
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
 | **Negotiate** | `runSession({ terms })` | fixed-price |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
+| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
@@ -521,7 +521,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, plus evm-erc20 settlement |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, and the provider-injected AP2 safety core |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
