@@ -41,6 +41,16 @@ import { identityBundleHash } from "../identity/bundle.js";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+const CONCRETE_PAYMENT_HANDLERS: ReadonlySet<string> = new Set([
+  "pay-evm-erc20",
+  "pay-solana-spl",
+  "pay-cross-chain-htlc",
+  "pay-cross-chain-liquidity-tank",
+  "pay-ap2",
+  "pay-x402",
+  "pay-dem",
+]);
+
 function stableDataProperty(
   source: object,
   key: PropertyKey,
@@ -454,7 +464,8 @@ export async function checkListingRevocation(
 
 export interface ListingPayPhaseClaim {
   kind: unknown;
-  rail: unknown;
+  rail?: unknown;
+  alternatives?: unknown;
 }
 
 export interface RailRegistryEntry {
@@ -497,6 +508,8 @@ export interface ListingRailResolutionInput {
     definitions: ListingRailDefinition[];
   };
   inCodeDefinitions?: ListingRailDefinition[];
+  /** Concrete handlers installed by this reader; defaults to the SDK set. */
+  supportedPaymentHandlers?: string[];
 }
 
 /**
@@ -547,7 +560,8 @@ function isRailDefinition(value: unknown): value is ListingRailDefinition {
     ) &&
     typeof value.railId === "string" && value.railId.length > 0 &&
     typeof value.railVersion === "number" && Number.isSafeInteger(value.railVersion) && value.railVersion > 0 &&
-    typeof value.phaseHandler === "string" && value.phaseHandler.startsWith("pay-") &&
+    typeof value.phaseHandler === "string" &&
+    CONCRETE_PAYMENT_HANDLERS.has(value.phaseHandler) &&
     (value.state === undefined ||
       value.state === "verified-finalized" ||
       value.state === "verified-included" ||
@@ -562,13 +576,13 @@ function isRailResolutionInput(value: unknown): value is ListingRailResolutionIn
     !hasOnlyKeys(
       value,
       ["trustPhase", "payPhases", "acceptedRails", "registry"],
-      ["trustPolicyAcceptsPA1", "inCodeDefinitions"],
+      ["trustPolicyAcceptsPA1", "inCodeDefinitions", "supportedPaymentHandlers"],
     ) ||
     (value.trustPhase !== "PA-1" && value.trustPhase !== "PA-2" && value.trustPhase !== "PA-3") ||
     (value.trustPolicyAcceptsPA1 !== undefined && typeof value.trustPolicyAcceptsPA1 !== "boolean") ||
     !Array.isArray(value.payPhases) ||
     !value.payPhases.every((phase) =>
-      isRecord(phase) && hasOnlyKeys(phase, ["kind", "rail"])) ||
+      isRecord(phase) && hasOnlyKeys(phase, ["kind"], ["rail", "alternatives"])) ||
     !Array.isArray(value.acceptedRails) ||
     !isRecord(value.registry) ||
     !hasOnlyKeys(value.registry, ["state", "entries", "definitions"]) ||
@@ -586,7 +600,12 @@ function isRailResolutionInput(value: unknown): value is ListingRailResolutionIn
     !value.registry.definitions.every(isRailDefinition) ||
     (value.inCodeDefinitions !== undefined &&
       (!Array.isArray(value.inCodeDefinitions) ||
-        !value.inCodeDefinitions.every(isRailDefinition)))) {
+        !value.inCodeDefinitions.every(isRailDefinition))) ||
+    (value.supportedPaymentHandlers !== undefined &&
+      (!Array.isArray(value.supportedPaymentHandlers) ||
+        !value.supportedPaymentHandlers.every(
+          (handler) => typeof handler === "string" && CONCRETE_PAYMENT_HANDLERS.has(handler),
+        )))) {
     return false;
   }
   return true;
@@ -643,28 +662,51 @@ function staticRailBinding(
   if (!input.acceptedRails.every(isPaymentRailRef)) {
     return railResult("rejected", "malformed-accepted-rail");
   }
-  if (
-    input.payPhases.some(
-      (phase) =>
-        typeof phase.kind !== "string" ||
-        !phase.kind.startsWith("pay-") ||
-        typeof phase.rail !== "string" ||
-        phase.rail.length === 0,
-    )
-  ) {
-    return railResult("rejected", "malformed-pay-rail");
-  }
   const rails = input.acceptedRails as PaymentRailRef[];
   const canonical = rails.map((rail) => canonicalize(rail));
   if (new Set(canonical).size !== canonical.length) {
     return railResult("rejected", "duplicate-accepted-rail-ref");
   }
-  if (
-    input.payPhases.some(
-      (phase) => !rails.some((rail) => rail.railId === phase.rail),
-    )
-  ) {
-    return railResult("rejected", "pay-rail-not-accepted");
+  const alternatives = input.payPhases.filter(
+    (phase) => phase.kind === "pay-alternative",
+  );
+  const concrete = input.payPhases.filter(
+    (phase) => phase.kind !== "pay-alternative",
+  );
+  if (alternatives.length > 0) {
+    if (alternatives.length !== 1 || concrete.length !== 0) {
+      return railResult("rejected", "alternative-slot-cardinality");
+    }
+    const refs = alternatives[0]!.alternatives;
+    if (!Array.isArray(refs) || refs.length < 2 || !refs.every(isPaymentRailRef)) {
+      return railResult("rejected", "alternative-ref-shape");
+    }
+    const keys = refs.map((ref) => canonicalize(ref));
+    if (new Set(keys).size !== keys.length) {
+      return railResult("rejected", "alternative-duplicate");
+    }
+    if (keys.some((key) => canonical.filter((entry) => entry === key).length !== 1)) {
+      return railResult("rejected", "alternative-membership");
+    }
+  } else {
+    if (
+      concrete.some(
+        (phase) =>
+          typeof phase.kind !== "string" ||
+          !CONCRETE_PAYMENT_HANDLERS.has(phase.kind) ||
+          typeof phase.rail !== "string" ||
+          phase.rail.length === 0,
+      )
+    ) {
+      return railResult("rejected", "malformed-pay-rail");
+    }
+    if (
+      concrete.some(
+        (phase) => !rails.some((rail) => rail.railId === phase.rail),
+      )
+    ) {
+      return railResult("rejected", "pay-rail-not-accepted");
+    }
   }
   return null;
 }
@@ -672,7 +714,34 @@ function staticRailBinding(
 function handlerCheck(
   payPhases: ListingPayPhaseClaim[],
   definitions: ListingRailDefinition[],
+  supportedHandlers: readonly string[] | undefined,
 ): ListingRailResolutionResult | null {
+  const alternatives = payPhases.filter(
+    (phase) => phase.kind === "pay-alternative",
+  );
+  if (alternatives.length > 0) {
+    const supported = new Set(
+      supportedHandlers ?? [...CONCRETE_PAYMENT_HANDLERS],
+    );
+    if (
+      definitions.some(
+        (definition) =>
+          !CONCRETE_PAYMENT_HANDLERS.has(definition.phaseHandler) ||
+          !supported.has(definition.phaseHandler),
+      )
+    ) {
+      return railResult("rejected", "phase-handler-unsupported");
+    }
+    const handlersByRail = new Map<string, string>();
+    for (const definition of definitions) {
+      const prior = handlersByRail.get(definition.railId);
+      if (prior !== undefined && prior !== definition.phaseHandler) {
+        return railResult("rejected", "phase-handler-version-drift");
+      }
+      handlersByRail.set(definition.railId, definition.phaseHandler);
+    }
+    return null;
+  }
   for (const phase of payPhases) {
     const matching = definitions.filter((definition) => definition.railId === phase.rail);
     if (matching.length === 0) {
@@ -732,7 +801,11 @@ function resolvePa1(
       indeterminateReason ??= "pa1-definition-unverifiable";
     }
   }
-  const handler = handlerCheck(input.payPhases, selected);
+  const handler = handlerCheck(
+    input.payPhases,
+    selected,
+    input.supportedPaymentHandlers,
+  );
   if (handler) return { ...handler, authorityBasis: "pa1-in-code" };
   return indeterminateReason
     ? railResult("indeterminate", indeterminateReason, "pa1-in-code")
@@ -813,7 +886,11 @@ function resolveAnchoredRegistry(
     }
   }
 
-  const handler = handlerCheck(input.payPhases, selected);
+  const handler = handlerCheck(
+    input.payPhases,
+    selected,
+    input.supportedPaymentHandlers,
+  );
   if (handler) return { ...handler, authorityBasis };
   return indeterminateReason
     ? railResult("indeterminate", indeterminateReason, authorityBasis)
@@ -1272,7 +1349,11 @@ export async function validateListingArtifact(
 
   const payPhases = listing.pipeline
     .filter((phase) => phase.kind.startsWith("pay-"))
-    .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail }));
+    .map((phase) =>
+      phase.kind === "pay-alternative"
+        ? { kind: phase.kind, alternatives: phase.parameters?.alternatives }
+        : { kind: phase.kind, rail: phase.parameters?.rail },
+    );
   let railResolution = railResult("verified", "not-applicable");
   if (payPhases.length > 0) {
     if (!deps.loadRailResolution) {
