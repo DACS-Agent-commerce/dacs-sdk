@@ -35,9 +35,10 @@ import {
   type UnsignedAgreementArtifact,
 } from "../negotiate/fixedPrice.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
+import type { DomainSeparator } from "../crypto/signing.js";
 
 export const PRIOR_PAYMENT_DISPOSITION_SEPARATOR =
-  "dacs-prior-payment-disposition:v1:" as const;
+  "dacs-prior-payment-disposition:v1:" as const satisfies DomainSeparator;
 
 export const CONCRETE_PAYMENT_PHASES = [
   "pay-evm-erc20",

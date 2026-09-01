@@ -160,7 +160,10 @@ describe("fixed-price offline coordinator", () => {
           railVersion: 2,
         },
       },
-    })).toBe("0c58b9d65f67e8c36e8379db8d80af074470e2834f40a148fce609461ecad17c");
+    // The binding hash covers FIXED_PRICE_X402_STANDARD_REVISION (= DACS_STANDARD_PIN,
+    // src/commerce/fixedPriceX402Protocol.ts), so it moves with the oracle pin. Pinned
+    // here so an accidental pin or protocol change fails loudly. 662be1d value:
+    })).toBe("a81bbc35634f8ec64b62fc820835ce498f2a976316e323cd962481b10bc0a77a");
   });
 
   it("runs the shared role-separated lifecycle and combines only verified actor state", async () => {
