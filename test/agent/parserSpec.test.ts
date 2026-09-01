@@ -22,10 +22,13 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
     expect(evalSpec(spec, "status ERR")).toBe("fail");
   });
 
-  it("PSP-2 negative-match inverts: match ⇒ fail, none ⇒ pass", () => {
+  it("PSP-2/5 negative-match fails on a hit and passes only complete absence", () => {
     const spec: ParserSpec = { format: "raw", matcher: "SANCTIONED" };
     expect(evalSpec(spec, "SANCTIONED", { negativeMatch: true })).toBe("fail");
-    expect(evalSpec(spec, "clean", { negativeMatch: true })).toBe("pass");
+    expect(evalSpec(spec, "clean", { negativeMatch: true })).toBe("indeterminate");
+    expect(
+      evalSpec(spec, "clean", { negativeMatch: true, listComplete: true }),
+    ).toBe("pass");
   });
 
   it("PSP-2 indeterminateOn precedes the match ⇒ indeterminate", () => {
@@ -56,6 +59,24 @@ describe("evaluateParserSpec (DACS-2 PSP-1..5)", () => {
     });
     expect(evalSpec(spec, JSON.stringify({ records: [] }), ctx(false))).toBe("indeterminate");
     expect(evalSpec(spec, JSON.stringify({ records: [] }), ctx(true))).toBe("pass");
+  });
+
+  it("PSP-5 cannot be bypassed by disabling the legacy completeness flag", () => {
+    const spec: ParserSpec = { format: "json", successJsonPath: "$.hit" };
+    expect(
+      evalSpec(spec, JSON.stringify({ records: [] }), {
+        negativeMatch: true,
+        requiresCompleteness: false,
+        listComplete: false,
+      }),
+    ).toBe("indeterminate");
+    expect(
+      evalSpec(spec, JSON.stringify({ records: [] }), {
+        negativeMatch: true,
+        requiresCompleteness: false,
+        listComplete: true,
+      }),
+    ).toBe("pass");
   });
 
   it("PSP-3 dataMap is extracted for audit but never changes the decision", () => {
