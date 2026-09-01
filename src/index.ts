@@ -10,7 +10,7 @@
  * IMPLEMENTATION.md.
  */
 
-export { VERSION, DACS_SPEC_VERSION } from "./version.js";
+export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
 export * from "./commerce/index.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
@@ -109,6 +109,9 @@ export {
   encodeAddressSegment,
   decodeAddressSegment,
   listingAddress,
+  attestationAddress,
+  paymentEvidenceAddress,
+  ratingAddress,
   logicalToStorageProgramName,
   storAddress,
   bundleAddress,
@@ -497,22 +500,21 @@ export {
   // DACS-2 §7.4.1 ParserSpec — signed recipe content rules (#49) + the engine seam.
   evaluateParserSpec,
   defaultParserEngine,
+  defaultParserEngineCapabilities,
   type ParserSpec,
   type ParserFormat,
   type IndeterminatePredicate,
   type ParserEngine,
+  type ParserEngineCapabilities,
   type ParserEvalContext,
   type ParserEvaluation,
   type Reputation,
   type ReputationExclusion,
-  // Injectable buyer-session core (F1 #14): run the lifecycle against any
-  // SubstrateAdapter (mock/simulation/non-Demos). NOTE: `sessionAnchorName` is
-  // deliberately NOT exported — its current MVP address strings are not the
-  // normative §6.3.x schemes (dacs2:composite:{jobId}:{evaluatedParty},
-  // dacs4:payment:{jobId}:{railId}:{phaseIndex}, role-specific bundle addr), and
-  // freezing them into the public API would mislead third-party verifiers.
-  // It stays internal until canonical addressing lands (tracked with #5/#48).
+  // Injectable legacy buyer-session core (F1 #14). Its historical address
+  // grammar is public only under an explicit compatibility name; current
+  // producers export their own typed normative address functions.
   runSessionCore,
+  legacyMvpSessionAnchorName,
   type SessionDeps,
   type RunSessionOptions,
   type SessionResult,
@@ -591,6 +593,7 @@ export {
   BUNDLE_OUTCOMES,
   type BundleOutcome,
   type BundleAnchorRole,
+  type SessionSigner,
   type SessionParty,
   type SigningSessionParty,
   type TwoSidedSession,

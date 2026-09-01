@@ -1276,6 +1276,16 @@ function counterSignatureVerificationInput(
 }
 
 describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
+  test("rejects raw seller seed material before bundle finalization", async () => {
+    const f = fixture();
+    f.input.seller.signer = SELLER_SEED as unknown as typeof f.input.seller.signer;
+
+    await expect(
+      finalizeCompletedSellerBundleCore(f.input, f.provider),
+    ).rejects.toThrow(/must not retain a raw Ed25519 seed/);
+    expect(f.sellerSign).not.toHaveBeenCalled();
+  });
+
   test("exports one transport-neutral signed scope and ingests only buyer-produced signatures", () => {
     const f = fixture();
     const request = prepareCompletedSellerBundleCounterSignatureRequest(f.input);

@@ -43,6 +43,12 @@ All five lifecycle stages run end to end:
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
+The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
+filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
+content only and fails closed on malformed input; see the
+[ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
+injection contract.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
@@ -431,6 +437,13 @@ explicitly named `LegacyMvp*` read/resume compatibility types and validators.
 Normative producers, including `buildTwoSidedBundle`, reject those legacy
 shapes. The existing buyer-only `runSessionCore` producer remains explicitly
 quarantined on `LegacyMvp*` until its v0.3 migration in #81.
+
+Its deterministic historical names are available as
+`legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
+prefix is intentional: these strings must not be used as the current DACS
+address grammar. New code should use the typed address helper exported by the
+relevant producer, such as `compositeVerificationAddress`,
+`fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
 
 ## Doctor
 

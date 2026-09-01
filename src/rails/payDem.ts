@@ -2,7 +2,10 @@ import { types as nodeTypes } from "node:util";
 
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
-import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJsonRead,
+  snapshotWireJsonRead,
+} from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import {
   createIdempotencyStore,
@@ -1096,7 +1099,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   const client: DemosNativeClient = {
     address,
     transfer: async ({ to, amountOs, recovery }) => {
-      const signed = snapshotCanonicalJsonRead(
+      // The transaction is already signed. Demos nodes compare GCR edits via
+      // order-sensitive JSON bytes, so JCS key sorting here would invalidate
+      // an otherwise valid signature/confirmation payload.
+      const signed = snapshotWireJsonRead(
         await transfer(to, amountOs),
         "pay-dem signed transfer",
       ) as unknown;
@@ -1130,7 +1136,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         );
       }
       const signedNonce = signedNonceValue as number;
-      const validity = snapshotCanonicalJsonRead(
+      // Confirmation returns the exact validity envelope consumed by
+      // broadcast. Own it without changing its byte-significant wire order.
+      const validity = snapshotWireJsonRead(
         await confirm(signed, demos),
         "pay-dem confirmation",
       ) as unknown;
