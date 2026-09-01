@@ -19,7 +19,9 @@ const REPO =
 // change that re-runs the suite and reconciles any drift.
 // Currently: DACS-Standard `next` @ 2026-09-01 (662be1d, merge of #335). This adds the
 // three B.7 separators the registry below was missing (evidence-bound fault bundle,
-// its pointer, prior-payment disposition) and the presence-only / APR / domain-GCR sets.
+// its pointer, prior-payment disposition). The presence-only / APR / domain-GCR sets that
+// landed in the same window are candidate security corpora, not MANIFEST cases; this
+// harness has no runners for them and does not test them.
 // Previous pin: 965df755 (2026-08-11); before that c2ecd9f, 625df63 and 9a77966 (234 cases).
 // See #5-#7, #137, and Standard #315.
 const REF =
