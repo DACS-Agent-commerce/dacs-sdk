@@ -4,6 +4,7 @@ import {
   dacs5BundleOutcomeForTerminalState,
   isDacs5SessionTransitionAllowed,
   type Dacs5ResumableSessionState,
+  type Dacs5SessionTransitionContext,
   type Dacs5SessionState,
 } from "../../src/agent/sessionSemantics.js";
 
@@ -51,7 +52,6 @@ describe("DACS-5 §10.3.1 session semantics", () => {
       "commit-pending",
       "settle-pending",
       "settle-asymmetric",
-      "rate-pending",
       "audit-pending",
     ];
     for (const pausedFrom of resumable) {
@@ -97,6 +97,9 @@ describe("DACS-5 §10.3.1 session semantics", () => {
   });
 
   test("rejects unbound pauses, wrong resumes, and terminal re-entry", () => {
+    const invalidRatePauseContext = {
+      pausedFrom: "rate-pending",
+    } as unknown as Dacs5SessionTransitionContext;
     expect(
       isDacs5SessionTransitionAllowed("settle-pending", "substrate-failure-paused"),
     ).toBe(false);
@@ -105,6 +108,20 @@ describe("DACS-5 §10.3.1 session semantics", () => {
         "substrate-failure-paused",
         "vet-pending",
         { pausedFrom: "settle-pending" },
+      ),
+    ).toBe(false);
+    expect(
+      isDacs5SessionTransitionAllowed(
+        "rate-pending",
+        "substrate-failure-paused",
+        invalidRatePauseContext,
+      ),
+    ).toBe(false);
+    expect(
+      isDacs5SessionTransitionAllowed(
+        "substrate-failure-paused",
+        "rate-pending",
+        invalidRatePauseContext,
       ),
     ).toBe(false);
     expect(isDacs5SessionTransitionAllowed("finalised", "rate-pending")).toBe(false);

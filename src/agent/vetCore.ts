@@ -1805,7 +1805,6 @@ async function proxyAttestation(
           negativeMatch,
           // A negative result founded on absence is never trusted unless the
           // attested response is independently complete (PSP-5).
-          requiresCompleteness: negativeMatch,
           listComplete: response.complete === true,
         },
       );

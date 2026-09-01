@@ -200,9 +200,9 @@ export {
 } from "./parserSpec.js";
 export {
   runSessionCore,
-  // sessionAnchorName intentionally NOT re-exported — MVP address strings are
-  // non-normative (see the note in the top-level barrel / #48). Kept internal to
-  // runSessionCore until canonical §6.3.x addressing lands.
+  // Explicitly legacy-named: these strings support old resume/read paths and
+  // are not the current normative DACS addressing contract.
+  legacyMvpSessionAnchorName,
   type SessionDeps,
   type SessionResult,
   type SessionVetRequest,
@@ -290,6 +290,7 @@ export {
   BUNDLE_OUTCOMES,
   type BundleOutcome,
   type BundleAnchorRole,
+  type SessionSigner,
   type SessionParty,
   type SigningSessionParty,
   type TwoSidedSession,

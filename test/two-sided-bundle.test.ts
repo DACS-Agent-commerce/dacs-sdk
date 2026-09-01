@@ -34,6 +34,7 @@ import type {
   AttestationBundle,
   FaultAttestationBundle,
 } from "../src/artifacts/types.js";
+import { privateKeyFromSeed } from "../src/crypto/ed25519.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const golden = (role: "buyer" | "seller"): AttestationBundle =>
@@ -57,6 +58,8 @@ function publicKeyRaw(rawSeed: Uint8Array): Uint8Array {
 
 const buyerSeed = seed(1);
 const sellerSeed = seed(2);
+const buyerSigner = privateKeyFromSeed(buyerSeed);
+const sellerSigner = privateKeyFromSeed(sellerSeed);
 const buyerClaim = `demos:0x${Buffer.from(publicKeyRaw(buyerSeed)).toString("hex")}`;
 const sellerClaim = `demos:0x${Buffer.from(publicKeyRaw(sellerSeed)).toString("hex")}`;
 
@@ -92,8 +95,8 @@ const session = (): TwoSidedSession & {
   recipeRegistryVersion: 1,
   railRegistryVersion: 1,
   finalisedAt: 1767225600000,
-  buyer: { primaryClaim: buyerClaim, bundleHash: "d".repeat(64), signer: buyerSeed },
-  seller: { primaryClaim: sellerClaim, bundleHash: "e".repeat(64), signer: sellerSeed },
+  buyer: { primaryClaim: buyerClaim, bundleHash: "d".repeat(64), signer: buyerSigner },
+  seller: { primaryClaim: sellerClaim, bundleHash: "e".repeat(64), signer: sellerSigner },
 });
 
 /** Both copies of a happy-path session; asserts the seller copy exists so tests can narrow. */
@@ -110,6 +113,15 @@ async function bothCopies() {
 const asRecord = (b: AnyAttestationBundle) => b as unknown as Record<string, unknown>;
 
 describe("DACS-5 two-sided co-signed bundle producer", () => {
+  test("rejects raw seed material at the session signer boundary", async () => {
+    const rawSeedSession = session();
+    rawSeedSession.buyer.signer = buyerSeed as unknown as SigningSessionParty["signer"];
+
+    await expect(buildTwoSidedBundle(rawSeedSession)).rejects.toThrow(
+      /must not retain a raw Ed25519 seed/,
+    );
+  });
+
   test("ISC-1: emits a buyer-anchored and a seller-anchored copy", async () => {
     const { buyerCopy, sellerCopy } = await bothCopies();
     expect(buyerCopy).toBeDefined();
@@ -510,7 +522,11 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
         outcome: "aborted-by-other",
         faultedParty: "seller",
         seller: sellerWithoutSigner,
-        orchestrator: { primaryClaim: orchClaim, bundleHash: "f".repeat(64), signer: orchSeed },
+        orchestrator: {
+          primaryClaim: orchClaim,
+          bundleHash: "f".repeat(64),
+          signer: privateKeyFromSeed(orchSeed),
+        },
       }),
     ).rejects.toThrow(/incomplete signer set/i);
   });
@@ -551,7 +567,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       orchestrator: {
         primaryClaim: orchClaim,
         bundleHash: "f".repeat(64),
-        signer: orchSeed,
+        signer: privateKeyFromSeed(orchSeed),
       },
     });
     expect(buyerCopy).toBeUndefined();
@@ -647,7 +663,11 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
     const orchClaim = `demos:0x${Buffer.from(publicKeyRaw(orchSeed)).toString("hex")}`;
     const { buyerCopy, sellerCopy, orchestratorCopy } = await buildTwoSidedBundle({
       ...session(),
-      orchestrator: { primaryClaim: orchClaim, bundleHash: "f".repeat(64), signer: orchSeed },
+      orchestrator: {
+        primaryClaim: orchClaim,
+        bundleHash: "f".repeat(64),
+        signer: privateKeyFromSeed(orchSeed),
+      },
     });
     expect(buyerCopy).toBeDefined();
     expect(sellerCopy).toBeDefined();
@@ -674,7 +694,11 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       ...session(),
       outcome: "failed-counterparty",
       faultedParty: "orchestrator",
-      orchestrator: { primaryClaim: orchClaim, bundleHash: "f".repeat(64), signer: orchSeed },
+      orchestrator: {
+        primaryClaim: orchClaim,
+        bundleHash: "f".repeat(64),
+        signer: privateKeyFromSeed(orchSeed),
+      },
     });
     expect([buyerCopy?.faultedParty, sellerCopy?.faultedParty, orchestratorCopy?.faultedParty]).toEqual([
       "orchestrator",
@@ -719,7 +743,7 @@ describe("DACS-5 two-sided co-signed bundle producer", () => {
       orchestrator: {
         primaryClaim: buyerClaim.toUpperCase(),
         bundleHash: "f".repeat(64),
-        signer: orchSeed,
+        signer: privateKeyFromSeed(orchSeed),
       },
     });
     expect(buyerCopy).toBeDefined();
