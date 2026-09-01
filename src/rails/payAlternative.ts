@@ -1272,7 +1272,7 @@ function isPriorPaymentDispositionShape(
   }
 }
 
-/** Create the signed APR-6 carrier without adding it to the legacy separator pin. */
+/** Create the signed APR-6 carrier under the registered `dacs-prior-payment-disposition:v1:` separator. */
 export async function buildPriorPaymentDisposition(
   unsignedSource: UnsignedPriorPaymentDisposition,
   signerSource: PriorPaymentDispositionSigner,

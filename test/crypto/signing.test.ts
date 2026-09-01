@@ -77,6 +77,19 @@ describe("signing (§B.7)", () => {
     // The non-signature hash-domain tags are NOT signature separators (§B.7).
     expect(isRegisteredSeparator("dacs-sealed-bid:v1:")).toBe(false);
     expect(isRegisteredSeparator("dacs-sb3:v1:")).toBe(false);
+    expect(isRegisteredSeparator("dacs-ap2-idem:v1:")).toBe(false);
+  });
+
+  it("662be1d: the three separators added with the pin sign + verify generically", () => {
+    for (const sep of [
+      "dacs-prior-payment-disposition:v1:",
+      "dacs-evidence-bound-fault-bundle:v1:",
+      "dacs-evidence-bound-fault-bundle-pointer:v1:",
+    ] as const) {
+      const sig = signArtifact(sep, GOLDEN.doc, seed);
+      expect(verifyArtifact(sep, GOLDEN.doc, sig, pub)).toBe(true);
+      expect(verifyArtifact("dacs-listing:v1:", GOLDEN.doc, sig, pub)).toBe(false);
+    }
   });
 
   it("#86: the four newly-added single-hash domains sign + verify generically", () => {
