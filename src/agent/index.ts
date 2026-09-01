@@ -74,6 +74,13 @@ export {
   type DeriveReputationDeps,
 } from "./reputationDerivation.js";
 export {
+  isDacs5SessionTransitionAllowed,
+  dacs5BundleOutcomeForTerminalState,
+  type Dacs5SessionState,
+  type Dacs5ResumableSessionState,
+  type Dacs5SessionTransitionContext,
+} from "./sessionSemantics.js";
+export {
   discoverListings,
   verifyReadableListingArtifact,
   type DiscoverDeps,
