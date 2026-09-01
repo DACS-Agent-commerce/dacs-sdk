@@ -75,6 +75,7 @@ export {
   type SessionOutcome,
   type DeriveReputationDeps,
   type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
 } from "./reputationDerivation.js";
 export {
   isDacs5SessionTransitionAllowed,

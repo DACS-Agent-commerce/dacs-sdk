@@ -5,11 +5,17 @@ import {
   deriveReputationWithValidation,
   type ReputationWindow,
 } from "../../src/agent/reputationDerivation.js";
-import type { AttestationBundle, FaultAttestationBundle } from "../../src/artifacts/types.js";
+import type {
+  AttestationBundle,
+  AttestationRef,
+  FaultAttestationBundle,
+  RatingRecord,
+} from "../../src/artifacts/types.js";
 import { bundleAddress } from "../../src/canonical/addressing.js";
+import { contentHash, stripSignature } from "../../src/canonical/index.js";
 
-const PARTY = "did:demos:buyer";
-const CP = "did:demos:seller";
+const PARTY = `did:demos:agent:${"11".repeat(32)}`;
+const CP = `did:demos:agent:${"22".repeat(32)}`;
 const WINDOW: ReputationWindow = {
   windowStart: 1000,
   windowEnd: 2000,
@@ -68,6 +74,37 @@ function faultBundle(
     parties,
   );
   return { ...shared, faultBundleVersion: "1", faultedParty } as FaultAttestationBundle;
+}
+
+function rating(
+  input: Omit<RatingRecord, "ratingVersion" | "signature">,
+  locator = `rating-${input.jobId}-${input.targetRole}-${input.ratedAt}`,
+): { record: RatingRecord; ref: AttestationRef } {
+  const record: RatingRecord = {
+    ratingVersion: "1",
+    ...input,
+    signature: {
+      algorithm: "ed25519",
+      signer: input.rater,
+      value: Buffer.alloc(64, input.value).toString("base64url"),
+    },
+  };
+  return {
+    record,
+    ref: {
+      anchor: { kind: "storage-program", locator },
+      contentHash: contentHash(
+        stripSignature(record as unknown as Record<string, unknown>),
+      ),
+    },
+  };
+}
+
+function withRatings(
+  candidate: AttestationBundle,
+  refs: AttestationRef[],
+): AttestationBundle {
+  return { ...candidate, ratingRefs: refs };
 }
 
 describe("deriveReputation (DACS-5 §10.5)", () => {
@@ -591,5 +628,336 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       trustBundlePartyRoles: true,
     });
     expect(r.metrics.transactionCountByCurrency).toEqual([]);
+  });
+
+  test("derives both role directions only from independently authenticated RatingRecords", async () => {
+    const buyerRatesSeller = rating({
+      jobId: "rated",
+      rater: PARTY,
+      target: CP,
+      targetRole: "seller",
+      value: 5,
+      ratedAt: 1200,
+    });
+    const sellerRatesBuyer = rating({
+      jobId: "rated",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 4,
+      ratedAt: 1201,
+    });
+    const candidate = withRatings(
+      bundle("rated", "completed", 1500),
+      [buyerRatesSeller.ref, sellerRatesBuyer.ref],
+    );
+    const byLocator = new Map([
+      [buyerRatesSeller.ref.anchor.locator, buyerRatesSeller.record],
+      [sellerRatesBuyer.ref.anchor.locator, sellerRatesBuyer.record],
+    ]);
+    const deps = {
+      validate: async () => true,
+      trustBundlePartyRoles: true as const,
+      copyAbsence: () => "absent" as const,
+      resolveAndAuthenticateRating: async ({ ref }: { ref: AttestationRef }) => ({
+        disposition: "authenticated" as const,
+        record: byLocator.get(ref.anchor.locator)!,
+      }),
+    };
+
+    const buyer = await deriveReputationWithValidation(
+      PARTY,
+      [candidate],
+      WINDOW,
+      deps,
+    );
+    const seller = await deriveReputationWithValidation(
+      CP,
+      [candidate],
+      WINDOW,
+      deps,
+    );
+
+    expect(buyer.metrics.averageBuyerRating).toBe(4);
+    expect(buyer.metrics.averageSellerRating).toBeNull();
+    expect(seller.metrics.averageSellerRating).toBe(5);
+    expect(seller.metrics.averageBuyerRating).toBeNull();
+  });
+
+  test("excludes invalid, indeterminate, misbound, non-RT-1, and hash-mismatched ratings", async () => {
+    const accepted = rating({
+      jobId: "adversarial",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 4,
+      ratedAt: 1200,
+    }, "accepted");
+    const wrongJob = rating({
+      jobId: "other-job",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 1,
+      ratedAt: 1201,
+    }, "wrong-job");
+    const relabelled = rating({
+      jobId: "adversarial",
+      rater: CP,
+      target: PARTY,
+      targetRole: "seller",
+      value: 1,
+      ratedAt: 1202,
+    }, "relabelled");
+    const wrongHash = rating({
+      jobId: "adversarial",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 1,
+      ratedAt: 1203,
+    }, "wrong-hash");
+    wrongHash.ref.contentHash = "0".repeat(64);
+    const wrongSigner = rating({
+      jobId: "adversarial",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 1,
+      ratedAt: 1204,
+    }, "wrong-signer");
+    wrongSigner.record.signature.signer = PARTY;
+    const outOfRange = rating({
+      jobId: "adversarial",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 1,
+      ratedAt: 1205,
+    }, "out-of-range");
+    outOfRange.record.value = 6;
+    const invalid = rating({
+      jobId: "adversarial",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 1,
+      ratedAt: 1206,
+    }, "invalid");
+    const indeterminate = rating({
+      jobId: "adversarial",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 1,
+      ratedAt: 1207,
+    }, "indeterminate");
+    const thrown = rating({
+      jobId: "adversarial",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 1,
+      ratedAt: 1208,
+    }, "thrown");
+    const all = [
+      accepted,
+      wrongJob,
+      relabelled,
+      wrongHash,
+      wrongSigner,
+      outOfRange,
+      invalid,
+      indeterminate,
+      thrown,
+    ];
+    const records = new Map(all.map(({ ref, record }) => [ref.anchor.locator, record]));
+    const result = await deriveReputationWithValidation(
+      PARTY,
+      [withRatings(bundle("adversarial", "completed", 1500), all.map(({ ref }) => ref))],
+      WINDOW,
+      {
+        validate: async () => true,
+        trustBundlePartyRoles: true,
+        copyAbsence: () => "absent",
+        resolveAndAuthenticateRating: async ({ ref }) => {
+          if (ref.anchor.locator === "invalid") {
+            return { disposition: "invalid", reason: "signature invalid" };
+          }
+          if (ref.anchor.locator === "indeterminate") {
+            return { disposition: "indeterminate", reason: "read unavailable" };
+          }
+          if (ref.anchor.locator === "thrown") throw new Error("transport down");
+          return {
+            disposition: "authenticated",
+            record: records.get(ref.anchor.locator)!,
+          };
+        },
+      },
+    );
+
+    expect(result.metrics.averageBuyerRating).toBe(4);
+    expect(result.metrics.averageSellerRating).toBeNull();
+  });
+
+  test("deduplicates one session direction by latest ratedAt independent of input order", async () => {
+    const early = rating({
+      jobId: "duplicate",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 2,
+      ratedAt: 1200,
+    }, "early");
+    const latest = rating({
+      jobId: "duplicate",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 5,
+      ratedAt: 1300,
+    }, "latest");
+    const records = new Map([
+      [early.ref.anchor.locator, early.record],
+      [latest.ref.anchor.locator, latest.record],
+    ]);
+    const derive = (refs: AttestationRef[]) =>
+      deriveReputationWithValidation(
+        PARTY,
+        [withRatings(bundle("duplicate", "completed", 1500), refs)],
+        WINDOW,
+        {
+          validate: async () => true,
+          trustBundlePartyRoles: true,
+          copyAbsence: () => "absent" as const,
+          resolveAndAuthenticateRating: async ({ ref }) => ({
+            disposition: "authenticated" as const,
+            record: records.get(ref.anchor.locator)!,
+          }),
+        },
+      );
+
+    const forward = await derive([early.ref, latest.ref, early.ref]);
+    const reversed = await derive([latest.ref, early.ref, latest.ref]);
+    expect(forward.metrics.averageBuyerRating).toBe(5);
+    expect(reversed.metrics.averageBuyerRating).toBe(5);
+  });
+
+  test("uses a canonical tie-break for same-timestamp conflicting authenticated records", async () => {
+    const low = rating({
+      jobId: "timestamp-tie",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 1,
+      ratedAt: 1200,
+    }, "tie-low");
+    const high = rating({
+      jobId: "timestamp-tie",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 5,
+      ratedAt: 1200,
+    }, "tie-high");
+    const records = new Map([
+      [low.ref.anchor.locator, low.record],
+      [high.ref.anchor.locator, high.record],
+    ]);
+    const derive = (refs: AttestationRef[]) =>
+      deriveReputationWithValidation(
+        PARTY,
+        [withRatings(bundle("timestamp-tie", "completed", 1500), refs)],
+        WINDOW,
+        {
+          validate: async () => true,
+          trustBundlePartyRoles: true,
+          copyAbsence: () => "absent" as const,
+          resolveAndAuthenticateRating: async ({ ref }) => ({
+            disposition: "authenticated" as const,
+            record: records.get(ref.anchor.locator)!,
+          }),
+        },
+      );
+
+    const forward = await derive([low.ref, high.ref]);
+    const reversed = await derive([high.ref, low.ref]);
+    expect(forward.metrics.averageBuyerRating).toBe(
+      reversed.metrics.averageBuyerRating,
+    );
+    expect([1, 5]).toContain(forward.metrics.averageBuyerRating);
+  });
+
+  test("rejects a truthy or non-canonical rating authentication envelope", async () => {
+    const candidateRating = rating({
+      jobId: "malformed-resolution",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 5,
+      ratedAt: 1200,
+    });
+    const result = await deriveReputationWithValidation(
+      PARTY,
+      [withRatings(bundle("malformed-resolution", "completed", 1500), [candidateRating.ref])],
+      WINDOW,
+      {
+        validate: async () => true,
+        trustBundlePartyRoles: true,
+        copyAbsence: () => "absent",
+        resolveAndAuthenticateRating: async () => ({
+          disposition: "authenticated",
+          record: candidateRating.record,
+          trusted: true,
+        }) as never,
+      },
+    );
+    expect(result.metrics.averageBuyerRating).toBeNull();
+  });
+
+  test("captures the rating authority before asynchronous bundle validation", async () => {
+    const candidateRating = rating({
+      jobId: "dependency-mutation",
+      rater: CP,
+      target: PARTY,
+      targetRole: "buyer",
+      value: 5,
+      ratedAt: 1200,
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const deps = {
+      validate: async () => {
+        signalStarted();
+        await gate;
+        return true;
+      },
+      trustBundlePartyRoles: true as const,
+      copyAbsence: () => "absent" as const,
+      resolveAndAuthenticateRating: async () => ({
+        disposition: "authenticated" as const,
+        record: candidateRating.record,
+      }),
+    };
+    const pending = deriveReputationWithValidation(
+      PARTY,
+      [withRatings(bundle("dependency-mutation", "completed", 1500), [candidateRating.ref])],
+      WINDOW,
+      deps,
+    );
+    await started;
+    deps.resolveAndAuthenticateRating = async () => ({
+      disposition: "invalid" as const,
+      reason: "mutated dependency",
+    }) as never;
+    release();
+
+    expect((await pending).metrics.averageBuyerRating).toBe(5);
   });
 });

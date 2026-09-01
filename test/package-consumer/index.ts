@@ -3,6 +3,8 @@ import {
   type DemosAdapterConfig,
   type DemosWriteJournal,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
   type RatingRecord,
   type RatingPublicationEffectStore,
   type SubstrateAdapter,
@@ -10,6 +12,7 @@ import {
   createSellerRatingRecord,
   isRatingRecord,
   publishRatingRecordDurably,
+  deriveReputationWithValidation,
   lookupBundleCopies,
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
@@ -45,6 +48,14 @@ const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRec
 const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
 const durableRatingPublisher: typeof publishRatingRecordDurably =
   publishRatingRecordDurably;
+const validatedReputationDeriver: typeof deriveReputationWithValidation =
+  deriveReputationWithValidation;
+declare const authenticatedRatingResolution: AuthenticatedRatingResolution;
+const validatedReputationDeps: DeriveReputationValidationDeps = {
+  validate: async () => true,
+  trustBundlePartyRoles: true,
+  resolveAndAuthenticateRating: async () => authenticatedRatingResolution,
+};
 declare const ratingEffectStore: RatingPublicationEffectStore;
 
 declare const adapter: SubstrateAdapter;
@@ -63,6 +74,8 @@ void ratingValidator;
 void buyerRatingProducer;
 void sellerRatingProducer;
 void durableRatingPublisher;
+void validatedReputationDeriver;
+void validatedReputationDeps;
 void ratingEffectStore;
 void adapter;
 void journal;
