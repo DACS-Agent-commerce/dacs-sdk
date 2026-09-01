@@ -391,6 +391,7 @@ export {
   type DurableBuyerBundleFinalizationProvider,
   type AuthenticatedBundleRolePublication,
   type DurableFinalizedBuyerBundle,
+  type DurableBuyerSessionCompletion,
   type BuyerBundleTransportIdentity,
   type BuyerBundleTransportResolution,
   type BuyerCounterSignaturePublication,

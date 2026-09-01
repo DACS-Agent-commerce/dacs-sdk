@@ -451,6 +451,10 @@ Only then does it return `state: "audit-complete"` with separate buyer and
 seller logical/native references. The v1 fixed-price topology is exactly two
 parties with the seller acting as phase orchestrator; a distinct orchestrator
 requires its own reviewed profile and role-owned publication.
+`verifyFixedPriceX402AuditCompletion(...)` and
+`verifyFixedPricePayDemAuditCompletion(...)` additionally bind that proof to
+the exact successful buyer/seller coordinator audit references for their
+respective rail before projecting the combined `audit-complete` milestone.
 
 ### Normative artifact references
 

@@ -19,7 +19,7 @@ import type {
   IdentityBundle,
   Listing,
 } from "@kynesyslabs/dacs/artifacts";
-import { canonicalize, contentHash, listingAddress, sha256Hex } from
+import { bundleAddress, canonicalize, contentHash, listingAddress, sha256Hex } from
   "@kynesyslabs/dacs/canonical";
 import {
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
@@ -56,11 +56,13 @@ const mocks = vi.hoisted(() => ({
   observeX402Transfer: vi.fn(),
   provenance: vi.fn(),
   sessionFacts: vi.fn(),
+  verifyCompleted: vi.fn(),
 }));
 
 vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@kynesyslabs/dacs")>()),
   getAuthenticatedRailProvenance: mocks.provenance,
+  verifyCompletedTwoSidedSession: mocks.verifyCompleted,
 }));
 
 vi.mock("../src/fixedPriceX402Profile.js", async (importOriginal) => ({
@@ -788,6 +790,63 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       exactRequest,
       exact.provider,
     )).resolves.toEqual(exactRequest);
+    mocks.verifyCompleted.mockResolvedValue({
+      state: "audit-complete",
+      jobId: JOB_ID,
+    });
+    const buyerPublication = {
+      role: "buyer" as const,
+      logicalAddress: bundleAddress(JOB_ID, "buyer"),
+      nativeAddress: "native:buyer-bundle",
+      bundleContentHash: "c".repeat(64),
+      anchorReceipt: { writer: BUYER },
+    };
+    const sellerPublication = {
+      role: "seller" as const,
+      logicalAddress: bundleAddress(JOB_ID, "seller"),
+      nativeAddress: "native:seller-bundle",
+      bundleContentHash: "d".repeat(64),
+      anchorReceipt: { writer: SELLER },
+    };
+    const sellerClosure = {
+      verificationInput: exact.input,
+      result: {
+        nativeAddress: sellerPublication.nativeAddress,
+        sellerBundle: { jobId: JOB_ID },
+      },
+    };
+    await expect(audit.audit.authorizeFinalized({
+      operation: { order: pair.buyer },
+      retained: { application: f.application },
+      material: { provider: exact.provider },
+      completion: { sellerClosure },
+      result: {
+        logicalAddress: buyerPublication.logicalAddress,
+        nativeAddress: buyerPublication.nativeAddress,
+        bundleContentHash: buyerPublication.bundleContentHash,
+        buyerBundle: { jobId: JOB_ID },
+        publications: { buyer: buyerPublication, seller: sellerPublication },
+      },
+    } as never)).resolves.toBe(true);
+    expect(mocks.verifyCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: JOB_ID,
+        buyer: BUYER,
+        seller: SELLER,
+        sellerClosure,
+        copies: {
+          buyer: expect.objectContaining({ nativeAddress: "native:buyer-bundle" }),
+          seller: expect.objectContaining({ nativeAddress: "native:seller-bundle" }),
+        },
+      }),
+      expect.objectContaining({
+        sellerFinalizationProvider: exact.provider,
+        readBundleCopy: expect.any(Function),
+        verifyBundleAnchor: expect.any(Function),
+        resolveBundleBinding: expect.any(Function),
+        verifyBundleBinding: expect.any(Function),
+      }),
+    );
     expect(mocks.observeX402Transfer).toHaveBeenLastCalledWith({
       chainId: observation.chainId,
       txHash: observation.txHash,

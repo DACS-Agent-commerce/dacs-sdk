@@ -242,6 +242,14 @@ cannot accept the peer direction. A validator outage fails authentication
 closed; a handler exception remains indeterminate so the durable inbox can
 resume it rather than acknowledging work that may not have been retained.
 
+The buyer audit track does not finish merely because both local workers have
+published something. The durable buyer finalizer returns the exact data-only
+seller closure it already authenticated (never a seller signer), and the host
+then runs `verifyCompletedTwoSidedSession()` against fresh buyer and seller
+Demos readbacks, finalized receipts, BB-1 bindings, and the complete seller
+ST-11 dependency graph. Its audit reference is the authenticated native bundle
+address. Native DEM and x402 use the same two-copy finish boundary.
+
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange
 and responder to the role-owned fenced-session store and Demos signer. Every

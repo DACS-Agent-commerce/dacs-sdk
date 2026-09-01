@@ -578,6 +578,9 @@ describe("durable buyer bundle finalization", () => {
       if (progress.disposition !== "finalised") return;
       expect(progress.recovered).toBe(false);
       expect(progress.result.binding !== undefined).toBe(mapping === "write-input");
+      expect(progress.completion.sellerClosure.result).toEqual(f.sellerFinalization);
+      expect(progress.completion.sellerClosure.verificationInput)
+        .toMatchObject({ counterSignatures: [f.state.counterSignature] });
       expect(f.state.counterSignature).toEqual(
         progress.result.buyerBundle.signatures.find(({ party }) => party === BUYER),
       );
@@ -1348,7 +1351,10 @@ describe("durable buyer bundle finalization", () => {
     );
 
     expect(replay.disposition).toBe("finalised");
-    if (replay.disposition === "finalised") expect(replay.recovered).toBe(true);
+    if (replay.disposition === "finalised") {
+      expect(replay.recovered).toBe(true);
+      expect(replay.completion.sellerClosure.result).toEqual(f.sellerFinalization);
+    }
     expect(protocolMocks.verifySettlement).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
