@@ -50,12 +50,19 @@ export {
   type AdvanceRfqSessionResult,
 } from "./negotiate/rfq.js";
 export {
+  deriveRfqAgreement,
+  signRfqAgreement,
+  type RfqAgreementInput,
+} from "./negotiate/rfqAgreement.js";
+export {
   FINALITY_COMMITMENT_SEPARATOR,
   LEGACY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
   commitFixedPriceAgreement,
+  commitRfqAgreement,
   readLegacyFixedPriceAgreementCommitment,
   validateFixedPriceAgreementBinding,
+  validateRfqAgreementBinding,
   type CommitmentVerificationDisposition,
   type CommitmentSignatureVerificationInput,
   type CommitmentSignatureVerifier,
@@ -67,7 +74,9 @@ export {
   type FinalityCommitmentProvider,
   type CommitmentSessionPartyBinding,
   type CommitmentSessionBinding,
+  type CommitAgreementInput,
   type CommitFixedPriceAgreementInput,
+  type CommitRfqAgreementInput,
   type ReadLegacyFixedPriceAgreementCommitmentInput,
   type FinalizedFinalityAgreementCommitment,
   type FinalizedLegacyAgreementCommitment,
@@ -77,6 +86,7 @@ export {
   ceilMeteredQuantity,
   deriveMeteredPriceTerm,
   deriveFixedPriceAgreement,
+  signAgreementArtifact,
   signFixedPriceAgreement,
   type VerifiedListingInput,
   type FixedPricePartyInput,
