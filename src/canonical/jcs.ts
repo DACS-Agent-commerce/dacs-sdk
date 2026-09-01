@@ -5,16 +5,15 @@ const MAX_NESTING_DEPTH = 64;
 const OBJECT_CONSTRUCTOR_SOURCE = Function.prototype.toString.call(Object);
 
 /**
- * RFC 8785 (JCS) string serialisation with the DACS CF-1 rule applied: the
- * value is NFC-normalised first (JCS itself performs no normalisation), then
- * escaped with only the JCS-required escapes. Forward slash and non-ASCII code
- * points are NOT escaped.
+ * RFC 8785 (JCS) string serialisation. DACS CF-1 NFC-normalises string values,
+ * but RFC 8785 requires object member names to remain unchanged. Forward slash
+ * and non-ASCII code points are NOT escaped.
  */
-function canonString(value: string): string {
+function canonString(value: string, normalizeValue: boolean): string {
   assertNoLoneSurrogates(value);
-  const nfc = value.normalize("NFC");
+  const input = normalizeValue ? value.normalize("NFC") : value;
   let out = '"';
-  for (const ch of nfc) {
+  for (const ch of input) {
     switch (ch) {
       case '"':
         out += '\\"';
@@ -55,7 +54,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
 
   const t = typeof value;
   if (t === "boolean") return value ? "true" : "false";
-  if (t === "string") return canonString(value as string);
+  if (t === "string") return canonString(value as string, true);
 
   if (t === "number") {
     const n = value as number;
@@ -135,26 +134,22 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
         }
       }
 
-      const normalizedEntries = new Map<string, unknown>();
-      for (const [rawKey, entry] of Object.entries(object)) {
+      const entries: Array<[string, unknown]> = [];
+      for (const [key, entry] of Object.entries(object)) {
         if (entry === undefined) continue;
-        assertNoLoneSurrogates(rawKey);
-        const key = rawKey.normalize("NFC");
-        if (normalizedEntries.has(key)) {
-          throw new DacsError(
-            `canonical form: duplicate NFC-normalized keys (NFC key collision) for "${key}"`,
-          );
-        }
-        normalizedEntries.set(key, entry);
+        assertNoLoneSurrogates(key);
+        entries.push([key, entry]);
       }
 
-      const entries = [...normalizedEntries.entries()].sort((a, b) =>
+      entries.sort((a, b) =>
         a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
       );
       return (
         "{" +
         entries
-          .map(([key, entry]) => canonString(key) + ":" + canonValue(entry, ancestors, depth + 1))
+          .map(([key, entry]) =>
+            canonString(key, false) + ":" + canonValue(entry, ancestors, depth + 1)
+          )
           .join(",") +
         "}"
       );
@@ -166,9 +161,10 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
 
 /**
  * RFC 8785 JSON Canonicalization Scheme serialisation with the DACS profile:
- * NFC-normalised strings (CF-1) and finite JSON numbers within the IEEE-754
- * safe-integer magnitude range (everything larger must be a string). Throws on any value
- * that has no reproducible canonical form.
+ * NFC-normalised string values (CF-1), byte-preserved member names, and finite
+ * JSON numbers within the IEEE-754 safe-integer magnitude range (everything
+ * larger must be a string). Throws on any value that has no reproducible
+ * canonical form.
  */
 export function canonicalize(value: unknown): string {
   return canonValue(value, new Set<object>(), 0);
