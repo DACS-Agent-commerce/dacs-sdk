@@ -32,6 +32,8 @@ export {
   type RefVerdict,
   type BundleEvidenceVerificationContext,
   type BundleEvidenceVerificationResult,
+  type AlternativePaymentBundleVerificationInput,
+  type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
   bundleConsistency,

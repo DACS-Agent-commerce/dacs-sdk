@@ -524,6 +524,9 @@ seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
 for the store, authentication, reconciliation and terminal-failure contracts.
 
+The optional signed `pay-alternative` Listing profile is documented in
+[the alternative-payment projection guide](./docs/alternative-payment-projection.md).
+
 Sellers use `createX402Paywall` as the framework-neutral HTTP protocol adapter
 and compose it with the authenticated seller spine. It settles or reconciles
 the retained payer authorization before durable fulfilment, while PC-7 payment-
