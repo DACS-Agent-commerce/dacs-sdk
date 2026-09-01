@@ -1321,9 +1321,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     expect(manifest.cases).toHaveLength(236);
   });
 
-  it("#86 plus payload attestation: the SDK exposes all 25 separators", () => {
+  it("the SDK exposes the current closed set of 28 separators", () => {
     // Was pinned at 18 with sig-registry-closed as an it.fails divergence; #86
     // reconciled the SDK to the closed §B.7 set, so it is now a passing case.
-    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(25);
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(28);
   });
 });

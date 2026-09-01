@@ -149,10 +149,16 @@ export {
 } from "./partyVetPlan.js";
 export {
   aggregateCompositeVerification,
+  aggregatePresenceAwareCompositeVerification,
+  classifyPresenceClaimRequirement,
   isCompositeBundleRequirement,
+  presenceRequirementPreflight,
   verifyCompositeVerificationRecord,
   type CompositeClaimRequirement,
   type CompositeBundleRequirement,
+  type PresenceClaimDecision,
+  type PresenceAwareAggregationInput,
+  type PresenceAwareVerifiedEvidence,
   type ExpectedVerifyResult,
   type CompositeVerificationExpectations,
   type ResolvedVerificationContent,

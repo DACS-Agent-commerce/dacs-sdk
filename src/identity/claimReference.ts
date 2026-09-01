@@ -66,6 +66,13 @@ const REGISTERED_CLAIM_REFERENCE_SCHEMES = new Set([
   "substrate-validator-set",
 ]);
 
+/** True only for a scheme closed by the current DACS-1 registry. */
+export function isRegisteredClaimReferenceScheme(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[a-z][a-z0-9-]*$/.test(value) &&
+    REGISTERED_CLAIM_REFERENCE_SCHEMES.has(value);
+}
+
 function hasNonEmptyComponents(identifier: string, count: number): boolean {
   let start = 0;
   for (let component = 1; component < count; component += 1) {

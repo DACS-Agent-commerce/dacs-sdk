@@ -33,7 +33,9 @@ import {
   type RecipeDescriptor,
   type VerifyResult,
 } from "../../src/index.js";
-import { createPartyVetPins } from "./partyVetPins.js";
+import {
+  createPartyVetPinFixture,
+} from "./partyVetPins.js";
 
 const VERIFIER_SEED = new Uint8Array(32).fill(91);
 const VERIFIER_KEY = rawPublicKey(publicKeyFromSeed(VERIFIER_SEED));
@@ -183,7 +185,11 @@ function keyFromSigner(signer: string): Uint8Array | null {
 
 function deps(
   harness: HarnessState,
-  options: { presentationValid?: boolean; randomSignatures?: boolean } = {},
+  options: {
+    presentationValid?: boolean;
+    randomSignatures?: boolean;
+    presentedClaimControlled?: boolean;
+  } = {},
 ): PartyVetDeps<Uint8Array> {
   if (!harness.effectLease) {
     throw new Error("party Vet harness effect lease was not activated");
@@ -441,6 +447,12 @@ function deps(
         return false;
       }
     },
+    ...(options.presentedClaimControlled === undefined
+      ? {}
+      : {
+          isPresentedClaimControlled: () =>
+            options.presentedClaimControlled === true,
+        }),
     componentVerifier: {
       isSignerAuthorized: (_artifact, signature) =>
         signature.signer === VERIFIER,
@@ -566,6 +578,27 @@ async function pinnedRequestAttempts(
     classification?: "freshness" | "dealSpecific";
   }[],
 ): Promise<PartyVetRequest["attempts"]> {
+  return (await pinnedRequestFixture(
+    jobId,
+    evaluatedParty,
+    identityBundle,
+    requirement,
+    specs,
+  )).attempts;
+}
+
+async function pinnedRequestFixture(
+  jobId: string,
+  evaluatedParty: string,
+  identityBundle: IdentityBundle,
+  requirement: CompositeBundleRequirement,
+  specs: readonly {
+    requirementPath: PartyVetRequest["attempts"][number]["requirementPath"];
+    claimSubject: string;
+    recipe: Awaited<ReturnType<typeof recipe>>;
+    classification?: "freshness" | "dealSpecific";
+  }[],
+) {
   const partyPlanHash = partyVetPinScopeHash({
     jobId,
     evaluatedParty,
@@ -579,7 +612,7 @@ async function pinnedRequestAttempts(
       methodInput: { kind: "consensus-backed-proxy" as const },
     })),
   });
-  const pins = await createPartyVetPins({
+  const fixture = await createPartyVetPinFixture({
     jobId,
     evaluatedParty,
     sessionStartHash: partyPlanHash,
@@ -596,8 +629,11 @@ async function pinnedRequestAttempts(
       ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
     now: NOW,
   });
-  return specs.map((spec, index) =>
-    attempt(spec.requirementPath, spec.claimSubject, pins[index]!));
+  return {
+    sessionSnapshot: fixture.sessionSnapshot,
+    attempts: specs.map((spec, index) =>
+      attempt(spec.requirementPath, spec.claimSubject, fixture.pins[index]!)),
+  };
 }
 
 async function storeCarriedResult(
@@ -1055,27 +1091,336 @@ describe("partyVetCore durable party-level producer", () => {
     )).rejects.toThrow(/disabled|provenance bindings/);
   });
 
-  test("rejects a presence-only requirement instead of signing a CVR that strict aggregation would fail", async () => {
+  test("produces a strict PCR-6 CVR for a presence-only controlled key without synthetic results", async () => {
     const harness = state();
-    const subject = "alpha:alice";
+    const subject = `key:${Buffer.from(PRESENTER_KEY).toString("hex")}`;
     const jobId = "job-party-presence-only";
     const requirement: CompositeBundleRequirement = {
       requirementVersion: "1",
-      required: [{ scheme: "alpha", verificationRequired: false }],
+      required: [{ scheme: "key", verificationRequired: false }],
+      primaryClaimSelector: "key",
     };
+    const identity = await bundle(subject, [subject], [{
+      ref: subject,
+      issuedAt: NOW + 10_000,
+    }]);
+    const pinScopeHash = partyVetPinScopeHash({
+      jobId,
+      evaluatedParty: subject,
+      identityBundle: identity,
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: [],
+    });
+    const { sessionSnapshot } = await createPartyVetPinFixture({
+      jobId,
+      evaluatedParty: subject,
+      sessionStartHash: pinScopeHash,
+      partyPlanHash: pinScopeHash,
+      bundleRequirement: requirement,
+      recipes: [await recipe("key")],
+      attempts: [],
+      stewardSigner: STEWARD,
+      stewardPublicKey: STEWARD_KEY,
+      verify: (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+      now: NOW,
+    });
     await activateEffectLease(harness, jobId);
-    await expect(partyVetCore(
+    const production = await partyVetCore(
       {
         jobId,
         evaluatedParty: subject,
-        identityBundle: await bundle(subject, [subject]),
+        identityBundle: identity,
         requirement,
         attempts: [],
+        sessionRecipeRegistrySnapshot: sessionSnapshot,
       },
       deps(harness),
-    )).rejects.toThrow(/strict CVR.*presence-only required claim/);
-    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
-    expect(harness.checkpoints.size).toBe(0);
+    );
+    expect(production.record).toMatchObject({
+      overallDecision: "pass",
+      freshness: [],
+      dealSpecific: [],
+    });
+    const strict = await verifyCompositeVerificationRecord(
+      production.record,
+      {
+        jobId,
+        evaluatedParty: subject,
+        bundleHash: identityBundleHash(identity),
+        requirement,
+        verifier: VERIFIER,
+        freshness: [],
+        dealSpecific: [],
+        presence: {
+          bundle: identity,
+          sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash,
+        },
+      },
+      {
+        nowMs: () => NOW,
+        resolve: async () => null,
+        resolveRecipe: async () => null,
+        isRecipeSignerAuthorized: () => false,
+        isVerifyResultSignerAuthorized: () => false,
+        resolvePublicKey: ({ signer }) =>
+          signer === VERIFIER ? VERIFIER_KEY : null,
+        verify: ({ signedBytes: bytes, signature, publicKey }) =>
+          ed25519Verify(
+            bytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(publicKey),
+          ),
+        verifyAuthorityAttestation: () => "unresolved",
+        isSessionRecipeRegistrySnapshotAuthenticated: (hash) =>
+          hash === sessionSnapshot.snapshotHash,
+        verifyIdentityPresentation: ({ bundle: candidate, bundleHash }) => {
+          if (
+            candidate.presentation.kind !== "siwd" ||
+            bundleHash !== identityBundleHash(candidate)
+          ) {
+            return false;
+          }
+          return ed25519Verify(
+            signedBytes("dacs-bundle-presentation:v1:", bundleHash),
+            Uint8Array.from(Buffer.from(candidate.presentation.signature, "hex")),
+            publicKeyFromRaw(PRESENTER_KEY),
+          );
+        },
+      },
+    );
+    expect(strict).toMatchObject({
+      status: "valid",
+      record: { overallDecision: "pass" },
+    });
+    expect(harness.effects).toEqual({ methods: 0, signs: 1, anchors: 1 });
+    expect(harness.checkpoints.size).toBe(1);
+    const replay = await partyVetCore(
+      {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: identity,
+        requirement,
+        attempts: [],
+        sessionRecipeRegistrySnapshot: sessionSnapshot,
+      },
+      deps(harness),
+    );
+    expect(canonicalize(replay)).toBe(canonicalize(production));
+    expect(harness.effects).toEqual({ methods: 0, signs: 1, anchors: 1 });
+  });
+
+  test("accepts an independently controlled non-key presence selector", async () => {
+    const harness = state();
+    const subject = "lei:5493001KJTIIGC8Y1R12";
+    const jobId = "job-party-presence-controlled-lei";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "lei", verificationRequired: false }],
+      primaryClaimSelector: "lei",
+    };
+    const identity = await bundle(subject, [subject]);
+    const pinScopeHash = partyVetPinScopeHash({
+      jobId,
+      evaluatedParty: subject,
+      identityBundle: identity,
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: [],
+    });
+    const { sessionSnapshot } = await createPartyVetPinFixture({
+      jobId,
+      evaluatedParty: subject,
+      sessionStartHash: pinScopeHash,
+      partyPlanHash: pinScopeHash,
+      bundleRequirement: requirement,
+      recipes: [await recipe("lei")],
+      attempts: [],
+      stewardSigner: STEWARD,
+      stewardPublicKey: STEWARD_KEY,
+      verify: (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+      now: NOW,
+    });
+    await activateEffectLease(harness, jobId);
+    const production = await partyVetCore(
+      {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: identity,
+        requirement,
+        attempts: [],
+        sessionRecipeRegistrySnapshot: sessionSnapshot,
+      },
+      deps(harness, { presentedClaimControlled: true }),
+    );
+    expect(production.record).toMatchObject({
+      overallDecision: "pass",
+      freshness: [],
+      dealSpecific: [],
+    });
+    const strict = await verifyCompositeVerificationRecord(
+      production.record,
+      {
+        jobId,
+        evaluatedParty: subject,
+        bundleHash: identityBundleHash(identity),
+        requirement,
+        verifier: VERIFIER,
+        freshness: [],
+        dealSpecific: [],
+        presence: {
+          bundle: identity,
+          sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash,
+        },
+      },
+      {
+        nowMs: () => NOW,
+        resolve: async () => null,
+        resolveRecipe: async () => null,
+        isRecipeSignerAuthorized: () => false,
+        isVerifyResultSignerAuthorized: () => false,
+        resolvePublicKey: ({ signer }) =>
+          signer === VERIFIER ? VERIFIER_KEY : null,
+        verify: ({ signedBytes: bytes, signature, publicKey }) =>
+          ed25519Verify(
+            bytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(publicKey),
+          ),
+        verifyAuthorityAttestation: () => "unresolved",
+        isSessionRecipeRegistrySnapshotAuthenticated: (hash) =>
+          hash === sessionSnapshot.snapshotHash,
+        verifyIdentityPresentation: () => true,
+        isPresentedClaimControlled: ({ claim }) => claim.ref === subject,
+      },
+    );
+    expect(strict).toMatchObject({
+      status: "valid",
+      record: { overallDecision: "pass" },
+    });
+    expect(harness.effects).toEqual({ methods: 0, signs: 1, anchors: 1 });
+  });
+
+  test("composes presence and verified members and the strict consumer reproduces the mixed decision", async () => {
+    const harness = state();
+    const subject = `key:${Buffer.from(PRESENTER_KEY).toString("hex")}`;
+    const did = "did:example:presence-party";
+    const jobId = "job-party-presence-mixed";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "key", verificationRequired: false },
+        { scheme: "did", verificationRequired: true, recipeVersion: 1 },
+      ],
+      primaryClaimSelector: "key",
+    };
+    const identity = await bundle(subject, [subject, did]);
+    const didRecipe = await recipe("did");
+    const fixture = await pinnedRequestFixture(
+      jobId,
+      subject,
+      identity,
+      requirement,
+      [{
+        requirementPath: { kind: "required", index: 1 },
+        claimSubject: did,
+        recipe: didRecipe,
+      }],
+    );
+    await activateEffectLease(harness, jobId);
+    const production = await partyVetCore(
+      {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: identity,
+        requirement,
+        attempts: fixture.attempts,
+        sessionRecipeRegistrySnapshot: fixture.sessionSnapshot,
+      },
+      deps(harness),
+    );
+    expect(production.record).toMatchObject({
+      overallDecision: "pass",
+      freshness: [],
+    });
+    expect(production.record.dealSpecific).toHaveLength(1);
+    const strict = await verifyCompositeVerificationRecord(
+      production.record,
+      {
+        jobId,
+        evaluatedParty: subject,
+        bundleHash: identityBundleHash(identity),
+        requirement,
+        verifier: VERIFIER,
+        freshness: [],
+        dealSpecific: [{
+          ref: production.record.dealSpecific[0]!,
+          scheme: "did",
+          identifier: "example:presence-party",
+          method: "consensus-backed-proxy",
+          requirement: requirement.required[1]!,
+        }],
+        presence: {
+          bundle: identity,
+          sessionRecipeRegistrySnapshotHash: fixture.sessionSnapshot.snapshotHash,
+        },
+      },
+      {
+        nowMs: () => harness.now,
+        resolve: async (ref) => {
+          const stored = [...harness.artifacts.values()].find(
+            (entry) => entry.ref.anchor.locator === ref.anchor.locator,
+          );
+          if (stored) {
+            return {
+              encoding: "canonical-json" as const,
+              value: structuredClone(stored.artifact),
+            };
+          }
+          if (ref.anchor.locator.startsWith("https://authority.example/evidence/")) {
+            return {
+              encoding: "bytes" as const,
+              value: Uint8Array.from(Buffer.from(JSON.stringify({ ok: true }))),
+            };
+          }
+          return null;
+        },
+        resolveRecipe: async ({ scheme }) => scheme === "did" ? didRecipe : null,
+        isRecipeSignerAuthorized: (_recipe, signature) =>
+          signature.signer === STEWARD,
+        isVerifyResultSignerAuthorized: (_result, signature) =>
+          signature.signer === VERIFIER,
+        resolvePublicKey: ({ signer }) => {
+          if (signer === VERIFIER) return VERIFIER_KEY;
+          if (signer === STEWARD) return STEWARD_KEY;
+          return null;
+        },
+        verify: ({ signedBytes: bytes, signature, publicKey }) =>
+          ed25519Verify(
+            bytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(publicKey),
+          ),
+        verifyAuthorityAttestation: () => "valid",
+        isSessionRecipeRegistrySnapshotAuthenticated: (hash) =>
+          hash === fixture.sessionSnapshot.snapshotHash,
+        verifyIdentityPresentation: ({ bundle: candidate, bundleHash }) =>
+          candidate.presentation.kind === "siwd" &&
+          bundleHash === identityBundleHash(candidate) &&
+          ed25519Verify(
+            signedBytes("dacs-bundle-presentation:v1:", bundleHash),
+            Uint8Array.from(Buffer.from(candidate.presentation.signature, "hex")),
+            publicKeyFromRaw(PRESENTER_KEY),
+          ),
+      },
+    );
+    expect(strict).toMatchObject({
+      status: "valid",
+      record: { overallDecision: "pass" },
+    });
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
   });
 
   test("rejects an unauthenticated presentation before method, sign, anchor or checkpoint", async () => {
