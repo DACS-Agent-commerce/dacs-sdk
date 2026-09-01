@@ -108,6 +108,8 @@ export interface RfqSessionState {
   awaitingSince: number;
   expectedSender: string;
   lastSequence: number;
+  /** Canonical hash of the last admitted unsigned channel envelope. */
+  lastMessageHash?: string;
   turnCount: number;
   status: RfqSessionStatus;
   standingProposal?: RfqStandingProposal;
@@ -770,7 +772,7 @@ function validateStoredState(value: RfqSessionState): boolean {
         "turnCount",
         "status",
       ],
-      ["standingProposal", "terminalReason"],
+      ["lastMessageHash", "standingProposal", "terminalReason"],
     )
   ) {
     return false;
@@ -804,6 +806,14 @@ function validateStoredState(value: RfqSessionState): boolean {
     value.timeoutMs <= 0 ||
     value.turnCount > value.maxTurns ||
     value.lastSequence < value.turnCount
+  ) {
+    return false;
+  }
+  if (
+    (value.lastSequence === 0 && value.lastMessageHash !== undefined) ||
+    (value.lastSequence > 0 &&
+      (typeof value.lastMessageHash !== "string" ||
+        !/^[0-9a-f]{64}$/.test(value.lastMessageHash)))
   ) {
     return false;
   }
@@ -968,6 +978,7 @@ export async function advanceRfqSession<TSignature = unknown>(
           state: deepFreeze({
             ...state,
             lastSequence: message.sequence,
+            lastMessageHash: admitted.envelopeHash,
             turnCount,
             standingProposal,
             status: "max-turns",
@@ -980,6 +991,7 @@ export async function advanceRfqSession<TSignature = unknown>(
         state: deepFreeze({
           ...state,
           lastSequence: message.sequence,
+          lastMessageHash: admitted.envelopeHash,
           turnCount,
           standingProposal,
           awaitingSince: receivedAt,
@@ -1003,6 +1015,7 @@ export async function advanceRfqSession<TSignature = unknown>(
         state: deepFreeze({
           ...state,
           lastSequence: message.sequence,
+          lastMessageHash: admitted.envelopeHash,
           turnCount,
           status: "accepted",
           terminalReason: "standing RFQ proposal accepted",
@@ -1016,6 +1029,7 @@ export async function advanceRfqSession<TSignature = unknown>(
         state: deepFreeze({
           ...state,
           lastSequence: message.sequence,
+          lastMessageHash: admitted.envelopeHash,
           turnCount,
           status: message.type === "reject" ? "rejected" : "aborted",
           ...(reason === undefined ? {} : { terminalReason: reason }),

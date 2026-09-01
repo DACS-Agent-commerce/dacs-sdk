@@ -380,6 +380,7 @@ describe("bounded RFQ turn reducer", () => {
       status: "open",
       turnCount: 1,
       lastSequence: 1,
+      lastMessageHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       expectedSender: SELLER,
       awaitingSince: NOW + 1_000,
       standingProposal: { price: { amount: "10", currency: "USDC" } },
@@ -416,6 +417,7 @@ describe("bounded RFQ turn reducer", () => {
         status: "accepted",
         turnCount: 3,
         lastSequence: 3,
+        lastMessageHash: expect.stringMatching(/^[0-9a-f]{64}$/),
         standingProposal: {
           sequence: 2,
           proposer: SELLER,
@@ -424,6 +426,9 @@ describe("bounded RFQ turn reducer", () => {
       });
       expect(Object.isFrozen(accepted.state.standingProposal?.price)).toBe(
         true,
+      );
+      expect(accepted.state.lastMessageHash).not.toBe(
+        first.state.lastMessageHash,
       );
       expect(
         rfqSessionCheckpointHash(accepted.state as RfqSessionState),
@@ -529,6 +534,19 @@ describe("bounded RFQ turn reducer", () => {
     };
     extraField.callerAuthority = true;
     cases.push(extraField);
+
+    const admitted = await advanceRfqSession(
+      original,
+      turn(original, "offer", proposal("10")),
+      NOW + 1,
+      verify,
+    );
+    if (admitted.decision !== "pass") throw new Error(admitted.reason);
+    const missingAdmittedHash = structuredClone(
+      admitted.state,
+    ) as RfqSessionState;
+    delete missingAdmittedHash.lastMessageHash;
+    cases.push(missingAdmittedHash);
 
     const verifier = vi.fn<
       ChannelMessageSignatureVerifier<RfqTurnBody, string>
