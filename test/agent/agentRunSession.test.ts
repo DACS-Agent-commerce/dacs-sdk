@@ -366,9 +366,9 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       },
     });
     const transfer = vi.fn(
-      async ({ recipient, network }: { recipient: string; network?: string }) => ({
+      async ({ recipient, network }: Parameters<PayDemRail["settle"]>[0]) => ({
         ok: true,
-        txHash: "demos:paid",
+        txHash: "11".repeat(32),
         chainId: network ?? "demos",
         payer: buyerDid,
         payee: recipient,
@@ -394,11 +394,21 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         settle: payDemSettle(rail, { network: "demos:testnet" }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
-    expect(transfer).toHaveBeenCalledWith({
+    expect(transfer).toHaveBeenCalledOnce();
+    const submitted = transfer.mock.calls[0]![0];
+    expect(submitted).toMatchObject({
       recipient: sellerHex,
       amount: "1000000000",
       network: "demos:testnet",
+      recovery: {
+        railId: "demos:native",
+        phaseIndex: 0,
+      },
     });
+    expect(submitted.recovery?.jobId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(submitted.recovery?.settlementKey).toBe(
+      `demos:native:${submitted.recovery?.jobId}:0`,
+    );
   });
 
   test("a genuinely signed listing settles through the public runSession", async () => {
