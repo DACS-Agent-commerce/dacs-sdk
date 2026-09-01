@@ -269,6 +269,7 @@ export {
   BUNDLE_OUTCOMES,
   type BundleOutcome,
   type BundleAnchorRole,
+  type SessionSigner,
   type SessionParty,
   type SigningSessionParty,
   type TwoSidedSession,
