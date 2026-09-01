@@ -505,10 +505,12 @@ export {
   // DACS-2 §7.4.1 ParserSpec — signed recipe content rules (#49) + the engine seam.
   evaluateParserSpec,
   defaultParserEngine,
+  defaultParserEngineCapabilities,
   type ParserSpec,
   type ParserFormat,
   type IndeterminatePredicate,
   type ParserEngine,
+  type ParserEngineCapabilities,
   type ParserEvalContext,
   type ParserEvaluation,
   type Reputation,
