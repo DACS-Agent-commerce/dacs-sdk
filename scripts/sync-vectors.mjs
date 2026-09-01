@@ -17,10 +17,11 @@ const REPO =
 // Pinned for reproducible conformance runs. The pin is the SDK's test oracle,
 // so moving it changes what "conformant" means — bump deliberately, in a
 // change that re-runs the suite and reconciles any drift.
-// Currently: adopted DACS-Standard PR #335 merge, including DACS-1 v0.7 /
-// DACS-2 v0.6 PCR-1..PCR-6 and its exact signed 38-case corpus.
-// Previous pin: 965df755 (DACS-4 v0.6 settlement identities).
-// See SDK #147 and Standard #334/#335.
+// Currently: DACS-Standard `next` @ 2026-09-01 (662be1d, merge of #335). This adds the
+// three B.7 separators the registry below was missing (evidence-bound fault bundle,
+// its pointer, prior-payment disposition) and the presence-only / APR / domain-GCR sets.
+// Previous pin: 965df755 (2026-08-11); before that c2ecd9f, 625df63 and 9a77966 (234 cases).
+// See #5-#7, #137, and Standard #315.
 const REF =
   process.env.DACS_STANDARD_REF || "662be1d4899a2cadf327fe2d5523e93a80334e5f";
 
