@@ -15,6 +15,7 @@ import {
   encodeAddressSegment,
   listingAddress,
   sha256Hex,
+  stripSignature,
 } from "../../src/canonical/index.js";
 import {
   SIGNATURE_DOMAIN_SEPARATORS,
@@ -36,6 +37,7 @@ import {
 import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { deriveReputation } from "../../src/agent/reputationDerivation.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
+import { resolveSettlementEventIdentity } from "../../src/agent/settlementIdentity.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import {
   assignSealedEnvelopeRoles,
@@ -759,6 +761,73 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(r.reasons).toEqual([]);
       expect(r.decision).toBe(want);
     },
+    "settlement-x402-pass": async (want) => {
+      const document = read(
+        "conformance/vectors/security/settlement-event-identity-v0.6.json",
+      ) as any;
+      const vector = document.vectors.find(
+        (entry: { name?: string }) => entry.name === "current-x402-event",
+      );
+      expect(vector).toBeDefined();
+      const evidence = structuredClone(vector.settlementEvidence);
+      const signer = evidence.signature.signer as string;
+      const publicKey = hex(document.publicKey);
+      const deps = {
+        resolvePublicKey: async (candidate: string) =>
+          candidate === signer ? publicKey : null,
+        verify: verifySig,
+      };
+      const semantic = await verifySettlementEvidence(
+        evidence,
+        {
+          orchestrator: signer,
+          attestationRef: {
+            anchor: {
+              kind: "storage-program",
+              locator: vector.anchorAddress,
+            },
+            contentHash: contentHash(stripSignature(evidence)),
+          },
+          result: { ok: true, txRefs: vector.settlementEvidence.paymentTxRefs },
+          agreement: vector.verificationContext.amount,
+          rail: {
+            railId: vector.verificationContext.railId,
+            railType: "x402",
+            asset: vector.verificationContext.amount.currency,
+            network: `eip155:${vector.verificationContext.x402Receipt.chainId}`,
+            handler: "pay-x402",
+          },
+          paymentAddress: {
+            railId: vector.verificationContext.railId,
+            phaseIndex: vector.phaseIndex,
+          },
+        },
+        deps,
+      );
+      expect(semantic.reasons).toEqual([]);
+      expect(semantic.decision).toBe(want);
+
+      const identity = await resolveSettlementEventIdentity(
+        evidence,
+        {
+          anchorAddress: vector.anchorAddress,
+          phaseIndex: vector.phaseIndex,
+          railId: vector.verificationContext.railId,
+          asset: vector.verificationContext.asset,
+          payer: vector.verificationContext.payer,
+          payee: vector.verificationContext.payee,
+          amount: vector.verificationContext.amount,
+          x402Receipt: vector.verificationContext.x402Receipt,
+          ledgerEvents: vector.ledgerEvents,
+          priorClaims: vector.priorClaims,
+        },
+        deps,
+      );
+      expect(identity.decision).toBe(want);
+      expect(identity).toMatchObject({
+        settlementId: vector.expectedSettlementTxId,
+      });
+    },
     "settlement-delivery-pass": async (want) => {
       const fx = read("conformance/fixtures/settlement-evidence-delivery-success.json") as any;
       const r = await verifySettlementEvidence(
@@ -1262,10 +1331,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. Eighty-one golden cases have non-vacuous SDK runners in
+    // This pin has 236 cases. Eighty-two golden cases have non-vacuous SDK runners in
     // this change; deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(81);
+    expect(Object.keys(RUNNERS)).toHaveLength(82);
     expect(manifest.cases).toHaveLength(236);
   });
 
