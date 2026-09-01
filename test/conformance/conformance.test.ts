@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertPositiveAmount,
+  attestationAddress,
   bundleAddress,
   canonicalSignedScope,
   canonicalize,
@@ -14,6 +15,8 @@ import {
   decodeAddressSegment,
   encodeAddressSegment,
   listingAddress,
+  paymentEvidenceAddress,
+  ratingAddress,
   sha256Hex,
 } from "../../src/canonical/index.js";
 import {
@@ -534,6 +537,29 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
           "cci-xm:evm:mainnet:0x1234",
         ),
       ).toBe(want);
+    },
+    "cf4-dacs2-attestation-address": (want) => {
+      expect(
+        attestationAddress("job-abc", "cci-xm", "evm:mainnet:0x1234", 3),
+      ).toBe(want);
+    },
+    "vet-cm2-address": (want) => {
+      expect(attestationAddress("job-abc", "lei", "984500ABCDEF12345678", 3)).toBe(
+        want,
+      );
+    },
+    "cf4-dacs4-payment-address": (want) => {
+      expect({
+        address: paymentEvidenceAddress(
+          "DACS-VERIFY-SETTLE-0001",
+          "evm-erc20:1:USDC",
+          0,
+        ),
+        decision: "pass",
+      }).toEqual(want);
+    },
+    "cf4-dacs5-rating-address": (want) => {
+      expect(ratingAddress("job-abc", "cci-xm:evm:mainnet:0x1234")).toBe(want);
     },
 
     // Exact normative artifact-reference shapes — DACS-2 §7.5.2 / DACS-4 §9.3.
@@ -1232,10 +1258,6 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       "needs surfaces the SDK does not export (ST-1 transition legality, phase-error→outcome mapping, two-sided address lookup) or inputs not shipped",
   };
   const TODO_CASE_REASON: Record<string, string> = {
-    "cf4-dacs2-attestation-address": "no exported DACS-2 attestation address builder (#6)",
-    "cf4-dacs4-payment-address": "no exported DACS-4 payment address builder (#6)",
-    "cf4-dacs5-rating-address": "no exported DACS-5 rating address builder (#6)",
-    "vet-cm2-address": "no exported DACS-2 attestation address builder (#6)",
     "settlement-wrong-anchor-fail":
       "EvidenceContext cannot validate the result.attestationRef payment-address id (PC-2)",
     "settlement-txrefs-mismatch-fail":
@@ -1291,10 +1313,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. Eighty golden cases have non-vacuous SDK runners in
-    // this change; deleting a runner must fail loudly instead of quietly
+    // This pin has 236 cases. The parent has 80 non-vacuous SDK runners; four
+    // additional canonical address vectors raise that coverage to 84.
+    // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(80);
+    expect(Object.keys(RUNNERS)).toHaveLength(84);
     expect(manifest.cases).toHaveLength(236);
   });
 

@@ -54,6 +54,12 @@ evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
 transaction/finality, writer, validation-profile, freshness and presentation-
 control inputs; it never treats copied bundle metadata as authority.
 
+The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
+filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
+content only and fails closed on malformed input; see the
+[ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
+injection contract.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
