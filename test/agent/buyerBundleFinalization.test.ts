@@ -349,6 +349,21 @@ beforeEach(() => {
 });
 
 describe("DACS-5 buyer completed-bundle counter-signing", () => {
+  test("rejects raw seed material before authenticating or signing", async () => {
+    const f = fixture();
+    f.buyer.signer = BUYER_SEED as unknown as SigningSessionParty["signer"];
+
+    await expect(
+      createCompletedBuyerBundleCounterSignature(
+        f.counterInput,
+        f.request,
+        f.provider,
+      ),
+    ).rejects.toThrow(/must not retain a raw Ed25519 seed/);
+    expect(sellerMocks.verifyRequest).not.toHaveBeenCalled();
+    expect(f.buyerSigner).not.toHaveBeenCalled();
+  });
+
   test("signs only the independently authenticated request and verifies the local buyer key", async () => {
     const f = fixture();
     const signature = await createCompletedBuyerBundleCounterSignature(

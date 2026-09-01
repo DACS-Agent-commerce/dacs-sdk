@@ -37,6 +37,7 @@ import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { deriveReputation } from "../../src/agent/reputationDerivation.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
+import { compositeVerificationAddress } from "../../src/agent/index.js";
 import {
   assignSealedEnvelopeRoles,
   buildSealedAgreement,
@@ -58,6 +59,10 @@ import type {
   AnyAttestationBundle,
   AttestationBundle,
 } from "../../src/artifacts/types.js";
+import {
+  isAttestationRef,
+  isChainTxRef,
+} from "../../src/artifacts/index.js";
 import type { LegacyMvpAgreementDocument as AgreementDocument } from "../../src/artifacts/legacyMvp.js";
 
 /**
@@ -141,6 +146,17 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     settlement: { seeds: Record<string, string>; publicKeys: Record<string, string> };
     verify: { seeds: Record<string, string> };
   } & Record<string, unknown>;
+  const referenceShapes = read(
+    "conformance/vectors/security/artifact-reference-shapes-v0.1.json",
+  ) as unknown as {
+    count: number;
+    vectors: Array<{
+      name: string;
+      type: "AttestationRef" | "ChainTxRef";
+      expected: "pass" | "fail";
+      value: unknown;
+    }>;
+  };
 
   it("loads the pinned manifest", () => {
     expect(manifest.dacsVersion).toBe("0.1");
@@ -510,6 +526,53 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     },
     "cf4-dacs1-listing-address": (want) => {
       expect(listingAddress("cci-xm:evm:mainnet:0x1234", "rfq-lot-x-1", 3)).toBe(want);
+    },
+    "cf4-dacs2-composite-address": (want) => {
+      expect(
+        compositeVerificationAddress(
+          "job-abc",
+          "cci-xm:evm:mainnet:0x1234",
+        ),
+      ).toBe(want);
+    },
+
+    // Exact normative artifact-reference shapes — DACS-2 §7.5.2 / DACS-4 §9.3.
+    "artifact-shape-attestationref": (want) => {
+      expect(referenceShapes.vectors).toHaveLength(referenceShapes.count);
+      expect(referenceShapes.count).toBe(23);
+      const accepted = referenceShapes.vectors.filter(
+        (testCase) =>
+          testCase.type === "AttestationRef" && testCase.expected === "pass",
+      );
+      expect(
+        accepted.map(
+          (testCase) =>
+            (testCase.value as { anchor: { kind: string } }).anchor.kind,
+        ).sort(),
+      ).toEqual([...want.acceptedAnchorKinds].sort());
+      expect(accepted.every((testCase) => isAttestationRef(testCase.value))).toBe(true);
+      const legacy = referenceShapes.vectors.find(
+        (testCase) => testCase.name === "attestation-legacy-kind-id-rejected",
+      );
+      expect(isAttestationRef(legacy?.value) ? "pass" : "fail").toBe(want.legacyKindId);
+    },
+    "artifact-shape-chaintxref": (want) => {
+      const acceptedKinds = new Set<string>(want.acceptedKinds);
+      const accepted = referenceShapes.vectors.filter((testCase) => {
+        if (testCase.type !== "ChainTxRef" || testCase.expected !== "pass") return false;
+        const kind = (testCase.value as { kind?: unknown }).kind;
+        return typeof kind === "string" && acceptedKinds.has(kind);
+      });
+      expect(
+        accepted.map((testCase) => (testCase.value as { kind: string }).kind).sort(),
+      ).toEqual([...want.acceptedKinds].sort());
+      expect(accepted.every((testCase) => isChainTxRef(testCase.value))).toBe(true);
+      const legacy = referenceShapes.vectors.find(
+        (testCase) => testCase.name === "txref-legacy-rail-kind-rejected",
+      );
+      expect(isChainTxRef(legacy?.value) ? "pass" : "fail").toBe(
+        want.legacyRailTxHashKind,
+      );
     },
 
     // negotiate — DACS-3 SE-8 role assignment and commit teeth.
@@ -1169,11 +1232,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       "needs surfaces the SDK does not export (ST-1 transition legality, phase-error→outcome mapping, two-sided address lookup) or inputs not shipped",
   };
   const TODO_CASE_REASON: Record<string, string> = {
-    "cf4-dacs2-attestation-address": "no exported dacs2 address builder (MVP anchor names deliberately unexported; #5/#48)",
-    "cf4-dacs2-composite-address": "no exported dacs2 composite address builder (#5/#48)",
-    "cf4-dacs4-payment-address": "no exported dacs4 payment address builder (#5/#48)",
-    "cf4-dacs5-rating-address": "no exported dacs5 rating address builder (#5/#48)",
-    "vet-cm2-address": "no exported dacs2 attestation address builder (#5/#48)",
+    "cf4-dacs2-attestation-address": "no exported DACS-2 attestation address builder (#6)",
+    "cf4-dacs4-payment-address": "no exported DACS-4 payment address builder (#6)",
+    "cf4-dacs5-rating-address": "no exported DACS-5 rating address builder (#6)",
+    "vet-cm2-address": "no exported DACS-2 attestation address builder (#6)",
     "settlement-wrong-anchor-fail":
       "EvidenceContext cannot validate the result.attestationRef payment-address id (PC-2)",
     "settlement-txrefs-mismatch-fail":
@@ -1229,10 +1291,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 234 cases. Seventy-seven golden cases have non-vacuous SDK runners in
+    // This pin has 236 cases. Eighty golden cases have non-vacuous SDK runners in
     // this change; deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(77);
+    expect(Object.keys(RUNNERS)).toHaveLength(80);
     expect(manifest.cases).toHaveLength(236);
   });
 

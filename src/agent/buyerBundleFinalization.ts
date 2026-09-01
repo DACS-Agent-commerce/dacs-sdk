@@ -15,9 +15,10 @@ import {
   signComponentArtifact,
 } from "../artifacts/index.js";
 import { bundleAddress, canonicalize, contentHash } from "../canonical/index.js";
-import { ed25519Sign, privateKeyFromSeed, signedBytes } from "../crypto/index.js";
+import { ed25519Sign, signedBytes } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import {
+  assertNoRawSessionSeed,
   attestationBundleHash,
   type SigningSessionParty,
 } from "./twoSidedBundle.js";
@@ -392,6 +393,7 @@ function captureCounterparty(
   const primaryClaim = descriptors.primaryClaim?.value;
   const bundleHash = descriptors.bundleHash?.value;
   const signer = descriptors.signer?.value as SigningSessionParty["signer"] | undefined;
+  assertNoRawSessionSeed(signer, `${subject} signer`);
   if (
     (role !== "buyer" && role !== "orchestrator") ||
     typeof primaryClaim !== "string" ||
@@ -725,10 +727,7 @@ async function signCounterpartyBytes(
             signer(new Uint8Array(payload)),
             `${subject} result`,
           )
-        : ed25519Sign(
-            payload,
-            signer instanceof Uint8Array ? privateKeyFromSeed(signer) : signer,
-          );
+        : ed25519Sign(payload, signer);
     if (!(raw instanceof Uint8Array) || raw.byteLength !== 64) {
       throw new DacsError(`${subject} did not return one Ed25519 signature`);
     }

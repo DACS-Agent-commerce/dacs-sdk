@@ -385,6 +385,29 @@ describe("filesystem x402 paywall settlement store", () => {
     )).toEqual([]);
   });
 
+  test("fails closed instead of publishing while stale recovery owns the transition gate", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = await createFsX402PaywallSettlementStore({
+      dir: directory,
+      lockStaleMs: 1,
+      lockTimeoutMs: 5,
+      lockPollMs: 1,
+    });
+    const gate = join(directory, "locks", ".reclaim");
+    await writeFile(gate, JSON.stringify({
+      pid: process.pid,
+      token: "deterministic-live-reclaimer",
+    }), { mode: 0o600 });
+
+    await expect(store.claim(intentFor())).rejects.toThrow(
+      /timed out acquiring x402 paywall settlement lock/,
+    );
+    expect(await readdir(join(directory, "records"))).toEqual([]);
+
+    await rm(gate, { force: true });
+    await expect(store.claim(intentFor())).resolves.toMatchObject({ status: "claimed" });
+  });
+
   test("recovers a dead stale-reclaimer gate before touching the settlement lock", async () => {
     const directory = await temporaryStoreDirectory();
     const store = await createFsX402PaywallSettlementStore({
