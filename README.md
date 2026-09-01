@@ -421,6 +421,16 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
+`prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
+coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
+recursive production authenticator, and creates DACS-5 `vet-failed` terminal
+authority only for an authenticated objective `fail`. A passing record remains
+non-terminal; `indeterminate`, verifier `error`, an unresolved closure, or a
+thrown authentication dependency cannot blame the counterparty. The returned
+authority contains no signing capability and is intended for the existing
+role-local `advanceTerminalBundleDurable(...)` path. Failed bundles remain
+co-signed; single-signature suppression is available only for an honest abort.
+
 ### Normative artifact references
 
 Public `AttestationRef` values use the DACS-2 §7.5.2
