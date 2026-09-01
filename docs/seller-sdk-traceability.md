@@ -1,11 +1,11 @@
 # Seller SDK traceability
 
 This audit uses the DACS Standard [`next` branch at commit
-`965df755aba4ff392f1fb37a93d287242b177ba4`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/965df755aba4ff392f1fb37a93d287242b177ba4)
+`662be1d4899a2cadf327fe2d5523e93a80334e5f`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/662be1d4899a2cadf327fe2d5523e93a80334e5f)
 as the current normative source.
 The SDK conformance runner remains reproducibly pinned by
 `scripts/sync-vectors.mjs` to [Standard commit
-`965df755aba4ff392f1fb37a93d287242b177ba4`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/965df755aba4ff392f1fb37a93d287242b177ba4).
+`662be1d4899a2cadf327fe2d5523e93a80334e5f`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/662be1d4899a2cadf327fe2d5523e93a80334e5f).
 
 This document describes only public DACS behavior. The SDK core must not depend
 on a private service, deployment, transport, repository, or URL.
@@ -83,7 +83,7 @@ out of the artifact-fidelity PR:
 | --- | --- | --- |
 | `validateListingArtifact` / `ListingValidationDisposition` | DACS-1 §6.3.4 reader steps 1–9, LR-2/LR-3 | Ordered positive/negative tests, including LRR-indeterminate followed by signer rejection |
 | `RevocationMarker`, `RevocationBinding`, `checkListingRevocation` | DACS-1 §6.3.4 RB-1..RB-6; CORE §B.7 | All 14 `revocation-binding-v0.3` Standard vectors |
-| `resolveListingRails` | DACS-1 §6.3.4 LRR-1..LRR-6; DACS-4 §9.4.3 RD-1..RD-6 | All 29 `listing-rail-registry-resolution-v0.4` vectors from Standard `next` commit `965df755aba4ff392f1fb37a93d287242b177ba4` |
+| `resolveListingRails` | DACS-1 §6.3.4 LRR-1..LRR-6; DACS-4 §9.4.3 RD-1..RD-6 | All 29 `listing-rail-registry-resolution-v0.4` vectors from Standard `next` commit `662be1d4899a2cadf327fe2d5523e93a80334e5f` |
 | pay-bearing publication gate | DACS-1 §6.3.4 LP-6 | Rejects missing, rejected, and indeterminate authority before signing/anchoring |
 | normative discovery/session-admission gates | DACS-1 §6.3.4 LRR-5, LR-2/LR-3 | Discovery returns only exact-hash `verified` Listings; `runSessionCore` rejects `rejected`, `revoked`, and `indeterminate` before Vet/payment |
 | `assessListingReachability` | DACS-1 §6.3.4 LP-5; §6.3.6 | Separate operational evidence with private-address, DNS, redirect, timeout, size, and no-credential controls |
